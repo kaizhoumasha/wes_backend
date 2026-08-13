@@ -9,10 +9,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
-from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
-from src.app.device.models.device import Device
-from src.app.device.repositories import device_command_repository
-from src.app.device.services.device_service import DeviceService
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -40,49 +36,12 @@ from src.utils.value_normalization import as_dict, enum_str, optional_int
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.device.repositories import DeviceCommandRepository
     from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition
     from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
     from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.sys.repositories import SystemOutboxRepository
     from src.app.workline.repositories.workline_repository import WorkLineRepository
-
-
-def _latest_matching_late_callback_data(session: Any | None, command: DeviceCommand) -> dict[str, Any]:
-    context = as_dict(getattr(session, "context_json", None))
-    evidence = context.get("runtime_reconciliation_late_callback_evidence")
-    if not isinstance(evidence, list):
-        return {}
-
-    for item in reversed([raw_item for raw_item in evidence if isinstance(raw_item, dict)]):
-        payload = item.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        evidence_command_code = item.get("command_code") or payload.get("command_code")
-        if evidence_command_code != command.command_code:
-            continue
-        if enum_str(payload.get("result")) != CommandResult.SUCCESS.value:
-            continue
-        data = payload.get("data")
-        if isinstance(data, dict) and data:
-            return dict(data)
-    return {}
-
-
-def _runtime_continue_result_payload(
-    request: ResolveRuntimeHoldRequest,
-    command: DeviceCommand,
-    *,
-    session: Any | None = None,
-) -> dict[str, Any]:
-    payload = as_dict(request.result_payload)
-    if payload:
-        return payload
-    payload = _latest_matching_late_callback_data(session, command)
-    if payload:
-        return payload
-    return as_dict(command.params)
 
 
 class RuntimeHoldReleaseError(ValueError):
@@ -114,28 +73,22 @@ class RuntimeHoldReleaseService:
         workline_repo: WorkLineRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
-        command_repo: DeviceCommandRepository | None = None,
-        device_service: DeviceService | None = None,
     ) -> None:
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
         self.workline_repo = workline_repo or workline_repository
         self.session_repo = session_repo or workline_session_repository
         self.outbox_repo = outbox_repo or system_outbox_repository
-        self.command_repo = command_repo or device_command_repository
-        self.device_service = device_service or DeviceService()
 
-    def build_latest_evidence_hash(self, hold: RuntimeHold, *, session: Any | None = None) -> str:
+    def build_latest_evidence_hash(self, hold: RuntimeHold) -> str:
         """构建可被 GET/API 复用的 deterministic evidence hash。"""
 
         payload = {
             "evidence_snapshot_json": hold.evidence_snapshot_json or {},
-            "late_callback_evidence": self._late_callback_evidence(session),
             "source_refs": {
                 "source_kind": hold.source_kind,
                 "source_reason": hold.source_reason,
                 "source_inbox_id": hold.source_inbox_id,
                 "source_outbox_id": hold.source_outbox_id,
-                "source_command_id": hold.source_command_id,
                 "source_device_id": hold.source_device_id,
                 "session_id": hold.session_id,
                 "workline_id": hold.workline_id,
@@ -186,7 +139,7 @@ class RuntimeHoldReleaseService:
                 "RUNTIME_HOLD_VERSION_CONFLICT",
                 f"version conflict: hold_id={hold_id}, current={hold.version}, provided={request.hold_version}",
             )
-        latest_evidence_hash = self.build_latest_evidence_hash(hold, session=session)
+        latest_evidence_hash = self.build_latest_evidence_hash(hold)
         if latest_evidence_hash != request.latest_evidence_hash:
             raise RuntimeHoldReleaseError("RUNTIME_HOLD_EVIDENCE_CHANGED", "evidence changed")
 
@@ -214,13 +167,6 @@ class RuntimeHoldReleaseService:
                 release_context=return_to_ng_context,
             )
 
-        source_command = await self._resolve_source_command(
-            db,
-            hold=hold,
-            request=request,
-            resolved_at=now,
-            session=session,
-        )
         self._write_release_facts(
             hold,
             request=request,
@@ -232,30 +178,8 @@ class RuntimeHoldReleaseService:
         hold.status = RuntimeHoldStatus.RESOLVED
         hold.resolved_by = operator_id
         hold.resolved_at = now
-        created_inbox_id: int | None = None
         if session is not None:
-            if source_command is not None and self._should_replay_command_result(
-                hold=hold,
-                request=request,
-            ):
-                self._resolve_session_for_command_result_replay(
-                    session,
-                    request=request,
-                    operator_id=operator_id,
-                    resolved_at=now,
-                    command=source_command,
-                )
-                created_inbox_id = await self._create_continue_command_result_inbox(
-                    db,
-                    hold=hold,
-                    request=request,
-                    command=source_command,
-                    session=session,
-                )
-            else:
-                self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
-
-        await self._clear_runtime_device_error(db, hold=hold)
+            self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
 
         hold.increment_version()
         await db.flush()
@@ -295,7 +219,6 @@ class RuntimeHoldReleaseService:
             "remaining_active_blocking_holds": remaining_active_blocking_holds,
             "released_outbox_count": released_outbox_count,
             "ng_return_item_id": getattr(ng_item, "id", None),
-            "created_inbox_id": created_inbox_id,
         }
 
     def _validate_release_request(self, request: ResolveRuntimeHoldRequest) -> None:
@@ -634,34 +557,6 @@ class RuntimeHoldReleaseService:
             resolved_at=resolved_at,
         )
 
-    def _resolve_session_for_command_result_replay(
-        self,
-        session: Any,
-        *,
-        request: ResolveRuntimeHoldRequest,
-        operator_id: int,
-        resolved_at: Any,
-        command: DeviceCommand,
-    ) -> None:
-        if command.id is None:
-            raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
-        from src.app.workline.domain.services.session_lifecycle_service import (
-            workline_session_lifecycle_service,
-        )
-
-        workline_session_lifecycle_service.replay_command_result_wait(
-            session,
-            command_code=command.command_code,
-            occurred_at=resolved_at,
-        )
-        self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)
-        self._write_session_release_context(
-            session,
-            request=request,
-            operator_id=operator_id,
-            resolved_at=resolved_at,
-        )
-
     def _mark_reconciliation_resolved(
         self,
         session: Any,
@@ -693,126 +588,6 @@ class RuntimeHoldReleaseService:
             "result_payload": request.result_payload or {},
         }
         session.context_json = context
-
-    def _should_replay_command_result(
-        self,
-        *,
-        hold: RuntimeHold,
-        request: ResolveRuntimeHoldRequest,
-    ) -> bool:
-        return (
-            hold.source_command_id is not None
-            and request.material_disposition == MaterialDisposition.CONTINUE.value
-            and request.resolution == SessionStatus.COMPLETED.value
-        )
-
-    async def _resolve_source_command(
-        self,
-        db: AsyncSession,
-        *,
-        hold: RuntimeHold,
-        request: ResolveRuntimeHoldRequest,
-        resolved_at: Any,
-        session: Any | None,
-    ) -> DeviceCommand | None:
-        if hold.source_command_id is None:
-            return None
-        command = await self.command_repo.get_by_id(db, hold.source_command_id)
-        if command is None:
-            return None
-        if request.resolution == SessionStatus.COMPLETED.value:
-            result_payload = _runtime_continue_result_payload(request, command, session=session)
-            command.status = CommandStatus.COMPLETED
-            command.result = CommandResult.SUCCESS
-            command.result_data = result_payload
-            command.error_detail = None
-        elif request.resolution == SessionStatus.FAILED.value:
-            command.status = CommandStatus.FAILED
-            command.result = CommandResult.FAILED
-            command.error_detail = {
-                **as_dict(command.error_detail),
-                "error_code": "RUNTIME_HOLD_FAILED",
-                "operator_resolution": request.resolution,
-            }
-        else:
-            command.status = CommandStatus.CANCELLED
-            command.result = None
-            command.error_detail = {
-                **as_dict(command.error_detail),
-                "error_code": "RUNTIME_HOLD_CANCELLED",
-                "operator_resolution": request.resolution,
-            }
-        command.completed_at = resolved_at
-        return command
-
-    async def _create_continue_command_result_inbox(
-        self,
-        db: AsyncSession,
-        *,
-        hold: RuntimeHold,
-        request: ResolveRuntimeHoldRequest,
-        command: DeviceCommand,
-        session: Any | None,
-    ) -> int:
-        if command.id is None:
-            raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
-        if command.workline_id is None:
-            command.workline_id = hold.workline_id
-        device = await db.get(Device, command.device_id)
-        if device is None:
-            raise ValueError(f"设备不存在: {command.device_id}")
-
-        command_type = enum_str(command.task_type)
-        result_payload = _runtime_continue_result_payload(request, command, session=session)
-        payload = {
-            "command_code": command.command_code,
-            "device_code": device.device_code,
-            "task_type": command_type,
-            "result": CommandResult.SUCCESS.value,
-            "runtime_hold_release": True,
-            "data": result_payload,
-        }
-        # RuntimeInbox 是 command result 唯一事实源，后续 processor 经统一路径消费。
-        from src.app.runtime.orchestration.services.runtime_inbox import (
-            runtime_inbox_service,
-        )
-
-        source_event_id = f"runtime-hold:result:{hold.id}:{command.command_code}"
-        runtime_inbox_result = await runtime_inbox_service.accept_command_result(
-            db,
-            command_code=command.command_code,
-            source_event_id=source_event_id,
-            device_code=device.device_code,
-            workline_id=command.workline_id,
-            device_id=command.device_id,
-            command_id=command.id,
-            trace_id=command.trace_id or hold.trace_id,
-            event_id=source_event_id,
-            causation_id=hold.trace_id,
-            payload_json=payload,
-            auto_commit=False,
-        )
-        return cast("int", runtime_inbox_result.record.id)
-
-    async def _clear_runtime_device_error(self, db: AsyncSession, *, hold: RuntimeHold) -> None:
-        device_error = self._device_error_for_hold(hold)
-        if hold.source_device_id is None or device_error is None:
-            return
-        _ = await self.device_service.clear_reconciliation_error(
-            db,
-            device_id=hold.source_device_id,
-            expected_error_code=device_error,
-            auto_commit=False,
-        )
-
-    def _device_error_for_hold(self, hold: RuntimeHold) -> str | None:
-        if hold.hold_type != RuntimeHoldType.RUNTIME_RECONCILIATION:
-            return None
-        if hold.source_reason == "CALLBACK_DEADLINE_EXPIRED":
-            return "CALLBACK_DEADLINE_EXPIRED"
-        if hold.source_reason in {"COMMAND_ACK_EXHAUSTED", "OUTBOX_DISPATCH_FAILED"}:
-            return "OUTBOX_DISPATCH_FAILED"
-        return None
 
     async def _project_remaining_hold_status(
         self,
@@ -854,13 +629,6 @@ class RuntimeHoldReleaseService:
             if isinstance(nested, dict):
                 return dict(nested)
         return evidence
-
-    def _late_callback_evidence(self, session: Any | None) -> list[dict[str, Any]]:
-        context = as_dict(getattr(session, "context_json", None))
-        evidence = context.get("runtime_reconciliation_late_callback_evidence")
-        if not isinstance(evidence, list):
-            return []
-        return [dict(item) for item in evidence if isinstance(item, dict)]
 
 
 runtime_hold_release_service = RuntimeHoldReleaseService()

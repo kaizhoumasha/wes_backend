@@ -405,13 +405,9 @@ async def test_workline_evidence_persistence_failure_never_reopens_sendable_stat
     )
     dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
     event_stream_module = import_module("src.app.sys.services.event_stream_service")
-    monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
     monkeypatch.setattr(service, "_should_dispatch_to_sandbox", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "_dispatch_external_http", sender)
-    monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
-    monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
     monkeypatch.setattr(dispatch_module, "_record_diagnostic", AsyncMock())
-    monkeypatch.setattr(dispatch_module, "_mark_device_command_failed_if_dispatch_exhausted", AsyncMock())
     monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
 
     if recovery_fails:
@@ -512,14 +508,11 @@ async def test_workline_dispatcher_emits_ordered_external_http_fault_boundaries(
         dispatch_attempt_service=attempt_service,
         external_http_fault_hook=fault_hook,
     )
-    dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
+    import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
     event_stream_module = import_module("src.app.sys.services.event_stream_service")
     safety_module = import_module("src.app.workline.services.safety_service")
-    monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
     monkeypatch.setattr(service, "_should_dispatch_to_sandbox", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "_dispatch_external_http", sender)
-    monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
-    monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
     monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
     monkeypatch.setattr(safety_module.workline_safety_service, "assert_accepting_work", AsyncMock())
 
@@ -596,12 +589,9 @@ async def test_workline_dispatcher_rechecks_claim_after_commit_before_external_s
         dispatch_attempt_service=_DispatchAttemptService(),
         external_http_fault_hook=cancel_after_claim,
     )
-    dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
+    import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
     event_stream_module = import_module("src.app.sys.services.event_stream_service")
-    monkeypatch.setattr(service, "_dispatch_blocked_resource_heads", AsyncMock(return_value=(set(), set())))
     monkeypatch.setattr(service, "_dispatch_external_http", sender)
-    monkeypatch.setattr(dispatch_module, "_repair_orphaned_device_busy_dispatches", AsyncMock(return_value=0))
-    monkeypatch.setattr(dispatch_module, "_repair_self_blocked_device_busy_dispatches", AsyncMock(return_value=0))
     monkeypatch.setattr(event_stream_module, "publish_deferred_sse_events", AsyncMock())
 
     stats = await service.dispatch(SimpleNamespace(commit=AsyncMock()), limit=1)

@@ -1,25 +1,34 @@
-"""WorkLine Service 导出"""
+"""WorkLine Service 按需导出，避免包导入拉起运行时闭包。"""
 
 from __future__ import annotations
 
-# pyright: reportUnsupportedDunderAll=false
-# WorkLine 运行态 service 已迁入 runtime/orchestration/services/ 与
-# runtime/capabilities/material_flow/,本包 facade 仅导出当前真实 service。
-# PlaneReadPrincipal / PlaneReadSecurityPolicy / plane_read_security_policy
-# 是 plane_service 的安全 helper,由具体模块直接导入,不放在 package facade。
-from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
-from .plane_service import WorkLinePlaneService, workline_plane_service
-from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
-from .workline_service import WorkLineService, workline_service
+from importlib import import_module
+from typing import Any
 
-__all__ = [
-    "WorkLinePlaneService",
-    "WorkLineSafetyBlocked",
-    "WorkLineSafetyService",
-    "WorkLineService",
-    "WorklineDiagnosticService",
-    "workline_diagnostic_service",
-    "workline_plane_service",
-    "workline_safety_service",
-    "workline_service",
-]
+_EXPORTS = {
+    "LineRunEpochService": ("line_run_epoch_service", "LineRunEpochService"),
+    "line_run_epoch_service": ("line_run_epoch_service", "line_run_epoch_service"),
+    "WorkLinePlaneService": ("plane_service", "WorkLinePlaneService"),
+    "workline_plane_service": ("plane_service", "workline_plane_service"),
+    "WorkLineSafetyBlocked": ("safety_service", "WorkLineSafetyBlocked"),
+    "WorkLineSafetyService": ("safety_service", "WorkLineSafetyService"),
+    "workline_safety_service": ("safety_service", "workline_safety_service"),
+    "WorkLineService": ("workline_service", "WorkLineService"),
+    "workline_service": ("workline_service", "workline_service"),
+    "WorklineDiagnosticService": ("diagnostic_service", "WorklineDiagnosticService"),
+    "workline_diagnostic_service": ("diagnostic_service", "workline_diagnostic_service"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "write_back_service":
+        return import_module(f"{__name__}.write_back_service")
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(name)
+    module = import_module(f"{__name__}.{target[0]}")
+    value = getattr(module, target[1])
+    globals()[name] = value
+    return value

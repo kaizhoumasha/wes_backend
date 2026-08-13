@@ -17,7 +17,6 @@ class RuntimeInboxRelatedEntities(TypedDict):
     session: Any | None
     workline: Any | None
     device: Any | None
-    command: Any | None
     devices_by_role: dict[str, list[Any]]
     services: WorklineRuntimeServices
     safety_checked: bool
@@ -48,21 +47,11 @@ def _should_resolve_session(inbox: Any, *, session_id: int | None) -> bool:
     kind = _kind_value(inbox)
     if canonical_event_type(payload) in RESERVED_RUNTIME_EVENTS:
         return False
-    if kind == "DEVICE_EVENT":
-        return bool(getattr(inbox, "device_id", None) or payload.get("device_code") or payload.get("business_key"))
-    if kind == "COMMAND_RESULT":
-        # payload command_code 只是不可信输入；
-        # Session 只能从持久 command_id 或显式 owner anchor 解析。
-        return bool(
-            getattr(inbox, "command_id", None)
-            or session_id is not None
-            or optional_str(getattr(inbox, "correlation_id", None))
-        )
     if kind == EXTERNAL_HTTP_INBOX_KIND:
         return bool(getattr(inbox, "trace_id", None))
     if kind == "INTERNAL_EVENT":
         return session_id is not None and isinstance(getattr(inbox, "workline_id", None), int)
-    if kind in {"TIMER_TIMEOUT", "REPLAY_REQUEST"}:
+    if kind == "REPLAY_REQUEST":
         return session_id is not None
     return False
 
@@ -88,29 +77,6 @@ async def _load_workline_entity(db: Any, inbox: Any, session: Any, workline_repo
     if isinstance(workline_id, int):
         return await workline_repo.get_by_id(db, workline_id)
     return None
-
-
-async def _load_command_entity(db: Any, inbox: Any, command_repo: Any) -> Any | None:
-    command_id = getattr(inbox, "command_id", None)
-    if isinstance(command_id, int):
-        return await command_repo.get_by_id(db, command_id)
-    if _kind_value(inbox) == "COMMAND_RESULT":
-        return None
-    command_code = payload_dict(getattr(inbox, "payload_json", None)).get("command_code")
-    if isinstance(command_code, str) and command_code:
-        return await command_repo.get_by_command_code(db, command_code)
-    return None
-
-
-def _hydrate_inbox_from_command(inbox: Any, command: Any | None) -> None:
-    if command is None:
-        return
-    command_pk = resolve_entity_id(command)
-    if _kind_value(inbox) != "COMMAND_RESULT" and command_pk is not None and not getattr(inbox, "command_id", None):
-        inbox.command_id = command_pk
-    workline_id = getattr(command, "workline_id", None)
-    if isinstance(workline_id, int) and not getattr(inbox, "workline_id", None):
-        inbox.workline_id = workline_id
 
 
 async def _load_device_entity(db: Any, inbox: Any, device_repo: Any) -> Any | None:
@@ -194,7 +160,6 @@ async def load_related_entities(
 ) -> RuntimeInboxRelatedEntities:
     """加载 RuntimeInbox 编排所需关联实体与运行时服务。"""
     from src.app.device.repositories import DeviceRepository
-    from src.app.device.repositories.command_repository import DeviceCommandRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.runtime.orchestration.repository_wiring import workline_repository
     from src.app.runtime.orchestration.services.session.session_resolver import session_resolver
@@ -202,12 +167,9 @@ async def load_related_entities(
     session_repo = WorklineSessionRepository()
     workline_repo = workline_repository
     device_repo = DeviceRepository()
-    command_repo = DeviceCommandRepository()
     session_id = _canonical_workline_session_id(inbox)
     session = await _load_workline_session(db, session_id=session_id, session_repo=session_repo)
     workline = await _load_workline_entity(db, inbox, session, workline_repo)
-    command = await _load_command_entity(db, inbox, command_repo)
-    _hydrate_inbox_from_command(inbox, command)
     device = await _load_device_entity(db, inbox, device_repo)
     if workline is None and device is not None:
         workline = await _backfill_workline_from_device(db, inbox, device, workline_repo)
@@ -221,8 +183,6 @@ async def load_related_entities(
         session = await session_resolver.resolve_or_create(
             db=db,
             inbox=inbox,
-            workline=workline,
-            devices_by_role=devices_by_role,
             session_id=session_id,
         )
         if workline is None:
@@ -246,7 +206,6 @@ async def load_related_entities(
         "session": session,
         "workline": workline,
         "device": device,
-        "command": command,
         "devices_by_role": devices_by_role,
         "services": build_workline_runtime_services(db=db, workline=workline, session=session),
         "safety_checked": safety_checked,

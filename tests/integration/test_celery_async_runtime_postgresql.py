@@ -62,7 +62,7 @@ TRANSACTION_TASK = "tests.integration.celery_prefork.transaction_probe"
 FAMILY_TASKS = (
     "src.celery_app.tasks.core.health_check",
     "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
-    "src.celery_app.tasks.workline.scan_timeouts_batch",
+    "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
     "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
     "src.celery_app.tasks.handling.process_signal",
 )
@@ -270,6 +270,10 @@ def _component_environment(database_url: str, redis_url: str, *, run_id: str) ->
         "REDIS_DB": str((redis.database or "0").lstrip("/")),
         "CELERY_BROKER_URL": redis_url,
         "CELERY_RESULT_BACKEND": redis_url,
+        "ECS_BASE_URL": "http://127.0.0.1:18081",
+        "ECS_CONNECT_TIMEOUT_SECONDS": "2",
+        "ECS_READ_TIMEOUT_SECONDS": "3",
+        "DEVICE_COMMAND_QUEUE": "device-command",
     }
 
 
@@ -789,7 +793,7 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         family_tasks = list(
             zip(
                 FAMILY_TASKS,
-                ([], [0], [0], [0], [{"run_id": worker.run_id}]),
+                ([], [0], [100], [0], [{"run_id": worker.run_id}]),
                 strict=True,
             )
         )

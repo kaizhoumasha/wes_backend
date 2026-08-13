@@ -50,6 +50,7 @@ class CeleryAsyncRuntime:
         self._owner_pid: int | None = None
         self._effect_preparation_runtime: Any | None = None
         self._transport_runtime: Any | None = None
+        self._device_command_runtime: Any | None = None
         self._state_lock = threading.RLock()
         # 生命周期与消息执行统一按 run_lock -> state_lock 取锁，禁止交叉顺序。
         self._run_lock = threading.RLock()
@@ -80,6 +81,16 @@ class CeleryAsyncRuntime:
                 return None
             return self._transport_runtime
 
+    @property
+    def device_command_runtime(self) -> Any | None:
+        """返回当前 WES child 唯一的 DeviceCommand runtime。"""
+
+        with self._state_lock:
+            self._assert_owner_pid()
+            if self._state is not RuntimeState.READY:
+                return None
+            return self._device_command_runtime
+
     @staticmethod
     def _assert_sync_entrypoint() -> None:
         try:
@@ -107,6 +118,7 @@ class CeleryAsyncRuntime:
         self._owner_pid = None
         self._effect_preparation_runtime = None
         self._transport_runtime = None
+        self._device_command_runtime = None
         self._state = RuntimeState.NEW
 
     @staticmethod
@@ -175,6 +187,19 @@ class CeleryAsyncRuntime:
             session_factory=db_module.AsyncSessionLocal,
         )
         progress["transport_runtime"] = transport_runtime
+
+        if process_role is WmsProviderProcessRole.WES:
+            from src.app.device.composition import (
+                build_device_command_runtime,
+                resolve_device_command_runtime_config,
+            )
+
+            device_config = resolve_device_command_runtime_config()
+            progress["device_command_runtime"] = build_device_command_runtime(
+                session_factory=db_module.AsyncSessionLocal,
+                base_url=device_config.base_url,
+                timeout_seconds=device_config.timeout_seconds,
+            )
 
         from src.app.wms_integration.effect_lane_runtime import (
             bind_wms_effect_lane_runtime,
@@ -281,6 +306,7 @@ class CeleryAsyncRuntime:
         *,
         effect_preparation_runtime: Any | None,
         transport_runtime: Any | None,
+        device_command_runtime: Any | None,
     ) -> None:
         """使用独立阶段预算，按 Redis → WMS data → Transport → preparation → effect → DB 回滚。"""
         from src.app.wms_integration.effect_lane_runtime import close_bound_wms_effect_lane_runtime
@@ -303,6 +329,8 @@ class CeleryAsyncRuntime:
             )
         if transport_runtime is not None:
             cleanup_stages.insert(2, ("transport", transport_runtime.aclose))
+        if device_command_runtime is not None:
+            cleanup_stages.insert(2, ("device-command", device_command_runtime.aclose))
         for name, factory in cleanup_stages:
             try:
                 await CeleryAsyncRuntime._wait_for_without_cancel_wait(factory(), SHUTDOWN_STAGE_TIMEOUT_SECONDS)
@@ -340,6 +368,7 @@ class CeleryAsyncRuntime:
             "wms_effect_lane": False,
             "wms_effect_preparation": None,
             "transport_runtime": None,
+            "device_command_runtime": None,
         }
         try:
             runner = asyncio.Runner()
@@ -357,6 +386,7 @@ class CeleryAsyncRuntime:
                             self._rollback_failed_initialization(
                                 effect_preparation_runtime=progress["wms_effect_preparation"],
                                 transport_runtime=progress["transport_runtime"],
+                                device_command_runtime=progress["device_command_runtime"],
                             ),
                             context=contextvars.Context(),
                         )
@@ -371,6 +401,7 @@ class CeleryAsyncRuntime:
                 self._owner_pid = None
                 self._effect_preparation_runtime = None
                 self._transport_runtime = None
+                self._device_command_runtime = None
                 self._state = RuntimeState.NEW if reusable else RuntimeState.CLOSED
             raise
 
@@ -380,6 +411,7 @@ class CeleryAsyncRuntime:
             self._owner_pid = os.getpid()
             self._effect_preparation_runtime = progress["wms_effect_preparation"]
             self._transport_runtime = progress["transport_runtime"]
+            self._device_command_runtime = progress["device_command_runtime"]
             self._state = RuntimeState.READY
 
     def run_async(self, factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -516,6 +548,13 @@ class CeleryAsyncRuntime:
                     "transport cleanup",
                     failure_result=None,
                 )
+            if self._device_command_runtime is not None:
+                self._run_runner_stage(
+                    runner,
+                    self._run_shutdown_stage(self._device_command_runtime.aclose, "device-command"),
+                    "device-command cleanup",
+                    failure_result=None,
+                )
             from src.app.wms_integration.effect_lane_runtime import close_bound_wms_effect_lane_runtime
 
             self._run_runner_stage(
@@ -556,6 +595,7 @@ class CeleryAsyncRuntime:
                 self._owner_pid = None
                 self._effect_preparation_runtime = None
                 self._transport_runtime = None
+                self._device_command_runtime = None
                 self._state = RuntimeState.CLOSED
 
 

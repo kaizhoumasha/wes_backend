@@ -6,20 +6,15 @@ from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from src.app.callback.models.ingress_response import (
-    CallbackEventAcceptedResponse,
-    CallbackRejectedResponse,
-    build_callback_event_accepted_response,
-    build_callback_rejected_response,
-)
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
-from src.app.runtime.orchestration.models.operation import (  # noqa: TC001 - FastAPI needs runtime annotations
+from src.app.runtime.orchestration.models.operation import (
     ReplayInboxRequest,
     ResolveEffectReconciliationRequest,
     ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
     SandboxExternalCallbackRequest,
     SandboxWorklineStartRequest,
+    SandboxWorklineStartResponse,
 )
 from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
     effect_reconciliation_resolution_service,
@@ -122,9 +117,9 @@ def _sandbox_start_response(
     device_code: str,
     trace_id: str,
     admission: Any,
-) -> CallbackEventAcceptedResponse | CallbackRejectedResponse:
+) -> SandboxWorklineStartResponse:
     if bool(getattr(admission, "accepted", False)):
-        return build_callback_event_accepted_response(
+        return SandboxWorklineStartResponse(
             status="accepted",
             device_code=device_code,
             request_id=trace_id,
@@ -139,7 +134,8 @@ def _sandbox_start_response(
     if isinstance(message, str) and message:
         diagnostic.setdefault("message", message)
     diagnostic.setdefault("workline_id", workline_id)
-    return build_callback_rejected_response(
+    return SandboxWorklineStartResponse(
+        ack=False,
         reason_code=getattr(admission, "reason_code", None) or "START_ADMISSION_FAILED",
         diagnostic=diagnostic,
     )
@@ -371,7 +367,7 @@ async def simulate_workline_estop(
 @router.post(
     "/sandbox/worklines/{workline_id}/start",
     summary="[biz:workline:update] 沙箱模拟现场硬件 START",
-    response_model=ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse],
+    response_model=ResponseSchemaModel[SandboxWorklineStartResponse],
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:update"))],
 )
@@ -379,7 +375,7 @@ async def start_sandbox_workline(
     workline_id: int,
     payload: SandboxWorklineStartRequest,
     db: AsyncSessionDep,
-) -> ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse]:
+) -> ResponseSchemaModel[SandboxWorklineStartResponse]:
     trace_id = payload.trace_id or f"sandbox:start:{workline_id}"
     admission = await start_admission_service.admit_start(
         db,
@@ -391,7 +387,7 @@ async def start_sandbox_workline(
     if bool(getattr(admission, "accepted", False)):
         await publish_deferred_sse_events(db)
     return cast(
-        "ResponseSchemaModel[CallbackEventAcceptedResponse | CallbackRejectedResponse]",
+        "ResponseSchemaModel[SandboxWorklineStartResponse]",
         response_builder.success(
             message=getattr(admission, "message", "START 准入完成"),
             data=_sandbox_start_response(

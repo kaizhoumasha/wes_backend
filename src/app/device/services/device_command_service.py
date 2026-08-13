@@ -1,647 +1,209 @@
-"""设备指令服务 (Device Command Service)
+"""DeviceCommand 应用端口实现。"""
 
-提供设备指令的 CRUD 操作, 专注于数据访问层。
+from __future__ import annotations
 
-职责划分:
-- Service 层: CRUD 操作(创建, 查询, 更新, 删除)
-- Celery 任务层: 业务逻辑(SDAF 流程: 验证, 决策, 构建, 发送)
-"""
+import hashlib
+import json
+from dataclasses import asdict
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Protocol
 
-import uuid
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, cast
-
-import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.app.device.models.command import (
-    CommandAck,
-    CommandCallbackResult,
-    CommandRequest,
-    CommandStatus,
-    DeviceCommand,
+from src.app.device.contracts import DeviceCommandHandle, DeviceCommandOutcome, DeviceCommandRequest
+from src.app.device.models.command import CommandStatus, DeviceCommand, DeviceCommandRequestData
+from src.app.device.repositories.command_repository import device_command_repository
+from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
+from src.app.workline.repositories.line_run_epoch_repository import (
+    line_run_epoch_repository,
 )
-from src.app.device.repositories.command_repository import (
-    DeviceCommandRepository,
-    device_command_repository,
-)
-from src.app.device.repositories.device_repository import DeviceRepository, device_repository
-from src.core.base_service import BaseService
-from src.core.exceptions import NotFoundException
-from src.core.logger import logger
-from src.database.redis_cache import get_cache
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
-from src.utils.value_normalization import coerce_optional_str
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
-@dataclass(frozen=True)
-class DeviceCallbackResultOutcome:
-    """设备结果回调处理结果。"""
-
-    command: DeviceCommand
-    late_callback_recorded: bool = False
+class DeviceNotFoundError(LookupError):
+    """活动 Epoch 中未绑定目标设备。"""
 
 
-class StaleDeviceCommandPrecondition(ValueError):
-    """锁定后的设备事实与已准入前置条件不一致。"""
+class DeviceContractMismatchError(ValueError):
+    """请求合同与 Epoch 冻结合同不一致。"""
 
 
-def _device_command_result_trace_id(command: object, callback: CommandCallbackResult) -> str | None:
-    return (
-        coerce_optional_str(getattr(callback, "trace_id", None))
-        or coerce_optional_str(getattr(command, "trace_id", None))
-        or _device_command_result_source_event_id(command, callback)
-    )
+class DeviceCommandCapacityError(RuntimeError):
+    """目标设备仍有未闭合命令。"""
 
 
-def _device_command_result_correlation_id(command: object, callback: CommandCallbackResult) -> str | None:
-    command_code = coerce_optional_str(getattr(command, "command_code", None)) or coerce_optional_str(
-        getattr(callback, "command_code", None)
-    )
-    return (
-        coerce_optional_str(getattr(command, "correlation_id", None))
-        or coerce_optional_str(getattr(callback, "causation_id", None))
-        or (f"command:{command_code}" if command_code else None)
-    )
+class DeviceCommandIdentityConflictError(ValueError):
+    """同一插件执行身份被用于不同的不可变命令请求。"""
 
 
-def _device_command_result_source_event_id(_command: object, callback: CommandCallbackResult) -> str:
-    """结果观测与 RuntimeInbox 共用供应商提供的唯一事件身份。"""
-
-    return callback.source_event_id
+class DeviceCommandDeadlineError(ValueError):
+    """请求截止时间不符合 Epoch 冻结设备合同。"""
 
 
-def _emit_device_command_result_observability(command: object, callback: CommandCallbackResult) -> None:
-    """发出 DeviceCommand RESULT 观测事件；观测失败不改变结果处理状态。"""
+class CommandRepositoryPort(Protocol):
+    async def get_by_execution_ref_for_update(
+        self,
+        db: object,
+        *,
+        line_run_epoch_id: int,
+        device_code: str,
+        execution_ref_type: str,
+        execution_ref_id: str,
+    ) -> DeviceCommand | None: ...
 
-    from src.app.runtime.orchestration.observability import runtime_observability_registry
+    async def get_unclosed_for_device_for_update(self, db: object, device_code: str) -> DeviceCommand | None: ...
 
-    command_code = coerce_optional_str(getattr(command, "command_code", None)) or coerce_optional_str(
-        getattr(callback, "command_code", None)
-    )
-    try:
-        _ = runtime_observability_registry.emit(
-            "device_command.result",
-            {
-                "trace_id": _device_command_result_trace_id(command, callback),
-                "correlation_id": _device_command_result_correlation_id(command, callback),
-                "command_code": command_code,
-                "source_event_id": _device_command_result_source_event_id(command, callback),
-            },
-        )
-    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响设备结果处理
-        logger.warning(f"设备指令 RESULT 观测事件发射失败: command_code={command_code or 'UNKNOWN'}, error={exc}")
+    async def add(self, db: object, command: DeviceCommand) -> DeviceCommand: ...
+
+    async def get_by_command_code(
+        self,
+        db: object,
+        command_code: str,
+        *,
+        for_update: bool = False,
+    ) -> DeviceCommand | None: ...
+
+    async def claim_next_reconcilable(self, db: object, *, now: datetime) -> DeviceCommand | None: ...
 
 
-class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
-    """设备指令服务。
+class EpochRepositoryPort(Protocol):
+    async def get_binding_for_command_creation(
+        self,
+        db: object,
+        *,
+        line_run_epoch_id: int,
+        device_code: str,
+    ) -> LineRunEpochDeviceBinding | None: ...
 
-    常规 CRUD 与发送流程保持原有职责；Runtime 副作用入口只在外层事务中
-    锁定并校验权威设备事实，然后准备 DeviceCommand 与 Outbox，不执行外部 I/O。
-    """
+
+class DeviceCommandService:
+    """创建命令并提供与业务无关的 typed outcome。"""
 
     def __init__(
         self,
-        repository: DeviceCommandRepository = device_command_repository,
-        device_repository: DeviceRepository = device_repository,
-    ) -> None:
-        """初始化服务"""
-        super().__init__(
-            repository,
-            enable_cache=True,
-            cache_prefix="app:device:command",
-        )
-        self.device_repository = device_repository
-        # HTTP 客户端配置
-        self.http_timeout = 10.0  # 10 秒超时
-        self.max_retries = 3
-
-    async def _invalidate_command_cache(self, command_id: int | None = None, invalidate_list: bool = False) -> None:
-        """清理指令详情/列表缓存。"""
-        await self.invalidate_cache(get_cache(), command_id, invalidate_list=invalidate_list)
-
-    # ==================== CRUD 操作 ====================
-
-    async def get_runtime_correlation_id(
-        self,
-        db: AsyncSession,
         *,
-        command_code: str,
-        command_id: int | None,
-    ) -> str | None:
-        """返回命令创建时固定的 runtime correlation。"""
-
-        return await self.repo.get_runtime_correlation_id(
-            db,
-            command_code=command_code,
-            command_id=command_id,
-        )
-
-    async def create_command(
-        self,
-        db: AsyncSession,
-        command_request: CommandRequest,
-    ) -> DeviceCommand | None:
-        """创建设备指令"""
-        # 生成 command_code（如果未提供）
-        task_type = self._task_type_value(command_request.task_type)
-        command_code = command_request.command_code
-        if not command_code:
-            command_code = self._generate_command_code(
-                command_request.device_id,
-                task_type,
-            )
-
-        # 生成 trace_id（如果未提供）
-        trace_id = command_request.trace_id
-        if not trace_id:
-            trace_id = str(uuid.uuid4())
-
-        # 创建指令记录
-        command_data: dict[str, Any] = {
-            "command_code": command_code,
-            "device_id": command_request.device_id,
-            "task_type": task_type,
-            "priority": command_request.priority,
-            "timeout_ms": command_request.timeout_ms,
-            "params": cast("dict[str, Any] | None", command_request.params),
-            "trace_id": trace_id,
-            "status": CommandStatus.PENDING,
-        }
-
-        command = await self.repo.create(db, command_data)
-        if command:
-            await db.commit()
-            await self._invalidate_command_cache(invalidate_list=True)
-            logger.info(f"创建指令: {command_code} -> {task_type}")
-
-        return command
-
-    async def prepare_runtime_effect(
-        self,
-        db: AsyncSession,
-        *,
-        request: Any,
-        target_device_id: int | None,
-        target_device_code: str | None,
-        expected_workline_id: int,
-        expected_fact_version: str,
-        expected_available: bool,
-        session: Any,
-        workline: Any,
-        idempotency_key: str,
-        execution_correlation_id: str,
-        trace_id: str | None,
-        intent_log: Any,
-    ) -> tuple[DeviceCommand, Any]:
-        """在 Runtime 外层事务内原子准备 DeviceCommand + Outbox，只 flush。"""
-
-        if getattr(request, "result_policy", None) != "COMMAND_RESULT":
-            raise ValueError("runtime device command result_policy must be COMMAND_RESULT")
-        if not isinstance(execution_correlation_id, str) or not execution_correlation_id:
-            raise ValueError("runtime device command requires execution_correlation_id")
-        if intent_log is None:
-            raise ValueError("runtime device command requires claimed RuntimeIntentLog")
-
-        from hashlib import sha256
-
-        from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
-
-        target_device = await self.device_repository.get_runtime_effect_target_for_update(
-            db,
-            target_device_id=target_device_id,
-            target_device_code=target_device_code,
-            expected_workline_id=expected_workline_id,
-        )
-        if target_device is None:
-            raise StaleDeviceCommandPrecondition("device target no longer exists")
-        if getattr(target_device, "work_line_id", None) != expected_workline_id:
-            raise StaleDeviceCommandPrecondition("device target is outside the runtime workline")
-        actual_version = getattr(target_device, "version", None)
-        actual_fact_version = (
-            f"device:v{actual_version}"
-            if isinstance(actual_version, int) and not isinstance(actual_version, bool) and actual_version >= 0
-            else "device:v-1"
-        )
-        status = getattr(target_device, "device_status", None)
-        actual_available = (
-            getattr(target_device, "is_active", None) is True
-            and str(getattr(status, "value", status)) == "IDLE"
-            and getattr(target_device, "maintenance_mode", None) is False
-            and getattr(target_device, "current_command_id", None) is None
-        )
-        if actual_fact_version != expected_fact_version or actual_available != expected_available:
-            raise StaleDeviceCommandPrecondition("device fact changed")
-        if not actual_available:
-            raise StaleDeviceCommandPrecondition("device is unavailable for command write")
-
-        device_id = getattr(target_device, "id", None)
-        device_code = getattr(target_device, "device_code", None)
-        if not isinstance(device_id, int) or not isinstance(device_code, str) or not device_code:
-            raise ValueError("runtime device command requires a pinned target device")
-        # 设备行锁把“检查未闭环命令 + 创建新命令”串行化；PENDING 尚未改变
-        # Device 运行态，但已经占用唯一命令槽，不能允许另一个 attempt 越过准入。
-        unfinished_commands = await self.repo.get_unfinished_commands_for_device(db, device_id, limit=1)
-        if unfinished_commands:
-            raise StaleDeviceCommandPrecondition("device already has an unfinished command")
-        requested_code = getattr(request, "command_code", None)
-        command_code = requested_code or f"SC-{sha256(idempotency_key.encode('utf-8')).hexdigest()[:32]}"
-        command = DeviceCommand(
-            command_code=command_code,
-            device_id=device_id,
-            task_type=str(request.action),
-            priority=int(request.priority),
-            timeout_ms=int(request.timeout_ms),
-            params=dict(request.payload),
-            trace_id=trace_id,
-            correlation_id=execution_correlation_id,
-            workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
-            status=CommandStatus.PENDING,
-        )
-        outbox = SystemOutbox(
-            session_id=getattr(session, "id", None),
-            workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
-            device_id=device_id,
-            operation_domain="DEVICE",
-            operation_key=idempotency_key,
-            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-            dispatch_key=f"device-command:{command_code}",
-            target_type=SystemOutboxTargetType.DEVICE,
-            target_code=device_code,
-            provider_profile_identity="ecs.device-command.v1",
-            operation_identity="device.command",
-            payload_json={
-                "command_code": command_code,
-                "device_code": device_code,
-                "task_type": str(request.action),
-                "priority": int(request.priority),
-                "timeout": int(request.timeout_ms),
-                "params": dict(request.payload),
-                "trace_id": trace_id,
-            },
-            trace_id=trace_id,
-        )
-        if getattr(intent_log, "dispatch_key", None) != outbox.dispatch_key:
-            raise ValueError("RuntimeIntentLog/SystemOutbox dispatch_key 必须一致")
-        await self.repo.add_runtime_effect(db, command, intent_log, outbox)
-        from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-
-        # queued/dispatched/ACK 均不是完成；匹配 command_code 的终态 Callback 才能推进状态。
-        timeout_seconds = max(1, (int(request.timeout_ms) + 999) // 1000)
-        workline_session_lifecycle_service.start_wait(
-            session,
-            wait_type="COMMAND_RESULT",
-            occurred_at=timezone.now_for_db(),
-            awaiting_device_command_code=command_code,
-            deadline_seconds=timeout_seconds,
-        )
-        return command, outbox
-
-    async def send_command(
-        self,
-        db: AsyncSession,
-        command_code: str,
-        device_url: str | None = None,
-    ) -> CommandAck:
-        """
-        发送指令到设备
-
-        Args:
-            db: 数据库会话
-            command_code: 指令编码
-            device_url: 设备 URL（可选）
-
-        Returns:
-            设备返回的 ACK 确认
-        """
-        # 1. 获取指令
-        command = await self.repo.get_by_command_code(db, command_code)
-        if not command:
-            raise NotFoundException(f"指令不存在: {command_code}")
-
-        # 2. 获取设备命令端点与设备编码
-        device_endpoint, device_code = await self._get_device_command_endpoint(db, command.device_id, device_url)
-
-        # 3. 构建请求体（白皮书 3.1.1 格式）
-        request_body: dict[str, Any] = {
-            "device_code": device_code,
-            "command_code": command.command_code,
-            "task_type": self._task_type_value(command.task_type),
-            "priority": command.priority,
-            "timeout": command.timeout_ms,
-            "params": cast("dict[str, Any] | None", command.params),
-            "timestamp": int(timezone.now_utc().timestamp() * 1000),
-        }
-
-        # 4. 发送 HTTP 请求
-        url = device_endpoint
-        logger.info(f"发送指令到设备: {url} -> {command_code}")
-
-        try:
-            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
-                response = await client.post(url, json=request_body)
-                _ = response.raise_for_status()
-
-                ack_data = response.json()
-                ack = CommandAck(**ack_data)
-
-                # 5. 更新指令状态
-                await self._update_sent_status(db, command, ack.code, ack.message, ack.trace_id)
-
-                logger.info(f"指令已发送: {command_code} -> ACK {ack.code} ({ack.message})")
-                return ack
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"发送指令失败: {command_code} -> HTTP {e.response.status_code}")
-            await self._update_command_status(db, command, CommandStatus.FAILED, error_detail=str(e))
-            raise
-        except httpx.RequestError as e:
-            logger.error(f"发送指令失败: {command_code} -> 网络错误 {e}")
-            await self._update_command_status(db, command, CommandStatus.TIMEOUT, error_detail=str(e))
-            raise
-
-    async def handle_callback_result(
-        self,
-        db: AsyncSession,
-        callback: CommandCallbackResult,
-    ) -> DeviceCallbackResultOutcome:
-        """处理设备回调结果（更新指令状态）"""
-        # 1. 获取指令
-        command = await self.repo.get_by_command_code(db, callback.command_code)
-        if not command or not command.id:
-            raise NotFoundException(f"回调指令不存在: {callback.command_code}")
-
-        # RuntimeReconciliationFacade 已物理删除,device 域直接走
-        # workline shim 路径(impl 模块在 sys.modules 上替换此 shim,行为等价)。
-        # 测试契约 `tests/contracts/device/test_device_command_service_contract.py` 已用同一路径。
-        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
-            workline_runtime_reconciliation_service,
-        )
-
-        if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
-            db,
-            command=command,
-            callback_payload=callback.model_dump(mode="json"),
-        ):
-            logger.warning(f"迟到 callback 已记录为对账证据，跳过自动更新指令状态: {callback.command_code}")
-            return DeviceCallbackResultOutcome(command=command, late_callback_recorded=True)
-
-        # 2. 解析完成时间（finish_time 为 Unix 毫秒，数据库存 UTC naive）
-        completed_at = timezone.to_db_datetime(callback.finish_time / 1000)
-        if completed_at is None:
-            raise ValueError(f"无效的回调完成时间: {callback.finish_time}")
-
-        # 3. 更新指令状态
-        update_data: dict[str, Any] = {
-            "result": callback.result,
-            "completed_at": completed_at,
-            "result_data": cast("dict[str, Any] | None", callback.data),
-            "error_detail": self._normalize_error_detail(callback.error_detail),
-        }
-
-        if callback.result == "SUCCESS":
-            update_data["status"] = CommandStatus.COMPLETED
-        else:
-            update_data["status"] = CommandStatus.FAILED
-
-        updated_command = await self.repo.update(db, command.id, update_data)
-        if updated_command:
-            # 由调用方统一控制事务边界，避免在 trace 链中间提前提交。
-            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
-            logger.info(
-                f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {updated_command.get_duration_ms()}ms)"
-            )
-            _emit_device_command_result_observability(updated_command, callback)
-
-        if updated_command is None:
-            raise RuntimeError(f"更新回调指令状态失败: {callback.command_code}")
-        return DeviceCallbackResultOutcome(command=updated_command)
-
-    # ==================== 指令状态管理 ====================
-
-    async def cancel_command(
-        self,
-        db: AsyncSession,
-        command_code: str,
-    ) -> DeviceCommand | None:
-        """取消正在执行的指令"""
-        command = await self.repo.get_by_command_code(db, command_code)
-        if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command_code}")
-
-        # 检查是否可以取消
-        if command.status not in [
-            CommandStatus.PENDING,
-            CommandStatus.SENT,
-            CommandStatus.ACK_RECEIVED,
-        ]:
-            raise ValueError(f"指令状态不允许取消: {command.status.value}")
-
-        # 更新状态
-        updated_command = await self.repo.update(
-            db,
-            command.id,
-            {
-                "status": CommandStatus.CANCELLED,
-            },
-        )
-
-        if updated_command:
-            await db.commit()
-            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
-            logger.info(f"指令已取消: {command_code}")
-        return updated_command
-
-    async def retry_command(
-        self,
-        db: AsyncSession,
-        command_code: str,
-    ) -> DeviceCommand | None:
-        """重试失败的指令"""
-        command = await self.repo.get_by_command_code(db, command_code)
-        if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command_code}")
-
-        # 检查是否可以重试
-        if not command.can_retry():
-            raise ValueError(f"指令不允许重试: status={command.status.value}, retry_count={command.retry_count}")
-
-        # 重置状态
-        update_data: dict[str, Any] = {
-            "status": CommandStatus.PENDING,
-            "sent_at": None,
-            "ack_received_at": None,
-            "completed_at": None,
-            "result": None,
-            "result_data": None,
-            "error_detail": None,
-            "retry_count": command.retry_count + 1,
-        }
-
-        updated_command = await self.repo.update(db, command.id, update_data)
-
-        if updated_command:
-            await db.commit()
-            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
-            logger.info(f"指令已重置: {command_code} (重试次数: {updated_command.retry_count})")
-        return updated_command
-
-    async def get_command_by_code(
-        self,
-        db: AsyncSession,
-        command_code: str,
-    ) -> DeviceCommand | None:
-        """根据 command_code 查询指令"""
-        return await self.repo.get_by_command_code(db, command_code)
-
-    # ==================== 辅助方法 ====================
-
-    def _generate_command_code(self, _device_id: int, task_type: str) -> str:
-        """生成指令编码"""
-        date_str = timezone.now_for_db().strftime("%Y%m%d")
-        unique_id = uuid.uuid4().hex[:8].upper()
-        return f"CMD-{date_str}-{task_type}-{unique_id}"
-
-    def _task_type_value(self, task_type: Any) -> str:
-        """兼容历史 TaskType 枚举与插件自定义字符串。"""
-        if isinstance(task_type, Enum):
-            return str(task_type.value)
-        return str(task_type)
-
-    async def _get_device_command_endpoint(
-        self,
-        db: AsyncSession,
-        device_id: int,
-        device_url: str | None = None,
-    ) -> tuple[str, str]:
-        """获取设备命令端点和顶层 device_code。"""
-        from src.app.device.repositories.device_repository import device_repository
-
-        device = await device_repository.get_by_id(db, device_id)
-        device_code = str(getattr(device, "device_code", device_id)) if device else str(device_id)
-
-        if device_url:
-            return f"{device_url.rstrip('/')}/api/v1/device/command", device_code
-
-        base_url = await self._get_device_url(db, device_id, device=device)
-        callback_path = "/api/v1/device/command"
-        if device:
-            raw_callback_path = getattr(device, "callback_path", None)
-            if raw_callback_path:
-                callback_path = str(raw_callback_path)
-                if not callback_path.startswith("/"):
-                    callback_path = f"/{callback_path}"
-        return f"{base_url}{callback_path}", device_code
-
-    async def _get_device_url(self, db: AsyncSession, device_id: int, device: Any | None = None) -> str:
-        """
-        获取设备基础 URL。
-        """
-        from src.app.device.repositories.device_repository import device_repository
-
-        if device is None:
-            device = await device_repository.get_by_id(db, device_id)
-        if not device:
-            logger.warning(f"设备不存在，使用兜底 URL: device_id={device_id}")
-            return f"http://{device_id}:8080"
-
-        # 优先使用设备通信配置（内部统一使用 device_id）
-        if device.host:
-            scheme = (device.protocol or "HTTP").lower()
-            if scheme not in {"http", "https"}:
-                scheme = "http"
-            port = device.port or (443 if scheme == "https" else 80)
-            return f"{scheme}://{device.host}:{port}"
-
-        # 默认 URL 格式（按设备编码）
-        return f"http://{device.device_code}:8080"
-
-    async def _update_sent_status(
-        self,
-        db: AsyncSession,
-        command: DeviceCommand,
-        ack_code: int,
-        ack_message: str,
-        trace_id: str | None,
+        session_factory: async_sessionmaker[AsyncSession],
+        command_repository: CommandRepositoryPort | None = None,
+        epoch_repository: EpochRepositoryPort | None = None,
+        clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
-        """更新指令发送状态"""
-        if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command.command_code}")
+        self._sessions = session_factory
+        self._commands = command_repository or device_command_repository
+        self._epochs = epoch_repository or line_run_epoch_repository
+        self._clock = clock
 
-        update_data: dict[str, Any] = {
-            "status": CommandStatus.SENT,
-            "sent_at": timezone.now_for_db(),
-            "ack_code": ack_code,
-            "ack_message": ack_message,
-            "ack_trace_id": trace_id,
-        }
-
-        ack_received_at = None
-        if ack_code == 200:
-            ack_received_at = timezone.now_for_db()
-            update_data["status"] = CommandStatus.ACK_RECEIVED
-            update_data["ack_received_at"] = ack_received_at
-
-        updated_command = await self.repo.update(db, command.id, update_data)
-        if updated_command is None or not isinstance(updated_command.id, int):
-            return
-
-        updated_command_id = updated_command.id
-        if ack_received_at is not None:
-            # facade 已物理删除,见上方同段注释。
-            from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
-                workline_runtime_reconciliation_service,
-            )
-
-            _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+    async def create_command(self, request: DeviceCommandRequest) -> DeviceCommandHandle:
+        validated = DeviceCommandRequestData.model_validate(asdict(request))
+        if validated.deadline_at.tzinfo is not None:
+            raise DeviceCommandDeadlineError("deadline_at 必须是数据库合同要求的 naive UTC")
+        async with self._sessions.begin() as db:
+            binding = await self._epochs.get_binding_for_command_creation(
                 db,
-                command_id=updated_command_id,
-                ack_received_at=ack_received_at,
+                line_run_epoch_id=validated.line_run_epoch_id,
+                device_code=validated.device_code,
             )
-        await db.commit()
-        await self._invalidate_command_cache(updated_command_id, invalidate_list=True)
+            if binding is None or binding.id is None:
+                raise DeviceNotFoundError(validated.device_code)
+            if binding.contract_key != validated.contract_key or binding.contract_version != validated.contract_version:
+                raise DeviceContractMismatchError(validated.device_code)
+            payload_digest = _command_payload_digest(validated)
+            same_identity = await self._commands.get_by_execution_ref_for_update(
+                db,
+                line_run_epoch_id=validated.line_run_epoch_id,
+                device_code=validated.device_code,
+                execution_ref_type=validated.execution_ref_type,
+                execution_ref_id=validated.execution_ref_id,
+            )
+            if same_identity is not None:
+                if same_identity.payload_digest != payload_digest or same_identity.deadline_at != validated.deadline_at:
+                    raise DeviceCommandIdentityConflictError(validated.execution_ref_id)
+                return DeviceCommandHandle(
+                    command_code=same_identity.command_code,
+                    status=CommandStatus(same_identity.status),
+                )
+            now = self._clock()
+            if validated.deadline_at <= now or validated.deadline_at > now + timedelta(
+                milliseconds=binding.command_timeout_ms
+            ):
+                raise DeviceCommandDeadlineError("deadline_at 超出冻结 binding 的 command_timeout_ms")
+            existing = await self._commands.get_unclosed_for_device_for_update(db, validated.device_code)
+            if existing is not None:
+                raise DeviceCommandCapacityError(validated.device_code)
+            command = DeviceCommand(
+                command_code=new_uuid7(),
+                device_code=validated.device_code,
+                line_run_epoch_id=validated.line_run_epoch_id,
+                device_binding_id=binding.id,
+                execution_ref_type=validated.execution_ref_type,
+                execution_ref_id=validated.execution_ref_id,
+                contract_key=validated.contract_key,
+                contract_version=validated.contract_version,
+                task_type=validated.task_type,
+                params=validated.params,
+                payload_digest=payload_digest,
+                deadline_at=validated.deadline_at,
+                trace_id=validated.trace_id,
+                next_attempt_at=now,
+                created_at=now,
+            )
+            persisted = await self._commands.add(db, command)
+        return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
 
-    async def _update_command_status(
-        self,
-        db: AsyncSession,
-        command: DeviceCommand,
-        status: CommandStatus,
-        error_detail: dict[str, Any] | str | None = None,
-    ) -> None:
-        """更新指令状态"""
-        if not command or not command.id:
-            raise NotFoundException(f"指令不存在: {command.command_code}")
-
-        update_data: dict[str, Any] = {
-            "status": status,
-        }
-        normalized_error = self._normalize_error_detail(error_detail)
-        if normalized_error is not None:
-            update_data["error_detail"] = normalized_error
-
-        updated_command = await self.repo.update(db, command.id, update_data)
-        if updated_command:
-            await db.commit()
-            await self._invalidate_command_cache(updated_command.id, invalidate_list=True)
-
-    def _normalize_error_detail(self, error_detail: dict[str, Any] | str | None) -> dict[str, Any] | None:
-        """将错误详情统一为 JSON 对象。"""
-        if error_detail is None:
+    async def get_outcome(self, command_code: str) -> DeviceCommandOutcome | None:
+        async with self._sessions.begin() as db:
+            command = await self._commands.get_by_command_code(db, command_code)
+        if command is None or command.occupies_device_slot:
             return None
-        if isinstance(error_detail, dict):
-            return error_detail
-        return {"message": str(error_detail)}
+        return DeviceCommandOutcome(
+            command_code=command.command_code,
+            status=CommandStatus(command.status),
+            failure_code=command.failure_code,
+            completed_at=command.completed_at,
+            version=command.version,
+        )
+
+    async def reconcile_one(self, *, now: datetime) -> bool:
+        """推进一条到期命令；只有未发送的 PENDING 可以进入 TIMED_OUT。"""
+
+        async with self._sessions.begin() as db:
+            command = await self._commands.claim_next_reconcilable(db, now=now)
+            if command is None:
+                return False
+            status = CommandStatus(command.status)
+            if status is CommandStatus.PENDING:
+                command.transition_to(CommandStatus.TIMED_OUT)
+            elif status is CommandStatus.DISPATCHING:
+                command.reconciliation_reason = "DISPATCH_LEASE_EXPIRED"
+                command.transition_to(CommandStatus.RECONCILING)
+            elif status is CommandStatus.ACKNOWLEDGED:
+                command.reconciliation_reason = "ACK_DEADLINE_EXPIRED"
+                command.transition_to(CommandStatus.RECONCILING)
+            else:
+                raise RuntimeError(f"不可对账的 DeviceCommand 状态: {status.value}")
+        return True
 
 
-# 创建单例
-device_command_service = DeviceCommandService()
-
-
-__all__ = ["DeviceCallbackResultOutcome", "DeviceCommandService", "device_command_service"]
+def _command_payload_digest(request: DeviceCommandRequestData) -> str:
+    payload = {
+        "device_code": request.device_code,
+        "contract_key": request.contract_key,
+        "contract_version": request.contract_version,
+        "task_type": request.task_type,
+        "params": request.params,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [
+    "DeviceCommandCapacityError",
+    "DeviceCommandDeadlineError",
+    "DeviceCommandIdentityConflictError",
     "DeviceCommandService",
-    "device_command_service",
+    "DeviceContractMismatchError",
+    "DeviceNotFoundError",
 ]

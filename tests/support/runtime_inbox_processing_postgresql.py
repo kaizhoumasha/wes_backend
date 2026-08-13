@@ -9,7 +9,6 @@ from unittest.mock import patch
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.app.device.models.device import Device, DeviceStatus
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -36,7 +35,6 @@ class SeededInboxFlow:
     inbox_id: int
     session_id: int
     workline_id: int
-    scanner_id: int
     trace_id: str
 
 
@@ -57,7 +55,7 @@ def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
 
 
 async def seed_scan_flow(db: AsyncSession) -> SeededInboxFlow:
-    """写入无插件的会话、执行锚点和待处理设备事件。"""
+    """写入无插件的会话、执行锚点和待处理内部事件。"""
 
     trace_id = "it-runtime-inbox-trace"
     workline = WorkLine(
@@ -66,20 +64,9 @@ async def seed_scan_flow(db: AsyncSession) -> SeededInboxFlow:
         line_type=LineType.AUTO,
         is_active=True,
     )
-    scanner = Device(
-        device_code="IT-GENERIC-SCANNER-01",
-        device_name="Generic Ingress Scanner",
-        work_line_id=None,
-        device_role="SCANNER",
-        device_status=DeviceStatus.IDLE,
-        version=1,
-    )
     db.add(workline)
     await db.flush()
     await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
-    scanner.work_line_id = workline.id
-    db.add(scanner)
-    await db.flush()
 
     session = WorklineSession(
         session_code="IT-RUNTIME-INBOX-SESSION",
@@ -113,30 +100,26 @@ async def seed_scan_flow(db: AsyncSession) -> SeededInboxFlow:
     )
     await db.flush()
 
-    accepted = await RuntimeInboxService().accept_device_event(
+    accepted = await RuntimeInboxService().accept_internal_event(
         db,
-        device_code=scanner.device_code,
-        event_type="SCAN_COMPLETED",
+        event_type="GENERIC_INPUT_RECEIVED",
         payload_json={
-            "event_type": "SCAN_COMPLETED",
-            "device_code": scanner.device_code,
+            "event_type": "GENERIC_INPUT_RECEIVED",
             "data": {"session_id": session.id, "barcode": "IT-GENERIC-OBJECT-001"},
         },
         trace_id=trace_id,
         event_id="it-runtime-inbox-event",
         workline_id=workline.id,
-        device_id=scanner.id,
     )
     accepted.record.workline_session_id = session.id
     accepted.record.execution_session_id = execution_session.id
     accepted.record.correlation_id = correlation.correlation_id
     await db.commit()
-    assert accepted.record.id is not None and workline.id is not None and scanner.id is not None
+    assert accepted.record.id is not None and workline.id is not None
     return SeededInboxFlow(
         inbox_id=int(accepted.record.id),
         session_id=int(session.id),
         workline_id=int(workline.id),
-        scanner_id=int(scanner.id),
         trace_id=trace_id,
     )
 

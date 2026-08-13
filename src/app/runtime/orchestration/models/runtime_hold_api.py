@@ -94,9 +94,9 @@ class FailedCommandEvidence(BaseModel):
     command_id: int | None = None
     command_code: str | None = None
     status: str | None = None
-    result: str | None = None
-    error_detail: dict[str, Any] | None = None
-    result_data: dict[str, Any] | None = None
+    failure_code: str | None = None
+    reconciliation_reason: str | None = None
+    result_evidence_id: int | None = None
 
 
 class RuntimeHoldReleaseEligibility(BaseModel):

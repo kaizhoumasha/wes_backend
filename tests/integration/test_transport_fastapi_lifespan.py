@@ -56,6 +56,10 @@ async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
     monkeypatch.setattr(register_module, "settings", integration_settings)
     monkeypatch.setattr(database, "settings", integration_settings)
     monkeypatch.setattr(redis_client, "settings", integration_settings)
+    monkeypatch.setenv("ECS_BASE_URL", "http://127.0.0.1:18080")
+    monkeypatch.setenv("ECS_CONNECT_TIMEOUT_SECONDS", "0.5")
+    monkeypatch.setenv("ECS_READ_TIMEOUT_SECONDS", "1.0")
+    monkeypatch.setenv("DEVICE_COMMAND_QUEUE", "device-command")
 
     assert database.engine is None
     assert database.AsyncSessionLocal is None

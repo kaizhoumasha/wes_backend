@@ -421,28 +421,7 @@ async def test_callback_timeout_hold_ignores_retired_session_plugin_identity():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_ack_exhausted_hold_ignores_retired_session_plugin_identity():
-    repository = _RuntimeHoldRepository()
-    service = RuntimeHoldCreationService(repository=repository)
-
-    await service.create_for_dispatch_ack_exhausted(
-        object(),
-        session=SimpleNamespace(
-            id=11,
-            workline_id=7,
-            trace_id="trace-11",
-            plugin_key="poison-plugin",
-            contract_version="poison-contract",
-        ),
-        outbox=SimpleNamespace(id=31, dispatch_key="dispatch-31", payload_json={}),
-        command=None,
-    )
-
-    assert {"plugin_key", "contract_version"}.isdisjoint(repository.calls[0])
-
-
-@pytest.mark.asyncio
-async def test_safety_estop_uses_compat_projection_service():
+async def test_safety_estop_uses_runtime_projection_service():
     from src.app.workline.services.safety_service import WorkLineSafetyService
 
     class _Db:
@@ -467,8 +446,7 @@ async def test_safety_estop_uses_compat_projection_service():
         incident_repository=SimpleNamespace(get_active_for_workline=AsyncMock(return_value=None)),
         session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
         system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
-        command_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
-        device_service=SimpleNamespace(mark_workline_safety_error=AsyncMock(return_value=0)),
+        command_repository=SimpleNamespace(fail_pending_by_workline=AsyncMock(return_value=0)),
         runtime_hold_creation_service=SimpleNamespace(
             create_for_safety_estop=AsyncMock(return_value=SimpleNamespace())
         ),
@@ -509,8 +487,7 @@ async def test_repeated_safety_estop_reuses_active_incident():
         incident_repository=incident_repository,
         session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
         system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
-        command_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
-        device_service=SimpleNamespace(mark_workline_safety_error=AsyncMock(return_value=0)),
+        command_repository=SimpleNamespace(fail_pending_by_workline=AsyncMock(return_value=0)),
         runtime_hold_creation_service=SimpleNamespace(
             create_for_safety_estop=AsyncMock(return_value=SimpleNamespace())
         ),
@@ -571,130 +548,6 @@ async def test_safety_assert_accepting_work_delegates_runtime_projection_service
     assert projection.accepting_calls[0][1].__name__ == "WorkLineSafetyBlocked"
     assert projection.accepting_calls[0][2] is True
     assert lock_order == ["row", "projection"]
-
-
-@pytest.mark.asyncio
-async def test_dispatch_ack_exhausted_uses_projection_without_overwriting_estop():
-    from src.app.device.models.command import CommandStatus
-    from src.app.runtime.orchestration.models.session import (
-        RuntimeReconciliationReason,
-        RuntimeReconciliationSourceKind,
-        RuntimeReconciliationState,
-        SessionStatus,
-    )
-    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
-        WorklineRuntimeReconciliationService,
-    )
-    from src.app.sys.models import SystemOutboxStatus
-
-    now = timezone.now_for_db()
-    old_stop = now
-    command = SimpleNamespace(
-        id=881,
-        command_code="CMD-ACK-EXHAUSTED",
-        workline_id=45,
-        device_id=7,
-        correlation_id="corr-runtime-reconciliation-dispatch",
-        status=CommandStatus.SENT,
-        completed_at=None,
-        error_detail=None,
-    )
-    outbox = SimpleNamespace(
-        id=862,
-        session_id=553,
-        workline_id=45,
-        target_code="CONVEYOR01",
-        dispatch_key="device-command:CMD-ACK-EXHAUSTED",
-        status=SystemOutboxStatus.SENT,
-        last_error=None,
-        next_retry_at=now,
-        finished_at=None,
-        blocked_by_runtime_hold_id=None,
-        blocked_by_reconciliation_session_id=None,
-        blocked_device_id=7,
-        blocked_workline_id=45,
-        blocked_reason="DEVICE_BUSY",
-        payload_json={"command_code": "CMD-ACK-EXHAUSTED"},
-    )
-    session = SimpleNamespace(
-        id=553,
-        workline_id=45,
-        trace_id="trace-dispatch-reconciliation",
-        status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_type="COMMAND_RESULT",
-        current_wait_timeout_seconds=300,
-        waiting_since=now,
-        deadline_at=None,
-        awaiting_device_command_code=command.command_code,
-        reconciliation_state=None,
-        context_json={},
-    )
-    workline = SimpleNamespace(
-        runtime_status=WorkLineRuntimeStatus.ESTOPPED,
-        stopped_at=old_stop,
-        stopped_reason="ESTOP_PRESSED",
-    )
-    projection = _RuntimeStatusProjectionSpy()
-    service = WorklineRuntimeReconciliationService(
-        session_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
-        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
-        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
-        device_service=SimpleNamespace(
-            mark_dispatch_ack_exhausted=AsyncMock(return_value=None),
-            mark_callback_deadline_expired=AsyncMock(return_value=None),
-        ),
-        runtime_hold_creation_service=SimpleNamespace(
-            create_for_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=9904))
-        ),
-        workline_status_projection_service=projection,
-    )
-
-    class _Db:
-        flush = AsyncMock()
-
-    from src.app.reconciliation.manager import ReconciliationManager, ReconciliationRegistrationResult
-    from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
-
-    class _Manager:
-        def __init__(self):
-            self.manager = ReconciliationManager()
-
-        async def register_conflict_idempotent(self, *_args, **_kwargs):
-            conflict = _args[1]
-            return ReconciliationRegistrationResult(
-                decision=self.manager.register_conflict(conflict),
-                claim_result=ClaimResult.NEW,
-            )
-
-    service.reconciliation_manager = _Manager()
-
-    from unittest.mock import patch
-
-    with (
-        patch(
-            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
-            new=AsyncMock(),
-        ),
-        patch(
-            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_diagnostic_service.record_event",
-            new=AsyncMock(),
-        ),
-    ):
-        _ = await service.handle_dispatch_ack_exhausted(
-            _Db(),
-            outbox=outbox,
-            command=command,
-            error_message="COMMAND_ACK_TIMEOUT",
-        )
-
-    assert len(projection.reconciling_calls) == 1
-    assert projection.reconciling_calls[0][0] == 45
-    assert projection.reconciling_calls[0][2] == RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
-    assert session.reconciliation_state == RuntimeReconciliationState.PENDING
-    assert session.reconciliation_source_kind == RuntimeReconciliationSourceKind.DISPATCH_ACK_EXHAUSTED
-    assert workline.runtime_status == WorkLineRuntimeStatus.ESTOPPED
-    assert workline.stopped_at == old_stop
-    assert workline.stopped_reason == "ESTOP_PRESSED"
 
 
 @pytest.mark.asyncio

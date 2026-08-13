@@ -17,12 +17,8 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
 )
 from src.app.runtime.orchestration.runtime_inbox import PRE_CUTOVER_AUDIT_ONLY
 from src.app.runtime.orchestration.services.idempotency_guard import (
-    IdempotencyGuard,
     IdempotencyOperationSpec,
     get_idempotency_operation_spec,
-)
-from src.app.runtime.orchestration.services.idempotency_guard import (
-    idempotency_guard as default_idempotency_guard,
 )
 from src.app.sys.models.audit_log import OperaStatus
 from src.utils.timezone import timezone
@@ -145,9 +141,7 @@ class RuntimeInboxReplayNotAllowed(Exception):
         self.detail = detail
 
 
-REPLAYABLE_ORIGINAL_KINDS = frozenset(
-    {"COMMAND_RESULT", "DEVICE_EVENT", "EXTERNAL_HTTP", "INTERNAL_EVENT", "TIMER_TIMEOUT"}
-)
+REPLAYABLE_ORIGINAL_KINDS = frozenset({"EXTERNAL_HTTP", "INTERNAL_EVENT"})
 REPLAY_MAX_RETRIES = 5
 _REPLAY_EVIDENCE_FIELDS = (
     "original_provider_code",
@@ -155,8 +149,6 @@ _REPLAY_EVIDENCE_FIELDS = (
     "original_source_event_id",
     "original_payload_hash",
     "original_workline_id",
-    "original_device_id",
-    "original_command_id",
     "original_workline_session_id",
     "original_execution_session_id",
     "original_correlation_id",
@@ -213,8 +205,6 @@ def validate_replay_envelope(payload: object) -> dict[str, Any]:
             )
     for field in (
         "original_workline_id",
-        "original_device_id",
-        "original_command_id",
         "original_workline_session_id",
         "original_execution_session_id",
     ):
@@ -253,8 +243,6 @@ def _original_replay_evidence(source: RuntimeInbox) -> dict[str, Any]:
         "original_source_event_id": source.source_event_id,
         "original_payload_hash": source.payload_hash,
         "original_workline_id": source.workline_id,
-        "original_device_id": source.device_id,
-        "original_command_id": source.command_id,
         "original_workline_session_id": source.workline_session_id,
         "original_execution_session_id": source.execution_session_id,
         "original_correlation_id": source.correlation_id,
@@ -372,8 +360,6 @@ class RuntimeInboxReplaySourceValidator:
 
         source_routing = {
             "original_workline_id": source.workline_id,
-            "original_device_id": source.device_id,
-            "original_command_id": source.command_id,
             "original_workline_session_id": source.workline_session_id,
             "original_execution_session_id": source.execution_session_id,
             "original_correlation_id": source.correlation_id,
@@ -480,12 +466,7 @@ def _runtime_inbox_operation_spec(event_type: str) -> IdempotencyOperationSpec:
     """将 callback channel/event_type 归一到 runtime operation_kind 审计矩阵。"""
 
     normalized = event_type.strip().lower().replace("-", "_")
-    aliases = {
-        "result": "command_result",
-        "device_result": "command_result",
-        "event": "event_push",
-        "external": "external_callback",
-    }
+    aliases = {"external": "external_callback"}
     return get_idempotency_operation_spec(aliases.get(normalized, normalized))
 
 
@@ -558,17 +539,6 @@ def _received_at_ms(now_ms: int | None = None) -> int:
     return now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000)
 
 
-def _format_runtime_temporal(value: object | None) -> str:
-    """将 timeout identity/payload 的时间值归一为稳定字符串。"""
-
-    if value is None:
-        return "unknown"
-    isoformat = getattr(value, "isoformat", None)
-    if callable(isoformat):
-        return str(isoformat())
-    return str(value)
-
-
 class RuntimeInboxService:
     """RuntimeInbox ACK-before-processing 与人工重放服务。"""
 
@@ -576,12 +546,10 @@ class RuntimeInboxService:
         self,
         repository: RuntimeInboxRepository = runtime_inbox_repository,
         audit_service: _AuditService | None = None,
-        idempotency_guard: IdempotencyGuard = default_idempotency_guard,
         replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
     ) -> None:
         self.repository = repository
         self.audit_service = audit_service
-        self.idempotency_guard = idempotency_guard
         self.replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(repository)
 
     async def _get_existing_source_event(
@@ -743,15 +711,6 @@ class RuntimeInboxService:
             try:
                 async with db.begin_nested():
                     record = await self.repository.add_received(db, record_data)
-                    await self._claim_device_event_idempotency_if_needed(
-                        db,
-                        provider_code=provider_code,
-                        event_type=event_type,
-                        source_event_id=source_event_id,
-                        payload_hash=payload_hash,
-                        correlation_id=correlation_id,
-                        now_ms=now_ms,
-                    )
             except IntegrityError:
                 existing = await self._get_existing_source_event(
                     db,
@@ -786,19 +745,8 @@ class RuntimeInboxService:
         return RuntimeInboxAcceptResult(record=record, created=True)
 
     # ============================================================
-    # Internal event acceptors (Task 7c-a) — device event / internal
-    # event / command result, all writing RuntimeInbox through the same
-    # source identity idempotency contract when an identity is available.
+    # Internal event acceptor；统一通过 RuntimeInbox source identity 幂等合同落库。
     # ============================================================
-
-    @staticmethod
-    def _derive_provider_code_for_device(device_code: str) -> str:
-        """从 device_code 前缀派生 provider_code (ARM_01 -> ARM, OVEN_01 -> OVEN)."""
-
-        if not isinstance(device_code, str) or not device_code:
-            return "ECS"
-        prefix = device_code.split("_", 1)[0].strip().upper()
-        return prefix or "ECS"
 
     async def _resolve_correlation_id_by_trace(
         self,
@@ -828,63 +776,6 @@ class RuntimeInboxService:
         if not await self.repository.correlation_id_exists(db, correlation_id=correlation_id):
             raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
         return correlation_id
-
-    async def accept_device_event(
-        self,
-        db: AsyncSession,
-        *,
-        device_code: str,
-        event_type: str,
-        payload_json: dict[str, Any],
-        trace_id: str | None = None,
-        event_id: str | None = None,
-        causation_id: str | None = None,
-        workline_session_id: int | None = None,
-        workline_id: int | None = None,
-        device_id: int | None = None,
-        command_id: int | None = None,
-        auto_commit: bool = False,
-    ) -> RuntimeInboxAcceptResult:
-        """接收 device event 写入 RuntimeInbox (kind=DEVICE_EVENT).
-
-        - event_id 是持久上游 occurrence identity，缺失时 fail-closed。
-        - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
-        - 本入口没有 ExecutionSession 映射参数，因此 execution_session_id 留空；
-          processor 不得从 WorklineSession ID 推导该字段。
-        - correlation_id 通过 trace_id 反查 ExecutionCorrelation；非唯一或查不到时保持为空。
-        """
-
-        if not isinstance(event_type, str) or not event_type:
-            raise ValueError("device event requires event_type")
-        if not isinstance(payload_json, dict):
-            raise TypeError("device event payload_json must be a dict")
-        event_id = _normalize_persistent_event_id(event_id, producer="device event")
-
-        provider_code = self._derive_provider_code_for_device(device_code)
-        payload_hash = _canonical_payload_hash(payload_json)
-        source_event_id = event_id
-        correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
-        result = await self.accept_received(
-            db,
-            provider_code=provider_code,
-            event_type=event_type,
-            source_event_id=source_event_id,
-            payload_hash=payload_hash,
-            kind="DEVICE_EVENT",
-            payload_json=payload_json,
-            payload_schema_version=1,
-            trace_id=trace_id,
-            event_id=event_id,
-            causation_id=causation_id,
-            workline_session_id=workline_session_id,
-            workline_id=workline_id,
-            device_id=device_id,
-            command_id=command_id,
-            correlation_id=correlation_id,
-        )
-        if auto_commit:
-            _ = await db.commit()
-        return result
 
     async def accept_internal_event(
         self,
@@ -939,211 +830,6 @@ class RuntimeInboxService:
         if auto_commit:
             _ = await db.commit()
         return result
-
-    async def accept_command_result(
-        self,
-        db: AsyncSession,
-        *,
-        command_code: str,
-        source_event_id: str,
-        source_provider_code: str | None = None,
-        source_event_type: str | None = None,
-        device_code: str | None = None,
-        workline_id: int | None = None,
-        device_id: int | None = None,
-        command_id: int | None = None,
-        correlation_id: str | None = None,
-        trace_id: str | None = None,
-        event_id: str | None = None,
-        causation_id: str | None = None,
-        payload_json: dict[str, Any] | None = None,
-        processing_required: bool = True,
-        auto_commit: bool = False,
-    ) -> RuntimeInboxAcceptResult:
-        """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
-
-        - source identity: callback 可显式保留既有 provider/event type；其他调用按 device_code
-          推导 provider_code，并固定使用 "COMMAND_RESULT"。
-        - source_event_id: 调用方必须提供唯一结果事件身份，不接受别名或合成回退。
-        - 稳定 source identity 同 hash ACK、异 hash 冲突。
-        """
-
-        if not isinstance(command_code, str) or not command_code:
-            raise ValueError("command result requires command_code")
-        if not isinstance(source_event_id, str) or not source_event_id.strip():
-            raise ValueError("command result requires source_event_id")
-
-        provider_code = source_provider_code or ("DEVICE_RESULT" if device_code else "RUNTIME")
-        event_type = source_event_type or "COMMAND_RESULT"
-
-        canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
-        command_correlation_id = None
-        if isinstance(command_id, int) and not isinstance(command_id, bool):
-            from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
-
-            command_correlation_id = await device_command_gateway.resolve_runtime_correlation_id(
-                db,
-                command_code=command_code,
-                command_id=command_id,
-            )
-        command_context = (
-            await self.repository.resolve_correlation_context_by_id(db, correlation_id=command_correlation_id)
-            if command_correlation_id is not None
-            else None
-        )
-        if command_context is not None:
-            # 命令创建时固定的执行归属是权威来源；设备可缺失、替换或复用请求 trace。
-            correlation_id, execution_session_id = command_context
-        else:
-            explicit_context = (
-                await self.repository.resolve_correlation_context_by_id(db, correlation_id=correlation_id)
-                if correlation_id is not None
-                else None
-            )
-            if correlation_id is not None and explicit_context is None:
-                raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
-            if explicit_context is not None:
-                correlation_id, execution_session_id = explicit_context
-            else:
-                execution_session_id = None
-        result = await self.accept_received(
-            db,
-            provider_code=provider_code,
-            event_type=event_type,
-            source_event_id=source_event_id.strip(),
-            payload_hash=_canonical_payload_hash(canonical_payload),
-            kind="COMMAND_RESULT",
-            payload_json=canonical_payload,
-            payload_schema_version=1,
-            trace_id=trace_id,
-            event_id=event_id,
-            causation_id=causation_id,
-            workline_id=workline_id,
-            device_id=device_id,
-            command_id=command_id,
-            execution_session_id=execution_session_id,
-            correlation_id=correlation_id,
-            processing_required=processing_required,
-        )
-        if auto_commit:
-            _ = await db.commit()
-        return result
-
-    async def accept_timer_timeout(
-        self,
-        db: AsyncSession,
-        *,
-        session_id: int,
-        execution_session_id: int | None = None,
-        workline_id: int,
-        deadline_at: object | None = None,
-        trace_id: str | None = None,
-        wait_token: str | None = None,
-        wait_type: str | None = None,
-        awaiting_device_command_code: str | None = None,
-        command_code: str | None = None,
-        device_id: int | None = None,
-        device_code: str | None = None,
-        command_id: int | None = None,
-        command_status: str | None = None,
-        ack_received_at: object | None = None,
-        now_ms: int | None = None,
-        auto_commit: bool = False,
-    ) -> RuntimeInboxAcceptResult:
-        """幂等接收系统 TIMER_TIMEOUT 并保存 canonical payload。"""
-
-        deadline_key = _format_runtime_temporal(deadline_at)
-        wait_key = wait_token or "no-wait-token"
-        command_key = awaiting_device_command_code or command_code or "no-command"
-        source_event_id = _fit_runtime_identity(
-            f"timeout:{session_id}:{deadline_key}:{wait_key}:{command_key}",
-            max_length=160,
-        )
-        existing = await self.repository.get_by_source_event_identity(
-            db,
-            provider_code="RUNTIME",
-            event_type="TIMER_TIMEOUT",
-            source_event_id=source_event_id,
-        )
-        if existing is not None:
-            return RuntimeInboxAcceptResult(record=existing, created=False)
-
-        correlation_id: str | None = None
-        correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
-        if correlation_context is not None:
-            correlation_id, resolved_execution_session_id = correlation_context
-            if execution_session_id is None:
-                execution_session_id = resolved_execution_session_id
-
-        payload_data = {
-            "session_id": session_id,
-            "workline_id": workline_id,
-            "deadline_at": deadline_key,
-            "wait_token": wait_token,
-            "wait_type": wait_type,
-            "awaiting_device_command_code": awaiting_device_command_code,
-            "command_code": command_code,
-            "device_id": device_id,
-            "device_code": device_code,
-            "command_status": command_status,
-            "ack_received_at": _format_runtime_temporal(ack_received_at),
-        }
-        canonical_payload = {
-            "logical_route": "BUSINESS_TIMEOUT",
-            "input": {
-                "route": "BUSINESS_TIMEOUT",
-                "command_code": command_key,
-                "wait_type": wait_type or "COMMAND_RESULT",
-            },
-            "event_type": "TIMER_TIMEOUT",
-            "data": payload_data,
-        }
-        record_data: dict[str, Any] = {
-            "kind": "TIMER_TIMEOUT",
-            "workline_session_id": session_id,
-            "execution_session_id": execution_session_id,
-            "correlation_id": correlation_id,
-            "workline_id": workline_id,
-            "device_id": device_id,
-            "command_id": command_id,
-            "trace_id": trace_id,
-            "provider_code": "RUNTIME",
-            "event_type": "TIMER_TIMEOUT",
-            "source_event_id": source_event_id,
-            "payload_hash": _canonical_payload_hash(canonical_payload),
-            "payload_json": canonical_payload,
-            "payload_schema_version": 1,
-            "status": "RECEIVED",
-            "attempt_count": 0,
-            "max_retries": 5,
-            "claim_bucket_key": _runtime_claim_bucket_key(
-                session_id=session_id,
-                device_id=device_id,
-                workline_id=workline_id,
-                command_id=command_id,
-                provider_code="RUNTIME",
-                event_type="TIMER_TIMEOUT",
-                source_event_id=source_event_id,
-            ),
-            "received_at": _received_at_ms(now_ms),
-        }
-        try:
-            async with db.begin_nested():
-                record = await self.repository.add_received(db, record_data)
-        except IntegrityError:
-            existing = await self.repository.get_by_source_event_identity(
-                db,
-                provider_code="RUNTIME",
-                event_type="TIMER_TIMEOUT",
-                source_event_id=source_event_id,
-            )
-            if existing is None:
-                raise
-            return RuntimeInboxAcceptResult(record=existing, created=False)
-
-        if auto_commit:
-            _ = await db.commit()
-        return RuntimeInboxAcceptResult(record=record, created=True)
 
     async def replay_from_dead_letter(
         self,
@@ -1233,8 +919,6 @@ class RuntimeInboxService:
                 event_id=replay_event_id,
                 causation_id=replay_causation_id,
                 workline_id=cast("int | None", evidence["original_workline_id"]),
-                device_id=cast("int | None", evidence["original_device_id"]),
-                command_id=cast("int | None", evidence["original_command_id"]),
                 workline_session_id=cast("int | None", evidence["original_workline_session_id"]),
                 execution_session_id=cast("int | None", evidence["original_execution_session_id"]),
                 correlation_id=cast("str | None", evidence["original_correlation_id"]),
@@ -1304,37 +988,6 @@ class RuntimeInboxService:
                     original_error=audit_error,
                 ) from audit_error
         return RuntimeInboxReplayResult(source_record=source, replay_record=replay.record, audit_event=audit_event)
-
-    async def _claim_device_event_idempotency_if_needed(
-        self,
-        db: AsyncSession,
-        *,
-        provider_code: str,
-        event_type: str,
-        source_event_id: str | None,
-        payload_hash: str | None,
-        correlation_id: str | None,
-        now_ms: int | None,
-    ) -> None:
-        """device_event 入站消息写入 RuntimeInbox 时，同步 claim 跨域 IdempotencyKey。"""
-
-        if not source_event_id or not payload_hash or not correlation_id:
-            return
-        spec = _runtime_inbox_operation_spec(event_type)
-        if spec.operation_kind != "device_event":
-            return
-
-        claimed_now_ms = now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000)
-        _ = await self.idempotency_guard.claim_or_match(
-            db,
-            provider_code=provider_code,
-            operation_kind=spec.operation_kind,
-            idempotency_key=source_event_id,
-            request_hash=payload_hash,
-            execution_correlation_id=correlation_id,
-            now_ms=claimed_now_ms,
-            business_owner_key=f"device_event:{source_event_id}",
-        )
 
     async def _write_replay_audit(self, db: AsyncSession, audit_event: dict[str, str | None]) -> None:
         """写入人工重放审计；未注入审计服务时只返回 audit_event。"""

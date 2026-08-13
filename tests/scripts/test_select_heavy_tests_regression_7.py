@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_core_env_profiles_use_fingerprinted_authoritative_heavy_mapping() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
     expected = [
+        "tests/e2e/device_command/test_device_command_production_wiring.py",
         "tests/integration/test_wms_northbound_feasibility_probe.py",
         "tests/mock/test_wms_mock_server.py",
         "tests/mock/test_wms_northbound_contract.py",

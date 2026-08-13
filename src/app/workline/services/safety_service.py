@@ -22,7 +22,6 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.device.services.device_service import DeviceService
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
@@ -123,7 +122,6 @@ class WorkLineSafetyService:
         session_repository: WorklineSessionRepository | None = None,
         system_outbox_cancellation_service: Any | None = None,
         command_repository: DeviceCommandRepository | None = None,
-        device_service: DeviceService | None = None,
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
         runtime_hold_release_service: Any | None = None,
@@ -142,11 +140,6 @@ class WorkLineSafetyService:
             system_outbox_cancellation_service = default_outbox_cancellation_service
         self.system_outbox_cancellation_service = system_outbox_cancellation_service
         self.command_repository = command_repository or DeviceCommandRepository()
-        if device_service is None:
-            from src.app.device.services.device_service import DeviceService
-
-            device_service = DeviceService()
-        self.device_service = device_service
         if runtime_hold_creation_service is None:
             from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
                 runtime_hold_creation_service as default_runtime_hold_creation_service,
@@ -162,12 +155,6 @@ class WorkLineSafetyService:
 
             workline_status_projection_service = workline_runtime_status_projection_service
         self.workline_status_projection_service = workline_status_projection_service
-        if runtime_hold_release_service is None:
-            from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
-                runtime_hold_release_service as default_release,
-            )
-
-            runtime_hold_release_service = default_release
         self.runtime_hold_release_service = runtime_hold_release_service
 
     async def assert_accepting_work(self, db: AsyncSession, *, workline_id: int) -> None:
@@ -238,15 +225,10 @@ class WorkLineSafetyService:
                 workline_id,
                 incident_id=cast("int", incident.id),
             )
-            command_count = await self.command_repository.cancel_active_by_workline(
-                db,
-                workline_id,
-                incident_id=cast("int", incident.id),
-            )
-            device_count = await self.device_service.mark_workline_safety_error(
+            command_count = await self.command_repository.fail_pending_by_workline(
                 db,
                 workline_id=workline_id,
-                auto_commit=False,
+                failure_code="WORKLINE_ESTOPPED_BEFORE_SEND",
             )
         except Exception as exc:
             logger.error(f"WorkLine 急停冻结已提交，但排空失败: workline_id={workline_id}, error={exc}")
@@ -268,8 +250,8 @@ class WorkLineSafetyService:
             {
                 "sessions_failed": session_count,
                 "outboxes_cancelled": outbox_count,
-                "commands_cancelled": command_count,
-                "devices_marked_error": device_count,
+                "pending_commands_failed": command_count,
+                "dispatched_commands_preserved": True,
             },
             max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
         )
@@ -341,19 +323,20 @@ class WorkLineSafetyService:
         incident.clear_reason = reason
         incident.cleared_by = operator_id
         incident.cleared_at = now
-        released_device_count = await self.device_service.clear_workline_safety_error(
-            db,
-            workline_id=workline_id,
-            auto_commit=False,
-        )
         incident.release_evidence_json = _bounded_safety_json(
             {
-                "released_device_count": released_device_count,
-                "released_device_error_code": "WORKLINE_ESTOPPED",
+                "device_runtime_authority": "ECS_STATUS_OBSERVATION",
+                "released_device_rows": 0,
             },
             max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
         )
 
+        if self.runtime_hold_release_service is None:
+            from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
+                runtime_hold_release_service,
+            )
+
+            self.runtime_hold_release_service = runtime_hold_release_service
         active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, workline_id)
         hold = next(
             (item for item in active_holds if item.hold_type == RuntimeHoldType.SAFETY_ESTOP),

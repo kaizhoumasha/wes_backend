@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 # 预加载外键目标模型, 确保独立 Celery worker 进程内 mapper/metadata 完整注册.
-from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import run_async
 from src.core.logger import logger

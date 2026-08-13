@@ -24,24 +24,6 @@ class _RecordingReservationService:
         return SimpleNamespace(status="RESERVED")
 
 
-def test_platform_route_roles_use_workline_runtime_configuration() -> None:
-    from src.app.runtime.orchestration.runtime_intent_effects import _runtime_route_roles
-
-    ctx = {
-        "workline": SimpleNamespace(
-            runtime_config_json={
-                "route_roles": {
-                    "PASS": "runtime-conflict-role",
-                    "NG": "runtime-unapproved-role",
-                }
-            },
-            config={"route_roles": {"PASS": "draft-device-role"}},
-        ),
-    }
-
-    assert _runtime_route_roles(ctx) == {"PASS": "runtime-conflict-role", "NG": "runtime-unapproved-role"}
-
-
 def _effect_ctx() -> dict[str, Any]:
     return {
         "db": SimpleNamespace(),
@@ -113,7 +95,7 @@ async def test_system_capability_intent_uses_one_generic_effect_service_branch()
 
 
 @pytest.mark.asyncio
-async def test_stale_material_effect_short_circuits_following_device_effects() -> None:
+async def test_stale_material_effect_short_circuits_following_system_capability_effects() -> None:
     service = _StaleMaterialEffectService()
     common = {
         "timeout_seconds": 5,
@@ -132,20 +114,23 @@ async def test_stale_material_effect_short_circuits_following_device_effects() -
         fact_version="material-unit:v0",
         **common,
     )
-    device = RuntimeIntent.system_capability(
-        capability_key="device.device_command_write",
+    following_effect = RuntimeIntent.system_capability(
+        capability_key="material_flow.bin_reservation_write",
         contract_version="v1",
-        operation_key="scan:PKG-001:dispatch",
-        dispatch_key="device-command:CMD-PKG-001",
-        payload={"target_device_id": 71, "action": "PICK_AND_PUT"},
+        operation_key="scan:PKG-001:reserve",
+        dispatch_key="bin-reservation:PKG-001",
+        payload={"bin_code": "BIN-001"},
         precondition={"expected_available": True},
-        fact_version="device:v1",
+        fact_version="bin:v1",
         **common,
     )
     ctx = _effect_ctx()
     ctx["db"] = SimpleNamespace(added=[])
 
-    await RuntimeIntentEffectApplier(system_capability_effect_service=service).apply(ctx, [material, device])
+    await RuntimeIntentEffectApplier(system_capability_effect_service=service).apply(
+        ctx,
+        [material, following_effect],
+    )
 
     assert [intent.capability_key for _, intent in service.calls] == ["material_flow.material_unit_write"]
     assert [result.outcome.kind for result in ctx["system_capability_outcomes"]] == ["business_reject"]
@@ -186,40 +171,3 @@ async def test_resource_reservation_uses_runtime_material_flow_default_singleton
     assert len(recording_service.calls) == 1
     assert recording_service.calls[0]["operation"] == "CLAIM_BIN_CELL"
     assert recording_service.calls[0]["payload_json"]["pkg_code"] == "PKG-DEFAULT-SINGLETON"
-
-
-@pytest.mark.asyncio
-async def test_device_event_intent_preserves_canonical_routing_payload(monkeypatch) -> None:
-    """生成型设备事件必须保留 processor 解析会话所需的顶层路由字段。"""
-
-    accepted: list[dict[str, Any]] = []
-
-    async def accept_device_event(*_args: Any, **kwargs: Any) -> SimpleNamespace:
-        accepted.append(kwargs)
-        return SimpleNamespace(record=SimpleNamespace(id=91), created=True)
-
-    from src.app.runtime.orchestration.services import runtime_inbox as runtime_inbox_module
-
-    monkeypatch.setattr(
-        runtime_inbox_module,
-        "runtime_inbox_service",
-        SimpleNamespace(accept_device_event=accept_device_event),
-    )
-    intent = RuntimeIntent.device_event(
-        device_code="ARM_01",
-        event_type="SCAN_COMPLETED",
-        data={"barcode": "PKG-001"},
-        timestamp=1_702_627_300_000,
-        event_id="device-event-001",
-    )
-
-    await RuntimeIntentEffectApplier().apply(_effect_ctx(), [intent])
-
-    [call] = accepted
-    assert call["payload_json"] == {
-        "device_code": "ARM_01",
-        "event_type": "SCAN_COMPLETED",
-        "timestamp": 1_702_627_300_000,
-        "data": {"barcode": "PKG-001"},
-        "event_id": "device-event-001",
-    }

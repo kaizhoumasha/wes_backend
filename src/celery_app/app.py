@@ -33,6 +33,7 @@ celery_app = Celery(
     backend=settings.CELERY_BACKEND,
     include=[
         "src.celery_app.tasks.core",  # 核心任务
+        "src.celery_app.tasks.device_command",  # DeviceCommand 可靠生命周期
         "src.celery_app.tasks.handling",  # 系统级 Handling 任务
         "src.celery_app.tasks.runtime_inbox",  # RuntimeInbox 主链路任务 (Plan Task 6)
         "src.celery_app.tasks.sys",  # 系统级统一任务
@@ -50,7 +51,7 @@ def _validate_worker_role_queue_contract() -> None:
     """部署角色与实际消费队列必须一一对应，配置漂移时阻止 worker 启动。"""
 
     process_role = celery_async_runtime.process_role
-    default_queues = "default,celery,device" if process_role is WmsProviderProcessRole.WES else ""
+    default_queues = "default,celery,device-command" if process_role is WmsProviderProcessRole.WES else ""
     queues = frozenset(
         queue.strip() for queue in os.getenv("CELERY_WORKER_QUEUES", default_queues).split(",") if queue.strip()
     )

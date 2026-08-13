@@ -12,6 +12,16 @@ from src import register as register_module
 from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.celery_app import app as celery_app_module
 from src.core.conf import settings
+
+
+@pytest.fixture(autouse=True)
+def _device_command_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ECS_BASE_URL", "http://ecs")
+    monkeypatch.setenv("ECS_CONNECT_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("ECS_READ_TIMEOUT_SECONDS", "2")
+    monkeypatch.setenv("DEVICE_COMMAND_QUEUE", "device-command")
+
+
 from src.register import register_init
 from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 

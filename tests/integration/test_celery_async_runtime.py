@@ -109,6 +109,7 @@ def _runtime_module() -> ModuleType:
 
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
+    from src.app.device import composition as device_composition
     from src.app.runtime.system_capabilities.wms import provider_catalog
     from src.app.transport import composition as transport_composition
     from src.app.wms_integration import effect_lane_runtime, effect_preparation_runtime, query_runtime
@@ -137,6 +138,11 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         validate_transport_runtime_profile=MagicMock(),
         transport_runtimes=[],
         build_transport_runtime=AsyncMock(),
+        device_command_runtimes=[],
+        resolve_device_command_runtime_config=MagicMock(
+            return_value=SimpleNamespace(base_url="http://127.0.0.1:18081", timeout_seconds=3.0)
+        ),
+        build_device_command_runtime=MagicMock(),
     )
 
     def build_transport_runtime(**_: object) -> SimpleNamespace:
@@ -148,6 +154,13 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     infra.build_transport_runtime.side_effect = build_transport_runtime
     infra.build_wms_effect_lane_runtime.return_value = infra.effect_runtime
     infra.build_wms_effect_preparation_runtime.return_value = infra.effect_preparation_runtime
+
+    def build_device_command_runtime(**_: object) -> SimpleNamespace:
+        runtime = SimpleNamespace(aclose=AsyncMock())
+        infra.device_command_runtimes.append(runtime)
+        return runtime
+
+    infra.build_device_command_runtime.side_effect = build_device_command_runtime
     redis_manager = SimpleNamespace(
         init_redis=infra.init_redis,
         close_redis=infra.close_redis,
@@ -174,6 +187,16 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         transport_composition,
         "build_transport_runtime",
         infra.build_transport_runtime,
+    )
+    monkeypatch.setattr(
+        device_composition,
+        "resolve_device_command_runtime_config",
+        infra.resolve_device_command_runtime_config,
+    )
+    monkeypatch.setattr(
+        device_composition,
+        "build_device_command_runtime",
+        infra.build_device_command_runtime,
     )
     monkeypatch.setattr(
         effect_lane_runtime,
@@ -1273,6 +1296,7 @@ def test_failed_init_rollback_gives_every_cleanup_stage_its_own_budget(
     async def close_database() -> None:
         await record("database")
 
+    device_command_runtime = SimpleNamespace(aclose=lambda: record("device-command"))
     transport_runtime = SimpleNamespace(aclose=lambda: record("transport"))
     preparation_runtime = object()
     infra.close_redis.side_effect = close_redis
@@ -1286,10 +1310,11 @@ def test_failed_init_rollback_gives_every_cleanup_stage_its_own_budget(
         module.CeleryAsyncRuntime._rollback_failed_initialization(
             effect_preparation_runtime=preparation_runtime,
             transport_runtime=transport_runtime,
+            device_command_runtime=device_command_runtime,
         )
     )
 
-    assert events == ["redis", "wms-data", "transport", "preparation", "effect", "database"]
+    assert events == ["redis", "wms-data", "device-command", "transport", "preparation", "effect", "database"]
 
 
 def test_normal_shutdown_permanently_rejects_initialize_and_run_async(
@@ -1398,7 +1423,7 @@ class _ShutdownFaultRunnerProbe(_RunnerProbe):
         return super().run(coroutine, context=context)
 
 
-@pytest.mark.parametrize("failure_call", [1, 2, 3, 4, 5, 6, 7, 8])
+@pytest.mark.parametrize("failure_call", range(1, 10))
 def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     failure_call: int,
@@ -1415,7 +1440,7 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     with _sync_watchdog(0.50, f"shutdown runner.run failure {failure_call}"):
         runtime.shutdown()
 
-    assert probe.shutdown_run_calls == 8
+    assert probe.shutdown_run_calls == 9
     if failure_call != 2:
         infra.close_redis.assert_awaited_once()
     if failure_call != 3:
@@ -1425,12 +1450,14 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     if failure_call != 5:
         infra.transport_runtimes[0].aclose.assert_awaited_once()
     if failure_call != 6:
-        infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+        infra.device_command_runtimes[0].aclose.assert_awaited_once()
     if failure_call != 7:
+        infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
+    if failure_call != 8:
         infra.close_db.assert_awaited_once()
     assert runtime.state is module.RuntimeState.CLOSED
     assert runtime._runner is None
     assert runtime._owner_pid is None
 
     runtime.shutdown()
-    assert probe.shutdown_run_calls == 8
+    assert probe.shutdown_run_calls == 9

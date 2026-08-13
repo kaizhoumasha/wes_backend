@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.app.runtime.orchestration.services.device_command_gateway import _DeviceCommandGovernanceError
 from src.app.sys.canonical_dispatch import CanonicalPayload, ExternalHttpDispatchRequest
 from src.app.sys.dispatch_concurrency import (
     DispatchBucketKey,
@@ -357,67 +356,6 @@ async def test_system_outbox_dispatcher_appends_late_transport_evidence_after_un
 
 
 @pytest.mark.asyncio
-async def test_system_outbox_dispatcher_persists_full_claim_batch_attempts_before_first_send() -> None:
-    messages = [
-        _outbox(id=31, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
-        _outbox(id=32, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
-    ]
-    repo = FakeSystemOutboxRepository(messages)
-    events: list[str] = []
-
-    class AttemptService(FakeDispatchAttemptService):
-        async def create_attempt(self, db: Any, *, outbox: Any, auto_commit: bool) -> Any:
-            events.append(f"attempt:{outbox.id}")
-            return await super().create_attempt(db, outbox=outbox, auto_commit=auto_commit)
-
-    async def device_sender(_db: Any, outbox: Any) -> bool:
-        events.append(f"send:{outbox.id}")
-        return True
-
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        dispatch_attempt_service=AttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-        device_command_dispatcher=device_sender,
-    )
-
-    result = await dispatcher.dispatch(SimpleNamespace(commit=AsyncMock()), limit=10)
-
-    assert result == {"dispatched": 2, "success": 2, "failed": 0, "skipped": 0}
-    assert events[:2] == ["attempt:31", "attempt:32"]
-
-
-@pytest.mark.asyncio
-async def test_system_outbox_dispatcher_rechecks_claim_before_each_physical_send() -> None:
-    messages = [
-        _outbox(id=41, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
-        _outbox(id=42, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND),
-    ]
-    repo = FakeSystemOutboxRepository(messages)
-    sent_ids: list[int] = []
-
-    async def device_sender(_db: Any, outbox: Any) -> bool:
-        sent_ids.append(outbox.id)
-        if outbox.id == 41:
-            messages[1].status = SystemOutboxStatus.CANCELLED
-        return True
-
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        dispatch_attempt_service=FakeDispatchAttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-        device_command_dispatcher=device_sender,
-    )
-
-    result = await dispatcher.dispatch(SimpleNamespace(commit=AsyncMock()), limit=10)
-
-    assert sent_ids == [41]
-    assert result == {"dispatched": 2, "success": 1, "failed": 0, "skipped": 1}
-
-
-@pytest.mark.asyncio
 async def test_system_outbox_dispatcher_marks_failed_when_external_http_fails() -> None:
     message = _outbox(id=2)
     repo = FakeSystemOutboxRepository([message])
@@ -480,36 +418,6 @@ async def test_system_outbox_dispatcher_bridges_persisted_transport_evidence_to_
 
 
 @pytest.mark.asyncio
-async def test_system_outbox_dispatcher_reclaims_stale_non_http_dispatching_message() -> None:
-    message = _outbox(
-        id=3,
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="DEVICE-LEASE-3",
-        status=SystemOutboxStatus.DISPATCHING,
-        lease_owner_token="old-owner",
-        lease_expires_at=datetime(2026, 5, 22, 7, 59, 0),
-    )
-    repo = FakeSystemOutboxRepository([message])
-    device_sender = AsyncMock(return_value=True)
-    db = SimpleNamespace(commit=AsyncMock())
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        device_command_dispatcher=device_sender,
-        dispatch_attempt_service=FakeDispatchAttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-    )
-
-    result = await dispatcher.dispatch(db, limit=10)
-
-    assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
-    device_sender.assert_awaited_once_with(db, message)
-    assert repo.mark_dispatching_calls == []
-    assert message.status == SystemOutboxStatus.SENT
-
-
-@pytest.mark.asyncio
 async def test_system_outbox_dispatcher_delegates_workline_domain_to_workline_governance() -> None:
     repo = FakeSystemOutboxRepository([])
     db = SimpleNamespace(commit=AsyncMock())
@@ -556,132 +464,3 @@ async def test_system_outbox_dispatcher_excludes_rack_domain_from_generic_http_d
     assert scheduler.claim_calls[-1]["exclude_operation_domains"] == ("WORKLINE", "RACK")
     sender.assert_not_awaited()
     assert repo.mark_dispatching_calls == []
-
-
-@pytest.mark.asyncio
-async def test_system_outbox_dispatcher_delegates_device_command_to_device_gateway() -> None:
-    message = _outbox(id=4, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND)
-    repo = FakeSystemOutboxRepository([message])
-    db = SimpleNamespace(commit=AsyncMock())
-
-    async def fake_device_dispatcher(_db: Any, outbox: Any) -> bool:
-        assert _db is db
-        assert outbox is message
-        return True
-
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        dispatch_attempt_service=FakeDispatchAttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-        device_command_dispatcher=fake_device_dispatcher,
-    )
-
-    result = await dispatcher.dispatch(db, limit=10)
-
-    assert result == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
-
-
-@pytest.mark.asyncio
-async def test_system_outbox_dispatcher_parks_device_command_resource_wait() -> None:
-    message = _outbox(
-        id=6,
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        target_code="ARM01",
-        workline_id=45,
-        blocked_detail_json={},
-    )
-    repo = FakeSystemOutboxRepository([message])
-    db = SimpleNamespace(commit=AsyncMock())
-
-    async def fake_device_dispatcher(_db: Any, _outbox: Any) -> bool:
-        raise _DeviceCommandGovernanceError(
-            domain="ORCHESTRATION",
-            code="DEVICE_BUSY",
-            message="设备 ARM01 实时状态忙，拒绝命令派发",
-            device_id=7,
-            device_code="ARM01",
-            detail={"device_code": "ARM01", "last_probe_result": "BUSY"},
-        )
-
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        dispatch_attempt_service=FakeDispatchAttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-        device_command_dispatcher=fake_device_dispatcher,
-    )
-
-    result = await dispatcher.dispatch(db, limit=10)
-
-    assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
-    assert repo.mark_failed_calls == []
-    assert repo.blocked_resource_calls == [
-        {
-            "outbox_id": 6,
-            "blocked_device_id": 7,
-            "blocked_workline_id": 45,
-            "reason": "DEVICE_BUSY",
-            "last_error": "设备 ARM01 实时状态忙，拒绝命令派发",
-            "detail": {"device_code": "ARM01", "last_probe_result": "BUSY"},
-            "lease_owner_token": "test-owner:6",
-        }
-    ]
-    assert message.status == SystemOutboxStatus.RETRY_WAIT
-    assert message.blocked_reason == "DEVICE_BUSY"
-
-
-@pytest.mark.asyncio
-async def test_system_outbox_dispatcher_reraises_non_resource_wait_runtime_error() -> None:
-    message = _outbox(id=7, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND)
-    repo = FakeSystemOutboxRepository([message])
-    db = SimpleNamespace(commit=AsyncMock())
-
-    async def fake_device_dispatcher(_db: Any, _outbox: Any) -> bool:
-        raise RuntimeError("device gateway exploded")
-
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        dispatch_attempt_service=FakeDispatchAttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-        device_command_dispatcher=fake_device_dispatcher,
-    )
-
-    with pytest.raises(RuntimeError, match="device gateway exploded"):
-        await dispatcher.dispatch(db, limit=10)
-
-    assert repo.mark_failed_calls == []
-    assert repo.blocked_resource_calls == []
-
-
-@pytest.mark.asyncio
-async def test_system_outbox_dispatcher_counts_resource_wait_fencing_as_skipped() -> None:
-    message = _outbox(id=8, dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND, workline_id=45)
-    repo = FakeSystemOutboxRepository([message])
-    repo.block_resource_wait_returns_none = True
-    db = SimpleNamespace(commit=AsyncMock())
-
-    async def fake_device_dispatcher(_db: Any, _outbox: Any) -> bool:
-        raise _DeviceCommandGovernanceError(
-            domain="ORCHESTRATION",
-            code="DEVICE_STATUS_PRECHECK_WAIT",
-            message="设备 ARM01 实时状态查询暂不可用",
-            device_id=7,
-            device_code="ARM01",
-            detail={"device_code": "ARM01", "last_probe_result": "STATUS_WAIT"},
-        )
-
-    dispatcher = SystemOutboxDispatcher(
-        outbox_repository=repo,
-        dispatch_scheduler=FakeFairDispatchScheduler(repo),
-        dispatch_attempt_service=FakeDispatchAttemptService(),
-        workline_domain_dispatcher=_no_workline_messages,
-        device_command_dispatcher=fake_device_dispatcher,
-    )
-
-    result = await dispatcher.dispatch(db, limit=10)
-
-    assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
-    assert repo.mark_failed_calls == []
-    assert repo.blocked_resource_calls[0]["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"

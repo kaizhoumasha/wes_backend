@@ -1,25 +1,15 @@
 from __future__ import annotations
 
-from inspect import isawaitable
 from socket import gethostname
 from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import uuid4
 
 if TYPE_CHECKING:
     from src.app.sys.external_http_transport import ExternalHttpTransportResult
+    from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 
 from src.app.runtime.orchestration.diagnostics import ErrorCode
-from src.app.runtime.orchestration.services.device_command_gateway import (
-    _build_device_command_log_envelope,
-    _DeviceCommandGovernanceError,
-    _mark_device_command_failed_if_dispatch_exhausted,
-    _mark_outbox_blocked_by_workline_state,
-)
-from src.app.sys.dispatch_concurrency import (
-    DispatchBucketKey,
-    FairDispatchScheduler,
-    dispatch_policy_registry,
-)
+from src.app.sys.dispatch_concurrency import FairDispatchScheduler, dispatch_policy_registry
 from src.app.sys.external_http_dispatch_faults import (
     ExternalHttpDispatchFaultHook,
     ExternalHttpDispatchFaultPoint,
@@ -37,7 +27,6 @@ from src.app.workline.outbox_dispatch_support import (
     _outbox_trace_log_suffix,
     _resolve_outbox_run_mode,
 )
-from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.core.logger import logger
@@ -48,11 +37,6 @@ from src.utils.value_normalization import (
     resolve_required_pk,
     string_value,
 )
-
-RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS = 2
-DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS = 120
-DEVICE_STATUS_PRECHECK_MAX_CHECK_COUNT = 30
-_DEVICE_RESOURCE_WAIT_CODES = {"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"}
 
 
 class DispatchResult(TypedDict):
@@ -68,6 +52,47 @@ def _count_workline_safety_block_result(result: DispatchResult, block_state: str
     else:
         result["failed"] += 1
     result["dispatched"] += 1
+
+
+async def _mark_outbox_blocked_by_workline_state(
+    db: Any,
+    *,
+    outbox_repo: Any,
+    outbox: Any,
+    outbox_id: int,
+    safety_error: Exception,
+    lease_owner_token: str | None = None,
+) -> str:
+    """按现役 WorkLine 状态封存共享 Outbox；不包含任何设备命令语义。"""
+
+    reason = str(safety_error)
+    if "WORKLINE_RECONCILING" in reason:
+        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+            workline_runtime_reconciliation_service,
+        )
+
+        updated = await workline_runtime_reconciliation_service.park_outbox_for_reconciliation(
+            db,
+            outbox=outbox,
+            reason="CALLBACK_DEADLINE_EXPIRED",
+            lease_owner_token=lease_owner_token,
+        )
+        return "blocked_resource" if updated is not None else "fenced"
+
+    if "WORKLINE_STOPPED" in reason:
+        updated = await outbox_repo.mark_as_blocked_by_workline_stopped(
+            db,
+            outbox_id,
+            lease_owner_token=lease_owner_token,
+        )
+        return "blocked_resource" if updated is not None else "fenced"
+
+    updated = await outbox_repo.mark_as_blocked_by_workline_estop(
+        db,
+        outbox_id,
+        lease_owner_token=lease_owner_token,
+    )
+    return "failed" if updated is not None else "fenced"
 
 
 def _dispatch_failure_diagnostic_code(failed_outbox: Any) -> ErrorCode:
@@ -107,9 +132,6 @@ def _runtime_intent_dispatch_correlation_id(outbox: Any, payload: dict[str, Any]
 
 
 def _runtime_intent_dispatch_provider_code(outbox: Any, payload: dict[str, Any]) -> str:
-    dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
-    if dispatch_type == "DEVICE_COMMAND":
-        return _outbox_payload_text(payload, "provider_code", "source_system", "provider") or "ECS"
     return (
         _outbox_payload_text(payload, "provider_code", "source_system", "provider")
         or coerce_optional_str(getattr(outbox, "target_code", None))
@@ -191,277 +213,6 @@ async def _block_outbox_for_workline_safety(
         f"Outbox {outbox_id} 因 WorkLine {guard_label}阻断派发 ({_outbox_trace_log_suffix(outbox, trace=trace)})"
     )
     return block_state
-
-
-def _resource_wait_detail(governance_error: _DeviceCommandGovernanceError) -> dict[str, Any]:
-    detail = dict(governance_error.detail or {})
-    if governance_error.code == "DEVICE_BUSY":
-        detail.setdefault("last_probe_result", "BUSY")
-    if governance_error.code == "DEVICE_STATUS_PRECHECK_WAIT":
-        detail.setdefault("last_probe_result", "STATUS_WAIT")
-        detail.setdefault("ttl_seconds", DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS)
-        detail.setdefault("max_check_count", DEVICE_STATUS_PRECHECK_MAX_CHECK_COUNT)
-    return detail
-
-
-def _resource_wait_diagnostic_key(outbox_id: int, reason: str) -> str:
-    return f"outbox-resource-wait:{outbox_id}:{reason}"
-
-
-def _resource_wait_elapsed_seconds(blocked_outbox: Any) -> float:
-    from src.utils.timezone import timezone as timezone_utils
-
-    blocked_at = getattr(blocked_outbox, "blocked_at", None)
-    if blocked_at is None:
-        return 0.0
-    return max((timezone_utils.now_for_db() - blocked_at).total_seconds(), 0.0)
-
-
-def _is_status_precheck_wait_over_ttl(blocked_outbox: Any) -> bool:
-    if string_value(getattr(blocked_outbox, "blocked_reason", None)) != "DEVICE_STATUS_PRECHECK_WAIT":
-        return False
-    elapsed_seconds = _resource_wait_elapsed_seconds(blocked_outbox)
-    check_count = getattr(blocked_outbox, "blocked_check_count", 0) or 0
-    return (
-        elapsed_seconds >= DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS
-        or check_count >= DEVICE_STATUS_PRECHECK_MAX_CHECK_COUNT
-    )
-
-
-async def _escalate_status_precheck_wait_if_needed(
-    db: Any,
-    *,
-    outbox_repo: Any,
-    outbox: Any,
-    outbox_id: int,
-    blocked_outbox: Any,
-    message: str,
-) -> None:
-    if not _is_status_precheck_wait_over_ttl(blocked_outbox):
-        return
-    detail = payload_dict(getattr(blocked_outbox, "blocked_detail_json", None))
-    if detail.get("last_probe_result") == "escalated" and detail.get("diagnostic_key"):
-        return
-    from src.utils.timezone import timezone as timezone_utils
-
-    diagnostic_key = _resource_wait_diagnostic_key(outbox_id, "DEVICE_STATUS_PRECHECK_WAIT")
-    escalated_at = timezone_utils.now_utc().isoformat()
-    elapsed_seconds = _resource_wait_elapsed_seconds(blocked_outbox)
-    detail.update(
-        {
-            "last_probe_result": "escalated",
-            "escalated_at": escalated_at,
-            "diagnostic_key": diagnostic_key,
-            "waited_seconds": elapsed_seconds,
-            "ttl_seconds": DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS,
-            "max_check_count": DEVICE_STATUS_PRECHECK_MAX_CHECK_COUNT,
-        }
-    )
-    updater = getattr(outbox_repo, "update_resource_wait_detail", None)
-    if not callable(updater):
-        return
-    updated_result = updater(
-        db,
-        outbox_id,
-        expected_reason="DEVICE_STATUS_PRECHECK_WAIT",
-        last_error=message,
-        detail=detail,
-    )
-    if not isawaitable(updated_result):
-        return
-    updated = await updated_result
-    if updated is not None:
-        blocked_outbox = updated
-    await _record_diagnostic(
-        db,
-        inbox=None,
-        outbox=blocked_outbox or outbox,
-        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-        message=message,
-        request_id=diagnostic_key,
-        trace_id=diagnostic_key,
-        extra={
-            **_outbox_trace_extra(blocked_outbox or outbox),
-            "reason": "DEVICE_STATUS_PRECHECK_WAIT_TIMEOUT",
-            "diagnostic_key": diagnostic_key,
-            "waited_seconds": elapsed_seconds,
-            "blocked_check_count": getattr(blocked_outbox, "blocked_check_count", None),
-        },
-    )
-
-
-async def _block_outbox_for_device_resource_wait(
-    db: Any,
-    *,
-    outbox_repo: Any,
-    outbox: Any,
-    outbox_id: int,
-    governance_error: _DeviceCommandGovernanceError,
-    dispatch_attempt: Any | None = None,
-    attempt_service: Any | None = None,
-    lease_owner_token: str | None = None,
-) -> bool:
-    """目标设备接纳条件暂不满足时，暂停 outbox 并等待 ECS probe 重新放行。"""
-    if governance_error.code not in _DEVICE_RESOURCE_WAIT_CODES:
-        raise governance_error
-    detail = _resource_wait_detail(governance_error)
-    if governance_error.code == "DEVICE_STATUS_PRECHECK_WAIT":
-        existing_detail = payload_dict(getattr(outbox, "blocked_detail_json", None))
-        if existing_detail.get("last_probe_result") == "escalated" and existing_detail.get("diagnostic_key"):
-            detail.update(
-                {
-                    "last_probe_result": "escalated",
-                    "escalated_at": existing_detail.get("escalated_at"),
-                    "diagnostic_key": existing_detail.get("diagnostic_key"),
-                }
-            )
-    blocked_outbox = await outbox_repo.mark_as_blocked_by_device_busy(
-        db,
-        outbox_id,
-        blocked_device_id=governance_error.device_id,
-        blocked_workline_id=getattr(outbox, "workline_id", None),
-        reason=governance_error.code,
-        last_error=governance_error.message,
-        detail=detail,
-        lease_owner_token=lease_owner_token,
-    )
-    if blocked_outbox is None:
-        await db.commit()
-        logger.warning(
-            f"Outbox {outbox_id} 因设备资源等待暂停时被 fencing 拒绝，保留当前状态 ({_outbox_trace_log_suffix(outbox)})"
-        )
-        return False
-    if dispatch_attempt is not None and attempt_service is not None:
-        _ = await attempt_service.finalize_attempt_record(
-            db,
-            attempt=dispatch_attempt,
-            lease_owner_token=lease_owner_token,
-            success=False,
-            error_message=governance_error.message,
-            response={"result": "blocked_resource", "reason": governance_error.code, "detail": detail},
-            auto_commit=False,
-        )
-    await _escalate_status_precheck_wait_if_needed(
-        db,
-        outbox_repo=outbox_repo,
-        outbox=outbox,
-        outbox_id=outbox_id,
-        blocked_outbox=blocked_outbox,
-        message=governance_error.message,
-    )
-    await db.commit()
-    logger.info(
-        f"Outbox {outbox_id} 因设备 {governance_error.device_code or governance_error.device_id} "
-        f"资源等待暂停派发: reason={governance_error.code}"
-    )
-    return True
-
-
-def _latest_dispatch_attempt(attempts: list[Any]) -> Any | None:
-    if not attempts:
-        return None
-    return max(attempts, key=lambda item: getattr(item, "attempt_no", 0) or 0)
-
-
-def _is_device_busy_attempt(attempt: Any | None) -> bool:
-    if attempt is None:
-        return False
-    if enum_value(getattr(attempt, "status", None)) != "FAILED":
-        return False
-    response = payload_dict(getattr(attempt, "response_json", None))
-    reason = string_value(response.get("reason"))
-    if reason == "DEVICE_BUSY":
-        return True
-    error_message = string_value(getattr(attempt, "error_message", None))
-    return "DEVICE_BUSY" in error_message
-
-
-def _is_dispatched_command(command: Any | None) -> bool:
-    return enum_value(getattr(command, "status", None)) in {"SENT", "ACK_RECEIVED"}
-
-
-async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
-    """恢复 attempt 已结束但 outbox 仍卡在 DISPATCHING 的设备忙派发。"""
-    from src.app.device.repositories.device_repository import device_repository
-    from src.app.runtime.orchestration.repositories.dispatch_attempt_repository import (
-        workline_dispatch_attempt_repository,
-    )
-
-    getter = getattr(outbox_repo, "get_dispatching_device_messages", None)
-    if not callable(getter):
-        return 0
-    repaired = 0
-    dispatching_messages = getter(db, limit=limit, operation_domains=("WORKLINE", "RACK"))
-    if not isawaitable(dispatching_messages):
-        return 0
-    for outbox in await dispatching_messages:
-        outbox_id = resolve_entity_id(outbox)
-        if outbox_id is None:
-            continue
-        attempts = await workline_dispatch_attempt_repository.get_by_outbox_id(db, outbox_id)
-        latest_attempt = _latest_dispatch_attempt(attempts)
-        if not _is_device_busy_attempt(latest_attempt):
-            continue
-        target_code = string_value(getattr(outbox, "target_code", None))
-        if not target_code:
-            continue
-        device = await device_repository.get_by_device_code(db, target_code)
-        device_id = resolve_entity_id(device)
-        if device_id is None:
-            continue
-        error_message = string_value(getattr(latest_attempt, "error_message", None), default="DEVICE_BUSY")
-        blocked = await outbox_repo.mark_as_blocked_by_device_busy(
-            db,
-            outbox_id,
-            blocked_device_id=device_id,
-            blocked_workline_id=getattr(outbox, "workline_id", None),
-            reason="DEVICE_BUSY",
-            last_error=error_message,
-            lease_owner_token=getattr(latest_attempt, "lease_token", None),
-        )
-        if blocked is None:
-            continue
-        repaired += 1
-        await db.commit()
-    if repaired:
-        logger.info(f"已恢复 {repaired} 条设备忙残留派发 outbox")
-    return repaired
-
-
-async def _repair_self_blocked_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
-    """禁用本地自阻塞放行；blocked 设备命令只能通过 ECS admission probe 恢复。"""
-    _ = (db, outbox_repo, limit)
-    return 0
-
-
-async def _resolve_device_id_for_target_code(db: Any, target_code: str) -> Any | None:
-    from src.app.device.repositories.device_repository import device_repository
-
-    device = await device_repository.get_by_device_code(db, target_code)
-    return resolve_entity_id(device)
-
-
-async def _remember_blocked_head_device_scope(
-    db: Any,
-    *,
-    outbox: Any,
-    processed_device_ids: set[Any],
-    processed_target_codes: set[str],
-) -> tuple[Any | None, Any | None, str]:
-    blocked_device_id = getattr(outbox, "blocked_device_id", None)
-    device_id = getattr(outbox, "device_id", None)
-    target_code = string_value(getattr(outbox, "target_code", None))
-    if blocked_device_id is not None:
-        processed_device_ids.add(blocked_device_id)
-    if device_id is not None:
-        processed_device_ids.add(device_id)
-    if blocked_device_id is None and device_id is None and target_code:
-        resolved_device_id = await _resolve_device_id_for_target_code(db, target_code)
-        if resolved_device_id is not None:
-            processed_device_ids.add(resolved_device_id)
-    if target_code:
-        processed_target_codes.add(target_code)
-    return blocked_device_id, device_id, target_code
 
 
 class OutboxDispatchService:
@@ -629,327 +380,6 @@ class OutboxDispatchService:
             await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.AFTER_REDUCER_EVIDENCE, outbox)
         return updated
 
-    async def _prepare_claimed_blocked_head_dispatch(
-        self,
-        db: Any,
-        *,
-        outbox_repo: Any,
-        claimed: Any,
-        outbox_id: int,
-        attempt_service: Any,
-        safety_service: Any,
-        result: DispatchResult,
-        lease_owner_token: str,
-    ) -> tuple[Any, bool]:
-        """blocked 队首 claim 后创建 attempt，并在 POST 前执行 WorkLine final guard。"""
-
-        dispatch_attempt = await attempt_service.create_attempt(
-            db,
-            outbox=claimed,
-            auto_commit=False,
-        )
-        await db.commit()
-        outbox_workline_id = getattr(claimed, "workline_id", None)
-        if outbox_workline_id is None:
-            return dispatch_attempt, False
-        try:
-            await safety_service.assert_accepting_work(db, workline_id=outbox_workline_id)
-        except WorkLineSafetyBlocked as safety_error:
-            block_state = await _block_outbox_for_workline_safety(
-                db,
-                outbox_repo=outbox_repo,
-                outbox=claimed,
-                outbox_id=outbox_id,
-                safety_error=safety_error,
-                trace=TraceContext.from_runtime(outbox=claimed),
-                dispatch_attempt=dispatch_attempt,
-                attempt_service=attempt_service,
-                final_guard=True,
-                lease_owner_token=lease_owner_token,
-            )
-            _count_workline_safety_block_result(result, block_state)
-            return dispatch_attempt, True
-        return dispatch_attempt, False
-
-    async def _probe_blocked_resource_head_ready(self, db: Any, outbox: Any) -> bool:
-        """claim blocked 队首前只做 ECS admission probe，不产生设备命令 POST 副作用。"""
-        import httpx
-
-        from src.app.device.repositories.device_repository import device_repository
-        from src.app.runtime.orchestration.services.device_command_gateway import (
-            _ensure_realtime_device_status_ready,
-            _get_device_for_command_dispatch,
-        )
-
-        device = await _get_device_for_command_dispatch(db, device_repository, outbox.target_code)
-        if device is None or not getattr(device, "host", None) or not getattr(device, "port", None):
-            device_id = resolve_entity_id(device) or getattr(outbox, "blocked_device_id", None)
-            device_code = string_value(getattr(device, "device_code", None), default=outbox.target_code)
-            message = f"设备 {device_code} 通信配置不完整，等待下次预检"
-            logger.warning(f"blocked outbox ECS probe 缺少设备通信配置: target_code={outbox.target_code}")
-            raise _DeviceCommandGovernanceError(
-                domain="ORCHESTRATION",
-                code="DEVICE_STATUS_PRECHECK_WAIT",
-                message=message,
-                device_id=device_id,
-                device_code=device_code,
-                detail={
-                    "device_code": device_code,
-                    "error_kind": "missing_device_config",
-                    "host_configured": bool(getattr(device, "host", None)),
-                    "port_configured": bool(getattr(device, "port", None)),
-                    "last_probe_result": "missing_device_config",
-                },
-            )
-
-        payload = payload_dict(getattr(outbox, "payload_json", None))
-        command_code = string_value(payload.get("command_code"))
-        device_code = string_value(getattr(device, "device_code", None), default=outbox.target_code)
-        async with httpx.AsyncClient() as client:
-            _ = await _ensure_realtime_device_status_ready(
-                client=client,
-                device=device,
-                device_code=device_code,
-                command_code=command_code or None,
-            )
-        return True
-
-    async def _dispatch_blocked_resource_heads(  # noqa: PLR0912
-        self,
-        db: Any,
-        *,
-        outbox_repo: Any,
-        limit: int,
-        result: DispatchResult,
-    ) -> tuple[set[Any], set[str]]:
-        """优先探测资源等待队首，ECS ready 后领取并复用设备 POST。"""
-        from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
-            workline_dispatch_attempt_service,
-        )
-        from src.app.workline.services.safety_service import workline_safety_service
-
-        attempt_service = self.dispatch_attempt_service or workline_dispatch_attempt_service
-        processed_device_ids: set[Any] = set()
-        processed_target_codes: set[str] = set()
-        getter = getattr(outbox_repo, "get_probeable_blocked_device_heads", None)
-        if not callable(getter):
-            return processed_device_ids, processed_target_codes
-
-        blocked_heads_result = getter(
-            db,
-            limit=limit,
-            min_probe_interval_seconds=RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS,
-            operation_domains=("WORKLINE", "RACK"),
-        )
-        if not isawaitable(blocked_heads_result):
-            return processed_device_ids, processed_target_codes
-        blocked_heads = await blocked_heads_result
-        for outbox in blocked_heads:
-            if result["dispatched"] >= limit:
-                break
-            outbox_id = resolve_entity_id(outbox)
-            if outbox_id is None:
-                result["skipped"] += 1
-                continue
-            blocked_device_id, device_id, target_code = await _remember_blocked_head_device_scope(
-                db,
-                outbox=outbox,
-                processed_device_ids=processed_device_ids,
-                processed_target_codes=processed_target_codes,
-            )
-            blocked_reason = string_value(getattr(outbox, "blocked_reason", None), default="DEVICE_BUSY")
-            claimed: Any | None = None
-            dispatch_attempt: Any | None = None
-            lease_owner_token: str | None = None
-            bucket = DispatchBucketKey(
-                string_value(getattr(outbox, "provider_profile_identity", None)),
-                string_value(getattr(outbox, "operation_identity", None)),
-            )
-            if dispatch_policy_registry.is_paused(bucket):
-                result["skipped"] += 1
-                continue
-            policy = dispatch_policy_registry.policy_for(bucket)
-            try:
-                ready = await self._probe_blocked_resource_head_ready(db, outbox)
-                if not ready:
-                    result["skipped"] += 1
-                    result["dispatched"] += 1
-                    continue
-                lease_owner_token = f"outbox-lease:workline-blocked:{uuid4().hex}"
-                claimed = await outbox_repo.claim_blocked_resource_wait_for_dispatch(
-                    db,
-                    outbox_id,
-                    blocked_reason,
-                    min_probe_interval_seconds=RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS,
-                    operation_domains=("WORKLINE", "RACK"),
-                    lease_owner_token=lease_owner_token,
-                    lease_seconds=policy.lease_seconds,
-                )
-                if claimed is None:
-                    await db.commit()
-                    result["skipped"] += 1
-                    result["dispatched"] += 1
-                    continue
-                dispatch_attempt, blocked_by_safety = await self._prepare_claimed_blocked_head_dispatch(
-                    db,
-                    outbox_repo=outbox_repo,
-                    claimed=claimed,
-                    outbox_id=outbox_id,
-                    attempt_service=attempt_service,
-                    safety_service=workline_safety_service,
-                    result=result,
-                    lease_owner_token=lease_owner_token,
-                )
-                if blocked_by_safety:
-                    continue
-                current_outbox = await outbox_repo.begin_physical_dispatch(
-                    db,
-                    outbox_id,
-                    lease_owner_token=lease_owner_token,
-                    lease_seconds=policy.lease_seconds,
-                )
-                if current_outbox is None:
-                    await db.commit()
-                    result["skipped"] += 1
-                    result["dispatched"] += 1
-                    continue
-                await db.commit()
-                claimed = current_outbox
-                success = await self._dispatch_single(db, claimed)
-                if success:
-                    sent_outbox = await outbox_repo.mark_as_sent(
-                        db,
-                        outbox_id,
-                        lease_owner_token=lease_owner_token,
-                    )
-                    if dispatch_attempt is not None and sent_outbox is not None:
-                        _ = await attempt_service.finalize_attempt_record(
-                            db,
-                            attempt=dispatch_attempt,
-                            lease_owner_token=lease_owner_token,
-                            success=True,
-                            response={
-                                "result": "sent",
-                                "outbox_finalization": "sent" if sent_outbox is not None else "fenced",
-                            },
-                            auto_commit=False,
-                        )
-                    await db.commit()
-                    if sent_outbox is None:
-                        result["skipped"] += 1
-                    else:
-                        result["success"] += 1
-                    result["dispatched"] += 1
-                    continue
-                failed_outbox = await outbox_repo.mark_as_failed(
-                    db,
-                    outbox_id,
-                    string_value(getattr(claimed, "_dispatch_failure_reason", None), default="Dispatch failed"),
-                    policy.retry_budget,
-                    lease_owner_token=lease_owner_token,
-                )
-                if dispatch_attempt is not None and failed_outbox is not None:
-                    _ = await attempt_service.finalize_attempt_record(
-                        db,
-                        attempt=dispatch_attempt,
-                        lease_owner_token=lease_owner_token,
-                        success=False,
-                        error_message=string_value(
-                            getattr(claimed, "_dispatch_failure_reason", None),
-                            default="Dispatch failed",
-                        ),
-                        auto_commit=False,
-                    )
-                await db.commit()
-                result["failed" if failed_outbox is not None else "skipped"] += 1
-                result["dispatched"] += 1
-            except _DeviceCommandGovernanceError as e:
-                if e.code in _DEVICE_RESOURCE_WAIT_CODES:
-                    _ = await _block_outbox_for_device_resource_wait(
-                        db,
-                        outbox_repo=outbox_repo,
-                        outbox=claimed or outbox,
-                        outbox_id=outbox_id,
-                        governance_error=e,
-                        dispatch_attempt=dispatch_attempt,
-                        attempt_service=attempt_service,
-                        lease_owner_token=lease_owner_token,
-                    )
-                    result["skipped"] += 1
-                    result["dispatched"] += 1
-                    continue
-                logger.warning(
-                    f"blocked outbox {outbox_id} ECS probe 治理拒绝: {e.message} ({_outbox_trace_log_suffix(outbox)})"
-                )
-                failed_outbox = await outbox_repo.mark_as_failed(
-                    db,
-                    outbox_id,
-                    e.message,
-                    policy.retry_budget,
-                    lease_owner_token=lease_owner_token,
-                )
-                if dispatch_attempt is not None and failed_outbox is not None and lease_owner_token is not None:
-                    _ = await attempt_service.finalize_attempt_record(
-                        db,
-                        attempt=dispatch_attempt,
-                        lease_owner_token=lease_owner_token,
-                        success=False,
-                        error_message=e.message,
-                        response={"result": "failed", "reason": e.code},
-                        auto_commit=False,
-                    )
-                await db.commit()
-                result["failed"] += 1
-                result["dispatched"] += 1
-            except Exception as e:
-                logger.warning(f"blocked outbox {outbox_id} ECS probe 异常: {e}")
-                if claimed is None:
-                    _ = await _block_outbox_for_device_resource_wait(
-                        db,
-                        outbox_repo=outbox_repo,
-                        outbox=outbox,
-                        outbox_id=outbox_id,
-                        governance_error=_DeviceCommandGovernanceError(
-                            domain="ORCHESTRATION",
-                            code="DEVICE_STATUS_PRECHECK_WAIT",
-                            message=str(e),
-                            device_id=blocked_device_id or device_id,
-                            device_code=target_code or None,
-                            detail={
-                                "device_code": target_code,
-                                "error_kind": "probe_exception",
-                                "last_probe_result": "exception",
-                                "error_message": str(e),
-                            },
-                        ),
-                    )
-                    result["skipped"] += 1
-                    result["dispatched"] += 1
-                    continue
-                failed_outbox = await outbox_repo.mark_as_failed(
-                    db,
-                    outbox_id,
-                    str(e),
-                    policy.retry_budget,
-                    lease_owner_token=lease_owner_token,
-                )
-                if dispatch_attempt is not None and failed_outbox is not None and lease_owner_token is not None:
-                    try:
-                        _ = await attempt_service.finalize_attempt_record(
-                            db,
-                            attempt=dispatch_attempt,
-                            lease_owner_token=lease_owner_token,
-                            success=False,
-                            error_message=str(e),
-                            auto_commit=False,
-                        )
-                    except Exception as attempt_error:
-                        logger.warning(f"blocked outbox {outbox_id} 派发尝试账本补记失败: {attempt_error}")
-                await db.commit()
-                result["failed" if failed_outbox is not None else "skipped"] += 1
-                result["dispatched"] += 1
-        return processed_device_ids, processed_target_codes
-
     async def dispatch(self, db: Any, limit: int = 50) -> DispatchResult:  # noqa: PLR0912
         """派发 Outbox 消息
         Args:
@@ -971,15 +401,7 @@ class OutboxDispatchService:
         }
         outbox_repo = self.outbox_repository
         attempt_service = self.dispatch_attempt_service or workline_dispatch_attempt_service
-        _ = await _repair_orphaned_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
-        _ = await _repair_self_blocked_device_busy_dispatches(db, outbox_repo=outbox_repo, limit=limit)
-        _processed_blocked_device_ids, _processed_blocked_target_codes = await self._dispatch_blocked_resource_heads(
-            db,
-            outbox_repo=outbox_repo,
-            limit=limit,
-            result=result,
-        )
-        remaining_limit = max(limit - result["dispatched"], 0)
+        remaining_limit = limit
         if remaining_limit <= 0:
             await db.commit()
             from src.app.sys.services.event_stream_service import publish_deferred_sse_events
@@ -1171,7 +593,6 @@ class OutboxDispatchService:
                         getattr(outbox, "_dispatch_failure_reason", None),
                         default="Dispatch failed",
                     )
-                    failure_code = string_value(getattr(outbox, "_dispatch_failure_error_code", None), default="")
                     failed_outbox = await outbox_repo.mark_as_failed(
                         db,
                         outbox_pk,
@@ -1201,19 +622,9 @@ class OutboxDispatchService:
                         db,
                         inbox=None,
                         outbox=outbox,
-                        error_code=(
-                            ErrorCode.OUTBOX_DISPATCH_FAILED
-                            if failure_code == "DEVICE_STATUS_PRECHECK_FAILED"
-                            else _dispatch_failure_diagnostic_code(failed_outbox)
-                        ),
+                        error_code=_dispatch_failure_diagnostic_code(failed_outbox),
                         message=failure_reason,
                         extra=trace_extra,
-                    )
-                    await _mark_device_command_failed_if_dispatch_exhausted(
-                        db,
-                        outbox=outbox,
-                        failed_outbox=failed_outbox,
-                        error_message=failure_reason,
                     )
                     await db.commit()
                     result["failed"] += 1
@@ -1222,72 +633,6 @@ class OutboxDispatchService:
             except ExternalHttpEvidenceRecoveryError:
                 # UNKNOWN 隔离恢复失败时必须向上抛出，禁止落入通用 mark_as_failed 自动重试路径。
                 raise
-            except _DeviceCommandGovernanceError as e:
-                outbox_pk = resolve_entity_id(outbox)
-                if e.code in _DEVICE_RESOURCE_WAIT_CODES:
-                    logger.info(
-                        f"Outbox {outbox_pk_text} 等待目标设备资源: {e.message} "
-                        f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
-                    )
-                    try:
-                        if outbox_pk is not None:
-                            _ = await _block_outbox_for_device_resource_wait(
-                                db,
-                                outbox_repo=outbox_repo,
-                                outbox=outbox,
-                                outbox_id=outbox_pk,
-                                governance_error=e,
-                                dispatch_attempt=dispatch_attempt,
-                                attempt_service=attempt_service,
-                                lease_owner_token=lease_owner_token,
-                            )
-                        else:
-                            await db.commit()
-                    except Exception as mark_error:
-                        logger.warning(f"Outbox {outbox_pk_text} 设备忙暂停补记失败: {mark_error}")
-                        result["failed"] += 1
-                        result["dispatched"] += 1
-                        continue
-                    result["skipped"] += 1
-                    result["dispatched"] += 1
-                    continue
-                logger.warning(
-                    f"Outbox {outbox_pk_text} 命令治理拒绝: {e.message} "
-                    f"({_outbox_trace_log_suffix(outbox, trace=trace)})"
-                )
-                failed_outbox = None
-                if outbox_pk is not None:
-                    failed_outbox = await outbox_repo.mark_as_failed(
-                        db,
-                        outbox_pk,
-                        e.message,
-                        retry_budget,
-                        lease_owner_token=lease_owner_token,
-                    )
-                    if dispatch_attempt is not None and failed_outbox is not None:
-                        try:
-                            _ = await attempt_service.finalize_attempt_record(
-                                db,
-                                attempt=dispatch_attempt,
-                                lease_owner_token=lease_owner_token,
-                                success=False,
-                                error_message=e.message,
-                                response={"result": "failed", "reason": e.code},
-                                auto_commit=False,
-                            )
-                        except Exception as attempt_error:
-                            logger.warning(f"Outbox {outbox_pk_text} 派发尝试账本补记失败: {attempt_error}")
-                    await _record_diagnostic(
-                        db,
-                        inbox=None,
-                        outbox=outbox,
-                        error_code=ErrorCode.OUTBOX_DISPATCH_FAILED,
-                        message=e.message,
-                        extra=_outbox_trace_extra(outbox, trace=trace),
-                    )
-                await db.commit()
-                result["failed"] += 1
-                result["dispatched"] += 1
             except Exception as e:
                 logger.exception(f"Outbox {outbox_pk_text} 派发异常 ({_outbox_trace_log_suffix(outbox, trace=trace)})")
                 try:
@@ -1329,12 +674,6 @@ class OutboxDispatchService:
                             message=str(e),
                             extra=_outbox_trace_extra(outbox, trace=trace),
                         )
-                        await _mark_device_command_failed_if_dispatch_exhausted(
-                            db,
-                            outbox=outbox,
-                            failed_outbox=failed_outbox,
-                            error_message=str(e),
-                        )
                         await db.commit()
                 except Exception as mark_error:
                     logger.warning(f"Outbox {outbox_pk_text} 异常补记失败: {mark_error}")
@@ -1360,10 +699,6 @@ class OutboxDispatchService:
         _emit_runtime_intent_dispatch_observability(outbox)
         if await self._should_dispatch_to_sandbox(db, outbox):
             return await self._dispatch_sandbox(db, outbox)
-        if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:
-            from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
-
-            return await device_command_gateway.dispatch(db, outbox)
         if outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
             await self._emit_external_http_fault(ExternalHttpDispatchFaultPoint.BEFORE_SEND, outbox)
             result = await self._dispatch_external_http(outbox)
@@ -1385,30 +720,18 @@ class OutboxDispatchService:
         """判断 Outbox 是否应进入沙箱派发出口。"""
         from src.app.sys.models import SystemOutboxDispatchType
 
-        if outbox.dispatch_type not in {
-            SystemOutboxDispatchType.DEVICE_COMMAND,
-            SystemOutboxDispatchType.EXTERNAL_HTTP,
-        }:
+        if outbox.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
             return False
         run_mode = await _resolve_outbox_run_mode(db, outbox)
         return is_simulation_run_mode(run_mode)
 
     async def _dispatch_sandbox(self, db: Any, outbox: Any) -> bool | ExternalHttpTransportResult:
-        """派发到沙箱工作台。
-        沙箱不改写 payload；Outbox 标记 SENT 后，由调试人员按原 callback/result 协议手工回传。
-        对设备命令，SENT 已代表硬件侧待完成任务，必须同步占用设备运行态，避免沙箱假并发。
-        """
+        """派发外部 HTTP 到沙箱工作台，等待调试人员手工回调。"""
         from src.app.sys.models import SystemOutboxDispatchType
 
-        if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:
-            from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
+        _ = db
 
-            reserved = await device_command_gateway.reserve_sandbox_command(db, outbox)
-            if not reserved:
-                return False
-            payload = payload_dict(getattr(outbox, "payload_json", None))
-            logger.info(f"沙箱设备指令参数: {_build_device_command_log_envelope(outbox, payload)}")
-        elif outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
+        if outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
             from src.app.sys.external_http_transport import ExternalHttpTransportResult
 
             logger.info(

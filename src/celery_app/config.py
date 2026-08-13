@@ -67,15 +67,24 @@ beat_schedule: dict[str, dict[str, Any]] = {
         "kwargs": {"limit": 100},
         "options": {"expires": 30.0},
     },
-    # 超时 Session 扫描任务
-    "scan-timeouts-batch": {
-        "task": "src.celery_app.tasks.workline.scan_timeouts_batch",
-        "schedule": 30.0,  # 每30秒扫描一次
+    # DeviceCommand 三类任务只携带扫描上限，不携带命令快照。
+    "dispatch-device-commands-batch": {
+        "task": "src.celery_app.tasks.device_command.dispatch_device_commands_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
     },
-    # 设备心跳超时扫描任务
-    "scan-device-heartbeats-batch": {
-        "task": "src.celery_app.tasks.workline.scan_device_heartbeats_batch",
-        "schedule": 300.0,  # 每 5 分钟扫描一次
+    "process-device-evidence-batch": {
+        "task": "src.celery_app.tasks.device_command.process_device_evidence_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
+    "reconcile-device-commands-batch": {
+        "task": "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
+        "schedule": 30.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 30.0},
     },
 }
 
@@ -84,6 +93,9 @@ beat_schedule: dict[str, dict[str, Any]] = {
 # ============================================
 
 task_routes = {
+    "src.celery_app.tasks.device_command.dispatch_device_commands_batch": {"queue": "device-command"},
+    "src.celery_app.tasks.device_command.process_device_evidence_batch": {"queue": "device-command"},
+    "src.celery_app.tasks.device_command.reconcile_device_commands_batch": {"queue": "device-command"},
     # 三个 Outbox dispatcher 必须直达静态队列，不能依赖 sys.* 通配路由推断 lane。
     "src.celery_app.tasks.sys.dispatch_system_outbox_batch": {"queue": "celery"},
     "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch": {"queue": "celery"},

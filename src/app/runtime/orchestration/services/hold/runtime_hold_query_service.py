@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from src.app.device.models.command import DeviceCommand
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReturnItem,
@@ -20,7 +19,6 @@ from src.app.runtime.orchestration.models.runtime_hold_api import (
     RuntimeHoldSource,
     RuntimeHoldSummary,
 )
-from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
@@ -70,24 +68,18 @@ class RuntimeHoldQueryService:
         if hold is None:
             return None
 
-        session = await db.get(WorklineSession, hold.session_id) if hold.session_id is not None else None
-        command = await db.get(DeviceCommand, hold.source_command_id) if hold.source_command_id is not None else None
         blockers = [
             self._blocker(item)
             for item in await self.repository.get_active_blocking_by_workline(db, hold.workline_id)
             if item.id != hold.id
         ]
-        from src.app.runtime.orchestration.services.trace.trace_response_builder import (
-            build_failed_command_evidence,
-        )
-
         return RuntimeHoldDetailResponse(
             summary=self._summary(hold),
             source=self._source(hold),
             evidence_snapshot_json=as_dict(hold.evidence_snapshot_json),
             release_evidence_json=as_dict(hold.release_evidence_json),
-            failed_command_evidence=build_failed_command_evidence(command),
-            release_eligibility=self._release_eligibility(hold, session=session),
+            failed_command_evidence=None,
+            release_eligibility=self._release_eligibility(hold),
             blockers=blockers,
         )
 
@@ -146,8 +138,6 @@ class RuntimeHoldQueryService:
     def _release_eligibility(
         self,
         hold: RuntimeHold,
-        *,
-        session: WorklineSession | None,
     ) -> RuntimeHoldReleaseEligibility:
         can_resolve = hold.is_active_blocking
         return RuntimeHoldReleaseEligibility(
@@ -155,7 +145,7 @@ class RuntimeHoldQueryService:
             required_checks=self._required_checks(hold),
             allowed_resolutions=["COMPLETED", "FAILED", "CANCELLED"] if can_resolve else [],
             allowed_material_dispositions=self._allowed_dispositions(hold) if can_resolve else [],
-            latest_evidence_hash=self.release_service.build_latest_evidence_hash(hold, session=session),
+            latest_evidence_hash=self.release_service.build_latest_evidence_hash(hold),
             reason=None if can_resolve else f"RuntimeHold status is {optional_enum_str(hold.status)}",
         )
 

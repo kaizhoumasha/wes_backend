@@ -327,14 +327,14 @@ def test_postgresql_claim_statement_uses_skip_locked_and_only_indexed_identity()
 
 def _leased_outbox(*, owner: str, expires_at: datetime) -> SystemOutbox:
     return SystemOutbox(
-        provider_profile_identity="ecs.device-command.v1",
-        operation_identity="device.command",
-        operation_domain="DEVICE",
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        dispatch_key=f"device-command:{owner}",
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="ROBOT-1",
-        payload_json={"command_code": owner},
+        provider_profile_identity="runtime.internal-signal.v1",
+        operation_identity="runtime.signal",
+        operation_domain="HANDLING",
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        dispatch_key=f"internal-signal:{owner}",
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="runtime",
+        payload_json={"signal_code": owner},
         status=SystemOutboxStatus.DISPATCHING,
         lease_owner_token=owner,
         lease_expires_at=expires_at,
@@ -520,7 +520,7 @@ async def test_begin_physical_dispatch_renews_an_expired_queued_lease(db_session
         lease_token=owner,
         lease_expires_at=outbox.lease_expires_at,
         status=DispatchAttemptStatus.DISPATCHING,
-        target_type=SystemOutboxTargetType.DEVICE.value,
+        target_type=outbox.target_type,
         target_code=outbox.target_code,
         started_at=timezone.now_for_db() - timedelta(minutes=1),
     )

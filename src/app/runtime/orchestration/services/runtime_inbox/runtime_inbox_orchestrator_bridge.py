@@ -24,9 +24,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
     RuntimeInboxValidationService,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
-    _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
-    _record_late_command_result_archive_timeline,
     _require_fenced_update,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
@@ -39,7 +37,6 @@ from src.utils.value_normalization import (
     optional_str,
     resolve_entity_id,
     resolve_required_pk,
-    string_value,
 )
 
 if TYPE_CHECKING:
@@ -60,21 +57,7 @@ class _InboxDiagnosticSnapshot:
     workline_id: int | None
     workline_session_id: int | None
     device_id: int | None
-    command_id: int | None
     payload_json: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class _ClaimedInboxContext:
-    inbox: Any
-    inbox_pk: int
-    payload: dict[str, Any]
-    resolved_event_type: str
-    session: Any | None
-    workline: Any | None
-    device: Any | None
-    command: Any | None
-    processor_token: str
 
 
 def _empty_result() -> ProcessResult:
@@ -105,7 +88,6 @@ def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
         workline_id=optional_int(getattr(inbox, "workline_id", None)),
         workline_session_id=optional_int(getattr(inbox, "workline_session_id", None)),
         device_id=optional_int(getattr(inbox, "device_id", None)),
-        command_id=optional_int(getattr(inbox, "command_id", None)),
         payload_json=dict(payload) if isinstance(payload, dict) else {},
     )
 
@@ -126,8 +108,6 @@ def _project_replay_request(inbox: Any, *, validated_source: Any | None) -> Any:
             "source_event_id": envelope["original_source_event_id"],
             "payload_hash": envelope["original_payload_hash"],
             "workline_id": envelope["original_workline_id"],
-            "device_id": envelope["original_device_id"],
-            "command_id": envelope["original_command_id"],
             "workline_session_id": envelope["original_workline_session_id"],
             "execution_session_id": envelope["original_execution_session_id"],
             "correlation_id": envelope["original_correlation_id"],
@@ -144,7 +124,7 @@ async def _load_related_entities(
     inbox: Any,
     *,
     resolved_event_type: str | None = None,
-) -> tuple[Any | None, Any | None, Any | None, Any | None, dict[str, list[Any]], Any, bool]:
+) -> tuple[Any | None, Any | None, Any | None, dict[str, list[Any]], Any, bool]:
     from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import load_related_entities
 
     loaded = await load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
@@ -152,7 +132,6 @@ async def _load_related_entities(
         loaded.get("session"),
         loaded.get("workline"),
         loaded.get("device"),
-        loaded.get("command"),
         loaded.get("devices_by_role", {}),
         loaded.get("services"),
         loaded.get("safety_checked", True),
@@ -168,7 +147,6 @@ async def _handle_estop(
     session: Any,
     workline: Any,
     device: Any,
-    command: Any,
     processor_token: str,
     inbox_service: RuntimeInboxService,
 ) -> bool:
@@ -183,7 +161,6 @@ async def _handle_estop(
             session=session,
             workline=workline,
             device=device,
-            command=command,
         )
         _require_fenced_update(
             await inbox_service.mark_failed(
@@ -205,7 +182,7 @@ async def _handle_estop(
         workline_id=workline_pk,
         source_inbox_id=inbox_pk,
         source_device_id=resolve_entity_id(device) or getattr(inbox, "device_id", None),
-        source_command_id=resolve_entity_id(command) or getattr(inbox, "command_id", None),
+        source_command_id=None,
         trigger_payload=payload,
     )
     _require_fenced_update(
@@ -214,36 +191,6 @@ async def _handle_estop(
         inbox_id=inbox_pk,
     )
     return True
-
-
-async def _handle_timer_timeout(
-    db: Any,
-    *,
-    inbox: Any,
-    inbox_pk: int,
-    payload: dict[str, Any],
-    processor_token: str,
-    inbox_service: RuntimeInboxService,
-) -> None:
-    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
-        workline_runtime_reconciliation_service,
-    )
-
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    _ = await workline_runtime_reconciliation_service.handle_timer_timeout(
-        db,
-        session_id=optional_int(data.get("session_id")),
-        inbox_id=inbox_pk,
-        payload=payload,
-        source_inbox_id=inbox_pk,
-        correlation_id=string_value(getattr(inbox, "correlation_id", None)) or None,
-        trace_id=string_value(getattr(inbox, "trace_id", None)) or None,
-    )
-    _require_fenced_update(
-        await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token),
-        action="mark_processed",
-        inbox_id=inbox_pk,
-    )
 
 
 class RuntimeInboxProcessorBridge:
@@ -361,20 +308,8 @@ class RuntimeInboxProcessorBridge:
                 message=outcome.error_message or "validation failed",
                 retryable=False,
             )
-        routed = self._validation_service.classify_estop_or_timer(
-            resolved_event_type=event_type, inbox_kind=_kind_value(inbox)
-        )
-        if _kind_value(inbox) == "DEVICE_EVENT" and not routed.estop_event:
-            return await self._mark_failure(
-                db,
-                inbox=inbox,
-                inbox_id=inbox_id,
-                token=token,
-                error_code=ErrorCode.CONTRACT_MISMATCH.value,
-                message=f"RuntimeInbox event has no active owner: {event_type}",
-                retryable=False,
-            )
-        session, workline, device, command, _devices, _services, _safety_checked = await _load_related_entities(
+        routed = self._validation_service.classify_estop(resolved_event_type=event_type)
+        session, workline, device, _devices, _services, _safety_checked = await _load_related_entities(
             db, inbox, resolved_event_type=event_type
         )
         if routed.estop_event:
@@ -386,7 +321,6 @@ class RuntimeInboxProcessorBridge:
                 session=session,
                 workline=workline,
                 device=device,
-                command=command,
                 processor_token=token,
                 inbox_service=self.inbox_service,
             )
@@ -395,17 +329,6 @@ class RuntimeInboxProcessorBridge:
             result["processed"] = 1
             result["success" if ok else "failed"] = 1
             return result
-        if routed.timer_timeout_event:
-            await _handle_timer_timeout(
-                db,
-                inbox=inbox,
-                inbox_pk=inbox_id,
-                payload=payload,
-                processor_token=token,
-                inbox_service=self.inbox_service,
-            )
-            await db.commit()
-            return _success_result()
         if session is None or workline is None:
             return await self._mark_failure(
                 db,
@@ -416,25 +339,6 @@ class RuntimeInboxProcessorBridge:
                 message="Inbox processing missing session/workline context",
                 retryable=False,
             )
-        if _is_late_or_duplicate_command_result_for_session(
-            inbox=inbox, payload=payload, session=session, command=command
-        ):
-            await _record_late_command_result_archive_timeline(
-                db,
-                session=session,
-                workline=workline,
-                inbox=inbox,
-                command=command,
-                payload=payload,
-                reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
-            )
-            _require_fenced_update(
-                await self.inbox_service.mark_processed(db, inbox_id=inbox_id, lease_token=token),
-                action="mark_processed",
-                inbox_id=inbox_id,
-            )
-            await db.commit()
-            return _success_result()
         return await self._mark_failure(
             db,
             inbox=inbox,

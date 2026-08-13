@@ -23,13 +23,13 @@ from src.app.sys.models.outbox import (
 
 def _create_payload() -> dict[str, object]:
     return {
-        "provider_profile_identity": "ecs.device-command.v1",
-        "operation_identity": "device.command",
-        "dispatch_type": SystemOutboxDispatchType.DEVICE_COMMAND,
-        "dispatch_key": "device-command:contract-1",
-        "target_type": SystemOutboxTargetType.DEVICE,
-        "target_code": "ROBOT-1",
-        "payload_json": {"command_code": "contract-1"},
+        "provider_profile_identity": "runtime.internal.v1",
+        "operation_identity": "runtime.signal",
+        "dispatch_type": SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        "dispatch_key": "runtime-signal:contract-1",
+        "target_type": SystemOutboxTargetType.INTERNAL_SERVICE,
+        "target_code": "runtime-processor",
+        "payload_json": {"event_type": "contract-1"},
     }
 
 
@@ -42,9 +42,9 @@ def test_dispatch_envelope_requires_explicit_indexed_scheduling_identity() -> No
     with pytest.raises(TypeError):
         DispatchEnvelope(
             dispatch_key="missing-scheduling-identity",
-            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-            target_type=SystemOutboxTargetType.DEVICE,
-            target_code="ROBOT-1",
+            dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+            target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+            target_code="runtime-processor",
             payload_json={},
             operation_domain="DEVICE",
         )

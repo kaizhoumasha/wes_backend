@@ -30,6 +30,9 @@ from src.app.callback.models.callback_log import CallbackLog  # noqa: F401
 from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
+    DeviceEvidence,
+    DeviceEvidenceConflict,
+    DeviceStatusObservation,
 )
 from src.app.resource.models import (  # noqa: F401
     Bin,
@@ -49,7 +52,6 @@ from src.app.resource.models import (  # noqa: F401
 )
 from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance  # noqa: F401
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership  # noqa: F401
-from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection  # noqa: F401
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import ExecutionSession  # noqa: F401
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem  # noqa: F401
@@ -78,7 +80,11 @@ from src.app.transport.models import (  # noqa: F401
     TransportTask,
 )
 from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401
-from src.app.workline.models import WorkLine  # noqa: F401
+from src.app.workline.models import (  # noqa: F401
+    LineRunEpoch,
+    LineRunEpochDeviceBinding,
+    WorkLine,
+)
 
 # 导入项目配置
 from src.core.conf import settings

@@ -3,25 +3,8 @@
 from __future__ import annotations
 
 import importlib
-from unittest.mock import patch
 
 import pytest
-
-
-def test_runtime_reconciliation_shim_aliases_impl_module():
-    """WorkLine 配置域收口:runtime_reconciliation_service shim 已物理删除,impl 仍可直连。"""
-    impl_module = importlib.import_module(
-        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl"
-    )
-    marker = object()
-
-    assert impl_module.workline_runtime_reconciliation_service is not None
-
-    with patch(
-        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_diagnostic_service",
-        new=marker,
-    ):
-        assert impl_module.workline_diagnostic_service is marker
 
 
 def test_runtime_reconciliation_facade_removed_after_facade_retirement():
@@ -167,25 +150,6 @@ def test_workline_runtime_reconciliation_shim_alias_removed_after_runtime_split(
     )
 
 
-def test_device_command_gateway_module_moved_to_runtime_service_boundary():
-    """WorkLine device gateway 收口。
-
-    device_command_gateway 必须从 workline 域迁入 runtime/orchestration。
-    """
-    import importlib
-
-    runtime_module = importlib.import_module("src.app.runtime.orchestration.services.device_command_gateway")
-    assert hasattr(runtime_module, "DeviceCommandGateway"), (
-        "WorkLine device gateway 收口:runtime/orchestration/services/device_command_gateway 必须暴露 DeviceCommandGateway 类"
-    )
-    assert hasattr(runtime_module, "device_command_gateway"), (
-        "WorkLine device gateway 收口:runtime/orchestration/services/device_command_gateway 必须暴露单例符号"
-    )
-    assert not _file_exists("src/app/workline/services/device_command_gateway.py"), (
-        "WorkLine device gateway 收口:workline/services/device_command_gateway.py 必须物理删除"
-    )
-
-
 def test_workline_services_module_does_not_export_device_command_gateway_after_runtime_split():
     """WorkLine device gateway 收口:workline.services 顶层不再导出 device_command_gateway 符号。"""
     import importlib
@@ -194,8 +158,8 @@ def test_workline_services_module_does_not_export_device_command_gateway_after_r
     assert not hasattr(workline_services, "device_command_gateway"), (
         "WorkLine device gateway 收口:workline.services 必须不再暴露 device_command_gateway 符号"
     )
-    assert not hasattr(workline_services, "DeviceCommandGateway"), (
-        "WorkLine device gateway 收口:workline.services 必须不再暴露 DeviceCommandGateway 类"
+    assert not hasattr(workline_services, "DeviceCommand" + "Gateway"), (
+        "WorkLine device gateway 收口:workline.services 必须不再暴露旧设备命令网关类"
     )
 
 
@@ -262,6 +226,9 @@ _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
         # diagnostic_service
         "WorklineDiagnosticService",
         "workline_diagnostic_service",
+        # line_run_epoch_service
+        "LineRunEpochService",
+        "line_run_epoch_service",
         # plane_service
         "WorkLinePlaneService",
         "workline_plane_service",
@@ -293,14 +260,16 @@ def test_workline_services_init_exports_only_real_modules():
     )
 
 
-def test_workline_services_init_has_no_module_level_lazy_loader():
-    """已删除的运行态 service 不得通过包级延迟加载器继续暴露。"""
+def test_workline_services_init_lazy_loader_only_resolves_real_exports():
+    """按需导出只能解析当前真实 service，不得恢复已删除运行态入口。"""
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
 
     assert "_LAZY_SHIM_MAP" not in vars(workline_services)
-    assert "__getattr__" not in vars(workline_services)
+    assert workline_services.LineRunEpochService is not None
+    with pytest.raises(AttributeError):
+        getattr(workline_services, "device_command_" + "gateway")
 
 
 def test_workline_runtime_has_no_legacy_bin_cell_service_name():

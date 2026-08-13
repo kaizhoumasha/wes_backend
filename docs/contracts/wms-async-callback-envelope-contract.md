@@ -2,10 +2,14 @@
 title: WMS 异步回调统一信封合同
 status: Approved
 created_at: 2026-08-09
-updated_at: 2026-08-11
+updated_at: 2026-08-13
 scope: WMS 到 WES 的异步业务事件回调及同步接收应答
 system_stage: pre_release
 migration_strategy: direct_replacement
+related:
+  - docs/contracts/transport-fulfillment-contract.md
+  - docs/contracts/wms-outbound-picking-task-integration-requirements.md
+  - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
 
 # WMS 异步回调统一信封合同
@@ -27,32 +31,26 @@ WES 的 Transport evidence 回调仍使用本文信封。
 
 ## 2. operation_id
 
-每个 WMS 回调 operation 都只有一个 `operation_id`。发起方在首次提交前生成 UUIDv7，并把它与 Payload 一起持久化；接收方
-可靠接纳后，该 operation 下的 Payload 冻结为不可变。相同回调的超时和背压重试使用原值，不能在发送时重新生成。
+WMS 为每条异步回调在其 `operation` 命名空间内分配 UUIDv7 `operation_id`，并在首次提交前与完整请求正文一起持久化；首次提交的
+`operation + operation_id` 组合不得与该 operation 的既有消息重复。超时和背压重试复用原组合。同步 HTTP响应只回显请求
+`operation_id`，不生成新身份。
 
-只有上游请求本身携带 `operation_id`，并且业务合同明确把请求与终局定义为同一交互时，异步终局回调才沿用原值。例如 WES
-发起 `outbound.picking_task.start@v1` 后，WMS 返回的 `outbound.picking_task.start_decided@v1` 使用同一个
-`operation_id`。两条消息的 operation 不同，不会发生幂等冲突。
-
-主动事件由 WMS 为回调生成 `operation_id`，并使用业务合同规定的对象身份建立因果关联。例如 PickingTask 发布、队列更新和
-来源恢复决定由 WMS 生成 ID。Transport submit 虽然使用统一 `operation_id` 信封，但位置和结果 evidence 是独立事实交互，
-仍由 WMS 为每条 evidence 生成新的 `operation_id`，通过 `transport_task_id` 关联，不沿用 submit `operation_id`。
-
-公共信封只使用 `operation_id`。业务对象仍保留自己的稳定身份，例如 `task_id`、`queue_revision` 和 `scan_evidence_id`。
+回调通过业务 DTO 引用上游请求或稳定业务对象，不复用上游请求 ID。例如，每批
+`outbound.picking_task.plan_delta@v1` 使用新的 `operation_id`，通过
+`prepare_operation_id + task_id + execution_id + plan_revision` 建立因果与顺序。每条 Transport 结果回调也使用新的
+`operation_id`，通过 `transport_task_id` 关联原提交。
 
 ID 边界固定如下：
 
 | ID | 生成方 | 本合同中的职责 |
 | --- | --- | --- |
-| `operation_id` | 独立主动回调由 WMS 生成；关联型异步终局沿用上游请求发起方生成的 ID | 唯一的回调交互身份和幂等身份组成部分 |
-| `task_id`、`transport_task_id`、证据 ID | 对应业务对象的 owner | 只建立业务关联，不替代 `operation_id` |
+| `operation_id` | 每条主动事件、分批回调和终局回调都由 WMS 生成；同步响应只回显请求 ID | 与 `operation` 共同构成异步消息身份和幂等身份 |
+| `task_id`、`transport_task_id`、证据 ID | 对应业务对象的权威方 | 只建立业务关联，不替代 `operation_id` |
 | `previous_operation_id`、`decision_operation_id` | 不生成新值，由业务 DTO 引用已有 `operation_id` | 表达业务因果，不是新的消息身份 |
 
-本合同不定义业务 JSON 字段 `event_id` 或 `request_id`。operation 类型由 `operation` 表达，交互身份由 `operation_id` 表达，
-再增加同义 ID 只会形成多套幂等键。HTTP 中间件可以独立使用 `X-Request-ID` 做单次访问日志追踪，但不能进入业务 Payload、
-参与业务幂等或替代 `operation_id`。
-具体业务 ID 的生成方、用途和不可变规则由对应业务合同定义；自动出库以
-[WMS / WES 自动出库 PickingTask 交互要求](wms-outbound-picking-task-integration-requirements.md#31-id-分类生成方与用途)为准。
+业务 JSON 不定义 `event_id` 或 `request_id`。HTTP 中间件可以使用 `X-Request-ID` 记录单次访问，但该值不得进入业务请求正文、
+参与幂等或替代 `operation_id`。具体业务 ID 规则由业务合同定义；自动出库以
+[WMS / WES 自动出库 PickingTask 交互要求](wms-outbound-picking-task-integration-requirements.md#6-id-和版本由谁生成)为准。
 
 ## 3. 回调请求信封
 
@@ -76,7 +74,7 @@ data
 
 | 字段 | 含义 |
 | --- | --- |
-| `operation_id` | 业务交互身份。首次生成后保持不变 |
+| `operation_id` | 当前异步消息在 `operation` 命名空间内的身份。首次生成后保持不变 |
 | `operation` | 已批准的业务动作和合同版本 |
 | `timestamp` | 发送方首次形成并可靠保存该不可变请求或事件时的 UTC Unix 毫秒时间戳 |
 | `data` | operation 专属闭集 DTO |
@@ -84,11 +82,12 @@ data
 `timestamp` 只用于审计和链路诊断，不参与业务排序、fencing、超时判断或设备事实发生时间判断。相同交互重试或幂等重放时，
 必须保持首次保存的 `timestamp`，不能按每次 HTTP 尝试刷新。
 
-接收方使用 `operation + operation_id` 作为幂等身份，并保存规范化 Payload 摘要：
+接收方使用 `operation + operation_id` 作为消息身份，并保存规范化 Payload 摘要：
 
-- 相同身份和相同 Payload 返回 `DUPLICATE`。
-- 相同身份和不同 Payload 返回 `CONFLICT`。
-- operation 不同但 `operation_id` 相同，表示同一业务交互中的不同阶段。
+- 相同 `operation + operation_id` 和相同 Payload 返回 `DUPLICATE`。
+- 相同 `operation + operation_id` 和不同 Payload 返回 `CONFLICT`。
+- 不同 `operation` 下相同 `operation_id` 是相互独立的消息，不表示业务因果；不同业务阶段、主动事件和异步终局通过
+  operation 专属 DTO 引用前序请求或稳定业务对象。
 
 ## 4. 同步接收应答
 
@@ -138,12 +137,12 @@ data
 ## 5. ACK 与业务结果
 
 接收 ACK 只证明消息已可靠持久化，不证明业务处理、运输或设备动作已经完成。需要异步终局结果的 operation 必须另行定义
-结果回调，并沿用原 `operation_id`。
+结果回调。结果回调在首次发送前生成并持久化新的 `operation_id`，通过 operation 专属 DTO 引用原请求或稳定业务对象，禁止
+复用原请求 `operation_id`。
 
 收到 `BUSY`、`UNAVAILABLE` 或响应未知时，发送方使用原 `operation_id` 和原 Payload 重试。主动事件收到 `400 | 413 | 422`
-后停止重试原 Payload，修正内容后创建新的 `operation_id`。业务合同明确沿用上游请求 ID 的关联型终局回调收到这三类“确认
-未接纳”结果时，修正 Payload 后仍必须使用上游请求的 `operation_id`；接收方不能把非法、超限或被拒绝内容保存为该
-operation 的幂等摘要。收到 `CONFLICT` 后进入合同对账，不能通过更换 ID 掩盖冲突。
+后停止重试原 Payload，修正内容后创建新的 `operation_id`。任何回调都不得沿用上游请求身份；接收方不能把非法、超限或被拒绝
+内容保存为该 operation 的幂等摘要。收到 `CONFLICT` 后进入合同对账，不能通过更换 ID 掩盖冲突。
 
 ## 6. operation 合同责任
 

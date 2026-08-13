@@ -142,7 +142,6 @@ class WorklineStationLeaseService:
         outbox = SystemOutbox(
             session_id=envelope.session_id,
             workline_id=workline_id,
-            device_id=envelope.device_id,
             operation_domain=envelope.operation_domain,
             operation_key=envelope.operation_key,
             dispatch_type=envelope.dispatch_type,

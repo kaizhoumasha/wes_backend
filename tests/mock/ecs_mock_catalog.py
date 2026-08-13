@@ -15,6 +15,8 @@ class MockEcsDevice:
     device_name: str
     device_type: str
     role: str
+    contract_key: str
+    contract_version: str
     supported_commands: tuple[str, ...] = field(default_factory=tuple)
     supported_events: tuple[str, ...] = field(default_factory=tuple)
 
@@ -25,6 +27,8 @@ MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
         device_name="流水线识别点摄像头",
         device_type="CAMERA",
         role="CAMERA",
+        contract_key="camera.scan",
+        contract_version="2.0",
         supported_events=("MATERIAL_ARRIVED", "SCAN_COMPLETED"),
     ),
     "ROBOT-ARM-01": MockEcsDevice(
@@ -32,6 +36,8 @@ MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
         device_name="搬运机械臂",
         device_type="ROBOTIC_ARM",
         role="ROBOT_ARM",
+        contract_key="arm.pick",
+        contract_version="2.0",
         supported_commands=("PICK_AND_PLACE", "MOVE"),
     ),
 }

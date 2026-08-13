@@ -34,7 +34,7 @@ async def _persist_projection(
         event_type=f"PROJECTION_{status}",
         source_event_id=f"projection:{status}:{workline_session_ref}:{execution_session_id}",
         payload_hash=f"hash-{status}-{workline_session_ref}-{execution_session_id}",
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         payload_json={"event_type": "DEVICE_RESULT", "device_code": "DEVICE-901"},
         payload_schema_version=1,
         workline_session_id=workline_session_ref,
@@ -98,24 +98,22 @@ async def test_trace_context_propagates_only_workline_session_ref_from_projectio
     assert TraceContext.from_request().with_inbox(SimpleNamespace(session_id=703)).session_id == 703
 
 
-def test_device_filter_compiles_correlated_runtime_inbox_exists_without_materialized_id_list() -> None:
-    """设备过滤必须保持单 SQL correlated EXISTS，不随历史量膨胀 IN 参数。"""
+def test_device_filter_compiles_correlated_epoch_binding_exists_without_materialized_id_list() -> None:
+    """设备过滤通过冻结绑定关联命令 trace，保持单 SQL correlated EXISTS。"""
 
-    repository = RuntimeInboxRepository()
     session_columns = WorklineSession.__table__.c
-    inbox_exists = repository.workline_session_ref_exists_for_device(901, session_columns.id)
-    statement = select(session_columns.id).where(_device_session_clause(session_columns, 901, inbox_exists))
+    statement = select(session_columns.id).where(_device_session_clause(session_columns, 901))
 
     sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
     assert "EXISTS" in sql
-    assert "runtime_inbox.device_id = 901" in sql
-    assert "runtime_inbox.workline_session_id = wes_biz.workline_sessions.id" in sql
+    assert "line_run_epoch_device_bindings.device_id = 901" in sql
+    assert "device_commands.trace_id = wes_biz.workline_sessions.trace_id" in sql
     assert "workline_sessions.id IN" not in sql
 
 
 @pytest.mark.asyncio
-async def test_active_session_device_filter_executes_one_statement_with_correlated_exists() -> None:
-    """即使 RuntimeInbox 历史量很大，查询服务也只提交一条不展开历史 ID 的 SQL。"""
+async def test_active_session_device_filter_executes_one_statement_with_epoch_binding_exists() -> None:
+    """查询服务只提交一条按冻结绑定关联 DeviceCommand 的 SQL。"""
 
     statements: list[object] = []
 
@@ -140,7 +138,7 @@ async def test_active_session_device_filter_executes_one_statement_with_correlat
         statements[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})  # type: ignore[attr-defined]
     )
     assert "EXISTS" in sql
-    assert "runtime_inbox.workline_session_id = wes_biz.workline_sessions.id" in sql
+    assert "device_commands.trace_id = wes_biz.workline_sessions.trace_id" in sql
     assert "workline_sessions.id IN" not in sql
 
 
@@ -159,7 +157,7 @@ async def test_runtime_inbox_projection_payload_is_deep_copy_isolated_from_orm(d
         event_type="PROJECTION_ISOLATION",
         source_event_id="projection-isolation",
         payload_hash="hash-projection-isolation",
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         payload_json={"data": {"nested": "original"}},
         payload_schema_version=1,
         status="RECEIVED",

@@ -1,15 +1,22 @@
-"""Callback API v1 模块."""
+"""Callback 模块入口。"""
+
+from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter
 
-from src.app.callback.v1.callback import router as callback_router
-from src.app.callback.v1.callback_log import router as callback_log_router
-
-router_v1 = APIRouter(prefix="/v1/callback", tags=["Callback"])
-
-# 注册回调路由
-router_v1.include_router(callback_router)
-# 注册回调日志查询路由
-router_v1.include_router(callback_log_router)
+router_v1: APIRouter
 
 __all__ = ["router_v1"]
+
+
+def __getattr__(name: str) -> Any:
+    if name != "router_v1":
+        raise AttributeError(name)
+    from .v1 import router as callback_router
+
+    router_v1 = APIRouter(prefix="/v1/callback", tags=["Callback"])
+    router_v1.include_router(callback_router)
+    globals()["router_v1"] = router_v1
+    return router_v1

@@ -74,7 +74,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/1
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
-      CELERY_WORKER_QUEUES: default,celery,device
+      CELERY_WORKER_QUEUES: default,celery,device-command
       CELERY_WORKER_CONCURRENCY: ${CELERY_CONCURRENCY:-4}
       WMS_PROVIDER_PROCESS_ROLE: wes
       WMS_DEPLOYMENT_ROLE: wes-worker

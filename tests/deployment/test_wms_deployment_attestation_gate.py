@@ -28,7 +28,7 @@ def test_production_compose_freezes_roles_and_worker_command_against_host_overri
     assert services["celery"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "wes-worker"
     assert services["celery-wms-fulfillment"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "fulfillment-worker"
     assert services["celery_beat"]["environment"]["WMS_DEPLOYMENT_ROLE"] == "beat"
-    assert services["celery"]["environment"]["CELERY_WORKER_QUEUES"] == "default,celery,device"
+    assert services["celery"]["environment"]["CELERY_WORKER_QUEUES"] == "default,celery,device-command"
     assert services["celery"]["environment"]["CELERY_WORKER_CONCURRENCY"] == "${CELERY_CONCURRENCY:-4}"
     rendered_command = services["celery"]["command"]
     assert "--queues=$${CELERY_WORKER_QUEUES}" in rendered_command

@@ -1,12 +1,11 @@
 """Device Repository 层"""
 
-from datetime import datetime
 from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.device.models import Device, DeviceStatus
+from src.app.device.models.device import Device
 from src.database.base_repository import BaseRepository
 from src.utils.device_cache import workline_device_cache
 
@@ -131,70 +130,6 @@ class DeviceRepository(BaseRepository[Device]):
                 Device.id.asc(),  # type: ignore[arg-type]
             )
             .execution_options(populate_existing=True)
-            .with_for_update()
-        )
-        return list(result.scalars().all())
-
-    async def get_heartbeat_stale_devices(
-        self,
-        db: AsyncSession,
-        *,
-        cutoff: datetime,
-        limit: int = 100,
-    ) -> list[Device]:
-        """查询心跳超时且可由 WES 判定为离线的设备。"""
-
-        columns = cast("Any", Device).__table__.c
-        result = await db.execute(
-            select(Device)
-            .where(
-                columns.last_heartbeat_at.is_not(None),
-                columns.last_heartbeat_at < cutoff,
-                columns.device_status.in_([DeviceStatus.IDLE, DeviceStatus.RUNNING]),
-                columns.maintenance_mode.is_(False),
-                columns.is_deleted.is_(False),
-            )
-            .order_by(columns.last_heartbeat_at.asc(), columns.id.asc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def get_non_maintenance_by_workline_for_update(
-        self,
-        db: AsyncSession,
-        workline_id: int,
-    ) -> list[Device]:
-        """锁定 WorkLine 下可被急停投影接管的设备。"""
-
-        columns = cast("Any", Device).__table__.c
-        result = await db.execute(
-            select(Device)
-            .where(
-                columns.work_line_id == workline_id,
-                columns.device_status.in_([DeviceStatus.IDLE, DeviceStatus.RUNNING]),
-                columns.maintenance_mode.is_(False),
-                columns.is_deleted.is_(False),
-            )
-            .with_for_update()
-        )
-        return list(result.scalars().all())
-
-    async def get_safety_error_by_workline_for_update(
-        self,
-        db: AsyncSession,
-        workline_id: int,
-    ) -> list[Device]:
-        """锁定 WorkLine 下由急停派生的设备错误投影。"""
-
-        columns = cast("Any", Device).__table__.c
-        result = await db.execute(
-            select(Device)
-            .where(
-                columns.work_line_id == workline_id,
-                columns.device_status == DeviceStatus.ERROR,
-                columns.error_code == "WORKLINE_ESTOPPED",
-                columns.is_deleted.is_(False),
-            )
             .with_for_update()
         )
         return list(result.scalars().all())

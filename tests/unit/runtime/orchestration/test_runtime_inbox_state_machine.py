@@ -42,7 +42,7 @@ def test_runtime_inbox_5_states_supported():
 
 def test_runtime_inbox_retry_fields_defaults():
     """attempt_count=0, max_retries=5, next_retry_at/lease_until=None。"""
-    inbox = RuntimeInbox(provider_code="ECS", event_type="DEVICE_EVENT")
+    inbox = RuntimeInbox(provider_code="ECS", event_type="INTERNAL_EVENT")
     assert inbox.attempt_count == 0
     assert inbox.max_retries == 5
     assert inbox.next_retry_at is None
@@ -53,7 +53,7 @@ def test_runtime_inbox_source_event_id_optional():
     """source_event_id 可空 (缺 event_id 的离散事件只 ACK 不推进)。"""
     inbox = RuntimeInbox(
         provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id=None,
     )
     assert inbox.source_event_id is None

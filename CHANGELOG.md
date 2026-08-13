@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0.0] - 2026-08-14
+
+### Added
+- 交付 Phase 7 `DeviceCommand`/ECS 核心生产基线：`LineRunEpoch` 设备合同绑定、单设备单未闭合命令、统一 ECS 状态/命令 wire、ACK/CALLBACK evidence 与三个有界 Celery worker。
+- 新增 DeviceCommand 运维诊断 Runbook，以及真实 PostgreSQL、Redis、Celery prefork、HTTP ECS 与 callback 的无业务插件闭环验收。
+
+### Changed
+- FastAPI 与 Celery 生命周期共同装配唯一 DeviceCommand composition root；设备命令和 TransportTask 保持平行可靠对象，不复用状态机、表、重试或测试所有者。
+- RuntimeInbox 收敛为通用 ingress、replay 和可靠性能力；ECS RESULT/EVENT 改由 `device_evidences` 独立持久化、幂等、冲突和 Epoch fencing。
+
+### Fixed
+- 修复 callback 流式限流、拒绝路径幂等身份固化、派发前截止时间复核、Epoch 轮换、binding 超时约束、uniform-wire Mock 与固定错误语义。
+- 修复 ECS `Retry-After` 与非对象 JSON 归类、DeviceCommand 重建迁移的存活外键恢复、状态观测命令码宽度，以及运行态汇总读取退役设备字段的问题。
+
+### Removed
+- 删除旧 DeviceCommand Gateway、lease、runtime projection、SystemCapability、SystemOutbox/RuntimeIntent 设备命令分支及旧 callback route，不保留兼容 facade、双写或 fallback。
+- 删除已无生产 owner 的普通 WMS event callback 分支与对应旧测试；WMS 业务回调和 ECS 设备回调继续严格分离。
+
+### Verification
+- QUALITY：3199 passed、4 个既有条件 skip；HEAVY selector 合同 278 passed；Ruff、Bandit、架构和测试拓扑门禁均通过。
+- DeviceCommand PostgreSQL 约束 14 passed，真实 Redis、Celery、HTTP ECS callback 闭环 1 passed；三轮独立复审最终无 P0–P2 意见。
+
 ## [0.24.2.0] - 2026-08-13
 
 ### Added

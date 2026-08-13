@@ -31,9 +31,7 @@ from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 
 PRE_CUTOVER_AUDIT_ONLY = "PRE_CUTOVER_AUDIT_ONLY"
 
-_KIND_CHECK_SQL = (
-    "kind IN ('COMMAND_RESULT', 'DEVICE_EVENT', 'EXTERNAL_HTTP', 'INTERNAL_EVENT', 'TIMER_TIMEOUT', 'REPLAY_REQUEST')"
-)
+_KIND_CHECK_SQL = "kind IN ('EXTERNAL_HTTP', 'INTERNAL_EVENT', 'TIMER_TIMEOUT', 'REPLAY_REQUEST')"
 _STATUS_CHECK_SQL = "status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED', 'DEAD_LETTER')"
 _WMS_BUSINESS_EVENT_INDEX_WHERE = text(
     "provider_code = 'WMS' AND event_type IN "
@@ -172,7 +170,7 @@ class RuntimeInbox(BaseMixin, table=True):
         default=None,
         max_length=40,
         index=True,
-        description="COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT / TIMER_TIMEOUT / REPLAY_REQUEST",
+        description="EXTERNAL_HTTP / INTERNAL_EVENT / TIMER_TIMEOUT / REPLAY_REQUEST",
     )
     workline_id: int | None = Field(
         default=None, index=True, description="强 FK 到 wes_biz.work_lines.id (无 DB 约束避免循环)"

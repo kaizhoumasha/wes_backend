@@ -59,7 +59,7 @@ def test_effect_apply_state_only_contains_effect_applier_mutable_fields() -> Non
 
 
 @pytest.mark.asyncio
-async def test_effect_apply_state_preserves_noop_and_command_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_effect_apply_state_preserves_noop_routing(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.app.workline.services import write_back_service as workline_effects
 
     monkeypatch.setattr(workline_effects, "_sync_effect_trace_fields", lambda _ctx: None)
@@ -71,29 +71,10 @@ async def test_effect_apply_state_preserves_noop_and_command_routing(monkeypatch
         assert isinstance(ctx["effect_state"], _effect_state_type())
         calls.append("noop")
 
-    async def apply_command(ctx: dict[str, Any], _intent: RuntimeIntent) -> None:
-        assert "orch_result" not in ctx
-        assert isinstance(ctx["effect_state"], _effect_state_type())
-        calls.append("command")
-
     monkeypatch.setattr(applier, "_apply_noop_completion", apply_noop)
-    monkeypatch.setattr(applier, "_apply_command", apply_command)
 
     assert (await applier.apply(_ctx(), [])).disposition.value == "PROCESSED"
-    assert (
-        await applier.apply(
-            _ctx(),
-            [
-                RuntimeIntent.command(
-                    device_role="SORTING_SOURCE_ARM",
-                    action="SORTING_SOURCE_PICK",
-                    payload={},
-                    result_policy="COMMAND_RESULT",
-                )
-            ],
-        )
-    ).disposition.value == "PROCESSED"
-    assert calls == ["noop", "command"]
+    assert calls == ["noop"]
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,9 @@ import pytest
 from sqlalchemy import BigInteger, CheckConstraint, Integer
 from sqlalchemy.exc import IntegrityError
 
+from src.app.device.models.command import DeviceCommand
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.sys.models import SystemOutbox
 
 # ============================================================
 # Field presence + type contract
@@ -183,7 +185,11 @@ def test_runtime_inbox_has_named_kind_status_and_conditional_envelope_checks() -
         "ck_runtime_inbox_status_valid",
         "ck_runtime_inbox_conditional_envelope",
     }
-    assert "COMMAND_RESULT" in checks["ck_runtime_inbox_kind_valid"]
+    kind_check = checks["ck_runtime_inbox_kind_valid"]
+    for retained_kind in ("EXTERNAL_HTTP", "INTERNAL_EVENT", "TIMER_TIMEOUT", "REPLAY_REQUEST"):
+        assert retained_kind in kind_check
+    assert "COMMAND_RESULT" not in kind_check
+    assert "DEVICE_EVENT" not in kind_check
     assert "DEAD_LETTER" in checks["ck_runtime_inbox_status_valid"]
     assert "PRE_CUTOVER_AUDIT_ONLY" in checks["ck_runtime_inbox_conditional_envelope"]
     for field_name in (
@@ -463,7 +469,7 @@ def test_status_rejects_invalid_state_value() -> None:
     # 这里只验证模型接受 string 字段, 不做严格 enum 验证
     record = RuntimeInbox(
         provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         status="RECEIVED",
     )
     assert record.status == "RECEIVED"
@@ -473,7 +479,7 @@ def test_payload_json_accepts_dict_payload() -> None:
     """payload_json 接受 dict[str, Any] 类型。"""
     record = RuntimeInbox(
         provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         status="RECEIVED",
         payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "X"}},
     )

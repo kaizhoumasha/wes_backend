@@ -1,304 +1,275 @@
-"""
-设备指令 Repository (Device Command Repository)
+"""DeviceCommand 最终持久化 owner。"""
 
-提供设备指令的数据访问操作。
-"""
+from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.database.base_repository import BaseRepository
-from src.utils.timezone import timezone
+
+_UNCLOSED_STATUSES = (
+    CommandStatus.PENDING,
+    CommandStatus.DISPATCHING,
+    CommandStatus.ACKNOWLEDGED,
+    CommandStatus.RECONCILING,
+)
 
 
 class DeviceCommandRepository(BaseRepository[DeviceCommand]):
-    """设备指令 Repository"""
+    """命令创建、领取和 fenced 写回查询。"""
 
-    def __init__(self):
-        """初始化 Repository"""
+    def __init__(self) -> None:
         super().__init__(DeviceCommand)
 
-    async def get_by_command_code(self, db: AsyncSession, command_code: str) -> DeviceCommand | None:
-        """
-        根据 command_code 查询指令
-
-        Args:
-            db: 数据库会话
-            command_code: 指令编码
-
-        Returns:
-            DeviceCommand 实例，如果不存在返回 None
-        """
+    async def get_by_command_code(
+        self,
+        db: AsyncSession,
+        command_code: str,
+        *,
+        for_update: bool = False,
+    ) -> DeviceCommand | None:
         columns = cast("Any", DeviceCommand).__table__.c
         statement = select(DeviceCommand).where(columns.command_code == command_code)
+        if for_update:
+            statement = statement.with_for_update()
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_runtime_correlation_id(
+    async def get_unclosed_for_device_for_update(
+        self,
+        db: AsyncSession,
+        device_code: str,
+    ) -> DeviceCommand | None:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(columns.device_code == device_code, columns.status.in_(_UNCLOSED_STATUSES))
+            .order_by(columns.id)
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def has_sendable_for_epoch_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> bool:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(columns.id)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.status.in_((CommandStatus.PENDING, CommandStatus.DISPATCHING)),
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def get_by_execution_ref_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        device_code: str,
+        execution_ref_type: str,
+        execution_ref_id: str,
+    ) -> DeviceCommand | None:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.device_code == device_code,
+                columns.execution_ref_type == execution_ref_type,
+                columns.execution_ref_id == execution_ref_id,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def add(self, db: AsyncSession, command: DeviceCommand) -> DeviceCommand:
+        db.add(command)
+        await db.flush()
+        return command
+
+    async def claim_next_pending(
+        self,
+        db: AsyncSession,
+        *,
+        token: str,
+        now: datetime,
+        claim_expires_at: datetime,
+    ) -> DeviceCommand | None:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.status == CommandStatus.PENDING,
+                columns.deadline_at > now,
+                (columns.next_attempt_at.is_(None) | (columns.next_attempt_at <= now)),
+            )
+            .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        command = result.scalar_one_or_none()
+        if command is None:
+            return None
+        command.transition_to(CommandStatus.DISPATCHING)
+        command.claim_token = token
+        command.claimed_at = now
+        command.claim_expires_at = claim_expires_at
+        command.attempt_count += 1
+        await db.flush()
+        return command
+
+    async def get_claimed_for_update(
         self,
         db: AsyncSession,
         *,
         command_code: str,
-        command_id: int | None,
-    ) -> str | None:
-        """读取命令创建时固定的 runtime correlation，不暴露设备 ORM。"""
-
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(columns.correlation_id).where(columns.command_code == command_code)
-        if command_id is not None:
-            statement = statement.where(columns.id == command_id)
-        value = await db.scalar(statement.limit(1))
-        return str(value) if value is not None else None
-
-    @staticmethod
-    async def add_runtime_effect(
-        db: AsyncSession,
-        command: DeviceCommand,
-        intent_log: object,
-        outbox: object,
-    ) -> None:
-        """在调用方外层事务中持久化命令与 EFFECT 双账本，只 flush。"""
-
-        db.add(command)
-        await db.flush()
-        from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import (
-            runtime_intent_log_repository,
-        )
-
-        await runtime_intent_log_repository.add_proposed_pair(
-            db,
-            intent_log=intent_log,  # type: ignore[arg-type]
-            outbox=outbox,  # type: ignore[arg-type]
-        )
-
-    async def get_pending_commands(
-        self,
-        db: AsyncSession,
-        device_id: int | None = None,
-        limit: int = 100,
-    ) -> list[DeviceCommand]:
-        """
-        获取待处理的指令
-
-        Args:
-            db: 数据库会话
-            device_id: 设备 ID（可选，为空时查询所有设备）
-            limit: 返回数量限制
-
-        Returns:
-            待处理指令列表
-        """
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(DeviceCommand).where(columns.status == CommandStatus.PENDING)
-
-        if device_id is not None:
-            statement = statement.where(columns.device_id == device_id)
-
-        statement = statement.order_by(columns.priority.desc()).limit(limit)
-
-        result = await db.execute(statement)
-        return list(result.scalars().all())
-
-    async def get_timeout_commands(self, db: AsyncSession, limit: int = 100) -> list[DeviceCommand]:
-        """
-        获取超时的指令
-
-        Args:
-            db: 数据库会话
-            limit: 返回数量限制
-
-        Returns:
-            超时指令列表
-        """
-        # 查询已发送但未完成的指令
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(DeviceCommand).where(columns.status.in_([CommandStatus.SENT, CommandStatus.ACK_RECEIVED]))
-
-        result = await db.execute(statement)
-        commands = list(result.scalars().all())
-
-        # 过滤超时的指令
-        timeout_commands = [cmd for cmd in commands if cmd.is_timeout()]
-
-        return timeout_commands[:limit]
-
-    async def get_ack_timed_out_commands(self, db: AsyncSession, limit: int = 100) -> list[DeviceCommand]:
-        """获取已发送但一直没有收到 ACK 的超时指令。"""
-
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = (
-            select(DeviceCommand)
-            .where(
-                columns.status == CommandStatus.SENT,
-                columns.sent_at.is_not(None),
-                columns.ack_received_at.is_(None),
-                columns.workline_id.is_not(None),
-            )
-            .order_by(columns.sent_at.asc(), columns.id.asc())
-        )
-
-        result = await db.execute(statement)
-        commands = list(result.scalars().all())
-        return [command for command in commands if command.is_timeout()][:limit]
-
-    async def get_active_commands_for_device(
-        self,
-        db: AsyncSession,
-        device_id: int,
-        *,
-        exclude_command_id: int | None = None,
-        limit: int = 1,
-    ) -> list[DeviceCommand]:
-        """获取设备已进入硬件侧且仍未闭环的指令，用于推导设备占用状态。
-
-        PENDING 只表示 WES 侧排队，不能让设备提前进入 RUNNING。
-        """
-
-        active_statuses = [CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(DeviceCommand).where(
-            columns.device_id == device_id,
-            columns.status.in_(active_statuses),
-        )
-        if exclude_command_id is not None:
-            statement = statement.where(columns.id != exclude_command_id)
-
-        statement = statement.order_by(columns.created_at.desc(), columns.id.desc()).limit(limit)
-        result = await db.execute(statement)
-        return list(result.scalars().all())
-
-    async def get_unfinished_commands_for_device(
-        self,
-        db: AsyncSession,
-        device_id: int,
-        *,
-        limit: int = 1,
-    ) -> list[DeviceCommand]:
-        """获取设备尚未闭环的指令，用于新指令的原子准入检查。
-
-        与 ``get_active_commands_for_device`` 不同，这里必须包含 PENDING：
-        PENDING 虽不代表硬件已进入 RUNNING，但已占用该设备的命令槽位。
-        """
-
-        unfinished_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = (
-            select(DeviceCommand)
-            .where(
-                columns.device_id == device_id,
-                columns.status.in_(unfinished_statuses),
-            )
-            .order_by(columns.created_at.desc(), columns.id.desc())
-            .limit(limit)
-        )
-        result = await db.execute(statement)
-        return list(result.scalars().all())
-
-    async def list_unfinished_for_workline_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        trace_id: str,
-    ) -> list[DeviceCommand]:
-        """批量锁定工作线未闭环指令，供跨域阶段门在同一事务内校验。"""
-
-        if not trace_id.strip():
-            raise ValueError("unfinished command query requires trace_id")
-        unfinished_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        claim_token: str,
+    ) -> DeviceCommand | None:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
             select(DeviceCommand)
             .where(
-                columns.workline_id == workline_id,
-                columns.trace_id == trace_id,
-                columns.status.in_(unfinished_statuses),
+                columns.command_code == command_code,
+                columns.claim_token == claim_token,
+                columns.status == CommandStatus.DISPATCHING,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def claim_next_reconcilable(
+        self,
+        db: AsyncSession,
+        *,
+        now: datetime,
+    ) -> DeviceCommand | None:
+        """锁定一条已到期命令；状态解释由应用服务完成。"""
+
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                or_(
+                    (columns.status == CommandStatus.PENDING) & (columns.deadline_at <= now),
+                    (columns.status == CommandStatus.DISPATCHING) & (columns.claim_expires_at <= now),
+                    (columns.status == CommandStatus.ACKNOWLEDGED) & (columns.deadline_at <= now),
+                )
             )
             .order_by(columns.id)
-            .with_for_update()
+            .limit(1)
+            .with_for_update(skip_locked=True)
         )
-        return list(result.scalars().all())
+        return result.scalar_one_or_none()
 
-    async def get_commands_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[DeviceCommand]:
-        """
-        根据 Trace ID 查询所有相关指令
-
-        Args:
-            db: 数据库会话
-            trace_id: Trace ID
-
-        Returns:
-            相关指令列表
-        """
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(DeviceCommand).where(columns.trace_id == trace_id).order_by(columns.created_at)
-
-        result = await db.execute(statement)
-        return list(result.scalars().all())
-
-    async def count_by_status(self, db: AsyncSession, status: CommandStatus, device_id: int | None = None) -> int:
-        """
-        统计指定状态的指令数量
-
-        Args:
-            db: 数据库会话
-            status: 指令状态
-            device_id: 设备 ID（可选）
-
-        Returns:
-            指令数量
-        """
-        from sqlalchemy import func
-
-        columns = cast("Any", DeviceCommand).__table__.c
-        statement = select(func.count(columns.id)).where(columns.status == status)
-
-        if device_id is not None:
-            statement = statement.where(columns.device_id == device_id)
-
-        result = await db.execute(statement)
-        return result.scalar_one() or 0
-
-    async def cancel_active_by_workline(
+    async def release_retryable(
         self,
         db: AsyncSession,
-        workline_id: int,
+        command: DeviceCommand,
         *,
-        incident_id: int,
-    ) -> int:
-        """取消 WorkLine 尚未闭环的设备指令。"""
+        next_attempt_at: datetime,
+    ) -> None:
+        command.transition_to(CommandStatus.PENDING)
+        command.next_attempt_at = next_attempt_at
+        _clear_claim(command)
+        await db.flush()
 
-        active_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
-        columns = cast("Any", DeviceCommand).__table__.c
+    async def mark_acknowledged(
+        self,
+        db: AsyncSession,
+        command: DeviceCommand,
+        *,
+        acknowledged_at: datetime,
+    ) -> None:
+        command.transition_to(CommandStatus.ACKNOWLEDGED)
+        command.ack_received_at = acknowledged_at
+        _clear_claim(command)
+        await db.flush()
+
+    async def mark_failed(
+        self,
+        db: AsyncSession,
+        command: DeviceCommand,
+        *,
+        failure_code: str,
+    ) -> None:
+        command.failure_code = failure_code
+        command.transition_to(CommandStatus.FAILED)
+        _clear_claim(command)
+        await db.flush()
+
+    async def mark_timed_out(self, db: AsyncSession, command: DeviceCommand) -> None:
+        command.transition_to(CommandStatus.TIMED_OUT)
+        _clear_claim(command)
+        await db.flush()
+
+    async def mark_reconciling(
+        self,
+        db: AsyncSession,
+        command: DeviceCommand,
+        *,
+        reason: str,
+    ) -> None:
+        command.reconciliation_reason = reason
+        command.transition_to(CommandStatus.RECONCILING)
+        _clear_claim(command)
+        await db.flush()
+
+    async def mark_late_ack_reconciling(
+        self,
+        db: AsyncSession,
+        command: DeviceCommand,
+        *,
+        acknowledged_at: datetime,
+    ) -> None:
+        command.ack_received_at = acknowledged_at
+        command.reconciliation_reason = "ACK_AFTER_DEADLINE"
+        command.transition_to(CommandStatus.RECONCILING)
+        _clear_claim(command)
+        await db.flush()
+
+    async def fail_pending_by_workline(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        failure_code: str,
+    ) -> int:
+        """急停只关闭尚未发送的命令；已可能触发物理动作的命令继续占槽。"""
+
+        command_columns = cast("Any", DeviceCommand).__table__.c
+        epoch_columns = cast("Any", LineRunEpoch).__table__.c
         result = await db.execute(
             select(DeviceCommand)
+            .join(LineRunEpoch, epoch_columns.id == command_columns.line_run_epoch_id)
             .where(
-                columns.workline_id == workline_id,
-                columns.status.in_(active_statuses),
+                epoch_columns.workline_id == workline_id,
+                command_columns.status == CommandStatus.PENDING,
             )
             .with_for_update()
         )
         commands = list(result.scalars().all())
-        now = timezone.now_for_db()
         for command in commands:
-            command.status = CommandStatus.CANCELLED
-            command.completed_at = now
-            command.error_detail = {
-                "error_code": "CANCELLED_BY_ESTOP",
-                "error_message": "WorkLine 急停冻结，指令已取消",
-                "safety_incident_id": incident_id,
-            }
+            command.failure_code = failure_code
+            command.transition_to(CommandStatus.FAILED)
+        await db.flush()
         return len(commands)
 
 
-# 创建单例
 device_command_repository = DeviceCommandRepository()
 
 
-__all__ = [
-    "DeviceCommandRepository",
-    "device_command_repository",
-]
+def _clear_claim(command: DeviceCommand) -> None:
+    command.claim_token = None
+    command.claimed_at = None
+    command.claim_expires_at = None
+
+
+__all__ = ["DeviceCommandRepository", "device_command_repository"]
