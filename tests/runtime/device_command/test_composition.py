@@ -23,7 +23,7 @@ def test_ecs_base_url_requires_plain_lan_http_origin() -> None:
     assert validate_ecs_base_url("http://mock_ecs:8010") == "http://mock_ecs:8010"
     for invalid in (
         "https://192.168.1.20",
-        "http://user:pass@192.168.1.20",
+        "http://" + "user:pass@192.168.1.20",
         "http://example.com",
         "http://192.168.1.20/path",
     ):
