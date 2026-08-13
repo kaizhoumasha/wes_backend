@@ -510,7 +510,7 @@ Transport 提交与其他 WMS/WES 消息一样使用顶层 `operation_id`：WES 
 `event_id` 或 `request_id`，因果引用字段只引用既有 ID，不产生第二套身份。完整字段级生成方、用途、
 不可变和重试规则以
 [WMS / WES 自动出库 PickingTask 交互要求](../../contracts/wms-outbound-picking-task-integration-requirements.md#6-id-和版本由谁生成)为准；
-Transport 内部 ID 以 [Transport 履约合同](../../contracts/transport-fulfillment-contract.md#51-入口和-id)为准。
+Transport 内部 ID 以 [Transport 履约合同](../../contracts/transport-fulfillment-contract.md#411-transport-id-所有权)为准。
 
 ### 16.2 API 端点
 

@@ -17,8 +17,8 @@
 | `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES 粗分逐盘入库、满箱交换和自动上架业务合同评审真源 | ReviewRequired |
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 6 已完成；下一阶段为 Phase 7 |
-| `plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS 通用能力生产收敛计划 | ReviewRequired；最终引用图、模型和 worker 清单获批前不得实施 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 6 已完成；Phase 7 详细计划已批准，下一动作是代码实施 |
+| `plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS 通用能力生产收敛计划 | Approved；已冻结基线、引用图、模型、事务、worker、装配、schema、验证与提交边界，可开始代码实施 |
 
 ## 项目外历史归档
 

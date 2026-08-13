@@ -17,7 +17,7 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
-Phase 5 已完成零插件基线；Phase 6 已完成 Transport 正式基础基线；下一阶段为 Phase 7。
+Phase 5 已完成零插件基线；Phase 6 已完成 Transport 正式基础基线；Phase 7 详细计划已批准，下一动作是代码实施。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -25,7 +25,7 @@ Phase 5 已完成零插件基线；Phase 6 已完成 Transport 正式基础基�
 
 **Inbound/putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`；不构成 Phase 8/9 实施授权）
 
-**Implementation baseline:** `v0.24.2.0` / `d65463cf`（当前 `develop` 的 Phase 6 Transport 正式基础基线；尚无业务 producer）
+**Implementation baseline:** `develop@7f17533aa8d51622867bc637055ee76ff6efeb8a`（Phase 7 批准基线；合同摘要、引用图和实施边界见其独立详细计划；尚无业务 producer）
 
 ---
 
@@ -125,7 +125,7 @@ Transport/Adapter/核心所有权。
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 已完成；Phase 7–12 尚未开始。
+Phase 6 已完成；Phase 7 详细计划已批准但代码尚未开始；Phase 8–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -467,8 +467,9 @@ ACK/CALLBACK 关联、`LineRunEpoch` fencing 和唯一生产装配，为后续�
 **Authoritative inputs:** 顶层 SPEC §4.2–§5.2、`docs/architecture/device-command-contract.md`、
 `docs/integration/third_party_integration_whitepaper.md`、Phase 2 Outbound HTTP、Phase 5 零插件基线和当前旧 Device owner 引用图。
 
-**Entry conditions:** Phase 6 退出门禁通过；命令、状态、事件和结果固定路径及公共包络获批；旧 DeviceCommand、
-RuntimeIntentLog、SystemOutbox、gateway、callback、配置、任务和测试均映射到唯一 successor 或 `NONE`。
+**Entry conditions:** 已满足。Phase 6 退出门禁已通过；命令、状态、事件和结果固定路径及公共包络已批准；旧 DeviceCommand、
+RuntimeIntentLog、SystemOutbox 设备分支、gateway、callback、配置、任务和测试已在独立详细计划中映射到唯一 successor、
+`NONE` 或 `RETAIN`。实施前必须按详细计划重新核对冻结摘要，发生漂移时只复审受影响边界。
 
 **Scope:** 稳定命令 identity 和不可变 payload digest；每 `device_code` 最多一个已接纳未终态命令；发送前
 `AUTO + IDLE` 和活动 Epoch 合同身份校验；同步 ACK 与异步终态 CALLBACK 分离；delivery unknown、deadline、安全重提和人工
@@ -482,7 +483,8 @@ RuntimeIntentLog、SystemOutbox、gateway、callback、配置、任务和测试�
 Epoch 绑定与 fencing；固定 worker/路由装配；Device/ECS 核心合同和可靠性测试；旧 gateway/SystemOutbox 设备分支缺席门禁。
 
 **旧所有者删除规则:** 最终 DeviceCommand 权威测试先建立，随后在同一阶段切换唯一生产装配并删除旧 DeviceCommand、
-RuntimeIntentLog/SystemOutbox、可配置路径、旧 `event_id`、`priority`/`timeout` wire 和私有认证分支；不保留兼容字段或双路径。
+RuntimeIntentLog 和 SystemOutbox 的设备命令职责、可配置路径、旧 `event_id`、`priority`/`timeout` wire 和私有认证分支；
+非设备共享职责按详细计划标记为 `RETAIN`，不得扩大删除范围；不保留兼容字段或双路径。
 
 **测试所有权与重量要求:** 核心只验证固定路径、公共包络、身份、幂等、状态新鲜度、ACK/CALLBACK、fencing 和可靠生命周期；
 供应商一致性验收拥有真实设备附录和 ECS 行为；插件测试拥有业务推进。三者不得互相代测。
@@ -495,9 +497,9 @@ RuntimeIntentLog/SystemOutbox、可配置路径、旧 `event_id`、`priority`/`t
 CALLBACK 可推进投影；未知、冲突、迟到或合同不匹配证据失败关闭；旧 Device owner 和裸 Client 分支零引用。零设备绑定是
 合法退出态：未绑定设备返回 `DEVICE_NOT_FOUND`，不发送 outbound 请求，也不接纳设备事件。
 
-**需要单独编写的子计划:** 启动前编写并批准
-`docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`，包含当前引用图、successor/`NONE` 矩阵、
-固定 wire、事务边界、worker、删除范围和分层验收命令。
+**已批准的详细计划:** `docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md` 已冻结当前引用图、
+successor/`NONE`/`RETAIN` 矩阵、固定 wire 方向、最终模型、事务边界、三个有界 worker、唯一生产装配、schema cutover、
+测试所有权、提交边界和分层验收命令。该批准只授权进入代码实施，不代表代码、设备联调或业务插件已交付。
 
 **风险及防止阶段越权的约束:** 不把旧 `DeviceCommandService` 当目标模板；不在本阶段定义具体插件业务、供应商私有协议或
 Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运行代际，不吸收 PickingTask 生命周期。
@@ -717,7 +719,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；Phase 6 已完成；Phase 7 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；Phase 6 已完成；Phase 7 详细计划已批准、代码尚未开始；Phase 8 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -733,16 +735,17 @@ Adapter、设备统一接口和明确插件。
 
 ## 21. Implementation Tasks
 
-Phase 6 已完成，下一实施阶段是 Phase 7。Phase 6 的引用图、successor/`NONE` 矩阵、测试所有权、唯一生产装配、精确 HEAVY 与
-生产镜像 smoke 已闭环；其过程计划已归档，不再保留为项目内当前真源。Phase 7 必须先完成自身详细计划评审，不直接复用
-Transport 的对象或测试证明 Device/ECS 能力。
+Phase 6 已完成，Phase 7 详细计划已批准，下一动作是按该计划实施代码。Phase 6 的引用图、successor/`NONE` 矩阵、测试所有权、
+唯一生产装配、精确 HEAVY 与生产镜像 smoke 已闭环；其过程计划已归档，不再保留为项目内当前真源。Phase 7 不直接复用
+Transport 的对象或测试证明 Device/ECS 能力，也不得提前实现 Phase 8/9 业务插件。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
 | --- | --- | --- | --- |
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务接线；旧 owner 已收敛，Phase 7 未提前实施 |
-| 2 | Phase 7 详细计划评审 | ReviewRequired | DeviceCommand/ECS 最终引用图、模型、worker 与退出门禁获批后才能实施 |
+| 2 | Phase 7 详细计划评审 | Approved | 最终引用图、模型、事务、worker、装配、schema、测试和提交边界已冻结 |
+| 3 | Phase 7 代码实施 | Ready | 按独立详细计划逐任务 TDD；全部退出门禁通过后才可声明 Phase 7 完成 |
 
-Phase 7 代码实施必须遵循 TDD，并在其独立详细计划获批后开始。
+Phase 7 现可开始代码实施；实施必须遵循 TDD，且不得把计划批准误报为阶段完成。
 
 ## 22. 工程复审完成摘要
 
@@ -767,6 +770,6 @@ Phase 7 代码实施必须遵循 TDD，并在其独立详细计划获批后开�
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段顺序已冻结；Phase 1 至 3、Phase 4 暗构建、Phase 5 零插件基线和 Phase 6 Transport 正式基础基线均已完成；下一阶段为 Phase 7 DeviceCommand/ECS 生产收敛，须先完成独立详细计划评审。**
+**VERDICT：十二阶段顺序已冻结；Phase 1 至 3、Phase 4 暗构建、Phase 5 零插件基线和 Phase 6 Transport 正式基础基线均已完成；Phase 7 DeviceCommand/ECS 独立详细计划已批准，可以从冻结基线开始代码实施。**
 
 NO UNRESOLVED DECISIONS
