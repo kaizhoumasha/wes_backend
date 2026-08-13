@@ -9,12 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import Request
 from fastapi.routing import APIRoute
-from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.callback.models import CallbackEventIngressResponse
 from src.app.callback.v1 import callback as callback_module
-from src.app.device.services.device_context_service import DeviceContextResult
 
 JsonDict = dict[str, object]
 RequestFactory = Callable[..., Request]
@@ -34,12 +31,6 @@ def _response_data(response: JsonDict) -> JsonDict:
     return cast("JsonDict", data)
 
 
-def _response_model_data(response: JsonDict) -> JsonDict:
-    validated = TypeAdapter(CallbackEventIngressResponse).validate_python(response)
-    serialized = TypeAdapter(CallbackEventIngressResponse).dump_python(validated, mode="json")
-    return _response_data(cast("JsonDict", serialized))
-
-
 def _get_route(path: str, method: str) -> APIRoute:
     for route in callback_module.router.routes:
         if isinstance(route, APIRoute) and method in route.methods and route.path == path:
@@ -49,11 +40,7 @@ def _get_route(path: str, method: str) -> APIRoute:
 
 @pytest.fixture(autouse=True)
 def mock_fast_fail_check():
-    """自动 mock fast_fail_check 和设备上下文服务，避免在测试中执行真实的基础设施检查。
-
-    注意：由于测试直接调用 callback 函数而非通过 FastAPI，
-    依赖注入可能不会自动触发。
-    """
+    """避免 external callback 单元测试执行真实基础设施检查。"""
     # Mock fast_fail_check 函数本身
     with patch("src.utils.fast_fail.fast_fail_check", new_callable=AsyncMock) as mock:
         # 同时 mock 健康检查函数
@@ -61,7 +48,6 @@ def mock_fast_fail_check():
             patch("src.utils.health.check_database_health", new_callable=AsyncMock) as db_mock,
             patch("src.utils.health.check_redis_health", new_callable=AsyncMock) as redis_mock,
             patch("src.utils.health.check_celery_health", new_callable=AsyncMock) as celery_mock,
-            patch("src.app.callback.services.callback_ingress_service.device_context_service.resolve") as ctx_mock,
             patch(
                 "src.app.callback.services.callback_ingress_service.workline_diagnostic_service.record_event",
                 new_callable=AsyncMock,
@@ -71,29 +57,6 @@ def mock_fast_fail_check():
             db_mock.return_value = {"status": "healthy"}
             redis_mock.return_value = {"status": "healthy"}
             celery_mock.return_value = {"status": "healthy"}
-
-            # 返回设备上下文（模拟 DeviceContextService.resolve）
-            def ctx_resolve_side_effect(db: object, device_code: str):
-                # 模拟成功返回：返回 (DeviceContextResult, None)
-                return (
-                    DeviceContextResult(
-                        device=SimpleNamespace(
-                            id=1,
-                            code=device_code,
-                            work_line_id=1,
-                            device_status="ONLINE",
-                        ),
-                        workline=SimpleNamespace(
-                            id=1,
-                            is_active=True,
-                        ),
-                        work_line_id=1,
-                        is_workline_bound=True,
-                    ),
-                    None,  # 无错误
-                )
-
-            ctx_mock.side_effect = ctx_resolve_side_effect
 
             mock.return_value = None  # 允许请求通过
             yield mock

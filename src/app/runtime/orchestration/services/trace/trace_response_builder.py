@@ -188,25 +188,27 @@ def _build_inbox_item(item: Any) -> TraceInboxItem:
 def _build_command_item(item: Any) -> TraceCommandItem:
     return TraceCommandItem(
         id=item.id,
-        device_id=item.device_id,
         command_code=item.command_code,
+        device_code=item.device_code,
         trace_id=item.trace_id,
-        workline_id=item.workline_id,
-        session_id=item.session_id,
+        line_run_epoch_id=item.line_run_epoch_id,
+        device_binding_id=item.device_binding_id,
+        execution_ref_type=item.execution_ref_type,
+        execution_ref_id=item.execution_ref_id,
+        contract_key=item.contract_key,
+        contract_version=item.contract_version,
         task_type=_status_str(item.task_type),
         status=_status_str(item.status),
-        result=optional_enum_str(item.result),
-        retry_count=item.retry_count,
-        sent_at=item.sent_at,
+        payload_digest=item.payload_digest,
+        deadline_at=item.deadline_at,
+        attempt_count=item.attempt_count,
+        next_attempt_at=item.next_attempt_at,
         ack_received_at=item.ack_received_at,
         completed_at=item.completed_at,
-        ack_code=item.ack_code,
-        ack_message=item.ack_message,
-        ack_trace_id=item.ack_trace_id,
+        result_evidence_id=item.result_evidence_id,
+        failure_code=item.failure_code,
+        reconciliation_reason=item.reconciliation_reason,
         params=item.params,
-        result_data=item.result_data,
-        error_detail=item.error_detail,
-        duration_ms=item.get_duration_ms(),
     )
 
 
@@ -295,9 +297,9 @@ def build_failed_command_evidence(command: Any | None) -> FailedCommandEvidence 
         command_id=command.id,
         command_code=command.command_code,
         status=optional_enum_str(command.status),
-        result=optional_enum_str(command.result),
-        error_detail=cast("dict[str, Any] | None", command.error_detail),
-        result_data=cast("dict[str, Any] | None", command.result_data),
+        failure_code=getattr(command, "failure_code", None),
+        reconciliation_reason=getattr(command, "reconciliation_reason", None),
+        result_evidence_id=getattr(command, "result_evidence_id", None),
     )
 
 

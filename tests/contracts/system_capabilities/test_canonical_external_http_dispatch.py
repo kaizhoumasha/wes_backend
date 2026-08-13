@@ -150,19 +150,19 @@ def test_external_http_envelope_fails_closed_when_canonical_contract_is_missing_
 
 def test_non_http_envelope_does_not_require_canonical_payload() -> None:
     envelope = DispatchEnvelope(
-        dispatch_key="device-command-001",
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="ECS-001",
-        provider_profile_identity="ecs.device-command.v1",
-        operation_identity="device.command",
-        payload_json={"command": "MOVE"},
-        operation_domain="DEVICE",
+        dispatch_key="internal-signal-001",
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="RUNTIME",
+        provider_profile_identity="runtime.internal-signal.v1",
+        operation_identity="runtime.signal",
+        payload_json={"signal": "WAKE"},
+        operation_domain="RUNTIME",
     )
 
     assert envelope.canonical_payload_bytes is None
     assert envelope.payload_hash is None
-    assert envelope.payload_json == {"command": "MOVE"}
+    assert envelope.payload_json == {"signal": "WAKE"}
 
 
 def test_external_http_create_schema_fails_closed_without_canonical_payload() -> None:
@@ -181,14 +181,14 @@ def test_external_http_create_schema_fails_closed_without_canonical_payload() ->
 
 def test_non_http_create_schema_does_not_require_canonical_payload() -> None:
     schema = SystemOutboxCreate(
-        dispatch_key="device-command-001",
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="ECS-001",
-        provider_profile_identity="ecs.device-command.v1",
-        operation_identity="device.command",
-        payload_json={"command": "MOVE"},
-        operation_domain="DEVICE",
+        dispatch_key="internal-signal-001",
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="RUNTIME",
+        provider_profile_identity="runtime.internal-signal.v1",
+        operation_identity="runtime.signal",
+        payload_json={"signal": "WAKE"},
+        operation_domain="RUNTIME",
     )
 
     assert schema.canonical_payload_bytes is None
@@ -495,27 +495,27 @@ def test_authored_wms_effect_request_rejects_missing_idempotency_key() -> None:
 
 def test_generic_outbox_keeps_idempotency_metadata_nullable() -> None:
     envelope = DispatchEnvelope(
-        dispatch_key="device-command-001",
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="ECS-001",
-        provider_profile_identity="ecs.device-command.v1",
-        operation_identity="device.command",
-        payload_json={"command": "MOVE"},
-        operation_domain="DEVICE",
+        dispatch_key="internal-signal-001",
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="RUNTIME",
+        provider_profile_identity="runtime.internal-signal.v1",
+        operation_identity="runtime.signal",
+        payload_json={"signal": "WAKE"},
+        operation_domain="RUNTIME",
     )
 
     assert envelope.idempotency_key is None
     assert (
         SystemOutboxCreate(
-            dispatch_key="device-command-002",
-            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-            target_type=SystemOutboxTargetType.DEVICE,
-            target_code="ECS-001",
-            provider_profile_identity="ecs.device-command.v1",
-            operation_identity="device.command",
-            payload_json={"command": "MOVE"},
-            operation_domain="DEVICE",
+            dispatch_key="internal-signal-002",
+            dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+            target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+            target_code="RUNTIME",
+            provider_profile_identity="runtime.internal-signal.v1",
+            operation_identity="runtime.signal",
+            payload_json={"signal": "WAKE"},
+            operation_domain="RUNTIME",
         ).idempotency_key
         is None
     )

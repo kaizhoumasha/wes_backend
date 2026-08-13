@@ -80,20 +80,11 @@ class TestCallbackExternalAPI:
         assert payload["signature"] == "top-secret"
 
     def test_external_callback_allow_list_keeps_non_wms_provider_matrix(self) -> None:
-        expected_types = {
-            "DEVICE_RESULT",
-            "DEVICE_EVENT",
-            "DEVICE_STATUS_CHANGED",
-            "MATERIAL_ARRIVED",
-            "SCAN_COMPLETED",
-            "ESTOP_PRESSED",
-            "DEVICE_ERROR",
-            "DEVICE_ONLINE",
-            "DEVICE_OFFLINE",
-            "AGV_TASK_RESULT",
-        }
-
-        assert expected_types <= callback_test_support.callback_ingress_module._EXTERNAL_CALLBACK_ALLOWED_TYPES
+        assert "AGV_TASK_RESULT" in callback_test_support.callback_ingress_module._EXTERNAL_CALLBACK_ALLOWED_TYPES
+        assert not any(
+            callback_type.startswith("DEVICE_")
+            for callback_type in callback_test_support.callback_ingress_module._EXTERNAL_CALLBACK_ALLOWED_TYPES
+        )
 
     @pytest.mark.asyncio
     async def test_callback_external_keeps_agv_callback_path(

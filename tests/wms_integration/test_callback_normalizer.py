@@ -22,7 +22,7 @@ def test_external_callback_normalizer_rejects_ordinary_wms_events(callback_type:
         "trace_id": f"trace-{callback_type.lower()}",
     }
 
-    with pytest.raises(ValueError, match="/api/v1/callback/event"):
+    with pytest.raises(ValueError, match="/api/v1/wms/events"):
         WmsExecutionCallbackNormalizer().normalize(payload)
 
 

@@ -408,17 +408,6 @@ async def test_repository_rejects_dispatch_key_updates_before_loading_row() -> N
         )
 
 
-@pytest.mark.asyncio
-async def test_resource_wait_rejects_uncontrolled_retry_reason_before_loading_row() -> None:
-    with pytest.raises(ValueError, match="不受控"):
-        await SystemOutboxRepository().block_for_resource_wait(  # type: ignore[arg-type]
-            SimpleNamespace(),
-            7,
-            reason="HTTP_503_BACKOFF",
-            blocked_device_id=9,
-        )
-
-
 def test_shared_retry_wait_transition_releases_dispatch_lease_expiry() -> None:
     outbox = SimpleNamespace(
         status=SystemOutboxStatus.DISPATCHING,
@@ -559,26 +548,17 @@ async def test_stale_external_http_claim_explicitly_clears_retry_schedule(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("dispatch_type", "target_type", "target_code"),
-    [
-        (SystemOutboxDispatchType.DEVICE_COMMAND, SystemOutboxTargetType.DEVICE, "DEVICE-LEASE-1"),
-        (SystemOutboxDispatchType.INTERNAL_SIGNAL, SystemOutboxTargetType.INTERNAL_SERVICE, "core"),
-    ],
-)
 async def test_non_http_stale_dispatching_lease_remains_reclaimable(
     db_session: Any,
-    dispatch_type: SystemOutboxDispatchType,
-    target_type: SystemOutboxTargetType,
-    target_code: str,
 ) -> None:
     now = timezone.now_for_db()
+    dispatch_type = SystemOutboxDispatchType.INTERNAL_SIGNAL
     outbox = SystemOutbox(
         operation_domain="HANDLING",
         dispatch_type=dispatch_type,
         dispatch_key=f"non-http-stale-lease-{dispatch_type.value}",
-        target_type=target_type,
-        target_code=target_code,
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="core",
         provider_profile_identity="test.non-http.v1",
         operation_identity=f"test.{dispatch_type.value.lower()}",
         payload_json={},
@@ -613,12 +593,12 @@ async def test_exhausted_non_http_lease_atomically_finalizes_outbox_and_attempt(
     now = timezone.now_for_db()
     outbox = SystemOutbox(
         operation_domain="HANDLING",
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
         dispatch_key="non-http-exhausted-lease",
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="DEVICE-LEASE-EXHAUSTED",
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="core",
         provider_profile_identity="test.non-http.v1",
-        operation_identity="test.device_command",
+        operation_identity="test.internal_signal",
         payload_json={},
         status=SystemOutboxStatus.DISPATCHING,
         attempt_count=3,
@@ -634,8 +614,8 @@ async def test_exhausted_non_http_lease_atomically_finalizes_outbox_and_attempt(
         lease_token="exhausted-owner",
         lease_expires_at=now - timedelta(seconds=1),
         status=DispatchAttemptStatus.DISPATCHING,
-        target_type=SystemOutboxTargetType.DEVICE.value,
-        target_code="DEVICE-LEASE-EXHAUSTED",
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE.value,
+        target_code="core",
         started_at=now - timedelta(minutes=5),
     )
     db_session.add(attempt)
@@ -644,7 +624,7 @@ async def test_exhausted_non_http_lease_atomically_finalizes_outbox_and_attempt(
     recovered = await NonHttpLeaseExhaustionService().fence_exhausted_leases(
         db_session,
         repository=SystemOutboxRepository(),
-        bucket=DispatchBucketKey("test.non-http.v1", "test.device_command"),
+        bucket=DispatchBucketKey("test.non-http.v1", "test.internal_signal"),
         retry_budget=3,
         now=now,
     )
@@ -731,9 +711,9 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
     inbox = RuntimeInbox(
         workline_session_id=session.id,
         provider_code="TEST",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id="sandbox-runtime-inbox-event-1",
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         payload_json={"event_type": "SCAN_COMPLETED", "data": {"session_id": session.id}},
         payload_hash="sha256:sandbox-runtime-inbox-event-1",
         payload_schema_version=1,

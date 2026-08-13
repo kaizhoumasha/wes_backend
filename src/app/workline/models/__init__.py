@@ -4,6 +4,7 @@ WorkLine 运行态迁出后收缩为纯配置域 model 聚合：workline 配置�
 运行态 model 已物理迁入 runtime/orchestration/models/。
 """
 
+from .line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding, LineRunEpochStatus
 from .plane import (
     PlaneEdge,
     PlaneExtremeState,
@@ -32,6 +33,9 @@ from .workline import (
 
 __all__ = [
     "ClearWorkLineEstopRequest",
+    "LineRunEpoch",
+    "LineRunEpochDeviceBinding",
+    "LineRunEpochStatus",
     "LineType",
     "PlaneEdge",
     "PlaneExtremeState",

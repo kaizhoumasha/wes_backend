@@ -27,11 +27,6 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
-from src.app.runtime.system_capabilities.device.device_command_write.contracts import (
-    DeviceCommandWriteInput,
-    DeviceCommandWriteOutput,
-)
-from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
 from src.app.runtime.system_capabilities.material_flow.material_unit_write.contracts import MaterialUnitWriteOutput
 from src.app.runtime.system_capabilities.material_flow.material_unit_write.definition import (
     DEFINITION as MATERIAL_DEFINITION,
@@ -538,14 +533,6 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
             MaterialUnitWriteOutput(material_unit_id=101, status="IN_STORAGE"),
         ),
         (
-            DEVICE_DEFINITION,
-            {"target_device_id": 7, "action": "MOVE", "result_policy": "COMMAND_RESULT"},
-            {"expected_available": True},
-            "device:v1",
-            {"accepted": True, "command_code": "CMD-1", "dispatch_key": "dispatch-1"},
-            DeviceCommandWriteOutput(accepted=True, command_code="CMD-1", dispatch_key="dispatch-1"),
-        ),
-        (
             HOLD_DEFINITION,
             {"reason_code": "MANUAL_REVIEW", "message": "review required"},
             {"expected_status": "RUNNING"},
@@ -729,18 +716,6 @@ async def test_admission_rejects_bypassed_invalid_operation_key_as_contract_viol
     assert repository.calls == []
 
 
-@pytest.mark.asyncio
-async def test_admission_revalidates_model_copy_bypassed_top_level_result_policy() -> None:
-    repository = _EffectRepository(ClaimResult.NEW)
-    intent = _intent().model_copy(update={"result_policy": "COMMAND_RESULT"})
-
-    result = await _service(_definition(), repository).apply(_ctx(), intent)
-
-    assert isinstance(result.outcome, ContractViolation)
-    assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
-    assert repository.calls == []
-
-
 def _session_hold_intent(*, expected_status: object, fact_version: object) -> RuntimeIntent:
     return RuntimeIntent.system_capability(
         capability_key=HOLD_DEFINITION.capability_key,
@@ -827,137 +802,11 @@ async def test_session_hold_matching_typed_admission_mutates_once(monkeypatch: p
     assert getattr(ctx["session"].status, "value", ctx["session"].status) == "MANUAL_HOLD"
 
 
-def _device_intent(*, expected_available: object, fact_version: object) -> RuntimeIntent:
-    return RuntimeIntent.system_capability(
-        capability_key=DEVICE_DEFINITION.capability_key,
-        contract_version=DEVICE_DEFINITION.contract_version,
-        operation_key="device:71:dispatch",
-        dispatch_key="device-command:CMD-71-EFFECT",
-        payload={
-            "target_device_id": 71,
-            "action": "PICK_AND_PUT",
-            "command_code": "CMD-71-EFFECT",
-            "result_policy": "COMMAND_RESULT",
-        },
-        precondition={"expected_available": expected_available},
-        fact_version=fact_version,  # type: ignore[arg-type]
-        timeout_seconds=5,
-        creator_authority="RUNTIME_DOMAIN_SERVICE",
-        authorization_policy="DOMAIN_CAPABILITY_ALLOWLIST",
-        binding_snapshot={},
-        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
-    )
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("device_values", "fact_version"),
-    [
-        ({"version": 2, "device_status": "IDLE", "maintenance_mode": False, "current_command_id": None}, "device:v1"),
-        ({"version": 2, "device_status": "RUNNING", "maintenance_mode": False, "current_command_id": 99}, "device:v2"),
-        ({"version": 2, "device_status": "IDLE", "maintenance_mode": True, "current_command_id": None}, "device:v2"),
-    ],
-)
-async def test_device_authoritative_fact_mismatch_creates_no_command_or_outbox(
-    monkeypatch: pytest.MonkeyPatch, device_values: dict[str, object], fact_version: str
-) -> None:
-    from importlib import import_module
-
-    from src.app.runtime.orchestration.services.device_command_gateway import StaleRuntimeDeviceCommandAdmission
-
-    calls: list[dict[str, object]] = []
-
-    async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
-        calls.append(_kwargs)
-        raise StaleRuntimeDeviceCommandAdmission("device fact changed")
-
-    gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
-    monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
-    device = SimpleNamespace(id=71, is_active=True, **device_values)
-    ctx = _ctx()
-    ctx["source_device"] = device
-
-    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
-        ctx, _device_intent(expected_available=True, fact_version=fact_version)
-    )
-
-    assert isinstance(result.outcome, BusinessReject)
-    assert result.outcome.reason_code == "STALE_PRECONDITION"
-    assert len(calls) == 1
-    assert calls[0]["target_device_id"] == 71
-    assert calls[0]["admission"].fact_version == fact_version  # type: ignore[union-attr]
-    assert calls[0]["expected_workline_id"] == 3
-
-
-@pytest.mark.asyncio
-async def test_device_matching_typed_admission_creates_one_command_and_outbox(monkeypatch: pytest.MonkeyPatch) -> None:
-    from importlib import import_module
-
-    calls: list[dict[str, object]] = []
-
-    async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
-        calls.append(_kwargs)
-        return SimpleNamespace(command_code="CMD-71"), SimpleNamespace(dispatch_key="dispatch-71")
-
-    gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
-    monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
-    ctx = _ctx()
-    ctx["source_device"] = SimpleNamespace(
-        id=71,
-        is_active=True,
-        version=2,
-        device_status="IDLE",
-        maintenance_mode=False,
-        current_command_id=None,
-    )
-
-    effect_repository = _EffectRepository(ClaimResult.NEW)
-    result = await _service(DEVICE_DEFINITION, effect_repository).apply(
-        ctx, _device_intent(expected_available=True, fact_version="device:v2")
-    )
-
-    assert isinstance(result.outcome, Success)
-    assert result.outcome.payload.command_code == "CMD-71"
-    assert len(calls) == 1
-    assert calls[0]["target_device_id"] == 71
-    assert calls[0]["admission"].fact_version == "device:v2"  # type: ignore[union-attr]
-    assert calls[0]["expected_workline_id"] == 3
-    assert calls[0]["intent_log"] is effect_repository.intent_log
-
-
-@pytest.mark.asyncio
-async def test_device_command_without_runtime_workline_identity_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    from importlib import import_module
-
-    async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
-        raise AssertionError("missing workline identity must not reach gateway")
-
-    gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
-    monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
-    ctx = _ctx()
-    delattr(ctx["session"], "workline_id")
-
-    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
-        ctx, _device_intent(expected_available=True, fact_version="device:v2")
-    )
-
-    assert isinstance(result.outcome, BusinessReject)
-    assert result.outcome.reason_code == "WORKLINE_SCOPE_UNAVAILABLE"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "intent",
-    [
-        _session_hold_intent(expected_status="RUNNING", fact_version="session:v3"),
-        _device_intent(expected_available="true", fact_version="device:v2"),
-    ],
-)
-async def test_session_and_device_malformed_admission_remain_contract_violations(intent: RuntimeIntent) -> None:
+async def test_session_malformed_admission_remains_contract_violation() -> None:
+    intent = _session_hold_intent(expected_status="RUNNING", fact_version="session:v3")
     repository = _EffectRepository(ClaimResult.NEW)
-    definition = HOLD_DEFINITION if intent.capability_key == HOLD_DEFINITION.capability_key else DEVICE_DEFINITION
-
-    result = await _service(definition, repository).apply(_ctx(), intent)
+    result = await _service(HOLD_DEFINITION, repository).apply(_ctx(), intent)
 
     assert isinstance(result.outcome, ContractViolation)
     assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
@@ -1215,182 +1064,6 @@ async def test_material_unit_mutation_service_participates_in_outer_transaction_
     assert db.flush_count >= 1
     assert db.commit_count == 0
     assert db.rollback_count == 0
-
-
-@pytest.mark.asyncio
-async def test_device_command_runtime_entry_writes_command_and_outbox_without_remote_io_or_commit() -> None:
-    from src.app.device.models.command import DeviceCommand
-    from src.app.device.repositories.command_repository import DeviceCommandRepository
-    from src.app.device.repositories.device_repository import DeviceRepository
-    from src.app.device.services.device_command_service import DeviceCommandService
-    from src.app.sys.models import SystemOutbox
-
-    class _DeviceRepository(DeviceRepository):
-        async def get_runtime_effect_target_for_update(
-            self,
-            _db: object,
-            *,
-            target_device_id: int | None,
-            target_device_code: str | None,
-            expected_workline_id: int,
-        ) -> object:
-            assert target_device_id == 71
-            assert target_device_code is None
-            assert expected_workline_id == 41
-            return SimpleNamespace(
-                id=71,
-                device_code="ARM-71",
-                work_line_id=41,
-                version=2,
-                device_status="IDLE",
-                maintenance_mode=False,
-                current_command_id=None,
-                is_active=True,
-            )
-
-    class _CommandRepository(DeviceCommandRepository):
-        async def get_unfinished_commands_for_device(
-            self,
-            _db: object,
-            device_id: int,
-            *,
-            limit: int = 1,
-        ) -> list[DeviceCommand]:
-            assert device_id == 71
-            assert limit == 1
-            return []
-
-    db = _MutationDb()
-    session = SimpleNamespace(
-        id=31,
-        workline_id=41,
-        plugin_key="test_plugin",
-        contract_version="v1",
-        status="RUNNING",
-        current_wait_type=None,
-        waiting_since=None,
-        deadline_at=None,
-        current_wait_timeout_seconds=None,
-        awaiting_device_command_code=None,
-    )
-    intent_log = SimpleNamespace(
-        effect_status=RuntimeIntentStatus.PROPOSED,
-        dispatch_key="device-command:CMD-RUNTIME-EFFECT",
-    )
-    command, outbox = await DeviceCommandService(
-        repository=_CommandRepository(),
-        device_repository=_DeviceRepository(),
-    ).prepare_runtime_effect(
-        db,  # type: ignore[arg-type]
-        request=SimpleNamespace(
-            action="PICK_AND_PUT",
-            priority=5,
-            timeout_ms=30000,
-            payload={"business_key": "PKG-1"},
-            command_code="CMD-RUNTIME-EFFECT",
-            result_policy="COMMAND_RESULT",
-        ),
-        target_device_id=71,
-        target_device_code=None,
-        expected_workline_id=41,
-        expected_fact_version="device:v2",
-        expected_available=True,
-        session=session,
-        workline=SimpleNamespace(id=41, plugin_key="test_plugin"),
-        idempotency_key="system-capability:device.device_command_write@v1:session:31:work-item:41:pick-1",
-        execution_correlation_id="corr-device-effect",
-        trace_id="trace-device-effect",
-        intent_log=intent_log,
-    )
-
-    assert isinstance(command, DeviceCommand)
-    assert isinstance(outbox, SystemOutbox)
-    assert command.correlation_id == "corr-device-effect"
-    assert outbox.dispatch_key == f"device-command:{command.command_code}"
-    assert getattr(outbox.status, "value", outbox.status) == "NEW"
-    assert session.current_wait_type == "COMMAND_RESULT"
-    assert session.awaiting_device_command_code == command.command_code
-    assert db.added == [command, intent_log, outbox]
-    assert db.commit_count == 0
-    assert db.rollback_count == 0
-
-
-def test_device_command_contract_requires_explicit_result_policy() -> None:
-    with pytest.raises(ValidationError, match="result_policy"):
-        DeviceCommandWriteInput.model_validate(
-            {
-                "target_device_id": 71,
-                "action": "MOVE_FORWARD",
-                "payload": {},
-            }
-        )
-    with pytest.raises(ValidationError, match="COMMAND_RESULT"):
-        DeviceCommandWriteInput.model_validate(
-            {
-                "target_device_id": 71,
-                "action": "MOVE_FORWARD",
-                "payload": {},
-                "result_policy": "FIRE_AND_FORGET",
-            }
-        )
-
-
-@pytest.mark.asyncio
-async def test_runtime_device_command_service_rejects_fire_and_forget_model_bypass() -> None:
-    from src.app.device.repositories.device_repository import DeviceRepository
-    from src.app.device.services.device_command_service import DeviceCommandService
-
-    class _DeviceRepository(DeviceRepository):
-        async def get_runtime_effect_target_for_update(self, _db: object, **_kwargs: object) -> object:
-            return SimpleNamespace(
-                id=72,
-                device_code="CONVEYOR-72",
-                work_line_id=41,
-                version=2,
-                device_status="IDLE",
-                maintenance_mode=False,
-                current_command_id=None,
-                is_active=True,
-            )
-
-    session = SimpleNamespace(
-        id=31,
-        workline_id=41,
-        plugin_key="test_plugin",
-        contract_version="v1",
-        status="RUNNING",
-        current_wait_type=None,
-        waiting_since=None,
-        deadline_at=None,
-        current_wait_timeout_seconds=None,
-        awaiting_device_command_code=None,
-    )
-    with pytest.raises(ValueError, match="COMMAND_RESULT"):
-        await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
-            _MutationDb(),  # type: ignore[arg-type]
-            request=SimpleNamespace(
-                action="MOVE_FORWARD",
-                priority=5,
-                timeout_ms=30000,
-                payload={"business_key": "PKG-1"},
-                command_code=None,
-                result_policy="FIRE_AND_FORGET",
-            ),
-            target_device_id=72,
-            target_device_code=None,
-            expected_workline_id=41,
-            expected_fact_version="device:v2",
-            expected_available=True,
-            session=session,
-            workline=SimpleNamespace(id=41, plugin_key="test_plugin"),
-            idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
-            execution_correlation_id="corr-fire-and-forget",
-            trace_id="trace-fire-and-forget",
-            intent_log=SimpleNamespace(
-                effect_status=RuntimeIntentStatus.PROPOSED,
-                dispatch_key="device-command:CMD-FIRE-AND-FORGET",
-            ),
-        )
 
 
 @pytest.mark.asyncio

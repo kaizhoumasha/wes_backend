@@ -1,13 +1,11 @@
 """RuntimeInboxValidationService (Task 5 三阶段 Processor 拆分).
 
-SCAN_COMPLETED barcode 校验、ESTOP 阻断、ESTOP 专用路由、TIMER_TIMEOUT
-专用路由前置 gate。
+SCAN_COMPLETED barcode 校验、ESTOP 阻断与 ESTOP 专用路由前置 gate。
 
 输入: RuntimeInbox 实体 + payload.
 输出: ValidationOutcome 携带 decision + 关联实体 + 必要终止态信息.
 
-不写终态, 不调 orchestrator, 不做 write-back. 重复入口 / 迟到
-COMMAND_RESULT 由 Orchestrator/Write-back 阶段判定.
+不写终态, 不调 orchestrator, 不做 write-back。
 """
 
 from __future__ import annotations
@@ -78,7 +76,6 @@ class ValidationOutcome:
     error_message: str | None = None
     error_code: ErrorCode | None = None
     estop_event: bool = False
-    timer_timeout_event: bool = False
     needs_session_resolution: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -109,19 +106,11 @@ class ValidationOutcome:
             estop_event=True,
         )
 
-    @staticmethod
-    def timer_timeout_routing() -> ValidationOutcome:
-        return ValidationOutcome(
-            proceed_to_orchestrator=False,
-            terminal_disposition=WriteBackDisposition.PROCESSED,
-            timer_timeout_event=True,
-        )
-
 
 class RuntimeInboxValidationService:
     """RuntimeInbox 前置 gate 服务.
 
-    单一职责: 在调用 orchestrator 前做出 SCAN/ESTOP/TIMER 三类决策.
+    单一职责: 在调用 orchestrator 前做出 SCAN/ESTOP 决策。
     不写终态, 不调 orchestrator, 不做 write-back.
     """
 
@@ -203,25 +192,20 @@ class RuntimeInboxValidationService:
         # SCAN gate 全部通过 -> 继续走 orchestrator.
         return ValidationOutcome.continue_orchestrator()
 
-    def classify_estop_or_timer(
+    def classify_estop(
         self,
         *,
         resolved_event_type: str,
-        inbox_kind: str | None,
     ) -> ValidationOutcome:
-        """识别 ESTOP_PRESSED / TIMER_TIMEOUT 专用路由.
+        """识别 ESTOP_PRESSED 专用路由。
 
         Args:
             resolved_event_type: canonical_event_type(payload).
-            inbox_kind: inbox.kind 字符串值.
-
         Returns:
-            ValidationOutcome.estop_routing() / timer_timeout_routing() / continue_orchestrator().
+            ValidationOutcome.estop_routing() / continue_orchestrator().
         """
         if resolved_event_type == "ESTOP_PRESSED":
             return ValidationOutcome.estop_routing()
-        if inbox_kind == "TIMER_TIMEOUT":
-            return ValidationOutcome.timer_timeout_routing()
         return ValidationOutcome.continue_orchestrator()
 
 

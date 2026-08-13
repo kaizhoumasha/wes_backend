@@ -38,7 +38,7 @@ def _ctx(db: Any) -> dict[str, Any]:
     inbox = SimpleNamespace(
         id=501,
         trace_id=session.trace_id,
-        payload_json={"event_type": "DEVICE_EVENT"},
+        payload_json={"event_type": "INTERNAL_EVENT"},
     )
     trace = TraceContext.from_runtime(session=session, workline=workline, inbox=inbox)
     return {

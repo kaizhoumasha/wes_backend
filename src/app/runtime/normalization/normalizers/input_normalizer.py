@@ -11,68 +11,27 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixInOne
-from src.app.runtime.normalization.classifiers.result_classifier import (
-    classify_result,
-    classify_result_category,
-)
 from src.app.runtime.normalization.contracts import (
-    NormalizedCommandResult,
     NormalizedDeviceEvent,
     NormalizedExternalCallback,
 )
 from src.app.workline.utils import non_empty_str, payload_dict
 
-_ERROR_CODE_FIELDS = ("error_code", "code")
-_ERROR_MESSAGE_FIELDS = ("error_message", "msg", "message")
-
-
-def _resolve_first_str(payload: dict[str, Any], field_names: tuple[str, ...]) -> str | None:
-    for field_name in field_names:
-        value = non_empty_str(payload.get(field_name))
-        if value:
-            return value
-    return None
-
 
 def _infer_kind(raw_kind: Any, payload: dict[str, Any]) -> Any:
     """在 kind 缺失时，按 payload 形状做最小推断。
 
-    注意：只有在 inbox.kind 缺失/为空时才推断，
-    显式 DEVICE_EVENT 不允许被 payload 中的 command_code 等字段覆盖。
+    注意：只有在 inbox.kind 缺失/为空时才推断。
     """
 
     kind = getattr(raw_kind, "value", raw_kind)
     if isinstance(kind, str) and kind:
         return kind
 
-    if payload.get("result") is not None and (
-        payload.get("command_code") or payload.get("command_type") or payload.get("task_type")
-    ):
-        return "COMMAND_RESULT"
-
     if payload.get("callback_type") or payload.get("source_system"):
         return "EXTERNAL_HTTP"
 
     return kind
-
-
-def _normalized_error_detail(payload: dict[str, Any]) -> dict[str, Any]:
-    error_detail = payload_dict(payload.get("error_detail"))
-    if error_detail:
-        normalized_error_detail = dict(error_detail)
-        resolved_error_code = _resolve_first_str(error_detail, _ERROR_CODE_FIELDS)
-        resolved_error_message = _resolve_first_str(error_detail, _ERROR_MESSAGE_FIELDS)
-        normalized_error_detail.setdefault(
-            "error_code",
-            resolved_error_code,
-        )
-        normalized_error_detail.setdefault(
-            "error_message",
-            resolved_error_message,
-        )
-        return normalized_error_detail
-
-    return {}
 
 
 def _resolve_trace_id(inbox: Any, payload: dict[str, Any], *, trace_id: str = "") -> str | None:
@@ -177,24 +136,6 @@ def normalize_inbox_input(
             inbox,
             payload,
             trace_id=trace_id,
-        )
-
-    if kind == "COMMAND_RESULT":
-        source_result = str(payload.get("result") or "UNKNOWN")
-        error_detail = _normalized_error_detail(payload)
-        result_classification = classify_result_category(source_result, error_detail=error_detail)
-        return NormalizedCommandResult(
-            command_code=str(payload.get("command_code") or ""),
-            source_result=source_result,
-            normalized_result=classify_result(source_result),
-            result_classification=result_classification,
-            command_type=non_empty_str(payload.get("command_type")) or non_empty_str(payload.get("task_type")),
-            device_code=non_empty_str(payload.get("device_code")),
-            trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
-            finish_time=payload.get("finish_time"),
-            payload=payload,
-            data=payload_dict(payload.get("data")),
-            error_detail=error_detail,
         )
 
     if kind == "EXTERNAL_HTTP":

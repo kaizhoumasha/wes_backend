@@ -60,7 +60,6 @@ DomainDispatcher = Callable[[Any, int], Awaitable["DispatchResult"]]
 WORKLINE_OPERATION_DOMAIN = "WORKLINE"
 RACK_OPERATION_DOMAIN = "RACK"
 ALLOWED_INTERNAL_SIGNALS = frozenset({"core", "handling", "sys", "workline"})
-DEVICE_RESOURCE_WAIT_CODES = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"})
 
 
 class DispatchResult(TypedDict):
@@ -94,7 +93,6 @@ class SystemOutboxEngine:
         external_http_sender: ExternalHttpSender | None = None,
         credential_provider: VersionedCredentialProvider = external_http_credential_provider,
         workline_domain_dispatcher: DomainDispatcher | None = None,
-        device_command_dispatcher: Callable[[Any, Any], Awaitable[bool]] | None = None,
         dispatch_attempt_service: Any | None = None,
         external_http_recovery_context_factory: Callable[[], Any] | None = None,
         effect_transport_bridge: Any | None = None,
@@ -109,7 +107,6 @@ class SystemOutboxEngine:
         self.external_http_sender = external_http_sender or _send_external_http
         self.credential_provider = credential_provider
         self.workline_domain_dispatcher = workline_domain_dispatcher or _dispatch_workline_domain
-        self.device_command_dispatcher = device_command_dispatcher or _dispatch_device_command
         self.dispatch_attempt_service = dispatch_attempt_service
         self.external_http_recovery_context_factory = external_http_recovery_context_factory
         self.effect_transport_bridge = effect_transport_bridge
@@ -209,35 +206,7 @@ class SystemOutboxEngine:
             await _commit_if_supported(db)
 
             dispatch_started_at = time.perf_counter()
-            try:
-                dispatch_result = await self.dispatch_single(db, outbox)
-            except RuntimeError as exc:
-                error_code = getattr(exc, "code", None)
-                if error_code not in DEVICE_RESOURCE_WAIT_CODES:
-                    raise
-                _ = await self.outbox_repository.mark_as_blocked_by_device_busy(
-                    db,
-                    outbox_id,
-                    blocked_device_id=getattr(exc, "device_id", None),
-                    blocked_workline_id=getattr(outbox, "workline_id", None),
-                    reason=error_code,
-                    last_error=getattr(exc, "message", str(exc)),
-                    detail=dict(getattr(exc, "detail", {}) or {}),
-                    lease_owner_token=claim.lease_owner_token,
-                )
-                _ = await attempt_service.finalize_attempt_record(
-                    db,
-                    attempt=dispatch_attempt,
-                    lease_owner_token=claim.lease_owner_token,
-                    success=False,
-                    error_message=getattr(exc, "message", str(exc)),
-                    response={"result": "blocked", "reason": error_code},
-                    auto_commit=False,
-                )
-                await _commit_if_supported(db)
-                result["skipped"] += 1
-                result["dispatched"] += 1
-                continue
+            dispatch_result = await self.dispatch_single(db, outbox)
             if isinstance(dispatch_result, ExternalHttpTransportResult):
                 try:
                     attempt_no = int(getattr(dispatch_attempt, "attempt_no", None) or 1)
@@ -527,6 +496,7 @@ class SystemOutboxEngine:
         )
 
     async def dispatch_single(self, db: Any, outbox: Any) -> bool | ExternalHttpTransportResult:
+        _ = db
         from src.app.sys.services.outbox_delivery import dispatch_external_http, dispatch_internal_signal
 
         dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
@@ -537,8 +507,6 @@ class SystemOutboxEngine:
             return result
         if dispatch_type == SystemOutboxDispatchType.INTERNAL_SIGNAL.value:
             return await dispatch_internal_signal(outbox)
-        if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
-            return await self.device_command_dispatcher(db, outbox)
         logger.warning(f"未知的 SystemOutbox 派发类型: {dispatch_type}")
         return False
 
@@ -843,12 +811,6 @@ async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:
     from src.app.runtime.orchestration.services.inbox.outbox_dispatch_service import outbox_dispatch_service
 
     return await outbox_dispatch_service.dispatch(db, limit=limit)
-
-
-async def _dispatch_device_command(db: Any, outbox: Any) -> bool:
-    from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
-
-    return await device_command_gateway.dispatch(db, outbox)
 
 
 async def _commit_if_supported(db: Any) -> None:

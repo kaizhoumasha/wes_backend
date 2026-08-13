@@ -31,6 +31,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     from src.database.redis_client import close_redis, init_redis
 
     transport_runtime = None
+    device_command_runtime = None
     wms_data_lane_runtime = None
     wms_effect_preparation_runtime = None
     primary_error: BaseException | None = None
@@ -46,6 +47,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         # 先清空前一轮 lifecycle 可能遗留的策略；profile 编译失败时必须 fail closed。
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.device_evidence_service = None
         startup = validate_wms_transport_configuration(settings_source=settings)
         validate_transport_runtime_profile(startup)
         wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
@@ -62,6 +64,19 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             session_factory=db_module.AsyncSessionLocal,
         )
         _app.state.transport_runtime = transport_runtime
+
+        from src.app.device.composition import (
+            build_device_command_runtime,
+            resolve_device_command_runtime_config,
+        )
+
+        device_config = resolve_device_command_runtime_config()
+        device_command_runtime = build_device_command_runtime(
+            session_factory=db_module.AsyncSessionLocal,
+            base_url=device_config.base_url,
+            timeout_seconds=device_config.timeout_seconds,
+        )
+        _app.state.device_evidence_service = device_command_runtime.evidence_service
         await init_redis()
 
         from src.app.wms_integration.effect_preparation_runtime import (
@@ -112,6 +127,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.device_evidence_service = None
         cleanup_errors: list[BaseException] = []
         try:
             await asyncio.to_thread(runtime_observability_registry.close)
@@ -142,6 +158,12 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             except BaseException as exc:
                 cleanup_errors.append(exc)
                 logger.warning(f"FastAPI Transport 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
+        if device_command_runtime is not None:
+            try:
+                await device_command_runtime.aclose()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                logger.warning(f"FastAPI DeviceCommand 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
         try:
             await close_db()
         except BaseException as exc:

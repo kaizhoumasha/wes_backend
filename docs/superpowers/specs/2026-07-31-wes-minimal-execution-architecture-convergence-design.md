@@ -4,7 +4,7 @@ status: Approved
 created_at: 2026-07-31
 updated_at: 2026-08-13
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: v0.24.2.0@d65463cf
+implementation_baseline: Phase 7 DeviceCommand/ECS core completed on feature/phase7-device-ecs
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
@@ -20,7 +20,7 @@ related:
   - docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
   - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-legacy-workline-plugin-execution-retirement.md
-  - docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md
+  - ../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md

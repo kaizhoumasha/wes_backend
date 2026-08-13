@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi import HTTPException, Request, Response
+from fastapi import HTTPException, Request
 from sqlalchemy import func, select
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.core.conf import settings
-from tests.api.callback_test_support import create_event_payload, create_external_payload, create_result_payload
+from tests.api.callback_test_support import create_external_payload
 
 
 def _request(payload: dict[str, object], *, path: str = "/api/v1/callback/external") -> Request:
@@ -94,158 +93,6 @@ async def test_external_payload_too_large_stays_413_when_callback_log_fails(
 
         with pytest.raises(HTTPException) as exc_info:
             await callback_external(request=_request(create_external_payload()), db=db_session)
-
-    assert exc_info.value.status_code == 413
-    count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
-    assert count == 0
-
-
-@pytest.mark.asyncio
-async def test_result_payload_too_large_uses_real_writer_and_stays_413_when_callback_log_fails(
-    db_session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """result 真实 writer 的 payload guard 应零落库，并且日志失败不覆盖 413。"""
-    monkeypatch.setattr(settings, "runtime_inbox_payload_max_bytes", 1)
-    context = SimpleNamespace(
-        device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
-        workline=SimpleNamespace(is_active=True),
-    )
-
-    with (
-        patch(
-            "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
-            new=AsyncMock(
-                return_value=SimpleNamespace(
-                    trace_id="trace-result-real-limit",
-                    device_id=7,
-                    contract_version="1.0",
-                )
-            ),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
-            new=AsyncMock(return_value=(context, None)),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-            new=AsyncMock(side_effect=RuntimeError("callback log unavailable")),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
-            new=AsyncMock(),
-        ),
-    ):
-        from src.app.callback.v1.callback import callback_result
-
-        with pytest.raises(HTTPException) as exc_info:
-            await callback_result(
-                request=_request(
-                    create_result_payload(data={"secret": "x" * 2048}),
-                    path="/api/v1/callback/result",
-                ),
-                db=db_session,
-            )
-
-    assert exc_info.value.status_code == 413
-    count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
-    assert count == 0
-
-
-@pytest.mark.asyncio
-async def test_result_unknown_command_correlation_returns_retryable_503_when_callback_log_fails(
-    db_session,
-) -> None:
-    """命令上的孤立 correlation 属于服务端完整性故障，并且日志失败不得覆盖可重试 503。"""
-    context = SimpleNamespace(
-        device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
-        workline=SimpleNamespace(is_active=True),
-    )
-
-    with (
-        patch(
-            "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
-            new=AsyncMock(
-                return_value=SimpleNamespace(
-                    trace_id="trace-result-orphan-correlation",
-                    correlation_id="corr-command-not-persisted",
-                    device_id=7,
-                    contract_version="1.0",
-                )
-            ),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
-            new=AsyncMock(return_value=(context, None)),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-            new=AsyncMock(side_effect=RuntimeError("callback log unavailable")),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
-            new=AsyncMock(),
-        ),
-    ):
-        from src.app.callback.v1.callback import callback_result
-
-        with pytest.raises(HTTPException) as exc_info:
-            await callback_result(
-                request=_request(create_result_payload(), path="/api/v1/callback/result"),
-                db=db_session,
-            )
-
-    assert exc_info.value.status_code == 503
-    count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
-    assert count == 0
-
-
-@pytest.mark.asyncio
-async def test_event_payload_too_large_uses_real_writer_and_stays_413_when_callback_log_fails(
-    db_session,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """event 真实 writer 的 payload guard 应零落库，并且日志失败不覆盖 413。"""
-    monkeypatch.setattr(settings, "runtime_inbox_payload_max_bytes", 1)
-    context = SimpleNamespace(
-        device=None,
-        workline=SimpleNamespace(
-            is_active=True,
-        ),
-        work_line_id=1,
-        is_workline_bound=True,
-    )
-
-    with (
-        patch(
-            "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
-            new=AsyncMock(return_value=(context, None)),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service."
-            "workline_runtime_status_projection_service.runtime_status_snapshot",
-            new=AsyncMock(return_value=SimpleNamespace(runtime_status="READY")),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-            new=AsyncMock(side_effect=RuntimeError("callback log unavailable")),
-        ),
-        patch(
-            "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
-            new=AsyncMock(),
-        ),
-    ):
-        from src.app.callback.v1.callback import callback_event
-
-        with pytest.raises(HTTPException) as exc_info:
-            await callback_event(
-                request=_request(
-                    create_event_payload(data={"secret": "x" * 4096}),
-                    path="/api/v1/callback/event",
-                ),
-                db=db_session,
-                response=Response(),
-            )
 
     assert exc_info.value.status_code == 413
     count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))

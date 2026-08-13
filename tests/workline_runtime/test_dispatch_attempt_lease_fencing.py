@@ -7,7 +7,6 @@ from typing import Any
 
 import pytest
 
-from src.app.device.models.command import DeviceCommand
 from src.app.effect_ledger_status import DispatchAttemptStatus
 from src.app.runtime.orchestration.services.inbox import dispatch_attempt_service as attempt_service_module
 from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import WorklineDispatchAttemptService
@@ -22,14 +21,14 @@ from src.utils.timezone import timezone
 
 def _outbox(*, owner: str, expires_in_seconds: int = 60) -> SystemOutbox:
     return SystemOutbox(
-        provider_profile_identity="ecs.device-command.v1",
-        operation_identity="device.command",
-        operation_domain="DEVICE",
-        dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
-        dispatch_key=f"device-command:{owner}",
-        target_type=SystemOutboxTargetType.DEVICE,
-        target_code="ROBOT-1",
-        payload_json={"command_code": owner},
+        provider_profile_identity="runtime.internal-signal.v1",
+        operation_identity="runtime.signal",
+        operation_domain="RUNTIME",
+        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
+        dispatch_key=f"internal-signal:{owner}",
+        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
+        target_code="RUNTIME",
+        payload_json={"signal": owner},
         status=SystemOutboxStatus.DISPATCHING,
         lease_owner_token=owner,
         lease_expires_at=timezone.now_for_db() + timedelta(seconds=expires_in_seconds),

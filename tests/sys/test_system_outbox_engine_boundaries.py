@@ -27,7 +27,6 @@ from src.app.sys.models.outbox import WMS_ASYNC_EFFECT_OPERATION_IDENTITIES
 from src.app.sys.services.outbox_engine import (
     SystemOutboxEngine,
     _commit_if_supported,
-    _dispatch_device_command,
     _dispatch_workline_domain,
     _extract_protocol_error_code,
     _send_external_http,
@@ -634,24 +633,14 @@ def test_protocol_code_extractor_rejects_non_object_json() -> None:
 @pytest.mark.asyncio
 async def test_default_domain_gateways_delegate_to_their_owned_services(monkeypatch) -> None:
     workline_dispatch = AsyncMock(return_value={"dispatched": 1, "success": 1, "failed": 0, "skipped": 0})
-    device_dispatch = AsyncMock(return_value=True)
     outbox_dispatch_module = import_module("src.app.runtime.orchestration.services.inbox.outbox_dispatch_service")
-    device_gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
     monkeypatch.setattr(
         outbox_dispatch_module,
         "outbox_dispatch_service",
         SimpleNamespace(dispatch=workline_dispatch),
     )
-    monkeypatch.setattr(
-        device_gateway_module,
-        "device_command_gateway",
-        SimpleNamespace(dispatch=device_dispatch),
-    )
-
     assert (await _dispatch_workline_domain("db", 3))["success"] == 1
-    assert await _dispatch_device_command("db", "outbox") is True
     workline_dispatch.assert_awaited_once_with("db", limit=3)
-    device_dispatch.assert_awaited_once_with("db", "outbox")
 
 
 @pytest.mark.asyncio

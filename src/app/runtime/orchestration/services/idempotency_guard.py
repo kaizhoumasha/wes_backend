@@ -1,7 +1,7 @@
 """IdempotencyGuard runtime idempotency implementation。
 
-WES outbound effect 幂等闸门: dispatch 前对 RuntimeIntentLog / DeviceCommand
-等出站操作做 claim, 防止崩溃重放或重试导致下游双发。
+WES outbound effect 幂等闸门: dispatch 前对通用 runtime 与 WMS 操作做 claim，
+防止崩溃重放或重试导致下游双发。DeviceCommand 使用自身数据库身份与 claim，不进入本矩阵。
 
 核心语义:
 - NEW    首次 claim, 写入 IdempotencyKey, 调用方可继续 dispatch
@@ -52,8 +52,6 @@ class IdempotencyOperationSpec:
 _IDEMPOTENCY_OPERATION_MATRIX = {
     "callback": IdempotencyOperationSpec(operation_kind="callback", domain="callback"),
     "fulfillment": IdempotencyOperationSpec(operation_kind="fulfillment", domain="wms_integration"),
-    "device_command": IdempotencyOperationSpec(operation_kind="device_command", domain="device"),
-    "device_event": IdempotencyOperationSpec(operation_kind="device_event", domain="device"),
     "reconciliation": IdempotencyOperationSpec(operation_kind="reconciliation", domain="reconciliation"),
 }
 
@@ -62,10 +60,6 @@ _IDEMPOTENCY_OPERATION_ALIASES = {
     "wms_callback": "callback",
     "rcs_callback": "callback",
     "wms_fulfillment": "fulfillment",
-    "device_dispatch": "device_command",
-    "dispatch_command": "device_command",
-    "command_result": "device_event",
-    "event_push": "device_event",
     "runtime_reconciliation": "reconciliation",
     "resource_reconciliation": "reconciliation",
 }

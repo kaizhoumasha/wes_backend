@@ -19,6 +19,17 @@ class SandboxWorklineStartRequest(BaseModel):
     trace_id: str | None = Field(default=None, max_length=200, description="Trace ID（可选，自动生成）")
 
 
+class SandboxWorklineStartResponse(BaseModel):
+    """沙箱 WorkLine START 准入结果。"""
+
+    status: str | None = None
+    ack: bool | None = None
+    device_code: str | None = None
+    trace_id: str | None = None
+    reason_code: str | None = None
+    diagnostic: dict[str, Any] | None = None
+
+
 class SandboxAckRequest(BaseModel):
     """沙箱 Command ACK 模拟请求。"""
 
@@ -113,4 +124,5 @@ __all__ = [
     "SandboxAckRequest",
     "SandboxExternalCallbackRequest",
     "SandboxWorklineStartRequest",
+    "SandboxWorklineStartResponse",
 ]

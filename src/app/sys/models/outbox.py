@@ -26,10 +26,8 @@ from sqlalchemy import (
     Index,
     LargeBinary,
     Text,
-    and_,
     event,
     inspect,
-    text,
 )
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
@@ -52,7 +50,6 @@ if TYPE_CHECKING:
 class SystemOutboxDispatchType(str, Enum):
     """系统级派发类型。"""
 
-    DEVICE_COMMAND = "DEVICE_COMMAND"
     EXTERNAL_HTTP = "EXTERNAL_HTTP"
     INTERNAL_SIGNAL = "INTERNAL_SIGNAL"
 
@@ -60,12 +57,10 @@ class SystemOutboxDispatchType(str, Enum):
 class SystemOutboxTargetType(str, Enum):
     """系统级派发目标类型。"""
 
-    DEVICE = "DEVICE"
     HTTP_ENDPOINT = "HTTP_ENDPOINT"
     INTERNAL_SERVICE = "INTERNAL_SERVICE"
 
 
-SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS = frozenset({"DEVICE_BUSY", "DEVICE_STATUS_PRECHECK_WAIT"})
 WMS_EFFECT_OPERATION_IDENTITIES = EFFECT_OPERATION_IDENTITIES
 WMS_ASYNC_EFFECT_OPERATION_IDENTITIES = ASYNC_EFFECT_OPERATION_IDENTITIES
 
@@ -81,34 +76,6 @@ def _validate_wms_effect_idempotency(outbox: Any) -> None:
         or "\r" in idempotency_key
     ):
         raise ValueError("WMS EFFECT requires a non-empty single-line idempotency_key")
-
-
-def is_system_outbox_resource_wait(outbox: Any) -> bool:
-    """仅把带完整受控元数据的设备等待识别为受控资源等待投影。"""
-
-    status = getattr(outbox, "status", None)
-    dispatch_type = getattr(outbox, "dispatch_type", None)
-    status_value = status.value if isinstance(status, Enum) else status
-    dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
-    return (
-        status_value == SystemOutboxStatus.RETRY_WAIT.value
-        and dispatch_type_value == SystemOutboxDispatchType.DEVICE_COMMAND.value
-        and getattr(outbox, "blocked_reason", None) in SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS
-        and getattr(outbox, "blocked_at", None) is not None
-        and getattr(outbox, "finished_at", None) is None
-    )
-
-
-def system_outbox_resource_wait_clause(columns: Any) -> Any:
-    """生成与内存谓词等价的 SQL 过滤条件。"""
-
-    return and_(
-        columns.status == SystemOutboxStatus.RETRY_WAIT,
-        columns.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND,
-        columns.blocked_reason.in_(SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS),
-        columns.blocked_at.is_not(None),
-        columns.finished_at.is_(None),
-    )
 
 
 class OperationCompletionPolicy(str, Enum):
@@ -136,7 +103,6 @@ class DispatchEnvelope:
     operation_key: str | None = None
     workline_id: int | None = None
     session_id: int | None = None
-    device_id: int | None = None
     trace_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -178,12 +144,6 @@ class SystemOutboxBase(BaseMixin):
         index=True,
         foreign_key="wes_biz.work_lines.id",
         description="可选关联 WorkLine.id",
-    )
-    device_id: int | None = Field(
-        default=None,
-        index=True,
-        foreign_key="wes_biz.devices.id",
-        description="可选关联 Device.id，用于物理设备 FIFO",
     )
     operation_domain: str = Field(default="WORKLINE", max_length=50, index=True, description="操作域")
     operation_key: str | None = Field(default=None, max_length=240, index=True, description="操作幂等键")
@@ -319,17 +279,8 @@ class SystemOutboxBase(BaseMixin):
         ),
         description="阻断该 outbox 的 RuntimeHold.id",
     )
-    blocked_device_id: int | None = Field(default=None, index=True, description="阻断相关设备 ID")
     blocked_workline_id: int | None = Field(default=None, index=True, description="阻断相关工作线 ID")
     blocked_reason: str | None = Field(default=None, max_length=100, description="阻断原因")
-    blocked_at: datetime | None = Field(default=None, description="资源等待起始时间")
-    last_blocked_check_at: datetime | None = Field(default=None, description="最近一次资源等待探测时间")
-    blocked_check_count: int = Field(default=0, ge=0, description="资源等待探测次数")
-    blocked_detail_json: dict[str, Any] = Field(
-        default_factory=dict,
-        sa_column=Column(JSON, nullable=False),
-        description="资源等待诊断摘要",
-    )
 
 
 class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
@@ -381,39 +332,8 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
         ),
         Index("ix_system_outbox_domain_operation", "operation_domain", "operation_key"),
         Index("ix_system_outbox_context_status", "workline_id", "session_id", "status"),
-        Index("ix_system_outbox_blocked_release", "blocked_reason", "blocked_device_id", "blocked_workline_id"),
-        Index(
-            "ix_system_outbox_blocked_device_head_probe",
-            "operation_domain",
-            "status",
-            "dispatch_type",
-            "blocked_reason",
-            "last_blocked_check_at",
-            "blocked_device_id",
-            "target_code",
-            "created_at",
-            postgresql_where=text(
-                "status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND' "
-                "AND blocked_reason IN ('DEVICE_BUSY', 'DEVICE_STATUS_PRECHECK_WAIT') "
-                "AND blocked_at IS NOT NULL AND finished_at IS NULL"
-            ),
-            sqlite_where=text(
-                "status = 'RETRY_WAIT' AND dispatch_type = 'DEVICE_COMMAND' "
-                "AND blocked_reason IN ('DEVICE_BUSY', 'DEVICE_STATUS_PRECHECK_WAIT') "
-                "AND blocked_at IS NOT NULL AND finished_at IS NULL"
-            ),
-        ),
+        Index("ix_system_outbox_blocked_release", "blocked_reason", "blocked_workline_id"),
         Index("ix_system_outbox_retention", "status", "finished_at"),
-        Index(
-            "ix_system_outbox_device_fifo",
-            "dispatch_type",
-            "device_id",
-            "target_code",
-            "status",
-            "created_at",
-            postgresql_where=text("dispatch_type = 'DEVICE_COMMAND'"),
-            sqlite_where=text("dispatch_type = 'DEVICE_COMMAND'"),
-        ),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -553,7 +473,6 @@ def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox
 
 
 __all__ = [
-    "SYSTEM_OUTBOX_RESOURCE_WAIT_REASONS",
     "WMS_ASYNC_EFFECT_OPERATION_IDENTITIES",
     "WMS_EFFECT_OPERATION_IDENTITIES",
     "DispatchEnvelope",
@@ -565,6 +484,4 @@ __all__ = [
     "SystemOutboxStatus",
     "SystemOutboxTargetType",
     "SystemOutboxUpdate",
-    "is_system_outbox_resource_wait",
-    "system_outbox_resource_wait_clause",
 ]

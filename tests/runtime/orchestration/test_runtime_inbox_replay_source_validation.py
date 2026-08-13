@@ -23,18 +23,23 @@ def _canonical_payload_hash(payload: dict[str, Any]) -> str:
 
 
 def _legal_replay_pair() -> tuple[SimpleNamespace, SimpleNamespace]:
-    root_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "ROOT"}}
+    root_payload = {
+        "callback_type": "AGV_TASK_RESULT",
+        "source_system": "AGV",
+        "trace_id": "trace-root",
+        "command_code": "AGV-001",
+        "result": "SUCCESS",
+        "data": {"session_id": 10},
+    }
     root = SimpleNamespace(
         id=7,
-        kind="DEVICE_EVENT",
-        provider_code="PLC",
-        event_type="SCAN_COMPLETED",
+        kind="EXTERNAL_HTTP",
+        provider_code="AGV",
+        event_type="AGV_TASK_RESULT",
         source_event_id="root-event",
         payload_hash=_canonical_payload_hash(root_payload),
         payload_json=root_payload,
         workline_id=20,
-        device_id=21,
-        command_id=None,
         workline_session_id=10,
         execution_session_id=11,
         correlation_id="corr-root",
@@ -56,8 +61,6 @@ def _legal_replay_pair() -> tuple[SimpleNamespace, SimpleNamespace]:
         "original_source_event_id": root.source_event_id,
         "original_payload_hash": root.payload_hash,
         "original_workline_id": root.workline_id,
-        "original_device_id": root.device_id,
-        "original_command_id": root.command_id,
         "original_workline_session_id": root.workline_session_id,
         "original_execution_session_id": root.execution_session_id,
         "original_correlation_id": root.correlation_id,
@@ -74,8 +77,6 @@ def _legal_replay_pair() -> tuple[SimpleNamespace, SimpleNamespace]:
         payload_json=envelope,
         payload_hash=_canonical_payload_hash(envelope),
         workline_id=root.workline_id,
-        device_id=root.device_id,
-        command_id=root.command_id,
         workline_session_id=root.workline_session_id,
         execution_session_id=root.execution_session_id,
         correlation_id=root.correlation_id,
@@ -124,7 +125,7 @@ async def test_process_claimed_rejects_tampered_replay_before_context_or_effect(
     if tamper == "stale_payload_hash":
         source.payload_hash = "stale-hash"
     elif tamper == "payload":
-        envelope["original_payload"] = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "TAMPERED"}}
+        envelope["original_payload"] = {**root_payload, "command_code": "TAMPERED"}
         source.payload_hash = _canonical_payload_hash(envelope)
     elif tamper == "evidence":
         envelope["original_workline_session_id"] = 999

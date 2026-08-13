@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
-from src.app.device.models.device import Device, DeviceStatus
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -37,7 +36,7 @@ def _canonical_payload_hash(payload: dict[str, object]) -> str:
     return sha256(encoded).hexdigest()
 
 
-def test_unbound_workline_device_event_persists_idempotently_without_execution_objects() -> None:
+def test_unbound_internal_event_persists_idempotently_without_execution_objects() -> None:
     """通用 ingress 不得要求插件 binding，也不得在领取前创建执行对象。"""
 
     async def scenario(
@@ -53,40 +52,25 @@ def test_unbound_workline_device_event_persists_idempotently_without_execution_o
             )
             db.add(workline)
             await db.flush()
-            scanner = Device(
-                device_code="IT-UNBOUND-SCANNER-01",
-                device_name="Unbound Ingress Scanner",
-                work_line_id=workline.id,
-                device_role="SCANNER",
-                device_status=DeviceStatus.IDLE,
-                version=1,
-            )
-            db.add(scanner)
-            await db.flush()
             payload = {
-                "event_type": "SCAN_COMPLETED",
-                "device_code": scanner.device_code,
+                "event_type": "GENERIC_INPUT_RECEIVED",
                 "data": {"barcode": "UNBOUND-001"},
             }
-            accepted = await service.accept_device_event(
+            accepted = await service.accept_internal_event(
                 db,
-                device_code=scanner.device_code,
-                event_type="SCAN_COMPLETED",
+                event_type="GENERIC_INPUT_RECEIVED",
                 payload_json=payload,
                 trace_id="trace-unbound-ingress",
                 event_id="event-unbound-ingress",
                 workline_id=workline.id,
-                device_id=scanner.id,
             )
-            duplicate = await service.accept_device_event(
+            duplicate = await service.accept_internal_event(
                 db,
-                device_code=scanner.device_code,
-                event_type="SCAN_COMPLETED",
+                event_type="GENERIC_INPUT_RECEIVED",
                 payload_json=payload,
                 trace_id="trace-unbound-ingress",
                 event_id="event-unbound-ingress",
                 workline_id=workline.id,
-                device_id=scanner.id,
             )
             await db.commit()
             assert accepted.record.id == duplicate.record.id
@@ -97,19 +81,19 @@ def test_unbound_workline_device_event_persists_idempotently_without_execution_o
             result = await processor(service).process_claimed(db, claim=claimed)
 
             assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
-            await assert_dead_letter_terminal(db, inbox_id=int(accepted.record.id), error_code="CONTRACT_MISMATCH")
+            await assert_dead_letter_terminal(db, inbox_id=int(accepted.record.id), error_code="SESSION_RESOLVE_FAILED")
             assert await db.scalar(select(func.count()).select_from(WorklineSession)) == 0
             assert await db.scalar(select(func.count()).select_from(ExecutionSession)) == 0
             diagnostic_code = await db.scalar(
                 select(WorklineDiagnostic.diagnostic_code).where(WorklineDiagnostic.inbox_id == accepted.record.id)
             )
-            assert diagnostic_code == "CONTRACT_MISMATCH"
+            assert diagnostic_code == "SESSION_RESOLVE_FAILED"
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def test_unowned_device_event_fails_closed_without_plugin_side_effects() -> None:
-    """无业务 owner 的设备事件必须失败闭环，不能被 no-op consumer 确认为成功。"""
+def test_unowned_internal_event_fails_closed_without_plugin_side_effects() -> None:
+    """无业务 owner 的内部事件必须失败闭环，不能被 no-op consumer 确认为成功。"""
 
     async def scenario(
         session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway

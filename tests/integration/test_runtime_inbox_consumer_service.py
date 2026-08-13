@@ -16,7 +16,6 @@ from sqlalchemy.exc import IntegrityError
 from src.app.device.models.command import DeviceCommand
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
-from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import (
@@ -45,7 +44,7 @@ def _canonical_payload_hash(payload: dict[str, Any]) -> str:
 async def _accept_received(service: Any, db: Any, **kwargs: Any) -> Any:
     """使用全量 canonical contract 调用 RuntimeInboxService.accept_received。"""
     event_type = str(kwargs["event_type"])
-    kind = "COMMAND_RESULT" if "RESULT" in event_type.upper() else "EXTERNAL_HTTP"
+    kind = "EXTERNAL_HTTP"
     return await service.accept_received(
         db,
         kind=kind,
@@ -157,17 +156,6 @@ class _RuntimeInboxCorrelationValidationRaceRepository:
         return False
 
 
-class _IdempotencyGuardSpy:
-    """记录 claim 调用，验证归属冲突不会产生幂等副作用。"""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def claim_or_match(self, _db: Any, **kwargs: Any) -> object:
-        self.calls.append(kwargs)
-        return object()
-
-
 @pytest.mark.asyncio
 async def test_accept_received_rejects_workline_session_namespace_mismatch(db_session) -> None:
     """显式 WorklineSession FK 与 canonical ref 不一致时不得落库。"""
@@ -205,7 +193,7 @@ async def test_accept_received_rejects_unknown_explicit_correlation_before_repos
             RuntimeInboxService(),
             db_session,
             provider_code="ECS",
-            event_type="COMMAND_RESULT",
+            event_type="EXTERNAL_CALLBACK",
             source_event_id="evt-unknown-correlation",
             payload_hash="hash-unknown-correlation",
             correlation_id="corr-not-persisted",
@@ -213,73 +201,6 @@ async def test_accept_received_rejects_unknown_explicit_correlation_before_repos
 
     rows = (await db_session.execute(select(RuntimeInbox))).scalars().all()
     assert rows == []
-
-
-@pytest.mark.asyncio
-async def test_callback_result_writer_rejects_unknown_command_correlation(db_session) -> None:
-    """result writer 不得把 DeviceCommand 上的孤立 correlation 传入 RuntimeInbox FK。"""
-
-    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
-    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxCorrelationUnavailable
-
-    with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
-        await CallbackRuntimeInboxWriter().write_result_callback(
-            db_session,
-            payload={
-                "command_code": "CMD-UNKNOWN-CORR",
-                "device_code": "ARM_01",
-                "source_event_id": "evt-result-unknown-correlation",
-                "result": "SUCCESS",
-            },
-            request_id="req-unknown-corr",
-            canonical_result_type="DEVICE_RESULT",
-            correlation_id="corr-command-not-persisted",
-        )
-
-    rows = (await db_session.execute(select(RuntimeInbox))).scalars().all()
-    assert rows == []
-
-
-@pytest.mark.asyncio
-async def test_command_result_rejects_system_capability_key_instead_of_using_trace_fallback(db_session) -> None:
-    """下游 capability 幂等键不是 ExecutionCorrelation，trace 不得替它兜底。"""
-
-    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxCorrelationUnavailable
-
-    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-command-authority")
-    service = RuntimeInboxService()
-
-    with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
-        await service.accept_command_result(
-            db_session,
-            command_code="CMD-SYSTEM-CAPABILITY",
-            source_event_id="evt-system-capability-result",
-            device_code="ARM-01",
-            correlation_id="system-capability:device.command_write@v1:session:1:work-item:2:pick",
-            trace_id=correlation.trace_id,
-            payload_json={"command_code": "CMD-SYSTEM-CAPABILITY", "result": "SUCCESS"},
-        )
-
-
-@pytest.mark.asyncio
-async def test_command_result_preserves_explicit_correlation_when_trace_points_elsewhere(db_session) -> None:
-    """显式 correlation 是 owner hint；冲突 trace 不能替换它。"""
-
-    authority = await _seed_execution_correlation(db_session, correlation_id="corr-command-trace-authority")
-    explicit = await _seed_execution_correlation(db_session, correlation_id="corr-command-other")
-
-    accepted = await RuntimeInboxService().accept_command_result(
-        db_session,
-        command_code="CMD-ORDINARY-CONFLICT",
-        source_event_id="evt-ordinary-conflict",
-        device_code="ARM-01",
-        correlation_id=explicit.correlation_id,
-        trace_id=authority.trace_id,
-        payload_json={"command_code": "CMD-ORDINARY-CONFLICT", "result": "SUCCESS"},
-    )
-
-    assert accepted.record.correlation_id == explicit.correlation_id
-    assert accepted.record.execution_session_id == explicit.execution_session_id
 
 
 @pytest.mark.asyncio
@@ -325,7 +246,7 @@ async def test_runtime_inbox_accept_non_actionable_event_as_processed(db_session
         event_type="DEVICE_STATUS_CHANGED",
         source_event_id="evt-non-actionable-001",
         payload_hash=_canonical_payload_hash(payload),
-        kind="DEVICE_EVENT",
+        kind="EXTERNAL_HTTP",
         payload_json=payload,
         payload_schema_version=1,
         processing_required=False,
@@ -346,7 +267,7 @@ async def test_runtime_inbox_non_actionable_event_keeps_duplicate_and_conflict_c
         "provider_code": "ECS",
         "event_type": "DEVICE_STATUS_CHANGED",
         "source_event_id": "evt-non-actionable-idempotency",
-        "kind": "DEVICE_EVENT",
+        "kind": "EXTERNAL_HTTP",
         "payload_json": payload,
         "payload_schema_version": 1,
         "processing_required": False,
@@ -472,13 +393,12 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
         db_session,
         correlation_id="corr-owner-filled-by-processor",
     )
-    guard = _IdempotencyGuardSpy()
-    service = RuntimeInboxService(idempotency_guard=guard)  # type: ignore[arg-type]
+    service = RuntimeInboxService()
     first = await _accept_received(
         service,
         db_session,
-        provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        provider_code="WMS",
+        event_type="WMS_INVENTORY_UPDATED",
         source_event_id="evt-owner-filled-by-processor",
         payload_hash="hash-owner-filled-by-processor",
         correlation_id=correlation.correlation_id,
@@ -492,8 +412,8 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
     retry = await _accept_received(
         service,
         db_session,
-        provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        provider_code="WMS",
+        event_type="WMS_INVENTORY_UPDATED",
         source_event_id="evt-owner-filled-by-processor",
         payload_hash="hash-owner-filled-by-processor",
         correlation_id=correlation.correlation_id,
@@ -504,7 +424,6 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
     assert retry.record.id == first.record.id
     assert retry.record.workline_session_id == 41
     assert first.record.workline_session_id == 41
-    assert len(guard.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -560,14 +479,13 @@ async def test_accept_received_unique_race_without_owner_acks_processor_assigned
         db_session,
         correlation_id="corr-owner-race-unspecified",
     )
-    guard = _IdempotencyGuardSpy()
-    service = RuntimeInboxService(repository=repository, idempotency_guard=guard)  # type: ignore[arg-type]
+    service = RuntimeInboxService(repository=repository)
 
     retry = await _accept_received(
         service,
         db_session,
-        provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        provider_code="WMS",
+        event_type="WMS_INVENTORY_UPDATED",
         source_event_id="evt-owner-race-unspecified",
         payload_hash="hash-owner-race-unspecified",
         correlation_id=correlation.correlation_id,
@@ -577,7 +495,6 @@ async def test_accept_received_unique_race_without_owner_acks_processor_assigned
     assert retry.record is existing
     assert existing.workline_session_id == 41
     assert repository.add_calls == 1
-    assert guard.calls == []
 
 
 @pytest.mark.asyncio
@@ -590,13 +507,12 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
     )
 
     correlation = await _seed_execution_correlation(db_session, correlation_id="corr-session-owner")
-    guard = _IdempotencyGuardSpy()
-    service = RuntimeInboxService(idempotency_guard=guard)  # type: ignore[arg-type]
+    service = RuntimeInboxService()
     first = await _accept_received(
         service,
         db_session,
-        provider_code="ECS",
-        event_type="COMMAND_RESULT",
+        provider_code="WMS",
+        event_type="WMS_INVENTORY_UPDATED",
         source_event_id="evt-session-owner",
         payload_hash="hash-session-owner",
         correlation_id=correlation.correlation_id,
@@ -607,8 +523,8 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
         await _accept_received(
             service,
             db_session,
-            provider_code="ECS",
-            event_type="COMMAND_RESULT",
+            provider_code="WMS",
+            event_type="WMS_INVENTORY_UPDATED",
             source_event_id="evt-session-owner",
             payload_hash="hash-session-owner",
             correlation_id=correlation.correlation_id,
@@ -618,7 +534,6 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
     await db_session.refresh(first.record)
     assert exc_info.value.status_code == 409
     assert first.record.workline_session_id == 41
-    assert len(guard.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -638,15 +553,14 @@ async def test_accept_received_unique_race_rejects_another_session_before_idempo
     )
     repository = _RuntimeInboxUniqueRaceRepository(existing)
     correlation = await _seed_execution_correlation(db_session, correlation_id="corr-session-race")
-    guard = _IdempotencyGuardSpy()
-    service = RuntimeInboxService(repository=repository, idempotency_guard=guard)  # type: ignore[arg-type]
+    service = RuntimeInboxService(repository=repository)
 
     with pytest.raises(RuntimeInboxSessionOwnershipConflict):
         await _accept_received(
             service,
             db_session,
-            provider_code="ECS",
-            event_type="COMMAND_RESULT",
+            provider_code="WMS",
+            event_type="WMS_INVENTORY_UPDATED",
             source_event_id="evt-session-race",
             payload_hash="hash-session-race",
             correlation_id=correlation.correlation_id,
@@ -654,7 +568,6 @@ async def test_accept_received_unique_race_rejects_another_session_before_idempo
         )
 
     assert repository.add_calls == 1
-    assert guard.calls == []
 
 
 @pytest.mark.asyncio
@@ -739,9 +652,8 @@ async def test_internal_producer_uses_same_canonical_payload_size_guard(
     monkeypatch.setattr(settings, "runtime_inbox_payload_max_bytes", 1)
 
     with pytest.raises(RuntimeInboxPayloadTooLarge):
-        await RuntimeInboxService().accept_device_event(
+        await RuntimeInboxService().accept_internal_event(
             db_session,
-            device_code="ARM_01",
             event_type="SCAN_COMPLETED",
             payload_json={"event_type": "SCAN_COMPLETED", "data": {"barcode": "TOO-LARGE"}},
             event_id="evt-too-large-001",
@@ -849,7 +761,7 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
         service,
         db_session,
         provider_code="ECS",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id="evt-002",
         payload_hash="hash-original",
     )
@@ -859,7 +771,7 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
             service,
             db_session,
             provider_code="ECS",
-            event_type="DEVICE_EVENT",
+            event_type="INTERNAL_EVENT",
             source_event_id="evt-002",
             payload_hash="hash-tampered",
         )
@@ -929,90 +841,6 @@ async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -
 
 
 @pytest.mark.asyncio
-async def test_runtime_inbox_device_event_accept_claims_idempotency_key(db_session) -> None:
-    """device_event 入站生产入口必须同步 claim IdempotencyKey。"""
-
-    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
-
-    correlation = await _seed_execution_correlation(db_session)
-    service = RuntimeInboxService()
-
-    first = await _accept_received(
-        service,
-        db_session,
-        provider_code="ECS",
-        event_type="COMMAND_RESULT",
-        source_event_id="evt-device-001",
-        payload_hash="hash-device-001",
-        correlation_id=correlation.correlation_id,
-        now_ms=NOW_MS,
-    )
-    second = await _accept_received(
-        service,
-        db_session,
-        provider_code="ECS",
-        event_type="COMMAND_RESULT",
-        source_event_id="evt-device-001",
-        payload_hash="hash-device-001",
-        correlation_id=correlation.correlation_id,
-        now_ms=NOW_MS,
-    )
-
-    assert first.created is True
-    assert second.created is False
-    stored = (
-        await db_session.execute(
-            select(IdempotencyKey).where(
-                IdempotencyKey.provider_code == "ECS",
-                IdempotencyKey.operation_kind == "device_event",
-                IdempotencyKey.idempotency_key == "evt-device-001",
-            )
-        )
-    ).scalar_one()
-    assert stored.request_hash == "hash-device-001"
-    assert stored.execution_correlation_id == correlation.correlation_id
-
-
-@pytest.mark.asyncio
-async def test_runtime_inbox_device_event_accept_rejects_existing_idempotency_hash_conflict(db_session) -> None:
-    """device_event 已有 IdempotencyKey 不同 hash 时必须 409 并暴露 device 审计域。"""
-
-    from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
-    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
-
-    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-device-event-conflict")
-    db_session.add(
-        IdempotencyKey(
-            provider_code="ECS",
-            operation_kind="device_event",
-            idempotency_key="evt-device-conflict",
-            execution_correlation_id=correlation.correlation_id,
-            request_hash="hash-original",
-            business_owner_key="device_event:evt-device-conflict",
-            created_at=NOW_MS,
-        )
-    )
-    await db_session.flush()
-
-    with pytest.raises(IdempotencyConflict) as exc_info:
-        await _accept_received(
-            RuntimeInboxService(),
-            db_session,
-            provider_code="ECS",
-            event_type="EVENT_PUSH",
-            source_event_id="evt-device-conflict",
-            payload_hash="hash-tampered",
-            correlation_id=correlation.correlation_id,
-            now_ms=NOW_MS,
-        )
-
-    audit_event = exc_info.value.to_audit_event()
-    assert audit_event["normalized_operation_kind"] == "device_event"
-    assert audit_event["domain"] == "device"
-    assert audit_event["incoming_request_hash"] == "hash-tampered"
-
-
-@pytest.mark.asyncio
 async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_session) -> None:
     """DEAD_LETTER 人工重放必须新建 inbox 记录并写审计。"""
 
@@ -1075,8 +903,6 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
         "original_source_event_id": "evt-dead-001",
         "original_payload_hash": dead.payload_hash,
         "original_workline_id": None,
-        "original_device_id": None,
-        "original_command_id": None,
         "original_workline_session_id": None,
         "original_execution_session_id": session.id,
         "original_correlation_id": None,
@@ -1380,7 +1206,7 @@ async def test_replay_accepts_payload_null_with_persisted_session_owner(db_sessi
 async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
     root_payload = {"event_type": "SCAN_COMPLETED", "data": {"barcode": "A"}}
     root = RuntimeInbox(
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         provider_code="PLC",
         event_type="SCAN_COMPLETED",
         source_event_id="scan-root",
@@ -1411,7 +1237,7 @@ async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
     envelope = second.replay_record.payload_json
     assert envelope["immediate_source_inbox_id"] == first.replay_record.id
     assert envelope["root_source_inbox_id"] == root.id
-    assert envelope["original_kind"] == "DEVICE_EVENT"
+    assert envelope["original_kind"] == "INTERNAL_EVENT"
     assert envelope["original_payload"] == root.payload_json
     assert envelope["request_id"] == "req-2"
     assert "original_payload" not in envelope["original_payload"]
@@ -1427,7 +1253,7 @@ async def test_runtime_inbox_replay_of_replay_rejects_tampered_source_evidence(
 
     root_payload = {"event_type": "SCAN_COMPLETED", "data": {"barcode": "ROOT"}}
     root = RuntimeInbox(
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         provider_code="PLC",
         event_type="SCAN_COMPLETED",
         source_event_id=f"tampered-root-{tamper}",
@@ -1554,7 +1380,7 @@ async def test_replay_uses_fixed_budget_and_rejects_invalid_source_budget(db_ses
     [
         {"original_kind": "REPLAY_REQUEST", "original_payload": {}},
         {"original_kind": "UNKNOWN", "original_payload": {}},
-        {"original_kind": "DEVICE_EVENT", "original_payload": "not-object"},
+        {"original_kind": "INTERNAL_EVENT", "original_payload": "not-object"},
     ],
 )
 @pytest.mark.asyncio
@@ -2001,12 +1827,8 @@ async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_a
 @pytest.mark.parametrize(
     ("event_type", "expected_operation_kind", "expected_domain"),
     [
-        ("result", "device_event", "device"),
-        ("DEVICE_RESULT", "device_event", "device"),
-        ("event", "device_event", "device"),
         ("external", "callback", "callback"),
         ("fulfillment", "fulfillment", "wms_integration"),
-        ("device_event", "device_event", "device"),
         ("reconciliation", "reconciliation", "reconciliation"),
     ],
 )
@@ -2015,7 +1837,7 @@ def test_runtime_inbox_conflict_audit_maps_operation_kind(
     expected_operation_kind: str,
     expected_domain: str,
 ) -> None:
-    """RuntimeInbox 冲突审计必须覆盖 callback/result/event 等 canonical operation_kind。"""
+    """RuntimeInbox 冲突审计必须覆盖保留的通用 operation_kind。"""
 
     from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxConflict
 
@@ -2029,39 +1851,3 @@ def test_runtime_inbox_conflict_audit_maps_operation_kind(
 
     assert audit_event["operation_kind"] == expected_operation_kind
     assert audit_event["domain"] == expected_domain
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "event_type",
-    ["result", "event", "command_result", "event_push", "device_event", "DEVICE_RESULT", "device_result"],
-)
-async def test_runtime_inbox_accept_device_event_aliases_claim_idempotency_key(db_session, event_type: str) -> None:
-    """result/event canonical 与 legacy alias 都必须归一到 device_event 并 claim IdempotencyKey。"""
-
-    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
-
-    correlation = await _seed_execution_correlation(db_session, correlation_id=f"corr-{event_type}")
-    source_event_id = f"evt-{event_type}"
-
-    _ = await _accept_received(
-        RuntimeInboxService(),
-        db_session,
-        provider_code="ECS",
-        event_type=event_type,
-        source_event_id=source_event_id,
-        payload_hash=f"hash-{event_type}",
-        correlation_id=correlation.correlation_id,
-        now_ms=NOW_MS,
-    )
-
-    stored = (
-        await db_session.execute(
-            select(IdempotencyKey).where(
-                IdempotencyKey.provider_code == "ECS",
-                IdempotencyKey.operation_kind == "device_event",
-                IdempotencyKey.idempotency_key == source_event_id,
-            )
-        )
-    ).scalar_one()
-    assert stored.request_hash == f"hash-{event_type}"

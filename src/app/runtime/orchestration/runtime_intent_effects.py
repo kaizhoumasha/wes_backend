@@ -16,13 +16,10 @@ from sqlmodel import select
 
 from src.app.runtime.capabilities.material_flow.runtime_identity import RECONCILIATION_RUNTIME_SOURCE
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
-from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
 from src.app.runtime.orchestration.models.session import SessionStatus
 from src.app.runtime.orchestration.resource_wait_evidence_bridge import ResourceWaitEvidence
 from src.app.runtime.orchestration.runtime_intent import (
     BlockScope,
-    Destination,
-    DestinationKind,
     RuntimeIntent,
     RuntimeIntentKind,
 )
@@ -35,9 +32,7 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.SYSTEM_CAPABILITY,
     RuntimeIntentKind.UPDATE_CONTEXT,
     RuntimeIntentKind.MARK_NG,
-    RuntimeIntentKind.COMMAND,
     RuntimeIntentKind.EXTERNAL_REQUEST,
-    RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.RESOURCE_FACT,
     RuntimeIntentKind.RESOURCE_RESERVATION,
     RuntimeIntentKind.RESOURCE_WAIT,
@@ -54,11 +49,6 @@ _TERMINAL_INTENT_KINDS = {
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.RESOURCE_WAIT,
 }
-_DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
-
-
-def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
-    return [device for devices in devices_by_role.values() for device in devices]
 
 
 def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
@@ -69,29 +59,7 @@ def _merge_context_patch(ctx: Any, patch: dict[str, Any]) -> None:
 
 
 def _is_command_producing_intent(intent: RuntimeIntent) -> bool:
-    return intent.kind in {
-        RuntimeIntentKind.COMMAND,
-        RuntimeIntentKind.EXTERNAL_REQUEST,
-    }
-
-
-def _validate_command_destination(intent: RuntimeIntent) -> None:
-    if intent.kind != RuntimeIntentKind.COMMAND:
-        raise ValueError(f"Expected COMMAND intent, got {intent.kind.value}")
-
-    destination = intent.destination
-    if destination is None:
-        return
-    if destination.kind in {
-        DestinationKind.CURRENT,
-        DestinationKind.NEXT,
-        DestinationKind.ROLE,
-        DestinationKind.DEVICE,
-        DestinationKind.NG_ROUTE,
-        DestinationKind.PASS_ROUTE,
-    }:
-        return
-    raise ValueError(f"unsupported COMMAND destination: {destination.kind.value}")
+    return intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST
 
 
 def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
@@ -106,8 +74,6 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
         if _is_command_producing_intent(intent):
             command_producing_count += 1
             command_producing_seen = True
-            if intent.kind == RuntimeIntentKind.COMMAND:
-                _validate_command_destination(intent)
 
         if intent.kind in _TERMINAL_INTENT_KINDS and index != len(intents) - 1:
             raise ValueError("terminal RuntimeIntent must be final intent")
@@ -118,44 +84,9 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
         raise ValueError("multiple command-producing RuntimeIntents are not supported in one callback")
 
 
-def _runtime_route_roles(ctx: Any) -> dict[str, str]:
-    workline = ctx["workline"]
-    config_sources = (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None))
-    route_roles: dict[str, str] = {}
-    for source in config_sources:
-        if not isinstance(source, Mapping):
-            continue
-        source_map = cast("Mapping[str, Any]", source)
-        raw_routes = source_map.get("route_roles") or source_map.get("routes")
-        if not isinstance(raw_routes, Mapping):
-            continue
-        route_map = cast("Mapping[Any, Any]", raw_routes)
-        for key, value in route_map.items():
-            if isinstance(key, str) and isinstance(value, str) and value:
-                route_roles.setdefault(key, value)
-    return route_roles
-
-
 def _ctx_trace_id(ctx: Mapping[str, Any]) -> Any | None:
     trace = ctx.get("trace")
     return getattr(trace, "trace_id", None) or ctx.get("trace_id")
-
-
-def _int_value(value: Any) -> int | None:
-    return optional_int(value)
-
-
-def _resolve_command_result_timeout_seconds(intent: RuntimeIntent) -> int:
-    explicit_timeout = _int_value(intent.timeout_seconds)
-    if explicit_timeout is not None:
-        return max(1, explicit_timeout)
-
-    payload = intent.payload_json if isinstance(intent.payload_json, Mapping) else {}
-    timeout_ms = _int_value(payload.get("timeout"))
-    if timeout_ms is not None:
-        return max(1, (max(0, timeout_ms) + 999) // 1000)
-
-    return _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS
 
 
 def _result_status_value(result: Any) -> str | None:
@@ -254,26 +185,6 @@ def _is_duplicate_result(result: Any) -> bool:
     return _result_status_value(result) == "DUPLICATE"
 
 
-def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
-    if intent.target_device_id is not None:
-        destination = Destination.device(intent.target_device_id)
-    elif intent.destination is None and intent.device_role:
-        destination = Destination.role(intent.device_role)
-    else:
-        destination = intent.destination or Destination.current()
-
-    if destination.kind == DestinationKind.NEXT and intent.device_role:
-        destination = Destination.role(intent.device_role)
-
-    source_device = ctx["source_device"]
-    return resolve_destination_device(
-        destination=destination,
-        source_device=source_device,
-        devices=_all_devices(ctx["devices_by_role"]),
-        route_roles=_runtime_route_roles(ctx),
-    )
-
-
 class RuntimeIntentEffectApplier:
     def __init__(
         self,
@@ -364,16 +275,8 @@ class RuntimeIntentEffectApplier:
                 await self._apply_mark_ng(ctx, intent)
                 continue
 
-            if intent.kind == RuntimeIntentKind.COMMAND:
-                await self._apply_command(ctx, intent)
-                continue
-
             if intent.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
                 await self._apply_external_request(ctx, intent)
-                continue
-
-            if intent.kind == RuntimeIntentKind.DEVICE_EVENT:
-                await self._apply_device_event(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_FACT:
@@ -582,84 +485,6 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.SUCCESS,
         )
 
-    async def _apply_command(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.device.repositories.command_repository import DeviceCommandRepository
-        from src.app.runtime.orchestration.models.timeline import (
-            TimelineActionType,
-            TimelineActorType,
-            TimelineStage,
-            TimelineStatus,
-        )
-        from src.app.workline.services import write_back_service as workline_effects
-
-        try:
-            target_device = _resolve_target_device(ctx, intent)
-        except ValueError as exc:
-            await self._apply_destination_failure(ctx, exc)
-            return
-        target_device_id = resolve_required_pk(target_device, "target_device")
-        try:
-            workline_effects._enforce_device_command_governance(
-                target_device,
-                command_type=intent.action,
-                stage_label="命令创建",
-                allow_busy=True,
-            )
-        except workline_effects._DeviceCommandGovernanceError as exc:
-            await self._apply_governance_failure(ctx, exc)
-            return
-
-        device_code = getattr(target_device, "device_code", None)
-        if not isinstance(device_code, str) or not device_code:
-            raise ValueError(f"Target device missing device_code: {target_device_id}")
-
-        generated_command_code = workline_effects._build_command_code(
-            workline_effects._map_command_task_type(str(intent.action)),
-            session_id=resolve_required_pk(ctx["session"], "session"),
-        )
-        vendor_payload = workline_effects._normalize_vendor_command_payload(
-            intent.payload_json,
-            action=str(intent.action),
-            default_command_code=generated_command_code,
-        )
-        resolved_command_code = string_value(vendor_payload.get("command_code"), generated_command_code)
-        command_data = workline_effects._build_command_create_payload(
-            ctx,
-            action=str(intent.action),
-            vendor_payload=vendor_payload,
-            target_device_id=target_device_id,
-            resolved_command_code=resolved_command_code,
-        )
-        command = await DeviceCommandRepository().create(ctx["db"], command_data)
-        if command is None:
-            raise RuntimeError("Failed to create device command from RuntimeIntent")
-
-        ctx["awaiting_device_command_pk"] = command.id
-        ctx["awaiting_command_code"] = command.command_code
-
-        command_outbox = workline_effects._build_command_outbox_model(ctx, command=command, device_code=device_code)
-        ctx["db"].add(command_outbox)
-        await workline_effects._emit_timeline(
-            ctx,
-            stage=TimelineStage.DISPATCH_PREPARE,
-            action_type=TimelineActionType.COMMAND_SENT,
-            payload=workline_effects._command_timeline_payload(
-                ctx,
-                command_code=command.command_code,
-                task_type=str(intent.action),
-                dispatch_key=command_outbox.dispatch_key,
-                parameters=workline_effects.payload_dict(vendor_payload.get("params")),
-            ),
-            actor_type=TimelineActorType.ORCHESTRATOR,
-            actor_code=device_code,
-            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            related_command_id=command.id,
-            status=TimelineStatus.PENDING,
-        )
-
-        workline_effects._clear_session_failure(ctx["session"])
-        await self._apply_command_wait(ctx, intent)
-
     async def _apply_external_request(self, ctx: Any, intent: RuntimeIntent) -> None:
         target_code = str(intent.target_code)
         del ctx
@@ -667,34 +492,6 @@ class RuntimeIntentEffectApplier:
         if source_system in {"WMS", "RCS"} or target_code.startswith(("WMS", "RCS")):
             raise RuntimeError("WMS external HTTP facade is removed; use the frozen 35-operation registry")
         raise RuntimeError("generic workline external HTTP facade is removed")
-
-    async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
-        ctx_map = cast("Mapping[str, Any]", ctx)
-        payload = dict(intent.payload_json)
-        from src.app.runtime.orchestration.services.runtime_inbox import (
-            runtime_inbox_service,
-        )
-
-        device_code = str(payload["device_code"])
-        event_type = str(payload["event_type"])
-        trace_id = _ctx_trace_id(ctx_map)
-        event_id = payload.get("event_id")
-        causation_id = payload.get("causation_id")
-        workline_id = optional_int(getattr(ctx_map["workline"], "id", None))
-
-        # RuntimeInbox 是 device event 唯一事实源；缺少持久上游 event_id 时
-        # service fail-closed，不能把相同内容的两次 occurrence 错误合并。
-        _ = await runtime_inbox_service.accept_device_event(
-            ctx_map["db"],
-            device_code=device_code,
-            event_type=event_type,
-            payload_json=payload,
-            workline_id=workline_id,
-            trace_id=trace_id,
-            event_id=event_id,
-            causation_id=causation_id,
-            auto_commit=False,
-        )
 
     async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
         fact_type = str(intent.action)
@@ -915,60 +712,6 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.PENDING,
         )
         return RuntimeIntentEffectResult.resource_retry()
-
-    async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.timeline import (
-            TimelineActionType,
-            TimelineActorType,
-            TimelineStage,
-            TimelineStatus,
-        )
-        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
-        from src.app.workline.services import write_back_service as workline_effects
-
-        session = ctx["session"]
-        timeout_seconds = _resolve_command_result_timeout_seconds(intent)
-        workline_effects.workline_session_lifecycle_service.start_wait(
-            session,
-            wait_type="COMMAND_RESULT",
-            occurred_at=ctx["now"],
-            awaiting_device_command_code=ctx["awaiting_command_code"],
-            deadline_seconds=timeout_seconds,
-        )
-        await WorklineSessionRepository().persist_command_result_wait(
-            ctx["db"],
-            session_id=resolve_required_pk(session, "session"),
-            occurred_at=ctx["now"],
-            command_code=ctx["awaiting_command_code"],
-            timeout_seconds=timeout_seconds,
-        )
-        await workline_effects._emit_timeline(
-            ctx,
-            stage=TimelineStage.WAITING,
-            action_type=TimelineActionType.WAIT_STARTED,
-            payload=workline_effects._wait_timeline_payload(
-                ctx,
-                wait_type="COMMAND_RESULT",
-                wait_token=ctx["awaiting_command_code"],
-                deadline_seconds=timeout_seconds,
-            ),
-            from_status=ctx["current_status"],
-            to_status=session.status,
-            actor_type=TimelineActorType.ORCHESTRATOR,
-            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            related_command_id=ctx["awaiting_device_command_pk"],
-            status=TimelineStatus.PENDING,
-        )
-
-    async def _apply_governance_failure(self, ctx: Any, exc: Any) -> None:
-        from src.app.workline.services import write_back_service as workline_effects
-
-        ctx["effect_state"].failure = workline_effects.EffectFailure(
-            domain=exc.domain,
-            code=exc.code,
-            message=exc.message,
-        )
-        _ = await workline_effects._apply_failure_transition(ctx)
 
     async def _apply_destination_failure(self, ctx: Any, exc: ValueError) -> None:
         await self._apply_block(

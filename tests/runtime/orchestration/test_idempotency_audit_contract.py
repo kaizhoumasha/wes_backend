@@ -43,13 +43,5 @@ def test_idempotency_audit_matrix_covers_runtime_domains() -> None:
 
     matrix = default_idempotency_operation_matrix()
 
-    assert {
-        "callback",
-        "fulfillment",
-        "device_command",
-        "device_event",
-        "reconciliation",
-    }.issubset(matrix)
+    assert set(matrix) == {"callback", "fulfillment", "reconciliation"}
     assert get_idempotency_operation_spec("FULFILLMENT").operation_kind == "fulfillment"
-    assert get_idempotency_operation_spec("DISPATCH_COMMAND").operation_kind == "device_command"
-    assert get_idempotency_operation_spec("DEVICE_DISPATCH").operation_kind == "device_command"

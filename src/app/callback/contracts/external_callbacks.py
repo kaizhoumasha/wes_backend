@@ -67,7 +67,7 @@ def validate_external_callback_type(
     if source_system != "WMS":
         raise ValueError("source_system must be WMS")
     if callback_type in WMS_ORDINARY_EVENT_TYPES:
-        raise ValueError(f"ordinary WMS event must use /api/v1/callback/event: {callback_type}")
+        raise ValueError(f"ordinary WMS event must use /api/v1/wms/events: {callback_type}")
     if callback_type == "WMS_EFFECT_STATUS_HINT":
         callback_data = payload.get("data")
         operation_identity = callback_data.get("operation_identity") if isinstance(callback_data, dict) else None

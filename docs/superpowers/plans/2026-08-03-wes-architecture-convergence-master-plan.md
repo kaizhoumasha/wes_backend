@@ -17,7 +17,7 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
-Phase 5 已完成零插件基线；Phase 6 已完成 Transport 正式基础基线；Phase 7 详细计划已批准，下一动作是代码实施。
+Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 等待真实设备合同附录与供应商一致性边界获批。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -25,7 +25,7 @@ Phase 5 已完成零插件基线；Phase 6 已完成 Transport 正式基础基�
 
 **Inbound/putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`；不构成 Phase 8/9 实施授权）
 
-**Implementation baseline:** `develop@7f17533aa8d51622867bc637055ee76ff6efeb8a`（Phase 7 批准基线；合同摘要、引用图和实施边界见其独立详细计划；尚无业务 producer）
+**Implementation baseline:** `feature/phase7-device-ecs`（Phase 7 核心实现基线；Phase 8/9 仍无业务插件或 producer）
 
 ---
 
@@ -125,7 +125,7 @@ Transport/Adapter/核心所有权。
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 已完成；Phase 7 详细计划已批准但代码尚未开始；Phase 8–12 尚未开始。
+Phase 6 与 Phase 7 核心生产基线已完成；Phase 8–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -497,9 +497,11 @@ RuntimeIntentLog 和 SystemOutbox 的设备命令职责、可配置路径、旧 
 CALLBACK 可推进投影；未知、冲突、迟到或合同不匹配证据失败关闭；旧 Device owner 和裸 Client 分支零引用。零设备绑定是
 合法退出态：未绑定设备返回 `DEVICE_NOT_FOUND`，不发送 outbound 请求，也不接纳设备事件。
 
-**已批准的详细计划:** `docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md` 已冻结当前引用图、
-successor/`NONE`/`RETAIN` 矩阵、固定 wire 方向、最终模型、事务边界、三个有界 worker、唯一生产装配、schema cutover、
-测试所有权、提交边界和分层验收命令。该批准只授权进入代码实施，不代表代码、设备联调或业务插件已交付。
+**完成状态:** Phase 7 已按批准合同完成唯一 `DeviceCommand`/ECS 生产基线、三个有界 worker、固定 callback、
+`LineRunEpoch` fencing、schema cutover 和旧 Device owner 收敛。完整受影响 HEAVY 已在真实 PostgreSQL、Redis、Celery
+prefork 与 HTTP 闭环中 426 passed、0 skipped；完成的过程计划已移至项目外
+`../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`。
+这只证明核心基础能力，不代表供应商一致性、设备合同附录、现场联调或 Phase 8/9 业务插件已经交付。
 
 **风险及防止阶段越权的约束:** 不把旧 `DeviceCommandService` 当目标模板；不在本阶段定义具体插件业务、供应商私有协议或
 Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运行代际，不吸收 PickingTask 生命周期。
@@ -719,7 +721,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；Phase 6 已完成；Phase 7 详细计划已批准、代码尚未开始；Phase 8 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；Phase 6 与 Phase 7 核心生产基线已完成；Phase 8 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -735,17 +737,17 @@ Adapter、设备统一接口和明确插件。
 
 ## 21. Implementation Tasks
 
-Phase 6 已完成，Phase 7 详细计划已批准，下一动作是按该计划实施代码。Phase 6 的引用图、successor/`NONE` 矩阵、测试所有权、
-唯一生产装配、精确 HEAVY 与生产镜像 smoke 已闭环；其过程计划已归档，不再保留为项目内当前真源。Phase 7 不直接复用
-Transport 的对象或测试证明 Device/ECS 能力，也不得提前实现 Phase 8/9 业务插件。
+Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。两阶段分别拥有独立可靠对象、生产装配和测试证据；
+已完成的过程计划已归档，不再保留为项目内当前真源。下一动作是 Phase 8 粗分机参考插件的合同与实施准备，必须先取得
+真实设备合同附录和供应商一致性输入；不得把 Phase 7 核心测试当成现场设备或业务插件验收。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
 | --- | --- | --- | --- |
-| 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务接线；旧 owner 已收敛，Phase 7 未提前实施 |
-| 2 | Phase 7 详细计划评审 | Approved | 最终引用图、模型、事务、worker、装配、schema、测试和提交边界已冻结 |
-| 3 | Phase 7 代码实施 | Ready | 按独立详细计划逐任务 TDD；全部退出门禁通过后才可声明 Phase 7 完成 |
+| 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
+| 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
+| 3 | Phase 8 粗分机参考插件准备 | Pending | 先冻结真实设备合同附录、供应商一致性范围和插件业务合同；不得反向修改 Phase 7 公共 wire |
 
-Phase 7 现可开始代码实施；实施必须遵循 TDD，且不得把计划批准误报为阶段完成。
+Phase 8 尚不可直接编码：供应商原始资料可以作为输入，但必须先形成获批设备合同附录和插件验收边界。
 
 ## 22. 工程复审完成摘要
 
@@ -755,7 +757,7 @@ Phase 7 现可开始代码实施；实施必须遵循 TDD，且不得把计划�
 - **Test Review：** 核心、WMS Adapter、供应商一致性和插件测试所有权严格分离；通用不变量先有 successor，旧业务测试后删除。
 - **Performance：** 本轮阶段调整不引入新轮询、缓存、registry 或运行时扫描；后续 worker 必须有界。
 - **Failure modes：** 已覆盖只删目录、短命 Transport 接线、空插件、旧 DeviceCommand 升格、批量误删测试和历史文档残留。
-- **Parallelization：** Phase 5 与 Phase 6 已完成；Phase 7 先冻结自身 owner 矩阵，测试承接与文档/部署审查可并行，代码删除仍按依赖串行。
+- **Parallelization：** Phase 5 至 7 已完成；Phase 8 的设备附录、供应商一致性和插件业务计划可并行评审，核心公共 wire 不并行改造。
 - **NOT in scope：** Phase 7 不实现 Phase 8/9 的业务插件；任何阶段都不得删除 `docs/hardware/`。
 
 ## GSTACK REVIEW REPORT
@@ -770,6 +772,6 @@ Phase 7 现可开始代码实施；实施必须遵循 TDD，且不得把计划�
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段顺序已冻结；Phase 1 至 3、Phase 4 暗构建、Phase 5 零插件基线和 Phase 6 Transport 正式基础基线均已完成；Phase 7 DeviceCommand/ECS 独立详细计划已批准，可以从冻结基线开始代码实施。**
+**VERDICT：十二阶段顺序已冻结；Phase 1 至 3、Phase 4 暗构建、Phase 5 零插件基线、Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线均已完成。下一阶段只能在真实设备合同附录和供应商一致性边界获批后进入 Phase 8 插件实施。**
 
 NO UNRESOLVED DECISIONS

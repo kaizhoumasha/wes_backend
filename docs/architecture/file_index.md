@@ -31,7 +31,6 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 分批计划、Cell 晚绑定、不可逆执行、安全取消、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md` | Phase 7 DeviceCommand/ECS、统一接口、ACK/CALLBACK、Epoch fencing 和旧 owner 删除详细计划 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
@@ -70,6 +69,8 @@ API → Service → Repository → Database
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/runtime/` | Phase 5 后的零插件 implementation baseline；保留通用入站、投影、可靠性和诊断能力，具体业务插件执行闭包已退役 |
 | `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合、位置投影与 Phase 6 生产运行时；不包含业务 producer |
+| `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
+| `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
 | `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |
 | `src/app/wms_integration/` | Phase 5 已删除插件专属分支，Phase 6 已退出旧 Transport Effect owner；保留共享 WMS 能力和后续真实 WMS 业务 owner，不是业务插件模板 |
 | `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
@@ -107,6 +108,7 @@ API → Service → Repository → Database
 | `scripts/run_selected_heavy_tests.py` | 执行选中 HEAVY 并拒绝零执行/跳过 |
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
 | `docs/runbooks/transport-operations.md` | Transport 结构化日志与 PostgreSQL 事实的只读诊断入口 |
+| `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
 | `scripts/check_business_legacy_absence_gate.py` | 旧业务平台缺席门禁 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |

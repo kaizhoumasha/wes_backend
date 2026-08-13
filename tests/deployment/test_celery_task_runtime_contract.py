@@ -27,16 +27,11 @@ ASYNC_TASKS = {
         "process_transport_evidence_batch",
         "reconcile_transport_tasks_batch",
     ),
-    "workline": (
-        "scan_timeouts_batch",
-        "scan_device_heartbeats_batch",
-    ),
 }
 DB_TASKS = {
     "core": ("health_check", "send_notification"),
     "runtime_inbox": ("process_runtime_inbox_batch",),
     "sys": ASYNC_TASKS["sys"],
-    "workline": ASYNC_TASKS["workline"],
 }
 
 
@@ -161,8 +156,6 @@ def test_database_task_async_body_uses_task_local_get_db_context(module_name: st
     [
         ("runtime_inbox", "process_runtime_inbox_batch", 5),
         ("sys", "dispatch_system_outbox_batch", 10),
-        ("workline", "scan_timeouts_batch", 60),
-        ("workline", "scan_device_heartbeats_batch", 60),
     ],
 )
 def test_retry_countdown_keeps_exponential_backoff_contract(
@@ -206,8 +199,6 @@ TASK_CONTRACTS: dict[str, tuple[str, int, int, str]] = {
     "src.celery_app.tasks.runtime_inbox.process_signal": ("celery", 3, 10, "runtime_inbox"),
     "src.celery_app.tasks.sys.dispatch_system_outbox_batch": ("celery", 3, 10, "sys"),
     "src.celery_app.tasks.sys.process_signal": ("celery", 3, 10, "sys"),
-    "src.celery_app.tasks.workline.scan_timeouts_batch": ("celery", 3, 60, "workline"),
-    "src.celery_app.tasks.workline.scan_device_heartbeats_batch": ("celery", 3, 60, "workline"),
     "src.celery_app.tasks.workline.process_signal": ("celery", 3, 10, "workline"),
 }
 

@@ -188,25 +188,27 @@ class TraceSessionItem(BaseModel):
 
 class TraceCommandItem(BaseModel):
     id: int
-    device_id: int
     command_code: str
+    device_code: str
     trace_id: str | None = None
-    workline_id: int | None = None
-    session_id: str | None = None
+    line_run_epoch_id: int
+    device_binding_id: int
+    execution_ref_type: str
+    execution_ref_id: str
+    contract_key: str
+    contract_version: str
     task_type: str
     status: str
-    result: str | None = None
-    retry_count: int = 0
-    sent_at: datetime | None = None
+    payload_digest: str
+    deadline_at: datetime
+    attempt_count: int = 0
+    next_attempt_at: datetime | None = None
     ack_received_at: datetime | None = None
     completed_at: datetime | None = None
-    ack_code: int | None = None
-    ack_message: str | None = None
-    ack_trace_id: str | None = None
+    result_evidence_id: int | None = None
+    failure_code: str | None = None
+    reconciliation_reason: str | None = None
     params: dict[str, Any]
-    result_data: dict[str, Any] | None = None
-    error_detail: dict[str, Any] | None = None
-    duration_ms: int | None = None
 
 
 class TraceOutboxItem(BaseModel):

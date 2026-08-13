@@ -1,39 +1,25 @@
-"""Hold 子目录 — Runtime Hold 创建/查询/释放。
+"""Runtime Hold 服务的惰性导出入口。"""
 
-从 workline/services/ 物理迁入。
-workline/services/ 保留 re-export shim 兼容 v1 API。
-"""
+from importlib import import_module
 
-from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
-    RuntimeHoldCreationService,
-    runtime_hold_creation_service,
-)
-from src.app.runtime.orchestration.services.hold.runtime_hold_query_service import (
-    RuntimeHoldQueryService,
-    runtime_hold_query_service,
-)
-from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
-    RuntimeHoldReleaseError,
-    RuntimeHoldReleaseService,
-    runtime_hold_release_service,
-)
-from src.app.runtime.orchestration.services.hold.wms_putaway_sync_barrier_service import (
-    WmsPutawaySyncBarrierEvaluation,
-    WmsPutawaySyncBarrierGroup,
-    WmsPutawaySyncBarrierService,
-    wms_putaway_sync_barrier_service,
-)
+_EXPORTS = {
+    "RuntimeHoldCreationService": ".runtime_hold_creation_service",
+    "runtime_hold_creation_service": ".runtime_hold_creation_service",
+    "RuntimeHoldQueryService": ".runtime_hold_query_service",
+    "runtime_hold_query_service": ".runtime_hold_query_service",
+    "RuntimeHoldReleaseError": ".runtime_hold_release_service",
+    "RuntimeHoldReleaseService": ".runtime_hold_release_service",
+    "runtime_hold_release_service": ".runtime_hold_release_service",
+    "WmsPutawaySyncBarrierEvaluation": ".wms_putaway_sync_barrier_service",
+    "WmsPutawaySyncBarrierGroup": ".wms_putaway_sync_barrier_service",
+    "WmsPutawaySyncBarrierService": ".wms_putaway_sync_barrier_service",
+    "wms_putaway_sync_barrier_service": ".wms_putaway_sync_barrier_service",
+}
 
-__all__ = [
-    "RuntimeHoldCreationService",
-    "RuntimeHoldQueryService",
-    "RuntimeHoldReleaseError",
-    "RuntimeHoldReleaseService",
-    "WmsPutawaySyncBarrierEvaluation",
-    "WmsPutawaySyncBarrierGroup",
-    "WmsPutawaySyncBarrierService",
-    "runtime_hold_creation_service",
-    "runtime_hold_query_service",
-    "runtime_hold_release_service",
-    "wms_putaway_sync_barrier_service",
-]
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    if module_name := _EXPORTS.get(name):
+        return getattr(import_module(module_name, __name__), name)
+    raise AttributeError(name)

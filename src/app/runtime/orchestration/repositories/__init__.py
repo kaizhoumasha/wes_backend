@@ -17,10 +17,6 @@ from .conveyor_queue_membership_repository import (
     ConveyorQueueMembershipRepository,
     conveyor_queue_membership_repository,
 )
-from .device_runtime_projection_repository import (
-    DeviceRuntimeProjectionRepository,
-    device_runtime_projection_repository,
-)
 from .diagnostic_repository import (
     WorklineDiagnosticRepository,
     workline_diagnostic_repository,
@@ -100,7 +96,6 @@ from .workline_runtime_status_projection_repository import (
 
 __all__ = [
     "ConveyorQueueMembershipRepository",
-    "DeviceRuntimeProjectionRepository",
     "EffectReducerRepository",
     "IdempotencyKeyRepository",
     "MaterialUnitRepository",
@@ -129,7 +124,6 @@ __all__ = [
     "WorklineRuntimeStatusProjectionRepository",
     "WorklineSessionRepository",
     "conveyor_queue_membership_repository",
-    "device_runtime_projection_repository",
     "effect_reducer_repository",
     "idempotency_key_repository",
     "material_unit_repository",

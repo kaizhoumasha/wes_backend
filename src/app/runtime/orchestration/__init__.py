@@ -26,7 +26,6 @@ runtime core 实体已落地; ConveyorQueueMembership active/history 投影随 r
 
 from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
-from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -46,7 +45,6 @@ from src.app.runtime.orchestration.workline_runtime_status_projection import (
 __all__ = [
     "BinRouteInstance",
     "ConveyorQueueMembership",
-    "DeviceRuntimeProjection",
     "ExecutionCorrelation",
     "ExecutionSession",
     "ExecutionWorkItem",

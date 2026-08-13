@@ -12,12 +12,11 @@ from __future__ import annotations
 from copy import deepcopy
 from enum import Enum
 from re import fullmatch
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
 from src.app.runtime.extension_identity import sha256_digest, validate_key_version
-from src.utils.timezone import timezone
 
 _SYSTEM_CAPABILITY_OPERATION_KEY_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}"
 
@@ -32,9 +31,7 @@ def validate_system_capability_operation_key(value: object) -> str:
 
 class RuntimeIntentKind(str, Enum):
     SYSTEM_CAPABILITY = "SYSTEM_CAPABILITY"
-    COMMAND = "COMMAND"
     EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
-    DEVICE_EVENT = "DEVICE_EVENT"
     RESOURCE_FACT = "RESOURCE_FACT"
     RESOURCE_RESERVATION = "RESOURCE_RESERVATION"
     RESOURCE_WAIT = "RESOURCE_WAIT"
@@ -101,8 +98,6 @@ class Destination(BaseModel):
 
 class RuntimeIntent(BaseModel):
     kind: RuntimeIntentKind
-    device_role: str | None = None
-    target_device_id: int | None = None
     action: str | None = None
     dispatch_key: str | None = Field(default=None, min_length=1, max_length=240)
     target_code: str | None = None
@@ -113,7 +108,6 @@ class RuntimeIntent(BaseModel):
     payload_json: dict[str, Any] = Field(default_factory=dict)
     destination: Destination | None = None
     timeout_seconds: int | None = None
-    result_policy: Literal["COMMAND_RESULT"] | None = None
     block_scope: BlockScope | None = None
     reason_code: str | None = None
     message: str | None = None
@@ -179,29 +173,6 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
-    def command(
-        cls,
-        *,
-        device_role: str | None = None,
-        target_device_id: int | None = None,
-        action: str,
-        payload: dict[str, Any] | None = None,
-        destination: Destination | None = None,
-        timeout_seconds: int | None = None,
-        result_policy: Literal["COMMAND_RESULT"],
-    ) -> RuntimeIntent:
-        return cls(
-            kind=RuntimeIntentKind.COMMAND,
-            device_role=device_role,
-            target_device_id=target_device_id,
-            action=action,
-            payload_json=deepcopy(payload) if payload is not None else {},
-            destination=destination,
-            timeout_seconds=timeout_seconds,
-            result_policy=result_policy,
-        )
-
-    @classmethod
     def external_request(
         cls,
         *,
@@ -218,36 +189,6 @@ class RuntimeIntent(BaseModel):
             source_system=source_system,
             payload_json=deepcopy(payload) if payload is not None else {},
             timeout_seconds=timeout_seconds,
-        )
-
-    @classmethod
-    def device_event(
-        cls,
-        *,
-        device_code: str,
-        event_type: str,
-        data: dict[str, Any] | None = None,
-        timestamp: int | None = None,
-        event_id: str | None = None,
-        causation_id: str | None = None,
-        canonical_event_type: str | None = None,
-    ) -> RuntimeIntent:
-        payload_json: dict[str, Any] = {
-            "device_code": device_code,
-            "event_type": event_type,
-            "timestamp": timestamp if timestamp is not None else int(timezone.now_utc().timestamp() * 1000),
-            "data": deepcopy(data) if data is not None else {},
-        }
-        if event_id is not None:
-            payload_json["event_id"] = event_id
-        if causation_id is not None:
-            payload_json["causation_id"] = causation_id
-        if canonical_event_type is not None:
-            payload_json["canonical_event_type"] = canonical_event_type
-
-        return cls(
-            kind=RuntimeIntentKind.DEVICE_EVENT,
-            payload_json=payload_json,
         )
 
     @classmethod
@@ -431,17 +372,10 @@ class RuntimeIntent(BaseModel):
 
     @model_validator(mode="after")
     def validate_intent(self) -> RuntimeIntent:  # noqa: PLR0912
-        if self.kind == RuntimeIntentKind.COMMAND:
-            if self.result_policy is None:
-                raise ValueError("COMMAND intent requires result_policy")
-        elif self.result_policy is not None:
-            raise ValueError("result_policy is only valid for COMMAND intents")
         if self.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
             self._validate_system_capability()
         else:
             self._reject_system_capability_fields()
-        if self.kind == RuntimeIntentKind.COMMAND and not self.action:
-            raise ValueError("COMMAND intent requires action")
         if self.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
             if not self.dispatch_key:
                 raise ValueError("EXTERNAL_REQUEST intent requires dispatch_key")
@@ -453,19 +387,6 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("EXTERNAL_REQUEST intent requires payload")
             if self.timeout_seconds is None or self.timeout_seconds <= 0:
                 raise ValueError("EXTERNAL_REQUEST intent requires timeout_seconds")
-        if self.kind == RuntimeIntentKind.DEVICE_EVENT:
-            if not self.payload_json.get("device_code"):
-                raise ValueError("DEVICE_EVENT intent requires device_code")
-            if not self.payload_json.get("event_type"):
-                raise ValueError("DEVICE_EVENT intent requires event_type")
-            if "timestamp" not in self.payload_json:
-                raise ValueError("DEVICE_EVENT intent requires timestamp")
-            if not isinstance(self.payload_json.get("timestamp"), int):
-                raise ValueError("DEVICE_EVENT intent timestamp must be an integer")
-            if "data" not in self.payload_json:
-                raise ValueError("DEVICE_EVENT intent requires data")
-            if not isinstance(self.payload_json.get("data"), dict):
-                raise ValueError("DEVICE_EVENT intent data must be a dict")
         if self.kind == RuntimeIntentKind.RESOURCE_FACT:
             if not self.action:
                 raise ValueError("RESOURCE_FACT intent requires action")
@@ -567,8 +488,6 @@ class RuntimeIntent(BaseModel):
         if not self.provider_snapshot:
             raise ValueError("SYSTEM_CAPABILITY intent requires provider snapshot")
         legacy_fields = {
-            "device_role": self.device_role,
-            "target_device_id": self.target_device_id,
             "action": self.action,
             "target_code": self.target_code,
             "source_system": self.source_system,

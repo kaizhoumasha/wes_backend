@@ -29,9 +29,9 @@ async def _processing_inbox(
     token: str = "lease-1",  # noqa: S107  (测试 lease token，不是密码)
 ) -> RuntimeInbox:
     inbox = RuntimeInbox(
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         provider_code="TEST",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id=source_event_id,
         payload_hash=f"sha256:{source_event_id}",
         payload_json={},
@@ -236,9 +236,9 @@ async def test_minimum_retry_budget_is_exhausted_after_first_attempt(db_session:
 @pytest.mark.asyncio
 async def test_resource_wait_does_not_consume_attempt_across_repeated_claims(db_session: AsyncSession) -> None:
     inbox = RuntimeInbox(
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         provider_code="TEST",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id="resource-wait",
         payload_hash="sha256:resource-wait",
         payload_json={},
@@ -364,9 +364,9 @@ async def test_atomic_recovery_respects_limit_active_lease_and_retry_budget(db_s
 @pytest.mark.asyncio
 async def test_last_budget_crash_recovers_to_dead_letter_and_unblocks_bucket(db_session: AsyncSession) -> None:
     first = RuntimeInbox(
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         provider_code="TEST",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id="last-budget",
         payload_hash="sha256:last-budget",
         payload_json={},
@@ -378,9 +378,9 @@ async def test_last_budget_crash_recovers_to_dead_letter_and_unblocks_bucket(db_
         max_retries=2,
     )
     following = RuntimeInbox(
-        kind="DEVICE_EVENT",
+        kind="INTERNAL_EVENT",
         provider_code="TEST",
-        event_type="DEVICE_EVENT",
+        event_type="INTERNAL_EVENT",
         source_event_id="after-last-budget",
         payload_hash="sha256:after-last-budget",
         payload_json={},

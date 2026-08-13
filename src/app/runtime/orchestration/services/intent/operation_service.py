@@ -10,11 +10,6 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.device.models.command import CommandStatus
-from src.app.device.repositories import (
-    DeviceCommandRepository,
-    device_command_repository,
-)
 from src.app.runtime.orchestration.effect_state_contract import transition_system_outbox
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
 from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
@@ -47,19 +42,10 @@ from src.utils.value_normalization import enum_str
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.models.operation import ResolveRuntimeReconciliationRequest
 
-_RESULT_WAIT_SESSION_STATUS = SessionStatus.WAITING_DEVICE_RESULT
-
-_ACK_WAIT_OUTBOX_STATUSES = {
+_SANDBOX_CALLBACK_OUTBOX_STATUSES = {
     SystemOutboxStatus.NEW.value,
     SystemOutboxStatus.DISPATCHING.value,
     SystemOutboxStatus.SENT.value,
-}
-
-_TERMINAL_COMMAND_STATUSES = {
-    CommandStatus.COMPLETED.value,
-    CommandStatus.FAILED.value,
-    CommandStatus.TIMEOUT.value,
-    CommandStatus.CANCELLED.value,
 }
 
 
@@ -73,7 +59,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
         workline_repo: WorkLineRepository | None = None,
-        command_repo: DeviceCommandRepository | None = None,
         runtime_hold_repo: RuntimeHoldRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
@@ -83,7 +68,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         self.session_repo = session_repo or workline_session_repository
         self.outbox_repo = outbox_repo or system_outbox_repository
         self.workline_repo = workline_repo or workline_repository
-        self.command_repo = command_repo or device_command_repository
         self.runtime_hold_repo = runtime_hold_repo or runtime_hold_repository
         self._queue_gateway = queue_gateway
 
@@ -99,8 +83,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         payload: dict[str, Any],
         source_event_id: str | None,
         workline_id: int | None = None,
-        device_id: int | None = None,
-        command_id: int | None = None,
         workline_session_id: int | None = None,
         trace_id: str | None = None,
         event_id: str | None = None,
@@ -124,8 +106,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             event_id=event_id,
             causation_id=causation_id,
             workline_id=workline_id,
-            device_id=device_id,
-            command_id=command_id,
             workline_session_id=workline_session_id,
             now_ms=received_at_ms,
         )
@@ -136,13 +116,10 @@ class WorklineOperationService(BaseService[Any, Any]):
         *,
         limit: int = 50,
         workline_id: int | None = None,
-        device_id: int | None = None,
     ) -> list[Any]:
         """查询 SIMULATION 模式下等待调试人员处理的 outbox。"""
 
-        outboxes = await self.outbox_repo.get_sandbox_pending_messages(
-            db, limit=limit, workline_id=workline_id, device_id=device_id
-        )
+        outboxes = await self.outbox_repo.get_sandbox_pending_messages(db, limit=limit, workline_id=workline_id)
         return [await self._project_sandbox_pending_outbox(db, outbox) for outbox in outboxes]
 
     async def get_sandbox_completed(
@@ -151,7 +128,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         *,
         limit: int = 50,
         workline_id: int | None = None,
-        device_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """查询 SIMULATION 模式下已完成的 outbox，按 Session 分组。"""
 
@@ -160,50 +136,26 @@ class WorklineOperationService(BaseService[Any, Any]):
             inbox_query=runtime_inbox_query,
             limit=limit,
             workline_id=workline_id,
-            device_id=device_id,
         )
         for group in groups:
             await self._enrich_sandbox_history_group(db, group)
         return groups
 
     async def _project_sandbox_pending_outbox(self, db: Any, outbox: Any) -> Any:
-        """将沙箱 outbox 投影为前端动作状态。
-
-        Sandbox 人工推进以 DeviceCommand 为操作对象。Outbox 即使尚未被后台
-        dispatcher 标记为 SENT，也已经代表一条待 ACK 的设备命令。
-        """
+        """将沙箱 EXTERNAL_HTTP outbox 投影为前端动作状态。"""
 
         raw_payload = outbox.payload_json
         payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
         status = enum_str(outbox.status)
-        is_current_action = True
-        command_status: str | None = None
-        command: Any | None = None
-        dispatch_type = enum_str(outbox.dispatch_type)
-        if dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND.value:
-            command_code = payload.get("command_code")
-            if isinstance(command_code, str) and command_code:
-                command = await self.command_repo.get_by_command_code(db, command_code)
-                if command is not None:
-                    command_status = enum_str(getattr(command, "status", None))
-                    is_current_action = await self._is_current_sandbox_command_outbox(db, outbox, command)
-                    if command_status in _TERMINAL_COMMAND_STATUSES:
-                        status = command_status
-                    elif command_status == CommandStatus.ACK_RECEIVED.value:
-                        status = "ACKED"
-                    elif enum_str(outbox.status) in _ACK_WAIT_OUTBOX_STATUSES:
-                        status = SystemOutboxStatus.SENT.value
-        elif dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-            is_current_action = await self._is_current_sandbox_external_outbox(db, outbox)
-
-        runtime_hold = await self._find_projection_runtime_hold(db, outbox=outbox, command=command)
+        is_current_action = await self._is_current_sandbox_external_outbox(db, outbox)
+        runtime_hold = await self._find_projection_runtime_hold(db, outbox=outbox)
         runtime_hold_id = runtime_hold.id if runtime_hold is not None else None
         is_actionable = (
             is_current_action
             and enum_str(outbox.status) not in {SystemOutboxStatus.RETRY_WAIT.value, SystemOutboxStatus.FAILED.value}
-            and status in {SystemOutboxStatus.SENT.value, "ACKED"}
+            and status == SystemOutboxStatus.SENT.value
         )
-        failure_summary = self._build_projection_failure_summary(outbox=outbox, command=command, hold=runtime_hold)
+        failure_summary = self._build_projection_failure_summary(outbox=outbox, hold=runtime_hold)
 
         return SimpleNamespace(
             id=outbox.id,
@@ -217,7 +169,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             payload_json=payload,
             source_device=None,
             last_error=getattr(outbox, "last_error", None),
-            command_status=command_status,
             is_current_action=is_current_action,
             is_actionable=is_actionable,
             runtime_hold_id=runtime_hold_id,
@@ -225,7 +176,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             history_group_key=self._history_group_key(outbox),
         )
 
-    async def _find_projection_runtime_hold(self, db: Any, *, outbox: Any, command: Any | None) -> Any | None:
+    async def _find_projection_runtime_hold(self, db: Any, *, outbox: Any) -> Any | None:
         direct_hold_id = getattr(outbox, "blocked_by_runtime_hold_id", None)
         if isinstance(direct_hold_id, int):
             if self.runtime_hold_repo is runtime_hold_repository and not hasattr(db, "execute"):
@@ -239,10 +190,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         if not isinstance(workline_id, int):
             return None
 
-        command_id = command.id if command is not None and isinstance(getattr(command, "id", None), int) else None
-        device_id = (
-            command.device_id if command is not None and isinstance(getattr(command, "device_id", None), int) else None
-        )
         session_id = outbox.session_id if isinstance(outbox.session_id, int) else None
         outbox_id = outbox.id if isinstance(outbox.id, int) else None
         return await self.runtime_hold_repo.find_latest_for_projection(
@@ -250,37 +197,24 @@ class WorklineOperationService(BaseService[Any, Any]):
             workline_id=workline_id,
             session_id=session_id,
             source_outbox_id=outbox_id,
-            source_command_id=command_id,
-            source_device_id=device_id,
         )
 
-    def _build_projection_failure_summary(
-        self, *, outbox: Any, command: Any | None, hold: Any | None
-    ) -> dict[str, Any] | None:
+    def _build_projection_failure_summary(self, *, outbox: Any, hold: Any | None) -> dict[str, Any] | None:
         outbox_status = enum_str(outbox.status)
-        command_status = enum_str(command.status) if command is not None else None
         failure_outbox_statuses = {
             SystemOutboxStatus.RETRY_WAIT.value,
             SystemOutboxStatus.FAILED.value,
             SystemOutboxStatus.CANCELLED.value,
         }
-        if outbox_status not in failure_outbox_statuses and command_status not in _TERMINAL_COMMAND_STATUSES:
+        if outbox_status not in failure_outbox_statuses:
             return None
 
-        error_detail = (
-            command.error_detail
-            if command is not None and isinstance(getattr(command, "error_detail", None), dict)
-            else {}
-        )
         code = None
         if hold is not None:
             code = hold.source_reason
         if code is None:
-            detail_code = error_detail.get("code")
-            code = detail_code if isinstance(detail_code, str) and detail_code else getattr(outbox, "last_error", None)
-        message = error_detail.get("message")
-        if not isinstance(message, str) or not message:
-            message = getattr(outbox, "last_error", None) or code
+            code = getattr(outbox, "last_error", None)
+        message = getattr(outbox, "last_error", None) or code
 
         runtime_hold_id = hold.id if hold is not None else None
         return {
@@ -324,20 +258,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         session_id: int | None,
         history_group_key: str | None,
     ) -> None:
-        payload = item.get("payload_json")
-        command_code = payload.get("command_code") if isinstance(payload, dict) else None
-        command = None
-        command_status: str | None = None
-        if isinstance(command_code, str) and command_code:
-            command = await self.command_repo.get_by_command_code(db, command_code)
-            if command is not None:
-                command_status = enum_str(getattr(command, "status", None))
-                item["command_status"] = command_status
-                if command_status in _TERMINAL_COMMAND_STATUSES:
-                    item["status"] = command_status
-                elif command_status == CommandStatus.ACK_RECEIVED.value:
-                    item["status"] = "ACKED"
-
         outbox = SimpleNamespace(
             id=item.get("id"),
             session_id=session_id or item.get("session_id"),
@@ -346,49 +266,17 @@ class WorklineOperationService(BaseService[Any, Any]):
             last_error=item.get("last_error"),
             blocked_by_runtime_hold_id=item.get("runtime_hold_id"),
         )
-        hold = await self._find_projection_runtime_hold(db, outbox=outbox, command=command)
+        hold = await self._find_projection_runtime_hold(db, outbox=outbox)
         runtime_hold_id = hold.id if hold is not None else item.get("runtime_hold_id")
-        if command_status == CommandStatus.COMPLETED.value:
-            runtime_hold_id = None
         item["is_actionable"] = False
         item["runtime_hold_id"] = runtime_hold_id
         item["history_group_key"] = history_group_key or self._history_group_key(outbox)
 
-        failure_summary = (
-            None
-            if command_status == CommandStatus.COMPLETED.value
-            else self._build_projection_failure_summary(outbox=outbox, command=command, hold=hold)
-        )
+        failure_summary = self._build_projection_failure_summary(outbox=outbox, hold=hold)
         existing_summary = item.get("failure_summary")
-        if (
-            command_status != CommandStatus.COMPLETED.value
-            and failure_summary is None
-            and isinstance(existing_summary, dict)
-        ):
+        if failure_summary is None and isinstance(existing_summary, dict):
             failure_summary = {**existing_summary, "runtime_hold_id": runtime_hold_id}
         item["failure_summary"] = failure_summary
-
-    async def _is_current_sandbox_command_outbox(self, db: Any, outbox: Any, command: Any) -> bool:
-        """判断 outbox 是否是当前 session 正在等待人工推进的命令。"""
-
-        if enum_str(getattr(command, "status", None)) in _TERMINAL_COMMAND_STATUSES:
-            return False
-
-        command_id = getattr(command, "id", None)
-        if not isinstance(command_id, int):
-            return True
-
-        session_id = getattr(outbox, "session_id", None)
-        if not isinstance(session_id, int):
-            return True
-
-        session = await self.session_repo.get_by_id(db, session_id)
-        if session is None or enum_str(getattr(session, "status", None)) != SessionStatus.WAITING_DEVICE_RESULT.value:
-            return True
-
-        awaiting_command_code = getattr(session, "awaiting_device_command_code", None)
-        command_code = getattr(command, "command_code", None)
-        return not isinstance(awaiting_command_code, str) or awaiting_command_code == command_code
 
     async def _is_current_sandbox_external_outbox(self, db: Any, outbox: Any) -> bool:
         """判断 EXTERNAL_HTTP outbox 是否仍是当前 session 等待的外部回调。"""
@@ -608,7 +496,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if enum_str(outbox.dispatch_type) != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
             raise ValueError(f"仅允许 EXTERNAL_HTTP Outbox 模拟外部回调: dispatch_key={dispatch_key}")
-        if enum_str(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
+        if enum_str(outbox.status) not in _SANDBOX_CALLBACK_OUTBOX_STATUSES:
             raise ValueError(
                 f"当前 Outbox 状态不允许模拟外部回调: dispatch_key={dispatch_key}, status={enum_str(outbox.status)}"
             )
@@ -722,79 +610,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             await self._commit_mutation(db)
         return inbox_result.record
 
-    async def submit_sandbox_ack(
-        self,
-        db: Any,
-        *,
-        dispatch_key: str,
-        auto_commit: bool = True,
-    ) -> Any:
-        """沙箱模式模拟 Command ACK。
-
-        ACK 事实写 DeviceCommand.status/ack_received_at；如果后台 dispatcher 尚未运行，
-        同步把 Sandbox outbox 收敛到 SENT，避免人工调试依赖派发轮询。
-        """
-
-        outbox = await self.outbox_repo.get_by_dispatch_key(db, dispatch_key)
-        if outbox is None:
-            raise ValueError(f"Outbox 不存在: {dispatch_key}")
-
-        if outbox.workline_id is None:
-            raise ValueError(f"Outbox 未关联工作线: dispatch_key={dispatch_key}")
-        _ = await self._lock_simulation_workline_for_runtime_write(db, outbox.workline_id)
-        await self._validate_ack_target(db, outbox)
-
-        raw_payload = outbox.payload_json
-        outbox_payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
-        command_code = outbox_payload.get("command_code")
-        if not isinstance(command_code, str) or not command_code:
-            raise ValueError(f"Outbox 缺少 command_code: dispatch_key={dispatch_key}")
-        command = await self.command_repo.get_by_command_code(db, command_code)
-        if command is None or command.id is None:
-            raise ValueError(f"Command 不存在: {command_code}")
-        command_status = enum_str(getattr(command, "status", None))
-        if command_status in _TERMINAL_COMMAND_STATUSES:
-            raise ValueError(f"Command 已终态，不能模拟 ACK: {command_code}")
-        if command_status == CommandStatus.ACK_RECEIVED.value or command.ack_received_at is not None:
-            raise ValueError(f"Command 已 ACK，不能重复模拟 ACK: {command_code}")
-
-        ack_received_at = timezone.now_for_db()
-        _transition_sandbox_outbox_to_sent(outbox)
-        if outbox.sent_at is None:
-            outbox.sent_at = ack_received_at
-        outbox.next_retry_at = None
-        outbox.last_error = None
-        command.status = CommandStatus.ACK_RECEIVED
-        command.sent_at = command.sent_at or ack_received_at
-        command.ack_received_at = ack_received_at
-        command.ack_code = 200
-        command.ack_message = "SANDBOX_ACK"
-
-        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
-            workline_runtime_reconciliation_service,
-        )
-
-        _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
-            db,
-            command_id=command.id,
-            ack_received_at=ack_received_at,
-        )
-
-        from src.app.sys.services.event_stream_service import defer_command_status_changed_event
-
-        defer_command_status_changed_event(
-            db,
-            command=command,
-            action="acked",
-            workline_id=getattr(command, "workline_id", None),
-            device_id=getattr(command, "device_id", None),
-            session_id=getattr(outbox, "session_id", None),
-        )
-
-        if auto_commit:
-            await self._commit_mutation(db)
-        return outbox
-
     async def resolve_runtime_reconciliation(
         self,
         db: Any,
@@ -859,61 +674,6 @@ class WorklineOperationService(BaseService[Any, Any]):
         workline = await self._lock_active_workline_for_runtime_write(db, workline_id)
         self._require_simulation_workline(workline)
         return workline
-
-    async def _load_session_waiting_for_command(
-        self,
-        db: Any,
-        command: Any,
-        command_code: str,
-        *,
-        action_label: str,
-    ) -> Any:
-        session = await self.session_repo.get_open_session_by_awaiting_device_command_code(db, command.command_code)
-        if session is None:
-            raise ValueError(f"未找到等待 Command 的会话: {command_code}")
-        session_id = session.id
-
-        if session.status != _RESULT_WAIT_SESSION_STATUS:
-            raise ValueError(
-                f"当前会话状态不允许{action_label}: session_id={session_id}, status={enum_str(session.status)}"
-            )
-        if session.awaiting_device_command_code != command.command_code:
-            raise ValueError(
-                f"当前会话等待的 Command 不匹配: session_id={session_id}, "
-                f"awaiting_device_command_code={session.awaiting_device_command_code}, command_code={command.command_code}"
-            )
-
-        return session
-
-    async def _validate_ack_target(self, db: Any, outbox: Any) -> None:
-        if enum_str(outbox.dispatch_type) != SystemOutboxDispatchType.DEVICE_COMMAND.value:
-            raise ValueError(f"仅允许 ACK 设备指令 Outbox: dispatch_key={outbox.dispatch_key}")
-        if enum_str(outbox.status) not in _ACK_WAIT_OUTBOX_STATUSES:
-            raise ValueError(
-                f"当前 Outbox 状态不允许 ACK: dispatch_key={outbox.dispatch_key}, status={enum_str(outbox.status)}"
-            )
-
-        raw_payload = outbox.payload_json
-        payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
-        command_code = payload.get("command_code")
-        if not isinstance(command_code, str) or not command_code:
-            raise ValueError(f"Outbox 缺少 command_code: dispatch_key={outbox.dispatch_key}")
-
-        command = await self.command_repo.get_by_command_code(db, command_code)
-        if command is None:
-            raise ValueError(f"Command 不存在: {command_code}")
-
-        session = await self._load_session_waiting_for_command(
-            db,
-            command,
-            command_code,
-            action_label="模拟 ACK",
-        )
-        if outbox.session_id != session.id:
-            raise ValueError(
-                f"Outbox 会话与 Command 会话不匹配: dispatch_key={outbox.dispatch_key}, "
-                f"outbox_session_id={outbox.session_id}, command_session_id={session.id}"
-            )
 
 
 def _transition_sandbox_outbox_to_sent(outbox: Any) -> None:
