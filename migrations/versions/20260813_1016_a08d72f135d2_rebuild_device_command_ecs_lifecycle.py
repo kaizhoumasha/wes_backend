@@ -37,6 +37,10 @@ def upgrade() -> None:
     )
 
     op.execute('DROP TABLE IF EXISTS "wes_biz"."device_runtime_projections" CASCADE')
+    # 未发布环境不迁移旧命令，但仍由目标模型拥有的引用列必须在重建后恢复外键约束。
+    op.execute('UPDATE "wes_biz"."runtime_holds" SET "source_command_id" = NULL')
+    op.execute('UPDATE "wes_biz"."ng_return_items" SET "source_command_id" = NULL')
+    op.execute('UPDATE "wes_biz"."workline_timelines" SET "related_command_id" = NULL')
     op.execute('DROP TABLE IF EXISTS "wes_biz"."device_commands" CASCADE')
     op.execute('DROP INDEX IF EXISTS "wes_biz"."ix_system_outbox_blocked_release"')
     for column in (
@@ -208,6 +212,33 @@ def upgrade() -> None:
             [column],
             schema="wes_biz",
         )
+    op.create_foreign_key(
+        "fk_runtime_holds_source_command_id",
+        "runtime_holds",
+        "device_commands",
+        ["source_command_id"],
+        ["id"],
+        source_schema="wes_biz",
+        referent_schema="wes_biz",
+    )
+    op.create_foreign_key(
+        "fk_ng_return_items_source_command_id",
+        "ng_return_items",
+        "device_commands",
+        ["source_command_id"],
+        ["id"],
+        source_schema="wes_biz",
+        referent_schema="wes_biz",
+    )
+    op.create_foreign_key(
+        "fk_workline_timelines_related_command_id",
+        "workline_timelines",
+        "device_commands",
+        ["related_command_id"],
+        ["id"],
+        source_schema="wes_biz",
+        referent_schema="wes_biz",
+    )
 
     op.create_table(
         "device_status_observations",
@@ -218,7 +249,7 @@ def upgrade() -> None:
         sa.Column("contract_version", sa.String(length=50), nullable=False),
         sa.Column("mode", sa.String(length=20), nullable=False),
         sa.Column("status", sa.String(length=20), nullable=False),
-        sa.Column("current_command_code", sa.String(length=100), nullable=True),
+        sa.Column("current_command_code", sa.String(length=160), nullable=True),
         sa.Column("device_timestamp", sa.BigInteger(), nullable=False),
         sa.Column("received_at", sa.DateTime(), nullable=False),
         sa.Column("payload_digest", sa.String(length=64), nullable=False),

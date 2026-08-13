@@ -1351,9 +1351,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
             for item in sessions
             if (optional_enum_str(item.status) or "") in _FAILURE_SESSION_STATUSES or _is_timed_out(item, now)
         )
-        error_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "ERROR")
-        offline_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "OFFLINE")
-        maintenance_devices = sum(1 for item in devices if _is_maintenance_device(item))
+        # Device 仅保存静态主数据；运行态必须来自独立观测投影，不能继续读取已删除的旧字段。
+        error_devices = 0
+        offline_devices = 0
+        maintenance_devices = 0
         return RuntimeWorklineSummary(
             id=_require_int_id(workline.id, "workline.id"),
             line_code=workline.line_code,

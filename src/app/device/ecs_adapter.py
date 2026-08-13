@@ -116,7 +116,7 @@ class EcsAdapter:
         try:
             payload = _decode_json_object(result.decoded_body)
             status = EcsDeviceStatus.model_validate(payload)
-        except (ValueError, ValidationError) as error:
+        except (TypeError, ValueError, ValidationError) as error:
             raise EcsStatusUnavailableError("ECS 状态响应不符合统一合同") from error
         if status.device_code != device_code:
             raise EcsStatusUnavailableError("ECS 状态响应 device_code 与请求不一致")
@@ -180,7 +180,7 @@ def _try_common_response(body: bytes | None) -> tuple[int, str, str | None] | No
         code = payload["code"]
         message = payload["message"]
         trace_id = payload.get("trace_id")
-    except (KeyError, ValueError):
+    except (KeyError, TypeError, ValueError):
         return None
     if not isinstance(code, int) or isinstance(code, bool) or not isinstance(message, str):
         return None
