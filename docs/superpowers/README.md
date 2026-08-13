@@ -11,11 +11,13 @@
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、分批计划、Bin/Cell 晚绑定、不可逆执行、安全取消和目标架业务设计真源 | ReviewRequired |
+| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成 | ReviewRequired；Transport 场景可实施，业务场景待联合批准 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、Payload、返回 JSON 与幂等评审基线 | ReviewRequired |
 | `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES 粗分逐盘入库、满箱交换和自动上架业务合同评审真源 | ReviewRequired |
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
+| `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 核心基线已完成；Phase 8 等待真实设备合同附录与供应商一致性边界获批 |
 

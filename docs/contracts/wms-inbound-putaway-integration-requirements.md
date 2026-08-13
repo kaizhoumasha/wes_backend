@@ -2,7 +2,7 @@
 title: WMS / WES 自动入库与上架交互要求
 status: ReviewRequired
 created_at: 2026-08-13
-updated_at: 2026-08-13
+updated_at: 2026-08-14
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: 粗分机单盘入库、单层货架释放、满箱交换、自动分拣线上架、目标 Bin 投退料、NG、事实确认和人工对账
 related:
@@ -46,8 +46,8 @@ operation registry、旧 `confirm_inbound`、旧 `notify_pkg_binding`、通用 R
 | 粗分 PUT | WMS 返回 `ACCEPT` 且目标可执行 | WES 创建独立 `DeviceCommand` | ECS 确定成功后更新位置投影，不以 ACK 代替完成 |
 | 单盘入库 | 粗分 PUT 形成可靠成功证据 | WES 报告 `inbound.material.placement_report@v1` | WMS 原子记录目标位置、消耗预留并完成该盘入库 |
 | 单层货架释放 | WMS 判定满箱、无兼容 Cell 或策略释放 | WMS 发送 `inbound.source_rack.release_decided@v1` | WES 停止新目标准入，待在途命令和 Fact 闭合后冻结 `rack_release_id` |
-| 上架计划 | 释放快照完整且无未知位置 | WES 请求 `putaway.source_rack.plan_decide@v1` | WMS 返回不可变 `putaway_plan_id`，完整覆盖满箱交换和逐盘上架成员 |
-| 满箱交换 | 计划包含交换对，相关货架均可靠到位 | WES 创建一次包含 1～2 对的 `exchange_bins()` Transport | 全批成员稳定落点 Fact 均被 WMS 记录才成功；否则人工恢复 |
+| 上架来源计划 | 释放快照完整且无未知位置 | WES 请求 `putaway.source_rack.plan_decide@v1` | WMS 返回不可变 `putaway_plan_id`，冻结全部来源成员和业务资格，不提前冻结交换目标 |
+| 满箱交换 | 当前面来源待处理，且 WMS 当前批次决定为 `READY` | WES 为同面 1～2 对创建一个 `exchange_bins()` Transport | T3 全成功且全部成员 Fact 被 WMS 记录后才重算下一批；否则人工恢复 |
 | 自动线上架准入 | 人工已把 WorkLine 切换为 `INBOUND`，WES 选择一条就绪线 | WES 运送来源单层货架，并按缓存需求请求目标 Bin | 同一 WorkLine 只激活一个 `putaway_execution_id` |
 | 目标 Bin 投料 | 投料缓存有具体空位且 CTU 有背篓空间 | WES 请求 `putaway.target_bin.supply_batch@v1` | WMS 返回库存主账中至少有一个可分配空 Cell 的精确 Bin |
 | SCAN1 路由 | 实际 Bin 到达 SCAN1 并已完成 `SUPPLY_PLACED` | WES 请求 `putaway.target_bin.route_decide@v1` | WMS 返回进入生产、正常无任务、标记 NG 或等待 |
@@ -55,7 +55,7 @@ operation registry、旧 `confirm_inbound`、旧 `notify_pkg_binding`、通用 R
 | 逐盘上架 | 来源盘到扫码平台并复扫完整六合一码 | WES 请求 `putaway.material.decide@v1` | WMS 返回精确目标 Bin/Cell；PUT 后只记录位置迁移 |
 | SCAN3/SCAN4 分流 | 目标 Bin 完成生产或不进入生产 | WES 按已保存的 NORMAL/NG 结果做物理路由 | NG 跨线到统一出口；NORMAL 经 SCAN4 进入本线退料缓存 |
 | 目标 Bin 退料 | Bin 可靠进入本线退料缓存 | WES 请求 `putaway.target_bin.return_batch@v1` | WMS 为实际候选分配精确五层货架储位 |
-| 上架完成 | 静态来源成员和逐盘业务 Fact 全部闭合 | WES 请求 `putaway.execution.completion_confirm@v1` | WMS 返回 `COMPLETED \| NOT_COMPLETED`；物理清线独立闭环 |
+| 上架完成 | 不可变来源成员和逐盘业务 Fact 全部闭合 | WES 请求 `putaway.execution.completion_confirm@v1` | WMS 返回 `COMPLETED \| NOT_COMPLETED`；物理清线独立闭环 |
 
 不定义 WMS 预发的 `InboundTask`、`ReceivingTask` 或 `WMS_GRN_RECEIVED` 设备启动语义。粗分由实物证据驱动，
 上架由冻结货架快照驱动，目标 Bin 供给由 WorkLine 当前物理容量驱动。
@@ -157,7 +157,7 @@ A/B 位和缓存位置；RCS 选择车辆与路线。三者不得相互替代。
 | --- | --- | --- |
 | `422 / REJECTED` | `reason_code`，`INVALID_DATA`时可带 `field_path` | `INVALID_ENVELOPE \| UNSUPPORTED_OPERATION \| INVALID_DATA` |
 | `409 / CONFLICT` | `reason_code` | `IDEMPOTENCY_CONFLICT \| STATE_CONFLICT \| REFERENCE_CONFLICT \| POSITION_CONFLICT` |
-| `429 / BUSY` | `retry_after_ms` | `1..2147483647` 毫秒；到期后仍使用原 Payload |
+| `429 / BUSY` | `retry_after_ms` | `1..60000` 毫秒；到期后仍使用原 Payload |
 | `503 / UNAVAILABLE` | 无 | `data={}`；调用方使用原身份重试 |
 
 ### 4.4 公共数据类型
@@ -166,7 +166,7 @@ A/B 位和缓存位置；RCS 选择车辆与路线。三者不得相互替代。
 - 可选字段无值时省略；除非字段表明确允许，禁止 `null`、空字符串、空对象和空数组。
 - 业务 ID、设备编码和位置编码匹配 `[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}`。
 - 时间字段为 `0..9223372036854775807` 的 UTC Unix 毫秒整数。
-- `retry_after_ms`为 `1..2147483647` 的整数。
+- `retry_after_ms` 为 `1..60000` 的整数。
 - 十进制测量值使用规范字符串 `0|[1-9][0-9]*(\.[0-9]{1,3})?`，单位由字段名固定为毫米，避免 JSON 浮点漂移。
 - 数组出现时必须包含 `1..N`项；最大数量由 `256 KiB` Body 上限和 operation 专属上限共同约束。
 - `six_in_one`固定包含六个长度 `1..256` 的设备原文字符串：`LotCode`、`DateCode`、`Qty`、`ProductNo`、
@@ -178,7 +178,7 @@ A/B 位和缓存位置；RCS 选择车辆与路线。三者不得相互替代。
 | --- | --- | --- | --- |
 | `ONE_LAYER_BIN_CELL` | `rack_id + rack_slot_code + bin_id + bin_cell_id` | 单层货架中一盘物料的逻辑位置 | `rack_face`、`location_code` |
 | `BIN_CELL` | `bin_id + bin_cell_id` | 当前自动线上目标 Bin的逻辑料格 | `rack_id`、`rack_face`、`rack_slot_code`、`location_code` |
-| `FIVE_LAYER_BIN_SLOT` | `rack_id + rack_face + slot_id` | 五层货架上的单 Bin储位；映射 Transport `RACK_BIN_SLOT` 时使用 `rack_id + slot_id` | `rack_slot_code`、`bin_cell_id`、`location_code` |
+| `FIVE_LAYER_BIN_SLOT` | `rack_id + rack_face + slot_id` | 五层货架上的单 Bin 储位；映射 Transport `RACK_BIN_SLOT` 时完整保留三个字段 | `rack_slot_code`、`bin_cell_id`、`location_code` |
 | `HANDOFF_POSITION` | `location_code` | 投料、SCAN、工作位或退料缓存等固定位置 | Rack、Bin、Cell字段 |
 | `RACK_POSITION` | `location_code` | 货架工作位、等待位或业务位置 | Rack、Bin、Cell字段 |
 | `NG_POSITION` | `location_code` | 当前 `LineRunEpoch`批准的料盘 NG交接区或 Bin NG出口 | Rack、Bin、Cell字段 |
@@ -196,7 +196,7 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | 位置投影 | WES根据可靠证据维护的作业期位置视图 | 只用于物理准入，不替代 WMS库存主账 |
 | 终局 | 普通重试不能改写的业务或物理结果 | `WAIT`和 `UNKNOWN`不是失败终局 |
 | 对账 | 证据无法支持自动推进时的人工核对 | 保留身份、位置、原始消息和资源绑定 |
-| 静态计划 | `putaway_plan_id`冻结的不可变成员全集 | 不支持 revision、成员增删、覆盖或普通取消 |
+| 不可变来源计划 | `putaway_plan_id` 冻结的来源成员全集和业务资格 | 不支持 revision、来源成员增删、覆盖或普通取消；交换目标按面、按批次晚绑定 |
 
 ## 5. Operation 实现索引
 
@@ -216,6 +216,7 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | operation | 方向 | 触发条件 | 首次成功响应 | 详见 |
 | --- | --- | --- | --- | --- |
 | `putaway.source_rack.plan_decide@v1` | WES 到 WMS | 单层货架释放快照完整 | `200 / DECIDED`：`READY \| REJECT \| WAIT` | §9.1 |
+| （下一交换批次 operation 名称待联合评审） | WES 到 WMS | 当前面没有活动批次，且前批业务 Fact 已全部闭环 | 候选：`READY \| TARGET_RACK_REPLACEMENT_REQUIRED \| WAIT \| COMPLETED` | §10.1 |
 | `putaway.bin_exchange.movement_report@v1` | WES 到 WMS | 交换成员可靠到达最终目标 | `200 / RECORDED` | §10.2 |
 | `putaway.target_bin.supply_batch@v1` | WES 到 WMS | 投料缓存有预留空位且 CTU有空间 | `200 / DECIDED`：`READY \| NO_BATCH \| WAIT` | §12.1 |
 | `putaway.target_bin.movement_report@v1` | WES 到 WMS | 实际 Bin供给到线或退回货架 | `200 / RECORDED` | §12.2 |
@@ -226,7 +227,7 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | `putaway.material.placement_report@v1` | WES 到 WMS | 料盘可靠 PUT到目标 Bin/Cell | `200 / RECORDED` | §14.3 |
 | `putaway.material.ng_placement_report@v1` | WES 到 WMS | 上架料盘可靠到达 NG交接区 | `200 / RECORDED` | §14.4 |
 | `putaway.source.empty_decide@v1` | WES 到 WMS | 来源 Cell形成可靠空取证据 | `200 / DECIDED`：`RETRY \| SOURCE_ABSENT \| WAIT` | §14.5 |
-| `putaway.target_bin.clearance_decide@v1` | WES 到 WMS | 每盘 Fact闭合或静态来源全部闭合 | `200 / DECIDED`：`KEEP \| RETURN \| WAIT` | §15.1 |
+| `putaway.target_bin.clearance_decide@v1` | WES 到 WMS | 每盘 Fact闭合或不可变来源全部闭合 | `200 / DECIDED`：`KEEP \| RETURN \| WAIT` | §15.1 |
 | `putaway.target_bin.return_batch@v1` | WES 到 WMS | 退料缓存存在实际 Bin候选 | `200 / DECIDED`：四类退料结果 | §15.2 |
 | `putaway.target_bin.ng_exit_report@v1` | WES 到 WMS | NG Bin可靠到达统一末端出口 | `200 / RECORDED` | §15.4 |
 | `putaway.execution.completion_confirm@v1` | WES 到 WMS | 本地静态成员与逐盘义务全部闭合 | `200 / DECIDED`：`COMPLETED \| NOT_COMPLETED` | §16.1 |
@@ -247,10 +248,10 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | `rack_target_generation` | WMS | 按 `rack_id + rack_slot_code` 对已提交的 `ACCEPT | REASSIGNED` 目标预留从 1 单调递增；释放决定据此冻结目标水位 |
 | `release_decision_id` | WMS | 一次不可撤回的单层货架释放决定 |
 | `rack_release_id` | WES | 单层货架停止接纳后形成的冻结物理快照身份 |
-| `putaway_plan_id` | WMS | 一份不可变上架计划；不定义 revision |
+| `putaway_plan_id` | WMS | 一份不可变上架来源计划；不定义 revision |
 | `putaway_execution_id` | WES | `putaway_plan_id`在一条自动 WorkLine上的本地执行身份 |
-| `source_execution_id` | WMS | 一个静态逐盘上架来源成员身份 |
-| `exchange_execution_id` | WMS | 一个满 Bin/空 Bin交换对身份 |
+| `source_execution_id` | WMS | 一个不可变逐盘上架来源成员身份 |
+| `exchange_execution_id` | WMS | 下一交换批次决定中返回的一个满 Bin/空 Bin 交换对身份；不属于来源计划静态成员 |
 | `bin_execution_id` | WES | 实际 Bin本次进入串联 WorkLine后的物理执行身份 |
 | `scan1_evidence_id` / `scan2_evidence_id` | WES | 当前实际 Bin在对应扫描点的不可变证据身份 |
 | `source_observation_id` | WES | 一次可靠空取观察身份 |
@@ -446,11 +447,11 @@ WES持久化 Event后立即禁止为该货架发起新的准入或目标恢复�
 `CONTINUE`只允许 WES依据新权威位置重新建立后续本地步骤；`ABORT`关闭业务推进但不得删除仍在现场的实物或改写
 TransportTask结果。WES持久化后返回 `202 / RECEIVED`，重复事件不得重复执行副作用。
 
-## 9. 上架静态计划
+## 9. 上架不可变来源计划
 
 ### 9.1 `putaway.source_rack.plan_decide@v1`
 
-WES以冻结的 `rack_release_id`请求一次不可变计划：
+WES 以冻结的 `rack_release_id` 请求一次不可变来源计划：
 
 ```json
 {
@@ -462,55 +463,84 @@ WES以冻结的 `rack_release_id`请求一次不可变计划：
     "rack_id": "SR-01",
     "rack_slot_code": "A",
     "occupied_cells": [
-      {"bin_id": "BIN-010", "bin_cell_id": "C03", "pkg_id": "PKG-9001"}
+      {"rack_face": "A", "bin_id": "BIN-010", "bin_cell_id": "C03", "pkg_id": "PKG-9001"}
     ]
   }
 }
 ```
 
+`occupied_cells[]` 中每项必须携带该来源 Bin 的 `rack_face=A|B`。`rack_face` 是交换分批所需的物理面证据，不等同于
+`rack_slot_code`，不得根据货位字母猜测。
+
 `data.result`严格为：
 
 | `result` | 必填字段 | 含义 |
 | --- | --- | --- |
-| `READY` | `putaway_plan_id`；按实际成员条件携带 `exchange_pairs`、`source_executions` | WMS已持久化覆盖快照全部成员的完整计划 |
+| `READY` | `putaway_plan_id`；按实际成员条件携带 `exchange_sources`、`source_executions` | WMS 已持久化覆盖快照全部来源成员的完整计划 |
 | `REJECT` | `reason_code` | 快照身份或业务状态不允许上架 |
-| `WAIT` | `reason_code`、`retry_after_ms` | WMS尚不能形成完整静态计划 |
+| `WAIT` | `reason_code`、`retry_after_ms` | WMS 尚不能形成完整来源计划 |
 
-`exchange_pairs`和 `source_executions`均为条件数组：没有该类成员时省略，出现时必须非空，两类成员总数必须大于零。
-每个 `source_execution`必须含 `source_execution_id`、`pkg_id`、`rack_id`、`rack_slot_code`、`bin_id`、`bin_cell_id`和
-可达性/作业顺序约束。每个 `exchange_pair`必须含 `exchange_execution_id`、来源满 Bin、目标空 Bin以及二者最终货架位置。
+`exchange_sources` 和 `source_executions` 均为条件数组：没有该类成员时省略，出现时必须非空，两类成员总数必须大于零。
+每个 `source_execution` 必须含 `source_execution_id`、`pkg_id`、`rack_id`、`rack_slot_code`、`bin_id`、`bin_cell_id` 和
+可达性/作业顺序约束。每个 `exchange_source` 只冻结来源满 Bin 的稳定身份、来源 `rack_id + rack_face + slot_id`、其覆盖的
+占用 Cell 和 WMS 已确认的交换资格；禁止提前携带目标五层货架、目标空 Bin、目标储位或 `exchange_execution_id`。
 
 ### 9.2 完整覆盖和不可变性
 
-WMS只有在一个事务内持久化完整 `READY`响应后才可返回成功。计划必须满足：
+WMS 只有在一个事务内持久化完整 `READY` 响应后才可返回成功。来源计划必须满足：
 
-- `occupied_cells`中的每个物理占用 Cell恰好进入一个 `exchange_pair`或一个 `source_execution`；
+- `occupied_cells` 中的每个物理占用 Cell 恰好由一个 `exchange_source` 或一个 `source_execution` 覆盖；
 - 不得遗漏、重复，也不得把同一 Bin同时放入交换与逐盘来源；
-- 满箱交换为零到两对；超过能力时返回 `REJECT`，不能截断；
-- 计划无 revision、追加、取消或成员覆盖；任何变化都必须人工对账并形成新的物理快照后重新开始；
+- `exchange_sources` 可以覆盖同一来源货架 A/B 两面的全部合格满 Bin，不受单次 Transport 两对上限约束；
+- 计划无 revision、来源追加、取消或成员覆盖；任何来源变化都必须人工对账并形成新的物理快照后重新开始；
 - WES不得根据本地阈值把逐盘成员升级为满箱交换。
+
+这里冻结的是来源事实，不是执行批次。目标五层货架和实际空 Bin 必须在每次准备交换时根据 WMS 当前主账重新选择，避免用早期
+静态目标占用库存或在前一批完成后继续执行已经失效的配对。
 
 ## 10. 满箱交换
 
-### 10.1 执行门禁
+### 10.1 下一交换批次决定（operation 和 DTO 待联合评审）
 
-WES只在来源单层货架和 WMS指定的五层货架均可靠到达静态交换位、身份一致、Transport结果确定后执行交换。每个
-`exchange_execution_id`包含一个来源满 Bin与一个目标空 Bin；一批一至两对必须作为同一人工恢复边界观察，Transport成员的
-最终位置事实仍逐 Bin记录。一批交换只创建一个 `exchange_bins()` TransportTask，不为其虚构 DeviceCommand。
+当前没有活动交换批次、上一批 T3 与全部业务 Fact 已闭环、相关货架位置均明确时，WES 才可请求 WMS 计算下一批。本文先冻结
+结果语义，不冻结 operation 字面量和完整 DTO；正式批准前不得实现或自行命名：
+
+| 候选 `result` | 最小语义 |
+| --- | --- |
+| `READY` | 返回当前面 `1..2` 个精确交换对；每对含稳定 `exchange_execution_id`、来源满 Bin、目标空 Bin 和双方最终位置 |
+| `TARGET_RACK_REPLACEMENT_REQUIRED` | 当前目标五层货架无法完整满足当前面；返回经 WMS 主账批准的换架准备要求，不直接创建 Transport |
+| `WAIT` | 当前不存在能够完整满足该面需求的合格空 Bin 或目标货架；来源计划保持不变，以新消息身份重新求值 |
+| `COMPLETED` | 来源计划中的全部 `exchange_sources` 已取得 WMS 已记录的业务终局 |
+
+“空 Bin”必须同时具有明确 `right_bin_id` 和 `right_location`；没有 Bin 的空储位不能参与交换。WMS 按以下最小顺序选择目标：
+
+1. 先满足库存资格、冷热区、锁定状态、尺寸/容量兼容和 RCS 可达性等 WMS 业务硬条件；
+2. 在合格候选中选择能够完整覆盖当前面剩余需求的五层货架；
+3. 若多个候选都满足，优先选择还能覆盖其它剩余面的同一货架，减少后续换架；
+4. 当前面需要两对而现有目标货架只有一个合格空 Bin 时，禁止自动缩成一对；优先返回换架要求，没有合格替换货架则 `WAIT`。
+
+`READY` 的一批只允许一个来源面和一个目标面：所有 Left Bin 必须属于同一来源 `rack_id + rack_face`，所有 Right Bin 必须属于
+同一目标 `rack_id + rack_face`；左右的 A/B 字面量可以不同。WES 对全部 1～2 对只创建一个 `exchange_bins()` TransportTask，
+WMS/RCS 必须原子接纳或整批拒绝，禁止截断、拆成部分接纳或跨面混合。
+
+两面都需要交换时，固定顺序为：当前面交换闭环 → WMS 重新计算 → 对下一面仍需使用的每个货架分别创建 `RACK_ROTATE` →
+所有换面 T3 成功且 `arrival_face` 正确 → 再请求下一批。需要更换目标五层货架时，必须先完成旧货架搬离和新货架可靠到位，再
+计算下一批。后续 TransportTask 只能在前一步成功后创建，不能提前形成 T1 或 RCS 义务。
 
 ### 10.2 `putaway.bin_exchange.movement_report@v1`
 
-每个 Bin可靠到达计划最终位置后分别上报：
+每个 Bin 可靠到达当前批次决定的最终位置后分别上报：
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `putaway_plan_id`、`exchange_execution_id` | 是 | 静态计划和交换对身份 |
+| `putaway_plan_id`、`exchange_execution_id` | 是 | 不可变来源计划和当前批次交换对身份 |
 | `bin_id` | 是 | 实际复核后的 Bin身份 |
 | `movement_role` | 是 | `FULL_BIN_TO_STORAGE \| EMPTY_BIN_TO_SOURCE_RACK` |
-| `from_position`、`to_position` | 是 | 计划中的稳定起终点 |
+| `from_position`、`to_position` | 是 | 当前批次决定中的稳定起终点 |
 | `transport_task_id`、`transport_outcome_version`、`placed_at` | 是 | 唯一 `exchange_bins()` TransportTask 及其确定结果版本；必须支撑本成员最终位置 |
 
-WMS返回 `RECORDED`或 `DUPLICATE`。只有该计划全部交换成员的最终位置 Fact均被记录，该交换批次才成功。任一成员失败、
+WMS 返回 `RECORDED` 或 `DUPLICATE`。只有本批 T3 全部成员 `SUCCEEDED` 且位置明确、每个 movement report 都取得
+`RECORDED/DUPLICATE`，并且 WMS 主账已经提交全部位置迁移后，该批次才闭环并允许重新计算。任一成员失败、
 身份不符或结果 `UNKNOWN`，立即停交换并把受影响交换对及其实际接触对象冻结为最小人工恢复范围；不得自动补偿、反向搬回，
 也不得把“另一对成功”解释为整批成功。交换过程中不发送 `SOURCE_PICKED`业务事实。
 
@@ -646,7 +676,7 @@ SCAN1负责生产准入/NG业务判断，SCAN2负责可用性，SCAN3负责 NG/�
 
 - 至少一个目标 Bin的 `SUPPLY_PLACED`已被 WMS记录；
 - 该 Bin经 SCAN1 `ENTER_PRODUCTION`、SCAN2 `AVAILABLE`，且未进入 `RETURN`或 `WAIT`清退状态；
-- 来源单层货架在可靠工作位，来源成员属于当前静态计划；
+- 来源单层货架在可靠工作位，来源成员属于当前不可变来源计划；
 - 机械臂、扫码平台和目标 Bin均无结果未知的命令。
 
 料盘到扫码平台后必须复扫六合一码。WES提交：`putaway_plan_id`、`putaway_execution_id`、`source_execution_id`、
@@ -719,7 +749,7 @@ WES等待；返回 `UNKNOWN`则停机，不能把“已发命令”当作 NG到�
 
 ### 15.1 `putaway.target_bin.clearance_decide@v1`
 
-每个料盘 placement Fact被 WMS记录后，以及静态来源全部闭合时，WES可针对当前 Bin提交 `bin_execution_id`、`bin_id`、
+每个料盘 placement Fact被 WMS记录后，以及不可变来源全部闭合时，WES可针对当前 Bin提交 `bin_execution_id`、`bin_id`、
 已记录的最后 `placement_sequence`、本地占用观察和触发原因。
 
 | `result` | WES动作 |
@@ -768,15 +798,16 @@ WMS根据库存主账、剩余可用 Cell和业务策略决定清退；WES不得
 
 ### 16.1 `putaway.execution.completion_confirm@v1`
 
-WES只有在静态计划每个 `exchange_execution_id`和 `source_execution_id`均有已记录终局、所有目标分配 Fact已闭合、且不存在
-业务位置冲突时请求完成。请求只提交 `putaway_plan_id`、`putaway_execution_id`和本地门禁摘要，不提交可被篡改的成员清单。
+WES 只有在来源计划每个 `exchange_source` 都由已闭环交换批次覆盖、每个 `source_execution_id` 均有已记录终局、所有目标分配
+Fact 已闭合，且不存在业务位置冲突时请求完成。请求只提交 `putaway_plan_id`、`putaway_execution_id` 和本地门禁摘要，不提交
+可被篡改的成员清单。
 
 | `result` | 必填字段 | 处理 |
 | --- | --- | --- |
 | `COMPLETED` | `completed_at` | WMS已根据权威事实完成业务计划 |
 | `NOT_COMPLETED` | `reason_code`、`open_obligations` | WES保留活动执行并按明确义务处理 |
 
-WMS必须依据其持久化的静态计划和事实裁决，不能信任 WES汇总。业务 `COMPLETED`不等待目标 Bin退回、NG Bin人工取出或空来源
+WMS 必须依据其持久化的不可变来源计划、逐批决定和事实裁决，不能信任 WES 汇总。业务 `COMPLETED` 不等待目标 Bin 退回、NG Bin 人工取出或空来源
 货架搬走；这些属于物理清理门禁。
 
 ### 16.2 `putaway.source_rack.clearance_decide@v1`
@@ -824,7 +855,7 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 ### 17.3 对账最小充分证据
 
 对账包至少包含 operation及首次响应、InboundEvidence原文、DeviceCommand所有版本、TransportTask所有 outcome版本、当前
-`LineRunEpoch`、位置投影、人工扫码记录以及受影响静态计划成员。不得只发送错误摘要，也不得用对账结果删除历史证据。
+`LineRunEpoch`、位置投影、人工扫码记录以及受影响来源计划和交换批次成员。不得只发送错误摘要，也不得用对账结果删除历史证据。
 
 ## 18. 联调验收清单
 
@@ -834,7 +865,10 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 | 粗分目标在 PUT前不可用 | 只允许目标恢复新 `target_assignment_id`；PUT开始后必须停机对账 |
 | 粗分 placement重放 | 首次 `RECORDED`，后续 `DUPLICATE`；库存只迁移一次 |
 | WMS发送货架释放 | WES停止新准入，闭合已接受盘后才冻结 `rack_release_id` |
-| 上架计划存在遗漏或重复成员 | WES拒绝 `READY`计划，不创建动作 |
+| 上架来源计划存在遗漏或重复成员 | WES拒绝 `READY`计划，不创建动作 |
+| 当前面需要两对但目标货架只有一个合格空 Bin | 不缩成一对；优先返回换架要求，没有合格替换货架则 `WAIT` |
+| A/B 两面都存在合格满 Bin | 当前面批次全部业务闭环后才换面并重新求值；不得预建下一面 TransportTask |
+| 两对交换混入不同 Left 面或不同 Right 面 | 整条 T1 确定拒绝，不创建部分任务 |
 | 两对满箱交换仅一对成功 | 整批不成功，停止交换并冻结最小安全范围等待人工恢复 |
 | 投料缓存只有一空位、CTU有四空位 | `max_bins=1`，不得超发 |
 | 退料缓存满 | 停止新供给，优先退回；不启用未定义水位算法 |
@@ -856,7 +890,7 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 
 | 层次 | 实现所有者 | 验收边界 |
 | --- | --- | --- |
-| 本文 WMS ACL DTO与路由 | `src/app/wms_adapter/` | 23个 operation的严格 schema、幂等、冲突和失败响应 |
+| 本文 WMS ACL DTO与路由 | `src/app/wms_adapter/` | 当前已具名的 23 个 operation，以及批准后补齐的下一交换批次 operation 的严格 schema、幂等、冲突和失败响应 |
 | 可靠执行基础 | WES核心 | MaterialExecution、BinExecution、PositionProjection、InboundEvidence、LineRunEpoch的不变量；不验证具体工作线业务 |
 | 粗分业务编排 | 独立粗分入库插件 | §7—§8的准入、PUT、释放和 NG场景；测试随插件交付 |
 | 满箱交换与自动上架编排 | 独立自动上架插件 | §9—§16的计划、交换、SCAN和逐盘上架；测试随插件交付 |
@@ -870,7 +904,7 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 ## 20. 正式实施前确认项
 
 1. WMS、WES、RCS和 ECS联合审批本文，状态由 `ReviewRequired`变为 `Approved`后才能冻结接口。
-2. 为23个 operation生成并联合确认严格 JSON Schema、共享正反 fixture和字段大小限制。
+2. 冻结下一交换批次的 operation 字面量和完整 DTO；为全部 operation 生成并联合确认严格 JSON Schema、共享正反 fixture 和字段大小限制。
 3. WMS确认 GRN绑定与粗分 placement在一个可审计事务链中，逐盘上架只迁移位置、不重复入库。
 4. WMS确认所有 Cell容量、兼容性、Usage、空箱资格、生产准入、NG和清退规则均以 WMS主账决定为唯一权威。
 5. ECS确认粗分测量字段、机械臂不可逆点、NG区状态以及 SCAN1—SCAN4物理含义；厂商映射写入设备合同附录，不改写硬件原文。

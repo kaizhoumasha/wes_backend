@@ -2,7 +2,7 @@
 title: WMS 异步回调统一信封合同
 status: Approved
 created_at: 2026-08-09
-updated_at: 2026-08-13
+updated_at: 2026-08-14
 scope: WMS 到 WES 的异步业务事件回调及同步接收应答
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -127,7 +127,7 @@ data
 | `400`，空响应体 | 请求不是合法 JSON，或无法提取合法 `operation_id`；尚未建立消息关联 |
 | `413`，空响应体 | 原始 Body 超过共享入口 `256 KiB` 上限，在解码前拒绝；尚未建立消息关联 |
 | `422 / REJECTED` | 已有合法 `operation_id`，但信封其余字段、operation 或专属 DTO 不合法 |
-| `429 / BUSY` | 暂时没有接收容量，未接纳；`data.retry_after_ms` 必须为正整数 |
+| `429 / BUSY` | 暂时没有接收容量，未接纳；`data.retry_after_ms` 必须是 `1..60000` 的整数 |
 | `503 / UNAVAILABLE` | 当前无法可靠持久化，未接纳 |
 
 `400` 和 `413` 预关联失败不使用 ACK 信封，响应体长度为 0，接收方不得生成或猜测 `operation_id`。除此以外，接收方必须

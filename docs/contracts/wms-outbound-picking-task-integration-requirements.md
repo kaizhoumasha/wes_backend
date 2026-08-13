@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-08-12
+updated_at: 2026-08-14
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、执行中增删、逐盘决定、事实确认和任务状态确认
 related:
@@ -139,7 +139,7 @@ DeviceCommand 分别遵循其独立合同，不能由 PickingTask 消息直接�
 | --- | --- | --- |
 | `422 / REJECTED` | `reason_code`，`INVALID_DATA` 时可带 `field_path` | `reason_code=INVALID_ENVELOPE \| UNSUPPORTED_OPERATION \| INVALID_DATA`；`field_path` 是长度 `1..256` 的 RFC 6901 JSON Pointer，例如 `/data/six_in_one/Qty` |
 | `409 / CONFLICT` | `reason_code` | `IDEMPOTENCY_CONFLICT \| REVISION_CONFLICT \| STATE_CONFLICT \| REFERENCE_CONFLICT` |
-| `429 / BUSY` | `retry_after_ms` | 正整数毫秒；调用方到期后仍使用原消息身份和 Payload |
+| `429 / BUSY` | `retry_after_ms` | `1..60000` 毫秒；调用方到期后仍使用原消息身份和 Payload |
 | `503 / UNAVAILABLE` | 无 | `data={}`；调用方使用原消息身份和 Payload 重试 |
 
 ### 4.4 字段字典和公共数据类型
@@ -156,7 +156,7 @@ DeviceCommand 分别遵循其独立合同，不能由 PickingTask 消息直接�
   UTF-8 字符串长度均按 Unicode code point 计数；WES 按设备规范化结果原样传递，不做数值、日期或主数据转换。
 - 时间字段均为 `0..9223372036854775807` 的 UTC Unix 毫秒整数。revision、generation、sequence 和 outcome version 均为
   `1..9223372036854775807` 的整数；仅任务状态确认中的 `last_applied_plan_revision` 和 `current_plan_revision` 允许为 `0`，表示
-  准备请求已经接纳但尚无任何计划增量。`retry_after_ms` 是 `1..2147483647` 的整数。
+  准备请求已经接纳但尚无任何计划增量。`retry_after_ms` 是 `1..60000` 的整数。
 - 条件数组出现时必须包含 `1..N` 项；最大可发送项数由 `256 KiB` 原始 Body 上限自然约束，不另设无法与 Body 上限独立验证的
   隐含数量。数组顺序只有在对应 operation 明确声明时才有业务含义。
 - 字段表中的 `a.b` 表示对象字段，`items[]` 表示数组每一项，`x | y` 表示闭集枚举，不表示自由字符串。
