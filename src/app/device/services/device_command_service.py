@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from datetime import datetime  # noqa: TC003
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
 from src.app.device.contracts import DeviceCommandHandle, DeviceCommandOutcome, DeviceCommandRequest
@@ -19,6 +19,8 @@ from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
@@ -36,6 +38,10 @@ class DeviceCommandCapacityError(RuntimeError):
 
 class DeviceCommandIdentityConflictError(ValueError):
     """同一插件执行身份被用于不同的不可变命令请求。"""
+
+
+class DeviceCommandDeadlineError(ValueError):
+    """请求截止时间不符合 Epoch 冻结设备合同。"""
 
 
 class CommandRepositoryPort(Protocol):
@@ -65,7 +71,7 @@ class CommandRepositoryPort(Protocol):
 
 
 class EpochRepositoryPort(Protocol):
-    async def get_binding_for_command(
+    async def get_binding_for_command_creation(
         self,
         db: object,
         *,
@@ -83,15 +89,19 @@ class DeviceCommandService:
         session_factory: async_sessionmaker[AsyncSession],
         command_repository: CommandRepositoryPort | None = None,
         epoch_repository: EpochRepositoryPort | None = None,
+        clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
         self._sessions = session_factory
         self._commands = command_repository or device_command_repository
         self._epochs = epoch_repository or line_run_epoch_repository
+        self._clock = clock
 
     async def create_command(self, request: DeviceCommandRequest) -> DeviceCommandHandle:
         validated = DeviceCommandRequestData.model_validate(asdict(request))
+        if validated.deadline_at.tzinfo is not None:
+            raise DeviceCommandDeadlineError("deadline_at 必须是数据库合同要求的 naive UTC")
         async with self._sessions.begin() as db:
-            binding = await self._epochs.get_binding_for_command(
+            binding = await self._epochs.get_binding_for_command_creation(
                 db,
                 line_run_epoch_id=validated.line_run_epoch_id,
                 device_code=validated.device_code,
@@ -115,10 +125,14 @@ class DeviceCommandService:
                     command_code=same_identity.command_code,
                     status=CommandStatus(same_identity.status),
                 )
+            now = self._clock()
+            if validated.deadline_at <= now or validated.deadline_at > now + timedelta(
+                milliseconds=binding.command_timeout_ms
+            ):
+                raise DeviceCommandDeadlineError("deadline_at 超出冻结 binding 的 command_timeout_ms")
             existing = await self._commands.get_unclosed_for_device_for_update(db, validated.device_code)
             if existing is not None:
                 raise DeviceCommandCapacityError(validated.device_code)
-            now = timezone.now_for_db()
             command = DeviceCommand(
                 command_code=new_uuid7(),
                 device_code=validated.device_code,
@@ -187,6 +201,7 @@ def _command_payload_digest(request: DeviceCommandRequestData) -> str:
 
 __all__ = [
     "DeviceCommandCapacityError",
+    "DeviceCommandDeadlineError",
     "DeviceCommandIdentityConflictError",
     "DeviceCommandService",
     "DeviceContractMismatchError",

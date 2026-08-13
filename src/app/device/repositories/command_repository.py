@@ -55,6 +55,19 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         )
         return result.scalar_one_or_none()
 
+    async def has_sendable_for_epoch_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> bool:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(columns.id)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.status.in_((CommandStatus.PENDING, CommandStatus.DISPATCHING)),
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none() is not None
+
     async def get_by_execution_ref_for_update(
         self,
         db: AsyncSession,
@@ -192,6 +205,11 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         _clear_claim(command)
         await db.flush()
 
+    async def mark_timed_out(self, db: AsyncSession, command: DeviceCommand) -> None:
+        command.transition_to(CommandStatus.TIMED_OUT)
+        _clear_claim(command)
+        await db.flush()
+
     async def mark_reconciling(
         self,
         db: AsyncSession,
@@ -200,6 +218,19 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         reason: str,
     ) -> None:
         command.reconciliation_reason = reason
+        command.transition_to(CommandStatus.RECONCILING)
+        _clear_claim(command)
+        await db.flush()
+
+    async def mark_late_ack_reconciling(
+        self,
+        db: AsyncSession,
+        command: DeviceCommand,
+        *,
+        acknowledged_at: datetime,
+    ) -> None:
+        command.ack_received_at = acknowledged_at
+        command.reconciliation_reason = "ACK_AFTER_DEADLINE"
         command.transition_to(CommandStatus.RECONCILING)
         _clear_claim(command)
         await db.flush()

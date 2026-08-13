@@ -130,7 +130,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 contract_version="2.0",
                 task_type="PICK",
                 params={"source_location": "STATION-A", "target_location": "STATION-B"},
-                deadline_at=timezone.now_for_db() + timedelta(minutes=2),
+                deadline_at=timezone.now_for_db() + timedelta(seconds=25),
                 trace_id=f"TRACE-{suffix}",
             )
         )

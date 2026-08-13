@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -39,6 +40,18 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         await db.flush()
         return epoch
 
+    async def close_epoch(
+        self,
+        db: AsyncSession,
+        epoch: LineRunEpoch,
+        *,
+        closed_at: datetime,
+    ) -> LineRunEpoch:
+        epoch.status = LineRunEpochStatus.CLOSED
+        epoch.closed_at = closed_at
+        await db.flush()
+        return epoch
+
     async def get_binding_for_update(
         self,
         db: AsyncSession,
@@ -57,7 +70,7 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         )
         return result.scalar_one_or_none()
 
-    async def get_binding_for_command(
+    async def get_binding_for_command_creation(
         self,
         db: AsyncSession,
         *,
@@ -66,15 +79,37 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
     ) -> LineRunEpochDeviceBinding | None:
         epoch_columns = cast("Any", LineRunEpoch).__table__.c
         binding_columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
-        result = await db.execute(
-            select(LineRunEpochDeviceBinding)
-            .join(LineRunEpoch, epoch_columns.id == binding_columns.line_run_epoch_id)
+        epoch = await db.execute(
+            select(LineRunEpoch)
             .where(
-                binding_columns.line_run_epoch_id == line_run_epoch_id,
-                binding_columns.device_code == device_code,
+                epoch_columns.id == line_run_epoch_id,
                 epoch_columns.status == LineRunEpochStatus.ACTIVE,
             )
             .with_for_update()
+        )
+        if epoch.scalar_one_or_none() is None:
+            return None
+        result = await db.execute(
+            select(LineRunEpochDeviceBinding).where(
+                binding_columns.line_run_epoch_id == line_run_epoch_id,
+                binding_columns.device_code == device_code,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_binding_for_dispatch(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        device_code: str,
+    ) -> LineRunEpochDeviceBinding | None:
+        columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochDeviceBinding).where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.device_code == device_code,
+            )
         )
         return result.scalar_one_or_none()
 

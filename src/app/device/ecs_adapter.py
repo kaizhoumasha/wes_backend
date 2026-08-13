@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import re
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -16,6 +17,10 @@ from src.core.outbound_http import (
     OutboundHttpResult,
     OutboundHttpTransport,
 )
+from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 COMMAND_PATH = "/api/v1/device/command"
 STATUS_PATH = "/api/v1/device/status"
@@ -29,6 +34,19 @@ _WIRE_RESPONSE_LIMITS = OutboundHttpResponseLimits(
 _CONTRACT_REJECTION_CODES = frozenset({400, 404, 405, 413, 422})
 _RETRYABLE_NOT_ACCEPTED_CODES = frozenset({429, 503})
 _DELIVERY_UNKNOWN_CODES = frozenset({409, 500, 502, 504})
+_FIXED_ERROR_MESSAGES = {
+    400: "INVALID_ENVELOPE",
+    404: "DEVICE_NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    409: "IDEMPOTENCY_CONFLICT",
+    413: "PAYLOAD_TOO_LARGE",
+    422: "ANNEX_VALIDATION_FAILED",
+    429: "CAPACITY_EXCEEDED",
+    500: "TEMPORARILY_UNAVAILABLE",
+    502: "TEMPORARILY_UNAVAILABLE",
+    503: "TEMPORARILY_UNAVAILABLE",
+    504: "TEMPORARILY_UNAVAILABLE",
+}
 
 
 class EcsStatusUnavailableError(RuntimeError):
@@ -38,8 +56,9 @@ class EcsStatusUnavailableError(RuntimeError):
 class EcsAdapter:
     """把 DeviceCommand 快照映射到四路径合同中的两个出站路径。"""
 
-    def __init__(self, transport: OutboundHttpTransport) -> None:
+    def __init__(self, transport: OutboundHttpTransport, *, clock=timezone.now_for_db) -> None:
         self._transport = transport
+        self._clock = clock
 
     async def submit_command(
         self,
@@ -52,6 +71,7 @@ class EcsAdapter:
         timestamp_ms: int,
         params: dict[str, Any],
         trace_id: str | None,
+        deadline_at: datetime | None = None,
     ) -> EcsSubmitResult:
         envelope: dict[str, Any] = {
             "device_code": device_code,
@@ -64,6 +84,8 @@ class EcsAdapter:
         }
         if trace_id is not None:
             envelope["trace_id"] = trace_id
+        if deadline_at is not None and self._clock() >= deadline_at:
+            return EcsSubmitResult(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED)
         result = await self._transport.send(
             OutboundHttpRequest(
                 method=OutboundHttpMethod.POST,
@@ -86,6 +108,11 @@ class EcsAdapter:
         )
         if result.delivery_state is not OutboundHttpDeliveryState.RESPONSE_RECEIVED or result.status_code != 200:
             raise EcsStatusUnavailableError("ECS 状态端点未返回可信成功响应")
+        if not _is_json_response(result.response_headers):
+            raise EcsStatusUnavailableError("ECS 状态响应不是 application/json")
+        cache_control = [value.lower() for name, value in result.response_headers if name.lower() == "cache-control"]
+        if len(cache_control) != 1 or "no-store" not in {item.strip() for item in cache_control[0].split(",")}:
+            raise EcsStatusUnavailableError("ECS 状态响应未按合同禁止缓存")
         try:
             payload = _decode_json_object(result.decoded_body)
             status = EcsDeviceStatus.model_validate(payload)
@@ -104,6 +131,8 @@ def _classify_submit_result(result: OutboundHttpResult) -> EcsSubmitResult:  # n
     status_code = result.status_code
     if status_code is None:
         return EcsSubmitResult(EcsSubmitDisposition.RECONCILING)
+    if not _is_json_response(result.response_headers):
+        return EcsSubmitResult(EcsSubmitDisposition.RECONCILING, code=status_code)
     response = _try_common_response(result.decoded_body)
     if status_code == 200:
         if response is None or response[0] != 200 or response[1] != "ACCEPTED":
@@ -115,7 +144,19 @@ def _classify_submit_result(result: OutboundHttpResult) -> EcsSubmitResult:  # n
             trace_id=response[2],
         )
     if status_code in _RETRYABLE_NOT_ACCEPTED_CODES:
-        return _with_common_response(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED, response, status_code)
+        classified = _with_common_response(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED, response, status_code)
+        if status_code != 429 or classified.disposition is not EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED:
+            return classified
+        retry_after_seconds = _retry_after_seconds(result.response_headers)
+        if retry_after_seconds is None:
+            return EcsSubmitResult(EcsSubmitDisposition.RECONCILING, code=status_code)
+        return EcsSubmitResult(
+            classified.disposition,
+            code=classified.code,
+            message=classified.message,
+            trace_id=classified.trace_id,
+            retry_after_seconds=retry_after_seconds,
+        )
     if status_code in _CONTRACT_REJECTION_CODES:
         return _with_common_response(EcsSubmitDisposition.CONTRACT_REJECTED, response, status_code)
     if status_code in _DELIVERY_UNKNOWN_CODES:
@@ -128,7 +169,7 @@ def _with_common_response(
     response: tuple[int, str, str | None] | None,
     status_code: int,
 ) -> EcsSubmitResult:
-    if response is None or response[0] != status_code:
+    if response is None or response[0] != status_code or response[1] != _FIXED_ERROR_MESSAGES.get(status_code):
         return EcsSubmitResult(EcsSubmitDisposition.RECONCILING, code=status_code)
     return EcsSubmitResult(disposition, code=response[0], message=response[1], trace_id=response[2])
 
@@ -143,7 +184,10 @@ def _try_common_response(body: bytes | None) -> tuple[int, str, str | None] | No
         return None
     if not isinstance(code, int) or isinstance(code, bool) or not isinstance(message, str):
         return None
-    if trace_id is not None and not isinstance(trace_id, str):
+    if ("trace_id" in payload and trace_id is None) or (
+        trace_id is not None
+        and (not isinstance(trace_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,119}", trace_id))
+    ):
         return None
     if set(payload) - {"code", "message", "trace_id"}:
         return None
@@ -160,6 +204,18 @@ def _decode_json_object(body: bytes | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TypeError("响应体必须是 JSON 对象")
     return payload
+
+
+def _retry_after_seconds(headers: tuple[tuple[str, str], ...]) -> int | None:
+    values = [value for name, value in headers if name.lower() == "retry-after"]
+    if len(values) != 1 or not values[0].isdigit():
+        return None
+    return int(values[0])
+
+
+def _is_json_response(headers: tuple[tuple[str, str], ...]) -> bool:
+    values = [value for name, value in headers if name.lower() == "content-type"]
+    return len(values) == 1 and values[0].split(";", 1)[0].strip().lower() == "application/json"
 
 
 def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:

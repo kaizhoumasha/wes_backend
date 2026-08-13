@@ -136,6 +136,7 @@ _ALLOWED_TRANSITIONS: dict[CommandStatus, frozenset[CommandStatus]] = {
             CommandStatus.SUCCEEDED,
             CommandStatus.FAILED,
             CommandStatus.RECONCILING,
+            CommandStatus.TIMED_OUT,
         }
     ),
     CommandStatus.ACKNOWLEDGED: frozenset({CommandStatus.SUCCEEDED, CommandStatus.FAILED, CommandStatus.RECONCILING}),

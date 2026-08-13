@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from src.app.device.contracts import DeviceEvidenceReceipt
 from src.app.device.services.device_evidence_service import (
+    DeviceEventContractMismatchError,
     DeviceEvidenceConflictError,
     UnknownDeviceCommandError,
 )
@@ -100,9 +105,70 @@ def test_unknown_command_and_identity_conflict_are_explicit() -> None:
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
 
 
+def test_parsed_callback_errors_use_closed_wire_and_preserve_trace_id() -> None:
+    with _client(FakeEvidenceService(DeviceEventContractMismatchError("ARM-01"))) as client:
+        mismatch = client.post("/api/v1/callback/event", json=_event_payload())
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1/callback")
+    with TestClient(app) as client:
+        unavailable = client.post("/api/v1/callback/result", json=_result_payload())
+
+    assert mismatch.status_code == 422
+    assert mismatch.json() == {"code": 422, "message": "ANNEX_VALIDATION_FAILED", "trace_id": "TRACE-002"}
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"code": 503, "message": "TEMPORARILY_UNAVAILABLE", "trace_id": "TRACE-001"}
+
+
 def test_closed_envelope_rejects_legacy_or_flattened_fields() -> None:
     payload = {**_result_payload(), "device_id": 7}
     with _client() as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json()["message"] == "INVALID_ENVELOPE"
+    assert response.json()["trace_id"] == "TRACE-001"
+
+
+def test_callback_requires_json_media_type() -> None:
+    with _client() as client:
+        response = client.post(
+            "/api/v1/callback/result",
+            content=json.dumps(_result_payload()),
+            headers={"content-type": "text/plain"},
+        )
+    assert response.status_code == 400
+    assert response.json()["message"] == "INVALID_ENVELOPE"
+
+
+def test_invalid_envelope_preserves_max_length_valid_trace_id() -> None:
+    trace_id = "T" * 120
+    with _client() as client:
+        response = client.post(
+            "/api/v1/callback/result",
+            json={**_result_payload(), "trace_id": trace_id, "unexpected": True},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["trace_id"] == trace_id
+
+
+def test_body_limit_stops_streaming_before_buffering_remaining_chunks() -> None:
+    class StreamingRequest:
+        def __init__(self) -> None:
+            self.chunks_read = 0
+            self.headers = {"content-type": "application/json"}
+
+        async def stream(self):
+            for chunk in (b"x" * (256 * 1024), b"y", b"must-not-be-read"):
+                self.chunks_read += 1
+                yield chunk
+
+    from src.app.device.v1.ecs_callback import EcsCallbackRejection, _decode_closed_body
+
+    request = StreamingRequest()
+    with pytest.raises(EcsCallbackRejection) as error:
+        asyncio.run(_decode_closed_body(request, BaseModel))  # type: ignore[arg-type]
+
+    assert error.value.status_code == 413
+    assert request.chunks_read == 2

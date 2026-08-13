@@ -35,6 +35,15 @@ class FakeLineRunEpochRepository:
         self.active_epoch = epoch
         return epoch
 
+    async def close_epoch(self, _db: object, epoch: LineRunEpoch, *, closed_at: datetime) -> LineRunEpoch:
+        epoch.status = LineRunEpochStatus.CLOSED
+        epoch.closed_at = closed_at
+        self.active_epoch = None
+        return epoch
+
+    async def has_sendable_for_epoch_for_update(self, _db: object, line_run_epoch_id: int) -> bool:
+        return getattr(self, "has_sendable", False)
+
     async def get_binding_for_update(
         self,
         _db: object,
@@ -131,3 +140,54 @@ async def test_binding_same_identity_is_idempotent_but_cannot_be_rewritten() -> 
             status_max_age_ms=1_000,
             command_timeout_ms=30_000,
         )
+
+
+@pytest.mark.asyncio
+async def test_close_active_epoch_allows_next_generation() -> None:
+    service, repository = _service()
+    first = await service.create_epoch(
+        object(),
+        epoch_code="EPOCH-LINE-01-0001",
+        workline_id=1,
+        topology_digest="a" * 64,
+        configuration_digest="b" * 64,
+        started_at=datetime(2026, 8, 13),
+    )
+
+    closed = await service.close_active_epoch(
+        object(), workline_id=1, closed_at=datetime(2026, 8, 13, 0, 1), command_repository=repository
+    )
+    second = await service.create_epoch(
+        object(),
+        epoch_code="EPOCH-LINE-01-0002",
+        workline_id=1,
+        topology_digest="c" * 64,
+        configuration_digest="d" * 64,
+        started_at=datetime(2026, 8, 13, 0, 1),
+    )
+
+    assert closed is first
+    assert closed.status == LineRunEpochStatus.CLOSED
+    assert closed.closed_at == datetime(2026, 8, 13, 0, 1)
+    assert second.status == LineRunEpochStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_close_epoch_rejects_commands_still_in_send_window() -> None:
+    service, repository = _service()
+    await service.create_epoch(
+        object(),
+        epoch_code="EPOCH-LINE-01-0001",
+        workline_id=1,
+        topology_digest="a" * 64,
+        configuration_digest="b" * 64,
+        started_at=datetime(2026, 8, 13),
+    )
+    repository.has_sendable = True
+
+    with pytest.raises(ActiveLineRunEpochExistsError, match="sendable"):
+        await service.close_active_epoch(
+            object(), workline_id=1, closed_at=datetime(2026, 8, 13, 0, 1), command_repository=repository
+        )
+
+    assert repository.active_epoch is not None

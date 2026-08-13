@@ -29,6 +29,8 @@ class LineRunEpochRepositoryPort(Protocol):
 
     async def add_epoch(self, db: object, epoch: LineRunEpoch) -> LineRunEpoch: ...
 
+    async def close_epoch(self, db: object, epoch: LineRunEpoch, *, closed_at: datetime) -> LineRunEpoch: ...
+
     async def get_binding_for_update(
         self,
         db: object,
@@ -42,6 +44,10 @@ class LineRunEpochRepositoryPort(Protocol):
         db: object,
         binding: LineRunEpochDeviceBinding,
     ) -> LineRunEpochDeviceBinding: ...
+
+
+class SendableCommandRepositoryPort(Protocol):
+    async def has_sendable_for_epoch_for_update(self, db: object, line_run_epoch_id: int) -> bool: ...
 
 
 class LineRunEpochService:
@@ -103,6 +109,23 @@ class LineRunEpochService:
         if existing.identity_tuple() == candidate.identity_tuple():
             return existing
         raise DeviceBindingConflictError(f"Epoch {line_run_epoch_id} 的设备 {device_code} 已冻结为其他合同绑定")
+
+    async def close_active_epoch(
+        self,
+        db: AsyncSession | object,
+        *,
+        workline_id: int,
+        closed_at: datetime,
+        command_repository: SendableCommandRepositoryPort,
+    ) -> LineRunEpoch | None:
+        active = await self._repository.get_active_for_workline_for_update(db, workline_id)
+        if active is None:
+            return None
+        if active.id is None:
+            raise RuntimeError("活动 Epoch 缺少持久化主键")
+        if await command_repository.has_sendable_for_epoch_for_update(db, active.id):
+            raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在 sendable DeviceCommand")
+        return await self._repository.close_epoch(db, active, closed_at=closed_at)
 
 
 line_run_epoch_service = LineRunEpochService(repository=LineRunEpochRepository())

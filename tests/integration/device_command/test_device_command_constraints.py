@@ -11,16 +11,20 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from src.app.device.contracts import EcsDeviceEvent
+from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.models.evidence import DeviceEvidence, DeviceEvidenceConflict
+from src.app.device.repositories.command_repository import device_command_repository
+from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceEvidenceService,
 )
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
+from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
 
 
 async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpochDeviceBinding]:
@@ -206,6 +210,117 @@ async def test_postgresql_rejects_second_active_epoch(integration_session_factor
         )
         with pytest.raises(IntegrityError):
             await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_closed_epoch_releases_active_generation_slot(integration_session_factory) -> None:
+    async with integration_session_factory.begin() as db:
+        line, _, first, _ = await _seed_topology(db)
+        closed_at = datetime(2026, 8, 13, 0, 1)
+        closed = await LineRunEpochService().close_active_epoch(
+            db, workline_id=line.id, closed_at=closed_at, command_repository=device_command_repository
+        )
+        second = LineRunEpoch(
+            epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{uuid4().hex[:12]}",
+            workline_id=line.id,
+            topology_digest="c" * 64,
+            configuration_digest="d" * 64,
+            started_at=closed_at,
+        )
+        db.add(second)
+        await db.flush()
+
+        assert closed is first
+        assert first.closed_at == closed_at
+        assert second.id is not None
+
+
+@pytest.mark.asyncio
+async def test_postgresql_create_and_close_serialize_on_epoch(integration_session_factory) -> None:
+    creation_holds_epoch = asyncio.Event()
+    release_creation = asyncio.Event()
+
+    class PausingEpochRepository(LineRunEpochRepository):
+        async def get_binding_for_command_creation(self, db, *, line_run_epoch_id, device_code):
+            binding = await super().get_binding_for_command_creation(
+                db, line_run_epoch_id=line_run_epoch_id, device_code=device_code
+            )
+            creation_holds_epoch.set()
+            await release_creation.wait()
+            return binding
+
+    async with integration_session_factory.begin() as db:
+        line, _, epoch, binding = await _seed_topology(db)
+
+    request = DeviceCommandRequest(
+        device_code=binding.device_code,
+        line_run_epoch_id=epoch.id,
+        execution_ref_type="TEST_EXECUTION",
+        execution_ref_id=f"EXEC-{uuid4().hex}",
+        contract_key=binding.contract_key,
+        contract_version=binding.contract_version,
+        task_type="TEST_ACTION",
+        params={},
+        deadline_at=datetime(2026, 8, 13, 0, 0, 30),
+    )
+    command_service = DeviceCommandService(
+        session_factory=integration_session_factory,
+        epoch_repository=PausingEpochRepository(),
+        clock=lambda: datetime(2026, 8, 13),
+    )
+
+    create_task = asyncio.create_task(command_service.create_command(request))
+    await asyncio.wait_for(creation_holds_epoch.wait(), timeout=2)
+
+    async def close_epoch():
+        async with integration_session_factory.begin() as db:
+            return await LineRunEpochService().close_active_epoch(
+                db,
+                workline_id=line.id,
+                closed_at=datetime(2026, 8, 13, 0, 1),
+                command_repository=device_command_repository,
+            )
+
+    close_task = asyncio.create_task(close_epoch())
+    await asyncio.sleep(0.05)
+    assert not close_task.done()
+    release_creation.set()
+    await asyncio.wait_for(create_task, timeout=2)
+    with pytest.raises(ActiveLineRunEpochExistsError, match="sendable DeviceCommand"):
+        await asyncio.wait_for(close_task, timeout=2)
+
+    async with integration_session_factory() as db:
+        persisted_epoch = await db.get(LineRunEpoch, epoch.id)
+        assert persisted_epoch.status == "ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_postgresql_dispatch_binding_read_does_not_wait_for_creation_lock(integration_session_factory) -> None:
+    repository = LineRunEpochRepository()
+    async with integration_session_factory.begin() as db:
+        _, _, epoch, binding = await _seed_topology(db)
+
+    lock_acquired = asyncio.Event()
+    release_lock = asyncio.Event()
+
+    async def hold_creation_lock() -> None:
+        async with integration_session_factory.begin() as db:
+            await repository.get_binding_for_command_creation(
+                db, line_run_epoch_id=epoch.id, device_code=binding.device_code
+            )
+            lock_acquired.set()
+            await release_lock.wait()
+
+    holder = asyncio.create_task(hold_creation_lock())
+    await asyncio.wait_for(lock_acquired.wait(), timeout=2)
+    async with integration_session_factory.begin() as db:
+        dispatch_binding = await asyncio.wait_for(
+            repository.get_binding_for_dispatch(db, line_run_epoch_id=epoch.id, device_code=binding.device_code),
+            timeout=1,
+        )
+    release_lock.set()
+    await holder
+    assert dispatch_binding.id == binding.id
 
 
 @pytest.mark.asyncio

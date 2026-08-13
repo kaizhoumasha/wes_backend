@@ -43,11 +43,15 @@ class DispatchCommandRepositoryPort(Protocol):
 
     async def mark_failed(self, db: object, command: DeviceCommand, *, failure_code: str): ...
 
+    async def mark_timed_out(self, db: object, command: DeviceCommand): ...
+
     async def mark_reconciling(self, db: object, command: DeviceCommand, *, reason: str): ...
+
+    async def mark_late_ack_reconciling(self, db: object, command: DeviceCommand, *, acknowledged_at: datetime): ...
 
 
 class DispatchEpochRepositoryPort(Protocol):
-    async def get_binding_for_command(
+    async def get_binding_for_dispatch(
         self, db: object, *, line_run_epoch_id: int, device_code: str
     ) -> LineRunEpochDeviceBinding | None: ...
 
@@ -76,7 +80,7 @@ class DeviceDispatchService:
         self._observations = observation_repository or device_evidence_repository
         self._clock = clock
 
-    async def dispatch_one(self, *, now: datetime) -> bool:
+    async def dispatch_one(self, *, now: datetime) -> bool:  # noqa: PLR0911
         claim_token = new_uuid7()
         async with self._sessions.begin() as db:
             command = await self._commands.claim_next_pending(
@@ -106,7 +110,7 @@ class DeviceDispatchService:
             )
             if command is None:
                 return True
-            binding = await self._epochs.get_binding_for_command(
+            binding = await self._epochs.get_binding_for_dispatch(
                 db,
                 line_run_epoch_id=command.line_run_epoch_id,
                 device_code=command.device_code,
@@ -118,6 +122,9 @@ class DeviceDispatchService:
                 db,
                 _status_observation(command, status, observed_at),
             )
+            if command.deadline_at <= observed_at:
+                await self._commands.mark_timed_out(db, command)
+                return True
             try:
                 self.ensure_admissible(command=command, binding=binding, status=status, observed_at=observed_at)
             except DeviceDispatchAdmissionError as error:
@@ -125,7 +132,16 @@ class DeviceDispatchService:
                 return True
             submit_snapshot = _submit_snapshot(command)
 
-        submit_result = await self._adapter.submit_command(**submit_snapshot)
+        if self._clock() >= command.deadline_at:
+            async with self._sessions.begin() as db:
+                command = await self._commands.get_claimed_for_update(
+                    db, command_code=command_code, claim_token=claim_token
+                )
+                if command is not None:
+                    await self._commands.mark_timed_out(db, command)
+            return True
+        submit_result = await self._adapter.submit_command(**submit_snapshot, deadline_at=command.deadline_at)
+        response_at = self._clock()
         async with self._sessions.begin() as db:
             command = await self._commands.get_claimed_for_update(
                 db, command_code=command_code, claim_token=claim_token
@@ -133,12 +149,23 @@ class DeviceDispatchService:
             if command is None:
                 return True
             if submit_result.disposition is EcsSubmitDisposition.ACKNOWLEDGED:
-                await self._commands.mark_acknowledged(db, command, acknowledged_at=now)
+                if response_at >= command.deadline_at:
+                    await self._commands.mark_late_ack_reconciling(db, command, acknowledged_at=response_at)
+                else:
+                    await self._commands.mark_acknowledged(db, command, acknowledged_at=response_at)
             elif submit_result.disposition is EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED:
+                retry_after_seconds = submit_result.retry_after_seconds
+                retry_base = self._clock()
+                try:
+                    candidate = retry_base + timedelta(
+                        seconds=5 if retry_after_seconds is None else retry_after_seconds
+                    )
+                except (OverflowError, ValueError):
+                    candidate = command.deadline_at
                 await self._commands.release_retryable(
                     db,
                     command,
-                    next_attempt_at=now + timedelta(seconds=5),
+                    next_attempt_at=min(candidate, command.deadline_at),
                 )
             elif submit_result.disposition is EcsSubmitDisposition.CONTRACT_REJECTED:
                 await self._commands.mark_failed(db, command, failure_code="ECS_CONTRACT_REJECTED")
@@ -185,8 +212,8 @@ class DeviceDispatchService:
             or command.contract_version != binding.contract_version
         ):
             raise DeviceDispatchAdmissionError("DEVICE_CONTRACT_MISMATCH")
-        status_at = datetime.fromtimestamp(status.timestamp / 1000, tz=UTC).replace(tzinfo=None)
-        age_ms = (observed_at - status_at).total_seconds() * 1000
+        observed_at_ms = int(observed_at.replace(tzinfo=UTC).timestamp() * 1000)
+        age_ms = observed_at_ms - status.timestamp
         if age_ms < 0 or age_ms > binding.status_max_age_ms:
             raise DeviceDispatchAdmissionError("DEVICE_STATUS_STALE")
         if status.mode is not EcsDeviceMode.AUTO:

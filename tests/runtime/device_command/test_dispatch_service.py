@@ -60,8 +60,18 @@ class FakeCommandRepository:
         command.transition_to(CommandStatus.FAILED)
         command.claim_token = None
 
+    async def mark_timed_out(self, _db, command):
+        command.transition_to(CommandStatus.TIMED_OUT)
+        command.claim_token = None
+
     async def mark_reconciling(self, _db, command, *, reason):
         command.reconciliation_reason = reason
+        command.transition_to(CommandStatus.RECONCILING)
+        command.claim_token = None
+
+    async def mark_late_ack_reconciling(self, _db, command, *, acknowledged_at):
+        command.ack_received_at = acknowledged_at
+        command.reconciliation_reason = "ACK_AFTER_DEADLINE"
         command.transition_to(CommandStatus.RECONCILING)
         command.claim_token = None
 
@@ -70,7 +80,7 @@ class FakeEpochRepository:
     def __init__(self, binding: LineRunEpochDeviceBinding) -> None:
         self.binding = binding
 
-    async def get_binding_for_command(self, _db, *, line_run_epoch_id, device_code):
+    async def get_binding_for_dispatch(self, _db, *, line_run_epoch_id, device_code):
         if (line_run_epoch_id, device_code) == (self.binding.line_run_epoch_id, self.binding.device_code):
             return self.binding
         return None
@@ -193,3 +203,107 @@ async def test_status_probe_failure_returns_to_pending_because_command_was_not_s
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
     assert command.status == CommandStatus.PENDING
     assert adapter.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_command_crossing_deadline_during_status_probe_is_timed_out_before_submit() -> None:
+    command = _command()
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter=adapter,  # type: ignore[arg-type]
+        clock=lambda: command.deadline_at,
+    )
+
+    assert await service.dispatch_one(now=command.deadline_at - timedelta(microseconds=1)) is True
+    assert command.status == CommandStatus.TIMED_OUT
+    assert adapter.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_command_crossing_deadline_after_admission_is_timed_out_at_final_send_fence() -> None:
+    command = _command()
+    command.deadline_at = datetime(2026, 8, 13, 0, 0, 1)
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter=adapter,  # type: ignore[arg-type]
+        clock=iter([command.deadline_at - timedelta(microseconds=1), command.deadline_at]).__next__,
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.TIMED_OUT
+    assert adapter.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_retryable_response_uses_retry_after_delay() -> None:
+    command = _command()
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED, retry_after_seconds=60))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter=adapter,  # type: ignore[arg-type]
+        clock=iter(
+            [
+                datetime(2026, 8, 13, 0, 0, 0, 500_000),
+                datetime(2026, 8, 13, 0, 0, 10, 500_000),
+                datetime(2026, 8, 13, 0, 0, 10, 500_000),
+                datetime(2026, 8, 13, 0, 0, 10, 500_000),
+            ]
+        ).__next__,
+    )
+
+    now = datetime(2026, 8, 13, 0, 0, 0, 500_000)
+    assert await service.dispatch_one(now=now) is True
+    assert command.next_attempt_at == command.deadline_at
+
+
+@pytest.mark.asyncio
+async def test_huge_retry_after_is_fenced_by_command_deadline() -> None:
+    command = _command()
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED, retry_after_seconds=10**100))
+    response_at = datetime(2026, 8, 13, 0, 0, 10)
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter=adapter,  # type: ignore[arg-type]
+        clock=iter([datetime(2026, 8, 13, 0, 0, 0, 500_000), response_at, response_at, response_at]).__next__,
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.next_attempt_at == command.deadline_at
+    assert command.status == CommandStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_ack_received_after_deadline_enters_reconciliation_with_response_time() -> None:
+    command = _command()
+    command.deadline_at = datetime(2026, 8, 13, 0, 0, 1)
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    response_at = command.deadline_at + timedelta(seconds=1)
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),
+        command_repository=FakeCommandRepository(command),
+        epoch_repository=FakeEpochRepository(_binding()),
+        observation_repository=FakeObservationRepository(),
+        adapter=adapter,
+        clock=iter(
+            [datetime(2026, 8, 13, 0, 0, 0, 500_000), datetime(2026, 8, 13, 0, 0, 0, 750_000), response_at]
+        ).__next__,
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.RECONCILING
+    assert command.reconciliation_reason == "ACK_AFTER_DEADLINE"
+    assert command.ack_received_at == response_at

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -13,6 +13,7 @@ from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import DeviceCommand  # noqa: TC001
 from src.app.device.services.device_command_service import (
     DeviceCommandCapacityError,
+    DeviceCommandDeadlineError,
     DeviceCommandIdentityConflictError,
     DeviceCommandService,
     DeviceNotFoundError,
@@ -73,7 +74,7 @@ class FakeEpochRepository:
     def __init__(self, bindings: dict[tuple[int, str], LineRunEpochDeviceBinding]) -> None:
         self.bindings = bindings
 
-    async def get_binding_for_command(
+    async def get_binding_for_command_creation(
         self,
         _db: object,
         *,
@@ -106,7 +107,7 @@ def _request(device_code: str = "ARM-01") -> DeviceCommandRequest:
         contract_version="2.0",
         task_type="PICK",
         params={"source_location": "STATION-A"},
-        deadline_at=datetime(2026, 8, 13, 0, 1),
+        deadline_at=datetime(2026, 8, 13, 0, 0, 30),
         trace_id="TRACE-001",
     )
 
@@ -120,6 +121,7 @@ def _service(*bindings: LineRunEpochDeviceBinding) -> tuple[DeviceCommandService
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=command_repository,  # type: ignore[arg-type]
         epoch_repository=epoch_repository,  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13),
     )
     return service, command_repository
 
@@ -176,3 +178,21 @@ async def test_different_devices_create_independent_commands() -> None:
     assert first.command_code != second.command_code
     assert {command.device_code for command in repository.created} == {"ARM-01", "ARM-02"}
     assert all(len(command.payload_digest) == 64 for command in repository.created)
+
+
+@pytest.mark.asyncio
+async def test_deadline_cannot_exceed_frozen_binding_timeout() -> None:
+    service, repository = _service(_binding())
+
+    with pytest.raises(DeviceCommandDeadlineError, match="deadline"):
+        await service.create_command(replace(_request(), deadline_at=datetime(2026, 8, 13, 0, 0, 31)))
+
+    assert repository.created == []
+
+
+@pytest.mark.asyncio
+async def test_aware_deadline_is_rejected_as_database_contract_violation() -> None:
+    service, repository = _service(_binding())
+    with pytest.raises(DeviceCommandDeadlineError, match="naive UTC"):
+        await service.create_command(replace(_request(), deadline_at=datetime(2026, 8, 13, tzinfo=UTC)))
+    assert repository.created == []

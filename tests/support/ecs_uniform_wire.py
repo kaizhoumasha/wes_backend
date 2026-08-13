@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -66,6 +67,7 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
                 "error_detail": None,
                 "timestamp": int(time.time() * 1000),
             },
+            no_store=True,
         )
 
     def do_POST(self) -> None:
@@ -82,11 +84,12 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
             "contract_version": command["contract_version"],
             "result": "SUCCESS",
             "finish_time": int(time.time() * 1000),
-            "source_event_id": f"RESULT-{command['command_code']}",
+            "source_event_id": f"RESULT-{hashlib.sha256(command['command_code'].encode()).hexdigest()}",
             "data": {"physical_result": "DONE"},
             "error_detail": None,
-            "trace_id": command.get("trace_id"),
         }
+        if command.get("trace_id") is not None:
+            callback_payload["trace_id"] = command["trace_id"]
         callback_request = urllib_request.Request(  # noqa: S310 - callback URL 由本地测试服务构造。
             self.server.callback_url,
             data=json.dumps(callback_payload, separators=(",", ":")).encode(),
@@ -100,16 +103,18 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
             self.server.callback_errors.append(error)
             self._send_json(500, {"code": 500, "message": "CALLBACK_FAILED"})
             return
-        self._send_json(
-            200,
-            {"code": 200, "message": "ACCEPTED", "trace_id": command.get("trace_id")},
-        )
+        ack = {"code": 200, "message": "ACCEPTED"}
+        if command.get("trace_id") is not None:
+            ack["trace_id"] = command["trace_id"]
+        self._send_json(200, ack)
 
-    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+    def _send_json(self, status: int, payload: dict[str, Any], *, no_store: bool = False) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
+        if no_store:
+            self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

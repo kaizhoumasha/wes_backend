@@ -11,6 +11,7 @@ from src.app.device.contracts import EcsCommandResult, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.evidence import DeviceEvidence, DeviceEvidenceConflict  # noqa: TC001
 from src.app.device.services.device_evidence_service import (
+    DeviceEventContractMismatchError,
     DeviceEvidenceConflictError,
     DeviceEvidenceService,
     DeviceResultConflictError,
@@ -216,6 +217,7 @@ async def test_one_command_accepts_only_one_result_identity() -> None:
         await service.accept_result(_result(source_event_id="RESULT-002"))
 
     assert repository.conflicts[0].reason_code == "COMMAND_RESULT_CONFLICT"
+    assert repository.evidences["RESULT-002"].apply_status == "IGNORED"
 
 
 @pytest.mark.asyncio
@@ -225,7 +227,42 @@ async def test_unknown_command_does_not_create_accepted_evidence() -> None:
     with pytest.raises(UnknownDeviceCommandError):
         await service.accept_result(_result())
 
-    assert repository.evidences == {}
+    rejected = repository.evidences["RESULT-001"]
+    assert rejected.apply_status == "IGNORED"
+    assert rejected.command_code is None
+
+    with pytest.raises(DeviceEvidenceConflictError):
+        await service.accept_result(_result(data={"changed": True}))
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_rejection_cannot_rebind_when_command_appears() -> None:
+    service, repository = _service(None)
+    with pytest.raises(UnknownDeviceCommandError):
+        await service.accept_result(_result())
+
+    service._commands.command = _command()
+    with pytest.raises(UnknownDeviceCommandError):
+        await service.accept_result(_result())
+
+    rejected = repository.evidences["RESULT-001"]
+    assert rejected.apply_status == "IGNORED"
+    assert rejected.command_code is None
+    assert rejected.line_run_epoch_id is None
+
+
+@pytest.mark.asyncio
+async def test_result_identity_mismatch_is_frozen_before_rejection() -> None:
+    service, repository = _service(_command())
+
+    with pytest.raises(DeviceResultConflictError):
+        await service.accept_result(_result(device_code="ARM-OTHER"))
+
+    rejected = repository.evidences["RESULT-001"]
+    assert rejected.apply_status == "IGNORED"
+    assert rejected.line_run_epoch_id == 11
+    with pytest.raises(DeviceEvidenceConflictError):
+        await service.accept_result(_result(device_code="ARM-THIRD"))
 
 
 @pytest.mark.asyncio
@@ -248,6 +285,41 @@ async def test_event_freezes_active_epoch_when_contract_matches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_contract_mismatch_is_frozen_before_rejection() -> None:
+    service, repository = _service(None, event_epoch_id=11)
+
+    with pytest.raises(DeviceEventContractMismatchError):
+        await service.accept_event(_event(contract_version="3.0"))
+
+    rejected = repository.evidences["EVENT-001"]
+    assert rejected.apply_status == "IGNORED"
+    assert rejected.line_run_epoch_id == 11
+    with pytest.raises(DeviceEvidenceConflictError):
+        await service.accept_event(_event(contract_version="4.0"))
+
+
+@pytest.mark.asyncio
+async def test_rejected_event_cannot_rebind_after_original_epoch_closes() -> None:
+    epochs = FakeEpochRepository(event_epoch_id=11)
+    evidences = FakeEvidenceRepository()
+    service = DeviceEvidenceService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        evidence_repository=evidences,  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(None),  # type: ignore[arg-type]
+        epoch_repository=epochs,  # type: ignore[arg-type]
+    )
+    event = _event(contract_version="3.0")
+    with pytest.raises(DeviceEventContractMismatchError):
+        await service.accept_event(event)
+
+    epochs.event_epoch_id = None
+    with pytest.raises(DeviceEventContractMismatchError):
+        await service.accept_event(event)
+
+    assert evidences.evidences["EVENT-001"].line_run_epoch_id == 11
+
+
+@pytest.mark.asyncio
 async def test_result_evidence_is_only_authority_that_closes_acknowledged_command() -> None:
     command = _command()
     service, repository = _service(command)
@@ -258,6 +330,21 @@ async def test_result_evidence_is_only_authority_that_closes_acknowledged_comman
     assert command.status == CommandStatus.SUCCEEDED
     assert command.result_evidence_id == receipt.evidence_id
     assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
+
+
+@pytest.mark.asyncio
+async def test_result_without_optional_fields_keeps_omission_through_async_apply() -> None:
+    command = _command()
+    service, repository = _service(command)
+    result = EcsCommandResult.model_validate(
+        {key: value for key, value in _result().model_dump(mode="json").items() if key != "trace_id"}
+    )
+
+    receipt = await service.accept_result(result)
+
+    assert "trace_id" not in repository.evidences[receipt.source_event_id].raw_payload
+    assert await service.process_one() is True
+    assert command.status == CommandStatus.SUCCEEDED
 
 
 @pytest.mark.asyncio
