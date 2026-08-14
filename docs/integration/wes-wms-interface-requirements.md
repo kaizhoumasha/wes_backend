@@ -3,9 +3,9 @@ title: WES - WMS 对接接口需求
 status: ReviewRequired
 contract_version: 0.2.0
 published_at: pending
-wes_alignment: ALIGNED
+wes_alignment: ALIGNMENT_REQUIRED
 created_at: 2026-08-13
-updated_at: 2026-08-14
+updated_at: 2026-08-15
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
 scope: WES/WMS 公共通信、Transport 搬运、自动出库、自动入库与上架
 system_stage: pre_release
@@ -18,7 +18,7 @@ migration_strategy: direct_replacement
 
 | 合同版本 | 日期 | 状态 | 主要变化 |
 | --- | --- | --- | --- |
-| `0.2.0` | 2026-08-14 | 待外发 | 冻结 .NET Framework 4.6、Transport 同面交换、货架面、T3 结果修订和按面分批业务边界 |
+| `0.2.0` | 2026-08-14 | 待外发 | Transport 收敛为货架/料箱两族 DTO，统一 `container_id`，冻结目标工作面，并删除 T1 BUSY 分支 |
 
 `contract_version` 只用于双方确认拿到的是同一份外发合同，不进入任何 JSON 信封，也不产生旧版本兼容逻辑。正式外发时将
 `published_at` 改为实际日期；在此之前，本版本不得用于宣称现场联调已经就绪。
@@ -51,13 +51,13 @@ WMS/RCS 私有接口。所有标为 `Approved` 的场景，其字段类型、长
 | --- | --- | --- | --- |
 | 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
-| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES T1 客户端、T2/T3 接收端和持久化约束已对齐；不代表 WMS 或现场已验收 |
+| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNMENT_REQUIRED` | 本文已切换两族 DTO 目标合同；WES 代码、OpenAPI、WMS 和现场尚待同步实施 |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的 O1～O7 只用于联合评审，批准前禁止实现 |
 | 自动入库与上架 | `ReviewRequired` | `NOT_READY` | 附录 B/C 的 I1～I4、P1～P8 只用于联合评审，批准前禁止实现 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-F-01、T1～T3 的合同生命周期为 `Approved`，WES 实现状态为 `ALIGNED`。基础通信或 Transport 验收通过，不能证明自动入库、
-自动出库已经通过；设备动作验收也不能替代 WMS 库存和业务验收。
+F-01、T1～T3 的合同生命周期为 `Approved`，当前两族 DTO 的 WES 实现状态为 `ALIGNMENT_REQUIRED`。基础通信或 Transport
+验收通过，不能证明自动入库、自动出库已经通过；设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
 
@@ -68,7 +68,7 @@ F-01、T1～T3 的合同生命周期为 `Approved`，WES 实现状态为 `ALIGNE
 | --- | --- | --- | --- | --- | --- |
 | `F-01` | 架构基础能力 | 为 T1 服务端接口提供严格 JSON、公共响应和幂等冲突处理 | 为 T2/T3 调用提供不可变消息、响应分类和可靠重试 | 完成 T1～T3 共用的 HTTP/JSON 能力，不单独新增通用端点 | 第 2 节“F-01 WMS 开发任务卡” |
 | `T1` | Transport 业务能力 | `POST {{WMS_BASE_URL}}/api/v1/wes/transport-requests`<br>`operation=transport.task.submit@v1` | 无 | 接收并可靠接纳四种不可变搬运请求 | 第 3 节“T1 WMS 开发任务卡” |
-| `T2` | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 根据确定 RCS 证据回调单个 Bin 的位置变化 | 第 3 节“T2 WMS 开发任务卡” |
+| `T2` | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 根据确定 RCS 证据回调单个容器的位置变化 | 第 3 节“T2 WMS 开发任务卡” |
 | `T3` | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.resulted@v1` | 按连续 `outcome_revision` 回调完整搬运结果和各对象最终位置 | 第 3 节“T3 WMS 开发任务卡” |
 | `D-01` | 联调交付 | 无新增运行时接口 | 无新增运行时接口 | 提供 Approved 范围的 OpenAPI、固定 JSON、归一化表和联调证据 | 第 5 节 |
 
@@ -216,7 +216,8 @@ flowchart LR
   4. 不得为未批准 operation 建立空实现、默认成功或兼容分支。
 - **完成证据：**
   1. 合法请求、重复请求、内容冲突、非法 JSON、超限和非法 DTO 均得到规定结果；
-  2. `BUSY/UNAVAILABLE`、网络失败和响应未知后，发送方仍使用原完整消息；
+  2. T1 只有请求明确未发出或收到 `503 / UNAVAILABLE` 时才使用原完整消息重试；请求可能已送达但响应未知时停止自动重提并进入
+     对账；T2/T3 主动通知在 `503 / UNAVAILABLE`、网络失败或响应未知后仍使用原完整消息继续履约；
   3. 进程重启后，已经形成但尚未明确接纳的主动通知仍可继续发送；
   4. F-01 验收记录与 T1～T3 业务验收记录分开保存和判定。
 
@@ -249,7 +250,8 @@ flowchart LR
     "kind": "RACK_MOVE",
     "rack_id": "RACK-005-01",
     "source": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-A-01"},
-    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"}
+    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "target_face": "A"
   }
 }
 ```
@@ -290,7 +292,9 @@ flowchart LR
 
 同一 `operation + operation_id` 对应不同完整消息时统一返回 `409 / CONFLICT`。比较完整消息时，JSON 空白和对象字段顺序不构成
 内容变化；字段是否出现、字段值、数组顺序、`operation`、`operation_id`、`timestamp` 或 `data` 发生变化均视为不同消息。
-字符串使用大小写敏感的序数比较，不做 Unicode 归一化；整数必须先通过字段类型校验，`1.0`、字符串 `"1"` 和整数 `1` 不相等。
+字符串使用大小写敏感的序数比较，不做 Unicode 归一化；规范化消息必须保留 JSON number 的整数/浮点 token 区别，`1.0`、字符串
+`"1"` 和整数 `1` 不相等；`SameCompleteMessage` 不得直接依赖会跨 number token 类型比较的宽松相等规则。首次消息在完成身份查询后
+再按字段合同拒绝错误 number 类型。
 接收方可以比较严格 DTO 或规范化 JSON，但不得比较原始 bytes 后把仅有空白或对象字段顺序变化的请求误判为冲突。发送方仍应保存并
 重发首次形成的同一组 UTF-8 bytes，减少跨语言差异。摘要算法属于内部实现。
 
@@ -301,7 +305,7 @@ flowchart LR
 同一身份的并发首次请求必须串行收敛：只能有一次业务接纳和一份首次响应，其余相同消息返回对应重复结果，不得创建第二项搬运
 义务。接收方使用锁、事务还是其它并发控制方式属于内部实现。
 
-`429 / BUSY` 和 `503 / UNAVAILABLE` 是尚未接纳时的临时响应，不建立业务绑定，也不作为后续 `DUPLICATE` 的冻结响应。
+`503 / UNAVAILABLE` 是尚未接纳时的临时响应，不建立业务绑定，也不作为后续 `DUPLICATE` 的冻结响应。
 `RECEIVED` 是首次接纳终局响应；`REJECTED` 是确定拒绝终局响应。取得合法消息身份的 `REJECTED` 必须保存请求摘要和首次拒绝
 响应；同一身份、同一非法消息稳定重放首次拒绝，同一身份改换内容返回 `409 / CONFLICT`。无法安全建立消息身份的 `400/413`
 不进入幂等记录。
@@ -310,7 +314,7 @@ flowchart LR
 
 | 项目 | 固定规则 |
 | --- | --- |
-| 编码与类型 | UTF-8 `application/json`；顶层必须是 JSON object；错误 `Content-Type` 按预关联失败返回空响应体 `400` |
+| 编码与类型 | 无 BOM 的严格 UTF-8 `application/json`；非法字节不得替换后继续；顶层必须是 JSON object；错误 `Content-Type` 按预关联失败返回空响应体 `400` |
 | 请求顶层字段 | 只能是 `operation_id + operation + timestamp + data`，四项全部必填 |
 | 响应顶层字段 | 只能是 `operation_id + code + timestamp + data`，四项全部必填 |
 | `operation_id` | RFC 9562 UUIDv7 小写 canonical 字符串，例如 `019fd985-0000-7b4d-a23a-1b90aa5d4472`；大写或其它文本形式非法 |
@@ -319,33 +323,25 @@ flowchart LR
 | `data` | operation 或 code 专属严格闭集 object；没有专属字段时使用 `{}`，不得省略或使用 `null` |
 | 可选字段 | 无值时省略；除非字段表明确允许，否则禁止 `null`、空字符串、空 object 和空 array |
 | 未知字段 | 顶层和 `data` 内都禁止；不得忽略、透传或保存为扩展字段 |
-| 重复 JSON key | 禁止；`operation_id` 本身重复或无法唯一取得合法值时返回空响应体 `400`，否则按 `422 / REJECTED` 处理 |
+| 重复 JSON key | 任意层级都禁止；重复成员无法形成唯一规范化消息，统一返回空响应体 `400` 且不建立幂等记录，与成员顺序无关 |
 | 字符串长度 | 按 Unicode code point 计数；必须是合法 UTF-8 |
 | Body 上限 | 请求和响应原始正文均为 `256 KiB`；请求超限在 JSON 解码前返回空响应体 `413` |
 
 ##### 2.2.1.1 .NET Framework 4.6 严格 JSON 伪代码
 
-下面示例使用 Json.NET 类型表达校验顺序。辅助方法必须验证所有嵌套 object，不能只检查顶层：
+严格接收分成两个阶段，不能把下面的完整 DTO 校验提前到身份查询之前：
+
+1. 身份阶段只执行有界读取、拒绝 BOM 和非法 UTF-8、严格 JSON 语法、重复 key 和根 object 检查；任意重复 key 都按无法安全
+   规范化的预关联失败返回空响应体 `400`。随后提取合法 `operation + operation_id` 并保留完整 `JObject`；未知字段、有限浮点 token
+   和 operation 专属类型暂不拒绝；
+2. 查询既有身份并比较完整消息后，只有首次出现的消息才执行闭集字段、精确 token 类型、字符串长度、DTO 转换和 operation 专属校验。
+
+下面示例是第二阶段的完整 DTO 校验入口，必须验证所有嵌套 object，不能只检查顶层；第一阶段复用相同的严格 reader 和
+`LoadObjectAndRejectDuplicateKeys`，但不得提前调用此方法中的字段与 DTO 校验：
 
 ```csharp
-static T ParseStrictJson<T>(byte[] rawBody, ISet<string> requiredTopLevelFields, ISet<string> allowedTopLevelFields)
+static T ValidateFirstMessageDto<T>(JObject root, ISet<string> requiredTopLevelFields, ISet<string> allowedTopLevelFields)
 {
-    // Body 大小必须在 UTF-8 解码和 JSON 解析之前判断。
-    if (rawBody == null || rawBody.Length > 262144)
-    {
-        throw new BodyTooLargeException();
-    }
-
-    // 使用“遇到非法字节就失败”的 UTF-8 解码，拒绝 BOM，不能用替换字符吞掉错误输入。
-    string json = DecodeUtf8WithoutReplacement(rawBody);
-
-    // JsonTextReader 会宽松接受尾随逗号，而且逗号不会作为 token 暴露给递归方法；必须先做字符串感知的词法检查。
-    RejectCommentsAndTrailingCommas(json);
-
-    // 加载 JSON object 时必须拒绝：重复 key、多个根值和非 object 根节点。
-    // Json.NET 默认会用后一个重复属性覆盖前一个，因此不能直接 JsonConvert.DeserializeObject<T>()。
-    JObject root = LoadObjectAndRejectDuplicateKeys(json);
-
     // 字段名按序数、大小写敏感方式比较；未知字段、错误大小写和缺失必填字段都必须失败。
     ValidateExactClosedFields(root, requiredTopLevelFields, allowedTopLevelFields, StringComparer.Ordinal);
 
@@ -369,11 +365,12 @@ static T ParseStrictJson<T>(byte[] rawBody, ISet<string> requiredTopLevelFields,
 }
 ```
 
-Json.NET 的 `JsonTextReader` 不提供“禁止尾随逗号”开关，而且递归读取时看不到逗号 token。下面的最小词法检查只负责拒绝注释和
-尾随逗号，并正确忽略 JSON 字符串内部的 `//`、`/*` 和逗号；其它结构错误继续交给严格 reader：
+Json.NET 的 `JsonTextReader` 会接受单引号字符串、无引号属性名、非 JSON 空白、十六进制/前导零整数和尾随逗号等扩展，而且递归读取时
+看不到原始空白和逗号。下面的最小词法检查拒绝词法层扩展以及非法字符串转义，并正确忽略双引号 JSON 字符串内部的注释标记和逗号；
+无引号属性名由后续 `PropertyName + QuoteChar` 检查拒绝，其它结构错误继续交给 reader：
 
 ```csharp
-static void RejectCommentsAndTrailingCommas(string json)
+static void RejectJsonNetExtensions(string json)
 {
     bool inString = false;
     bool escaped = false;
@@ -385,6 +382,22 @@ static void RejectCommentsAndTrailingCommas(string json)
         {
             if (escaped)
             {
+                if (current != '"' && current != '\\' && current != '/' &&
+                    current != 'b' && current != 'f' && current != 'n' &&
+                    current != 'r' && current != 't' && current != 'u')
+                {
+                    throw new ContractValidationException("JSON 包含非法字符串转义");
+                }
+                if (current == 'u')
+                {
+                    if (index + 4 >= json.Length ||
+                        !IsHexDigit(json[index + 1]) || !IsHexDigit(json[index + 2]) ||
+                        !IsHexDigit(json[index + 3]) || !IsHexDigit(json[index + 4]))
+                    {
+                        throw new ContractValidationException("JSON 的 Unicode 转义必须包含四个十六进制数字");
+                    }
+                    index += 4;
+                }
                 escaped = false;
             }
             else if (current == '\\')
@@ -395,12 +408,55 @@ static void RejectCommentsAndTrailingCommas(string json)
             {
                 inString = false;
             }
+            else if (current < 0x20)
+            {
+                throw new ContractValidationException("JSON 字符串禁止未转义控制字符");
+            }
             continue;
+        }
+
+        if (current == '\'')
+        {
+            throw new ContractValidationException("JSON 字符串和属性名只能使用双引号");
         }
 
         if (current == '"')
         {
             inString = true;
+            continue;
+        }
+
+        if (!IsJsonWhitespace(current) && (current < 0x20 || char.IsWhiteSpace(current)))
+        {
+            throw new ContractValidationException("JSON 包含原始控制字符或非标准空白字符");
+        }
+
+        if (current == '-' || current == '.' || (current >= '0' && current <= '9'))
+        {
+            int end = index + 1;
+            while (end < json.Length && !IsJsonNumberDelimiter(json[end]))
+            {
+                end++;
+            }
+
+            string lexeme = json.Substring(index, end - index);
+            // 完整 JSON number 文法；拒绝十六/八进制、前导零、.5、1. 和残缺指数等 Json.NET 扩展。
+            if (!Regex.IsMatch(
+                    lexeme,
+                    @"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$",
+                    RegexOptions.CultureInvariant))
+            {
+                throw new ContractValidationException("JSON number 不符合标准文法");
+            }
+
+            if ((lexeme.IndexOf('.') >= 0 || lexeme.IndexOf('e') >= 0 || lexeme.IndexOf('E') >= 0) &&
+                !TryParseDecimalExactly(lexeme))
+            {
+                // Decimal.TryParse 可能成功但发生舍入或下溢；这种 number 不能进入消息摘要。
+                throw new PreAssociationContractException("JSON number 超出合同无损规范化域");
+            }
+
+            index = end - 1;
             continue;
         }
 
@@ -428,12 +484,41 @@ static void RejectCommentsAndTrailingCommas(string json)
     }
 }
 
+static bool IsHexDigit(char value)
+{
+    return (value >= '0' && value <= '9') ||
+           (value >= 'a' && value <= 'f') ||
+           (value >= 'A' && value <= 'F');
+}
+
 static bool IsJsonWhitespace(char value)
 {
     // JSON 只允许这四种空白字符，不能使用 char.IsWhiteSpace 扩大接受集合。
     return value == ' ' || value == '\t' || value == '\r' || value == '\n';
 }
+
+static bool IsJsonNumberDelimiter(char value)
+{
+    return IsJsonWhitespace(value) || value == ',' || value == ']' || value == '}';
+}
+
+static bool TryParseDecimalExactly(string lexeme)
+{
+    decimal parsed;
+    if (!decimal.TryParse(lexeme, NumberStyles.Float, CultureInfo.InvariantCulture, out parsed))
+    {
+        return false;
+    }
+
+    // 两边都转为“符号 + 去除首尾零的十进制系数 + 十进制指数”后比较，不能比较格式化字符串。
+    // 左侧只处理已经通过 JSON number 正则的 lexeme；右侧从 decimal.GetBits(parsed) 取得 96-bit 系数和 scale。
+    // 这样 1.0、1e0 和 1.00 数学值相同，但 1e-29/2e-29 被 Decimal 下溢为 0M 时都会检测为不相等。
+    return CanonicalizeJsonDecimal(lexeme) == CanonicalizeDecimalBits(parsed);
+}
 ```
+
+`DuplicateJsonKeyException` 必须归入 `PreAssociationContractException`：重复成员不存在可供幂等比较的唯一 object，不能根据已经读到的
+局部 `operation/operation_id` 把它提升为已关联 `422`。
 
 重复 key 必须在构造 `JObject` 前发现；下面是 `LoadObjectAndRejectDuplicateKeys` 的关键递归结构。它是伪代码，重点是解析顺序和
 失败条件，不要求 WMS 使用相同方法名：
@@ -441,11 +526,10 @@ static bool IsJsonWhitespace(char value)
 ```csharp
 static JToken ReadStrictToken(JsonTextReader reader)
 {
-    // 禁止 Json.NET 的宽松扩展；浮点值也不能替代合同中的整数或十进制字符串。
+    // 这里只拒绝非法 JSON 扩展；字段是否允许浮点数留到首次消息的 DTO 校验。
     if (reader.TokenType == JsonToken.Comment ||
         reader.TokenType == JsonToken.ConstructorStart ||
-        reader.TokenType == JsonToken.Undefined ||
-        reader.TokenType == JsonToken.Float)
+        reader.TokenType == JsonToken.Undefined)
     {
         throw new ContractValidationException("JSON 包含合同未允许的 token");
     }
@@ -455,17 +539,29 @@ static JToken ReadStrictToken(JsonTextReader reader)
         JObject result = new JObject();
         HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
 
-        while (reader.Read() && reader.TokenType != JsonToken.EndObject)
+        while (reader.Read())
         {
+            if (reader.TokenType == JsonToken.EndObject)
+            {
+                return result;
+            }
+
             if (reader.TokenType != JsonToken.PropertyName)
             {
                 throw new ContractValidationException("object 中只能出现属性名");
+            }
+
+            // JsonTextReader 允许无引号属性名，并以 QuoteChar='\0' 暴露；合同只接受双引号属性名。
+            if (reader.QuoteChar != '"')
+            {
+                throw new ContractValidationException("JSON 属性名必须使用双引号");
             }
 
             string name = (string)reader.Value;
             // 在读取属性值前检查，确保第二个同名属性不会覆盖第一个属性。
             if (!names.Add(name))
             {
+                // 任意层级重复 key 都是预关联 400，不能因 operation/operation_id 的成员顺序改变响应分类。
                 throw new DuplicateJsonKeyException(name);
             }
 
@@ -475,20 +571,36 @@ static JToken ReadStrictToken(JsonTextReader reader)
             }
             result.Add(name, ReadStrictToken(reader));
         }
-        return result;
+        throw new ContractValidationException("JSON object 缺少闭合括号");
     }
 
     if (reader.TokenType == JsonToken.StartArray)
     {
         JArray result = new JArray();
-        while (reader.Read() && reader.TokenType != JsonToken.EndArray)
+        while (reader.Read())
         {
+            if (reader.TokenType == JsonToken.EndArray)
+            {
+                return result;
+            }
             result.Add(ReadStrictToken(reader));
         }
-        return result;
+        throw new ContractValidationException("JSON array 缺少闭合括号");
     }
 
-    // 这里只保留 String、Integer、Boolean 和 Null；Null 是否允许由字段合同继续判断。
+    if (reader.TokenType == JsonToken.Float)
+    {
+        // reader 必须使用 FloatParseHandling.Decimal；出现 double 表示 NaN/Infinity 等非合同 number。
+        if (reader.Value is double)
+        {
+            throw new PreAssociationContractException("JSON number 超出合同规范化域");
+        }
+
+        // Decimal 无损参与完整消息比较；合同字段是否允许 Float 由首次消息的 DTO 校验决定。
+        return new JValue(reader.Value);
+    }
+
+    // Null 是否允许、number 是否必须为整数或十进制字符串，由字段合同继续判断。
     if (reader.TokenType == JsonToken.String || reader.TokenType == JsonToken.Integer ||
         reader.TokenType == JsonToken.Boolean || reader.TokenType == JsonToken.Null)
     {
@@ -499,8 +611,18 @@ static JToken ReadStrictToken(JsonTextReader reader)
 }
 ```
 
-创建 `JsonTextReader` 时必须关闭日期自动解析，并确认读取一个根 object 后已经到达输入结尾；前置词法检查拒绝注释和尾逗号，
-reader 继续拒绝第二个根值和 `NaN/Infinity`。`ValidateExactClosedFields` 必须分别检查“全部 required 均存在”和“实际字段全部属于 allowed”；
+创建 `JsonTextReader` 时必须设置 `DateParseHandling=None` 和 `FloatParseHandling=Decimal`，并确认递归读取实际遇到匹配的
+object/array 闭合 token，且一个根 object 后已经到达输入结尾。线上合同没有 Float 字段；身份阶段仅保留可由 .NET
+`System.Decimal` 无损表示的有限 Float，以便先比较既有完整消息，再让首次 DTO 校验把 `1.0/1e0` 等类型错误归为 `422`。
+`NaN/Infinity` 或超出 Decimal 表示域的 Float 无法形成双方稳定规范化值，统一按预关联空响应体 `400`，不建立幂等记录；不得转成
+`double` 后比较。词法阶段必须用原始 number lexeme 执行无损检查：将 lexeme 与 `decimal.GetBits` 分别归一为十进制系数/指数后完全
+相等才可接受；`Decimal.TryParse` 成功但发生舍入或下溢同样是预关联 `400`。Decimal 溢出产生的 `JsonReaderException` 也必须映射到
+这个预关联 `400`。前置词法检查、reader、重复 key 检查、
+属性名引号检查和 token 白名单共同拒绝截断 JSON、第二个根值、无引号属性名、
+构造器和 `undefined`。联调负例至少包含 BOM/非法 UTF-8、单引号属性/字符串、无引号属性名、非法转义、字符串外原始 NUL、
+非标准空白、非标准 number、`NaN/Infinity`、超出 Decimal 域或发生舍入/下溢的 Float（至少 `1e-29`、`2e-29` 和超长有效数字）、
+注释、尾随逗号、缺少 object/array 闭合 token，以及在整数或十进制字符串字段中使用 `1.0/1e0`。
+`ValidateExactClosedFields` 必须分别检查“全部 required 均存在”和“实际字段全部属于 allowed”；
 随后根据 `operation/kind` 对每层 object 传入各自的 required/allowed 集合，不能依赖 Json.NET 大小写不敏感的 DTO 绑定来判断字段。
 
 `.NET Framework 4.6` 的 `string.Length` 统计 UTF-16 code unit，不等于本文规定的 Unicode code point 数。字符串长度校验可以使用
@@ -565,12 +687,14 @@ async Task<HttpResult> ReceiveTransportRequestAsync(HttpRequest request, Cancell
     }
     catch (PreAssociationContractException)
     {
+        // 包括任意层级重复 key；它无法形成唯一规范化消息，因此不建立幂等记录。
         return HttpResult.Empty(400);
     }
     catch (AssociatedContractException ex)
     {
-        // 已取得合法 operation_id 后，信封/operation/data 错误使用稳定 reason_code。
-        return HttpResult.Rejected(ex.OperationId, ex.ReasonCode, ex.ValidTransportTaskId);
+        // 已取得合法 operation_id 后，必须按 operation + operation_id 和完整原消息持久化或重放确定拒绝：
+        // 同身份同消息重放首次 REJECTED；同身份不同消息返回 CONFLICT。不能只临时构造一个未登记的响应。
+        return await PersistOrReplayAssociatedRejectionAsync(rawBody, ex, cancellationToken);
     }
 }
 ```
@@ -587,15 +711,14 @@ async Task<HttpResult> ReceiveTransportRequestAsync(HttpRequest request, Cancell
 | `200 / DUPLICATE` | 相同身份和相同完整消息已经接纳 | operation 专属字段；复用第一次 `timestamp + data` | 视为本次义务已经完成 |
 | `202 / RECEIVED` | Event、Transport 请求或 evidence 已可靠接纳 | operation 专属字段 | 只表示接纳，不表示物理或业务完成 |
 | `202 / PREPARE_ACCEPTED` | 耗时业务准备义务已可靠接纳 | operation 专属字段或 `{}` | 等待后续 Event，不把 ACK 当作计划 |
-| `400`，空响应体 | 错误 `Content-Type`、非法 UTF-8/JSON，或无法提取合法 UUIDv7 `operation_id` | 无响应信封 | 停止原消息；修正后创建新身份 |
+| `400`，空响应体 | 错误 `Content-Type`、非法 UTF-8/JSON、number 超出合同规范化域，或无法提取合法 UUIDv7 `operation_id` | 无响应信封 | 停止原消息；修正后创建新身份 |
 | `413`，空响应体 | 原始请求正文超过 `256 KiB` | 无响应信封 | 停止原消息；缩小合法业务请求后创建新身份 |
 | `422 / REJECTED` | 已有合法 `operation_id`，但信封、operation 或 DTO 非法 | 必须携带稳定 `reason_code` | 停止原消息；修正后创建新身份 |
 | `409 / CONFLICT` | 同一身份对应不同内容，或违反不可变业务约束 | operation 专属冲突信息 | 禁止换 ID 掩盖，进入对账 |
-| `429 / BUSY` | 接收方暂时没有接收容量，且尚未接纳 | `retry_after_ms` 如存在必须是 `1..60000` 的整数；具体 operation 可规定必填 | 等待后使用原完整消息重试；允许缺省或取值非法时固定等待 2000 毫秒 |
 | `503 / UNAVAILABLE` | 接收方当前无法可靠接纳，且尚未接纳 | operation 专属字段或 `{}` | 使用原完整消息重试 |
 
-`400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。`429` 的等待时间只读取
-`data.retry_after_ms`，不依赖 HTTP `Retry-After`。网络超时或无法确认响应内容时，不能假定对方没有收到消息。
+`400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。本合同不使用 HTTP `Retry-After`。
+网络超时或无法确认响应内容时，不能假定对方没有收到消息。
 
 #### 2.2.3 接收方幂等处理伪代码
 
@@ -614,14 +737,14 @@ async Task<HttpResult> ReceiveAsync(
         return HttpResult.Empty(statusCode: 413);
     }
 
-    // 严格解析：拒绝非法 UTF-8、非法 JSON、重复 JSON key、未知字段和错误字段类型。
-    // 无法取得合法 UUIDv7 operation_id 时返回空响应体 400。
-    Envelope envelope = await ParseStrictEnvelopeAsync(request, cancellationToken);
+    // 先完成严格 JSON 语法和重复 key 检查；任意重复 key 都返回预关联 400。
+    // 随后提取 operation + canonical UUIDv7 operation_id；
+    // 暂时保留完整顶层和 data token，不在查询既有身份前拒绝未知字段或 operation 专属类型。
+    // 非法 UTF-8/JSON，或无法取得合法消息身份时返回空响应体 400。
+    Envelope envelope = await ParseStrictJsonAndExtractIdentityAsync(request, cancellationToken);
 
-    // operation 的 data 校验必须使用本文规定的严格闭集，不能忽略或透传未知字段。
-    ValidateOperationData(envelope.Operation, envelope.Data);
-
-    // 消息身份必须同时包含 operation 和 operation_id；不能只按 operation_id 去重。
+    // 严格语法解析先保留完整 data token；消息身份必须同时包含 operation 和 operation_id，不能只按 operation_id 去重。
+    // 已存在身份的内容冲突必须优先于新消息的 operation/data 校验，否则换成非法 DTO 会被错误返回 REJECTED 而不是 CONFLICT。
     MessageIdentity identity = new MessageIdentity(envelope.Operation, envelope.OperationId);
     StoredExchange previous = await FindPreviousExchangeAsync(identity, cancellationToken);
 
@@ -633,11 +756,17 @@ async Task<HttpResult> ReceiveAsync(
             return HttpResult.FromStoredResponse(previous.FirstResponse);
         }
 
-        // Event、Fact 和 Transport 重复消息返回 DUPLICATE，复用第一次响应的 timestamp + data。
-        return HttpResult.Duplicate(
-            operationId: envelope.OperationId,
-            timestamp: previous.FirstResponse.Timestamp,
-            data: previous.FirstResponse.Data);
+        if (previous.FirstResponse.Code == "RECEIVED" || previous.FirstResponse.Code == "RECORDED")
+        {
+            // 只有首次成功接纳的 Event、Fact 和 Transport 才转换为 DUPLICATE，并复用首次 timestamp + data。
+            return HttpResult.Duplicate(
+                operationId: envelope.OperationId,
+                timestamp: previous.FirstResponse.Timestamp,
+                data: previous.FirstResponse.Data);
+        }
+
+        // 首次 REJECTED 或业务/资源 CONFLICT 是确定终局；同身份同消息必须原样重放，不能伪装成已接纳的 DUPLICATE。
+        return HttpResult.FromStoredResponse(previous.FirstResponse);
     }
 
     if (previous != null)
@@ -645,6 +774,9 @@ async Task<HttpResult> ReceiveAsync(
         // 相同身份却出现不同完整消息时必须冲突，禁止把新内容覆盖到旧消息上。
         return HttpResult.Conflict(operationId: envelope.OperationId);
     }
+
+    // 只有首次出现的消息才执行其余信封字段和 operation 专属 data 闭集校验；校验失败由上层按已关联 REJECTED 原子登记并稳定重放。
+    ValidateEnvelopeAndOperationData(envelope);
 
     // 首次业务结果、资源变化和完整响应必须一致生效后才能返回成功。
     // 该方法名只表达对外保证，不规定 WMS 内部使用何种事务或持久化方案。
@@ -880,7 +1012,7 @@ static string CreateUuidV7()
 | --- | --- | --- |
 | `transport_task_id` | 非空 UTF-8 string，`1..80` 字符 | WES 生成；贯穿 T1、T2、T3；一个已接纳 ID 只能绑定一个 T1 `operation_id` |
 | `rack_id` | 非空 UTF-8 string，`1..100` 字符 | 货架身份，精确比较，不根据前缀推断类型 |
-| `bin_id/object_id` | 非空 UTF-8 string，`1..100` 字符 | Bin 或结果成员身份，精确比较 |
+| `container_id` | 非空 UTF-8 string，`1..100` 字符 | WES-WMS wire 中的物理料箱/容器身份；对应厂商 `containerId`，不是厂商表示仓位的 `binId` |
 | `slot_id/location_code` | 非空 UTF-8 string，`1..100` 字符 | 由位置权威方提供；不得用空字符串或 `null` |
 | `kind` | enum | `RACK_MOVE \| RACK_ROTATE \| BIN_MOVE \| BIN_EXCHANGE` |
 | `rack_face/target_face/arrival_face` | enum | `A \| B`；`rack_face` 是储位身份的一部分，不能从 `slot_id` 推断 |
@@ -894,7 +1026,7 @@ static string CreateUuidV7()
 
 | `kind` | 完整字段 | 允许用途 |
 | --- | --- | --- |
-| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE` 的 `source/target`、`RACK_ROTATE.position`、货架 T3 最终位置 |
+| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE/RACK_ROTATE` 的 `source/target`、货架 T3 最终位置 |
 | `RACK_BIN_SLOT` | `kind + rack_id + rack_face + slot_id` | Bin 所在货架储位、Bin T3 最终位置；四个字段共同定位唯一物理储位 |
 | `HANDOFF_POSITION` | `kind + location_code` | WorkLine 入料口、出料口或其它已批准交接位、Bin T3 最终位置 |
 
@@ -935,7 +1067,36 @@ static string CreateUuidV7()
 
 未知位置类型、混入其它类型字段、缺少必填字段或使用供应商私有位置结构，统一属于非法 DTO。
 
-#### 3.1.3 Transport 稳定码闭集
+#### 3.1.3 WMS 最小 `data` 结构分族
+
+T1 只需要两个 `data` Schema 族：
+
+| 协议 Schema 族 | `kind` | 固定字段 |
+| --- | --- | --- |
+| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rack_id + source + target + target_face` |
+| `BinTransportData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + moves[]`；成员固定为 `container_id + source + target` |
+
+T3 同样只需要两个 `data` Schema 族：
+
+| 协议 Schema 族 | `kind` | 固定字段 |
+| --- | --- | --- |
+| `RackTransportResultData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + outcome_revision + rack_id + status`，以及结果条件字段 |
+| `BinTransportResultData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + outcome_revision + results[]`；成员使用 `container_id`，以及结果条件字段 |
+
+上述 Schema 名只用于标识线上结构，不规定 WMS 的 C# 类名。货架结果直接展开唯一 `rack_id`，不套只有一项的 `results[]`；料箱结果
+使用 `results[].container_id`。WMS 不需要四套 T1 DTO，不需要自定义多态 `JsonConverter`，也不需要 DTO 注册表。推荐先严格解析
+公共信封并读取 `data.kind`，再进行一次显式分流：
+
+```text
+RACK_MOVE | RACK_ROTATE → RackTransportData Schema
+BIN_MOVE  | BIN_EXCHANGE → BinTransportData Schema
+```
+
+WMS 可以用一个自行命名的普通 C# 位置类型承载 `kind/location_code/rack_id/rack_face/slot_id` 实现属性，但必须按 `kind` 校验严格
+联合，并在 JSON 中省略不适用字段。WMS 面向 WES 的协议边界统一使用 `SnakeCaseNamingStrategy`；WMS 面向 RCS 的 camelCase
+厂商 DTO 必须独立定义，不能与 WES DTO 共用同一 C# 类。
+
+#### 3.1.4 Transport 稳定码闭集
 
 T1 `422 / REJECTED` 的 `reason_code` 只能使用：
 
@@ -977,8 +1138,7 @@ RCS 请求或结果超时本身不能证明搬运失败，也不能证明对象�
 - **WMS 接口角色：** HTTP 服务端，接收 `POST /api/v1/wes/transport-requests`。
 - **必须完成：**
   1. 在 JSON 解码前检查 `256 KiB` Body 上限，再严格校验公共信封和 T1 `data`；
-  2. 严格解析 `RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE` 四种请求；前三种按合同接纳，`BIN_EXCHANGE` 在现场协调能力
-     未确认前可以按稳定码确定拒绝，禁止接受未定义字段；
+  2. 使用一次 rack/bin 分流严格解析两族 DTO；`BIN_EXCHANGE` 在现场协调能力未确认前可以按稳定码确定拒绝，禁止接受未定义字段；
   3. 使用 `operation + operation_id` 处理首次请求、重复请求和内容冲突；
   4. 保证一个已接纳的 `transport_task_id` 只关联一个不可变提交和一项实际搬运义务；
   5. 在可靠接纳和首次响应已经一致保存后，按 T1 响应联合返回结果。
@@ -988,8 +1148,9 @@ RCS 请求或结果超时本身不能证明搬运失败，也不能证明对象�
   3. 不得在尚未可靠接纳时返回 `RECEIVED`，也不得用统一 `200`、空响应或自由文本代替合同响应。
 - **完成证据：**
   1. 四种 `kind` 各有完整请求/响应；`BIN_EXCHANGE` 在现场能力未确认前验证严格解析和确定拒绝，确认支持后再补首次接纳记录；
-  2. 同一完整消息重试返回 `DUPLICATE`，同一身份不同消息返回 `CONFLICT`；
-  3. 非法 JSON、超限、非法 DTO、暂时繁忙和不可用分别得到规定响应；
+  2. 首次 `RECEIVED` 后，同一完整消息重试返回 `DUPLICATE`；首次 `REJECTED/CONFLICT` 原样稳定重放；同一身份不同消息返回
+     `CONFLICT`；
+  3. 非法 JSON、超限、非法 DTO、冲突和不可用分别得到规定响应；
   4. 能用 `transport_task_id` 追溯到 WMS/RCS 实际搬运义务。
 
 WES 调用 WMS：
@@ -999,22 +1160,30 @@ POST /api/v1/wes/transport-requests
 operation = transport.task.submit@v1
 ```
 
-`data` 首先固定包含 `transport_task_id + kind`，再根据 `kind` 严格选择一种结构：
+`data` 首先固定包含 `transport_task_id + kind`，再根据 `kind` 严格选择货架或料箱结构：
 
-| `kind` | 其余必填字段 | 数量和唯一性规则 |
-| --- | --- | --- |
-| `RACK_MOVE` | `rack_id + source + target` | `source/target` 都必须是不同的 `RACK_POSITION` |
-| `RACK_ROTATE` | `rack_id + position + target_face` | `position` 必须是 `RACK_POSITION`；`target_face=A\|B` |
-| `BIN_MOVE` | `moves[] {bin_id + source + target}` | `moves` 为 `1..4`；每项来源和目标不同且至少一端为 `RACK_BIN_SLOT`；所有 `bin_id` 和 `RACK_BIN_SLOT` 不重复 |
-| `BIN_EXCHANGE` | `exchange_pairs[] {left_bin_id + left_location + right_bin_id + right_location}` | `exchange_pairs` 为 `1..2`；所有 left location 具有相同 `rack_id+rack_face`，所有 right location 也具有相同 `rack_id+rack_face`；left Bin 的目标是同对 right location，right Bin 的目标是同对 left location；所有 Bin 和完整储位不重复 |
+| DTO 族 | `kind` | 其余必填字段 | 关键规则 |
+| --- | --- | --- | --- |
+| 货架 | `RACK_MOVE` | `rack_id + source + target + target_face` | 两个位置都是 `RACK_POSITION` 且 `source != target`；`target_face=A\|B` |
+| 货架 | `RACK_ROTATE` | `rack_id + source + target + target_face` | 两个位置都是 `RACK_POSITION` 且 `source == target`；`target_face=A\|B` 且不同于可信当前面 |
+| 料箱 | `BIN_MOVE` | `moves[] {container_id + source + target}` | `moves` 为 `1..4`；`container_id` 唯一；每项来源与目标不同且至少一端是 `RACK_BIN_SLOT` |
+| 料箱 | `BIN_EXCHANGE` | `moves[] {container_id + source + target}` | `moves` 只能为 `2` 或 `4`；`container_id` 唯一；所有位置是 `RACK_BIN_SLOT`；形成 1～2 个二元闭环 |
 
-多个 `BIN_MOVE` 成员可以使用同一个 `HANDOFF_POSITION`。请求禁止携带货架类型、空/满箱、容量、车辆、路线、RCS 内部动作顺序、
-WES 工作线调用方身份或供应商私有字段。
+`target_face` 是业务调用方冻结的目标义务，不是 WMS 从厂商当前面字段推断的值。WMS 可以把 `RACK_MOVE` 分解为一个或多个 RCS
+子任务，但必须保存一个 WES `transport_task_id` 到全部厂商 `taskCode` 的关联，并只以最终 `target + target_face` 判断完成。
 
-`BIN_EXCHANGE` 的“同面”分别按角色判断：所有 left location 必须属于一个确定的左侧 `rack_id+rack_face`，所有 right location
-必须属于一个确定的右侧 `rack_id+rack_face`。左侧面和右侧面的字母可以不同，例如左侧 A 面与右侧 B 面可以组成一批，只要
-WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合 A/B 面或多个 `rack_id` 都是 `INVALID_DATA`。两侧都需要交换时，
-业务层必须在第一面完整闭环后重新计算，分别创建货架换面任务和下一面新的 `BIN_EXCHANGE`；不得把跨面流程塞入一个 T1。
+`BIN_MOVE` 中，精确 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 在全部成员的 `source/target` 中不得重复出现；多个成员可以使用
+同一个 `HANDOFF_POSITION`。`BIN_EXCHANGE` 的来源精确储位分别唯一、目标精确储位分别唯一，且来源储位集合必须等于目标储位集合。
+
+同一 Bin 请求中，同一个 `rack_id` 只能出现一个 `rack_face`；不同货架可以分别使用 A 面或 B 面。`BIN_EXCHANGE` 只允许涉及一个
+或两个 `rack_id+rack_face` 组：一个组时在该货架当前面的不同精确储位之间交换；两个组时每个成员都必须跨组移动。展开后的每个
+`source=S,target=T` 必须且只能存在一个 `source=T,target=S` 的反向成员；四个成员只能形成两个互不重叠的二元闭环。需要操作
+任一货架另一面时，先完成独立 `RACK_ROTATE`，再创建新的 Bin 任务。
+
+WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自身主数据和可信 RCS 状态再次检查。对于 `RACK_ROTATE`，无法
+取得可信当前面时返回 `503 / UNAVAILABLE`，`target_face` 等于可信当前面时返回 `409 / CONFLICT`。对于 Bin 请求，请求中的
+`rack_face` 与已知当前面不一致时返回 `409 / CONFLICT`，无法取得必须的可信当前面时返回 `503 / UNAVAILABLE`。上述情况均不得
+调用 RCS。请求禁止携带货架类型、空/满箱、容量、车辆、路线、RCS 内部动作顺序、WES 工作线调用方身份或供应商私有字段。
 
 四种完整 T1 请求样例：
 
@@ -1032,7 +1201,8 @@ WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合
     "kind": "RACK_MOVE",
     "rack_id": "RACK-005-01",
     "source": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-A-01"},
-    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"}
+    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "target_face": "A"
   }
 }
 ```
@@ -1050,7 +1220,8 @@ WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合
     "transport_task_id": "TRANSPORT-000002",
     "kind": "RACK_ROTATE",
     "rack_id": "RACK-005-01",
-    "position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
     "target_face": "B"
   }
 }
@@ -1070,12 +1241,12 @@ WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合
     "kind": "BIN_MOVE",
     "moves": [
       {
-        "bin_id": "BIN-0001",
+        "container_id": "CONTAINER-0001",
         "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": "A", "slot_id": "SLOT-01"},
         "target": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
       },
       {
-        "bin_id": "BIN-0002",
+        "container_id": "CONTAINER-0002",
         "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": "A", "slot_id": "SLOT-02"},
         "target": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
       }
@@ -1084,10 +1255,10 @@ WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合
 }
 ```
 
-**样例 4：同一货架面协调交换两对、四个 Bin（`BIN_EXCHANGE`）**
+**样例 4：两个货架当前面协调交换两对、四个容器（`BIN_EXCHANGE`）**
 
-在一个不可拆分的协调任务中，让左侧单层货架 A 面的两个满 Bin 与右侧五层货架 A 面的两个可交换空 Bin 分别互换。
-“空 Bin”必须具有明确 `right_bin_id`；没有 Bin 的空储位不能参与交换。
+在一个不可拆分的协调任务中，让两个货架当前面的四个确定容器形成两个二元闭环。`moves` 已按 `container_id` 升序排列，数组
+顺序不代表 CTU 动作顺序。空储位不能代替 `container_id` 参与交换。
 
 ```json
 {
@@ -1097,18 +1268,26 @@ WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合
   "data": {
     "transport_task_id": "TRANSPORT-000004",
     "kind": "BIN_EXCHANGE",
-    "exchange_pairs": [
+    "moves": [
       {
-        "left_bin_id": "BIN-FULL-01",
-        "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"},
-        "right_bin_id": "BIN-EMPTY-01",
-        "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "A", "slot_id": "SLOT-05"}
+        "container_id": "CONTAINER-0001",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-05"}
       },
       {
-        "left_bin_id": "BIN-FULL-02",
-        "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-02"},
-        "right_bin_id": "BIN-EMPTY-02",
-        "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "A", "slot_id": "SLOT-06"}
+        "container_id": "CONTAINER-0002",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-05"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"}
+      },
+      {
+        "container_id": "CONTAINER-0003",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-02"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-06"}
+      },
+      {
+        "container_id": "CONTAINER-0004",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-06"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-02"}
       }
     ]
   }
@@ -1117,8 +1296,8 @@ WMS/RCS 已确认两面当前都可操作。任何一侧在同一请求中混合
 
 WMS 的对外处理结果必须满足：
 
-1. 检查公共字段、重复消息、成员数量、对象唯一性和位置结构。
-2. 确认 `BIN_EXCHANGE` 的一至两对属于同一左侧货架面和同一右侧货架面，并能由 RCS 作为一个协调任务整体接纳，不能拆成两个搬运。
+1. 检查公共字段、重复消息，以及第 3.1 节规定的成员数量、容器唯一性、精确储位唯一性、端点组、工作面和位置结构。
+2. 确认 `BIN_EXCHANGE` 的成员形成一至两个二元闭环、每个货架只使用当前面，并能由 RCS 作为一个协调任务整体接纳，不能拆成两个搬运。
 3. 可靠接纳完整请求和首次响应，并保证 `transport_task_id` 可以追溯到实际搬运义务。
 4. 首次可靠接纳后返回 `202 / RECEIVED`；同一消息重复请求返回 `200 / DUPLICATE` 并复用第一次响应的 `timestamp + data`。
 5. `RECEIVED` 只表示 WMS 接纳搬运义务，不表示车辆出发或对象到位。
@@ -1138,9 +1317,8 @@ T1 同步响应完整联合：
 | `202 / RECEIVED` | `transport_task_id` | 首次可靠接纳 |
 | `200 / DUPLICATE` | `transport_task_id` | 相同身份和相同消息已经接纳；复用第一次 `timestamp + data` |
 | `409 / CONFLICT` | `transport_task_id` | 身份内容冲突、同一任务更换提交身份或活动资源冲突 |
-| `422 / REJECTED` | `reason_code + transport_task_id?` | 请求确定非法；只有能从请求中取得合法 `transport_task_id` 时才回显；`reason_code` 来自第 3.1.3 节闭集 |
-| `429 / BUSY` | `transport_task_id + retry_after_ms?` | 暂未接纳；缺少合法等待值时固定等待 2000 毫秒 |
-| `503 / UNAVAILABLE` | `transport_task_id` | 当前无法可靠接纳；固定等待 2000 毫秒后使用原消息重试 |
+| `422 / REJECTED` | `reason_code + transport_task_id?` | 请求确定非法；只有能从请求中取得合法 `transport_task_id` 时才回显；`reason_code` 来自第 3.1.4 节闭集 |
+| `503 / UNAVAILABLE` | `transport_task_id` | 无法可靠持久化，或无法取得必须的可信当前面；固定等待 2000 毫秒后使用原消息重试 |
 | `400`，空响应体 | 无 | 错误 `Content-Type`、非法 UTF-8/JSON，或无法取得合法 `operation_id` |
 | `413`，空响应体 | 无 | 原始请求正文超限 |
 
@@ -1149,23 +1327,25 @@ T1 失败分类不得混用：
 | 情况 | 固定响应 | 是否允许原消息重试 |
 | --- | --- | --- |
 | 字段、枚举、长度、成员数量或固定能力不合法 | `422 / REJECTED` | 否；修正后创建新的 TransportTask 和消息身份 |
-| 接收容量暂时不足，且尚未接纳任何义务 | `429 / BUSY` | 是；等待后重试原完整消息 |
-| WMS 当前无法可靠保存，且尚未接纳任何义务 | `503 / UNAVAILABLE` | 是；2000 毫秒后重试原完整消息 |
+| WMS 当前无法可靠保存，或无法取得必须的可信当前面，且尚未接纳任何义务 | `503 / UNAVAILABLE` | 是；2000 毫秒后重试原完整消息 |
 | 同一身份对应不同内容、同一 `transport_task_id` 更换提交身份，或对象已绑定另一个已接纳且未闭合的搬运任务 | `409 / CONFLICT` | 否；进入人工对账 |
 
 活动资源冲突的最小公共范围固定为：任一未闭合 TransportTask 绑定的 `rack_id` 不能再属于另一个未闭合的货架或 Bin 任务；同一
-`bin_id` 不能同时属于两个未闭合的 Bin 任务；同一完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 不能同时作为两个未闭合任务的
+`container_id` 不能同时属于两个未闭合的 Bin 任务；同一完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 不能同时作为两个未闭合任务的
 独占来源或目标。Bin 任务必须绑定其所有来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，防止搬架与在该架取放 Bin 并发。
 `HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有 T1 ACK 中的 `transport_task_id` 都回显本次请求中已解析的
-合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份或占用冲突使用 `409`，仅临时调度容量不足使用 `429`。
+合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
 
-`RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`BUSY/UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
-`400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。T1 `reason_code` 必须来自第 3.1.3 节闭集；WES 对所有
+`RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
+`400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。T1 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有
 `REJECTED` 都执行相同的终止处理，不根据诊断码增加自动业务分支。
 
-WES 对每次 T1 HTTP 访问使用 `10` 秒硬超时，单个任务最多实际发送 `3` 次。只有请求明确未发出、`429` 或 `503` 才使用原完整
-消息重试；`503` 固定等待 `2000` 毫秒，`429` 使用合法的 `retry_after_ms`，缺失或非法时等待 `2000` 毫秒。如果请求可能已经
+WES 对每次 T1 HTTP 访问使用 `10` 秒硬超时，单个任务最多实际发送 `3` 次。只有请求明确未发出或收到 `503` 才使用原完整
+消息重试，两者固定等待 `2000` 毫秒。如果请求可能已经
 送达但没有取得确定响应，WES 不自动重提、不查询任务状态，直接把该任务置为待对账，防止同一物理搬运被执行两次。
+
+T1 不提供 `429 / BUSY`，也不定义 `retry_after_ms`。RCS 或 WMS 内部调度容量不足时，WMS 应先可靠保存搬运义务并返回
+`RECEIVED`，随后内部排队，不得把调度繁忙转换为未接纳响应。
 
 `BIN_EXCHANGE` 如果不能作为一个协调任务整体接纳，必须返回
 `422 / REJECTED`，并使用 `reason_code=COORDINATED_BIN_EXCHANGE_UNSUPPORTED`；不得拆成两个独立搬运。
@@ -1195,16 +1375,16 @@ WES 对每次 T1 HTTP 访问使用 `10` 秒硬超时，单个任务最多实际�
 }
 ```
 
-### T2：WMS 回调单个 Bin 已离开来源或到达目标
+### T2：WMS 回调单个容器已离开来源或到达目标
 
-只有 `BIN_MOVE/BIN_EXCHANGE` 需要逐 Bin 回调位置。货架不发送此 operation。
+只有 `BIN_MOVE/BIN_EXCHANGE` 需要逐容器回调位置。货架不发送此 operation。
 
 #### T2 WMS 开发任务卡
 
-- **开发目标：** RCS 已经确认单个 Bin 离开来源、到达目标或位置未知时，把该位置事实可靠通知 WES。
+- **开发目标：** RCS 已经确认单个容器离开来源、到达目标或位置未知时，把该位置事实可靠通知 WES。
 - **WMS 接口角色：** HTTP 客户端，调用 `POST /api/v1/wms/events`。
 - **必须完成：**
-  1. 从 T1 保存的任务关联取得 `transport_task_id + bin_id`，不得重新生成或替换业务身份；
+  1. 从 T1 保存的任务关联取得 `transport_task_id + container_id`，不得重新生成或替换业务身份；
   2. 只根据确定的 RCS 物理证据生成 `SOURCE_PICKED`、`TARGET_PLACED` 或 `POSITION_UNKNOWN`；
   3. 为每条新事实生成 UUIDv7 `operation_id`，在首次发送前冻结完整消息并可靠保存发送义务；
   4. 按里程碑处理 `final_position` 条件必填，并使用本文定义的位置严格联合；
@@ -1227,20 +1407,20 @@ operation = transport.task.member_position_changed@v1
 | 回调字段 | 如何生成 |
 | --- | --- |
 | `transport_task_id` | 从 T1 保存的 WMS/RCS 任务关联读取，禁止重新生成 |
-| `bin_id` | 从 T1 已保存的请求成员读取，并与 RCS 实际搬运成员核对 |
-| `milestone=SOURCE_PICKED` | RCS 给出 Bin 已物理离开来源、不能再视为位于原槽位的确定证据 |
-| `milestone=TARGET_PLACED` | RCS 给出 Bin 已经放入 T1 指定目标的确定证据 |
-| `milestone=POSITION_UNKNOWN` | WMS/RCS 无法确定 Bin 当前处于来源、目标还是中间位置 |
+| `container_id` | 从 T1 已保存的请求成员读取，并与 RCS 实际搬运成员核对 |
+| `milestone=SOURCE_PICKED` | RCS 给出容器已物理离开来源、不能再视为位于原槽位的确定证据 |
+| `milestone=TARGET_PLACED` | RCS 给出容器已经放入 T1 指定目标的确定证据 |
+| `milestone=POSITION_UNKNOWN` | WMS/RCS 无法确定容器当前处于来源、目标还是中间位置 |
 | `final_position` | 仅 `TARGET_PLACED` 必填；根据 T1 指定目标和 RCS 实际到位结果生成 |
 
-导航中、升降中、接近目标等 RCS 内部过程不回调 WES。`SOURCE_PICKED` 后 WES 不再把 Bin 当作位于来源；
+导航中、升降中、接近目标等 RCS 内部过程不回调 WES。`SOURCE_PICKED` 后 WES 不再把容器当作位于来源；
 出现 `POSITION_UNKNOWN` 后，双方暂停使用相关资源并开始人工对账。
 
 三个完整 T2 请求样例：
 
-**样例 1：Bin 已离开来源（`SOURCE_PICKED`）**
+**样例 1：容器已离开来源（`SOURCE_PICKED`）**
 
-Bin 已经从原货架储位取出，不能再把该储位中的 Bin 视为仍在原位。
+容器已经从原货架储位取出，不能再把该储位中的容器视为仍在原位。
 
 ```json
 {
@@ -1249,15 +1429,15 @@ Bin 已经从原货架储位取出，不能再把该储位中的 Bin 视为仍�
   "timestamp": 1786060900000,
   "data": {
     "transport_task_id": "TRANSPORT-000003",
-    "bin_id": "BIN-0001",
+    "container_id": "CONTAINER-0001",
     "milestone": "SOURCE_PICKED"
   }
 }
 ```
 
-**样例 2：Bin 已放入目标（`TARGET_PLACED`）**
+**样例 2：容器已放入目标（`TARGET_PLACED`）**
 
-Bin 已到达 T1 指定的工作线交接位，因此必须同时提供 `final_position`。
+容器已到达 T1 指定的工作线交接位，因此必须同时提供 `final_position`。
 
 ```json
 {
@@ -1266,16 +1446,16 @@ Bin 已到达 T1 指定的工作线交接位，因此必须同时提供 `final_p
   "timestamp": 1786060901000,
   "data": {
     "transport_task_id": "TRANSPORT-000003",
-    "bin_id": "BIN-0001",
+    "container_id": "CONTAINER-0001",
     "milestone": "TARGET_PLACED",
     "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
   }
 }
 ```
 
-**样例 3：Bin 当前位置未知（`POSITION_UNKNOWN`）**
+**样例 3：容器当前位置未知（`POSITION_UNKNOWN`）**
 
-WMS/RCS 无法确认 Bin 位于来源、目标还是搬运途中，此时不得提供 `final_position`。
+WMS/RCS 无法确认容器位于来源、目标还是搬运途中，此时不得提供 `final_position`。
 
 ```json
 {
@@ -1284,7 +1464,7 @@ WMS/RCS 无法确认 Bin 位于来源、目标还是搬运途中，此时不得�
   "timestamp": 1786060902000,
   "data": {
     "transport_task_id": "TRANSPORT-000003",
-    "bin_id": "BIN-0001",
+    "container_id": "CONTAINER-0001",
     "milestone": "POSITION_UNKNOWN"
   }
 }
@@ -1303,7 +1483,7 @@ WMS/RCS 无法确认 Bin 位于来源、目标还是搬运途中，此时不得�
 | `POSITION_UNKNOWN` | 无 | 停止普通 T2；当前任务仍发送位置未知的完整 T3，消歧后再发送新的完整 T3 权威结果 |
 
 每个不同里程碑都是一条新的业务事实，必须使用新的 UUIDv7 `operation_id`。同一里程碑因网络未知或 `UNAVAILABLE` 重试时必须复用原消息，不能
-生成新的 `operation_id`。`BIN_EXCHANGE` 中每个 Bin 分别按自身物理事实发送 T2。
+生成新的 `operation_id`。`BIN_EXCHANGE` 中每个容器分别按自身物理事实发送 T2。
 
 ### T3：WMS 回调搬运最终结果
 
@@ -1312,7 +1492,7 @@ WMS/RCS 无法确认 Bin 位于来源、目标还是搬运途中，此时不得�
 - **开发目标：** 搬运已经形成确定结果或权威对账结果后，向 WES 报告 T1 全部对象的最终状态和实际位置。
 - **WMS 接口角色：** HTTP 客户端，调用 `POST /api/v1/wms/events`。
 - **必须完成：**
-  1. 从 T1 不可变接纳记录读取 `transport_task_id + kind`，完整覆盖原请求中的所有货架或 Bin；
+  1. 从 T1 不可变接纳记录读取 `transport_task_id + kind`，按货架或料箱结果族完整覆盖原请求对象；
   2. 将 RCS 结果归一化为 `SUCCEEDED/FAILED`，并按条件生成最终位置、位置未知、失败码和货架到达面；
   3. 失败码必须是稳定归一化码，不得向 WES 发送自由文本或供应商原始 Payload；
   4. 为每条完整结果生成新的 UUIDv7 `operation_id`，并为同一任务分配连续递增的 `outcome_revision`，发送前冻结消息并按第 2.4 节
@@ -1320,12 +1500,12 @@ WMS/RCS 无法确认 Bin 位于来源、目标还是搬运途中，此时不得�
   5. `UNKNOWN` 经权威核对取得完整位置后，使用新的消息身份和更高版本重新发送完整 T3；已经确定的 `SUCCEEDED/FAILED`
      不得通过后续 T3 改写，即使完成人工对账也只能形成独立审计与现场处置，不能伪装成普通 T3 重放。
 - **禁止事项：**
-  1. 不得缺少、增加或重复成员，也不得分批发送可执行的部分结果；
-  2. 不得发送可由 `results[]` 推导的任务总状态；
+  1. 料箱结果不得缺少、增加或重复成员，也不得分批发送可执行的部分结果；
+  2. 料箱任务不得发送可由 `results[]` 推导的任务总状态；货架顶层 `status` 就是唯一对象结果；
   3. 不得把部分成功包装成整体成功，或在位置未知时伪造来源、目标和到达面；
   4. 不得同时发送 `final_position` 和 `position_unknown=true`。
 - **完成证据：**
-  1. 货架成功、Bin 全部成功、位置明确的部分失败和位置未知分别有完整请求/响应；
+  1. 货架成功、料箱全部成功、位置明确的部分失败和位置未知分别有完整请求/响应；
   2. 每条 T3 与对应 T1 的 `kind`、对象集合和身份完全一致；
   3. 重复消息、内容冲突、非法成员覆盖和非法条件字段均按合同收敛；
   4. WES 返回 `RECEIVED/DUPLICATE` 后能结束发送义务，位置未知时能停止依赖该位置的后续动作。
@@ -1339,26 +1519,24 @@ operation = transport.task.resulted@v1
 | --- | --- |
 | `transport_task_id/kind` | 从 T1 的不可变接纳记录读取 |
 | `outcome_revision` | WMS 对同一 `transport_task_id` 的完整 T3 从 `1` 开始连续递增；同一版本技术重试保持不变 |
-| `results[]` | WMS 汇总 RCS 对 T1 全部请求对象的最终结果；必须完整覆盖，不能多、少或重复 |
-| `results[].object_id` | T1 中的 `rack_id` 或每个 `bin_id` |
+| 货架 `rack_id/status` | `RACK_MOVE/RACK_ROTATE` 直接在 `data` 顶层表达唯一货架及结果，不使用 `results[]` |
+| 货架 `final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
+| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；成功时必须等于 T1 `target_face` |
+| 料箱 `results[]` | 完整覆盖 T1 全部 `container_id`，按 `container_id` 升序输出，不能多、少或重复 |
 | `results[].status` | RCS 最终结果归一化为 `SUCCEEDED` 或 `FAILED` |
-| `results[].final_position` | 成功必填；失败但位置明确时也填写；来自 RCS 最终到位事实和 WMS/RCS 位置映射 |
-| `results[].position_unknown` | 失败且位置无法确定时为 `true`，与 `final_position` 二选一 |
+| `results[].final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
 | `results[].failure_code` | 失败时由 WMS 将 RCS 原始失败码转换为双方已经确定的稳定码 |
-| `results[].arrival_face` | 货架位置明确时由 RCS 到位姿态生成；Bin 禁止携带 |
 
-T3 `results[]` 还必须满足：
+T3 两族 DTO 必须满足：
 
-- 完整覆盖 T1 的全部货架或 Bin，不能多、少或重复；
+- 货架结果直接携带 T1 唯一 `rack_id`；料箱 `results[]` 完整覆盖 T1 全部 `container_id`；
 - `SUCCEEDED` 必须携带 `final_position`，禁止携带 `failure_code` 和 `position_unknown`；
 - `FAILED` 必须携带 `failure_code`，并在 `final_position` 与字面量 `position_unknown=true` 之间严格二选一；
 - `position_unknown=false`、同时携带最终位置和未知标记、或两者都缺少，均为非法 DTO；
 - 货架位置明确时 `final_position.kind=RACK_POSITION` 且必须携带 `arrival_face=A|B`；位置未知时禁止 `arrival_face`；
-- Bin 位置明确时只能使用 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，并禁止携带 `arrival_face`。
-- `RACK_MOVE` 成功时最终位置必须等于 T1 `target`；`RACK_ROTATE` 成功时最终位置必须等于 T1 `position`，且
-  `arrival_face` 必须等于 T1 `target_face`；
-- `BIN_MOVE` 成功成员的最终位置必须等于该成员的 T1 `target`；`BIN_EXCHANGE` 成功时 left Bin 必须位于 right location，right
-  Bin 必须位于 left location；
+- 料箱位置明确时只能使用 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，并禁止携带 `arrival_face`；
+- `RACK_MOVE/RACK_ROTATE` 成功时最终位置与实际到达面必须分别等于 T1 `target + target_face`；
+- `BIN_MOVE/BIN_EXCHANGE` 成功成员的最终位置必须等于该成员 T1 `target`；
 - 失败但位置明确时可以报告来源、目标或其它已经在第 3.1.2 节建模的实际位置，禁止把预期目标当作实际位置；无法用本文位置联合
   准确表达时必须使用 `position_unknown=true + failure_code=POSITION_UNKNOWN`。
 
@@ -1382,14 +1560,10 @@ T3 版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES �
     "transport_task_id": "TRANSPORT-000001",
     "kind": "RACK_MOVE",
     "outcome_revision": 1,
-    "results": [
-      {
-        "object_id": "RACK-005-01",
-        "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-        "arrival_face": "A"
-      }
-    ]
+    "rack_id": "RACK-005-01",
+    "status": "SUCCEEDED",
+    "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "arrival_face": "A"
   }
 }
 ```
@@ -1407,21 +1581,17 @@ T3 版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES �
     "transport_task_id": "TRANSPORT-000002",
     "kind": "RACK_ROTATE",
     "outcome_revision": 1,
-    "results": [
-      {
-        "object_id": "RACK-005-01",
-        "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-        "arrival_face": "B"
-      }
-    ]
+    "rack_id": "RACK-005-01",
+    "status": "SUCCEEDED",
+    "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "arrival_face": "B"
   }
 }
 ```
 
-**样例 3：Bin 全部成功（`BIN_MOVE`）**
+**样例 3：料箱全部成功（`BIN_MOVE`）**
 
-T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次完整覆盖两个成员。
+T1 中的两个料箱都已经到达指定工作线交接位，结果必须一次完整覆盖两个成员。
 
 ```json
 {
@@ -1434,12 +1604,12 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
     "outcome_revision": 1,
     "results": [
       {
-        "object_id": "BIN-0001",
+        "container_id": "CONTAINER-0001",
         "status": "SUCCEEDED",
         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
       },
       {
-        "object_id": "BIN-0002",
+        "container_id": "CONTAINER-0002",
         "status": "SUCCEEDED",
         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
       }
@@ -1448,9 +1618,9 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 }
 ```
 
-**样例 4：同面两对交换全部成功（`BIN_EXCHANGE`）**
+**样例 4：两个货架当前面两对交换全部成功（`BIN_EXCHANGE`）**
 
-四个成员必须在一条 T3 中完整覆盖；每个 Left Bin 到达同对 Right location，每个 Right Bin 到达同对 Left location。
+四个成员必须在一条 T3 中完整覆盖；每个容器的最终位置就是 T1 同一 `moves[]` 成员冻结的 `target`。
 
 ```json
 {
@@ -1463,22 +1633,22 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
     "outcome_revision": 1,
     "results": [
       {
-        "object_id": "BIN-FULL-01",
+        "container_id": "CONTAINER-0001",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "A", "slot_id": "SLOT-05"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-05"}
       },
       {
-        "object_id": "BIN-EMPTY-01",
+        "container_id": "CONTAINER-0002",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"}
       },
       {
-        "object_id": "BIN-FULL-02",
+        "container_id": "CONTAINER-0003",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "A", "slot_id": "SLOT-06"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-06"}
       },
       {
-        "object_id": "BIN-EMPTY-02",
+        "container_id": "CONTAINER-0004",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-02"}
       }
@@ -1489,7 +1659,7 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 
 **样例 5：部分失败但位置明确（`BIN_MOVE`）**
 
-独立任务 `TRANSPORT-000005` 中，`BIN-0001` 已经成功到达目标；`BIN-0002` 的 RCS 动作失败，但已确认仍位于原货架储位，因此
+独立任务 `TRANSPORT-000005` 中，`CONTAINER-0001` 已经成功到达目标；`CONTAINER-0002` 的 RCS 动作失败，但已确认仍位于原货架储位，因此
 不能标记位置未知。
 
 ```json
@@ -1503,12 +1673,12 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
     "outcome_revision": 1,
     "results": [
       {
-        "object_id": "BIN-0001",
+        "container_id": "CONTAINER-0001",
         "status": "SUCCEEDED",
         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
       },
       {
-        "object_id": "BIN-0002",
+        "container_id": "CONTAINER-0002",
         "status": "FAILED",
         "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": "A", "slot_id": "SLOT-02"},
         "failure_code": "RCS_EXECUTION_FAILED"
@@ -1520,7 +1690,7 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 
 **样例 6：部分失败且位置未知（`BIN_MOVE`）**
 
-独立任务 `TRANSPORT-000006` 中，`BIN-0001` 已经成功到达目标；`BIN-0002` 的当前位置无法确认，因此必须使用
+独立任务 `TRANSPORT-000006` 中，`CONTAINER-0001` 已经成功到达目标；`CONTAINER-0002` 的当前位置无法确认，因此必须使用
 `position_unknown=true` 和
 `failure_code=POSITION_UNKNOWN`。
 
@@ -1535,12 +1705,12 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
     "outcome_revision": 1,
     "results": [
       {
-        "object_id": "BIN-0001",
+        "container_id": "CONTAINER-0001",
         "status": "SUCCEEDED",
         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
       },
       {
-        "object_id": "BIN-0002",
+        "container_id": "CONTAINER-0002",
         "status": "FAILED",
         "position_unknown": true,
         "failure_code": "POSITION_UNKNOWN"
@@ -1550,9 +1720,9 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 }
 ```
 
-**样例 7：同面两对协调交换部分失败且位置明确（`BIN_EXCHANGE`）**
+**样例 7：两个货架当前面两对协调交换部分失败且位置明确（`BIN_EXCHANGE`）**
 
-独立任务 `TRANSPORT-000007` 中，第一对已经完成互换，第二对在任何成员移动前执行失败，因此第二对两个 Bin 都仍位于各自来源。
+独立任务 `TRANSPORT-000007` 中，第一对已经完成互换，第二对在任何成员移动前执行失败，因此第二对两个容器都仍位于各自来源。
 四个成员仍必须在同一条 T3 中完整报告；不能把第一对成功解释为整批成功，也不能为失败成员虚构反向搬回。
 
 ```json
@@ -1566,25 +1736,25 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
     "outcome_revision": 1,
     "results": [
       {
-        "object_id": "BIN-FULL-11",
+        "container_id": "CONTAINER-0011",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": "A", "slot_id": "SLOT-05"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": "B", "slot_id": "SLOT-05"}
       },
       {
-        "object_id": "BIN-EMPTY-11",
+        "container_id": "CONTAINER-0012",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-02", "rack_face": "A", "slot_id": "SLOT-01"}
       },
       {
-        "object_id": "BIN-FULL-12",
+        "container_id": "CONTAINER-0013",
         "status": "FAILED",
         "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-02", "rack_face": "A", "slot_id": "SLOT-02"},
         "failure_code": "RCS_EXECUTION_FAILED"
       },
       {
-        "object_id": "BIN-EMPTY-12",
+        "container_id": "CONTAINER-0014",
         "status": "FAILED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": "A", "slot_id": "SLOT-06"},
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": "B", "slot_id": "SLOT-06"},
         "failure_code": "RCS_EXECUTION_FAILED"
       }
     ]
@@ -1599,7 +1769,7 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 
 #### T2 与 T3 的固定关系
 
-1. `BIN_MOVE/BIN_EXCHANGE` 的 T2 和 T3 是两个独立义务，不能互相替代：T2 及时报告逐 Bin 位置事实，T3 完整闭合整项任务。
+1. `BIN_MOVE/BIN_EXCHANGE` 的 T2 和 T3 是两个独立义务，不能互相替代：T2 及时报告逐容器位置事实，T3 完整闭合整项任务。
 2. WMS 在对应物理事实出现时形成 T2；在全部请求对象已经形成确定结果或位置未知结论时形成一条完整 T3。
 3. WMS 不等待最后一条 T2 的 ACK 才形成或发送 T3。两个独立可靠发送任务可能因网络重试乱序到达，WES 必须按事实单调合并，不能
    因 T3 先到而拒绝后到且不矛盾的 T2。
@@ -1623,8 +1793,8 @@ T2 和 T3 使用相同 ACK 规则：
 | `400`，空响应体 | 无 | 原消息非法，停止重试 |
 | `413`，空响应体 | 无 | 原消息超限，停止重试 |
 
-当前 T2/T3 不使用 `429 / BUSY`。WES 暂时不能可靠保存时只返回 `503 / UNAVAILABLE`；未来只有在实现并批准明确的有界背压能力后
-才可增加 `429`。隔离局域网部署固定认证 `NONE`，正常业务响应不包含 `401`；`401` 表示 WES 部署策略错误。WMS 收到 `401` 时
+Transport 合同不使用 `429 / BUSY`，也不定义 `retry_after_ms`。WES 暂时不能可靠保存时只返回 `503 / UNAVAILABLE`。
+隔离局域网部署固定认证 `NONE`，正常业务响应不包含 `401`；`401` 表示 WES 部署策略错误。WMS 收到 `401` 时
 必须保留原发送义务、停止每 2 秒热重试并告警，等待配置修复后再恢复发送。HTML 或其它未定义组合仍按未知响应处理。
 
 WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/DUPLICATE/CONFLICT` 的 `data.transport_task_id` 等于冻结消息
@@ -1676,15 +1846,15 @@ T2 位置事实 DTO 拒绝响应样例：
 ### 3.3 规范 fixture 最小集合
 
 下表的基准请求均引用本节已经给出的完整 JSON；“修改”是对基准请求的唯一变化。双方必须使用相同预期，WMS 不再自行定义错误
-结果。当前 WES 代码和 OpenAPI 已按这些预期对齐；双方仍必须在实际联调环境运行 fixture 并保存证据，才能宣称联调通过。
+结果。当前 WES 代码和 OpenAPI 尚未按这些预期完成对齐；完成实现后，双方仍必须在实际联调环境运行 fixture 并保存证据，才能
+宣称联调通过。
 
 | Fixture | 基准与唯一修改 | 固定预期 |
 | --- | --- | --- |
 | `T1-DUPLICATE` | 完整重发样例 1，不改变任何字段 | `200 / DUPLICATE`，复用首次 `timestamp + data` |
 | `T1-CONFLICT` | 复用样例 1 `operation_id`，只把 `target.location_code` 改为其它值 | `409 / CONFLICT`，回显本次 `transport_task_id` |
-| `T1-BUSY` | 首次提交样例 1，WMS 尚未接纳且临时无调度容量 | `429 / BUSY`；原消息可以重试，临时响应不冻结 |
 | `T1-UNAVAILABLE` | 首次提交样例 1，WMS 无法可靠保存 | `503 / UNAVAILABLE`；原消息可以重试，临时响应不冻结 |
-| `JSON-DUPLICATE-KEY` | 使用下方重复 `kind` 的完整请求 | 已有合法身份，`422 / REJECTED + INVALID_DATA` |
+| `JSON-DUPLICATE-KEY` | 使用下方重复 `kind` 的完整请求 | 空响应体 `400`；不建立幂等记录 |
 | `JSON-WRONG-CASE` | 样例 1 的 `operation_id` 改为 `operationId` | 无法取得合法身份，空响应体 `400` |
 | `JSON-UNKNOWN-FIELD` | 样例 1 `data` 增加 `vehicle_id` | `422 / REJECTED + INVALID_DATA` |
 | `T2-MISSING-POSITION` | T2 `TARGET_PLACED` 省略 `final_position` | `422 / REJECTED + INVALID_EVIDENCE` |
@@ -1717,17 +1887,6 @@ T2 位置事实 DTO 拒绝响应样例：
 }
 ```
 
-**尚未接纳且暂时繁忙：**
-
-```json
-{
-  "operation_id": "019fd98a-0000-7b4d-a23a-1b90aa5d4472",
-  "code": "BUSY",
-  "timestamp": 1786061200123,
-  "data": {"transport_task_id": "TRANSPORT-BUSY-001", "retry_after_ms": 2000}
-}
-```
-
 **尚未接纳且无法可靠保存：**
 
 ```json
@@ -1750,7 +1909,8 @@ T2 位置事实 DTO 拒绝响应样例：
 }
 ```
 
-**重复 JSON key 错误请求：** 该示例故意包含两个 `kind`，只用于验证解析器拒绝重复 key。
+**重复 JSON key 错误请求：** 该示例故意包含两个 `kind`，只用于验证解析器拒绝重复 key；预期为空响应体
+`400`，不建立幂等记录。
 
 ```json
 {
@@ -1763,12 +1923,13 @@ T2 位置事实 DTO 拒绝响应样例：
     "kind": "BIN_MOVE",
     "rack_id": "RACK-005-01",
     "source": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-A-01"},
-    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"}
+    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "target_face": "A"
   }
 }
 ```
 
-**跨面两对交换错误请求：** 第二个 Left Bin 混入 B 面，因此整条 T1 非法。
+**同一货架跨面交换错误请求：** `RACK-SOURCE-01` 在同一任务中同时出现 A、B 面，因此整条 T1 非法。
 
 ```json
 {
@@ -1778,23 +1939,57 @@ T2 位置事实 DTO 拒绝响应样例：
   "data": {
     "transport_task_id": "TRANSPORT-INVALID-002",
     "kind": "BIN_EXCHANGE",
-    "exchange_pairs": [
+    "moves": [
       {
-        "left_bin_id": "BIN-FULL-01",
-        "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"},
-        "right_bin_id": "BIN-EMPTY-01",
-        "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "A", "slot_id": "SLOT-05"}
+        "container_id": "CONTAINER-0001",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-05"}
       },
       {
-        "left_bin_id": "BIN-FULL-02",
-        "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "B", "slot_id": "SLOT-02"},
-        "right_bin_id": "BIN-EMPTY-02",
-        "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "A", "slot_id": "SLOT-06"}
+        "container_id": "CONTAINER-0002",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-05"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "A", "slot_id": "SLOT-01"}
+      },
+      {
+        "container_id": "CONTAINER-0003",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "B", "slot_id": "SLOT-02"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-06"}
+      },
+      {
+        "container_id": "CONTAINER-0004",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "B", "slot_id": "SLOT-06"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "B", "slot_id": "SLOT-02"}
       }
     ]
   }
 }
 ```
+
+### 3.4 WMS 到厂商协议的最小映射
+
+WMS 建议将 WES 到 RCS 的转换集中为货架、料箱两个明确映射职责，具体类和方法名由 WMS 自定。WES DTO 与厂商 RCS DTO
+必须独立定义，不能继承或共用同一 C# 类；前者固定使用 `snake_case`，后者按厂商协议使用 `camelCase`。
+
+| WES 字段或语义 | WMS/RCS 处理 |
+| --- | --- |
+| `transport_task_id` | WMS 为每个厂商子任务生成符合厂商限制的 `taskCode`，并保存一个 WES 任务到一个或多个厂商任务的关联 |
+| `rack_id` | 通过 WMS 主数据解析为厂商 `podCode`，并校验厂商字段限制 |
+| `container_id` | 通过 WMS 主数据解析为厂商 `containerId`，并校验厂商字段限制 |
+| `RACK_POSITION.location_code` | 映射为 `positionCodePath[].positionCode` |
+| `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
+| `target_face` | 只驱动厂商任务分解和预期结果校验，不直接映射为厂商当前面字段 |
+| `arrival_face` | RCS 确认实际到达工作面后用于形成 T3；需要整架上报时再映射为当前面 `ctuSide` |
+| `kind + source + target` | 由 WMS 场景解析器选择厂商 `AGV01..03`、`CTU01..04` 等任务类型 |
+
+厂商 `sideA/sideB` 是 WMS 根据自身库存和货架主数据形成的整架容器上报，不进入 WES T1。WES 不复制 WMS 已拥有的两面容器
+全集，也不参与厂商短时 `taskCode + podCode` 幂等规则。
+
+WES `transport_task_id` 长度为 `1..80`，`rack_id`、`container_id` 为 `1..100`；厂商文档中的 `taskCode`、`podCode`、
+`containerId`、`binId` 上限均为 64。WMS 必须经过主数据解析并按厂商出站合同校验长度，不能承诺字符串直接复用。现场主数据
+恰好映射为相同值，也不改变这一边界。
+
+厂商资料中的 `podDir` 尚未形成可依赖语义，必须由 WMS 按现场联调结果维护映射。容器上报文档对列表上限同时出现“最大 50 条”
+和“≤10”两种描述，该矛盾由 WMS/RCS 联调确认，不改变 WES 料箱批次 `1..4` 的合同。
 
 ## 4. WMS 对接实现边界
 
@@ -1836,8 +2031,8 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 
 | 情况 | 身份规则 | 动作 |
 | --- | --- | --- |
-| 请求明确未发送、`429`、`503` | 原 `operation_id + timestamp + 完整消息` | 按第 2.4 节规则重试 |
-| WMS 主动通知没有收到明确响应 | 原主动通知完整消息 | WMS 继续履行发送义务，WES 识别并处理重复消息 |
+| T1 Transport submit 明确未发送或收到 `503` | 原冻结 `operation_id + timestamp + 完整消息` | 固定等待 2000 毫秒，并在最多实际发送 3 次的预算内按 T1 规则重试 |
+| T2/T3 主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
 | Transport submit `DELIVERY_UNKNOWN` | 原 `transport_task_id` | 禁止自动重提，进入 `UNKNOWN/RECONCILING` |
 | `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 新 `operation_id`，引用 `previous_operation_id` | 等待新事实或到期后，根据当前现场数据重新请求决定 |
 | `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |
@@ -1852,12 +2047,12 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | 交付物 | 最低要求 |
 | --- | --- |
 | 当前场景接口矩阵 | 对 F-01、T1～T3 标明负责人、路径、operation 和实现状态；O1～O7、I1～I4、P1～P8 只列为 `ReviewRequired` |
-| T1 OpenAPI | WMS 提供其服务端 `POST /api/v1/wes/transport-requests` 的 OpenAPI 3.0.3 权威文件，完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
+| T1 OpenAPI | WMS 提供其服务端 `POST /api/v1/wes/transport-requests` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
 | T2/T3 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 按其中 T2/T3 operation 实现客户端，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
-| 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/BUSY/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和 T3 版本冲突 |
+| 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和 T3 版本冲突 |
 | WMS 运行证据 | WMS 使用本文规范 fixture，提交实际请求、响应和日志；不得由实现方自行发明合同预期 |
-| Transport 对外归一化表 | WMS 提供 RCS 私有码到第 3.1.3 节稳定 `failure_code` 闭集的映射；不得新增线上码或包含供应商原始 Payload |
+| Transport 对外归一化表 | WMS 提供 RCS 私有码到第 3.1.4 节稳定 `failure_code` 闭集的映射；不得新增线上码或包含供应商原始 Payload |
 | 联调环境参数表 | 双方提供实际 `WMS_BASE_URL/WES_BASE_URL`、端口和网络连通结果；超时、Body 上限和认证模式使用第 0.4 节固定值 |
 | ACK 后冲突 SOP | 双方共同确认告警联系人、通知方式和以 `operation + operation_id + transport_task_id` 检索证据的方法；不新增状态查询接口 |
 | 联调证据 | 能证明首次请求、重复请求、内容冲突、可靠通知和确定业务结果符合合同的完整请求与响应 |
@@ -1911,7 +2106,8 @@ WES 也会逐步复制出一套不完整的 WMS 业务逻辑。
 WES 项目内部保留了一份 2026-03 的 WMS 交互约定初稿，保存其原始命名、样例和当时假设，但它不是当前实施真源。WMS 团队
 不需要取得或查阅该内部资料；所有当前 Approved 的对接要求都已经完整写入本文。
 
-本文不记录代码完成度、测试数量、部署状态或现场上线进度。易变化的实施状态由计划、验收报告和 Runbook 维护。
+本文只记录接口是否开发放行，以及 WES 是否达到当前合同的实施对齐门禁；不记录测试数量、具体代码进度、部署证据或现场上线进度。
+这些易变化的实施明细由计划、验收报告和 Runbook 维护。
 
 ## 附录 A. 自动出库场景（ReviewRequired）
 
