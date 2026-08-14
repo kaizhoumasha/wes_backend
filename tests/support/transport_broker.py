@@ -133,8 +133,12 @@ def _validate_test_redis_url(redis_url: str) -> None:
         database = int((redis.database or "0").lstrip("/"))
     except ValueError:
         database = 0
-    if redis.get_backend_name() != "redis" or redis.host not in {"127.0.0.1", "localhost", "::1"} or database <= 0:
-        raise AssertionError("Transport broker harness requires a local non-zero test database")
+    if (
+        redis.get_backend_name() != "redis"
+        or redis.host not in {"127.0.0.1", "localhost", "::1", "redis"}
+        or database <= 0
+    ):
+        raise AssertionError("Transport broker harness requires a local/build-scoped non-zero test database")
 
 
 def _worker_environment(

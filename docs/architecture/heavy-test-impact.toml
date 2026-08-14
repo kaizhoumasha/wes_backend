@@ -44,10 +44,22 @@ heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
-# 后端 CI 编排变更至少运行一项当前数据库合同，证明 HEAVY runner 确实进入执行面。
+# 后端 CI 编排变更同时验证当前数据库合同和 Transport 生产接线。
 [[mapping]]
 source_glob = "Jenkinsfile.backend-ci"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+# 本地 HEAVY 入口及其 compose 覆盖共同负责构建隔离依赖、迁移并执行 Transport 生产接线。
+[[mapping]]
+source_glob = "docker-compose.ci-heavy.local.yml"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+
+[[mapping]]
+source_glob = "scripts/run_selected_heavy_local.sh"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Docker build context 过滤规则影响 HEAVY runner 镜像内容，由最小数据库合同验证镜像可执行。
 [[mapping]]

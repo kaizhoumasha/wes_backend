@@ -143,6 +143,12 @@ HEAVY 测试影响选择由 `scripts/select_heavy_tests.py` 和机器可读真�
   一致性验收。两者都不得加入核心 selector 的 `heavy_tests` 映射。
 
 ```bash
+# 一键执行未暂存差异命中的 HEAVY：使用独立临时容器，自动迁移并在结束时清理
+./scripts/run_selected_heavy_local.sh --scope unstaged
+
+# 一键执行已暂存差异命中的 HEAVY
+./scripts/run_selected_heavy_local.sh --scope staged
+
 # 本地未暂存改动（默认 scope 也是 unstaged）
 uv run scripts/select_heavy_tests.py --scope unstaged
 
@@ -156,7 +162,7 @@ uv run scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"
 uv run pytest tests/scripts -q
 ```
 
-退出 0 且有输出表示每行一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。`Jenkinsfile.backend-ci` 的唯一 `Quality Gate` 在所有构建中运行 selector 合同测试，并在合并请求中通过 `HEAVY Required` 执行目标分支差异选择结果。
+一键入口只启动当前进程专属的 PostgreSQL/Redis Compose 项目，端口由 Docker 动态分配；测试结束或失败时都会删除容器和数据卷。退出 0 且有输出表示 selector 每行输出一个应运行的 HEAVY 测试；退出 0 且无输出表示改动只命中 ignore 或显式 NONE；非零表示 selector 为避免漏测而 fail closed。`Jenkinsfile.backend-ci` 的唯一 `Quality Gate` 在所有构建中运行 selector 合同测试，并在合并请求中通过 `HEAVY Required` 执行目标分支差异选择结果。
 
 ```bash
 # E2E 测试（默认不会被 pytest 自动收集）

@@ -105,6 +105,13 @@ def test_heavy_required_uses_a_build_scoped_compose_project() -> None:
     assert "wesp9-test-network" not in heavy_body
 
 
+def test_heavy_required_uses_non_zero_build_scoped_redis_database() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
+
+    assert 'INTEGRATION_REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15"' in heavy_body
+
+
 def test_heavy_compose_does_not_publish_or_reuse_deployment_resources() -> None:
     compose_text = (REPO_ROOT / "docker-compose.ci-heavy.yml").read_text(encoding="utf-8")
 

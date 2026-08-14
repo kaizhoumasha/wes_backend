@@ -31,8 +31,22 @@ def _flatten_errors(error: BaseException) -> list[BaseException]:
     ),
 )
 def test_worker_rejects_non_isolated_or_non_local_redis(redis_url: str) -> None:
-    with pytest.raises(AssertionError, match="local non-zero test database"):
+    with pytest.raises(AssertionError, match="local/build-scoped non-zero test database"):
         harness.TransportBrokerWorker(DATABASE_URL, redis_url, Path("provider.yaml"))
+
+
+def test_worker_accepts_build_scoped_compose_redis_on_non_zero_database() -> None:
+    worker = harness.TransportBrokerWorker(
+        DATABASE_URL,
+        "redis://redis:6379/15",
+        Path("provider.yaml"),
+        run_id="compose-network-proof",
+    )
+
+    try:
+        assert worker.key_prefix == "it:transport:compose-network-proof:"
+    finally:
+        worker.producer.close()
 
 
 def test_worker_applies_one_run_prefix_to_broker_and_result_backend() -> None:

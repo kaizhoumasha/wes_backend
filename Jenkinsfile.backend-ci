@@ -249,7 +249,7 @@ pipeline {
                         sh -c '
                             set -eu
                             export INTEGRATION_DATABASE_URL="postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
-                            export INTEGRATION_REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/0"
+                            export INTEGRATION_REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15"
                             uv run --no-sync alembic upgrade head
                             uv run --no-sync scripts/run_selected_heavy_tests.py /artifacts/heavy-tests.txt /reports/heavy-required.xml
                         '

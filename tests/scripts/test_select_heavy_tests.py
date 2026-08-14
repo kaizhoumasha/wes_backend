@@ -1365,9 +1365,25 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
 def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests(["Jenkinsfile.backend-ci"], config) == [DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST]
+    assert select_heavy_tests(["Jenkinsfile.backend-ci"], config) == [
+        TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+        DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+    ]
     with pytest.raises(SelectorError, match="未分类改动路径"):
         select_heavy_tests(["Jenkinsfile"], config)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "docker-compose.ci-heavy.local.yml",
+        "scripts/run_selected_heavy_local.sh",
+    ],
+)
+def test_repository_mapping_selects_transport_e2e_for_local_heavy_entry(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]
 
 
 @pytest.mark.parametrize(
