@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
@@ -101,6 +102,17 @@ def _valid_transport_request_headers(request: Request) -> bool:
     )
 
 
+def _enqueue_transport_evidence() -> None:
+    try:
+        task_queue_gateway.enqueue_transport_evidence()
+    except Exception:
+        logger.warning(
+            "transport.evidence.enqueue_failed",
+            extra={"event": "transport.evidence.enqueue_failed"},
+            exc_info=True,
+        )
+
+
 @router.post(
     "/events",
     responses=TRANSPORT_EVENT_RESPONSES,
@@ -126,20 +138,14 @@ async def receive_transport_event(request: Request) -> Response:
     if runtime is None:
         return _unavailable_ack(raw_body)
     result = await runtime.handler.handle(raw_body)
+    # Evidence 已持久化后先应答 WMS；Celery 唤醒只是加速提示，失败时由 Beat 兜底扫描。
+    background = (
+        BackgroundTask(_enqueue_transport_evidence) if result.body.get("code") in {"RECEIVED", "DUPLICATE"} else None
+    )
     if result.body:
-        response: Response = JSONResponse(status_code=result.http_status, content=result.body)
+        response: Response = JSONResponse(status_code=result.http_status, content=result.body, background=background)
     else:
-        response = Response(status_code=result.http_status)
-
-    if result.body.get("code") in {"RECEIVED", "DUPLICATE"}:
-        try:
-            task_queue_gateway.enqueue_transport_evidence()
-        except Exception:
-            logger.warning(
-                "transport.evidence.enqueue_failed",
-                extra={"event": "transport.evidence.enqueue_failed"},
-                exc_info=True,
-            )
+        response = Response(status_code=result.http_status, background=background)
     return response
 
 

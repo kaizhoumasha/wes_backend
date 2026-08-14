@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from src.app.wms_adapter.transport_event_handler import (
@@ -129,6 +129,46 @@ def test_none_profile_forwards_exact_bytes_and_wakes_evidence_worker_after_persi
     enqueue.assert_called_once_with()
 
 
+@pytest.mark.asyncio
+async def test_persisted_ack_defers_evidence_wakeup_until_response_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _events_module()
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=202, body={"code": "RECEIVED"}))
+    enqueue = MagicMock()
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", enqueue)
+    app = _route_app(module, handler, _none_policy(module))
+    received = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal received
+        if received:
+            return {"type": "http.disconnect"}
+        received = True
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/wms/events",
+            "headers": [(b"content-type", b"application/json")],
+            "app": app,
+        },
+        receive,
+    )
+
+    response = await module.receive_transport_event(request)
+
+    assert response.status_code == 202
+    enqueue.assert_not_called()
+    assert response.background is not None
+
+    await response.background()
+
+    enqueue.assert_called_once_with()
+
+
 def test_non_persisted_ack_does_not_wake_evidence_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _events_module()
     handler = AsyncMock(
@@ -164,10 +204,13 @@ def test_non_persisted_ack_does_not_wake_evidence_worker(monkeypatch: pytest.Mon
     ],
 )
 def test_transport_event_route_enforces_json_utf8_identity_headers(
-    headers: dict[str, str], expected_status: int
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+    expected_status: int,
 ) -> None:
     module = _events_module()
     handler = AsyncMock(return_value=TransportEventResponse(http_status=202, body={"code": "RECEIVED"}))
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", MagicMock())
     app = _route_app(module, handler, _none_policy(module))
 
     with TestClient(app) as client:

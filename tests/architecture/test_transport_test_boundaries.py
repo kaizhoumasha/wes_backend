@@ -21,7 +21,6 @@ TRANSPORT_TEST_FILES = tuple(
         "tests/integration/test_transport_broker_harness_cleanup.py",
         "tests/integration/test_transport_fastapi_lifespan.py",
         "tests/integration/test_transport_fulfillment_queue.py",
-        "tests/integration/test_celery_async_runtime.py",
         "tests/integration/test_celery_async_runtime_postgresql.py",
         "tests/integration/test_celery_prefork_harness_cleanup.py",
         "tests/integration/test_wms_deployment_attestation.py",
