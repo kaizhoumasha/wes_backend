@@ -68,7 +68,7 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
             MoveBinsRequest(
                 _REQUEST_ID,
                 _caller(),
-                (BinMove("bin-1", RackBinSlot("rack-1", "1-1"), HandoffPosition("ROLLER_IN")),),
+                (BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1-1"), HandoffPosition("ROLLER_IN")),),
             ).moves
         )
         == 1
@@ -78,7 +78,14 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
             ExchangeBinsRequest(
                 _REQUEST_ID,
                 _caller(),
-                (BinExchangePair("full-1", RackBinSlot("rack-1", "1-1"), "empty-1", RackBinSlot("rack-2", "1-1")),),
+                (
+                    BinExchangePair(
+                        "full-1",
+                        RackBinSlot("rack-1", RackFace.A, "1-1"),
+                        "empty-1",
+                        RackBinSlot("rack-2", RackFace.A, "1-1"),
+                    ),
+                ),
             ).exchange_pairs
         )
         == 1
@@ -105,12 +112,19 @@ def test_request_contracts_require_uuid7_client_request_id(client_request_id: st
         lambda caller: MoveBinsRequest(
             _REQUEST_ID,
             caller,
-            (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
+            (BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
         ),
         lambda caller: ExchangeBinsRequest(
             _REQUEST_ID,
             caller,
-            (BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1")),),
+            (
+                BinExchangePair(
+                    "bin-1",
+                    RackBinSlot("rack-1", RackFace.A, "1"),
+                    "bin-2",
+                    RackBinSlot("rack-2", RackFace.A, "1"),
+                ),
+            ),
         ),
     ],
 )
@@ -138,12 +152,12 @@ def test_requests_reject_untyped_caller(factory: Callable[[TransportCaller], obj
             HandoffPosition("ROLLER_IN"),
             RackFace.B,
         ),
-        lambda: BinMove("bin-type", RackPosition("STATION_A"), RackBinSlot("rack-1", "1")),
+        lambda: BinMove("bin-type", RackPosition("STATION_A"), RackBinSlot("rack-1", RackFace.A, "1")),
         lambda: BinExchangePair(
             "bin-left",
             HandoffPosition("ROLLER_IN"),
             "bin-right",
-            RackBinSlot("rack-2", "1"),
+            RackBinSlot("rack-2", RackFace.A, "1"),
         ),
     ],
 )
@@ -156,7 +170,7 @@ def test_requests_reject_positions_outside_their_closed_types(factory: Callable[
     ("position_type", "args"),
     [
         (RackPosition, ("STATION_A",)),
-        (RackBinSlot, ("rack-1", "1")),
+        (RackBinSlot, ("rack-1", RackFace.A, "1")),
         (HandoffPosition, ("ROLLER_IN",)),
     ],
 )
@@ -187,13 +201,20 @@ def test_position_discriminator_cannot_be_overridden(position_type: object, args
         lambda: MoveBinsRequest(
             _REQUEST_ID,
             _caller(),
-            (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("IN")),),
+            (BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("IN")),),
             kind=TransportTaskKind.RACK_MOVE,
         ),
         lambda: ExchangeBinsRequest(
             _REQUEST_ID,
             _caller(),
-            (BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1")),),
+            (
+                BinExchangePair(
+                    "bin-1",
+                    RackBinSlot("rack-1", RackFace.A, "1"),
+                    "bin-2",
+                    RackBinSlot("rack-2", RackFace.A, "1"),
+                ),
+            ),
             kind=TransportTaskKind.RACK_ROTATE,
         ),
     ],
@@ -220,13 +241,15 @@ def test_request_kind_is_fixed_by_request_type(factory: Callable[[], object]) ->
             VendorRackPosition("ROTATE_POINT"),
             RackFace.B,
         ),
-        lambda: BinMove("bin-vendor-slot", VendorRackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),
-        lambda: BinMove("bin-vendor-handoff", RackBinSlot("rack-1", "1"), VendorHandoffPosition("ROLLER_IN")),
+        lambda: BinMove("bin-vendor-slot", VendorRackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
+        lambda: BinMove(
+            "bin-vendor-handoff", RackBinSlot("rack-1", RackFace.A, "1"), VendorHandoffPosition("ROLLER_IN")
+        ),
         lambda: BinExchangePair(
             "bin-left",
-            VendorRackBinSlot("rack-1", "1"),
+            VendorRackBinSlot("rack-1", RackFace.A, "1"),
             "bin-right",
-            RackBinSlot("rack-2", "1"),
+            RackBinSlot("rack-2", RackFace.A, "1"),
         ),
     ],
 )
@@ -237,20 +260,88 @@ def test_requests_reject_position_subclasses_with_extra_wire_fields(factory: Cal
 
 @pytest.mark.parametrize("count", [0, 3])
 def test_exchange_rejects_pair_count_outside_one_to_two(count: int) -> None:
-    pair = BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1"))
+    pair = BinExchangePair(
+        "bin-1", RackBinSlot("rack-1", RackFace.A, "1"), "bin-2", RackBinSlot("rack-2", RackFace.A, "1")
+    )
     with pytest.raises(TransportContractError):
         ExchangeBinsRequest(_REQUEST_ID, _caller(), tuple(pair for _ in range(count)))
 
 
 def test_exchange_rejects_reused_bin_or_slot_across_pairs() -> None:
-    first = BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-2", "1"))
-    reused_bin = BinExchangePair("bin-1", RackBinSlot("rack-3", "1"), "bin-4", RackBinSlot("rack-4", "1"))
-    reused_slot = BinExchangePair("bin-3", RackBinSlot("rack-1", "1"), "bin-4", RackBinSlot("rack-4", "1"))
+    first = BinExchangePair(
+        "bin-1", RackBinSlot("rack-1", RackFace.A, "1"), "bin-2", RackBinSlot("rack-2", RackFace.A, "1")
+    )
+    reused_bin = BinExchangePair(
+        "bin-1", RackBinSlot("rack-3", RackFace.A, "1"), "bin-4", RackBinSlot("rack-4", RackFace.A, "1")
+    )
+    reused_slot = BinExchangePair(
+        "bin-3", RackBinSlot("rack-1", RackFace.A, "1"), "bin-4", RackBinSlot("rack-4", RackFace.A, "1")
+    )
 
     with pytest.raises(TransportContractError):
         ExchangeBinsRequest(_REQUEST_ID, _caller(), (first, reused_bin))
     with pytest.raises(TransportContractError):
         ExchangeBinsRequest(_REQUEST_ID, _caller(), (first, reused_slot))
+
+
+def test_rack_bin_slot_identity_includes_rack_face() -> None:
+    face_a = RackBinSlot("rack-1", RackFace.A, "1")
+    face_b = RackBinSlot("rack-1", RackFace.B, "1")
+
+    assert face_a != face_b
+    assert face_a.rack_face is RackFace.A
+    with pytest.raises(TransportContractError, match="rack_face must be A or B"):
+        RackBinSlot("rack-1", cast("RackFace", "C"), "1")
+
+
+def test_two_pair_exchange_requires_all_left_and_all_right_bins_on_one_face_each() -> None:
+    valid = (
+        BinExchangePair(
+            "left-1",
+            RackBinSlot("rack-left", RackFace.A, "1"),
+            "right-1",
+            RackBinSlot("rack-right", RackFace.A, "1"),
+        ),
+        BinExchangePair(
+            "left-2",
+            RackBinSlot("rack-left", RackFace.A, "2"),
+            "right-2",
+            RackBinSlot("rack-right", RackFace.A, "2"),
+        ),
+    )
+    assert len(ExchangeBinsRequest(_REQUEST_ID, _caller(), valid).exchange_pairs) == 2
+
+    cross_face = (
+        valid[0],
+        BinExchangePair(
+            "left-2",
+            RackBinSlot("rack-left", RackFace.B, "2"),
+            "right-2",
+            RackBinSlot("rack-right", RackFace.B, "2"),
+        ),
+    )
+    with pytest.raises(TransportContractError, match="one rack and face per side"):
+        ExchangeBinsRequest(_REQUEST_ID, _caller(), cross_face)
+
+
+def test_two_pair_exchange_requires_one_rack_and_face_per_side() -> None:
+    cross_rack = (
+        BinExchangePair(
+            "left-1",
+            RackBinSlot("rack-left-1", RackFace.A, "1"),
+            "right-1",
+            RackBinSlot("rack-right-1", RackFace.B, "1"),
+        ),
+        BinExchangePair(
+            "left-2",
+            RackBinSlot("rack-left-2", RackFace.A, "2"),
+            "right-2",
+            RackBinSlot("rack-right-2", RackFace.B, "2"),
+        ),
+    )
+
+    with pytest.raises(TransportContractError, match="one rack and face per side"):
+        ExchangeBinsRequest(_REQUEST_ID, _caller(), cross_rack)
 
 
 @pytest.mark.parametrize(
@@ -263,10 +354,14 @@ def test_exchange_rejects_reused_bin_or_slot_across_pairs() -> None:
             RackPosition("SAME"),
             RackPosition("SAME"),
         ),
-        lambda: BinMove("bin-1", RackBinSlot("rack-1", "1"), RackBinSlot("rack-1", "1")),
+        lambda: BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), RackBinSlot("rack-1", RackFace.A, "1")),
         lambda: BinMove("bin-1", HandoffPosition("IN"), HandoffPosition("OUT")),
-        lambda: BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-1", RackBinSlot("rack-2", "1")),
-        lambda: BinExchangePair("bin-1", RackBinSlot("rack-1", "1"), "bin-2", RackBinSlot("rack-1", "1")),
+        lambda: BinExchangePair(
+            "bin-1", RackBinSlot("rack-1", RackFace.A, "1"), "bin-1", RackBinSlot("rack-2", RackFace.A, "1")
+        ),
+        lambda: BinExchangePair(
+            "bin-1", RackBinSlot("rack-1", RackFace.A, "1"), "bin-2", RackBinSlot("rack-1", RackFace.A, "1")
+        ),
     ],
 )
 def test_requests_reject_degenerate_moves_and_exchanges(factory: Callable[[], object]) -> None:
@@ -313,7 +408,8 @@ def test_outcome_version_must_be_positive(outcome_version: int) -> None:
 
 def test_move_bins_accepts_four_members_and_rejects_five() -> None:
     moves = tuple(
-        BinMove(f"bin-{index}", RackBinSlot("rack", str(index)), HandoffPosition("ROLLER_IN")) for index in range(5)
+        BinMove(f"bin-{index}", RackBinSlot("rack", RackFace.A, str(index)), HandoffPosition("ROLLER_IN"))
+        for index in range(5)
     )
 
     assert len(MoveBinsRequest(_REQUEST_ID, _caller(), moves[:4]).moves) == 4
@@ -327,8 +423,8 @@ def test_move_bins_allows_shared_handoff_but_not_shared_rack_slot() -> None:
         _REQUEST_ID,
         _caller(),
         (
-            BinMove("bin-1", RackBinSlot("rack", "1"), shared_handoff),
-            BinMove("bin-2", RackBinSlot("rack", "2"), shared_handoff),
+            BinMove("bin-1", RackBinSlot("rack", RackFace.A, "1"), shared_handoff),
+            BinMove("bin-2", RackBinSlot("rack", RackFace.A, "2"), shared_handoff),
         ),
     )
     assert len(request.moves) == 2
@@ -338,8 +434,8 @@ def test_move_bins_allows_shared_handoff_but_not_shared_rack_slot() -> None:
             _REQUEST_ID,
             _caller(),
             (
-                BinMove("bin-1", RackBinSlot("rack", "1"), shared_handoff),
-                BinMove("bin-2", RackBinSlot("rack", "1"), HandoffPosition("ROLLER_OUT")),
+                BinMove("bin-1", RackBinSlot("rack", RackFace.A, "1"), shared_handoff),
+                BinMove("bin-2", RackBinSlot("rack", RackFace.A, "1"), HandoffPosition("ROLLER_OUT")),
             ),
         )
 
@@ -385,8 +481,8 @@ def test_identifiers_fail_closed(value: str) -> None:
             RackPosition("SOURCE"),
             RackPosition("TARGET"),
         ),
-        lambda: BinMove("b" * 101, RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),
-        lambda: RackBinSlot("r" * 101, "1"),
+        lambda: BinMove("b" * 101, RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
+        lambda: RackBinSlot("r" * 101, RackFace.A, "1"),
     ],
     ids=["client-request-id", "rack-id", "bin-id", "slot-rack-id"],
 )

@@ -116,6 +116,7 @@ async def test_two_evidence_workers_are_fenced_and_expired_claim_is_recovered(
                 operation_id=operation_id,
                 transport_task_id=f"missing-{suffix}",
                 operation="transport.task.resulted@v1",
+                outcome_revision=1,
                 event_timestamp_ms=1_723_456_789_011,
                 payload_digest="c" * 64,
                 payload_json={"transport_task_id": f"missing-{suffix}"},

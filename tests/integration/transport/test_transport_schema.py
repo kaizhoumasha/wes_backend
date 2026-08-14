@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import BigInteger, text
 from sqlalchemy.exc import IntegrityError
 
 from src.app.transport.models import TransportEvidence, TransportResourceBinding, TransportTask
@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_transport_result_revision_columns_use_signed_64_bit_storage() -> None:
+    assert isinstance(TransportTask.__table__.c.last_applied_wms_outcome_revision.type, BigInteger)
+    assert isinstance(TransportEvidence.__table__.c.outcome_revision.type, BigInteger)
 
 
 def _task(task_id: str, request_id: str, digest: str, now: object) -> TransportTask:
@@ -109,12 +114,12 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
 ) -> None:
     result = await integration_db_session.execute(
         text(
-            "SELECT table_name, column_name FROM information_schema.columns "
+            "SELECT table_name, column_name, column_default FROM information_schema.columns "
             "WHERE table_schema = 'wes_runtime' AND table_name IN "
             "('transport_tasks', 'transport_evidence', 'transport_members', 'transport_position_projections')"
         )
     )
-    columns = {(row[0], row[1]) for row in result}
+    columns = {(row[0], row[1]): row[2] for row in result}
     assert {
         ("transport_tasks", "submit_operation_id"),
         ("transport_tasks", "submit_timestamp_ms"),
@@ -126,12 +131,13 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
         ("transport_evidence", "ack_data_json"),
         ("transport_members", "last_operation_id"),
         ("transport_position_projections", "source_operation_id"),
-    } <= columns
+    } <= columns.keys()
     assert {
         ("transport_evidence", "event_id"),
         ("transport_members", "last_event_id"),
         ("transport_position_projections", "source_event_id"),
     }.isdisjoint(columns)
+    assert columns[("transport_tasks", "last_applied_wms_outcome_revision")] is None
 
 
 async def test_transport_evidence_identity_is_operation_and_operation_id(integration_db_session: AsyncSession) -> None:
@@ -147,6 +153,7 @@ async def test_transport_evidence_identity_is_operation_and_operation_id(integra
                 operation_id=operation_id,
                 transport_task_id=task.transport_task_id,
                 operation=operation,
+                outcome_revision=1 if operation == "transport.task.resulted@v1" else None,
                 event_timestamp_ms=1_723_456_789_011,
                 payload_digest="d" * 64,
                 payload_json={"status": "SUCCEEDED"},
@@ -161,6 +168,7 @@ async def test_transport_evidence_identity_is_operation_and_operation_id(integra
             operation_id=operation_id,
             transport_task_id=task.transport_task_id,
             operation="transport.task.resulted@v1",
+            outcome_revision=2,
             event_timestamp_ms=1_723_456_789_012,
             payload_digest="e" * 64,
             payload_json={"status": "FAILED"},
@@ -169,6 +177,35 @@ async def test_transport_evidence_identity_is_operation_and_operation_id(integra
             received_at=now,
         )
     )
+    with pytest.raises(IntegrityError):
+        await integration_db_session.flush()
+    await integration_db_session.rollback()
+
+
+async def test_transport_result_revision_is_unique_per_task(integration_db_session: AsyncSession) -> None:
+    suffix = uuid.uuid4().hex
+    now = timezone.now_for_db()
+    task = _task(f"transport-revision-{suffix}", f"request-revision-{suffix}", "f" * 64, now)
+    integration_db_session.add(task)
+    await integration_db_session.flush()
+
+    def evidence(operation_id: str) -> TransportEvidence:
+        return TransportEvidence(
+            operation_id=operation_id,
+            transport_task_id=task.transport_task_id,
+            operation="transport.task.resulted@v1",
+            outcome_revision=1,
+            event_timestamp_ms=1_723_456_789_011,
+            payload_digest="a" * 64,
+            payload_json={"outcome_revision": 1},
+            ack_timestamp_ms=1_723_456_789_012,
+            ack_data_json={"transport_task_id": task.transport_task_id},
+            received_at=now,
+        )
+
+    integration_db_session.add(evidence(new_uuid7()))
+    await integration_db_session.flush()
+    integration_db_session.add(evidence(new_uuid7()))
     with pytest.raises(IntegrityError):
         await integration_db_session.flush()
     await integration_db_session.rollback()

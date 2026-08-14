@@ -9,6 +9,7 @@ from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
     RackBinSlot,
+    RackFace,
     TransportCaller,
     TransportOutcome,
     TransportSubmitCode,
@@ -63,15 +64,16 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
     db_engine: object,
 ) -> None:
     moves = (
-        BinMove("bin-confirmed-source", RackBinSlot("rack-reconciling", "1"), HandoffPosition("OUT_1")),
-        BinMove("bin-unknown-peer", RackBinSlot("rack-reconciling", "2"), HandoffPosition("OUT_2")),
+        BinMove("bin-confirmed-source", RackBinSlot("rack-reconciling", RackFace.A, "1"), HandoffPosition("OUT_1")),
+        BinMove("bin-unknown-peer", RackBinSlot("rack-reconciling", RackFace.A, "2"), HandoffPosition("OUT_2")),
     )
     handle = await reconciling_service.move_bins(new_uuid7(), TransportCaller("SORTER"), moves)
-    source = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-reconciling", "slot_id": "1"}
+    source = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-reconciling", "rack_face": "A", "slot_id": "1"}
     operation_id = "operation-confirmed-source"
     result = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-confirmed-source",
@@ -149,8 +151,8 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
     late_failure_code: str | None,
 ) -> None:
     moves = (
-        BinMove("bin-confirmed-result", RackBinSlot("rack-result", "1"), HandoffPosition("OUT_1")),
-        BinMove("bin-unknown-result", RackBinSlot("rack-result", "2"), HandoffPosition("OUT_2")),
+        BinMove("bin-confirmed-result", RackBinSlot("rack-result", RackFace.A, "1"), HandoffPosition("OUT_1")),
+        BinMove("bin-unknown-result", RackBinSlot("rack-result", RackFace.A, "2"), HandoffPosition("OUT_2")),
     )
     handle = await reconciling_service.move_bins(
         new_uuid7(),
@@ -162,6 +164,7 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
     initial_result = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-confirmed-result",
@@ -181,6 +184,7 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
     late_result = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 2,
         "results": [
             {
                 "object_id": "bin-confirmed-result",

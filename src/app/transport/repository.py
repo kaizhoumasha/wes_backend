@@ -219,6 +219,22 @@ class TransportRepository:
             statement = statement.with_for_update()
         return await db.scalar(statement)
 
+    async def get_evidence_by_outcome_revision(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+        outcome_revision: int,
+        *,
+        for_update: bool = False,
+    ) -> TransportEvidence | None:
+        statement = select(TransportEvidence).where(
+            TransportEvidence.transport_task_id == transport_task_id,
+            TransportEvidence.outcome_revision == outcome_revision,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
+
     async def has_evidence(self, db: AsyncSession, transport_task_id: str) -> bool:
         evidence_id = await db.scalar(
             select(TransportEvidence.id).where(TransportEvidence.transport_task_id == transport_task_id).limit(1)

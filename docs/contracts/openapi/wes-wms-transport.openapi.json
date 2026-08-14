@@ -1,0 +1,954 @@
+{
+  "info": {
+    "title": "WES-WMS Transport Callback API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/api/v1/wms/events": {
+      "post": {
+        "operationId": "receiveWmsTransportEvent",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "data": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bin_id": {
+                                "maxLength": 100,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              },
+                              "milestone": {
+                                "enum": [
+                                  "SOURCE_PICKED"
+                                ],
+                                "type": "string"
+                              },
+                              "transport_task_id": {
+                                "maxLength": 80,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "transport_task_id",
+                              "bin_id",
+                              "milestone"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bin_id": {
+                                "maxLength": 100,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              },
+                              "milestone": {
+                                "enum": [
+                                  "POSITION_UNKNOWN"
+                                ],
+                                "type": "string"
+                              },
+                              "transport_task_id": {
+                                "maxLength": 80,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "transport_task_id",
+                              "bin_id",
+                              "milestone"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bin_id": {
+                                "maxLength": 100,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              },
+                              "final_position": {
+                                "oneOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "enum": [
+                                          "RACK_BIN_SLOT"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "rack_face": {
+                                        "enum": [
+                                          "A",
+                                          "B"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "rack_id": {
+                                        "maxLength": 100,
+                                        "minLength": 1,
+                                        "pattern": ".*\\S.*",
+                                        "type": "string"
+                                      },
+                                      "slot_id": {
+                                        "maxLength": 100,
+                                        "minLength": 1,
+                                        "pattern": ".*\\S.*",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "rack_id",
+                                      "rack_face",
+                                      "slot_id"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "kind": {
+                                        "enum": [
+                                          "HANDOFF_POSITION"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "location_code": {
+                                        "maxLength": 100,
+                                        "minLength": 1,
+                                        "pattern": ".*\\S.*",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "location_code"
+                                    ],
+                                    "type": "object"
+                                  }
+                                ]
+                              },
+                              "milestone": {
+                                "enum": [
+                                  "TARGET_PLACED"
+                                ],
+                                "type": "string"
+                              },
+                              "transport_task_id": {
+                                "maxLength": 80,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "transport_task_id",
+                              "bin_id",
+                              "milestone",
+                              "final_position"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "operation": {
+                        "enum": [
+                          "transport.task.member_position_changed@v1"
+                        ],
+                        "type": "string"
+                      },
+                      "operation_id": {
+                        "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "description": "Unix 毫秒时间戳",
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "operation_id",
+                      "operation",
+                      "timestamp",
+                      "data"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "data": {
+                        "oneOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "enum": [
+                                  "RACK_MOVE",
+                                  "RACK_ROTATE"
+                                ],
+                                "type": "string"
+                              },
+                              "outcome_revision": {
+                                "format": "int64",
+                                "maximum": 9223372036854775807,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "results": {
+                                "items": {
+                                  "oneOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "arrival_face": {
+                                          "enum": [
+                                            "A",
+                                            "B"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "final_position": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "kind": {
+                                              "enum": [
+                                                "RACK_POSITION"
+                                              ],
+                                              "type": "string"
+                                            },
+                                            "location_code": {
+                                              "maxLength": 100,
+                                              "minLength": 1,
+                                              "pattern": ".*\\S.*",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "location_code"
+                                          ],
+                                          "type": "object"
+                                        },
+                                        "object_id": {
+                                          "maxLength": 100,
+                                          "minLength": 1,
+                                          "pattern": ".*\\S.*",
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "enum": [
+                                            "SUCCEEDED"
+                                          ],
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "object_id",
+                                        "status",
+                                        "final_position",
+                                        "arrival_face"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "arrival_face": {
+                                          "enum": [
+                                            "A",
+                                            "B"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "failure_code": {
+                                          "enum": [
+                                            "MANUAL_ABORTED",
+                                            "RCS_EXECUTION_FAILED",
+                                            "RCS_TASK_REJECTED"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "final_position": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "kind": {
+                                              "enum": [
+                                                "RACK_POSITION"
+                                              ],
+                                              "type": "string"
+                                            },
+                                            "location_code": {
+                                              "maxLength": 100,
+                                              "minLength": 1,
+                                              "pattern": ".*\\S.*",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "kind",
+                                            "location_code"
+                                          ],
+                                          "type": "object"
+                                        },
+                                        "object_id": {
+                                          "maxLength": 100,
+                                          "minLength": 1,
+                                          "pattern": ".*\\S.*",
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "enum": [
+                                            "FAILED"
+                                          ],
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "object_id",
+                                        "status",
+                                        "final_position",
+                                        "failure_code",
+                                        "arrival_face"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "failure_code": {
+                                          "enum": [
+                                            "POSITION_UNKNOWN"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "object_id": {
+                                          "maxLength": 100,
+                                          "minLength": 1,
+                                          "pattern": ".*\\S.*",
+                                          "type": "string"
+                                        },
+                                        "position_unknown": {
+                                          "enum": [
+                                            true
+                                          ],
+                                          "type": "boolean"
+                                        },
+                                        "status": {
+                                          "enum": [
+                                            "FAILED"
+                                          ],
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "object_id",
+                                        "status",
+                                        "position_unknown",
+                                        "failure_code"
+                                      ],
+                                      "type": "object"
+                                    }
+                                  ]
+                                },
+                                "minItems": 1,
+                                "type": "array"
+                              },
+                              "transport_task_id": {
+                                "maxLength": 80,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "transport_task_id",
+                              "kind",
+                              "outcome_revision",
+                              "results"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "enum": [
+                                  "BIN_MOVE",
+                                  "BIN_EXCHANGE"
+                                ],
+                                "type": "string"
+                              },
+                              "outcome_revision": {
+                                "format": "int64",
+                                "maximum": 9223372036854775807,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "results": {
+                                "items": {
+                                  "oneOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "final_position": {
+                                          "oneOf": [
+                                            {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "kind": {
+                                                  "enum": [
+                                                    "RACK_BIN_SLOT"
+                                                  ],
+                                                  "type": "string"
+                                                },
+                                                "rack_face": {
+                                                  "enum": [
+                                                    "A",
+                                                    "B"
+                                                  ],
+                                                  "type": "string"
+                                                },
+                                                "rack_id": {
+                                                  "maxLength": 100,
+                                                  "minLength": 1,
+                                                  "pattern": ".*\\S.*",
+                                                  "type": "string"
+                                                },
+                                                "slot_id": {
+                                                  "maxLength": 100,
+                                                  "minLength": 1,
+                                                  "pattern": ".*\\S.*",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "rack_id",
+                                                "rack_face",
+                                                "slot_id"
+                                              ],
+                                              "type": "object"
+                                            },
+                                            {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "kind": {
+                                                  "enum": [
+                                                    "HANDOFF_POSITION"
+                                                  ],
+                                                  "type": "string"
+                                                },
+                                                "location_code": {
+                                                  "maxLength": 100,
+                                                  "minLength": 1,
+                                                  "pattern": ".*\\S.*",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "location_code"
+                                              ],
+                                              "type": "object"
+                                            }
+                                          ]
+                                        },
+                                        "object_id": {
+                                          "maxLength": 100,
+                                          "minLength": 1,
+                                          "pattern": ".*\\S.*",
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "enum": [
+                                            "SUCCEEDED"
+                                          ],
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "object_id",
+                                        "status",
+                                        "final_position"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "failure_code": {
+                                          "enum": [
+                                            "MANUAL_ABORTED",
+                                            "RCS_EXECUTION_FAILED",
+                                            "RCS_TASK_REJECTED"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "final_position": {
+                                          "oneOf": [
+                                            {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "kind": {
+                                                  "enum": [
+                                                    "RACK_BIN_SLOT"
+                                                  ],
+                                                  "type": "string"
+                                                },
+                                                "rack_face": {
+                                                  "enum": [
+                                                    "A",
+                                                    "B"
+                                                  ],
+                                                  "type": "string"
+                                                },
+                                                "rack_id": {
+                                                  "maxLength": 100,
+                                                  "minLength": 1,
+                                                  "pattern": ".*\\S.*",
+                                                  "type": "string"
+                                                },
+                                                "slot_id": {
+                                                  "maxLength": 100,
+                                                  "minLength": 1,
+                                                  "pattern": ".*\\S.*",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "rack_id",
+                                                "rack_face",
+                                                "slot_id"
+                                              ],
+                                              "type": "object"
+                                            },
+                                            {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "kind": {
+                                                  "enum": [
+                                                    "HANDOFF_POSITION"
+                                                  ],
+                                                  "type": "string"
+                                                },
+                                                "location_code": {
+                                                  "maxLength": 100,
+                                                  "minLength": 1,
+                                                  "pattern": ".*\\S.*",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "kind",
+                                                "location_code"
+                                              ],
+                                              "type": "object"
+                                            }
+                                          ]
+                                        },
+                                        "object_id": {
+                                          "maxLength": 100,
+                                          "minLength": 1,
+                                          "pattern": ".*\\S.*",
+                                          "type": "string"
+                                        },
+                                        "status": {
+                                          "enum": [
+                                            "FAILED"
+                                          ],
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "object_id",
+                                        "status",
+                                        "final_position",
+                                        "failure_code"
+                                      ],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "failure_code": {
+                                          "enum": [
+                                            "POSITION_UNKNOWN"
+                                          ],
+                                          "type": "string"
+                                        },
+                                        "object_id": {
+                                          "maxLength": 100,
+                                          "minLength": 1,
+                                          "pattern": ".*\\S.*",
+                                          "type": "string"
+                                        },
+                                        "position_unknown": {
+                                          "enum": [
+                                            true
+                                          ],
+                                          "type": "boolean"
+                                        },
+                                        "status": {
+                                          "enum": [
+                                            "FAILED"
+                                          ],
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "object_id",
+                                        "status",
+                                        "position_unknown",
+                                        "failure_code"
+                                      ],
+                                      "type": "object"
+                                    }
+                                  ]
+                                },
+                                "minItems": 1,
+                                "type": "array"
+                              },
+                              "transport_task_id": {
+                                "maxLength": 80,
+                                "minLength": 1,
+                                "pattern": ".*\\S.*",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "transport_task_id",
+                              "kind",
+                              "outcome_revision",
+                              "results"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      "operation": {
+                        "enum": [
+                          "transport.task.resulted@v1"
+                        ],
+                        "type": "string"
+                      },
+                      "operation_id": {
+                        "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "description": "Unix 毫秒时间戳",
+                        "format": "int64",
+                        "maximum": 9223372036854775807,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "operation_id",
+                      "operation",
+                      "timestamp",
+                      "data"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "DUPLICATE"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "transport_task_id": {
+                          "maxLength": 80,
+                          "minLength": 1,
+                          "pattern": ".*\\S.*",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "transport_task_id"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "description": "Unix 毫秒时间戳",
+                      "format": "int64",
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "code",
+                    "timestamp",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "重复 evidence 已确认"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "RECEIVED"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "transport_task_id": {
+                          "maxLength": 80,
+                          "minLength": 1,
+                          "pattern": ".*\\S.*",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "transport_task_id"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "description": "Unix 毫秒时间戳",
+                      "format": "int64",
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "code",
+                    "timestamp",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "evidence 已持久化"
+          },
+          "400": {
+            "description": "请求媒体类型、编码或 evidence envelope 不满足封闭合同"
+          },
+          "401": {
+            "description": "部署 profile 不允许无签名 callback",
+            "x-operational-error": true
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "CONFLICT"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "transport_task_id": {
+                          "maxLength": 80,
+                          "minLength": 1,
+                          "pattern": ".*\\S.*",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "transport_task_id"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "description": "Unix 毫秒时间戳",
+                      "format": "int64",
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "code",
+                    "timestamp",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "operation_id 或 outcome_revision 身份冲突"
+          },
+          "413": {
+            "description": "请求体超过固定上限"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "REJECTED"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "reason_code": {
+                          "enum": [
+                            "INVALID_EVIDENCE",
+                            "UNSUPPORTED_OPERATION"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "reason_code"
+                      ],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "description": "Unix 毫秒时间戳",
+                      "format": "int64",
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "code",
+                    "timestamp",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "evidence data 不满足对应 operation 的封闭合同"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "UNAVAILABLE"
+                      ],
+                      "type": "string"
+                    },
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {},
+                      "required": [],
+                      "type": "object"
+                    },
+                    "operation_id": {
+                      "description": "WMS 生成的小写 canonical UUIDv7 幂等号",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "description": "Unix 毫秒时间戳",
+                      "format": "int64",
+                      "maximum": 9223372036854775807,
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "code",
+                    "timestamp",
+                    "data"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Transport runtime 尚未就绪或当前无法可靠持久化"
+          }
+        }
+      }
+    }
+  }
+}

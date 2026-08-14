@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0.0] - 2026-08-14
+
+### Added
+- 新增面向 WMS 团队的 Transport OpenAPI 3.0.3 外发合同，并以同一 schema builder 约束 FastAPI 路由与冻结交付产物。
+- 为料箱储位补充权威 `rack_face`，支持同侧一至两对 `BIN_EXCHANGE`；为 T3 完整结果增加 WMS 来源 `outcome_revision` 与数据库单调水位。
+
+### Changed
+- WMS Transport 请求与响应边界改为严格 UTF-8/JSON、重复键拒绝、封闭字段联合和精确 HTTP `Content-Type`/`Content-Encoding` 校验。
+- T3 结果按同一任务的来源版本单调收敛：高版本可将 `UNKNOWN` 收敛为确定结果，低版本仅幂等确认且不得回退投影，已确定终态的矛盾证据进入人工处置。
+- 收紧 T1 ACK、T2 位置证据、T3 失败码、时间戳、位置长度和 UUIDv7 的公共合同，并同步外发需求文档与 WES 内部履约合同。
+
+### Fixed
+- 修复 ACK 关联字段不匹配被误判为业务冲突、深层 JSON 物化异常逸出、重复 HTTP 头可能绕过严格边界的问题。
+- 修复 `outcome_revision` 并发身份裁决、乱序旧结果覆盖新投影，以及迁移永久数据库默认值与模型声明漂移的问题。
+
+### Verification
+- FAST：3239 passed、4 个既有条件 skip；相关合同专项 368 passed；分支覆盖率 93%。
+- 真实 PostgreSQL/Redis Transport 集成验证 23 passed；独立落地前复审无剩余意见。
+
 ## [0.25.0.0] - 2026-08-14
 
 ### Added
