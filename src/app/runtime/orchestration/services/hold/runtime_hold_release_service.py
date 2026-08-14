@@ -327,7 +327,7 @@ class RuntimeHoldReleaseService:
         if existing_item is not None:
             await self._raise_material_conflict(db, material_identity_key, existing_item=existing_item)
 
-        ng_reason = self._resolve_ng_reason(hold, request.ng_reason)
+        ng_reason = self._resolve_ng_reason(request.ng_reason)
         physical_handoff_evidence = self._build_physical_handoff_evidence(
             workline=workline,
             request=request,
@@ -368,10 +368,9 @@ class RuntimeHoldReleaseService:
             data=data,
         )
 
-    def _resolve_ng_reason(self, hold: RuntimeHold, ng_reason: Any) -> NgReasonDefinition:
+    def _resolve_ng_reason(self, ng_reason: Any) -> NgReasonDefinition:
         from src.app.runtime.capabilities.material_flow.contracts.ng_reason import build_ng_reason_catalog
 
-        del hold
         catalog = build_ng_reason_catalog()
         reason = catalog.by_code.get(ng_reason.code)
         if reason is None or reason.source.value != ng_reason.source:

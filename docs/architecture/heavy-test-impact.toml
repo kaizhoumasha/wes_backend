@@ -442,6 +442,10 @@ heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 source_glob = "src/app/runtime/orchestration/{models/runtime_hold_api.py,services/trace/__init__.py,services/trace/trace_response_builder.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/runtime_hold.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+
 # Runtime 诊断镜像与 snapshot 输出只收敛退役字段，由 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/builder.py"
@@ -821,6 +825,11 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,rough_sorter.py,rough_sorter_context.py,rough_sorter_inventory_admission.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
+heavy_tests = []
+
+# NG reason 枚举与 DTO 的退役插件身份缺席由专用 FAST 合同承接。
+[[mapping]]
+source_glob = "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py"
 heavy_tests = []
 
 # 存活的 START 准入由真实 PostgreSQL、HTTP status wire 与 READY 写回闭环承接。

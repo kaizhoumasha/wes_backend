@@ -20,9 +20,33 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """删除工作线诊断中的退役插件身份。"""
+    """删除诊断与 RuntimeHold 的退役插件身份，并收紧 NG reason 来源。"""
 
     op.drop_column("workline_diagnostics", "plugin_key", schema="wes_biz")
+    op.drop_index(
+        "ix_wes_biz_runtime_holds_plugin_key",
+        table_name="runtime_holds",
+        schema="wes_biz",
+    )
+    op.drop_column("runtime_holds", "plugin_key", schema="wes_biz")
+    op.drop_column("runtime_holds", "contract_version", schema="wes_biz")
+
+    for table_name, constraint_name in (
+        ("runtime_holds", "ck_runtime_holds_ngreasonsource"),
+        ("ng_return_items", "ck_ng_return_items_ngreturnitemngreasonsource"),
+    ):
+        op.drop_constraint(
+            op.f(constraint_name),
+            table_name,
+            schema="wes_biz",
+            type_="check",
+        )
+        op.create_check_constraint(
+            op.f(constraint_name),
+            table_name,
+            "ng_reason_source IN ('DEVICE_ERROR', 'RUNTIME', 'MANUAL')",
+            schema="wes_biz",
+        )
 
 
 def downgrade() -> None:
