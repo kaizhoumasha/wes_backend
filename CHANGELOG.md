@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - WMS Transport 请求与响应边界改为严格 UTF-8/JSON、重复键拒绝、封闭字段联合和精确 HTTP `Content-Type`/`Content-Encoding` 校验。
-- T3 结果按同一任务的来源版本单调收敛：高版本可修正权威结果，低版本仅幂等确认且不得回退投影，确定终态修订继续保留审计证据。
+- T3 结果按同一任务的来源版本单调收敛：高版本可将 `UNKNOWN` 收敛为确定结果，低版本仅幂等确认且不得回退投影，已确定终态的矛盾证据进入人工处置。
 - 收紧 T1 ACK、T2 位置证据、T3 失败码、时间戳、位置长度和 UUIDv7 的公共合同，并同步外发需求文档与 WES 内部履约合同。
 
 ### Fixed
