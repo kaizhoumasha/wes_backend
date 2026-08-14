@@ -86,11 +86,10 @@ if TYPE_CHECKING:
 _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
     "DEVICE_TIMEOUT": ErrorCode.DEVICE_TIMEOUT,
     "DEVICE_UNREACHABLE": ErrorCode.DEVICE_UNREACHABLE,
-    "PLUGIN_EXECUTION_FAILED": ErrorCode.PLUGIN_EXECUTION_FAILED,
-    "PLUGIN_TRANSITION_INVALID": ErrorCode.PLUGIN_TRANSITION_INVALID,
+    "WORKFLOW_EXECUTION_FAILED": ErrorCode.WORKFLOW_EXECUTION_FAILED,
+    "WORKFLOW_TRANSITION_INVALID": ErrorCode.WORKFLOW_TRANSITION_INVALID,
     "CONTRACT_MISMATCH": ErrorCode.CONTRACT_MISMATCH,
     "CONFIG_INVALID": ErrorCode.CONFIG_INVALID,
-    "PLUGIN_BINDING_REQUIRED": ErrorCode.PLUGIN_BINDING_REQUIRED,
     "CALLBACK_SCHEMA_INVALID": ErrorCode.CALLBACK_SCHEMA_INVALID,
     "INBOX_RETRY_EXHAUSTED": ErrorCode.INBOX_RETRY_EXHAUSTED,
     "WMS_TIMEOUT": ErrorCode.WMS_TIMEOUT,
@@ -762,7 +761,6 @@ class TraceQueryService(BaseService[Any, Any]):
                 command_code=coerce_optional_str(getattr(item, "command_code", None)),
                 device_code=coerce_optional_str(getattr(item, "device_code", None)),
                 workline_id=getattr(item, "workline_id", None),
-                plugin_key=coerce_optional_str(getattr(item, "plugin_key", None)),
                 extra={
                     "source": "workline_diagnostic",
                     "diagnostic_id": getattr(item, "id", None),

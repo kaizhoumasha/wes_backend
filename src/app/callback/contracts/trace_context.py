@@ -1,11 +1,11 @@
-"""Callback 域 TraceContext — legacy runtime.trace_context 镜像。
+"""Callback 域 TraceContext — workline TraceContext 镜像。
 
 镜像说明:
-- 与 legacy runtime.trace_context.TraceContext 完整等价,所有 18 个字段 + 全部 with_*
+- 与 runtime TraceContext 完整等价,包含全部 with_*
   方法 + project_timeline_payload / project_outbox_trace / as_dict 投影方法。
 - 字段命名、属性名、取值约定保留 (跨域调用方按 attribute 访问)。
-- 非空字符串标准化由 callback.utils.non_empty_str 提供,不使用 legacy runtime.utils。
-- 所有跨域调用方改为本地 TraceContext,避免 callback 域反向依赖 legacy runtime。
+- 非空字符串标准化由 callback.utils.non_empty_str 提供,不反向依赖 workline utils。
+- callback 跨域调用方使用本地 TraceContext,避免反向依赖 workline 实现。
 """
 
 from __future__ import annotations
@@ -52,8 +52,6 @@ class TraceContext:
     dispatch_key: str | None = None
     canonical_event_type: str | None = None
     transition: str | None = None
-    plugin_key: str | None = None
-    contract_version: str | None = None
 
     @classmethod
     def from_request(
@@ -181,8 +179,6 @@ class TraceContext:
             trace_id=_attr_str(command, "trace_id") or self.trace_id,
             workline_id=_attr_int(command, "workline_id") or self.workline_id,
             device_id=_attr_int(command, "device_id") or self.device_id,
-            plugin_key=_attr_str(command, "plugin_key") or self.plugin_key,
-            contract_version=_attr_str(command, "contract_version") or self.contract_version,
         )
 
     def with_command_code(self, command_code: str | None) -> TraceContext:

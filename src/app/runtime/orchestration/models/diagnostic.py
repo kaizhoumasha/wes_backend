@@ -38,7 +38,6 @@ class WorklineDiagnosticBase(BaseMixin):
     command_code: str | None = Field(default=None, max_length=200, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)
     workline_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.work_lines.id")
-    plugin_key: str | None = Field(default=None, max_length=100, index=True)
 
     diagnostic_code: str = Field(max_length=100, index=True, description="标准诊断码")
     error_domain: str = Field(max_length=100, index=True, description="错误域")

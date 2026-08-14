@@ -9,6 +9,7 @@ import pytest
 
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.workline.models.workline import WorkLine
 from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
@@ -66,6 +67,7 @@ _RETIRED_COLUMNS: dict[tuple[str, str], frozenset[str]] = {
             "plugin_state_version",
         }
     ),
+    ("wes_biz", "workline_diagnostics"): frozenset({"plugin_key"}),
 }
 
 _RETIRED_TABLES = frozenset(
@@ -104,6 +106,7 @@ _MODELS_BY_TABLE = {
     ("wes_biz", "workline_sessions"): WorklineSession,
     ("wes_runtime", "execution_sessions"): ExecutionSession,
     ("wes_runtime", "execution_work_items"): ExecutionWorkItem,
+    ("wes_biz", "workline_diagnostics"): WorklineDiagnostic,
 }
 
 

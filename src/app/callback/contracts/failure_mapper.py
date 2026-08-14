@@ -1,9 +1,8 @@
-"""Callback 域 failure mapper — legacy runtime.diagnostics.failure_mapper 镜像。
+"""Callback 域 failure mapper — runtime diagnostics failure mapper 镜像。
 
 镜像说明:
-- FailureDomain 来源由原 legacy runtime.enums.FailureDomain 替换为 callback 域内本地
-  字符串映射 (避免反向依赖 legacy runtime.enums)。
-- 错误码与域映射行为与 legacy runtime.diagnostics.failure_mapper 一致。
+- FailureDomain 使用 callback 域内本地字符串映射,避免反向依赖 runtime enums。
+- 错误码与域映射行为与 runtime diagnostics failure mapper 一致。
 """
 
 from __future__ import annotations
@@ -35,13 +34,13 @@ def _map_failure_to_error_code(*, failure: Any | None = None) -> ErrorCode:
     if failure_code == "DEVICE_NOT_FOUND":
         return ErrorCode.DEVICE_UNREACHABLE
     if failure_code == "STATE_MISMATCH":
-        return ErrorCode.PLUGIN_TRANSITION_INVALID
+        return ErrorCode.WORKFLOW_TRANSITION_INVALID
     if failure_domain == "CONFIG":
         return ErrorCode.CONFIG_INVALID
     if failure_domain == "TIMEOUT":
         return ErrorCode.DEVICE_TIMEOUT
     if failure_domain in {"SOFTWARE", "ORCHESTRATION"}:
-        return ErrorCode.PLUGIN_EXECUTION_FAILED
+        return ErrorCode.WORKFLOW_EXECUTION_FAILED
     return ErrorCode.UNKNOWN
 
 
@@ -52,7 +51,7 @@ def _domain_from_failure(failure: Any | None) -> ErrorDomain:
     if failure_domain == "TIMEOUT":
         return ErrorDomain.NETWORK
     if failure_domain in {"SOFTWARE", "ORCHESTRATION"}:
-        return ErrorDomain.PLUGIN
+        return ErrorDomain.WORKFLOW
     if failure_domain == "CONFIG":
         return ErrorDomain.CONFIG
     if failure_domain == "DATA":

@@ -8,25 +8,59 @@ from src.app.callback.contracts.builder import build_diagnostic_card as build_ca
 from src.app.callback.contracts.builder import build_diagnostic_context as build_callback_context
 from src.app.callback.contracts.builder import build_diagnostic_event as build_callback_event
 from src.app.callback.contracts.codes import ErrorCode as CallbackErrorCode
+from src.app.callback.contracts.codes import ErrorDomain as CallbackErrorDomain
+from src.app.callback.contracts.failure_mapper import map_failure_to_diagnostic as map_callback_failure
 from src.app.callback.contracts.models import DiagnosticContext as CallbackDiagnosticContext
 from src.app.callback.contracts.registry import get_diagnostic_code_definition as get_callback_definition
 from src.app.runtime.orchestration.diagnostics.builder import build_diagnostic_card as build_runtime_card
 from src.app.runtime.orchestration.diagnostics.builder import build_diagnostic_context as build_runtime_context
 from src.app.runtime.orchestration.diagnostics.builder import build_diagnostic_event as build_runtime_event
 from src.app.runtime.orchestration.diagnostics.codes import ErrorCode as RuntimeErrorCode
+from src.app.runtime.orchestration.diagnostics.codes import ErrorDomain as RuntimeErrorDomain
+from src.app.runtime.orchestration.diagnostics.failure_mapper import map_failure_to_diagnostic as map_runtime_failure
 from src.app.runtime.orchestration.diagnostics.models import DiagnosticContext as RuntimeDiagnosticContext
 from src.app.runtime.orchestration.diagnostics.registry import get_diagnostic_code_definition as get_runtime_definition
 from src.app.workline.services.diagnostic_service import WorklineDiagnosticService
 
 
 @pytest.mark.parametrize("builder", [build_callback_context, build_runtime_context])
-def test_diagnostic_context_ignores_retired_session_and_workline_plugin_identity(builder) -> None:
+def test_diagnostic_context_excludes_retired_session_and_workline_plugin_identity(builder) -> None:
     context = builder(
         session=SimpleNamespace(id=11, workline_id=7, plugin_key="poison-session"),
         workline=SimpleNamespace(id=7, line_code="LINE-07", plugin_key="poison-workline"),
     )
 
-    assert context.plugin_key is None
+    assert "plugin_key" not in type(context).model_fields
+    assert "plugin_key" not in context.model_dump()
+
+
+def test_callback_and_runtime_diagnostic_mirrors_exclude_retired_plugin_codes_and_domain() -> None:
+    callback_codes = set(CallbackErrorCode.__members__)
+    runtime_codes = set(RuntimeErrorCode.__members__)
+    callback_domains = set(CallbackErrorDomain.__members__)
+    runtime_domains = set(RuntimeErrorDomain.__members__)
+
+    assert callback_codes == runtime_codes
+    assert runtime_codes.isdisjoint({"PLUGIN_BINDING_REQUIRED", "PLUGIN_EXECUTION_FAILED", "PLUGIN_TRANSITION_INVALID"})
+    assert {"WORKFLOW_EXECUTION_FAILED", "WORKFLOW_TRANSITION_INVALID"}.issubset(runtime_codes)
+    assert callback_domains == runtime_domains
+    assert "PLUGIN" not in runtime_domains
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (SimpleNamespace(code="STATE_MISMATCH", domain="ORCHESTRATION"), "WORKFLOW_TRANSITION_INVALID"),
+        (SimpleNamespace(code="SOFTWARE_FAILURE", domain="SOFTWARE"), "WORKFLOW_EXECUTION_FAILED"),
+        (SimpleNamespace(code="ORCHESTRATION_FAILURE", domain="ORCHESTRATION"), "WORKFLOW_EXECUTION_FAILED"),
+    ],
+)
+def test_failure_mappers_use_workflow_diagnostics(failure: SimpleNamespace, expected_code: str) -> None:
+    callback_result = map_callback_failure(failure=failure)
+    runtime_result = map_runtime_failure(failure=failure)
+
+    assert (callback_result[0].value, callback_result[1].value) == (expected_code, "WORKFLOW")
+    assert (runtime_result[0].value, runtime_result[1].value) == (expected_code, "WORKFLOW")
 
 
 def test_contract_mismatch_diagnostics_do_not_reference_retired_plugin_contracts() -> None:

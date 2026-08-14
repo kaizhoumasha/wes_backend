@@ -314,7 +314,6 @@ def _build_diagnostic_item(item: Any) -> TraceDiagnosticItem:
         device_code=item.device_code,
         workline_id=item.workline_id,
         workline_code=item.workline_code,
-        plugin_key=item.plugin_key,
         canonical_event_type=item.canonical_event_type,
         transition=item.transition,
         extra=item.extra,

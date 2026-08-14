@@ -1,10 +1,8 @@
-"""Callback 域诊断错误码 — legacy runtime.diagnostics.codes 镜像。
+"""Callback 域诊断错误码 — runtime diagnostics codes 镜像。
 
 镜像说明:
-- ErrorCode 枚举值与 legacy runtime.diagnostics.codes 完全一致,跨域调用方按字符串
-  比对 (例如 runtime_query_service 输出 DiagnosticCard.error_code.value),
-  镜像保留兼容。
-- _ERROR_CODE_TO_DOMAIN 映射与 legacy runtime 一致,error_domain_for() 行为不变。
+- ErrorCode 枚举值与 runtime diagnostics codes 完全一致,跨域调用方按字符串比对。
+- _ERROR_CODE_TO_DOMAIN 映射与 runtime diagnostics 一致,error_domain_for() 行为相同。
 """
 
 from enum import Enum
@@ -15,7 +13,6 @@ class ErrorDomain(str, Enum):
 
     用于回答"问题首先落在哪个边界":
     - 设备连不上、设备超时:``DEVICE``
-    - 插件抛错、插件状态推进错误:``PLUGIN``
     - Session / 工作流推进失败:``WORKFLOW``
     - 外部系统契约或集成链路问题:``INTEGRATION``
     - 纯网络链路故障:``NETWORK``
@@ -25,7 +22,6 @@ class ErrorDomain(str, Enum):
     """
 
     DEVICE = "DEVICE"
-    PLUGIN = "PLUGIN"
     WORKFLOW = "WORKFLOW"
     INTEGRATION = "INTEGRATION"
     NETWORK = "NETWORK"
@@ -41,8 +37,8 @@ class ErrorCode(str, Enum):
     CONTRACT_MISMATCH = "CONTRACT_MISMATCH"
     SESSION_CONTEXT_MISSING = "SESSION_CONTEXT_MISSING"
     SESSION_RESOLVE_FAILED = "SESSION_RESOLVE_FAILED"
-    PLUGIN_EXECUTION_FAILED = "PLUGIN_EXECUTION_FAILED"
-    PLUGIN_TRANSITION_INVALID = "PLUGIN_TRANSITION_INVALID"
+    WORKFLOW_EXECUTION_FAILED = "WORKFLOW_EXECUTION_FAILED"
+    WORKFLOW_TRANSITION_INVALID = "WORKFLOW_TRANSITION_INVALID"
     DEVICE_UNREACHABLE = "DEVICE_UNREACHABLE"
     DEVICE_TIMEOUT = "DEVICE_TIMEOUT"
     OUTBOX_ACK_TIMEOUT = "OUTBOX_ACK_TIMEOUT"
@@ -61,8 +57,8 @@ _ERROR_CODE_TO_DOMAIN: dict[ErrorCode, ErrorDomain] = {
     ErrorCode.CONTRACT_MISMATCH: ErrorDomain.CONFIG,
     ErrorCode.SESSION_CONTEXT_MISSING: ErrorDomain.WORKFLOW,
     ErrorCode.SESSION_RESOLVE_FAILED: ErrorDomain.WORKFLOW,
-    ErrorCode.PLUGIN_EXECUTION_FAILED: ErrorDomain.PLUGIN,
-    ErrorCode.PLUGIN_TRANSITION_INVALID: ErrorDomain.PLUGIN,
+    ErrorCode.WORKFLOW_EXECUTION_FAILED: ErrorDomain.WORKFLOW,
+    ErrorCode.WORKFLOW_TRANSITION_INVALID: ErrorDomain.WORKFLOW,
     ErrorCode.DEVICE_UNREACHABLE: ErrorDomain.DEVICE,
     ErrorCode.DEVICE_TIMEOUT: ErrorDomain.NETWORK,
     ErrorCode.OUTBOX_ACK_TIMEOUT: ErrorDomain.NETWORK,

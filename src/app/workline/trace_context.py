@@ -10,8 +10,7 @@
 
 from __future__ import annotations
 
-# 旧 runtime 镜像实现:src.workline_runtime.trace_context 的平级副本。
-# 旧 runtime 入口删除后,本模块承载正式实现并保留 consumers 旁路排除。
+# 本模块承载正式实现并保留 consumers 旁路排除。
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
@@ -54,8 +53,6 @@ class TraceContext:
     dispatch_key: str | None = None
     canonical_event_type: str | None = None
     transition: str | None = None
-    plugin_key: str | None = None
-    contract_version: str | None = None
 
     @classmethod
     def from_request(
@@ -183,8 +180,6 @@ class TraceContext:
             trace_id=_attr_str(command, "trace_id") or self.trace_id,
             workline_id=_attr_int(command, "workline_id") or self.workline_id,
             device_id=_attr_int(command, "device_id") or self.device_id,
-            plugin_key=_attr_str(command, "plugin_key") or self.plugin_key,
-            contract_version=_attr_str(command, "contract_version") or self.contract_version,
         )
 
     def with_command_code(self, command_code: str | None) -> TraceContext:

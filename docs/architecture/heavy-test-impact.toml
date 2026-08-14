@@ -39,6 +39,10 @@ reviewed_content_sha256 = "260b75cc8399d7b0b2a1ab812cc5fc50ccdf1e278580b8137680f
 source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 
+[[mapping]]
+source_glob = "migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+
 # 旧命令请求/响应 Schema 退役后，由 DeviceCommand 生产闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -304,18 +308,33 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 [[mapping]]
 source_glob = "src/app/callback/contracts/builder.py"
 heavy_tests = []
-reviewed_content_sha256 = "3d77f7275676a0db61b74c21c6afd92fea7cff459d864fbb45a40166e6c6d133"
+reviewed_content_sha256 = "c4163a0601b0bec4623f4a106cfc837fda044cfc92acd7384840e6500bd486cd"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/models.py"
+heavy_tests = []
+reviewed_content_sha256 = "933a7b5fa232dda907fe48b170a24c92fb1a724ae8ba2568feb1c4014ad035b0"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/codes.py"
+heavy_tests = []
+reviewed_content_sha256 = "e5cddd4b4891b585c0f80aea8667933fafb467f91ea1dea0e4dacd8ed1781945"
 
 [[mapping]]
 source_glob = "src/app/callback/contracts/registry.py"
 heavy_tests = []
-reviewed_content_sha256 = "ae04ce438de7fb14eb289fa56b07d5bfa0b821a4c414bff407349cb93024c169"
+reviewed_content_sha256 = "afac7276cc4bf086bad6e404fbf2950862ef86cabf82b1399fb986a9c98f445a"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/failure_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "07eefe2764dddc252cc11dcee542abc36268551046bf8d3b3ae2aefbeddc42c0"
 
 # TraceContext 只规范化进程内诊断字段；本次删除退役来源由 FAST mirror 合同承接。
 [[mapping]]
 source_glob = "src/app/callback/contracts/trace_context.py"
 heavy_tests = []
-reviewed_content_sha256 = "20f13643de34553b4276db30817c27d2bc8dd848dc8e64de6172301c44307e0e"
+reviewed_content_sha256 = "3db090574004395dda6de537bab8513f9a2a1e4874a19836cb8b83ad10d8808a"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py"
@@ -416,6 +435,10 @@ source_glob = "src/app/runtime/orchestration/models/runtime.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 [[mapping]]
+source_glob = "src/app/runtime/orchestration/models/diagnostic.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+
+[[mapping]]
 source_glob = "src/app/runtime/orchestration/{models/runtime_hold_api.py,services/trace/__init__.py,services/trace/trace_response_builder.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
@@ -423,12 +446,32 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/builder.py"
 heavy_tests = []
-reviewed_content_sha256 = "015e164e26ab671ee750810ddf0c6a1c642f8c87e3634ee24f9d588a3bc15e34"
+reviewed_content_sha256 = "ae1ac6711948ed451938bf979731d39579f381ed175d9cce816e92b6879a01ba"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/models.py"
+heavy_tests = []
+reviewed_content_sha256 = "9a4477ee5262bf48990ad1da4b2e98bd7cdc1137492cdd89e4625756268de1c1"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/codes.py"
+heavy_tests = []
+reviewed_content_sha256 = "c0a739bc4ab0b83001f55dae5b92710358c9851fad3a1f4b3b2f916b25b94511"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/registry.py"
 heavy_tests = []
-reviewed_content_sha256 = "1cfe32cfe0b708333762dc27ed753589bf4b90a68f443c8eecff4331bc029d81"
+reviewed_content_sha256 = "53561ba1db03b133ccc5bd95aa32be6b00cf46260f0a161545bdb6a4f2f30e85"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/failure_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "5ed576fccada10cc3beee698829d7ab73bf4018b17db992cf0230822b870c923"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/trace/trace_query_service.py"
+heavy_tests = []
+reviewed_content_sha256 = "609485f73816196cc5ef6b9328ca979f78b0705ce8553375c95512e060aba37e"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/runtime_snapshot_assembler.py"
@@ -908,7 +951,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/workline/trace_context.py"
 heavy_tests = []
-reviewed_content_sha256 = "80117d33a82cc7995bd9f9489d260464e1c5cd4be502713fc9d6b207637383f4"
+reviewed_content_sha256 = "e83f7ab0dfbbe70fad586c1fbc22c97118185d0f9432078df138ef373eabac5e"
 
 [[mapping]]
 source_glob = "tests/support/wms_conformance_coverage.py"

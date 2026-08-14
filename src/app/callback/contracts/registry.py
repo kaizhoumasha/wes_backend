@@ -1,4 +1,4 @@
-"""Callback 域诊断码登记表 — legacy runtime.diagnostics.registry 镜像。"""
+"""Callback 域诊断码登记表 — runtime diagnostics registry 镜像。"""
 
 from __future__ import annotations
 
@@ -48,23 +48,23 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
         recoverability=Recoverability.MANUAL_INTERVENTION_REQUIRED,
         docs_anchor="SESSION_RESOLVE_FAILED",
     ),
-    ErrorCode.PLUGIN_EXECUTION_FAILED: DiagnosticCodeDefinition(
-        code=ErrorCode.PLUGIN_EXECUTION_FAILED,
-        owner="plugin",
-        cause="工作线插件处理事件时抛错或返回失败。",
+    ErrorCode.WORKFLOW_EXECUTION_FAILED: DiagnosticCodeDefinition(
+        code=ErrorCode.WORKFLOW_EXECUTION_FAILED,
+        owner="workflow",
+        cause="工作流处理事件时抛错或返回失败。",
         operator_action="业务处理异常。请勿移动料盘，联系技术人员确认问题后再继续操作。",
-        fix="回放该 inbox 并检查插件日志、输入归一化和状态迁移。",
+        fix="回放该 inbox 并检查执行日志、输入归一化和状态迁移。",
         recoverability=Recoverability.MANUAL_RETRYABLE,
-        docs_anchor="PLUGIN_EXECUTION_FAILED",
+        docs_anchor="WORKFLOW_EXECUTION_FAILED",
     ),
-    ErrorCode.PLUGIN_TRANSITION_INVALID: DiagnosticCodeDefinition(
-        code=ErrorCode.PLUGIN_TRANSITION_INVALID,
-        owner="plugin",
-        cause="插件尝试执行当前状态不允许的迁移。",
+    ErrorCode.WORKFLOW_TRANSITION_INVALID: DiagnosticCodeDefinition(
+        code=ErrorCode.WORKFLOW_TRANSITION_INVALID,
+        owner="workflow",
+        cause="工作流尝试执行当前状态不允许的迁移。",
         operator_action="流程状态异常，无法继续推进。请勿手动干预物料，联系技术人员处理后重试。",
-        fix="核对 session 当前状态和插件 transition 定义。",
+        fix="核对 session 当前状态和工作流 transition 定义。",
         recoverability=Recoverability.MANUAL_RETRYABLE,
-        docs_anchor="PLUGIN_TRANSITION_INVALID",
+        docs_anchor="WORKFLOW_TRANSITION_INVALID",
     ),
     ErrorCode.CONTRACT_MISMATCH: DiagnosticCodeDefinition(
         code=ErrorCode.CONTRACT_MISMATCH,

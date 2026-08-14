@@ -21,7 +21,6 @@ class DiagnosticContext(BaseModel):
     device_code: str | None = None
     workline_id: int | None = None
     workline_code: str | None = None
-    plugin_key: str | None = None
     canonical_event_type: str | None = None
     transition: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)

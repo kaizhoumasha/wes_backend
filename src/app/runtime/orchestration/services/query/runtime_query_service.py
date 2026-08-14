@@ -1361,8 +1361,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             line_name=workline.line_name,
             line_type=_status_str(workline.line_type),
             zone_name=workline.zone_name,
-            plugin_key=None,
-            contract_version=None,
             is_active=workline.is_active,
             device_count=len(devices),
             active_session_count=active_count,
