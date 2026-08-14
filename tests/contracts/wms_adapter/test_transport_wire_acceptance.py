@@ -9,6 +9,7 @@ from src.app.transport.contracts import (
     HandoffPosition,
     MoveBinsRequest,
     RackBinSlot,
+    RackFace,
     TransportCaller,
     TransportContractError,
 )
@@ -44,6 +45,7 @@ def _result_data(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
         "transport_task_id": "transport-1",
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-1",
@@ -60,7 +62,7 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
     request = MoveBinsRequest(
         new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
-        (BinMove("bin-1", RackBinSlot("rack-1", "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
     )
 
     data = build_submit_data(request, "transport-1")
@@ -71,7 +73,7 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
         "moves": [
             {
                 "bin_id": "bin-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],
@@ -98,11 +100,11 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
         ),
         (
             _envelope(POSITION_OPERATION, _position_data()) | {"timestamp": -(2**63) - 1},
-            "timestamp must fit signed 64-bit integer",
+            "timestamp must be a non-negative signed 64-bit integer",
         ),
         (
             _envelope(POSITION_OPERATION, _position_data()) | {"timestamp": 2**63},
-            "timestamp must fit signed 64-bit integer",
+            "timestamp must be a non-negative signed 64-bit integer",
         ),
         (_envelope("transport.task.unknown@v1", {}), "unsupported transport callback operation"),
     ],
@@ -112,8 +114,8 @@ def test_callback_envelope_rejects_non_closed_or_unsupported_values(value: objec
         validate_callback_envelope(value)
 
 
-@pytest.mark.parametrize("timestamp", [-(2**63), 2**63 - 1])
-def test_callback_envelope_accepts_signed_64_bit_timestamp_boundaries(timestamp: int) -> None:
+@pytest.mark.parametrize("timestamp", [0, 2**63 - 1])
+def test_callback_envelope_accepts_non_negative_signed_64_bit_timestamp_boundaries(timestamp: int) -> None:
     envelope = _envelope(POSITION_OPERATION, _position_data())
     envelope["timestamp"] = timestamp
 
@@ -179,10 +181,22 @@ def test_position_callback_enforces_milestone_contract(data: dict[str, object], 
 def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
     data = _position_data(
         milestone="TARGET_PLACED",
-        final_position={"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+        final_position={"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
     )
 
     assert validate_callback_envelope(_envelope(POSITION_OPERATION, data))["data"] == data
+
+
+def test_target_placed_rejects_a_rack_position() -> None:
+    data = _position_data(
+        milestone="TARGET_PLACED",
+        final_position={"kind": "RACK_POSITION", "location_code": "STATION_A"},
+    )
+
+    with pytest.raises(
+        TransportContractError, match="TARGET_PLACED position must be a rack bin slot or handoff position"
+    ):
+        validate_callback_envelope(_envelope(POSITION_OPERATION, data))
 
 
 @pytest.mark.parametrize(
@@ -194,8 +208,18 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
         (
             _result_data(
                 results=[
-                    {"object_id": "bin-1", "status": "FAILED", "position_unknown": True, "failure_code": "FAILED"},
-                    {"object_id": "bin-1", "status": "FAILED", "position_unknown": True, "failure_code": "FAILED"},
+                    {
+                        "object_id": "bin-1",
+                        "status": "FAILED",
+                        "position_unknown": True,
+                        "failure_code": "POSITION_UNKNOWN",
+                    },
+                    {
+                        "object_id": "bin-1",
+                        "status": "FAILED",
+                        "position_unknown": True,
+                        "failure_code": "POSITION_UNKNOWN",
+                    },
                 ]
             ),
             "duplicate result object_id",
@@ -205,7 +229,7 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
             "invalid member result status",
         ),
         (
-            _result_data(results=[{"object_id": "bin-1", "status": "FAILED", "failure_code": "FAILED"}]),
+            _result_data(results=[{"object_id": "bin-1", "status": "FAILED", "failure_code": "RCS_EXECUTION_FAILED"}]),
             "final_position xor position_unknown=true is required",
         ),
         (
@@ -216,7 +240,7 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
                         "status": "FAILED",
                         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
                         "position_unknown": False,
-                        "failure_code": "FAILED",
+                        "failure_code": "RCS_EXECUTION_FAILED",
                     }
                 ]
             ),
@@ -277,7 +301,7 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
                         "object_id": "rack-1",
                         "status": "FAILED",
                         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-                        "failure_code": "FAILED",
+                        "failure_code": "RCS_EXECUTION_FAILED",
                         "arrival_face": "A",
                     }
                 ],
@@ -291,7 +315,7 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
                         "object_id": "bin-1",
                         "status": "FAILED",
                         "final_position": {"kind": "RACK_POSITION", "location_code": "STATION_A"},
-                        "failure_code": "FAILED",
+                        "failure_code": "RCS_EXECUTION_FAILED",
                     }
                 ]
             ),
@@ -308,7 +332,7 @@ def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
                     }
                 ]
             ),
-            "failure_code exceeds 120 characters",
+            "invalid failure_code",
         ),
     ],
 )
@@ -326,8 +350,11 @@ def test_result_callback_rejects_values_outside_closed_member_contract(
         (None, "position must be an object with kind"),
         ({}, "position must be an object with kind"),
         ({"kind": "RACK_POSITION", "location_code": " "}, "location_code must not be blank"),
-        ({"kind": "RACK_BIN_SLOT", "rack_id": " ", "slot_id": "1"}, "rack_id must not be blank"),
-        ({"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": " "}, "slot_id must not be blank"),
+        ({"kind": "RACK_BIN_SLOT", "rack_id": " ", "rack_face": "A", "slot_id": "1"}, "rack_id must not be blank"),
+        (
+            {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": " "},
+            "slot_id must not be blank",
+        ),
         ({"kind": "HANDOFF_POSITION", "location_code": " "}, "location_code must not be blank"),
         ({"kind": "UNKNOWN"}, "invalid position kind"),
     ],
@@ -382,3 +409,48 @@ def test_callback_wire_uses_its_own_uuid7_operation_id_without_legacy_business_i
     assert validate_callback_envelope(envelope) == envelope
     with pytest.raises(TransportContractError):
         validate_callback_envelope({**envelope, "operation_id": "019f12d0-58d7-4b4d-a23a-1b90aa5d4472"})
+
+    with pytest.raises(TransportContractError, match="lowercase canonical UUIDv7"):
+        validate_callback_envelope({**envelope, "operation_id": operation_id.upper()})
+
+
+def test_result_callback_requires_a_positive_outcome_revision() -> None:
+    with pytest.raises(TransportContractError, match="outcome_revision must be a positive integer"):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, _result_data(outcome_revision=0)))
+
+
+def test_result_callback_rejects_outcome_revision_above_signed_int64() -> None:
+    with pytest.raises(TransportContractError, match="signed 64-bit range"):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, _result_data(outcome_revision=2**63)))
+
+
+def test_result_callback_rejects_vendor_private_failure_code() -> None:
+    data = _result_data(
+        results=[
+            {
+                "object_id": "bin-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "VENDOR_PRIVATE_CODE",
+            }
+        ]
+    )
+
+    with pytest.raises(TransportContractError, match="invalid failure_code"):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, data))
+
+
+@pytest.mark.parametrize(
+    "position",
+    [
+        {"kind": "RACK_POSITION", "location_code": "L" * 101},
+        {"kind": "RACK_BIN_SLOT", "rack_id": "R" * 101, "rack_face": "A", "slot_id": "1"},
+        {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "S" * 101},
+        {"kind": "HANDOFF_POSITION", "location_code": "L" * 101},
+    ],
+)
+def test_callback_positions_reject_text_longer_than_100_code_points(position: dict[str, object]) -> None:
+    data = _result_data(results=[{"object_id": "bin-1", "status": "SUCCEEDED", "final_position": position}])
+
+    with pytest.raises(TransportContractError, match="exceeds 100 characters"):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, data))

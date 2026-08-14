@@ -323,7 +323,7 @@ async def test_unmatched_or_unsupported_evidence_is_retained_as_conflict(
         transport_task_id=task_id,
         operation=operation,
         timestamp=1,
-        payload={"kind": "RACK_MOVE", "results": []},
+        payload={"kind": "RACK_MOVE", "outcome_revision": 1, "results": []},
     )
 
     assert await service.process_pending_evidence(1) == 1
@@ -419,6 +419,7 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
     result = {
         "transport_task_id": handle.transport_task_id,
         "kind": "RACK_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "rack-publish-stale-token",
@@ -513,12 +514,13 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
         new_uuid7(),
         _caller(),
         (
-            BinMove("bin-success", RackBinSlot("rack-partial", "1"), HandoffPosition("ROLLER_IN")),
-            BinMove("bin-failed", RackBinSlot("rack-partial", "2"), HandoffPosition("ROLLER_OUT")),
+            BinMove("bin-success", RackBinSlot("rack-partial", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
+            BinMove("bin-failed", RackBinSlot("rack-partial", RackFace.A, "2"), HandoffPosition("ROLLER_OUT")),
         ),
     )
     payload = {
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-success",
@@ -528,7 +530,12 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
             {
                 "object_id": "bin-failed",
                 "status": "FAILED",
-                "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-partial", "slot_id": "2"},
+                "final_position": {
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": "rack-partial",
+                    "rack_face": "A",
+                    "slot_id": "2",
+                },
                 "failure_code": "CTU_PICK_FAILED",
             },
         ],

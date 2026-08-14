@@ -4,7 +4,7 @@ status: Approved
 created_at: 2026-08-07
 updated_at: 2026-08-14
 contract_version: 0.2.0
-implementation_alignment: ALIGNMENT_REQUIRED
+implementation_alignment: ALIGNED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -26,8 +26,9 @@ related:
 本文是 Phase 4 搬运能力的唯一线上接口评审基线。它定义工作线插件如何调用四个通用搬运方法，以及 WES 如何经 WMS
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
-本合同生命周期为 `Approved`，但当前代码与 OpenAPI 尚未完成 `rack_face`、T3 `outcome_revision`、严格 JSON 和响应联合对齐，
-实施状态为 `ALIGNMENT_REQUIRED`。完成对齐前不得宣称 WES/WMS 双向联调就绪。
+本合同生命周期为 `Approved`，当前 WES 代码、数据库约束、运行时 OpenAPI 与独立 OpenAPI 3.0.3 文件已完成
+`rack_face`、T3 `outcome_revision`、严格 JSON 和响应联合对齐，实施状态为 `ALIGNED`。`ALIGNED` 只证明 WES 合同实现一致，
+不等于 WMS 已实现、双方环境已连通或现场业务已验收。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
 
@@ -326,8 +327,9 @@ operation 另外固定 `256 KiB` Body 上限。
 未知任务或与既有任务事实冲突的结构合法 evidence 先返回 `202`，再异步标记 `CONFLICT` 并保留
 诊断事实；不能把它伪装成可修正 DTO 的 `422`，也不能以 `503` 要求自动重提。
 
-当前 T2/T3 不提供 `429 / BUSY`。部署认证固定为 `NONE`，正常合同响应不包含 `401`；WMS 收到 `401`、HTML 或其它未定义组合时，
-必须视为未知响应，保留原消息并告警。响应 `operation_id` 必须等于请求，带任务 ID 的 ACK 还必须回显冻结消息中的
+当前 T2/T3 不提供 `429 / BUSY`。部署认证固定为 `NONE`，正常业务响应不包含 `401`；`401` 只作为部署策略错误的防御性运维响应。
+WMS 收到 `401` 时必须保留原消息、停止热重试并告警，待配置修复后再恢复发送；HTML 或其它未定义组合仍按未知响应处理。
+响应 `operation_id` 必须等于请求，带任务 ID 的 ACK 还必须回显冻结消息中的
 `transport_task_id`，否则不得结束发送义务。
 
 首版不规定 WMS 在取得权威证据后多少毫秒内形成 T2/T3，只验收消息最终可靠形成和送达。现场 SOP 必须填写 RCS 无结果告警阈值、
@@ -363,7 +365,7 @@ final_position?   # TARGET_PLACED 时必填，且必须等于冻结目标；只�
 ```text
 transport_task_id
 kind
-outcome_revision  # 同一 transport_task_id 从 1 开始连续递增；技术重试保持不变
+outcome_revision  # 1..Int64.MaxValue；同一 transport_task_id 从 1 开始连续递增；技术重试保持不变
 results[] {
   object_id
   status: SUCCEEDED | FAILED
@@ -401,9 +403,10 @@ WMS 不回传可由 `results[]` 推导的任务总状态，避免总状态和逐
 确定结果；WES 接受后同步更新本地面向投影，后续 `rotate_rack()` 只能使用该投影校验目标面不同于当前面。
 
 WMS 为同一 `transport_task_id` 的首条完整 T3 使用 `outcome_revision=1`，每次形成新的完整权威结果时连续加一，技术重试不得改号。
-WES 可靠保存每个合法版本：更高版本可以推进结果；低于已应用版本的迟到消息仍按幂等规则 ACK，但不得回退结果或位置；同一任务、
-同一版本内容不同返回 `409 / CONFLICT`。`timestamp` 不参与版本排序。`UNKNOWN` 可在取得权威完整位置后由更高版本收敛；已经确定的
-`SUCCEEDED/FAILED` 只有完成人工对账并留下审计记录后才允许更高版本纠正，普通迟到 RCS 消息不得改写确定终态。
+WES 可靠保存每个合法版本：更高版本可以推进未确定结果；低于已应用版本的迟到消息仍按幂等规则 ACK，但不得回退结果或位置；
+同一任务、同一版本绑定首个消息身份，新 `operation_id` 复用该版本一律返回 `409 / CONFLICT`。`timestamp` 不参与版本排序。
+`UNKNOWN` 可在取得权威完整位置后由更高版本收敛；已经确定的 `SUCCEEDED/FAILED` 不允许通过后续 T3 自动改写，即使版本更高也按
+证据冲突处理。人工对账只形成独立审计和现场处置，不伪装成普通 T3 改写已释放资源的确定终态。
 
 ### 5.4 持久化后应答
 
@@ -455,11 +458,12 @@ T3 版本登记必须使用数据库唯一约束或等价的原子并发控制�
 `outcome_version` 再次发布同一任务的 `SUCCEEDED` 或 `FAILED`；插件必须按 `transport_task_id + outcome_version` 幂等处理，
 并允许版本号跳跃。
 
-WMS 作为全局位置事实 owner，可以在有审计记录的人工核对后，通过同一个 `transport.task.resulted@v1` 提交一条新的权威结果
-evidence；WES 接纳后为同一 TransportTask 形成更高的内部 `outcome_version`，不增加人工修正专用 operation。确认动作已经
-完成时，`SUCCEEDED` 必须携带完整最终位置；确认动作未完成时，`FAILED` 同样必须
-携带所有对象的已知位置。只确认“操作员已检查”而没有完整位置，不能把 `UNKNOWN` 提升为确定结果，也不能直接改写 WES
-位置投影。
+仅当任务仍为 `UNKNOWN/RECONCILING` 时，WMS 作为全局位置事实 owner 才可以在有审计记录的人工核对后，通过同一个
+`transport.task.resulted@v1` 提交下一连续 `outcome_revision` 的完整权威结果 evidence；WES 接纳后为同一 TransportTask 形成
+更高的内部 `outcome_version`，不增加人工修正专用 operation。确认动作已经完成时，`SUCCEEDED` 必须携带完整最终位置；确认动作
+未完成时，`FAILED` 同样必须携带所有对象的已知位置。只确认“操作员已检查”而没有完整位置，不能把 `UNKNOWN` 提升为确定结果，
+也不能直接改写 WES 位置投影。任务已是确定 `SUCCEEDED/FAILED` 时，人工核对只形成独立审计和现场处置，不再发送用于改写终态的
+T3。
 
 形成 `UNKNOWN` 或确定结果的事务必须同时递增 `outcome_version`。Transport 后台只领取
 `published_outcome_version < outcome_version` 的任务，领取时冻结当前版本、结果快照、领取令牌和租约，在事务外调用

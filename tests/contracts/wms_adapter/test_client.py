@@ -428,13 +428,26 @@ async def test_invalid_utf8_preserves_http_facts_and_reports_json_failure() -> N
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("body", [b" ", b"not-json", b"NaN", b"Infinity", b"-Infinity"])
+@pytest.mark.parametrize(
+    "body",
+    [b" ", b"not-json", b"NaN", b"Infinity", b"-Infinity", b'{"code":"A","code":"B"}'],
+)
 async def test_invalid_json_preserves_http_facts_and_reports_json_failure(body: bytes) -> None:
     result = await WmsClient(_FakeTransport(_response(body=body, status_code=500))).get("/decision")
 
     assert result.delivery_state is OutboundHttpDeliveryState.RESPONSE_RECEIVED
     assert result.status_code == 500
     assert result.body_present is True
+    assert result.json_body is None
+    assert result.json_failure == "INVALID_JSON"
+
+
+@pytest.mark.asyncio
+async def test_deep_json_response_reports_json_failure_instead_of_escaping_recursion_error() -> None:
+    body = b"[" * 998 + b"0" + b"]" * 998
+
+    result = await WmsClient(_FakeTransport(_response(body=body, status_code=500))).get("/decision")
+
     assert result.json_body is None
     assert result.json_failure == "INVALID_JSON"
 

@@ -147,10 +147,67 @@ def test_non_persisted_ack_does_not_wake_evidence_worker(monkeypatch: pytest.Mon
     app = _route_app(module, handler, _none_policy(module))
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/wms/events", content=b"{}")
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 409
     enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_status"),
+    [
+        ({"Content-Type": "application/json"}, 202),
+        ({"Content-Type": "application/json; charset=utf-8"}, 202),
+        ({"Content-Type": "text/plain"}, 400),
+        ({"Content-Type": "application/json; charset=gbk"}, 400),
+        ({"Content-Type": "application/json", "Content-Encoding": "gzip"}, 400),
+    ],
+)
+def test_transport_event_route_enforces_json_utf8_identity_headers(
+    headers: dict[str, str], expected_status: int
+) -> None:
+    module = _events_module()
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=202, body={"code": "RECEIVED"}))
+    app = _route_app(module, handler, _none_policy(module))
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"{}", headers=headers)
+
+    assert response.status_code == expected_status
+    if expected_status == 400:
+        assert response.content == b""
+        handler.assert_not_awaited()
+    else:
+        handler.assert_awaited_once_with(b"{}")
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [("Content-Type", "application/json"), ("Content-Type", "text/plain")],
+        [
+            ("Content-Type", "application/json"),
+            ("Content-Encoding", "identity"),
+            ("Content-Encoding", "gzip"),
+        ],
+        [("Content-Type", 'application/json; charset=u"t"f-8')],
+        [("Content-Type", "application/json; charset =utf-8")],
+        [("Content-Type", "application/json; charset= utf-8")],
+    ],
+)
+def test_transport_event_route_rejects_ambiguous_or_malformed_json_headers(
+    headers: list[tuple[str, str]],
+) -> None:
+    module = _events_module()
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=202, body={"code": "RECEIVED"}))
+    app = _route_app(module, handler, _none_policy(module))
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"{}", headers=headers)
+
+    assert response.status_code == 400
+    assert response.content == b""
+    handler.assert_not_awaited()
 
 
 def test_enqueue_failure_keeps_persisted_ack_and_emits_stable_event(
@@ -173,7 +230,7 @@ def test_enqueue_failure_keeps_persisted_ack_and_emits_stable_event(
     app = _route_app(module, handler, _none_policy(module))
 
     with caplog.at_level(logging.WARNING, logger=module.__name__), TestClient(app) as client:
-        response = client.post("/api/v1/wms/events", content=b"{}")
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 202
     assert response.json() == response_body
@@ -202,7 +259,7 @@ def test_missing_or_unsupported_frozen_policy_fails_closed_before_handler(policy
     app = _route_app(module, handler, policy)
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/wms/events", content=b"{}")
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 401
     assert response.content == b""
@@ -215,7 +272,7 @@ def test_handler_empty_error_body_remains_empty() -> None:
     app = _route_app(module, handler, _none_policy(module))
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/wms/events", content=b"not-json")
+        response = client.post("/api/v1/wms/events", content=b"not-json", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 400
     assert response.content == b""
@@ -236,7 +293,7 @@ def test_missing_transport_runtime_returns_unavailable_ack_for_associated_reques
     )
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/wms/events", content=raw_body)
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
 
     assert response.status_code == 503
     assert response.json() == {
@@ -249,34 +306,48 @@ def test_missing_transport_runtime_returns_unavailable_ack_for_associated_reques
 
 
 @pytest.mark.parametrize(
-    "envelope",
+    ("envelope", "reason_code"),
     (
-        {
-            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
-            "timestamp": 1,
-            "data": {},
-        },
-        {
-            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
-            "operation": "transport.task.unknown@v1",
-            "timestamp": 1,
-            "data": {},
-        },
-        {
-            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
-            "operation": "transport.task.member_position_changed@v1",
-            "timestamp": True,
-            "data": {},
-        },
-        {
-            "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
-            "operation": "transport.task.member_position_changed@v1",
-            "timestamp": 1,
-            "data": {"transport_task_id": "transport-1"},
-        },
+        (
+            {
+                "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+                "timestamp": 1,
+                "data": {},
+            },
+            "INVALID_EVIDENCE",
+        ),
+        (
+            {
+                "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+                "operation": "transport.task.unknown@v1",
+                "timestamp": 1,
+                "data": {},
+            },
+            "UNSUPPORTED_OPERATION",
+        ),
+        (
+            {
+                "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+                "operation": "transport.task.member_position_changed@v1",
+                "timestamp": True,
+                "data": {},
+            },
+            "INVALID_EVIDENCE",
+        ),
+        (
+            {
+                "operation_id": "01988ef1-4d2a-7000-8000-000000000002",
+                "operation": "transport.task.member_position_changed@v1",
+                "timestamp": 1,
+                "data": {"transport_task_id": "transport-1"},
+            },
+            "INVALID_EVIDENCE",
+        ),
     ),
 )
-def test_missing_transport_runtime_still_rejects_invalid_associated_envelope(envelope: dict[str, Any]) -> None:
+def test_missing_transport_runtime_still_rejects_invalid_associated_envelope(
+    envelope: dict[str, Any], reason_code: str
+) -> None:
     module = _events_module()
     app = FastAPI()
     app.state.transport_runtime = None
@@ -291,7 +362,7 @@ def test_missing_transport_runtime_still_rejects_invalid_associated_envelope(env
         "operation_id": envelope["operation_id"],
         "code": "REJECTED",
         "timestamp": response.json()["timestamp"],
-        "data": {"reason_code": "INVALID_EVIDENCE"},
+        "data": {"reason_code": reason_code},
     }
     assert isinstance(response.json()["timestamp"], int)
 

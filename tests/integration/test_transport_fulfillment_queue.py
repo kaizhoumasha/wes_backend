@@ -11,7 +11,7 @@ from celery.exceptions import TaskRevokedError
 from sqlalchemy import delete, select
 
 from src.app.transport.composition import build_transport_runtime
-from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, TransportCaller
+from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller
 from src.app.transport.models import TransportEvidence, TransportMember, TransportResourceBinding, TransportTask
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
@@ -76,7 +76,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 (
                     BinMove(
                         f"bin-submit-{index}-{suffix}",
-                        RackBinSlot(f"rack-submit-{index}-{suffix}", "1"),
+                        RackBinSlot(f"rack-submit-{index}-{suffix}", RackFace.A, "1"),
                         HandoffPosition(f"HANDOFF-{index}-{suffix}"),
                     ),
                 ),
@@ -89,7 +89,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             (
                 BinMove(
                     f"bin-evidence-{suffix}",
-                    RackBinSlot(f"rack-evidence-{suffix}", "1"),
+                    RackBinSlot(f"rack-evidence-{suffix}", RackFace.A, "1"),
                     HandoffPosition(f"HANDOFF-EVIDENCE-{suffix}"),
                 ),
             ),
@@ -104,6 +104,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             payload={
                 "transport_task_id": evidence_handle.transport_task_id,
                 "kind": "BIN_MOVE",
+                "outcome_revision": 1,
                 "results": [
                     {
                         "object_id": f"bin-evidence-{suffix}",

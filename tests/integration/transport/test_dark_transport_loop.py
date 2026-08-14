@@ -130,7 +130,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
         bin_handle = await service.move_bins(
             new_uuid7(),
             caller,
-            (BinMove(moved_bin_id, RackBinSlot(move_source_rack, "1"), HandoffPosition("ROLLER_IN")),),
+            (BinMove(moved_bin_id, RackBinSlot(move_source_rack, RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
         )
         exchange_handle = await service.exchange_bins(
             new_uuid7(),
@@ -138,15 +138,15 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
             (
                 BinExchangePair(
                     exchange_bin_ids[0],
-                    RackBinSlot(exchange_left_rack, "1"),
+                    RackBinSlot(exchange_left_rack, RackFace.A, "1"),
                     exchange_bin_ids[1],
-                    RackBinSlot(exchange_right_rack, "1"),
+                    RackBinSlot(exchange_right_rack, RackFace.A, "1"),
                 ),
                 BinExchangePair(
                     exchange_bin_ids[2],
-                    RackBinSlot(exchange_left_rack, "2"),
+                    RackBinSlot(exchange_left_rack, RackFace.A, "2"),
                     exchange_bin_ids[3],
-                    RackBinSlot(exchange_right_rack, "2"),
+                    RackBinSlot(exchange_right_rack, RackFace.A, "2"),
                 ),
             ),
         )
@@ -200,6 +200,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                         "final_position": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": exchange_right_rack,
+                            "rack_face": "A",
                             "slot_id": "1",
                         },
                     },
@@ -209,6 +210,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                         "final_position": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": exchange_left_rack,
+                            "rack_face": "A",
                             "slot_id": "1",
                         },
                     },
@@ -218,6 +220,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                         "final_position": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": exchange_right_rack,
+                            "rack_face": "A",
                             "slot_id": "2",
                         },
                     },
@@ -227,6 +230,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                         "final_position": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": exchange_left_rack,
+                            "rack_face": "A",
                             "slot_id": "2",
                         },
                     },
@@ -243,6 +247,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 payload={
                     "transport_task_id": handle.transport_task_id,
                     "kind": kind,
+                    "outcome_revision": 1,
                     "results": results,
                 },
             )

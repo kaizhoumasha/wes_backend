@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import delete, func, select
 
-from src.app.transport import BinMove, HandoffPosition, RackBinSlot, TransportCaller, build_transport_runtime
+from src.app.transport import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller, build_transport_runtime
 from src.app.transport.models import (
     TransportEvidence,
     TransportMember,
@@ -111,7 +111,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
             (
                 BinMove(
                     object_id,
-                    RackBinSlot(f"rack-{suffix}", "1"),
+                    RackBinSlot(f"rack-{suffix}", RackFace.A, "1"),
                     HandoffPosition(f"HANDOFF-{suffix}"),
                 ),
             ),
@@ -141,6 +141,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
                     "data": {
                         "transport_task_id": task_id,
                         "kind": "BIN_MOVE",
+                        "outcome_revision": 1,
                         "results": [
                             {
                                 "object_id": object_id,

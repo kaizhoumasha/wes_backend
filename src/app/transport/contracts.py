@@ -94,18 +94,21 @@ class RackPosition:
     kind: str = field(default="RACK_POSITION", init=False)
 
     def __post_init__(self) -> None:
-        _required(self.location_code, "location_code")
+        _required(self.location_code, "location_code", max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
 class RackBinSlot:
     rack_id: str
+    rack_face: RackFace
     slot_id: str
     kind: str = field(default="RACK_BIN_SLOT", init=False)
 
     def __post_init__(self) -> None:
         _required(self.rack_id, "rack_id", max_length=100)
-        _required(self.slot_id, "slot_id")
+        if not isinstance(self.rack_face, RackFace):
+            raise TransportContractError("rack_face must be A or B")
+        _required(self.slot_id, "slot_id", max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +117,7 @@ class HandoffPosition:
     kind: str = field(default="HANDOFF_POSITION", init=False)
 
     def __post_init__(self) -> None:
-        _required(self.location_code, "location_code")
+        _required(self.location_code, "location_code", max_length=100)
 
 
 type TransportPosition = RackPosition | RackBinSlot | HandoffPosition
@@ -237,6 +240,11 @@ class ExchangeBinsRequest:
             ),
             "rack bin slot",
         )
+        if (
+            len({(pair.left_location.rack_id, pair.left_location.rack_face) for pair in self.exchange_pairs}) != 1
+            or len({(pair.right_location.rack_id, pair.right_location.rack_face) for pair in self.exchange_pairs}) != 1
+        ):
+            raise TransportContractError("exchange pairs must use one rack and face per side")
 
 
 type TransportRequest = MoveRackRequest | RotateRackRequest | MoveBinsRequest | ExchangeBinsRequest
@@ -348,8 +356,8 @@ def _validate_request_identity(client_request_id: str, caller: TransportCaller) 
         raise TransportContractError("caller must be a TransportCaller")
 
 
-def _position_key(position: RackBinSlot) -> tuple[str, str]:
-    return position.rack_id, position.slot_id
+def _position_key(position: RackBinSlot) -> tuple[str, RackFace, str]:
+    return position.rack_id, position.rack_face, position.slot_id
 
 
 def _reject_duplicates(values: object, field_name: str) -> None:

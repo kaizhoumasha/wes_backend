@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard, cast
 
 from src.app.transport.contracts import TransportContractError
-from src.app.wms_adapter.transport_wire import validate_callback_envelope
+from src.app.wms_adapter.strict_json import StrictJsonError, loads_strict_json
+from src.app.wms_adapter.transport_wire import UnsupportedTransportOperation, validate_callback_envelope
 from src.core.uuid7 import is_uuid7
 from src.utils.timezone import timezone
 
@@ -42,16 +42,22 @@ class TransportEventHandler:
     async def handle(self, raw_body: bytes) -> TransportEventResponse:
         if len(raw_body) > MAX_TRANSPORT_EVENT_BODY_BYTES:
             return TransportEventResponse(413, {})
-        try:
-            decoded = raw_body.decode("utf-8")
-            raw_envelope = json.loads(decoded)
-        except (UnicodeDecodeError, ValueError, RecursionError):
+        raw_envelope, parsing_error = _decode_raw_envelope(raw_body)
+        if parsing_error is not None:
+            return parsing_error
+        if raw_envelope is None:
             return TransportEventResponse(400, {})
-        operation_id = raw_envelope.get("operation_id") if isinstance(raw_envelope, dict) else None
-        if not is_uuid7(operation_id):
-            return TransportEventResponse(400, {})
+        operation_id = raw_envelope["operation_id"]
         try:
             envelope = validate_callback_envelope(raw_envelope)
+        except UnsupportedTransportOperation:
+            return _response(
+                422,
+                operation_id,
+                "REJECTED",
+                _timestamp_ms(),
+                {"reason_code": "UNSUPPORTED_OPERATION"},
+            )
         except TransportContractError:
             return _response(422, operation_id, "REJECTED", _timestamp_ms(), {"reason_code": "INVALID_EVIDENCE"})
         data = envelope["data"]
@@ -91,6 +97,31 @@ def _response(
 
 def _timestamp_ms() -> int:
     return int(timezone.now_utc().timestamp() * 1000)
+
+
+def _decode_raw_envelope(raw_body: bytes) -> tuple[dict[str, Any] | None, TransportEventResponse | None]:
+    try:
+        decoded = raw_body.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, TransportEventResponse(400, {})
+    try:
+        value = loads_strict_json(decoded)
+    except StrictJsonError as error:
+        operation_id = error.operation_id
+        if not _is_wire_operation_id(operation_id):
+            return None, TransportEventResponse(400, {})
+        return None, _response(422, operation_id, "REJECTED", _timestamp_ms(), {"reason_code": "INVALID_EVIDENCE"})
+    if not isinstance(value, dict):
+        return None, TransportEventResponse(400, {})
+    envelope = cast("dict[str, Any]", value)
+    operation_id = envelope.get("operation_id")
+    if not _is_wire_operation_id(operation_id):
+        return None, TransportEventResponse(400, {})
+    return envelope, None
+
+
+def _is_wire_operation_id(value: object) -> TypeGuard[str]:
+    return isinstance(value, str) and value == value.lower() and is_uuid7(value)
 
 
 __all__ = ["MAX_TRANSPORT_EVENT_BODY_BYTES", "TransportEventHandler", "TransportEventResponse"]

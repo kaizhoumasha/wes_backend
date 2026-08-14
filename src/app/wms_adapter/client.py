@@ -6,8 +6,9 @@ import json as json_module
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
+from src.app.wms_adapter.strict_json import StrictJsonError, loads_strict_json
 from src.core.outbound_http import (
     OutboundHttpClosedError,
     OutboundHttpDeliveryState,
@@ -219,25 +220,10 @@ def _decode_result(result: OutboundHttpResult) -> WmsAccessResult:
         return _as_access_result(result, body_present=True, json_body=None, json_failure="INVALID_UTF8")
 
     try:
-        json_body = json_module.loads(
-            text,
-            parse_float=_parse_finite_json_float,
-            parse_constant=_reject_nonstandard_json_constant,
-        )
-    except (json_module.JSONDecodeError, ValueError, RecursionError):
+        json_body = cast("_JsonValue", loads_strict_json(text))
+    except StrictJsonError:
         return _as_access_result(result, body_present=True, json_body=None, json_failure="INVALID_JSON")
     return _as_access_result(result, body_present=True, json_body=json_body, json_failure=None)
-
-
-def _reject_nonstandard_json_constant(value: str) -> None:
-    raise ValueError(f"non-standard JSON constant: {value}")
-
-
-def _parse_finite_json_float(value: str) -> float:
-    parsed_value = float(value)
-    if not math.isfinite(parsed_value):
-        raise ValueError("JSON number must be finite")
-    return parsed_value
 
 
 def _as_access_result(

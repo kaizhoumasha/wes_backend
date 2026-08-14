@@ -18,6 +18,10 @@ RUNTIME_SCHEMA = SchemaType.RUNTIME.value
 # DELIVERY_UNKNOWN/冲突/超时进入 RECONCILING，匹配不可变身份的迟到权威事实仍可单调收敛。
 _TASK_STATUS_CHECK = "status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'SUCCEEDED', 'FAILED', 'RECONCILING')"
 _EVIDENCE_STATUS_CHECK = "status IN ('PENDING', 'APPLIED', 'CONFLICT')"
+_EVIDENCE_REVISION_OPERATION_CHECK = (
+    "(operation = 'transport.task.resulted@v1' AND outcome_revision IS NOT NULL) OR "
+    "(operation <> 'transport.task.resulted@v1' AND outcome_revision IS NULL)"
+)
 
 
 class TransportTask(BaseMixin, table=True):
@@ -28,6 +32,10 @@ class TransportTask(BaseMixin, table=True):
         CheckConstraint(
             f"submit_attempt_count BETWEEN 0 AND {MAX_SUBMIT_ATTEMPTS}",
             name="transport_submit_attempt_count_valid",
+        ),
+        CheckConstraint(
+            "last_applied_wms_outcome_revision >= 0",
+            name="transport_last_applied_wms_outcome_revision_valid",
         ),
         UniqueConstraint("transport_task_id", name="ux_transport_tasks_task_id"),
         UniqueConstraint("client_request_id", name="ux_transport_tasks_client_request_id"),
@@ -86,6 +94,7 @@ class TransportTask(BaseMixin, table=True):
 
     outcome_version: int = Field(default=0)
     published_outcome_version: int = Field(default=0)
+    last_applied_wms_outcome_revision: int = Field(default=0, sa_type=BigInteger)
     outcome_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     outcome_claim_token: str | None = Field(default=None, max_length=80)
     outcome_claim_until: datetime | None = Field(default=None)
@@ -128,7 +137,20 @@ class TransportEvidence(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_EVIDENCE_STATUS_CHECK, name="transport_evidence_status_valid"),
+        CheckConstraint(
+            "outcome_revision IS NULL OR outcome_revision > 0",
+            name="transport_evidence_outcome_revision_valid",
+        ),
+        CheckConstraint(
+            _EVIDENCE_REVISION_OPERATION_CHECK,
+            name="transport_evidence_outcome_revision_operation_valid",
+        ),
         UniqueConstraint("operation", "operation_id", name="ux_transport_evidence_operation_operation_id"),
+        UniqueConstraint(
+            "transport_task_id",
+            "outcome_revision",
+            name="ux_transport_evidence_task_outcome_revision",
+        ),
         Index(
             "ix_transport_evidence_pending_claim",
             "status",
@@ -144,6 +166,7 @@ class TransportEvidence(BaseMixin, table=True):
     operation_id: str = Field(max_length=36)
     transport_task_id: str = Field(max_length=80, index=True)
     operation: str = Field(max_length=80)
+    outcome_revision: int | None = Field(default=None, sa_type=BigInteger)
     event_timestamp_ms: int = Field(sa_type=BigInteger)
     payload_digest: str = Field(max_length=64)
     payload_json: dict[str, Any] = Field(sa_type=JSON)

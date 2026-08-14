@@ -102,6 +102,7 @@ class ResultBeforeAckProvider:
             payload={
                 "transport_task_id": transport_task_id,
                 "kind": "RACK_MOVE",
+                "outcome_revision": 1,
                 "results": [
                     {
                         "object_id": "rack-before-ack",
@@ -170,12 +171,19 @@ async def test_four_public_methods_create_one_reliable_task_each(
         await service.move_bins(
             new_uuid7(),
             _caller(),
-            (BinMove("bin-1", RackBinSlot("rack-2", "1"), HandoffPosition("IN")),),
+            (BinMove("bin-1", RackBinSlot("rack-2", RackFace.A, "1"), HandoffPosition("IN")),),
         ),
         await service.exchange_bins(
             new_uuid7(),
             _caller(),
-            (BinExchangePair("bin-2", RackBinSlot("rack-3", "1"), "bin-3", RackBinSlot("rack-4", "1")),),
+            (
+                BinExchangePair(
+                    "bin-2",
+                    RackBinSlot("rack-3", RackFace.A, "1"),
+                    "bin-3",
+                    RackBinSlot("rack-4", RackFace.A, "1"),
+                ),
+            ),
         ),
     ]
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -268,7 +276,7 @@ async def test_active_resource_binding_rejects_overlapping_task(service: Transpo
         await service.move_bins(
             new_uuid7(),
             _caller(),
-            (BinMove("bin-resource", RackBinSlot("rack-resource", "1"), HandoffPosition("IN")),),
+            (BinMove("bin-resource", RackBinSlot("rack-resource", RackFace.A, "1"), HandoffPosition("IN")),),
         )
 
 
@@ -553,7 +561,7 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
-        (BinMove("bin-deadline", RackBinSlot("rack-deadline", "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-deadline", RackBinSlot("rack-deadline", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
     )
     await service.submit_pending_tasks(1)
     accepted = await _load_task(db_engine, handle.transport_task_id)
@@ -596,7 +604,7 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
-        (BinMove("bin-late-position", RackBinSlot("rack-late-position", "1"), HandoffPosition("OUT")),),
+        (BinMove("bin-late-position", RackBinSlot("rack-late-position", RackFace.A, "1"), HandoffPosition("OUT")),),
     )
     assert await service.submit_pending_tasks(1) == 1
     unknown = await _load_task(db_engine, handle.transport_task_id)

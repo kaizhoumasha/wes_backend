@@ -17,6 +17,7 @@ class FakeAccessResult:
     status_code: int | None
     json_body: object
     json_failure: str | None = None
+    response_headers: tuple[tuple[str, str], ...] = (("Content-Type", "application/json"),)
 
 
 class Value:
@@ -101,15 +102,15 @@ async def test_exchange_pairs_send_one_fixed_persisted_snapshot() -> None:
         "exchange_pairs": [
             {
                 "left_bin_id": "bin-1",
-                "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+                "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
                 "right_bin_id": "bin-2",
-                "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "slot_id": "1"},
+                "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "1"},
             },
             {
                 "left_bin_id": "bin-3",
-                "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "2"},
+                "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "2"},
                 "right_bin_id": "bin-4",
-                "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "slot_id": "2"},
+                "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "2"},
             },
         ],
     }
@@ -138,9 +139,9 @@ async def test_delivery_unknown_is_not_interpreted_as_rejection() -> None:
         "exchange_pairs": [
             {
                 "left_bin_id": "bin-1",
-                "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+                "left_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
                 "right_bin_id": "bin-2",
-                "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "slot_id": "1"},
+                "right_location": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "1"},
             }
         ],
     }
@@ -159,7 +160,7 @@ async def test_oversized_request_is_a_deterministic_payload_rejection() -> None:
         "moves": [
             {
                 "bin_id": "bin-oversized",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "x" * (256 * 1024)},
             }
         ],
@@ -195,7 +196,7 @@ async def test_submit_wire_uses_the_persisted_operation_snapshot_without_local_c
         "moves": [
             {
                 "bin_id": "bin-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],

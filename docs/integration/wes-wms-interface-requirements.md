@@ -3,7 +3,7 @@ title: WES - WMS 对接接口需求
 status: ReviewRequired
 contract_version: 0.2.0
 published_at: pending
-wes_alignment: ALIGNMENT_REQUIRED
+wes_alignment: ALIGNED
 created_at: 2026-08-13
 updated_at: 2026-08-14
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
@@ -49,14 +49,14 @@ WMS/RCS 私有接口。所有标为 `Approved` 的场景，其字段类型、长
 
 | 能力 | 合同生命周期 | WES 联调状态 | 当前动作 |
 | --- | --- | --- | --- |
-| 公共 HTTP/JSON Client | `Approved` | `ALIGNMENT_REQUIRED` | WMS 可按本合同开发；WES 完成严格 JSON、OpenAPI 3.0.3 和响应联合对齐后才可联调 |
-| WMS → WES 主动通知公共信封 | `Approved` | `ALIGNMENT_REQUIRED` | WMS 可实现不可变消息、可靠重试、重复消息处理和接收确认 |
-| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNMENT_REQUIRED` | WMS 可实现 T1～T3；不得把合同批准表述为当前双向联调就绪 |
+| 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
+| WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
+| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES T1 客户端、T2/T3 接收端和持久化约束已对齐；不代表 WMS 或现场已验收 |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的 O1～O7 只用于联合评审，批准前禁止实现 |
 | 自动入库与上架 | `ReviewRequired` | `NOT_READY` | 附录 B/C 的 I1～I4、P1～P8 只用于联合评审，批准前禁止实现 |
 
-本文总状态为 `ReviewRequired`，因为仍包含未批准的业务附录；其中 F-01、T1～T3 的合同生命周期为 `Approved`。当前 WES
-实现与 OpenAPI 尚需按本版本对齐，所以联调状态为 `ALIGNMENT_REQUIRED`。基础通信或 Transport 验收通过，不能证明自动入库、
+本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
+F-01、T1～T3 的合同生命周期为 `Approved`，WES 实现状态为 `ALIGNED`。基础通信或 Transport 验收通过，不能证明自动入库、
 自动出库已经通过；设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
@@ -152,7 +152,7 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 | `TransportTask` | WES 保存的一次可靠搬运任务 |
 | `DeviceCommand` | WES 发给 ECS 的一条设备命令 |
 | generation / revision | 单调递增的代际号或版本号，用来拒绝过期决定和乱序消息 |
-| `outcome_revision` | WMS 在线上 T3 中为同一搬运任务生成的连续结果版本，用于排序多次完整权威结果 |
+| `outcome_revision` | WMS 在线上 T3 中为同一搬运任务生成的 `1..Int64.MaxValue` 连续结果版本，用于排序多次完整权威结果 |
 | `outcome_version` | WES 内部发布给业务使用方的搬运结果版本；与线上 `outcome_revision` 不是同一字段 |
 | WMS 主账 | WMS 中已经提交的业务单据、库存和位置数据。发生冲突时以这些数据为准 |
 | 幂等 | 同一条消息重复发送时，系统只执行业务动作一次，并按合同重放第一次结果或返回 `DUPLICATE` |
@@ -1317,8 +1317,8 @@ WMS/RCS 无法确认 Bin 位于来源、目标还是搬运途中，此时不得�
   3. 失败码必须是稳定归一化码，不得向 WES 发送自由文本或供应商原始 Payload；
   4. 为每条完整结果生成新的 UUIDv7 `operation_id`，并为同一任务分配连续递增的 `outcome_revision`，发送前冻结消息并按第 2.4 节
      可靠发送；
-  5. `UNKNOWN` 经权威核对取得完整位置后，使用新的消息身份和更高版本重新发送完整 T3；已经确定的 `SUCCEEDED/FAILED` 只有
-     完成人工对账并保留审计记录后才允许纠正，普通迟到 RCS 消息不得改写确定终态。
+  5. `UNKNOWN` 经权威核对取得完整位置后，使用新的消息身份和更高版本重新发送完整 T3；已经确定的 `SUCCEEDED/FAILED`
+     不得通过后续 T3 改写，即使完成人工对账也只能形成独立审计与现场处置，不能伪装成普通 T3 重放。
 - **禁止事项：**
   1. 不得缺少、增加或重复成员，也不得分批发送可执行的部分结果；
   2. 不得发送可由 `results[]` 推导的任务总状态；
@@ -1364,8 +1364,8 @@ T3 `results[]` 还必须满足：
 
 T3 版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES 接纳更高版本并单调应用；低版本迟到时仍可靠 ACK，但不得让结果
 或位置回退。同一版本、同一完整消息按重复处理；同一版本、不同消息返回 `409 / CONFLICT`。`UNKNOWN` 可以经人工核对或更可靠
-证据修订为 `SUCCEEDED/FAILED`；已经确定的 `SUCCEEDED/FAILED` 只有基于人工对账形成的新版本才允许修订，普通迟到 RCS 消息不能
-覆盖确定终态。
+证据修订为 `SUCCEEDED/FAILED`；已经确定的 `SUCCEEDED/FAILED` 不允许通过后续 T3 修订，即使版本更高也按证据冲突处理。
+人工对账只形成独立审计与现场处置，不能覆盖已经释放资源的确定终态。
 
 七个完整 T3 结果样例，覆盖四种 `kind`、两类失败位置以及协调交换部分失败：
 
@@ -1593,9 +1593,9 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 ```
 
 每条 T3 消息都必须完整覆盖全部请求成员，不发送可由成员推导的任务总状态。WES 返回接收确认后，本次结果消息的发送义务结束。
-如果位置未知，双方必须暂停依赖该位置的后续动作；WMS/RCS 后续取得新的权威对账结果时，使用新的 `operation_id` 和连续的
-`outcome_revision` 再发送一条完整 T3 消息。已确定终态的纠正必须来自人工对账，不能由普通迟到消息触发。使用搬运结果的业务
-场景还要继续完成自己的业务步骤。
+如果位置未知，双方必须暂停依赖该位置的后续动作；WMS/RCS 后续取得新的权威完整位置时，使用新的 `operation_id` 和连续的
+`outcome_revision` 再发送一条完整 T3 消息，使 `UNKNOWN` 收敛为确定结果。已经确定的 `SUCCEEDED/FAILED` 不允许被后续 T3 自动
+改写；不同的更高版本会形成证据冲突并进入人工处置。使用搬运结果的业务场景还要继续完成自己的业务步骤。
 
 #### T2 与 T3 的固定关系
 
@@ -1606,8 +1606,8 @@ T1 中的两个 Bin 都已经到达指定工作线交接位，结果必须一次
 4. 成功 T3 不免除已经形成的 T2 发送义务；但如果 WMS/RCS 首个可用证据直接是最终结果，不得伪造历史 T2。
 5. 发现位置未知时，WMS 应在首次确认该事实时形成 T2 `POSITION_UNKNOWN`；任务结果形成后仍必须发送包含全部成员的 T3。二者到达
    顺序不构成冲突。
-6. T3 已形成后出现迟到但不矛盾的 RCS 过程通知，不再创建新的 T2；出现矛盾证据时进入人工对账。对账取得完整权威结果后，使用
-   新 `operation_id` 和下一连续 `outcome_revision` 发送新的完整 T3。
+6. T3 已形成后出现迟到但不矛盾的 RCS 过程通知，不再创建新的 T2；出现矛盾证据时进入人工对账。只有原结果为 `UNKNOWN` 时，
+   对账取得完整权威位置后才使用新 `operation_id` 和下一连续 `outcome_revision` 发送完整 T3；确定终态不通过 T3 改写。
 
 ### 3.2 T2/T3 接收确认
 
@@ -1624,8 +1624,8 @@ T2 和 T3 使用相同 ACK 规则：
 | `413`，空响应体 | 无 | 原消息超限，停止重试 |
 
 当前 T2/T3 不使用 `429 / BUSY`。WES 暂时不能可靠保存时只返回 `503 / UNAVAILABLE`；未来只有在实现并批准明确的有界背压能力后
-才可增加 `429`。隔离局域网部署固定认证 `NONE`，正常合同响应不包含 `401`；如果 WMS 收到 `401`、HTML 响应或其它未定义组合，
-必须把它当作没有取得明确合同响应，保留原发送义务并告警。
+才可增加 `429`。隔离局域网部署固定认证 `NONE`，正常业务响应不包含 `401`；`401` 表示 WES 部署策略错误。WMS 收到 `401` 时
+必须保留原发送义务、停止每 2 秒热重试并告警，等待配置修复后再恢复发送。HTML 或其它未定义组合仍按未知响应处理。
 
 WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/DUPLICATE/CONFLICT` 的 `data.transport_task_id` 等于冻结消息
 中的任务 ID 后，才能执行对应动作。任何关联字段不匹配都属于未知响应，绝不能结束发送义务。
@@ -1661,8 +1661,10 @@ T2 位置事实 DTO 拒绝响应样例：
 2. 告警必须携带 `operation + operation_id + transport_task_id`，由现场联调/运维人员通知 WMS 共同核对；
 3. WMS 已收到 `RECEIVED`，因此不得自动重发原 evidence，也不得通过更换 ID 掩盖冲突；
 4. 双方根据 RCS 原始证据、现场实物和 WMS 主账形成一致结论；
-5. 如果能够关联到有效 T1，WMS 使用新的 `operation_id` 发送一条覆盖该 T1 全部成员的 T3 权威结果，WES 接纳后解除或继续
-   保持冻结；如果确认 WES 从未创建对应 TransportTask，则双方把原 evidence 记录为错误消息并人工关闭告警，禁止伪造 T3。
+5. 如果能够关联到有效 T1 且任务仍为 `UNKNOWN/RECONCILING`，WMS 使用新的 `operation_id` 和下一连续 `outcome_revision` 发送一条
+   覆盖该 T1 全部成员的 T3 权威结果，WES 接纳后解除或继续保持冻结；如果任务已经是确定 `SUCCEEDED/FAILED`，人工核对只形成
+   独立审计和现场处置，不再发送用于改写终态的 T3；如果确认 WES 从未创建对应 TransportTask，则双方把原 evidence 记录为错误
+   消息并人工关闭告警，禁止伪造 T3。
 
 这是一条明确的人工运行边界，不代表已完成自动化双向冲突通知。若现场要求自动通知，必须另行批准新 operation，不能复用 T2/T3
 或临时增加查询接口。
@@ -1674,7 +1676,7 @@ T2 位置事实 DTO 拒绝响应样例：
 ### 3.3 规范 fixture 最小集合
 
 下表的基准请求均引用本节已经给出的完整 JSON；“修改”是对基准请求的唯一变化。双方必须使用相同预期，WMS 不再自行定义错误
-结果。当前 WES 完成这些 fixture 的代码和 OpenAPI 对齐前，联调状态保持 `ALIGNMENT_REQUIRED`。
+结果。当前 WES 代码和 OpenAPI 已按这些预期对齐；双方仍必须在实际联调环境运行 fixture 并保存证据，才能宣称联调通过。
 
 | Fixture | 基准与唯一修改 | 固定预期 |
 | --- | --- | --- |
@@ -1851,7 +1853,7 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | --- | --- |
 | 当前场景接口矩阵 | 对 F-01、T1～T3 标明负责人、路径、operation 和实现状态；O1～O7、I1～I4、P1～P8 只列为 `ReviewRequired` |
 | T1 OpenAPI | WMS 提供其服务端 `POST /api/v1/wes/transport-requests` 的 OpenAPI 3.0.3 权威文件，完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
-| T2/T3 OpenAPI | WES 提供 `POST /api/v1/wms/events` 的 OpenAPI 3.0.3 权威文件；WMS 按其中 T2/T3 operation 实现客户端，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
+| T2/T3 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 按其中 T2/T3 operation 实现客户端，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
 | 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/BUSY/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和 T3 版本冲突 |
 | WMS 运行证据 | WMS 使用本文规范 fixture，提交实际请求、响应和日志；不得由实现方自行发明合同预期 |

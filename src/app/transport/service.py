@@ -278,6 +278,7 @@ class TransportService:
     ) -> dict[str, Any]:
         _validate_persisted_text(operation_id, "operation_id", 36)
         _validate_persisted_text(transport_task_id, "transport_task_id", 80)
+        outcome_revision = _source_outcome_revision(operation, payload)
         envelope = {
             "operation_id": operation_id,
             "operation": operation,
@@ -298,12 +299,22 @@ class TransportService:
                 )
                 if existing is not None:
                     return _resolve_evidence_identity(existing, digest, operation)
+                if outcome_revision is not None:
+                    revision_owner = await self._repository.get_evidence_by_outcome_revision(
+                        db,
+                        transport_task_id,
+                        outcome_revision,
+                        for_update=True,
+                    )
+                    if revision_owner is not None:
+                        return _resolve_outcome_revision_identity(revision_owner)
                 await self._repository.add_evidence(
                     db,
                     TransportEvidence(
                         operation_id=operation_id,
                         transport_task_id=transport_task_id,
                         operation=operation,
+                        outcome_revision=outcome_revision,
                         event_timestamp_ms=timestamp,
                         payload_digest=digest,
                         payload_json=payload,
@@ -319,7 +330,17 @@ class TransportService:
                     db, operation, operation_id, for_update=True
                 )
                 if existing is None:
-                    raise
+                    if outcome_revision is None:
+                        raise
+                    existing = await self._repository.get_evidence_by_outcome_revision(
+                        db,
+                        transport_task_id,
+                        outcome_revision,
+                        for_update=True,
+                    )
+                    if existing is None:
+                        raise
+                    return _resolve_outcome_revision_identity(existing)
                 return _resolve_evidence_identity(existing, digest, operation)
         return {"code": "RECEIVED", "timestamp": ack_timestamp_ms, "data": ack_data}
 
@@ -664,10 +685,13 @@ class TransportService:
             raise TransportContractError("result members differ from frozen task")
         if task.status == TransportTaskStatus.REJECTED.value:
             raise TransportContractError("rejected task cannot accept result evidence")
+        # 迟到旧版本只跳过状态推进，仍必须匹配当前任务的冻结 kind、成员类型和成功目标。
+        _validate_result_frozen_identity(task, members, results)
+        outcome_revision = _applicable_outcome_revision(evidence, task)
+        if outcome_revision is None:
+            return
         if task.status in {TransportTaskStatus.SUCCEEDED.value, TransportTaskStatus.FAILED.value}:
-            if all(_matches_definite_member_result(member, results[member.object_id]) for member in members):
-                return
-            raise TransportContractError("result evidence contradicts definite terminal fact")
+            raise TransportContractError("result evidence cannot revise a definite terminal fact")
 
         now = timezone.now_for_db()
         validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome]] = []
@@ -689,16 +713,6 @@ class TransportService:
             if member.object_type == "RACK" and has_position and arrival_face not in {"A", "B"}:
                 raise TransportContractError("known rack result requires arrival_face")
             final_position = result.get("final_position") if has_position else None
-            if has_position and not _position_matches_member_type(member, final_position):
-                raise TransportContractError("result position type differs from frozen member")
-            if (
-                task.kind == TransportTaskKind.RACK_ROTATE.value
-                and status == "SUCCEEDED"
-                and arrival_face != task.request_json["target_face"]
-            ):
-                raise TransportContractError("successful arrival face differs from frozen target")
-            if status == "SUCCEEDED" and final_position != member.target_json:
-                raise TransportContractError("successful final position differs from frozen target")
             if member.final_position_json is not None and (
                 position_unknown
                 or final_position != member.final_position_json
@@ -759,6 +773,7 @@ class TransportService:
             reason_code = None
         task.status = task_status.value
         task.reason_code = reason_code
+        task.last_applied_wms_outcome_revision = outcome_revision
         task.outcome_version += 1
         task.updated_at = now
         task.outcome_json = _json_value(
@@ -888,7 +903,7 @@ def _contract_position(payload: dict[str, Any]) -> RackPosition | RackBinSlot | 
     if kind == "RACK_POSITION":
         return RackPosition(payload["location_code"])
     if kind == "RACK_BIN_SLOT":
-        return RackBinSlot(payload["rack_id"], payload["slot_id"])
+        return RackBinSlot(payload["rack_id"], RackFace(payload["rack_face"]), payload["slot_id"])
     if kind == "HANDOFF_POSITION":
         return HandoffPosition(payload["location_code"])
     raise TransportContractError("invalid final position kind")
@@ -947,6 +962,27 @@ def _position_matches_member_type(member: TransportMember, position: object) -> 
     if member.object_type == "RACK":
         return position.get("kind") == "RACK_POSITION"
     return position.get("kind") in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}
+
+
+def _validate_result_frozen_identity(
+    task: TransportTask,
+    members: list[TransportMember],
+    results: dict[object, dict[str, Any]],
+) -> None:
+    for member in members:
+        result = results[member.object_id]
+        status = result.get("status")
+        final_position = result.get("final_position")
+        if isinstance(final_position, dict) and not _position_matches_member_type(member, final_position):
+            raise TransportContractError("result position type differs from frozen member")
+        if (
+            task.kind == TransportTaskKind.RACK_ROTATE.value
+            and status == "SUCCEEDED"
+            and result.get("arrival_face") != task.request_json["target_face"]
+        ):
+            raise TransportContractError("successful arrival face differs from frozen target")
+        if status == "SUCCEEDED" and final_position != member.target_json:
+            raise TransportContractError("successful final position differs from frozen target")
 
 
 def _matches_definite_member_result(member: TransportMember, result: dict[str, Any]) -> bool:
@@ -1010,6 +1046,31 @@ def _resolve_evidence_identity(
         "timestamp": evidence.ack_timestamp_ms,
         "data": evidence.ack_data_json,
     }
+
+
+def _resolve_outcome_revision_identity(evidence: TransportEvidence) -> dict[str, Any]:
+    # 同一任务的来源 revision 只绑定首个 operation_id；新身份不得借相同 payload 绕过版本裁决。
+    return {
+        "code": "CONFLICT",
+        "timestamp": evidence.ack_timestamp_ms,
+        "data": evidence.ack_data_json,
+    }
+
+
+def _source_outcome_revision(operation: str, payload: dict[str, Any]) -> int | None:
+    if operation != TRANSPORT_RESULT_OPERATION:
+        return None
+    value = payload.get("outcome_revision")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise TransportContractError("result evidence requires a positive outcome_revision")
+    return value
+
+
+def _applicable_outcome_revision(evidence: TransportEvidence, task: TransportTask) -> int | None:
+    value = evidence.outcome_revision
+    if value is None or value <= 0:
+        raise TransportContractError("result evidence requires outcome_revision")
+    return value if value > task.last_applied_wms_outcome_revision else None
 
 
 __all__ = ["TransportService"]

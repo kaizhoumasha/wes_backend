@@ -57,7 +57,7 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
             "transport_task_id": "transport-1",
             "bin_id": "bin-1",
             "milestone": "TARGET_PLACED",
-            "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "slot_id": "1"},
+            "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
         },
     )
 
@@ -135,6 +135,66 @@ async def test_handler_accepts_a_valid_body_at_exactly_256_kib() -> None:
 async def test_handler_rejects_invalid_utf8_or_json(raw_body: bytes) -> None:
     response = await TransportEventHandler(FakeRecorder()).handle(raw_body)
     assert response.http_status == 400
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_nested_duplicate_key_as_associated_invalid_evidence() -> None:
+    recorder = FakeRecorder()
+    raw_body = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
+        b'"operation":"transport.task.member_position_changed@v1","timestamp":1,'
+        b'"data":{"transport_task_id":"transport-1","bin_id":"bin-1","bin_id":"bin-2",'
+        b'"milestone":"SOURCE_PICKED"}}'
+    )
+
+    response = await TransportEventHandler(recorder).handle(raw_body)
+
+    assert response.http_status == 422
+    assert response.body["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    assert response.body["data"] == {"reason_code": "INVALID_EVIDENCE"}
+    assert recorder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_duplicate_operation_id_as_unassociated_bad_request() -> None:
+    raw_body = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
+        b'"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4473",'
+        b'"operation":"transport.task.member_position_changed@v1","timestamp":1,"data":{}}'
+    )
+
+    response = await TransportEventHandler(FakeRecorder()).handle(raw_body)
+
+    assert (response.http_status, response.body) == (400, {})
+
+
+@pytest.mark.asyncio
+async def test_handler_rejects_deep_json_without_escaping_recursion_error() -> None:
+    recorder = FakeRecorder()
+    raw_body = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
+        b'"operation":"transport.task.member_position_changed@v1","timestamp":1,"data":'
+        + b"[" * 998
+        + b"0"
+        + b"]" * 998
+        + b"}"
+    )
+
+    response = await TransportEventHandler(recorder).handle(raw_body)
+
+    assert response.http_status == 422
+    assert response.body["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    assert recorder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_handler_distinguishes_unknown_operation_from_invalid_known_evidence() -> None:
+    response = await TransportEventHandler(FakeRecorder()).handle(
+        _body("transport.task.unknown@v1", {"transport_task_id": "transport-1"})
+    )
+
+    assert response.http_status == 422
+    assert response.body["data"] == {"reason_code": "UNSUPPORTED_OPERATION"}
 
 
 @pytest.mark.asyncio

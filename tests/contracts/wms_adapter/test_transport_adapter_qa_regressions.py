@@ -20,6 +20,7 @@ class FakeAccessResult:
     json_body: object
     json_failure: str | None = None
     body_present: bool = True
+    response_headers: tuple[tuple[str, str], ...] = (("Content-Type", "application/json"),)
 
 
 class FakeClient:
@@ -108,6 +109,16 @@ async def test_busy_ack_preserves_positive_integer_retry_delay() -> None:
 
 
 @pytest.mark.asyncio
+async def test_busy_ack_discards_retry_delay_above_contract_limit() -> None:
+    access = _ack(429, "BUSY", {"transport_task_id": "transport-1", "retry_after_ms": 60001})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.BUSY
+    assert result.retry_after_ms is None
+
+
+@pytest.mark.asyncio
 async def test_non_busy_ack_discards_retry_delay() -> None:
     access = _ack(503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
 
@@ -136,7 +147,7 @@ async def test_ack_status_and_code_are_a_closed_pair(
 ) -> None:
     data: dict[str, object] = {"transport_task_id": "transport-1"}
     if code == "REJECTED":
-        data["reason_code"] = "REJECTED_BY_WMS"
+        data["reason_code"] = "INVALID_DATA"
     access = _ack(status, code, data)
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
@@ -198,12 +209,59 @@ async def test_rejected_ack_preserves_a_persistable_reason_code(status_code: int
 
 
 @pytest.mark.asyncio
-async def test_ack_for_another_task_is_a_conflict() -> None:
+async def test_rejected_ack_may_omit_transport_task_id() -> None:
+    access = _ack(422, "REJECTED", {"reason_code": "INVALID_DATA"})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.REJECTED
+    assert result.reason_code == "INVALID_DATA"
+
+
+@pytest.mark.asyncio
+async def test_rejected_ack_rejects_explicit_null_transport_task_id() -> None:
+    access = _ack(422, "REJECTED", {"transport_task_id": None, "reason_code": "INVALID_DATA"})
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_transport_ack_requires_json_utf8_response_content_type() -> None:
+    access = _ack(202, "RECEIVED", {"transport_task_id": "transport-1"})
+    access.response_headers = (("Content-Type", "text/plain"),)
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_ack_for_another_task_remains_delivery_unknown() -> None:
     access = _ack(202, "RECEIVED", {"transport_task_id": "transport-other"})
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
 
-    assert result.code is TransportSubmitCode.CONFLICT
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        'application/json; charset=u"t"f-8',
+        "application/json; charset =utf-8",
+        "application/json; charset= utf-8",
+    ],
+)
+async def test_transport_ack_rejects_malformed_utf8_charset(content_type: str) -> None:
+    access = _ack(202, "RECEIVED", {"transport_task_id": "transport-1"})
+    access.response_headers = (("Content-Type", content_type),)
+
+    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -260,7 +318,7 @@ async def test_rejected_ack_discards_unencodable_reason_code() -> None:
         (
             422,
             "REJECTED",
-            {"transport_task_id": "transport-1", "reason_code": "REJECTED_BY_WMS", "retry_after_ms": 1000},
+            {"transport_task_id": "transport-1", "reason_code": "INVALID_DATA", "retry_after_ms": 1000},
         ),
     ],
 )

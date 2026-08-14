@@ -684,13 +684,18 @@ heavy_tests = [
     "tests/integration/transport/test_dark_transport_loop.py",
 ]
 
+# 独立 OpenAPI 交付文件不参与运行时；其与共享 schema builder 的一致性由 FAST 合同测试验证。
+[[mapping]]
+source_glob = "docs/contracts/openapi/wes-wms-transport.openapi.json"
+heavy_tests = []
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/transport_adapter.py"
 heavy_tests = ["tests/integration/transport/test_dark_transport_loop.py"]
 
 # 入站 handler/wire 必须由真实 route E2E 承接，同时保留暗闭环覆盖。
 [[mapping]]
-source_glob = "src/app/wms_adapter/{transport_event_handler.py,transport_wire.py}"
+source_glob = "src/app/wms_adapter/{strict_json.py,transport_event_handler.py,transport_openapi.py,transport_wire.py}"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/transport/test_dark_transport_loop.py",
@@ -698,6 +703,10 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py"
+heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260814_0516_ce53af214081_对齐_wms_t3_来源结果版本.py"
 heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]

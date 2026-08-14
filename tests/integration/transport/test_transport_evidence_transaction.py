@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from src.app.transport.contracts import (
     BinMove,
@@ -306,6 +306,7 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         payload={
             "transport_task_id": f"missing-{suffix}",
             "kind": "RACK_MOVE",
+            "outcome_revision": 1,
             "results": [],
         },
     )
@@ -358,12 +359,13 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
     handle = await service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-rollback", RackBinSlot("rack-rollback", "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-rollback", RackBinSlot("rack-rollback", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     payload = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-rollback",
@@ -427,12 +429,13 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-concurrent", RackBinSlot("rack-concurrent", "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-concurrent", RackBinSlot("rack-concurrent", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     payload = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-concurrent",
@@ -482,6 +485,81 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
 
 
+async def test_concurrent_result_revision_binds_to_only_one_operation(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    setup_service = TransportService(
+        integration_session_factory,
+        TransportRepository(),
+        _UnusedProvider(),
+    )
+    handle = await setup_service.move_bins(
+        new_uuid7(),
+        TransportCaller("INTEGRATION"),
+        (BinMove("bin-revision", RackBinSlot("rack-revision", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+    )
+    payload = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_MOVE",
+        "outcome_revision": 1,
+        "results": [
+            {
+                "object_id": "bin-revision",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+            }
+        ],
+    }
+    services = [
+        TransportService(
+            integration_session_factory,
+            TransportRepository(),
+            _UnusedProvider(),
+        )
+        for _ in range(2)
+    ]
+
+    try:
+        results = await asyncio.gather(
+            *(
+                service.record_evidence(
+                    operation_id=new_uuid7(),
+                    transport_task_id=handle.transport_task_id,
+                    operation=RESULT_OPERATION,
+                    timestamp=1,
+                    payload=payload,
+                )
+                for service in services
+            )
+        )
+        assert sorted(result["code"] for result in results) == ["CONFLICT", "RECEIVED"]
+
+        async with integration_session_factory() as db:
+            evidence_count = await db.scalar(
+                select(func.count())
+                .select_from(TransportEvidence)
+                .where(
+                    TransportEvidence.transport_task_id == handle.transport_task_id,
+                    TransportEvidence.outcome_revision == 1,
+                )
+            )
+        assert evidence_count == 1
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
+            )
+            await db.execute(
+                delete(TransportResourceBinding).where(
+                    TransportResourceBinding.transport_task_id == handle.transport_task_id
+                )
+            )
+            await db.execute(
+                delete(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+
+
 async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_lock_order(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -493,12 +571,13 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-lock-order", RackBinSlot("rack-lock-order", "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-lock-order", RackBinSlot("rack-lock-order", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     payload = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-lock-order",
@@ -605,6 +684,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
             payload={
                 "transport_task_id": handle.transport_task_id,
                 "kind": "RACK_MOVE",
+                "outcome_revision": 1,
                 "results": [
                     {
                         "object_id": "rack-callback-before-reject",
@@ -681,12 +761,13 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-apply-race", RackBinSlot("rack-apply-race", "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-apply-race", RackBinSlot("rack-apply-race", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     original_payload = {
         "transport_task_id": handle.transport_task_id,
         "kind": "BIN_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": "bin-apply-race",
@@ -812,6 +893,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
     move_payload = {
         "transport_task_id": move_handle.transport_task_id,
         "kind": "RACK_MOVE",
+        "outcome_revision": 1,
         "results": [
             {
                 "object_id": rack_id,
