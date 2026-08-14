@@ -26,7 +26,6 @@ def upgrade() -> None:
         sa.Column(
             "last_applied_wms_outcome_revision",
             sa.BigInteger(),
-            server_default=sa.text("0"),
             nullable=False,
         ),
         schema="wes_runtime",

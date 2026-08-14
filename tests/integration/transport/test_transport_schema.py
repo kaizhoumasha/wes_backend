@@ -114,12 +114,12 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
 ) -> None:
     result = await integration_db_session.execute(
         text(
-            "SELECT table_name, column_name FROM information_schema.columns "
+            "SELECT table_name, column_name, column_default FROM information_schema.columns "
             "WHERE table_schema = 'wes_runtime' AND table_name IN "
             "('transport_tasks', 'transport_evidence', 'transport_members', 'transport_position_projections')"
         )
     )
-    columns = {(row[0], row[1]) for row in result}
+    columns = {(row[0], row[1]): row[2] for row in result}
     assert {
         ("transport_tasks", "submit_operation_id"),
         ("transport_tasks", "submit_timestamp_ms"),
@@ -131,12 +131,13 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
         ("transport_evidence", "ack_data_json"),
         ("transport_members", "last_operation_id"),
         ("transport_position_projections", "source_operation_id"),
-    } <= columns
+    } <= columns.keys()
     assert {
         ("transport_evidence", "event_id"),
         ("transport_members", "last_event_id"),
         ("transport_position_projections", "source_event_id"),
     }.isdisjoint(columns)
+    assert columns[("transport_tasks", "last_applied_wms_outcome_revision")] is None
 
 
 async def test_transport_evidence_identity_is_operation_and_operation_id(integration_db_session: AsyncSession) -> None:
