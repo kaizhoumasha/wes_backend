@@ -139,8 +139,6 @@ class SystemCapabilityIntentService:
             "execution_session_id": execution_identity["execution_session_id"],
             "execution_work_item_id": execution_identity["execution_work_item_id"],
             "correlation_id": correlation_id,
-            "plugin_key": execution_identity["plugin_key"],
-            "plugin_contract_version": execution_identity["plugin_contract_version"],
             "binding_id": execution_identity["binding_id"],
             "binding_version": execution_identity["binding_version"],
             "capability_key": str(intent.capability_key),
@@ -303,8 +301,6 @@ class SystemCapabilityIntentService:
         return {
             "execution_session_id": execution_session_id,
             "execution_work_item_id": execution_work_item_id,
-            "plugin_key": None,
-            "plugin_contract_version": None,
             "binding_id": None,
             "binding_version": None,
             "correlation_id": self._correlation_id(ctx),

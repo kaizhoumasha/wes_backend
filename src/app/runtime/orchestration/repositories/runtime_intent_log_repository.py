@@ -84,8 +84,6 @@ class RuntimeIntentLogRepository:
             "target_action": values["operation_identity"],
             "idempotency_key": values["idempotency_key"],
             "request_hash": values["request_hash"],
-            "plugin_key": values["plugin_key"],
-            "plugin_contract_version": values["plugin_contract_version"],
             "capability_key": values["capability_key"],
             "capability_contract_version": values["capability_contract_version"],
             "operation_identity": values["operation_identity"],

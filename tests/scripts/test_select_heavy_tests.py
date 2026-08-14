@@ -1237,7 +1237,6 @@ def test_repository_mapping_keeps_broad_transitive_dependencies_fail_closed(chan
         "src/database/schema_conf.py",
         "src/database/sqlite_schema.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
-        "src/app/runtime/orchestration/runtime_intent_log.py",
     ],
 )
 def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_closed(changed_path: str) -> None:
@@ -1279,6 +1278,16 @@ def test_repository_mapping_selects_audited_runtime_owners(
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     assert select_heavy_tests([changed_path], config) == expected
+
+
+def test_runtime_intent_log_mapping_is_exact_schema_retirement_owner() -> None:
+    changed_path = "src/app/runtime/orchestration/runtime_intent_log.py"
+    expected = ("tests/integration/test_workline_plugin_schema_retirement.py",)
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
+    assert [mapping.heavy_tests for mapping in matching_mappings] == [expected]
+    assert select_heavy_tests([changed_path], config) == list(expected)
 
 
 @pytest.mark.parametrize(

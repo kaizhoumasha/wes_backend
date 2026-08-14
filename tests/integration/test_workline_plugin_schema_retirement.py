@@ -12,6 +12,7 @@ from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.workline.models.workline import WorkLine
 from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
 
@@ -64,6 +65,7 @@ _RETIRED_COLUMNS: dict[tuple[str, str], frozenset[str]] = {
             "plugin_state_version",
         }
     ),
+    ("wes_runtime", "runtime_intent_logs"): frozenset({"plugin_key", "plugin_contract_version"}),
     ("wes_biz", "workline_diagnostics"): frozenset({"plugin_key"}),
     ("wes_biz", "runtime_holds"): frozenset({"plugin_key", "contract_version"}),
 }
@@ -96,6 +98,7 @@ _RETIRED_INDEXES = frozenset(
         "ix_wes_runtime_execution_sessions_plugin_binding_id",
         "ix_wes_runtime_execution_work_items_plugin_key",
         "ix_wes_runtime_execution_work_items_plugin_binding_id",
+        "ix_wes_runtime_runtime_intent_logs_plugin_key",
         "ix_wes_biz_runtime_holds_plugin_key",
     }
 )
@@ -105,6 +108,7 @@ _MODELS_BY_TABLE = {
     ("wes_biz", "workline_sessions"): WorklineSession,
     ("wes_runtime", "execution_sessions"): ExecutionSession,
     ("wes_runtime", "execution_work_items"): ExecutionWorkItem,
+    ("wes_runtime", "runtime_intent_logs"): RuntimeIntentLog,
     ("wes_biz", "workline_diagnostics"): WorklineDiagnostic,
     ("wes_biz", "runtime_holds"): RuntimeHold,
 }

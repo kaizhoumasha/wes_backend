@@ -42,8 +42,6 @@ def _claim() -> dict[str, object]:
         "execution_session_id": 21,
         "execution_work_item_id": 41,
         "correlation_id": "corr-1",
-        "plugin_key": "test_plugin",
-        "plugin_contract_version": "v1",
         "capability_key": "runtime.session_hold",
         "capability_contract_version": "v1",
         "operation_identity": "hold-1",
@@ -65,8 +63,6 @@ def _domain_claim() -> dict[str, object]:
         "execution_session_id": None,
         "execution_work_item_id": None,
         "correlation_id": "corr-domain-1",
-        "plugin_key": None,
-        "plugin_contract_version": None,
         "capability_key": "external.transport_confirmation",
         "operation_identity": "transport-confirmation:task-17",
         "creator_authority": "RUNTIME_DOMAIN_SERVICE",
@@ -339,8 +335,6 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
     row = await repository.get_claimed_intent(db_session, claim=claim)
     assert row is not None
-    assert row.plugin_key == "test_plugin"
-    assert row.plugin_contract_version == "v1"
     assert row.capability_key == "runtime.session_hold"
     assert row.capability_contract_version == "v1"
     assert row.operation_identity == "hold-1"

@@ -97,9 +97,7 @@ class RuntimeIntentLog(BaseMixin, table=True):
         description="与 SystemOutbox 1:1 共享的不可变派发键",
     )
 
-    # Plugin/Capability 执行快照；effect replay 必须按这些固定值执行，不能重新选版本或 provider。
-    plugin_key: str | None = Field(default=None, max_length=100, index=True)
-    plugin_contract_version: str | None = Field(default=None, max_length=60)
+    # Capability 执行快照；effect replay 必须按这些固定值执行，不能重新选版本或 provider。
     capability_key: str | None = Field(default=None, max_length=120, index=True)
     capability_contract_version: str | None = Field(default=None, max_length=60)
     operation_identity: str | None = Field(default=None, max_length=160)

@@ -43,6 +43,10 @@ heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 source_glob = "migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_intent_log.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+
 # 旧命令请求/响应 Schema 退役后，由 DeviceCommand 生产闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"

@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """删除诊断与 RuntimeHold 的退役插件身份，并收紧 NG reason 来源。"""
+    """删除诊断、RuntimeHold 与 RuntimeIntentLog 的退役插件身份，并收紧 NG reason 来源。"""
 
     op.drop_column("workline_diagnostics", "plugin_key", schema="wes_biz")
     op.drop_index(
@@ -30,6 +30,14 @@ def upgrade() -> None:
     )
     op.drop_column("runtime_holds", "plugin_key", schema="wes_biz")
     op.drop_column("runtime_holds", "contract_version", schema="wes_biz")
+
+    op.drop_index(
+        "ix_wes_runtime_runtime_intent_logs_plugin_key",
+        table_name="runtime_intent_logs",
+        schema="wes_runtime",
+    )
+    op.drop_column("runtime_intent_logs", "plugin_key", schema="wes_runtime")
+    op.drop_column("runtime_intent_logs", "plugin_contract_version", schema="wes_runtime")
 
     for table_name, constraint_name in (
         ("runtime_holds", "ck_runtime_holds_ngreasonsource"),
