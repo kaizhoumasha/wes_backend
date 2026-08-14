@@ -831,6 +831,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py"
 heavy_tests = []
+reviewed_content_sha256 = "58d75e9bd78dc94e3b1ecfa132d115e6affce86a3863f0505ca2bbde929a4a8d"
 
 # 存活的 START 准入由真实 PostgreSQL、HTTP status wire 与 READY 写回闭环承接。
 [[mapping]]

@@ -1392,6 +1392,7 @@ def test_repository_mapping_selects_transport_e2e_for_local_heavy_entry(changed_
         "src/app/runtime/orchestration/execution_correlation.py",
         "src/app/runtime/orchestration/enums.py",
         "src/app/runtime/orchestration/models/timeline.py",
+        "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py",
     ],
 )
 def test_repository_mapping_pins_reviewed_none_to_current_runtime_source_content(

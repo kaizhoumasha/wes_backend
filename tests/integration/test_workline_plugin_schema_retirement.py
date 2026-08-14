@@ -109,6 +109,11 @@ _MODELS_BY_TABLE = {
     ("wes_biz", "runtime_holds"): RuntimeHold,
 }
 
+_NG_REASON_SOURCE_CONSTRAINTS = {
+    "runtime_holds": "ck_runtime_holds_ngreasonsource",
+    "ng_return_items": "ck_ng_return_items_ngreturnitemngreasonsource",
+}
+
 
 async def _column_names(connection: asyncpg.Connection, *, schema: str, table: str) -> set[str]:
     rows = await connection.fetch(
@@ -276,7 +281,7 @@ def test_upgrade_head_restricts_ng_reason_source_to_shared_runtime_sources() -> 
                 hold_id, item_id = await _insert_ng_reason_source_rows(connection)
                 for table, row_id in (("ng_return_items", item_id), ("runtime_holds", hold_id)):
                     definitions = await _ng_reason_source_check_definitions(connection, table=table)
-                    assert len(definitions) == 1, (table, definitions)
+                    assert set(definitions) == {_NG_REASON_SOURCE_CONSTRAINTS[table]}, (table, definitions)
                     definition = next(iter(definitions.values()))
                     assert "DEVICE_ERROR" in definition
                     assert "RUNTIME" in definition
@@ -289,12 +294,13 @@ def test_upgrade_head_restricts_ng_reason_source_to_shared_runtime_sources() -> 
                             source,
                             row_id,
                         )
-                    with pytest.raises(asyncpg.CheckViolationError):
-                        await connection.execute(
-                            f'UPDATE wes_biz."{table}" SET ng_reason_source = $1 WHERE id = $2',
-                            "PLUGIN",
-                            row_id,
-                        )
+                    for unsupported_source in ("PLUGIN", "UNSUPPORTED"):
+                        with pytest.raises(asyncpg.CheckViolationError):
+                            await connection.execute(
+                                f'UPDATE wes_biz."{table}" SET ng_reason_source = $1 WHERE id = $2',
+                                unsupported_source,
+                                row_id,
+                            )
             finally:
                 await connection.close()
 
