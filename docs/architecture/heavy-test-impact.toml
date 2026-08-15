@@ -863,6 +863,27 @@ heavy_tests = [
     "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
 ]
 
+# 无生产消费者的 recorded replay 草案 DELETE → NONE；专属测试 successor 为 NONE。
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/replay.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/timeline_recorded_replay_repository.py"
+heavy_tests = []
+
+# SystemCapability 包入口仅移除 replay 导出，存活 QueryEvidence 行为由其 FAST 合同承接。
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "5f49270d7ec440dfcea30c887bbb8873c4748ee7a58420793cfa64714de8872b"
+
+# 北向观测阶段闭集收敛由 operation observability FAST 合同直接承接。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/observability.py"
+heavy_tests = []
+reviewed_content_sha256 = "141284030d44a2a2b5ac9ba73f48a518d2ba5a023f6a5e1c867315ea72ef61b2"
+
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
