@@ -308,7 +308,7 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 source_glob = "src/app/callback/models/event.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
-# Callback 诊断构建仅收敛展示与退役身份来源，由邻近 FAST 合同承接；指纹变化后恢复 fail closed。
+# Callback 当前所有权与依赖说明不改变运行时行为，由既有 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
 source_glob = "src/app/callback/utils.py"
 heavy_tests = []
@@ -317,7 +317,7 @@ reviewed_content_sha256 = "67f41fce219cd68a41c2f9defcf59ace0743139ce8b597f66826b
 [[mapping]]
 source_glob = "src/app/callback/contracts/__init__.py"
 heavy_tests = []
-reviewed_content_sha256 = "767e88b838bb2451f7e6ad1f38a9ecee5d7b644d71cce97a52f30e219175fbfe"
+reviewed_content_sha256 = "e3f7a17ed07c485e1af90e93738f08328697d3267442154414f3ddae05440ce9"
 
 [[mapping]]
 source_glob = "src/app/callback/contracts/diagnostics.py"

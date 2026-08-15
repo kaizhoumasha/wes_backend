@@ -8,7 +8,8 @@
 - 两侧只同步当前诊断语义；字段或错误码退役时必须同时收敛，不保留 legacy 兼容入口。
 - ``canonicalize_event_type`` 保持生产事件 source 映射行为；callback ingress
   额外保留平台与安全事件 source 原值。
-- 本模块不反向导入 runtime orchestration，实现依赖仅限 ``src.utils`` 与本包内部模块。
+- 本地诊断镜像不反向导入 runtime diagnostics 实现；``TimelineGenerator`` 明确复用
+  runtime orchestration 的共享 timeline 模型。
 """
 
 from __future__ import annotations
