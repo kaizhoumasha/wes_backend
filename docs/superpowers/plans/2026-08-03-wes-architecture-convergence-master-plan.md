@@ -17,7 +17,8 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
-Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 等待真实设备合同附录与供应商一致性边界获批。
+Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；退役插件活动残留收敛已完成 Tasks 1–5，
+正在执行合入前门禁与独立复审。Phase 8 仍等待真实设备合同附录与供应商一致性边界获批。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -121,11 +122,12 @@ Transport/Adapter/核心所有权。
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 5 只解除旧插件闭包；Device/ECS 裸 Client 由 Phase 7 处理 |
 | 目标对象扫描 | 已有 `TransportTask`、Transport member-position/result evidence 和 Transport 位置投影 | Phase 4 暗构建完成；Phase 6 只收敛 Transport 直接旧 owner |
 | `34837439` / `src/app/runtime/workline_plugins/` 缺席 | 旧工作线插件、binding、dispatcher、attempt 及目录外活动 owner 已原子退役 | Phase 5 零插件基线完成；后续插件按 Phase 8/9 目标合同重新实现 |
+| `docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Tasks 1–5 已删除活动 Trace/Diagnostic/Hold/Intent/replay 的退役插件身份，并由当前 PostgreSQL head 与测试 owner 验证 | Task 6 合入前门禁和独立复审进行中；合入后才清理 deletion tombstone 并外部归档本计划 |
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 与 Phase 7 核心生产基线已完成；Phase 8–12 尚未开始。
+Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -545,8 +547,8 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 **Exit gate:** 供应商 ECS/网关通过一致性验收，endpoint/device 绑定明确，插件独立安装、构建和测试；业务闭环仅由插件拥有；
 全部设备 HTTP 调用仍经 Phase 7 唯一生产 Adapter，核心无供应商特殊分支；最小 SPI 只包含本插件实际使用的稳定接口。
 
-**需要单独编写的子计划:** 启动前编写并批准
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`，同步其阶段号为 Phase 8，并从当前真实合同重新编写。
+**需要单独编写的子计划:** 唯一详细计划已建立为
+`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`。其当前状态为 `GATED`；启动编码前必须先完成并批准 Task 1 的合同、设备附录和供应商一致性边界。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、
 认证或凭据；禁止因供应商内部协议不同而修改 WES 固定路径、公共包络或增加兼容 Adapter。
@@ -655,7 +657,7 @@ Adapter、设备统一接口和明确插件。
 **Exit gate:** `migrations/versions/` 只含最终初始基线及其后真实 revision；空库一次 upgrade head 成功；无旧迁移/兼容断言。
 
 **需要单独编写的子计划:** 启动前编写并批准
-`docs/superpowers/plans/2026-08-03-wes-schema-and-migration-baseline-reset.md`，同步其阶段号为 Phase 11。
+`docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset.md`，阶段号为 Phase 11。
 
 **风险及防止阶段越权的约束:** 禁止在模型未稳定前生成基线；禁止因保留开发数据引入兼容迁移。
 
@@ -738,14 +740,15 @@ Adapter、设备统一接口和明确插件。
 ## 21. Implementation Tasks
 
 Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。两阶段分别拥有独立可靠对象、生产装配和测试证据；
-已完成的过程计划已归档，不再保留为项目内当前真源。下一动作是 Phase 8 粗分机参考插件的合同与实施准备，必须先取得
-真实设备合同附录和供应商一致性输入；不得把 Phase 7 核心测试当成现场设备或业务插件验收。
+已完成的过程计划已归档，不再保留为项目内当前真源。当前动作是完成退役插件活动残留收敛的合入前门禁与独立复审；
+合入后按该计划清理 deletion tombstone 并外部归档。随后才进入 Phase 8 粗分机参考插件的合同准备，且必须先取得真实设备合同附录和供应商一致性输入；不得把 Phase 7 核心测试当成现场设备或业务插件验收。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
 | --- | --- | --- | --- |
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
-| 3 | Phase 8 粗分机参考插件准备 | Pending | 先冻结真实设备合同附录、供应商一致性范围和插件业务合同；不得反向修改 Phase 7 公共 wire |
+| 3 | Phase 5 后退役插件活动残留收敛 | In progress | Tasks 1–5 已实施；完成合入前门禁和独立复审后合入，tombstone 清理与计划归档只在合入后执行 |
+| 4 | Phase 8 粗分机参考插件准备 | Gated | 先冻结真实设备合同附录、供应商一致性范围和插件业务合同；不得反向修改 Phase 7 公共 wire |
 
 Phase 8 尚不可直接编码：供应商原始资料可以作为输入，但必须先形成获批设备合同附录和插件验收边界。
 

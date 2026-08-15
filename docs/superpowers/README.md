@@ -11,6 +11,7 @@
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、分批计划、Bin/Cell 晚绑定、不可逆执行、安全取消和目标架业务设计真源 | ReviewRequired |
+| `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | ReviewRequired；实现对齐前仍以现行 Approved Transport 合同为准 |
 | `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成 | ReviewRequired；Transport 场景可实施，业务场景待联合批准 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
@@ -19,7 +20,10 @@
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 核心基线已完成；Phase 8 等待真实设备合同附录与供应商一致性边界获批 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 核心基线已完成；退役插件残留收敛处于合入前复审，Phase 8 仍受合同门禁约束 |
+| `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 粗分机参考插件的合同、SDK、可靠对象和业务闭环实施计划 | Gated；Task 1 合同、设备附录和供应商一致性边界获批前不得编码 |
+| `plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Phase 5 后活动源码、诊断合同和当前 schema 中的退役插件身份收敛 | In progress；Tasks 1–5 已实施，Task 6 正在完成合入前门禁与独立复审；合入后执行 tombstone 清理和外部归档 |
+| `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 
 ## 项目外历史归档
 
