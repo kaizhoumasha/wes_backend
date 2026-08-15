@@ -534,11 +534,6 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
         "outcome_revision": 1,
         "results": [
             {
-                "container_id": "bin-success",
-                "status": "SUCCEEDED",
-                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-            },
-            {
                 "container_id": "bin-failed",
                 "status": "FAILED",
                 "final_position": {
@@ -548,6 +543,11 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
                     "slot_id": "2",
                 },
                 "failure_code": "RCS_EXECUTION_FAILED",
+            },
+            {
+                "container_id": "bin-success",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             },
         ],
     }

@@ -430,6 +430,14 @@ async def test_finite_float_json_response_is_decoded() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finite_float_outside_transport_decimal_range_is_decoded() -> None:
+    result = await WmsClient(_FakeTransport(_response(body=b'{"quantity":1e100}'))).get("/inventory")
+
+    assert result.json_body == {"quantity": 1e100}
+    assert result.json_failure is None
+
+
+@pytest.mark.asyncio
 async def test_invalid_utf8_preserves_http_facts_and_reports_json_failure() -> None:
     result = await WmsClient(_FakeTransport(_response(body=b"\xff", status_code=502))).get("/decision")
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, TypeGuard, cast
 
 from src.app.transport.contracts import TransportContractError
-from src.app.wms_adapter.strict_json import StrictJsonError, loads_strict_json
+from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
 from src.app.wms_adapter.transport_wire import UnsupportedTransportOperation, validate_callback_envelope
 from src.core.uuid7 import is_uuid7
 from src.utils.timezone import timezone
@@ -102,8 +102,10 @@ def _decode_raw_envelope(
     except UnicodeDecodeError:
         return None, False, TransportEventResponse(400, {})
     try:
-        value = loads_strict_json(decoded)
+        value = loads_transport_json(decoded)
     except StrictJsonError as error:
+        if error.duplicate_key:
+            return None, False, TransportEventResponse(400, {})
         operation_id = error.operation_id
         operation = error.operation
         if not _is_wire_operation_id(operation_id) or not _is_wire_operation(operation):

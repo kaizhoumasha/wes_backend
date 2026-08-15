@@ -226,6 +226,7 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
+_CONFLICT_DATA_SCHEMA = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
 _REASON_CODE_SCHEMA = {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}
 _REASON_DATA_SCHEMA = {
     "oneOf": [
@@ -250,7 +251,7 @@ TRANSPORT_EVENT_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"description": "部署 profile 不允许无签名 callback", "x-operational-error": True},
     409: {
         "description": "operation_id 或 outcome_revision 身份冲突",
-        "content": {"application/json": {"schema": _ack_schema("CONFLICT", _ACK_TASK_DATA_SCHEMA)}},
+        "content": {"application/json": {"schema": _ack_schema("CONFLICT", _CONFLICT_DATA_SCHEMA)}},
     },
     413: {"description": "请求体超过固定上限"},
     422: {

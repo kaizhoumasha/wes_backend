@@ -112,6 +112,8 @@ def _validate_result_data(value: object) -> dict[str, Any]:
             raise TransportContractError("duplicate result container_id")
         container_ids.add(container_id)
         normalized.append(result)
+    if [result["container_id"] for result in normalized] != sorted(container_ids):
+        raise TransportContractError("results must be sorted by container_id")
     data["results"] = normalized
     return data
 

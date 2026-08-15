@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
-from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_strict_json
+from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA, TRANSPORT_EVENT_RESPONSES
 from src.core.task_queue_gateway import task_queue_gateway
@@ -45,8 +45,10 @@ def _unavailable_ack(raw_body: bytes) -> JSONResponse | Response:
     except UnicodeDecodeError:
         return Response(status_code=400)
     try:
-        raw_envelope = loads_strict_json(decoded)
+        raw_envelope = loads_transport_json(decoded)
     except StrictJsonError as error:
+        if error.duplicate_key:
+            return Response(status_code=400)
         operation_id = error.operation_id
         if not _is_wire_operation_id(operation_id) or not _is_wire_operation(error.operation):
             return Response(status_code=400)

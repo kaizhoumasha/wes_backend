@@ -348,6 +348,26 @@ def test_missing_transport_runtime_returns_unavailable_ack_for_associated_reques
     assert isinstance(response.json()["timestamp"], int)
 
 
+def test_missing_transport_runtime_rejects_nested_duplicate_key_before_association() -> None:
+    module = _events_module()
+    app = FastAPI()
+    app.state.transport_runtime = None
+    app.state.wms_inbound_auth_policy = _none_policy(module)
+    app.include_router(module.router, prefix="/api/v1/wms")
+    raw_body = (
+        b'{"operation_id":"01988ef1-4d2a-7000-8000-000000000001",'
+        b'"operation":"transport.task.member_position_changed@v1","timestamp":1,'
+        b'"data":{"transport_task_id":"transport-1","container_id":"bin-1",'
+        b'"milestone":"SOURCE_PICKED","milestone":"TARGET_PLACED"}}'
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 400
+    assert response.content == b""
+
+
 @pytest.mark.parametrize(
     ("envelope", "expected_status"),
     (

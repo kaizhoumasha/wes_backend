@@ -764,7 +764,7 @@ heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Transport 领域合同、持久化约束、领取和收敛由隔离 PostgreSQL 验收。
 [[mapping]]
-source_glob = "src/app/transport/{contracts.py,models.py,repository.py,service.py}"
+source_glob = "src/app/transport/{callback_json.py,contracts.py,models.py,repository.py,service.py}"
 heavy_tests = [
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",

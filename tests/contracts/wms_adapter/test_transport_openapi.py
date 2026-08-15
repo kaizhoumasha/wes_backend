@@ -42,6 +42,27 @@ def test_transport_openapi_exposes_only_v02_callback_identity_shapes() -> None:
     assert '"BUSY"' not in serialized
 
 
+def test_transport_openapi_allows_conflict_without_an_associated_task() -> None:
+    document = build_transport_openapi_document()
+    data_schema = document["paths"]["/api/v1/wms/events"]["post"]["responses"]["409"]["content"]["application/json"][
+        "schema"
+    ]["properties"]["data"]
+
+    assert data_schema == {
+        "oneOf": [
+            {"type": "object", "additionalProperties": False, "required": [], "properties": {}},
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["transport_task_id"],
+                "properties": {
+                    "transport_task_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": r".*\S.*"}
+                },
+            },
+        ]
+    }
+
+
 def _walk_schemas(schema: object):
     if isinstance(schema, dict):
         yield schema

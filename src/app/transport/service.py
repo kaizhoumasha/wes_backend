@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError
 
+from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import (
     MAX_SUBMIT_ATTEMPTS,
     TRANSPORT_POSITION_OPERATION,
@@ -279,7 +280,7 @@ class TransportService:
     ) -> dict[str, Any]:
         _validate_persisted_text(operation_id, "operation_id", 36)
         _validate_persisted_text(operation, "operation", 80)
-        encoded = json.dumps(message, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        encoded = canonical_callback_json(message).encode("utf-8")
         message_digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
         ack_timestamp_ms = int(timezone.now_utc().timestamp() * 1000)
@@ -1119,7 +1120,9 @@ def _callback_ack(http_status: int, code: str, timestamp: int, data: dict[str, A
 
 def _resolve_callback_receipt(receipt: TransportCallbackReceipt, message_digest: str) -> dict[str, Any]:
     if receipt.message_digest != message_digest:
-        return _callback_ack(409, "CONFLICT", receipt.response_timestamp_ms, receipt.response_data_json)
+        transport_task_id = receipt.response_data_json.get("transport_task_id")
+        data = {"transport_task_id": transport_task_id} if isinstance(transport_task_id, str) else {}
+        return _callback_ack(409, "CONFLICT", receipt.response_timestamp_ms, data)
     if receipt.response_code == "RECEIVED":
         return _callback_ack(200, "DUPLICATE", receipt.response_timestamp_ms, receipt.response_data_json)
     return _callback_ack(

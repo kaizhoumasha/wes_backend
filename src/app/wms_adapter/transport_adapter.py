@@ -10,7 +10,7 @@ from src.app.transport.submit_snapshot import SUBMIT_OPERATION
 from src.app.wms_adapter.client import OutboundHttpClosedError, WmsRequestBodyTooLargeError
 from src.app.wms_adapter.strict_json import (
     StrictJsonError,
-    loads_strict_json,
+    loads_transport_json,
 )
 from src.app.wms_adapter.strict_json import (
     is_json_utf8_media_type as _valid_json_media_type,
@@ -150,7 +150,7 @@ def _valid_ack_data(data: Mapping[str, object], code: TransportSubmitCode) -> bo
 
 def _decode_frozen_request_body(request_body: bytes) -> dict[str, object] | None:
     try:
-        value = loads_strict_json(request_body.decode("utf-8"))
+        value = loads_transport_json(request_body.decode("utf-8"))
     except (UnicodeDecodeError, StrictJsonError):
         return None
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):

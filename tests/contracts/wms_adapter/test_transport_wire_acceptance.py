@@ -407,6 +407,28 @@ def test_result_callback_rejects_values_outside_closed_member_contract(
         validate_callback_envelope(_envelope(RESULT_OPERATION, data))
 
 
+def test_bin_result_callback_rejects_unsorted_container_ids() -> None:
+    data = _result_data(
+        results=[
+            {
+                "container_id": "container-2",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "POSITION_UNKNOWN",
+            },
+            {
+                "container_id": "container-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "POSITION_UNKNOWN",
+            },
+        ]
+    )
+
+    with pytest.raises(TransportContractError, match="results must be sorted by container_id"):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, data))
+
+
 @pytest.mark.parametrize(
     ("position", "message"),
     [

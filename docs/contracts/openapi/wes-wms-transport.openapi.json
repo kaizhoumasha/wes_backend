@@ -856,19 +856,29 @@
                       "description": "Unix 毫秒时间戳"
                     },
                     "data": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "transport_task_id"
-                      ],
-                      "properties": {
-                        "transport_task_id": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 80,
-                          "pattern": ".*\\S.*"
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [],
+                          "properties": {}
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "transport_task_id"
+                          ],
+                          "properties": {
+                            "transport_task_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 80,
+                              "pattern": ".*\\S.*"
+                            }
+                          }
                         }
-                      }
+                      ]
                     }
                   }
                 }

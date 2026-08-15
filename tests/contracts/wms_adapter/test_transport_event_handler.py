@@ -162,7 +162,7 @@ async def test_handler_rejects_invalid_utf8_or_json(raw_body: bytes) -> None:
 
 
 @pytest.mark.asyncio
-async def test_handler_rejects_nested_duplicate_key_as_associated_invalid_evidence() -> None:
+async def test_handler_rejects_nested_duplicate_key_before_association() -> None:
     recorder = FakeRecorder()
     raw_body = (
         b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
@@ -173,10 +173,8 @@ async def test_handler_rejects_nested_duplicate_key_as_associated_invalid_eviden
 
     response = await TransportEventHandler(recorder).handle(raw_body)
 
-    assert response.http_status == 422
-    assert response.body["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
-    assert response.body["data"] == {"reason_code": "INVALID_EVIDENCE"}
-    assert len(recorder.calls) == 1
+    assert (response.http_status, response.body) == (400, {})
+    assert recorder.calls == []
 
 
 @pytest.mark.asyncio
@@ -236,6 +234,47 @@ async def test_handler_rejects_json_integer_beyond_python_digit_limit() -> None:
 
     assert response.http_status == 400
     assert recorder.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("number", "expected_status", "expected_calls"),
+    [
+        (b"79228162514264337593543950335.0", 422, 1),
+        (b"79228162514264337593543950336.0", 400, 0),
+        (b"1e-28", 422, 1),
+        (b"1e-29", 400, 0),
+        (b"10e-29", 422, 1),
+        (b"1e29", 400, 0),
+        (b"0e-999999999", 422, 1),
+        (b"0e999999999", 422, 1),
+    ],
+    ids=[
+        "max",
+        "coefficient-overflow",
+        "scale-28",
+        "scale-29",
+        "reduced-scale-29",
+        "positive-overflow",
+        "zero-negative-huge-exponent",
+        "zero-positive-huge-exponent",
+    ],
+)
+async def test_handler_enforces_exact_system_decimal_float_domain(
+    number: bytes,
+    expected_status: int,
+    expected_calls: int,
+) -> None:
+    recorder = FakeRecorder()
+    raw_body = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
+        b'"operation":"transport.task.member_position_changed@v1","timestamp":' + number + b',"data":{}}'
+    )
+
+    response = await TransportEventHandler(recorder).handle(raw_body)
+
+    assert response.http_status == expected_status
+    assert len(recorder.calls) == expected_calls
 
 
 @pytest.mark.asyncio

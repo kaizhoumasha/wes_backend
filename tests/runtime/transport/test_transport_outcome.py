@@ -23,6 +23,7 @@ from src.app.transport.models import (
     TransportPositionProjection,
     TransportTask,
 )
+from src.app.wms_adapter.transport_event_handler import TransportEventHandler
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -172,12 +173,70 @@ async def test_associated_invalid_callback_replays_first_rejection_and_conflicts
     assert first["http_status"] == 422
     assert first["code"] == "REJECTED"
     assert (changed["http_status"], changed["code"]) == (409, "CONFLICT")
+    assert changed["data"] == {"transport_task_id": "transport-invalid"}
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         receipts = list(await db.scalars(select(TransportCallbackReceipt)))
         evidence = list(await db.scalars(select(TransportEvidence)))
     assert len(receipts) == 1
     assert evidence == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_float_lexemes_with_same_value_conflict(outcome_service: TransportService) -> None:
+    operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    prefix = f'{{"operation_id":"{operation_id}","operation":"{POSITION_OPERATION}","timestamp":'.encode()
+    suffix = b',"data":{}}'
+
+    first = await TransportEventHandler(outcome_service).handle(prefix + b"1.0" + suffix)
+    changed = await TransportEventHandler(outcome_service).handle(prefix + b"1e0" + suffix)
+
+    assert (first.http_status, first.body["code"]) == (422, "REJECTED")
+    assert (changed.http_status, changed.body["code"]) == (409, "CONFLICT")
+
+
+@pytest.mark.asyncio
+async def test_conflict_without_an_associated_task_has_empty_data(outcome_service: TransportService) -> None:
+    message = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "operation": POSITION_OPERATION,
+        "timestamp": 1,
+        "data": {},
+    }
+
+    await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+    changed = await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message={**message, "timestamp": 2},
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+
+    assert (changed["http_status"], changed["code"], changed["data"]) == (409, "CONFLICT", {})
+
+
+@pytest.mark.asyncio
+async def test_lone_surrogate_dto_is_durably_rejected(outcome_service: TransportService) -> None:
+    raw_body = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472","operation":"'
+        + POSITION_OPERATION.encode()
+        + b'","timestamp":1,"data":{"transport_task_id":"transport-invalid",'
+        b'"container_id":"\\ud800","milestone":"SOURCE_PICKED"}}'
+    )
+    handler = TransportEventHandler(outcome_service)
+
+    first = await handler.handle(raw_body)
+    duplicate = await handler.handle(raw_body)
+
+    assert (first.http_status, first.body["code"]) == (422, "REJECTED")
+    assert duplicate.body == first.body
 
 
 @pytest.mark.asyncio
