@@ -125,7 +125,8 @@ __all__ = ["XxxService", "xxx_service"]
 - ✅ 简短伪代码或极短示例，用于说明约定
 - ✅ 验证命令、测试场景和通过标准
 
-非纯文档实现的细节应在编码阶段通过 TDD、diff、测试和提交体现，而不是塞进规划文档。
+产品功能行为的实现细节应在编码阶段通过 TDD、diff、测试和提交体现；其他类型变更按其风险使用相称的验证，
+而不是把实现细节塞进规划文档。
 
 ### Documentation-only Changes
 
@@ -300,6 +301,20 @@ When modifying existing code, **preserve all valuable comments** — they are cr
 ## Testing Guidelines
 Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 除纯文档变更外，新增或修改行为时应在受影响领域附近补充测试，并覆盖成功和失败路径。
 
+### TDD 适用边界
+
+TDD 只对新增产品功能，或修复、修改会改变产品可观察运行行为的生产代码强制执行。此类实施必须先建立能够失败的行为测试，
+再完成最小实现并验证转绿。
+
+**STRICTLY FORBIDDEN**:
+
+- ❌ 对文档、规划、项目规则、注释、格式化、代码评审、调查分析等非功能性工作强制要求 TDD
+- ❌ 对仅测试维护、测试归属调整、selector/测试治理、CI/构建/开发工具脚本、配置、依赖或元数据变更，把 RED→GREEN 作为硬性前置条件
+- ❌ 对不改变产品可观察行为的重构、性能整理、迁移维护或数据治理，机械地新增失败测试以满足流程形式
+
+上述非功能性变更仍必须执行与风险相称的验证；必要时可以补充测试，但不得把 TDD 作为开工、验收或提交的强制门槛。
+代码与其他类型变更混合时，只对其中改变产品功能行为的生产代码切片执行 TDD。
+
 ### Test Suite Governance
 
 所有 Agent 新增、移动、拆分或删除测试时，必须遵守 [`tests/README.md`](tests/README.md) 的目录归属、默认快速回归和重测试边界。
@@ -351,6 +366,10 @@ uv run pytest --collect-only -q -o addopts='' | tail -5
 
 正常提交时，最后一条完整 QUALITY 由仓库 `pre-commit` hook 执行并作为本地提交证据；同一 staged 快照不得在提交前手工运行后又立即由 hook 重复运行。仅在不提交或诊断 hook 时手工执行完整 profile。
 
+启动正常 `git commit` 前，如果暂存区包含 Python 文件，必须先对这些变更文件运行聚焦
+`uv run ruff format --check <files>` 和 `uv run ruff check <files>`。该快速预检用于在完整 QUALITY 之前发现格式与静态检查错误，
+不能替代正常提交 hook，也不得因此重复手工运行完整 QUALITY。
+
 If a change intentionally touches integration / e2e / resilience / load / mock behavior, explicitly run the affected heavy-test directory and mention it in the PR. Do not rely on default pytest collection for those suites.
 
 ### 代码评审与验证职责
@@ -362,7 +381,7 @@ If a change intentionally touches integration / e2e / resilience / load / mock b
 - 发起评审时必须提供精确 review base/head、`git status --short`、评审范围、selector scope/manifest、已执行命令、结果和 JUnit 路径；存在 staged、unstaged 或 untracked 差异时必须显式列出，不得只用 `HEAD_SHA` 冒充当前工作区快照。
 - 验证证据必须记录 repository、base/head 或 staged tree、selector manifest、命令、结果和报告路径。完全相同的快照与 manifest 复用原证据；不得先对等价 unstaged 快照执行完整 selected HEAVY，再为 staged 标签重复执行同一批测试。
 - 证据按变更面失效：人类阅读文档只使文档核验失效；测试或 selector 配置只使对应测试/selector 证据失效；生产代码使直接 FAST/合同与受影响 HEAVY 失效；migration 使临时数据库 HEAVY 失效；review base/head 变化使完整 diff 评审失效。失效证据标记为 `STALE`，不得写成当前通过。
-- 收到评审意见后，先按 TDD 运行直接受影响测试；需要提交修复时，对该修复的精确 staged diff 运行 selector、选中的 HEAVY 和 GitNexus detect changes。中间评审轮次不重复运行完整分支 HEAVY，也不重复执行同一 staged 快照已通过的门禁。
+- 收到评审意见后，先判断变更类型：产品功能行为修复按 TDD 运行直接受影响测试，其他修复只运行与风险相称的聚焦检查；需要提交修复时，对该修复的精确 staged diff 运行 selector、选中的 HEAVY 和 GitNexus detect changes。中间评审轮次不重复运行完整分支 HEAVY，也不重复执行同一 staged 快照已通过的门禁。
 - 多轮评审采用“首轮 fresh reviewer 完整 diff → 原 reviewer 定向 closure check → 最终 fresh reviewer 完整 diff”。最终 reviewer 仍发现新问题时重新进入该序列；停止条件不降低，但中间修复不反复派发完整重审。
 - Critical/Important 意见全部清零后，主 Agent 必须对最终 `origin/develop...HEAD`（或计划冻结的 implementation base）执行一次完整 QUALITY、selected HEAVY 和 GitNexus 变更检测；此最终证据生成后若代码再次变化，必须重新生成。
 - 高风险计划可以要求更强的最终门禁，但不得把 HEAVY 执行下放给 reviewer subagent，也不得让多个 reviewer 对同一快照重复执行相同重测试。
