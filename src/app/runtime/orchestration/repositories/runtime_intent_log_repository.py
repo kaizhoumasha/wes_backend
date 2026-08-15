@@ -50,10 +50,13 @@ class RuntimeIntentLogRepository:
     ) -> SystemCapabilityClaimResult:
         """在唯一 RuntimeIntentLog ledger 上执行 provisional claim。"""
 
+        operation_kind = values.get("operation_kind")
+        if not isinstance(operation_kind, str) or not operation_kind.strip():
+            raise ValueError("runtime intent effect claim 必须显式提供非空 operation_kind")
         table = cast("Any", RuntimeIntentLog).__table__
         identity = {
             "provider_code": values["provider_code"],
-            "operation_kind": values["operation_kind"],
+            "operation_kind": operation_kind,
             "idempotency_key": values["idempotency_key"],
         }
         dialect_name = db.get_bind().dialect.name
@@ -84,8 +87,6 @@ class RuntimeIntentLogRepository:
             "target_action": values["operation_identity"],
             "idempotency_key": values["idempotency_key"],
             "request_hash": values["request_hash"],
-            "plugin_key": values["plugin_key"],
-            "plugin_contract_version": values["plugin_contract_version"],
             "capability_key": values["capability_key"],
             "capability_contract_version": values["capability_contract_version"],
             "operation_identity": values["operation_identity"],

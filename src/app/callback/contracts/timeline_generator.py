@@ -1,11 +1,7 @@
-"""Callback 域 timeline 生成器 — legacy runtime.timeline_generator 镜像。
+"""Callback 域 timeline 生成器。
 
-镜像说明:
-- TimelineGenerator 与 legacy runtime.timeline_generator.TimelineGenerator 行为一致,
-  公开方法签名 `generate(session, stage, action_type, ...)` 与 legacy runtime 等价。
-- Timeline 模型继续引用 src.app.workline.models.timeline (callback 域合法
-  依赖,不构成跨域)。
-- timeline_generator 单例保持 callback 域可见。
+``TimelineGenerator`` 通过当前 runtime orchestration timeline 模型生成统一记录，
+``timeline_generator`` 单例由 callback 域直接持有。
 """
 
 from __future__ import annotations

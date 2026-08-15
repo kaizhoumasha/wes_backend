@@ -231,6 +231,7 @@ async def test_idempotency_guard_does_not_autoflush_unrelated_pending_rows(db_se
         provider_code="WES",
         target_domain="device",
         target_action="dispatch",
+        operation_kind="DEVICE_DISPATCH",
         idempotency_key="WES-DEVICE_DISPATCH-pending",
         request_hash="sha256-pending",
         dispatch_key="WES-DEVICE_DISPATCH-pending",

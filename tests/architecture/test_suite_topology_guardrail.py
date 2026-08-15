@@ -69,7 +69,9 @@ def test_test_files_stay_in_governed_top_level_directories() -> None:
     assert actual_directories <= FINAL_TEST_DIRECTORY_ALLOWLIST
 
 
-def test_pre_commit_always_executes_quality_gate() -> None:
+def test_pre_commit_routes_docs_only_changes_before_quality_fallback() -> None:
     hook_text = (REPO_ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
 
+    assert "--no-renames" in hook_text
+    assert "git diff --cached --check" in hook_text
     assert 'exec ./scripts/git-quality-gate.sh --profile "quality"' in hook_text

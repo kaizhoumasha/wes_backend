@@ -1,14 +1,12 @@
-"""Callback 域 utils + contracts mirror 完整性测试。
+"""Callback 域 utils 与 contracts 当前合同完整性测试。
 
-校验 callback 域从 src.workline_runtime 解耦后,本地镜像 (callback/utils 与
-callback/contracts) 对外公开 API 与 legacy runtime 镜像版本行为一致。
-
-注:这是 mirror 完整性测试,不重 legacy runtime 测试,只验证本地镜像能 import + 关键
-API 行为(TraceContext 字段填充 / TimelineGenerator 返回值 / utils 边界)。
+校验 callback 本地合同可独立导入，并与当前 WorkLine TraceContext 身份语义保持对称。
+这里只验证关键 API 行为，包括 TraceContext 字段填充、TimelineGenerator 返回值与 utils 边界。
 """
 
 from __future__ import annotations
 
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -81,25 +79,30 @@ def test_tracecontext_from_request_populates_minimal_fields() -> None:
 
 
 @pytest.mark.parametrize("context_type", [TraceContext, WorkLineTraceContext])
-def test_tracecontext_with_session_ignores_retired_plugin_fields(context_type: type[TraceContext]) -> None:
+def test_tracecontext_dataclasses_exclude_retired_plugin_fields(context_type: type[TraceContext]) -> None:
+    assert {field.name for field in fields(context_type)}.isdisjoint({"plugin_key", "contract_version"})
+
+
+@pytest.mark.parametrize("context_type", [TraceContext, WorkLineTraceContext])
+def test_tracecontext_with_session_ignores_retired_plugin_identity(context_type: type[TraceContext]) -> None:
     t = context_type.from_request(request_id="req-x").with_session(_StubSession())
     assert t.session_id == 99
     assert t.workline_id == 7
     assert t.trace_id == "sess-trace"
     assert t.request_id == "req-1"
-    assert t.plugin_key is None
-    assert t.contract_version is None
+    assert "plugin_key" not in t.as_dict()
+    assert "contract_version" not in t.as_dict()
 
 
 @pytest.mark.parametrize("context_type", [TraceContext, WorkLineTraceContext])
-def test_tracecontext_with_workline_ignores_retired_plugin_fields(context_type: type[TraceContext]) -> None:
+def test_tracecontext_with_workline_ignores_retired_plugin_identity(context_type: type[TraceContext]) -> None:
     workline = SimpleNamespace(id=7, plugin_key="plug-a", contract_version="v1")
 
     t = context_type.from_request(request_id="req-x").with_workline(workline)
 
     assert t.workline_id == 7
-    assert t.plugin_key is None
-    assert t.contract_version is None
+    assert "plugin_key" not in t.as_dict()
+    assert "contract_version" not in t.as_dict()
 
 
 def test_tracecontext_with_command_fills_command_fields() -> None:
@@ -109,8 +112,8 @@ def test_tracecontext_with_command_fills_command_fields() -> None:
     assert t.trace_id == "cmd-trace"
     assert t.device_id == 42
     assert t.workline_id == 7
-    assert t.plugin_key == "plug-c"
-    assert t.contract_version == "v1"
+    assert "plugin_key" not in t.as_dict()
+    assert "contract_version" not in t.as_dict()
 
 
 def test_tracecontext_with_inbox_extracts_payload_event_type_fallback() -> None:

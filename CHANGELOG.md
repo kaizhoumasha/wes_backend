@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1.0] - 2026-08-16
+
+### Added
+- 为退役插件残余增加统一的 PostgreSQL schema 验收和精确 HEAVY 影响映射，可在全新数据库上一次验证诊断、暂停、NG 原因和运行时意图的最终结构。
+- 补充 Rocky Linux 基础支撑离线交付包说明，并固化实施、评审、QA 与 ship 之间的验证证据交接规则。
+
+### Changed
+- Callback 与 Runtime 诊断统一使用 `WORKFLOW_EXECUTION_FAILED`、`WORKFLOW_TRANSITION_INVALID` 和 `WORKFLOW` 域，不再暴露插件身份或插件错误域。
+- RuntimeHold 与 NG 原因只接受 `DEVICE_ERROR`、`RUNTIME`、`MANUAL` 三类共享来源；查询与释放接口不再携带插件字段。
+- RuntimeIntentLog 只保留当前 Capability 身份，`operation_kind` 改为显式必填且数据库不再提供插件默认值；claim 入口在访问数据库前拒绝缺失或空白值。
+- HEAVY selector 的 glob 重叠校验复用缓存结果，提交门禁对纯人类阅读文档只执行文档相称检查，对机器合同和代码继续运行完整 QUALITY。
+- 同步插件退役后的架构计划、阶段所有权、观测合同和 Rocky Linux 初始化记录，使当前文档不再把旧插件执行闭包当作现役能力。
+
+### Fixed
+- 修复诊断 Trace、RuntimeHold、RuntimeIntentLog 与数据库当前 head 之间仍残留插件字段、索引、CHECK 约束和默认值的问题。
+- 修复 selector 精确映射缺少内容指纹、测试所有权与实施事实不一致，以及运行时意图必填 fixture 仍使用旧合同的问题。
+
+### Removed
+- 删除无生产消费者的 recorded replay 草案、Timeline repository、包导出及其专属测试，不保留兼容入口或替代 facade。
+- 删除北向观测中的 `PLUGIN_EXECUTION` 阶段，以及诊断、暂停、NG 原因和运行时意图中的退役插件身份字段与错误码。
+
+### Verification
+- QUALITY 全门禁通过：304 个 selector 合同通过；FAST 为 3252 passed、4 个既有条件 skip；Ruff、Bandit、架构和测试拓扑检查均通过。
+- 受影响的 8 个 HEAVY owner 在隔离 PostgreSQL、Redis 和 Celery 环境下 47 passed、0 skipped；覆盖审计为 86%，预落地评审无剩余意见。
+
 ## [0.26.0.0] - 2026-08-14
 
 ### Added

@@ -13,6 +13,7 @@ import unicodedata
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path, PurePosixPath
 
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
@@ -207,6 +208,7 @@ def _segment_transitions(pattern: str, position: int, character: str) -> set[int
     return {position + 1} if glob_character == character else set()
 
 
+@cache
 def _segment_patterns_overlap(left: str, right: str) -> bool:
     # 有限字符表包含所有 ASCII 路径字符及 glob 中的非 ASCII 字面量；足以区分字符类与通配符。
     alphabet = {chr(codepoint) for codepoint in range(32, 127) if chr(codepoint) != "/"}

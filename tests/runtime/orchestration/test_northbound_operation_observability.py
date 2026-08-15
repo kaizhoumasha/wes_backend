@@ -128,7 +128,6 @@ def test_northbound_trace_stage_and_outcome_are_closed_sets() -> None:
     registry = RuntimeObservabilityRegistry()
     signal = registry.signals["northbound.operation.query_inventory"]
     assert signal.allowed_values["stage"] == {
-        "PLUGIN_EXECUTION",
         "QUERY_EVIDENCE",
         "POLICY_DECISION",
         "RUNTIME_INTENT_LOG",
@@ -148,6 +147,11 @@ def test_northbound_trace_stage_and_outcome_are_closed_sets() -> None:
         "stage": "CALLBACK",
     }
     assert registry.validate("northbound.operation.query_inventory", attributes).valid is True
+
+    attributes["stage"] = "PLUGIN_EXECUTION"
+    retired = registry.validate("northbound.operation.query_inventory", attributes)
+    assert retired.valid is False
+    assert retired.reason == "ATTRIBUTE_VALUE_NOT_ALLOWED"
 
     attributes["stage"] = "arbitrary-tenant-stage"
     invalid = registry.validate("northbound.operation.query_inventory", attributes)

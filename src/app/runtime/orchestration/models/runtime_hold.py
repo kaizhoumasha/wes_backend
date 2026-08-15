@@ -17,7 +17,6 @@ from src.database.schema_conf import SchemaType
 class _LocalNgReasonSource(str, Enum):
     """本地副本,避免引入 domain.ng_reason 触发反向循环。"""
 
-    PLUGIN = "PLUGIN"
     DEVICE_ERROR = "DEVICE_ERROR"
     RUNTIME = "RUNTIME"
     MANUAL = "MANUAL"
@@ -110,8 +109,6 @@ class RuntimeHold(
         description="关联原始 WorklineSession.id",
     )
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="统一 trace ID")
-    plugin_key: str | None = Field(default=None, max_length=100, index=True, description="插件 key")
-    contract_version: str | None = Field(default=None, max_length=50, description="插件契约版本")
 
     source_kind: str = Field(max_length=100, index=True, description="来源类型")
     source_reason: str = Field(max_length=200, index=True, description="来源原因")

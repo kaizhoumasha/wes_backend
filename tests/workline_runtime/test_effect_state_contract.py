@@ -260,6 +260,13 @@ def test_dispatch_key_is_excluded_from_update_schema() -> None:
     assert "dispatch_key" not in SystemOutboxUpdate.model_fields
 
 
+def test_runtime_intent_log_requires_explicit_operation_kind() -> None:
+    operation_kind = RuntimeIntentLog.model_fields["operation_kind"]
+
+    assert operation_kind.is_required()
+    assert RuntimeIntentLog.__table__.c.operation_kind.nullable is False
+
+
 def test_runtime_intent_log_owns_semantic_state_only_and_dispatch_keys_are_unique_on_both_ledgers() -> None:
     _require_effect_state_contract()
     runtime_fields = RuntimeIntentLog.model_fields

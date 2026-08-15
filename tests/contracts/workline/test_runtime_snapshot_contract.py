@@ -57,6 +57,7 @@ def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation()
         provider_code="ECS",
         target_domain="device",
         target_action="dispatch_command",
+        operation_kind="DEVICE_DISPATCH",
         idempotency_key="WES-DEVICE-001",
         request_hash="sha256-001",
         dispatch_key="device-command:001",

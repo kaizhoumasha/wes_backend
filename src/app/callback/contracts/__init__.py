@@ -1,21 +1,15 @@
 """Callback 域 contracts（跨域 import 解耦镜像）。
 
-本包承载 callback 域真正使用的诊断契约 (ErrorCode/ErrorDomain/...)
-与运行时事件 / TraceContext / 时间线生成器。
-
-来源镜像自 `src.workline_runtime.{diagnostics,trace_context,runtime_events,
-timeline_generator,plugin_sdk.normalizers.event_mapper}`,
-目的是切断 callback 域对 `src.workline_runtime` 的反向依赖 (主计划 §10.3
-跨域修复要求)。
+本包承载 callback 入站边界使用的诊断契约、运行时事件、TraceContext
+与时间线生成器。诊断模型和错误码与
+``src.app.runtime.orchestration.diagnostics`` 保持当前合同对称。
 
 约束:
-- 这是镜像副本,与 legacy runtime 源保持契约对齐 (ErrorCode 枚举值不变,
-  build_diagnostic_* 函数签名不变,canonicalize_event_type 的生产事件
-  source 映射行为不变; callback ingress 额外保留平台/安全事件 source 原值)。
-- runtime 重构收口时会与 `src.app.runtime.orchestration` 的 contracts
-  合并,届时本包整体迁入 runtime orchestration 域。
-- 本模块不导入 `src.workline_runtime.*`,内部依赖仅限 `src.utils.*` 与
-  本包内其它模块。
+- 两侧只同步当前诊断语义；字段或错误码退役时必须同时收敛，不保留 legacy 兼容入口。
+- ``canonicalize_event_type`` 保持生产事件 source 映射行为；callback ingress
+  额外保留平台与安全事件 source 原值。
+- 本地诊断镜像不反向导入 runtime diagnostics 实现；``TimelineGenerator`` 明确复用
+  runtime orchestration 的共享 timeline 模型。
 """
 
 from __future__ import annotations

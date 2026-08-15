@@ -101,8 +101,6 @@ class TraceContextResponse(BaseModel):
     dispatch_key: str | None = None
     canonical_event_type: str | None = None
     transition: str | None = None
-    plugin_key: str | None = None
-    contract_version: str | None = None
 
 
 class TraceCallbackLogItem(BaseModel):
@@ -286,7 +284,6 @@ class TraceDiagnosticContextItem(BaseModel):
     device_code: str | None = None
     workline_id: int | None = None
     workline_code: str | None = None
-    plugin_key: str | None = None
     canonical_event_type: str | None = None
     transition: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
@@ -412,8 +409,6 @@ class RuntimeWorklineSummary(BaseModel):
     line_name: str
     line_type: str
     zone_name: str | None = None
-    plugin_key: str | None = None
-    contract_version: str | None = None
     is_active: bool
     device_count: int = 0
     active_session_count: int = 0

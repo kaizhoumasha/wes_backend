@@ -114,3 +114,9 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 **Effort:** M (human: ~1 day / CC: ~30 min)
 
 **Priority:** P3
+
+---
+
+## Completed
+
+当前没有已完成待办；完成记录以版本号和日期随发布移动到本节。

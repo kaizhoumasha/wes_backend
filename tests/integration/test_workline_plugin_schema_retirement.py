@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
 
+import asyncpg
 import pytest
 
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.workline.models.workline import WorkLine
 from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
-
-if TYPE_CHECKING:
-    import asyncpg
-
 
 _RETIRED_COLUMNS: dict[tuple[str, str], frozenset[str]] = {
     ("wes_biz", "work_lines"): frozenset(
@@ -66,6 +65,9 @@ _RETIRED_COLUMNS: dict[tuple[str, str], frozenset[str]] = {
             "plugin_state_version",
         }
     ),
+    ("wes_runtime", "runtime_intent_logs"): frozenset({"plugin_key", "plugin_contract_version"}),
+    ("wes_biz", "workline_diagnostics"): frozenset({"plugin_key"}),
+    ("wes_biz", "runtime_holds"): frozenset({"plugin_key", "contract_version"}),
 }
 
 _RETIRED_TABLES = frozenset(
@@ -96,6 +98,8 @@ _RETIRED_INDEXES = frozenset(
         "ix_wes_runtime_execution_sessions_plugin_binding_id",
         "ix_wes_runtime_execution_work_items_plugin_key",
         "ix_wes_runtime_execution_work_items_plugin_binding_id",
+        "ix_wes_runtime_runtime_intent_logs_plugin_key",
+        "ix_wes_biz_runtime_holds_plugin_key",
     }
 )
 
@@ -104,6 +108,14 @@ _MODELS_BY_TABLE = {
     ("wes_biz", "workline_sessions"): WorklineSession,
     ("wes_runtime", "execution_sessions"): ExecutionSession,
     ("wes_runtime", "execution_work_items"): ExecutionWorkItem,
+    ("wes_runtime", "runtime_intent_logs"): RuntimeIntentLog,
+    ("wes_biz", "workline_diagnostics"): WorklineDiagnostic,
+    ("wes_biz", "runtime_holds"): RuntimeHold,
+}
+
+_NG_REASON_SOURCE_CONSTRAINTS = {
+    "runtime_holds": "ck_runtime_holds_ngreasonsource",
+    "ng_return_items": "ck_ng_return_items_ngreturnitemngreasonsource",
 }
 
 
@@ -145,6 +157,86 @@ async def _index_names(connection: asyncpg.Connection) -> set[str]:
     return {str(row["indexname"]) for row in rows}
 
 
+async def _ng_reason_source_check_definitions(
+    connection: asyncpg.Connection,
+    *,
+    table: str,
+) -> dict[str, str]:
+    rows = await connection.fetch(
+        """
+        SELECT constraint_row.conname,
+               pg_get_constraintdef(constraint_row.oid) AS definition
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS table_row ON table_row.oid = constraint_row.conrelid
+        JOIN pg_namespace AS namespace_row ON namespace_row.oid = table_row.relnamespace
+        WHERE namespace_row.nspname = 'wes_biz'
+          AND table_row.relname = $1
+          AND constraint_row.contype = 'c'
+          AND pg_get_constraintdef(constraint_row.oid) LIKE '%ng_reason_source%'
+        """,
+        table,
+    )
+    return {str(row["conname"]): str(row["definition"]) for row in rows}
+
+
+async def _insert_ng_reason_source_rows(connection: asyncpg.Connection) -> tuple[int, int]:
+    workline_id = await connection.fetchval(
+        """
+        INSERT INTO wes_biz.work_lines (
+            created_at, line_code, line_name, line_type, is_active
+        ) VALUES (
+            CURRENT_TIMESTAMP, 'NG-SOURCE-CHECK', 'NG source constraint check', 'AUTO', FALSE
+        )
+        RETURNING id
+        """
+    )
+    session_id = await connection.fetchval(
+        """
+        INSERT INTO wes_biz.workline_sessions (
+            created_at, session_code, workline_id, run_mode, status
+        ) VALUES (
+            CURRENT_TIMESTAMP, 'NG-SOURCE-CHECK', $1, 'AUTO', 'NEW'
+        )
+        RETURNING id
+        """,
+        workline_id,
+    )
+    hold_id = await connection.fetchval(
+        """
+        INSERT INTO wes_biz.runtime_holds (
+            created_at, hold_type, status, blocking, workline_id, session_id,
+            source_kind, source_reason, source_idempotency_key, ng_reason_source
+        ) VALUES (
+            CURRENT_TIMESTAMP, 'MANUAL_HOLD', 'OPEN', TRUE, $1, $2,
+            'INTERNAL_EVENT', 'NG source constraint check', 'ng-source-check-hold', 'DEVICE_ERROR'
+        )
+        RETURNING id
+        """,
+        workline_id,
+        session_id,
+    )
+    item_id = await connection.fetchval(
+        """
+        INSERT INTO wes_biz.ng_return_items (
+            created_at, source_workline_id, source_session_id, material_identity_key,
+            material_identity_json, physical_handoff_evidence_json, disposition,
+            ng_reason_source, ng_reason_code, ng_reason_label,
+            created_from_runtime_hold_id, status
+        ) VALUES (
+            CURRENT_TIMESTAMP, $1, $2, 'ng-source-check-material',
+            '{}'::json, '{}'::json, 'RETURN_TO_NG',
+            'DEVICE_ERROR', 'DEVICE_ERROR_CHECK', 'Device error check',
+            $3, 'WAITING_REWORK'
+        )
+        RETURNING id
+        """,
+        workline_id,
+        session_id,
+        hold_id,
+    )
+    return int(hold_id), int(item_id)
+
+
 @pytest.mark.integration
 def test_upgrade_head_retires_workline_plugin_execution_schema() -> None:
     """空库升级到 head 后，旧插件执行闭包不得保留任何 Schema 所有权。"""
@@ -175,6 +267,126 @@ def test_upgrade_head_retires_workline_plugin_execution_schema() -> None:
 
                 assert _RETIRED_FOREIGN_KEYS.isdisjoint(await _foreign_key_names(connection))
                 assert _RETIRED_INDEXES.isdisjoint(await _index_names(connection))
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_upgrade_head_removes_runtime_intent_operation_kind_default() -> None:
+    """空库升级到 head 后，operation_kind 不得由数据库伪造插件意图类型。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            connection = await connect(database)
+            try:
+                column_default = await connection.fetchval(
+                    """
+                    SELECT column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = 'wes_runtime'
+                      AND table_name = 'runtime_intent_logs'
+                      AND column_name = 'operation_kind'
+                    """
+                )
+                assert column_default is None
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_upgrade_head_rejects_runtime_intent_without_operation_kind() -> None:
+    """数据库必须直接拒绝缺失 operation_kind 的 RuntimeIntentLog。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            connection = await connect(database)
+            try:
+                with pytest.raises(asyncpg.NotNullViolationError, match="operation_kind"):
+                    async with connection.transaction():
+                        await connection.execute("SET LOCAL session_replication_role = replica")
+                        await connection.execute(
+                            """
+                            INSERT INTO wes_runtime.runtime_intent_logs (
+                                correlation_id,
+                                provider_code,
+                                target_domain,
+                                target_action,
+                                idempotency_key,
+                                request_hash,
+                                dispatch_key,
+                                binding_snapshot_json,
+                                provider_snapshot_json,
+                                precondition_json,
+                                effect_status,
+                                outcome_json,
+                                outcome_history_json,
+                                status_check_count,
+                                status_resubmit_count,
+                                status_binding_snapshot_json
+                            ) VALUES (
+                                'missing-operation-kind-correlation',
+                                'RUNTIME',
+                                'runtime',
+                                'runtime.test',
+                                'missing-operation-kind',
+                                repeat('a', 64),
+                                'missing-operation-kind-dispatch',
+                                '{}'::json,
+                                '{}'::json,
+                                '{}'::json,
+                                'PROPOSED',
+                                '{}'::json,
+                                '[]'::json,
+                                0,
+                                0,
+                                '{}'::json
+                            )
+                            """
+                        )
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_upgrade_head_restricts_ng_reason_source_to_shared_runtime_sources() -> None:
+    """两张持久表只接受 DEVICE_ERROR/RUNTIME/MANUAL，拒绝退役 PLUGIN。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            connection = await connect(database)
+            try:
+                hold_id, item_id = await _insert_ng_reason_source_rows(connection)
+                for table, row_id in (("ng_return_items", item_id), ("runtime_holds", hold_id)):
+                    definitions = await _ng_reason_source_check_definitions(connection, table=table)
+                    assert set(definitions) == {_NG_REASON_SOURCE_CONSTRAINTS[table]}, (table, definitions)
+                    definition = next(iter(definitions.values()))
+                    assert "DEVICE_ERROR" in definition
+                    assert "RUNTIME" in definition
+                    assert "MANUAL" in definition
+                    assert "PLUGIN" not in definition, (table, definitions)
+
+                    for source in ("DEVICE_ERROR", "RUNTIME", "MANUAL"):
+                        await connection.execute(
+                            f'UPDATE wes_biz."{table}" SET ng_reason_source = $1 WHERE id = $2',
+                            source,
+                            row_id,
+                        )
+                    for unsupported_source in ("PLUGIN", "UNSUPPORTED"):
+                        with pytest.raises(asyncpg.CheckViolationError):
+                            await connection.execute(
+                                f'UPDATE wes_biz."{table}" SET ng_reason_source = $1 WHERE id = $2',
+                                unsupported_source,
+                                row_id,
+                            )
             finally:
                 await connection.close()
 

@@ -28,7 +28,6 @@ NorthboundOutcome = Literal[
     "RECONCILING",
 ]
 NorthboundTraceStage = Literal[
-    "PLUGIN_EXECUTION",
     "QUERY_EVIDENCE",
     "POLICY_DECISION",
     "RUNTIME_INTENT_LOG",

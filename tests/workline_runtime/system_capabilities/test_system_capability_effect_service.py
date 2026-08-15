@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentStatus
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog, RuntimeIntentStatus
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
@@ -283,6 +283,13 @@ def _ctx(db: _Db | None = None) -> dict[str, object]:
     }
 
 
+def test_runtime_intent_log_exposes_only_current_capability_identity() -> None:
+    columns = set(RuntimeIntentLog.__table__.columns.keys())
+
+    assert {"plugin_key", "plugin_contract_version"}.isdisjoint(columns)
+    assert {"capability_key", "capability_contract_version", "provider_code"} <= columns
+
+
 def _service(
     definition: SystemCapabilityDefinition,
     repository: _EffectRepository,
@@ -512,6 +519,7 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
     assert "work-item:41" in claim["idempotency_key"]
     assert claim["idempotency_key"].endswith(":operation-1")
     assert claim["dispatch_key"] == "system-capability:test.effect:operation-1"
+    assert {"plugin_key", "plugin_contract_version"}.isdisjoint(claim)
 
 
 @pytest.mark.asyncio

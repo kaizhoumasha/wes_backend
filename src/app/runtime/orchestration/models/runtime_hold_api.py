@@ -64,8 +64,6 @@ class RuntimeHoldSummary(BaseModel):
     workline_id: int
     session_id: int | None = None
     trace_id: str | None = None
-    plugin_key: str | None = None
-    contract_version: str | None = None
     source_reason: str
     material_disposition: str | None = None
     ng_reason_code: str | None = None
@@ -152,8 +150,6 @@ class NgReasonOption(BaseModel):
     source: str
     code: str
     label: str
-    plugin_key: str | None = None
-    contract_version: str | None = None
     maps_from: list[str] = Field(default_factory=list)
 
 

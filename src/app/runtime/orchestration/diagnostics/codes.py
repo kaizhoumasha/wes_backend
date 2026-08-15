@@ -16,7 +16,6 @@ class ErrorDomain(str, Enum):
 
     用于回答“问题首先落在哪个边界”：
     - 设备连不上、设备超时：``DEVICE``
-    - 插件抛错、插件状态推进错误：``PLUGIN``
     - Session / 工作流推进失败：``WORKFLOW``
     - 外部系统契约或集成链路问题：``INTEGRATION``
     - 纯网络链路故障：``NETWORK``
@@ -26,7 +25,6 @@ class ErrorDomain(str, Enum):
     """
 
     DEVICE = "DEVICE"  # 设备侧问题，如设备不可达、设备超时等。
-    PLUGIN = "PLUGIN"  # 插件执行或插件状态迁移相关问题。
     WORKFLOW = "WORKFLOW"  # 作业流上下文、会话推进或流程编排问题。
     INTEGRATION = "INTEGRATION"  # 外部系统集成、契约对接或回调适配问题。
     NETWORK = "NETWORK"  # 网络连接、请求链路或通信超时问题。
@@ -42,8 +40,8 @@ class ErrorCode(str, Enum):
     - 回调 payload 结构不对：``CALLBACK_SCHEMA_INVALID``
     - 缺少当前流程继续执行所需上下文：``SESSION_CONTEXT_MISSING``
     - 有输入但仍无法定位 Session：``SESSION_RESOLVE_FAILED``
-    - 插件内部报错：``PLUGIN_EXECUTION_FAILED``
-    - 插件返回了不合法状态迁移：``PLUGIN_TRANSITION_INVALID``
+    - 工作流执行报错：``WORKFLOW_EXECUTION_FAILED``
+    - 工作流发生不合法状态迁移：``WORKFLOW_TRANSITION_INVALID``
     - 对接字段/版本/协议不一致：``CONTRACT_MISMATCH``
     - 设备当前连不上：``DEVICE_UNREACHABLE``
     - 派发 ACK 通信超时：``OUTBOX_ACK_TIMEOUT``
@@ -63,11 +61,10 @@ class ErrorCode(str, Enum):
     # Session / 工作流上下文问题
     SESSION_CONTEXT_MISSING = "SESSION_CONTEXT_MISSING"  # 缺少继续处理所需的 Session 上下文。
     SESSION_RESOLVE_FAILED = "SESSION_RESOLVE_FAILED"  # 无法根据输入解析到目标 Session。
-    PLUGIN_BINDING_REQUIRED = "PLUGIN_BINDING_REQUIRED"  # Session 缺少不可变插件 binding pin。
 
-    # 插件执行与状态迁移问题
-    PLUGIN_EXECUTION_FAILED = "PLUGIN_EXECUTION_FAILED"  # 插件执行过程中抛出异常或返回失败。
-    PLUGIN_TRANSITION_INVALID = "PLUGIN_TRANSITION_INVALID"  # 插件尝试了不合法的状态迁移。
+    # 工作流执行与状态迁移问题
+    WORKFLOW_EXECUTION_FAILED = "WORKFLOW_EXECUTION_FAILED"  # 工作流执行过程中抛出异常或返回失败。
+    WORKFLOW_TRANSITION_INVALID = "WORKFLOW_TRANSITION_INVALID"  # 工作流尝试了不合法的状态迁移。
 
     # 设备与消息派发问题
     DEVICE_UNREACHABLE = "DEVICE_UNREACHABLE"  # 目标设备不可连接或当前不可达。
@@ -90,9 +87,8 @@ _ERROR_CODE_TO_DOMAIN: dict[ErrorCode, ErrorDomain] = {
     ErrorCode.CONTRACT_MISMATCH: ErrorDomain.CONFIG,
     ErrorCode.SESSION_CONTEXT_MISSING: ErrorDomain.WORKFLOW,
     ErrorCode.SESSION_RESOLVE_FAILED: ErrorDomain.WORKFLOW,
-    ErrorCode.PLUGIN_BINDING_REQUIRED: ErrorDomain.CONFIG,
-    ErrorCode.PLUGIN_EXECUTION_FAILED: ErrorDomain.PLUGIN,
-    ErrorCode.PLUGIN_TRANSITION_INVALID: ErrorDomain.PLUGIN,
+    ErrorCode.WORKFLOW_EXECUTION_FAILED: ErrorDomain.WORKFLOW,
+    ErrorCode.WORKFLOW_TRANSITION_INVALID: ErrorDomain.WORKFLOW,
     ErrorCode.DEVICE_UNREACHABLE: ErrorDomain.DEVICE,
     ErrorCode.DEVICE_TIMEOUT: ErrorDomain.NETWORK,
     ErrorCode.OUTBOX_ACK_TIMEOUT: ErrorDomain.NETWORK,

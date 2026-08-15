@@ -86,7 +86,7 @@ callback hint 边界真实发射。沿用既有 `RuntimeOpenTelemetryBridge` 和
 - 统一窗口为 30 天，可用性目标为 99.5%，UNKNOWN 比例上限为 0.1%，open reconciliation age 上限为 900 秒；各 operation 的 p95 延迟目标、burn rate 与告警责任人见
   [`northbound-operation-slo-catalog.md`](../operations/northbound-operation-slo-catalog.md)。
 - 当前可执行 Trace stage 闭集为：
-  `PLUGIN_EXECUTION → QUERY_EVIDENCE → POLICY_DECISION → RUNTIME_INTENT_LOG → DISPATCH_ATTEMPT → CALLBACK → RECONCILIATION`。
+  `QUERY_EVIDENCE → POLICY_DECISION → RUNTIME_INTENT_LOG → DISPATCH_ATTEMPT → CALLBACK → RECONCILIATION`。
   Status query/callback hint 的专用 signal 不得擅自发送未登记的 `STATUS_QUERY/CALLBACK_HINT` stage；若未来新增，
   必须先修改 `NorthboundTraceStage` 与 registry 合同测试。
 - QUERY 在 typed evidence 落库后发射；EFFECT submit 在 Outbox、Attempt、Reducer evidence 成功提交后发射。

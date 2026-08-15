@@ -5,16 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 
 class NgReasonSource(str, Enum):
     """Source of a canonical NG reason."""
 
-    PLUGIN = "PLUGIN"
     DEVICE_ERROR = "DEVICE_ERROR"
     RUNTIME = "RUNTIME"
     MANUAL = "MANUAL"
@@ -27,8 +22,6 @@ class NgReasonDefinition:
     canonical_code: str
     label: str
     source: NgReasonSource
-    plugin_key: str | None = None
-    contract_version: str | None = None
     maps_from: tuple[str, ...] = ()
     deprecated: bool = False
 
@@ -37,8 +30,6 @@ class NgReasonDefinition:
             raise ValueError("NG reason canonical_code must not be empty")
         if not self.label:
             raise ValueError("NG reason label must not be empty")
-        if self.source == NgReasonSource.PLUGIN and (not self.plugin_key or not self.contract_version):
-            raise ValueError("plugin NG reason requires plugin_key and contract_version")
 
 
 @dataclass(frozen=True)
@@ -70,10 +61,10 @@ BUILTIN_NG_REASONS: tuple[NgReasonDefinition, ...] = (
 )
 
 
-def build_ng_reason_catalog(plugin_reasons: Iterable[NgReasonDefinition] = ()) -> NgReasonCatalog:
-    """Build a catalog from plugin reasons plus built-in fallback reasons."""
+def build_ng_reason_catalog() -> NgReasonCatalog:
+    """Build the built-in NG reason catalog."""
 
-    reasons = tuple(plugin_reasons) + BUILTIN_NG_REASONS
+    reasons = BUILTIN_NG_REASONS
     by_code: dict[str, NgReasonDefinition] = {}
     grouped: dict[NgReasonSource, list[NgReasonDefinition]] = defaultdict(list)
     for reason in reasons:

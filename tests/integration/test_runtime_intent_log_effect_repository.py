@@ -42,14 +42,12 @@ def _claim() -> dict[str, object]:
         "execution_session_id": 21,
         "execution_work_item_id": 41,
         "correlation_id": "corr-1",
-        "plugin_key": "test_plugin",
-        "plugin_contract_version": "v1",
         "capability_key": "runtime.session_hold",
         "capability_contract_version": "v1",
         "operation_identity": "hold-1",
-        "creator_authority": "WORKLINE_PLUGIN",
-        "authorization_policy": "PLUGIN_DECLARED_CAPABILITY",
-        "binding_snapshot_json": {"binding_id": 9, "binding_version": 1},
+        "creator_authority": "RUNTIME_DOMAIN_SERVICE",
+        "authorization_policy": "DOMAIN_CAPABILITY_ALLOWLIST",
+        "binding_snapshot_json": {},
         "provider_snapshot_json": {"provider_code": "RUNTIME", "profile": "runtime"},
         "precondition_json": {"expected": 1},
         "fact_version": "fact:1",
@@ -65,8 +63,6 @@ def _domain_claim() -> dict[str, object]:
         "execution_session_id": None,
         "execution_work_item_id": None,
         "correlation_id": "corr-domain-1",
-        "plugin_key": None,
-        "plugin_contract_version": None,
         "capability_key": "external.transport_confirmation",
         "operation_identity": "transport-confirmation:task-17",
         "creator_authority": "RUNTIME_DOMAIN_SERVICE",
@@ -78,6 +74,26 @@ def _domain_claim() -> dict[str, object]:
             "correlation_id": "corr-domain-1",
         },
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation_kind", "omit"),
+    [(None, True), ("", False), ("   ", False)],
+    ids=["missing", "empty", "whitespace"],
+)
+async def test_claim_rejects_missing_or_blank_operation_kind_before_database_access(
+    operation_kind: object,
+    omit: bool,
+) -> None:
+    claim = _claim()
+    if omit:
+        claim.pop("operation_kind")
+    else:
+        claim["operation_kind"] = operation_kind
+
+    with pytest.raises(ValueError, match="operation_kind"):
+        await RuntimeIntentLogRepository().claim_or_match(object(), **claim)
 
 
 def _evidence(kind: str, *, occurred_at_ms: int) -> SimpleNamespace:
@@ -339,17 +355,15 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     assert await repository.claim_or_match(db_session, **claim) is SystemCapabilityClaimResult.NEW
     row = await repository.get_claimed_intent(db_session, claim=claim)
     assert row is not None
-    assert row.plugin_key == "test_plugin"
-    assert row.plugin_contract_version == "v1"
     assert row.capability_key == "runtime.session_hold"
     assert row.capability_contract_version == "v1"
     assert row.operation_identity == "hold-1"
     assert row.target_domain == "runtime"
     assert row.payload_hash == "a" * 64
     assert row.completion_mode == "LOCAL_TRANSACTIONAL"
-    assert row.creator_authority == "WORKLINE_PLUGIN"
-    assert row.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
-    assert row.binding_snapshot_json == {"binding_id": 9, "binding_version": 1}
+    assert row.creator_authority == "RUNTIME_DOMAIN_SERVICE"
+    assert row.authorization_policy == "DOMAIN_CAPABILITY_ALLOWLIST"
+    assert row.binding_snapshot_json == {}
     assert row.provider_snapshot_json == {"provider_code": "RUNTIME", "profile": "runtime"}
     await db_session.rollback()
 

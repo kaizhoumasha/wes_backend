@@ -2,10 +2,12 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | V1.0 |
+| 文档版本 | V1.2 |
 | 适用服务器 | `HOIB4-MESWES1` |
 | 服务器位置 | 美国休斯顿 |
 | 适用阶段 | 服务器检查通过后的第二步 |
+| 现场记录更新时间 | 2026-08-14（CDT） |
+| 基础支撑交付包日期 | 2026-08-15 |
 
 ## 1. 本次工作范围
 
@@ -86,11 +88,11 @@ sudo -v
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| 主机名 |  |
-| Time zone |  |
-| System clock synchronized |  |
-| 根目录 Avail |  |
-| 本步骤结果（通过/失败） |  |
+| 主机名 | `HOIB4-MESWES1` |
+| Time zone | `America/Chicago` |
+| System clock synchronized | `yes` |
+| 根目录 Avail | `3.9T` |
+| 本步骤结果（通过/失败） | 通过 |
 
 任一结果不符合时，停止操作并记录实际结果。
 
@@ -114,15 +116,15 @@ sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker
 
 ### 6.3 安装 Docker
 
-项目负责人必须在交付本手册前，把下面五个变量替换为已经在当前 Rocky Linux 版本验证通过的完整 RPM NEVRA，例如包含包名、
-epoch、版本、release 和架构的精确值。现场人员不得自行选择“最新版本”，任一变量仍为占位符时必须停止操作。
+以下五个 RPM NEVRA 已根据服务器 `HOIB4-MESWES1` 的 Docker 官方软件源查询结果冻结。现场人员必须使用以下精确版本，不得自行改成
+其他版本。
 
 ```bash
-WES_DOCKER_CE_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_DOCKER_CE_CLI_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_CONTAINERD_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_DOCKER_BUILDX_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_DOCKER_COMPOSE_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
+WES_DOCKER_CE_NEVRA='docker-ce-3:29.7.2-1.el10.x86_64'
+WES_DOCKER_CE_CLI_NEVRA='docker-ce-cli-1:29.7.2-1.el10.x86_64'
+WES_CONTAINERD_NEVRA='containerd.io-0:2.3.3-1.el10.x86_64'
+WES_DOCKER_BUILDX_NEVRA='docker-buildx-plugin-0:0.36.1-1.el10.x86_64'
+WES_DOCKER_COMPOSE_NEVRA='docker-compose-plugin-0:5.4.0-1.el10.x86_64'
 
 if printf '%s\n' \
     "$WES_DOCKER_CE_NEVRA" \
@@ -164,15 +166,16 @@ sudo docker compose version
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| Docker Engine RPM NEVRA |  |
-| Docker CLI RPM NEVRA |  |
-| containerd RPM NEVRA |  |
-| Buildx RPM NEVRA |  |
-| Compose RPM NEVRA |  |
-| Docker Engine 版本 |  |
-| Docker Compose 版本 |  |
-| Docker 服务状态 |  |
-| 本步骤结果（通过/失败） |  |
+| Docker Engine RPM NEVRA | `docker-ce-3:29.7.2-1.el10.x86_64` |
+| Docker CLI RPM NEVRA | `docker-ce-cli-1:29.7.2-1.el10.x86_64` |
+| containerd RPM NEVRA | `containerd.io-0:2.3.3-1.el10.x86_64` |
+| Buildx RPM NEVRA | `docker-buildx-plugin-0:0.36.1-1.el10.x86_64` |
+| Compose RPM NEVRA | `docker-compose-plugin-0:5.4.0-1.el10.x86_64` |
+| Docker Engine 版本 | `29.7.2` |
+| Docker Compose 版本 | `v5.4.0` |
+| Docker 服务状态 | `active` |
+| Docker 开机启动状态 | `enabled` |
+| 本步骤结果（通过/失败） | 通过 |
 
 ## 7. 第四步：设置 Docker 日志轮转
 
@@ -203,9 +206,10 @@ sudo docker info --format '{{.LoggingDriver}}'
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| Docker 服务状态 |  |
-| LoggingDriver |  |
-| 本步骤结果（通过/失败） |  |
+| Docker 服务状态 | `active` |
+| LoggingDriver | `json-file` |
+| 日志轮转配置 | 单文件 `10m`，保留 `3` 个文件 |
+| 本步骤结果（通过/失败） | 通过 |
 
 ## 8. 第五步：创建 WES 部署目录
 
@@ -220,10 +224,11 @@ ls -ld /srv/wes /srv/wes/app /srv/wes/packages /srv/wes/images
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| `/srv/wes/app` 所有者 |  |
-| `/srv/wes/packages` 所有者 |  |
-| `/srv/wes/images` 所有者 |  |
-| 本步骤结果（通过/失败） |  |
+| `/srv/wes` 所有者及权限 | `root:root`，`755` |
+| `/srv/wes/app` 所有者及权限 | `CANTAISYS:CANTAISYS`，`750` |
+| `/srv/wes/packages` 所有者及权限 | `CANTAISYS:CANTAISYS`，`750` |
+| `/srv/wes/images` 所有者及权限 | `CANTAISYS:CANTAISYS`，`750` |
+| 本步骤结果（通过/失败） | 通过 |
 
 ## 9. 第六步：接收并校验项目交付文件
 
@@ -236,16 +241,30 @@ ls -ld /srv/wes /srv/wes/app /srv/wes/packages /srv/wes/images
 | `wes-foundation-images.tar` | `/srv/wes/images` |
 | `wes-foundation-images.tar.sha256` | `/srv/wes/images` |
 
+本次交付包只适用于 `linux/amd64` 服务器，包含以下固定镜像：
+
+- TimescaleDB `2.27.1-pg17`；
+- Redis `8.2.8-alpine`。
+
+项目负责人保存的原始校验值如下，现场人员不需要手工比对长字符串，以后续 `sha256sum -c` 显示 `OK` 为准：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| `wes-foundation-bundle.tar.gz` | `25889815849c13c9eb8eaa7a71d5b17465410df33a6378fe05026bc2876a220a` |
+| `wes-foundation-images.tar` | `77fbf706af802ba753b01a0096352278a2b41148ab33ee4a7672907d9e215a56` |
+
 通过客户允许的文件传输方式把四个文件放到对应目录，然后执行：
 
 ```bash
+chmod 600 /srv/wes/packages/wes-foundation-bundle.tar.gz
 cd /srv/wes/packages
 sha256sum -c wes-foundation-bundle.tar.gz.sha256
 cd /srv/wes/images
 sha256sum -c wes-foundation-images.tar.sha256
 ```
 
-符合要求的结果：两条校验结果都显示 `OK`。
+符合要求的结果：权限设置没有报错，两条校验结果都显示 `OK`。部署包中包含数据库和 Redis 凭据，不要查看、抄录或发送
+`.env.prod` 的内容。
 
 | 记录项 | 现场填写 |
 | --- | --- |
@@ -271,8 +290,8 @@ else
 fi
 ```
 
-符合要求的结果：解压前 `/srv/wes/app` 为空，文件列表至少包含 `.env.prod` 和 `docker-compose.yml`。目录不为空或文件不在
-`/srv/wes/app` 的第一层目录时，停止操作；不得覆盖、合并或自行删除旧内容。
+符合要求的结果：解压前 `/srv/wes/app` 为空，文件列表包含 `.env.prod`、`docker-compose.yml` 和 `IMAGE-MANIFEST.txt`。目录不为空或
+文件不在 `/srv/wes/app` 的第一层目录时，停止操作；不得覆盖、合并或自行删除旧内容。
 
 ### 10.2 设置目录权限和 SELinux 标签
 
@@ -294,7 +313,10 @@ sudo docker load -i /srv/wes/images/wes-foundation-images.tar
 sudo docker image ls --format 'table {{.Repository}}\t{{.Tag}}\t{{.ID}}'
 ```
 
-符合要求的结果：导入命令显示 `Loaded image`，镜像列表包含项目负责人提供的 TimescaleDB/PostgreSQL 和 Redis 固定版本镜像。
+符合要求的结果：导入命令显示 `Loaded image`，镜像列表包含以下两项：
+
+- `wes-foundation/timescaledb:2.27.1-pg17-amd64-c6262240a63f`；
+- `wes-foundation/redis:8.2.8-alpine-amd64-3790f2652609`。
 
 | 记录项 | 现场填写 |
 | --- | --- |
@@ -313,8 +335,8 @@ sudo docker image ls --format 'table {{.Repository}}\t{{.Tag}}\t{{.ID}}'
 cd /srv/wes/app
 grep '^ENV=' .env.prod
 grep '^DATETIME_TIMEZONE=' .env.prod
-sudo docker compose --env-file .env.prod -f docker-compose.yml --profile infra config --services
-sudo docker compose --env-file .env.prod -f docker-compose.yml --profile infra config --images
+sudo docker compose --env-file .env.prod -f docker-compose.yml config --services
+sudo docker compose --env-file .env.prod -f docker-compose.yml config --images
 ```
 
 符合要求的结果：
@@ -322,7 +344,8 @@ sudo docker compose --env-file .env.prod -f docker-compose.yml --profile infra c
 - `ENV=prod`。
 - `DATETIME_TIMEZONE=America/Chicago`。
 - 服务列表只有 `db` 和 `redis`，顺序可以不同。
-- 镜像列表只有项目负责人提供的两个固定版本镜像。
+- 镜像列表只有 `wes-foundation/timescaledb:2.27.1-pg17-amd64-c6262240a63f` 和
+  `wes-foundation/redis:8.2.8-alpine-amd64-3790f2652609`。
 
 任何一项不符合时，停止操作。不要自行编辑 `.env.prod` 或 `docker-compose.yml`。
 
@@ -330,8 +353,8 @@ sudo docker compose --env-file .env.prod -f docker-compose.yml --profile infra c
 
 ```bash
 cd /srv/wes/app
-sudo docker compose --env-file .env.prod -f docker-compose.yml --profile infra up -d --wait db redis
-sudo docker compose --env-file .env.prod -f docker-compose.yml --profile infra ps db redis
+sudo docker compose --env-file .env.prod -f docker-compose.yml up -d --wait db redis
+sudo docker compose --env-file .env.prod -f docker-compose.yml ps db redis
 sudo docker inspect --format '{{.Name}} {{.State.Health.Status}} {{.HostConfig.RestartPolicy.Name}}' wes_postgres_prod wes_redis_prod
 ```
 
@@ -354,13 +377,20 @@ sudo firewall-cmd --list-ports
 - Redis 显示 `127.0.0.1:6379`。
 - Firewalld 端口列表中没有 `5432/tcp` 和 `6379/tcp`。
 
-### 11.4 检查 PostgreSQL 响应
+### 11.4 检查数据库和 Redis 版本及响应
 
 ```bash
 sudo docker exec wes_postgres_prod sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+sudo docker exec wes_postgres_prod sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SHOW server_version; SELECT default_version FROM pg_available_extensions WHERE name = '\''timescaledb'\'';"'
+sudo docker exec wes_redis_prod redis-server --version
 ```
 
-符合要求的结果：显示 `accepting connections`。
+符合要求的结果：
+
+- PostgreSQL 显示 `accepting connections`；
+- PostgreSQL 版本显示 `17.10`；
+- TimescaleDB 版本显示 `2.27.1`；
+- Redis 版本显示 `8.2.8`。
 
 Redis 已通过容器自身的带密码健康检查验证，不需要现场人员输入或查看 Redis 密码。
 
@@ -384,15 +414,17 @@ stat -c '%a %n' backups/foundation-globals.sql
 | 检查项 | 正确结果 | 现场填写 |
 | --- | --- | --- |
 | IT 快照 | 已取得快照名称或编号 |  |
-| Docker 服务 | `active`、`enabled` |  |
-| Docker 日志驱动 | `json-file` |  |
-| Docker Compose | 版本不低于 `2.24.4` |  |
+| Docker 服务 | `active`、`enabled` | `active`、`enabled` |
+| Docker 日志驱动 | `json-file` | `json-file` |
+| Docker Compose | 版本不低于 `2.24.4` | `v5.4.0` |
 | 部署包校验 | `OK` |  |
 | 镜像包校验 | `OK` |  |
 | 配置时区 | `America/Chicago` |  |
 | Compose 服务 | 只有 `db`、`redis` |  |
 | PostgreSQL 容器 | `healthy`、`always` |  |
 | Redis 容器 | `healthy`、`always` |  |
+| PostgreSQL/TimescaleDB 版本 | `17.10`、`2.27.1` |  |
+| Redis 版本 | `8.2.8` |  |
 | PostgreSQL 绑定地址 | `127.0.0.1:5432` |  |
 | Redis 绑定地址 | `127.0.0.1:6379` |  |
 | Firewalld | 未开放 `5432/tcp`、`6379/tcp` |  |

@@ -1,10 +1,10 @@
-"""Callback 域诊断构建器 — legacy runtime.diagnostics.builder 镜像。
+"""Callback 域诊断构建器 — runtime diagnostics builder 镜像。
 
 镜像说明:
-- 与 legacy runtime.diagnostics.builder 行为一致 (DEFAULTS 字典 + build_diagnostic_*
+- 与 runtime diagnostics builder 行为一致 (DEFAULTS 字典 + build_diagnostic_*
   三个函数)。
-- _resolve_diagnostic_device_code 复用 TraceContext 内部字段，插件身份只接受
-  TraceContext 已冻结的 command 审计值，wirings 由 callback 域本地 TraceContext 提供。
+- _resolve_diagnostic_device_code 复用 TraceContext 内部字段，wirings 由 callback 域本地
+  TraceContext 提供。
 """
 
 from typing import Any
@@ -52,14 +52,14 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         "系统无法匹配当前业务会话，请联系支持人员。",
         ["检查 business_key / trace_id 归属逻辑", "核对设备与作业线绑定关系"],
     ),
-    ErrorCode.PLUGIN_EXECUTION_FAILED: (
+    ErrorCode.WORKFLOW_EXECUTION_FAILED: (
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.SOFTWARE,
-        "业务插件处理失败，请稍后重试或联系技术支持。",
-        ["回放该 inbox 的 normalized input", "检查插件返回结果与状态迁移逻辑"],
+        "工作流执行失败，请稍后重试或联系技术支持。",
+        ["回放该 inbox 的 normalized input", "检查执行结果与状态迁移逻辑"],
     ),
-    ErrorCode.PLUGIN_TRANSITION_INVALID: (
+    ErrorCode.WORKFLOW_TRANSITION_INVALID: (
         Severity.ERROR,
         Recoverability.MANUAL_RETRYABLE,
         ProblemClass.SOFTWARE,
@@ -187,7 +187,6 @@ def build_diagnostic_context(
         device_code=_resolve_diagnostic_device_code(resolved_trace, device=device, outbox=outbox),
         workline_id=resolved_trace.workline_id or optional_int_attr(session, "workline_id"),
         workline_code=optional_str_attr(workline, "line_code"),
-        plugin_key=resolved_trace.plugin_key,
         canonical_event_type=resolved_trace.canonical_event_type,
         transition=resolved_trace.transition,
         extra=extra or {},

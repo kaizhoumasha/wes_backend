@@ -20,13 +20,13 @@ def _map_failure_to_error_code(*, failure: Any | None = None) -> ErrorCode:
     if failure_code == "DEVICE_NOT_FOUND":
         return ErrorCode.DEVICE_UNREACHABLE
     if failure_code == "STATE_MISMATCH":
-        return ErrorCode.PLUGIN_TRANSITION_INVALID
+        return ErrorCode.WORKFLOW_TRANSITION_INVALID
     if failure_domain == FailureDomain.CONFIG.value:
         return ErrorCode.CONFIG_INVALID
     if failure_domain == FailureDomain.TIMEOUT.value:
         return ErrorCode.DEVICE_TIMEOUT
     if failure_domain in {FailureDomain.SOFTWARE.value, FailureDomain.ORCHESTRATION.value}:
-        return ErrorCode.PLUGIN_EXECUTION_FAILED
+        return ErrorCode.WORKFLOW_EXECUTION_FAILED
     return ErrorCode.UNKNOWN
 
 
@@ -37,7 +37,7 @@ def _domain_from_failure(failure: Any | None) -> ErrorDomain:
     if failure_domain == FailureDomain.TIMEOUT.value:
         return ErrorDomain.NETWORK
     if failure_domain in {FailureDomain.SOFTWARE.value, FailureDomain.ORCHESTRATION.value}:
-        return ErrorDomain.PLUGIN
+        return ErrorDomain.WORKFLOW
     if failure_domain == FailureDomain.CONFIG.value:
         return ErrorDomain.CONFIG
     if failure_domain == FailureDomain.DATA.value:

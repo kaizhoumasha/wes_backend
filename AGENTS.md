@@ -125,7 +125,8 @@ __all__ = ["XxxService", "xxx_service"]
 - ✅ 简短伪代码或极短示例，用于说明约定
 - ✅ 验证命令、测试场景和通过标准
 
-非纯文档实现的细节应在编码阶段通过 TDD、diff、测试和提交体现，而不是塞进规划文档。
+产品功能行为的实现细节应在编码阶段通过 TDD、diff、测试和提交体现；其他类型变更按其风险使用相称的验证，
+而不是把实现细节塞进规划文档。
 
 ### Documentation-only Changes
 
@@ -300,6 +301,20 @@ When modifying existing code, **preserve all valuable comments** — they are cr
 ## Testing Guidelines
 Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. 除纯文档变更外，新增或修改行为时应在受影响领域附近补充测试，并覆盖成功和失败路径。
 
+### TDD 适用边界
+
+TDD 只对新增产品功能，或修复、修改会改变产品可观察运行行为的生产代码强制执行。此类实施必须先建立能够失败的行为测试，
+再完成最小实现并验证转绿。
+
+**STRICTLY FORBIDDEN**:
+
+- ❌ 对文档、规划、项目规则、注释、格式化、代码评审、调查分析等非功能性工作强制要求 TDD
+- ❌ 对仅测试维护、测试归属调整、selector/测试治理、CI/构建/开发工具脚本、配置、依赖或元数据变更，把 RED→GREEN 作为硬性前置条件
+- ❌ 对不改变产品可观察行为的重构、性能整理、迁移维护或数据治理，机械地新增失败测试以满足流程形式
+
+上述非功能性变更仍必须执行与风险相称的验证；必要时可以补充测试，但不得把 TDD 作为开工、验收或提交的强制门槛。
+代码与其他类型变更混合时，只对其中改变产品功能行为的生产代码切片执行 TDD。
+
 ### Test Suite Governance
 
 所有 Agent 新增、移动、拆分或删除测试时，必须遵守 [`tests/README.md`](tests/README.md) 的目录归属、默认快速回归和重测试边界。
@@ -349,7 +364,85 @@ uv run pytest --collect-only -q -o addopts='' | tail -5
 ./scripts/git-quality-gate.sh --profile quality
 ```
 
+正常提交时，最后一条完整 QUALITY 由仓库 `pre-commit` hook 执行并作为本地提交证据；同一 staged 快照不得在提交前手工运行后又立即由 hook 重复运行。仅在不提交或诊断 hook 时手工执行完整 profile。
+
+启动正常 `git commit` 前，如果暂存区包含 Python 文件，必须先对这些变更文件运行聚焦
+`uv run ruff format --check <files>` 和 `uv run ruff check <files>`。该快速预检用于在完整 QUALITY 之前发现格式与静态检查错误，
+不能替代正常提交 hook，也不得因此重复手工运行完整 QUALITY。
+
 If a change intentionally touches integration / e2e / resilience / load / mock behavior, explicitly run the affected heavy-test directory and mention it in the PR. Do not rely on default pytest collection for those suites.
+
+### 代码评审与验证职责
+
+代码评审 subagent 负责只读核验计划、diff、架构边界、测试所有权和既有验证证据，不负责重复执行重测试。
+
+- reviewer subagent 不得启动 Docker、PostgreSQL、Redis、Celery，不得执行 HEAVY、部署、迁移或其它会改变外部状态的验证；需要补充验证时，应把缺失证据或证据过期明确报告给主 Agent。
+- 主 Agent / 实施 Agent 是测试执行 owner，负责运行直接受影响的 FAST/合同测试、staged selector 选中的 HEAVY，以及评审收敛后的完整分支门禁。
+- 发起评审时必须提供精确 review base/head、`git status --short`、评审范围、selector scope/manifest、已执行命令、结果和 JUnit 路径；存在 staged、unstaged 或 untracked 差异时必须显式列出，不得只用 `HEAD_SHA` 冒充当前工作区快照。
+- 验证证据必须记录 repository、base/head 或 staged tree、selector manifest、命令、结果和报告路径。完全相同的快照与 manifest 复用原证据；不得先对等价 unstaged 快照执行完整 selected HEAVY，再为 staged 标签重复执行同一批测试。
+- 证据按变更面失效：人类阅读文档只使文档核验失效；测试或 selector 配置只使对应测试/selector 证据失效；生产代码使直接 FAST/合同与受影响 HEAVY 失效；migration 使临时数据库 HEAVY 失效。review base/head 变化时先分类增量 diff：仅人类阅读文档变化只使文档评审失效，生产代码、测试、机器可读合同或迁移变化才使对应代码 diff 评审失效。失效证据标记为 `STALE`，不得写成当前通过。
+- 收到评审意见后，先判断变更类型：产品功能行为修复按 TDD 运行直接受影响测试，其他修复只运行与风险相称的聚焦检查；需要提交修复时，对该修复的精确 staged diff 运行 selector、选中的 HEAVY 和 GitNexus detect changes。中间评审轮次不重复运行完整分支 HEAVY，也不重复执行同一 staged 快照已通过的门禁。
+- 多轮评审采用“首轮 fresh reviewer 完整 diff → 原 reviewer 定向 closure check → 最终 fresh reviewer 完整 diff”。最终 reviewer 仍发现新问题时重新进入该序列；停止条件不降低，但中间修复不反复派发完整重审。
+- Critical/Important 意见全部清零后，主 Agent 必须对最终 `origin/develop...HEAD`（或计划冻结的 implementation base）执行一次完整 QUALITY、selected HEAVY 和 GitNexus 变更检测；此最终证据生成后若生产代码、测试、机器可读合同、selector、迁移或运行配置再次变化，必须按失效面重新生成。后续仅增加人类阅读文档时只补文档核验，不得重跑完整门禁。
+- 高风险计划可以要求更强的最终门禁，但不得把 HEAVY 执行下放给 reviewer subagent，也不得让多个 reviewer 对同一快照重复执行相同重测试。
+
+### 跨任务验证证据交接
+
+实施任务进入 review、QA 或 ship 前，实施 owner 必须提供可复用的验证交接，不得让下游任务从零猜测或机械重跑：
+
+- 记录 repository、base ref、HEAD 或 staged tree、`git status --short`、变更分类以及是否存在并发修改。
+- 记录 selector scope、精确 manifest、生产代码/测试/selector/migration 是否变化、已执行命令、结果、时间和 JUnit/报告路径。
+- 下游任务先比较快照、manifest 与变更分类；完全相同的证据直接复用，只重跑已失效的部分。
+- selector 实现或配置变化时，先重跑 selector 合同与选择结果；如果生产代码、HEAVY 测试资产和最终 manifest 均未变化，
+  不得仅因 selector 重新计算而重复执行同一批 HEAVY。
+- 人类阅读文档或报告变化不得使生产代码的 QUALITY、HEAVY 或迁移证据失效。
+- QA 启动前应已有明确、干净的实施快照。QA 不得默认承担遗留变更整理、实施提交或原子提交拆分；发现脏工作树时先报告
+  其所有权和对快照的影响，只有用户明确授权后才处理。
+
+### 后端 QA 路由
+
+QA 必须按变更面选择最小有效路径，不得把通用页面 QA 机械套用到纯后端变更：
+
+| 变更面 | 必要 QA | 默认不做 |
+| --- | --- | --- |
+| 前端页面、交互或视觉合同 | 浏览器功能、视觉、控制台与截图证据 | — |
+| API 路由、认证、请求或响应合同 | 受影响端点 HTTP 冒烟、API/合同测试 | 无视觉合同的页面评分与批量截图 |
+| Service、Repository、Runtime、迁移或后台任务 | 聚焦 FAST/合同、selected HEAVY、迁移或 worker 闭环 | `/health`、预期 404、页面视觉与可访问性评分 |
+| 文档、项目规则、测试治理、开发工具 | 与变更相称的文档、脚本或治理验证 | 产品 QA、浏览器 QA、真实 HEAVY |
+
+- `/health` 和 `/ready` 只证明存活/就绪合同；仅当相关路由、启动配置或部署接线发生变化时才作为主要 QA 目标。
+- 不得为预期的 `/`、`/docs`、`/openapi.json` 404 生成重复截图或据此计算后端健康分。
+- QA 先消费上游验证交接；只有证据缺失、失效或 QA 发现新问题时才运行对应门禁，不能以“fresh QA”名义重复同一快照的
+  QUALITY、HEAVY 或迁移。
+
+### Ship 增量验证
+
+`ship` 在执行任何昂贵门禁前，必须先消费 implementation/review/QA 的验证交接，并比较同步 `develop` 前后的增量树：
+
+- 新提交、merge 或 review base/head 变化如果只涉及人类阅读文档或报告，必须复用既有 QUALITY、HEAVY、迁移和代码评审证据；
+  禁止以“fresh ship”名义重跑，只执行文档 diff、引用、状态和发布说明检查。
+- 是否属于纯文档变化以“是否被程序、CI、构建、测试或运行时读取”为准，不以目录或扩展名机械判断。OpenAPI、VERSION、
+  TOML/YAML/JSON/CSV、迁移、依赖锁、运行配置和可执行合同不是人类阅读文档。
+- 同步 `develop` 后必须比较生产代码、测试、HEAVY 资产、selector、迁移和机器可读合同的实际差异；不能仅因 HEAD 或提交数变化
+  就判定全部证据失效。如果这些树均未变化，原验证继续有效。
+- selector 实现或配置是唯一变化时，按“跨任务验证证据交接”重跑 selector 合同与选择结果；manifest 和生产/HEAVY 资产不变时
+  不重跑真实 HEAVY。
+- 已有最终 coverage、计划完成审计和 pre-landing review 且对应快照未失效时，ship 只做增量核对；不得再次启动完整独立审计。
+  新发现但不阻断发布的 coverage GAP 只记录为后续实施输入，不得在 ship 中扩张为测试设计或功能实施。
+- 版本级别应在完成 diff 分类后、昂贵验证前确定；需要用户选择 MINOR/MAJOR 或其它发布语义时应尽早询问，避免门禁全部完成后等待。
+
+### 重复审计的增量模式
+
+用户再次询问已审计主题时，默认执行增量审计，不从头重复完整代码库扫描：
+
+1. 读取上一轮结论、证据快照和未决项。
+2. 只核对新增文档、提交、合同或当前 checkout 与上一快照的差异。
+3. 如果结论前提未变化，直接报告“结论不变”、本轮增量证据和仍待处理项。
+4. 只有 authoritative contract、base/head、实现路径或关键证据发生变化，才升级为完整重审。
+
+只读审计不得为了形式完整运行测试、QUALITY、HEAVY、迁移、服务或部署，也不得重复生成上一轮已经成立的长篇证据矩阵。
+
+纯文档提交由 `pre-commit` 自动执行 `git diff --cached --check`，不运行 FAST、selector 合同或 HEAVY；Markdown lint、链接、引用、归档路径和残留扫描由具体文档任务按变更面显式执行。只要暂存区包含生产代码、测试、脚本、迁移或 TOML/YAML/JSON/CSV 等机器可读配置，就回退完整 QUALITY。
 
 ### HEAVY Selector Mapping Governance
 
@@ -383,6 +476,10 @@ use Chinese to Write document and Communication and Commit Comment
 - **强制影响分析**：在修改任何函数、类或方法前，必须运行 `gitnexus_impact({target: "symbolName", direction: "upstream"})`。
 - **风险确认**：如果影响分析返回 HIGH 或 CRITICAL 风险，必须在操作前向用户汇报并确认。
 - **提交前检测**：在 Commit 前运行 `gitnexus_detect_changes()`，验证变更范围是否符合预期。
+- **只读审计降级**：只读审计发现索引 stale 时，不默认刷新，也不因刷新等待阻塞结论；以当前源码、合同、`git diff`、测试和
+  OpenAPI 为主证据，并将旧索引标记为补充证据。下方生成区块中的通用刷新提示主要适用于写操作前确需当前调用图的场景。
+- **失败快速回退**：索引刷新因权限、registry、worktree 或工具错误失败一次后，立即回退 `rg`、精确文件读取和 Git diff；
+  不得重复等待或让只读任务修改 `AGENTS.md`、`CLAUDE.md` 等生成区块。
 
 ### RTK (Rust Token Killer) — Token 优化
 本项目环境通过 RTK 代理执行 Shell 命令以节省 60-90% 的 Token。
@@ -393,7 +490,7 @@ use Chinese to Write document and Communication and Commit Comment
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (42655 symbols, 74559 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (37845 symbols, 65253 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

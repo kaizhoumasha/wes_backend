@@ -68,11 +68,14 @@ def test_runtime_intent_log_table_name():
 
 def test_runtime_intent_log_required_fields():
     """必填: execution_session_id / correlation_id / provider_code /
-    target_domain / target_action / idempotency_key / request_hash / dispatch_key。"""
+    operation_kind / target_domain / target_action / idempotency_key /
+    request_hash / dispatch_key。
+    """
     log = RuntimeIntentLog(
         execution_session_id=42,
         correlation_id="corr-x",
         provider_code="ECS",
+        operation_kind="DEVICE_DISPATCH",
         target_domain="device",
         target_action="dispatch_command",
         idempotency_key="WES-DEVICE-xyz",
@@ -82,6 +85,7 @@ def test_runtime_intent_log_required_fields():
     assert log.execution_session_id == 42
     assert log.correlation_id == "corr-x"
     assert log.provider_code == "ECS"
+    assert log.operation_kind == "DEVICE_DISPATCH"
     assert log.target_domain == "device"
     assert log.target_action == "dispatch_command"
     assert log.idempotency_key == "WES-DEVICE-xyz"

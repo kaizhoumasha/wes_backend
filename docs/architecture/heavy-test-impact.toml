@@ -39,6 +39,15 @@ reviewed_content_sha256 = "260b75cc8399d7b0b2a1ab812cc5fc50ccdf1e278580b8137680f
 source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 
+[[mapping]]
+source_glob = "migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_intent_log.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+reviewed_content_sha256 = "07c95a0c5b9e352440c3ee7ac2f0bcb0e75c6f9b310747d68655a9f996ac176a"
+
 # 旧命令请求/响应 Schema 退役后，由 DeviceCommand 生产闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -300,22 +309,67 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 source_glob = "src/app/callback/models/event.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
-# Callback 诊断构建仅收敛展示与退役身份来源，由邻近 FAST 合同承接；指纹变化后恢复 fail closed。
+# Callback 当前所有权与依赖说明不改变运行时行为，由既有 FAST 合同承接；指纹变化后恢复 fail closed。
+[[mapping]]
+source_glob = "src/app/callback/utils.py"
+heavy_tests = []
+reviewed_content_sha256 = "67f41fce219cd68a41c2f9defcf59ace0743139ce8b597f66826bedcc35a8029"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "e3f7a17ed07c485e1af90e93738f08328697d3267442154414f3ddae05440ce9"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/diagnostics.py"
+heavy_tests = []
+reviewed_content_sha256 = "ff9369e4c42e4a3be67e8f9ac8030f903c0eca1e8721d61b97b7ffb52a2f6eb3"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/timeline_generator.py"
+heavy_tests = []
+reviewed_content_sha256 = "64b4ff7470f631f0817d6a067e23d1d230e3e9a3949e70e256a62b74e11b966e"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/event_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "9535c028d6245863c25a6f83661d4bc3b3ee3c85ffc38f0c9858af151f0e558a"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/runtime_events.py"
+heavy_tests = []
+reviewed_content_sha256 = "cb87f2a3a2fbd07b1298da145e621b5796a2eebf3ba91c73e16497828a7138ba"
+
 [[mapping]]
 source_glob = "src/app/callback/contracts/builder.py"
 heavy_tests = []
-reviewed_content_sha256 = "3d77f7275676a0db61b74c21c6afd92fea7cff459d864fbb45a40166e6c6d133"
+reviewed_content_sha256 = "c4163a0601b0bec4623f4a106cfc837fda044cfc92acd7384840e6500bd486cd"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/models.py"
+heavy_tests = []
+reviewed_content_sha256 = "933a7b5fa232dda907fe48b170a24c92fb1a724ae8ba2568feb1c4014ad035b0"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/codes.py"
+heavy_tests = []
+reviewed_content_sha256 = "e5cddd4b4891b585c0f80aea8667933fafb467f91ea1dea0e4dacd8ed1781945"
 
 [[mapping]]
 source_glob = "src/app/callback/contracts/registry.py"
 heavy_tests = []
-reviewed_content_sha256 = "ae04ce438de7fb14eb289fa56b07d5bfa0b821a4c414bff407349cb93024c169"
+reviewed_content_sha256 = "afac7276cc4bf086bad6e404fbf2950862ef86cabf82b1399fb986a9c98f445a"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/failure_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "07eefe2764dddc252cc11dcee542abc36268551046bf8d3b3ae2aefbeddc42c0"
 
 # TraceContext 只规范化进程内诊断字段；本次删除退役来源由 FAST mirror 合同承接。
 [[mapping]]
 source_glob = "src/app/callback/contracts/trace_context.py"
 heavy_tests = []
-reviewed_content_sha256 = "20f13643de34553b4276db30817c27d2bc8dd848dc8e64de6172301c44307e0e"
+reviewed_content_sha256 = "3db090574004395dda6de537bab8513f9a2a1e4874a19836cb8b83ad10d8808a"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py"
@@ -416,19 +470,49 @@ source_glob = "src/app/runtime/orchestration/models/runtime.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 [[mapping]]
+source_glob = "src/app/runtime/orchestration/models/diagnostic.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+reviewed_content_sha256 = "3e93ce9035922ef12a097a02ff7cf7bd0539c2fa16f20cfcd0609f4e3f263e32"
+
+[[mapping]]
 source_glob = "src/app/runtime/orchestration/{models/runtime_hold_api.py,services/trace/__init__.py,services/trace/trace_response_builder.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/runtime_hold.py"
+heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+reviewed_content_sha256 = "cdbb295ad0d16b8176590e377dba0e343c5a579a8e011ea50958b4480441e5d0"
 
 # Runtime 诊断镜像与 snapshot 输出只收敛退役字段，由 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/builder.py"
 heavy_tests = []
-reviewed_content_sha256 = "015e164e26ab671ee750810ddf0c6a1c642f8c87e3634ee24f9d588a3bc15e34"
+reviewed_content_sha256 = "ae1ac6711948ed451938bf979731d39579f381ed175d9cce816e92b6879a01ba"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/models.py"
+heavy_tests = []
+reviewed_content_sha256 = "9a4477ee5262bf48990ad1da4b2e98bd7cdc1137492cdd89e4625756268de1c1"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/codes.py"
+heavy_tests = []
+reviewed_content_sha256 = "c0a739bc4ab0b83001f55dae5b92710358c9851fad3a1f4b3b2f916b25b94511"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/registry.py"
 heavy_tests = []
-reviewed_content_sha256 = "1cfe32cfe0b708333762dc27ed753589bf4b90a68f443c8eecff4331bc029d81"
+reviewed_content_sha256 = "53561ba1db03b133ccc5bd95aa32be6b00cf46260f0a161545bdb6a4f2f30e85"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/diagnostics/failure_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "5ed576fccada10cc3beee698829d7ab73bf4018b17db992cf0230822b870c923"
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/trace/trace_query_service.py"
+heavy_tests = []
+reviewed_content_sha256 = "609485f73816196cc5ef6b9328ca979f78b0705ce8553375c95512e060aba37e"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/runtime_snapshot_assembler.py"
@@ -780,6 +864,12 @@ heavy_tests = []
 source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py,rough_sorter.py,rough_sorter_context.py,rough_sorter_inventory_admission.py,smt_inbound_handoff_reason.py,smt_sorting_inbound.py,smt_usage_policy.py,sorting_inbound_context.py}"
 heavy_tests = []
 
+# NG reason 枚举与 DTO 的退役插件身份缺席由专用 FAST 合同承接。
+[[mapping]]
+source_glob = "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py"
+heavy_tests = []
+reviewed_content_sha256 = "58d75e9bd78dc94e3b1ecfa132d115e6affce86a3863f0505ca2bbde929a4a8d"
+
 # 存活的 START 准入由真实 PostgreSQL、HTTP status wire 与 READY 写回闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/start_admission_service.py"
@@ -805,6 +895,27 @@ heavy_tests = [
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
     "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
 ]
+
+# 无生产消费者的 recorded replay 草案 DELETE → NONE；专属测试 successor 为 NONE。
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/replay.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/timeline_recorded_replay_repository.py"
+heavy_tests = []
+
+# SystemCapability 包入口仅移除 replay 导出，存活 QueryEvidence 行为由其 FAST 合同承接。
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "5f49270d7ec440dfcea30c887bbb8873c4748ee7a58420793cfa64714de8872b"
+
+# 北向观测阶段闭集收敛由 operation observability FAST 合同直接承接。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/observability.py"
+heavy_tests = []
+reviewed_content_sha256 = "141284030d44a2a2b5ac9ba73f48a518d2ba5a023f6a5e1c867315ea72ef61b2"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 [[mapping]]
@@ -908,7 +1019,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/workline/trace_context.py"
 heavy_tests = []
-reviewed_content_sha256 = "80117d33a82cc7995bd9f9489d260464e1c5cd4be502713fc9d6b207637383f4"
+reviewed_content_sha256 = "e83f7ab0dfbbe70fad586c1fbc22c97118185d0f9432078df138ef373eabac5e"
 
 [[mapping]]
 source_glob = "tests/support/wms_conformance_coverage.py"

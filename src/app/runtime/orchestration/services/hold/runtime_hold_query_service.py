@@ -170,8 +170,6 @@ class RuntimeHoldQueryService:
             workline_id=hold.workline_id,
             session_id=hold.session_id,
             trace_id=hold.trace_id,
-            plugin_key=hold.plugin_key,
-            contract_version=hold.contract_version,
             source_reason=hold.source_reason,
             material_disposition=optional_enum_str(hold.material_disposition),
             ng_reason_code=hold.ng_reason_code,
@@ -208,8 +206,6 @@ class RuntimeHoldQueryService:
             source=reason.source.value,
             code=reason.canonical_code,
             label=reason.label,
-            plugin_key=reason.plugin_key,
-            contract_version=reason.contract_version,
             maps_from=list(reason.maps_from),
         )
 
