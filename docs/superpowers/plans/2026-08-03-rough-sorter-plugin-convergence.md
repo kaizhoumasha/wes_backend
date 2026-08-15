@@ -95,6 +95,8 @@
 - Inspect: `src/celery_app/`
 - Inspect: `tests/{runtime,workline,contracts,integration,deployment,architecture}/`
 - Inspect: `workline_plugins/rough_sorter/tests/`
+- Modify: `scripts/select_heavy_tests.py`
+- Modify: `tests/scripts/test_select_heavy_tests.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
@@ -127,7 +129,9 @@
 
 - [ ] **Step 5: 更新精确 HEAVY mapping**
 
-  对新增核心执行模型、migration、WMS Adapter、Celery 任务和核心部署装配分别映射真实受影响的核心 HEAVY；不得用空 `heavy_tests` 隐藏运行时影响。插件业务、插件集成和插件部署闭环由插件包自己的测试配置与 CI 选择，不得加入核心 selector。
+  先为 selector 写失败合同，证明 `workline_plugins/rough_sorter/` 下的源码、单元测试和 E2E 都应返回空核心 HEAVY 集，而核心 Composition Root、migration 和共享支撑资产仍按 mapping 选择真实 owner；同时证明尚未配置的 `packages/wes_plugin_sdk/**` 继续 fail closed。随后把 `workline_plugins/**` 加入核心 selector 的明确 ignore，并把 `packages/wes_plugin_sdk/**` 纳入核心候选路径。插件包自己的测试配置与 CI 是其唯一选择器，不得加入核心 selector。
+
+  对新增核心执行模型、migration、WMS Adapter、Celery 任务、核心部署装配和后续实际创建的共享 SDK 文件分别映射真实受影响的核心 HEAVY；只有经评审确认仅由 FAST 承接的共享 SDK 文件才可使用带最终内容指纹的精确 `NONE`，不得用宽泛空 mapping 隐藏未来影响。
 
 ### Task 3: 建立最小独立插件 SDK 与边界守卫
 
@@ -488,7 +492,7 @@
 **Files:**
 
 - Create: `workline_plugins/rough_sorter/tests/e2e/test_business_loop.py`
-- Create or update: named non-secret E2E fixtures under `workline_plugins/rough_sorter/tests/fixtures/`
+- Create or update: named non-secret E2E fixtures under `workline_plugins/rough_sorter/fixtures/`
 - Create: `docs/integration/rough-sorter-supplier-conformance.md`
 - Create: `docs/integration/rough-sorter-joint-acceptance.md`
 

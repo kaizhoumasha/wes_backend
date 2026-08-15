@@ -10,7 +10,7 @@
 
 **当前状态:** `IN_PROGRESS`。Tasks 1–5 已完成原子实施；Task 6 正在执行合入前全局门禁、完整分支独立评审和意见修复循环。Steps 7–8 只能在本分支合入 `develop` 后执行，不得提前清理 deletion tombstone 或归档本计划。
 
-**已完成任务证据:** Task 2=`707be9b9`；Task 3=`b7a126b4`（评审强化 `c597d564`）；Task 4=`1292ed34`（后续收敛 `3842befe`、`4810b1af`）；Task 5=`277a370a`（合同同步 `18c1b655`）。下列 Tasks 1–5 checkbox 已按实际执行记录同步；Task 6 仅在当前全局复审循环完成后更新，合入后步骤继续保持未完成。
+**已完成任务证据:** Task 1 实施基线=`7512f01b747932f521211230f8e90d3def691d48`；Task 2=`707be9b9`；Task 3=`b7a126b4`（评审强化 `c597d564`）；Task 4=`1292ed34`（后续收敛 `3842befe`、`4810b1af`）；Task 5=`277a370a`（合同同步 `18c1b655`）。下列 Tasks 1–5 checkbox 已按实际执行记录同步；Task 6 仅在当前全局复审循环完成后更新，合入后步骤继续保持未完成。
 
 ## Global Constraints
 
@@ -21,7 +21,7 @@
 - 代码行为遵循 TDD；纯文档同步只做链接、引用和 `git diff --check` 验证。
 - 核心测试只验证基础能力和跨模块合同；不得加入具体工作线、供应商私有协议或业务流程。
 - HEAVY selector 为新合并 revision，以及尚未被现有规则覆盖且直接承载被删数据库列的 ORM model，增加 `test_workline_plugin_schema_retirement.py` 这一权威 owner。已被现有宽映射覆盖的 repository/service 路径不得再增加不同策略的精确 mapping；现有精确 `NONE` mapping 仅在确认仍无 HEAVY 影响后刷新说明和内容指纹。每次新增 mapping 前先运行 selector 合同证明没有宽窄策略重叠。
-- Task 1 必须记录不可变的 `<implementation_base_sha>`。Tasks 2–5 的每个原子提交都必须依次完成：按本任务文件清单精确暂存、核对 `git diff --cached --name-status` 未带入外部变更、运行 staged selector 和其选中的 HEAVY、运行 `gitnexus_detect_changes({scope: "staged"})`、确认范围正确，然后才允许提交。不得把这些提交前门禁推迟到最终任务。
+- Task 1 已冻结不可变实施基线 `7512f01b747932f521211230f8e90d3def691d48`。Tasks 2–5 的每个原子提交都必须依次完成：按本任务文件清单精确暂存、核对 `git diff --cached --name-status` 未带入外部变更、运行 staged selector 和其选中的 HEAVY、运行 `gitnexus_detect_changes({scope: "staged"})`、确认范围正确，然后才允许提交。不得把这些提交前门禁推迟到最终任务。
 - Tasks 2–4 会逐步扩展同一条未发布 revision；每轮 PostgreSQL 验证必须使用全新临时数据库，已经应用过该 revision 较早形态的开发/测试数据库必须清理重建，不得复用旧 stamp 推断新 schema 已生效。
 - 每个任务第一次运行 `--scope unstaged` 前，必须把该任务全部拟改生产路径逐一交给当前 selector 求值。未被既有规则分类的数据库列/enum owner 精确映射到 `test_workline_plugin_schema_retirement.py`；仅由已列 FAST owner 承接且确认无 HEAVY 影响的路径使用精确 `NONE`，并在最终内容稳定后记录内容指纹。先运行 `uv run pytest tests/scripts -q` 证明配置无歧义，再运行红灯测试和 HEAVY；不得让未分类路径掩盖预期红灯。
 - 删除的 `replay.py` 和 `timeline_recorded_replay_repository.py` 必须在含删除的分支差异中保留精确 `NONE` tombstone mapping，使 staged 与 CI base diff 可分类；合入 `develop` 后再以独立 cleanup 提交删除 tombstone。仍存活的 `src/app/runtime/system_capabilities/__init__.py` 使用精确、带最终内容指纹的 `NONE` mapping，不随 tombstone 清理。
@@ -84,7 +84,7 @@
 
   Run: `git rev-parse HEAD && git status --short`
 
-  Expected: 记录输出中的 HEAD 为 `<implementation_base_sha>`；状态与 Step 1 前相比没有新增 tracked 变化，本任务不产生 Commit。
+  Expected: 记录输出中的 HEAD 为 `7512f01b747932f521211230f8e90d3def691d48`；状态与 Step 1 前相比没有新增 tracked 变化，本任务不产生 Commit。
 
 - [x] **Step 5: 冻结所有拟改路径的 selector 分类**
 
@@ -406,21 +406,21 @@
 
 - [ ] **Step 3: 验证完整实施差异的 HEAVY 选择与实际执行**
 
-  Run: `uv run scripts/select_heavy_tests.py --base <implementation_base_sha>`
+  Run: `uv run scripts/select_heavy_tests.py --base 7512f01b747932f521211230f8e90d3def691d48`
 
-  Run: `./scripts/run_selected_heavy_local.sh --base <implementation_base_sha>`
+  Run: `./scripts/run_selected_heavy_local.sh --base 7512f01b747932f521211230f8e90d3def691d48`
 
   Expected: 新合并 schema revision 新增的 mapping 只指向 PostgreSQL 退役验收；完整分支差异还必须选择并实际运行所有被既有 repository/service/model 映射命中的 HEAVY，全部无跳过，且 selector 合同未报告宽窄 mapping 重叠。
 
 - [ ] **Step 4: 对完整实施差异运行 GitNexus 变更检测**
 
-  Run `gitnexus_detect_changes({scope: "compare", base_ref: "<implementation_base_sha>"})`。
+  Run `gitnexus_detect_changes({scope: "compare", base_ref: "7512f01b747932f521211230f8e90d3def691d48"})`。
 
   Expected: 变更只影响诊断、RuntimeHold/NG、RuntimeIntentLog、旧 replay/观测和对应测试/schema；不得包含 WMS-WES DTO 文档。
 
 - [ ] **Step 5: 发起独立代码评审**
 
-  使用 `superpowers:requesting-code-review` 对 `<implementation_base_sha>` 以来的完整 diff 评审；存在意见则通过 `superpowers:receiving-code-review` 核实并按 TDD 修复。任何修复必须回到所属 Task 2–5，重新执行全局精确暂存、staged selector/HEAVY、GitNexus 检测和原子提交，再完整重跑本 Task Steps 1–4 并重新评审；循环至无可操作意见后才允许合入。
+  使用 `superpowers:requesting-code-review` 对 `7512f01b747932f521211230f8e90d3def691d48` 以来的完整 diff 做只读评审，并向 reviewer 提供 Steps 1–4 的精确 HEAD、工作区状态、selector manifest、验证命令和结果；reviewer 不启动 Docker、不执行 HEAVY。存在意见则通过 `superpowers:receiving-code-review` 核实并按 TDD 修复：修复必须回到所属 Task 2–5，运行直接受影响测试，并在原子提交前对该修复的精确 staged diff 执行 selector/选中的 HEAVY、GitNexus 检测。中间评审轮次只重新评审完整 diff，不重复运行本 Task 的完整分支 Steps 1–4。循环至无可操作意见后，若最终 HEAD 不同于最近一次 Steps 1–4 的证据快照，则只在最终 HEAD 上完整重跑 Steps 1–4 一次；全部通过后才允许合入。
 
 - [ ] **Step 6: 确认 Phase 11 剩余边界**
 
