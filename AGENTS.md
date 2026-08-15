@@ -68,9 +68,30 @@ DO NOT send optional commentary
 - 主 Agent 是变更和验证证据的唯一责任人；同一文件或同一执行路径只允许一个实施所有者。
 - Review Subagent 默认只读，只检查 diff、合同、风险和既有证据；不得运行 QUALITY、HEAVY、迁移、Docker、Celery 或部署命令。
 - 实施 Subagent 只运行其任务所需的聚焦测试，不运行全量门禁；命令、结果、变更快照必须回传主 Agent。
-- 同一轮先做一次完整 Review；修复后由原 Reviewer 做闭环复查。只有生产代码、测试、脚本、机器可读配置或合同再次变化，才触发新的 fresh Review。
-- QUALITY、HEAVY 和迁移验证由主 Agent 按本文件的失效矩阵最多执行一次；Reviewer 不以“独立确认”为由重复执行。
+- 同一轮先做一次完整 Review；后续闭环与 fresh Review 按 8.1 合并执行，不由 Subagent 自行追加轮次。
+- QUALITY、HEAVY 和迁移验证由主 Agent 按失效矩阵执行；Reviewer 不以“独立确认”为由重复运行。
 - Subagent 返回结论和精确证据，不粘贴长日志。主 Agent 在证据不足、快照不同或结果可疑时才补跑。
+
+### 3.4 已批准计划的实施协议
+
+计划经用户批准后进入 **Execution Lock**：以批准计划和其中引用的当前合同为执行真源。除非发现实际矛盾、缺失决策或变更面扩大，
+不得重新设计、重复读取原始需求、重复加载含义重叠的 Skill，或在每个文件前重新论证已经确定的方案。
+
+首个生产代码补丁前必须建立一次性变更面清单，至少包含：计划修改的生产符号、直接调用点、测试/fixture 所有者、migration、
+生成物以及预期验证。随后按清单批量完成影响分析和必要确认；同一 base、同一符号、同一变更意图不重复查询。用户对本任务的
+HIGH / CRITICAL 影响链作出范围授权后，清单内相同风险不再次暂停；出现清单外的新高风险影响时仍须报告。
+
+实施按完整行为切片推进：
+
+- 功能性代码每个切片执行一次 RED 测试补丁、一次内聚 GREEN 实现和一次聚焦验证；不要把一个切片拆成逐文件微补丁。
+- 公共签名、字段或测试夹具发生机械传播时，先列全调用点，再做一次受控迁移、一次旧符号残留扫描和一次领域回归；禁止依靠整目录失败逐个发现调用点。
+- 可独立的读取、影响分析和 FAST 测试应批量或并行执行；已知签名传播尚未完成时，不反复运行整目录测试。
+- 修改测试期望前先把失败归类为合同变化、机械传播遗漏、环境/fixture 缺失或真实回归。只有合同证据支持时才能改变可观察语义；不得用放宽断言掩盖后三类问题。
+- 最终门禁前按生产模块或机器合同闭合测试所有权：用 GitNexus tests 或精确 `rg` 枚举直接测试、fixture/helper 间接消费者、QA/回归和 HEAVY mapping；未闭合不得把聚焦测试或 QUALITY 称为最终证据。
+- 解析器、规范化或摘要算法还须验证复杂度受输入长度约束：长度/exponent 边界与零值短路先于数值规模驱动的循环、幂或分配；用极小恶意输入做硬超时回归。
+
+上下文读取必须面向当前决策：优先精确 `rg`、符号 context 和函数级行号切片，避免重叠读取。预计需要读取超过约 500 行时，
+先缩窄到失败测试、目标函数和直接调用者；除非计划与实现发生冲突，不重新读取整份原始附件或大段已批准文档。
 
 ## 4. 架构与领域红线
 
@@ -108,7 +129,7 @@ API → Service → Repository → Database
 | 新增或改变可观察功能 | 是 | 先失败测试，再最小实现，再聚焦回归 |
 | Bug 修复 | 是 | 先建立可复现失败，再修复 |
 | 不改变行为的重构 | 否 | 变更前后聚焦回归，必要时补缺失覆盖 |
-| 测试治理、脚本、配置、合同 | 否 | 针对其可执行行为或解析结果做聚焦验证 |
+| 测试治理、脚本、配置、合同自身 | 否；若改变运行时可观察行为，其实现部分按功能变更 | 聚焦验证可执行行为或解析结果 |
 | 纯文档、注释、规则、Release 元数据 | 否，且不得硬套 TDD | 文档或元数据相称检查 |
 
 严禁为了满足流程，为非功能性变更制造无价值的红灯测试、修改 pytest，或把人类文档内容写成自动化断言。
@@ -127,6 +148,7 @@ API → Service → Repository → Database
 - 具体工作线/插件测试位于 `workline_plugins/<plugin_key>/tests/`，不进入核心默认 pytest、覆盖率、QUALITY 或 HEAVY selector。
 - 供应商一致性验收在供应商 ECS/网关边界运行，不在核心仓库创建私有 `device_adapters/` 测试包。
 - WMS Adapter 的 FAST 合同位于 `tests/contracts/wms_adapter/`；真实持久化/事务测试位于 `tests/integration/wms_adapter/`，不得借此证明通用传输层或 WES 最小内核。
+- integration 命令只有在所需数据库、Redis、worker 和显式启用条件就绪时才执行；因环境未启用而 `skipped` 不属于通过证据，也不应为了得到 skip 结果先跑一轮名义集成测试。
 
 `docs/architecture/heavy-test-impact.toml` 是 HEAVY 映射唯一真源：
 
@@ -176,11 +198,13 @@ uv run scripts/select_heavy_tests.py --scope staged
 
 执行规则：
 
-- 同一快照上，完整 QUALITY、同一组 HEAVY、同一迁移链各运行一次。Review、Ship、pre-commit 之间复用有效结果。
-- 提交前若 pre-commit 将执行完整 QUALITY，不要紧邻手工重复；先做聚焦测试和必要快速检查，交给 hook 产生提交快照证据。
+- 同一有效快照上，已通过的完整 QUALITY、同组 HEAVY 和同一迁移链各运行一次并复用；失败门禁不产生有效证据，聚焦诊断通过也不能替代最终完整绿灯。
+- 已授权 Commit 且 pre-commit 将执行完整 QUALITY 时，先做聚焦验证，交给 hook 产生提交快照证据。hook 失败后必须在相同 Git 环境中单独复现失败阶段，修复并确认 staged fingerprint 与 Git 元数据未漂移后再重试；禁止把反复 `git commit` 当作诊断循环。
 - 可执行树（生产、测试、脚本、配置、迁移）或验证环境变化会使相关证据失效；仅创建 Commit 不会自动失效。纯文档或 Release 元数据变化不会使 QUALITY、HEAVY、迁移证据失效。
 - HEAVY 只执行 selector 输出的 manifest；`NONE` 是有效结果。不得把全量 HEAVY 当作默认安心检查。
-- 失败时只重跑失败项或受修复影响的集合；通过后不为“更保险”重复全量。
+- 失败后先重跑失败项或受修复影响集合做诊断；生产、测试、脚本、配置或环境修复完成后，最终快照必须重新完整通过被失效的必选门禁。未变化的绿色快照不重复全量。
+- 多组互不写共享状态的 FAST 测试可并行运行。公共接口传播完成后再运行一次对应领域集；此前只运行当前行为切片，避免用失败列表代替调用点清单。
+- Migration / schema 任务复用一个独占临时 PostgreSQL 实例及 readiness，不复用污染的逻辑库状态。autogenerate、迁移链、integration/HEAVY 使用独立数据库或重建 schema；最终至少在干净逻辑库上完成规定 base 到 head。不得使用共享 dev 数据库。
 - 不能把未绑定当前可执行树 fingerprint 和验证环境的历史绿灯描述为 fresh 证据。不同分支、worktree 或 Commit 只有在受验证内容 fingerprint 与环境一致时才可复用；纯文档或 Release 元数据提交不改变该 fingerprint。
 
 ## 8. Review、QA 与 Ship
@@ -188,15 +212,16 @@ uv run scripts/select_heavy_tests.py --scope staged
 ### 8.1 Review
 
 - 开始前固定 base、head 和 staged/unstaged/untracked 范围；只读 Review 不写文件、不提交、不推送。
-- Reviewer 优先检查合同、架构、风险、测试所有权和现有证据，不重复实施 Agent 已完成的测试。
-- 首轮做完整 Review；修复后由原 Reviewer 验证反馈闭环。只有可执行树变化才做 fresh Review；纯文档或元数据变化只核对对应 diff。
+- Reviewer 从 diff manifest、生产符号和合同缩窄读取，独立枚举直接/间接测试、QA/回归及 HEAVY mapping；不得凭实施者绿灯清单宣布闭合，也不重复其测试。
+- 首轮做完整 Review。生产代码、机器合同或运行时配置修复后，原 Reviewer 用一轮评审同时完成旧意见闭环和当前 diff 的 fresh full Review，禁止拆成两轮。
+- 只有断言语义、测试所有者和可观察行为均不变，且残留扫描闭合时，fixture/期望/调用点传播才算机械变更并做定向 Review；否则升级为完整 Review。纯文档或 Release 元数据只核对对应 diff。
 - Review 结论必须区分代码证据、测试证据、运行时证据和部署/业务验收，不能互相替代。
 
 ### 8.2 后端 QA 路由
 
 - API 路由变化：优先 ASGI/HTTP 合同测试；仅在需要真实进程或中间件行为时启动服务。
 - Service、Repository、模型、迁移：使用聚焦单元/集成/迁移验证，不启动浏览器。
-- callback、设备事件、Celery 或定时任务：除自动测试外，按风险使用真实 worker 验证，并在 PR 中注明。
+- Celery 注册、队列路由、序列化、重试或 worker/定时 wiring 变化必须使用真实 worker；纯 handler/service 逻辑按风险决定，并在 PR 中注明边界。
 - 仅前端页面或明确的端到端浏览器场景使用 GStack 浏览器 QA。
 
 ### 8.3 Ship
@@ -220,24 +245,28 @@ GitHub-only、无需部署或仓库没有部署能力时，Merge 后报告 `MERG
 - 普通单任务不创建 worktree。只在并行隔离、长线重构、保留现场处理紧急修复或明确的多 Agent 计划中使用。
 - 后端主仓库：`/Users/kaizhou/codeDev/wes_backend`；worktree 根目录：`/Users/kaizhou/codeDev/wes_backend-worktrees`。
 - worktree 名使用 branch slug（`/` 替换为 `-`），并独立维护 `.env`、`.venv`、`.pytest_cache` 和 hooks；不得复用其它 worktree 的本地状态。
+- 主工作区未提交的 `AGENTS.md` 不会自动进入既有 worktree。新任务在创建/同步后确认版本；任务中途不追随普通规则变化，新增安全/质量红线则暂停、报告并重新确认基线。
 - 新 worktree 先运行 `./scripts/init-env.sh dev`、`uv sync --dev`，需要提交门禁时运行 `./scripts/install-git-hooks.sh`。
 - `pyproject.toml`、`uv.lock` 或环境 profile 变化后重新初始化环境和依赖。
+- 创建临时仓库的测试或工具必须从子进程环境中删除 `git rev-parse --local-env-vars` 返回的全部变量，不得只维护单个变量白名单。
+- Commit、hook 和嵌套 Git 测试前后核对 worktree 判定、`core.bare`、`.git/config`、index 和 status 指纹；发生漂移时，只恢复本次工具造成的 Git 元数据变化，再继续实施。
 - Commit 使用 Conventional Commits，主题简洁、中文，schema 变化必须说明 migration。Commit 与 Push 是两次独立授权。
 
 ## 10. GitNexus 与影响分析
 
 本项目使用 GitNexus 导航和控制符号级变更风险：
 
-- 修改任何函数、类或方法前，必须对目标符号运行 upstream impact analysis，并查看直接调用者、执行流程和风险级别。
-- HIGH / CRITICAL 风险必须在修改前向用户说明影响范围并确认；LOW / MEDIUM 可按既定任务继续。
+- 修改生产代码中的函数、类或方法前，必须对计划内目标符号运行 upstream impact analysis，并查看直接调用者、执行流程和风险级别；同一批次应并行查询并缓存结果。
+- HIGH / CRITICAL 风险必须在修改前向用户说明影响范围并确认；LOW / MEDIUM 可按既定任务继续。任务范围授权和重新确认规则见 3.4。
 - 探索陌生代码优先按概念查询执行流程；需要完整上下文时查询 symbol context。
-- 重命名使用图谱感知的 rename，不做纯文本全局替换。
-- Commit 前运行 detect changes，确认实际影响符号和流程符合预期。
-- 若索引 stale，先运行 `npx gitnexus analyze`；工具不可用时，明确降级并用 `rg`、调用点、测试和 diff 做保守分析，不伪造 GitNexus 结果。
+- 生产符号重命名使用图谱感知的 rename。协议字段、测试数据和字符串字面量使用限定路径的机械替换，并以旧值残留扫描和聚焦测试收口；禁止无边界全仓替换。
+- Worktree 中先运行 `npx gitnexus status`；仅在索引 stale 时运行一次 `npx gitnexus analyze`。Commit 前固定使用 `npx gitnexus detect-changes --scope staged --repo "$PWD"`，不临时探索 `--help` 或其它变体。
+- `analyze` 可能改写 Agent 入口；执行前后对比 `AGENTS.md` 和 `CLAUDE.md`，只恢复工具生成的超范围变化。若与用户现有变更重叠，停止并报告，不得覆盖。工具不可用时，明确降级为 `rg`、调用点、测试和 diff。
 
-文档、规则或纯数据文件不修改函数/类/方法时，无需为了仪式运行 symbol impact；但 Commit 前的变更范围检查仍适用。
+测试函数、测试 fixture、测试辅助、文档、规则和一次性工具脚本默认不做逐符号 impact；使用测试所有权、精确调用点、聚焦测试和 diff
+评估。共享测试基础设施或 CI 工具存在广泛消费者时才升级为符号影响分析。Commit 前的变更范围检查仍适用。
 
-RTK 用于压缩 Shell 输出；正常使用项目命令即可。遇到输出被过滤或需要原始日志时使用 `rtk proxy <cmd>`，需要评估节省时使用 `rtk gain`。
+QUALITY、HEAVY、Commit hook 和 GitNexus 等长输出默认使用 RTK 摘要；失败时只对失败阶段使用 `rtk proxy <cmd>` 展开原始日志，不重新读取全链路输出。需要评估节省时使用 `rtk gain`。
 
 ## 11. 项目命令与配置
 
@@ -255,7 +284,6 @@ uv run bandit -r src/
 
 - 新 Alembic migration 必须由 `uv run alembic revision -m "<message>"` 或仓库 wrapper 生成随机 revision，再编辑生成文件；不得手写模板式 revision ID。
 - `.env.dev`、`.env.test`、`.env.prod` 生成运行时 `.env`，不得提交 secrets。
-- 修改 callback、device event、scheduled task 或 worker wiring 时，按风险验证 Celery worker，并在 PR 中说明实际验证范围。
 - Python 目标版本为 3.13；Ruff 使用双引号、120 字符行宽和项目既有规则。
 
 ## 12. 文档规划与归档
@@ -271,7 +299,7 @@ uv run bandit -r src/
 
 - diff 只包含授权范围，用户原有变更未被覆盖；
 - 架构、合同、测试所有权和注释规则得到满足；
-- 所有被当前最终快照失效的验证已运行并有结果；未运行项及原因被明确说明；
+- 当前最终快照要求的必选门禁均已通过；必选门禁被阻塞只能报告未完成，非必选或未触发验证须说明边界；
 - GitNexus 影响与变更范围检查按触发条件完成；
 - 未把 Merge、Deploy、健康检查或历史绿灯夸大为业务验收；
 - 未在无授权情况下 Commit、Push、创建 PR、Merge 或 Deploy。
