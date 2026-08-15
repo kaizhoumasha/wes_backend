@@ -10,6 +10,8 @@
 
 **当前状态:** `IN_PROGRESS`。Tasks 1–5 已完成原子实施；Task 6 正在执行合入前全局门禁、完整分支独立评审和意见修复循环。Steps 7–8 只能在本分支合入 `develop` 后执行，不得提前清理 deletion tombstone 或归档本计划。
 
+**已完成任务证据:** Task 2=`707be9b9`；Task 3=`b7a126b4`（评审强化 `c597d564`）；Task 4=`1292ed34`（后续收敛 `3842befe`、`4810b1af`）；Task 5=`277a370a`（合同同步 `18c1b655`）。下列 Tasks 1–5 checkbox 已按实际执行记录同步；Task 6 仅在当前全局复审循环完成后更新，合入后步骤继续保持未完成。
+
 ## Global Constraints
 
 - 当前系统未发布，不保留旧字段 alias、兼容 shim、双写、双读、旧错误码映射或 downgrade。
@@ -58,19 +60,19 @@
 - Consumes: Phase 5 零插件缺席守卫。
 - Produces: 无旧字节码干扰、可复核的干净源码扫描基线。
 
-- [ ] **Step 1: 证明目录没有 Git 跟踪文件**
+- [x] **Step 1: 证明目录没有 Git 跟踪文件**
 
   Run: `git ls-files src/app/runtime/workline_plugins`
 
   Expected: 无输出。
 
-- [ ] **Step 2: 记录并核对待删除对象**
+- [x] **Step 2: 记录并核对待删除对象**
 
   Run: `rg --files -uu src/app/runtime/workline_plugins | sort`
 
   Expected: 仅出现 `__pycache__/*.pyc`，不得出现 `.py`、配置或 fixture。
 
-- [ ] **Step 3: 删除精确目录并验证**
+- [x] **Step 3: 删除精确目录并验证**
 
   删除 `src/app/runtime/workline_plugins/` 这一已核对的本地缓存目录，不使用针对仓库根目录的递归清理或 `git clean`。
 
@@ -78,13 +80,13 @@
 
   Expected: 退出码 `0`。
 
-- [ ] **Step 4: 确认没有可提交变化**
+- [x] **Step 4: 确认没有可提交变化**
 
   Run: `git rev-parse HEAD && git status --short`
 
   Expected: 记录输出中的 HEAD 为 `<implementation_base_sha>`；状态与 Step 1 前相比没有新增 tracked 变化，本任务不产生 Commit。
 
-- [ ] **Step 5: 冻结所有拟改路径的 selector 分类**
+- [x] **Step 5: 冻结所有拟改路径的 selector 分类**
 
   逐项核对 Tasks 2–5 的生产文件与 `docs/architecture/heavy-test-impact.toml`。当前未分类清单至少包括 callback/diagnostics 的 `codes.py`、`failure_mapper.py`、`models.py`，`material_flow/contracts/ng_reason.py`，`models/diagnostic.py`、`models/runtime_hold.py`、`runtime_intent_log.py`、`observability.py`、`services/trace/trace_query_service.py`，以及 Task 5 的 replay、repository 和 `system_capabilities/__init__.py`；实施时以当前 selector 实测为准，不得只复制本清单。
 
@@ -112,7 +114,7 @@
 - Consumes: 现行 request/event/session/device/command/outbox Trace 字段和通用诊断持久化。
 - Produces: 不含插件身份的 Trace/Diagnostic DTO、`WORKFLOW_EXECUTION_FAILED`、`WORKFLOW_TRANSITION_INVALID` 和同步后的数据库 schema。
 
-- [ ] **Step 1: 执行影响分析并确认边界**
+- [x] **Step 1: 执行影响分析并确认边界**
 
   对以下 `target / file_path` 组合分别运行 `gitnexus_impact({direction: "upstream"})`，禁止省略 `file_path` 后自行猜测同名对象：
 
@@ -125,7 +127,7 @@
 
   Expected: 记录 direct callers、风险等级和受影响测试；HIGH/CRITICAL 时先向用户报告并等待确认。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
   在现有测试所有者中增加以下精确断言：
 
@@ -142,7 +144,7 @@
   - trace session failure map 识别两个新工作流错误码，旧 `PLUGIN_*` 字符串不在映射中并落入既定 `SESSION_RESOLVE_FAILED` fail-closed 路径；
   - Trace API 与诊断 Pydantic/SQLModel 字段不再暴露 `plugin_key`，两个 mirror 的枚举、registry 和 builder 保持一致。
 
-- [ ] **Step 3: 运行红灯测试**
+- [x] **Step 3: 运行红灯测试**
 
   Run: `uv run pytest tests/scripts -q`
 
@@ -152,17 +154,17 @@
 
   Expected: FAST 与 PostgreSQL 退役验收均 FAIL，失败点必须是旧字段、旧错误码或旧 schema 仍存在；不得因环境跳过。
 
-- [ ] **Step 4: 实现最小替换**
+- [x] **Step 4: 实现最小替换**
 
   删除 Trace、诊断持久模型、查询响应和 builder 中的插件字段；删除 `PLUGIN_BINDING_REQUIRED`；将另外两个旧插件错误码直接改名为工作流错误码并归属 `ErrorDomain.WORKFLOW`。同步更新本任务触及文件中已经失效的“legacy mirror”“保留兼容”和插件 owner 注释，不做邻近重构；不得保留旧枚举成员、字符串 alias 或 fallback。
 
-- [ ] **Step 5: 生成并编辑 schema revision**
+- [x] **Step 5: 生成并编辑 schema revision**
 
   Run: `uv run alembic revision -m "删除退役插件活动残留"`
 
   在生成的唯一 revision 中先删除 `wes_biz.workline_diagnostics.plugin_key` 及其索引；`downgrade()` 明确抛出 `NotImplementedError`。扩展 `test_workline_plugin_schema_retirement.py` 验证当前 head 和 ORM 都不存在该列。为该新 revision 及尚无现有 owner 的直接 ORM model 增加指向此测试的精确 HEAVY mapping；其它生产路径复用现有 owner，或刷新已确认仍成立的精确 `NONE` 指纹，并运行 selector 合同确认不存在重叠策略。
 
-- [ ] **Step 6: 运行绿灯测试与 selector 合同**
+- [x] **Step 6: 运行绿灯测试与 selector 合同**
 
   Run: `uv run pytest tests/callback/test_callback_mirror_integration.py tests/callback/test_contract_mismatch_diagnostics.py tests/runtime/orchestration/test_trace_response_builder.py tests/scripts -q`
 
@@ -172,7 +174,7 @@
 
   Expected: PostgreSQL 退役验收实际执行且无跳过。
 
-- [ ] **Step 7: 提交原子变更**
+- [x] **Step 7: 提交原子变更**
 
   按全局原子提交门禁精确暂存、执行 staged HEAVY 和 GitNexus 检测；全部通过后运行：
 
@@ -195,17 +197,17 @@
 - Consumes: `DEVICE_ERROR`、`RUNTIME`、`MANUAL` 三类 NG reason 及 RuntimeHold/NgReturnItem 当前释放流程。
 - Produces: 不含插件身份的 RuntimeHold/NG API、ORM 和 PostgreSQL 约束。
 
-- [ ] **Step 1: 执行影响分析**
+- [x] **Step 1: 执行影响分析**
 
   对 `NgReasonSource`、`NgReasonDefinition`、`build_ng_reason_catalog` 使用 `file_path="src/app/runtime/capabilities/material_flow/contracts/ng_reason.py"` 运行 upstream impact；对持久化的 `RuntimeHold`、`NgReturnItem` 使用 `file_path="src/app/runtime/orchestration/models/runtime_hold.py"` 运行 upstream impact。不得误选 `src/app/runtime/orchestration/runtime_hold.py` 中待 Phase 10 处置的同名旧模型。
 
   Expected: 明确 release/query/safety 调用者；HIGH/CRITICAL 时先取得用户确认。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
   测试必须证明 `NgReasonSource` 只含 `DEVICE_ERROR/RUNTIME/MANUAL`，`NgReasonDefinition`、RuntimeHold summary、NgReasonOption 和 ORM 模型均不含插件身份字段；内置三类 reason 仍可构建并按 code 查询。PostgreSQL 验收必须分别证明两张表接受三个合法 source，并拒绝 `PLUGIN`。
 
-- [ ] **Step 3: 运行红灯测试**
+- [x] **Step 3: 运行红灯测试**
 
   Run: `uv run pytest tests/scripts -q`
 
@@ -215,15 +217,15 @@
 
   Expected: FAST 与 PostgreSQL 退役验收均 FAIL，原因是 `PLUGIN`、插件字段或旧 CHECK 仍存在；不得因环境跳过。
 
-- [ ] **Step 4: 实现最小删除**
+- [x] **Step 4: 实现最小删除**
 
   删除 `PLUGIN` enum member、`plugin_reasons` 扩展参数、`plugin_key` 和插件 `contract_version` 字段及查询映射。保留硬件错误、运行时错误和人工判定，不改变 RuntimeHold 状态机或资源冲突逻辑。
 
-- [ ] **Step 5: 扩展唯一 schema revision**
+- [x] **Step 5: 扩展唯一 schema revision**
 
   继续编辑 Task 2 生成的 revision：删除 `wes_biz.runtime_holds` 的插件字段和索引，并在 `runtime_holds`、`ng_return_items` 上重建只允许 `DEVICE_ERROR/RUNTIME/MANUAL` 的 `ng_reason_source` CHECK。扩展 PostgreSQL 退役验收验证两张表的列与 CHECK；不得转换旧数据，存在 `PLUGIN` 开发数据时要求清库后重试。不得新增第二条 revision 或重复增加 HEAVY owner。
 
-- [ ] **Step 6: 运行绿灯和 PostgreSQL 选择器**
+- [x] **Step 6: 运行绿灯和 PostgreSQL 选择器**
 
   Run: `uv run pytest tests/runtime/orchestration/test_runtime_hold_plugin_identity_absence.py tests/resource/test_resource_relation_service.py tests/workline_runtime/test_wms_sync_obligation_resolution.py tests/workline_runtime/test_workline_runtime_status_projection_service.py tests/scripts -q`
 
@@ -231,7 +233,7 @@
 
   Expected: 所有选中测试实际执行，JUnit 中 `total > 0` 且 `skipped = 0`。
 
-- [ ] **Step 7: 提交原子变更**
+- [x] **Step 7: 提交原子变更**
 
   按全局原子提交门禁精确暂存、执行 staged HEAVY 和 GitNexus 检测；全部通过后运行：
 
@@ -259,13 +261,13 @@
 - Consumes: `(provider_code, operation_kind, idempotency_key)` 唯一身份、显式 `operation_kind`、capability/provider/precondition 快照和 dispatch key。
 - Produces: 无插件列、无插件执行 identity 分支、且不可能默认为 `plugin_intent` 的 RuntimeIntentLog。
 
-- [ ] **Step 1: 重新执行 HIGH 风险分析并等待确认**
+- [x] **Step 1: 重新执行 HIGH 风险分析并等待确认**
 
   对 `src/app/runtime/orchestration/runtime_intent_log.py:RuntimeIntentLog`、`src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py:RuntimeIntentLogRepository.claim_or_match`、`src/app/runtime/orchestration/services/intent/system_capability_intent_service.py:SystemCapabilityIntentService._validate_execution_identity` 分别运行 upstream impact，并把每项冒号前的路径传入 GitNexus `file_path` 参数。
 
   Expected: `RuntimeIntentLog` 仍为 HIGH 时，向用户报告直接调用者和受影响测试，取得明确继续授权后才能执行后续步骤。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
   增加断言证明 RuntimeIntentLog 表不含 `plugin_key/plugin_contract_version`，并用符合 SQLModel table model 实际语义的三层验收约束 `operation_kind`：
 
@@ -275,7 +277,7 @@
 
   claim 不再要求插件 identity key；保留 request hash、correlation、owner snapshot 和 dispatch key 冲突检测。不得把 SQLModel 构造器是否立即报错作为验收条件。
 
-- [ ] **Step 3: 运行红灯测试**
+- [x] **Step 3: 运行红灯测试**
 
   Run: `uv run pytest tests/scripts -q`
 
@@ -285,15 +287,15 @@
 
   Expected: FAST 与 PostgreSQL 退役验收均 FAIL，原因是旧字段、旧 schema、SQLModel 默认值或 PostgreSQL `server_default='plugin_intent'` 仍存在；不得因环境跳过。
 
-- [ ] **Step 4: 删除显式插件身份**
+- [x] **Step 4: 删除显式插件身份**
 
   删除模型、claim、repository insert 和 execution identity 中的两个插件字段；删除未被调用且仍拼接 binding 的 `_business_owner_key`；将 `operation_kind` 改为无默认值的必填字段，并在 repository 入口对缺失或空白值抛出清晰的 `ValueError`。保留当前非插件 domain owner 使用的 `binding_snapshot_json`，不扩大到 Phase 10 Generic Intent/Effect 删除。
 
-- [ ] **Step 5: 完成唯一 schema revision**
+- [x] **Step 5: 完成唯一 schema revision**
 
   继续编辑 Task 2 生成的 revision：删除 `wes_runtime.runtime_intent_logs.plugin_key` 的索引以及 `plugin_key/plugin_contract_version` 两列，并对 `operation_kind` 执行 `alter_column(..., server_default=None)`，同时保持 `NOT NULL`。扩展 PostgreSQL 退役验收，证明当前 head 与 ORM 都不存在插件字段、`column_default IS NULL`，且直接写入缺失 `operation_kind` 会触发 `NOT NULL`；不转换数据、不提供 downgrade，也不得新增第三条 revision。
 
-- [ ] **Step 6: 运行 FAST 与 PostgreSQL 验收**
+- [x] **Step 6: 运行 FAST 与 PostgreSQL 验收**
 
   Run: `uv run pytest tests/workline_runtime/system_capabilities/test_system_capability_effect_service.py tests/workline_runtime/test_effect_state_contract.py tests/unit/runtime/orchestration/test_runtime_inbox_state_machine.py tests/contracts/workline/test_runtime_snapshot_contract.py -q`
 
@@ -301,7 +303,7 @@
 
   Expected: 所有选中测试实际执行且无跳过；空库 head 与 ORM 字段一致。
 
-- [ ] **Step 7: 提交原子变更**
+- [x] **Step 7: 提交原子变更**
 
   按全局原子提交门禁精确暂存、执行 staged HEAVY 和 GitNexus 检测；全部通过后运行：
 
@@ -326,7 +328,7 @@
 - Consumes: 当前 QueryEvidence 合同和仍在使用的北向观测阶段。
 - Produces: 无 `PLUGIN_DECISION` reader、无 `PLUGIN_EXECUTION` stage、无仅由测试支撑的 replay service。
 
-- [ ] **Step 1: 证明没有生产消费者**
+- [x] **Step 1: 证明没有生产消费者**
 
   对 `src/app/runtime/system_capabilities/replay.py:TimelineRecordedReplayService`、`src/app/runtime/orchestration/repositories/timeline_recorded_replay_repository.py:TimelineRecordedReplayRepository` 和 `src/app/runtime/orchestration/operation_observability.py:NorthboundTraceStage` 分别使用对应 `file_path` 运行 GitNexus context/impact。
 
@@ -348,11 +350,11 @@
 
   Expected: 仅列出待修改测试、当前合同和本计划，用于建立删除清单，不作为生产消费者证据。
 
-- [ ] **Step 2: 先保住 QueryEvidence 与现行观测合同**
+- [x] **Step 2: 先保住 QueryEvidence 与现行观测合同**
 
   修改既有测试，使其继续验证 QueryEvidence hash/identity 和当前北向阶段，但不再构造 recorded plugin decision 或期待 `PLUGIN_EXECUTION`。
 
-- [ ] **Step 3: 删除无 owner 闭包并运行测试**
+- [x] **Step 3: 删除无 owner 闭包并运行测试**
 
   删除 replay service/repository 及导出，删除旧观测阶段，同步观测合同中的阶段顺序。为两个删除路径保留全局约束指定的精确 `NONE` tombstone，为仍存活的 `system_capabilities/__init__.py` 增加精确、带最终内容指纹的 `NONE` mapping。
 
@@ -362,7 +364,7 @@
 
   Expected: PASS；QueryEvidence 仍有唯一测试 owner。
 
-- [ ] **Step 4: 运行缺席扫描并提交**
+- [x] **Step 4: 运行缺席扫描并提交**
 
   Run: `rg -n "PLUGIN_BINDING_REQUIRED|PLUGIN_EXECUTION_FAILED|PLUGIN_TRANSITION_INVALID|PLUGIN_DECISION|PLUGIN_EXECUTION|plugin_intent|plugin_key|plugin_contract_version|ErrorDomain\\.PLUGIN" src --glob '*.py'`
 

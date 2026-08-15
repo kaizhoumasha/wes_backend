@@ -93,7 +93,8 @@
 - Inspect: `src/app/resource/models/resource.py`
 - Inspect: `src/app/wms_adapter/`
 - Inspect: `src/celery_app/`
-- Inspect: `tests/{runtime,workline,contracts,integration,e2e,deployment,architecture}/`
+- Inspect: `tests/{runtime,workline,contracts,integration,deployment,architecture}/`
+- Inspect: `workline_plugins/rough_sorter/tests/`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
@@ -109,7 +110,7 @@
 
 - [ ] **Step 2: 建立 owner/successor 清单**
 
-  至少逐项裁决 `DeviceEvidence`、`DeviceEvidenceConflict`、`WmsConfirmationStatus`、旧 RuntimeInbox 消费点、WMS 旧 Effect lane、启动装配和旧部署测试。目标是直接用 `InboundEvidence`/冲突证据、独立 `WmsConfirmation` 和新静态处理器接管；没有当前价值的旧 owner 标记 `NONE` 并删除，不做兼容代理。
+  至少逐项裁决 `DeviceEvidence`、`DeviceEvidenceConflict`、`WmsConfirmationStatus`、本阶段直接替换的旧 RuntimeInbox 消费点、WMS 旧 Effect lane、启动装配和旧部署测试。目标是直接用 `InboundEvidence`/冲突证据、独立 `WmsConfirmation` 和新静态处理器接管；没有当前价值的直接旧 owner 标记 `NONE` 并删除，不做兼容代理。跨阶段 Runtime/System Capability/Intent/Hold 残余只记录精确 owner、消费者和 successor，交给 Phase 10；Phase 8 不以全仓零命中为退出条件。
 
 - [ ] **Step 3: 运行 GitNexus 影响分析**
 
@@ -121,13 +122,12 @@
   - `tests/workline/`: Epoch 插件/配置冻结与绑定。
   - `tests/contracts/wms_adapter/`: 粗分 WMS operation、DTO、HTTP/错误语义。
   - `tests/integration/{execution,wms_adapter}/`: PostgreSQL 约束、事务和真实持久化。
-  - `tests/e2e/rough_sorter/`: 部署组合的单条闭环，显式 HEAVY。
-  - `workline_plugins/rough_sorter/tests/`: 只验粗分业务 Decision，不进入核心默认 pytest。
+  - `workline_plugins/rough_sorter/tests/`: 拥有粗分业务 Decision、插件集成和部署闭环，使用插件包自己的 Pytest/CI，不进入核心默认 pytest、覆盖率或 HEAVY selector。
   - 供应商一致性验收: 留在供应商 ECS/网关交付边界，不进入本仓库核心质量门禁。
 
 - [ ] **Step 5: 更新精确 HEAVY mapping**
 
-  对新增执行模型、migration、WMS Adapter、Celery 任务、部署装配和 E2E 支撑资产分别映射真实受影响 HEAVY；不得用空 `heavy_tests` 隐藏运行时影响，也不得把插件私有测试加入核心 selector。
+  对新增核心执行模型、migration、WMS Adapter、Celery 任务和核心部署装配分别映射真实受影响的核心 HEAVY；不得用空 `heavy_tests` 隐藏运行时影响。插件业务、插件集成和插件部署闭环由插件包自己的测试配置与 CI 选择，不得加入核心 selector。
 
 ### Task 3: 建立最小独立插件 SDK 与边界守卫
 
@@ -483,15 +483,14 @@
 
   Commit suggestion: `feat(deployment): 显式装配粗分机插件`
 
-### Task 9: 完成供应商一致性、真实闭环和业务验收
+### Task 9: 完成供应商一致性、插件闭环和业务验收
 
 **Files:**
 
-- Create: `tests/e2e/rough_sorter/test_rough_sorter_business_loop.py`
-- Create or update: named non-secret E2E fixtures under `tests/e2e/rough_sorter/fixtures/`
+- Create: `workline_plugins/rough_sorter/tests/e2e/test_business_loop.py`
+- Create or update: named non-secret E2E fixtures under `workline_plugins/rough_sorter/tests/fixtures/`
 - Create: `docs/integration/rough-sorter-supplier-conformance.md`
 - Create: `docs/integration/rough-sorter-joint-acceptance.md`
-- Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
 
@@ -502,9 +501,9 @@
 
   覆盖附录 task/event、字段闭集、身份、ACK、CALLBACK、错误、时限、投递未知和不可逆点。结果只记录版本、环境、通过/失败和证据位置；供应商私有 DTO/认证/原始映射不复制进 WES 核心或插件。
 
-- [ ] **Step 2: 先建立失败的部署 E2E**
+- [ ] **Step 2: 先在插件包建立失败的部署 E2E**
 
-  单场景必须经过真实 HTTP ingress、持久化 evidence、Celery handler、DeviceCommand 派发、callback、WmsConfirmation 和 execution 完成；不得直接调用 Service 跳过装配。失败原因应是闭环尚未接通，不是依赖缺失或测试跳过。
+  单场景必须通过插件包独立测试配置，经过真实 HTTP ingress、持久化 evidence、Celery handler、DeviceCommand 派发、callback、WmsConfirmation 和 execution 完成；不得直接调用 Service 跳过装配。失败原因应是闭环尚未接通，不是依赖缺失或测试跳过。该测试不进入核心 `tests/`、核心覆盖率或核心 HEAVY selector。
 
 - [ ] **Step 3: 跑通主成功路径**
 
@@ -514,13 +513,15 @@
 
   至少现场/集成验证：重复与冲突 evidence、业务 `WAIT`、PUT 前恢复、ACK 后禁止改目标、callback 未知、货架 release generation 冲突、人工 reconciliation。非功能性负载、HA 和多供应商矩阵不作为 MVP 退出条件。
 
-- [ ] **Step 5: 执行受影响 HEAVY**
+- [ ] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
+
+  Run: `uv run --project workline_plugins/rough_sorter pytest workline_plugins/rough_sorter/tests/e2e -q`
 
   Run: `uv run scripts/select_heavy_tests.py --scope unstaged`
 
   Run: `./scripts/run_selected_heavy_local.sh --scope unstaged`
 
-  Expected: selector 包含粗分 E2E 及实际受影响 integration 目录；JUnit `total > 0`、`failed = 0`、`skipped = 0`。
+  Expected: 插件包独立闭环全部通过；核心 selector 只包含实际受影响的核心 integration/E2E owner，不包含粗分插件私有测试。两类结果分别报告，JUnit 均 `total > 0`、`failed = 0`、`skipped = 0`。
 
 - [ ] **Step 6: 记录分层验收结论**
 
@@ -545,13 +546,15 @@
 **Interfaces:**
 
 - Consumes: Task 3—9 全部实现、测试和联合验收证据。
-- Produces: 无旧 Runtime/粗分残留、当前开发指南与主计划一致、可独立交付的 Phase 8 最终状态。
+- Produces: 无本阶段直接替换的旧粗分/WMS Effect 双路径、Phase 10 残余 owner 清单、当前开发指南与主计划一致、可独立交付的 Phase 8 最终状态。
 
-- [ ] **Step 1: 执行旧路径 absence 扫描**
+- [ ] **Step 1: 执行本阶段直接旧路径 absence 扫描并冻结 Phase 10 交接**
 
-  Run: `rg -n "RuntimeInbox|ExecutionSession|RuntimeIntent|RuntimeHold|SystemCapability|plugin_state|src\.app\.runtime\.workline_plugins|old_rough_sorter|confirm_inbound|notify_pkg_binding" src packages workline_plugins tests --glob '*.py'`
+  Run: `rg -n "plugin_state|src\.app\.runtime\.workline_plugins|old_rough_sorter|confirm_inbound|notify_pkg_binding" src packages workline_plugins tests --glob '*.py'`
 
-  Expected: 生产路径零命中；测试只允许明确的 absence 字面量。不得保留 dual path、shim、registry 或被新对象取代的旧状态 owner。
+  Run: `rg -n "RuntimeInbox|ExecutionSession|RuntimeIntent|RuntimeHold|SystemCapability" src packages workline_plugins tests --glob '*.py'`
+
+  Expected: 第一组本阶段直接旧路径在生产代码零命中，测试只允许明确的 absence 字面量；不得保留 dual path、shim、registry 或被新对象取代的旧状态 owner。第二组跨阶段 Runtime 命中必须逐项记录当前 owner、消费者和 successor，作为 Phase 10 输入，不要求 Phase 8 越权删除或全仓零命中。
 
 - [ ] **Step 2: 验证依赖方向和测试拓扑**
 
@@ -605,7 +608,7 @@
 4. Web 与 Celery 通过一个显式 Composition Root 绑定同一插件版本、配置 digest 和设备 binding；核心无具体插件 import 或供应商分支。
 5. Phase 7 Device/ECS、WMS Adapter、供应商一致性、插件业务和现场联合验收分别通过，且证据不互相代替。
 6. 成功闭环及重复、冲突、WAIT、投递未知、不可逆、释放围栏和对账路径全部通过；受影响 HEAVY `failed = 0` 且 `skipped = 0`。
-7. 旧 Runtime/Effect/粗分路径 absence 扫描通过，当前文档真源已更新，过期过程文档已移出项目目录，`docs/hardware/` 保持原样。
+7. 本阶段直接替换的旧粗分/WMS Effect 双路径 absence 扫描通过，跨阶段 Runtime 残余已形成 Phase 10 精确交接清单；当前文档真源已更新，过期过程文档已移出项目目录，`docs/hardware/` 保持原样。
 
 ## 明确延期到后续阶段
 
