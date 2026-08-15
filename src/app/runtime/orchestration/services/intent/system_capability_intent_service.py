@@ -343,15 +343,6 @@ class SystemCapabilityIntentService:
             raise ValueError("SYSTEM_CAPABILITY effect requires execution correlation")
         return value
 
-    @staticmethod
-    def _business_owner_key(ctx: Mapping[str, Any], intent: RuntimeIntent) -> str:
-        session_id = getattr(ctx.get("session"), "id", None)
-        binding = intent.binding_snapshot
-        return (
-            f"session:{session_id}:binding:{binding.get('binding_id')}:{binding.get('binding_version')}:"
-            f"policy:{intent.authorization_policy}"
-        )[:160]
-
 
 system_capability_intent_service = SystemCapabilityIntentService()
 

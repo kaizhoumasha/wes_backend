@@ -38,6 +38,14 @@ def upgrade() -> None:
     )
     op.drop_column("runtime_intent_logs", "plugin_key", schema="wes_runtime")
     op.drop_column("runtime_intent_logs", "plugin_contract_version", schema="wes_runtime")
+    op.alter_column(
+        "runtime_intent_logs",
+        "operation_kind",
+        schema="wes_runtime",
+        existing_type=sa.String(length=80),
+        existing_nullable=False,
+        server_default=None,
+    )
 
     for table_name, constraint_name in (
         ("runtime_holds", "ck_runtime_holds_ngreasonsource"),

@@ -274,6 +274,88 @@ def test_upgrade_head_retires_workline_plugin_execution_schema() -> None:
 
 
 @pytest.mark.integration
+def test_upgrade_head_removes_runtime_intent_operation_kind_default() -> None:
+    """空库升级到 head 后，operation_kind 不得由数据库伪造插件意图类型。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            connection = await connect(database)
+            try:
+                column_default = await connection.fetchval(
+                    """
+                    SELECT column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = 'wes_runtime'
+                      AND table_name = 'runtime_intent_logs'
+                      AND column_name = 'operation_kind'
+                    """
+                )
+                assert column_default is None
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_upgrade_head_rejects_runtime_intent_without_operation_kind() -> None:
+    """数据库必须直接拒绝缺失 operation_kind 的 RuntimeIntentLog。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            connection = await connect(database)
+            try:
+                with pytest.raises(asyncpg.NotNullViolationError, match="operation_kind"):
+                    async with connection.transaction():
+                        await connection.execute("SET LOCAL session_replication_role = replica")
+                        await connection.execute(
+                            """
+                            INSERT INTO wes_runtime.runtime_intent_logs (
+                                correlation_id,
+                                provider_code,
+                                target_domain,
+                                target_action,
+                                idempotency_key,
+                                request_hash,
+                                dispatch_key,
+                                binding_snapshot_json,
+                                provider_snapshot_json,
+                                precondition_json,
+                                effect_status,
+                                outcome_json,
+                                outcome_history_json,
+                                status_check_count,
+                                status_resubmit_count,
+                                status_binding_snapshot_json
+                            ) VALUES (
+                                'missing-operation-kind-correlation',
+                                'RUNTIME',
+                                'runtime',
+                                'runtime.test',
+                                'missing-operation-kind',
+                                repeat('a', 64),
+                                'missing-operation-kind-dispatch',
+                                '{}'::json,
+                                '{}'::json,
+                                '{}'::json,
+                                'PROPOSED',
+                                '{}'::json,
+                                '[]'::json,
+                                0,
+                                0,
+                                '{}'::json
+                            )
+                            """
+                        )
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
 def test_upgrade_head_restricts_ng_reason_source_to_shared_runtime_sources() -> None:
     """两张持久表只接受 DEVICE_ERROR/RUNTIME/MANUAL，拒绝退役 PLUGIN。"""
 

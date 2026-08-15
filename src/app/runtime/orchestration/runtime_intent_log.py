@@ -84,7 +84,7 @@ class RuntimeIntentLog(BaseMixin, table=True):
 
     # effect 元数据
     provider_code: str = Field(max_length=60, index=True)
-    operation_kind: str = Field(default="plugin_intent", max_length=80)
+    operation_kind: str = Field(max_length=80)
     target_domain: str = Field(max_length=60, description="handling / device / wms_integration")
     target_action: str = Field(max_length=120)
 

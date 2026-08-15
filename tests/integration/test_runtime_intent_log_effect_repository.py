@@ -76,6 +76,26 @@ def _domain_claim() -> dict[str, object]:
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation_kind", "omit"),
+    [(None, True), ("", False), ("   ", False)],
+    ids=["missing", "empty", "whitespace"],
+)
+async def test_claim_rejects_missing_or_blank_operation_kind_before_database_access(
+    operation_kind: object,
+    omit: bool,
+) -> None:
+    claim = _claim()
+    if omit:
+        claim.pop("operation_kind")
+    else:
+        claim["operation_kind"] = operation_kind
+
+    with pytest.raises(ValueError, match="operation_kind"):
+        await RuntimeIntentLogRepository().claim_or_match(object(), **claim)
+
+
 def _evidence(kind: str, *, occurred_at_ms: int) -> SimpleNamespace:
     code = "SUCCESS" if kind == "success" else "STALE_PRECONDITION"
     payload = {"kind": "success", "payload": {"held": True, "reason_code": "REVIEW"}}
