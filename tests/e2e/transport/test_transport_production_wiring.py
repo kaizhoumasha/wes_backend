@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select
 
 from src.app.transport import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller, build_transport_runtime
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -68,6 +69,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
     task_id: str | None = None
     object_id: str | None = None
+    evidence_operation_id: str | None = None
     server: MockWmsHttpServer | None = None
     runtime = None
     worker: TransportBrokerWorker | None = None
@@ -78,6 +80,12 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         if task_id is None or object_id is None:
             return
         async with integration_session_factory.begin() as db:
+            if evidence_operation_id is not None:
+                await db.execute(
+                    delete(TransportCallbackReceipt).where(
+                        TransportCallbackReceipt.operation_id == evidence_operation_id
+                    )
+                )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
             await db.execute(
                 delete(TransportPositionProjection).where(TransportPositionProjection.object_id == object_id)
@@ -144,7 +152,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
                         "outcome_revision": 1,
                         "results": [
                             {
-                                "object_id": object_id,
+                                "container_id": object_id,
                                 "status": "SUCCEEDED",
                                 "final_position": {
                                     "kind": "HANDOFF_POSITION",

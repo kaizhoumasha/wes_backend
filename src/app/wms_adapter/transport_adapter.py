@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 from src.app.transport.contracts import TransportSubmitCode, TransportSubmitResult
-from src.app.transport.submit_snapshot import build_submit_envelope, submit_payload_digest
+from src.app.transport.submit_snapshot import SUBMIT_OPERATION
 from src.app.wms_adapter.client import OutboundHttpClosedError, WmsRequestBodyTooLargeError
-from src.app.wms_adapter.strict_json import is_json_utf8_media_type as _valid_json_media_type
+from src.app.wms_adapter.strict_json import (
+    StrictJsonError,
+    loads_strict_json,
+)
+from src.app.wms_adapter.strict_json import (
+    is_json_utf8_media_type as _valid_json_media_type,
+)
 from src.app.wms_adapter.transport_wire import TRANSPORT_PATH
 from src.core.uuid7 import is_uuid7
 
@@ -33,31 +40,31 @@ class WmsTransportAdapter:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
-        envelope = build_submit_envelope(operation_id, timestamp, payload)
-        transport_task_id = payload.get("transport_task_id")
-        if (
-            not is_uuid7(operation_id)
-            or operation_id != operation_id.lower()
-            or not isinstance(timestamp, int)
-            or isinstance(timestamp, bool)
-            or not 0 <= timestamp <= _SIGNED_INT64_MAX
-            or not isinstance(transport_task_id, str)
-            or not transport_task_id.strip()
-            or submit_payload_digest(operation_id, timestamp, payload) != payload_digest
+        envelope = _decode_frozen_request_body(request_body)
+        payload = envelope.get("data") if envelope is not None else None
+        timestamp = envelope.get("timestamp") if envelope is not None else None
+        if not _valid_frozen_identity(
+            envelope,
+            operation_id=operation_id,
+            timestamp=timestamp,
+            transport_task_id=transport_task_id,
+            payload=payload,
+            request_body=request_body,
+            request_body_digest=request_body_digest,
         ):
             return TransportSubmitResult(
                 TransportSubmitCode.REJECTED,
-                transport_task_id if isinstance(transport_task_id, str) else "",
-                reason_code="PAYLOAD_DIGEST_MISMATCH",
+                transport_task_id,
+                reason_code="REQUEST_BODY_DIGEST_MISMATCH",
             )
         try:
-            access = await self._client.post(
+            access = await self._client.post_json_bytes(
                 TRANSPORT_PATH,
-                json=envelope,
+                body=request_body,
                 max_request_body_bytes=_BODY_LIMIT,
                 max_response_body_bytes=_BODY_LIMIT,
             )
@@ -66,7 +73,7 @@ class WmsTransportAdapter:
             return TransportSubmitResult(
                 TransportSubmitCode.REJECTED if request_too_large else TransportSubmitCode.NOT_SENT,
                 transport_task_id,
-                reason_code="PAYLOAD_TOO_LARGE" if request_too_large else None,
+                reason_code="REQUEST_BODY_TOO_LARGE" if request_too_large else None,
             )
         delivery_state = getattr(access.delivery_state, "value", access.delivery_state)
         if delivery_state != "RESPONSE_RECEIVED":
@@ -78,7 +85,7 @@ class WmsTransportAdapter:
             return TransportSubmitResult(
                 TransportSubmitCode.REJECTED,
                 transport_task_id,
-                reason_code="PAYLOAD_TOO_LARGE" if access.status_code == 413 else "INVALID_REQUEST",
+                reason_code="REQUEST_BODY_TOO_LARGE" if access.status_code == 413 else "INVALID_REQUEST",
             )
         body = access.json_body
         if (
@@ -95,19 +102,10 @@ class WmsTransportAdapter:
         acknowledged_task_id = data.get("transport_task_id")
         if acknowledged_task_id is not None and acknowledged_task_id != transport_task_id:
             return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
-        retry_after_ms = data.get("retry_after_ms")
-        if (
-            code is not TransportSubmitCode.BUSY
-            or not isinstance(retry_after_ms, int)
-            or isinstance(retry_after_ms, bool)
-            or not 1 <= retry_after_ms <= 60_000
-        ):
-            retry_after_ms = None
         return TransportSubmitResult(
             code,
             transport_task_id,
             reason_code=_persistable_reason_code(data.get("reason_code")),
-            retry_after_ms=retry_after_ms,
         )
 
 
@@ -117,7 +115,6 @@ def _map_response_code(status_code: int | None, code: object) -> TransportSubmit
         (200, "DUPLICATE"): TransportSubmitCode.DUPLICATE,
         (409, "CONFLICT"): TransportSubmitCode.CONFLICT,
         (422, "REJECTED"): TransportSubmitCode.REJECTED,
-        (429, "BUSY"): TransportSubmitCode.BUSY,
         (503, "UNAVAILABLE"): TransportSubmitCode.UNAVAILABLE,
     }
     return mapping.get((status_code, code), TransportSubmitCode.DELIVERY_UNKNOWN)
@@ -132,7 +129,7 @@ def _valid_ack_envelope(body: Mapping[str, object], operation_id: str) -> bool:
     if not isinstance(timestamp, int) or isinstance(timestamp, bool) or not 0 <= timestamp <= _SIGNED_INT64_MAX:
         return False
     data = body.get("data")
-    return isinstance(data, dict) and set(data) <= {"transport_task_id", "reason_code", "retry_after_ms"}
+    return isinstance(data, dict) and set(data) <= {"transport_task_id", "reason_code"}
 
 
 def _valid_ack_data(data: Mapping[str, object], code: TransportSubmitCode) -> bool:
@@ -148,9 +145,45 @@ def _valid_ack_data(data: Mapping[str, object], code: TransportSubmitCode) -> bo
     task_id = data.get("transport_task_id")
     if not _valid_task_id(task_id):
         return False
-    if code is TransportSubmitCode.BUSY:
-        return set(data) <= {"transport_task_id", "retry_after_ms"}
     return set(data) == {"transport_task_id"}
+
+
+def _decode_frozen_request_body(request_body: bytes) -> dict[str, object] | None:
+    try:
+        value = loads_strict_json(request_body.decode("utf-8"))
+    except (UnicodeDecodeError, StrictJsonError):
+        return None
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        return None
+    return value
+
+
+def _valid_frozen_identity(
+    envelope: dict[str, object] | None,
+    *,
+    operation_id: str,
+    timestamp: object,
+    transport_task_id: str,
+    payload: object,
+    request_body: bytes,
+    request_body_digest: str,
+) -> bool:
+    return bool(
+        envelope is not None
+        and set(envelope) == {"operation_id", "operation", "timestamp", "data"}
+        and is_uuid7(operation_id)
+        and operation_id == operation_id.lower()
+        and envelope.get("operation_id") == operation_id
+        and envelope.get("operation") == SUBMIT_OPERATION
+        and isinstance(timestamp, int)
+        and not isinstance(timestamp, bool)
+        and 0 <= timestamp <= _SIGNED_INT64_MAX
+        and isinstance(transport_task_id, str)
+        and transport_task_id.strip()
+        and isinstance(payload, dict)
+        and payload.get("transport_task_id") == transport_task_id
+        and hashlib.sha256(request_body).hexdigest() == request_body_digest
+    )
 
 
 def _persistable_reason_code(value: object) -> str | None:

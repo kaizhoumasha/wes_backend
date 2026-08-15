@@ -13,25 +13,48 @@ class FakeRecorder:
         self.calls: list[dict[str, object]] = []
         self._first_acks: dict[tuple[str, str], dict[str, object]] = {}
 
-    async def record_evidence(self, **kwargs: object) -> dict[str, object]:
+    async def record_callback(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(kwargs)
         operation_id = str(kwargs["operation_id"])
         operation = str(kwargs["operation"])
         key = operation, operation_id
         first_ack = self._first_acks.get(key)
         if first_ack is not None:
-            return {**first_ack, "code": "DUPLICATE"}
+            return {**first_ack, "http_status": 200, "code": "DUPLICATE"}
+        message = kwargs["message"]
+        assert isinstance(message, dict)
+        data = message.get("data")
+        transport_task_id = data.get("transport_task_id") if isinstance(data, dict) else None
+        if isinstance(transport_task_id, str):
+            try:
+                transport_task_id.encode("utf-8")
+            except UnicodeEncodeError:
+                transport_task_id = None
+        rejection_reason_code = kwargs["rejection_reason_code"]
+        if rejection_reason_code is not None:
+            response_data = {"reason_code": rejection_reason_code}
+            if isinstance(transport_task_id, str):
+                response_data["transport_task_id"] = transport_task_id
+            first_ack = {
+                "http_status": 422,
+                "code": "REJECTED",
+                "timestamp": 1710000000123,
+                "data": response_data,
+            }
+            self._first_acks[key] = first_ack
+            return first_ack
         first_ack = {
+            "http_status": 202,
             "code": self.code,
             "timestamp": 1710000000123,
-            "data": {"transport_task_id": kwargs["transport_task_id"]},
+            "data": {"transport_task_id": transport_task_id},
         }
         self._first_acks[key] = first_ack
         return first_ack
 
 
 class UnavailableRecorder:
-    async def record_evidence(self, **kwargs: object) -> str:
+    async def record_callback(self, **kwargs: object) -> str:
         raise RuntimeError("database unavailable")
 
 
@@ -55,7 +78,7 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
         "transport.task.member_position_changed@v1",
         {
             "transport_task_id": "transport-1",
-            "bin_id": "bin-1",
+            "container_id": "bin-1",
             "milestone": "TARGET_PLACED",
             "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
         },
@@ -66,7 +89,7 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
     assert response.http_status == 202
     assert response.body["code"] == "RECEIVED"
     assert recorder.calls[0]["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
-    assert recorder.calls[0]["timestamp"] == 1
+    assert recorder.calls[0]["message"]["timestamp"] == 1
 
 
 @pytest.mark.asyncio
@@ -76,7 +99,7 @@ async def test_persistence_failure_returns_unavailable_ack() -> None:
             "transport.task.member_position_changed@v1",
             {
                 "transport_task_id": "transport-1",
-                "bin_id": "bin-1",
+                "container_id": "bin-1",
                 "milestone": "SOURCE_PICKED",
             },
         )
@@ -97,7 +120,7 @@ async def test_handler_rejects_oversized_or_non_closed_json_without_persisting()
             "transport.task.member_position_changed@v1",
             {
                 "transport_task_id": "transport-1",
-                "bin_id": "bin-1",
+                "container_id": "bin-1",
                 "milestone": "SOURCE_PICKED",
                 "unexpected": True,
             },
@@ -106,7 +129,8 @@ async def test_handler_rejects_oversized_or_non_closed_json_without_persisting()
 
     assert oversized.http_status == 413
     assert unknown.http_status == 422
-    assert recorder.calls == []
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]["rejection_reason_code"] == "INVALID_EVIDENCE"
 
 
 @pytest.mark.asyncio
@@ -117,7 +141,7 @@ async def test_handler_accepts_a_valid_body_at_exactly_256_kib() -> None:
         "transport.task.member_position_changed@v1",
         {
             "transport_task_id": "transport-boundary",
-            "bin_id": "bin-boundary",
+            "container_id": "bin-boundary",
             "milestone": "SOURCE_PICKED",
         },
     )
@@ -143,7 +167,7 @@ async def test_handler_rejects_nested_duplicate_key_as_associated_invalid_eviden
     raw_body = (
         b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
         b'"operation":"transport.task.member_position_changed@v1","timestamp":1,'
-        b'"data":{"transport_task_id":"transport-1","bin_id":"bin-1","bin_id":"bin-2",'
+        b'"data":{"transport_task_id":"transport-1","container_id":"bin-1","container_id":"bin-2",'
         b'"milestone":"SOURCE_PICKED"}}'
     )
 
@@ -152,7 +176,7 @@ async def test_handler_rejects_nested_duplicate_key_as_associated_invalid_eviden
     assert response.http_status == 422
     assert response.body["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
     assert response.body["data"] == {"reason_code": "INVALID_EVIDENCE"}
-    assert recorder.calls == []
+    assert len(recorder.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -184,7 +208,7 @@ async def test_handler_rejects_deep_json_without_escaping_recursion_error() -> N
 
     assert response.http_status == 422
     assert response.body["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
-    assert recorder.calls == []
+    assert len(recorder.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -194,7 +218,10 @@ async def test_handler_distinguishes_unknown_operation_from_invalid_known_eviden
     )
 
     assert response.http_status == 422
-    assert response.body["data"] == {"reason_code": "UNSUPPORTED_OPERATION"}
+    assert response.body["data"] == {
+        "transport_task_id": "transport-1",
+        "reason_code": "UNSUPPORTED_OPERATION",
+    }
 
 
 @pytest.mark.asyncio
@@ -217,13 +244,13 @@ async def test_handler_rejects_unencodable_json_string_without_persisting() -> N
     raw_body = (
         b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472","operation":"transport.task.member_position_changed@v1",'
         b'"timestamp":1,"data":{"transport_task_id":"\\ud800",'
-        b'"bin_id":"bin-1","milestone":"SOURCE_PICKED"}}'
+        b'"container_id":"bin-1","milestone":"SOURCE_PICKED"}}'
     )
 
     response = await TransportEventHandler(recorder).handle(raw_body)
 
     assert response.http_status == 422
-    assert recorder.calls == []
+    assert len(recorder.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -248,7 +275,7 @@ async def test_result_requires_position_xor_unknown_and_failure_code() -> None:
         {
             "transport_task_id": "transport-1",
             "kind": "BIN_MOVE",
-            "results": [{"object_id": "bin-1", "status": "FAILED", "position_unknown": False}],
+            "results": [{"container_id": "bin-1", "status": "FAILED", "position_unknown": False}],
         },
     )
 
@@ -273,21 +300,21 @@ async def test_oversized_preassociation_rejection_has_an_empty_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rejected_evidence_keeps_its_operation_id_out_of_idempotency_and_corrected_event_uses_a_new_id() -> None:
+async def test_rejected_evidence_is_persisted_and_corrected_event_uses_a_new_id() -> None:
     recorder = FakeRecorder()
     rejected_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
     corrected_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4473"
     rejected = await TransportEventHandler(recorder).handle(
         _body(
             "transport.task.member_position_changed@v1",
-            {"transport_task_id": "transport-1", "bin_id": "bin-1", "milestone": "INVALID"},
+            {"transport_task_id": "transport-1", "container_id": "bin-1", "milestone": "INVALID"},
             operation_id=rejected_id,
         )
     )
     corrected = await TransportEventHandler(recorder).handle(
         _body(
             "transport.task.member_position_changed@v1",
-            {"transport_task_id": "transport-1", "bin_id": "bin-1", "milestone": "SOURCE_PICKED"},
+            {"transport_task_id": "transport-1", "container_id": "bin-1", "milestone": "SOURCE_PICKED"},
             operation_id=corrected_id,
         )
     )
@@ -296,15 +323,11 @@ async def test_rejected_evidence_keeps_its_operation_id_out_of_idempotency_and_c
     assert rejected.body.get("operation_id") == rejected_id
     assert corrected.http_status == 202
     assert corrected.body.get("operation_id") == corrected_id
-    assert recorder.calls == [
-        {
-            "operation_id": corrected_id,
-            "transport_task_id": "transport-1",
-            "operation": "transport.task.member_position_changed@v1",
-            "timestamp": 1,
-            "payload": {"transport_task_id": "transport-1", "bin_id": "bin-1", "milestone": "SOURCE_PICKED"},
-        }
-    ]
+    assert len(recorder.calls) == 2
+    assert recorder.calls[0]["operation_id"] == rejected_id
+    assert recorder.calls[0]["rejection_reason_code"] == "INVALID_EVIDENCE"
+    assert recorder.calls[1]["operation_id"] == corrected_id
+    assert recorder.calls[1]["rejection_reason_code"] is None
 
 
 @pytest.mark.asyncio
@@ -313,7 +336,7 @@ async def test_duplicate_evidence_ack_reuses_owner_snapshot_across_a_new_handler
     operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
     body = _body(
         "transport.task.member_position_changed@v1",
-        {"transport_task_id": "transport-1", "bin_id": "bin-1", "milestone": "SOURCE_PICKED"},
+        {"transport_task_id": "transport-1", "container_id": "bin-1", "milestone": "SOURCE_PICKED"},
         operation_id=operation_id,
     )
 

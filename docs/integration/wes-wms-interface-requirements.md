@@ -3,9 +3,9 @@ title: WES - WMS 对接接口需求
 status: ReviewRequired
 contract_version: 0.2.0
 published_at: pending
-wes_alignment: ALIGNMENT_REQUIRED
+wes_alignment: ALIGNED
 created_at: 2026-08-13
-updated_at: 2026-08-15
+updated_at: 2026-08-16
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
 scope: WES/WMS 公共通信、Transport 搬运、自动出库、自动入库与上架
 system_stage: pre_release
@@ -51,12 +51,12 @@ WMS/RCS 私有接口。所有标为 `Approved` 的场景，其字段类型、长
 | --- | --- | --- | --- |
 | 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
-| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNMENT_REQUIRED` | 本文已切换两族 DTO 目标合同；WES 代码、OpenAPI、WMS 和现场尚待同步实施 |
+| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES 代码、OpenAPI 和本地行为证据已对齐两族 DTO；WMS 实现、双方联调和现场验收仍待完成 |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的 O1～O7 只用于联合评审，批准前禁止实现 |
 | 自动入库与上架 | `ReviewRequired` | `NOT_READY` | 附录 B/C 的 I1～I4、P1～P8 只用于联合评审，批准前禁止实现 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-F-01、T1～T3 的合同生命周期为 `Approved`，当前两族 DTO 的 WES 实现状态为 `ALIGNMENT_REQUIRED`。基础通信或 Transport
+F-01、T1～T3 的合同生命周期为 `Approved`，当前两族 DTO 的 WES 本地实现状态为 `ALIGNED`。基础通信或 Transport
 验收通过，不能证明自动入库、自动出库已经通过；设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
@@ -141,7 +141,7 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 | `IMPLEMENTED` | 代码已经实现，不代表现场联调或业务验收已经完成 |
 | operation | 接口动作编号。它决定本次请求使用哪套参数规则，例如 `transport.task.submit@v1` |
 | 参数结构（DTO） | 某个 operation 允许接收和返回的 JSON 字段集合 |
-| 完整消息（Payload） | 包括 `operation_id`、`operation`、`timestamp` 和 `data` 的完整 JSON 内容 |
+| 消息信封 | 包括 `operation_id`、`operation`、`timestamp` 和 `data` 的完整 JSON 内容 |
 | 接收确认（ACK） | 接收方确认消息已经保存。它不表示搬运、设备动作或业务已经完成 |
 | 主动通知（Event） | WMS 主动发送给 WES 的消息，不是 WES 发起请求后的同步响应 |
 | 事实报告（Fact） | WES 把已经发生且有证据的业务事实报告给 WMS，例如料盘已经放入目标 Cell |
@@ -795,7 +795,7 @@ async Task<HttpResult> ReceiveAsync(
 | WES 执行对象 | WES 为一次现场执行持久化的稳定身份 | `execution_id`、`material_execution_id`、`bin_execution_id` |
 | WES 配置 | 部署时确定的 WorkLine 和固定位置关系 | `workline_code`、固定工作位、缓存位 |
 | ECS 原始证据 | ECS/PLC 已确定并由 WES 原样持久化的扫码、测量或动作结果 | `scan_evidence_id`、六合一码、测量值、`command_code` |
-| 搬运结果 | 已确定搬运任务的成员位置和结果版本 | WMS wire 使用 `transport_task_id + outcome_revision`；WES 业务结果另有内部 `outcome_version` |
+| 搬运结果 | 已确定搬运任务的成员位置和结果版本 | WMS接口契约使用 `transport_task_id + outcome_revision`；WES 业务结果另有内部 `outcome_version` |
 | WES 现场位置记录 | WES 根据可靠设备和搬运证据形成的作业期现场位置 | `current_location`、`from_position`、`to_position` |
 | WMS 前序响应 | WMS 已经返回并由 WES 保存的业务身份或代际号 | `target_assignment_id`、`route_decision_id`、`putaway_plan_id` |
 | 人工对账 | 操作员核对实物、WMS 主账和原始证据后形成的批准结果 | `reconciliation_id`、权威位置、`CONTINUE/ABORT` |
@@ -1012,13 +1012,13 @@ static string CreateUuidV7()
 | --- | --- | --- |
 | `transport_task_id` | 非空 UTF-8 string，`1..80` 字符 | WES 生成；贯穿 T1、T2、T3；一个已接纳 ID 只能绑定一个 T1 `operation_id` |
 | `rack_id` | 非空 UTF-8 string，`1..100` 字符 | 货架身份，精确比较，不根据前缀推断类型 |
-| `container_id` | 非空 UTF-8 string，`1..100` 字符 | WES-WMS wire 中的物理料箱/容器身份；对应厂商 `containerId`，不是厂商表示仓位的 `binId` |
+| `container_id` | 非空 UTF-8 string，`1..100` 字符 | WES-WMS 接口契约中的物理料箱/容器身份；对应厂商 `containerId`，不是厂商表示仓位的 `binId` |
 | `slot_id/location_code` | 非空 UTF-8 string，`1..100` 字符 | 由位置权威方提供；不得用空字符串或 `null` |
 | `kind` | enum | `RACK_MOVE \| RACK_ROTATE \| BIN_MOVE \| BIN_EXCHANGE` |
 | `rack_face/target_face/arrival_face` | enum | `A \| B`；`rack_face` 是储位身份的一部分，不能从 `slot_id` 推断 |
 | `milestone` | enum | `SOURCE_PICKED \| TARGET_PLACED \| POSITION_UNKNOWN` |
 | `results[].status` | enum | `SUCCEEDED \| FAILED` |
-| `failure_code` | 非空 UTF-8 string，`1..120` 字符 | WMS 将 RCS 原始失败归一化后的稳定码，不发送自由文本或供应商原始 Payload |
+| `failure_code` | 非空 UTF-8 string，`1..120` 字符 | WMS 将 RCS 原始失败归一化后的稳定码，不发送自由文本或供应商原始业务载荷 |
 
 #### 3.1.2 位置严格联合
 
@@ -1494,7 +1494,7 @@ WMS/RCS 无法确认容器位于来源、目标还是搬运途中，此时不得
 - **必须完成：**
   1. 从 T1 不可变接纳记录读取 `transport_task_id + kind`，按货架或料箱结果族完整覆盖原请求对象；
   2. 将 RCS 结果归一化为 `SUCCEEDED/FAILED`，并按条件生成最终位置、位置未知、失败码和货架到达面；
-  3. 失败码必须是稳定归一化码，不得向 WES 发送自由文本或供应商原始 Payload；
+  3. 失败码必须是稳定归一化码，不得向 WES 发送自由文本或供应商原始业务载荷；
   4. 为每条完整结果生成新的 UUIDv7 `operation_id`，并为同一任务分配连续递增的 `outcome_revision`，发送前冻结消息并按第 2.4 节
      可靠发送；
   5. `UNKNOWN` 经权威核对取得完整位置后，使用新的消息身份和更高版本重新发送完整 T3；已经确定的 `SUCCEEDED/FAILED`
@@ -2052,7 +2052,7 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
 | 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和 T3 版本冲突 |
 | WMS 运行证据 | WMS 使用本文规范 fixture，提交实际请求、响应和日志；不得由实现方自行发明合同预期 |
-| Transport 对外归一化表 | WMS 提供 RCS 私有码到第 3.1.4 节稳定 `failure_code` 闭集的映射；不得新增线上码或包含供应商原始 Payload |
+| Transport 对外归一化表 | WMS 提供 RCS 私有码到第 3.1.4 节稳定 `failure_code` 闭集的映射；不得新增线上码或包含供应商原始业务载荷 |
 | 联调环境参数表 | 双方提供实际 `WMS_BASE_URL/WES_BASE_URL`、端口和网络连通结果；超时、Body 上限和认证模式使用第 0.4 节固定值 |
 | ACK 后冲突 SOP | 双方共同确认告警联系人、通知方式和以 `operation + operation_id + transport_task_id` 检索证据的方法；不新增状态查询接口 |
 | 联调证据 | 能证明首次请求、重复请求、内容冲突、可靠通知和确定业务结果符合合同的完整请求与响应 |

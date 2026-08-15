@@ -21,6 +21,7 @@ from src.app.transport.contracts import (
     TransportSubmitResult,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -32,6 +33,7 @@ from src.app.transport.service import TransportService
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
+from tests.support.transport_callbacks import record_valid_callback
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -46,9 +48,9 @@ class _UnusedProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> object:
         raise AssertionError("evidence transaction test must not submit")
 
@@ -58,13 +60,13 @@ class _RejectedProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
         return TransportSubmitResult(
             TransportSubmitCode.REJECTED,
-            str(payload["transport_task_id"]),
+            transport_task_id,
             reason_code="WMS_REJECTED",
         )
 
@@ -83,6 +85,12 @@ class _BlockingEvidenceInsertRepository(TransportRepository):
 class _FailingProjectionRepository(TransportRepository):
     async def get_projection(self, *args: object, **kwargs: object) -> object:
         raise RuntimeError("forced projection failure")
+
+
+class _FailingEvidenceInsertRepository(TransportRepository):
+    async def add_evidence(self, db: AsyncSession, evidence: TransportEvidence) -> None:
+        await super().add_evidence(db, evidence)
+        raise RuntimeError("forced evidence insert failure")
 
 
 class _EvidenceReadRepository(TransportRepository):
@@ -217,6 +225,7 @@ async def test_concurrent_duplicate_public_calls_share_one_postgresql_aggregate(
                 f"rack-duplicate-{suffix}",
                 RackPosition("SOURCE"),
                 RackPosition("TARGET"),
+                RackFace.A,
             )
             for service in services
         )
@@ -260,6 +269,7 @@ async def test_concurrent_resource_conflict_has_one_postgresql_winner(
                 f"rack-conflict-{suffix}",
                 RackPosition("SOURCE"),
                 RackPosition("TARGET"),
+                RackFace.A,
             )
             for index, service in enumerate(services)
         ),
@@ -298,7 +308,8 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         TransportRepository(),
         _UnusedProvider(),
     )
-    await setup_service.record_evidence(
+    await record_valid_callback(
+        setup_service,
         operation_id=operation_id,
         transport_task_id=f"missing-{suffix}",
         operation=RESULT_OPERATION,
@@ -307,7 +318,10 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
             "transport_task_id": f"missing-{suffix}",
             "kind": "RACK_MOVE",
             "outcome_revision": 1,
-            "results": [],
+            "rack_id": f"rack-missing-{suffix}",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+            "arrival_face": "A",
         },
     )
     blocked_repository = _BlockedEvidenceReadRepository()
@@ -345,6 +359,9 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         blocked_repository.release.set()
         await asyncio.gather(stale_task, return_exceptions=True)
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
 
 
@@ -368,13 +385,14 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-rollback",
+                "container_id": "bin-rollback",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],
     }
-    await service.record_evidence(
+    await record_valid_callback(
+        service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -404,6 +422,9 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         assert evidence is not None and evidence.status == "PENDING" and evidence.processed_at is None
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
             await db.execute(
                 delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
             )
@@ -438,7 +459,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-concurrent",
+                "container_id": "bin-concurrent",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
@@ -456,7 +477,8 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
     try:
         results = await asyncio.gather(
             *(
-                service.record_evidence(
+                record_valid_callback(
+                    service,
                     operation_id=operation_id,
                     transport_task_id=handle.transport_task_id,
                     operation=RESULT_OPERATION,
@@ -471,6 +493,9 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         assert results[0]["data"] == results[1]["data"] == {"transport_task_id": handle.transport_task_id}
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
             await db.execute(
                 delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
             )
@@ -504,7 +529,7 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-revision",
+                "container_id": "bin-revision",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
@@ -519,17 +544,19 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
         for _ in range(2)
     ]
 
+    callback_operation_ids = [new_uuid7(), new_uuid7()]
     try:
         results = await asyncio.gather(
             *(
-                service.record_evidence(
-                    operation_id=new_uuid7(),
+                record_valid_callback(
+                    service,
+                    operation_id=callback_operation_id,
                     transport_task_id=handle.transport_task_id,
                     operation=RESULT_OPERATION,
                     timestamp=1,
                     payload=payload,
                 )
-                for service in services
+                for service, callback_operation_id in zip(services, callback_operation_ids, strict=True)
             )
         )
         assert sorted(result["code"] for result in results) == ["CONFLICT", "RECEIVED"]
@@ -546,6 +573,11 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
         assert evidence_count == 1
     finally:
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.operation_id.in_(callback_operation_ids)
+                )
+            )
             await db.execute(
                 delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
             )
@@ -580,13 +612,14 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-lock-order",
+                "container_id": "bin-lock-order",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],
     }
-    first_ack = await setup_service.record_evidence(
+    first_ack = await record_valid_callback(
+        setup_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -608,7 +641,8 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
     worker = asyncio.create_task(worker_service.process_pending_evidence(1))
     await worker_repository.evidence_locked.wait()
     callback = asyncio.create_task(
-        callback_service.record_evidence(
+        record_valid_callback(
+            callback_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -629,11 +663,14 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         assert results[0] == 1
         duplicate_ack = results[1]
         assert isinstance(duplicate_ack, dict)
-        assert duplicate_ack == {**first_ack, "code": "DUPLICATE"}
+        assert duplicate_ack == {**first_ack, "http_status": 200, "code": "DUPLICATE"}
     finally:
         worker_repository.release_evidence.set()
         await asyncio.gather(worker, callback, return_exceptions=True)
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
             await db.execute(
                 delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
             )
@@ -662,6 +699,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         "rack-callback-before-reject",
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
+        RackFace.A,
     )
     blocking_repository = _BlockingEvidenceInsertRepository()
     callback_service = TransportService(
@@ -676,7 +714,8 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     )
     operation_id = new_uuid7()
     callback_task = asyncio.create_task(
-        callback_service.record_evidence(
+        record_valid_callback(
+            callback_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -685,14 +724,10 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
                 "transport_task_id": handle.transport_task_id,
                 "kind": "RACK_MOVE",
                 "outcome_revision": 1,
-                "results": [
-                    {
-                        "object_id": "rack-callback-before-reject",
-                        "status": "SUCCEEDED",
-                        "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-                        "arrival_face": "A",
-                    }
-                ],
+                "rack_id": "rack-callback-before-reject",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+                "arrival_face": "A",
             },
         )
     )
@@ -733,6 +768,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     )
 
     async with integration_session_factory.begin() as db:
+        await db.execute(delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id))
         await db.execute(
             delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
         )
@@ -770,13 +806,14 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-apply-race",
+                "container_id": "bin-apply-race",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],
     }
-    await setup_service.record_evidence(
+    await record_valid_callback(
+        setup_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -805,7 +842,8 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
     apply_task = asyncio.create_task(apply_without_committing())
     await applied.wait()
     conflict_task = asyncio.create_task(
-        conflicting_service.record_evidence(
+        record_valid_callback(
+            conflicting_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -832,6 +870,9 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         release.set()
         await asyncio.gather(apply_task, conflict_task, return_exceptions=True)
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
             await db.execute(
                 delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
             )
@@ -873,6 +914,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
+        RackFace.A,
     )
     race_repository = _RotationReadRepository()
     rotate_service = TransportService(
@@ -894,21 +936,18 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         "transport_task_id": move_handle.transport_task_id,
         "kind": "RACK_MOVE",
         "outcome_revision": 1,
-        "results": [
-            {
-                "object_id": rack_id,
-                "status": "SUCCEEDED",
-                "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-                "arrival_face": "B",
-            }
-        ],
+        "rack_id": rack_id,
+        "status": "SUCCEEDED",
+        "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+        "arrival_face": "B",
     }
     try:
         try:
             await asyncio.wait_for(race_repository.read.wait(), timeout=0.1)
         except TimeoutError:
             pass
-        await service.record_evidence(
+        await record_valid_callback(
+            service,
             operation_id=move_operation_id,
             transport_task_id=move_handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -923,6 +962,9 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         race_repository.release.set()
         await asyncio.gather(rotate_task, return_exceptions=True)
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == move_operation_id)
+            )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.operation_id == move_operation_id))
             task_ids = [move_handle.transport_task_id]
             stale_task = await db.scalar(
@@ -938,3 +980,100 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             await db.execute(
                 delete(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
             )
+
+
+async def test_concurrent_invalid_callback_replays_share_one_postgresql_receipt(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    operation_id = new_uuid7()
+    operation = "transport.task.member_position_changed@v1"
+    message = {
+        "operation_id": operation_id,
+        "operation": operation,
+        "timestamp": 1,
+        "data": {"transport_task_id": "transport-invalid", "container_id": "bin-1", "milestone": "INVALID"},
+    }
+    services = [
+        TransportService(integration_session_factory, TransportRepository(), _UnusedProvider()) for _ in range(2)
+    ]
+
+    try:
+        responses = await asyncio.gather(
+            *(
+                service.record_callback(
+                    operation_id=operation_id,
+                    operation=operation,
+                    message=message,
+                    payload=None,
+                    rejection_reason_code="INVALID_EVIDENCE",
+                )
+                for service in services
+            )
+        )
+        assert responses[0] == responses[1]
+        assert responses[0]["http_status"] == 422
+        async with integration_session_factory() as db:
+            count = await db.scalar(
+                select(func.count())
+                .select_from(TransportCallbackReceipt)
+                .where(
+                    TransportCallbackReceipt.operation == operation,
+                    TransportCallbackReceipt.operation_id == operation_id,
+                )
+            )
+        assert count == 1
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.operation == operation,
+                    TransportCallbackReceipt.operation_id == operation_id,
+                )
+            )
+
+
+async def test_callback_receipt_and_evidence_roll_back_in_one_transaction(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    operation_id = new_uuid7()
+    operation = "transport.task.member_position_changed@v1"
+    payload = {
+        "transport_task_id": "transport-rollback-missing",
+        "container_id": "bin-1",
+        "milestone": "SOURCE_PICKED",
+    }
+    message = {
+        "operation_id": operation_id,
+        "operation": operation,
+        "timestamp": 1,
+        "data": payload,
+    }
+    service = TransportService(integration_session_factory, _FailingEvidenceInsertRepository(), _UnusedProvider())
+
+    with pytest.raises(RuntimeError, match="forced evidence insert failure"):
+        await service.record_callback(
+            operation_id=operation_id,
+            operation=operation,
+            message=message,
+            payload=payload,
+            rejection_reason_code=None,
+        )
+
+    async with integration_session_factory() as db:
+        receipt_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportCallbackReceipt)
+            .where(
+                TransportCallbackReceipt.operation == operation,
+                TransportCallbackReceipt.operation_id == operation_id,
+            )
+        )
+        evidence_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportEvidence)
+            .where(
+                TransportEvidence.operation == operation,
+                TransportEvidence.operation_id == operation_id,
+            )
+        )
+    assert (receipt_count, evidence_count) == (0, 0)

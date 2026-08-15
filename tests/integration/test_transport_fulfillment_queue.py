@@ -12,7 +12,13 @@ from sqlalchemy import delete, select
 
 from src.app.transport.composition import build_transport_runtime
 from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller
-from src.app.transport.models import TransportEvidence, TransportMember, TransportResourceBinding, TransportTask
+from src.app.transport.models import (
+    TransportCallbackReceipt,
+    TransportEvidence,
+    TransportMember,
+    TransportResourceBinding,
+    TransportTask,
+)
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
 from src.core.uuid7 import new_uuid7
@@ -25,6 +31,7 @@ from tests.support.transport_broker import (
     TransportBrokerWorker,
     close_transport_test_resources,
 )
+from tests.support.transport_callbacks import record_valid_callback
 
 pytestmark = pytest.mark.integration
 
@@ -41,6 +48,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
     task_ids: list[str] = []
+    callback_operation_ids: list[str] = []
     server: MockWmsHttpServer | None = None
     runtime = None
     worker: TransportBrokerWorker | None = None
@@ -51,6 +59,11 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         if not task_ids:
             return
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.operation_id.in_(callback_operation_ids)
+                )
+            )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
             await db.execute(
                 delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
@@ -96,18 +109,19 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         )
         task_ids.append(evidence_handle.transport_task_id)
         evidence_operation_id = new_uuid7()
-        await runtime.service.record_evidence(
+        callback_operation_ids.append(evidence_operation_id)
+        await record_valid_callback(
+            runtime.service,
             operation_id=evidence_operation_id,
             transport_task_id=evidence_handle.transport_task_id,
             operation=RESULT_OPERATION,
             timestamp=1,
             payload={
-                "transport_task_id": evidence_handle.transport_task_id,
                 "kind": "BIN_MOVE",
                 "outcome_revision": 1,
                 "results": [
                     {
-                        "object_id": f"bin-evidence-{suffix}",
+                        "container_id": f"bin-evidence-{suffix}",
                         "status": "SUCCEEDED",
                         "final_position": {
                             "kind": "HANDOFF_POSITION",

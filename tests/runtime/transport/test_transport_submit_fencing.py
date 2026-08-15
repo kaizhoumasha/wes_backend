@@ -10,6 +10,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import (
+    RackFace,
     RackPosition,
     TransportCaller,
     TransportOutcome,
@@ -17,6 +18,7 @@ from src.app.transport.contracts import (
     TransportSubmitResult,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -43,11 +45,11 @@ class _BlockingProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
-        task_id = str(payload["transport_task_id"])
+        task_id = transport_task_id
         self.calls.append(task_id)
         self.started.set()
         await self.release.wait()
@@ -62,11 +64,11 @@ class _ImmediateProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
-        task_id = str(payload["transport_task_id"])
+        task_id = transport_task_id
         self.calls.append(task_id)
         return TransportSubmitResult(TransportSubmitCode.RECEIVED, task_id)
 
@@ -77,6 +79,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
     async with sessions.begin() as db:
         for model in (
             TransportEvidence,
+            TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
             TransportPositionProjection,
@@ -97,6 +100,7 @@ async def _create_task(service: TransportService, request_id: str, rack_id: str)
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
+        RackFace.A,
     )
     return handle.transport_task_id
 
@@ -232,7 +236,7 @@ async def test_snapshot_digest_mismatch_has_no_writeback(db_engine: object) -> N
             update(TransportTask)
             .where(TransportTask.transport_task_id == task_id)
             .values(
-                submit_payload_digest="0" * 64,
+                submit_request_body_digest="0" * 64,
                 status="PENDING",
                 reason_code="UNCHANGED",
                 updated_at=mismatch_updated_at,
@@ -242,7 +246,7 @@ async def test_snapshot_digest_mismatch_has_no_writeback(db_engine: object) -> N
     provider.release.set()
     assert await running == 1
     task = await _load_task(db_engine, task_id)
-    assert task.submit_payload_digest == "0" * 64
+    assert task.submit_request_body_digest == "0" * 64
     assert (task.status, task.reason_code, task.updated_at) == ("PENDING", "UNCHANGED", mismatch_updated_at)
 
 

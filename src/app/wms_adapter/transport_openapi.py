@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -69,10 +69,10 @@ _BIN_POSITION_SCHEMA = {"oneOf": [_RACK_BIN_SLOT_SCHEMA, _HANDOFF_POSITION_SCHEM
 _POSITION_DATA_SCHEMA = {
     "oneOf": [
         _closed_object(
-            ["transport_task_id", "bin_id", "milestone"],
+            ["transport_task_id", "container_id", "milestone"],
             {
                 "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
-                "bin_id": _OBJECT_ID_SCHEMA,
+                "container_id": _OBJECT_ID_SCHEMA,
                 "milestone": _literal(milestone),
             },
         )
@@ -80,10 +80,10 @@ _POSITION_DATA_SCHEMA = {
     ]
     + [
         _closed_object(
-            ["transport_task_id", "bin_id", "milestone", "final_position"],
+            ["transport_task_id", "container_id", "milestone", "final_position"],
             {
                 "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
-                "bin_id": _OBJECT_ID_SCHEMA,
+                "container_id": _OBJECT_ID_SCHEMA,
                 "milestone": _literal("TARGET_PLACED"),
                 "final_position": _BIN_POSITION_SCHEMA,
             },
@@ -92,14 +92,16 @@ _POSITION_DATA_SCHEMA = {
 }
 
 
-def _member_result_schema(*, final_position: Mapping[str, object], arrival_face: bool) -> dict[str, object]:
+def _member_result_schema(
+    *, id_field: str, final_position: Mapping[str, object], arrival_face: bool
+) -> dict[str, object]:
     success_properties: dict[str, object] = {
-        "object_id": _OBJECT_ID_SCHEMA,
+        id_field: _OBJECT_ID_SCHEMA,
         "status": _literal("SUCCEEDED"),
         "final_position": final_position,
     }
     failed_properties: dict[str, object] = {
-        "object_id": _OBJECT_ID_SCHEMA,
+        id_field: _OBJECT_ID_SCHEMA,
         "status": _literal("FAILED"),
         "final_position": final_position,
         "failure_code": {
@@ -107,8 +109,8 @@ def _member_result_schema(*, final_position: Mapping[str, object], arrival_face:
             "enum": sorted(TRANSPORT_FAILURE_CODES - {"POSITION_UNKNOWN"}),
         },
     }
-    success_required = ["object_id", "status", "final_position"]
-    failed_required = ["object_id", "status", "final_position", "failure_code"]
+    success_required = [id_field, "status", "final_position"]
+    failed_required = [id_field, "status", "final_position", "failure_code"]
     if arrival_face:
         arrival_schema = {"type": "string", "enum": ["A", "B"]}
         success_properties["arrival_face"] = arrival_schema
@@ -120,9 +122,9 @@ def _member_result_schema(*, final_position: Mapping[str, object], arrival_face:
             _closed_object(success_required, success_properties),
             _closed_object(failed_required, failed_properties),
             _closed_object(
-                ["object_id", "status", "position_unknown", "failure_code"],
+                [id_field, "status", "position_unknown", "failure_code"],
                 {
-                    "object_id": _OBJECT_ID_SCHEMA,
+                    id_field: _OBJECT_ID_SCHEMA,
                     "status": _literal("FAILED"),
                     "position_unknown": _literal(True),
                     "failure_code": _literal("POSITION_UNKNOWN"),
@@ -132,12 +134,12 @@ def _member_result_schema(*, final_position: Mapping[str, object], arrival_face:
     }
 
 
-def _result_data_schema(kind_values: list[str], result_schema: dict[str, object]) -> dict[str, object]:
+def _bin_result_data_schema(result_schema: dict[str, object]) -> dict[str, object]:
     return _closed_object(
         ["transport_task_id", "kind", "outcome_revision", "results"],
         {
             "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
-            "kind": {"type": "string", "enum": kind_values},
+            "kind": {"type": "string", "enum": ["BIN_MOVE", "BIN_EXCHANGE"]},
             "outcome_revision": {
                 "type": "integer",
                 "format": "int64",
@@ -149,15 +151,43 @@ def _result_data_schema(kind_values: list[str], result_schema: dict[str, object]
     )
 
 
+def _rack_result_data_schema() -> dict[str, object]:
+    member_schema = _member_result_schema(
+        id_field="rack_id",
+        final_position=_RACK_POSITION_SCHEMA,
+        arrival_face=True,
+    )
+    common_properties = {
+        "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
+        "kind": {"type": "string", "enum": ["RACK_MOVE", "RACK_ROTATE"]},
+        "outcome_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1,
+            "maximum": SIGNED_INT64_MAX,
+        },
+    }
+    return {
+        "oneOf": [
+            _closed_object(
+                ["transport_task_id", "kind", "outcome_revision", *variant["required"]],
+                {**common_properties, **variant["properties"]},
+            )
+            for variant in member_schema["oneOf"]
+        ]
+    }
+
+
+_RACK_RESULT_DATA_VARIANTS = cast("list[dict[str, object]]", _rack_result_data_schema()["oneOf"])
 _RESULT_DATA_SCHEMA = {
     "oneOf": [
-        _result_data_schema(
-            ["RACK_MOVE", "RACK_ROTATE"],
-            _member_result_schema(final_position=_RACK_POSITION_SCHEMA, arrival_face=True),
-        ),
-        _result_data_schema(
-            ["BIN_MOVE", "BIN_EXCHANGE"],
-            _member_result_schema(final_position=_BIN_POSITION_SCHEMA, arrival_face=False),
+        *_RACK_RESULT_DATA_VARIANTS,
+        _bin_result_data_schema(
+            _member_result_schema(
+                id_field="container_id",
+                final_position=_BIN_POSITION_SCHEMA,
+                arrival_face=False,
+            ),
         ),
     ]
 }
@@ -196,10 +226,16 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
-_REASON_DATA_SCHEMA = _closed_object(
-    ["reason_code"],
-    {"reason_code": {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}},
-)
+_REASON_CODE_SCHEMA = {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}
+_REASON_DATA_SCHEMA = {
+    "oneOf": [
+        _closed_object(["reason_code"], {"reason_code": _REASON_CODE_SCHEMA}),
+        _closed_object(
+            ["transport_task_id", "reason_code"],
+            {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA, "reason_code": _REASON_CODE_SCHEMA},
+        ),
+    ]
+}
 
 TRANSPORT_EVENT_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {

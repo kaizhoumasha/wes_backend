@@ -67,7 +67,9 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
         ack_schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
         assert ack_schema.get("properties", {}).get("code", {}).get("enum") == [expected_code]
         assert ack_schema["additionalProperties"] is False
-        assert ack_schema["properties"]["data"]["additionalProperties"] is False
+        data_schema = ack_schema["properties"]["data"]
+        data_variants = data_schema.get("oneOf", [data_schema])
+        assert all(variant["additionalProperties"] is False for variant in data_variants)
     for status_code in ("400", "401", "413"):
         assert "content" not in operation["responses"][status_code]
 

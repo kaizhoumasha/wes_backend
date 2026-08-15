@@ -798,11 +798,23 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "tests/support/transport_callbacks.py"
+heavy_tests = [
+    "tests/integration/test_transport_fulfillment_queue.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+]
+
+[[mapping]]
 source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py"
 heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260814_0516_ce53af214081_对齐_wms_t3_来源结果版本.py"
+heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py"
 heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]

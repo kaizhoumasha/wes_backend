@@ -31,6 +31,17 @@ def test_transport_openapi_limits_outcome_revision_to_signed_int64() -> None:
     assert all(schema["maximum"] == 2**63 - 1 for schema in revisions)
 
 
+def test_transport_openapi_exposes_only_v02_callback_identity_shapes() -> None:
+    serialized = json.dumps(build_transport_openapi_document(), ensure_ascii=False)
+
+    assert '"container_id"' in serialized
+    assert '"rack_id"' in serialized
+    assert '"bin_id"' not in serialized
+    assert '"object_id"' not in serialized
+    assert '"retry_after_ms"' not in serialized
+    assert '"BUSY"' not in serialized
+
+
 def _walk_schemas(schema: object):
     if isinstance(schema, dict):
         yield schema

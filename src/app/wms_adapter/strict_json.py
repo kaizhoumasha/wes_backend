@@ -10,9 +10,10 @@ from typing import Any
 class StrictJsonError(ValueError):
     """JSON 语法或对象成员不满足严格合同。"""
 
-    def __init__(self, message: str, *, operation_id: object = None) -> None:
+    def __init__(self, message: str, *, operation_id: object = None, operation: object = None) -> None:
         super().__init__(message)
         self.operation_id = operation_id
+        self.operation = operation
 
 
 class _ObjectPairs(list[tuple[str, Any]]):
@@ -33,12 +34,13 @@ def loads_strict_json(text: str) -> object:
         raise StrictJsonError("invalid JSON") from error
 
     operation_id = _unique_top_level_value(parsed, "operation_id")
+    operation = _unique_top_level_value(parsed, "operation")
     try:
         return _materialize(parsed)
     except StrictJsonError as error:
-        raise StrictJsonError(str(error), operation_id=operation_id) from error
+        raise StrictJsonError(str(error), operation_id=operation_id, operation=operation) from error
     except RecursionError as error:
-        raise StrictJsonError("invalid JSON", operation_id=operation_id) from error
+        raise StrictJsonError("invalid JSON", operation_id=operation_id, operation=operation) from error
 
 
 def is_json_utf8_media_type(value: str) -> bool:

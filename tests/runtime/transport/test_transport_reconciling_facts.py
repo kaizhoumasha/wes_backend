@@ -16,6 +16,7 @@ from src.app.transport.contracts import (
     TransportSubmitResult,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -27,6 +28,7 @@ from src.app.transport.service import TransportService
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
+from tests.support.transport_callbacks import record_valid_callback
 
 register_required_sqlmodel_metadata()
 
@@ -36,11 +38,11 @@ class FakeProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
-        return TransportSubmitResult(TransportSubmitCode.RECEIVED, str(payload["transport_task_id"]))
+        return TransportSubmitResult(TransportSubmitCode.RECEIVED, transport_task_id)
 
 
 @pytest_asyncio.fixture
@@ -49,6 +51,7 @@ async def reconciling_service(db_engine: object) -> TransportService:
     async with sessions.begin() as db:
         for model in (
             TransportEvidence,
+            TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
             TransportPositionProjection,
@@ -76,20 +79,21 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-confirmed-source",
+                "container_id": "bin-confirmed-source",
                 "status": "FAILED",
                 "final_position": source,
-                "failure_code": "PICK_FAILED",
+                "failure_code": "RCS_EXECUTION_FAILED",
             },
             {
-                "object_id": "bin-unknown-peer",
+                "container_id": "bin-unknown-peer",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "POSITION_LOST",
+                "failure_code": "POSITION_UNKNOWN",
             },
         ],
     }
-    await reconciling_service.record_evidence(
+    await record_valid_callback(
+        reconciling_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -97,14 +101,15 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
         payload=result,
     )
     await reconciling_service.process_pending_evidence(1)
-    await reconciling_service.record_evidence(
+    await record_valid_callback(
+        reconciling_service,
         operation_id="operation-late-target",
         transport_task_id=handle.transport_task_id,
         operation=POSITION_OPERATION,
         timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
-            "bin_id": "bin-confirmed-source",
+            "container_id": "bin-confirmed-source",
             "milestone": "TARGET_PLACED",
             "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT_1"},
         },
@@ -129,7 +134,7 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
 
     assert evidence is not None and evidence.status == "CONFLICT"
     assert member is not None and member.final_position_json == source
-    assert member.status == "FAILED" and member.failure_code == "PICK_FAILED"
+    assert member.status == "FAILED" and member.failure_code == "RCS_EXECUTION_FAILED"
     assert projection is not None and projection.position_json == source
 
 
@@ -137,8 +142,8 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
 @pytest.mark.parametrize(
     ("confirmed_status", "confirmed_failure_code", "late_status", "late_failure_code"),
     [
-        ("SUCCEEDED", None, "FAILED", "LATE_FAILURE"),
-        ("FAILED", "INITIAL_FAILURE", "SUCCEEDED", None),
+        ("SUCCEEDED", None, "FAILED", "RCS_EXECUTION_FAILED"),
+        ("FAILED", "RCS_EXECUTION_FAILED", "SUCCEEDED", None),
     ],
     ids=["success-to-failure", "failure-to-success"],
 )
@@ -167,16 +172,16 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-confirmed-result",
+                "container_id": "bin-confirmed-result",
                 "status": confirmed_status,
                 "final_position": confirmed_target,
                 **({"failure_code": confirmed_failure_code} if confirmed_failure_code is not None else {}),
             },
             {
-                "object_id": "bin-unknown-result",
+                "container_id": "bin-unknown-result",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "POSITION_LOST",
+                "failure_code": "POSITION_UNKNOWN",
             },
         ],
     }
@@ -187,16 +192,16 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
         "outcome_revision": 2,
         "results": [
             {
-                "object_id": "bin-confirmed-result",
+                "container_id": "bin-confirmed-result",
                 "status": late_status,
                 "final_position": confirmed_target,
                 **({"failure_code": late_failure_code} if late_failure_code is not None else {}),
             },
             {
-                "object_id": "bin-unknown-result",
+                "container_id": "bin-unknown-result",
                 "status": "FAILED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT_2"},
-                "failure_code": "POSITION_LOST",
+                "failure_code": "RCS_EXECUTION_FAILED",
             },
         ],
     }
@@ -204,7 +209,8 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
         (initial_operation_id, initial_result),
         (late_operation_id, late_result),
     ):
-        await reconciling_service.record_evidence(
+        await record_valid_callback(
+            reconciling_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -232,6 +238,6 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
     )
     assert (members[1].status, members[1].failure_code, members[1].position_unknown) == (
         "FAILED",
-        "POSITION_LOST",
+        "POSITION_UNKNOWN",
         True,
     )

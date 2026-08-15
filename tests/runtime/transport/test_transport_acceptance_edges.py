@@ -23,6 +23,7 @@ from src.app.transport.contracts import (
     TransportSubmitResult,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -35,6 +36,7 @@ from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
+from tests.support.transport_callbacks import record_valid_callback
 
 register_required_sqlmodel_metadata()
 
@@ -44,11 +46,9 @@ class ConfigurableProvider:
         self,
         code: TransportSubmitCode = TransportSubmitCode.RECEIVED,
         *,
-        retry_after_ms: int | None = None,
         error: BaseException | None = None,
     ) -> None:
         self.code = code
-        self.retry_after_ms = retry_after_ms
         self.error = error
         self.calls = 0
 
@@ -56,15 +56,14 @@ class ConfigurableProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
         self.calls += 1
         if self.error is not None:
             raise self.error
-        transport_task_id = str(payload["transport_task_id"])
-        return TransportSubmitResult(self.code, transport_task_id, retry_after_ms=self.retry_after_ms)
+        return TransportSubmitResult(self.code, transport_task_id)
 
 
 class RecordingPublisher:
@@ -134,6 +133,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
     async with sessions.begin() as db:
         for model in (
             TransportEvidence,
+            TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
             TransportPositionProjection,
@@ -229,6 +229,7 @@ async def test_submit_ack_terminal_matrix(
         f"rack-{code.value}",
         RackPosition("A"),
         RackPosition("B"),
+        RackFace.A,
     )
 
     assert await service.submit_pending_tasks(1) == 1
@@ -250,26 +251,24 @@ async def test_submit_ack_terminal_matrix(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("code", "retry_after_ms"),
+    "code",
     [
-        (TransportSubmitCode.NOT_SENT, None),
-        (TransportSubmitCode.UNAVAILABLE, None),
-        (TransportSubmitCode.BUSY, -1),
-        (TransportSubmitCode.BUSY, True),
+        TransportSubmitCode.NOT_SENT,
+        TransportSubmitCode.UNAVAILABLE,
     ],
 )
 async def test_confirmed_retryable_results_clear_send_marker_and_use_fixed_delay(
     db_engine: object,
     code: TransportSubmitCode,
-    retry_after_ms: int | None,
 ) -> None:
-    service = _service(db_engine, provider=ConfigurableProvider(code, retry_after_ms=retry_after_ms))
+    service = _service(db_engine, provider=ConfigurableProvider(code))
     handle = await service.move_rack(
         new_uuid7(),
         _caller(),
-        f"rack-retry-{code.value}-{retry_after_ms}",
+        f"rack-retry-{code.value}",
         RackPosition("A"),
         RackPosition("B"),
+        RackFace.A,
     )
 
     assert await service.submit_pending_tasks(1) == 1
@@ -289,6 +288,7 @@ async def test_timeout_is_unknown_and_never_retried(db_engine: object) -> None:
         "rack-timeout",
         RackPosition("A"),
         RackPosition("B"),
+        RackFace.A,
     )
 
     assert await service.submit_pending_tasks(1) == 1
@@ -316,14 +316,23 @@ async def test_unmatched_or_unsupported_evidence_is_retained_as_conflict(
                 "rack-evidence",
                 RackPosition("A"),
                 RackPosition("B"),
+                RackFace.A,
             )
         ).transport_task_id
-    await service.record_evidence(
+    await record_valid_callback(
+        service,
         operation_id=f"event-{operation}",
         transport_task_id=task_id,
         operation=operation,
         timestamp=1,
-        payload={"kind": "RACK_MOVE", "outcome_revision": 1, "results": []},
+        payload={
+            "kind": "RACK_MOVE",
+            "outcome_revision": 1,
+            "rack_id": "rack-evidence",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
+            "arrival_face": "A",
+        },
     )
 
     assert await service.process_pending_evidence(1) == 1
@@ -344,6 +353,7 @@ async def test_failed_publish_is_reclaimed_after_lease_expiry(db_engine: object)
         "rack-publish",
         RackPosition("A"),
         RackPosition("B"),
+        RackFace.A,
     )
     service.provider.code = TransportSubmitCode.REJECTED
     await service.submit_pending_tasks(1)
@@ -377,6 +387,7 @@ async def test_publish_success_before_bookkeeping_crash_is_retried_with_same_ver
         "rack-publish-bookkeeping-crash",
         RackPosition("A"),
         RackPosition("B"),
+        RackFace.A,
     )
     await service.submit_pending_tasks(1)
     repository.fail_bookkeeping = True
@@ -410,6 +421,7 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
         "rack-publish-stale-token",
         RackPosition("A"),
         RackPosition("B"),
+        RackFace.A,
     )
     await stale_service.submit_pending_tasks(1)
     blocked_repository.block_bookkeeping = True
@@ -420,18 +432,15 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
         "transport_task_id": handle.transport_task_id,
         "kind": "RACK_MOVE",
         "outcome_revision": 1,
-        "results": [
-            {
-                "object_id": "rack-publish-stale-token",
-                "status": "SUCCEEDED",
-                "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
-                "arrival_face": "B",
-            }
-        ],
+        "rack_id": "rack-publish-stale-token",
+        "status": "SUCCEEDED",
+        "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
+        "arrival_face": "A",
     }
 
     try:
-        await winner_service.record_evidence(
+        await record_valid_callback(
+            winner_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -468,6 +477,7 @@ async def test_failed_publish_does_not_starve_later_outcomes(db_engine: object) 
             f"rack-publish-error-{ordinal}",
             RackPosition("A"),
             RackPosition("B"),
+            RackFace.A,
         )
     service.provider.code = TransportSubmitCode.REJECTED
     assert await service.submit_pending_tasks(2) == 2
@@ -492,6 +502,7 @@ async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
                 f"rack-publish-timeout-{ordinal}",
                 RackPosition("A"),
                 RackPosition("B"),
+                RackFace.A,
             )
         )
     service.provider.code = TransportSubmitCode.REJECTED
@@ -523,12 +534,12 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-success",
+                "container_id": "bin-success",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             },
             {
-                "object_id": "bin-failed",
+                "container_id": "bin-failed",
                 "status": "FAILED",
                 "final_position": {
                     "kind": "RACK_BIN_SLOT",
@@ -536,11 +547,12 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
                     "rack_face": "A",
                     "slot_id": "2",
                 },
-                "failure_code": "CTU_PICK_FAILED",
+                "failure_code": "RCS_EXECUTION_FAILED",
             },
         ],
     }
-    await service.record_evidence(
+    await record_valid_callback(
+        service,
         operation_id="partial-failure-result",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -551,5 +563,5 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
     assert await service.process_pending_evidence(1) == 1
     assert await service.publish_pending_outcomes(1, publisher) == 1
     task = await _load_task(db_engine, handle.transport_task_id)
-    assert (task.status, task.reason_code) == ("FAILED", "CTU_PICK_FAILED")
+    assert (task.status, task.reason_code) == ("FAILED", "RCS_EXECUTION_FAILED")
     assert publisher.outcomes[0].status.value == "FAILED"
