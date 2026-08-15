@@ -54,7 +54,6 @@ class TransportSubmitCode(StrEnum):
     DUPLICATE = "DUPLICATE"
     CONFLICT = "CONFLICT"
     REJECTED = "REJECTED"
-    BUSY = "BUSY"
     UNAVAILABLE = "UNAVAILABLE"
     NOT_SENT = "NOT_SENT"
     DELIVERY_UNKNOWN = "DELIVERY_UNKNOWN"
@@ -167,6 +166,7 @@ class MoveRackRequest:
     rack_id: str
     source: RackPosition
     target: RackPosition
+    target_face: RackFace
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_MOVE, init=False)
 
     def __post_init__(self) -> None:
@@ -176,6 +176,8 @@ class MoveRackRequest:
             raise TransportContractError("rack source and target must be rack positions")
         if self.source == self.target:
             raise TransportContractError("rack source and target must differ")
+        if not isinstance(self.target_face, RackFace):
+            raise TransportContractError("target_face must be A or B")
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +270,7 @@ class TransportPort(Protocol):
         rack_id: str,
         source: RackPosition,
         target: RackPosition,
+        target_face: RackFace,
     ) -> TransportHandle: ...
 
     async def rotate_rack(
@@ -330,7 +333,6 @@ class TransportSubmitResult:
     code: TransportSubmitCode
     transport_task_id: str
     reason_code: str | None = None
-    retry_after_ms: int | None = None
 
 
 class TransportProviderPort(Protocol):
@@ -338,9 +340,9 @@ class TransportProviderPort(Protocol):
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult: ...
 
 

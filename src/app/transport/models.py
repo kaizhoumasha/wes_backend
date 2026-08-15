@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - SQLModel resolves this annotation at runtime
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Index, Text, UniqueConstraint, text
 from sqlmodel import Field
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
@@ -74,14 +74,14 @@ class TransportTask(BaseMixin, table=True):
     id: int | None = Field(default=None, primary_key=True)
     transport_task_id: str = Field(max_length=80)
     client_request_id: str = Field(max_length=120)
-    payload_digest: str = Field(max_length=64)
+    request_digest: str = Field(max_length=64)
     kind: str = Field(max_length=30)
     caller_json: dict[str, Any] = Field(sa_type=JSON)
     request_json: dict[str, Any] = Field(sa_type=JSON)
     submit_operation_id: str = Field(max_length=36)
     submit_timestamp_ms: int = Field(sa_type=BigInteger)
-    submit_payload_json: dict[str, Any] = Field(sa_type=JSON)
-    submit_payload_digest: str = Field(max_length=64)
+    submit_request_body: str = Field(sa_type=Text)
+    submit_request_body_digest: str = Field(max_length=64)
     status: str = Field(default="PENDING", max_length=20)
     reason_code: str | None = Field(default=None, max_length=120)
 
@@ -168,7 +168,7 @@ class TransportEvidence(BaseMixin, table=True):
     operation: str = Field(max_length=80)
     outcome_revision: int | None = Field(default=None, sa_type=BigInteger)
     event_timestamp_ms: int = Field(sa_type=BigInteger)
-    payload_digest: str = Field(max_length=64)
+    message_digest: str = Field(max_length=64)
     payload_json: dict[str, Any] = Field(sa_type=JSON)
     ack_timestamp_ms: int = Field(sa_type=BigInteger)
     ack_data_json: dict[str, Any] = Field(sa_type=JSON)
@@ -178,6 +178,26 @@ class TransportEvidence(BaseMixin, table=True):
     received_at: datetime
     processed_at: datetime | None = Field(default=None)
     conflict_code: str | None = Field(default=None, max_length=120)
+
+
+class TransportCallbackReceipt(BaseMixin, table=True):
+    __tablename__ = "transport_callback_receipts"  # pyright: ignore[reportAssignmentType]
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = (
+        UniqueConstraint("operation", "operation_id", name="ux_transport_callback_receipts_identity"),
+        {"schema": RUNTIME_SCHEMA},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    operation_id: str = Field(max_length=36)
+    operation: str = Field(max_length=80)
+    message_digest: str = Field(max_length=64)
+    message_json: dict[str, Any] = Field(sa_type=JSON)
+    response_http_status: int
+    response_code: str = Field(max_length=20)
+    response_timestamp_ms: int = Field(sa_type=BigInteger)
+    response_data_json: dict[str, Any] = Field(sa_type=JSON)
+    received_at: datetime
 
 
 class TransportPositionProjection(BaseMixin, table=True):
@@ -226,6 +246,7 @@ class TransportResourceBinding(BaseMixin, table=True):
 
 
 __all__ = [
+    "TransportCallbackReceipt",
     "TransportEvidence",
     "TransportMember",
     "TransportPositionProjection",

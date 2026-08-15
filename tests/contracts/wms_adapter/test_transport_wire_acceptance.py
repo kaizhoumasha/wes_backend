@@ -5,11 +5,16 @@ from __future__ import annotations
 import pytest
 
 from src.app.transport.contracts import (
+    BinExchangePair,
     BinMove,
+    ExchangeBinsRequest,
     HandoffPosition,
     MoveBinsRequest,
+    MoveRackRequest,
     RackBinSlot,
     RackFace,
+    RackPosition,
+    RotateRackRequest,
     TransportCaller,
     TransportContractError,
 )
@@ -34,7 +39,7 @@ def _envelope(operation: str, data: object) -> dict[str, object]:
 def _position_data(**overrides: object) -> dict[str, object]:
     data: dict[str, object] = {
         "transport_task_id": "transport-1",
-        "bin_id": "bin-1",
+        "container_id": "container-1",
         "milestone": "SOURCE_PICKED",
     }
     data.update(overrides)
@@ -48,7 +53,7 @@ def _result_data(**overrides: object) -> dict[str, object]:
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-1",
+                "container_id": "container-1",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
@@ -58,11 +63,51 @@ def _result_data(**overrides: object) -> dict[str, object]:
     return data
 
 
-def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> None:
+def _rack_result_data(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "transport_task_id": "transport-1",
+        "kind": "RACK_MOVE",
+        "outcome_revision": 1,
+        "rack_id": "rack-1",
+        "status": "SUCCEEDED",
+        "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+        "arrival_face": "A",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_rack_submit_data_uses_one_shared_wire_shape() -> None:
+    caller = TransportCaller("SORTER", "STATION_A")
+    source = RackPosition("RACK_BUFFER_A")
+    target = RackPosition("RACK_BUFFER_B")
+
+    assert build_submit_data(MoveRackRequest(new_uuid7(), caller, "rack-1", source, target, RackFace.B), "move-1") == {
+        "transport_task_id": "move-1",
+        "kind": "RACK_MOVE",
+        "rack_id": "rack-1",
+        "source": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_A"},
+        "target": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
+        "target_face": "B",
+    }
+    assert build_submit_data(RotateRackRequest(new_uuid7(), caller, "rack-1", target, RackFace.A), "rotate-1") == {
+        "transport_task_id": "rotate-1",
+        "kind": "RACK_ROTATE",
+        "rack_id": "rack-1",
+        "source": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
+        "target": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
+        "target_face": "A",
+    }
+
+
+def test_bin_move_submit_data_maps_container_identity_and_sorts_members() -> None:
     request = MoveBinsRequest(
         new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
-        (BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (
+            BinMove("container-2", RackBinSlot("rack-1", RackFace.A, "2"), HandoffPosition("ROLLER_IN")),
+            BinMove("container-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
+        ),
     )
 
     data = build_submit_data(request, "transport-1")
@@ -72,10 +117,42 @@ def test_submit_data_removes_client_identity_and_preserves_frozen_members() -> N
         "kind": "BIN_MOVE",
         "moves": [
             {
-                "bin_id": "bin-1",
+                "container_id": "container-1",
                 "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-            }
+            },
+            {
+                "container_id": "container-2",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "2"},
+                "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+            },
+        ],
+    }
+
+
+def test_bin_exchange_submit_data_flattens_pairs_and_sorts_members() -> None:
+    left = RackBinSlot("rack-1", RackFace.A, "1")
+    right = RackBinSlot("rack-2", RackFace.B, "2")
+    request = ExchangeBinsRequest(
+        new_uuid7(),
+        TransportCaller("SORTER", "STATION_A"),
+        (BinExchangePair("container-2", left, "container-1", right),),
+    )
+
+    assert build_submit_data(request, "transport-1") == {
+        "transport_task_id": "transport-1",
+        "kind": "BIN_EXCHANGE",
+        "moves": [
+            {
+                "container_id": "container-1",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "B", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+            },
+            {
+                "container_id": "container-2",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "B", "slot_id": "2"},
+            },
         ],
     }
 
@@ -122,7 +199,7 @@ def test_callback_envelope_accepts_non_negative_signed_64_bit_timestamp_boundari
     assert validate_callback_envelope(envelope)["timestamp"] == timestamp
 
 
-@pytest.mark.parametrize("field", ["operation_id", "transport_task_id", "bin_id"])
+@pytest.mark.parametrize("field", ["operation_id", "transport_task_id", "container_id"])
 def test_position_callback_rejects_blank_identifiers(field: str) -> None:
     envelope = _envelope(POSITION_OPERATION, _position_data())
     if field == "operation_id":
@@ -139,7 +216,7 @@ def test_position_callback_rejects_blank_identifiers(field: str) -> None:
     ("operation", "data", "field", "limit"),
     [
         (POSITION_OPERATION, _position_data(), "transport_task_id", 80),
-        (POSITION_OPERATION, _position_data(), "bin_id", 100),
+        (POSITION_OPERATION, _position_data(), "container_id", 100),
         (RESULT_OPERATION, _result_data(), "transport_task_id", 80),
     ],
 )
@@ -200,6 +277,27 @@ def test_target_placed_rejects_a_rack_position() -> None:
 
 
 @pytest.mark.parametrize(
+    ("kind", "count", "message"),
+    [
+        ("BIN_MOVE", 5, "BIN_MOVE results must contain 1 to 4 members"),
+        ("BIN_EXCHANGE", 3, "BIN_EXCHANGE results must contain 2 or 4 members"),
+    ],
+)
+def test_bin_result_callback_rejects_noncanonical_member_count(kind: str, count: int, message: str) -> None:
+    results = [
+        {
+            "container_id": f"container-{index}",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "HANDOFF_POSITION", "location_code": f"ROLLER_{index}"},
+        }
+        for index in range(count)
+    ]
+
+    with pytest.raises(TransportContractError, match=message):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, _result_data(kind=kind, results=results)))
+
+
+@pytest.mark.parametrize(
     ("data", "message"),
     [
         (_result_data(kind="UNKNOWN"), "invalid transport kind"),
@@ -209,34 +307,36 @@ def test_target_placed_rejects_a_rack_position() -> None:
             _result_data(
                 results=[
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "FAILED",
                         "position_unknown": True,
                         "failure_code": "POSITION_UNKNOWN",
                     },
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "FAILED",
                         "position_unknown": True,
                         "failure_code": "POSITION_UNKNOWN",
                     },
                 ]
             ),
-            "duplicate result object_id",
+            "duplicate result container_id",
         ),
         (
-            _result_data(results=[{"object_id": "bin-1", "status": "UNKNOWN", "position_unknown": True}]),
+            _result_data(results=[{"container_id": "container-1", "status": "UNKNOWN", "position_unknown": True}]),
             "invalid member result status",
         ),
         (
-            _result_data(results=[{"object_id": "bin-1", "status": "FAILED", "failure_code": "RCS_EXECUTION_FAILED"}]),
+            _result_data(
+                results=[{"container_id": "container-1", "status": "FAILED", "failure_code": "RCS_EXECUTION_FAILED"}]
+            ),
             "final_position xor position_unknown=true is required",
         ),
         (
             _result_data(
                 results=[
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "FAILED",
                         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
                         "position_unknown": False,
@@ -247,14 +347,14 @@ def test_target_placed_rejects_a_rack_position() -> None:
             "position_unknown must be literal true",
         ),
         (
-            _result_data(results=[{"object_id": "bin-1", "status": "SUCCEEDED", "position_unknown": True}]),
+            _result_data(results=[{"container_id": "container-1", "status": "SUCCEEDED", "position_unknown": True}]),
             "SUCCEEDED requires known position and no failure_code",
         ),
         (
             _result_data(
                 results=[
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "SUCCEEDED",
                         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
                         "failure_code": "IMPOSSIBLE",
@@ -264,27 +364,18 @@ def test_target_placed_rejects_a_rack_position() -> None:
             "SUCCEEDED requires known position and no failure_code",
         ),
         (
-            _result_data(results=[{"object_id": "bin-1", "status": "FAILED", "position_unknown": True}]),
+            _result_data(results=[{"container_id": "container-1", "status": "FAILED", "position_unknown": True}]),
             "failure_code must not be blank",
         ),
         (
-            _result_data(
-                kind="RACK_MOVE",
-                results=[
-                    {
-                        "object_id": "rack-1",
-                        "status": "SUCCEEDED",
-                        "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
-                    }
-                ],
-            ),
+            _rack_result_data(arrival_face=None),
             "known rack result requires arrival_face",
         ),
         (
             _result_data(
                 results=[
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "SUCCEEDED",
                         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
                         "arrival_face": "A",
@@ -294,17 +385,10 @@ def test_target_placed_rejects_a_rack_position() -> None:
             "arrival_face is not valid for this result",
         ),
         (
-            _result_data(
-                kind="RACK_MOVE",
-                results=[
-                    {
-                        "object_id": "rack-1",
-                        "status": "FAILED",
-                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-                        "failure_code": "RCS_EXECUTION_FAILED",
-                        "arrival_face": "A",
-                    }
-                ],
+            _rack_result_data(
+                status="FAILED",
+                final_position={"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+                failure_code="RCS_EXECUTION_FAILED",
             ),
             "rack result position must be RACK_POSITION",
         ),
@@ -312,7 +396,7 @@ def test_target_placed_rejects_a_rack_position() -> None:
             _result_data(
                 results=[
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "FAILED",
                         "final_position": {"kind": "RACK_POSITION", "location_code": "STATION_A"},
                         "failure_code": "RCS_EXECUTION_FAILED",
@@ -325,7 +409,7 @@ def test_target_placed_rejects_a_rack_position() -> None:
             _result_data(
                 results=[
                     {
-                        "object_id": "bin-1",
+                        "container_id": "container-1",
                         "status": "FAILED",
                         "position_unknown": True,
                         "failure_code": "F" * 121,
@@ -341,6 +425,28 @@ def test_result_callback_rejects_values_outside_closed_member_contract(
     message: str,
 ) -> None:
     with pytest.raises(TransportContractError, match=message):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, data))
+
+
+def test_bin_result_callback_rejects_unsorted_container_ids() -> None:
+    data = _result_data(
+        results=[
+            {
+                "container_id": "container-2",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "POSITION_UNKNOWN",
+            },
+            {
+                "container_id": "container-1",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "POSITION_UNKNOWN",
+            },
+        ]
+    )
+
+    with pytest.raises(TransportContractError, match="results must be sorted by container_id"):
         validate_callback_envelope(_envelope(RESULT_OPERATION, data))
 
 
@@ -360,28 +466,22 @@ def test_result_callback_rejects_values_outside_closed_member_contract(
     ],
 )
 def test_result_callback_rejects_invalid_position_shapes(position: object, message: str) -> None:
-    data = _result_data(results=[{"object_id": "bin-1", "status": "SUCCEEDED", "final_position": position}])
+    data = _result_data(results=[{"container_id": "container-1", "status": "SUCCEEDED", "final_position": position}])
 
     with pytest.raises(TransportContractError, match=message):
         validate_callback_envelope(_envelope(RESULT_OPERATION, data))
 
 
 def test_result_callback_accepts_known_rack_and_unknown_failed_member() -> None:
-    known = _result_data(
+    known = _rack_result_data(
         kind="RACK_ROTATE",
-        results=[
-            {
-                "object_id": "rack-1",
-                "status": "SUCCEEDED",
-                "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE"},
-                "arrival_face": "B",
-            }
-        ],
+        final_position={"kind": "RACK_POSITION", "location_code": "ROTATE"},
+        arrival_face="B",
     )
     unknown = _result_data(
         results=[
             {
-                "object_id": "bin-1",
+                "container_id": "container-1",
                 "status": "FAILED",
                 "position_unknown": True,
                 "failure_code": "POSITION_UNKNOWN",
@@ -401,7 +501,7 @@ def test_callback_wire_uses_its_own_uuid7_operation_id_without_legacy_business_i
         "timestamp": 1,
         "data": {
             "transport_task_id": "transport-1",
-            "bin_id": "bin-1",
+            "container_id": "container-1",
             "milestone": "SOURCE_PICKED",
         },
     }
@@ -428,7 +528,7 @@ def test_result_callback_rejects_vendor_private_failure_code() -> None:
     data = _result_data(
         results=[
             {
-                "object_id": "bin-1",
+                "container_id": "container-1",
                 "status": "FAILED",
                 "position_unknown": True,
                 "failure_code": "VENDOR_PRIVATE_CODE",
@@ -450,7 +550,7 @@ def test_result_callback_rejects_vendor_private_failure_code() -> None:
     ],
 )
 def test_callback_positions_reject_text_longer_than_100_code_points(position: dict[str, object]) -> None:
-    data = _result_data(results=[{"object_id": "bin-1", "status": "SUCCEEDED", "final_position": position}])
+    data = _result_data(results=[{"container_id": "container-1", "status": "SUCCEEDED", "final_position": position}])
 
     with pytest.raises(TransportContractError, match="exceeds 100 characters"):
         validate_callback_envelope(_envelope(RESULT_OPERATION, data))

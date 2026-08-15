@@ -7,7 +7,12 @@ import pytest
 from sqlalchemy import BigInteger, text
 from sqlalchemy.exc import IntegrityError
 
-from src.app.transport.models import TransportEvidence, TransportResourceBinding, TransportTask
+from src.app.transport.models import (
+    TransportCallbackReceipt,
+    TransportEvidence,
+    TransportResourceBinding,
+    TransportTask,
+)
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
@@ -28,14 +33,14 @@ def _task(task_id: str, request_id: str, digest: str, now: object) -> TransportT
     return TransportTask(
         transport_task_id=task_id,
         client_request_id=request_id,
-        payload_digest=digest,
+        request_digest=digest,
         kind="RACK_MOVE",
         caller_json={"workline_id": "line"},
         request_json={"rack_id": "rack"},
         submit_operation_id=operation_id,
         submit_timestamp_ms=1_723_456_789_012,
-        submit_payload_json={"transport_task_id": task_id, "kind": "RACK_MOVE"},
-        submit_payload_digest=digest,
+        submit_request_body='{"data":{"kind":"RACK_MOVE"}}',
+        submit_request_body_digest=digest,
         created_at=now,
         updated_at=now,
     )
@@ -116,15 +121,18 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
         text(
             "SELECT table_name, column_name, column_default FROM information_schema.columns "
             "WHERE table_schema = 'wes_runtime' AND table_name IN "
-            "('transport_tasks', 'transport_evidence', 'transport_members', 'transport_position_projections')"
+            "('transport_tasks', 'transport_callback_receipts', 'transport_evidence', "
+            "'transport_members', 'transport_position_projections')"
         )
     )
     columns = {(row[0], row[1]): row[2] for row in result}
     assert {
         ("transport_tasks", "submit_operation_id"),
         ("transport_tasks", "submit_timestamp_ms"),
-        ("transport_tasks", "submit_payload_json"),
-        ("transport_tasks", "submit_payload_digest"),
+        ("transport_tasks", "submit_request_body"),
+        ("transport_tasks", "submit_request_body_digest"),
+        ("transport_tasks", "request_digest"),
+        ("transport_callback_receipts", "message_digest"),
         ("transport_evidence", "operation_id"),
         ("transport_evidence", "event_timestamp_ms"),
         ("transport_evidence", "ack_timestamp_ms"),
@@ -134,6 +142,10 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
     } <= columns.keys()
     assert {
         ("transport_evidence", "event_id"),
+        ("transport_evidence", "payload_digest"),
+        ("transport_tasks", "payload_digest"),
+        ("transport_tasks", "submit_payload_json"),
+        ("transport_tasks", "submit_payload_digest"),
         ("transport_members", "last_event_id"),
         ("transport_position_projections", "source_event_id"),
     }.isdisjoint(columns)
@@ -155,7 +167,7 @@ async def test_transport_evidence_identity_is_operation_and_operation_id(integra
                 operation=operation,
                 outcome_revision=1 if operation == "transport.task.resulted@v1" else None,
                 event_timestamp_ms=1_723_456_789_011,
-                payload_digest="d" * 64,
+                message_digest="d" * 64,
                 payload_json={"status": "SUCCEEDED"},
                 ack_timestamp_ms=1_723_456_789_012,
                 ack_data_json={"transport_task_id": task.transport_task_id},
@@ -170,7 +182,7 @@ async def test_transport_evidence_identity_is_operation_and_operation_id(integra
             operation="transport.task.resulted@v1",
             outcome_revision=2,
             event_timestamp_ms=1_723_456_789_012,
-            payload_digest="e" * 64,
+            message_digest="e" * 64,
             payload_json={"status": "FAILED"},
             ack_timestamp_ms=1_723_456_789_013,
             ack_data_json={"transport_task_id": task.transport_task_id},
@@ -196,7 +208,7 @@ async def test_transport_result_revision_is_unique_per_task(integration_db_sessi
             operation="transport.task.resulted@v1",
             outcome_revision=1,
             event_timestamp_ms=1_723_456_789_011,
-            payload_digest="a" * 64,
+            message_digest="a" * 64,
             payload_json={"outcome_revision": 1},
             ack_timestamp_ms=1_723_456_789_012,
             ack_data_json={"transport_task_id": task.transport_task_id},
@@ -206,6 +218,33 @@ async def test_transport_result_revision_is_unique_per_task(integration_db_sessi
     integration_db_session.add(evidence(new_uuid7()))
     await integration_db_session.flush()
     integration_db_session.add(evidence(new_uuid7()))
+    with pytest.raises(IntegrityError):
+        await integration_db_session.flush()
+    await integration_db_session.rollback()
+
+
+async def test_callback_receipt_identity_is_unique_for_valid_and_rejected_messages(
+    integration_db_session: AsyncSession,
+) -> None:
+    operation_id = new_uuid7()
+    now = timezone.now_for_db()
+
+    def receipt(digest: str) -> TransportCallbackReceipt:
+        return TransportCallbackReceipt(
+            operation_id=operation_id,
+            operation="transport.task.member_position_changed@v1",
+            message_digest=digest,
+            message_json={"operation_id": operation_id},
+            response_http_status=422,
+            response_code="REJECTED",
+            response_timestamp_ms=1,
+            response_data_json={"reason_code": "INVALID_EVIDENCE"},
+            received_at=now,
+        )
+
+    integration_db_session.add(receipt("a" * 64))
+    await integration_db_session.flush()
+    integration_db_session.add(receipt("b" * 64))
     with pytest.raises(IntegrityError):
         await integration_db_session.flush()
     await integration_db_session.rollback()

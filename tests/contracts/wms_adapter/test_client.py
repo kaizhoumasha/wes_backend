@@ -126,6 +126,17 @@ async def test_post_encodes_compact_utf8_json_and_owns_content_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_json_bytes_sends_the_frozen_body_without_reserialization() -> None:
+    transport = _FakeTransport()
+    frozen_body = b'{"z":1, "a":"preserve spaces"}'
+
+    await WmsClient(transport).post_json_bytes("/tasks", body=frozen_body)
+
+    assert transport.requests[0].body == frozen_body
+    assert transport.requests[0].headers == (("Content-Type", "application/json"),)
+
+
+@pytest.mark.asyncio
 async def test_per_request_body_budgets_are_applied_after_json_encoding() -> None:
     transport = _FakeTransport()
     client = WmsClient(transport)
@@ -221,8 +232,10 @@ async def test_request_rejects_get_json_and_post_without_json_before_send() -> N
 
     with pytest.raises(OutboundHttpRequestError, match="GET must not contain JSON"):
         await client.request(method=OutboundHttpMethod.GET, path="/tasks", json={})
-    with pytest.raises(OutboundHttpRequestError, match="POST requires JSON"):
+    with pytest.raises(OutboundHttpRequestError, match="POST requires exactly one JSON body source"):
         await client.request(method=OutboundHttpMethod.POST, path="/tasks")
+    with pytest.raises(OutboundHttpRequestError, match="POST requires exactly one JSON body source"):
+        await client.request(method=OutboundHttpMethod.POST, path="/tasks", json={}, encoded_json=b"{}")
 
     assert transport.requests == []
 
@@ -413,6 +426,14 @@ async def test_finite_float_json_response_is_decoded() -> None:
     result = await WmsClient(_FakeTransport(_response(body=b'{"quantity":1.25}'))).get("/inventory")
 
     assert result.json_body == {"quantity": 1.25}
+    assert result.json_failure is None
+
+
+@pytest.mark.asyncio
+async def test_finite_float_outside_transport_decimal_range_is_decoded() -> None:
+    result = await WmsClient(_FakeTransport(_response(body=b'{"quantity":1e100}'))).get("/inventory")
+
+    assert result.json_body == {"quantity": 1e100}
     assert result.json_failure is None
 
 

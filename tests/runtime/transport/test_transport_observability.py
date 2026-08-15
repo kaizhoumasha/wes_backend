@@ -10,6 +10,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import (
+    RackFace,
     RackPosition,
     TransportCaller,
     TransportOutcome,
@@ -17,6 +18,7 @@ from src.app.transport.contracts import (
     TransportSubmitResult,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -52,15 +54,15 @@ class _Provider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
         self.started.set()
         await self.release.wait()
         return TransportSubmitResult(
             self.code,
-            str(payload["transport_task_id"]),
+            transport_task_id,
             reason_code="WMS_REJECTED",
         )
 
@@ -80,6 +82,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
     async with sessions.begin() as db:
         for model in (
             TransportEvidence,
+            TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
             TransportPositionProjection,
@@ -103,6 +106,7 @@ async def _create_task(service: TransportService, request_id: str, rack_id: str)
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
+        RackFace.A,
     )
     return handle.transport_task_id
 

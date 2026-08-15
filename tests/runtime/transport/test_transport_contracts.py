@@ -61,7 +61,10 @@ def test_four_request_contracts_accept_minimal_valid_data() -> None:
     source = RackPosition("ROUGH_SORTER")
     target = RackPosition("STATION_A")
 
-    assert MoveRackRequest(_REQUEST_ID, _caller(), "rack-1", source, target).rack_id == "rack-1"
+    move_rack = MoveRackRequest(_REQUEST_ID, _caller(), "rack-1", source, target, RackFace.A)
+
+    assert move_rack.rack_id == "rack-1"
+    assert move_rack.target_face is RackFace.A
     assert RotateRackRequest(_REQUEST_ID, _caller(), "rack-1", target, RackFace.B).target_face is RackFace.B
     assert (
         len(
@@ -101,13 +104,16 @@ def test_request_contracts_require_uuid7_client_request_id(client_request_id: st
             "rack-1",
             RackPosition("SOURCE"),
             RackPosition("TARGET"),
+            RackFace.A,
         )
 
 
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda caller: MoveRackRequest(_REQUEST_ID, caller, "rack-1", RackPosition("SOURCE"), RackPosition("TARGET")),
+        lambda caller: MoveRackRequest(
+            _REQUEST_ID, caller, "rack-1", RackPosition("SOURCE"), RackPosition("TARGET"), RackFace.A
+        ),
         lambda caller: RotateRackRequest(_REQUEST_ID, caller, "rack-1", RackPosition("ROTATE"), RackFace.B),
         lambda caller: MoveBinsRequest(
             _REQUEST_ID,
@@ -144,6 +150,7 @@ def test_requests_reject_untyped_caller(factory: Callable[[TransportCaller], obj
             "rack-1",
             HandoffPosition("ROLLER_IN"),
             RackPosition("STATION_A"),
+            RackFace.A,
         ),
         lambda: RotateRackRequest(
             _REQUEST_ID,
@@ -188,6 +195,7 @@ def test_position_discriminator_cannot_be_overridden(position_type: object, args
             "rack-1",
             RackPosition("A"),
             RackPosition("B"),
+            RackFace.A,
             kind=TransportTaskKind.BIN_MOVE,
         ),
         lambda: RotateRackRequest(
@@ -233,6 +241,7 @@ def test_request_kind_is_fixed_by_request_type(factory: Callable[[], object]) ->
             "rack-1",
             VendorRackPosition("STATION_A"),
             RackPosition("STATION_B"),
+            RackFace.A,
         ),
         lambda: RotateRackRequest(
             _REQUEST_ID,
@@ -353,6 +362,7 @@ def test_two_pair_exchange_requires_one_rack_and_face_per_side() -> None:
             "rack-1",
             RackPosition("SAME"),
             RackPosition("SAME"),
+            RackFace.A,
         ),
         lambda: BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), RackBinSlot("rack-1", RackFace.A, "1")),
         lambda: BinMove("bin-1", HandoffPosition("IN"), HandoffPosition("OUT")),
@@ -473,6 +483,7 @@ def test_identifiers_fail_closed(value: str) -> None:
             "rack-1",
             RackPosition("SOURCE"),
             RackPosition("TARGET"),
+            RackFace.A,
         ),
         lambda: MoveRackRequest(
             _REQUEST_ID,
@@ -480,6 +491,7 @@ def test_identifiers_fail_closed(value: str) -> None:
             "r" * 101,
             RackPosition("SOURCE"),
             RackPosition("TARGET"),
+            RackFace.A,
         ),
         lambda: BinMove("b" * 101, RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
         lambda: RackBinSlot("r" * 101, RackFace.A, "1"),

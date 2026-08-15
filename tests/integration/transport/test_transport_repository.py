@@ -19,18 +19,17 @@ pytestmark = pytest.mark.asyncio
 
 def _task(task_id: str, request_id: str, digest: str, now: object) -> TransportTask:
     operation_id = new_uuid7(timestamp_ms=1_723_456_789_012)
-    payload = {"transport_task_id": task_id, "kind": "RACK_MOVE"}
     return TransportTask(
         transport_task_id=task_id,
         client_request_id=request_id,
-        payload_digest=digest,
+        request_digest=digest,
         kind="RACK_MOVE",
         caller_json={"workline_id": "line"},
         request_json={"rack_id": "rack"},
         submit_operation_id=operation_id,
         submit_timestamp_ms=1_723_456_789_012,
-        submit_payload_json=payload,
-        submit_payload_digest=digest,
+        submit_request_body='{"data":{}}',
+        submit_request_body_digest=digest,
         created_at=now,
         updated_at=now,
     )
@@ -118,7 +117,7 @@ async def test_two_evidence_workers_are_fenced_and_expired_claim_is_recovered(
                 operation="transport.task.resulted@v1",
                 outcome_revision=1,
                 event_timestamp_ms=1_723_456_789_011,
-                payload_digest="c" * 64,
+                message_digest="c" * 64,
                 payload_json={"transport_task_id": f"missing-{suffix}"},
                 ack_timestamp_ms=1_723_456_789_012,
                 ack_data_json={"transport_task_id": f"missing-{suffix}"},

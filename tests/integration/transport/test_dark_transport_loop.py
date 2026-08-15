@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from src.app.transport.contracts import (
     TransportCaller,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -29,6 +31,7 @@ from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
+from tests.support.transport_callbacks import record_valid_callback
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -53,15 +56,16 @@ class _AcceptedClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    async def post(self, path: str, *, json: dict[str, object], **kwargs: object) -> _AccessResult:
-        self.calls.append(json)
-        data = json["data"]
+    async def post_json_bytes(self, path: str, *, body: bytes, **kwargs: object) -> _AccessResult:
+        message = json.loads(body)
+        self.calls.append(message)
+        data = message["data"]
         assert isinstance(data, dict)
         return _AccessResult(
             delivery_state=_DeliveryState(),
             status_code=202,
             json_body={
-                "operation_id": json["operation_id"],
+                "operation_id": message["operation_id"],
                 "code": "RECEIVED",
                 "timestamp": 1,
                 "data": {"transport_task_id": data["transport_task_id"]},
@@ -101,6 +105,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     caller = TransportCaller("DARK_LINE", "STATION_A")
     rotate_rack_id = f"rack-rotate-{suffix}"
     task_ids: list[str] = []
+    callback_operation_ids: list[str] = []
 
     async with integration_session_factory.begin() as db:
         db.add(
@@ -122,7 +127,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     exchange_bin_ids = [f"bin-exchange-{index}-{suffix}" for index in range(4)]
     try:
         rack_handle = await service.move_rack(
-            new_uuid7(), caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK")
+            new_uuid7(), caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK"), RackFace.A
         )
         rotate_handle = await service.rotate_rack(
             new_uuid7(), caller, rotate_rack_id, RackPosition("ROTATE_POINT"), RackFace.B
@@ -157,99 +162,100 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
         result_payloads = [
             (
                 rack_handle,
-                "RACK_MOVE",
-                [
-                    {
-                        "object_id": rack_id,
-                        "status": "SUCCEEDED",
-                        "final_position": {"kind": "RACK_POSITION", "location_code": "RACK_WORK"},
-                        "arrival_face": "A",
-                    }
-                ],
+                {
+                    "kind": "RACK_MOVE",
+                    "outcome_revision": 1,
+                    "rack_id": rack_id,
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "RACK_WORK"},
+                    "arrival_face": "A",
+                },
             ),
             (
                 rotate_handle,
-                "RACK_ROTATE",
-                [
-                    {
-                        "object_id": rotate_rack_id,
-                        "status": "SUCCEEDED",
-                        "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-                        "arrival_face": "B",
-                    }
-                ],
+                {
+                    "kind": "RACK_ROTATE",
+                    "outcome_revision": 1,
+                    "rack_id": rotate_rack_id,
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
+                    "arrival_face": "B",
+                },
             ),
             (
                 bin_handle,
-                "BIN_MOVE",
-                [
-                    {
-                        "object_id": moved_bin_id,
-                        "status": "SUCCEEDED",
-                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-                    }
-                ],
+                {
+                    "kind": "BIN_MOVE",
+                    "outcome_revision": 1,
+                    "results": [
+                        {
+                            "container_id": moved_bin_id,
+                            "status": "SUCCEEDED",
+                            "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+                        }
+                    ],
+                },
             ),
             (
                 exchange_handle,
-                "BIN_EXCHANGE",
-                [
-                    {
-                        "object_id": exchange_bin_ids[0],
-                        "status": "SUCCEEDED",
-                        "final_position": {
-                            "kind": "RACK_BIN_SLOT",
-                            "rack_id": exchange_right_rack,
-                            "rack_face": "A",
-                            "slot_id": "1",
+                {
+                    "kind": "BIN_EXCHANGE",
+                    "outcome_revision": 1,
+                    "results": [
+                        {
+                            "container_id": exchange_bin_ids[0],
+                            "status": "SUCCEEDED",
+                            "final_position": {
+                                "kind": "RACK_BIN_SLOT",
+                                "rack_id": exchange_right_rack,
+                                "rack_face": "A",
+                                "slot_id": "1",
+                            },
                         },
-                    },
-                    {
-                        "object_id": exchange_bin_ids[1],
-                        "status": "SUCCEEDED",
-                        "final_position": {
-                            "kind": "RACK_BIN_SLOT",
-                            "rack_id": exchange_left_rack,
-                            "rack_face": "A",
-                            "slot_id": "1",
+                        {
+                            "container_id": exchange_bin_ids[1],
+                            "status": "SUCCEEDED",
+                            "final_position": {
+                                "kind": "RACK_BIN_SLOT",
+                                "rack_id": exchange_left_rack,
+                                "rack_face": "A",
+                                "slot_id": "1",
+                            },
                         },
-                    },
-                    {
-                        "object_id": exchange_bin_ids[2],
-                        "status": "SUCCEEDED",
-                        "final_position": {
-                            "kind": "RACK_BIN_SLOT",
-                            "rack_id": exchange_right_rack,
-                            "rack_face": "A",
-                            "slot_id": "2",
+                        {
+                            "container_id": exchange_bin_ids[2],
+                            "status": "SUCCEEDED",
+                            "final_position": {
+                                "kind": "RACK_BIN_SLOT",
+                                "rack_id": exchange_right_rack,
+                                "rack_face": "A",
+                                "slot_id": "2",
+                            },
                         },
-                    },
-                    {
-                        "object_id": exchange_bin_ids[3],
-                        "status": "SUCCEEDED",
-                        "final_position": {
-                            "kind": "RACK_BIN_SLOT",
-                            "rack_id": exchange_left_rack,
-                            "rack_face": "A",
-                            "slot_id": "2",
+                        {
+                            "container_id": exchange_bin_ids[3],
+                            "status": "SUCCEEDED",
+                            "final_position": {
+                                "kind": "RACK_BIN_SLOT",
+                                "rack_id": exchange_left_rack,
+                                "rack_face": "A",
+                                "slot_id": "2",
+                            },
                         },
-                    },
-                ],
+                    ],
+                },
             ),
         ]
-        for handle, kind, results in result_payloads:
+        for handle, payload in result_payloads:
             operation_id = new_uuid7()
-            await service.record_evidence(
+            callback_operation_ids.append(operation_id)
+            await record_valid_callback(
+                service,
                 operation_id=operation_id,
                 transport_task_id=handle.transport_task_id,
                 operation=RESULT_OPERATION,
                 timestamp=1,
-                payload={
-                    "transport_task_id": handle.transport_task_id,
-                    "kind": kind,
-                    "outcome_revision": 1,
-                    "results": results,
-                },
+                payload=payload,
             )
 
         assert await service.process_pending_evidence(10) == 4
@@ -262,6 +268,11 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
         await runtime.aclose()
         async with integration_session_factory.begin() as db:
             if task_ids:
+                await db.execute(
+                    delete(TransportCallbackReceipt).where(
+                        TransportCallbackReceipt.operation_id.in_(callback_operation_ids)
+                    )
+                )
                 await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
                 await db.execute(
                     delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))

@@ -2,11 +2,11 @@
 title: WES-WMS Transport DTO 收敛设计
 status: Approved
 created_at: 2026-08-14
-updated_at: 2026-08-15
-scope: WES 与 WMS 之间 Transport T1/T2/T3 wire、WMS C# DTO 和 WMS-RCS 映射边界
+updated_at: 2026-08-16
+scope: WES 与 WMS 之间 Transport T1/T2/T3 接口契约、WMS C# DTO 和 WMS-RCS 映射边界
 system_stage: pre_release
 migration_strategy: direct_replacement
-implementation_alignment: ALIGNMENT_REQUIRED
+implementation_alignment: ALIGNED
 related:
   - docs/integration/wes-wms-interface-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
@@ -18,16 +18,16 @@ related:
 
 ## 1. 文档定位
 
-本文定义尚未发布系统的 WES-WMS Transport wire 目标设计，重点减少 WMS 在 .NET Framework 4.6 中解析和组装
+本文定义尚未发布系统的 WES-WMS Transport接口契约目标设计，重点减少 WMS 在 .NET Framework 4.6 中解析和组装
 `RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE` 四种请求的重复工作，同时守住 WES、WMS 与 RCS 的职责边界。
 
-本文是已经完成联合设计评审、等待实现对齐的目标基线，不是实现完成声明。两份现行合同已经按本文切换到目标 wire；当前代码、
-运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试尚未完成相同改造，因此
-`implementation_alignment=ALIGNMENT_REQUIRED`。实施时必须同步修改代码、OpenAPI 和行为测试，不能保留旧 wire 形成双真源。
+本文是已经完成联合设计评审的目标基线。两份现行合同、当前 WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
+已经完成同一合同对齐，因此 `implementation_alignment=ALIGNED`。该状态不表示 WMS 提供方实现、双方联调或现场业务验收已经完成，
+也不允许保留旧接口契约形成双真源。
 
 两份 `docs/hardware/` PDF 是厂商原始输入，保持原貌。厂商字段只用于说明 WMS ACL 的映射依据，不升级为 WES 核心合同。
 
-系统尚未发布，不保留旧 Payload、旧 DTO、字段别名、双读、双写或版本兼容。开发和测试数据可以清理。
+系统尚未发布，不保留旧业务载荷、旧 DTO、字段别名、双读、双写或版本兼容。开发和测试数据可以清理。
 
 ## 2. 目标与非目标
 
@@ -35,7 +35,7 @@ related:
 
 - 将 T1 的四套 JSON/C# `data` DTO 收敛为货架、料箱两族。
 - 统一四种操作中可统一的字段名称和结构，不用可选字段拼成万能 DTO。
-- 让物理料箱在整个 wire 中统一使用 `container_id`，消除与厂商 `binId` 的同名异义。
+- 让物理料箱在整个接口契约中统一使用 `container_id`，消除与厂商 `binId` 的同名异义。
 - 删除 T3 的含糊 `object_id`，按货架和料箱结果分别使用 `rack_id`、`container_id`。
 - 保留 WES 稳定业务语义，使 WMS 到厂商 RCS 的转换集中为货架、料箱两个清晰的映射职责。
 - 删除 T1 `429 / BUSY`、`BUSY` 和 `retry_after_ms`，让 WMS 可靠接纳后自行排队。
@@ -55,12 +55,12 @@ related:
 2. `RACK_MOVE` 与 `RACK_ROTATE` 共用 `source + target + target_face`。原地换面通过 `source == target` 表达。
 3. `BIN_MOVE` 与 `BIN_EXCHANGE` 共用 `moves[] { container_id + source + target }`。交换通过闭环约束表达，不使用
    `exchange_pairs` 或 left/right 角色。
-4. wire 上的物理料箱统一叫 `container_id`；`slot_id` 继续表示 WES 结构化货架槽位。WMS 根据主数据把槽位映射为厂商
+4. 接口契约中的物理料箱统一叫 `container_id`；`slot_id` 继续表示 WES 结构化货架槽位。WMS 根据主数据把槽位映射为厂商
    `binId`，不得靠字符串拼接或从容器编码反推。
 5. T3 货架结果直接展开，料箱结果保留 `results[]`。不再使用单元素货架数组和通用 `object_id`。
-6. Position wire 保持严格可判别联合；WMS C# 可以用一个自行命名的普通位置类型承载其实现属性，再按 `kind` 校验条件必填并省略
+6. Position接口契约保持严格可判别联合；WMS C# 可以用一个自行命名的普通位置类型承载其实现属性，再按 `kind` 校验条件必填并省略
    不适用的 `null` 字段。
-7. 公共 wire 继续使用 `snake_case`。WMS 为 WES 边界和厂商边界使用独立 Json.NET 配置及 DTO。
+7. 公共接口契约继续使用 `snake_case`。WMS 为 WES 边界和厂商边界使用独立 Json.NET 配置及 DTO。
 
 ## 4. 公共信封与位置类型
 
@@ -76,7 +76,7 @@ data
 `data` 是 JSON object，不是二次转义后的 JSON string。顶层和专属 `data` 都是严格闭集；未知字段、重复 key、隐式类型转换、
 错误大小写和显式 `null` 均拒绝。
 
-Position wire 固定为：
+Position接口契约固定为：
 
 | `kind` | 完整字段 | 用途 |
 | --- | --- | --- |
@@ -111,7 +111,7 @@ RCS 中间步骤提前完成 TransportTask；WMS 必须以最终位置和最终�
 
 `target_face` 是业务调用方在创建任务时给出的目标义务，不是 WMS Adapter 根据当前投影或厂商字段推断出的结果。实施时
 `move_rack()`、`rotate_rack()` 及其请求对象都必须显式接收 `target_face`，并把它写入 TransportTask 的不可变请求快照和
-Payload 摘要；后续重提只能读取该冻结值。WES 只以冻结 `target + target_face` 校验成功结果。
+`request_body_digest`；后续重提只能读取该冻结值。WES 只以冻结 `target + target_face` 校验成功结果。
 
 ### 5.2 料箱族
 
@@ -223,16 +223,16 @@ results[] {
   `failure_code` 必须为 `POSITION_UNKNOWN`；其它失败码只能与明确位置组合。
 - `BIN_EXCHANGE` 部分完成时仍完整报告每个容器的已知位置；不得伪造整体回滚。
 
-T3 wire 中不再存在 `object_id`。WES 内部 `TransportMember.object_id` 和位置投影的通用标识可以保留，由 WMS ACL 在 wire
+T3 接口契约中不再存在 `object_id`。WES 内部 `TransportMember.object_id` 和位置投影的通用标识可以保留，由 WMS ACL 在接口契约
 边界转换，不要求数据库字段跟随重命名。
 
 ### 7.3 回调可靠性不变量
 
 本次 DTO 收敛不改变 T2/T3 的统一回调信封、消息幂等和结果单调性：
 
-- T2/T3 继续以 `operation + operation_id` 作为消息身份；WES 在返回接纳 ACK 前原子保存消息身份、规范化 Payload 摘要和
-  原始 evidence。首次 `RECEIVED` 后，相同消息身份、相同 Payload 返回 `DUPLICATE`；首次 `REJECTED/CONFLICT` 原样稳定重放；
-  相同消息身份、不同 Payload 返回 `409 / CONFLICT`。`503` 不建立幂等记录。
+- T2/T3 继续以 `operation + operation_id` 作为消息身份；WES 在返回接纳 ACK 前原子保存消息身份、`message_digest` 和
+  原始 evidence。首次 `RECEIVED` 后，相同消息身份、相同消息信封返回 `DUPLICATE`；首次 `REJECTED/CONFLICT` 原样稳定重放；
+  相同消息身份、不同消息信封返回 `409 / CONFLICT`。`503` 不建立幂等记录。
 - `outcome_revision` 范围为 `1..Int64.MaxValue`。同一 `transport_task_id` 从 `1` 开始连续递增；同一权威结果的技术重试保持
   原版本号和原 `operation_id`。
 - T3 在上述消息幂等之外，还必须原子登记 `transport_task_id + outcome_revision + 版本内容摘要`。同一任务、同一版本的摘要
@@ -275,7 +275,7 @@ T1 同步响应闭集为：
 删除 `429 / BUSY`、`BUSY`、`retry_after_ms` 及所有相关分支。RCS 或内部调度容量不足不是拒绝 WES 义务的理由：WMS 应先
 可靠接纳，再在内部排队。`503` 固定等待 2000 毫秒，单任务发送预算仍为最多 3 次；请求可能已经送达但响应未知时继续进入
 `RECONCILING`，不得自动重提。只有确认未送达的 `NOT_SENT` 和明确未接纳的 `503` 可以使用原始不可变请求受控重提；发送预算
-耗尽后形成 WES 内部终态 `REJECTED / TRANSPORT_SUBMIT_RETRY_EXHAUSTED`，该诊断码不进入 WMS ACK wire。
+耗尽后形成 WES 内部终态 `REJECTED / TRANSPORT_SUBMIT_RETRY_EXHAUSTED`，该诊断码不进入 WMS ACK 接口契约。
 
 ## 9. WMS .NET Framework 4.6 实现边界
 
@@ -298,7 +298,7 @@ WMS 只需要一个公共信封、一个 Position DTO、两个 T1 data DTO、一
 - 使用普通 POCO 和一次显式 `switch`；不编写自定义 JsonConverter、继承树或类型注册表。
 - WMS 面向 WES 的协议边界统一使用 Json.NET `SnakeCaseNamingStrategy`，未知成员按错误处理；WMS 面向厂商 RCS 的边界使用
   独立的 camelCase DTO 和序列化设置。
-- WMS 自行命名的位置类型可以包含可空实现属性，但 wire 省略不适用字段，校验器按 `kind` 强制严格联合。
+- WMS 自行命名的位置类型可以包含可空实现属性，但接口契约省略不适用字段，校验器按 `kind` 强制严格联合。
 - WES DTO 只表达跨系统运输义务；RCS DTO 只表达厂商调用。建议分别集中为货架、料箱两个明确映射职责，具体类和方法名由 WMS
   自定；两侧 DTO 不能互相继承或共用同一类。
 
@@ -318,7 +318,7 @@ WMS 只需要一个公共信封、一个 Position DTO、两个 T1 data DTO、一
 厂商 `sideA/sideB` 是 WMS 基于自身库存和货架主数据形成的整架容器上报，不进入 WES T1。WES 不复制 WMS 已拥有的两面容器
 全集，也不参与厂商短时 `taskCode + podCode` 幂等规则。
 
-WES 目标 wire 的 `transport_task_id` 长度为 `1..80`，`rack_id`、`container_id` 为 `1..100`；厂商文档中的 `taskCode`、
+WES 目标接口契约的 `transport_task_id` 长度为 `1..80`，`rack_id`、`container_id` 为 `1..100`；厂商文档中的 `taskCode`、
 `podCode`、`containerId`、`binId` 上限均为 64。两侧身份语义可以一致，但 WMS 必须经过主数据解析并按出站合同校验长度，不能
 在设计上承诺字符串直接复用。若现场主数据恰好返回相同值，也只是映射结果相同，不改变该边界。
 
@@ -332,10 +332,10 @@ WES 目标 wire 的 `transport_task_id` 长度为 `1..80`，`rack_id`、`contain
 
 ### 11.1 分层边界
 
-- Transport 核心继续保留 `move_rack()`、`rotate_rack()`、`move_bins()`、`exchange_bins()` 四个领域方法；只收敛 wire，不把四种
+- Transport 核心继续保留 `move_rack()`、`rotate_rack()`、`move_bins()`、`exchange_bins()` 四个领域方法；只收敛 接口契约，不把四种
   领域行为合并为一个万能方法。`move_rack()` 与 `rotate_rack()` 的签名及请求对象都显式接收 `target_face`，货架任务快照和
   摘要都冻结该字段。
-- `src/app/wms_adapter/` 负责 WES wire 编解码和 WMS ACL 转换；基础 HTTP 传输层不解释 Rack、Container、Face 或 RCS 任务类型。
+- `src/app/wms_adapter/` 负责 WES接口契约编解码和 WMS ACL 转换；基础 HTTP 传输层不解释 Rack、Container、Face 或 RCS 任务类型。
 - WMS 私有 RCS 映射、库存查询、`sideA/sideB` 组装和供应商子任务表不进入 WES 仓库。
 
 ### 11.2 TDD 所有权
@@ -343,7 +343,7 @@ WES 目标 wire 的 `transport_task_id` 长度为 `1..80`，`rack_id`、`contain
 本设计会改变生产代码行为，实施阶段必须先修改或新增受影响行为测试，再修改实现：
 
 - Transport 核心测试验证四个领域方法、位置/工作面不变量、不可变快照和任务聚合。
-- `tests/contracts/wms_adapter/` 验证两族 T1 wire、T2/T3、ACK 闭集、严格 JSON 和 ACL 转换。
+- `tests/contracts/wms_adapter/` 验证两族 T1 接口契约、T2/T3、ACK 闭集、严格 JSON 和 ACL 转换。
 - `tests/integration/wms_adapter/` 只在需要真实持久化或事务时验证 WMS Adapter，不证明基础 HTTP 能力。
 - 供应商 `AGV01..03`、`CTU01..04` 和原始错误码映射由 WMS/RCS 交付边界的供应商一致性验收负责，不进入 WES 核心测试。
 - 两份人类阅读文档不增加正文断言测试；纯文档阶段只做格式、引用和 diff 检查。
@@ -351,7 +351,7 @@ WES 目标 wire 的 `transport_task_id` 长度为 `1..80`，`rack_id`、`contain
 ### 11.3 直接替换
 
 - 原地重写未发布的 `transport.task.submit@v1`、T2 和 T3，不创建 v2。
-- 删除旧四族 submit DTO、`exchange_pairs` wire、T2 `bin_id`、T3 `object_id`、`BUSY` 和 `retry_after_ms`。
+- 删除旧四族 submit DTO、`exchange_pairs` 接口契约、T2 `bin_id`、T3 `object_id`、`BUSY` 和 `retry_after_ms`。
 - 不保留旧字段 alias、兼容解析、deprecated wrapper 或双路径测试。
 - 实施完成后清理开发/测试数据，使用新合同 fixture 重建验证基线；不编写历史数据迁移。
 
@@ -361,12 +361,12 @@ WES 目标 wire 的 `transport_task_id` 长度为 `1..80`，`rack_id`、`contain
 2. 四种 `kind` 的 JSON 都能通过一次 rack/bin 分流完成严格解析，不需要自定义多态转换器。
 3. `RACK_MOVE` 与 `RACK_ROTATE` 都携带必填 `target_face`，T3 成功结果同时校验最终位置和工作面。
 4. `BIN_MOVE` 与 `BIN_EXCHANGE` 都使用 `moves[].container_id + source + target`，且严格执行单面、端点组和闭环规则。
-5. T2/T3 wire 不再出现 `bin_id` 或 `object_id`；货架和料箱结果身份分别明确为 `rack_id`、`container_id`。
+5. T2/T3接口契约不再出现 `bin_id` 或 `object_id`；货架和料箱结果身份分别明确为 `rack_id`、`container_id`。
 6. T1 ACK、实现和测试中不存在 `429 / BUSY`、`BUSY` 或 `retry_after_ms`。
 7. T1 ACK `data`、活动资源围栏以及 T2/T3 幂等、修订和确定终态规则均有唯一、可执行的闭集定义。
 8. `target_face` 由业务调用方提供并冻结；WMS 不把它误作厂商当前面，T3 `arrival_face` 才表达确认后的实际工作面。
 9. WMS 为厂商子任务生成合规 `taskCode`，所有跨协议身份经过主数据解析和长度校验，不依赖字符串直接复用。
 10. WMS/RCS 私有字段不进入 WES 公共合同；两份厂商 PDF 未被修改。
-11. 两份当前态合同、OpenAPI、生产代码和行为测试使用同一目标 wire，不存在旧格式兼容入口。
+11. 两份当前态合同、OpenAPI、生产代码和行为测试使用同一目标接口契约，不存在旧格式兼容入口。
 12. 基础能力、WMS ACL、Transport 业务不变量和供应商一致性由各自测试所有者独立验证。
 13. 初级 WMS 开发人员只阅读 WMS 对接指南即可得到完整 DTO、映射表、成功路径、错误分类和失败处理，不需要反查 WES 内部代码。

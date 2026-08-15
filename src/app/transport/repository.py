@@ -8,6 +8,7 @@ from sqlalchemy import or_, select, update
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -202,6 +203,26 @@ class TransportRepository:
     async def add_evidence(self, db: AsyncSession, evidence: TransportEvidence) -> None:
         db.add(evidence)
         await db.flush()
+
+    async def add_callback_receipt(self, db: AsyncSession, receipt: TransportCallbackReceipt) -> None:
+        db.add(receipt)
+        await db.flush()
+
+    async def get_callback_receipt(
+        self,
+        db: AsyncSession,
+        operation: str,
+        operation_id: str,
+        *,
+        for_update: bool = False,
+    ) -> TransportCallbackReceipt | None:
+        statement = select(TransportCallbackReceipt).where(
+            TransportCallbackReceipt.operation == operation,
+            TransportCallbackReceipt.operation_id == operation_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
 
     async def get_evidence_by_operation_id(
         self,

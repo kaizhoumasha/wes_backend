@@ -59,6 +59,7 @@ class WmsClient:
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         json: object = _MISSING,
+        encoded_json: bytes | object = _MISSING,
         max_request_body_bytes: int | None = None,
         max_response_body_bytes: int | None = None,
     ) -> WmsAccessResult:
@@ -73,13 +74,18 @@ class WmsClient:
             raise OutboundHttpRequestError("request header is owned by WmsClient")
 
         if method is OutboundHttpMethod.GET:
-            if json is not _MISSING:
+            if json is not _MISSING or encoded_json is not _MISSING:
                 raise OutboundHttpRequestError("GET must not contain JSON")
             body = b""
         elif method is OutboundHttpMethod.POST:
-            if json is _MISSING:
-                raise OutboundHttpRequestError("POST requires JSON")
-            body = _encode_json(json)
+            if (json is _MISSING) == (encoded_json is _MISSING):
+                raise OutboundHttpRequestError("POST requires exactly one JSON body source")
+            if encoded_json is not _MISSING:
+                if not isinstance(encoded_json, bytes):
+                    raise TypeError("encoded_json must be bytes")
+                body = encoded_json
+            else:
+                body = _encode_json(json)
             request_headers += (("Content-Type", "application/json"),)
         else:
             raise TypeError("method must be an OutboundHttpMethod")
@@ -145,6 +151,28 @@ class WmsClient:
             query=query,
             headers=headers,
             json=json,
+            max_request_body_bytes=max_request_body_bytes,
+            max_response_body_bytes=max_response_body_bytes,
+        )
+
+    async def post_json_bytes(
+        self,
+        path: str,
+        *,
+        body: bytes,
+        query: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        max_request_body_bytes: int | None = None,
+        max_response_body_bytes: int | None = None,
+    ) -> WmsAccessResult:
+        """发送已经冻结的 JSON 请求体，不重新序列化。"""
+
+        return await self.request(
+            method=OutboundHttpMethod.POST,
+            path=path,
+            query=query,
+            headers=headers,
+            encoded_json=body,
             max_request_body_bytes=max_request_body_bytes,
             max_response_body_bytes=max_response_body_bytes,
         )

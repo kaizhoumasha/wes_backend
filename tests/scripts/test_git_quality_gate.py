@@ -8,6 +8,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _isolated_git_environment(git_executable: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    local_variables = subprocess.run(
+        [git_executable, "rev-parse", "--local-env-vars"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    for variable in local_variables:
+        environment.pop(variable, None)
+    return environment
+
+
 def _run_pre_commit_hook(
     tmp_path: Path,
     staged_files: str | dict[str, str],
@@ -16,24 +30,24 @@ def _run_pre_commit_hook(
     if git_executable is None:
         raise RuntimeError("git executable not found")
 
+    environment = _isolated_git_environment(git_executable)
     repository = tmp_path / "repository"
     scripts = repository / "scripts"
     scripts.mkdir(parents=True)
-    subprocess.run([git_executable, "init", "-q"], cwd=repository, check=True)
+    subprocess.run([git_executable, "init", "-q"], cwd=repository, env=environment, check=True)
 
     files = {staged_files: "content\n"} if isinstance(staged_files, str) else staged_files
     for staged_path, content in files.items():
         target = repository / staged_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    subprocess.run([git_executable, "add", *files], cwd=repository, check=True)
+    subprocess.run([git_executable, "add", *files], cwd=repository, env=environment, check=True)
 
     gate_log = repository / "gate.log"
     quality_gate = scripts / "git-quality-gate.sh"
     quality_gate.write_text('#!/bin/sh\nprintf "quality %s\\n" "$*" >> "$GATE_LOG"\n', encoding="utf-8")
     quality_gate.chmod(0o755)
 
-    environment = os.environ.copy()
     environment["GATE_LOG"] = str(gate_log)
     result = subprocess.run(
         ["/bin/bash", str(REPO_ROOT / ".githooks" / "pre-commit")],
@@ -58,10 +72,11 @@ def _run_release_metadata_gate(
     if git_executable is None:
         raise RuntimeError("git executable not found")
 
+    environment = _isolated_git_environment(git_executable)
     repository = tmp_path / "release-repository"
     scripts = repository / "scripts"
     scripts.mkdir(parents=True)
-    subprocess.run([git_executable, "init", "-q"], cwd=repository, check=True)
+    subprocess.run([git_executable, "init", "-q"], cwd=repository, env=environment, check=True)
     shutil.copy(REPO_ROOT / "scripts" / "git-quality-gate.sh", scripts / "git-quality-gate.sh")
 
     release_files = {
@@ -71,11 +86,12 @@ def _run_release_metadata_gate(
     }
     for path, content in release_files.items():
         (repository / path).write_text(content, encoding="utf-8")
-    subprocess.run([git_executable, "add", *release_files], cwd=repository, check=True)
+    subprocess.run([git_executable, "add", *release_files], cwd=repository, env=environment, check=True)
 
     return subprocess.run(
         ["/bin/bash", "scripts/git-quality-gate.sh", "--check", "release-metadata"],
         cwd=repository,
+        env=environment,
         check=False,
         capture_output=True,
         text=True,

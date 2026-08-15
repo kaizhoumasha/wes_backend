@@ -17,14 +17,17 @@ from src.app.transport.contracts import (
     TransportContractError,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
     TransportTask,
 )
+from src.app.wms_adapter.transport_event_handler import TransportEventHandler
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
+from tests.support.transport_callbacks import record_valid_callback
 
 if TYPE_CHECKING:
     from src.app.transport.service import TransportService
@@ -46,14 +49,15 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-1",
+                "container_id": "bin-1",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],
     }
 
-    ack = await outcome_service.record_evidence(
+    ack = await record_valid_callback(
+        outcome_service,
         operation_id="event-1",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -83,34 +87,37 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-2",
+                "container_id": "bin-2",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "CTU_ERROR",
+                "failure_code": "POSITION_UNKNOWN",
             }
         ],
     }
 
-    first = await outcome_service.record_evidence(
+    first = await record_valid_callback(
+        outcome_service,
         operation_id="event-2",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
         payload=payload,
     )
-    duplicate = await outcome_service.record_evidence(
+    duplicate = await record_valid_callback(
+        outcome_service,
         operation_id="event-2",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
         payload=payload,
     )
-    changed = await outcome_service.record_evidence(
+    changed = await record_valid_callback(
+        outcome_service,
         operation_id="event-2",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
-        payload={**payload, "kind": "BIN_EXCHANGE"},
+        payload={**payload, "outcome_revision": 2},
     )
 
     assert (first["code"], duplicate["code"], changed["code"]) == ("RECEIVED", "DUPLICATE", "CONFLICT")
@@ -123,9 +130,113 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
 
     assert evidence is not None
     assert evidence.status == "APPLIED"
-    assert evidence.conflict_code == "OPERATION_PAYLOAD_CONFLICT"
+    assert evidence.conflict_code is None
     assert task is not None
     assert (task.status, task.reason_code, task.outcome_version) == ("RECONCILING", "TRANSPORT_POSITION_UNKNOWN", 1)
+
+
+@pytest.mark.asyncio
+async def test_associated_invalid_callback_replays_first_rejection_and_conflicts_on_changed_message(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    message = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "operation": POSITION_OPERATION,
+        "timestamp": 1,
+        "data": {"transport_task_id": "transport-invalid", "container_id": "bin-1", "milestone": "INVALID"},
+    }
+
+    first = await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+    duplicate = await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+    changed = await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message={**message, "timestamp": 2},
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+
+    assert first == duplicate
+    assert first["http_status"] == 422
+    assert first["code"] == "REJECTED"
+    assert (changed["http_status"], changed["code"]) == (409, "CONFLICT")
+    assert changed["data"] == {"transport_task_id": "transport-invalid"}
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        receipts = list(await db.scalars(select(TransportCallbackReceipt)))
+        evidence = list(await db.scalars(select(TransportEvidence)))
+    assert len(receipts) == 1
+    assert evidence == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_float_lexemes_with_same_value_conflict(outcome_service: TransportService) -> None:
+    operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    prefix = f'{{"operation_id":"{operation_id}","operation":"{POSITION_OPERATION}","timestamp":'.encode()
+    suffix = b',"data":{}}'
+
+    first = await TransportEventHandler(outcome_service).handle(prefix + b"1.0" + suffix)
+    changed = await TransportEventHandler(outcome_service).handle(prefix + b"1e0" + suffix)
+
+    assert (first.http_status, first.body["code"]) == (422, "REJECTED")
+    assert (changed.http_status, changed.body["code"]) == (409, "CONFLICT")
+
+
+@pytest.mark.asyncio
+async def test_conflict_without_an_associated_task_has_empty_data(outcome_service: TransportService) -> None:
+    message = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "operation": POSITION_OPERATION,
+        "timestamp": 1,
+        "data": {},
+    }
+
+    await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+    changed = await outcome_service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message={**message, "timestamp": 2},
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+
+    assert (changed["http_status"], changed["code"], changed["data"]) == (409, "CONFLICT", {})
+
+
+@pytest.mark.asyncio
+async def test_lone_surrogate_dto_is_durably_rejected(outcome_service: TransportService) -> None:
+    raw_body = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472","operation":"'
+        + POSITION_OPERATION.encode()
+        + b'","timestamp":1,"data":{"transport_task_id":"transport-invalid",'
+        b'"container_id":"\\ud800","milestone":"SOURCE_PICKED"}}'
+    )
+    handler = TransportEventHandler(outcome_service)
+
+    first = await handler.handle(raw_body)
+    duplicate = await handler.handle(raw_body)
+
+    assert (first.http_status, first.body["code"]) == (422, "REJECTED")
+    assert duplicate.body == first.body
 
 
 @pytest.mark.asyncio
@@ -145,22 +256,24 @@ async def test_same_evidence_identity_with_changed_event_timestamp_conflicts(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-timestamp",
+                "container_id": "bin-timestamp",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "CTU_ERROR",
+                "failure_code": "POSITION_UNKNOWN",
             }
         ],
     }
 
-    first = await outcome_service.record_evidence(
+    first = await record_valid_callback(
+        outcome_service,
         operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
         payload=payload,
     )
-    changed = await outcome_service.record_evidence(
+    changed = await record_valid_callback(
+        outcome_service,
         operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -195,18 +308,20 @@ async def test_same_operation_id_is_independent_between_callback_operations(
     )
     operation_id = "shared-operation-id"
 
-    position_code = await outcome_service.record_evidence(
+    position_code = await record_valid_callback(
+        outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=POSITION_OPERATION,
         timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
-            "bin_id": "bin-operation-scoped",
+            "container_id": "bin-operation-scoped",
             "milestone": "SOURCE_PICKED",
         },
     )
-    result_code = await outcome_service.record_evidence(
+    result_code = await record_valid_callback(
+        outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -217,7 +332,7 @@ async def test_same_operation_id_is_independent_between_callback_operations(
             "outcome_revision": 1,
             "results": [
                 {
-                    "object_id": "bin-operation-scoped",
+                    "container_id": "bin-operation-scoped",
                     "status": "SUCCEEDED",
                     "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
                 }
@@ -247,7 +362,8 @@ async def test_record_evidence_rejects_identifiers_larger_than_persistence_colum
     transport_task_id: str,
 ) -> None:
     with pytest.raises(TransportContractError):
-        await outcome_service.record_evidence(
+        await record_valid_callback(
+            outcome_service,
             operation_id=operation_id,
             transport_task_id=transport_task_id,
             operation=RESULT_OPERATION,
@@ -277,19 +393,20 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-atomic-1",
+                "container_id": "bin-atomic-1",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             },
             {
-                "object_id": "bin-atomic-2",
+                "container_id": "bin-atomic-2",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "WRONG_TARGET"},
             },
         ],
     }
 
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -337,48 +454,34 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
     [
         [
             {
-                "object_id": "bin-member-1",
+                "container_id": "bin-member-1",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "FAILED",
+                "failure_code": "POSITION_UNKNOWN",
             }
         ],
         [
             {
-                "object_id": "bin-member-1",
+                "container_id": "bin-member-1",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "FAILED",
+                "failure_code": "POSITION_UNKNOWN",
             },
             {
-                "object_id": "bin-member-2",
+                "container_id": "bin-member-2",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "FAILED",
+                "failure_code": "POSITION_UNKNOWN",
             },
             {
-                "object_id": "bin-member-extra",
+                "container_id": "bin-member-extra",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "FAILED",
-            },
-        ],
-        [
-            {
-                "object_id": "bin-member-1",
-                "status": "FAILED",
-                "position_unknown": True,
-                "failure_code": "FAILED",
-            },
-            {
-                "object_id": "bin-member-1",
-                "status": "FAILED",
-                "position_unknown": True,
-                "failure_code": "FAILED",
+                "failure_code": "POSITION_UNKNOWN",
             },
         ],
     ],
-    ids=["missing", "extra", "duplicate"],
+    ids=["missing", "extra"],
 )
 async def test_result_members_must_exactly_match_the_frozen_batch(
     outcome_service: TransportService,
@@ -393,8 +496,9 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
             BinMove("bin-member-2", RackBinSlot("rack-members", RackFace.A, "2"), HandoffPosition("ROLLER_OUT")),
         ),
     )
-    operation_id = f"operation-members-{len(results)}-{results[-1]['object_id']}"
-    await outcome_service.record_evidence(
+    operation_id = f"operation-members-{len(results)}-{results[-1]['container_id']}"
+    await record_valid_callback(
+        outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -422,76 +526,32 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("rack_request", "result"),
-    [
-        (
-            MoveRackRequest(
-                new_uuid7(),
-                TransportCaller("SORTER"),
-                "rack-position-type",
-                RackPosition("SOURCE"),
-                RackPosition("TARGET"),
-            ),
-            {
-                "object_id": "rack-position-type",
-                "status": "FAILED",
-                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-                "failure_code": "FAILED",
-                "arrival_face": "A",
-            },
-        ),
-        (
-            None,
-            {
-                "object_id": "bin-position-type",
-                "status": "FAILED",
-                "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-                "failure_code": "FAILED",
-            },
-        ),
-    ],
-    ids=["rack", "bin"],
-)
-async def test_result_position_type_must_match_the_frozen_member_type(
+async def test_move_success_requires_the_frozen_target_face(
     outcome_service: TransportService,
     db_engine: object,
-    rack_request: MoveRackRequest | None,
-    result: dict[str, object],
 ) -> None:
-    if rack_request is None:
-        handle = await outcome_service.move_bins(
-            new_uuid7(),
-            TransportCaller("SORTER"),
-            (
-                BinMove(
-                    "bin-position-type",
-                    RackBinSlot("rack-position-type", RackFace.A, "1"),
-                    HandoffPosition("ROLLER_IN"),
-                ),
-            ),
-        )
-        kind = "BIN_MOVE"
-    else:
-        handle = await outcome_service.move_rack(
-            rack_request.client_request_id,
-            rack_request.caller,
-            rack_request.rack_id,
-            rack_request.source,
-            rack_request.target,
-        )
-        kind = "RACK_MOVE"
-    operation_id = f"operation-position-type-{kind}"
-    await outcome_service.record_evidence(
+    handle = await outcome_service.move_rack(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        "rack-move-face",
+        RackPosition("SOURCE"),
+        RackPosition("TARGET"),
+        RackFace.B,
+    )
+    operation_id = "operation-move-wrong-face"
+    await record_valid_callback(
+        outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
         payload={
-            "transport_task_id": handle.transport_task_id,
-            "kind": kind,
+            "kind": "RACK_MOVE",
             "outcome_revision": 1,
-            "results": [result],
+            "rack_id": "rack-move-face",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+            "arrival_face": "A",
         },
     )
 
@@ -500,11 +560,8 @@ async def test_result_position_type_must_match_the_frozen_member_type(
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
-        member = await db.scalar(
-            select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
-        )
+
     assert evidence is not None and evidence.status == "CONFLICT"
-    assert member is not None and member.status == "PENDING" and member.final_position_json is None
 
 
 @pytest.mark.asyncio
@@ -537,17 +594,14 @@ async def test_rotate_success_requires_the_frozen_target_face(
         "transport_task_id": handle.transport_task_id,
         "kind": "RACK_ROTATE",
         "outcome_revision": 1,
-        "results": [
-            {
-                "object_id": "rack-face",
-                "status": "SUCCEEDED",
-                "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-                "arrival_face": "A",
-            }
-        ],
+        "rack_id": "rack-face",
+        "status": "SUCCEEDED",
+        "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
+        "arrival_face": "A",
     }
 
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -587,16 +641,17 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
     )
     target = {
         "transport_task_id": handle.transport_task_id,
-        "bin_id": "bin-order",
+        "container_id": "bin-order",
         "milestone": "TARGET_PLACED",
         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
     }
     picked = {
         "transport_task_id": handle.transport_task_id,
-        "bin_id": "bin-order",
+        "container_id": "bin-order",
         "milestone": "SOURCE_PICKED",
     }
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id="event-target",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
@@ -604,7 +659,8 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
         payload=target,
     )
     await outcome_service.process_pending_evidence(1)
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id="event-picked",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
@@ -639,12 +695,13 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
     ):
         payload = {
             "transport_task_id": handle.transport_task_id,
-            "bin_id": "bin-late-unknown",
+            "container_id": "bin-late-unknown",
             "milestone": milestone,
         }
         if final_position is not None:
             payload["final_position"] = final_position
-        await outcome_service.record_evidence(
+        await record_valid_callback(
+            outcome_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation="transport.task.member_position_changed@v1",
@@ -687,20 +744,22 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
         ),
     )
     target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id="event-confirmed-target",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
-            "bin_id": "bin-confirmed-target",
+            "container_id": "bin-confirmed-target",
             "milestone": "TARGET_PLACED",
             "final_position": target,
         },
     )
     await outcome_service.process_pending_evidence(1)
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id="event-conflicting-final-position",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -711,10 +770,10 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
             "outcome_revision": 1,
             "results": [
                 {
-                    "object_id": "bin-confirmed-target",
+                    "container_id": "bin-confirmed-target",
                     "status": "FAILED",
                     "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_OUT"},
-                    "failure_code": "LATE_FAILURE",
+                    "failure_code": "RCS_EXECUTION_FAILED",
                 }
             ],
         },
@@ -756,14 +815,15 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
         ("operation-position-lost", "POSITION_UNKNOWN"),
         ("operation-picked-too-late", "SOURCE_PICKED"),
     ):
-        await outcome_service.record_evidence(
+        await record_valid_callback(
+            outcome_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation="transport.task.member_position_changed@v1",
             timestamp=1,
             payload={
                 "transport_task_id": handle.transport_task_id,
-                "bin_id": "bin-unknown-order",
+                "container_id": "bin-unknown-order",
                 "milestone": milestone,
             },
         )
@@ -807,7 +867,7 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-terminal",
+                "container_id": "bin-terminal",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
@@ -819,15 +879,16 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
         "outcome_revision": 2,
         "results": [
             {
-                "object_id": "bin-terminal",
+                "container_id": "bin-terminal",
                 "status": "FAILED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-                "failure_code": "LATE_CONTRADICTION",
+                "failure_code": "RCS_EXECUTION_FAILED",
             }
         ],
     }
     for operation_id, payload in (("operation-success", success), ("operation-conflict", conflicting)):
-        await outcome_service.record_evidence(
+        await record_valid_callback(
+            outcome_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -865,13 +926,14 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-position",
+                "container_id": "bin-position",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],
     }
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id="operation-position-success",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -879,14 +941,15 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
         payload=success,
     )
     await outcome_service.process_pending_evidence(1)
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id="operation-position-unknown",
         transport_task_id=handle.transport_task_id,
         operation="transport.task.member_position_changed@v1",
         timestamp=1,
         payload={
             "transport_task_id": handle.transport_task_id,
-            "bin_id": "bin-position",
+            "container_id": "bin-position",
             "milestone": "POSITION_UNKNOWN",
         },
     )

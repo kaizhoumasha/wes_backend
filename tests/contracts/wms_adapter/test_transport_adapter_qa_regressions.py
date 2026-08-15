@@ -27,14 +27,15 @@ class FakeClient:
     def __init__(self, result: FakeAccessResult) -> None:
         self.result = result
 
-    async def post(self, path: str, *, json: dict[str, object], **kwargs: object) -> FakeAccessResult:
+    async def post_json_bytes(self, path: str, *, body: bytes, **kwargs: object) -> FakeAccessResult:
+        envelope = json.loads(body)
         if isinstance(self.result.json_body, dict) and self.result.json_body.get("operation_id") == "CURRENT":
-            self.result.json_body["operation_id"] = json["operation_id"]
+            self.result.json_body["operation_id"] = envelope["operation_id"]
         return self.result
 
 
 class ClosedClient:
-    async def post(self, path: str, *, json: dict[str, object], **kwargs: object) -> FakeAccessResult:
+    async def post_json_bytes(self, path: str, *, body: bytes, **kwargs: object) -> FakeAccessResult:
         raise OutboundHttpClosedError("closed")
 
 
@@ -49,14 +50,15 @@ def _snapshot() -> dict[str, object]:
             "rack_id": "rack-1",
             "source": {"kind": "RACK_POSITION", "location_code": "A"},
             "target": {"kind": "RACK_POSITION", "location_code": "B"},
+            "target_face": "A",
         },
     }
     encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return {
         "operation_id": envelope["operation_id"],
-        "timestamp": envelope["timestamp"],
-        "payload": envelope["data"],
-        "payload_digest": sha256(encoded).hexdigest(),
+        "transport_task_id": envelope["data"]["transport_task_id"],
+        "request_body": encoded,
+        "request_body_digest": sha256(encoded).hexdigest(),
     }
 
 
@@ -74,58 +76,21 @@ def _ack(status: int, code: str, data: dict[str, object]) -> FakeAccessResult:
 
 
 @pytest.mark.asyncio
-async def test_busy_ack_without_retry_delay_uses_service_fallback() -> None:
+async def test_removed_busy_ack_is_not_accepted() -> None:
     access = _ack(429, "BUSY", {"transport_task_id": "transport-1"})
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
 
-    assert result.code is TransportSubmitCode.BUSY
-    assert result.retry_after_ms is None
+    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_retry_after", [True, 0, -1, "1000"])
-async def test_busy_ack_discards_non_positive_integer_retry_delay(invalid_retry_after: object) -> None:
-    access = _ack(
-        429,
-        "BUSY",
-        {"transport_task_id": "transport-1", "retry_after_ms": invalid_retry_after},
-    )
-
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
-
-    assert result.code is TransportSubmitCode.BUSY
-    assert result.retry_after_ms is None
-
-
-@pytest.mark.asyncio
-async def test_busy_ack_preserves_positive_integer_retry_delay() -> None:
-    access = _ack(429, "BUSY", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
-
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
-
-    assert result.code is TransportSubmitCode.BUSY
-    assert result.retry_after_ms == 1500
-
-
-@pytest.mark.asyncio
-async def test_busy_ack_discards_retry_delay_above_contract_limit() -> None:
-    access = _ack(429, "BUSY", {"transport_task_id": "transport-1", "retry_after_ms": 60001})
-
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
-
-    assert result.code is TransportSubmitCode.BUSY
-    assert result.retry_after_ms is None
-
-
-@pytest.mark.asyncio
-async def test_non_busy_ack_discards_retry_delay() -> None:
+async def test_retry_after_ms_is_rejected_from_all_ack_data() -> None:
     access = _ack(503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
 
     result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
-    assert result.retry_after_ms is None
 
 
 @pytest.mark.asyncio

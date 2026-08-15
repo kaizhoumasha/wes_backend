@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.2.0] - 2026-08-16
+
+### Added
+- 为 Transport callback 增加持久化收据、唯一身份约束和定向 Alembic migration，使可关联的拒绝、重放与冲突在重启和并发场景下保持确定。
+- 补充 WMS Transport v0.2 的 DTO、OpenAPI、生产 wiring、PostgreSQL 集成与 HEAVY 测试资产。
+
+### Changed
+- 直接以 `target_face`、`container_id` 和分族 T3 结果替换旧 Transport wire，不保留别名、兼容层或双路径。
+- 冻结出站请求原始字节及摘要，并统一 ACK、固定重试、`DELIVERY_UNKNOWN` 与 callback 身份关联语义。
+- 严格区分 UTF-8、JSON 语法、重复键、数字 lexeme 和 DTO 校验边界，使预关联错误不污染幂等身份。
+
+### Fixed
+- 修复浮点数重序列化导致不同 JSON 数字共享摘要、重复键被错误持久化，以及非法 Unicode 被误判为可重试 `503` 的问题。
+- 修复 rejected receipt 冲突响应沿用 `422` 数据形状、T3 结果数组未校验排序或成员数量，以及 runtime 缺失 fallback 与 handler 身份判定漂移的问题。
+- 修复 pre-commit 嵌套 Git 测试继承父仓库环境而污染测试仓库判定的问题。
+
+### Verification
+- QUALITY 全门禁通过：FAST 为 3264 passed、4 个既有条件 skip；Ruff、Bandit、架构和测试拓扑检查均通过。
+- 受影响 HEAVY 在隔离 PostgreSQL、Redis 和 Celery 环境下 28 passed；计划完成度 38/38，行为路径覆盖审计 100%，独立预落地审查无剩余意见。
+
 ## [0.26.1.0] - 2026-08-16
 
 ### Added

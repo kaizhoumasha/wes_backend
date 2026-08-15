@@ -10,6 +10,7 @@ from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, R
 from src.app.transport.models import TransportEvidence, TransportResourceBinding, TransportTask
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
+from tests.support.transport_callbacks import record_valid_callback
 
 if TYPE_CHECKING:
     from src.app.transport.service import TransportService
@@ -32,15 +33,15 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-version-1",
+                "container_id": "bin-version-1",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             },
             {
-                "object_id": "bin-version-2",
+                "container_id": "bin-version-2",
                 "status": "FAILED",
                 "position_unknown": True,
-                "failure_code": "POSITION_LOST",
+                "failure_code": "POSITION_UNKNOWN",
             },
         ],
     }
@@ -50,7 +51,7 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
         "outcome_revision": 2,
         "results": [
             {
-                "object_id": move.bin_id,
+                "container_id": move.bin_id,
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
@@ -58,7 +59,8 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
         ],
     }
     for operation_id, payload in (("operation-version-1", unknown), ("operation-version-2", corrected)):
-        await outcome_service.record_evidence(
+        await record_valid_callback(
+            outcome_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -105,14 +107,15 @@ async def test_higher_revision_cannot_advance_a_definite_terminal_fact_even_when
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-terminal-revision",
+                "container_id": "bin-terminal-revision",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
             }
         ],
     }
     for operation_id, revision in (("terminal-revision-1", 1), ("terminal-revision-2", 2)):
-        await outcome_service.record_evidence(
+        await record_valid_callback(
+            outcome_service,
             operation_id=operation_id,
             transport_task_id=handle.transport_task_id,
             operation=RESULT_OPERATION,
@@ -149,20 +152,22 @@ async def test_result_revision_identity_and_late_lower_revision_never_roll_back_
         "outcome_revision": 2,
         "results": [
             {
-                "object_id": "bin-revision",
+                "container_id": "bin-revision",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
             }
         ],
     }
-    first = await outcome_service.record_evidence(
+    first = await record_valid_callback(
+        outcome_service,
         operation_id="revision-2",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=2,
         payload=latest,
     )
-    same_revision_other_identity = await outcome_service.record_evidence(
+    same_revision_other_identity = await record_valid_callback(
+        outcome_service,
         operation_id="revision-2-conflict",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -178,14 +183,15 @@ async def test_result_revision_identity_and_late_lower_revision_never_roll_back_
         "outcome_revision": 1,
         "results": [
             {
-                "object_id": "bin-revision",
+                "container_id": "bin-revision",
                 "status": "FAILED",
                 "position_unknown": True,
                 "failure_code": "POSITION_UNKNOWN",
             }
         ],
     }
-    old_ack = await outcome_service.record_evidence(
+    old_ack = await record_valid_callback(
+        outcome_service,
         operation_id="revision-1-late",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -222,7 +228,10 @@ async def test_late_lower_revision_still_validates_frozen_identity(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-late-invalid", RackBinSlot("rack-late-invalid", RackFace.A, "1"), HandoffPosition("OUT")),),
+        (
+            BinMove("bin-late-invalid", RackBinSlot("rack-late-invalid", RackFace.A, "1"), HandoffPosition("OUT")),
+            BinMove("bin-late-peer", RackBinSlot("rack-late-invalid", RackFace.A, "2"), HandoffPosition("OUT")),
+        ),
     )
     latest = {
         "transport_task_id": handle.transport_task_id,
@@ -230,13 +239,19 @@ async def test_late_lower_revision_still_validates_frozen_identity(
         "outcome_revision": 2,
         "results": [
             {
-                "object_id": "bin-late-invalid",
+                "container_id": "bin-late-invalid",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
-            }
+            },
+            {
+                "container_id": "bin-late-peer",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
+            },
         ],
     }
-    await outcome_service.record_evidence(
+    await record_valid_callback(
+        outcome_service,
         operation_id=f"revision-2-before-invalid-{invalid_identity}",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
@@ -247,10 +262,11 @@ async def test_late_lower_revision_still_validates_frozen_identity(
 
     older = {**latest, "outcome_revision": 1}
     if invalid_identity == "kind":
-        older["kind"] = "RACK_MOVE"
+        older["kind"] = "BIN_EXCHANGE"
     else:
-        older["results"] = [{**latest["results"][0], "object_id": "another-bin"}]
-    await outcome_service.record_evidence(
+        older["results"] = [{**latest["results"][0], "container_id": "another-bin"}, latest["results"][1]]
+    await record_valid_callback(
+        outcome_service,
         operation_id=f"revision-1-invalid-{invalid_identity}",
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import TransportOutcome, TransportSubmitCode, TransportSubmitResult
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
@@ -25,11 +26,10 @@ class FakeProvider:
         self,
         *,
         operation_id: str,
-        timestamp: int,
-        payload: dict[str, object],
-        payload_digest: str,
+        transport_task_id: str,
+        request_body: bytes,
+        request_body_digest: str,
     ) -> TransportSubmitResult:
-        transport_task_id = str(payload["transport_task_id"])
         return TransportSubmitResult(TransportSubmitCode.RECEIVED, transport_task_id)
 
 
@@ -47,6 +47,7 @@ async def outcome_service(db_engine: object) -> TransportService:
     async with sessions.begin() as db:
         for model in (
             TransportEvidence,
+            TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
             TransportPositionProjection,

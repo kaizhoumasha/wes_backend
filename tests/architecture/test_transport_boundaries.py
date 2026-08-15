@@ -31,6 +31,19 @@ def test_wms_transport_adapter_only_uses_wms_client_boundary() -> None:
         assert "src.core.outbound_http" not in source
 
 
+def test_shared_strict_json_decoder_does_not_import_transport_domain() -> None:
+    tree = ast.parse(
+        (ROOT / "src/app/wms_adapter/strict_json.py").read_text(encoding="utf-8"),
+        filename="src/app/wms_adapter/strict_json.py",
+    )
+
+    assert not any(
+        (isinstance(node, ast.ImportFrom) and node.module is not None and node.module.startswith("src.app.transport"))
+        or (isinstance(node, ast.Import) and any(alias.name.startswith("src.app.transport") for alias in node.names))
+        for node in ast.walk(tree)
+    )
+
+
 def _transport_imports_and_constructor_calls(path: Path) -> tuple[set[tuple[str, str]], list[str]]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     imports = {
@@ -72,6 +85,7 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
             "rack_id": str,
             "source": transport.RackPosition,
             "target": transport.RackPosition,
+            "target_face": transport.RackFace,
             "return": transport.TransportHandle,
         },
         "rotate_rack": {

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError
 
+from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import (
     MAX_SUBMIT_ATTEMPTS,
     TRANSPORT_POSITION_OPERATION,
@@ -42,13 +43,14 @@ from src.app.transport.contracts import (
     TransportTaskStatus,
 )
 from src.app.transport.models import (
+    TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
     TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
-from src.app.transport.submit_snapshot import build_submit_data, submit_payload_digest
+from src.app.transport.submit_snapshot import build_submit_data, build_submit_request_body, request_body_digest
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
@@ -88,8 +90,9 @@ class TransportService:
         rack_id: str,
         source: RackPosition,
         target: RackPosition,
+        target_face: RackFace,
     ) -> TransportHandle:
-        return await self._create_task(MoveRackRequest(client_request_id, caller, rack_id, source, target))
+        return await self._create_task(MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face))
 
     async def rotate_rack(
         self,
@@ -136,17 +139,16 @@ class TransportService:
                     break
                 task_id = task.transport_task_id
                 operation_id = task.submit_operation_id
-                timestamp_ms = task.submit_timestamp_ms
-                payload = _json_value(task.submit_payload_json)
-                payload_digest = task.submit_payload_digest
+                request_body = task.submit_request_body.encode("utf-8")
+                frozen_request_body_digest = task.submit_request_body_digest
 
             try:
                 async with asyncio.timeout(_SUBMIT_TIMEOUT_SECONDS):
                     result = await self.provider.submit(
                         operation_id=operation_id,
-                        timestamp=timestamp_ms,
-                        payload=payload,
-                        payload_digest=payload_digest,
+                        transport_task_id=task_id,
+                        request_body=request_body,
+                        request_body_digest=frozen_request_body_digest,
                     )
             except TimeoutError:
                 result_code = TransportSubmitCode.DELIVERY_UNKNOWN
@@ -161,8 +163,8 @@ class TransportService:
                     current,
                     operation_id=operation_id,
                     transport_task_id=task_id,
-                    payload=payload,
-                    payload_digest=payload_digest,
+                    request_body=request_body,
+                    expected_request_body_digest=frozen_request_body_digest,
                 ):
                     logger.warning(
                         "transport.submit.late_writeback",
@@ -267,38 +269,63 @@ class TransportService:
                 processed += 1
         return processed
 
-    async def record_evidence(
+    async def record_callback(
         self,
         *,
         operation_id: str,
-        transport_task_id: str,
         operation: str,
-        timestamp: int,
-        payload: dict[str, Any],
+        message: dict[str, Any],
+        payload: dict[str, Any] | None,
+        rejection_reason_code: str | None,
     ) -> dict[str, Any]:
         _validate_persisted_text(operation_id, "operation_id", 36)
-        _validate_persisted_text(transport_task_id, "transport_task_id", 80)
-        outcome_revision = _source_outcome_revision(operation, payload)
-        envelope = {
-            "operation_id": operation_id,
-            "operation": operation,
-            "timestamp": timestamp,
-            "data": payload,
-        }
-        encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-        digest = hashlib.sha256(encoded).hexdigest()
+        _validate_persisted_text(operation, "operation", 80)
+        encoded = canonical_callback_json(message).encode("utf-8")
+        message_digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
         ack_timestamp_ms = int(timezone.now_utc().timestamp() * 1000)
-        ack_data = {"transport_task_id": transport_task_id}
+        transport_task_id = _associated_transport_task_id(message)
+        if payload is not None:
+            transport_task_id = payload["transport_task_id"]
+            _validate_persisted_text(transport_task_id, "transport_task_id", 80)
+        outcome_revision = _source_outcome_revision(operation, payload) if payload is not None else None
+        if rejection_reason_code is not None:
+            ack_data = {"reason_code": rejection_reason_code}
+            if transport_task_id is not None:
+                ack_data["transport_task_id"] = transport_task_id
+            first_http_status = 422
+            first_code = "REJECTED"
+        else:
+            if payload is None or transport_task_id is None:
+                raise TransportContractError("validated callback requires payload and transport_task_id")
+            ack_data = {"transport_task_id": transport_task_id}
+            first_http_status = 202
+            first_code = "RECEIVED"
         try:
             async with self._sessions.begin() as db:
+                existing = await self._repository.get_callback_receipt(db, operation, operation_id, for_update=True)
+                if existing is not None:
+                    return _resolve_callback_receipt(existing, message_digest)
+                if rejection_reason_code is not None:
+                    await self._repository.add_callback_receipt(
+                        db,
+                        _callback_receipt(
+                            operation_id=operation_id,
+                            operation=operation,
+                            message_digest=message_digest,
+                            message=message,
+                            http_status=first_http_status,
+                            code=first_code,
+                            timestamp=ack_timestamp_ms,
+                            data=ack_data,
+                            now=now,
+                        ),
+                    )
+                    return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
+                if payload is None or transport_task_id is None:
+                    raise RuntimeError("validated callback is missing transport_task_id")
                 # 与 submit 写回锁同一任务行，使未提交 evidence 在确定性拒绝判断前可见。
                 await self._repository.get_task(db, transport_task_id, for_update=True)
-                existing = await self._repository.get_evidence_by_operation_id(
-                    db, operation, operation_id, for_update=True
-                )
-                if existing is not None:
-                    return _resolve_evidence_identity(existing, digest, operation)
                 if outcome_revision is not None:
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -307,7 +334,24 @@ class TransportService:
                         for_update=True,
                     )
                     if revision_owner is not None:
-                        return _resolve_outcome_revision_identity(revision_owner)
+                        first_http_status = 409
+                        first_code = "CONFLICT"
+                await self._repository.add_callback_receipt(
+                    db,
+                    _callback_receipt(
+                        operation_id=operation_id,
+                        operation=operation,
+                        message_digest=message_digest,
+                        message=message,
+                        http_status=first_http_status,
+                        code=first_code,
+                        timestamp=ack_timestamp_ms,
+                        data=ack_data,
+                        now=now,
+                    ),
+                )
+                if first_code == "CONFLICT":
+                    return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
                 await self._repository.add_evidence(
                     db,
                     TransportEvidence(
@@ -315,8 +359,8 @@ class TransportService:
                         transport_task_id=transport_task_id,
                         operation=operation,
                         outcome_revision=outcome_revision,
-                        event_timestamp_ms=timestamp,
-                        payload_digest=digest,
+                        event_timestamp_ms=message["timestamp"],
+                        message_digest=message_digest,
                         payload_json=payload,
                         ack_timestamp_ms=ack_timestamp_ms,
                         ack_data_json=ack_data,
@@ -324,25 +368,37 @@ class TransportService:
                     ),
                 )
         except IntegrityError:
-            # 并发重复回调可能同时通过首次查询；唯一约束裁决后重新读取首个已提交事实。
+            # 并发重放由数据库唯一约束裁决；回滚后读取首个已提交收据。
             async with self._sessions.begin() as db:
-                existing = await self._repository.get_evidence_by_operation_id(
-                    db, operation, operation_id, for_update=True
-                )
+                existing = await self._repository.get_callback_receipt(db, operation, operation_id, for_update=True)
                 if existing is None:
-                    if outcome_revision is None:
+                    if outcome_revision is None or transport_task_id is None:
                         raise
-                    existing = await self._repository.get_evidence_by_outcome_revision(
+                    revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
                         transport_task_id,
                         outcome_revision,
                         for_update=True,
                     )
-                    if existing is None:
+                    if revision_owner is None:
                         raise
-                    return _resolve_outcome_revision_identity(existing)
-                return _resolve_evidence_identity(existing, digest, operation)
-        return {"code": "RECEIVED", "timestamp": ack_timestamp_ms, "data": ack_data}
+                    await self._repository.add_callback_receipt(
+                        db,
+                        _callback_receipt(
+                            operation_id=operation_id,
+                            operation=operation,
+                            message_digest=message_digest,
+                            message=message,
+                            http_status=409,
+                            code="CONFLICT",
+                            timestamp=ack_timestamp_ms,
+                            data=ack_data,
+                            now=now,
+                        ),
+                    )
+                    return _callback_ack(409, "CONFLICT", ack_timestamp_ms, ack_data)
+                return _resolve_callback_receipt(existing, message_digest)
+        return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
 
     async def reconcile_overdue_tasks(self, limit: int) -> int:
         _validate_limit(limit)
@@ -412,13 +468,13 @@ class TransportService:
         return published
 
     async def _create_task(self, request: TransportRequest) -> TransportHandle:
-        payload_digest = _payload_digest(request)
+        request_digest = _request_digest(request)
         task_id = f"transport-{uuid.uuid4()}"
         now = timezone.now_for_db()
         submit_operation_id = new_uuid7()
         submit_timestamp_ms = int(timezone.now_utc().timestamp() * 1000)
         submit_payload = build_submit_data(request, task_id)
-        frozen_submit_digest = submit_payload_digest(
+        frozen_request_body = build_submit_request_body(
             submit_operation_id,
             submit_timestamp_ms,
             submit_payload,
@@ -426,14 +482,14 @@ class TransportService:
         task = TransportTask(
             transport_task_id=task_id,
             client_request_id=request.client_request_id,
-            payload_digest=payload_digest,
+            request_digest=request_digest,
             kind=request.kind.value,
             caller_json=_json_value(request.caller),
             request_json=_json_value(request),
             submit_operation_id=submit_operation_id,
             submit_timestamp_ms=submit_timestamp_ms,
-            submit_payload_json=submit_payload,
-            submit_payload_digest=frozen_submit_digest,
+            submit_request_body=frozen_request_body.decode("utf-8"),
+            submit_request_body_digest=request_body_digest(frozen_request_body),
             created_at=now,
             updated_at=now,
         )
@@ -451,7 +507,7 @@ class TransportService:
             async with self._sessions.begin() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
                 if existing is not None:
-                    return _idempotent_handle(existing, payload_digest)
+                    return _idempotent_handle(existing, request_digest)
                 await self._repository.add_aggregate(db, task, members, bindings)
                 if isinstance(request, RotateRackRequest):
                     projection = await self._repository.get_projection(
@@ -470,7 +526,7 @@ class TransportService:
             async with self._sessions() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
                 if existing is not None:
-                    return _idempotent_handle(existing, payload_digest)
+                    return _idempotent_handle(existing, request_digest)
             raise TransportResourceConflict("transport resource is already active") from error
         return TransportHandle(task_id, request.client_request_id)
 
@@ -561,23 +617,14 @@ class TransportService:
             return
         _clear_submit_claim(task)
         task.updated_at = now
-        if code in {TransportSubmitCode.NOT_SENT, TransportSubmitCode.BUSY, TransportSubmitCode.UNAVAILABLE}:
+        if code in {TransportSubmitCode.NOT_SENT, TransportSubmitCode.UNAVAILABLE}:
             task.status = "PENDING"
             task.reason_code = None
             task.send_started_at = None
             if task.submit_attempt_count >= MAX_SUBMIT_ATTEMPTS:
                 self._set_outcome(task, TransportTaskStatus.REJECTED, "TRANSPORT_SUBMIT_RETRY_EXHAUSTED", now)
                 return
-            retry_after_ms = getattr(result, "retry_after_ms", None)
-            try:
-                delay = (
-                    timedelta(milliseconds=retry_after_ms)
-                    if code is TransportSubmitCode.BUSY and _positive(retry_after_ms)
-                    else _RETRY_DELAY
-                )
-                task.next_submit_at = now + delay
-            except OverflowError:
-                task.next_submit_at = now + _RETRY_DELAY
+            task.next_submit_at = now + _RETRY_DELAY
             return
         self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_DELIVERY_UNKNOWN", now)
 
@@ -620,7 +667,7 @@ class TransportService:
         evidence: TransportEvidence,
     ) -> None:
         payload = evidence.payload_json
-        member_id = payload.get("bin_id")
+        member_id = payload.get("container_id")
         members = await self._repository.list_members(db, task.transport_task_id)
         member = next((item for item in members if item.object_type == "BIN" and item.object_id == member_id), None)
         if member is None:
@@ -677,9 +724,29 @@ class TransportService:
         if payload.get("kind") != task.kind:
             raise TransportContractError("result kind differs from frozen task")
         members = await self._repository.list_members(db, task.transport_task_id)
-        raw_results = payload.get("results")
-        if not isinstance(raw_results, list):
-            raise TransportContractError("results must be a list")
+        if task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}:
+            raw_results = [
+                {
+                    "object_id": payload.get("rack_id"),
+                    **{
+                        key: payload[key]
+                        for key in ("status", "final_position", "position_unknown", "failure_code", "arrival_face")
+                        if key in payload
+                    },
+                }
+            ]
+        else:
+            external_results = payload.get("results")
+            if not isinstance(external_results, list):
+                raise TransportContractError("results must be a list")
+            raw_results = [
+                {
+                    "object_id": item.get("container_id"),
+                    **{key: value for key, value in item.items() if key != "container_id"},
+                }
+                for item in external_results
+                if isinstance(item, dict)
+            ]
         results = {item.get("object_id"): item for item in raw_results if isinstance(item, dict)}
         if set(results) != {member.object_id for member in members} or len(results) != len(raw_results):
             raise TransportContractError("result members differ from frozen task")
@@ -870,7 +937,7 @@ def _resource_keys(request: TransportRequest) -> set[tuple[str, str]]:
     return resources
 
 
-def _payload_digest(request: TransportRequest) -> str:
+def _request_digest(request: TransportRequest) -> str:
     encoded = json.dumps(_json_value(request), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -880,16 +947,15 @@ def _matches_submit_snapshot(
     *,
     operation_id: str,
     transport_task_id: str,
-    payload: dict[str, Any],
-    payload_digest: str,
+    request_body: bytes,
+    expected_request_body_digest: str,
 ) -> bool:
     return (
         task.transport_task_id == transport_task_id
         and task.submit_operation_id == operation_id
-        and task.submit_payload_json == payload
-        and task.submit_payload_digest == payload_digest
-        and payload.get("transport_task_id") == transport_task_id
-        and submit_payload_digest(operation_id, task.submit_timestamp_ms, payload) == payload_digest
+        and task.submit_request_body.encode("utf-8") == request_body
+        and task.submit_request_body_digest == expected_request_body_digest
+        and request_body_digest(request_body) == expected_request_body_digest
     )
 
 
@@ -934,8 +1000,8 @@ def _outcome_from_json(payload: dict[str, Any]) -> TransportOutcome:
     )
 
 
-def _idempotent_handle(task: TransportTask, payload_digest: str) -> TransportHandle:
-    if task.payload_digest != payload_digest:
+def _idempotent_handle(task: TransportTask, request_digest: str) -> TransportHandle:
+    if task.request_digest != request_digest:
         raise TransportIdempotencyConflict("client_request_id payload conflict")
     return TransportHandle(task.transport_task_id, task.client_request_id)
 
@@ -943,10 +1009,6 @@ def _idempotent_handle(task: TransportTask, payload_digest: str) -> TransportHan
 def _validate_limit(limit: int) -> None:
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         raise ValueError("limit must be a positive integer")
-
-
-def _positive(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _validate_persisted_text(value: object, field_name: str, max_length: int) -> None:
@@ -976,7 +1038,7 @@ def _validate_result_frozen_identity(
         if isinstance(final_position, dict) and not _position_matches_member_type(member, final_position):
             raise TransportContractError("result position type differs from frozen member")
         if (
-            task.kind == TransportTaskKind.RACK_ROTATE.value
+            task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
             and status == "SUCCEEDED"
             and result.get("arrival_face") != task.request_json["target_face"]
         ):
@@ -1027,34 +1089,62 @@ def _accept_position_fact(task: TransportTask, now: Any) -> None:
     task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
 
 
-def _resolve_evidence_identity(
-    evidence: TransportEvidence,
-    payload_digest: str,
+def _callback_receipt(
+    *,
+    operation_id: str,
     operation: str,
-) -> dict[str, Any]:
-    if evidence.payload_digest == payload_digest and evidence.operation == operation:
-        return {
-            "code": "DUPLICATE",
-            "timestamp": evidence.ack_timestamp_ms,
-            "data": evidence.ack_data_json,
-        }
-    # 身份冲突只记录诊断；首份权威 evidence 仍必须保持可处理或已应用状态。
-    if evidence.status == "PENDING":
-        evidence.conflict_code = "OPERATION_PAYLOAD_CONFLICT"
-    return {
-        "code": "CONFLICT",
-        "timestamp": evidence.ack_timestamp_ms,
-        "data": evidence.ack_data_json,
-    }
+    message_digest: str,
+    message: dict[str, Any],
+    http_status: int,
+    code: str,
+    timestamp: int,
+    data: dict[str, Any],
+    now: Any,
+) -> TransportCallbackReceipt:
+    return TransportCallbackReceipt(
+        operation_id=operation_id,
+        operation=operation,
+        message_digest=message_digest,
+        message_json=message,
+        response_http_status=http_status,
+        response_code=code,
+        response_timestamp_ms=timestamp,
+        response_data_json=data,
+        received_at=now,
+    )
 
 
-def _resolve_outcome_revision_identity(evidence: TransportEvidence) -> dict[str, Any]:
-    # 同一任务的来源 revision 只绑定首个 operation_id；新身份不得借相同 payload 绕过版本裁决。
-    return {
-        "code": "CONFLICT",
-        "timestamp": evidence.ack_timestamp_ms,
-        "data": evidence.ack_data_json,
-    }
+def _callback_ack(http_status: int, code: str, timestamp: int, data: dict[str, Any]) -> dict[str, Any]:
+    return {"http_status": http_status, "code": code, "timestamp": timestamp, "data": data}
+
+
+def _resolve_callback_receipt(receipt: TransportCallbackReceipt, message_digest: str) -> dict[str, Any]:
+    if receipt.message_digest != message_digest:
+        transport_task_id = receipt.response_data_json.get("transport_task_id")
+        data = {"transport_task_id": transport_task_id} if isinstance(transport_task_id, str) else {}
+        return _callback_ack(409, "CONFLICT", receipt.response_timestamp_ms, data)
+    if receipt.response_code == "RECEIVED":
+        return _callback_ack(200, "DUPLICATE", receipt.response_timestamp_ms, receipt.response_data_json)
+    return _callback_ack(
+        receipt.response_http_status,
+        receipt.response_code,
+        receipt.response_timestamp_ms,
+        receipt.response_data_json,
+    )
+
+
+def _associated_transport_task_id(message: dict[str, Any]) -> str | None:
+    data = message.get("data")
+    if not isinstance(data, dict):
+        return None
+    value = data.get("transport_task_id")
+    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value
 
 
 def _source_outcome_revision(operation: str, payload: dict[str, Any]) -> int | None:

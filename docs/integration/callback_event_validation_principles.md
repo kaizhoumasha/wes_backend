@@ -44,7 +44,8 @@ Token、签名、Nonce 或 HMAC 分支；网络隔离和访问控制由部署边
 运输结果复用 WMS Event 入口的信封校验、幂等和持久化后应答能力，但不进入普通 WMS 业务事件 Handler：
 
 - 固定 operation 为 `transport.task.resulted@v1`；
-- 入口先持久化 `InboundEvidence` 并返回 ACK，再分发类型化 `TransportResult`；
+- 入口先以 `operation + operation_id` 持久化 `TransportCallbackReceipt`；合法回调在同一事务保存
+  `TransportEvidence`，再返回 ACK 并分发类型化 `TransportResult`；
 - 应用端口校验 `transport_task_id`、请求版本、对象身份和冻结成员；
 - 只有 `TransportTask` owner 可以接受终态并推进相关投影；
 - 普通 WMS 业务事件、callback hint、ACK 或远端内部进度都不能终结 `TransportTask`。

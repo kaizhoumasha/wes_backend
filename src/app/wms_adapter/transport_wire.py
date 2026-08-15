@@ -46,12 +46,12 @@ def validate_callback_envelope(value: object) -> dict[str, Any]:
 def _validate_position_data(value: object) -> dict[str, Any]:
     data = _strict_dict(
         value,
-        {"transport_task_id", "bin_id", "milestone"},
+        {"transport_task_id", "container_id", "milestone"},
         "position data",
         optional={"final_position"},
     )
     _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
-    _nonblank(data["bin_id"], "bin_id", max_length=100)
+    _nonblank(data["container_id"], "container_id", max_length=100)
     milestone = data["milestone"]
     if milestone not in {"SOURCE_PICKED", "TARGET_PLACED", "POSITION_UNKNOWN"}:
         raise TransportContractError("invalid position milestone")
@@ -67,7 +67,20 @@ def _validate_position_data(value: object) -> dict[str, Any]:
 
 
 def _validate_result_data(value: object) -> dict[str, Any]:
-    data = _strict_dict(value, {"transport_task_id", "kind", "outcome_revision", "results"}, "result data")
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise TransportContractError("result data must be an object")
+    kind = value.get("kind")
+    if kind not in {"RACK_MOVE", "RACK_ROTATE", "BIN_MOVE", "BIN_EXCHANGE"}:
+        raise TransportContractError("invalid transport kind")
+    if kind in {"RACK_MOVE", "RACK_ROTATE"}:
+        data = _strict_dict(
+            value,
+            {"transport_task_id", "kind", "outcome_revision", "rack_id", "status"},
+            "result data",
+            optional={"final_position", "position_unknown", "failure_code", "arrival_face"},
+        )
+    else:
+        data = _strict_dict(value, {"transport_task_id", "kind", "outcome_revision", "results"}, "result data")
     _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
     outcome_revision = data["outcome_revision"]
     if (
@@ -76,55 +89,75 @@ def _validate_result_data(value: object) -> dict[str, Any]:
         or not 1 <= outcome_revision <= SIGNED_INT64_MAX
     ):
         raise TransportContractError("outcome_revision must be a positive integer within signed 64-bit range")
-    if data["kind"] not in {"RACK_MOVE", "RACK_ROTATE", "BIN_MOVE", "BIN_EXCHANGE"}:
-        raise TransportContractError("invalid transport kind")
+    if kind in {"RACK_MOVE", "RACK_ROTATE"}:
+        _validate_member_result(
+            {
+                key: data[key]
+                for key in ("rack_id", "status", "final_position", "position_unknown", "failure_code", "arrival_face")
+                if key in data
+            },
+            id_field="rack_id",
+            rack_kind=True,
+        )
+        return data
     results = data["results"]
     if not isinstance(results, list) or not results:
         raise TransportContractError("results must be a non-empty list")
+    if kind == "BIN_MOVE" and len(results) > 4:
+        raise TransportContractError("BIN_MOVE results must contain 1 to 4 members")
+    if kind == "BIN_EXCHANGE" and len(results) not in {2, 4}:
+        raise TransportContractError("BIN_EXCHANGE results must contain 2 or 4 members")
     normalized: list[dict[str, Any]] = []
-    object_ids: set[str] = set()
+    container_ids: set[str] = set()
     for raw in results:
-        result = _strict_dict(
-            raw,
-            {"object_id", "status"},
-            "member result",
-            optional={"final_position", "position_unknown", "failure_code", "arrival_face"},
-        )
-        object_id = _nonblank(result["object_id"], "object_id", max_length=100)
-        if object_id in object_ids:
-            raise TransportContractError("duplicate result object_id")
-        object_ids.add(object_id)
-        status = result["status"]
-        if status not in {"SUCCEEDED", "FAILED"}:
-            raise TransportContractError("invalid member result status")
-        has_position = "final_position" in result
-        is_unknown = result.get("position_unknown") is True
-        rack_kind = data["kind"] in {"RACK_MOVE", "RACK_ROTATE"}
-        if has_position == is_unknown:
-            raise TransportContractError("final_position xor position_unknown=true is required")
-        if "position_unknown" in result and result["position_unknown"] is not True:
-            raise TransportContractError("position_unknown must be literal true")
-        if has_position:
-            final_position = _validate_position(result["final_position"])
-            if rack_kind and final_position["kind"] != "RACK_POSITION":
-                raise TransportContractError("rack result position must be RACK_POSITION")
-            if not rack_kind and final_position["kind"] not in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}:
-                raise TransportContractError("bin result position must be a rack bin slot or handoff position")
-        if status == "SUCCEEDED" and (not has_position or "failure_code" in result):
-            raise TransportContractError("SUCCEEDED requires known position and no failure_code")
-        if status == "FAILED":
-            failure_code = _nonblank(result.get("failure_code"), "failure_code")
-            if failure_code not in TRANSPORT_FAILURE_CODES:
-                raise TransportContractError("invalid failure_code")
-            if is_unknown != (failure_code == "POSITION_UNKNOWN"):
-                raise TransportContractError("POSITION_UNKNOWN failure_code must match position_unknown=true")
-        if rack_kind and has_position and result.get("arrival_face") not in {"A", "B"}:
-            raise TransportContractError("known rack result requires arrival_face")
-        if (not rack_kind or is_unknown) and "arrival_face" in result:
-            raise TransportContractError("arrival_face is not valid for this result")
+        result = _validate_member_result(raw, id_field="container_id", rack_kind=False)
+        container_id = result["container_id"]
+        if container_id in container_ids:
+            raise TransportContractError("duplicate result container_id")
+        container_ids.add(container_id)
         normalized.append(result)
+    if [result["container_id"] for result in normalized] != sorted(container_ids):
+        raise TransportContractError("results must be sorted by container_id")
     data["results"] = normalized
     return data
+
+
+def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) -> dict[str, Any]:
+    result = _strict_dict(
+        value,
+        {id_field, "status"},
+        "member result",
+        optional={"final_position", "position_unknown", "failure_code", "arrival_face"},
+    )
+    _nonblank(result[id_field], id_field, max_length=100)
+    status = result["status"]
+    if status not in {"SUCCEEDED", "FAILED"}:
+        raise TransportContractError("invalid member result status")
+    has_position = "final_position" in result
+    is_unknown = result.get("position_unknown") is True
+    if has_position == is_unknown:
+        raise TransportContractError("final_position xor position_unknown=true is required")
+    if "position_unknown" in result and result["position_unknown"] is not True:
+        raise TransportContractError("position_unknown must be literal true")
+    if has_position:
+        final_position = _validate_position(result["final_position"])
+        if rack_kind and final_position["kind"] != "RACK_POSITION":
+            raise TransportContractError("rack result position must be RACK_POSITION")
+        if not rack_kind and final_position["kind"] not in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}:
+            raise TransportContractError("bin result position must be a rack bin slot or handoff position")
+    if status == "SUCCEEDED" and (not has_position or "failure_code" in result):
+        raise TransportContractError("SUCCEEDED requires known position and no failure_code")
+    if status == "FAILED":
+        failure_code = _nonblank(result.get("failure_code"), "failure_code")
+        if failure_code not in TRANSPORT_FAILURE_CODES:
+            raise TransportContractError("invalid failure_code")
+        if is_unknown != (failure_code == "POSITION_UNKNOWN"):
+            raise TransportContractError("POSITION_UNKNOWN failure_code must match position_unknown=true")
+    if rack_kind and has_position and result.get("arrival_face") not in {"A", "B"}:
+        raise TransportContractError("known rack result requires arrival_face")
+    if (not rack_kind or is_unknown) and "arrival_face" in result:
+        raise TransportContractError("arrival_face is not valid for this result")
+    return result
 
 
 def _validate_position(value: object) -> dict[str, Any]:
