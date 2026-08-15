@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-14
+**最后更新**：2026-08-16
 
 ## 1. 真源与入口
 
@@ -36,7 +36,7 @@
 | `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖 T2/T3 客户端生成，T1 服务端合同由 WMS 交付 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
-| `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、Transport Port、WMS 转发提交 ACK、成员位置事实与异步终态评审基线 |
+| `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
 | `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库推荐端点、Payload、返回 JSON、幂等和联调评审基线；正式 Schema 待双方冻结 |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES 粗分逐盘入库、满箱交换和自动上架的固定端点、严格 DTO、幂等、物理门禁和联调评审基线；正式 Schema 待双方冻结 |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
