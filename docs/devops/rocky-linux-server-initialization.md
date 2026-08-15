@@ -2,10 +2,11 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 文档版本 | V1.0 |
+| 文档版本 | V1.1 |
 | 适用服务器 | `HOIB4-MESWES1` |
 | 服务器位置 | 美国休斯顿 |
 | 适用阶段 | 服务器检查通过后的第二步 |
+| 现场记录更新时间 | 2026-08-14（CDT） |
 
 ## 1. 本次工作范围
 
@@ -86,11 +87,11 @@ sudo -v
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| 主机名 |  |
-| Time zone |  |
-| System clock synchronized |  |
-| 根目录 Avail |  |
-| 本步骤结果（通过/失败） |  |
+| 主机名 | `HOIB4-MESWES1` |
+| Time zone | `America/Chicago` |
+| System clock synchronized | `yes` |
+| 根目录 Avail | `3.9T` |
+| 本步骤结果（通过/失败） | 通过 |
 
 任一结果不符合时，停止操作并记录实际结果。
 
@@ -114,15 +115,15 @@ sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker
 
 ### 6.3 安装 Docker
 
-项目负责人必须在交付本手册前，把下面五个变量替换为已经在当前 Rocky Linux 版本验证通过的完整 RPM NEVRA，例如包含包名、
-epoch、版本、release 和架构的精确值。现场人员不得自行选择“最新版本”，任一变量仍为占位符时必须停止操作。
+以下五个 RPM NEVRA 已根据服务器 `HOIB4-MESWES1` 的 Docker 官方软件源查询结果冻结。现场人员必须使用以下精确版本，不得自行改成
+其他版本。
 
 ```bash
-WES_DOCKER_CE_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_DOCKER_CE_CLI_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_CONTAINERD_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_DOCKER_BUILDX_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
-WES_DOCKER_COMPOSE_NEVRA='__PROJECT_OWNER_MUST_REPLACE__'
+WES_DOCKER_CE_NEVRA='docker-ce-3:29.7.2-1.el10.x86_64'
+WES_DOCKER_CE_CLI_NEVRA='docker-ce-cli-1:29.7.2-1.el10.x86_64'
+WES_CONTAINERD_NEVRA='containerd.io-0:2.3.3-1.el10.x86_64'
+WES_DOCKER_BUILDX_NEVRA='docker-buildx-plugin-0:0.36.1-1.el10.x86_64'
+WES_DOCKER_COMPOSE_NEVRA='docker-compose-plugin-0:5.4.0-1.el10.x86_64'
 
 if printf '%s\n' \
     "$WES_DOCKER_CE_NEVRA" \
@@ -164,15 +165,16 @@ sudo docker compose version
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| Docker Engine RPM NEVRA |  |
-| Docker CLI RPM NEVRA |  |
-| containerd RPM NEVRA |  |
-| Buildx RPM NEVRA |  |
-| Compose RPM NEVRA |  |
-| Docker Engine 版本 |  |
-| Docker Compose 版本 |  |
-| Docker 服务状态 |  |
-| 本步骤结果（通过/失败） |  |
+| Docker Engine RPM NEVRA | `docker-ce-3:29.7.2-1.el10.x86_64` |
+| Docker CLI RPM NEVRA | `docker-ce-cli-1:29.7.2-1.el10.x86_64` |
+| containerd RPM NEVRA | `containerd.io-0:2.3.3-1.el10.x86_64` |
+| Buildx RPM NEVRA | `docker-buildx-plugin-0:0.36.1-1.el10.x86_64` |
+| Compose RPM NEVRA | `docker-compose-plugin-0:5.4.0-1.el10.x86_64` |
+| Docker Engine 版本 | `29.7.2` |
+| Docker Compose 版本 | `v5.4.0` |
+| Docker 服务状态 | `active` |
+| Docker 开机启动状态 | `enabled` |
+| 本步骤结果（通过/失败） | 通过 |
 
 ## 7. 第四步：设置 Docker 日志轮转
 
@@ -203,9 +205,10 @@ sudo docker info --format '{{.LoggingDriver}}'
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| Docker 服务状态 |  |
-| LoggingDriver |  |
-| 本步骤结果（通过/失败） |  |
+| Docker 服务状态 | `active` |
+| LoggingDriver | `json-file` |
+| 日志轮转配置 | 单文件 `10m`，保留 `3` 个文件 |
+| 本步骤结果（通过/失败） | 通过 |
 
 ## 8. 第五步：创建 WES 部署目录
 
@@ -220,10 +223,11 @@ ls -ld /srv/wes /srv/wes/app /srv/wes/packages /srv/wes/images
 
 | 记录项 | 现场填写 |
 | --- | --- |
-| `/srv/wes/app` 所有者 |  |
-| `/srv/wes/packages` 所有者 |  |
-| `/srv/wes/images` 所有者 |  |
-| 本步骤结果（通过/失败） |  |
+| `/srv/wes` 所有者及权限 | `root:root`，`755` |
+| `/srv/wes/app` 所有者及权限 | `CANTAISYS:CANTAISYS`，`750` |
+| `/srv/wes/packages` 所有者及权限 | `CANTAISYS:CANTAISYS`，`750` |
+| `/srv/wes/images` 所有者及权限 | `CANTAISYS:CANTAISYS`，`750` |
+| 本步骤结果（通过/失败） | 通过 |
 
 ## 9. 第六步：接收并校验项目交付文件
 
