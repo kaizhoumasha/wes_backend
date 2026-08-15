@@ -656,8 +656,8 @@ Adapter、设备统一接口和明确插件。
 
 **Exit gate:** `migrations/versions/` 只含最终初始基线及其后真实 revision；空库一次 upgrade head 成功；无旧迁移/兼容断言。
 
-**需要单独编写的子计划:** 启动前编写并批准
-`docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset.md`，阶段号为 Phase 11。
+**需要单独编写的子计划:** Phase 11 详细计划已建立为
+`docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset.md`；Phase 10 退出后必须基于当前实测结果重新冻结实施清单并取得批准，才可开始基线重置。
 
 **风险及防止阶段越权的约束:** 禁止在模型未稳定前生成基线；禁止因保留开发数据引入兼容迁移。
 

@@ -106,7 +106,7 @@
 - Modify: `src/app/runtime/orchestration/services/trace/{trace_query_service.py,trace_response_builder.py}`
 - Modify: `src/app/runtime/orchestration/services/query/runtime_query_service.py`
 - Modify: `src/app/workline/{trace_context.py,services/diagnostic_service.py}`
-- Create: `migrations/versions/<generated>_remove_retired_plugin_residuals.py`
+- Create: `migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
@@ -189,7 +189,7 @@
 - Modify: `src/app/runtime/capabilities/material_flow/contracts/ng_reason.py`
 - Modify: `src/app/runtime/orchestration/models/{runtime_hold.py,runtime_hold_api.py}`
 - Modify: `src/app/runtime/orchestration/services/hold/{runtime_hold_query_service.py,runtime_hold_release_service.py}`
-- Modify: `migrations/versions/<generated>_remove_retired_plugin_residuals.py`
+- Modify: `migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
@@ -253,7 +253,7 @@
 - Modify: `src/app/runtime/orchestration/runtime_intent_log.py`
 - Modify: `src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py`
 - Modify: `src/app/runtime/orchestration/services/intent/system_capability_intent_service.py`
-- Modify: `migrations/versions/<generated>_remove_retired_plugin_residuals.py`
+- Modify: `migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
