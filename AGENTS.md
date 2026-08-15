@@ -386,6 +386,46 @@ If a change intentionally touches integration / e2e / resilience / load / mock b
 - Critical/Important 意见全部清零后，主 Agent 必须对最终 `origin/develop...HEAD`（或计划冻结的 implementation base）执行一次完整 QUALITY、selected HEAVY 和 GitNexus 变更检测；此最终证据生成后若代码再次变化，必须重新生成。
 - 高风险计划可以要求更强的最终门禁，但不得把 HEAVY 执行下放给 reviewer subagent，也不得让多个 reviewer 对同一快照重复执行相同重测试。
 
+### 跨任务验证证据交接
+
+实施任务进入 review、QA 或 ship 前，实施 owner 必须提供可复用的验证交接，不得让下游任务从零猜测或机械重跑：
+
+- 记录 repository、base ref、HEAD 或 staged tree、`git status --short`、变更分类以及是否存在并发修改。
+- 记录 selector scope、精确 manifest、生产代码/测试/selector/migration 是否变化、已执行命令、结果、时间和 JUnit/报告路径。
+- 下游任务先比较快照、manifest 与变更分类；完全相同的证据直接复用，只重跑已失效的部分。
+- selector 实现或配置变化时，先重跑 selector 合同与选择结果；如果生产代码、HEAVY 测试资产和最终 manifest 均未变化，
+  不得仅因 selector 重新计算而重复执行同一批 HEAVY。
+- 人类阅读文档或报告变化不得使生产代码的 QUALITY、HEAVY 或迁移证据失效。
+- QA 启动前应已有明确、干净的实施快照。QA 不得默认承担遗留变更整理、实施提交或原子提交拆分；发现脏工作树时先报告
+  其所有权和对快照的影响，只有用户明确授权后才处理。
+
+### 后端 QA 路由
+
+QA 必须按变更面选择最小有效路径，不得把通用页面 QA 机械套用到纯后端变更：
+
+| 变更面 | 必要 QA | 默认不做 |
+| --- | --- | --- |
+| 前端页面、交互或视觉合同 | 浏览器功能、视觉、控制台与截图证据 | — |
+| API 路由、认证、请求或响应合同 | 受影响端点 HTTP 冒烟、API/合同测试 | 无视觉合同的页面评分与批量截图 |
+| Service、Repository、Runtime、迁移或后台任务 | 聚焦 FAST/合同、selected HEAVY、迁移或 worker 闭环 | `/health`、预期 404、页面视觉与可访问性评分 |
+| 文档、项目规则、测试治理、开发工具 | 与变更相称的文档、脚本或治理验证 | 产品 QA、浏览器 QA、真实 HEAVY |
+
+- `/health` 和 `/ready` 只证明存活/就绪合同；仅当相关路由、启动配置或部署接线发生变化时才作为主要 QA 目标。
+- 不得为预期的 `/`、`/docs`、`/openapi.json` 404 生成重复截图或据此计算后端健康分。
+- QA 先消费上游验证交接；只有证据缺失、失效或 QA 发现新问题时才运行对应门禁，不能以“fresh QA”名义重复同一快照的
+  QUALITY、HEAVY 或迁移。
+
+### 重复审计的增量模式
+
+用户再次询问已审计主题时，默认执行增量审计，不从头重复完整代码库扫描：
+
+1. 读取上一轮结论、证据快照和未决项。
+2. 只核对新增文档、提交、合同或当前 checkout 与上一快照的差异。
+3. 如果结论前提未变化，直接报告“结论不变”、本轮增量证据和仍待处理项。
+4. 只有 authoritative contract、base/head、实现路径或关键证据发生变化，才升级为完整重审。
+
+只读审计不得为了形式完整运行测试、QUALITY、HEAVY、迁移、服务或部署，也不得重复生成上一轮已经成立的长篇证据矩阵。
+
 纯文档提交由 `pre-commit` 自动执行 `git diff --cached --check`，不运行 FAST、selector 合同或 HEAVY；Markdown lint、链接、引用、归档路径和残留扫描由具体文档任务按变更面显式执行。只要暂存区包含生产代码、测试、脚本、迁移或 TOML/YAML/JSON/CSV 等机器可读配置，就回退完整 QUALITY。
 
 ### HEAVY Selector Mapping Governance
@@ -420,6 +460,10 @@ use Chinese to Write document and Communication and Commit Comment
 - **强制影响分析**：在修改任何函数、类或方法前，必须运行 `gitnexus_impact({target: "symbolName", direction: "upstream"})`。
 - **风险确认**：如果影响分析返回 HIGH 或 CRITICAL 风险，必须在操作前向用户汇报并确认。
 - **提交前检测**：在 Commit 前运行 `gitnexus_detect_changes()`，验证变更范围是否符合预期。
+- **只读审计降级**：只读审计发现索引 stale 时，不默认刷新，也不因刷新等待阻塞结论；以当前源码、合同、`git diff`、测试和
+  OpenAPI 为主证据，并将旧索引标记为补充证据。下方生成区块中的通用刷新提示主要适用于写操作前确需当前调用图的场景。
+- **失败快速回退**：索引刷新因权限、registry、worktree 或工具错误失败一次后，立即回退 `rg`、精确文件读取和 Git diff；
+  不得重复等待或让只读任务修改 `AGENTS.md`、`CLAUDE.md` 等生成区块。
 
 ### RTK (Rust Token Killer) — Token 优化
 本项目环境通过 RTK 代理执行 Shell 命令以节省 60-90% 的 Token。
