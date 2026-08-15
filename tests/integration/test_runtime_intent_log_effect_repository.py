@@ -45,9 +45,9 @@ def _claim() -> dict[str, object]:
         "capability_key": "runtime.session_hold",
         "capability_contract_version": "v1",
         "operation_identity": "hold-1",
-        "creator_authority": "WORKLINE_PLUGIN",
-        "authorization_policy": "PLUGIN_DECLARED_CAPABILITY",
-        "binding_snapshot_json": {"binding_id": 9, "binding_version": 1},
+        "creator_authority": "RUNTIME_DOMAIN_SERVICE",
+        "authorization_policy": "DOMAIN_CAPABILITY_ALLOWLIST",
+        "binding_snapshot_json": {},
         "provider_snapshot_json": {"provider_code": "RUNTIME", "profile": "runtime"},
         "precondition_json": {"expected": 1},
         "fact_version": "fact:1",
@@ -361,9 +361,9 @@ async def test_production_repository_claim_is_rolled_back_with_outer_transaction
     assert row.target_domain == "runtime"
     assert row.payload_hash == "a" * 64
     assert row.completion_mode == "LOCAL_TRANSACTIONAL"
-    assert row.creator_authority == "WORKLINE_PLUGIN"
-    assert row.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
-    assert row.binding_snapshot_json == {"binding_id": 9, "binding_version": 1}
+    assert row.creator_authority == "RUNTIME_DOMAIN_SERVICE"
+    assert row.authorization_policy == "DOMAIN_CAPABILITY_ALLOWLIST"
+    assert row.binding_snapshot_json == {}
     assert row.provider_snapshot_json == {"provider_code": "RUNTIME", "profile": "runtime"}
     await db_session.rollback()
 

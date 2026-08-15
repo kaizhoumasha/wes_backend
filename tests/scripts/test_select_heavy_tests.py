@@ -1280,14 +1280,25 @@ def test_repository_mapping_selects_audited_runtime_owners(
     assert select_heavy_tests([changed_path], config) == expected
 
 
-def test_runtime_intent_log_mapping_is_exact_schema_retirement_owner() -> None:
-    changed_path = "src/app/runtime/orchestration/runtime_intent_log.py"
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/runtime/orchestration/runtime_intent_log.py",
+        "src/app/runtime/orchestration/models/diagnostic.py",
+        "src/app/runtime/orchestration/models/runtime_hold.py",
+    ],
+)
+def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_content(changed_path: str) -> None:
     expected = ("tests/integration/test_workline_plugin_schema_retirement.py",)
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
     assert [mapping.heavy_tests for mapping in matching_mappings] == [expected]
-    assert select_heavy_tests([changed_path], config) == list(expected)
+    assert (
+        matching_mappings[0].reviewed_content_sha256
+        == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+    )
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == list(expected)
 
 
 @pytest.mark.parametrize(

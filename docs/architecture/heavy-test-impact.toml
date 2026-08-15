@@ -46,6 +46,7 @@ heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/runtime_intent_log.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+reviewed_content_sha256 = "07c95a0c5b9e352440c3ee7ac2f0bcb0e75c6f9b310747d68655a9f996ac176a"
 
 # 旧命令请求/响应 Schema 退役后，由 DeviceCommand 生产闭环承接。
 [[mapping]]
@@ -471,6 +472,7 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/diagnostic.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+reviewed_content_sha256 = "3e93ce9035922ef12a097a02ff7cf7bd0539c2fa16f20cfcd0609f4e3f263e32"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/{models/runtime_hold_api.py,services/trace/__init__.py,services/trace/trace_response_builder.py}"
@@ -479,6 +481,7 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/runtime_hold.py"
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+reviewed_content_sha256 = "cdbb295ad0d16b8176590e377dba0e343c5a579a8e011ea50958b4480441e5d0"
 
 # Runtime 诊断镜像与 snapshot 输出只收敛退役字段，由 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
