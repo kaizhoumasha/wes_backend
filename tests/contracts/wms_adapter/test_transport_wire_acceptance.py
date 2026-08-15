@@ -277,6 +277,27 @@ def test_target_placed_rejects_a_rack_position() -> None:
 
 
 @pytest.mark.parametrize(
+    ("kind", "count", "message"),
+    [
+        ("BIN_MOVE", 5, "BIN_MOVE results must contain 1 to 4 members"),
+        ("BIN_EXCHANGE", 3, "BIN_EXCHANGE results must contain 2 or 4 members"),
+    ],
+)
+def test_bin_result_callback_rejects_noncanonical_member_count(kind: str, count: int, message: str) -> None:
+    results = [
+        {
+            "container_id": f"container-{index}",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "HANDOFF_POSITION", "location_code": f"ROLLER_{index}"},
+        }
+        for index in range(count)
+    ]
+
+    with pytest.raises(TransportContractError, match=message):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, _result_data(kind=kind, results=results)))
+
+
+@pytest.mark.parametrize(
     ("data", "message"),
     [
         (_result_data(kind="UNKNOWN"), "invalid transport kind"),

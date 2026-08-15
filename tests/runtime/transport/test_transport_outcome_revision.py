@@ -228,7 +228,10 @@ async def test_late_lower_revision_still_validates_frozen_identity(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-late-invalid", RackBinSlot("rack-late-invalid", RackFace.A, "1"), HandoffPosition("OUT")),),
+        (
+            BinMove("bin-late-invalid", RackBinSlot("rack-late-invalid", RackFace.A, "1"), HandoffPosition("OUT")),
+            BinMove("bin-late-peer", RackBinSlot("rack-late-invalid", RackFace.A, "2"), HandoffPosition("OUT")),
+        ),
     )
     latest = {
         "transport_task_id": handle.transport_task_id,
@@ -239,7 +242,12 @@ async def test_late_lower_revision_still_validates_frozen_identity(
                 "container_id": "bin-late-invalid",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
-            }
+            },
+            {
+                "container_id": "bin-late-peer",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
+            },
         ],
     }
     await record_valid_callback(
@@ -256,7 +264,7 @@ async def test_late_lower_revision_still_validates_frozen_identity(
     if invalid_identity == "kind":
         older["kind"] = "BIN_EXCHANGE"
     else:
-        older["results"] = [{**latest["results"][0], "container_id": "another-bin"}]
+        older["results"] = [{**latest["results"][0], "container_id": "another-bin"}, latest["results"][1]]
     await record_valid_callback(
         outcome_service,
         operation_id=f"revision-1-invalid-{invalid_identity}",

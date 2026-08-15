@@ -117,7 +117,7 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
         transport_task_id=handle.transport_task_id,
         operation=RESULT_OPERATION,
         timestamp=1,
-        payload={**payload, "kind": "BIN_EXCHANGE"},
+        payload={**payload, "outcome_revision": 2},
     )
 
     assert (first["code"], duplicate["code"], changed["code"]) == ("RECEIVED", "DUPLICATE", "CONFLICT")

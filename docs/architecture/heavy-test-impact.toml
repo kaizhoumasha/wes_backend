@@ -770,6 +770,7 @@ heavy_tests = [
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
     "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
 ]
 
 # submit snapshot 同时经过持久化闭环与真实 worker/HTTP 生产接线。
@@ -815,7 +816,10 @@ heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py"
-heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
 
 [[mapping]]
 source_glob = "migrations/env.py"

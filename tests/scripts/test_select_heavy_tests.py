@@ -61,6 +61,7 @@ WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_confor
 WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/mock/test_wms_provider_conformance_simulator.py"
 TRANSPORT_DARK_LOOP_HEAVY_TEST = "tests/integration/transport/test_dark_transport_loop.py"
 TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evidence_transaction.py"
+TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST = "tests/integration/wms_adapter/test_transport_callback_receipts.py"
 TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
@@ -726,6 +727,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py",
             [TRANSPORT_SCHEMA_HEAVY_TEST],
         ),
+        (
+            "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py",
+            [TRANSPORT_SCHEMA_HEAVY_TEST, TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST],
+        ),
         ("src/app/callback/services/__init__.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
         ("src/app/callback/services/wms_inbound_auth.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
         ("src/app/callback/v1/callback.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
@@ -801,6 +806,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
             ],
         ),
         (
@@ -810,6 +816,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
             ],
         ),
         (
@@ -819,6 +826,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
             ],
         ),
         (
@@ -828,6 +836,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
             ],
         ),
         (

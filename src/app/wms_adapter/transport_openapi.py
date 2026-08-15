@@ -134,19 +134,24 @@ def _member_result_schema(
     }
 
 
-def _bin_result_data_schema(result_schema: dict[str, object]) -> dict[str, object]:
+def _bin_result_data_schema(
+    result_schema: dict[str, object],
+    *,
+    kind: str,
+    results_schema: dict[str, object],
+) -> dict[str, object]:
     return _closed_object(
         ["transport_task_id", "kind", "outcome_revision", "results"],
         {
             "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
-            "kind": {"type": "string", "enum": ["BIN_MOVE", "BIN_EXCHANGE"]},
+            "kind": _literal(kind),
             "outcome_revision": {
                 "type": "integer",
                 "format": "int64",
                 "minimum": 1,
                 "maximum": SIGNED_INT64_MAX,
             },
-            "results": {"type": "array", "minItems": 1, "items": result_schema},
+            "results": {**results_schema, "items": result_schema},
         },
     )
 
@@ -179,15 +184,28 @@ def _rack_result_data_schema() -> dict[str, object]:
 
 
 _RACK_RESULT_DATA_VARIANTS = cast("list[dict[str, object]]", _rack_result_data_schema()["oneOf"])
+_BIN_MEMBER_RESULT_SCHEMA = _member_result_schema(
+    id_field="container_id",
+    final_position=_BIN_POSITION_SCHEMA,
+    arrival_face=False,
+)
 _RESULT_DATA_SCHEMA = {
     "oneOf": [
         *_RACK_RESULT_DATA_VARIANTS,
         _bin_result_data_schema(
-            _member_result_schema(
-                id_field="container_id",
-                final_position=_BIN_POSITION_SCHEMA,
-                arrival_face=False,
-            ),
+            _BIN_MEMBER_RESULT_SCHEMA,
+            kind="BIN_MOVE",
+            results_schema={"type": "array", "minItems": 1, "maxItems": 4},
+        ),
+        _bin_result_data_schema(
+            _BIN_MEMBER_RESULT_SCHEMA,
+            kind="BIN_EXCHANGE",
+            results_schema={
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 4,
+                "not": {"minItems": 3, "maxItems": 3},
+            },
         ),
     ]
 }

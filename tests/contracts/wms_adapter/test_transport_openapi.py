@@ -42,6 +42,31 @@ def test_transport_openapi_exposes_only_v02_callback_identity_shapes() -> None:
     assert '"BUSY"' not in serialized
 
 
+def test_transport_openapi_closes_bin_result_member_counts_by_kind() -> None:
+    document = build_transport_openapi_document()
+    request_schema = document["paths"]["/api/v1/wms/events"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    bin_result_variants = {
+        schema["properties"]["kind"]["enum"][0]: schema["properties"]["results"]
+        for schema in _walk_schemas(request_schema)
+        if schema.get("type") == "object"
+        and schema.get("properties", {}).get("kind", {}).get("enum") in (["BIN_MOVE"], ["BIN_EXCHANGE"])
+        and "results" in schema["properties"]
+    }
+
+    assert bin_result_variants == {
+        "BIN_MOVE": {"type": "array", "minItems": 1, "maxItems": 4, "items": bin_result_variants["BIN_MOVE"]["items"]},
+        "BIN_EXCHANGE": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": bin_result_variants["BIN_EXCHANGE"]["items"],
+            "not": {"minItems": 3, "maxItems": 3},
+        },
+    }
+
+
 def test_transport_openapi_allows_conflict_without_an_associated_task() -> None:
     document = build_transport_openapi_document()
     data_schema = document["paths"]["/api/v1/wms/events"]["post"]["responses"]["409"]["content"]["application/json"][

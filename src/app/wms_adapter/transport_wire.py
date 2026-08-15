@@ -103,6 +103,10 @@ def _validate_result_data(value: object) -> dict[str, Any]:
     results = data["results"]
     if not isinstance(results, list) or not results:
         raise TransportContractError("results must be a non-empty list")
+    if kind == "BIN_MOVE" and len(results) > 4:
+        raise TransportContractError("BIN_MOVE results must contain 1 to 4 members")
+    if kind == "BIN_EXCHANGE" and len(results) not in {2, 4}:
+        raise TransportContractError("BIN_EXCHANGE results must contain 2 or 4 members")
     normalized: list[dict[str, Any]] = []
     container_ids: set[str] = set()
     for raw in results:
