@@ -40,7 +40,7 @@ P9 WES Backend 是面向 WMS/WES 的 FastAPI + SQLModel + SQLAlchemy 2.0 后端�
 | 测试 | `uv run pytest tests/` |
 | Ruff | `uv run ruff format . && uv run ruff check .` |
 
-测试文件新增、移动、拆分或删除时，必须遵循 `AGENTS.md` 的 `Test Suite Governance`；不要在 `tests/` 根目录新增测试，不要把重测试目录混入默认快速回归集，提交前运行测试拓扑 guardrail。
+测试文件新增、移动、拆分或删除时，必须遵循 `AGENTS.md` 的“测试所有权与 HEAVY”；不要在 `tests/` 根目录新增测试，不要把重测试目录混入默认快速回归集，提交前运行测试拓扑 guardrail。
 
 ## Workspace Rules
 

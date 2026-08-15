@@ -8,7 +8,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _run_pre_commit_hook(tmp_path: Path, staged_path: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+def _run_pre_commit_hook(
+    tmp_path: Path,
+    staged_files: str | dict[str, str],
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     git_executable = shutil.which("git")
     if git_executable is None:
         raise RuntimeError("git executable not found")
@@ -18,10 +21,12 @@ def _run_pre_commit_hook(tmp_path: Path, staged_path: str) -> tuple[subprocess.C
     scripts.mkdir(parents=True)
     subprocess.run([git_executable, "init", "-q"], cwd=repository, check=True)
 
-    target = repository / staged_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("content\n", encoding="utf-8")
-    subprocess.run([git_executable, "add", staged_path], cwd=repository, check=True)
+    files = {staged_files: "content\n"} if isinstance(staged_files, str) else staged_files
+    for staged_path, content in files.items():
+        target = repository / staged_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    subprocess.run([git_executable, "add", *files], cwd=repository, check=True)
 
     gate_log = repository / "gate.log"
     quality_gate = scripts / "git-quality-gate.sh"
@@ -40,6 +45,41 @@ def _run_pre_commit_hook(tmp_path: Path, staged_path: str) -> tuple[subprocess.C
     )
     lines = gate_log.read_text(encoding="utf-8").splitlines() if gate_log.exists() else []
     return result, lines
+
+
+def _run_release_metadata_gate(
+    tmp_path: Path,
+    *,
+    version: str,
+    readme_version: str,
+    changelog_version: str,
+) -> subprocess.CompletedProcess[str]:
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise RuntimeError("git executable not found")
+
+    repository = tmp_path / "release-repository"
+    scripts = repository / "scripts"
+    scripts.mkdir(parents=True)
+    subprocess.run([git_executable, "init", "-q"], cwd=repository, check=True)
+    shutil.copy(REPO_ROOT / "scripts" / "git-quality-gate.sh", scripts / "git-quality-gate.sh")
+
+    release_files = {
+        "VERSION": f"{version}\n",
+        "README.md": f"**Version**: {readme_version}\n",
+        "CHANGELOG.md": f"## [{changelog_version}] - 2026-08-16\n",
+    }
+    for path, content in release_files.items():
+        (repository / path).write_text(content, encoding="utf-8")
+    subprocess.run([git_executable, "add", *release_files], cwd=repository, check=True)
+
+    return subprocess.run(
+        ["/bin/bash", "scripts/git-quality-gate.sh", "--check", "release-metadata"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_test_topology_check_runs_core_secondary_package_ownership_guardrails() -> None:
@@ -116,6 +156,60 @@ def test_pre_commit_keeps_quality_gate_for_machine_readable_contract(tmp_path: P
 
     assert result.returncode == 0, result.stderr
     assert gate_log == ["quality --profile quality"]
+
+
+def test_pre_commit_uses_release_metadata_gate_for_version_and_human_documents(tmp_path: Path) -> None:
+    result, gate_log = _run_pre_commit_hook(
+        tmp_path,
+        {
+            "VERSION": "1.2.3.4\n",
+            "README.md": "**Version**: 1.2.3.4\n",
+            "CHANGELOG.md": "## [1.2.3.4] - 2026-08-16\n",
+            "TODOS.md": "# TODO\n",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Running release-metadata gate" in result.stdout
+    assert gate_log == ["quality --check release-metadata"]
+
+
+def test_pre_commit_keeps_quality_gate_when_release_includes_machine_readable_config(tmp_path: Path) -> None:
+    result, gate_log = _run_pre_commit_hook(
+        tmp_path,
+        {
+            "VERSION": "1.2.3.4\n",
+            "README.md": "**Version**: 1.2.3.4\n",
+            "CHANGELOG.md": "## [1.2.3.4] - 2026-08-16\n",
+            "pyproject.toml": '[project]\nname = "example"\n',
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert gate_log == ["quality --profile quality"]
+
+
+def test_release_metadata_gate_accepts_consistent_four_part_version(tmp_path: Path) -> None:
+    result = _run_release_metadata_gate(
+        tmp_path,
+        version="1.2.3.4",
+        readme_version="1.2.3.4",
+        changelog_version="1.2.3.4",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_release_metadata_gate_rejects_inconsistent_readme_version(tmp_path: Path) -> None:
+    result = _run_release_metadata_gate(
+        tmp_path,
+        version="1.2.3.4",
+        readme_version="1.2.3.3",
+        changelog_version="1.2.3.4",
+    )
+
+    assert result.returncode == 1
+    assert "README.md does not declare VERSION 1.2.3.4" in result.stderr
 
 
 def test_retired_root_jenkinsfile_is_absent() -> None:

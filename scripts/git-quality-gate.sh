@@ -17,6 +17,8 @@ Profiles:
   ci-smoke  Run the quality profile plus API signature smoke tests.
 
 Checks:
+  release-metadata
+            Validate staged VERSION, README, CHANGELOG, and diff consistency without running application tests.
   format    Run only Ruff format check.
   lint      Run only Ruff lint.
   security  Run only Bandit security scan.
@@ -117,6 +119,32 @@ run_tool() {
 run_format_check() {
     log_step "quality" "ruff format --check ."
     run_tool ruff format --check .
+}
+
+run_release_metadata_check() {
+    log_step "release-metadata" "validate staged VERSION, README, CHANGELOG, and diff"
+    git diff --cached --check
+
+    local version
+    version="$(git show :VERSION 2>/dev/null || true)"
+    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "Staged VERSION must use four numeric components, got: ${version:-<missing>}" >&2
+        return 1
+    fi
+
+    local readme
+    readme="$(git show :README.md 2>/dev/null || true)"
+    if [[ "$readme" != *"**Version**: $version"* ]]; then
+        echo "Staged README.md does not declare VERSION $version." >&2
+        return 1
+    fi
+
+    local changelog
+    changelog="$(git show :CHANGELOG.md 2>/dev/null || true)"
+    if [[ "$changelog" != *"## [$version]"* ]]; then
+        echo "Staged CHANGELOG.md does not contain a $version release heading." >&2
+        return 1
+    fi
 }
 
 run_lint_check() {
@@ -233,6 +261,9 @@ run_ci_smoke_profile() {
 
 if [[ -n "$CHECK" ]]; then
     case "$CHECK" in
+        release-metadata)
+            run_release_metadata_check
+            ;;
         format)
             run_format_check
             ;;

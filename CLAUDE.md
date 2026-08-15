@@ -108,7 +108,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - 把计划文档写成可复制执行的代码脚本
 - 用实现细节替代架构决策和验收标准
 
-允许少量简短伪代码或极短示例，但只用于说明约定。非纯文档实现的细节应在编码阶段通过 TDD、diff、测试和提交体现；纯文档变更遵循 `AGENTS.md` 的 Documentation-only Changes 规则，不走 TDD、不编写测试代码。
+允许少量简短伪代码或极短示例，但只用于说明约定。非纯文档实现的细节应在编码阶段通过 TDD、diff、测试和提交体现；纯文档变更遵循 `AGENTS.md` 的“变更分类与 TDD 边界”，不走 TDD、不编写测试代码。
 
 ---
 
@@ -153,7 +153,7 @@ uv run ruff format . && uv run ruff check . # 格式化和检查
 uv run pytest --cov=src       # 测试和覆盖率
 ```
 
-测试文件新增、移动、拆分或删除时，必须遵循 `AGENTS.md` 的 `Test Suite Governance`；不要在 `tests/` 根目录新增测试，不要把重测试目录混入默认快速回归集，提交前运行测试拓扑 guardrail。
+测试文件新增、移动、拆分或删除时，必须遵循 `AGENTS.md` 的“测试所有权与 HEAVY”；不要在 `tests/` 根目录新增测试，不要把重测试目录混入默认快速回归集，提交前运行测试拓扑 guardrail。
 
 ### Alembic 迁移规则
 
@@ -505,24 +505,6 @@ This project is indexed by GitNexus as **wes_backend** (37845 symbols, 65253 rel
 
 <!-- gitnexus:end -->
 
-## Skill routing
-
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
-
-Key routing rules:
-- Product ideas/brainstorming → invoke /office-hours
-- Strategy/scope → invoke /plan-ceo-review
-- Architecture → invoke /plan-eng-review
-- Design system/plan review → invoke /design-consultation or /plan-design-review
-- Full review pipeline → invoke /autoplan
-- Bugs/errors → invoke /investigate
-- QA/testing site behavior → invoke /qa or /qa-only
-- Code review/diff check → invoke /review
-- Visual polish → invoke /design-review
-- Ship/deploy/PR → invoke /ship or /land-and-deploy
-- Save progress → invoke /context-save
-- Resume context → invoke /context-restore
-- Author a backlog-ready spec/issue → invoke /spec
 
 ## GBrain Configuration (configured by /setup-gbrain)
 - Mode: local-stdio
@@ -597,7 +579,7 @@ Key routing rules:
 - QA/testing site behavior → invoke /qa or /qa-only
 - Code review/diff check → invoke /review
 - Visual polish → invoke /design-review
-- Ship/deploy/PR → invoke /ship or /land-and-deploy
+- Ship/PR → invoke /ship；仅检测到可执行部署 workflow、目标环境和验证地址时 invoke /land-and-deploy，否则按 AGENTS.md 执行 land-only
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 - Author a backlog-ready spec/issue → invoke /spec
