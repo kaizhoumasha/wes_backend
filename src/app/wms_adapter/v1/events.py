@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -11,10 +11,13 @@ from starlette.background import BackgroundTask
 
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
-from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
+from src.app.wms_adapter.transport_event_handler import (
+    MAX_TRANSPORT_EVENT_BODY_BYTES,
+    is_wire_operation,
+    is_wire_operation_id,
+)
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA, TRANSPORT_EVENT_RESPONSES
 from src.core.task_queue_gateway import task_queue_gateway
-from src.core.uuid7 import is_uuid7
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -50,14 +53,14 @@ def _unavailable_ack(raw_body: bytes) -> JSONResponse | Response:
         if error.duplicate_key:
             return Response(status_code=400)
         operation_id = error.operation_id
-        if not _is_wire_operation_id(operation_id) or not _is_wire_operation(error.operation):
+        if not is_wire_operation_id(operation_id) or not is_wire_operation(error.operation):
             return Response(status_code=400)
         return _unavailable_response(operation_id)
     if not isinstance(raw_envelope, dict):
         return Response(status_code=400)
     envelope = cast("dict[str, Any]", raw_envelope)
     operation_id = envelope.get("operation_id")
-    if not _is_wire_operation_id(operation_id) or not _is_wire_operation(envelope.get("operation")):
+    if not is_wire_operation_id(operation_id) or not is_wire_operation(envelope.get("operation")):
         return Response(status_code=400)
     return _unavailable_response(operation_id)
 
@@ -72,14 +75,6 @@ def _unavailable_response(operation_id: str) -> JSONResponse:
             "data": {},
         },
     )
-
-
-def _is_wire_operation_id(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and value == value.lower() and is_uuid7(value)
-
-
-def _is_wire_operation(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and bool(value.strip()) and len(value) <= 80
 
 
 def _valid_transport_request_headers(request: Request) -> bool:

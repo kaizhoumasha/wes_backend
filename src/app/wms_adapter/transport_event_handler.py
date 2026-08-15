@@ -108,7 +108,7 @@ def _decode_raw_envelope(
             return None, False, TransportEventResponse(400, {})
         operation_id = error.operation_id
         operation = error.operation
-        if not _is_wire_operation_id(operation_id) or not _is_wire_operation(operation):
+        if not is_wire_operation_id(operation_id) or not is_wire_operation(operation):
             return None, False, TransportEventResponse(400, {})
         return (
             {
@@ -124,16 +124,16 @@ def _decode_raw_envelope(
     envelope = cast("dict[str, Any]", value)
     operation_id = envelope.get("operation_id")
     operation = envelope.get("operation")
-    if not _is_wire_operation_id(operation_id) or not _is_wire_operation(operation):
+    if not is_wire_operation_id(operation_id) or not is_wire_operation(operation):
         return None, False, TransportEventResponse(400, {})
     return envelope, False, None
 
 
-def _is_wire_operation_id(value: object) -> TypeGuard[str]:
+def is_wire_operation_id(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and value == value.lower() and is_uuid7(value)
 
 
-def _is_wire_operation(value: object) -> TypeGuard[str]:
+def is_wire_operation(value: object) -> TypeGuard[str]:
     if not isinstance(value, str) or not value.strip() or len(value) > 80:
         return False
     try:
@@ -143,4 +143,10 @@ def _is_wire_operation(value: object) -> TypeGuard[str]:
     return True
 
 
-__all__ = ["MAX_TRANSPORT_EVENT_BODY_BYTES", "TransportEventHandler", "TransportEventResponse"]
+__all__ = [
+    "MAX_TRANSPORT_EVENT_BODY_BYTES",
+    "TransportEventHandler",
+    "TransportEventResponse",
+    "is_wire_operation",
+    "is_wire_operation_id",
+]
