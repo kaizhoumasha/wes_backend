@@ -134,7 +134,13 @@ def _is_wire_operation_id(value: object) -> TypeGuard[str]:
 
 
 def _is_wire_operation(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and bool(value.strip()) and len(value) <= 80
+    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 __all__ = ["MAX_TRANSPORT_EVENT_BODY_BYTES", "TransportEventHandler", "TransportEventResponse"]

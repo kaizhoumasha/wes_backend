@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select
 from src.app.transport.models import TransportCallbackReceipt, TransportEvidence
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.app.wms_adapter.transport_event_handler import TransportEventHandler
 from src.core.uuid7 import new_uuid7
 
 if TYPE_CHECKING:
@@ -33,6 +34,25 @@ class _FailingEvidenceInsertRepository(TransportRepository):
     async def add_evidence(self, db: AsyncSession, evidence: TransportEvidence) -> None:
         await super().add_evidence(db, evidence)
         raise RuntimeError("forced evidence insert failure")
+
+
+async def test_non_utf8_operation_is_rejected_before_postgresql_receipt(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = TransportService(integration_session_factory, TransportRepository(), _UnusedProvider())
+    handler = TransportEventHandler(service)
+    async with integration_session_factory() as db:
+        receipt_count_before = await db.scalar(select(func.count()).select_from(TransportCallbackReceipt))
+
+    response = await handler.handle(
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472","operation":"\\ud800","timestamp":1,"data":{}}'
+    )
+
+    assert response.http_status == 400
+    assert response.body == {}
+    async with integration_session_factory() as db:
+        receipt_count_after = await db.scalar(select(func.count()).select_from(TransportCallbackReceipt))
+    assert receipt_count_after == receipt_count_before
 
 
 async def test_concurrent_invalid_callback_replays_share_one_postgresql_receipt(
