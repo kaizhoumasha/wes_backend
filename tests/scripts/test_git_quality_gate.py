@@ -1,10 +1,45 @@
 """质量门禁脚本与 Jenkins 的强制测试所有权接线。"""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_pre_commit_hook(tmp_path: Path, staged_path: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise RuntimeError("git executable not found")
+
+    repository = tmp_path / "repository"
+    scripts = repository / "scripts"
+    scripts.mkdir(parents=True)
+    subprocess.run([git_executable, "init", "-q"], cwd=repository, check=True)
+
+    target = repository / staged_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("content\n", encoding="utf-8")
+    subprocess.run([git_executable, "add", staged_path], cwd=repository, check=True)
+
+    gate_log = repository / "gate.log"
+    quality_gate = scripts / "git-quality-gate.sh"
+    quality_gate.write_text('#!/bin/sh\nprintf "quality %s\\n" "$*" >> "$GATE_LOG"\n', encoding="utf-8")
+    quality_gate.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment["GATE_LOG"] = str(gate_log)
+    result = subprocess.run(
+        ["/bin/bash", str(REPO_ROOT / ".githooks" / "pre-commit")],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    lines = gate_log.read_text(encoding="utf-8").splitlines() if gate_log.exists() else []
+    return result, lines
 
 
 def test_test_topology_check_runs_core_secondary_package_ownership_guardrails() -> None:
@@ -66,6 +101,21 @@ def test_ci_architecture_check_disables_uv_sync_for_nested_guardrail(tmp_path: P
 
     assert result.returncode == 0, result.stderr
     assert uv_no_sync_log.read_text(encoding="utf-8").strip() == "1"
+
+
+def test_pre_commit_uses_docs_gate_for_human_readable_document(tmp_path: Path) -> None:
+    result, gate_log = _run_pre_commit_hook(tmp_path, "docs/plan.md")
+
+    assert result.returncode == 0, result.stderr
+    assert "Running documentation-only gate" in result.stdout
+    assert gate_log == []
+
+
+def test_pre_commit_keeps_quality_gate_for_machine_readable_contract(tmp_path: Path) -> None:
+    result, gate_log = _run_pre_commit_hook(tmp_path, "docs/architecture/contract.toml")
+
+    assert result.returncode == 0, result.stderr
+    assert gate_log == ["quality --profile quality"]
 
 
 def test_retired_root_jenkinsfile_is_absent() -> None:

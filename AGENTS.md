@@ -349,7 +349,25 @@ uv run pytest --collect-only -q -o addopts='' | tail -5
 ./scripts/git-quality-gate.sh --profile quality
 ```
 
+正常提交时，最后一条完整 QUALITY 由仓库 `pre-commit` hook 执行并作为本地提交证据；同一 staged 快照不得在提交前手工运行后又立即由 hook 重复运行。仅在不提交或诊断 hook 时手工执行完整 profile。
+
 If a change intentionally touches integration / e2e / resilience / load / mock behavior, explicitly run the affected heavy-test directory and mention it in the PR. Do not rely on default pytest collection for those suites.
+
+### 代码评审与验证职责
+
+代码评审 subagent 负责只读核验计划、diff、架构边界、测试所有权和既有验证证据，不负责重复执行重测试。
+
+- reviewer subagent 不得启动 Docker、PostgreSQL、Redis、Celery，不得执行 HEAVY、部署、迁移或其它会改变外部状态的验证；需要补充验证时，应把缺失证据或证据过期明确报告给主 Agent。
+- 主 Agent / 实施 Agent 是测试执行 owner，负责运行直接受影响的 FAST/合同测试、staged selector 选中的 HEAVY，以及评审收敛后的完整分支门禁。
+- 发起评审时必须提供精确 review base/head、`git status --short`、评审范围、selector scope/manifest、已执行命令、结果和 JUnit 路径；存在 staged、unstaged 或 untracked 差异时必须显式列出，不得只用 `HEAD_SHA` 冒充当前工作区快照。
+- 验证证据必须记录 repository、base/head 或 staged tree、selector manifest、命令、结果和报告路径。完全相同的快照与 manifest 复用原证据；不得先对等价 unstaged 快照执行完整 selected HEAVY，再为 staged 标签重复执行同一批测试。
+- 证据按变更面失效：人类阅读文档只使文档核验失效；测试或 selector 配置只使对应测试/selector 证据失效；生产代码使直接 FAST/合同与受影响 HEAVY 失效；migration 使临时数据库 HEAVY 失效；review base/head 变化使完整 diff 评审失效。失效证据标记为 `STALE`，不得写成当前通过。
+- 收到评审意见后，先按 TDD 运行直接受影响测试；需要提交修复时，对该修复的精确 staged diff 运行 selector、选中的 HEAVY 和 GitNexus detect changes。中间评审轮次不重复运行完整分支 HEAVY，也不重复执行同一 staged 快照已通过的门禁。
+- 多轮评审采用“首轮 fresh reviewer 完整 diff → 原 reviewer 定向 closure check → 最终 fresh reviewer 完整 diff”。最终 reviewer 仍发现新问题时重新进入该序列；停止条件不降低，但中间修复不反复派发完整重审。
+- Critical/Important 意见全部清零后，主 Agent 必须对最终 `origin/develop...HEAD`（或计划冻结的 implementation base）执行一次完整 QUALITY、selected HEAVY 和 GitNexus 变更检测；此最终证据生成后若代码再次变化，必须重新生成。
+- 高风险计划可以要求更强的最终门禁，但不得把 HEAVY 执行下放给 reviewer subagent，也不得让多个 reviewer 对同一快照重复执行相同重测试。
+
+纯文档提交由 `pre-commit` 自动执行 `git diff --cached --check`，不运行 FAST、selector 合同或 HEAVY；Markdown lint、链接、引用、归档路径和残留扫描由具体文档任务按变更面显式执行。只要暂存区包含生产代码、测试、脚本、迁移或 TOML/YAML/JSON/CSV 等机器可读配置，就回退完整 QUALITY。
 
 ### HEAVY Selector Mapping Governance
 
@@ -393,7 +411,7 @@ use Chinese to Write document and Communication and Commit Comment
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (42655 symbols, 74559 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (37845 symbols, 65253 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

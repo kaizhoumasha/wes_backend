@@ -303,7 +303,7 @@
 
 - [ ] **Step 6: 独立代码评审**
 
-  使用 `superpowers:requesting-code-review` 评审完整 staged diff；通过 `superpowers:receiving-code-review` 核实并修复意见，循环至无可操作问题。任何修复都会使既有门禁证据失效，必须回到 Step 1 重新精确暂存，并完整重跑 Steps 2–5 后才能提交。
+  使用 `superpowers:requesting-code-review` 对完整 staged diff 做只读评审，并向 reviewer 提供 Step 1 冻结的路径、精确 staged 状态和 Steps 2–5 的验证证据；reviewer 不启动 Docker、不执行 HEAVY。通过 `superpowers:receiving-code-review` 核实意见并按 TDD 修复，修复后重新精确暂存并运行直接受影响测试；既有最终门禁证据标记为 `STALE`，中间评审轮次不重复执行完整 Steps 2–5。循环至无可操作问题后，回到 Step 1 核对最终 staged 清单，并在最终快照上完整重跑 Steps 2–5 一次；全部通过后才能提交。
 
 - [ ] **Step 7: 提交数据库基线原子变更**
 

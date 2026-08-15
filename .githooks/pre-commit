@@ -8,7 +8,28 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 # 允许通过 WES_ARCHITECTURE_GUARDRAIL_MODE_OVERRIDE 环境变量临时回退 (测试/调试场景)。
 export ARCHITECTURE_GUARDRAIL_MODE="${WES_ARCHITECTURE_GUARDRAIL_MODE_OVERRIDE:-enforced}"
 
-echo "[pre-commit] Running quality gate profile: quality (ARCHITECTURE_GUARDRAIL_MODE=$ARCHITECTURE_GUARDRAIL_MODE)"
-
 cd "$REPO_ROOT"
+
+# 人类阅读文档不改变生产行为、测试工具或机器可读合同，只执行与文档相称的门禁。
+has_staged_paths="false"
+docs_only="true"
+while IFS= read -r -d '' staged_path; do
+    has_staged_paths="true"
+    case "$staged_path" in
+        *.md|*.mdx|*.rst|*.txt|*.docx|*.pdf)
+            ;;
+        *)
+            docs_only="false"
+            ;;
+    esac
+done < <(git diff --cached --name-only -z --no-renames --diff-filter=ACDMRTUXB)
+
+if [[ "$has_staged_paths" == "true" && "$docs_only" == "true" ]]; then
+    echo "[pre-commit] Running documentation-only gate"
+    git diff --cached --check
+    echo "[pre-commit] Documentation-only gate passed"
+    exit 0
+fi
+
+echo "[pre-commit] Running quality gate profile: quality (ARCHITECTURE_GUARDRAIL_MODE=$ARCHITECTURE_GUARDRAIL_MODE)"
 exec ./scripts/git-quality-gate.sh --profile "quality"
