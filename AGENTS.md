@@ -380,10 +380,10 @@ If a change intentionally touches integration / e2e / resilience / load / mock b
 - 主 Agent / 实施 Agent 是测试执行 owner，负责运行直接受影响的 FAST/合同测试、staged selector 选中的 HEAVY，以及评审收敛后的完整分支门禁。
 - 发起评审时必须提供精确 review base/head、`git status --short`、评审范围、selector scope/manifest、已执行命令、结果和 JUnit 路径；存在 staged、unstaged 或 untracked 差异时必须显式列出，不得只用 `HEAD_SHA` 冒充当前工作区快照。
 - 验证证据必须记录 repository、base/head 或 staged tree、selector manifest、命令、结果和报告路径。完全相同的快照与 manifest 复用原证据；不得先对等价 unstaged 快照执行完整 selected HEAVY，再为 staged 标签重复执行同一批测试。
-- 证据按变更面失效：人类阅读文档只使文档核验失效；测试或 selector 配置只使对应测试/selector 证据失效；生产代码使直接 FAST/合同与受影响 HEAVY 失效；migration 使临时数据库 HEAVY 失效；review base/head 变化使完整 diff 评审失效。失效证据标记为 `STALE`，不得写成当前通过。
+- 证据按变更面失效：人类阅读文档只使文档核验失效；测试或 selector 配置只使对应测试/selector 证据失效；生产代码使直接 FAST/合同与受影响 HEAVY 失效；migration 使临时数据库 HEAVY 失效。review base/head 变化时先分类增量 diff：仅人类阅读文档变化只使文档评审失效，生产代码、测试、机器可读合同或迁移变化才使对应代码 diff 评审失效。失效证据标记为 `STALE`，不得写成当前通过。
 - 收到评审意见后，先判断变更类型：产品功能行为修复按 TDD 运行直接受影响测试，其他修复只运行与风险相称的聚焦检查；需要提交修复时，对该修复的精确 staged diff 运行 selector、选中的 HEAVY 和 GitNexus detect changes。中间评审轮次不重复运行完整分支 HEAVY，也不重复执行同一 staged 快照已通过的门禁。
 - 多轮评审采用“首轮 fresh reviewer 完整 diff → 原 reviewer 定向 closure check → 最终 fresh reviewer 完整 diff”。最终 reviewer 仍发现新问题时重新进入该序列；停止条件不降低，但中间修复不反复派发完整重审。
-- Critical/Important 意见全部清零后，主 Agent 必须对最终 `origin/develop...HEAD`（或计划冻结的 implementation base）执行一次完整 QUALITY、selected HEAVY 和 GitNexus 变更检测；此最终证据生成后若代码再次变化，必须重新生成。
+- Critical/Important 意见全部清零后，主 Agent 必须对最终 `origin/develop...HEAD`（或计划冻结的 implementation base）执行一次完整 QUALITY、selected HEAVY 和 GitNexus 变更检测；此最终证据生成后若生产代码、测试、机器可读合同、selector、迁移或运行配置再次变化，必须按失效面重新生成。后续仅增加人类阅读文档时只补文档核验，不得重跑完整门禁。
 - 高风险计划可以要求更强的最终门禁，但不得把 HEAVY 执行下放给 reviewer subagent，也不得让多个 reviewer 对同一快照重复执行相同重测试。
 
 ### 跨任务验证证据交接
@@ -414,6 +414,22 @@ QA 必须按变更面选择最小有效路径，不得把通用页面 QA 机械�
 - 不得为预期的 `/`、`/docs`、`/openapi.json` 404 生成重复截图或据此计算后端健康分。
 - QA 先消费上游验证交接；只有证据缺失、失效或 QA 发现新问题时才运行对应门禁，不能以“fresh QA”名义重复同一快照的
   QUALITY、HEAVY 或迁移。
+
+### Ship 增量验证
+
+`ship` 在执行任何昂贵门禁前，必须先消费 implementation/review/QA 的验证交接，并比较同步 `develop` 前后的增量树：
+
+- 新提交、merge 或 review base/head 变化如果只涉及人类阅读文档或报告，必须复用既有 QUALITY、HEAVY、迁移和代码评审证据；
+  禁止以“fresh ship”名义重跑，只执行文档 diff、引用、状态和发布说明检查。
+- 是否属于纯文档变化以“是否被程序、CI、构建、测试或运行时读取”为准，不以目录或扩展名机械判断。OpenAPI、VERSION、
+  TOML/YAML/JSON/CSV、迁移、依赖锁、运行配置和可执行合同不是人类阅读文档。
+- 同步 `develop` 后必须比较生产代码、测试、HEAVY 资产、selector、迁移和机器可读合同的实际差异；不能仅因 HEAD 或提交数变化
+  就判定全部证据失效。如果这些树均未变化，原验证继续有效。
+- selector 实现或配置是唯一变化时，按“跨任务验证证据交接”重跑 selector 合同与选择结果；manifest 和生产/HEAVY 资产不变时
+  不重跑真实 HEAVY。
+- 已有最终 coverage、计划完成审计和 pre-landing review 且对应快照未失效时，ship 只做增量核对；不得再次启动完整独立审计。
+  新发现但不阻断发布的 coverage GAP 只记录为后续实施输入，不得在 ship 中扩张为测试设计或功能实施。
+- 版本级别应在完成 diff 分类后、昂贵验证前确定；需要用户选择 MINOR/MAJOR 或其它发布语义时应尽早询问，避免门禁全部完成后等待。
 
 ### 重复审计的增量模式
 
