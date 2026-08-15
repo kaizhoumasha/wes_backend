@@ -310,6 +310,36 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 
 # Callback 诊断构建仅收敛展示与退役身份来源，由邻近 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
+source_glob = "src/app/callback/utils.py"
+heavy_tests = []
+reviewed_content_sha256 = "67f41fce219cd68a41c2f9defcf59ace0743139ce8b597f66826bedcc35a8029"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "767e88b838bb2451f7e6ad1f38a9ecee5d7b644d71cce97a52f30e219175fbfe"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/diagnostics.py"
+heavy_tests = []
+reviewed_content_sha256 = "ff9369e4c42e4a3be67e8f9ac8030f903c0eca1e8721d61b97b7ffb52a2f6eb3"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/timeline_generator.py"
+heavy_tests = []
+reviewed_content_sha256 = "64b4ff7470f631f0817d6a067e23d1d230e3e9a3949e70e256a62b74e11b966e"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/event_mapper.py"
+heavy_tests = []
+reviewed_content_sha256 = "9535c028d6245863c25a6f83661d4bc3b3ee3c85ffc38f0c9858af151f0e558a"
+
+[[mapping]]
+source_glob = "src/app/callback/contracts/runtime_events.py"
+heavy_tests = []
+reviewed_content_sha256 = "cb87f2a3a2fbd07b1298da145e621b5796a2eebf3ba91c73e16497828a7138ba"
+
+[[mapping]]
 source_glob = "src/app/callback/contracts/builder.py"
 heavy_tests = []
 reviewed_content_sha256 = "c4163a0601b0bec4623f4a106cfc837fda044cfc92acd7384840e6500bd486cd"

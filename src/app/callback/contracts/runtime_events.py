@@ -1,10 +1,7 @@
-"""Callback 域 runtime events 常量与判定函数 — legacy runtime.runtime_events 镜像。
+"""Callback 域 runtime events 常量与判定函数。
 
-镜像说明:
-- PLATFORM_CONTROL_EVENTS / RESERVED_RUNTIME_EVENTS 集合与 legacy runtime.runtime_events
-  保持完全一致 (跨域按字符串比对)。
-- is_platform_control_event / is_reserved_runtime_event / is_production_event
-  行为与 legacy runtime 一致,无外部依赖。
+这些集合是 callback 入站分类的本地合同，跨域交互只使用事件字符串，
+不反向依赖 runtime orchestration 实现。
 """
 
 from __future__ import annotations
