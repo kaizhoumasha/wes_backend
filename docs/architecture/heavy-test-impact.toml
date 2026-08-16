@@ -1,6 +1,7 @@
 # HEAVY selector 的机器可读真源。分类顺序固定为：直接 HEAVY 测试、人类文档、候选 mapping、ignore。
 ignore_globs = [
     ".codex/**",
+    "workline_plugins/**",
     "VERSION",
     "tests/**",
     "Jenkinsfile.test-deploy",

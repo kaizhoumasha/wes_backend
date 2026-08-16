@@ -12,6 +12,7 @@ from scripts.select_heavy_tests import (
     build_parser,
     expand_braces,
     get_changed_files,
+    is_candidate,
     load_config,
     main,
     matches_glob,
@@ -299,6 +300,29 @@ def test_ignored_paths_select_nothing(tmp_path: Path, changed_path: str) -> None
     )
 
     assert select_heavy_tests([changed_path], config) == []
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "workline_plugins/rough_sorter/src/rough_sorter/handler.py",
+        "workline_plugins/rough_sorter/tests/test_handler.py",
+        "workline_plugins/rough_sorter/tests/e2e/test_inbound_flow.py",
+    ],
+)
+def test_plugin_package_assets_do_not_select_core_heavy_tests(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == []
+
+
+def test_unmapped_plugin_sdk_asset_is_a_core_candidate_and_fails_closed() -> None:
+    changed_path = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decision.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert is_candidate(changed_path)
+    with pytest.raises(SelectorError, match="候选路径未配置 mapping/NONE"):
+        select_heavy_tests([changed_path], config)
 
 
 def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:

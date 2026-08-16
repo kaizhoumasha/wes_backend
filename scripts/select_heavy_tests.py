@@ -22,6 +22,7 @@ RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
 RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
 CANDIDATE_GLOBS = (
     "src/**",
+    "packages/wes_plugin_sdk/**",
     "main.py",
     "migrations/**",
     "alembic.ini",
