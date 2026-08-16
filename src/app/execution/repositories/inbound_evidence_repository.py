@@ -1,0 +1,109 @@
+"""InboundEvidence 身份、冲突与应用状态 owner。"""
+
+from __future__ import annotations
+
+from datetime import datetime  # noqa: TC003
+from typing import Any, cast
+
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
+
+from src.app.execution.models.inbound_evidence import (
+    InboundEvidence,
+    InboundEvidenceApplyStatus,
+    InboundEvidenceConflict,
+    InboundEvidenceKind,
+)
+from src.database.base_repository import BaseRepository
+
+
+class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
+    def __init__(self) -> None:
+        super().__init__(InboundEvidence)
+
+    async def lock_source_identity(self, db: AsyncSession, source_identity: str) -> None:
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:source_identity, 0))"),
+            {"source_identity": source_identity},
+        )
+
+    async def get_by_source_identity_for_update(
+        self,
+        db: AsyncSession,
+        source_identity: str,
+    ) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(
+            select(InboundEvidence).where(columns.source_identity == source_identity).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def get_device_result_for_command_for_update(
+        self,
+        db: AsyncSession,
+        command_code: str,
+    ) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(
+            select(InboundEvidence)
+            .where(
+                columns.command_code == command_code,
+                columns.kind == InboundEvidenceKind.DEVICE_RESULT,
+            )
+            .order_by(columns.id)
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def add(self, db: AsyncSession, evidence: InboundEvidence) -> InboundEvidence:
+        db.add(evidence)
+        await db.flush()
+        return evidence
+
+    async def add_conflict(
+        self,
+        db: AsyncSession,
+        conflict: InboundEvidenceConflict,
+    ) -> InboundEvidenceConflict:
+        db.add(conflict)
+        await db.flush()
+        return conflict
+
+    async def claim_next_pending(self, db: AsyncSession) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(
+            select(InboundEvidence)
+            .where(columns.apply_status == InboundEvidenceApplyStatus.PENDING)
+            .order_by(columns.received_at, columns.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def mark_applied(
+        self,
+        db: AsyncSession,
+        evidence: InboundEvidence,
+        *,
+        processed_at: datetime,
+    ) -> None:
+        evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
+        evidence.processed_at = processed_at
+        await db.flush()
+
+    async def mark_reconciling(
+        self,
+        db: AsyncSession,
+        evidence: InboundEvidence,
+        *,
+        processed_at: datetime,
+    ) -> None:
+        evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
+        evidence.processed_at = processed_at
+        await db.flush()
+
+
+inbound_evidence_repository = InboundEvidenceRepository()
+
+__all__ = ["InboundEvidenceRepository", "inbound_evidence_repository"]

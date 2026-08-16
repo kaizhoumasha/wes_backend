@@ -71,6 +71,7 @@ TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_
 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfillment_queue.py"
 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_device_command_constraints.py"
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
+EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
@@ -1399,6 +1400,34 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
         (
             "src/app/device/services/device_command_service.py",
             [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/device/repositories/evidence_repository.py",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/execution/models/material_execution.py",
+            [EXECUTION_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/resource/models/__init__.py",
+            [EXECUTION_CONSTRAINTS_HEAVY_TEST],
+        ),
+        (
+            "src/app/execution/repositories/inbound_evidence_repository.py",
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                EXECUTION_CONSTRAINTS_HEAVY_TEST,
+            ],
+        ),
+        (
+            "migrations/versions/20260816_2248_48c71f31cafb_收敛执行对象.py",
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                EXECUTION_CONSTRAINTS_HEAVY_TEST,
+            ],
         ),
         ("src/app/runtime/orchestration/models/session.py", [RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST]),
     ],

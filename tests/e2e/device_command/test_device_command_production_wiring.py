@@ -12,8 +12,9 @@ from sqlalchemy import delete, select
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
-from src.app.device.models.evidence import DeviceEvidence, DeviceEvidenceConflict, DeviceStatusObservation
+from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
@@ -60,15 +61,15 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
         if command_code is None:
             return
         async with integration_session_factory.begin() as db:
-            evidence_ids = select(DeviceEvidence.id).where(DeviceEvidence.command_code == command_code)
+            evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
             await db.execute(
-                delete(DeviceEvidenceConflict).where(DeviceEvidenceConflict.first_evidence_id.in_(evidence_ids))
+                delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
             )
             await db.execute(
                 delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
             )
             await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
-            await db.execute(delete(DeviceEvidence).where(DeviceEvidence.command_code == command_code))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
             if binding_id is not None:
                 await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
             if epoch_id is not None:
@@ -100,6 +101,9 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             epoch = LineRunEpoch(
                 epoch_code=f"EPOCH-E2E-{suffix}",
                 workline_id=line.id,
+                plugin_key="device_command_test",
+                plugin_version="1.0.0",
+                flow_mode="TEST",
                 topology_digest="a" * 64,
                 configuration_digest="b" * 64,
                 started_at=timezone.now_for_db(),
@@ -165,7 +169,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
 
         async with integration_session_factory() as db:
             command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == command_code))
-            evidence = await db.scalar(select(DeviceEvidence).where(DeviceEvidence.command_code == command_code))
+            evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.command_code == command_code))
             observations = list(
                 (
                     await db.execute(

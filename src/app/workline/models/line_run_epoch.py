@@ -41,6 +41,9 @@ class LineRunEpoch(EnterpriseMixin, DataTableMixin, table=True):
 
     epoch_code: str = Field(min_length=1, max_length=100)
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True)
+    plugin_key: str = Field(min_length=1, max_length=100)
+    plugin_version: str = Field(min_length=1, max_length=50)
+    flow_mode: str = Field(min_length=1, max_length=100)
     topology_digest: str = Field(min_length=64, max_length=64)
     configuration_digest: str = Field(min_length=64, max_length=64)
     status: LineRunEpochStatus = Field(

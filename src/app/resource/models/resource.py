@@ -150,15 +150,6 @@ class BinCellOccupancyStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class WmsConfirmationStatus(str, Enum):
-    """WMS 确认状态。"""
-
-    PENDING = "PENDING"
-    CONFIRMED = "CONFIRMED"
-    REJECTED = "REJECTED"
-    NOT_REQUIRED = "NOT_REQUIRED"
-
-
 class BinContentSnapshotStatus(str, Enum):
     """料箱内容快照完整性。"""
 
@@ -625,11 +616,6 @@ class BinMaterialMountBase(BaseMixin):
     reel_thickness: str | None = Field(default=None, max_length=80, description="料盘厚度")
     wms_inventory_id: str | None = Field(default=None, max_length=120, index=True, description="WMS 库存记录引用")
     wms_inventory_version: str | None = Field(default=None, max_length=120, description="WMS 库存或分拆版本引用")
-    wms_confirmation_status: WmsConfirmationStatus = Field(
-        default=WmsConfirmationStatus.PENDING,
-        sa_type=cast("Any", SQLAEnum(WmsConfirmationStatus, native_enum=False, create_constraint=True, length=50)),
-        description="WMS 确认状态",
-    )
     writeback_evidence_id: int | None = Field(default=None, description="关联 WMS 回写证据")
     mount_status: BinMaterialMountStatus = Field(
         default=BinMaterialMountStatus.UNKNOWN,
@@ -1124,5 +1110,4 @@ __all__ = [
     "ResourceStateEventType",
     "ResourceStateEventUpdate",
     "ResourceType",
-    "WmsConfirmationStatus",
 ]

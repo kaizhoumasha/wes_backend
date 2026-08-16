@@ -15,13 +15,7 @@ from .device import (
     DeviceResponse,
     DeviceUpdate,
 )
-from .evidence import (
-    DeviceEvidence,
-    DeviceEvidenceApplyStatus,
-    DeviceEvidenceConflict,
-    DeviceEvidenceKind,
-    DeviceStatusObservation,
-)
+from .evidence import DeviceStatusObservation
 
 __all__ = [
     "CommandStatus",
@@ -32,10 +26,6 @@ __all__ = [
     "DeviceCommandRequestData",
     "DeviceCreate",
     "DeviceEditableBase",
-    "DeviceEvidence",
-    "DeviceEvidenceApplyStatus",
-    "DeviceEvidenceConflict",
-    "DeviceEvidenceKind",
     "DeviceResponse",
     "DeviceStatusObservation",
     "DeviceUpdate",

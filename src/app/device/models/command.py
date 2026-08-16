@@ -12,6 +12,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
 
+from src.app.execution.models.inbound_evidence import InboundEvidence  # noqa: F401
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
@@ -197,7 +198,7 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
     completed_at: datetime | None = Field(default=None)
     result_evidence_id: int | None = Field(
         default=None,
-        foreign_key="wes_biz.device_evidences.id",
+        foreign_key="wes_biz.inbound_evidences.id",
         index=True,
     )
     failure_code: str | None = Field(default=None, max_length=120)

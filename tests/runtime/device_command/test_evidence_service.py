@@ -9,7 +9,6 @@ import pytest
 
 from src.app.device.contracts import EcsCommandResult, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.device.models.evidence import DeviceEvidence, DeviceEvidenceConflict  # noqa: TC001
 from src.app.device.services.device_evidence_service import (
     DeviceEventContractMismatchError,
     DeviceEvidenceConflictError,
@@ -17,6 +16,11 @@ from src.app.device.services.device_evidence_service import (
     DeviceResultConflictError,
     UnknownDeviceCommandError,
 )
+from src.app.execution.models.inbound_evidence import (  # noqa: TC001
+    InboundEvidence,
+    InboundEvidenceConflict,
+)
+from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
 
 
 class FakeBegin(AbstractAsyncContextManager[object]):
@@ -34,45 +38,45 @@ class FakeSessionFactory:
 
 class FakeEvidenceRepository:
     def __init__(self) -> None:
-        self.evidences: dict[str, DeviceEvidence] = {}
-        self.conflicts: list[DeviceEvidenceConflict] = []
+        self.evidences: dict[str, InboundEvidence] = {}
+        self.conflicts: list[InboundEvidenceConflict] = []
         self.identity_locks: list[str] = []
         self.next_id = 1
 
-    async def lock_source_event_id(self, _db: object, source_event_id: str) -> None:
-        self.identity_locks.append(source_event_id)
+    async def lock_source_identity(self, _db: object, source_identity: str) -> None:
+        self.identity_locks.append(source_identity)
 
-    async def get_by_source_event_id_for_update(self, _db: object, source_event_id: str) -> DeviceEvidence | None:
-        return self.evidences.get(source_event_id)
+    async def get_by_source_identity_for_update(self, _db: object, source_identity: str) -> InboundEvidence | None:
+        return self.evidences.get(source_identity)
 
-    async def get_result_for_command_for_update(self, _db: object, command_code: str) -> DeviceEvidence | None:
+    async def get_device_result_for_command_for_update(self, _db: object, command_code: str) -> InboundEvidence | None:
         return next(
             (
                 item
                 for item in self.evidences.values()
-                if item.command_code == command_code and getattr(item.kind, "value", item.kind) == "RESULT"
+                if item.command_code == command_code and getattr(item.kind, "value", item.kind) == "DEVICE_RESULT"
             ),
             None,
         )
 
-    async def add(self, _db: object, evidence: DeviceEvidence) -> DeviceEvidence:
+    async def add(self, _db: object, evidence: InboundEvidence) -> InboundEvidence:
         evidence.id = self.next_id
         self.next_id += 1
-        self.evidences[evidence.source_event_id] = evidence
+        self.evidences[evidence.source_identity] = evidence
         return evidence
 
-    async def add_conflict(self, _db: object, conflict: DeviceEvidenceConflict) -> DeviceEvidenceConflict:
+    async def add_conflict(self, _db: object, conflict: InboundEvidenceConflict) -> InboundEvidenceConflict:
         self.conflicts.append(conflict)
         return conflict
 
-    async def claim_next_pending(self, _db: object) -> DeviceEvidence | None:
+    async def claim_next_pending(self, _db: object) -> InboundEvidence | None:
         return next((item for item in self.evidences.values() if item.apply_status == "PENDING"), None)
 
-    async def mark_applied(self, _db: object, evidence: DeviceEvidence, *, processed_at: datetime) -> None:
+    async def mark_applied(self, _db: object, evidence: InboundEvidence, *, processed_at: datetime) -> None:
         evidence.apply_status = "APPLIED"
         evidence.processed_at = processed_at
 
-    async def mark_reconciling(self, _db: object, evidence: DeviceEvidence, *, processed_at: datetime) -> None:
+    async def mark_reconciling(self, _db: object, evidence: InboundEvidence, *, processed_at: datetime) -> None:
         evidence.apply_status = "RECONCILING"
         evidence.processed_at = processed_at
 
@@ -175,7 +179,8 @@ def _service(
     return (
         DeviceEvidenceService(
             session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
-            evidence_repository=evidences,  # type: ignore[arg-type]
+            inbound_evidence_service=InboundEvidenceService(repository=evidences),
+            processing_repository=evidences,  # type: ignore[arg-type]
             command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
             epoch_repository=FakeEpochRepository(event_epoch_id),  # type: ignore[arg-type]
         ),
@@ -195,6 +200,26 @@ async def test_result_is_persisted_before_receipt_and_duplicate_is_idempotent() 
     assert duplicate.duplicate is True
     assert list(repository.evidences) == ["RESULT-001"]
     assert repository.identity_locks == ["RESULT-001", "RESULT-001"]
+    assert repository.evidences["RESULT-001"].contract_key == "arm.pick"
+    assert repository.evidences["RESULT-001"].contract_version == "2.0"
+
+
+@pytest.mark.asyncio
+async def test_ingress_writes_only_through_inbound_evidence_application() -> None:
+    application_repository = FakeEvidenceRepository()
+    processing_repository = FakeEvidenceRepository()
+    service = DeviceEvidenceService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        inbound_evidence_service=InboundEvidenceService(repository=application_repository),
+        processing_repository=processing_repository,  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(_command()),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(),  # type: ignore[arg-type]
+    )
+
+    receipt = await service.accept_result(_result())
+
+    assert receipt.evidence_id == application_repository.evidences["RESULT-001"].id
+    assert processing_repository.evidences == {}
 
 
 @pytest.mark.asyncio
@@ -205,7 +230,7 @@ async def test_same_source_event_id_with_different_payload_is_conflict() -> None
     with pytest.raises(DeviceEvidenceConflictError):
         await service.accept_result(_result(data={"position": "OTHER"}))
 
-    assert repository.conflicts[0].reason_code == "SOURCE_EVENT_ID_PAYLOAD_CONFLICT"
+    assert repository.conflicts[0].reason_code == "SOURCE_IDENTITY_PAYLOAD_CONFLICT"
 
 
 @pytest.mark.asyncio
@@ -285,6 +310,20 @@ async def test_event_freezes_active_epoch_when_contract_matches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_accepted_event_retry_after_epoch_switch_reuses_frozen_evidence() -> None:
+    service, repository = _service(None, event_epoch_id=11)
+    first = await service.accept_event(_event())
+
+    service._epochs.event_epoch_id = 12
+    duplicate = await service.accept_event(_event(trace_id="TRACE-ACK-RETRY"))
+
+    assert duplicate.evidence_id == first.evidence_id
+    assert duplicate.duplicate is True
+    assert repository.evidences[duplicate.source_event_id].line_run_epoch_id == 11
+    assert repository.conflicts == []
+
+
+@pytest.mark.asyncio
 async def test_event_contract_mismatch_is_frozen_before_rejection() -> None:
     service, repository = _service(None, event_epoch_id=11)
 
@@ -304,7 +343,8 @@ async def test_rejected_event_cannot_rebind_after_original_epoch_closes() -> Non
     evidences = FakeEvidenceRepository()
     service = DeviceEvidenceService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
-        evidence_repository=evidences,  # type: ignore[arg-type]
+        inbound_evidence_service=InboundEvidenceService(repository=evidences),
+        processing_repository=evidences,  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(None),  # type: ignore[arg-type]
         epoch_repository=epochs,  # type: ignore[arg-type]
     )
@@ -342,7 +382,7 @@ async def test_result_without_optional_fields_keeps_omission_through_async_apply
 
     receipt = await service.accept_result(result)
 
-    assert "trace_id" not in repository.evidences[receipt.source_event_id].raw_payload
+    assert "trace_id" not in repository.evidences[receipt.source_event_id].normalized_payload
     assert await service.process_one() is True
     assert command.status == CommandStatus.SUCCEEDED
 

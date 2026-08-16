@@ -444,7 +444,15 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,evidence_repository.py}"
+source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,status_observation_repository.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+# 被 InboundEvidenceRepository 直接接管的旧路径 tombstone，删除 diff 仍必须选中 DeviceCommand 闭环。
+[[mapping]]
+source_glob = "src/app/device/repositories/evidence_repository.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
@@ -869,6 +877,7 @@ source_glob = "migrations/env.py"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 [[mapping]]
@@ -880,6 +889,42 @@ source_glob = "src/app/workline/{models/line_run_epoch.py,repositories/line_run_
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
+]
+
+# 最小 execution owner 由独立 PostgreSQL 约束承接；设备 evidence 切换同时刷新既有 DeviceCommand 闭环。
+[[mapping]]
+source_glob = "src/app/execution/{__init__.py,composition.py,models/__init__.py,repositories/__init__.py,services/__init__.py}"
+heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/material_execution.py,repositories/material_execution_repository.py,services/material_execution_service.py}"
+heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_confirmation_repository.py,services/wms_confirmation_service.py}"
+heavy_tests = [
+    "tests/integration/execution/test_execution_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/inbound_evidence.py,repositories/inbound_evidence_repository.py,services/inbound_evidence_service.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/resource/models/{__init__.py,resource.py}"
+heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260816_2248_48c71f31cafb_收敛执行对象.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 # Phase 5 已批准为 destructive removal：嵌入式插件包无核心行为 successor，仅由 FAST 缺席门禁验收。

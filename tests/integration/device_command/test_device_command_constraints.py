@@ -14,13 +14,13 @@ from sqlalchemy.exc import IntegrityError
 from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEvent
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
-from src.app.device.models.evidence import DeviceEvidence, DeviceEvidenceConflict
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceEvidenceService,
 )
+from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
@@ -47,6 +47,9 @@ async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpo
     epoch = LineRunEpoch(
         epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{identity}",
         workline_id=line.id,
+        plugin_key="device_command_test",
+        plugin_version="1.0.0",
+        flow_mode="TEST",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
         started_at=datetime(2026, 8, 13),
@@ -105,17 +108,17 @@ async def cleanup_device_command_constraint_rows(integration_session_factory):
     yield
 
     async with integration_session_factory.begin() as db:
-        evidence_ids = select(DeviceEvidence.id).where(
-            DeviceEvidence.source_event_id.like("DEVICE-COMMAND-CONSTRAINT-EVENT-%")
+        evidence_ids = select(InboundEvidence.id).where(
+            InboundEvidence.source_identity.like("DEVICE-COMMAND-CONSTRAINT-EVENT-%")
         )
         epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like("EPOCH-DEVICE-COMMAND-CONSTRAINT-%"))
         device_ids = select(Device.id).where(Device.device_code.like("ARM-DEVICE-COMMAND-CONSTRAINT-%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like("LINE-DEVICE-COMMAND-CONSTRAINT-%"))
         await db.execute(
-            delete(DeviceEvidenceConflict).where(DeviceEvidenceConflict.first_evidence_id.in_(evidence_ids))
+            delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
         )
         await db.execute(delete(DeviceCommand).where(DeviceCommand.line_run_epoch_id.in_(epoch_ids)))
-        await db.execute(delete(DeviceEvidence).where(DeviceEvidence.id.in_(evidence_ids)))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
         await db.execute(
             delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.line_run_epoch_id.in_(epoch_ids))
         )
@@ -177,14 +180,14 @@ async def test_postgresql_concurrent_conflicting_event_persists_conflict(
     assert sum(isinstance(result, DeviceEvidenceConflictError) for result in results) == 1
     async with integration_session_factory() as db:
         evidences = list(
-            (await db.execute(select(DeviceEvidence).where(DeviceEvidence.source_event_id == source_event_id)))
+            (await db.execute(select(InboundEvidence).where(InboundEvidence.source_identity == source_event_id)))
             .scalars()
             .all()
         )
         conflicts = list(
             (
                 await db.execute(
-                    select(DeviceEvidenceConflict).where(DeviceEvidenceConflict.source_event_id == source_event_id)
+                    select(InboundEvidenceConflict).where(InboundEvidenceConflict.source_identity == source_event_id)
                 )
             )
             .scalars()
@@ -203,6 +206,9 @@ async def test_postgresql_rejects_second_active_epoch(integration_session_factor
             LineRunEpoch(
                 epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{uuid4().hex[:12]}",
                 workline_id=line.id,
+                plugin_key="device_command_test",
+                plugin_version="1.0.0",
+                flow_mode="TEST",
                 topology_digest="c" * 64,
                 configuration_digest="d" * 64,
                 started_at=datetime(2026, 8, 13),
@@ -223,6 +229,9 @@ async def test_postgresql_closed_epoch_releases_active_generation_slot(integrati
         second = LineRunEpoch(
             epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{uuid4().hex[:12]}",
             workline_id=line.id,
+            plugin_key="device_command_test",
+            plugin_version="1.0.1",
+            flow_mode="TEST",
             topology_digest="c" * 64,
             configuration_digest="d" * 64,
             started_at=closed_at,

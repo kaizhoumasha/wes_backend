@@ -77,6 +77,9 @@ async def test_same_workline_rejects_second_active_epoch() -> None:
         object(),
         epoch_code="EPOCH-LINE-01-0001",
         workline_id=1,
+        plugin_key="rough_sorter",
+        plugin_version="1.0.0",
+        flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
         started_at=started_at,
@@ -88,6 +91,9 @@ async def test_same_workline_rejects_second_active_epoch() -> None:
             object(),
             epoch_code="EPOCH-LINE-01-0002",
             workline_id=1,
+            plugin_key="rough_sorter",
+            plugin_version="1.0.0",
+            flow_mode="ROUGH_SORT_INBOUND",
             topology_digest="c" * 64,
             configuration_digest="d" * 64,
             started_at=started_at,
@@ -101,6 +107,9 @@ async def test_binding_same_identity_is_idempotent_but_cannot_be_rewritten() -> 
         object(),
         epoch_code="EPOCH-LINE-01-0001",
         workline_id=1,
+        plugin_key="rough_sorter",
+        plugin_version="1.0.0",
+        flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
         started_at=datetime(2026, 8, 13),
@@ -149,6 +158,9 @@ async def test_close_active_epoch_allows_next_generation() -> None:
         object(),
         epoch_code="EPOCH-LINE-01-0001",
         workline_id=1,
+        plugin_key="rough_sorter",
+        plugin_version="1.0.0",
+        flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
         started_at=datetime(2026, 8, 13),
@@ -161,6 +173,9 @@ async def test_close_active_epoch_allows_next_generation() -> None:
         object(),
         epoch_code="EPOCH-LINE-01-0002",
         workline_id=1,
+        plugin_key="rough_sorter",
+        plugin_version="1.0.1",
+        flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="c" * 64,
         configuration_digest="d" * 64,
         started_at=datetime(2026, 8, 13, 0, 1),
@@ -179,6 +194,9 @@ async def test_close_epoch_rejects_commands_still_in_send_window() -> None:
         object(),
         epoch_code="EPOCH-LINE-01-0001",
         workline_id=1,
+        plugin_key="rough_sorter",
+        plugin_version="1.0.0",
+        flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
         started_at=datetime(2026, 8, 13),
@@ -191,3 +209,25 @@ async def test_close_epoch_rejects_commands_still_in_send_window() -> None:
         )
 
     assert repository.active_epoch is not None
+
+
+@pytest.mark.asyncio
+async def test_epoch_freezes_plugin_identity_and_flow_mode_without_generic_state() -> None:
+    service, _ = _service()
+
+    epoch = await service.create_epoch(
+        object(),
+        epoch_code="EPOCH-LINE-01-0001",
+        workline_id=1,
+        plugin_key="rough_sorter",
+        plugin_version="1.0.0",
+        flow_mode="ROUGH_SORT_INBOUND",
+        topology_digest="a" * 64,
+        configuration_digest="b" * 64,
+        started_at=datetime(2026, 8, 13),
+    )
+
+    assert epoch.plugin_key == "rough_sorter"
+    assert epoch.plugin_version == "1.0.0"
+    assert epoch.flow_mode == "ROUGH_SORT_INBOUND"
+    assert "plugin_state" not in LineRunEpoch.model_fields
