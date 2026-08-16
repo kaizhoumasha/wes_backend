@@ -72,6 +72,7 @@ TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfi
 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_device_command_constraints.py"
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
+WMS_INBOUND_CONFIRMATION_HEAVY_TEST = "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
@@ -908,7 +909,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/wms_adapter/inbound_auth.py",
             [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
         ),
-        ("src/app/wms_adapter/__init__.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/app/wms_adapter/__init__.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
+        ),
+        ("src/app/wms_adapter/inbound_adapter.py", [WMS_INBOUND_CONFIRMATION_HEAVY_TEST]),
+        ("src/app/wms_adapter/inbound_event_handler.py", [WMS_INBOUND_CONFIRMATION_HEAVY_TEST]),
+        ("src/app/wms_adapter/inbound_wire.py", [WMS_INBOUND_CONFIRMATION_HEAVY_TEST]),
+        ("src/app/wms_adapter/inbound_openapi.py", []),
         (
             "src/app/wms_adapter/transport_event_handler.py",
             [
@@ -926,8 +934,18 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ],
         ),
         ("src/app/wms_adapter/transport_adapter.py", [TRANSPORT_DARK_LOOP_HEAVY_TEST]),
-        ("src/app/wms_adapter/v1/__init__.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
-        ("src/app/wms_adapter/v1/events.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/app/wms_adapter/v1/__init__.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
+        ),
+        (
+            "src/app/wms_adapter/v1/events.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
+        ),
+        (
+            "src/app/execution/services/wms_confirmation_service.py",
+            [EXECUTION_CONSTRAINTS_HEAVY_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
+        ),
         (
             "src/app/transport/submit_snapshot.py",
             [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],

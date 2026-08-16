@@ -10,13 +10,15 @@ from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
+from src.app.wms_adapter.inbound_openapi import RECONCILIATION_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
+from src.app.wms_adapter.inbound_wire import RECONCILIATION_OPERATION
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
     is_wire_operation,
     is_wire_operation_id,
 )
-from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA, TRANSPORT_EVENT_RESPONSES
+from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA
 from src.core.task_queue_gateway import task_queue_gateway
 from src.utils.timezone import timezone
 
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+WMS_EVENT_REQUEST_SCHEMA = {"oneOf": [*TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"], RECONCILIATION_EVENT_REQUEST_SCHEMA]}
 
 
 async def _read_bounded_body(request: Request) -> bytes | None:
@@ -100,11 +103,11 @@ def _enqueue_transport_evidence() -> None:
 
 @router.post(
     "/events",
-    responses=TRANSPORT_EVENT_RESPONSES,
+    responses=WMS_EVENT_RESPONSES,
     openapi_extra={
         "requestBody": {
             "required": True,
-            "content": {"application/json": {"schema": TRANSPORT_EVENT_REQUEST_SCHEMA}},
+            "content": {"application/json": {"schema": WMS_EVENT_REQUEST_SCHEMA}},
         }
     },
 )
@@ -119,19 +122,41 @@ async def receive_transport_event(request: Request) -> Response:
     if not _permits_transport_endpoint(policy):
         return Response(status_code=401)
 
-    runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
-    if runtime is None:
-        return _unavailable_ack(raw_body)
-    result = await runtime.handler.handle(raw_body)
+    operation = _extract_operation(raw_body)
+    is_inbound_event = operation == RECONCILIATION_OPERATION
+    if is_inbound_event:
+        handler = getattr(request.app.state, "wms_inbound_event_handler", None)
+        if handler is None:
+            return _unavailable_ack(raw_body)
+        result = await handler.handle(raw_body)
+    else:
+        runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
+        if runtime is None:
+            return _unavailable_ack(raw_body)
+        result = await runtime.handler.handle(raw_body)
     # Evidence 已持久化后先应答 WMS；Celery 唤醒只是加速提示，失败时由 Beat 兜底扫描。
     background = (
-        BackgroundTask(_enqueue_transport_evidence) if result.body.get("code") in {"RECEIVED", "DUPLICATE"} else None
+        (BackgroundTask(_enqueue_transport_evidence) if result.body.get("code") in {"RECEIVED", "DUPLICATE"} else None)
+        if not is_inbound_event
+        else None
     )
     if result.body:
         response: Response = JSONResponse(status_code=result.http_status, content=result.body, background=background)
     else:
         response = Response(status_code=result.http_status, background=background)
     return response
+
+
+def _extract_operation(raw_body: bytes) -> str | None:
+    try:
+        value = loads_transport_json(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, StrictJsonError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    envelope = cast("dict[str, Any]", value)
+    operation = envelope.get("operation")
+    return operation if isinstance(operation, str) else None
 
 
 __all__ = ["router"]

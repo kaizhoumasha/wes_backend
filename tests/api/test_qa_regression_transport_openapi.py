@@ -1,4 +1,4 @@
-"""WMS Transport 生产入口的 OpenAPI 回归合同。"""
+"""唯一 WMS event 生产入口的 OpenAPI 回归合同。"""
 
 import re
 
@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from src.register import register_routers
 
 
-def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -> None:
+def test_wms_event_openapi_exposes_transport_and_reconciliation_contracts() -> None:
     # Regression: ISSUE-001 — Swagger 无请求体且只声明 200，无法用于 WMS 联调
     # Found by /qa on 2026-08-12
     # Report: .gstack/qa-reports/qa-report-127-0-0-1-8012-2026-08-12.md
@@ -20,7 +20,7 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
 
     assert request_body["required"] is True
     request_variants = request_schema["oneOf"]
-    assert len(request_variants) == 2
+    assert len(request_variants) == 3
     assert all(variant["type"] == "object" for variant in request_variants)
     assert all(variant["additionalProperties"] is False for variant in request_variants)
     assert all(
@@ -29,12 +29,16 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
     assert [variant["properties"]["operation"]["enum"] for variant in request_variants] == [
         ["transport.task.member_position_changed@v1"],
         ["transport.task.resulted@v1"],
+        ["inbound.execution.reconciliation_decided@v1"],
     ]
     for variant in request_variants:
         timestamp = variant["properties"]["timestamp"]
         assert timestamp["type"] == "integer"
         assert timestamp["format"] == "int64"
-        assert timestamp["minimum"] == 0
+        expected_minimum = (
+            1 if variant["properties"]["operation"]["enum"] == ["inbound.execution.reconciliation_decided@v1"] else 0
+        )
+        assert timestamp["minimum"] == expected_minimum
         assert timestamp["maximum"] >= 2**63 - 1
         assert timestamp["description"] == "Unix 毫秒时间戳"
     position_data = request_variants[0]["properties"]["data"]
@@ -53,10 +57,10 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
         "BIN_EXCHANGE",
     }
     assert set(operation["responses"]) == {"200", "202", "400", "401", "409", "413", "422", "503"}
-    assert operation["responses"]["200"]["description"] == "重复 evidence 已确认"
-    assert operation["responses"]["202"]["description"] == "evidence 已持久化"
-    assert operation["responses"]["409"]["description"] == "operation_id 或 outcome_revision 身份冲突"
-    assert operation["responses"]["422"]["description"] == "evidence data 不满足对应 operation 的封闭合同"
+    assert operation["responses"]["200"]["description"] == "相同 WMS event 已可靠持久化"
+    assert operation["responses"]["202"]["description"] == "WMS event 已可靠持久化"
+    assert operation["responses"]["409"]["description"] == "WMS event 身份、内容或不可变事实冲突"
+    assert operation["responses"]["422"]["description"] == "WMS event 信封或 operation 专属 data 不合法"
     for status_code, expected_code in {
         "200": "DUPLICATE",
         "202": "RECEIVED",
@@ -80,9 +84,13 @@ def test_wms_transport_openapi_exposes_request_and_actual_response_contracts() -
     ]
     assert constrained_strings
     for schema in constrained_strings:
-        assert "pattern" in schema
-        assert re.search(schema["pattern"], "   ") is None
-        assert re.search(schema["pattern"], "value") is not None
+        if "pattern" in schema:
+            assert re.search(schema["pattern"], "   ") is None
+            assert re.search(schema["pattern"], "value") is not None
+            continue
+        forbidden_patterns = [constraint["not"]["pattern"] for constraint in schema["allOf"]]
+        assert any(re.search(pattern, "   ") is not None for pattern in forbidden_patterns)
+        assert all(re.search(pattern, "value") is None for pattern in forbidden_patterns)
 
     rack_slots = [
         schema
