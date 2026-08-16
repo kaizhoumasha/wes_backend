@@ -8,7 +8,9 @@
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Alembic、Celery、PostgreSQL、Redis、Pytest、uv workspace、Ruff、GitNexus。
 
-**当前状态:** `GATED`。`docs/contracts/wms-inbound-putaway-integration-requirements.md` 当前仍为 `ReviewRequired`，且粗分机设备合同附录、供应商一致性验收边界和 Phase 6 Transport 消费授权尚未全部冻结。在 Task 1 退出门禁通过前，只允许完成合同、附录和验收责任的纯文档工作；禁止开始生产代码、migration 或行为测试。
+**当前状态:** `IN_PROGRESS`。Task 1 已于 2026-08-16 关闭文档门禁：独立 Phase 8 粗分入库合同与设备附录均为
+`Approved`，两个 `RACK_MOVE` 的 Transport 消费已获批。后续代码、migration 和行为测试仍必须按本计划逐 Task 实施与验收；
+`IN_PROGRESS` 不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
 
 ## Global Constraints
 
@@ -21,13 +23,17 @@
 - 架构调用保持 API → Service → Repository → Database；插件不能绕过 Service/Port 访问 Repository 或数据库。
 - 一个插件键表示一条完整业务执行流。Phase 8 固定 `plugin_key = rough_sorter`；设备、工位和现场差异属于 `LineRunEpoch` 配置与绑定，不拆成多个插件键。
 - `LineRunEpoch` 只冻结插件、配置、拓扑和设备合同版本，不拥有单盘生命周期，也不是整线并发锁。
-- 业务并发边界是 `MaterialExecution`；设备串行/并发约束归 `DeviceCommand.device_code`；共享货架/位置通过现有 generation/fence 约束。禁止新增 WorkLine 全局锁。
-- 核心生命周期只允许 `ACTIVE | RECONCILING | COMPLETED | ABORTED`；不得把扫码、准入、PUT、上报等粗分步骤做成核心状态枚举。
+- 业务并发边界是 `MaterialExecution`；设备串行/并发约束归 `DeviceCommand.device_code`；旧架通过获批 release gate 与冻结快照
+  围栏。禁止新增 WorkLine 全局锁。
+- 核心生命周期只允许 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING`；不得把扫码、准入、PUT、上报等粗分步骤做成核心状态枚举。
 - 默认不建立插件私有持久状态，更不得新增通用 `plugin_state` JSON。业务进度由 `InboundEvidence`、`DeviceCommand`、`WmsConfirmation`、位置投影和执行终态推导。
 - handler 消费已验证、可关联的类型化 Fact，不接收供应商原始 Payload；装饰器只声明静态元数据，不注册对象、不扫描模块、不产生 import-time 副作用。
-- Decision 是封闭集合，不建设通用 Effect 引擎。Phase 8 初始集合为 `Wait`、`CreateDeviceCommand`、`CreateWmsConfirmation`、`PauseForReconciliation`、`CompleteExecution`；只有 Task 1 明确批准 Transport 业务语义后才能加入 `CreateTransportTask`。
+- Decision 是封闭集合，不建设通用 Effect 引擎。Phase 8 集合为 `Wait`、`CreateDeviceCommand`、`CreateWmsConfirmation`、
+  `CreateTransportTask`、`PauseForReconciliation`、`CompleteExecution`；`CreateTransportTask` 只用于获批换架计划的两个既有
+  `RACK_MOVE`。
 - ECS 已 ACK 命令或投递结果未知时，必须假定物理动作可能开始，禁止改目标或创建等价重放。只有 ECS 明确未接纳且没有物理副作用时，才允许用新的业务 Decision 恢复目标。
-- 冲突默认冻结当前 `MaterialExecution` 及其已占用/预留资源；货架释放 generation 冲突扩大到该单层货架；只有 Epoch、拓扑或现场事实整体不可信时才暂停整条 WorkLine。
+- 冲突默认冻结当前 `MaterialExecution` 及其已占用/预留资源；旧架 release gate 或位置冲突扩大到该单层货架；只有 Epoch、
+  拓扑或现场事实整体不可信时才暂停整条 WorkLine。
 - MVP 不实现动态插件市场、运行时热插拔、多供应商抽象、通用认证平台、负载/HA 平台、仪表盘或 Phase 9 的 `BinExecution`。
 - 核心测试、WMS Adapter 测试、插件测试、供应商一致性验收和现场业务验收分别拥有自己的边界，禁止互相代证。
 
@@ -37,7 +43,8 @@
 
 **Files:**
 
-- Modify after joint approval: `docs/contracts/wms-inbound-putaway-integration-requirements.md`
+- Create: `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`
+- Modify: `docs/contracts/wms-inbound-putaway-integration-requirements.md`
 - Create: `docs/contracts/device-annexes/rough-sorter-device-contract.md`
 - Review: `docs/integration/third_party_integration_whitepaper.md`
 - Review only: `docs/hardware/**`
@@ -48,40 +55,42 @@
 **Interfaces:**
 
 - Consumes: WMS/WES/RCS/ECS 联合评审、粗分机真实拓扑、供应商原始协议、Phase 6/7 已验收合同。
-- Produces: `Approved` 入库 §7—§8、设备 task/event 闭集、不可逆点、endpoint/device/ECS 版本绑定规则、责任清晰的供应商验收包，以及 Transport 消费的明确结论。
+- Produces: 独立 `Approved` Phase 8 粗分入库合同、设备 task/event 闭集、不可逆点、endpoint/device/ECS 版本绑定规则、
+  责任清晰的供应商验收边界，以及两个既有 `RACK_MOVE` 的 Transport 消费结论。
 
-- [ ] **Step 1: 逐项关闭入库合同 §20**
+- [x] **Step 1: 拆分并批准 Phase 8 粗分合同**
 
-  记录每个确认项的责任方、审批证据和冻结版本；只有十项全部闭合后才把文档状态从 `ReviewRequired` 改为 `Approved`。不得用 WES 单方评审代替 WMS、RCS 或 ECS 授权。
+  `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 是 Phase 8 唯一业务合同真源；未来满箱交换、自动上架和
+  其它阶段继续保留在 `ReviewRequired` 合同中。
 
-- [ ] **Step 2: 冻结粗分机设备合同附录**
+- [x] **Step 2: 冻结粗分机设备合同附录**
 
   附录只定义本插件真实使用的 `task_type`、`event_type`、严格 Payload、设备错误、ACK/CALLBACK 时限、`Retry-After` 规则、不可逆点和原始供应商字段到统一 wire 的映射；固定 HTTP 路径、公共包络、幂等身份和 callback 语义直接引用 Phase 7 真源，不复制定义。
 
-- [ ] **Step 3: 冻结 endpoint/device/Epoch 绑定证据**
+- [x] **Step 3: 冻结 endpoint/device/Epoch 绑定规则**
 
-  对每台扫码、测量、机械臂和 NG 交接设备明确 `device_code`、`endpoint_code`、`contract_key`、合同版本、超时和所属 WorkLine。部署时这些值进入现有 `LineRunEpochDeviceBinding` 与 Epoch digest，不新增数据库插件注册表。
+  每个 WorkLine 绑定一个 ECS 和三个一对一角色；具体 `device_code`、`endpoint_code`、`contract_key`、合同版本、超时与版本证据在
+  部署一致性验收中进入现有 `LineRunEpochDeviceBinding` 与 Epoch digest，不新增数据库插件注册表。
 
-- [ ] **Step 4: 裁决 Phase 6 Transport Port 是否属于粗分闭环**
+- [x] **Step 4: 裁决 Phase 6 Transport Port 属于粗分换架闭环**
 
-  当前入库 §7—§8 只授权逐盘准入、PUT、NG、货架释放和对账，`REPLACE` 不等于授权搬运当前货架。联合评审必须二选一：
+  WMS 返回稳定 `rack_replacement_id` 及旧装载架/新空架各自的 `rack_id + source + target + target_face`。插件创建两个独立
+  `RACK_MOVE`，业务幂等键分别为 `(rack_replacement_id, OLD_OUT)` 与 `(rack_replacement_id, NEW_IN)`；应用端将每个键原子
+  映射到不同的全局唯一 UUIDv7 `client_request_id`。不新增 `RACK_EXCHANGE`。
+  两任务可同时提交，实际顺序由 RCS 控制，是外部未验证前提。
 
-  - 增加明确的 WMS/RCS 授权、目标、幂等身份和完成事实，使 `CreateTransportTask` 成为获批 Decision；或
-  - 将 Phase 8 Transport 消费标记为 `NONE`，并同步修订主计划中“消费 Phase 6 Transport”的硬要求。
-
-  未裁决前禁止在插件中猜测运输目标，也禁止创建占位 Transport。
-
-- [ ] **Step 5: 冻结验收所有权矩阵**
+- [x] **Step 5: 冻结验收所有权矩阵**
 
   明确 Phase 7 核心只验固定 wire 和 DeviceCommand 可靠性；供应商交付边界验设备附录；WMS Adapter 验 operation/DTO；插件包验 Decision；现场联合验收真实闭环。每个场景只能有一个主要 owner。
 
-- [ ] **Step 6: 执行纯文档验证并取得退出结论**
+- [x] **Step 6: 执行纯文档验证并取得退出结论**
 
-  Run: `rg -n "^status:|ReviewRequired|Approved|CreateTransportTask|Transport" docs/contracts/wms-inbound-putaway-integration-requirements.md docs/contracts/device-annexes/rough-sorter-device-contract.md docs/superpowers/{specs,plans}`
+  Run: `rg -n "^status:|ReviewRequired|Approved|CreateTransportTask|RACK_MOVE|Transport" docs/contracts/wms-rough-sorter-inbound-integration-requirements.md docs/contracts/wms-inbound-putaway-integration-requirements.md docs/contracts/device-annexes/rough-sorter-device-contract.md docs/superpowers/{specs,plans}`
 
   Run: `git diff --check -- docs/contracts docs/architecture docs/superpowers`
 
-  Expected: 入库合同和设备附录均为获批当前真源；Transport 只有一个明确结论；项目文档不存在互相冲突的 Phase 8 描述。否则 Phase 8 保持 `GATED`。
+  Expected: Phase 8 粗分合同和设备附录均为 `Approved`，后续上架合同保持 `ReviewRequired`，Transport 只有两个既有
+  `RACK_MOVE` 这一明确结论，项目文档不存在互相冲突的 Phase 8 描述。满足后 Phase 8 进入 `IN_PROGRESS`。
 
 ### Task 2: 冻结直接切换矩阵与 TDD 验收地图
 
@@ -159,11 +168,14 @@
 
 - [ ] **Step 2: 定义实际使用的类型化 Fact**
 
-  只包含粗分闭环需要的不可变输入，例如物料证据已齐备、WMS 准入已决定、设备 placement 已确认、货架释放已决定、人工对账已决定。Fact 只携带稳定标识、版本和已验证数据，不携带 ORM 对象或原始 wire Payload。
+  只包含粗分闭环需要的不可变输入，例如 SCAN 证据已齐备、WMS 准入/目标/换架计划已决定、设备位置结果已确认、
+  Transport 结果已发布、人工对账已决定。Fact 只携带稳定标识、版本和已验证数据，不携带 ORM 对象或原始 wire Payload。
 
 - [ ] **Step 3: 定义封闭 Decision**
 
-  建立 `Wait`、`CreateDeviceCommand`、`CreateWmsConfirmation`、`PauseForReconciliation`、`CompleteExecution`；仅在 Task 1 明确批准后增加 `CreateTransportTask`。Decision 必须包含应用幂等所需的稳定业务身份，不包含 Repository 或执行回调。
+  建立 `Wait`、`CreateDeviceCommand`、`CreateWmsConfirmation`、`CreateTransportTask`、`PauseForReconciliation`、
+  `CompleteExecution`。`CreateTransportTask` 只表达两个获批 `RACK_MOVE`，Decision 必须包含应用幂等所需的稳定业务身份，
+  不包含 Repository 或执行回调。
 
 - [ ] **Step 4: 定义最窄只读 Protocol**
 
@@ -222,7 +234,9 @@
 
 - [ ] **Step 1: 先写失败的模型与服务测试**
 
-  覆盖：`MaterialExecution` 生命周期和乐观并发；一个活动业务身份只能有一个执行；`InboundEvidence` 同身份同 digest 幂等、异 digest 冲突；`WmsConfirmation` 稳定 `operation + operation_id`、重试不换身份；Epoch 固定 `plugin_key`、`plugin_version`、`flow_mode`；禁止通用插件状态 JSON。
+  覆盖：`MaterialExecution` 只允许 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING` 及合法迁移；一个活动 trace 只能有一个
+  执行；`InboundEvidence` 同身份同 digest 幂等、异 digest 冲突；`WmsConfirmation` 稳定 `operation + operation_id`、重试不换
+  身份；Epoch 固定 `plugin_key`、`plugin_version`、`flow_mode`；禁止通用插件状态 JSON。
 
 - [ ] **Step 2: 实现 `MaterialExecution`**
 
@@ -282,7 +296,7 @@
 
 **Interfaces:**
 
-- Consumes: Task 1 获批 §7—§8 operation 与公共信封，现有 WMS `OutboundHttpTransport`/client 边界。
+- Consumes: Task 1 独立获批粗分合同的 operation 与公共信封，现有 WMS `OutboundHttpTransport`/client 边界。
 - Produces: 类型化 WES→WMS 可靠确认与 WMS→WES 持久化事件入口，不把 WMS 业务语义泄漏到基础 HTTP transport。
 
 - [ ] **Step 1: 先写失败的合同测试**
@@ -291,11 +305,15 @@
 
 - [ ] **Step 2: 建立逐盘入库 WES→WMS 类型化 DTO**
 
-  仅实现 `inbound.material.admission_decide@v1`、`target_recovery_decide@v1`、`placement_report@v1` 和 `ng_placement_report@v1`；适配器把 transport 响应规范化为 WMS_RESULT `InboundEvidence`，不直接推进插件或修改库存投影。
+  仅实现 `inbound.material.admission_decide@v1`、`inbound.material.target_decide@v1`、
+  `inbound.material.placement_report@v1`、`inbound.material.ng_placement_report@v1` 和
+  `inbound.source_rack.replacement_plan_decide@v1`；适配器把 transport 响应规范化为 WMS_RESULT `InboundEvidence`，不直接推进
+  插件或修改库存投影。
 
 - [ ] **Step 3: 建立 WMS→WES 类型化入口**
 
-  仅实现 `inbound.source_rack.release_decided@v1` 和 `inbound.execution.reconciliation_decided@v1`。入口先持久化 WMS_EVENT `InboundEvidence` 再返回 `202 / RECEIVED`；不得在 API 层访问 Repository 或执行 handler。
+  仅实现 `inbound.execution.reconciliation_decided@v1`。入口先持久化 WMS_EVENT `InboundEvidence` 再返回
+  `202 / RECEIVED`；不得在 API 层访问 Repository 或执行 handler。
 
 - [ ] **Step 4: 静态分派现有 WMS 事件端点**
 
@@ -384,8 +402,11 @@
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/__init__.py`
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/material_evidence_ready.py`
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/admission_decided.py`
+- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/device_position_confirmed.py`
+- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/target_decided.py`
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/placement_completed.py`
-- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/rack_release_decided.py`
+- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/replacement_plan_decided.py`
+- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/transport_outcome_published.py`
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/reconciliation_decided.py`
 - Create: `workline_plugins/rough_sorter/tests/`
 - Create only for approved payloads: `workline_plugins/rough_sorter/fixtures/`
@@ -397,7 +418,9 @@
 
 - [ ] **Step 1: 先写插件失败测试**
 
-  最少覆盖：证据不完整 `Wait`、准入 `ACCEPT`、业务 `WAIT`、`REJECT`/NG、PUT 前目标恢复、ECS ACK 后禁止换目标、placement 确认、货架 release fence、generation 冲突、delivery unknown、对账完成和重复 Fact 幂等。
+  最少覆盖：证据不完整 `Wait`、准入 `ACCEPT` 不含目标、入料/输送顺序、出口后目标 Cell 晚绑定、业务 `WAIT`、
+  `REJECT`/NG、ECS ACK 后禁止等价重放、placement 确认、旧架 release gate、两个 `RACK_MOVE` 稳定身份、新架先成功恢复目标请求、
+  两任务失败不级联、delivery unknown、对账完成和重复 Fact 幂等。
 
 - [ ] **Step 2: 实现最小插件入口**
 
@@ -409,19 +432,26 @@
 
 - [ ] **Step 4: 实现逐盘准入和 PUT 决策**
 
-  六合一码、直径和厚度齐备后创建 WMS admission confirmation；`ACCEPT` 且目标物理可执行时创建唯一 DeviceCommand；业务 `WAIT` 不伪装成设备忙；`REJECT` 只按 WMS 决定进入获批 NG 路径。
+  `SCAN_COMPLETED` 的 trace、六合一码、直径、厚度、外形结果和位置齐备后创建 WMS admission confirmation；`ACCEPT` 后只创建
+  入料 `PICK_AND_PUT`，成功后创建 `MOVE_FORWARD`。料盘可靠到达出口后才请求目标 Cell；业务 `WAIT` 不伪装成设备忙，
+  `REJECT` 只按 WMS 决定进入获批 NG 路径。
 
-- [ ] **Step 5: 实现目标恢复和不可逆保护**
+- [ ] **Step 5: 实现目标晚绑定和不可逆保护**
 
-  只在 PUT 前且旧命令明确未被 ECS 接纳时请求 `target_recovery_decide`；ECS ACK 或结果未知后禁止换 target，进入等待或人工对账。
+  WMS 返回精确 Cell 且本地 source/target/设备门禁通过时才创建出料 `PICK_AND_PUT`。没有可用 Cell 时不下发出料命令；
+  ECS ACK、FAILED 或结果未知后禁止换 target 或重放等价动作，进入等待或人工对账。
 
-- [ ] **Step 6: 实现 placement、release 和 reconciliation 决策**
+- [ ] **Step 6: 实现 placement、换架和 reconciliation 决策**
 
-  PUT/NG 可靠完成后创建对应 WMS report；release 只冻结新准入并等待当前货架在途事实闭合；generation/成员/位置冲突进入最小隔离域；获批 reconciliation Fact 才能恢复或终结相关执行。
+  PUT/NG 可靠完成后创建对应 WMS report；旧架 release gate 闭合后冻结快照；位置/成员冲突进入最小隔离域；获批
+  reconciliation Fact 才能恢复或终结相关执行。
 
-- [ ] **Step 7: 实现经批准的 Transport 分支或显式 NONE**
+- [ ] **Step 7: 实现两个获批 `RACK_MOVE`**
 
-  只有 Task 1 选择并冻结 Transport 授权时才添加对应 handler/Decision 测试；若结论为 `NONE`，插件和 SDK 都不得留下空 Transport 抽象。
+  按同一 `rack_replacement_id` 创建 `OLD_OUT` 和 `NEW_IN` 两个独立 `CreateTransportTask`；以
+  `(rack_replacement_id, leg)` 为业务幂等键，由应用端在首次调用前原子持久化到全局唯一 UUIDv7 `client_request_id`，同键重试
+  复用原 UUIDv7 和原 Handle。两任务可以同时提交，顺序不由插件控制；新架匹配 T3 成功后可重新请求 Cell，旧架失败只隔离
+  旧 rack，新架失败阻止出料。
 
 - [ ] **Step 8: 独立运行插件包测试**
 
@@ -511,11 +541,14 @@
 
 - [ ] **Step 3: 跑通主成功路径**
 
-  标准完整料盘证据 → WMS `ACCEPT` → 粗分 PUT → ECS 确定成功 → placement report → WMS `RECORDED` → `MaterialExecution.COMPLETED`。验证每个可靠对象身份稳定且无双写。
+  `SCAN_COMPLETED` → WMS `ACCEPT` → 入料 `PICK_AND_PUT` → `MOVE_FORWARD` → WMS 目标 Cell 晚绑定 → 出料
+  `PICK_AND_PUT` → placement report → WMS `RECORDED` → `MaterialExecution.CLOSED`。验证每个可靠对象身份稳定且无双写。
 
 - [ ] **Step 4: 跑通安全失败路径**
 
-  至少现场/集成验证：重复与冲突 evidence、业务 `WAIT`、PUT 前恢复、ACK 后禁止改目标、callback 未知、货架 release generation 冲突、人工 reconciliation。非功能性负载、HA 和多供应商矩阵不作为 MVP 退出条件。
+  至少现场/集成验证：重复与冲突 evidence、业务 `WAIT`、无 Cell 不下发出料、ACK 后禁止等价重放、callback 未知、旧架 release
+  gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和人工 reconciliation。非功能性负载、HA 和多供应商矩阵不作为
+  MVP 退出条件。
 
 - [ ] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
 
@@ -606,7 +639,7 @@
 
 只有以下条件同时成立，Phase 8 才能从 `GATED/IN_PROGRESS` 改为 `COMPLETE`：
 
-1. 入库合同 §7—§8 和粗分机设备合同附录已联合批准，Transport 消费已有唯一明确结论。
+1. 独立 Phase 8 粗分入库合同和粗分机设备合同附录已联合批准；Transport 消费唯一结论为两个既有 `RACK_MOVE`。
 2. `MaterialExecution`、`InboundEvidence`、`WmsConfirmation`、Epoch 插件冻结和封闭 Decision 应用器成为唯一生产路径，无旧 owner/双写/兼容路径。
 3. `wes_plugin_sdk` 与 `rough_sorter` 均可独立安装、构建和测试；SDK 只含真实使用的稳定接口。
 4. Web 与 Celery 通过一个显式 Composition Root 绑定同一插件版本、配置 digest 和设备 binding；核心无具体插件 import 或供应商分支。

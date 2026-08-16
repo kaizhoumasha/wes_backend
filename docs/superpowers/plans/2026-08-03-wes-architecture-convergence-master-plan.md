@@ -18,13 +18,16 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
 Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；退役插件活动残留收敛已完成 Tasks 1–5，
-正在执行合入前门禁与独立复审。Phase 8 仍等待真实设备合同附录与供应商一致性边界获批。
+正在执行合入前门禁与独立复审。Phase 8 的粗分业务合同与设备附录已获批，详细实施已进入 `IN_PROGRESS`；供应商一致性、
+现场联调和业务验收尚未完成。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 
-**Inbound/putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`；不构成 Phase 8/9 实施授权）
+**Phase 8 rough-sorter contract baseline:** `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`（`Approved`）
+
+**Phase 9 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
 **Implementation baseline:** `feature/phase7-device-ecs`（Phase 7 核心实现基线；Phase 8/9 仍无业务插件或 producer）
 
@@ -127,7 +130,8 @@ Transport/Adapter/核心所有权。
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8–12 尚未开始。
+Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8 Task 1 合同与设备附录已批准，
+详细实施为 `IN_PROGRESS`；Phase 9–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -513,19 +517,20 @@ Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运
 **Objective:** 在独立 Device/ECS 基础能力已批准、实施并切换为唯一生产路径后，以粗分机交付首个真实执行插件、
 设备合同附录、endpoint/device 绑定和供应商一致性验收。
 
-**Authoritative inputs:** 顶层 SPEC §7/§11.1、`docs/contracts/wms-inbound-putaway-integration-requirements.md` §7—§8、
+**Authoritative inputs:** 顶层 SPEC §7/§11.1、`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`、
 第三方设备统一接口白皮书、Phase 7 Device/ECS 验收证据、粗分机真实拓扑、供应商原始资料和 Phase 6 Transport 基线。
 
 **Entry conditions:** Phase 7 Device/ECS 退出门禁通过；入库合同已由 WMS、WES、RCS 和 ECS 联合批准；粗分机供应商资料
 完整；设备 `task_type`、`event_type`、字段闭集、错误和时限已形成可批准附录。
 
 **Scope:** 粗分机设备合同附录、endpoint/device 绑定、供应商一致性验收和独立插件包；身份与测量证据、WMS 原子 GRN
-绑定和目标、目标恢复、placement/NG Fact、单层货架释放围栏与快照、人工对账，以及 Phase 6 Transport Port 消费；以第一
+绑定、目标 Cell 晚绑定、placement/NG Fact、旧架 release gate 与快照、人工对账，以及两个既有 `RACK_MOVE` 的 Phase 6
+Transport Port 消费；以第一
 个真实插件为依据冻结最小、静态、显式注入的插件 SPI。设备 HTTP 只复用 Phase 7 唯一生产 Adapter。
 
 **Explicit out-of-scope:** 其他分拣线、第二个 WES 设备 HTTP Adapter、公共 HTTP Client、凭据、通用认证配置、WMS wire 合同重定义、通用插件模板。
 
-**Deliverables:** 获批入库合同 §7—§8和粗分机设备合同附录、endpoint/device 绑定、通过一致性验收的供应商 ECS/网关、
+**Deliverables:** 独立获批 Phase 8 粗分入库合同和粗分机设备合同附录、endpoint/device 绑定、通过一致性验收的供应商 ECS/网关、
 可独立构建/测试的粗分机插件、由真实使用驱动的最小 SPI、显式插件 Composition Root 绑定和真实业务验收结果；不新增
 顶层 `InboundTask`、兼容 operation 或 WES HTTP Adapter。
 
@@ -548,7 +553,8 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 全部设备 HTTP 调用仍经 Phase 7 唯一生产 Adapter，核心无供应商特殊分支；最小 SPI 只包含本插件实际使用的稳定接口。
 
 **需要单独编写的子计划:** 唯一详细计划已建立为
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`。其当前状态为 `GATED`；启动编码前必须先完成并批准 Task 1 的合同、设备附录和供应商一致性边界。
+`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`。其当前状态为 `IN_PROGRESS`；Task 1 文档门禁已关闭，
+后续仍按该计划完成实现、供应商一致性和现场验收。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、
 认证或凭据；禁止因供应商内部协议不同而修改 WES 固定路径、公共包络或增加兼容 Adapter。
@@ -557,7 +563,7 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 
 **Objective:** 按真实工作线和获批设备合同附录分别交付自动分拣、人工分拣、满箱交换和复杂出库，不建设通用分拣工作流。
 
-**Authoritative inputs:** 顶层 SPEC §11.2–§12、`docs/contracts/wms-inbound-putaway-integration-requirements.md` §9—§20、
+**Authoritative inputs:** 顶层 SPEC §11.2–§12、`docs/contracts/wms-inbound-putaway-integration-requirements.md`、
 `docs/contracts/wms-outbound-picking-task-integration-requirements.md`、第三方设备统一接口白皮书、每条线真实拓扑与供应商原始资料、
 Phase 8 复审结果、Phase 7 Device/ECS 和 Phase 6 Transport。
 
@@ -723,7 +729,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 3 已完成；Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；Phase 6 与 Phase 7 核心生产基线已完成；Phase 8 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 Task 1 已批准且详细实施为 `IN_PROGRESS`；Phase 9 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -740,17 +746,18 @@ Adapter、设备统一接口和明确插件。
 ## 21. Implementation Tasks
 
 Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。两阶段分别拥有独立可靠对象、生产装配和测试证据；
-已完成的过程计划已归档，不再保留为项目内当前真源。当前动作是完成退役插件活动残留收敛的合入前门禁与独立复审；
-合入后按该计划清理 deletion tombstone 并外部归档。随后才进入 Phase 8 粗分机参考插件的合同准备，且必须先取得真实设备合同附录和供应商一致性输入；不得把 Phase 7 核心测试当成现场设备或业务插件验收。
+已完成的过程计划已归档，不再保留为项目内当前真源。退役插件活动残留收敛仍在完成合入前门禁与独立复审；Phase 8 Task 1
+合同与设备附录已批准，粗分机参考插件实施已进入 `IN_PROGRESS`。供应商一致性和现场闭环仍须在后续任务独立验收；不得把
+Phase 7 核心测试或 Task 1 文档批准当成现场设备或业务插件验收。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
 | --- | --- | --- | --- |
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
 | 3 | Phase 5 后退役插件活动残留收敛 | In progress | Tasks 1–5 已实施；完成合入前门禁和独立复审后合入，tombstone 清理与计划归档只在合入后执行 |
-| 4 | Phase 8 粗分机参考插件准备 | Gated | 先冻结真实设备合同附录、供应商一致性范围和插件业务合同；不得反向修改 Phase 7 公共 wire |
+| 4 | Phase 8 粗分机参考插件实施 | In progress | Task 1 合同与附录已批准；继续实施插件并分别验收供应商一致性与现场闭环 |
 
-Phase 8 尚不可直接编码：供应商原始资料可以作为输入，但必须先形成获批设备合同附录和插件验收边界。
+Phase 8 已获准按详细计划实施；这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 
 ## 22. 工程复审完成摘要
 
@@ -760,7 +767,8 @@ Phase 8 尚不可直接编码：供应商原始资料可以作为输入，但必
 - **Test Review：** 核心、WMS Adapter、供应商一致性和插件测试所有权严格分离；通用不变量先有 successor，旧业务测试后删除。
 - **Performance：** 本轮阶段调整不引入新轮询、缓存、registry 或运行时扫描；后续 worker 必须有界。
 - **Failure modes：** 已覆盖只删目录、短命 Transport 接线、空插件、旧 DeviceCommand 升格、批量误删测试和历史文档残留。
-- **Parallelization：** Phase 5 至 7 已完成；Phase 8 的设备附录、供应商一致性和插件业务计划可并行评审，核心公共 wire 不并行改造。
+- **Parallelization：** Phase 5 至 7 核心基线已完成；Phase 8 Task 1 已批准，后续供应商一致性和插件实施按详细计划推进，
+  核心公共 wire 不并行改造。
 - **NOT in scope：** Phase 7 不实现 Phase 8/9 的业务插件；任何阶段都不得删除 `docs/hardware/`。
 
 ## GSTACK REVIEW REPORT
@@ -775,6 +783,7 @@ Phase 8 尚不可直接编码：供应商原始资料可以作为输入，但必
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段顺序已冻结；Phase 1 至 3、Phase 4 暗构建、Phase 5 零插件基线、Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线均已完成。下一阶段只能在真实设备合同附录和供应商一致性边界获批后进入 Phase 8 插件实施。**
+**VERDICT：十二阶段顺序已冻结；Phase 1 至 7 核心基线均已完成；Phase 8 Task 1 合同与设备附录已批准，详细实施为
+`IN_PROGRESS`；供应商一致性和现场闭环尚未通过；Phase 9 至 12 未开始。**
 
 NO UNRESOLVED DECISIONS

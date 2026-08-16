@@ -37,8 +37,9 @@ migration_strategy: direct_replacement
 7. 什么证据出现后场景才算结束。
 
 本文只定义两个系统共同遵守的交互语言和对外可验证结果，不规定 WMS 内部的代码结构、数据库表、事务技术、任务调度方式或
-WMS/RCS 私有接口。所有标为 `Approved` 的场景，其字段类型、长度、条件必填、完整响应联合、错误码和样例均以本文为准；
-标为 `ReviewRequired` 的场景允许保留待联合评审项。禁止依据旧文档、旧代码或示例自行增加兼容字段。
+WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 的场景，其字段类型、条件必填、完整响应联合和错误码以该场景
+链接的独立合同真源为准，本文只解释参数来源和可观察流程。标为 `ReviewRequired` 的场景允许保留待联合评审项。禁止依据旧文档、
+旧代码或示例自行增加兼容字段。
 
 本文出现“可靠保存”“一致生效”等表述时，只要求成功响应已经具有可恢复、不可重复执行的对外效果。WMS 可以使用其现有技术能力
 实现这些保证，WES 不要求 WMS 采用指定表结构、消息组件或后台任务框架。
@@ -53,11 +54,13 @@ WMS/RCS 私有接口。所有标为 `Approved` 的场景，其字段类型、长
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
 | WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES 代码、OpenAPI 和本地行为证据已对齐两族 DTO；WMS 实现、双方联调和现场验收仍待完成 |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的 O1～O7 只用于联合评审，批准前禁止实现 |
-| 自动入库与上架 | `ReviewRequired` | `NOT_READY` | 附录 B/C 的 I1～I4、P1～P8 只用于联合评审，批准前禁止实现 |
+| Phase 8 粗分自动入库 | `Approved` | `NOT_IMPLEMENTED` | 附录 B 的 I1～I4 已冻结；WMS/WES 可按独立获批合同实施，尚无联调证据 |
+| Phase 9 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的 P1～P8 只用于联合评审，批准前禁止实现 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-F-01、T1～T3 的合同生命周期为 `Approved`，当前两族 DTO 的 WES 本地实现状态为 `ALIGNED`。基础通信或 Transport
-验收通过，不能证明自动入库、自动出库已经通过；设备动作验收也不能替代 WMS 库存和业务验收。
+F-01、T1～T3 与 I1～I4 的合同生命周期为 `Approved`；当前 Transport 两族 DTO 的 WES 本地实现状态为 `ALIGNED`，I1～I4
+仍未实施和联调。基础通信或 Transport 验收通过，不能证明粗分业务、自动上架或自动出库已经通过；设备动作验收也不能替代
+WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
 
@@ -119,13 +122,13 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 2. WMS/RCS 团队实现搬运时阅读第 3 节的 T1～T3。
 3. 按第 4～7 节确认实现边界、交付物、不提供的接口和文档治理规则。
 4. WMS 出库团队按附录 A 的 O1～O7 顺序参加联合评审；转为 `Approved` 后才实现。
-5. WMS 入库团队按附录 B 的 I1～I4 顺序参加联合评审；转为 `Approved` 后才实现。
+5. WMS 入库团队按附录 B 的 I1～I4 和其链接的获批粗分合同实施与联调。
 6. WMS 上架团队按附录 C 的 P1～P8 顺序参加联合评审；转为 `Approved` 后才实现。
 
 ### 0.6 外发文档完整性
 
-- WMS 团队只需要本文即可实现所有标为 `Approved` 的交互，不依赖 WES 项目内部文档、代码或测试。
-- `Approved` 场景必须在本文给出完整字段、条件必填、响应联合、错误处理、伪代码和正确/错误样例。
+- WMS 团队只需要本文及其直接链接的独立合同即可实现标为 `Approved` 的交互，不依赖 WES 内部代码或测试。
+- `Approved` 场景的完整字段、条件必填、响应联合和错误处理必须在其独立合同中闭合；本文提供参数来源和场景顺序。
 - `ReviewRequired` 场景可以保留业务流程和候选字段，但未冻结部分必须明确标记“待联合评审”，不能要求 WMS 根据内部引用补全。
 - WES 项目内部合同只用于文档治理，不向 WMS 增加本文之外的义务；内部合同变更只有同步更新本文后才对 WMS 生效。
 - 本文内部出现冲突时必须停止实现并先修正文档，不能在代码中建立双路径。
@@ -2041,12 +2044,12 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 
 ### 5.1 WMS 团队必须交付
 
-当前只交付 `F-01`、T1～T3 和对应联调证据。O1～O7、I1～I4、P1～P8 只需要进入待评审清单，不需要提交实现、OpenAPI 或
-占位 JSON 样例。
+当前合同放行范围包含 `F-01`、T1～T3、I1～I4；是否已经进入具体实现迭代以各阶段实施计划为准。O1～O7、P1～P8 只进入
+待评审清单，不提交实现、OpenAPI 或占位 JSON 样例。
 
 | 交付物 | 最低要求 |
 | --- | --- |
-| 当前场景接口矩阵 | 对 F-01、T1～T3 标明负责人、路径、operation 和实现状态；O1～O7、I1～I4、P1～P8 只列为 `ReviewRequired` |
+| 当前场景接口矩阵 | 对 F-01、T1～T3、I1～I4 标明负责人、路径、operation 和实现状态；O1～O7、P1～P8 只列为 `ReviewRequired` |
 | T1 OpenAPI | WMS 提供其服务端 `POST /api/v1/wes/transport-requests` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
 | T2/T3 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 按其中 T2/T3 operation 实现客户端，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
@@ -2099,12 +2102,12 @@ WES 也会逐步复制出一套不完整的 WMS 业务逻辑。
 
 ## 7. 文档治理
 
-本文是交付 WMS 团队的 WES/WMS 公共接口真源。修改公共接口时，先由 WMS/WES 联合评审并更新本文的场景、参数规则和固定 JSON
-样例，再由双方同步各自内部资料和实现。任何内部文档或代码与本文冲突时，不能据此要求对方兼容；应先修正本文并重新确认版本。
-未发布系统直接切换新合同并清理开发/测试数据，不保留兼容路径。
+本文是交付 WMS 团队的场景化入口；每个场景链接的独立合同是严格 wire 真源。修改公共接口时，先由 WMS/WES 联合评审并更新
+独立合同，再同步本文的流程、参数来源和场景说明。任何内部文档或代码与获批合同冲突时，不能据此要求对方兼容；应先修正合同
+并重新确认版本。未发布系统直接切换新合同并清理开发/测试数据，不保留兼容路径。
 
 WES 项目内部保留了一份 2026-03 的 WMS 交互约定初稿，保存其原始命名、样例和当时假设，但它不是当前实施真源。WMS 团队
-不需要取得或查阅该内部资料；所有当前 Approved 的对接要求都已经完整写入本文。
+不需要取得或查阅该内部资料；当前 Approved 对接要求只来自本文链接的当前合同，不来自历史初稿。
 
 本文只记录接口是否开发放行，以及 WES 是否达到当前合同的实施对齐门禁；不记录测试数量、具体代码进度、部署证据或现场上线进度。
 这些易变化的实施明细由计划、验收报告和 Runbook 维护。
@@ -2354,12 +2357,12 @@ operation = outbound.picking_task.transport_recovery_decided@v1
 `transport_recovery_decided` 的 `replacement_transport_plan` 来自 WMS 人工核对后的来源/目标决定，不能由 RCS 瞬时失败码自动生成。
 位置未知时禁止发送替代计划，必须对账。待联合评审：替代计划 DTO、响应联合和完整 JSON 样例尚未冻结。
 
-## 附录 B. 粗分自动入库场景（ReviewRequired）
+## 附录 B. Phase 8 粗分自动入库场景（Approved）
 
-> **待联合评审：** 本节只用于确认业务流程和候选交互语言，不构成开发放行。未冻结的字段、响应联合和场景必须保持待补，
-> WMS 开发人员不得自行补充 operation、字段或兼容分支。
+> 本附录面向联调人员说明场景顺序；严格字段、结果联合和失败门禁以
+> [`wms-rough-sorter-inbound-integration-requirements.md`](../contracts/wms-rough-sorter-inbound-integration-requirements.md) 为唯一真源。
 
-### I1：料盘扫码和测量完成，WES 请求 GRN 准入及目标分配
+### I1：料盘扫码和测量完成，WES 请求 GRN 准入
 
 触发条件：ECS 已完成六合一码、直径、厚度和外形检测，WES 已保存原始证据，而且保存后不再修改。
 
@@ -2371,63 +2374,60 @@ operation = inbound.material.admission_decide@v1
 | 请求参数 | 来源 |
 | --- | --- |
 | `material_execution_id` | WES 为当前实物创建的本地执行身份 |
-| `scan_evidence_id/six_in_one/measurements` | ECS 原始上报被 WES 持久化并校验后的证据 |
+| `material_trace_id/six_in_one/measurements/shape_result` | ECS `SCAN_COMPLETED` 被 WES 持久化并校验后的证据 |
 | `line_run_epoch_id/workline_code` | WES 当前粗分线运行实例和部署配置 |
 | `source_position` | WES 可靠位置投影中的实际扫码交接位 |
-| `available_source_rack` | WES 已确认到位的实际单层货架和槽位；不代表容量合格 |
+WMS 根据主账匹配 GRN、建立或读取 `pkg_id` 并验证业务准入，但此时不分配目标 Cell：
 
-WMS 根据主账匹配 GRN、建立或读取 `pkg_id`、验证业务准入、选择兼容 Cell、创建目标预留并分配
-`rack_target_generation`。这些业务结果必须一致生效后再生成：
-
-- `ACCEPT`：`pkg_id + inbound_admission_id + target_assignment_id + target_position + rack_target_generation + placement_sequence`；
+- `ACCEPT`：`pkg_id + inbound_admission_id`；
 - `REJECT`：稳定原因和 NG 目的地；
 - `WAIT`：暂不能形成决定的原因和等待时间。
 
-`ACCEPT` 只授权目标，不代表入库完成。待联合评审：三个结果分支的完整字段、条件必填、错误码和 JSON 样例尚未冻结。
+`ACCEPT` 只授权进入正常设备链，不代表目标或入库完成。
 
-### I2：PUT 前目标不可执行，WES 请求 WMS 重新分配
+### I2：料盘到达流水线出口后，WES 请求目标 Cell
 
 ```text
 POST /api/v1/wes/decisions
-operation = inbound.material.target_recovery_decide@v1
+operation = inbound.material.target_decide@v1
 ```
 
 | 请求参数 | 来源 |
 | --- | --- |
-| `material_execution_id/inbound_admission_id` | I1 请求和 WMS 响应原值 |
-| `failed_target_assignment_id` | I1 `ACCEPT` 或前次 `REASSIGNED` 的目标身份 |
-| `failure_evidence` | ECS/PLC 明确的占用、不可达或身份不符证据，经 WES 持久化 |
+| `material_execution_id/material_trace_id/inbound_admission_id` | I1 请求和 WMS 响应原值 |
+| `source_position` | ECS 已确认的流水线出口位置 |
+| `source_rack` | 当前实际到位的单层货架 |
 
-WMS 必须一致处理旧预留，并根据最新主账生成 `REASSIGNED/REJECT/WAIT`。`REASSIGNED` 必须创建新目标身份和新
-`rack_target_generation`。料盘已经进入不可逆 PUT 或位置未知时，WES 禁止调用该接口。
+WMS 根据最新主账返回 `ASSIGNED/NO_AVAILABLE_CELL/REJECT/WAIT`。只有 `ASSIGNED` 携带唯一精确 Cell；无 Cell 时 WES 不下发
+出料命令，并进入 I4 换架计划请求。
 
 ### I3：料盘完成正常 PUT 或 NG 到位，WES 报告最终事实
 
 | 物理结果 | WES → WMS 接口 | 参数来源 | WMS 对外结果 |
 | --- | --- | --- | --- |
-| 正常 PUT 到单层货架 Cell | `inbound.material.placement_report@v1` | 执行和 `pkg_id` 来自 I1；目标/序号来自 I1/I2 响应；`command_code/placed_at` 来自 ECS 确定 PUT 结果 | 验证准入和预留，写入最终位置，消耗目标预留，完成该盘 GRN 入库，返回 `RECORDED` |
-| 料盘到粗分 NG 交接位 | `inbound.material.ng_placement_report@v1` | 执行和扫码证据来自 I1；原因/NG 目的地来自 WMS 拒绝；`ng_evidence_id/ng_position` 来自 ECS 实际到位 | 记录业务拒绝和实际 NG 位置，返回 `RECORDED` |
+| 正常 PUT 到单层货架 Cell | `inbound.material.placement_report@v1` | 严格字段为 `material_execution_id`、`material_trace_id`、`pkg_id`、`inbound_admission_id`、`target_assignment_id`、`target_position`、`placement_sequence`、`command_code`、`placed_at`；来源依次为 I1、I2 与 ECS 确定 PUT 结果 | 验证准入、trace 和目标，写入最终位置，完成该盘 GRN 入库，返回 `RECORDED/DUPLICATE` |
+| 料盘到粗分 NG 交接位 | `inbound.material.ng_placement_report@v1` | 严格字段为 `material_execution_id`、`material_trace_id`、可选非空 `pkg_id`、`ng_evidence_id`、`ng_position`、`reason_code`、`business_context=ROUGH_SORT_INBOUND`；来源为 I1、WMS 拒绝与 ECS 到位证据 | 记录业务拒绝和实际 NG 位置，返回 `RECORDED/DUPLICATE` |
 
 设备命令成功只生成 WES 可以报告的物理证据，不能替代 WMS 的 `RECORDED`。NG 后续人工处置由 WMS 管理，不再回调 WES。
 
-### I4：WMS 决定释放单层货架，或完成人工对账
+### I4：WES 请求稳定换架计划，或接收人工对账
 
-WMS 决定释放货架后，主动通知 WES：
+无可用 Cell 时，WES 请求：
 
 ```text
-POST /api/v1/wms/events
-operation = inbound.source_rack.release_decided@v1
+POST /api/v1/wes/decisions
+operation = inbound.source_rack.replacement_plan_decide@v1
 ```
 
-| 回调参数 | 如何生成 |
+| 响应参数 | 如何生成 |
 | --- | --- |
-| `release_decision_id` | WMS 在一次不可撤回的释放决定中生成 |
-| `rack_id/rack_slot_code` | WMS 正在停止新目标分配的单层货架 |
-| `reason` | WMS 主账计算得到 `FULL/NO_COMPATIBLE_CELL/POLICY_RELEASE` |
-| `target_preparation` | WMS 是否要求准备替换货架，`NONE/REPLACE` |
-| `reserved_through_rack_target_generation` | 释放决定生效时，该货架所有已提交 `ACCEPT/REASSIGNED` 的最高代际；没有预留时为 0 |
+| `rack_replacement_id` | WMS 生成；同一计划重试返回原身份和原内容 |
+| `old_loaded_rack` | 旧架 `rack_id + source + target + target_face` |
+| `new_empty_rack` | 新架 `rack_id + source + target + target_face` |
 
-WMS 释放决定生效后不得再为该货架生成更高目标代际。WES 收到后停止新准入，但必须完成水位内已经批准的料盘。
+WES 在旧架 release gate 闭合后，以 `(rack_replacement_id, OLD_OUT)` 和 `(rack_replacement_id, NEW_IN)` 作为两条腿的业务
+幂等键，分别持久化映射到不同的全局唯一 UUIDv7 `client_request_id`，再创建两个独立 `RACK_MOVE`。同一业务键重试复用原
+UUIDv7；两任务可以同时提交，实际顺序由 RCS 控制；新架 T3 成功且身份/位置/朝向匹配后可以重新执行 I2，不等待旧架。
 
 人工对账完成后，WMS 主动通知 WES：
 
@@ -2435,8 +2435,12 @@ WMS 释放决定生效后不得再为该货架生成更高目标代际。WES 收
 operation = inbound.execution.reconciliation_decided@v1
 ```
 
-WMS 操作员核对 WMS 主账、现场扫码和 WES 提供的原始证据后，生成 `reconciliation_id`、受影响执行集合、每个 `pkg_id` 的
-权威位置、`CONTINUE/ABORT` 和稳定原因。该回调不能改写历史设备命令或搬运任务结果。
+WMS 操作员核对 WMS 主账、现场扫码和 WES 提供的原始证据后，严格发送 `reconciliation_id`、
+`affected_execution_ids`、`authoritative_positions`、`decision=CONTINUE|ABORT` 和 `reason_code`。每个
+`authoritative_positions[]` 只含 `material_execution_id`、`material_trace_id`、可选非空 `pkg_id` 和必填可空 `position`，并与
+受影响执行一一对应。`CONTINUE` 要求本消息全部 `position` 非 `null`；任一 `position=null` 时只能 `ABORT`。已知对象继续、
+缺失对象中止必须拆成不同 reconciliation 决定/消息，不能在同一全局 decision 中部分继续。首次持久化返回 `RECEIVED`，相同
+Payload 重放返回 `DUPLICATE`。该回调不能改写历史设备命令或搬运任务结果。
 
 ## 附录 C. 满箱交换和自动上架场景（ReviewRequired）
 

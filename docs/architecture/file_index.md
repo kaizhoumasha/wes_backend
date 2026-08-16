@@ -38,7 +38,8 @@
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
 | `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库推荐端点、Payload、返回 JSON、幂等和联调评审基线；正式 Schema 待双方冻结 |
-| `docs/contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES 粗分逐盘入库、满箱交换和自动上架的固定端点、严格 DTO、幂等、物理门禁和联调评审基线；正式 Schema 待双方冻结 |
+| `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` | Phase 8 粗分逐盘入库的获批业务合同；目标 Cell 晚绑定、五态生命周期和两个既有 `RACK_MOVE` 的唯一真源 |
+| `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 9 满箱交换和自动上架的严格 DTO、幂等、物理门禁和联调评审基线；当前为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand、设备统一接口与 WorkLine 插件边界 |
