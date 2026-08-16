@@ -16,6 +16,8 @@
 #   CAPABILITY_IMPLEMENTATION_IMPORT     capability 不得 import wms_integration/device services/models
 #   INBOUND_NORMALIZER_OWNERSHIP         capability 不得持有 inbound normalizer (WmsEventPort 等)
 #   WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY  Plugin 不得依赖持久化/transport/provider 实现
+#   PLUGIN_SDK_DEPENDENCY_BOUNDARY       独立 SDK 只依赖标准库与自身模块
+#   CORE_PLUGIN_DEPENDENCY_BOUNDARY      核心 src/ 不得 import 具体工作线插件
 #   SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY System Capability 不得依赖 Repository 或控制事务
 #   RUNTIME_GENERATED_INDEX_STATICITY    运行时生成索引不得扫描或动态 import
 #   RUNTIME_EXTENSION_GENERIC_ORCHESTRATION 编排/EffectApplier 不得包含 Workline 业务分支
@@ -36,6 +38,8 @@ RULE_INBOUND_NORMALIZER_OWNERSHIP="INBOUND_NORMALIZER_OWNERSHIP"
 RULE_LEGACY_RUNTIME_IMPORT="LEGACY_RUNTIME_IMPORT"
 RULE_WORKLINE_INBOX_RETIREMENT="WORKLINE_INBOX_RETIREMENT"
 RULE_WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY="WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY"
+RULE_PLUGIN_SDK_DEPENDENCY_BOUNDARY="PLUGIN_SDK_DEPENDENCY_BOUNDARY"
+RULE_CORE_PLUGIN_DEPENDENCY_BOUNDARY="CORE_PLUGIN_DEPENDENCY_BOUNDARY"
 RULE_SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY="SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY"
 RULE_RUNTIME_GENERATED_INDEX_STATICITY="RUNTIME_GENERATED_INDEX_STATICITY"
 RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION="RUNTIME_EXTENSION_GENERIC_ORCHESTRATION"
@@ -48,7 +52,7 @@ Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--a
   --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY RUNTIME_GENERATED_INDEX_STATICITY RUNTIME_EXTENSION_GENERIC_ORCHESTRATION LEGACY_CAPABILITY_ROUTING_IMPORT
+规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT PLUGIN_SDK_DEPENDENCY_BOUNDARY CORE_PLUGIN_DEPENDENCY_BOUNDARY WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY RUNTIME_GENERATED_INDEX_STATICITY RUNTIME_EXTENSION_GENERIC_ORCHESTRATION LEGACY_CAPABILITY_ROUTING_IMPORT
 EOF
 }
 
@@ -275,6 +279,342 @@ rule_workline_inbox_retirement() {
         emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "$file" "$line" \
             "$reason" \
             "改用 RuntimeInbox 当前入口；历史证据只能加入精确文件/签名 allowlist"
+    done <<<"$scanner_output"
+}
+
+# --- 独立 SDK、核心与具体插件依赖方向 ---
+rule_plugin_package_boundaries() {
+    local scanner_output="" scanner_status=0
+    set +e
+    scanner_output="$(run_python - <<'PY'
+import ast
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ.get("PLUGIN_BOUNDARY_GUARDRAIL_FIXTURE_ROOT", "."))
+stdlib = sys.stdlib_module_names
+
+
+def python_files(path: Path):
+    if path.exists():
+        yield from sorted(candidate for candidate in path.rglob("*.py") if "__pycache__" not in candidate.parts)
+
+
+def parse(path: Path):
+    try:
+        return ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+    except SyntaxError as error:
+        return error
+
+
+def imports(tree: ast.AST):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name, node.lineno
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            yield node.module, node.lineno
+
+
+def import_aliases(tree: ast.AST):
+    aliases = {
+        "__import__": "builtins.__import__",
+        "dict": "builtins.dict",
+        "list": "builtins.list",
+        "range": "builtins.range",
+        "set": "builtins.set",
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                aliases[bound] = alias.name if alias.asname else bound
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            for alias in node.names:
+                if alias.name != "*":
+                    aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def resolve_name(node: ast.AST, aliases: dict[str, str]):
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        parent = resolve_name(node.value, aliases)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    if isinstance(node, ast.Call):
+        return resolve_name(node.func, aliases)
+    return ""
+
+
+def apply_simple_assignment(statement: ast.stmt, aliases: dict[str, str], constants: dict[str, str]):
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return
+    targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+    names = [target.id for target in targets if isinstance(target, ast.Name)]
+    if not names or statement.value is None:
+        return
+    if isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
+        for name in names:
+            constants[name] = statement.value.value
+        return
+    if isinstance(statement.value, (ast.Name, ast.Attribute)):
+        canonical = resolve_name(statement.value, aliases)
+        for name in names:
+            aliases[name] = canonical
+        return
+    if isinstance(statement.value, ast.Call) and resolve_name(statement.value.func, aliases) == "pathlib.Path":
+        for name in names:
+            aliases[name] = "pathlib.Path"
+
+
+def module_flow(tree: ast.Module, aliases: dict[str, str]):
+    constants = {}
+    for statement in tree.body:
+        apply_simple_assignment(statement, aliases, constants)
+    return constants
+
+
+def declared_functions(statements):
+    for statement in statements:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield statement
+        elif isinstance(statement, ast.ClassDef):
+            yield from declared_functions(statement.body)
+
+
+def straight_function_flows(tree: ast.Module, module_aliases: dict[str, str], module_constants: dict[str, str]):
+    for function in declared_functions(tree.body):
+        aliases = dict(module_aliases)
+        constants = dict(module_constants)
+        for statement in function.body:
+            if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr, ast.Return)):
+                value = statement.value
+                if value is not None:
+                    yield dict(aliases), dict(constants), (value,)
+            apply_simple_assignment(statement, aliases, constants)
+
+
+def import_time_expressions(statements):
+    for statement in statements:
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr)):
+            value = statement.value
+            if value is not None:
+                yield value
+        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield from statement.decorator_list
+            yield from statement.args.defaults
+            yield from (default for default in statement.args.kw_defaults if default is not None)
+        elif isinstance(statement, ast.ClassDef):
+            yield from statement.decorator_list
+            yield from statement.bases
+            yield from (keyword.value for keyword in statement.keywords)
+            yield from import_time_expressions(statement.body)
+
+
+DYNAMIC_CALLS = {
+    "builtins.__import__",
+    "importlib.import_module",
+    "importlib.metadata.entry_points",
+    "glob.glob",
+    "glob.iglob",
+    "os.scandir",
+    "os.walk",
+    "pathlib.Path.glob",
+    "pathlib.Path.iterdir",
+    "pathlib.Path.rglob",
+    "pkgutil.iter_modules",
+}
+MUTABLE_CONSTRUCTORS = {"builtins.dict", "builtins.list", "builtins.set", "collections.defaultdict"}
+ALLOWED_SDK_MODULE_CALLS = {"builtins.range", "dataclasses.dataclass", "pathlib.Path", "typing.TypeVar"}
+
+
+def sdk_dynamic_violations(tree: ast.Module, aliases: dict[str, str], constants: dict[str, str]):
+    for expression in import_time_expressions(tree.body):
+        for node in ast.walk(expression):
+            if isinstance(node, (ast.Dict, ast.List, ast.Set)):
+                yield node.lineno, "SDK import-time 定义全局可变集合"
+            elif isinstance(node, ast.Call):
+                canonical = resolve_name(node.func, aliases)
+                if canonical in DYNAMIC_CALLS:
+                    yield node.lineno, f"SDK 模块执行动态扫描/导入: {canonical}"
+                if canonical in MUTABLE_CONSTRUCTORS:
+                    yield node.lineno, f"SDK import-time 定义全局可变集合: {canonical}"
+                elif canonical not in DYNAMIC_CALLS and canonical not in ALLOWED_SDK_MODULE_CALLS and "." in canonical:
+                    yield node.lineno, f"SDK import-time 计划外依赖实例化: {canonical}"
+    for function_aliases, _function_constants, expressions in straight_function_flows(tree, aliases, constants):
+        for expression in expressions:
+            for node in ast.walk(expression):
+                if not isinstance(node, ast.Call):
+                    continue
+                canonical = resolve_name(node.func, function_aliases)
+                if canonical in DYNAMIC_CALLS:
+                    yield node.lineno, f"SDK 模块执行动态扫描/导入: {canonical}"
+
+
+def dynamic_import_targets(tree: ast.Module, aliases: dict[str, str], constants: dict[str, str]):
+    for expression in import_time_expressions(tree.body):
+        for node in ast.walk(expression):
+            if not isinstance(node, ast.Call):
+                continue
+            canonical = resolve_name(node.func, aliases)
+            if canonical not in {"builtins.__import__", "importlib.import_module"}:
+                continue
+            target_node = node.args[0] if node.args else None
+            if isinstance(target_node, ast.Constant) and isinstance(target_node.value, str):
+                target = target_node.value
+            elif isinstance(target_node, ast.Name):
+                target = constants.get(target_node.id)
+            else:
+                target = None
+            yield canonical, target, node.lineno, True
+    for function_aliases, function_constants, expressions in straight_function_flows(tree, aliases, constants):
+        for expression in expressions:
+            for node in ast.walk(expression):
+                if not isinstance(node, ast.Call):
+                    continue
+                canonical = resolve_name(node.func, function_aliases)
+                if canonical not in {"builtins.__import__", "importlib.import_module"}:
+                    continue
+                target_node = node.args[0] if node.args else None
+                if isinstance(target_node, ast.Constant) and isinstance(target_node.value, str):
+                    target = target_node.value
+                elif isinstance(target_node, ast.Name):
+                    target = function_constants.get(target_node.id)
+                else:
+                    target = None
+                yield canonical, target, node.lineno, False
+
+
+def emit(rule: str, path: Path, line: int, reason: str, fix: str):
+    try:
+        display = path.relative_to(root).as_posix()
+    except ValueError:
+        display = path.as_posix()
+    print(f"{rule}\t{display}\t{line}\t{reason}\t{fix}")
+
+
+sdk_root = root / "packages/wes_plugin_sdk/src/wes_plugin_sdk"
+for path in python_files(sdk_root):
+    tree = parse(path)
+    if isinstance(tree, SyntaxError):
+        emit(
+            "PLUGIN_SDK_DEPENDENCY_BOUNDARY",
+            path,
+            tree.lineno or 1,
+            "插件 SDK 文件无法解析，依赖边界无法确认",
+            "修复 Python 语法后重新运行门禁",
+        )
+        continue
+    aliases = import_aliases(tree)
+    constants = module_flow(tree, aliases)
+    for module, line in imports(tree):
+        top = module.split(".", maxsplit=1)[0]
+        if top not in stdlib | {"wes_plugin_sdk"}:
+            emit(
+                "PLUGIN_SDK_DEPENDENCY_BOUNDARY",
+                path,
+                line,
+                f"插件 SDK import 非标准库或 WES 内部/框架模块: {module}",
+                "SDK 只依赖 Python 标准库和 wes_plugin_sdk 自身模块",
+            )
+    for line, detail in sdk_dynamic_violations(tree, aliases, constants):
+        emit(
+            "PLUGIN_SDK_DEPENDENCY_BOUNDARY",
+            path,
+            line,
+            f"动态扫描或全局可变集合: {detail}",
+            "装饰器只附加不可变静态元数据，不扫描、不注册、不维护全局可变集合",
+        )
+
+
+for path in python_files(root / "src"):
+    tree = parse(path)
+    if isinstance(tree, SyntaxError):
+        continue
+    aliases = import_aliases(tree)
+    constants = module_flow(tree, aliases)
+    for module, line in imports(tree):
+        if module == "workline_plugins" or module.startswith("workline_plugins."):
+            emit(
+                "CORE_PLUGIN_DEPENDENCY_BOUNDARY",
+                path,
+                line,
+                f"核心 src/ import 具体工作线插件: {module}",
+                "只在顶层 deployment Composition Root 显式装配具体插件",
+            )
+    for canonical, target, line, at_import_time in dynamic_import_targets(tree, aliases, constants):
+        if target and (target == "workline_plugins" or target.startswith("workline_plugins.")):
+            emit(
+                "CORE_PLUGIN_DEPENDENCY_BOUNDARY",
+                path,
+                line,
+                f"核心 src/ 动态加载具体工作线插件: {canonical}({target})",
+                "只在顶层 deployment Composition Root 显式装配具体插件",
+            )
+        elif target is None and at_import_time:
+            emit(
+                "CORE_PLUGIN_DEPENDENCY_BOUNDARY",
+                path,
+                line,
+                f"核心 src/ import-time 动态加载目标不可判定: {canonical}",
+                "使用可静态确认的核心模块；具体插件只在 deployment Composition Root 装配",
+            )
+
+
+plugin_root = root / "workline_plugins"
+if plugin_root.exists():
+    for package_root in sorted(path for path in plugin_root.iterdir() if path.is_dir()):
+        source_root = package_root / "src"
+        own_modules = {path.name for path in source_root.iterdir() if path.is_dir()} if source_root.exists() else set()
+        allowed = stdlib | own_modules | {"wes_plugin_sdk"}
+        for path in python_files(source_root):
+            tree = parse(path)
+            if isinstance(tree, SyntaxError):
+                emit(
+                    "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+                    path,
+                    tree.lineno or 1,
+                    "具体插件文件无法解析，依赖边界无法确认",
+                    "修复 Python 语法后重新运行门禁",
+                )
+                continue
+            aliases = import_aliases(tree)
+            constants = module_flow(tree, aliases)
+            for module, line in imports(tree):
+                top = module.split(".", maxsplit=1)[0]
+                if top not in allowed:
+                    emit(
+                        "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+                        path,
+                        line,
+                        f"具体插件 import SDK/自身/标准库之外的实现: {module}",
+                        "插件只依赖 wes_plugin_sdk、插件自身与 Python 标准库",
+                    )
+            for canonical, target, line, at_import_time in dynamic_import_targets(tree, aliases, constants):
+                target_root = target.split(".", maxsplit=1)[0] if target else None
+                if target_root not in allowed and (target is not None or at_import_time):
+                    emit(
+                        "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+                        path,
+                        line,
+                        f"具体插件动态加载禁用或不可判定模块: {canonical}({target})",
+                        "插件只静态依赖 wes_plugin_sdk、插件自身与 Python 标准库",
+                    )
+PY
+)"
+    scanner_status=$?
+    set -e
+    if [[ $scanner_status -ne 0 ]]; then
+        emit_violation "$RULE_PLUGIN_SDK_DEPENDENCY_BOUNDARY" "packages/wes_plugin_sdk" "1" \
+            "插件依赖边界 scanner 执行失败，拒绝 fail open" \
+            "修复 scanner 后重新运行 architecture guardrail"
+        return
+    fi
+    while IFS=$'\t' read -r rule file line reason fix; do
+        [[ -z "$rule" ]] && continue
+        emit_violation "$rule" "$file" "$line" "$reason" "$fix"
     done <<<"$scanner_output"
 }
 
@@ -1102,14 +1442,17 @@ rule_workline_inbox_retirement
 rule_capability_implementation_import
 rule_inbound_normalizer_ownership
 }
-if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" && "${RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
+if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" && "${RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" && "${PLUGIN_BOUNDARY_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
     run_established_guardrails
 fi
-if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" ]]; then
+if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" && "${PLUGIN_BOUNDARY_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
     rule_runtime_extension_platform
 fi
+if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" ]]; then
+    rule_plugin_package_boundaries
+fi
 
-if [[ "$GUARDRAIL_MODE" != "warn" && "${RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
+if [[ "$GUARDRAIL_MODE" != "warn" && "${RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" && "${PLUGIN_BOUNDARY_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
     validate_allowlist
 fi
 

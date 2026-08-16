@@ -89,6 +89,14 @@ SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     "tests/resilience/test_runtime_inbox_failure_state_machine.py",
     "tests/resilience/test_wms_circuit_breaker.py",
 )
+PLUGIN_SDK_REVIEWED_NONE_PATHS = (
+    "packages/wes_plugin_sdk/pyproject.toml",
+    "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py",
+    "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py",
+    "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py",
+    "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
+    "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py",
+)
 
 
 def _write_mapping(
@@ -323,6 +331,38 @@ def test_unmapped_plugin_sdk_asset_is_a_core_candidate_and_fails_closed() -> Non
     assert is_candidate(changed_path)
     with pytest.raises(SelectorError, match="候选路径未配置 mapping/NONE"):
         select_heavy_tests([changed_path], config)
+
+
+def test_plugin_sdk_assets_are_exact_reviewed_none_mappings() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    for changed_path in PLUGIN_SDK_REVIEWED_NONE_PATHS:
+        matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
+        assert len(matching_mappings) == 1
+        mapping = matching_mappings[0]
+        assert mapping.heavy_tests == ()
+        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+        assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
+def test_plugin_sdk_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    changed_path = PLUGIN_SDK_REVIEWED_NONE_PATHS[0]
+    drifted_path = tmp_path / changed_path
+    drifted_path.parent.mkdir(parents=True)
+    drifted_path.write_bytes((REPO_ROOT / changed_path).read_bytes() + b"\n# drift\n")
+
+    with pytest.raises(SelectorError, match="reviewed mapping 内容指纹不匹配"):
+        select_heavy_tests([changed_path], config, repo_root=tmp_path)
+
+
+def test_core_composition_root_keeps_its_heavy_owners() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["src/app/device/composition.py"], config) == [
+        DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+    ]
 
 
 def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:

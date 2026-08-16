@@ -151,6 +151,38 @@ heavy_tests = []
 source_glob = "pyproject.toml"
 heavy_tests = []
 
+# 独立插件 SDK 仅定义标准库不可变类型、只读协议和静态元数据；当前精确内容由架构测试承接。
+# 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/pyproject.toml"
+heavy_tests = []
+reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85359e8386954"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "668f02ca03a3ac76b73588a7404e6307f9e3e565fb2f80e288ec7f552163fc86"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
+heavy_tests = []
+reviewed_content_sha256 = "0e08feb2f50191b7ae578873becdbc4190e24f1472496b5aed2e23fa0ceea096"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py"
+heavy_tests = []
+reviewed_content_sha256 = "1b4e7eef627d78f29dde2acaf5f519f86bda15ec186736d641af5d82b750a3f5"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
+heavy_tests = []
+reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa35126a8eb4c"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
+heavy_tests = []
+reviewed_content_sha256 = "305414911ba52023d32ace89b7db8eae786205ec0de877fceb34168d58050c72"
+
 # 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。
 [[mapping]]
 source_glob = "scripts/{architecture-guardrails.allowlist,architecture-guardrails.sh,check_business_legacy_absence_gate.py,check_fast_test_budget.py,generate_legacy_matrix.py,run_selected_heavy_tests.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}"
