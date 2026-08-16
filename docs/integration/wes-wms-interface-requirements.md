@@ -1331,10 +1331,10 @@ T1 失败分类不得混用：
 | 同一身份对应不同内容、同一 `transport_task_id` 更换提交身份，或对象已绑定另一个已接纳且未闭合的搬运任务 | `409 / CONFLICT` | 否；进入人工对账 |
 
 活动资源冲突的最小公共范围固定为：任一未闭合 TransportTask 绑定的 `rack_id` 不能再属于另一个未闭合的货架或 Bin 任务；同一
-`container_id` 不能同时属于两个未闭合的 Bin 任务；同一完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 不能同时作为两个未闭合任务的
-独占来源或目标。Bin 任务必须绑定其所有来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，防止搬架与在该架取放 Bin 并发。
-`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有 T1 ACK 中的 `transport_task_id` 都回显本次请求中已解析的
-合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
+`container_id` 不能同时属于两个未闭合的 Bin 任务。完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 用于请求内位置唯一性、成员目标
+校验和结果匹配，不另建活动资源绑定；Bin 任务必须绑定其所有来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，防止搬架与
+在该架取放 Bin 并发。`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有 T1 ACK 中的 `transport_task_id` 都
+回显本次请求中已解析的合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
 
 `RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
 `400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。T1 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有
