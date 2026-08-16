@@ -223,6 +223,22 @@ async def test_conflict_without_an_associated_task_has_empty_data(outcome_servic
 
 
 @pytest.mark.asyncio
+async def test_record_callback_rejects_nul_in_persisted_operation(outcome_service: TransportService) -> None:
+    operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
+    operation = "transport.task.unknown@v1\x00"
+    message = {"operation_id": operation_id, "operation": operation}
+
+    with pytest.raises(TransportContractError, match="operation must not contain NUL"):
+        await outcome_service.record_callback(
+            operation_id=operation_id,
+            operation=operation,
+            message=message,
+            payload=None,
+            rejection_reason_code="UNSUPPORTED_OPERATION",
+        )
+
+
+@pytest.mark.asyncio
 async def test_lone_surrogate_dto_is_durably_rejected(outcome_service: TransportService) -> None:
     raw_body = (
         b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472","operation":"'

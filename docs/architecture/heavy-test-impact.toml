@@ -796,11 +796,21 @@ source_glob = "src/app/wms_adapter/{strict_json.py,transport_event_handler.py,tr
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
 ]
 
 [[mapping]]
 source_glob = "tests/support/transport_callbacks.py"
 heavy_tests = [
+    "tests/integration/test_transport_fulfillment_queue.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+]
+
+[[mapping]]
+source_glob = "tests/support/transport_projections.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/test_transport_fulfillment_queue.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",

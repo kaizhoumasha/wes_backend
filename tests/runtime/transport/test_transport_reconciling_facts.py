@@ -29,6 +29,7 @@ from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERAT
 from src.core.uuid7 import new_uuid7
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import confirm_rack_faces
 
 register_required_sqlmodel_metadata()
 
@@ -70,6 +71,7 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
         BinMove("bin-confirmed-source", RackBinSlot("rack-reconciling", RackFace.A, "1"), HandoffPosition("OUT_1")),
         BinMove("bin-unknown-peer", RackBinSlot("rack-reconciling", RackFace.A, "2"), HandoffPosition("OUT_2")),
     )
+    await confirm_rack_faces(db_engine, {"rack-reconciling": RackFace.A})
     handle = await reconciling_service.move_bins(new_uuid7(), TransportCaller("SORTER"), moves)
     source = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-reconciling", "rack_face": "A", "slot_id": "1"}
     operation_id = "operation-confirmed-source"
@@ -159,6 +161,7 @@ async def test_late_result_cannot_flip_a_confirmed_member_while_peer_position_is
         BinMove("bin-confirmed-result", RackBinSlot("rack-result", RackFace.A, "1"), HandoffPosition("OUT_1")),
         BinMove("bin-unknown-result", RackBinSlot("rack-result", RackFace.A, "2"), HandoffPosition("OUT_2")),
     )
+    await confirm_rack_faces(db_engine, {"rack-result": RackFace.A})
     handle = await reconciling_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),

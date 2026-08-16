@@ -42,6 +42,7 @@ from tests.support.transport_broker import (
     TransportBrokerWorker,
     close_transport_test_resources,
 )
+from tests.support.transport_projections import confirm_rack_faces_with_sessions
 
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
@@ -69,6 +70,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
     task_id: str | None = None
     object_id: str | None = None
+    rack_id: str | None = None
     evidence_operation_id: str | None = None
     server: MockWmsHttpServer | None = None
     runtime = None
@@ -77,7 +79,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
     primary_error: BaseException | None = None
 
     async def _cleanup_database() -> None:
-        if task_id is None or object_id is None:
+        if task_id is None and object_id is None and rack_id is None:
             return
         async with integration_session_factory.begin() as db:
             if evidence_operation_id is not None:
@@ -86,15 +88,19 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
                         TransportCallbackReceipt.operation_id == evidence_operation_id
                     )
                 )
-            await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
-            await db.execute(
-                delete(TransportPositionProjection).where(TransportPositionProjection.object_id == object_id)
-            )
-            await db.execute(
-                delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == task_id)
-            )
-            await db.execute(delete(TransportMember).where(TransportMember.transport_task_id == task_id))
-            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
+            if task_id is not None:
+                await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
+            projection_ids = [value for value in (object_id, rack_id) if value is not None]
+            if projection_ids:
+                await db.execute(
+                    delete(TransportPositionProjection).where(TransportPositionProjection.object_id.in_(projection_ids))
+                )
+            if task_id is not None:
+                await db.execute(
+                    delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == task_id)
+                )
+                await db.execute(delete(TransportMember).where(TransportMember.transport_task_id == task_id))
+                await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
 
     try:
         server = MockWmsHttpServer().start()
@@ -113,13 +119,15 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
 
         suffix = uuid.uuid4().hex
         object_id = f"bin-{suffix}"
+        rack_id = f"rack-{suffix}"
+        await confirm_rack_faces_with_sessions(integration_session_factory, {rack_id: RackFace.A})
         handle = await runtime.port.move_bins(
             new_uuid7(),
             TransportCaller("TRANSPORT_E2E"),
             (
                 BinMove(
                     object_id,
-                    RackBinSlot(f"rack-{suffix}", RackFace.A, "1"),
+                    RackBinSlot(rack_id, RackFace.A, "1"),
                     HandoffPosition(f"HANDOFF-{suffix}"),
                 ),
             ),

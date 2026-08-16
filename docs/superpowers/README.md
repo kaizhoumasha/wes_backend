@@ -11,7 +11,7 @@
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask`、分批计划、Bin/Cell 晚绑定、不可逆执行、安全取消和目标架业务设计真源 | ReviewRequired |
-| `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；现行合同已切换到目标 wire，代码、OpenAPI 和行为测试仍为 `ALIGNMENT_REQUIRED` |
+| `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
 | `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成 | ReviewRequired；Transport 场景可实施，业务场景待联合批准 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
@@ -31,6 +31,7 @@
 历史内容：
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-16-wes-transport-dto-contract-alignment.md`
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`

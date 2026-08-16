@@ -1787,7 +1787,7 @@ T2 和 T3 使用相同 ACK 规则：
 | --- | --- | --- |
 | `202 / RECEIVED` | `transport_task_id` | 结束本次消息发送义务；不等于 evidence 已经推进业务 |
 | `200 / DUPLICATE` | `transport_task_id` | 视为已经接纳，结束发送义务 |
-| `409 / CONFLICT` | `transport_task_id` | 停止自动重试并对账 |
+| `409 / CONFLICT` | 首次收据含合法任务 ID 时为 `transport_task_id`，否则为 `{}` | 停止自动重试并对账 |
 | `422 / REJECTED` | 已知 operation 使用 `reason_code=INVALID_EVIDENCE`；未知 operation 使用 `UNSUPPORTED_OPERATION` | 停止原消息；修正后使用新 `operation_id` |
 | `503 / UNAVAILABLE` | `{}` | 2000 毫秒后使用原完整消息重试 |
 | `400`，空响应体 | 无 | 原消息非法，停止重试 |
@@ -1797,8 +1797,9 @@ Transport 合同不使用 `429 / BUSY`，也不定义 `retry_after_ms`。WES 暂
 隔离局域网部署固定认证 `NONE`，正常业务响应不包含 `401`；`401` 表示 WES 部署策略错误。WMS 收到 `401` 时
 必须保留原发送义务、停止每 2 秒热重试并告警，等待配置修复后再恢复发送。HTML 或其它未定义组合仍按未知响应处理。
 
-WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/DUPLICATE/CONFLICT` 的 `data.transport_task_id` 等于冻结消息
-中的任务 ID 后，才能执行对应动作。任何关联字段不匹配都属于未知响应，绝不能结束发送义务。
+WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/DUPLICATE` 的 `data.transport_task_id` 等于冻结消息中的任务
+ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入对账；其 `data.transport_task_id` 存在时必须等于冻结任务 ID，
+为空则表示同一消息身份的首份收据没有合法任务 ID。任何已返回关联字段不匹配都属于未知响应，绝不能结束发送义务。
 
 T2/T3 首次接纳响应样例：
 

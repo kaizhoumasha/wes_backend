@@ -212,6 +212,16 @@ def test_position_callback_rejects_blank_identifiers(field: str) -> None:
         validate_callback_envelope(envelope)
 
 
+@pytest.mark.parametrize("field", ["transport_task_id", "container_id"])
+def test_position_callback_rejects_nul_in_persisted_identifiers(field: str) -> None:
+    envelope = _envelope(POSITION_OPERATION, _position_data())
+    assert isinstance(envelope["data"], dict)
+    envelope["data"][field] = "value\x00suffix"
+
+    with pytest.raises(TransportContractError, match=f"{field} must not contain NUL"):
+        validate_callback_envelope(envelope)
+
+
 @pytest.mark.parametrize(
     ("operation", "data", "field", "limit"),
     [

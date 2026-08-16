@@ -508,7 +508,6 @@ class TransportService:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
                 if existing is not None:
                     return _idempotent_handle(existing, request_digest)
-                await self._repository.add_aggregate(db, task, members, bindings)
                 if isinstance(request, RotateRackRequest):
                     projection = await self._repository.get_projection(
                         db,
@@ -522,6 +521,18 @@ class TransportService:
                         raise TransportContractError("rack current position is not confirmed")
                     if projection.arrival_face == request.target_face.value:
                         raise TransportContractError("target face equals current face")
+                elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
+                    for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
+                        projection = await self._repository.get_projection(db, "RACK", rack_id, for_update=True)
+                        if (
+                            projection is None
+                            or projection.position_unknown
+                            or projection.arrival_face not in {"A", "B"}
+                        ):
+                            raise TransportContractError("rack current face is unknown")
+                        if projection.arrival_face != requested_face.value:
+                            raise TransportContractError("rack current face does not match request")
+                await self._repository.add_aggregate(db, task, members, bindings)
         except IntegrityError as error:
             async with self._sessions() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
@@ -937,8 +948,22 @@ def _resource_keys(request: TransportRequest) -> set[tuple[str, str]]:
     return resources
 
 
+def _rack_faces_for_bin_request(request: MoveBinsRequest | ExchangeBinsRequest) -> dict[str, RackFace]:
+    positions: list[object] = []
+    if isinstance(request, MoveBinsRequest):
+        positions.extend(position for move in request.moves for position in (move.source, move.target))
+    else:
+        positions.extend(
+            position for pair in request.exchange_pairs for position in (pair.left_location, pair.right_location)
+        )
+    return {position.rack_id: position.rack_face for position in positions if isinstance(position, RackBinSlot)}
+
+
 def _request_digest(request: TransportRequest) -> str:
-    encoded = json.dumps(_json_value(request), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    submit_data = build_submit_data(request, "")
+    submit_data.pop("transport_task_id")
+    request_semantics = {"caller": _json_value(request.caller), "data": submit_data}
+    encoded = json.dumps(request_semantics, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -1014,6 +1039,8 @@ def _validate_limit(limit: int) -> None:
 def _validate_persisted_text(value: object, field_name: str, max_length: int) -> None:
     if not isinstance(value, str) or not value.strip():
         raise TransportContractError(f"{field_name} must not be blank")
+    if "\x00" in value:
+        raise TransportContractError(f"{field_name} must not contain NUL")
     if len(value) > max_length:
         raise TransportContractError(f"{field_name} exceeds {max_length} characters")
 
@@ -1138,7 +1165,7 @@ def _associated_transport_task_id(message: dict[str, Any]) -> str | None:
     if not isinstance(data, dict):
         return None
     value = data.get("transport_task_id")
-    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > 80:
         return None
     try:
         value.encode("utf-8")

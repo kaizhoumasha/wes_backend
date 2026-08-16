@@ -67,6 +67,8 @@ TRANSPORT_RESULT_OPERATION = "transport.task.resulted@v1"
 def _required(value: str, field_name: str, *, max_length: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TransportContractError(f"{field_name} must not be blank")
+    if "\x00" in value:
+        raise TransportContractError(f"{field_name} must not contain NUL")
     if max_length is not None and len(value) > max_length:
         raise TransportContractError(f"{field_name} exceeds {max_length} characters")
     try:
@@ -217,6 +219,7 @@ class MoveBinsRequest:
             if isinstance(position, RackBinSlot)
         ]
         _reject_duplicates((_position_key(slot) for slot in slots), "rack bin slot")
+        _validate_one_face_per_rack(slots)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,11 +245,17 @@ class ExchangeBinsRequest:
             ),
             "rack bin slot",
         )
-        if (
-            len({(pair.left_location.rack_id, pair.left_location.rack_face) for pair in self.exchange_pairs}) != 1
-            or len({(pair.right_location.rack_id, pair.right_location.rack_face) for pair in self.exchange_pairs}) != 1
+        slots = [position for pair in self.exchange_pairs for position in (pair.left_location, pair.right_location)]
+        _validate_one_face_per_rack(slots)
+        endpoint_groups = {(slot.rack_id, slot.rack_face) for slot in slots}
+        if not 1 <= len(endpoint_groups) <= 2:
+            raise TransportContractError("exchange pairs must use one or two endpoint groups")
+        if len(endpoint_groups) == 2 and any(
+            (pair.left_location.rack_id, pair.left_location.rack_face)
+            == (pair.right_location.rack_id, pair.right_location.rack_face)
+            for pair in self.exchange_pairs
         ):
-            raise TransportContractError("exchange pairs must use one rack and face per side")
+            raise TransportContractError("exchange members must cross endpoint groups")
 
 
 type TransportRequest = MoveRackRequest | RotateRackRequest | MoveBinsRequest | ExchangeBinsRequest
@@ -360,6 +369,14 @@ def _validate_request_identity(client_request_id: str, caller: TransportCaller) 
 
 def _position_key(position: RackBinSlot) -> tuple[str, RackFace, str]:
     return position.rack_id, position.rack_face, position.slot_id
+
+
+def _validate_one_face_per_rack(slots: list[RackBinSlot]) -> None:
+    faces_by_rack: dict[str, set[RackFace]] = {}
+    for slot in slots:
+        faces_by_rack.setdefault(slot.rack_id, set()).add(slot.rack_face)
+    if any(len(faces) != 1 for faces in faces_by_rack.values()):
+        raise TransportContractError("same rack must use one face")
 
 
 def _reject_duplicates(values: object, field_name: str) -> None:

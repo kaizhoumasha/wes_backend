@@ -224,10 +224,10 @@ WMS 使用 `operation + operation_id` 作为接口契约幂等身份，并保证
 首次 `REJECTED` 响应；同身份同非法消息信封稳定重放首次拒绝，同身份换内容返回 `409 / CONFLICT`。`503` 是尚未接纳的临时响应，
 不建立业务绑定，也不冻结为首次终局响应。WES 已形成的原任务和诊断事实不得被覆盖。
 
-`WmsTransportAdapter` 调用 `WmsClient.post()` 时必须传入 `max_request_body_bytes=256 KiB` 和
-`max_response_body_bytes=256 KiB`。`WmsClient` 在统一 JSON 编码后、调用 Phase 2 Transport 前校验请求体字节数，并在内部把
-响应上限映射为 `max_wire_bytes=256 KiB`、`max_decoded_bytes=256 KiB` 的 `OutboundHttpResponseLimits`；Phase 4 Adapter
-不导入 Phase 2 合同、不复制 JSON 编码，也不绕过 `WmsClient`。
+`WmsTransportAdapter` 调用 `WmsClient.post_json_bytes()` 发送 TransportTask 已冻结的最终请求体字节，并传入
+`max_request_body_bytes=256 KiB` 和 `max_response_body_bytes=256 KiB`。`WmsClient` 不重新编码该 payload，只在调用 Phase 2
+Transport 前校验请求体字节数，并把响应上限映射为 `max_wire_bytes=256 KiB`、`max_decoded_bytes=256 KiB` 的
+`OutboundHttpResponseLimits`；Phase 4 Adapter 不导入 Phase 2 合同，也不绕过 `WmsClient`。
 
 `data` 公共字段固定为：
 
@@ -576,16 +576,18 @@ CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一�
 | --- | --- | --- |
 | 四个公共方法 | 核心 runtime/transport | 参数、`move_rack.target_face`、幂等、一个调用一个任务、统一 handle/outcome |
 | 任务和资源可靠性 | PostgreSQL integration/transport | 唯一约束、资源互斥、领取和原子结果应用 |
-| WMS 提交与回调 DTO | WMS Adapter contract | OpenAPI 3.0.3 权威文件、固定 path/operation、两族 T1、两族 T3、ACK、严格 JSON 和事件转换 |
+| WES → WMS T1 payload 与 ACK | WMS Adapter contract | 冻结 payload、固定 path/operation、两族 T1、ACK 和 WMS 所有的服务端 OpenAPI 一致性 |
+| WMS → WES T2/T3 DTO | WMS Adapter contract | WES 所有的 OpenAPI 3.0.3、固定 path/operation、T2、两族 T3、ACK、严格 JSON 和事件转换 |
 | 协调交换真实行为 | WMS/RCS 联调 | 同面 1～2 个二元闭环、内部顺序、部分失败和最终位置 |
 | 分拣机开工顺序 | 分拣机插件测试 | WMS 分配、并行调架、五层货架成功后投箱 |
 
 Phase 4 核心测试不得使用“粗分完成、空货架、满箱、空箱、可用储位”等业务分类证明搬运能力。工作线插件测试使用假的
 `TransportService`，不得替代 Phase 4 的数据库、幂等和 WMS 合同测试。
 
-OpenAPI 3.0.3 是 Transport 机器合同唯一真源，必须表达四种 T1 `kind` 对应的两族 DTO、位置判别联合、T2/T3 条件字段、T3
-`outcome_revision` 和完整响应联合。Swagger 2.0 可以作为旧工具的非权威导出，但不能替代 `oneOf` 等严格联合，也不能与本文
-产生第二套字段或响应规则。
+Transport 按服务端所有权分别使用两份 OpenAPI 3.0.3 权威文件：WMS 提供 T1 `POST /api/v1/wes/transport-requests`，表达四种
+`kind` 对应的两族 DTO、位置判别联合和 ACK；WES 提供 T2/T3 `POST /api/v1/wms/events`，表达条件字段、T3
+`outcome_revision` 和完整响应联合。任一系统不得为对方服务端接口另建第二份权威定义。Swagger 2.0 只能作为旧工具的非权威
+导出，不能替代 `oneOf` 等严格联合。
 
 ## 10. 明确非目标
 

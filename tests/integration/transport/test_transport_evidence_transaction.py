@@ -34,6 +34,7 @@ from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import confirm_rack_faces_with_sessions
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -367,6 +368,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         TransportRepository(),
         _UnusedProvider(),
     )
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-rollback": RackFace.A})
     handle = await service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
@@ -441,6 +443,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         TransportRepository(),
         _UnusedProvider(),
     )
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-concurrent": RackFace.A})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
@@ -512,6 +515,7 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
         TransportRepository(),
         _UnusedProvider(),
     )
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-revision": RackFace.A})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
@@ -594,6 +598,7 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         TransportRepository(),
         _UnusedProvider(),
     )
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-lock-order": RackFace.A})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
@@ -788,6 +793,7 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         TransportRepository(),
         _UnusedProvider(),
     )
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-apply-race": RackFace.A})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),

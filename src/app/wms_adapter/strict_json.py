@@ -44,16 +44,21 @@ class _PreservedJsonFloat(float):
 def loads_strict_json(text: str) -> object:
     """拒绝重复 key、非标准常量和非有限浮点数，并保留可唯一提取的消息身份。"""
 
-    return _loads_strict_json(text, parse_float=_parse_finite_float)
+    return _loads_strict_json(text, parse_float=_parse_finite_float, materialize=_materialize_recursive)
 
 
 def loads_transport_json(text: str) -> object:
     """按 Transport 合同保留 Decimal 可表示 Float 的原始 lexeme。"""
 
-    return _loads_strict_json(text, parse_float=_parse_transport_float)
+    return _loads_strict_json(text, parse_float=_parse_transport_float, materialize=_materialize)
 
 
-def _loads_strict_json(text: str, *, parse_float: Callable[[str], float]) -> object:
+def _loads_strict_json(
+    text: str,
+    *,
+    parse_float: Callable[[str], float],
+    materialize: Callable[[object], object],
+) -> object:
     try:
         parsed = json.loads(
             text,
@@ -67,7 +72,7 @@ def _loads_strict_json(text: str, *, parse_float: Callable[[str], float]) -> obj
     operation_id = _unique_top_level_value(parsed, "operation_id")
     operation = _unique_top_level_value(parsed, "operation")
     try:
-        return _materialize(parsed)
+        return materialize(parsed)
     except StrictJsonError as error:
         raise StrictJsonError(
             str(error),
@@ -101,15 +106,58 @@ def _unique_top_level_value(value: object, key: str) -> object:
 
 
 def _materialize(value: object) -> object:
+    if not isinstance(value, (_ObjectPairs, list)):
+        return value
+
+    root: dict[str, object] | list[object] = {} if isinstance(value, _ObjectPairs) else []
+    stack: list[tuple[_ObjectPairs | list[object], dict[str, object] | list[object]]] = [(value, root)]
+    while stack:
+        source, target = stack.pop()
+        if isinstance(source, _ObjectPairs):
+            if not isinstance(target, dict):
+                raise TypeError("object pairs require a dictionary target")
+            for key, item in source:
+                if key in target:
+                    raise StrictJsonError(f"duplicate JSON key: {key}", duplicate_key=True)
+                if isinstance(item, _ObjectPairs):
+                    child: dict[str, object] | list[object] = {}
+                    target[key] = child
+                    stack.append((item, child))
+                elif isinstance(item, list):
+                    child = []
+                    target[key] = child
+                    stack.append((item, child))
+                else:
+                    target[key] = item
+            continue
+
+        if not isinstance(target, list):
+            raise TypeError("array values require a list target")
+        target.extend([None] * len(source))
+        for index, item in enumerate(source):
+            if isinstance(item, _ObjectPairs):
+                child = {}
+                target[index] = child
+                stack.append((item, child))
+            elif isinstance(item, list):
+                child = []
+                target[index] = child
+                stack.append((item, child))
+            else:
+                target[index] = item
+    return root
+
+
+def _materialize_recursive(value: object) -> object:
     if isinstance(value, _ObjectPairs):
         result: dict[str, object] = {}
         for key, item in value:
             if key in result:
                 raise StrictJsonError(f"duplicate JSON key: {key}", duplicate_key=True)
-            result[key] = _materialize(item)
+            result[key] = _materialize_recursive(item)
         return result
     if isinstance(value, list):
-        return [_materialize(item) for item in value]
+        return [_materialize_recursive(item) for item in value]
     return value
 
 

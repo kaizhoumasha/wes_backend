@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import (
+    BinExchangePair,
     BinMove,
     HandoffPosition,
     RackBinSlot,
@@ -37,6 +38,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import confirm_rack_faces
 
 register_required_sqlmodel_metadata()
 
@@ -204,6 +206,57 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
         await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("OTHER"), RackFace.B)
     with pytest.raises(TransportContractError, match="target face equals current face"):
         await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), RackFace.A)
+
+
+@pytest.mark.asyncio
+async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: object) -> None:
+    service = _service(db_engine)
+    move_on_face_a = (BinMove("bin-face", RackBinSlot("rack-face", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),)
+
+    with pytest.raises(TransportContractError, match="rack current face is unknown"):
+        await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportPositionProjection(
+                object_type="RACK",
+                object_id="rack-face",
+                position_json={"kind": "RACK_POSITION", "location_code": "STORAGE"},
+                arrival_face="B",
+                source_operation_id="seed",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+
+    with pytest.raises(TransportContractError, match="rack current face does not match request"):
+        await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
+
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportPositionProjection)
+            .where(TransportPositionProjection.object_id == "rack-face")
+            .values(arrival_face="A")
+        )
+
+    handle = await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
+    assert handle.transport_task_id.startswith("transport-")
+
+
+@pytest.mark.asyncio
+async def test_bin_exchange_requires_confirmed_rack_faces(db_engine: object) -> None:
+    service = _service(db_engine)
+    exchange_pairs = (
+        BinExchangePair(
+            "bin-left",
+            RackBinSlot("rack-left", RackFace.A, "1"),
+            "bin-right",
+            RackBinSlot("rack-right", RackFace.B, "1"),
+        ),
+    )
+
+    with pytest.raises(TransportContractError, match="rack current face is unknown"):
+        await service.exchange_bins(new_uuid7(), _caller(), exchange_pairs)
 
 
 @pytest.mark.asyncio
@@ -521,6 +574,7 @@ async def test_timed_out_publish_does_not_block_later_outcomes_or_mark_success(
 async def test_known_partial_failure_forms_failed_outcome_and_releases_resources(db_engine: object) -> None:
     publisher = RecordingPublisher()
     service = _service(db_engine)
+    await confirm_rack_faces(db_engine, {"rack-partial": RackFace.A})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),

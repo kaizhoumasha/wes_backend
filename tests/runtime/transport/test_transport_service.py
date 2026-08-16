@@ -37,6 +37,7 @@ from src.app.transport.service import TransportService
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
+from tests.support.transport_projections import confirm_rack_faces
 
 register_required_sqlmodel_metadata()
 
@@ -165,6 +166,10 @@ async def test_four_public_methods_create_one_reliable_task_each(
     service: TransportService,
     db_engine: object,
 ) -> None:
+    await confirm_rack_faces(
+        db_engine,
+        {"rack-2": RackFace.A, "rack-3": RackFace.A, "rack-4": RackFace.A},
+    )
     handles = [
         await service.move_rack(
             new_uuid7(),
@@ -238,6 +243,56 @@ async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_move_bins_idempotency_ignores_member_input_order(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    request_id = new_uuid7()
+    await confirm_rack_faces(db_engine, {"rack-bin-order": RackFace.A})
+    moves = (
+        BinMove("bin-order-1", RackBinSlot("rack-bin-order", RackFace.A, "1"), HandoffPosition("IN")),
+        BinMove("bin-order-2", RackBinSlot("rack-bin-order", RackFace.A, "2"), HandoffPosition("OUT")),
+    )
+
+    first = await service.move_bins(request_id, _caller(), moves)
+    duplicate = await service.move_bins(request_id, _caller(), tuple(reversed(moves)))
+
+    assert duplicate == first
+
+
+@pytest.mark.asyncio
+async def test_exchange_idempotency_ignores_pair_order_and_left_right_orientation(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    request_id = new_uuid7()
+    await confirm_rack_faces(db_engine, {"rack-exchange-left": RackFace.A, "rack-exchange-right": RackFace.B})
+    pairs = (
+        BinExchangePair(
+            "bin-left-1",
+            RackBinSlot("rack-exchange-left", RackFace.A, "1"),
+            "bin-right-1",
+            RackBinSlot("rack-exchange-right", RackFace.B, "1"),
+        ),
+        BinExchangePair(
+            "bin-left-2",
+            RackBinSlot("rack-exchange-left", RackFace.A, "2"),
+            "bin-right-2",
+            RackBinSlot("rack-exchange-right", RackFace.B, "2"),
+        ),
+    )
+    equivalent = tuple(
+        BinExchangePair(pair.right_bin_id, pair.right_location, pair.left_bin_id, pair.left_location)
+        for pair in reversed(pairs)
+    )
+
+    first = await service.exchange_bins(request_id, _caller(), pairs)
+    duplicate = await service.exchange_bins(request_id, _caller(), equivalent)
+
+    assert duplicate == first
+
+
+@pytest.mark.asyncio
 async def test_rotate_retry_returns_original_handle_after_projection_reaches_target_face(
     service: TransportService,
     db_engine: object,
@@ -281,7 +336,11 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
 
 
 @pytest.mark.asyncio
-async def test_active_resource_binding_rejects_overlapping_task(service: TransportService) -> None:
+async def test_active_resource_binding_rejects_overlapping_task(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    await confirm_rack_faces(db_engine, {"rack-resource": RackFace.A})
     await service.move_rack(new_uuid7(), _caller(), "rack-resource", RackPosition("A"), RackPosition("B"), RackFace.A)
 
     with pytest.raises(TransportResourceConflict):
@@ -553,6 +612,7 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     service: TransportService,
     db_engine: object,
 ) -> None:
+    await confirm_rack_faces(db_engine, {"rack-deadline": RackFace.A})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
@@ -602,6 +662,7 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     db_engine: object,
 ) -> None:
     service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
+    await confirm_rack_faces(db_engine, {"rack-late-position": RackFace.A})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),

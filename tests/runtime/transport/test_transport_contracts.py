@@ -303,8 +303,8 @@ def test_rack_bin_slot_identity_includes_rack_face() -> None:
         RackBinSlot("rack-1", cast("RackFace", "C"), "1")
 
 
-def test_two_pair_exchange_requires_all_left_and_all_right_bins_on_one_face_each() -> None:
-    valid = (
+def test_two_pair_exchange_accepts_equivalent_pair_orientation() -> None:
+    exchange_pairs = (
         BinExchangePair(
             "left-1",
             RackBinSlot("rack-left", RackFace.A, "1"),
@@ -312,25 +312,50 @@ def test_two_pair_exchange_requires_all_left_and_all_right_bins_on_one_face_each
             RackBinSlot("rack-right", RackFace.A, "1"),
         ),
         BinExchangePair(
-            "left-2",
-            RackBinSlot("rack-left", RackFace.A, "2"),
             "right-2",
             RackBinSlot("rack-right", RackFace.A, "2"),
-        ),
-    )
-    assert len(ExchangeBinsRequest(_REQUEST_ID, _caller(), valid).exchange_pairs) == 2
-
-    cross_face = (
-        valid[0],
-        BinExchangePair(
             "left-2",
-            RackBinSlot("rack-left", RackFace.B, "2"),
-            "right-2",
-            RackBinSlot("rack-right", RackFace.B, "2"),
+            RackBinSlot("rack-left", RackFace.A, "2"),
         ),
     )
-    with pytest.raises(TransportContractError, match="one rack and face per side"):
-        ExchangeBinsRequest(_REQUEST_ID, _caller(), cross_face)
+
+    assert len(ExchangeBinsRequest(_REQUEST_ID, _caller(), exchange_pairs).exchange_pairs) == 2
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: MoveBinsRequest(
+            _REQUEST_ID,
+            _caller(),
+            (
+                BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
+                BinMove("bin-2", RackBinSlot("rack-1", RackFace.B, "2"), HandoffPosition("ROLLER_OUT")),
+            ),
+        ),
+        lambda: ExchangeBinsRequest(
+            _REQUEST_ID,
+            _caller(),
+            (
+                BinExchangePair(
+                    "bin-1",
+                    RackBinSlot("rack-1", RackFace.A, "1"),
+                    "bin-2",
+                    RackBinSlot("rack-2", RackFace.A, "1"),
+                ),
+                BinExchangePair(
+                    "bin-3",
+                    RackBinSlot("rack-1", RackFace.B, "2"),
+                    "bin-4",
+                    RackBinSlot("rack-2", RackFace.A, "2"),
+                ),
+            ),
+        ),
+    ],
+)
+def test_bin_batches_reject_multiple_faces_for_the_same_rack(factory: Callable[[], object]) -> None:
+    with pytest.raises(TransportContractError, match="same rack must use one face"):
+        factory()
 
 
 def test_two_pair_exchange_requires_one_rack_and_face_per_side() -> None:
@@ -349,7 +374,7 @@ def test_two_pair_exchange_requires_one_rack_and_face_per_side() -> None:
         ),
     )
 
-    with pytest.raises(TransportContractError, match="one rack and face per side"):
+    with pytest.raises(TransportContractError, match="one or two endpoint groups"):
         ExchangeBinsRequest(_REQUEST_ID, _caller(), cross_rack)
 
 
@@ -466,7 +491,7 @@ def test_handle_and_outcome_expose_only_stable_plugin_contract() -> None:
     assert outcome.status is TransportOutcomeStatus.UNKNOWN
 
 
-@pytest.mark.parametrize("value", ["", " "])
+@pytest.mark.parametrize("value", ["", " ", "value\x00suffix"])
 def test_identifiers_fail_closed(value: str) -> None:
     with pytest.raises(TransportContractError):
         TransportCaller(workline_id=value)

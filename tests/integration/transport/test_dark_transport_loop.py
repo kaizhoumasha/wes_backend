@@ -103,28 +103,40 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     )
     service = runtime.service
     caller = TransportCaller("DARK_LINE", "STATION_A")
-    rotate_rack_id = f"rack-rotate-{suffix}"
-    task_ids: list[str] = []
-    callback_operation_ids: list[str] = []
-
-    async with integration_session_factory.begin() as db:
-        db.add(
-            TransportPositionProjection(
-                object_type="RACK",
-                object_id=rotate_rack_id,
-                position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-                arrival_face="A",
-                source_operation_id=new_uuid7(),
-                updated_at=timezone.now_for_db(),
-            )
-        )
-
     rack_id = f"rack-move-{suffix}"
+    rotate_rack_id = f"rack-rotate-{suffix}"
     moved_bin_id = f"bin-move-{suffix}"
     move_source_rack = f"rack-bin-source-{suffix}"
     exchange_left_rack = f"rack-exchange-left-{suffix}"
     exchange_right_rack = f"rack-exchange-right-{suffix}"
     exchange_bin_ids = [f"bin-exchange-{index}-{suffix}" for index in range(4)]
+    task_ids: list[str] = []
+    callback_operation_ids: list[str] = []
+
+    async with integration_session_factory.begin() as db:
+        db.add_all(
+            [
+                TransportPositionProjection(
+                    object_type="RACK",
+                    object_id=position_rack_id,
+                    position_json={"kind": "RACK_POSITION", "location_code": "RACK_WAIT"},
+                    arrival_face="A",
+                    source_operation_id=new_uuid7(),
+                    updated_at=timezone.now_for_db(),
+                )
+                for position_rack_id in (move_source_rack, exchange_left_rack, exchange_right_rack)
+            ]
+            + [
+                TransportPositionProjection(
+                    object_type="RACK",
+                    object_id=rotate_rack_id,
+                    position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
+                    arrival_face="A",
+                    source_operation_id=new_uuid7(),
+                    updated_at=timezone.now_for_db(),
+                )
+            ]
+        )
     try:
         rack_handle = await service.move_rack(
             new_uuid7(), caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK"), RackFace.A
@@ -282,7 +294,15 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
             await db.execute(
                 delete(TransportPositionProjection).where(
                     TransportPositionProjection.object_id.in_(
-                        [rotate_rack_id, rack_id, moved_bin_id, *exchange_bin_ids]
+                        [
+                            rotate_rack_id,
+                            rack_id,
+                            move_source_rack,
+                            exchange_left_rack,
+                            exchange_right_rack,
+                            moved_bin_id,
+                            *exchange_bin_ids,
+                        ]
                     )
                 )
             )

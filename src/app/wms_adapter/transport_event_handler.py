@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeGuard, cast
 
+from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
 from src.app.wms_adapter.transport_wire import UnsupportedTransportOperation, validate_callback_envelope
@@ -42,7 +43,7 @@ class TransportEventHandler:
     async def handle(self, raw_body: bytes) -> TransportEventResponse:
         if len(raw_body) > MAX_TRANSPORT_EVENT_BODY_BYTES:
             return TransportEventResponse(413, {})
-        raw_envelope, associated_parse_error, parsing_error = _decode_raw_envelope(raw_body)
+        raw_envelope, parsing_error = _decode_raw_envelope(raw_body)
         if parsing_error is not None:
             return parsing_error
         if raw_envelope is None:
@@ -50,19 +51,19 @@ class TransportEventHandler:
         operation_id = raw_envelope["operation_id"]
         operation = raw_envelope["operation"]
         envelope: dict[str, Any] | None = None
-        rejection_reason_code: str | None = "INVALID_EVIDENCE" if associated_parse_error else None
-        if not associated_parse_error:
-            try:
-                envelope = validate_callback_envelope(raw_envelope)
-            except UnsupportedTransportOperation:
-                rejection_reason_code = "UNSUPPORTED_OPERATION"
-            except TransportContractError:
-                rejection_reason_code = "INVALID_EVIDENCE"
+        rejection_reason_code: str | None = None
+        try:
+            envelope = validate_callback_envelope(raw_envelope)
+        except UnsupportedTransportOperation:
+            rejection_reason_code = "UNSUPPORTED_OPERATION"
+        except TransportContractError:
+            rejection_reason_code = "INVALID_EVIDENCE"
+        message = _rejection_message(raw_envelope) if rejection_reason_code is not None else raw_envelope
         try:
             ack = await self._recorder.record_callback(
                 operation_id=operation_id,
                 operation=operation,
-                message=raw_envelope,
+                message=message,
                 payload=envelope["data"] if envelope is not None else None,
                 rejection_reason_code=rejection_reason_code,
             )
@@ -96,37 +97,36 @@ def _timestamp_ms() -> int:
 
 def _decode_raw_envelope(
     raw_body: bytes,
-) -> tuple[dict[str, Any] | None, bool, TransportEventResponse | None]:
+) -> tuple[dict[str, Any] | None, TransportEventResponse | None]:
     try:
         decoded = raw_body.decode("utf-8")
     except UnicodeDecodeError:
-        return None, False, TransportEventResponse(400, {})
+        return None, TransportEventResponse(400, {})
     try:
         value = loads_transport_json(decoded)
-    except StrictJsonError as error:
-        if error.duplicate_key:
-            return None, False, TransportEventResponse(400, {})
-        operation_id = error.operation_id
-        operation = error.operation
-        if not is_wire_operation_id(operation_id) or not is_wire_operation(operation):
-            return None, False, TransportEventResponse(400, {})
-        return (
-            {
-                "operation_id": operation_id,
-                "operation": operation,
-                "raw_request_body": decoded,
-            },
-            True,
-            None,
-        )
+    except StrictJsonError:
+        return None, TransportEventResponse(400, {})
     if not isinstance(value, dict):
-        return None, False, TransportEventResponse(400, {})
+        return None, TransportEventResponse(400, {})
     envelope = cast("dict[str, Any]", value)
     operation_id = envelope.get("operation_id")
     operation = envelope.get("operation")
     if not is_wire_operation_id(operation_id) or not is_wire_operation(operation):
-        return None, False, TransportEventResponse(400, {})
-    return envelope, False, None
+        return None, TransportEventResponse(400, {})
+    return envelope, None
+
+
+def _rejection_message(envelope: dict[str, Any]) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "operation_id": envelope["operation_id"],
+        "operation": envelope["operation"],
+        "canonical_message_json": canonical_callback_json(envelope),
+    }
+    data = envelope.get("data")
+    transport_task_id = data.get("transport_task_id") if isinstance(data, dict) else None
+    if _is_persistable_text(transport_task_id, 80):
+        message["data"] = {"transport_task_id": transport_task_id}
+    return message
 
 
 def is_wire_operation_id(value: object) -> TypeGuard[str]:
@@ -134,7 +134,11 @@ def is_wire_operation_id(value: object) -> TypeGuard[str]:
 
 
 def is_wire_operation(value: object) -> TypeGuard[str]:
-    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+    return _is_persistable_text(value, 80)
+
+
+def _is_persistable_text(value: object, max_length: int) -> TypeGuard[str]:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > max_length:
         return False
     try:
         value.encode("utf-8")

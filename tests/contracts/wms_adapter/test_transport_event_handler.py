@@ -162,6 +162,41 @@ async def test_handler_rejects_invalid_utf8_or_json(raw_body: bytes) -> None:
 
 
 @pytest.mark.asyncio
+async def test_handler_rejects_nul_operation_before_association() -> None:
+    recorder = FakeRecorder()
+    response = await TransportEventHandler(recorder).handle(
+        _body(
+            "transport.task.member_position_changed@v1\x00",
+            {"transport_task_id": "transport-1"},
+        )
+    )
+
+    assert (response.http_status, response.body) == (400, {})
+    assert recorder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_handler_records_nul_payload_as_persistence_safe_rejection() -> None:
+    recorder = FakeRecorder()
+    response = await TransportEventHandler(recorder).handle(
+        _body(
+            "transport.task.member_position_changed@v1",
+            {
+                "transport_task_id": "transport-1",
+                "container_id": "bin\x00one",
+                "milestone": "SOURCE_PICKED",
+            },
+        )
+    )
+
+    assert response.http_status == 422
+    message = recorder.calls[0]["message"]
+    assert isinstance(message, dict)
+    assert "\x00" not in str(message)
+    assert "\\u0000" in message["canonical_message_json"]
+
+
+@pytest.mark.asyncio
 async def test_handler_rejects_nested_duplicate_key_before_association() -> None:
     recorder = FakeRecorder()
     raw_body = (
@@ -207,6 +242,24 @@ async def test_handler_rejects_deep_json_without_escaping_recursion_error() -> N
     assert response.http_status == 422
     assert response.body["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
     assert len(recorder.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_uses_semantic_digest_input_for_deep_invalid_json() -> None:
+    recorder = FakeRecorder()
+    prefix = (
+        b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472",'
+        b'"operation":"transport.task.member_position_changed@v1","timestamp":1,"data":'
+    )
+    nested = b"[" * 998 + b"0" + b"]" * 998
+    compact = prefix + nested + b"}"
+    spaced = prefix.replace(b'"timestamp":1', b'"timestamp" : 1') + nested + b" }"
+
+    first = await TransportEventHandler(recorder).handle(compact)
+    second = await TransportEventHandler(recorder).handle(spaced)
+
+    assert (first.http_status, second.http_status) == (422, 200)
+    assert recorder.calls[0]["message"] == recorder.calls[1]["message"]
 
 
 @pytest.mark.asyncio

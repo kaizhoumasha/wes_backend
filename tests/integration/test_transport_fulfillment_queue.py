@@ -16,6 +16,7 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
+    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -32,6 +33,7 @@ from tests.support.transport_broker import (
     close_transport_test_resources,
 )
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import confirm_rack_faces_with_sessions
 
 pytestmark = pytest.mark.integration
 
@@ -49,6 +51,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
     task_ids: list[str] = []
     callback_operation_ids: list[str] = []
+    projection_object_ids: list[str] = []
     server: MockWmsHttpServer | None = None
     runtime = None
     worker: TransportBrokerWorker | None = None
@@ -56,7 +59,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
     primary_error: BaseException | None = None
 
     async def _cleanup_database() -> None:
-        if not task_ids:
+        if not task_ids and not projection_object_ids:
             return
         async with integration_session_factory.begin() as db:
             await db.execute(
@@ -65,6 +68,11 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 )
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
+            await db.execute(
+                delete(TransportPositionProjection).where(
+                    TransportPositionProjection.object_id.in_(projection_object_ids)
+                )
+            )
             await db.execute(
                 delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
             )
@@ -82,6 +90,12 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         worker = TransportBrokerWorker(database_url, redis_url, profile_file)
         worker.start()
         suffix = uuid.uuid4().hex
+        rack_ids = [f"rack-submit-{index}-{suffix}" for index in range(2)] + [f"rack-evidence-{suffix}"]
+        projection_object_ids.extend([*rack_ids, f"bin-evidence-{suffix}"])
+        await confirm_rack_faces_with_sessions(
+            integration_session_factory,
+            dict.fromkeys(rack_ids, RackFace.A),
+        )
         for index in range(2):
             handle = await runtime.service.move_bins(
                 new_uuid7(),
@@ -89,7 +103,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 (
                     BinMove(
                         f"bin-submit-{index}-{suffix}",
-                        RackBinSlot(f"rack-submit-{index}-{suffix}", RackFace.A, "1"),
+                        RackBinSlot(rack_ids[index], RackFace.A, "1"),
                         HandoffPosition(f"HANDOFF-{index}-{suffix}"),
                     ),
                 ),
@@ -102,7 +116,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             (
                 BinMove(
                     f"bin-evidence-{suffix}",
-                    RackBinSlot(f"rack-evidence-{suffix}", RackFace.A, "1"),
+                    RackBinSlot(rack_ids[2], RackFace.A, "1"),
                     HandoffPosition(f"HANDOFF-EVIDENCE-{suffix}"),
                 ),
             ),

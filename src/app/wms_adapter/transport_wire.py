@@ -201,6 +201,8 @@ def _strict_dict(
 def _nonblank(value: object, field_name: str, *, max_length: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TransportContractError(f"{field_name} must not be blank")
+    if "\x00" in value:
+        raise TransportContractError(f"{field_name} must not contain NUL")
     if max_length is not None and len(value) > max_length:
         raise TransportContractError(f"{field_name} exceeds {max_length} characters")
     try:

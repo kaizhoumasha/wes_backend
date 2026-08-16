@@ -846,11 +846,19 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/wms_adapter/__init__.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
         (
             "src/app/wms_adapter/transport_event_handler.py",
-            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],
+            [
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
+            ],
         ),
         (
             "src/app/wms_adapter/transport_wire.py",
-            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],
+            [
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
+            ],
         ),
         ("src/app/wms_adapter/transport_adapter.py", [TRANSPORT_DARK_LOOP_HEAVY_TEST]),
         ("src/app/wms_adapter/v1/__init__.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),

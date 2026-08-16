@@ -55,6 +55,46 @@ async def test_non_utf8_operation_is_rejected_before_postgresql_receipt(
     assert receipt_count_after == receipt_count_before
 
 
+async def test_nul_payload_is_durably_rejected_and_replayed_from_postgresql(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    operation_id = new_uuid7()
+    operation = "transport.task.member_position_changed@v1"
+    raw_body = (
+        f'{{"operation_id":"{operation_id}","operation":"{operation}","timestamp":1,'
+        '"data":{"transport_task_id":"transport-invalid","container_id":"bin\\u0000one",'
+        '"milestone":"SOURCE_PICKED"}}'
+    ).encode()
+    handler = TransportEventHandler(
+        TransportService(integration_session_factory, TransportRepository(), _UnusedProvider())
+    )
+
+    try:
+        first = await handler.handle(raw_body)
+        replay = await handler.handle(raw_body)
+
+        assert (first.http_status, first.body["code"]) == (422, "REJECTED")
+        assert replay == first
+        async with integration_session_factory() as db:
+            receipt = await db.scalar(
+                select(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.operation == operation,
+                    TransportCallbackReceipt.operation_id == operation_id,
+                )
+            )
+        assert receipt is not None
+        assert "\x00" not in str(receipt.message_json)
+        assert "\\u0000" in receipt.message_json["canonical_message_json"]
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(
+                    TransportCallbackReceipt.operation == operation,
+                    TransportCallbackReceipt.operation_id == operation_id,
+                )
+            )
+
+
 async def test_concurrent_invalid_callback_replays_share_one_postgresql_receipt(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
