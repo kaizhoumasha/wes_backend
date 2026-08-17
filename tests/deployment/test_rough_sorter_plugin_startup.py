@@ -1535,8 +1535,26 @@ async def test_wms_resolver_builds_strict_admission_wire_from_same_db_snapshot()
 
 
 @pytest.mark.asyncio
-async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> None:
+@pytest.mark.parametrize(
+    ("outcome_status", "execution_status", "expected_apply_status", "should_wake"),
+    [
+        (TransportOutcomeStatus.SUCCEEDED, MaterialExecutionStatus.HOLD, InboundEvidenceApplyStatus.APPLIED, True),
+        (
+            TransportOutcomeStatus.UNKNOWN,
+            MaterialExecutionStatus.RECONCILING,
+            InboundEvidenceApplyStatus.IGNORED,
+            False,
+        ),
+    ],
+)
+async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
+    outcome_status: TransportOutcomeStatus,
+    execution_status: MaterialExecutionStatus,
+    expected_apply_status: InboundEvidenceApplyStatus,
+    should_wake: bool,
+) -> None:
     events: list[str] = []
+    accepted_evidence = SimpleNamespace(apply_status=InboundEvidenceApplyStatus.APPLIED)
 
     class Sessions:
         def begin(self) -> object:
@@ -1605,13 +1623,16 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> 
         async def get_by_id_for_update(self, db: object, execution_id: int) -> object:
             del db, execution_id
             events.append("execution-lock")
-            return SimpleNamespace(id=21, line_run_epoch_id=11, workline_id=7, status="HOLD")
+            return SimpleNamespace(id=21, line_run_epoch_id=11, workline_id=7, status=execution_status)
 
     class EvidenceService:
         async def accept(self, db: object, **values: object) -> object:
             del db
             events.append("accepted:" + str(values["source_identity"]))
-            return SimpleNamespace(evidence=SimpleNamespace(apply_status=InboundEvidenceApplyStatus.APPLIED))
+            return SimpleNamespace(
+                evidence=accepted_evidence,
+                duplicate=False,
+            )
 
     class Queue:
         def enqueue_execution_facts(self) -> None:
@@ -1630,7 +1651,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> 
         client_request_id="019d0000-0000-7000-8000-000000000041",
         outcome_version=1,
         caller=TransportCaller(workline_id="7"),
-        status=TransportOutcomeStatus.SUCCEEDED,
+        status=outcome_status,
         reason_code=None,
         members=(
             TransportMemberOutcome(
@@ -1643,17 +1664,20 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> 
 
     await publisher.publish(outcome)
 
-    assert events == [
+    expected_events = [
         "begin",
         "binding-read",
         "source-read",
+        "accepted:transport:TRANSPORT-1:outcome:1",
         "execution-lock",
         "binding-lock",
         "source-lock",
-        "accepted:transport:TRANSPORT-1:outcome:1",
         "commit",
-        "wake",
     ]
+    if should_wake:
+        expected_events.append("wake")
+    assert events == expected_events
+    assert accepted_evidence.apply_status == expected_apply_status
 
 
 @pytest.mark.asyncio
@@ -1667,8 +1691,14 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 async def __aenter__(self) -> object:
                     return object()
 
-                async def __aexit__(self, *args: object) -> None:
-                    del args
+                async def __aexit__(
+                    self,
+                    exc_type: type[BaseException] | None,
+                    exc: BaseException | None,
+                    traceback: object,
+                ) -> None:
+                    del exc, traceback
+                    events.append("rollback" if exc_type is not None else "commit")
 
             return Transaction()
 
@@ -1730,7 +1760,10 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
         async def accept(self, db: object, **values: object) -> object:
             del db, values
             events.append("accepted")
-            return object()
+            return SimpleNamespace(
+                evidence=SimpleNamespace(apply_status=InboundEvidenceApplyStatus.APPLIED),
+                duplicate=False,
+            )
 
     publisher = RoughSorterTransportOutcomePublisher(
         session_factory=Sessions(),  # type: ignore[arg-type]
@@ -1758,9 +1791,10 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
     with pytest.raises(ValueError, match=f"Transport {drift}.*drift"):
         await publisher.publish(outcome)
 
-    expected_events = ["execution-lock", "binding-lock"]
+    expected_events = ["accepted", "execution-lock", "binding-lock"]
     if drift == "source":
         expected_events.append("source-lock")
+    expected_events.append("rollback")
     assert events == expected_events
 
 

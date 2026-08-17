@@ -82,6 +82,23 @@ class RoughSorterTransportOutcomePublisher:
             if source_hint is None:
                 raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
             source_correlation = _source_correlation(source_hint)
+            accepted = None
+            if binding_hint.leg == "NEW_IN":
+                accepted = await self._evidence_service.accept(
+                    db,
+                    kind=InboundEvidenceKind.TRANSPORT_RESULT,
+                    source_identity=f"transport:{outcome.transport_task_id}:outcome:{outcome.outcome_version}",
+                    normalized_payload=_outcome_payload(outcome),
+                    received_at=timezone.now_for_db(),
+                    line_run_epoch_id=source_correlation[3],
+                    material_execution_id=source_correlation[2],
+                    transport_task_id=outcome.transport_task_id,
+                    contract_key="rough_sorter.transport_outcome",
+                    contract_version="1.0",
+                    apply_status=InboundEvidenceApplyStatus.APPLIED,
+                )
+                if isinstance(accepted, InboundEvidenceConflictResult):
+                    raise accepted.to_exception()
             execution = await self._executions.get_by_id_for_update(db, source_correlation[2])
             binding = await self._bindings.get_by_client_request_id_for_update(db, outcome.client_request_id)
             if binding is None or _binding_correlation(binding, outcome.client_request_id) != binding_correlation:
@@ -98,27 +115,14 @@ class RoughSorterTransportOutcomePublisher:
                 raise ValueError("Transport outcome 与 source execution correlation 不匹配")
             if binding.leg == "OLD_OUT":
                 return
-            apply_status = (
-                InboundEvidenceApplyStatus.IGNORED
-                if execution.status == MaterialExecutionStatus.RECONCILING
+            if accepted is None:
+                raise RuntimeError("NEW_IN Transport outcome 缺少 evidence acceptance")
+            if (
+                not accepted.duplicate
+                and execution.status == MaterialExecutionStatus.RECONCILING
                 and outcome.status is TransportOutcomeStatus.UNKNOWN
-                else InboundEvidenceApplyStatus.APPLIED
-            )
-            accepted = await self._evidence_service.accept(
-                db,
-                kind=InboundEvidenceKind.TRANSPORT_RESULT,
-                source_identity=f"transport:{outcome.transport_task_id}:outcome:{outcome.outcome_version}",
-                normalized_payload=_outcome_payload(outcome),
-                received_at=timezone.now_for_db(),
-                line_run_epoch_id=source.line_run_epoch_id,
-                material_execution_id=source.material_execution_id,
-                transport_task_id=outcome.transport_task_id,
-                contract_key="rough_sorter.transport_outcome",
-                contract_version="1.0",
-                apply_status=apply_status,
-            )
-            if isinstance(accepted, InboundEvidenceConflictResult):
-                raise accepted.to_exception()
+            ):
+                accepted.evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
             should_wake = accepted.evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
         if should_wake:
             try:

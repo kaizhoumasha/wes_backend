@@ -18,7 +18,10 @@ from wes_plugin_sdk import (
     RackFace,
     TransportLeg,
     TransportRackPosition,
+    TransportResultReadyFact,
     TransportTaskType,
+    Wait,
+    handler,
 )
 
 from deployment._rough_sorter_transport import RoughSorterTransportOutcomePublisher
@@ -37,6 +40,7 @@ from src.app.execution.models import (
     WmsConfirmation,
     WmsConfirmationStatus,
 )
+from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
 from src.app.execution.repositories import (
     inbound_evidence_repository,
     material_execution_repository,
@@ -45,6 +49,8 @@ from src.app.execution.repositories import (
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services import (
     DecisionApplier,
+    FactProcessor,
+    InboundEvidenceService,
     MaterialExecutionService,
     WmsConfirmationIdentityConflictError,
     WmsConfirmationRequest,
@@ -1103,6 +1109,215 @@ async def test_postgresql_transport_publisher_revalidates_after_execution_first_
             delete(RackReplacementTransportBinding).where(
                 RackReplacementTransportBinding.client_request_id == client_request_id
             )
+        )
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share_outcome_first_lock_order(
+    integration_session_factory,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 13)
+    client_request_id = "019d0000-0000-7000-8000-" + identity[:12]
+    transport_task_id = f"TRANSPORT-LOCK-{identity}"
+    async with integration_session_factory.begin() as db:
+        line, epoch = await _claim_epoch(db, f"PUBLISHER-FACT-{identity}", now)
+        source = InboundEvidence(
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity=f"PUBLISHER-FACT-SOURCE-{identity}",
+            payload_digest="a" * 64,
+            normalized_payload={"data": {}},
+            received_at=now,
+            line_run_epoch_id=epoch.id,
+            operation="inbound.source_rack.replacement_plan_decide@v1",
+            operation_id=f"PUBLISHER-FACT-OP-{identity}",
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.IGNORED,
+        )
+        db.add(source)
+        await db.flush()
+        execution = MaterialExecution(
+            execution_code=f"PUBLISHER-FACT-EXEC-{identity}",
+            material_trace_id=f"PUBLISHER-FACT-TRACE-{identity}",
+            workline_id=line.id,
+            line_run_epoch_id=epoch.id,
+            last_transition_reason="INITIAL_EVIDENCE",
+            last_transition_evidence_id=source.id,
+            status_changed_at=now,
+        )
+        db.add(execution)
+        await db.flush()
+        source.material_execution_id = execution.id
+        binding = RackReplacementTransportBinding(
+            rack_replacement_id=f"PUBLISHER-FACT-REPLACE-{identity}",
+            leg="NEW_IN",
+            line_run_epoch_id=epoch.id,
+            current_rack_id="RACK-1",
+            client_request_id=client_request_id,
+            source_evidence_id=source.id,
+        )
+        db.add(binding)
+        outcome = TransportOutcome(
+            transport_task_id=transport_task_id,
+            client_request_id=client_request_id,
+            outcome_version=1,
+            caller=TransportCaller(workline_id=str(line.id)),
+            status=TransportOutcomeStatus.SUCCEEDED,
+            reason_code=None,
+            members=(
+                TransportMemberOutcome(
+                    object_id="RACK-2",
+                    final_position=RackPosition("OUTLET"),
+                    arrival_face=CoreRackFace.B,
+                ),
+            ),
+        )
+        accepted = await InboundEvidenceService().accept(
+            db,
+            kind=InboundEvidenceKind.TRANSPORT_RESULT,
+            source_identity=f"transport:{transport_task_id}:outcome:1",
+            normalized_payload={
+                "transport_task_id": transport_task_id,
+                "client_request_id": client_request_id,
+                "outcome_version": 1,
+                "caller": {"workline_id": str(line.id)},
+                "status": "SUCCEEDED",
+                "reason_code": None,
+                "members": [
+                    {
+                        "object_id": "RACK-2",
+                        "final_position": {"kind": "RACK_POSITION", "location_code": "OUTLET"},
+                        "position_unknown": False,
+                        "failure_code": None,
+                        "arrival_face": "B",
+                    }
+                ],
+            },
+            received_at=now,
+            line_run_epoch_id=epoch.id,
+            material_execution_id=execution.id,
+            transport_task_id=transport_task_id,
+            contract_key="rough_sorter.transport_outcome",
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        outcome_evidence_id = accepted.evidence.id
+        line_id = line.id
+        epoch_id = epoch.id
+        source_id = source.id
+        execution_id = execution.id
+
+    processor_holds_outcome = asyncio.Event()
+    release_processor = asyncio.Event()
+    publisher_waiting_outcome = asyncio.Event()
+
+    class GatedExecutionRepository:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_by_id_for_update(self, db: object, execution_id: int) -> MaterialExecution | None:
+            self.calls += 1
+            if self.calls == 1:
+                processor_holds_outcome.set()
+                await release_processor.wait()
+            return await material_execution_repository.get_by_id_for_update(db, execution_id)  # type: ignore[arg-type]
+
+    class PublisherEvidenceRepository:
+        async def lock_source_identity(self, db: object, source_identity: str) -> None:
+            await inbound_evidence_repository.lock_source_identity(db, source_identity)  # type: ignore[arg-type]
+
+        async def get_by_source_identity_for_update(self, db: object, source_identity: str) -> InboundEvidence | None:
+            publisher_waiting_outcome.set()
+            return await inbound_evidence_repository.get_by_source_identity_for_update(  # type: ignore[arg-type]
+                db, source_identity
+            )
+
+        async def add(self, db: object, evidence: InboundEvidence) -> InboundEvidence:
+            return await inbound_evidence_repository.add(db, evidence)  # type: ignore[arg-type]
+
+        async def add_conflict(self, db: object, conflict: object) -> object:
+            return await inbound_evidence_repository.add_conflict(db, conflict)  # type: ignore[arg-type]
+
+    class IdentityFactFactory:
+        async def build(self, db: object, fact: TransportResultReadyFact) -> TransportResultReadyFact:
+            del db
+            return fact
+
+    @handler(fact_type=TransportResultReadyFact, name="transport_lock_order", supported_versions=("1.0",))
+    def handle_transport(fact: TransportResultReadyFact) -> tuple[Wait, ...]:
+        return (Wait(fact.material_execution_id, fact.fact_id, "TRANSPORT_RECORDED"),)
+
+    class RecordingApplier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def apply(self, *args: object) -> str:
+            del args
+            self.calls += 1
+            return "applied"
+
+    class Queue:
+        def enqueue_execution_facts(self) -> None:
+            return None
+
+    applier = RecordingApplier()
+    processor = FactProcessor(
+        session_factory=integration_session_factory,
+        plugin_binding=StaticPluginBinding(
+            (
+                PluginRuntimeBinding(
+                    plugin_key="rough_sorter",
+                    plugin_version="1.0.0",
+                    handlers=(handle_transport,),
+                    fact_factory=IdentityFactFactory(),  # type: ignore[arg-type]
+                ),
+            )
+        ),
+        decision_applier=applier,  # type: ignore[arg-type]
+        execution_repository=GatedExecutionRepository(),
+        clock=lambda: now + timedelta(seconds=1),
+        token_factory=lambda: f"claim-{identity}",
+    )
+    publisher = RoughSorterTransportOutcomePublisher(
+        session_factory=integration_session_factory,
+        evidence_service=InboundEvidenceService(repository=PublisherEvidenceRepository()),  # type: ignore[arg-type]
+        queue_gateway=Queue(),  # type: ignore[arg-type]
+    )
+
+    processing = asyncio.create_task(processor.process_batch(limit=1))
+    await asyncio.wait_for(processor_holds_outcome.wait(), timeout=5)
+    publishing = asyncio.create_task(publisher.publish(outcome))
+    await asyncio.wait_for(publisher_waiting_outcome.wait(), timeout=5)
+    release_processor.set()
+    assert await asyncio.wait_for(processing, timeout=5) == 1
+    await asyncio.wait_for(publishing, timeout=5)
+    assert await processor.process_batch(limit=1) == 0
+    assert applier.calls == 1
+
+    async with integration_session_factory.begin() as db:
+        evidences = list(
+            (
+                await db.execute(
+                    select(InboundEvidence).where(
+                        InboundEvidence.source_identity == f"transport:{transport_task_id}:outcome:1"
+                    )
+                )
+            ).scalars()
+        )
+        assert [evidence.id for evidence in evidences] == [outcome_evidence_id]
+        assert evidences[0].published_at is not None
+        await db.execute(
+            delete(RackReplacementTransportBinding).where(
+                RackReplacementTransportBinding.client_request_id == client_request_id
+            )
+        )
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == outcome_evidence_id))
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.id == source_id).values(material_execution_id=None)
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
