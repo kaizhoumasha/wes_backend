@@ -10,6 +10,14 @@
 # ============================================
 FROM python:3.13-slim AS base
 
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
+
+RUN test -n "${WES_VCS_REVISION}" && test -n "${WES_SOURCE_TREE}"
+
+LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
+      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
+
 # 设置工作目录
 WORKDIR /app
 
