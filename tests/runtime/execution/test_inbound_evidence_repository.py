@@ -76,6 +76,7 @@ async def test_decision_claim_and_partial_index_exclude_foundation_device_result
     )
     for compiled in (sql, sqlite_sql):
         assert "earlier_transport_outcomes" in compiled
+        assert "earlier_transport_outcomes.apply_status = 'APPLIED'" in compiled
         assert "transport_task_id" in compiled
         assert "material_execution_id" in compiled
         assert "outcome_version" in compiled

@@ -73,6 +73,7 @@ class WmsConfirmationDispatchResultPort(Protocol):
     normalized_response: dict[str, Any] | None
     response_result: str | None
     retry_after_ms: int | None
+    follow_up_plan: WmsConfirmationFollowUpPlan | None
 
 
 class WmsConfirmationAdapterPort(Protocol):
@@ -87,6 +88,11 @@ class WmsConfirmationAdapterPort(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class WmsConfirmationFollowUpPlan:
+    retry_after_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class WmsBusinessWaitFollowUp:
     operation: str
     operation_id: str
@@ -98,7 +104,7 @@ class WmsBusinessWaitPlanner(Protocol):
     def plan(
         self,
         confirmation: WmsConfirmation,
-        response_payload: dict[str, object],
+        planning: WmsConfirmationFollowUpPlan,
     ) -> WmsBusinessWaitFollowUp | None: ...
 
 
@@ -387,12 +393,11 @@ class WmsConfirmationService:
                     )
                     if isinstance(completed, WmsConfirmationResponseConflictResult):
                         return
-                    if result.response_result == "WAIT":
+                    if result.follow_up_plan is not None:
                         await self._create_business_wait_follow_up(
                             db,
                             confirmation,
-                            response_payload=result.normalized_response,
-                            retry_after_ms=result.retry_after_ms,
+                            planning=result.follow_up_plan,
                             received_at=changed_at,
                         )
                     return
@@ -415,15 +420,12 @@ class WmsConfirmationService:
         db: object,
         confirmation: WmsConfirmation,
         *,
-        response_payload: dict[str, Any],
-        retry_after_ms: int | None,
+        planning: WmsConfirmationFollowUpPlan,
         received_at: datetime,
     ) -> None:
         planner = self._business_wait_planner
         try:
-            follow_up = (
-                planner.plan(confirmation, cast("dict[str, object]", response_payload)) if planner is not None else None
-            )
+            follow_up = planner.plan(confirmation, planning) if planner is not None else None
         except Exception:  # ACL planner 失败不得回滚已接收的确定 WMS response evidence。
             logger.exception(
                 "execution.wms_business_wait_planning_failed",
@@ -434,7 +436,7 @@ class WmsConfirmationService:
         if not self._valid_business_wait_follow_up(
             confirmation,
             follow_up,
-            retry_after_ms=retry_after_ms,
+            retry_after_ms=planning.retry_after_ms,
             received_at=received_at,
         ):
             _ = await self.mark_reconciling(db, confirmation, changed_at=received_at)
@@ -522,6 +524,7 @@ __all__ = [
     "WmsBusinessWaitFollowUp",
     "WmsBusinessWaitPlanner",
     "WmsConfirmationAcceptance",
+    "WmsConfirmationFollowUpPlan",
     "WmsConfirmationIdentityConflictError",
     "WmsConfirmationIdentityConflictResult",
     "WmsConfirmationResponseConflictError",

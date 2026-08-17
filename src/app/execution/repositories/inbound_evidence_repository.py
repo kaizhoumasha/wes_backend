@@ -127,6 +127,7 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
                             earlier_columns.kind == InboundEvidenceKind.TRANSPORT_RESULT,
                             earlier_columns.transport_task_id == columns.transport_task_id,
                             earlier_columns.material_execution_id == columns.material_execution_id,
+                            earlier_columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
                             earlier_columns.published_at.is_(None),
                             earlier_columns.normalized_payload["status"].as_string() == "UNKNOWN",
                             earlier_columns.normalized_payload["outcome_version"].as_integer()

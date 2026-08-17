@@ -24,6 +24,7 @@ from src.app.execution.models import (
 from src.app.execution.repositories import WmsConfirmationRepository
 from src.app.execution.services import (
     WmsBusinessWaitFollowUp,
+    WmsConfirmationFollowUpPlan,
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
@@ -248,6 +249,7 @@ class _DispatchAdapter:
                 normalized_response=None,
                 response_result=None,
                 retry_after_ms=None,
+                follow_up_plan=None,
             )
         return SimpleNamespace(
             code=InboundDispatchCode.DETERMINATE,
@@ -259,6 +261,7 @@ class _DispatchAdapter:
             },
             response_result="ACCEPT",
             retry_after_ms=None,
+            follow_up_plan=None,
         )
 
 
@@ -292,6 +295,7 @@ class _ConflictDuringDispatchAdapter:
             },
             response_result="ACCEPT",
             retry_after_ms=None,
+            follow_up_plan=None,
         )
 
 
@@ -307,6 +311,7 @@ class _WaitDispatchAdapter:
             },
             response_result="WAIT",
             retry_after_ms=250,
+            follow_up_plan=WmsConfirmationFollowUpPlan(retry_after_ms=250),
         )
 
 
@@ -317,9 +322,9 @@ class _OversizedTimestampPlanner:
     def plan(
         self,
         confirmation: WmsConfirmation,
-        response_payload: dict[str, object],
+        planning: WmsConfirmationFollowUpPlan,
     ) -> WmsBusinessWaitFollowUp:
-        del response_payload
+        assert planning.retry_after_ms == 250
         assert confirmation.completed_at is not None
         request_payload = json.loads(json.dumps(confirmation.request_payload))
         request_payload["operation_id"] = self._operation_id

@@ -12,6 +12,7 @@ from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmation
 from src.app.execution.services import (
     InboundEvidenceAcceptance,
     WmsBusinessWaitFollowUp,
+    WmsConfirmationFollowUpPlan,
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
@@ -136,6 +137,30 @@ async def test_adapter_sends_decision_through_wms_client_and_returns_typed_evide
         "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
     }
     assert transport.requests[0].path == "/api/v1/wes/decisions"
+
+
+@pytest.mark.asyncio
+async def test_adapter_maps_wait_to_typed_follow_up_plan() -> None:
+    payload = _request()
+    transport = _Transport(
+        _response(
+            {
+                "operation_id": OPERATION_ID,
+                "code": "DECIDED",
+                "timestamp": 2,
+                "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
+            }
+        )
+    )
+
+    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
+        operation=ADMISSION_OPERATION,
+        operation_id=OPERATION_ID,
+        request_payload=payload,
+        request_digest=_digest(payload),
+    )
+
+    assert result.follow_up_plan == WmsConfirmationFollowUpPlan(retry_after_ms=250)
 
 
 @pytest.mark.asyncio
@@ -493,6 +518,7 @@ class _ConflictDuringDispatchAdapter:
             },
             response_result="ACCEPT",
             retry_after_ms=None,
+            follow_up_plan=None,
         )
 
 
@@ -530,6 +556,7 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
             },
             response_result="ACCEPT",
             retry_after_ms=None,
+            follow_up_plan=None,
         )
     )
     service = WmsConfirmationService(
@@ -562,6 +589,7 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
             normalized_response=None,
             response_result=None,
             retry_after_ms=None,
+            follow_up_plan=None,
         )
     )
     service = WmsConfirmationService(
@@ -615,8 +643,9 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
             SimpleNamespace(
                 code=InboundDispatchCode.DETERMINATE,
                 normalized_response=response_body,
-                response_result="WAIT",
+                response_result="OPAQUE_DETERMINATE_RESULT",
                 retry_after_ms=250,
+                follow_up_plan=WmsConfirmationFollowUpPlan(retry_after_ms=250),
             )
         ),
         evidence_service=evidence,  # type: ignore[arg-type]
@@ -645,6 +674,7 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
             },
             response_result="ACCEPT",
             retry_after_ms=None,
+            follow_up_plan=None,
         )
     )
     assert await service.dispatch_batch(now=follow_up.next_attempt_at) == 1
@@ -662,12 +692,7 @@ def test_wms_business_wait_planner_uses_new_identity_timestamp_and_received_time
 
     follow_up = planner.plan(
         confirmation,
-        {
-            "operation_id": confirmation.operation_id,
-            "code": "DECIDED",
-            "timestamp": 2,
-            "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
-        },
+        WmsConfirmationFollowUpPlan(retry_after_ms=250),
     )
 
     assert follow_up is not None
@@ -756,6 +781,7 @@ async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(i
                 normalized_response=response_body,
                 response_result="WAIT",
                 retry_after_ms=250,
+                follow_up_plan=WmsConfirmationFollowUpPlan(retry_after_ms=250),
             )
         ),
         evidence_service=evidence,  # type: ignore[arg-type]
@@ -792,6 +818,7 @@ async def test_confirmation_persists_received_json_object_before_marking_reconci
                 normalized_response=response_body,
                 response_result=None,
                 retry_after_ms=None,
+                follow_up_plan=None,
             )
         ),
         evidence_service=evidence,  # type: ignore[arg-type]

@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
-from src.app.execution.services.wms_confirmation_service import WmsBusinessWaitFollowUp
+from src.app.execution.services.wms_confirmation_service import (
+    WmsBusinessWaitFollowUp,
+    WmsConfirmationFollowUpPlan,
+)
 from src.app.wms_adapter.client import (
     OutboundHttpClosedError,
     WmsClient,
@@ -51,6 +54,7 @@ class InboundDispatchResult:
     normalized_response: dict[str, Any] | None = None
     response_result: str | None = None
     retry_after_ms: int | None = None
+    follow_up_plan: WmsConfirmationFollowUpPlan | None = None
 
 
 class WmsInboundAdapter:
@@ -121,7 +125,11 @@ class WmsInboundAdapter:
                 InboundDispatchCode.DETERMINATE,
                 normalized_response=normalized,
                 response_result=response_result,
-                retry_after_ms=response.data.retry_after_ms if response_result == "WAIT" else None,
+                follow_up_plan=(
+                    WmsConfirmationFollowUpPlan(retry_after_ms=response.data.retry_after_ms)
+                    if response_result == "WAIT"
+                    else None
+                ),
             )
         if response.code == "BUSY":
             return InboundDispatchResult(
@@ -147,12 +155,9 @@ class WmsInboundBusinessWaitPlanner:
     def plan(
         self,
         confirmation: WmsConfirmation,
-        response_payload: dict[str, object],
+        planning: WmsConfirmationFollowUpPlan,
     ) -> WmsBusinessWaitFollowUp | None:
-        data = response_payload.get("data")
-        if not isinstance(data, dict) or data.get("result") != "WAIT":
-            return None
-        retry_after_ms = data.get("retry_after_ms")
+        retry_after_ms = planning.retry_after_ms
         if not isinstance(retry_after_ms, int) or isinstance(retry_after_ms, bool) or retry_after_ms <= 0:
             return None
         received_at = confirmation.completed_at
