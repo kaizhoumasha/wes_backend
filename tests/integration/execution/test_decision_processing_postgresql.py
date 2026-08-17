@@ -876,6 +876,9 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
         await db.execute(
             delete(RackReplacementTransportBinding).where(RackReplacementTransportBinding.line_run_epoch_id == epoch_id)
         )
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)).values(material_execution_id=None)
+        )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
         await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
@@ -991,6 +994,9 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
             delete(RackReplacementTransportBinding).where(
                 RackReplacementTransportBinding.client_request_id == client_request_id
             )
+        )
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.id.in_(source_ids)).values(material_execution_id=None)
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(source_ids)))
@@ -1109,6 +1115,9 @@ async def test_postgresql_transport_publisher_revalidates_after_execution_first_
             delete(RackReplacementTransportBinding).where(
                 RackReplacementTransportBinding.client_request_id == client_request_id
             )
+        )
+        await db.execute(
+            update(InboundEvidence).where(InboundEvidence.id == source_id).values(material_execution_id=None)
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
