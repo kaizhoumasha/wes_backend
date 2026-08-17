@@ -131,7 +131,7 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
         ]
         if RECOVERY_OPERATION_IDS:
             evidence_filters.append(InboundEvidence.operation_id.in_(RECOVERY_OPERATION_IDS))
-        evidence_ids = select(InboundEvidence.id).where(or_(*evidence_filters))
+        evidence_ids = tuple((await db.scalars(select(InboundEvidence.id).where(or_(*evidence_filters)))).all())
         epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like(f"{PREFIX}%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like(f"{PREFIX}%"))
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id.in_(execution_ids)))
