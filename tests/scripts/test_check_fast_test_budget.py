@@ -33,12 +33,12 @@ def test_report_only_prints_actual_values_and_keeps_exit_zero(tmp_path: Path) ->
     report_path = tmp_path / "fast.xml"
     testcases = [("tests.unit.test_fast", 0.2)] * 30
     testcases.append(("tests.core.test_slow", 3.2))
-    _write_junit_report(report_path, testcases, suite_duration=60.1)
+    _write_junit_report(report_path, testcases, suite_duration=90.1)
 
     result = _run_budget_check(report_path, "--report-only")
 
     assert result.returncode == 0
-    assert "套件总耗时 60.100s，预算 60.000s" in result.stdout
+    assert "套件总耗时 90.100s，预算 90.000s" in result.stdout
     assert "tests.core.test_slow::case_30：3.200s，预算 3.000s" in result.stdout
     assert "tests/unit/ p95：0.200s，预算 0.100s，N=30" in result.stdout
 

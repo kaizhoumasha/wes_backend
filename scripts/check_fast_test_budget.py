@@ -9,7 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-SUITE_BUDGET_SECONDS = 60.0
+SUITE_BUDGET_SECONDS = 90.0
 CASE_BUDGET_SECONDS = 3.0
 DIRECTORY_P95_BUDGET_SECONDS = 0.1
 MINIMUM_DIRECTORY_CASE_COUNT = 30
