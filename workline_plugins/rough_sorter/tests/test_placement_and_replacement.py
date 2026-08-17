@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from conftest import (
     EXECUTION_ID,
     TRACE_ID,
@@ -96,6 +97,25 @@ def _release_snapshot(*, closed: bool) -> RackReleaseSnapshot:
         confirmation_status=(PlacementConfirmationStatus.COMPLETED if closed else PlacementConfirmationStatus.PENDING),
         response_result=PlacementResponseResult.RECORDED if closed else None,
         response_evidence_id=61 if closed else None,
+    )
+    placements = (placement,)
+    return RackReleaseSnapshot(
+        current_rack_id="rack-old",
+        placements=placements,
+        snapshot_ref=rack_release_snapshot_ref("rack-old", placements),
+    )
+
+
+def _release_snapshot_without_confirmation(command_status: PlacementCommandStatus) -> RackReleaseSnapshot:
+    placement = PlacementReleaseEvidence(
+        command_code="placement-command-absent",
+        command_status=command_status,
+        command_result_evidence_id=None,
+        confirmation_operation=None,
+        confirmation_operation_id=None,
+        confirmation_status=PlacementConfirmationStatus.ABSENT,
+        response_result=None,
+        response_evidence_id=None,
     )
     placements = (placement,)
     return RackReleaseSnapshot(
@@ -248,6 +268,69 @@ def test_open_release_gate_creates_no_rack_move_and_does_not_claim_recovery() ->
         ),
     )
     assert not any(isinstance(decision, CreateTransportTask) for decision in decisions)
+
+
+def test_active_placement_without_confirmation_defers_rack_release() -> None:
+    fact = _replacement_fact(
+        ReplacementResult.READY,
+        release_snapshot=_release_snapshot_without_confirmation(PlacementCommandStatus.ACKNOWLEDGED),
+        rack_replacement_id="replacement-1",
+        old_loaded_rack=RackMoveLegPlan(
+            rack_id="rack-old",
+            source=TransportRackPosition("work-position"),
+            target=TransportRackPosition("old-buffer"),
+            target_face=RackFace.A,
+        ),
+        new_empty_rack=RackMoveLegPlan(
+            rack_id="rack-new",
+            source=TransportRackPosition("new-buffer"),
+            target=TransportRackPosition("work-position"),
+            target_face=RackFace.B,
+        ),
+    )
+
+    assert ReplacementPlanDecidedHandler()(fact) == (
+        DeferExecution(EXECUTION_ID, fact.fact_id, "RACK_RELEASE_GATE_NOT_CLOSED"),
+    )
+
+
+@pytest.mark.parametrize(
+    "command_status",
+    [
+        PlacementCommandStatus.FAILED,
+        PlacementCommandStatus.TIMED_OUT,
+        PlacementCommandStatus.RECONCILING,
+    ],
+)
+def test_conflicting_placement_without_confirmation_pauses_rack_release(
+    command_status: PlacementCommandStatus,
+) -> None:
+    fact = _replacement_fact(
+        ReplacementResult.READY,
+        release_snapshot=_release_snapshot_without_confirmation(command_status),
+        rack_replacement_id="replacement-1",
+        old_loaded_rack=RackMoveLegPlan(
+            rack_id="rack-old",
+            source=TransportRackPosition("work-position"),
+            target=TransportRackPosition("old-buffer"),
+            target_face=RackFace.A,
+        ),
+        new_empty_rack=RackMoveLegPlan(
+            rack_id="rack-new",
+            source=TransportRackPosition("new-buffer"),
+            target=TransportRackPosition("work-position"),
+            target_face=RackFace.B,
+        ),
+    )
+
+    assert ReplacementPlanDecidedHandler()(fact) == (
+        PauseForReconciliation(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="RACK_RELEASE_GATE_CONFLICT",
+            affected_resource_ids=("rack-old",),
+        ),
+    )
 
 
 def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None:

@@ -146,16 +146,15 @@ heavy_tests = []
 source_glob = "scripts/markdownlint.sh"
 heavy_tests = []
 
-# pytest 收集、报告和 FAST/QUALITY 拓扑由质量门禁直接承接。
+# workspace 依赖与插件安装拓扑由 concrete rough sorter PostgreSQL composition owner 承接。
 [[mapping]]
 source_glob = "pyproject.toml"
-heavy_tests = []
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
-# 当前 lock 只冻结已审的本地插件 SDK 依赖，uv lock/QUALITY 承接；内容漂移恢复 fail closed。
+# lock 变化同样必须证明 concrete rough sorter composition 可从冻结依赖启动。
 [[mapping]]
 source_glob = "uv.lock"
-heavy_tests = []
-reviewed_content_sha256 = "c03c5c168d8b453271891672e8f2a0145caa45032d17d2a5e13c0e94cd77e7b3"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 # 独立插件 SDK 仅定义标准库不可变类型、只读协议和静态元数据；当前精确内容由架构测试承接。
 # 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
@@ -470,6 +469,7 @@ source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,st
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 # 被 InboundEvidenceRepository 直接接管的旧路径 tombstone，删除 diff 仍必须选中 DeviceCommand 闭环。
@@ -986,6 +986,7 @@ heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
 source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_confirmation_repository.py,services/wms_confirmation_service.py}"
 heavy_tests = [
     "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
 

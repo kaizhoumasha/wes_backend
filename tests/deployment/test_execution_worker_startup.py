@@ -21,6 +21,26 @@ from tests.support.ecs_uniform_wire import (
 )
 
 TASK_NAME = "src.celery_app.tasks.execution.process_execution_facts_batch"
+DEVICE_COMMAND_BEAT_CONTRACTS = (
+    (
+        "dispatch-device-commands-batch",
+        "src.celery_app.tasks.device_command.dispatch_device_commands_batch",
+        10.0,
+        10.0,
+    ),
+    (
+        "process-device-evidence-batch",
+        "src.celery_app.tasks.device_command.process_device_evidence_batch",
+        10.0,
+        10.0,
+    ),
+    (
+        "reconcile-device-commands-batch",
+        "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
+        30.0,
+        30.0,
+    ),
+)
 
 
 def _worker_sender(*queues: str) -> SimpleNamespace:
@@ -56,6 +76,48 @@ def test_execution_fact_scanner_is_required_by_deployment_attestation(drift: str
         routes[TASK_NAME] = {"queue": "celery"}
 
     with pytest.raises(ValueError, match=r"Beat required schedule|device-command"):
+        _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
+
+
+@pytest.mark.parametrize(("schedule_name", "task_name", "period", "expires"), DEVICE_COMMAND_BEAT_CONTRACTS)
+def test_device_command_beat_contract_matches_production_configuration(
+    schedule_name: str,
+    task_name: str,
+    period: float,
+    expires: float,
+) -> None:
+    assert beat_schedule[schedule_name] == {
+        "task": task_name,
+        "schedule": period,
+        "kwargs": {"limit": 100},
+        "options": {"expires": expires},
+    }
+    assert task_routes[task_name] == {"queue": "device-command"}
+
+
+@pytest.mark.parametrize(("schedule_name", "task_name", "period", "expires"), DEVICE_COMMAND_BEAT_CONTRACTS)
+@pytest.mark.parametrize("drift", ("missing-schedule", "wrong-period", "wrong-expires", "missing-route", "wrong-route"))
+def test_device_command_beat_drift_fails_deployment_attestation(
+    schedule_name: str,
+    task_name: str,
+    period: float,
+    expires: float,
+    drift: str,
+) -> None:
+    schedules = {name: {**value, "options": dict(value.get("options", {}))} for name, value in beat_schedule.items()}
+    routes = {name: dict(value) for name, value in task_routes.items()}
+    if drift == "missing-schedule":
+        schedules.pop(schedule_name)
+    elif drift == "wrong-period":
+        schedules[schedule_name]["schedule"] = period + 1.0
+    elif drift == "wrong-expires":
+        schedules[schedule_name]["options"] = {"expires": expires + 1.0}
+    elif drift == "missing-route":
+        routes.pop(task_name)
+    else:
+        routes[task_name] = {"queue": "celery"}
+
+    with pytest.raises(ValueError, match="DeviceCommand Beat"):
         _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
 
 

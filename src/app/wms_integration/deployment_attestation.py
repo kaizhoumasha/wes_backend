@@ -84,6 +84,26 @@ _REQUIRED_BEAT_SCHEDULES = (
         "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
     ),
 )
+_REQUIRED_DEVICE_COMMAND_BEAT_SCHEDULES = (
+    (
+        "dispatch-device-commands-batch",
+        "src.celery_app.tasks.device_command.dispatch_device_commands_batch",
+        10.0,
+        10.0,
+    ),
+    (
+        "process-device-evidence-batch",
+        "src.celery_app.tasks.device_command.process_device_evidence_batch",
+        10.0,
+        10.0,
+    ),
+    (
+        "reconcile-device-commands-batch",
+        "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
+        30.0,
+        30.0,
+    ),
+)
 _REQUIRED_FULFILLMENT_ROUTES = (
     "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
     "src.celery_app.tasks.workline.check_wms_effect_status",
@@ -246,6 +266,20 @@ def _beat_role_facts(
         if schedule is None or schedule.get("task") != expected_task or "schedule" not in schedule:
             raise ValueError(f"Beat required schedule is missing or invalid: {schedule_name}")
         schedules.append((schedule_name, expected_task, schedule["schedule"], schedule.get("options")))
+
+    for schedule_name, expected_task, expected_period, expected_expires in _REQUIRED_DEVICE_COMMAND_BEAT_SCHEDULES:
+        schedule = beat_schedule_source.get(schedule_name)
+        options = schedule.get("options") if schedule is not None else None
+        if (
+            schedule is None
+            or schedule.get("task") != expected_task
+            or schedule.get("schedule") != expected_period
+            or not isinstance(options, Mapping)
+            or options.get("expires") != expected_expires
+            or task_routes_source.get(expected_task, {}).get("queue") != "device-command"
+        ):
+            raise ValueError(f"DeviceCommand Beat schedule or route is invalid: {schedule_name}")
+        schedules.append((schedule_name, expected_task, expected_period, {"expires": expected_expires}))
 
     for schedule_name, schedule in beat_schedule_source.items():
         task_name = schedule.get("task")

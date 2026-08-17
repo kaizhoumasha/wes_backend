@@ -372,27 +372,6 @@ def test_plugin_sdk_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) 
         select_heavy_tests([changed_path], config, repo_root=tmp_path)
 
 
-def test_uv_lock_is_exact_reviewed_none_for_current_sdk_dependency() -> None:
-    changed_path = "uv.lock"
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
-
-    assert len(matching_mappings) == 1
-    mapping = matching_mappings[0]
-    assert mapping.heavy_tests == ()
-    assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
-    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
-
-
-def test_uv_lock_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) -> None:
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-    drifted_path = tmp_path / "uv.lock"
-    drifted_path.write_bytes((REPO_ROOT / "uv.lock").read_bytes() + b"\n# drift\n")
-
-    with pytest.raises(SelectorError, match="reviewed mapping 内容指纹不匹配"):
-        select_heavy_tests(["uv.lock"], config, repo_root=tmp_path)
-
-
 def test_core_composition_root_keeps_its_heavy_owners() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
@@ -400,6 +379,46 @@ def test_core_composition_root_keeps_its_heavy_owners() -> None:
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
     ]
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected"),
+    (
+        ("pyproject.toml", [DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST]),
+        ("uv.lock", [DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST]),
+        (
+            "src/app/device/repositories/command_repository.py",
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/device/repositories/status_observation_repository.py",
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/app/execution/repositories/wms_confirmation_repository.py",
+            [
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+                EXECUTION_CONSTRAINTS_HEAVY_TEST,
+                WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
+            ],
+        ),
+    ),
+)
+def test_rough_sorter_runtime_paths_independently_select_concrete_execution_owner(
+    changed_path: str,
+    expected: list[str],
+) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == expected
 
 
 def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
@@ -1027,7 +1046,11 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/execution/services/wms_confirmation_service.py",
-            [EXECUTION_CONSTRAINTS_HEAVY_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
+            [
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+                EXECUTION_CONSTRAINTS_HEAVY_TEST,
+                WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
+            ],
         ),
         (
             "src/app/transport/submit_snapshot.py",

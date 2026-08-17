@@ -313,7 +313,19 @@ async def rack_release_snapshot(
     for command in rack_commands:
         confirmation = placement_confirmations.get(command.command_code)
         if confirmation is None:
-            raise ValueError("placement command missing exact confirmation correlation")
+            items.append(
+                types.PlacementReleaseEvidence(
+                    command_code=command.command_code,
+                    command_status=types.PlacementCommandStatus(command.status),
+                    command_result_evidence_id=command.result_evidence_id,
+                    confirmation_operation=None,
+                    confirmation_operation_id=None,
+                    confirmation_status=types.PlacementConfirmationStatus.ABSENT,
+                    response_result=None,
+                    response_evidence_id=None,
+                )
+            )
+            continue
         if confirmation.material_execution_id != command.material_execution_id:
             raise ValueError("placement confirmation execution correlation mismatch")
         items.append(

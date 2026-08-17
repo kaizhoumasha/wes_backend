@@ -130,19 +130,8 @@ class FactProcessor:
         for evidence_id in evidence_ids:
             try:
                 prepared = await self._prepare_fact(evidence_id, token)
-                decision_groups = self._decision_groups(prepared)
-                decisions = tuple(decision for group in decision_groups for decision in group)
-                defer = self._single_defer(decision_groups)
-                if defer is not None:
-                    await self._defer(evidence_id, token)
-                    processed += 1
-                    continue
-                digest = decision_digest(decisions)
-                if not await self._record_digest(evidence_id, token, digest):
-                    processed += 1
-                    continue
-                await self._apply(evidence_id, token, digest)
-                if any(type(decision) is CreateWmsConfirmation for decision in decisions):
+                _ = self._decision_groups(prepared)
+                if await self._apply_locked(evidence_id, token):
                     self._enqueue_wms_confirmations()
                 processed += 1
             except Exception:  # worker 必须隔离单条 evidence，并通过持久状态有界恢复。
@@ -167,40 +156,28 @@ class FactProcessor:
             evidence = await self._claimed(db, evidence_id, token, now)
             return await self._prepare_facts_in_session(db, evidence, now)
 
-    async def _record_digest(self, evidence_id: int, token: str, digest: str) -> bool:
+    async def _apply_locked(self, evidence_id: int, token: str) -> bool:
         now = self._clock()
         async with self._sessions.begin() as db:
             evidence = await self._claimed(db, evidence_id, token, now)
-            if evidence.decision_digest is None:
-                evidence.decision_digest = digest
-                await self._evidences.flush(db)
-                return True
-            if evidence.decision_digest == digest:
-                return True
-            evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
-            evidence.decision_claim_token = None
-            evidence.decision_claim_expires_at = None
-            evidence.decision_next_attempt_at = None
-            await self._transition_all_executions(db, evidence, now, reason_code="DECISION_DIGEST_CONFLICT")
-            await self._evidences.flush(db)
-            return False
-
-    async def _apply(
-        self,
-        evidence_id: int,
-        token: str,
-        digest: str,
-    ) -> None:
-        now = self._clock()
-        async with self._sessions.begin() as db:
-            evidence = await self._claimed(db, evidence_id, token, now)
-            if evidence.decision_digest != digest:
-                raise RuntimeError("fenced Decision digest changed")
             prepared = await self._prepare_facts_in_session(db, evidence, now)
             current_groups = self._decision_groups(prepared)
+            defer = self._single_defer(current_groups)
+            if defer is not None:
+                await self._hold_deferred(db, evidence, prepared, defer, now)
+                return False
             current_decisions = tuple(decision for group in current_groups for decision in group)
-            if decision_digest(current_decisions) != digest:
-                raise RuntimeError("Decision digest changed during locked Fact rebuild")
+            digest = decision_digest(current_decisions)
+            if evidence.decision_digest is None:
+                evidence.decision_digest = digest
+            elif evidence.decision_digest != digest:
+                evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
+                evidence.decision_claim_token = None
+                evidence.decision_claim_expires_at = None
+                evidence.decision_next_attempt_at = None
+                await self._transition_all_executions(db, evidence, now, reason_code="DECISION_DIGEST_CONFLICT")
+                await self._evidences.flush(db)
+                return False
             for item, group in zip(prepared, current_groups, strict=True):
                 _ = await self._applier.apply(db, evidence, item.execution, item.fact, group)
             evidence.published_at = now
@@ -208,6 +185,7 @@ class FactProcessor:
             evidence.decision_claim_expires_at = None
             evidence.decision_next_attempt_at = None
             await self._evidences.flush(db)
+            return any(type(decision) is CreateWmsConfirmation for decision in current_decisions)
 
     async def _record_failure(self, evidence_id: int, token: str) -> None:
         now = self._clock()
@@ -244,35 +222,36 @@ class FactProcessor:
             raise ValueError("DeferExecution must not be mixed with another Decision")
         return decision
 
-    async def _defer(self, evidence_id: int, token: str) -> None:
-        now = self._clock()
-        async with self._sessions.begin() as db:
-            evidence = await self._claimed(db, evidence_id, token, now)
-            prepared = await self._prepare_facts_in_session(db, evidence, now)
-            if len(prepared) != 1:
-                raise ValueError("DeferExecution requires exactly one prepared Fact")
-            item = prepared[0]
-            decision = self._single_defer(self._decision_groups(prepared))
-            if decision is None:
-                raise RuntimeError("locked Fact no longer produces DeferExecution")
-            if (
-                decision.material_execution_id != item.execution.execution_code
-                or decision.fact_id != item.fact.fact_id
-                or item.fact.evidence_id != str(evidence.id)
-            ):
-                raise ValueError("DeferExecution identity does not match the claimed Fact")
-            evidence.decision_claim_token = None
-            evidence.decision_claim_expires_at = None
-            evidence.decision_next_attempt_at = now
-            _ = await self._execution_service.transition(
-                db,
-                item.execution,
-                target=MaterialExecutionStatus.HOLD,
-                changed_at=now,
-                reason_code=decision.reason_code,
-                evidence_id=cast("int", evidence.id),
-            )
-            await self._evidences.flush(db)
+    async def _hold_deferred(
+        self,
+        db: object,
+        evidence: InboundEvidence,
+        prepared: tuple[_PreparedFact, ...],
+        decision: DeferExecution,
+        now: datetime,
+    ) -> None:
+        if len(prepared) != 1:
+            raise ValueError("DeferExecution requires exactly one prepared Fact")
+        item = prepared[0]
+        if (
+            decision.material_execution_id != item.execution.execution_code
+            or decision.fact_id != item.fact.fact_id
+            or item.fact.evidence_id != str(evidence.id)
+        ):
+            raise ValueError("DeferExecution identity does not match the claimed Fact")
+        evidence.decision_digest = None
+        evidence.decision_claim_token = None
+        evidence.decision_claim_expires_at = None
+        evidence.decision_next_attempt_at = now
+        _ = await self._execution_service.transition(
+            db,
+            item.execution,
+            target=MaterialExecutionStatus.HOLD,
+            changed_at=now,
+            reason_code=decision.reason_code,
+            evidence_id=cast("int", evidence.id),
+        )
+        await self._evidences.flush(db)
 
     def _decision_groups(self, prepared: tuple[_PreparedFact, ...]) -> list[tuple[object, ...]]:
         decision_groups: list[tuple[object, ...]] = []

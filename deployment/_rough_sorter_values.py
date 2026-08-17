@@ -13,6 +13,7 @@ from wes_plugin_sdk import (
     FactReference,
     RackFace,
     TransportRackPosition,
+    TransportResultReadyFact,
     WmsResultReadyFact,
 )
 
@@ -61,6 +62,11 @@ def base_fact_for_persisted_evidence(
         )
     if evidence.kind == InboundEvidenceKind.WMS_EVENT:
         return FactBuilder().build(evidence, execution)
+    if evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT:
+        return TransportResultReadyFact(
+            **common,
+            transport_task_id=required_string(evidence.transport_task_id, "evidence.transport_task_id"),
+        )
     raise ValueError("当前 WMS request resolver 不支持该 evidence kind")
 
 

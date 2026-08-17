@@ -502,7 +502,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
 
 
 @pytest.mark.asyncio
-async def test_postgresql_rack_release_snapshot_includes_open_placement_from_another_execution(
+async def test_postgresql_rack_release_snapshot_includes_cross_execution_placement_without_confirmation(
     integration_session_factory,
 ) -> None:
     identity = uuid4().hex
@@ -611,37 +611,6 @@ async def test_postgresql_rack_release_snapshot_includes_open_placement_from_ano
             status=CommandStatus.ACKNOWLEDGED,
         )
         db.add(command)
-        confirmation = WmsConfirmation(
-            operation="inbound.material.placement_report@v1",
-            operation_id=command_code,
-            material_execution_id=executions[1].id,
-            request_digest="d" * 64,
-            request_payload={
-                "operation": "inbound.material.placement_report@v1",
-                "operation_id": command_code,
-                "timestamp": 1_787_040_000_000,
-                "data": {
-                    "material_execution_id": executions[1].execution_code,
-                    "material_trace_id": executions[1].material_trace_id,
-                    "pkg_id": "PKG-1",
-                    "inbound_admission_id": "ADM-1",
-                    "target_assignment_id": "ASSIGN-1",
-                    "target_position": {
-                        "type": "ONE_LAYER_BIN_CELL",
-                        "rack_id": "RACK-1",
-                        "rack_slot_code": "SLOT-1",
-                        "bin_id": "BIN-1",
-                        "bin_cell_id": "CELL-1",
-                    },
-                    "placement_sequence": 1,
-                    "command_code": command_code,
-                    "placed_at": 1_787_040_000_000,
-                },
-            },
-            deadline_at=now + timedelta(minutes=1),
-            status=WmsConfirmationStatus.PENDING,
-        )
-        db.add(confirmation)
         await db.flush()
         execution_ids = tuple(execution.id for execution in executions)
         seed_ids = tuple(seed.id for seed in seeds)
@@ -660,8 +629,9 @@ async def test_postgresql_rack_release_snapshot_includes_open_placement_from_ano
         )
         assert [item.command_code for item in snapshot.placements] == [command_code]
         assert snapshot.placements[0].command_status.value == "ACKNOWLEDGED"
+        assert snapshot.placements[0].confirmation_status.value == "ABSENT"
+        assert snapshot.placements[0].confirmation_operation_id is None
 
-        await db.execute(delete(WmsConfirmation).where(WmsConfirmation.operation_id == command_code))
         await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))

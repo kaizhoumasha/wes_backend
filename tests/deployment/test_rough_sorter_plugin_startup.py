@@ -4,7 +4,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from rough_sorter.handlers import ReplacementPlanDecidedHandler
+from rough_sorter.handlers import ReplacementPlanDecidedHandler, TransportOutcomePublishedHandler
 from wes_plugin_sdk import (
     CreateWmsConfirmation,
     DeferExecution,
@@ -29,6 +29,7 @@ from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
+from src.app.execution.services.decision_applier import DecisionApplier
 from src.app.transport.contracts import (
     RackFace,
     RackPosition,
@@ -835,39 +836,8 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         payload_digest="9" * 64,
         status=CommandStatus.ACKNOWLEDGED,
     )
-    placement_confirmation = WmsConfirmation(
-        id=99,
-        operation="inbound.material.placement_report@v1",
-        operation_id=placement_command_code,
-        material_execution_id=22,
-        request_digest="9" * 64,
-        request_payload={
-            "operation": "inbound.material.placement_report@v1",
-            "operation_id": placement_command_code,
-            "timestamp": 1_787_040_000_450,
-            "data": {
-                "material_execution_id": "EXEC-22",
-                "material_trace_id": "TRACE-22",
-                "pkg_id": "PKG-22",
-                "inbound_admission_id": "ADM-22",
-                "target_assignment_id": "ASSIGN-22",
-                "target_position": {
-                    "type": "ONE_LAYER_BIN_CELL",
-                    "rack_id": "RACK-1",
-                    "rack_slot_code": "SLOT-99",
-                    "bin_id": "BIN-99",
-                    "bin_cell_id": "CELL-99",
-                },
-                "placement_sequence": 1,
-                "command_code": placement_command_code,
-                "placed_at": 1_787_040_000_440,
-            },
-        },
-        deadline_at=NOW,
-        status=WmsConfirmationStatus.PENDING,
-    )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
-    factory._wms_confirmations = _Confirmations(confirmation, placement_confirmation)  # type: ignore[attr-defined]
+    factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
     factory._rack_positions = _RackPositions()  # type: ignore[attr-defined]
     factory._rack_placements = _Placements()  # type: ignore[attr-defined]
     factory._commands = _Commands(placement_command)  # type: ignore[attr-defined]
@@ -880,6 +850,8 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     assert fact.result.value == "READY"
     assert fact.release_snapshot.current_rack_id == "RACK-1"
     assert tuple(item.command_code for item in fact.release_snapshot.placements) == (placement_command_code,)
+    assert fact.release_snapshot.placements[0].confirmation_status.value == "ABSENT"
+    assert fact.release_snapshot.placements[0].confirmation_operation_id is None
     assert ReplacementPlanDecidedHandler()(fact) == (
         DeferExecution("EXEC-21", "evidence:36", "RACK_RELEASE_GATE_NOT_CLOSED"),
     )
@@ -957,9 +929,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             return SimpleNamespace(leg="NEW_IN", source_evidence_id=36, rack_replacement_id="REPLACE-1")
 
     factory._evidences = _Evidences(transport_evidence, evidence, admission_evidence)  # type: ignore[attr-defined]
-    factory._wms_confirmations = _Confirmations(  # type: ignore[attr-defined]
-        confirmation, admission_confirmation, placement_confirmation
-    )
+    factory._wms_confirmations = _Confirmations(confirmation, admission_confirmation)  # type: ignore[attr-defined]
     factory._rack_replacement_bindings = Bindings()  # type: ignore[attr-defined]
 
     transport_fact = await factory.build(
@@ -971,6 +941,63 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     assert transport_fact.rack_id == "RACK-2"
     assert transport_fact.final_position.location_code == "OUTLET-1"
     assert transport_fact.request_operation_id == "019d0000-0000-7000-8000-000000000041"
+
+    decisions = TransportOutcomePublishedHandler()(transport_fact)
+
+    class ConfirmationCreator:
+        def __init__(self) -> None:
+            self.requests: list[dict[str, object]] = []
+
+        async def create_or_get(self, db: object, **kwargs: object) -> object:
+            del db
+            self.requests.append(kwargs)
+            return object()
+
+    class ExecutionTransitions:
+        async def transition(self, db: object, current: MaterialExecution, **kwargs: object) -> MaterialExecution:
+            del db, kwargs
+            return current
+
+    confirmations = ConfirmationCreator()
+    resolver = RoughSorterWmsConfirmationRequestResolver(
+        fact_factory=factory,
+        evidence_repository=factory._evidences,  # type: ignore[attr-defined]
+        execution_repository=factory._executions,  # type: ignore[attr-defined]
+    )
+    applier = DecisionApplier(
+        device_command_service=object(),
+        wms_confirmation_service=confirmations,
+        wms_request_resolver=resolver,
+        rack_binding_repository=object(),
+        transport_service=object(),
+        material_execution_service=ExecutionTransitions(),
+        clock=lambda: NOW,
+    )
+
+    await applier.apply(object(), transport_evidence, factory._executions.execution, transport_fact, decisions)  # type: ignore[attr-defined]
+
+    assert confirmations.requests == [
+        {
+            "operation": "inbound.material.target_decide@v1",
+            "operation_id": "019d0000-0000-7000-8000-000000000041",
+            "material_execution_id": 21,
+            "request_payload": {
+                "operation_id": "019d0000-0000-7000-8000-000000000041",
+                "operation": "inbound.material.target_decide@v1",
+                "timestamp": 1_787_043_600_000,
+                "data": {
+                    "material_execution_id": "EXEC-21",
+                    "material_trace_id": "TRACE-21",
+                    "pkg_id": "PKG-1",
+                    "inbound_admission_id": "ADM-1",
+                    "source_position": {"type": "HANDOFF_POSITION", "location_code": "OUTLET-1"},
+                    "current_rack_id": "RACK-2",
+                },
+            },
+            "deadline_at": datetime(2026, 8, 18, 9, 0, 30),
+            "created_at": NOW,
+        }
+    ]
 
 
 @pytest.mark.asyncio

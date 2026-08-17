@@ -189,16 +189,13 @@ class _ChangingFact(EvidenceReadyFact):
 
 
 class _ChangingFactFactory:
-    def __init__(self, decisions: tuple[str, ...], *, on_rebuild: object | None = None) -> None:
+    def __init__(self, decisions: tuple[str, ...]) -> None:
         self._decisions = iter(decisions)
-        self._on_rebuild = on_rebuild
         self.calls = 0
 
     async def build(self, db: object, fact: FactReference) -> FactReference:
         del db
         self.calls += 1
-        if self.calls == 2 and self._on_rebuild is not None:
-            self._on_rebuild()
         return _ChangingFact(
             fact_id=fact.fact_id,
             evidence_id=fact.evidence_id,
@@ -213,7 +210,14 @@ def _handle_changing(fact: _ChangingFact) -> tuple[DeferExecution | PauseForReco
     if fact.decision == "DEFER":
         return (DeferExecution(fact.material_execution_id, fact.fact_id, "SNAPSHOT_NOT_READY"),)
     if fact.decision == "PAUSE":
-        return (PauseForReconciliation(fact.material_execution_id, fact.fact_id, "SNAPSHOT_CONFLICT", ()),)
+        return (
+            PauseForReconciliation(
+                fact.material_execution_id,
+                fact.fact_id,
+                "SNAPSHOT_CONFLICT",
+                ("snapshot:resource",),
+            ),
+        )
     return (Wait(fact.material_execution_id, fact.fact_id, "SNAPSHOT_READY"),)
 
 
@@ -411,18 +415,11 @@ def _processor(
 
 
 def _changing_processor(
-    decisions: tuple[str, str], *, reconcile_on_rebuild: bool = False
+    decisions: tuple[str, str],
 ) -> tuple[FactProcessor, InboundEvidence, _Executions, _ExecutionService, DecisionApplier, _ChangingFactFactory]:
     evidence = _evidence()
     executions = _Executions()
-
-    def mark_reconciling() -> None:
-        assert executions.execution is not None
-        executions.execution.status = MaterialExecutionStatus.RECONCILING
-        executions.execution.last_transition_reason = "NEW_CAUSAL_CONFLICT"
-        executions.execution.last_transition_evidence_id = 32
-
-    factory = _ChangingFactFactory(decisions, on_rebuild=mark_reconciling if reconcile_on_rebuild else None)
+    factory = _ChangingFactFactory(decisions)
     binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(
@@ -557,32 +554,33 @@ async def test_mixed_defer_fails_closed_as_a_real_handler_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_rebuilds_fact_and_never_applies_the_lock_free_decision_after_snapshot_drift() -> None:
-    processor, evidence, _, service, _, factory = _changing_processor(("WAIT", "PAUSE"))
+async def test_lock_free_action_to_locked_defer_uses_current_decision_without_attempt() -> None:
+    processor, evidence, _, service, _, factory = _changing_processor(("WAIT", "DEFER"))
 
-    assert await processor.process_batch() == 0
+    assert await processor.process_batch() == 1
 
     assert factory.calls == 2
-    assert service.transitions == []
+    assert service.transitions == [MaterialExecutionStatus.HOLD]
     assert evidence.published_at is None
-    assert evidence.decision_attempt_count == 1
+    assert evidence.decision_digest is None
+    assert evidence.decision_next_attempt_at == NOW
+    assert evidence.decision_attempt_count == 0
 
 
 @pytest.mark.asyncio
-async def test_defer_rebuilds_fact_and_never_overwrites_a_new_reconciling_snapshot_with_old_hold() -> None:
-    processor, evidence, executions, service, _, factory = _changing_processor(
-        ("DEFER", "PAUSE"), reconcile_on_rebuild=True
-    )
+async def test_lock_free_defer_to_locked_action_uses_current_decision_without_attempt() -> None:
+    processor, evidence, executions, service, _, factory = _changing_processor(("DEFER", "PAUSE"))
 
-    assert await processor.process_batch() == 0
+    assert await processor.process_batch() == 1
 
     assert factory.calls == 2
     assert executions.execution is not None
     assert MaterialExecutionStatus(executions.execution.status) is MaterialExecutionStatus.RECONCILING
-    assert executions.execution.last_transition_evidence_id == 32
-    assert service.transitions == []
-    assert evidence.published_at is None
-    assert evidence.decision_attempt_count == 1
+    assert executions.execution.last_transition_evidence_id == evidence.id
+    assert service.transitions == [MaterialExecutionStatus.RECONCILING]
+    assert evidence.published_at == NOW
+    assert evidence.decision_digest is not None
+    assert evidence.decision_attempt_count == 0
 
 
 @pytest.mark.asyncio

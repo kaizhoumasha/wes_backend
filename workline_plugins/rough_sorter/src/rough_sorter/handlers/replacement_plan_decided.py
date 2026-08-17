@@ -38,7 +38,7 @@ class ReplacementPlanDecidedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is ReplacementResult.WAIT:
             return (self._wait(fact, fact.reason_code or "WMS_REPLACEMENT_WAIT"),)
         if fact.result is ReplacementResult.RECONCILING:
@@ -53,6 +53,24 @@ class ReplacementPlanDecidedHandler:
         release_snapshot = fact.release_snapshot
         if release_snapshot is None:
             raise ValueError("READY replacement requires release snapshot")
+        if any(
+            item.command_status
+            in {
+                PlacementCommandStatus.FAILED,
+                PlacementCommandStatus.TIMED_OUT,
+                PlacementCommandStatus.RECONCILING,
+            }
+            or item.confirmation_status is PlacementConfirmationStatus.RECONCILING
+            for item in release_snapshot.placements
+        ):
+            return (
+                PauseForReconciliation(
+                    material_execution_id=fact.material_execution_id,
+                    fact_id=fact.fact_id,
+                    reason_code="RACK_RELEASE_GATE_CONFLICT",
+                    affected_resource_ids=(fact.current_rack_id,),
+                ),
+            )
         if any(
             item.command_status is not PlacementCommandStatus.SUCCEEDED
             or item.command_result_evidence_id is None

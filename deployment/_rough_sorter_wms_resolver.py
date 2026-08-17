@@ -256,6 +256,21 @@ class RoughSorterWmsConfirmationRequestResolver:
                 "source_position": wms_position(fact.source_position),
             }
             return common
+        if (
+            type(fact) is types.TransportOutcomePublishedFact
+            and decision.operation == "inbound.material.target_decide@v1"
+        ):
+            if fact.outcome is not types.TransportOutcome.SUCCEEDED:
+                raise ValueError("target_decide 只接受成功 NEW_IN Transport Fact")
+            common["data"] = {
+                "material_execution_id": fact.material_execution_id,
+                "material_trace_id": fact.material_trace_id,
+                "pkg_id": fact.pkg_id,
+                "inbound_admission_id": fact.inbound_admission_id,
+                "source_position": wms_position(required_position(fact.source_position, "source_position")),
+                "current_rack_id": fact.rack_id,
+            }
+            return common
         if type(fact) is types.DevicePositionConfirmedFact:
             if (
                 decision.operation == "inbound.material.target_decide@v1"

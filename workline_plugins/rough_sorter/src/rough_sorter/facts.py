@@ -89,6 +89,7 @@ class PlacementCommandStatus(StrEnum):
 
 
 class PlacementConfirmationStatus(StrEnum):
+    ABSENT = "ABSENT"
     PENDING = "PENDING"
     DISPATCHING = "DISPATCHING"
     COMPLETED = "COMPLETED"
@@ -609,21 +610,33 @@ class PlacementReleaseEvidence:
     command_code: str
     command_status: PlacementCommandStatus
     command_result_evidence_id: int | None
-    confirmation_operation: str
-    confirmation_operation_id: str
+    confirmation_operation: str | None
+    confirmation_operation_id: str | None
     confirmation_status: PlacementConfirmationStatus
     response_result: PlacementResponseResult | None
     response_evidence_id: int | None
 
     def __post_init__(self) -> None:
         _required(self.command_code, "command_code")
-        _required(self.confirmation_operation_id, "confirmation_operation_id")
-        if self.confirmation_operation != "inbound.material.placement_report@v1":
-            raise ValueError("release evidence must use placement_report operation")
         if type(self.command_status) is not PlacementCommandStatus:
             raise TypeError("command_status must be a PlacementCommandStatus")
         if type(self.confirmation_status) is not PlacementConfirmationStatus:
             raise TypeError("confirmation_status must be a PlacementConfirmationStatus")
+        if self.confirmation_status is PlacementConfirmationStatus.ABSENT:
+            if any(
+                value is not None
+                for value in (
+                    self.confirmation_operation,
+                    self.confirmation_operation_id,
+                    self.response_result,
+                    self.response_evidence_id,
+                )
+            ):
+                raise ValueError("ABSENT confirmation must not include confirmation or response identity")
+        else:
+            _required(self.confirmation_operation_id or "", "confirmation_operation_id")
+            if self.confirmation_operation != "inbound.material.placement_report@v1":
+                raise ValueError("release evidence must use placement_report operation")
         for value, field_name in (
             (self.command_result_evidence_id, "command_result_evidence_id"),
             (self.response_evidence_id, "response_evidence_id"),
