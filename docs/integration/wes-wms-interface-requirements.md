@@ -2410,7 +2410,7 @@ WMS 根据最新主账返回 `ASSIGNED/NO_AVAILABLE_CELL/REJECT/WAIT`。只有 `
 
 设备命令成功只生成 WES 可以报告的物理证据，不能替代 WMS 的 `RECORDED`。NG 后续人工处置由 WMS 管理，不再回调 WES。
 
-### I4：WES 请求稳定换架计划，或接收人工对账
+### I4：WES 请求稳定换架计划，或接收单盘人工核验恢复决定
 
 无可用 Cell 时，WES 请求：
 
@@ -2429,18 +2429,18 @@ WES 在旧架 release gate 闭合后，以 `(rack_replacement_id, OLD_OUT)` 和 
 幂等键，分别持久化映射到不同的全局唯一 UUIDv7 `client_request_id`，再创建两个独立 `RACK_MOVE`。同一业务键重试复用原
 UUIDv7；两任务可以同时提交，实际顺序由 RCS 控制；新架 T3 成功且身份/位置/朝向匹配后可以重新执行 I2，不等待旧架。
 
-人工对账完成后，WMS 主动通知 WES：
+单盘现场核验完成后，WMS 主动通知 WES：
 
 ```text
-operation = inbound.execution.reconciliation_decided@v1
+operation = inbound.execution.recovery_decided@v1
 ```
 
-WMS 操作员核对 WMS 主账、现场扫码和 WES 提供的原始证据后，严格发送 `reconciliation_id`、
-`affected_execution_ids`、`authoritative_positions`、`decision=CONTINUE|ABORT` 和 `reason_code`。每个
-`authoritative_positions[]` 只含 `material_execution_id`、`material_trace_id`、可选非空 `pkg_id` 和必填可空 `position`，并与
-受影响执行一一对应。`CONTINUE` 要求本消息全部 `position` 非 `null`；任一 `position=null` 时只能 `ABORT`。已知对象继续、
-缺失对象中止必须拆成不同 reconciliation 决定/消息，不能在同一全局 decision 中部分继续。首次持久化返回 `RECEIVED`，相同
-Payload 重放返回 `DUPLICATE`。该回调不能改写历史设备命令或搬运任务结果。
+WMS 操作员核对 WMS 主账、现场扫码和 WES 提供的原始证据后，对一个 `MaterialExecution` 严格发送 `recovery_id`、
+`material_execution_id`、`material_trace_id`、`reconciling_evidence_id`、`authoritative_position`、
+`decision=CONTINUE|ABORT` 和 `reason_code`。`CONTINUE` 要求 `authoritative_position` 非 `null`；实物缺失时位置为 `null` 且只能
+`ABORT`。多个 execution 必须分别发送不同 `recovery_id + operation_id`，WES 不建立人工对账单或批量恢复任务。首次持久化返回
+`RECEIVED`，相同 Payload 重放返回 `DUPLICATE`；只有 execution 当前冻结 evidence 与 `reconciling_evidence_id` 一致时才应用，
+否则返回 `CONFLICT` 并保持冻结。该回调不能改写历史设备命令或搬运任务结果。
 
 ## 附录 C. 满箱交换和自动上架场景（ReviewRequired）
 

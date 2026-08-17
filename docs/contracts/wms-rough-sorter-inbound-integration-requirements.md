@@ -5,7 +5,7 @@ implementation_authorization: true
 approved_at: 2026-08-16
 contract_version: "1.0"
 audience: WMS、WES、RCS、ECS 开发与联调人员
-scope: Phase 8 粗分逐盘准入、设备执行、目标 Cell 晚绑定、单层货架更换、NG、事实确认与人工对账
+scope: Phase 8 粗分逐盘准入、设备执行、目标 Cell 晚绑定、单层货架更换、NG、事实确认与人工核验恢复
 related:
   - docs/contracts/device-annexes/rough-sorter-device-contract.md
   - docs/contracts/wms-northbound-interaction-contract.md
@@ -58,7 +58,7 @@ CREATED | RUNNING | HOLD | CLOSED | RECONCILING
 - `RUNNING`：至少一个获批业务步骤正在可靠推进。
 - `HOLD`：仍可安全等待业务决定、资源或明确未接纳后的有界恢复。
 - `CLOSED`：placement/NG 事实已被 WMS `RECORDED | DUPLICATE`，或人工决定终止且现场事实已闭合。
-- `RECONCILING`：已接纳命令失败、交付未知、位置未知、身份冲突或事实冲突，需要人工对账。
+- `RECONCILING`：已接纳命令失败、交付未知、位置未知、身份冲突或事实冲突，需要人工核验恢复。
 
 扫码、准入、输送、目标请求、PUT 和上报是插件业务步骤，不复制 DeviceCommand、WMS 或 Transport 状态。多个
 `MaterialExecution` 可以并行；不建立通用调度器或 WorkLine 全局锁。每次动作只验证：拓扑步骤正确、目标设备没有活动命令、
@@ -86,7 +86,7 @@ CREATED | RUNNING | HOLD | CLOSED | RECONCILING
 | `inbound.material.placement_report@v1` | WES → WMS | 出料 PUT 成功且位置身份匹配 | `RECORDED | DUPLICATE` |
 | `inbound.material.ng_placement_report@v1` | WES → WMS | WMS 业务拒绝且料盘可靠到达指定 NG | `RECORDED | DUPLICATE` |
 | `inbound.source_rack.replacement_plan_decide@v1` | WES → WMS | 无可用 Cell 且没有活动的同货架计划请求 | `READY | WAIT` |
-| `inbound.execution.reconciliation_decided@v1` | WMS → WES | 人工已核对业务主账与物理事实 | `RECEIVED | DUPLICATE` |
+| `inbound.execution.recovery_decided@v1` | WMS → WES | 人工已核对业务主账与物理事实 | `RECEIVED | DUPLICATE` |
 
 operation 专属 `data` 是严格闭集。未知字段、错误类型、枚举外值、同一稳定身份不同载荷均必须拒绝。业务 `WAIT` 是一次确定
 决定；后续重求值使用新 `operation_id`。网络超时、暂时不可用或未得到确定响应不改业务身份。
@@ -133,7 +133,7 @@ WMS `ACCEPT` 后，插件按以下顺序创建既有 DeviceCommand：
 
 `target_position` 必须是唯一 `rack_id + rack_slot_code + bin_id + bin_cell_id`。WES 不预建、替换或本地计算 Cell。
 
-## 8. placement、NG 与对账
+## 8. placement、NG 与人工核验恢复
 
 以下三个 operation 的 `data` 都是严格对象：只允许表中字段，未知字段、缺少必填字段、错误类型、非法 `null`、重复数组成员或
 条件字段不一致均拒绝。所有 ID、code 和枚举都是大小写敏感的非空 string；时间是大于 `0` 的 UTC Unix 毫秒 integer。
@@ -177,36 +177,30 @@ DeviceCommand 成功或 WES 位置投影均不能替代该业务完成事实。
 `200 / DUPLICATE` 且 `data={}`。执行、trace、位置、原因或幂等内容冲突使用公共 `409 / CONFLICT`。物理未知、身份冲突、
 CALLBACK `FAILED` 或结果 `UNKNOWN` 不自动转 NG，统一进入 `RECONCILING`。
 
-### 8.3 `inbound.execution.reconciliation_decided@v1`
+### 8.3 `inbound.execution.recovery_decided@v1`
 
 WMS 人工核对业务主账与现场事实后，通过公共 WMS→WES 异步回调信封发送：
 
 | `data` 字段 | JSON 类型 | 必填 | 可空 | 约束 |
 | --- | --- | --- | --- | --- |
-| `reconciliation_id` | string | 是 | 否 | WMS 生成的稳定人工决定身份 |
-| `affected_execution_ids` | array[string] | 是 | 否 | 非空、无重复，只包含本次已冻结的 `material_execution_id` |
-| `authoritative_positions` | array[object] | 是 | 否 | 与 `affected_execution_ids` 一一对应、无重复；元素为下表严格对象 |
-| `decision` | string | 是 | 否 | `CONTINUE | ABORT`；`CONTINUE` 要求本消息全部 `position` 非 `null`，任一为 `null` 时只能为 `ABORT` |
+| `recovery_id` | string | 是 | 否 | WMS 生成的稳定人工恢复决定身份 |
+| `material_execution_id` | string | 是 | 否 | 本次已冻结的唯一 `MaterialExecution` |
+| `material_trace_id` | string | 是 | 否 | 必须等于该 execution 的原 trace |
+| `reconciling_evidence_id` | string | 是 | 否 | WES 公开的当前冻结 evidence 身份；解析后的 evidence 必须等于 execution 当前 `last_transition_evidence_id` |
+| `decision` | string | 是 | 否 | `CONTINUE | ABORT`；`CONTINUE` 要求 `authoritative_position` 非 `null` |
+| `authoritative_position` | object | 是 | 是 | 已知时为第 8.4 节严格位置对象；实物缺失时为 `null` 且只能 `ABORT` |
 | `reason_code` | string | 是 | 否 | 本次人工决定的稳定原因 |
 
-`authoritative_positions[]` 严格对象：
-
-| 字段 | JSON 类型 | 必填 | 可空 | 约束 |
-| --- | --- | --- | --- | --- |
-| `material_execution_id` | string | 是 | 否 | 必须且只能对应一个 `affected_execution_ids[]` 成员 |
-| `material_trace_id` | string | 是 | 否 | 该执行的原 trace |
-| `pkg_id` | string | 否 | 否 | WMS 已建立稳定业务身份时携带，否则省略 |
-| `position` | object | 是 | 是 | 已知时为第 8.4 节严格位置对象；权威结论为实物缺失时为 `null`，且本消息 `decision` 必须为 `ABORT` |
-
-`decision` 对本消息全部受影响执行统一生效：`decision=CONTINUE` 时，每个 `authoritative_positions[].position` 都必须是非
-`null` 的第 8.4 节严格对象；只要任一 `position=null`，本消息只能使用 `decision=ABORT`。如 WMS 需要让已知位置对象继续、
-缺失对象中止，必须按对象集合拆成不同的 reconciliation 决定与消息，各自使用新的 `reconciliation_id` 和 `operation_id`；
-禁止在同一全局 `decision` 中部分继续。
+WES 不建立人工对账单、恢复任务或批量恢复聚合。`decision=CONTINUE` 时，`authoritative_position` 必须是非 `null` 的第 8.4 节
+严格对象；`authoritative_position=null` 时只能使用 `decision=ABORT`。多个 execution 必须分别发送消息，并分别使用新的
+`recovery_id` 和 `operation_id`。
 
 首次可靠持久化只允许 `202 / RECEIVED` 且 `data={}`；相同 `operation + operation_id`、相同 Payload 重放只允许
-`200 / DUPLICATE` 且 `data={}`。同身份异 Payload、数组对应关系或不可变决定冲突使用公共 `409 / CONFLICT`。`CONTINUE` 只按
-本次非空权威位置恢复后续步骤；`ABORT` 终止本消息全部受影响执行的业务推进但不删除现场实物。人工决定后的迟到回调只保留证据，不改写人工决定或历史
-DeviceCommand/TransportTask 结果。
+`200 / DUPLICATE` 且 `data={}`。同身份异 Payload、execution/trace/evidence 围栏或不可变决定冲突使用公共 `409 / CONFLICT`。
+WES 只在 execution 仍为 `RECONCILING`，且公开 `reconciling_evidence_id` 解析出的 evidence 等于当前
+`last_transition_evidence_id` 时应用决定；否则保持冻结。`CONTINUE` 只按本次非空权威位置恢复后续步骤；`ABORT` 终止该 execution
+的业务推进但不删除现场实物。人工决定后的迟到
+回调只保留证据，不改写人工决定或历史 DeviceCommand/TransportTask 结果。
 
 ### 8.4 严格位置对象
 
@@ -265,7 +259,7 @@ Phase 8 真实消费既有 Transport Port，并创建两个互相独立的 `RACK
 
 - 同步明确拒绝表示动作未接纳；可以保持等待、有界安全恢复或重新请求 WMS 业务决定。
 - ACK 后 `FAILED`、交付未知或位置未知时，不重放等价物理动作，进入 `RECONCILING`。
-- 相同回调幂等；冲突回调保留证据并对账。
+- 相同回调幂等；冲突回调保留证据并进入人工核验恢复。
 - 重启只从已持久化事实继续，不重发已接纳或结果未知的命令。
 - 任一步骤都不能用状态查询、HTTP 成功或超时推断物理完成。
 

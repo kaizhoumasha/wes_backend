@@ -10,7 +10,8 @@
 
 **当前状态:** `IN_PROGRESS`。Task 1—7 已分别完成并提交；Task 8 在部署装配前先按
 `docs/superpowers/specs/2026-08-17-phase8-persistent-trigger-closure-design.md` 闭合持久触发。后续装配、migration、分层验收和收尾
-仍必须按本计划完成；`IN_PROGRESS` 不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
+仍必须按本计划完成。Task 4/7 已提交的批量 reconciliation 只是当前待替换实现，Task 8 必须直接收缩为单 execution
+`recovery_decided`，不保留旧 operation、binding 或兼容路径；`IN_PROGRESS` 不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
 
 | Task | 状态 | Commit |
 | --- | --- | --- |
@@ -322,8 +323,8 @@
 
 - [x] **Step 3: 建立 WMS→WES 类型化入口**
 
-  仅实现 `inbound.execution.reconciliation_decided@v1`。入口先持久化 WMS_EVENT `InboundEvidence` 再返回
-  `202 / RECEIVED`；不得在 API 层访问 Repository 或执行 handler。
+  Task 4 已建立先持久化 WMS_EVENT `InboundEvidence` 再返回 `202 / RECEIVED` 的入口基础；当时的批量恢复 wire 和 execution
+  binding 由 Task 8 直接替换为单 execution `inbound.execution.recovery_decided@v1`。API 层不得访问 Repository 或执行 handler。
 
 - [x] **Step 4: 静态分派现有 WMS 事件端点**
 
@@ -417,7 +418,7 @@
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/placement_completed.py`
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/replacement_plan_decided.py`
 - Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/transport_outcome_published.py`
-- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/reconciliation_decided.py`
+- Historical Create, Task 8 Delete/Replace: `workline_plugins/rough_sorter/src/rough_sorter/handlers/reconciliation_decided.py`
 - Create: `workline_plugins/rough_sorter/tests/`
 - Create only for approved payloads: `workline_plugins/rough_sorter/fixtures/`
 
@@ -475,90 +476,338 @@
 
 ### Task 8: 闭合持久触发并完成显式部署装配
 
+Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 RED、GREEN、Review 和提交，不创建平行计划或 worktree。
+
+#### Task 8A: 建立持久暂缓、真实失败计数与重启围栏
+
 **Files:**
 
-- Modify: `packages/wes_plugin_sdk/src/wes_plugin_sdk/{decisions.py,__init__.py}`
-- Modify: `src/app/execution/models/inbound_evidence.py`
-- Modify: `src/app/execution/repositories/{inbound_evidence_repository.py,rack_replacement_transport_binding_repository.py}`
-- Modify: `src/app/execution/services/{fact_builder.py,fact_processor.py,wms_confirmation_service.py}`
-- Modify as required: `src/app/execution/{models,repositories,services}/__init__.py`
-- Modify: `src/app/wms_adapter/`
-- Modify: `workline_plugins/rough_sorter/`
-- Create via Alembic generator: direct-cutover migration for `TRANSPORT_RESULT`
-- Modify: `pyproject.toml`
-- Modify: `uv.lock`
-- Modify: `Dockerfile`
-- Create: `deployment/__init__.py`
-- Create: `deployment/rough_sorter_composition.py`
-- Modify: `main.py`
-- Modify: `src/celery_app/{app.py,config.py,tasks/}`
-- Modify as required: deployment environment profile files without secrets
-- Create/Modify: `tests/runtime/execution/`
-- Create/Modify: `tests/contracts/wms_adapter/`
-- Create/Modify: `tests/integration/{execution,wms_adapter}/`
-- Create: `tests/deployment/test_rough_sorter_plugin_startup.py`
-- Modify: `tests/deployment/test_celery_task_runtime_contract.py`
+- Modify: `packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py`
+- Modify: `packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py`
+- Modify: `src/app/execution/repositories/inbound_evidence_repository.py`
+- Modify: `src/app/execution/services/fact_processor.py`
+- Modify: `src/app/workline/repositories/line_run_epoch_repository.py`
+- Modify: `src/app/workline/services/line_run_epoch_service.py`
+- Modify: `src/celery_app/tasks/execution.py`
+- Test: `tests/architecture/test_plugin_sdk_boundary_guardrail.py`
+- Test: `tests/runtime/execution/test_fact_processor.py`
+- Test: `tests/runtime/execution/test_inbound_evidence_repository.py`
+- Test: `tests/deployment/test_execution_worker_startup.py`
+- Test: `tests/integration/execution/test_decision_processing_postgresql.py`
+- Modify: `docs/architecture/heavy-test-impact.toml`
+- Test: `tests/scripts/test_select_heavy_tests.py`
 
 **Interfaces:**
 
-- Consumes: Task 1—7 可靠对象与插件、获批持久触发设计、已冻结 Epoch/plugin/device 配置。
-- Produces: 不丢失的本地暂缓、Transport/WMS 后续触发，以及一个部署内唯一、静态、可审计的粗分插件绑定和包含 SDK/plugin wheel
-  的镜像。
+- Consumes: `FactProcessor.process_batch(limit=100)`、`InboundEvidence.decision_next_attempt_at`、`LineRunEpochStatus.ACTIVE`。
+- Produces: SDK `DeferExecution`；claim 只加 lease、不加失败次数；单 execution defer 原子释放 claim；worker 启动 Epoch 门禁。
 
-- [ ] **Step 1: 先写失败的核心持久触发测试**
+- [ ] **Step 1: 写 defer 与领取顺序的失败测试**
 
-  覆盖：`DeferExecution` 必须单独返回；defer 不发布、不写 digest、不增加失败次数且 execution 进入 `HOLD`；真实异常才增加失败
-  次数；`TRANSPORT_RESULT` 身份、duplicate/冲突与 Fact 构建；WMS 业务 `WAIT` 完成原 confirmation 并在同一事务创建带新
-  `operation_id + next_attempt_at` 的后续 confirmation。
+  测试先锁定以下可观察结果；不通过新增通用 scheduler 或 mock 业务角色来达成：
 
-- [ ] **Step 2: 实现 `DeferExecution` 通用语义**
+  ```python
+  decision = DeferExecution(material_execution_id="execution-1", fact_id="fact-1", reason_code="DEVICE_BUSY")
+  assert decision.material_execution_id == "execution-1"
 
-  SDK 只增加一个不可变 Decision；插件拥有设备忙和 release gate 判断。Fact processor 只实现通用持久暂缓，不解释粗分角色、位置
-  或原因码，不建立 wakeup 表或 Effect ledger。现有 attempt counter 只统计真实失败。
+  await processor.process_batch()
+  assert evidence.published_at is None
+  assert evidence.decision_digest is None
+  assert evidence.decision_attempt_count == 0
+  assert evidence.decision_next_attempt_at == now
+  assert execution.status == MaterialExecutionStatus.HOLD
+  ```
 
-- [ ] **Step 3: 建立通用 Transport Result Fact 承接**
+  另加三个负例：`DeferExecution` 与其它 Decision 混合；一个 WMS_EVENT 关联多个 execution 后 defer；真实 handler 异常。前两项
+  fail closed 且不按 defer 处理，第三项才把 `decision_attempt_count` 从 `0` 增到 `1`。
 
-  `InboundEvidence` 直接增加 `TRANSPORT_RESULT + transport_task_id` 最终 schema；Fact builder 构造通用
-  `TransportResultReadyFact`。基础层不判断 `NEW_IN/OLD_OUT`；Task 8 deployment adapter 按
-  `RackReplacementTransportBinding.client_request_id` 仅把 `NEW_IN` 映射到 material evidence。
+- [ ] **Step 2: 运行精确 RED**
 
-- [ ] **Step 4: 建立 WMS 业务 WAIT follow-up 端口**
+  Run: `uv run pytest tests/architecture/test_plugin_sdk_boundary_guardrail.py tests/runtime/execution/test_fact_processor.py tests/runtime/execution/test_inbound_evidence_repository.py -q`
 
-  execution service 只消费 WMS ACL 返回的 typed follow-up；`src/app/wms_adapter/` 负责识别已验证业务 `WAIT`、生成新 operation
-  identity/请求快照和 `next_attempt_at`。技术重试继续复用原 identity，不得走 follow-up。
+  Expected: 只因 SDK 尚无 `DeferExecution`、claim 仍递增 attempt、processor 仍写 digest/published、领取顺序未实现而失败。
 
-- [ ] **Step 5: 生成并验证 direct-cutover migration**
+- [ ] **Step 3: 实现最小 SDK 与 processor 语义**
 
-  只能用 Alembic generator 创建随机 revision，再编辑最终列、约束和 index；不迁移开发数据，不提供兼容字段或可用 downgrade。在干净
-  PostgreSQL 上验证当前 base 到 head，并运行 selector 选中的真实事务 owner。
+  SDK 只增加以下不可变类型并加入既有 `Decision` union；不增加 context、retry time 或下一动作：
 
-- [ ] **Step 6: 独立提交核心持久触发切片**
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class DeferExecution:
+      material_execution_id: str
+      fact_id: str
+      reason_code: str
+  ```
 
-  Commit suggestion: `feat(execution): 闭合粗分持久触发`
+  `FactProcessor` 在生成 digest 前只接受单组、单项 `DeferExecution`，校验 fact/execution identity 后在同一 session 中执行：
 
-- [ ] **Step 7: 先写失败的部署装配与唤醒测试**
+  ```python
+  evidence.decision_claim_token = None
+  evidence.decision_claim_expires_at = None
+  evidence.decision_next_attempt_at = now
+  await execution_service.transition(..., target=MaterialExecutionStatus.HOLD, evidence_id=evidence.id)
+  ```
 
-  测试锁定：部署只显式绑定 `rough_sorter`；插件键/版本必须与活动 `LineRunEpoch` 一致；未知键、版本漂移、缺少设备 binding 或 digest 不一致时启动/激活 fail closed；只有仓库顶层 deployment Composition Root 可以导入具体插件，核心 `src/app/**` 不导入任意插件。
-  同时锁定 Device/WMS/Transport 事实提交后只发送无载荷扫描任务、即时消息失败不回滚已提交事实、10 秒 Beat 可恢复遗漏。
+  `claim_decision_batch()` 删除 claim 时的 attempt 自增；领取按 `decision_next_attempt_at IS NULL` 优先，再按
+  `decision_next_attempt_at, received_at, id`。`_record_failure()` 是唯一 attempt 增量 owner，并继续使用既有有界退避/耗尽语义。
 
-- [ ] **Step 8: 配置 workspace、Composition Root 与镜像**
+- [ ] **Step 4: 写并实现重启 Epoch 门禁**
 
-  只加入两个实际 workspace 成员。deployment 模块显式 import 插件并构造 Fact factory、correlator、WMS resolver/business-wait
-  planner、Transport publisher、handler map、Fact processor 和 Decision applier。Web/Celery 使用同一静态配置；Docker 在 `uv sync`
-  前复制必要成员元数据和包结构，最终镜像不依赖宿主机 editable install。
+  Repository 增加只读查询：
 
-- [ ] **Step 9: 验证并独立提交部署装配**
+  ```python
+  async def has_active_epoch(self, db: AsyncSession) -> bool: ...
+  ```
+
+  `LineRunEpochService.assert_execution_worker_startable(db)` 只在存在遗留 `ACTIVE` Epoch 时抛明确领域错误，不修改数据库。execution
+  worker child 初始化调用该门禁；`claim_decision_batch()` 通过 join/exists 只领取关联 `ACTIVE` Epoch 的 evidence，`CLOSED` 永久不领。
+  新 Epoch 激活仍由 Web/API 事务 owner 完成，不由 worker 自动创建或关闭。
+
+- [ ] **Step 5: 运行 GREEN 与真实 PostgreSQL owner**
+
+  Run: `uv run pytest tests/architecture/test_plugin_sdk_boundary_guardrail.py tests/runtime/execution/test_fact_processor.py tests/runtime/execution/test_inbound_evidence_repository.py tests/deployment/test_execution_worker_startup.py -q`
+
+  Run: `uv run pytest tests/integration/execution/test_decision_processing_postgresql.py -q`
+
+  Expected: 新 evidence 优先、超过 batch limit 的 defer 公平轮转、CLOSED Epoch 不领取、遗留 ACTIVE Epoch 启动失败均 PASS 且无 skip。
+
+- [ ] **Step 6: Review、selector 与独立提交**
+
+  更新精确 HEAVY mapping 后运行 selector 合同、Ruff、basedpyright 和 `git diff --check`；Review 确认核心未解释
+  `DEVICE_BUSY`/release gate 等业务 reason。
+
+  Commit: `feat(execution): 建立持久暂缓与重启围栏`
+
+#### Task 8B: 直接替换 recovery 合同并闭合 Transport/WMS 持久生产者
+
+**Files:**
+
+- Modify: `src/app/execution/models/inbound_evidence.py`
+- Delete: `src/app/execution/models/inbound_evidence_execution_binding.py`
+- Modify: `src/app/execution/models/__init__.py`
+- Modify: `src/app/execution/repositories/inbound_evidence_repository.py`
+- Delete: `src/app/execution/repositories/inbound_evidence_execution_binding_repository.py`
+- Modify: `src/app/execution/repositories/__init__.py`
+- Modify: `src/app/execution/services/fact_builder.py`
+- Modify: `src/app/execution/services/fact_processor.py`
+- Modify: `src/app/execution/services/wms_confirmation_service.py`
+- Modify: `src/app/wms_adapter/inbound_wire.py`
+- Modify: `src/app/wms_adapter/inbound_adapter.py`
+- Modify: `src/app/wms_adapter/inbound_event_handler.py`
+- Modify: `src/app/wms_adapter/inbound_openapi.py`
+- Modify: `src/app/wms_adapter/v1/events.py`
+- Modify: `workline_plugins/rough_sorter/src/rough_sorter/facts.py`
+- Delete: `workline_plugins/rough_sorter/src/rough_sorter/handlers/reconciliation_decided.py`
+- Create: `workline_plugins/rough_sorter/src/rough_sorter/handlers/recovery_decided.py`
+- Modify: `workline_plugins/rough_sorter/src/rough_sorter/handlers/__init__.py`
+- Modify: `workline_plugins/rough_sorter/src/rough_sorter/plugin.py`
+- Delete: `workline_plugins/rough_sorter/tests/test_transport_and_reconciliation.py`
+- Create: `workline_plugins/rough_sorter/tests/test_transport_and_recovery.py`
+- Create: `src/celery_app/tasks/wms_confirmation.py`
+- Modify: `src/celery_app/tasks/__init__.py`
+- Modify: `src/celery_app/app.py`
+- Modify: `src/celery_app/config.py`
+- Create via `uv run alembic revision -m "闭合粗分持久触发"`: generator 输出的随机 revision migration
+- Test: `tests/runtime/execution/test_fact_builder.py`
+- Test: `tests/runtime/execution/test_fact_processor.py`
+- Test: `tests/runtime/execution/test_wms_confirmation_service.py`
+- Test: `tests/contracts/wms_adapter/test_inbound_wire_acceptance.py`
+- Test: `tests/contracts/wms_adapter/test_inbound_adapter.py`
+- Test: `tests/contracts/wms_adapter/test_inbound_event_handler.py`
+- Test: `tests/contracts/wms_adapter/test_inbound_openapi.py`
+- Test: `tests/integration/execution/test_decision_processing_postgresql.py`
+- Test: `tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py`
+- Modify: `docs/architecture/heavy-test-impact.toml`
+- Test: `tests/scripts/test_select_heavy_tests.py`
+
+**Interfaces:**
+
+- Consumes: `TransportTask.outcome_version`、`RackReplacementTransportBinding`、`WmsConfirmationService.dispatch_batch()`、
+  `MaterialExecution.last_transition_evidence_id`。
+- Produces: `InboundEvidenceKind.TRANSPORT_RESULT`；单 execution `RecoveryDecidedFact`；typed business WAIT follow-up；独立 WMS dispatcher。
+
+- [ ] **Step 1: 写 Transport 与单对象 recovery 的失败合同**
+
+  `InboundEvidence` 最终字段必须满足：
+
+  ```python
+  kind = InboundEvidenceKind.TRANSPORT_RESULT
+  source_identity = f"transport:{transport_task_id}:outcome:{outcome_version}"
+  transport_task_id = transport_task_id
+  material_execution_id = execution.id
+  ```
+
+  recovery wire 直接替换为 `inbound.execution.recovery_decided@v1`，严格字段仅为
+  `recovery_id/material_execution_id/material_trace_id/reconciling_evidence_id/decision/authoritative_position/reason_code`。删除批量数组、
+  `ReconciliationData` 和多 execution binding 测试；测试必须先证明旧 operation、旧字段和 stale evidence 均被拒绝。
+
+- [ ] **Step 2: 运行 Transport/recovery RED**
+
+  Run: `uv run pytest tests/runtime/execution/test_fact_builder.py tests/runtime/execution/test_fact_processor.py tests/contracts/wms_adapter/test_inbound_wire_acceptance.py tests/contracts/wms_adapter/test_inbound_event_handler.py tests/contracts/wms_adapter/test_inbound_openapi.py workline_plugins/rough_sorter/tests/test_transport_and_recovery.py -q`
+
+  Expected: 因缺 `TRANSPORT_RESULT`、旧批量 recovery 仍存在、插件路由仍指向 reconciliation 而失败；不得通过保留 alias 使其转绿。
+
+- [ ] **Step 3: 实现 Transport evidence 与 causal fence**
+
+  `InboundEvidence` 增加 nullable `transport_task_id`，但 `TRANSPORT_RESULT` 由 CheckConstraint 强制非空且 WMS/device identity 为空。
+  `FactBuilder.build()` 构建 SDK `TransportResultReadyFact`；基础层不识别 `NEW_IN/OLD_OUT`。同一 task 更高确定版本只有在
+  `execution.status == RECONCILING` 且 `last_transition_evidence_id` 指向该 task 较低 UNKNOWN evidence 时才可进入恢复 Fact；其它结果只
+  持久化。插件 handler 继续负责 rack/position/face 比较和最终 Decision。
+
+- [ ] **Step 4: 实现单对象 recovery direct replacement**
+
+  删除 `InboundEvidenceExecutionBinding` model/repository/export 及 FactProcessor 的多 Fact 展开。WMS ingress 在 ACK 前解析
+  `reconciling_evidence_id`，锁定 execution 与 causal evidence，并冻结到单条 WMS_EVENT evidence。Fact 形态固定为：
+
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class RecoveryDecidedFact(FactReference):
+      recovery_id: str
+      decision: RecoveryDecision
+      authoritative_position: DevicePosition | None
+      reason_code: str
+  ```
+
+  应用前再次验证 execution 仍为 `RECONCILING` 且 `last_transition_evidence_id` 未变化；`CONTINUE` 用权威位置恢复，`ABORT` 关闭业务推进。
+  旧 operation、旧类、旧 handler 和旧 binding 全仓零生产命中。
+
+- [ ] **Step 5: 写 WMS business WAIT follow-up RED**
+
+  在 `tests/runtime/execution/test_wms_confirmation_service.py` 锁定：确定 `WAIT` 先保存 WMS_RESULT evidence，原 confirmation
+  `COMPLETED`，同一事务创建新 `PENDING` confirmation；新 `operation_id` 不等于原值，`next_attempt_at = received_at + retry_after_ms`。
+  未到期 `dispatch_batch()` 返回 `0`，到期只领取一次。技术投递未知仍复用原 operation identity。
+
+- [ ] **Step 6: 实现 typed follow-up 与独立 dispatcher**
+
+  execution service 只依赖窄端口：
+
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class WmsBusinessWaitFollowUp:
+      operation: str
+      operation_id: str
+      request_payload: dict[str, object]
+      next_attempt_at: datetime
+
+  class WmsBusinessWaitPlanner(Protocol):
+      def plan(self, confirmation: WmsConfirmation, response_payload: dict[str, object]) -> WmsBusinessWaitFollowUp | None: ...
+  ```
+
+  planner 的粗分 operation/DTO 解释只位于 `src/app/wms_adapter/`。新增无业务载荷 Celery task
+  `dispatch_wms_confirmations_batch(limit=100)`，固定路由 `wms-fulfillment`、Beat 10 秒；禁止 ETA/countdown，execution scanner 不调用 WMS。
+
+- [ ] **Step 7: 生成 direct-cutover migration 并验证 GREEN**
+
+  migration 直接增加 transport identity/约束/index，删除批量 binding 表，不迁移开发数据，`downgrade()` 明确不支持。先运行聚焦 FAST，
+  再在独占干净 PostgreSQL 上验证当前 base→head、metadata 一致、stale recovery CAS、Transport version fence、WAIT 原子事务。
+
+  Run: `uv run pytest tests/contracts/wms_adapter tests/runtime/execution workline_plugins/rough_sorter/tests -q`
+
+  Run: `uv run alembic heads`
+
+  Run: `uv run pytest tests/integration/execution/test_decision_processing_postgresql.py tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py -q`
+
+- [ ] **Step 8: Review、selector 与独立提交**
+
+  Review 必须确认不存在批量 recovery、compatibility alias、基础层 `NEW_IN/OLD_OUT` 分支或 WES 人工工单。selector 只选择实际 schema、WMS、
+  Transport/execution PostgreSQL owner。
+
+  Commit: `feat(execution): 闭合粗分持久触发`
+
+#### Task 8C: 完成 post-commit 唤醒与静态部署装配
+
+**Files:**
+
+- Modify: `src/core/task_queue_gateway.py`
+- Modify: `src/app/device/services/device_evidence_service.py`
+- Modify: `src/app/execution/services/wms_confirmation_service.py`
+- Modify: `src/app/wms_adapter/inbound_event_handler.py`
+- Modify: `src/app/transport/service.py`
+- Create: `deployment/__init__.py`
+- Create: `deployment/rough_sorter_composition.py`
+- Modify: `src/celery_app/async_runtime.py`
+- Modify: `src/celery_app/app.py`
+- Modify: `src/celery_app/config.py`
+- Modify: `main.py`
+- Modify: `pyproject.toml`
+- Modify: `uv.lock`
+- Modify: `Dockerfile`
+- Test: `tests/deployment/test_rough_sorter_plugin_startup.py`
+- Test: `tests/deployment/test_celery_task_runtime_contract.py`
+- Test: `tests/deployment/test_execution_worker_startup.py`
+- Test: `tests/runtime/execution/test_wms_confirmation_service.py`
+- Test: `tests/integration/execution/test_decision_processing_postgresql.py`
+- Modify: `docs/architecture/heavy-test-impact.toml`
+- Test: `tests/scripts/test_select_heavy_tests.py`
+
+**Interfaces:**
+
+- Consumes: Task 8A/8B 的两个无载荷扫描任务、Task 7 rough_sorter 静态 handlers、既有 `TaskQueueGateway`。
+- Produces: Web/Celery 共用的单一 `RoughSorterComposition`；commit 后低延迟提示；10 秒 Beat 最终恢复；包含 SDK/plugin 的镜像。
+
+- [ ] **Step 1: 写 post-commit 唤醒 RED**
+
+  `TaskQueueGateway` 只增加两个无载荷方法：
+
+  ```python
+  def enqueue_execution_facts(self) -> None: ...
+  def enqueue_wms_confirmations(self) -> None: ...
+  ```
+
+  测试分别证明 Device/WMS_RESULT/Transport material evidence 提交后只发送 execution scan，立即可派发的普通 confirmation 提交后只发送
+  WMS scan，未来到期的 business WAIT follow-up 不即时发送；事务回滚不发送，enqueue 异常只记录结构化日志且不改变已提交事实。
+
+- [ ] **Step 2: 运行唤醒 RED 并实现事务 owner 调用**
+
+  Run: `uv run pytest tests/deployment/test_celery_task_runtime_contract.py tests/runtime/execution/test_wms_confirmation_service.py -q`
+
+  Expected: 因 gateway 和 commit 后调用点不存在而失败。GREEN 时只能由真正执行 `commit`/session context 退出的应用服务调用 gateway，
+  Repository、model、插件和 handler 不得导入 Celery。
+
+- [ ] **Step 3: 写静态 Composition Root 与版本门禁 RED**
+
+  `tests/deployment/test_rough_sorter_plugin_startup.py` 锁定：仅 `deployment/rough_sorter_composition.py` 可 import `rough_sorter`；未知
+  `plugin_key`、版本漂移、Epoch digest 漂移或角色缺绑定时 fail closed；Web 和 Celery 获得同一不可变配置。核心
+  `src/app/**` 对 `workline_plugins.*`/`rough_sorter` 零命中。
+
+- [ ] **Step 4: 实现显式装配、workspace 与镜像**
+
+  新 Composition Root 只暴露一个明确工厂，不扫描 entry point 或 filesystem：
+
+  ```python
+  def build_rough_sorter_runtime(*, session_factory: async_sessionmaker[AsyncSession]) -> ExecutionRuntime:
+      return ExecutionRuntime(
+          fact_processor=FactProcessor(...),
+          wms_confirmation_service=WmsConfirmationService(...),
+      )
+  ```
+
+  `pyproject.toml` workspace 只加入 `packages/wes_plugin_sdk` 与 `workline_plugins/rough_sorter`；Web/Celery 调同一工厂。Docker 在 `uv sync`
+  前复制两个成员的 `pyproject.toml` 与包目录，镜像不依赖宿主 editable install。配置只使用现有非 secret profile，不新增动态插件目录。
+
+- [ ] **Step 5: 运行部署 GREEN、镜像与最终门禁**
 
   Run: `uv sync --dev && uv lock --check`
 
-  Run: `uv run pytest tests/deployment/test_rough_sorter_plugin_startup.py tests/deployment/test_celery_task_runtime_contract.py -q`
+  Run: `uv run pytest tests/deployment/test_rough_sorter_plugin_startup.py tests/deployment/test_celery_task_runtime_contract.py tests/deployment/test_execution_worker_startup.py -q`
 
   Run: `docker build -t wes-backend:phase8-rough-sorter .`
 
-  Expected: workspace lock 无漂移；持久化后即时唤醒与 Beat 兜底均闭合；Web/Celery 静态绑定一致；镜像内可导入 SDK 和插件，
-  未知/漂移配置 fail closed。
+  Run: `./scripts/git-quality-gate.sh --profile quality`
 
-  Commit suggestion: `feat(deployment): 显式装配粗分机插件`
+  Run: `uv run scripts/select_heavy_tests.py --scope unstaged`
+
+  Run: `./scripts/run_selected_heavy_local.sh --scope unstaged`
+
+  Expected: Web/Celery 静态绑定一致；两个 Beat 分别恢复遗漏；插件与 SDK 在镜像内可导入；QUALITY、选中 HEAVY、干净 migration chain
+  全绿且无跳过。插件 FAST、核心 FAST、PostgreSQL HEAVY 仍分别报告，不能互相代证。
+
+- [ ] **Step 6: Fresh Review 与独立提交**
+
+  Reviewer 核对当前完整 Task 8 diff：基础/业务边界、重启安全、WMS/RCS/ECS 权威、post-commit 时序、旧 recovery absence、测试所有权和
+  HEAVY mapping。修复后只刷新失效证据。
+
+  Commit: `feat(deployment): 显式装配粗分机插件`
 
 ### Task 9: 完成供应商一致性、插件闭环和业务验收
 
@@ -590,7 +839,7 @@
 - [ ] **Step 4: 跑通安全失败路径**
 
   至少现场/集成验证：重复与冲突 evidence、业务 `WAIT`、无 Cell 不下发出料、ACK 后禁止等价重放、callback 未知、旧架 release
-  gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和人工 reconciliation。非功能性负载、HA 和多供应商矩阵不作为
+  gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和单对象人工核验恢复。非功能性负载、HA 和多供应商矩阵不作为
   MVP 退出条件。
 
 - [ ] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
@@ -687,7 +936,8 @@
 3. `wes_plugin_sdk` 与 `rough_sorter` 均可独立安装、构建和测试；SDK 只含真实使用的稳定接口。
 4. Web 与 Celery 通过一个显式 Composition Root 绑定同一插件版本、配置 digest 和设备 binding；核心无具体插件 import 或供应商分支。
 5. Phase 7 Device/ECS、WMS Adapter、供应商一致性、插件业务和现场联合验收分别通过，且证据不互相代替。
-6. 成功闭环及重复、冲突、WAIT、投递未知、不可逆、释放围栏和对账路径全部通过；受影响 HEAVY `failed = 0` 且 `skipped = 0`。
+6. 成功闭环及重复、冲突、WAIT、投递未知、不可逆、释放围栏和人工核验恢复路径全部通过；受影响 HEAVY `failed = 0` 且
+   `skipped = 0`。
 7. 本阶段直接替换的旧粗分/WMS Effect 双路径 absence 扫描通过，跨阶段 Runtime 残余已形成 Phase 10 精确交接清单；当前文档真源已更新，过期过程文档已移出项目目录，`docs/hardware/` 保持原样。
 
 ## 明确延期到后续阶段
