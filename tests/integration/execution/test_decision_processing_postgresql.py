@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import CheckConstraint, delete, select, text, update
 from wes_plugin_sdk import (
     CreateDeviceCommand,
     CreateTransportTask,
@@ -47,15 +47,28 @@ from src.app.workline.models.workline import LineType
 
 @pytest.mark.asyncio
 async def test_specialized_unique_constraints_are_installed(integration_session_factory) -> None:
-    expected = {
-        "fk_device_commands_material_execution_id_material_executions",
-        "inbound_evidence_transport_identity_isolated",
-        "inbound_evidence_transport_identity_required",
-        "ux_rack_replacement_transport_bindings_business_identity",
-        "ux_rack_replacement_transport_bindings_client_request_id",
-        "ux_line_run_epoch_device_bindings_epoch_device_role",
+    transport_constraints = {
+        constraint
+        for constraint in InboundEvidence.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+        and any(
+            fragment in str(constraint.sqltext)
+            for fragment in ("(kind = 'TRANSPORT_RESULT')", "kind <> 'TRANSPORT_RESULT'")
+        )
     }
+    assert len(transport_constraints) == 2
     async with integration_session_factory() as db:
+        transport_constraint_names = {
+            db.get_bind().dialect.identifier_preparer.format_constraint(constraint)
+            for constraint in transport_constraints
+        }
+        expected = {
+            "fk_device_commands_material_execution_id_material_executions",
+            "ux_rack_replacement_transport_bindings_business_identity",
+            "ux_rack_replacement_transport_bindings_client_request_id",
+            "ux_line_run_epoch_device_bindings_epoch_device_role",
+            *transport_constraint_names,
+        }
         names = set(
             (
                 await db.execute(

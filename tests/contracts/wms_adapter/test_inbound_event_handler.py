@@ -88,6 +88,8 @@ def _body(
     *,
     decision: str = "CONTINUE",
     position: object = ...,
+    material_execution_id: str = "EXEC-1",
+    reconciling_evidence_id: str = "30",
 ) -> bytes:
     actual_position = {"type": "HANDOFF_POSITION", "location_code": "LINE-OUT"} if position is ... else position
     return json.dumps(
@@ -97,9 +99,9 @@ def _body(
             "timestamp": 1,
             "data": {
                 "recovery_id": "REC-1",
-                "material_execution_id": "EXEC-1",
+                "material_execution_id": material_execution_id,
                 "material_trace_id": "TRACE-1",
-                "reconciling_evidence_id": "30",
+                "reconciling_evidence_id": reconciling_evidence_id,
                 "decision": decision,
                 "authoritative_position": actual_position,
                 "reason_code": "MANUAL_CONFIRMED",
@@ -212,7 +214,7 @@ async def test_recorder_freezes_single_execution_and_current_causal_evidence_bef
 
 
 @pytest.mark.asyncio
-async def test_recorder_rejects_trace_mismatch_without_received_ack() -> None:
+async def test_recorder_maps_trace_mismatch_to_execution_correlation_conflict() -> None:
     executions = _Executions()
     executions.values["EXEC-1"].material_trace_id = "OTHER"
     recorder = InboundEventEvidenceRecorder(
@@ -224,12 +226,12 @@ async def test_recorder_rejects_trace_mismatch_without_received_ack() -> None:
 
     response = await InboundEventHandler(recorder).handle(_body())
 
-    assert (response.http_status, response.body["code"]) == (422, "REJECTED")
-    assert response.body["data"] == {"reason_code": "INVALID_EXECUTION_CORRELATION"}
+    assert (response.http_status, response.body["code"]) == (409, "CONFLICT")
+    assert response.body["data"] == {"reason_code": "EXECUTION_CORRELATION_CONFLICT"}
 
 
 @pytest.mark.asyncio
-async def test_recorder_rejects_stale_reconciling_evidence_without_received_ack() -> None:
+async def test_recorder_maps_stale_reconciling_evidence_to_execution_correlation_conflict() -> None:
     executions = _Executions()
     executions.values["EXEC-1"].last_transition_evidence_id = 29
     recorder = InboundEventEvidenceRecorder(
@@ -241,5 +243,27 @@ async def test_recorder_rejects_stale_reconciling_evidence_without_received_ack(
 
     response = await InboundEventHandler(recorder).handle(_body())
 
-    assert (response.http_status, response.body["code"]) == (422, "REJECTED")
-    assert response.body["data"] == {"reason_code": "INVALID_EXECUTION_CORRELATION"}
+    assert (response.http_status, response.body["code"]) == (409, "CONFLICT")
+    assert response.body["data"] == {"reason_code": "EXECUTION_CORRELATION_CONFLICT"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(_body(material_execution_id="MISSING"), id="missing-execution"),
+        pytest.param(_body(reconciling_evidence_id="not-an-evidence-id"), id="invalid-causal-identity"),
+    ],
+)
+async def test_recorder_maps_other_execution_correlation_failures_to_conflict(body: bytes) -> None:
+    recorder = InboundEventEvidenceRecorder(
+        _Sessions(),
+        _EvidenceService(),
+        material_execution_repository=_Executions(),
+        inbound_evidence_repository=_CausalEvidences(),
+    )
+
+    response = await InboundEventHandler(recorder).handle(body)
+
+    assert (response.http_status, response.body["code"]) == (409, "CONFLICT")
+    assert response.body["data"] == {"reason_code": "EXECUTION_CORRELATION_CONFLICT"}

@@ -193,7 +193,7 @@ class InboundEventHandler:
         try:
             persisted = await self._recorder.record(envelope, received_at=timezone.now_for_db())
         except InboundEventCorrelationError:
-            return _ack(422, operation_id, "REJECTED", received_at, {"reason_code": "INVALID_EXECUTION_CORRELATION"})
+            return _ack(409, operation_id, "CONFLICT", received_at, {"reason_code": "EXECUTION_CORRELATION_CONFLICT"})
         except Exception:
             logger.exception("WMS recovery 事件持久化失败: operation_id=%s", operation_id)
             return _ack(503, operation_id, "UNAVAILABLE", received_at, {})
