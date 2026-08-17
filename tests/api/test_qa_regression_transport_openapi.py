@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from src.register import register_routers
 
 
-def test_wms_event_openapi_exposes_transport_and_reconciliation_contracts() -> None:
+def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
     # Regression: ISSUE-001 — Swagger 无请求体且只声明 200，无法用于 WMS 联调
     # Found by /qa on 2026-08-12
     # Report: .gstack/qa-reports/qa-report-127-0-0-1-8012-2026-08-12.md
@@ -29,14 +29,14 @@ def test_wms_event_openapi_exposes_transport_and_reconciliation_contracts() -> N
     assert [variant["properties"]["operation"]["enum"] for variant in request_variants] == [
         ["transport.task.member_position_changed@v1"],
         ["transport.task.resulted@v1"],
-        ["inbound.execution.reconciliation_decided@v1"],
+        ["inbound.execution.recovery_decided@v1"],
     ]
     for variant in request_variants:
         timestamp = variant["properties"]["timestamp"]
         assert timestamp["type"] == "integer"
         assert timestamp["format"] == "int64"
         expected_minimum = (
-            1 if variant["properties"]["operation"]["enum"] == ["inbound.execution.reconciliation_decided@v1"] else 0
+            1 if variant["properties"]["operation"]["enum"] == ["inbound.execution.recovery_decided@v1"] else 0
         )
         assert timestamp["minimum"] == expected_minimum
         assert timestamp["maximum"] >= 2**63 - 1

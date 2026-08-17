@@ -23,6 +23,8 @@ from .material_execution_service import (
     material_execution_service,
 )
 from .wms_confirmation_service import (
+    WmsBusinessWaitFollowUp,
+    WmsBusinessWaitPlanner,
     WmsConfirmationAcceptance,
     WmsConfirmationIdentityConflictError,
     WmsConfirmationIdentityConflictResult,
@@ -44,6 +46,8 @@ __all__ = [
     "InboundEvidenceService",
     "InitialExecutionCorrelationConflictError",
     "MaterialExecutionService",
+    "WmsBusinessWaitFollowUp",
+    "WmsBusinessWaitPlanner",
     "WmsConfirmationAcceptance",
     "WmsConfirmationIdentityConflictError",
     "WmsConfirmationIdentityConflictResult",

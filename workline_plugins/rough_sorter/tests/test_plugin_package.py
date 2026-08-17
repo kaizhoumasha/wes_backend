@@ -14,7 +14,7 @@ from rough_sorter.facts import (
     DevicePositionConfirmedFact,
     MaterialEvidenceReadyFact,
     PlacementCompletedFact,
-    ReconciliationDecidedFact,
+    RecoveryDecidedFact,
     ReplacementPlanDecidedFact,
     TargetDecidedFact,
     TransportOutcomePublishedFact,
@@ -71,7 +71,7 @@ def test_plugin_entry_explicitly_builds_exactly_eight_stable_fact_handlers() -> 
         PlacementCompletedFact,
         ReplacementPlanDecidedFact,
         TransportOutcomePublishedFact,
-        ReconciliationDecidedFact,
+        RecoveryDecidedFact,
     }
     assert all(issubclass(item.fact_type, FactReference) for item in metadata)
     assert all(item.supported_versions == ("1.0",) for item in metadata)

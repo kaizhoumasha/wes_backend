@@ -9,7 +9,9 @@ import pytest
 from wes_plugin_sdk import (
     DeviceResultReadyFact,
     EvidenceReadyFact,
-    ReconciliationResultReadyFact,
+    RecoveryDecidedFact,
+    RecoveryDecision,
+    TransportResultReadyFact,
     WmsResultReadyFact,
 )
 
@@ -111,25 +113,92 @@ def test_wms_result_uses_validated_operation_identity() -> None:
     )
 
 
-def test_batch_reconciliation_builds_one_stable_fact_per_frozen_execution_binding() -> None:
+def test_transport_result_uses_frozen_task_identity_without_business_leg_interpretation() -> None:
     evidence = _evidence(
-        InboundEvidenceKind.WMS_EVENT,
-        material_execution_id=None,
-        line_run_epoch_id=None,
-        operation="inbound.execution.reconciliation_decided@v1",
-        operation_id="019cd8ce-34b7-7000-8000-000000000001",
-        normalized_payload={"data": {"reconciliation_id": "REC-1"}},
+        InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        transport_task_id="TRANSPORT-1",
+        normalized_payload={"outcome_version": 1, "status": "SUCCEEDED", "caller": {"leg": "NEW_IN"}},
     )
 
-    fact = _builder().build_reconciliation(evidence, _execution())
+    fact = _builder().build(evidence, _execution())
 
-    assert fact == ReconciliationResultReadyFact(
-        fact_id="evidence:31:execution:EXEC-001",
+    assert fact == TransportResultReadyFact(
+        fact_id="evidence:31",
         evidence_id="31",
         fact_version="1.0",
         material_execution_id="EXEC-001",
-        reconciliation_id="REC-1",
+        transport_task_id="TRANSPORT-1",
     )
+
+
+def test_higher_determinate_transport_result_requires_the_exact_lower_unknown_causal_evidence() -> None:
+    execution = _execution()
+    execution.status = MaterialExecutionStatus.RECONCILING
+    execution.last_transition_evidence_id = 30
+    current = _evidence(
+        InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:2",
+        transport_task_id="TRANSPORT-1",
+        normalized_payload={"outcome_version": 2, "status": "SUCCEEDED"},
+    )
+    causal = _evidence(
+        InboundEvidenceKind.TRANSPORT_RESULT,
+        id=30,
+        source_identity="transport:TRANSPORT-1:outcome:1",
+        transport_task_id="TRANSPORT-1",
+        normalized_payload={"outcome_version": 1, "status": "UNKNOWN"},
+    )
+
+    assert _builder().build(current, execution, causal_evidence=causal).transport_task_id == "TRANSPORT-1"
+    with pytest.raises(ValueError, match="causal"):
+        _builder().build(current, execution, causal_evidence=causal.model_copy(update={"transport_task_id": "OTHER"}))
+
+
+def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() -> None:
+    execution = _execution()
+    execution.status = MaterialExecutionStatus.RECONCILING
+    execution.last_transition_evidence_id = 30
+    evidence = _evidence(
+        InboundEvidenceKind.WMS_EVENT,
+        operation="inbound.execution.recovery_decided@v1",
+        operation_id="019cd8ce-34b7-7000-8000-000000000001",
+        normalized_payload={
+            "data": {
+                "recovery_id": "REC-1",
+                "material_execution_id": "EXEC-001",
+                "material_trace_id": "TRACE-001",
+                "reconciling_evidence_id": "30",
+                "decision": "ABORT",
+                "authoritative_position": None,
+                "reason_code": "MATERIAL_MISSING",
+            }
+        },
+    )
+
+    fact = _builder().build(evidence, execution)
+
+    assert fact == RecoveryDecidedFact(
+        fact_id="evidence:31",
+        evidence_id="31",
+        fact_version="1.0",
+        material_execution_id="EXEC-001",
+        recovery_id="REC-1",
+        decision=RecoveryDecision.ABORT,
+        authoritative_position=None,
+        reason_code="MATERIAL_MISSING",
+    )
+    with pytest.raises(ValueError, match="reconciling_evidence_id"):
+        _builder().build(
+            evidence.model_copy(
+                update={
+                    "normalized_payload": {
+                        "data": {**evidence.normalized_payload["data"], "reconciling_evidence_id": "29"}
+                    }
+                }
+            ),
+            execution,
+        )
 
 
 @pytest.mark.parametrize(

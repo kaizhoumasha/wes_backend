@@ -70,7 +70,7 @@ def test_plugin_sdk_exposes_only_the_approved_fact_and_decision_categories() -> 
         for fact_type in (
             sdk.DeviceResultReadyFact,
             sdk.EvidenceReadyFact,
-            sdk.ReconciliationResultReadyFact,
+            sdk.RecoveryDecidedFact,
             sdk.TransportResultReadyFact,
             sdk.WmsResultReadyFact,
         )
@@ -93,6 +93,18 @@ def test_plugin_sdk_exposes_only_the_approved_fact_and_decision_categories() -> 
     assert decision.material_execution_id == "execution-1"
     with pytest.raises(dataclasses.FrozenInstanceError):
         decision.reason_code = "CHANGED"
+
+    recovery = sdk.RecoveryDecidedFact(
+        fact_id="fact-1",
+        evidence_id="evidence-1",
+        fact_version="1.0",
+        material_execution_id="execution-1",
+        recovery_id="recovery-1",
+        decision=sdk.RecoveryDecision.ABORT,
+        authoritative_position=None,
+        reason_code="MATERIAL_MISSING",
+    )
+    assert recovery.recovery_id == "recovery-1"
 
 
 def test_plugin_frozen_fact_subclass_can_carry_typed_decision_data() -> None:

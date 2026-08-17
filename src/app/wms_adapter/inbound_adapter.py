@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
+from src.app.execution.services.wms_confirmation_service import WmsBusinessWaitFollowUp
 from src.app.wms_adapter.client import (
     OutboundHttpClosedError,
     WmsClient,
@@ -26,6 +28,13 @@ from src.app.wms_adapter.inbound_wire import (
 )
 from src.app.wms_adapter.strict_json import is_json_utf8_media_type
 from src.core.outbound_http import OutboundHttpDeliveryState
+from src.core.uuid7 import new_uuid7
+from src.utils.timezone import timezone
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from src.app.execution.models.wms_confirmation import WmsConfirmation
 
 
 class InboundDispatchCode(str, Enum):
@@ -112,6 +121,7 @@ class WmsInboundAdapter:
                 InboundDispatchCode.DETERMINATE,
                 normalized_response=normalized,
                 response_result=response_result,
+                retry_after_ms=response.data.retry_after_ms if response_result == "WAIT" else None,
             )
         if response.code == "BUSY":
             return InboundDispatchResult(
@@ -122,6 +132,45 @@ class WmsInboundAdapter:
         if response.code == "UNAVAILABLE":
             return InboundDispatchResult(InboundDispatchCode.RETRY, normalized_response=normalized)
         return InboundDispatchResult(InboundDispatchCode.RECONCILING, normalized_response=normalized)
+
+
+class WmsInboundBusinessWaitPlanner:
+    """把已验证的粗分 WAIT 响应转换为新的可靠请求身份。"""
+
+    def __init__(
+        self,
+        *,
+        operation_id_factory: Callable[[], str] = new_uuid7,
+    ) -> None:
+        self._operation_id_factory = operation_id_factory
+
+    def plan(
+        self,
+        confirmation: WmsConfirmation,
+        response_payload: dict[str, object],
+    ) -> WmsBusinessWaitFollowUp | None:
+        data = response_payload.get("data")
+        if not isinstance(data, dict) or data.get("result") != "WAIT":
+            return None
+        retry_after_ms = data.get("retry_after_ms")
+        if not isinstance(retry_after_ms, int) or isinstance(retry_after_ms, bool) or retry_after_ms <= 0:
+            return None
+        received_at = confirmation.completed_at
+        if received_at is None:
+            return None
+        operation_id = self._operation_id_factory()
+        request_payload = cast(
+            "dict[str, object]",
+            json.loads(json.dumps(confirmation.request_payload, ensure_ascii=False, separators=(",", ":"))),
+        )
+        request_payload["operation_id"] = operation_id
+        request_payload["timestamp"] = int(timezone.to_utc(received_at).timestamp() * 1000)
+        return WmsBusinessWaitFollowUp(
+            operation=confirmation.operation,
+            operation_id=operation_id,
+            request_payload=request_payload,
+            next_attempt_at=received_at + timedelta(milliseconds=retry_after_ms),
+        )
 
 
 def _canonical_digest(payload: dict[str, Any]) -> str:
@@ -137,4 +186,4 @@ def _valid_json_headers(headers: tuple[tuple[str, str], ...]) -> bool:
     return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
 
 
-__all__ = ["InboundDispatchCode", "InboundDispatchResult", "WmsInboundAdapter"]
+__all__ = ["InboundDispatchCode", "InboundDispatchResult", "WmsInboundAdapter", "WmsInboundBusinessWaitPlanner"]

@@ -1,4 +1,4 @@
-"""人工对账结论触发终止或一个类型化恢复动作。"""
+"""恢复裁决触发终止或一个经过因果验证的类型化续作。"""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from wes_plugin_sdk import (
 )
 
 from rough_sorter.facts import (
-    ReconciliationDecidedFact,
-    ReconciliationDecision,
-    ResumeDeviceAction,
-    ResumeWait,
-    ResumeWmsAction,
+    RecoveryDecidedFact,
+    RecoveryDecision,
+    RecoveryDeferContinuation,
+    RecoveryDeviceContinuation,
+    RecoveryWmsContinuation,
 )
 from rough_sorter.handlers._guards import require_epoch, require_execution, require_source, require_target
 
@@ -34,7 +34,7 @@ _POSITION_WMS_OPERATIONS = {
     "NG_POSITION": {"inbound.material.ng_placement_report@v1"},
 }
 
-_DEVICE_RESUME_TOPOLOGY = {
+_DEVICE_RECOVERY_TOPOLOGY = {
     ("MEASUREMENT_POSITION", "PIPELINE_INLET"): ("MEASUREMENT_DEVICE", "PICK_AND_PUT"),
     ("MEASUREMENT_POSITION", "NG_POSITION"): ("MEASUREMENT_DEVICE", "PICK_AND_PUT"),
     ("PIPELINE_INLET", "PIPELINE_OUTLET"): ("TRANSFER_DEVICE", "MOVE_FORWARD"),
@@ -44,19 +44,19 @@ _DEVICE_RESUME_TOPOLOGY = {
 
 
 @handler(
-    fact_type=ReconciliationDecidedFact,
-    name="reconciliation-decided",
+    fact_type=RecoveryDecidedFact,
+    name="recovery-decided",
     supported_versions=("1.0",),
 )
 @dataclass(frozen=True, slots=True)
-class ReconciliationDecidedHandler:
+class RecoveryDecidedHandler:
     executions: ExecutionSnapshotReader
     positions: PositionResourceSnapshotReader
     epochs: EpochConfigurationSnapshotReader
 
     def __call__(
         self,
-        fact: ReconciliationDecidedFact,
+        fact: RecoveryDecidedFact,
     ) -> tuple[CompleteExecution | CreateDeviceCommand | CreateWmsConfirmation | Wait]:
         execution = require_execution(
             self.executions,
@@ -64,72 +64,78 @@ class ReconciliationDecidedHandler:
             material_trace_id=fact.material_trace_id,
             allow_reconciling=True,
         )
-        require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
-        if fact.decision is ReconciliationDecision.ABORT:
+        _ = require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
+        if fact.decision is RecoveryDecision.ABORT:
             return (
                 CompleteExecution(
                     material_execution_id=fact.material_execution_id,
                     fact_id=fact.fact_id,
-                    reason_code=f"RECONCILIATION_ABORT:{fact.reason_code}",
+                    reason_code=f"RECOVERY_ABORT:{fact.reason_code}",
                 ),
             )
         position = fact.authoritative_position
         if position is None:
             raise ValueError("CONTINUE requires authoritative_position")
         require_source(self.positions, position, material_trace_id=fact.material_trace_id)
-        action = fact.resume_action
-        if type(action) is ResumeWmsAction:
-            return (self._resume_wms(fact, action),)
-        if type(action) is ResumeDeviceAction:
-            return (self._resume_device(fact, action),)
-        if type(action) is ResumeWait:
+        continuation = fact.continuation
+        if type(continuation) is RecoveryWmsContinuation:
+            return (self._continue_wms(fact, continuation),)
+        if type(continuation) is RecoveryDeviceContinuation:
+            return (self._continue_device(fact, continuation),)
+        if type(continuation) is RecoveryDeferContinuation:
             return (
                 Wait(
                     material_execution_id=fact.material_execution_id,
                     fact_id=fact.fact_id,
-                    reason_code=action.reason_code,
+                    reason_code=continuation.reason_code,
                 ),
             )
-        raise TypeError("CONTINUE requires a typed resume_action")
+        raise TypeError("CONTINUE requires a typed continuation")
 
     @staticmethod
-    def _resume_wms(fact: ReconciliationDecidedFact, action: ResumeWmsAction) -> CreateWmsConfirmation:
+    def _continue_wms(fact: RecoveryDecidedFact, continuation: RecoveryWmsContinuation) -> CreateWmsConfirmation:
         position = fact.authoritative_position
-        if position is None or action.operation not in _POSITION_WMS_OPERATIONS.get(position.location_type, set()):
-            raise ValueError("WMS resume operation does not match authoritative position")
-        if fact.evidence_id not in action.evidence_refs:
-            raise ValueError("WMS resume must reference reconciliation evidence")
+        if position is None or continuation.operation not in _POSITION_WMS_OPERATIONS.get(
+            position.location_type, set()
+        ):
+            raise ValueError("WMS continuation does not match authoritative position")
+        if fact.evidence_id not in continuation.evidence_refs:
+            raise ValueError("WMS continuation must reference recovery evidence")
         return CreateWmsConfirmation(
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
-            operation=action.operation,
-            operation_id=action.operation_id,
-            evidence_refs=action.evidence_refs,
-            snapshot_refs=action.snapshot_refs,
+            operation=continuation.operation,
+            operation_id=continuation.operation_id,
+            evidence_refs=continuation.evidence_refs,
+            snapshot_refs=continuation.snapshot_refs,
         )
 
-    def _resume_device(self, fact: ReconciliationDecidedFact, action: ResumeDeviceAction) -> CreateDeviceCommand | Wait:
-        if action.source != fact.authoritative_position:
-            raise ValueError("device resume source must equal authoritative position")
-        expected = _DEVICE_RESUME_TOPOLOGY.get((action.source.location_type, action.target.location_type))
-        if expected != (action.device_role, action.task_type):
-            raise ValueError("device resume action does not match approved topology")
-        if not action.device_ready:
+    def _continue_device(
+        self,
+        fact: RecoveryDecidedFact,
+        continuation: RecoveryDeviceContinuation,
+    ) -> CreateDeviceCommand | Wait:
+        if continuation.source != fact.authoritative_position:
+            raise ValueError("device continuation source must equal authoritative position")
+        expected = _DEVICE_RECOVERY_TOPOLOGY.get((continuation.source.location_type, continuation.target.location_type))
+        if expected != (continuation.device_role, continuation.task_type):
+            raise ValueError("device continuation does not match approved topology")
+        if not continuation.device_ready:
             return Wait(
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
-                reason_code=f"{action.device_role}_NOT_READY",
+                reason_code=f"{continuation.device_role}_NOT_READY",
             )
-        require_target(self.positions, action.target)
+        require_target(self.positions, continuation.target)
         return CreateDeviceCommand(
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
-            device_role=action.device_role,
-            task_type=action.task_type,
+            device_role=continuation.device_role,
+            task_type=continuation.task_type,
             material_trace_id=fact.material_trace_id,
-            source=action.source,
-            target=action.target,
+            source=continuation.source,
+            target=continuation.target,
         )
 
 
-__all__ = ["ReconciliationDecidedHandler"]
+__all__ = ["RecoveryDecidedHandler"]

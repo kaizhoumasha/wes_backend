@@ -219,7 +219,9 @@ async def test_direct_cutover_schema_has_no_previous_evidence_or_resource_confir
                     text(
                         "SELECT table_name FROM information_schema.tables "
                         "WHERE table_schema = 'wes_biz' "
-                        "AND table_name IN ('device_evidences', 'device_evidence_conflicts')"
+                        "AND table_name IN ("
+                        "'device_evidences', 'device_evidence_conflicts', 'inbound_evidence_execution_bindings'"
+                        ")"
                     )
                 )
             ).scalars()
@@ -237,6 +239,50 @@ async def test_direct_cutover_schema_has_no_previous_evidence_or_resource_confir
 
     assert old_tables == set()
     assert old_column_exists is False
+
+
+@pytest.mark.asyncio
+async def test_transport_evidence_identity_is_required_and_isolated(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
+    async with integration_session_factory.begin() as db:
+        db.add(
+            InboundEvidence(
+                kind=InboundEvidenceKind.TRANSPORT_RESULT,
+                source_identity=f"{PREFIX}TRANSPORT-VALID",
+                payload_digest="2" * 64,
+                normalized_payload={"transport_task_id": "TRANSPORT-1", "outcome_version": 1},
+                received_at=datetime(2026, 8, 16),
+                transport_task_id="TRANSPORT-1",
+            )
+        )
+
+    async with integration_session_factory.begin() as db:
+        db.add(
+            InboundEvidence(
+                kind=InboundEvidenceKind.TRANSPORT_RESULT,
+                source_identity=f"{PREFIX}TRANSPORT-MISSING",
+                payload_digest="3" * 64,
+                normalized_payload={"transport_task_id": "TRANSPORT-2", "outcome_version": 1},
+                received_at=datetime(2026, 8, 16),
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+    async with integration_session_factory.begin() as db:
+        db.add(
+            InboundEvidence(
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=f"{PREFIX}TRANSPORT-MIXED",
+                payload_digest="4" * 64,
+                normalized_payload={"data": {}},
+                received_at=datetime(2026, 8, 16),
+                transport_task_id="TRANSPORT-3",
+                operation="inbound.execution.recovery_decided@v1",
+                operation_id="RECOVERY-1",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await db.flush()
 
 
 @pytest.mark.asyncio

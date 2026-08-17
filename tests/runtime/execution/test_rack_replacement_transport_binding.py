@@ -21,10 +21,5 @@ def test_binding_identity_is_only_replacement_and_leg() -> None:
     assert "status" not in binding_type.model_fields
 
 
-def test_reconciliation_binding_contains_only_ordered_execution_identity() -> None:
-    binding_type = execution_models.InboundEvidenceExecutionBinding
-
-    assert {"inbound_evidence_id", "material_execution_id", "ordinal"} <= binding_type.model_fields.keys()
-    assert "payload" not in binding_type.model_fields
-    assert "status" not in binding_type.model_fields
-    assert "retry" not in binding_type.model_fields
+def test_batch_reconciliation_binding_is_not_exported() -> None:
+    assert not hasattr(execution_models, "InboundEvidenceExecutionBinding")

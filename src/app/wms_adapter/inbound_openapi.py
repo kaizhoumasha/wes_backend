@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from src.app.wms_adapter.inbound_wire import RECONCILIATION_OPERATION
+from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_RESPONSES
 
 _IDENTIFIER = {
@@ -57,56 +57,38 @@ _CELL = _closed(
         "bin_cell_id": _IDENTIFIER,
     },
 )
-_AUTHORITATIVE_POSITION = _closed(
-    ["material_execution_id", "material_trace_id", "position"],
+_DATA = _closed(
+    [
+        "recovery_id",
+        "material_execution_id",
+        "material_trace_id",
+        "reconciling_evidence_id",
+        "decision",
+        "authoritative_position",
+        "reason_code",
+    ],
     {
+        "recovery_id": _IDENTIFIER,
         "material_execution_id": _EXECUTION_CODE,
         "material_trace_id": _MATERIAL_TRACE_ID,
-        "pkg_id": _IDENTIFIER,
-        "position": {"oneOf": [_HANDOFF, _NG, _CELL, {"type": "null"}]},
-    },
-)
-_DATA = _closed(
-    ["reconciliation_id", "affected_execution_ids", "authoritative_positions", "decision", "reason_code"],
-    {
-        "reconciliation_id": _IDENTIFIER,
-        "affected_execution_ids": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": True,
-            "items": _EXECUTION_CODE,
-        },
-        "authoritative_positions": {
-            "type": "array",
-            "minItems": 1,
-            "items": _AUTHORITATIVE_POSITION,
-        },
+        "reconciling_evidence_id": _IDENTIFIER,
         "decision": {"type": "string", "enum": ["CONTINUE", "ABORT"]},
+        "authoritative_position": {"oneOf": [_HANDOFF, _NG, _CELL, {"type": "null"}]},
         "reason_code": _IDENTIFIER,
     },
 )
 _DATA["allOf"] = [
     {
         "if": {"properties": {"decision": {"const": "CONTINUE"}}, "required": ["decision"]},
-        "then": {
-            "properties": {
-                "authoritative_positions": {
-                    "items": {
-                        "properties": {
-                            "position": {"oneOf": [_HANDOFF, _NG, _CELL]},
-                        }
-                    }
-                }
-            }
-        },
+        "then": {"properties": {"authoritative_position": {"oneOf": [_HANDOFF, _NG, _CELL]}}},
     }
 ]
 
-RECONCILIATION_EVENT_REQUEST_SCHEMA = _closed(
+RECOVERY_EVENT_REQUEST_SCHEMA = _closed(
     ["operation_id", "operation", "timestamp", "data"],
     {
         "operation_id": _UUIDV7,
-        "operation": {"type": "string", "enum": [RECONCILIATION_OPERATION]},
+        "operation": {"type": "string", "enum": [RECOVERY_OPERATION]},
         "timestamp": _TIMESTAMP,
         "data": _DATA,
     },
@@ -142,4 +124,4 @@ def _combined_event_responses() -> dict[int | str, dict[str, object]]:
 
 WMS_EVENT_RESPONSES = _combined_event_responses()
 
-__all__ = ["RECONCILIATION_EVENT_REQUEST_SCHEMA", "WMS_EVENT_RESPONSES"]
+__all__ = ["RECOVERY_EVENT_REQUEST_SCHEMA", "WMS_EVENT_RESPONSES"]

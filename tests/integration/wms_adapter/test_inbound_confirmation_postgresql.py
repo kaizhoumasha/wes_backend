@@ -15,7 +15,6 @@ from sqlalchemy import delete, or_, select, update
 from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceConflict,
-    InboundEvidenceExecutionBinding,
     InboundEvidenceKind,
     MaterialExecution,
     MaterialExecutionStatus,
@@ -24,15 +23,18 @@ from src.app.execution.models import (
 )
 from src.app.execution.repositories import WmsConfirmationRepository
 from src.app.execution.services import WmsConfirmationIdentityConflictResult, WmsConfirmationService
-from src.app.wms_adapter.inbound_adapter import InboundDispatchCode
+from src.app.wms_adapter.inbound_adapter import (
+    InboundDispatchCode,
+    WmsInboundBusinessWaitPlanner,
+)
 from src.app.wms_adapter.inbound_event_handler import InboundEventEvidenceRecorder, InboundEventHandler
-from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION, RECONCILIATION_OPERATION
+from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION, RECOVERY_OPERATION
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 
 PREFIX = "WMS-INBOUND-"
-RECONCILIATION_OPERATION_IDS: set[str] = set()
+RECOVERY_OPERATION_IDS: set[str] = set()
 
 
 async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-def]
@@ -79,6 +81,8 @@ async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-d
     )
     db.add(execution)
     await db.flush()
+    evidence.material_execution_id = execution.id
+    await db.flush()
     return execution
 
 
@@ -120,8 +124,8 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
             InboundEvidence.source_identity.like(f"{PREFIX}%"),
             InboundEvidence.material_execution_id.in_(execution_ids),
         ]
-        if RECONCILIATION_OPERATION_IDS:
-            evidence_filters.append(InboundEvidence.operation_id.in_(RECONCILIATION_OPERATION_IDS))
+        if RECOVERY_OPERATION_IDS:
+            evidence_filters.append(InboundEvidence.operation_id.in_(RECOVERY_OPERATION_IDS))
         evidence_ids = select(InboundEvidence.id).where(or_(*evidence_filters))
         epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like(f"{PREFIX}%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like(f"{PREFIX}%"))
@@ -130,18 +134,13 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
         )
         await db.execute(
-            delete(InboundEvidenceExecutionBinding).where(
-                InboundEvidenceExecutionBinding.inbound_evidence_id.in_(evidence_ids)
-            )
-        )
-        await db.execute(
             update(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)).values(material_execution_id=None)
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
         await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_(epoch_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
-    RECONCILIATION_OPERATION_IDS.clear()
+    RECOVERY_OPERATION_IDS.clear()
 
 
 @pytest.mark.asyncio
@@ -292,6 +291,21 @@ class _ConflictDuringDispatchAdapter:
         )
 
 
+class _WaitDispatchAdapter:
+    async def dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            code=InboundDispatchCode.DETERMINATE,
+            normalized_response={
+                "operation_id": kwargs["operation_id"],
+                "code": "DECIDED",
+                "timestamp": 2,
+                "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
+            },
+            response_result="WAIT",
+            retry_after_ms=250,
+        )
+
+
 @pytest.mark.asyncio
 async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evidence_before_completion(
     integration_session_factory,
@@ -345,6 +359,56 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
 
 
 @pytest.mark.asyncio
+async def test_business_wait_completion_and_follow_up_are_committed_together(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
+    now = datetime(2026, 8, 16)
+    follow_up_operation_id = new_uuid7()
+    async with integration_session_factory.begin() as db:
+        execution = await _seed_execution(db)
+        original_operation_id = new_uuid7()
+        payload = _request(original_operation_id, execution.execution_code)
+        confirmation = WmsConfirmation(
+            operation=ADMISSION_OPERATION,
+            operation_id=original_operation_id,
+            material_execution_id=execution.id,
+            request_digest=_digest(payload),
+            request_payload=payload,
+            deadline_at=now + timedelta(minutes=5),
+            created_at=now,
+        )
+        db.add(confirmation)
+        await db.flush()
+        execution_id = execution.id
+
+    service = WmsConfirmationService(
+        repository=WmsConfirmationRepository(),
+        session_factory=integration_session_factory,
+        adapter=_WaitDispatchAdapter(),
+        business_wait_planner=WmsInboundBusinessWaitPlanner(
+            operation_id_factory=lambda: follow_up_operation_id,
+        ),
+    )
+
+    assert await service.dispatch_batch(limit=1, now=now) == 1
+    async with integration_session_factory() as db:
+        rows = list(
+            (
+                await db.execute(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution_id))
+            ).scalars()
+        )
+        by_operation_id = {row.operation_id: row for row in rows}
+        original = by_operation_id[original_operation_id]
+        follow_up = by_operation_id[follow_up_operation_id]
+        assert original.status == WmsConfirmationStatus.COMPLETED
+        assert original.response_result == "WAIT"
+        assert original.response_evidence_id is not None
+        assert await db.get(InboundEvidence, original.response_evidence_id) is not None
+        assert follow_up.status == WmsConfirmationStatus.PENDING
+        assert follow_up.next_attempt_at == now + timedelta(milliseconds=250)
+        assert follow_up.request_payload["operation_id"] == follow_up_operation_id
+        assert follow_up.deadline_at == original.deadline_at
+
+
+@pytest.mark.asyncio
 async def test_inflight_identity_conflict_fences_late_http_response(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
     now = datetime(2026, 8, 16)
     deadline_at = now + timedelta(minutes=5)
@@ -395,29 +459,26 @@ async def test_inflight_identity_conflict_fences_late_http_response(integration_
         assert persisted.status == WmsConfirmationStatus.RECONCILING
 
 
-def _reconciliation(
+def _recovery(
     operation_id: str,
     *,
     reason_code: str,
     execution_code: str,
     material_trace_id: str,
+    reconciling_evidence_id: int,
 ) -> bytes:
     return json.dumps(
         {
             "operation_id": operation_id,
-            "operation": RECONCILIATION_OPERATION,
+            "operation": RECOVERY_OPERATION,
             "timestamp": 1,
             "data": {
-                "reconciliation_id": f"{PREFIX}REC-1",
-                "affected_execution_ids": [execution_code],
-                "authoritative_positions": [
-                    {
-                        "material_execution_id": execution_code,
-                        "material_trace_id": material_trace_id,
-                        "position": None,
-                    }
-                ],
+                "recovery_id": f"{PREFIX}REC-1",
+                "material_execution_id": execution_code,
+                "material_trace_id": material_trace_id,
+                "reconciling_evidence_id": str(reconciling_evidence_id),
                 "decision": "ABORT",
+                "authoritative_position": None,
                 "reason_code": reason_code,
             },
         },
@@ -426,27 +487,31 @@ def _reconciliation(
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_identity_conflict_is_committed_before_409(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
+async def test_recovery_identity_conflict_is_committed_before_409(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
     operation_id = new_uuid7()
-    RECONCILIATION_OPERATION_IDS.add(operation_id)
+    RECOVERY_OPERATION_IDS.add(operation_id)
     handler = InboundEventHandler(InboundEventEvidenceRecorder(integration_session_factory))
     async with integration_session_factory.begin() as db:
         execution = await _seed_execution(db)
+        execution.status = MaterialExecutionStatus.RECONCILING
+        await db.flush()
 
     first = await handler.handle(
-        _reconciliation(
+        _recovery(
             operation_id,
             reason_code="MANUAL_ABORT",
             execution_code=execution.execution_code,
             material_trace_id=execution.material_trace_id,
+            reconciling_evidence_id=execution.last_transition_evidence_id,
         )
     )
     conflict = await handler.handle(
-        _reconciliation(
+        _recovery(
             operation_id,
             reason_code="CHANGED_REASON",
             execution_code=execution.execution_code,
             material_trace_id=execution.material_trace_id,
+            reconciling_evidence_id=execution.last_transition_evidence_id,
         )
     )
 
@@ -454,8 +519,52 @@ async def test_reconciliation_identity_conflict_is_committed_before_409(integrat
     async with integration_session_factory() as db:
         persisted = await db.scalar(
             select(InboundEvidenceConflict).where(
-                InboundEvidenceConflict.source_identity == f"{RECONCILIATION_OPERATION}:{operation_id}"
+                InboundEvidenceConflict.source_identity == f"{RECOVERY_OPERATION}:{operation_id}"
             )
         )
     assert persisted is not None
     assert persisted.reason_code == "SOURCE_IDENTITY_PAYLOAD_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_stale_recovery_causal_fence_rolls_back_new_evidence(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
+    operation_id = new_uuid7()
+    RECOVERY_OPERATION_IDS.add(operation_id)
+    handler = InboundEventHandler(InboundEventEvidenceRecorder(integration_session_factory))
+    async with integration_session_factory.begin() as db:
+        execution = await _seed_execution(db)
+        stale_causal_id = execution.last_transition_evidence_id
+        newer_causal = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"{PREFIX}NEWER-CAUSAL-{uuid4().hex}",
+            payload_digest="d" * 64,
+            normalized_payload={"source_event_id": f"{PREFIX}NEWER"},
+            received_at=datetime(2026, 8, 16, 0, 1),
+            line_run_epoch_id=execution.line_run_epoch_id,
+            material_execution_id=execution.id,
+            device_code=f"{PREFIX}DEVICE-NEWER",
+        )
+        db.add(newer_causal)
+        await db.flush()
+        execution.status = MaterialExecutionStatus.RECONCILING
+        execution.last_transition_evidence_id = newer_causal.id
+        execution_code = execution.execution_code
+        material_trace_id = execution.material_trace_id
+        await db.flush()
+
+    response = await handler.handle(
+        _recovery(
+            operation_id,
+            reason_code="STALE_OPERATOR_VIEW",
+            execution_code=execution_code,
+            material_trace_id=material_trace_id,
+            reconciling_evidence_id=stale_causal_id,
+        )
+    )
+
+    assert response.http_status == 409
+    async with integration_session_factory() as db:
+        persisted = await db.scalar(
+            select(InboundEvidence).where(InboundEvidence.source_identity == f"{RECOVERY_OPERATION}:{operation_id}")
+        )
+    assert persisted is None

@@ -13,16 +13,11 @@ from wes_plugin_sdk import DeferExecution, FactReference
 from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
-    InboundEvidenceExecutionBinding,
     InboundEvidenceKind,
     MaterialExecution,
 )
 from src.app.execution.models.material_execution import MaterialExecutionStatus
-from src.app.execution.repositories import (
-    inbound_evidence_execution_binding_repository,
-    inbound_evidence_repository,
-    material_execution_repository,
-)
+from src.app.execution.repositories import inbound_evidence_repository, material_execution_repository
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.execution.services.fact_builder import FactBuilder
 from src.app.execution.services.material_execution_service import MaterialExecutionService
@@ -46,6 +41,8 @@ class EvidenceRepositoryPort(Protocol):
 
     async def get_decision_claim_for_update(self, db: object, **kwargs: object) -> InboundEvidence | None: ...
 
+    async def get_by_id_for_update(self, db: object, evidence_id: int) -> InboundEvidence | None: ...
+
     async def flush(self, db: object) -> None: ...
 
 
@@ -61,14 +58,6 @@ class ExecutionRepositoryPort(Protocol):
 
 class EpochRepositoryPort(Protocol):
     async def get_by_id_for_update(self, db: object, line_run_epoch_id: int) -> LineRunEpoch | None: ...
-
-
-class EvidenceExecutionBindingRepositoryPort(Protocol):
-    async def list_for_evidence_for_update(
-        self,
-        db: object,
-        evidence_id: int,
-    ) -> list[InboundEvidenceExecutionBinding]: ...
 
 
 class InitialExecutionServicePort(Protocol):
@@ -95,7 +84,6 @@ class FactProcessor:
         evidence_repository: EvidenceRepositoryPort | None = None,
         execution_repository: ExecutionRepositoryPort | None = None,
         epoch_repository: EpochRepositoryPort | None = None,
-        evidence_execution_binding_repository: EvidenceExecutionBindingRepositoryPort | None = None,
         material_execution_service: InitialExecutionServicePort | None = None,
         fact_builder: FactBuilder | None = None,
         clock: object = timezone.now_for_db,
@@ -107,9 +95,6 @@ class FactProcessor:
         self._evidences = evidence_repository or inbound_evidence_repository
         self._executions = execution_repository or material_execution_repository
         self._epochs = epoch_repository or line_run_epoch_repository
-        self._evidence_execution_bindings = (
-            evidence_execution_binding_repository or inbound_evidence_execution_binding_repository
-        )
         self._execution_service = material_execution_service or MaterialExecutionService()
         self._fact_builder = fact_builder or FactBuilder()
         self._clock = cast("callable", clock)
@@ -199,7 +184,7 @@ class FactProcessor:
                 raise RuntimeError("fenced Decision digest changed")
             prepared = await self._prepare_facts_in_session(db, evidence, now)
             if len(prepared) != len(decision_groups):
-                raise RuntimeError("frozen reconciliation Fact membership changed")
+                raise RuntimeError("prepared Fact membership changed")
             flattened: list[object] = []
             for item, group in zip(prepared, decision_groups, strict=True):
                 self._plugins.resolve_handler(item.plugin_key, item.plugin_version, item.fact)
@@ -335,26 +320,19 @@ class FactProcessor:
         evidence: InboundEvidence,
         now: datetime,
     ) -> tuple[_PreparedFact, ...]:
-        if evidence.kind == InboundEvidenceKind.WMS_EVENT:
-            if evidence.id is None:
-                raise ValueError("reconciliation evidence 未持久化")
-            bindings = await self._evidence_execution_bindings.list_for_evidence_for_update(db, evidence.id)
-            if not bindings:
-                raise ValueError("reconciliation evidence 缺少冻结 execution bindings")
-            prepared: list[_PreparedFact] = []
-            for binding in bindings:
-                execution = await self._executions.get_by_id_for_update(db, binding.material_execution_id)
-                if execution is None:
-                    raise LookupError("reconciliation MaterialExecution 不存在")
-                epoch = await self._load_epoch_for_execution(db, execution)
-                fact = await self._augment_fact(epoch, self._fact_builder.build_reconciliation(evidence, execution))
-                prepared.append(_PreparedFact(fact, epoch.plugin_key, epoch.plugin_version, execution))
-            return tuple(prepared)
-
         await self._restore_epoch_from_execution(db, evidence)
         epoch = await self._load_epoch(db, evidence)
         execution = await self._load_or_correlate_execution(db, evidence, epoch, now)
-        fact = await self._augment_fact(epoch, self._fact_builder.build(evidence, execution))
+        causal_evidence = None
+        if (
+            evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT
+            and MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.RECONCILING
+        ):
+            causal_evidence = await self._evidences.get_by_id_for_update(db, execution.last_transition_evidence_id)
+        fact = await self._augment_fact(
+            epoch,
+            self._fact_builder.build(evidence, execution, causal_evidence=causal_evidence),
+        )
         return (_PreparedFact(fact, epoch.plugin_key, epoch.plugin_version, execution),)
 
     async def _transition_all_executions(
@@ -368,12 +346,6 @@ class FactProcessor:
         executions: list[MaterialExecution] = []
         if evidence.material_execution_id is not None:
             executions.append(await self._load_execution(db, evidence))
-        elif evidence.kind == InboundEvidenceKind.WMS_EVENT and evidence.id is not None:
-            bindings = await self._evidence_execution_bindings.list_for_evidence_for_update(db, evidence.id)
-            for binding in bindings:
-                execution = await self._executions.get_by_id_for_update(db, binding.material_execution_id)
-                if execution is not None:
-                    executions.append(execution)
         for execution in executions:
             if MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.CLOSED:
                 continue

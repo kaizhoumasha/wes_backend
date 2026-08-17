@@ -417,6 +417,23 @@ def test_execution_celery_task_selects_runtime_and_prefork_owners() -> None:
     ]
 
 
+def test_wms_confirmation_dispatcher_and_schema_cutover_select_exact_owners() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["src/celery_app/tasks/wms_confirmation.py"], config) == [
+        CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+        WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
+    ]
+    assert select_heavy_tests(
+        ["migrations/versions/20260817_2308_5695afa99545_闭合粗分持久触发.py"],
+        config,
+    ) == [
+        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+        EXECUTION_CONSTRAINTS_HEAVY_TEST,
+        WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
+    ]
+
+
 def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:
     config = load_config(_write_mapping(tmp_path, ignore_globs=["**/*.md"]))
 

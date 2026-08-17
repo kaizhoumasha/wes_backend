@@ -35,7 +35,6 @@ from src.app.device.models import (  # noqa: F401
 from src.app.execution.models import (  # noqa: F401
     InboundEvidence,
     InboundEvidenceConflict,
-    InboundEvidenceExecutionBinding,
     MaterialExecution,
     RackReplacementTransportBinding,
     WmsConfirmation,

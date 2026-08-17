@@ -13,7 +13,7 @@ from src.app.wms_adapter.inbound_event_handler import (
     InboundEventHandler,
     InboundEventPersistenceResult,
 )
-from src.app.wms_adapter.inbound_wire import MAX_INBOUND_BODY_BYTES, RECONCILIATION_OPERATION
+from src.app.wms_adapter.inbound_wire import MAX_INBOUND_BODY_BYTES, RECOVERY_OPERATION
 from src.utils.timezone import timezone
 
 OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
@@ -61,8 +61,14 @@ class _EvidenceService:
 class _Executions:
     def __init__(self) -> None:
         self.values = {
-            "EXEC-1": SimpleNamespace(id=21, execution_code="EXEC-1", material_trace_id="TRACE-1"),
-            "EXEC-2": SimpleNamespace(id=22, execution_code="EXEC-2", material_trace_id="TRACE-2"),
+            "EXEC-1": SimpleNamespace(
+                id=21,
+                execution_code="EXEC-1",
+                material_trace_id="TRACE-1",
+                line_run_epoch_id=11,
+                status="RECONCILING",
+                last_transition_evidence_id=30,
+            ),
         }
 
     async def get_by_execution_code_for_update(self, db, execution_code):  # type: ignore[no-untyped-def]
@@ -70,19 +76,12 @@ class _Executions:
         return self.values.get(execution_code)
 
 
-class _Bindings:
-    def __init__(self) -> None:
-        self.values = []
-
-    async def list_for_evidence_for_update(self, db, evidence_id):  # type: ignore[no-untyped-def]
+class _CausalEvidences:
+    async def get_by_id_for_update(self, db, evidence_id):  # type: ignore[no-untyped-def]
         del db
-        return [item for item in self.values if item.inbound_evidence_id == evidence_id]
-
-    async def add(self, db, binding):  # type: ignore[no-untyped-def]
-        del db
-        binding.id = len(self.values) + 1
-        self.values.append(binding)
-        return binding
+        if evidence_id != 30:
+            return None
+        return SimpleNamespace(id=30, material_execution_id=21, line_run_epoch_id=11)
 
 
 def _body(
@@ -94,19 +93,15 @@ def _body(
     return json.dumps(
         {
             "operation_id": OPERATION_ID,
-            "operation": RECONCILIATION_OPERATION,
+            "operation": RECOVERY_OPERATION,
             "timestamp": 1,
             "data": {
-                "reconciliation_id": "REC-1",
-                "affected_execution_ids": ["EXEC-1"],
-                "authoritative_positions": [
-                    {
-                        "material_execution_id": "EXEC-1",
-                        "material_trace_id": "TRACE-1",
-                        "position": actual_position,
-                    }
-                ],
+                "recovery_id": "REC-1",
+                "material_execution_id": "EXEC-1",
+                "material_trace_id": "TRACE-1",
+                "reconciling_evidence_id": "30",
                 "decision": decision,
+                "authoritative_position": actual_position,
                 "reason_code": "MANUAL_CONFIRMED",
             },
         },
@@ -115,7 +110,7 @@ def _body(
 
 
 @pytest.mark.asyncio
-async def test_valid_reconciliation_is_persisted_before_received_ack_without_applying_decision(
+async def test_valid_recovery_is_persisted_before_received_ack_without_applying_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_received_at = datetime(2026, 8, 17, 1, 2, 3)
@@ -145,7 +140,7 @@ async def test_recorder_interprets_naive_database_received_at_as_utc_in_non_utc_
                 _Sessions(),
                 _EvidenceService(),
                 material_execution_repository=_Executions(),
-                evidence_execution_binding_repository=_Bindings(),
+                inbound_evidence_repository=_CausalEvidences(),
             ),  # type: ignore[arg-type]
         ).handle(_body())
     time.tzset()
@@ -164,7 +159,7 @@ async def test_duplicate_and_conflict_are_mapped_after_persistence_result() -> N
 
 
 @pytest.mark.asyncio
-async def test_invalid_reconciliation_is_rejected_without_persistence() -> None:
+async def test_invalid_recovery_is_rejected_without_persistence() -> None:
     recorder = _Recorder()
     invalid = await InboundEventHandler(recorder).handle(_body(decision="CONTINUE", position=None))
     unsupported = json.dumps(
@@ -202,33 +197,18 @@ async def test_persistence_failure_returns_unavailable_without_false_ack() -> No
 
 
 @pytest.mark.asyncio
-async def test_recorder_freezes_all_reconciliation_execution_bindings_before_ack() -> None:
-    body = json.loads(_body())
-    body["data"]["affected_execution_ids"] = ["EXEC-1", "EXEC-2"]
-    body["data"]["authoritative_positions"] = [
-        {
-            "material_execution_id": "EXEC-1",
-            "material_trace_id": "TRACE-1",
-            "position": {"type": "HANDOFF_POSITION", "location_code": "LINE-OUT"},
-        },
-        {
-            "material_execution_id": "EXEC-2",
-            "material_trace_id": "TRACE-2",
-            "position": {"type": "HANDOFF_POSITION", "location_code": "LINE-OUT"},
-        },
-    ]
-    bindings = _Bindings()
+async def test_recorder_freezes_single_execution_and_current_causal_evidence_before_ack() -> None:
+    evidence_service = _EvidenceService()
     recorder = InboundEventEvidenceRecorder(
         _Sessions(),
-        _EvidenceService(),
+        evidence_service,
         material_execution_repository=_Executions(),
-        evidence_execution_binding_repository=bindings,
+        inbound_evidence_repository=_CausalEvidences(),
     )
 
-    response = await InboundEventHandler(recorder).handle(json.dumps(body).encode())
+    response = await InboundEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
-    assert [(item.ordinal, item.material_execution_id) for item in bindings.values] == [(0, 21), (1, 22)]
 
 
 @pytest.mark.asyncio
@@ -239,7 +219,24 @@ async def test_recorder_rejects_trace_mismatch_without_received_ack() -> None:
         _Sessions(),
         _EvidenceService(),
         material_execution_repository=executions,
-        evidence_execution_binding_repository=_Bindings(),
+        inbound_evidence_repository=_CausalEvidences(),
+    )
+
+    response = await InboundEventHandler(recorder).handle(_body())
+
+    assert (response.http_status, response.body["code"]) == (422, "REJECTED")
+    assert response.body["data"] == {"reason_code": "INVALID_EXECUTION_CORRELATION"}
+
+
+@pytest.mark.asyncio
+async def test_recorder_rejects_stale_reconciling_evidence_without_received_ack() -> None:
+    executions = _Executions()
+    executions.values["EXEC-1"].last_transition_evidence_id = 29
+    recorder = InboundEventEvidenceRecorder(
+        _Sessions(),
+        _EvidenceService(),
+        material_execution_repository=executions,
+        inbound_evidence_repository=_CausalEvidences(),
     )
 
     response = await InboundEventHandler(recorder).handle(_body())

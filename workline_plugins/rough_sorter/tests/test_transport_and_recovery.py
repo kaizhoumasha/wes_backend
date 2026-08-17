@@ -24,14 +24,14 @@ from wes_plugin_sdk import (
 )
 
 from rough_sorter.facts import (
-    ReconciliationDecidedFact,
-    ReconciliationDecision,
-    ResumeDeviceAction,
-    ResumeWmsAction,
+    RecoveryDecidedFact,
+    RecoveryDecision,
+    RecoveryDeviceContinuation,
+    RecoveryWmsContinuation,
     TransportOutcome,
     TransportOutcomePublishedFact,
 )
-from rough_sorter.handlers.reconciliation_decided import ReconciliationDecidedHandler
+from rough_sorter.handlers.recovery_decided import RecoveryDecidedHandler
 from rough_sorter.handlers.transport_outcome_published import TransportOutcomePublishedHandler
 
 
@@ -225,8 +225,8 @@ def test_old_rack_outcome_cannot_enter_material_decision_lane(outcome: Transport
         _transport_fact(TransportLeg.OLD_OUT, outcome, **values)
 
 
-def _reconciliation_handler() -> ReconciliationDecidedHandler:
-    return ReconciliationDecidedHandler(
+def _recovery_handler() -> RecoveryDecidedHandler:
+    return RecoveryDecidedHandler(
         FakeExecutionReader(execution_snapshot(lifecycle=ExecutionLifecycle.RECONCILING)),
         FakePositionReader(
             (
@@ -242,30 +242,31 @@ def _reconciliation_handler() -> ReconciliationDecidedHandler:
     )
 
 
-def test_reconciliation_abort_closes_without_deleting_or_inventing_position() -> None:
-    fact = ReconciliationDecidedFact(
-        fact_id="reconciliation:abort",
-        evidence_id="reconciliation-evidence",
+def test_recovery_abort_closes_without_deleting_or_inventing_position() -> None:
+    fact = RecoveryDecidedFact(
+        fact_id="recovery:abort",
+        evidence_id="recovery-evidence",
         fact_version="1.0",
         material_execution_id=EXECUTION_ID,
-        reconciliation_id="reconciliation-1",
+        recovery_id="recovery-1",
         material_trace_id=TRACE_ID,
-        decision=ReconciliationDecision.ABORT,
+        decision=RecoveryDecision.ABORT,
         reason_code="MATERIAL_CONFIRMED_MISSING",
         authoritative_position=None,
-        resume_action=None,
+        reconciling_evidence_id="causal-unknown-evidence",
+        continuation=None,
     )
 
-    assert _reconciliation_handler()(fact) == (
+    assert _recovery_handler()(fact) == (
         CompleteExecution(
             material_execution_id=EXECUTION_ID,
             fact_id=fact.fact_id,
-            reason_code="RECONCILIATION_ABORT:MATERIAL_CONFIRMED_MISSING",
+            reason_code="RECOVERY_ABORT:MATERIAL_CONFIRMED_MISSING",
         ),
     )
 
 
-def test_reconciliation_authoritative_non_rack_position_rejects_rack_identity() -> None:
+def test_recovery_authoritative_non_rack_position_rejects_rack_identity() -> None:
     invalid_position = DevicePosition(
         location_id="pipeline-outlet",
         location_type="PIPELINE_OUTLET",
@@ -274,21 +275,22 @@ def test_reconciliation_authoritative_non_rack_position_rejects_rack_identity() 
     )
 
     with pytest.raises(ValueError, match="non-RACK_CELL"):
-        ReconciliationDecidedFact(
-            fact_id="reconciliation:invalid-position",
-            evidence_id="reconciliation-invalid-position-evidence",
+        RecoveryDecidedFact(
+            fact_id="recovery:invalid-position",
+            evidence_id="recovery-invalid-position-evidence",
             fact_version="1.0",
             material_execution_id=EXECUTION_ID,
-            reconciliation_id="reconciliation-invalid-position",
+            recovery_id="recovery-invalid-position",
             material_trace_id=TRACE_ID,
-            decision=ReconciliationDecision.ABORT,
+            decision=RecoveryDecision.ABORT,
             reason_code="MATERIAL_CONFIRMED_MISSING",
             authoritative_position=invalid_position,
-            resume_action=None,
+            reconciling_evidence_id="causal-unknown-evidence",
+            continuation=None,
         )
 
 
-def test_reconciliation_authoritative_position_rejects_incomplete_rack_cell_identity() -> None:
+def test_recovery_authoritative_position_rejects_incomplete_rack_cell_identity() -> None:
     incomplete_cell = DevicePosition(
         location_id="cell-1",
         location_type="RACK_CELL",
@@ -299,21 +301,22 @@ def test_reconciliation_authoritative_position_rejects_incomplete_rack_cell_iden
     )
 
     with pytest.raises(ValueError, match="RACK_CELL requires complete rack/bin identity"):
-        ReconciliationDecidedFact(
-            fact_id="reconciliation:incomplete-cell",
-            evidence_id="reconciliation-incomplete-cell-evidence",
+        RecoveryDecidedFact(
+            fact_id="recovery:incomplete-cell",
+            evidence_id="recovery-incomplete-cell-evidence",
             fact_version="1.0",
             material_execution_id=EXECUTION_ID,
-            reconciliation_id="reconciliation-incomplete-cell",
+            recovery_id="recovery-incomplete-cell",
             material_trace_id=TRACE_ID,
-            decision=ReconciliationDecision.ABORT,
+            decision=RecoveryDecision.ABORT,
             reason_code="MATERIAL_CONFIRMED_MISSING",
             authoritative_position=incomplete_cell,
-            resume_action=None,
+            reconciling_evidence_id="causal-unknown-evidence",
+            continuation=None,
         )
 
 
-def test_resume_device_action_rejects_non_rack_position_with_bin_identity() -> None:
+def test_recovery_device_continuation_rejects_non_rack_position_with_bin_identity() -> None:
     invalid_source = DevicePosition(
         location_id="pipeline-inlet",
         location_type="PIPELINE_INLET",
@@ -322,7 +325,7 @@ def test_resume_device_action_rejects_non_rack_position_with_bin_identity() -> N
     )
 
     with pytest.raises(ValueError, match="non-RACK_CELL"):
-        ResumeDeviceAction(
+        RecoveryDeviceContinuation(
             device_role="TRANSFER_DEVICE",
             task_type="MOVE_FORWARD",
             source=invalid_source,
@@ -331,7 +334,7 @@ def test_resume_device_action_rejects_non_rack_position_with_bin_identity() -> N
         )
 
 
-def test_resume_device_action_rejects_incomplete_rack_cell_identity() -> None:
+def test_recovery_device_continuation_rejects_incomplete_rack_cell_identity() -> None:
     incomplete_cell = DevicePosition(
         location_id="cell-1",
         location_type="RACK_CELL",
@@ -342,7 +345,7 @@ def test_resume_device_action_rejects_incomplete_rack_cell_identity() -> None:
     )
 
     with pytest.raises(ValueError, match="RACK_CELL requires complete rack/bin identity"):
-        ResumeDeviceAction(
+        RecoveryDeviceContinuation(
             device_role="PLACEMENT_DEVICE",
             task_type="PICK_AND_PUT",
             source=_outlet(),
@@ -351,26 +354,27 @@ def test_resume_device_action_rejects_incomplete_rack_cell_identity() -> None:
         )
 
 
-def test_reconciliation_continue_uses_typed_resume_action_and_is_deterministic() -> None:
-    action = ResumeWmsAction(
+def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> None:
+    continuation = RecoveryWmsContinuation(
         operation="inbound.material.target_decide@v1",
         operation_id="stable-reconciled-target-request",
-        evidence_refs=("reconciliation-evidence",),
+        evidence_refs=("recovery-evidence",),
         snapshot_refs=(f"execution:{EXECUTION_ID}", "position:pipeline-outlet", "rack:rack-new"),
     )
-    fact = ReconciliationDecidedFact(
-        fact_id="reconciliation:continue",
-        evidence_id="reconciliation-evidence",
+    fact = RecoveryDecidedFact(
+        fact_id="recovery:continue",
+        evidence_id="recovery-evidence",
         fact_version="1.0",
         material_execution_id=EXECUTION_ID,
-        reconciliation_id="reconciliation-2",
+        recovery_id="recovery-2",
         material_trace_id=TRACE_ID,
-        decision=ReconciliationDecision.CONTINUE,
+        decision=RecoveryDecision.CONTINUE,
         reason_code="POSITION_CONFIRMED",
         authoritative_position=_outlet(),
-        resume_action=action,
+        reconciling_evidence_id="causal-unknown-evidence",
+        continuation=continuation,
     )
-    handler = _reconciliation_handler()
+    handler = _recovery_handler()
 
     first = handler(fact)
     second = handler(fact)
@@ -382,33 +386,34 @@ def test_reconciliation_continue_uses_typed_resume_action_and_is_deterministic()
             CreateWmsConfirmation(
                 material_execution_id=EXECUTION_ID,
                 fact_id=fact.fact_id,
-                operation=action.operation,
-                operation_id=action.operation_id,
-                evidence_refs=action.evidence_refs,
-                snapshot_refs=action.snapshot_refs,
+                operation=continuation.operation,
+                operation_id=continuation.operation_id,
+                evidence_refs=continuation.evidence_refs,
+                snapshot_refs=continuation.snapshot_refs,
             ),
         )
     )
 
 
-def test_reconciliation_continue_can_wait_for_the_next_topology_device() -> None:
+def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
     inlet = DevicePosition(
         location_id="pipeline-inlet",
         location_type="PIPELINE_INLET",
         material_trace_id=TRACE_ID,
     )
     outlet = _outlet()
-    fact = ReconciliationDecidedFact(
-        fact_id="reconciliation:resume-device",
-        evidence_id="reconciliation-device-evidence",
+    fact = RecoveryDecidedFact(
+        fact_id="recovery:continue-device",
+        evidence_id="recovery-device-evidence",
         fact_version="1.0",
         material_execution_id=EXECUTION_ID,
-        reconciliation_id="reconciliation-device",
+        recovery_id="recovery-device",
         material_trace_id=TRACE_ID,
-        decision=ReconciliationDecision.CONTINUE,
+        decision=RecoveryDecision.CONTINUE,
         reason_code="INLET_POSITION_CONFIRMED",
         authoritative_position=inlet,
-        resume_action=ResumeDeviceAction(
+        reconciling_evidence_id="causal-unknown-evidence",
+        continuation=RecoveryDeviceContinuation(
             device_role="TRANSFER_DEVICE",
             task_type="MOVE_FORWARD",
             source=inlet,
@@ -416,7 +421,7 @@ def test_reconciliation_continue_can_wait_for_the_next_topology_device() -> None
             device_ready=False,
         ),
     )
-    handler = ReconciliationDecidedHandler(
+    handler = RecoveryDecidedHandler(
         FakeExecutionReader(execution_snapshot(lifecycle=ExecutionLifecycle.RECONCILING)),
         FakePositionReader(
             (
@@ -442,22 +447,65 @@ def test_reconciliation_continue_can_wait_for_the_next_topology_device() -> None
     )
 
 
-def test_reconciliation_continue_requires_authoritative_position() -> None:
+def test_recovery_continue_requires_authoritative_position() -> None:
     with pytest.raises(ValueError, match="authoritative_position"):
-        ReconciliationDecidedFact(
-            fact_id="reconciliation:invalid",
-            evidence_id="reconciliation-evidence",
+        RecoveryDecidedFact(
+            fact_id="recovery:invalid",
+            evidence_id="recovery-evidence",
             fact_version="1.0",
             material_execution_id=EXECUTION_ID,
-            reconciliation_id="reconciliation-3",
+            recovery_id="recovery-3",
             material_trace_id=TRACE_ID,
-            decision=ReconciliationDecision.CONTINUE,
+            decision=RecoveryDecision.CONTINUE,
             reason_code="POSITION_UNKNOWN",
             authoritative_position=None,
-            resume_action=ResumeWmsAction(
+            reconciling_evidence_id="causal-unknown-evidence",
+            continuation=RecoveryWmsContinuation(
                 operation="inbound.material.target_decide@v1",
                 operation_id="stable-target-request",
-                evidence_refs=("reconciliation-evidence",),
+                evidence_refs=("recovery-evidence",),
                 snapshot_refs=(f"execution:{EXECUTION_ID}",),
             ),
         )
+
+
+def test_recovery_continue_requires_typed_continuation() -> None:
+    with pytest.raises(TypeError, match="typed continuation"):
+        RecoveryDecidedFact(
+            fact_id="recovery:missing-continuation",
+            evidence_id="recovery-evidence",
+            fact_version="1.0",
+            material_execution_id=EXECUTION_ID,
+            recovery_id="recovery-4",
+            decision=RecoveryDecision.CONTINUE,
+            authoritative_position=_outlet(),
+            reason_code="POSITION_CONFIRMED",
+            material_trace_id=TRACE_ID,
+            reconciling_evidence_id="causal-unknown-evidence",
+            continuation=None,
+        )
+
+
+def test_recovery_abort_forbids_continuation_and_self_causal_identity() -> None:
+    continuation = RecoveryWmsContinuation(
+        operation="inbound.material.target_decide@v1",
+        operation_id="new-target-operation",
+        evidence_refs=("recovery-evidence",),
+        snapshot_refs=(f"execution:{EXECUTION_ID}",),
+    )
+    values = {
+        "fact_id": "recovery:abort-invalid",
+        "evidence_id": "recovery-evidence",
+        "fact_version": "1.0",
+        "material_execution_id": EXECUTION_ID,
+        "recovery_id": "recovery-5",
+        "decision": RecoveryDecision.ABORT,
+        "authoritative_position": None,
+        "reason_code": "MATERIAL_CONFIRMED_MISSING",
+        "material_trace_id": TRACE_ID,
+    }
+
+    with pytest.raises(ValueError, match="ABORT must not include continuation"):
+        RecoveryDecidedFact(**values, reconciling_evidence_id="causal-unknown-evidence", continuation=continuation)
+    with pytest.raises(ValueError, match="prior causal evidence"):
+        RecoveryDecidedFact(**values, reconciling_evidence_id="recovery-evidence", continuation=None)

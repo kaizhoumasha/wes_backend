@@ -18,7 +18,7 @@ TARGET_OPERATION = "inbound.material.target_decide@v1"
 PLACEMENT_OPERATION = "inbound.material.placement_report@v1"
 NG_PLACEMENT_OPERATION = "inbound.material.ng_placement_report@v1"
 REPLACEMENT_PLAN_OPERATION = "inbound.source_rack.replacement_plan_decide@v1"
-RECONCILIATION_OPERATION = "inbound.execution.reconciliation_decided@v1"
+RECOVERY_OPERATION = "inbound.execution.recovery_decided@v1"
 
 OUTBOUND_OPERATIONS = frozenset(
     {
@@ -349,43 +349,27 @@ type OutboundResponse = (
 )
 
 
-class AuthoritativePosition(_StrictModel):
+class RecoveryData(_StrictModel):
+    recovery_id: Identifier
     material_execution_id: ExecutionCode
     material_trace_id: MaterialTraceId
-    pkg_id: Identifier | None = None
-    position: MaterialPosition | None
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_explicit_null_pkg_id(cls, value: Any) -> Any:
-        return _reject_explicit_null(value, "pkg_id")
-
-
-class ReconciliationData(_StrictModel):
-    reconciliation_id: Identifier
-    affected_execution_ids: Annotated[list[ExecutionCode], Field(min_length=1)]
-    authoritative_positions: Annotated[list[AuthoritativePosition], Field(min_length=1)]
+    reconciling_evidence_id: Identifier
     decision: Literal["CONTINUE", "ABORT"]
+    authoritative_position: MaterialPosition | None
     reason_code: Identifier
 
     @model_validator(mode="after")
-    def validate_correspondence(self) -> ReconciliationData:
-        affected = self.affected_execution_ids
-        positioned = [item.material_execution_id for item in self.authoritative_positions]
-        if len(set(affected)) != len(affected) or len(set(positioned)) != len(positioned):
-            raise ValueError("执行身份数组不得包含重复成员")
-        if set(affected) != set(positioned) or len(affected) != len(positioned):
-            raise ValueError("权威位置必须与受影响执行一一对应")
-        if self.decision == "CONTINUE" and any(item.position is None for item in self.authoritative_positions):
-            raise ValueError("CONTINUE 要求全部权威位置非空")
+    def validate_position(self) -> RecoveryData:
+        if self.decision == "CONTINUE" and self.authoritative_position is None:
+            raise ValueError("CONTINUE 要求 authoritative_position 非空")
         return self
 
 
-class ReconciliationEvent(_StrictModel):
+class RecoveryEvent(_StrictModel):
     operation_id: OperationId
-    operation: Literal["inbound.execution.reconciliation_decided@v1"]
+    operation: Literal["inbound.execution.recovery_decided@v1"]
     timestamp: PositiveMilliseconds
-    data: ReconciliationData
+    data: RecoveryData
 
 
 def parse_outbound_request(value: object) -> OutboundRequest:
@@ -431,8 +415,8 @@ def parse_outbound_response(operation: str, http_status: int, value: object) -> 
     raise ValueError("不支持的粗分 WMS operation")
 
 
-def parse_reconciliation_event(value: object) -> ReconciliationEvent:
-    return ReconciliationEvent.model_validate(value)
+def parse_recovery_event(value: object) -> RecoveryEvent:
+    return RecoveryEvent.model_validate(value)
 
 
 def _reject_explicit_null(value: Any, field_name: str) -> Any:
@@ -451,13 +435,13 @@ __all__ = [
     "NG_PLACEMENT_OPERATION",
     "OUTBOUND_OPERATIONS",
     "PLACEMENT_OPERATION",
-    "RECONCILIATION_OPERATION",
+    "RECOVERY_OPERATION",
     "REPLACEMENT_PLAN_OPERATION",
     "TARGET_OPERATION",
     "OutboundRequest",
     "OutboundResponse",
-    "ReconciliationEvent",
+    "RecoveryEvent",
     "parse_outbound_request",
     "parse_outbound_response",
-    "parse_reconciliation_event",
+    "parse_recovery_event",
 ]

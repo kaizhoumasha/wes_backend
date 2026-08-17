@@ -11,11 +11,12 @@ import pytest
 from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import (
     InboundEvidenceAcceptance,
+    WmsBusinessWaitFollowUp,
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
 from src.app.wms_adapter.client import WmsClient
-from src.app.wms_adapter.inbound_adapter import InboundDispatchCode, WmsInboundAdapter
+from src.app.wms_adapter.inbound_adapter import InboundDispatchCode, WmsInboundAdapter, WmsInboundBusinessWaitPlanner
 from src.app.wms_adapter.inbound_wire import (
     ADMISSION_OPERATION,
     MAX_INBOUND_BODY_BYTES,
@@ -392,11 +393,24 @@ class _ConfirmationRepository:
         )
 
     async def add(self, db, confirmation):  # type: ignore[no-untyped-def]
+        confirmation.id = max((item.id or 0 for item in self.confirmations), default=0) + 1
         self.confirmations.append(confirmation)
         return confirmation
 
     async def claim_eligible(self, db, *, now, claim_token, claim_expires_at, limit):  # type: ignore[no-untyped-def]
-        claimed = self.confirmations[:limit]
+        claimed = [
+            confirmation
+            for confirmation in self.confirmations
+            if (
+                confirmation.status == WmsConfirmationStatus.PENDING
+                and (confirmation.next_attempt_at is None or confirmation.next_attempt_at <= now)
+            )
+            or (
+                confirmation.status == WmsConfirmationStatus.DISPATCHING
+                and confirmation.claim_expires_at is not None
+                and confirmation.claim_expires_at <= now
+            )
+        ][:limit]
         for confirmation in claimed:
             confirmation.status = WmsConfirmationStatus.DISPATCHING
             confirmation.claim_token = claim_token
@@ -438,6 +452,16 @@ class _Adapter:
     async def dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append(kwargs)
         return self.result
+
+
+class _BusinessWaitPlanner:
+    def __init__(self, follow_up: WmsBusinessWaitFollowUp | None) -> None:
+        self.follow_up = follow_up
+        self.calls = []
+
+    def plan(self, confirmation, response_payload):  # type: ignore[no-untyped-def]
+        self.calls.append((confirmation, response_payload))
+        return self.follow_up
 
 
 class _ConflictDuringDispatchAdapter:
@@ -556,6 +580,139 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
     assert retryable.status == WmsConfirmationStatus.PENDING
     assert retryable.retry_eligible is True
     assert retryable.next_attempt_at == now + timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_business_wait_completes_original_and_atomically_creates_due_follow_up() -> None:
+    now = datetime(2026, 8, 16, tzinfo=UTC)
+    confirmation = _confirmation(1, now)
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    repository = _ConfirmationRepository([confirmation])
+    evidence = _EvidenceService()
+    response_body = {
+        "operation_id": confirmation.operation_id,
+        "code": "DECIDED",
+        "timestamp": 2,
+        "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
+    }
+    follow_up_payload = {**confirmation.request_payload, "operation_id": OTHER_OPERATION_ID, "timestamp": 3}
+    planner = _BusinessWaitPlanner(
+        WmsBusinessWaitFollowUp(
+            operation=confirmation.operation,
+            operation_id=OTHER_OPERATION_ID,
+            request_payload=follow_up_payload,
+            next_attempt_at=now + timedelta(milliseconds=250),
+        )
+    )
+    service = WmsConfirmationService(
+        repository=repository,
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=InboundDispatchCode.DETERMINATE,
+                normalized_response=response_body,
+                response_result="WAIT",
+                retry_after_ms=250,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+        business_wait_planner=planner,
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == WmsConfirmationStatus.COMPLETED
+    assert confirmation.response_evidence_id == 501
+    follow_up = repository.confirmations[-1]
+    assert follow_up is not confirmation
+    assert follow_up.status == WmsConfirmationStatus.PENDING
+    assert follow_up.operation_id != confirmation.operation_id
+    assert follow_up.next_attempt_at == now + timedelta(milliseconds=250)
+    assert len(evidence.calls) == len(planner.calls) == 1
+    assert await service.dispatch_batch(now=now) == 0
+
+    service._adapter = _Adapter(
+        SimpleNamespace(
+            code=InboundDispatchCode.DETERMINATE,
+            normalized_response={
+                "operation_id": follow_up.operation_id,
+                "code": "DECIDED",
+                "timestamp": 4,
+                "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
+            },
+            response_result="ACCEPT",
+            retry_after_ms=None,
+        )
+    )
+    assert await service.dispatch_batch(now=follow_up.next_attempt_at) == 1
+    assert follow_up.status == WmsConfirmationStatus.COMPLETED
+    assert follow_up.attempt_count == 1
+
+
+def test_wms_business_wait_planner_uses_new_identity_timestamp_and_received_time() -> None:
+    received_at = datetime(2026, 8, 16, tzinfo=UTC)
+    confirmation = _confirmation(1, received_at)
+    confirmation.completed_at = received_at
+    planner = WmsInboundBusinessWaitPlanner(
+        operation_id_factory=lambda: OTHER_OPERATION_ID,
+    )
+
+    follow_up = planner.plan(
+        confirmation,
+        {
+            "operation_id": confirmation.operation_id,
+            "code": "DECIDED",
+            "timestamp": 2,
+            "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
+        },
+    )
+
+    assert follow_up is not None
+    assert follow_up.operation_id == OTHER_OPERATION_ID
+    assert follow_up.request_payload["operation_id"] == OTHER_OPERATION_ID
+    assert follow_up.request_payload["timestamp"] == int(received_at.timestamp() * 1000)
+    assert follow_up.next_attempt_at == received_at + timedelta(milliseconds=250)
+
+
+@pytest.mark.asyncio
+async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed() -> None:
+    now = datetime(2026, 8, 16, tzinfo=UTC)
+    confirmation = _confirmation(1, now)
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    repository = _ConfirmationRepository([confirmation])
+    evidence = _EvidenceService()
+    response_body = {
+        "operation_id": confirmation.operation_id,
+        "code": "DECIDED",
+        "timestamp": 2,
+        "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
+    }
+    invalid = WmsBusinessWaitFollowUp(
+        operation=confirmation.operation,
+        operation_id=confirmation.operation_id,
+        request_payload=confirmation.request_payload,
+        next_attempt_at=now + timedelta(milliseconds=250),
+    )
+    service = WmsConfirmationService(
+        repository=repository,
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=InboundDispatchCode.DETERMINATE,
+                normalized_response=response_body,
+                response_result="WAIT",
+                retry_after_ms=250,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+        business_wait_planner=_BusinessWaitPlanner(invalid),
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert len(evidence.calls) == 1
+    assert repository.confirmations == [confirmation]
+    assert confirmation.response_evidence_id == 501
+    assert confirmation.response_result == "WAIT"
+    assert confirmation.status == WmsConfirmationStatus.RECONCILING
 
 
 @pytest.mark.asyncio

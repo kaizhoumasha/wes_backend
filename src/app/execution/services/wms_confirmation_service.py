@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -23,6 +24,8 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+logger = logging.getLogger(__name__)
 
 
 class WmsConfirmationIdentityConflictError(ValueError):
@@ -84,6 +87,22 @@ class WmsConfirmationAdapterPort(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class WmsBusinessWaitFollowUp:
+    operation: str
+    operation_id: str
+    request_payload: dict[str, object]
+    next_attempt_at: datetime
+
+
+class WmsBusinessWaitPlanner(Protocol):
+    def plan(
+        self,
+        confirmation: WmsConfirmation,
+        response_payload: dict[str, object],
+    ) -> WmsBusinessWaitFollowUp | None: ...
+
+
+@dataclass(frozen=True, slots=True)
 class WmsConfirmationAcceptance:
     confirmation: WmsConfirmation
     duplicate: bool
@@ -123,11 +142,13 @@ class WmsConfirmationService:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         adapter: WmsConfirmationAdapterPort | None = None,
         evidence_service: InboundEvidenceService | None = None,
+        business_wait_planner: WmsBusinessWaitPlanner | None = None,
     ) -> None:
         self._repository: WmsConfirmationRepositoryPort = repository or wms_confirmation_repository
         self._sessions = session_factory
         self._adapter = adapter
         self._evidence = evidence_service or InboundEvidenceService()
+        self._business_wait_planner = business_wait_planner
 
     async def create_or_get(
         self,
@@ -291,7 +312,7 @@ class WmsConfirmationService:
             )
         return len(claimed)
 
-    async def _dispatch_claimed(
+    async def _dispatch_claimed(  # noqa: PLR0911 - 每个持久状态分支保留明确的 fail-closed 终点。
         self,
         *,
         confirmation_id: int,
@@ -357,13 +378,23 @@ class WmsConfirmationService:
                     if evidence_result.evidence.id is None or result.response_result is None:
                         _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                         return
-                    _ = await self.complete(
+                    completed = await self.complete(
                         db,
                         confirmation,
                         response_evidence_id=evidence_result.evidence.id,
                         response_result=result.response_result,
                         completed_at=changed_at,
                     )
+                    if isinstance(completed, WmsConfirmationResponseConflictResult):
+                        return
+                    if result.response_result == "WAIT":
+                        await self._create_business_wait_follow_up(
+                            db,
+                            confirmation,
+                            response_payload=result.normalized_response,
+                            retry_after_ms=result.retry_after_ms,
+                            received_at=changed_at,
+                        )
                     return
             if code in {"RETRY", "NOT_SENT", "DELIVERY_UNKNOWN"}:
                 retry_delay_ms = result.retry_after_ms if result.retry_after_ms is not None else 1000
@@ -379,6 +410,83 @@ class WmsConfirmationService:
                     return
             _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
 
+    async def _create_business_wait_follow_up(
+        self,
+        db: object,
+        confirmation: WmsConfirmation,
+        *,
+        response_payload: dict[str, Any],
+        retry_after_ms: int | None,
+        received_at: datetime,
+    ) -> None:
+        planner = self._business_wait_planner
+        try:
+            follow_up = (
+                planner.plan(confirmation, cast("dict[str, object]", response_payload)) if planner is not None else None
+            )
+        except Exception:  # ACL planner 失败不得回滚已接收的确定 WMS response evidence。
+            logger.exception(
+                "execution.wms_business_wait_planning_failed",
+                extra={"operation": confirmation.operation, "operation_id": confirmation.operation_id},
+            )
+            _ = await self.mark_reconciling(db, confirmation, changed_at=received_at)
+            return
+        if not self._valid_business_wait_follow_up(
+            confirmation,
+            follow_up,
+            retry_after_ms=retry_after_ms,
+            received_at=received_at,
+        ):
+            _ = await self.mark_reconciling(db, confirmation, changed_at=received_at)
+            return
+        if follow_up is None:
+            _ = await self.mark_reconciling(db, confirmation, changed_at=received_at)
+            return
+        created = await self.create_or_get(
+            db,
+            operation=follow_up.operation,
+            operation_id=follow_up.operation_id,
+            material_execution_id=confirmation.material_execution_id,
+            request_payload=cast("dict[str, Any]", follow_up.request_payload),
+            deadline_at=confirmation.deadline_at,
+            created_at=received_at,
+        )
+        if isinstance(created, WmsConfirmationIdentityConflictResult):
+            _ = await self.mark_reconciling(db, confirmation, changed_at=received_at)
+            return
+        created.confirmation.next_attempt_at = follow_up.next_attempt_at
+        await self._repository.flush(db)
+
+    @staticmethod
+    def _valid_business_wait_follow_up(
+        confirmation: WmsConfirmation,
+        follow_up: WmsBusinessWaitFollowUp | None,
+        *,
+        retry_after_ms: int | None,
+        received_at: datetime,
+    ) -> bool:
+        try:
+            if type(follow_up) is not WmsBusinessWaitFollowUp or not isinstance(follow_up.request_payload, dict):
+                return False
+            _ = _immutable_request(cast("dict[str, Any]", follow_up.request_payload))
+            return (
+                isinstance(retry_after_ms, int)
+                and not isinstance(retry_after_ms, bool)
+                and retry_after_ms > 0
+                and isinstance(follow_up.operation, str)
+                and follow_up.operation == confirmation.operation
+                and isinstance(follow_up.operation_id, str)
+                and bool(follow_up.operation_id.strip())
+                and follow_up.operation_id != confirmation.operation_id
+                and follow_up.request_payload.get("operation") == follow_up.operation
+                and follow_up.request_payload.get("operation_id") == follow_up.operation_id
+                and isinstance(follow_up.next_attempt_at, datetime)
+                and follow_up.next_attempt_at == received_at + timedelta(milliseconds=retry_after_ms)
+                and follow_up.next_attempt_at < confirmation.deadline_at
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
 
 def _required_id(confirmation: WmsConfirmation) -> int:
     if confirmation.id is None:
@@ -389,6 +497,8 @@ def _required_id(confirmation: WmsConfirmation) -> int:
 wms_confirmation_service = WmsConfirmationService()
 
 __all__ = [
+    "WmsBusinessWaitFollowUp",
+    "WmsBusinessWaitPlanner",
     "WmsConfirmationAcceptance",
     "WmsConfirmationIdentityConflictError",
     "WmsConfirmationIdentityConflictResult",

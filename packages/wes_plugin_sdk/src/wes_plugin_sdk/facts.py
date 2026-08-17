@@ -1,6 +1,9 @@
 """已验证事实的不可变触发引用。"""
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+from .decisions import DevicePosition
 
 
 def _required(value: str, field_name: str) -> None:
@@ -56,13 +59,28 @@ class TransportResultReadyFact(FactReference):
         _required(self.transport_task_id, "transport_task_id")
 
 
+class RecoveryDecision(StrEnum):
+    CONTINUE = "CONTINUE"
+    ABORT = "ABORT"
+
+
 @dataclass(frozen=True, slots=True)
-class ReconciliationResultReadyFact(FactReference):
-    reconciliation_id: str
+class RecoveryDecidedFact(FactReference):
+    recovery_id: str
+    decision: RecoveryDecision
+    authoritative_position: DevicePosition | None
+    reason_code: str
 
     def __post_init__(self) -> None:
         FactReference.__post_init__(self)
-        _required(self.reconciliation_id, "reconciliation_id")
+        _required(self.recovery_id, "recovery_id")
+        _required(self.reason_code, "reason_code")
+        if type(self.decision) is not RecoveryDecision:
+            raise TypeError("decision must be a RecoveryDecision")
+        if self.authoritative_position is not None and type(self.authoritative_position) is not DevicePosition:
+            raise TypeError("authoritative_position must be a DevicePosition")
+        if self.decision is RecoveryDecision.CONTINUE and self.authoritative_position is None:
+            raise ValueError("CONTINUE requires authoritative_position")
 
 
 Fact = FactReference

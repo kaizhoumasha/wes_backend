@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from src.app.wms_adapter.inbound_event_handler import InboundEventResponse
-from src.app.wms_adapter.inbound_wire import RECONCILIATION_OPERATION
+from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
 from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
     TransportEventResponse,
@@ -465,7 +465,7 @@ def test_application_registers_exactly_one_wms_transport_events_route() -> None:
     assert matches[0].methods == {"POST"}
 
 
-def test_shared_wms_event_route_dispatches_reconciliation_to_the_single_inbound_handler(
+def test_shared_wms_event_route_dispatches_recovery_to_the_single_inbound_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _events_module()
@@ -488,7 +488,7 @@ def test_shared_wms_event_route_dispatches_reconciliation_to_the_single_inbound_
     raw_body = json.dumps(
         {
             "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
-            "operation": RECONCILIATION_OPERATION,
+            "operation": RECOVERY_OPERATION,
             "timestamp": 1,
             "data": {},
         }

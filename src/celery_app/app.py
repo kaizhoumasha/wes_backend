@@ -40,6 +40,7 @@ celery_app = Celery(
         "src.celery_app.tasks.transport",  # Transport 可靠对象后台驱动
         "src.celery_app.tasks.workline",  # 作业线编排任务
         "src.celery_app.tasks.execution",  # Execution Fact 持久处理
+        "src.celery_app.tasks.wms_confirmation",  # WMS confirmation 独立派发
     ],
 )
 

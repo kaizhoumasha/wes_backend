@@ -8,6 +8,7 @@ import pytest
 
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
+    InboundEvidenceApplyStatus,
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
@@ -153,8 +154,37 @@ async def test_wms_source_identity_must_equal_operation_plus_operation_id() -> N
             source_identity="OP-001",
             normalized_payload={"decision": "ABORT"},
             received_at=datetime(2026, 8, 16),
-            operation="inbound.execution.reconciliation_decided@v1",
+            operation="inbound.execution.recovery_decided@v1",
             operation_id="OP-001",
+        )
+
+
+@pytest.mark.asyncio
+async def test_transport_evidence_requires_frozen_task_and_version_identity() -> None:
+    service = InboundEvidenceService(repository=FakeInboundEvidenceRepository())
+    accepted = await service.accept(
+        object(),
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:TRANSPORT-1:outcome:2",
+        normalized_payload={"transport_task_id": "TRANSPORT-1", "outcome_version": 2, "status": "SUCCEEDED"},
+        received_at=datetime(2026, 8, 17),
+        line_run_epoch_id=11,
+        material_execution_id=21,
+        transport_task_id="TRANSPORT-1",
+        contract_key="transport.outcome",
+        contract_version="1.0",
+        apply_status=InboundEvidenceApplyStatus.APPLIED,
+    )
+
+    assert accepted.evidence.transport_task_id == "TRANSPORT-1"
+    with pytest.raises(ValueError, match="Transport source_identity"):
+        await service.accept(
+            object(),
+            kind=InboundEvidenceKind.TRANSPORT_RESULT,
+            source_identity="transport:OTHER:outcome:2",
+            normalized_payload={"outcome_version": 2, "status": "SUCCEEDED"},
+            received_at=datetime(2026, 8, 17),
+            transport_task_id="TRANSPORT-1",
         )
 
 
@@ -162,6 +192,7 @@ def test_kind_is_closed_and_raw_supplier_payload_is_not_an_owner() -> None:
     assert {kind.value for kind in InboundEvidenceKind} == {
         "DEVICE_EVENT",
         "DEVICE_RESULT",
+        "TRANSPORT_RESULT",
         "WMS_EVENT",
         "WMS_RESULT",
     }

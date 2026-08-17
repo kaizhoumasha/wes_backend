@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.app.execution.repositories import (
-    InboundEvidenceExecutionBindingRepository,
     InboundEvidenceRepository,
     MaterialExecutionRepository,
     RackReplacementTransportBindingRepository,
@@ -49,7 +48,6 @@ def build_execution_runtime(
 
     material_repository = MaterialExecutionRepository()
     evidence_repository = InboundEvidenceRepository()
-    evidence_execution_binding_repository = InboundEvidenceExecutionBindingRepository()
     confirmation_repository = WmsConfirmationRepository()
     rack_binding_repository = RackReplacementTransportBindingRepository()
     material_service = MaterialExecutionService(repository=material_repository)
@@ -73,7 +71,6 @@ def build_execution_runtime(
             decision_applier=applier,
             evidence_repository=evidence_repository,
             execution_repository=material_repository,
-            evidence_execution_binding_repository=evidence_execution_binding_repository,
             material_execution_service=material_service,
         ),
     )

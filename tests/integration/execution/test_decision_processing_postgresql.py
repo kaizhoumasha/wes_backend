@@ -49,8 +49,8 @@ from src.app.workline.models.workline import LineType
 async def test_specialized_unique_constraints_are_installed(integration_session_factory) -> None:
     expected = {
         "fk_device_commands_material_execution_id_material_executions",
-        "ux_inbound_evidence_execution_bindings_evidence_execution",
-        "ux_inbound_evidence_execution_bindings_evidence_ordinal",
+        "inbound_evidence_transport_identity_isolated",
+        "inbound_evidence_transport_identity_required",
         "ux_rack_replacement_transport_bindings_business_identity",
         "ux_rack_replacement_transport_bindings_client_request_id",
         "ux_line_run_epoch_device_bindings_epoch_device_role",
@@ -69,6 +69,29 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
         )
 
     assert names == expected
+
+    async with integration_session_factory() as db:
+        retired_binding_table = await db.scalar(
+            text("SELECT to_regclass('wes_biz.inbound_evidence_execution_bindings')")
+        )
+        transport_indexes = set(
+            (
+                await db.execute(
+                    text("SELECT indexname FROM pg_indexes WHERE schemaname = 'wes_biz' AND indexname = ANY(:names)"),
+                    {
+                        "names": [
+                            "ix_inbound_evidences_transport_task",
+                            "ix_wes_biz_inbound_evidences_transport_task_id",
+                        ]
+                    },
+                )
+            ).scalars()
+        )
+    assert retired_binding_table is None
+    assert transport_indexes == {
+        "ix_inbound_evidences_transport_task",
+        "ix_wes_biz_inbound_evidences_transport_task_id",
+    }
 
     async with integration_session_factory() as db:
         index_names = set(

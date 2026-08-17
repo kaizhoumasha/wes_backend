@@ -10,8 +10,8 @@ from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
-from src.app.wms_adapter.inbound_openapi import RECONCILIATION_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
-from src.app.wms_adapter.inbound_wire import RECONCILIATION_OPERATION
+from src.app.wms_adapter.inbound_openapi import RECOVERY_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
+from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-WMS_EVENT_REQUEST_SCHEMA = {"oneOf": [*TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"], RECONCILIATION_EVENT_REQUEST_SCHEMA]}
+WMS_EVENT_REQUEST_SCHEMA = {"oneOf": [*TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"], RECOVERY_EVENT_REQUEST_SCHEMA]}
 
 
 async def _read_bounded_body(request: Request) -> bytes | None:
@@ -123,7 +123,7 @@ async def receive_transport_event(request: Request) -> Response:
         return Response(status_code=401)
 
     operation = _extract_operation(raw_body)
-    is_inbound_event = operation == RECONCILIATION_OPERATION
+    is_inbound_event = operation == RECOVERY_OPERATION
     if is_inbound_event:
         handler = getattr(request.app.state, "wms_inbound_event_handler", None)
         if handler is None:

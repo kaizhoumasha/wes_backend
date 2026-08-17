@@ -9,12 +9,12 @@ from src.app.wms_adapter.inbound_wire import (
     FACT_PATH,
     NG_PLACEMENT_OPERATION,
     PLACEMENT_OPERATION,
-    RECONCILIATION_OPERATION,
+    RECOVERY_OPERATION,
     REPLACEMENT_PLAN_OPERATION,
     TARGET_OPERATION,
     parse_outbound_request,
     parse_outbound_response,
-    parse_reconciliation_event,
+    parse_recovery_event,
 )
 
 OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
@@ -72,7 +72,7 @@ def test_outbound_operation_closure_and_paths_are_exact() -> None:
         "inbound.material.ng_placement_report@v1",
         "inbound.source_rack.replacement_plan_decide@v1",
     }
-    assert RECONCILIATION_OPERATION == "inbound.execution.reconciliation_decided@v1"
+    assert RECOVERY_OPERATION == "inbound.execution.recovery_decided@v1"
     assert (DECISION_PATH, FACT_PATH) == ("/api/v1/wes/decisions", "/api/v1/wes/facts")
 
 
@@ -329,48 +329,35 @@ def test_response_status_code_and_result_pairings_are_strict() -> None:
         )
 
 
-def test_reconciliation_arrays_correspond_and_continue_has_no_null_position() -> None:
+def test_recovery_is_single_execution_strict_and_continue_has_no_null_position() -> None:
     value = _envelope(
-        RECONCILIATION_OPERATION,
+        RECOVERY_OPERATION,
         {
-            "reconciliation_id": "REC-1",
-            "affected_execution_ids": ["EXEC-1"],
-            "authoritative_positions": [
-                {"material_execution_id": "EXEC-1", "material_trace_id": "TRACE-1", "position": _handoff()}
-            ],
+            "recovery_id": "REC-1",
+            "material_execution_id": "EXEC-1",
+            "material_trace_id": "TRACE-1",
+            "reconciling_evidence_id": "31",
             "decision": "CONTINUE",
+            "authoritative_position": _handoff(),
             "reason_code": "MANUAL_CONFIRMED",
         },
     )
-    assert parse_reconciliation_event(value).data.decision == "CONTINUE"
+    assert parse_recovery_event(value).data.decision == "CONTINUE"
 
-    missing = value.copy()
-    missing["data"] = {**value["data"], "affected_execution_ids": ["EXEC-1", "EXEC-2"]}
+    legacy_batch = value.copy()
+    legacy_batch["data"] = {**value["data"], "affected_execution_ids": ["EXEC-1"]}
     with pytest.raises(ValidationError):
-        parse_reconciliation_event(missing)
+        parse_recovery_event(legacy_batch)
     null_position = value.copy()
     null_position["data"] = {
         **value["data"],
-        "authoritative_positions": [
-            {"material_execution_id": "EXEC-1", "material_trace_id": "TRACE-1", "position": None}
-        ],
+        "authoritative_position": None,
     }
     with pytest.raises(ValidationError):
-        parse_reconciliation_event(null_position)
-    null_pkg = value.copy()
-    null_pkg["data"] = {
-        **value["data"],
-        "authoritative_positions": [
-            {
-                "material_execution_id": "EXEC-1",
-                "material_trace_id": "TRACE-1",
-                "pkg_id": None,
-                "position": _handoff(),
-            }
-        ],
-    }
+        parse_recovery_event(null_position)
+    old_operation = {**value, "operation": "inbound.execution.reconciliation_decided@v1"}
     with pytest.raises(ValidationError):
-        parse_reconciliation_event(null_pkg)
+        parse_recovery_event(old_operation)
 
 
 @pytest.mark.parametrize("timestamp", [0, -1, True, 1.0])

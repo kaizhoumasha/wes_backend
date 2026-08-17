@@ -9,7 +9,7 @@ from rough_sorter.handlers import (
     DevicePositionConfirmedHandler,
     MaterialEvidenceReadyHandler,
     PlacementCompletedHandler,
-    ReconciliationDecidedHandler,
+    RecoveryDecidedHandler,
     ReplacementPlanDecidedHandler,
     TargetDecidedHandler,
     TransportOutcomePublishedHandler,
@@ -26,7 +26,7 @@ type RoughSorterHandler = (
     | PlacementCompletedHandler
     | ReplacementPlanDecidedHandler
     | TransportOutcomePublishedHandler
-    | ReconciliationDecidedHandler
+    | RecoveryDecidedHandler
 )
 
 
@@ -46,7 +46,7 @@ def build_handlers(
         PlacementCompletedHandler(executions),
         ReplacementPlanDecidedHandler(executions, epochs),
         TransportOutcomePublishedHandler(executions, positions, epochs),
-        ReconciliationDecidedHandler(executions, positions, epochs),
+        RecoveryDecidedHandler(executions, positions, epochs),
     )
 
 

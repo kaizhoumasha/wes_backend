@@ -17,6 +17,7 @@ from src.database.schema_conf import SchemaType
 class InboundEvidenceKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"
     DEVICE_RESULT = "DEVICE_RESULT"
+    TRANSPORT_RESULT = "TRANSPORT_RESULT"
     WMS_EVENT = "WMS_EVENT"
     WMS_RESULT = "WMS_RESULT"
 
@@ -35,7 +36,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('DEVICE_EVENT', 'DEVICE_RESULT', 'WMS_EVENT', 'WMS_RESULT')",
+            "kind IN ('DEVICE_EVENT', 'DEVICE_RESULT', 'TRANSPORT_RESULT', 'WMS_EVENT', 'WMS_RESULT')",
             name="inbound_evidence_kind_valid",
         ),
         CheckConstraint(
@@ -49,6 +50,15 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
         CheckConstraint(
             "kind NOT IN ('DEVICE_EVENT', 'DEVICE_RESULT') OR device_code IS NOT NULL",
             name="inbound_evidence_device_identity_required",
+        ),
+        CheckConstraint(
+            "(kind = 'TRANSPORT_RESULT') = (transport_task_id IS NOT NULL)",
+            name="inbound_evidence_transport_identity_required",
+        ),
+        CheckConstraint(
+            "kind <> 'TRANSPORT_RESULT' OR "
+            "(device_code IS NULL AND command_code IS NULL AND operation IS NULL AND operation_id IS NULL)",
+            name="inbound_evidence_transport_identity_isolated",
         ),
         CheckConstraint("decision_attempt_count >= 0", name="inbound_evidence_decision_attempt_count_nonnegative"),
         CheckConstraint(
@@ -83,6 +93,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             ),
         ),
         Index("ix_inbound_evidences_device_command", "device_code", "command_code", "kind"),
+        Index("ix_inbound_evidences_transport_task", "transport_task_id", "kind"),
         Index(
             "ux_inbound_evidences_device_result",
             "command_code",
@@ -111,6 +122,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
 
     line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id", index=True)
     material_execution_id: int | None = Field(default=None, foreign_key="wes_biz.material_executions.id", index=True)
+    transport_task_id: str | None = Field(default=None, max_length=120, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)
     command_code: str | None = Field(default=None, max_length=100, index=True)
     contract_key: str | None = Field(default=None, max_length=100)

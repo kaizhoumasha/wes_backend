@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,7 +10,7 @@ from wes_plugin_sdk import (
     DeviceResultReadyFact,
     EvidenceReadyFact,
     FactReference,
-    ReconciliationResultReadyFact,
+    RecoveryDecidedFact,
     Wait,
     handler,
 )
@@ -71,6 +70,10 @@ class _Evidences:
         if self.evidence.apply_status != InboundEvidenceApplyStatus.APPLIED or self.evidence.published_at is not None:
             return None
         return self.evidence
+
+    async def get_by_id_for_update(self, db: object, evidence_id: int) -> InboundEvidence | None:
+        del db
+        return self.evidence if self.evidence.id == evidence_id else None
 
     async def flush(self, db: object) -> None:
         del db
@@ -209,14 +212,9 @@ def _mixed_defer_handler(fact: EvidenceReadyFact) -> tuple[DeferExecution | Wait
     )
 
 
-@handler(fact_type=ReconciliationResultReadyFact, name="reconciliation", supported_versions=("1.0",))
-def _handle_reconciliation(fact: ReconciliationResultReadyFact) -> tuple[Wait, ...]:
-    return (Wait(fact.material_execution_id, fact.fact_id, "MANUAL_REVIEW"),)
-
-
-@handler(fact_type=ReconciliationResultReadyFact, name="reconciliation-defer", supported_versions=("1.0",))
-def _handle_reconciliation_defer(fact: ReconciliationResultReadyFact) -> tuple[DeferExecution, ...]:
-    return (DeferExecution(fact.material_execution_id, fact.fact_id, "DEVICE_BUSY"),)
+@handler(fact_type=RecoveryDecidedFact, name="recovery", supported_versions=("1.0",))
+def _handle_recovery(fact: RecoveryDecidedFact) -> tuple[Wait, ...]:
+    return (Wait(fact.material_execution_id, fact.fact_id, "RECOVERY_ABORTED"),)
 
 
 def _evidence(**changes: object) -> InboundEvidence:
@@ -501,15 +499,27 @@ async def test_digest_conflict_keeps_closed_execution_terminal_and_reconciles_ev
 
 
 @pytest.mark.asyncio
-async def test_multi_execution_reconciliation_defer_fails_closed() -> None:
+async def test_recovery_fact_targets_exactly_one_execution() -> None:
     evidence = _evidence(
         kind=InboundEvidenceKind.WMS_EVENT,
-        operation="inbound.execution.reconciliation_decided@v1",
+        operation="inbound.execution.recovery_decided@v1",
         operation_id="OP-1",
-        normalized_payload={"data": {"reconciliation_id": "REC-1"}},
+        material_execution_id=21,
+        normalized_payload={
+            "data": {
+                "recovery_id": "REC-1",
+                "material_execution_id": "EXEC-1",
+                "material_trace_id": "TRACE-1",
+                "reconciling_evidence_id": "30",
+                "decision": "ABORT",
+                "authoritative_position": None,
+                "reason_code": "MATERIAL_CONFIRMED_MISSING",
+            }
+        },
     )
     evidence_repo = _Evidences(evidence)
-    first = MaterialExecution(
+    executions = _Executions()
+    executions.execution = MaterialExecution(
         id=21,
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
@@ -517,27 +527,9 @@ async def test_multi_execution_reconciliation_defer_fails_closed() -> None:
         line_run_epoch_id=11,
         status=MaterialExecutionStatus.RECONCILING,
         last_transition_reason="UNKNOWN",
-        last_transition_evidence_id=31,
+        last_transition_evidence_id=30,
         status_changed_at=NOW,
     )
-    second = first.model_copy(update={"id": 22, "execution_code": "EXEC-2", "material_trace_id": "TRACE-2"})
-
-    class _BatchExecutions:
-        def __init__(self) -> None:
-            self.values = {21: first, 22: second}
-
-        async def get_by_id_for_update(self, db, execution_id):  # type: ignore[no-untyped-def]
-            del db
-            return self.values.get(execution_id)
-
-    class _EvidenceBindings:
-        async def list_for_evidence_for_update(self, db, evidence_id):  # type: ignore[no-untyped-def]
-            del db
-            assert evidence_id == 31
-            return [
-                SimpleNamespace(material_execution_id=21, ordinal=0),
-                SimpleNamespace(material_execution_id=22, ordinal=1),
-            ]
 
     applier = _Applier()
     processor = FactProcessor(
@@ -547,28 +539,23 @@ async def test_multi_execution_reconciliation_defer_fails_closed() -> None:
                 PluginRuntimeBinding(
                     plugin_key="rough_sorter",
                     plugin_version="1.0.0",
-                    handlers=(_handle_reconciliation_defer,),
+                    handlers=(_handle_recovery,),
                     fact_factory=_IdentityFactFactory(),
                 ),
             )
         ),
         decision_applier=applier,
         evidence_repository=evidence_repo,
-        execution_repository=_BatchExecutions(),
+        execution_repository=executions,
         epoch_repository=_Epochs(),
-        evidence_execution_binding_repository=_EvidenceBindings(),
-        material_execution_service=_ExecutionService(_Executions()),
+        material_execution_service=_ExecutionService(executions),
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
     )
 
-    assert await processor.process_batch() == 0
-
-    assert applier.calls == []
-    assert evidence.published_at is None
-    assert evidence.decision_digest is None
-    assert evidence.decision_attempt_count == 1
-    assert evidence.decision_next_attempt_at == datetime(2026, 8, 17, 10, 0, 1)
+    assert await processor.process_batch() == 1
+    assert len(applier.calls) == 1
+    assert evidence.published_at == NOW
 
 
 @pytest.mark.asyncio

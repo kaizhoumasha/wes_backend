@@ -6,7 +6,6 @@ from .inbound_evidence import (
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
-from .inbound_evidence_execution_binding import InboundEvidenceExecutionBinding
 from .material_execution import (
     InvalidMaterialExecutionTransitionError,
     MaterialExecution,
@@ -19,7 +18,6 @@ __all__ = [
     "InboundEvidence",
     "InboundEvidenceApplyStatus",
     "InboundEvidenceConflict",
-    "InboundEvidenceExecutionBinding",
     "InboundEvidenceKind",
     "InvalidMaterialExecutionTransitionError",
     "MaterialExecution",

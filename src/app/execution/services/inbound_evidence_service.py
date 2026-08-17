@@ -98,6 +98,7 @@ class InboundEvidenceService:
         received_at: datetime,
         line_run_epoch_id: int | None = None,
         material_execution_id: int | None = None,
+        transport_task_id: str | None = None,
         device_code: str | None = None,
         command_code: str | None = None,
         contract_key: str | None = None,
@@ -110,8 +111,26 @@ class InboundEvidenceService:
         if kind in {InboundEvidenceKind.WMS_EVENT, InboundEvidenceKind.WMS_RESULT}:
             if not operation or not operation_id or source_identity != f"{operation}:{operation_id}":
                 raise ValueError("WMS source_identity 必须严格等于 operation + operation_id")
+            if transport_task_id is not None:
+                raise ValueError("WMS evidence 不得关联 transport_task_id")
+        elif kind is InboundEvidenceKind.TRANSPORT_RESULT:
+            outcome_version = normalized_payload.get("outcome_version")
+            payload_task_id = normalized_payload.get("transport_task_id")
+            if (
+                not transport_task_id
+                or not isinstance(outcome_version, int)
+                or isinstance(outcome_version, bool)
+                or outcome_version < 1
+                or payload_task_id != transport_task_id
+                or source_identity != f"transport:{transport_task_id}:outcome:{outcome_version}"
+            ):
+                raise ValueError("Transport source_identity 必须严格等于 transport_task_id + outcome_version")
+            if any(value is not None for value in (device_code, command_code, operation, operation_id)):
+                raise ValueError("Transport evidence 不得混入 device/WMS identity")
         elif not device_code:
             raise ValueError("DEVICE evidence 必须关联 device_code")
+        elif transport_task_id is not None:
+            raise ValueError("DEVICE evidence 不得关联 transport_task_id")
         payload, digest = normalize_payload(
             normalized_payload,
             digest_policy=digest_policy,
@@ -123,6 +142,7 @@ class InboundEvidenceService:
                 kind,
                 line_run_epoch_id,
                 material_execution_id,
+                transport_task_id,
                 device_code,
                 command_code,
                 contract_key,
@@ -134,6 +154,7 @@ class InboundEvidenceService:
                 existing.kind,
                 existing.line_run_epoch_id,
                 existing.material_execution_id,
+                existing.transport_task_id,
                 existing.device_code,
                 existing.command_code,
                 existing.contract_key,
@@ -180,6 +201,7 @@ class InboundEvidenceService:
                 received_at=received_at,
                 line_run_epoch_id=line_run_epoch_id,
                 material_execution_id=material_execution_id,
+                transport_task_id=transport_task_id,
                 device_code=device_code,
                 command_code=command_code,
                 contract_key=contract_key,

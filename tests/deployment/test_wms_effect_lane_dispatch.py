@@ -19,6 +19,7 @@ from src.app.wms_integration.provider_readiness import WmsProviderProcessRole, W
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_TASK = "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch"
 FULFILLMENT_TASK = "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch"
+CONFIRMATION_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 SYSTEM_TASK = "src.celery_app.tasks.sys.dispatch_system_outbox_batch"
 
 
@@ -43,6 +44,7 @@ def test_fulfillment_beat_messages_are_replaceable_database_scan_wakeups() -> No
         "src.celery_app.tasks.transport.submit_transport_tasks_batch": (30.0, {"limit": 100}),
         "src.celery_app.tasks.transport.process_transport_evidence_batch": (10.0, {"limit": 100}),
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": (30.0, {"limit": 100}),
+        CONFIRMATION_TASK: (10.0, {"limit": 100}),
         FULFILLMENT_TASK: (10.0, None),
         "src.celery_app.tasks.workline.scan_wms_effect_status_batch": (10.0, None),
     }

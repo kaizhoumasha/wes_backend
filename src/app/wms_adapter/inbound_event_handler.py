@@ -1,4 +1,4 @@
-"""粗分机 WMS 人工对账事件接收。"""
+"""粗分机 WMS 单对象恢复事件接收。"""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from pydantic import ValidationError
 
 from src.app.execution.models import (
     InboundEvidenceApplyStatus,
-    InboundEvidenceExecutionBinding,
     InboundEvidenceKind,
     MaterialExecution,
+    MaterialExecutionStatus,
 )
 from src.app.execution.repositories import (
-    inbound_evidence_execution_binding_repository,
+    inbound_evidence_repository as default_inbound_evidence_repository,
 )
 from src.app.execution.repositories import (
     material_execution_repository as default_material_execution_repository,
@@ -27,9 +27,9 @@ from src.app.execution.services import (
 )
 from src.app.wms_adapter.inbound_wire import (
     MAX_INBOUND_BODY_BYTES,
-    RECONCILIATION_OPERATION,
-    ReconciliationEvent,
-    parse_reconciliation_event,
+    RECOVERY_OPERATION,
+    RecoveryEvent,
+    parse_recovery_event,
 )
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
 from src.core.uuid7 import is_uuid7
@@ -56,14 +56,14 @@ class InboundEventPersistenceResult:
 class _InboundEventRecorder(Protocol):
     async def record(
         self,
-        envelope: ReconciliationEvent,
+        envelope: RecoveryEvent,
         *,
         received_at: datetime,
     ) -> InboundEventPersistenceResult: ...
 
 
 class InboundEventCorrelationError(ValueError):
-    """对账事件无法完整关联全部已持久化 execution。"""
+    """恢复事件不匹配当前 execution 因果围栏。"""
 
 
 class _MaterialExecutionRepository(Protocol):
@@ -74,18 +74,8 @@ class _MaterialExecutionRepository(Protocol):
     ) -> MaterialExecution | None: ...
 
 
-class _EvidenceExecutionBindingRepository(Protocol):
-    async def list_for_evidence_for_update(
-        self,
-        db: object,
-        evidence_id: int,
-    ) -> list[InboundEvidenceExecutionBinding]: ...
-
-    async def add(
-        self,
-        db: object,
-        binding: InboundEvidenceExecutionBinding,
-    ) -> InboundEvidenceExecutionBinding: ...
+class _InboundEvidenceRepository(Protocol):
+    async def get_by_id_for_update(self, db: object, evidence_id: int) -> object | None: ...
 
 
 class InboundEventEvidenceRecorder:
@@ -96,28 +86,46 @@ class InboundEventEvidenceRecorder:
         session_factory: async_sessionmaker[AsyncSession],
         evidence_service: InboundEvidenceService | None = None,
         material_execution_repository: _MaterialExecutionRepository | None = None,
-        evidence_execution_binding_repository: _EvidenceExecutionBindingRepository | None = None,
+        inbound_evidence_repository: _InboundEvidenceRepository | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
-        self._executions = material_execution_repository or default_material_execution_repository
-        self._bindings = evidence_execution_binding_repository or inbound_evidence_execution_binding_repository
+        self._executions = cast(
+            "_MaterialExecutionRepository",
+            material_execution_repository or default_material_execution_repository,
+        )
+        self._evidences = cast(
+            "_InboundEvidenceRepository",
+            inbound_evidence_repository or default_inbound_evidence_repository,
+        )
 
     async def record(
         self,
-        envelope: ReconciliationEvent,
+        envelope: RecoveryEvent,
         *,
         received_at: datetime,
     ) -> InboundEventPersistenceResult:
         payload = envelope.model_dump(mode="json")
         source_identity = f"{envelope.operation}:{envelope.operation_id}"
         async with self._sessions.begin() as db:
+            execution = await self._executions.get_by_execution_code_for_update(
+                db,
+                envelope.data.material_execution_id,
+            )
+            if (
+                execution is None
+                or execution.id is None
+                or execution.material_trace_id != envelope.data.material_trace_id
+            ):
+                raise InboundEventCorrelationError(envelope.data.material_execution_id)
             result = await self._evidence.accept(
                 db,
                 kind=InboundEvidenceKind.WMS_EVENT,
                 source_identity=source_identity,
                 normalized_payload=payload,
                 received_at=received_at,
+                line_run_epoch_id=execution.line_run_epoch_id,
+                material_execution_id=execution.id,
                 contract_key="rough_sorter_inbound",
                 contract_version="1.0",
                 operation=envelope.operation,
@@ -129,43 +137,32 @@ class InboundEventEvidenceRecorder:
                 timestamp_ms = int(timezone.to_utc(result.conflict.received_at).timestamp() * 1000)
             else:
                 if result.evidence.id is None:
-                    raise RuntimeError("持久化 reconciliation evidence 缺少主键")
-                await self._freeze_execution_bindings(db, result.evidence.id, envelope)
+                    raise RuntimeError("持久化 recovery evidence 缺少主键")
+                if not result.duplicate:
+                    await self._validate_causal_fence(db, execution, envelope.data.reconciling_evidence_id)
                 persisted_code = "DUPLICATE" if result.duplicate else "RECEIVED"
                 timestamp_ms = int(timezone.to_utc(result.evidence.received_at).timestamp() * 1000)
         return InboundEventPersistenceResult(code=persisted_code, timestamp_ms=timestamp_ms)
 
-    async def _freeze_execution_bindings(
+    async def _validate_causal_fence(
         self,
         db: object,
-        evidence_id: int,
-        envelope: ReconciliationEvent,
+        execution: MaterialExecution,
+        reconciling_evidence_id: str,
     ) -> None:
-        positions = {item.material_execution_id: item for item in envelope.data.authoritative_positions}
-        execution_ids: list[int] = []
-        for execution_code in envelope.data.affected_execution_ids:
-            execution = await self._executions.get_by_execution_code_for_update(db, execution_code)
-            position = positions[execution_code]
-            if execution is None or execution.id is None or execution.material_trace_id != position.material_trace_id:
-                raise InboundEventCorrelationError(execution_code)
-            execution_ids.append(execution.id)
-
-        existing = await self._bindings.list_for_evidence_for_update(db, evidence_id)
-        if existing:
-            frozen = [(binding.ordinal, binding.material_execution_id) for binding in existing]
-            expected = list(enumerate(execution_ids))
-            if frozen != expected:
-                raise InboundEventCorrelationError("frozen reconciliation bindings conflict")
-            return
-        for ordinal, execution_id in enumerate(execution_ids):
-            await self._bindings.add(
-                db,
-                InboundEvidenceExecutionBinding(
-                    inbound_evidence_id=evidence_id,
-                    material_execution_id=execution_id,
-                    ordinal=ordinal,
-                ),
-            )
+        if not reconciling_evidence_id.isascii() or not reconciling_evidence_id.isdigit():
+            raise InboundEventCorrelationError(reconciling_evidence_id)
+        causal_id = int(reconciling_evidence_id)
+        causal = await self._evidences.get_by_id_for_update(db, causal_id)
+        if (
+            MaterialExecutionStatus(execution.status) is not MaterialExecutionStatus.RECONCILING
+            or execution.last_transition_evidence_id != causal_id
+            or causal is None
+            or getattr(causal, "id", None) != causal_id
+            or getattr(causal, "material_execution_id", None) != execution.id
+            or getattr(causal, "line_run_epoch_id", None) != execution.line_run_epoch_id
+        ):
+            raise InboundEventCorrelationError(reconciling_evidence_id)
 
 
 class InboundEventHandler:
@@ -187,10 +184,10 @@ class InboundEventHandler:
         if not _is_operation_id(operation_id) or not _is_operation(operation):
             return InboundEventResponse(400, {})
         received_at = timezone.now_utc()
-        if operation != RECONCILIATION_OPERATION:
+        if operation != RECOVERY_OPERATION:
             return _ack(422, operation_id, "REJECTED", received_at, {"reason_code": "UNSUPPORTED_OPERATION"})
         try:
-            envelope = parse_reconciliation_event(raw_envelope)
+            envelope = parse_recovery_event(raw_envelope)
         except (ValidationError, ValueError, TypeError):
             return _ack(422, operation_id, "REJECTED", received_at, {"reason_code": "INVALID_DATA"})
         try:
@@ -198,12 +195,12 @@ class InboundEventHandler:
         except InboundEventCorrelationError:
             return _ack(422, operation_id, "REJECTED", received_at, {"reason_code": "INVALID_EXECUTION_CORRELATION"})
         except Exception:
-            logger.exception("WMS 对账事件持久化失败: operation_id=%s", operation_id)
+            logger.exception("WMS recovery 事件持久化失败: operation_id=%s", operation_id)
             return _ack(503, operation_id, "UNAVAILABLE", received_at, {})
         status_by_code = {"RECEIVED": 202, "DUPLICATE": 200, "CONFLICT": 409}
         http_status = status_by_code.get(persisted.code)
         if http_status is None:
-            logger.warning("WMS 对账事件持久化返回未知 code: %s", persisted.code)
+            logger.warning("WMS recovery 事件持久化返回未知 code: %s", persisted.code)
             return _ack(503, operation_id, "UNAVAILABLE", received_at, {})
         return InboundEventResponse(
             http_status,

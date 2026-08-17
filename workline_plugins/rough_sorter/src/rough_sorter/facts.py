@@ -11,11 +11,14 @@ from wes_plugin_sdk import (
     DeviceResultReadyFact,
     EvidenceReadyFact,
     RackFace,
-    ReconciliationResultReadyFact,
+    RecoveryDecision,
     TransportLeg,
     TransportRackPosition,
     TransportResultReadyFact,
     WmsResultReadyFact,
+)
+from wes_plugin_sdk import (
+    RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
 
 
@@ -75,11 +78,6 @@ class TransportOutcome(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     UNKNOWN = "UNKNOWN"
-
-
-class ReconciliationDecision(StrEnum):
-    CONTINUE = "CONTINUE"
-    ABORT = "ABORT"
 
 
 def _required(value: str, field_name: str) -> None:
@@ -630,7 +628,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
         _required(self.inbound_admission_id or "", "inbound_admission_id")
 
 
-_RECONCILIATION_WMS_OPERATIONS = {
+_RECOVERY_WMS_OPERATIONS = {
     "inbound.material.admission_decide@v1",
     "inbound.material.target_decide@v1",
     "inbound.material.placement_report@v1",
@@ -640,22 +638,22 @@ _RECONCILIATION_WMS_OPERATIONS = {
 
 
 @dataclass(frozen=True, slots=True)
-class ResumeWmsAction:
+class RecoveryWmsContinuation:
     operation: str
     operation_id: str
     evidence_refs: tuple[str, ...]
     snapshot_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.operation not in _RECONCILIATION_WMS_OPERATIONS:
-            raise ValueError("unsupported reconciliation WMS operation")
+        if self.operation not in _RECOVERY_WMS_OPERATIONS:
+            raise ValueError("unsupported recovery WMS operation")
         _operation_id(self.operation_id, "operation_id")
         _required_refs(self.evidence_refs, "evidence_refs")
         _required_refs(self.snapshot_refs, "snapshot_refs")
 
 
 @dataclass(frozen=True, slots=True)
-class ResumeDeviceAction:
+class RecoveryDeviceContinuation:
     device_role: str
     task_type: str
     source: DevicePosition
@@ -670,49 +668,47 @@ class ResumeDeviceAction:
         _position_identity(self.source, "source")
         _position_identity(self.target, "target")
         if self.source.material_trace_id != self.target.material_trace_id or self.source == self.target:
-            raise ValueError("resume device positions must keep one trace and differ")
+            raise ValueError("recovery device positions must keep one trace and differ")
         if type(self.device_ready) is not bool:
             raise TypeError("device_ready must be a boolean")
 
 
 @dataclass(frozen=True, slots=True)
-class ResumeWait:
+class RecoveryDeferContinuation:
     reason_code: str
 
     def __post_init__(self) -> None:
         _required(self.reason_code, "reason_code")
 
 
-ResumeAction = ResumeWmsAction | ResumeDeviceAction | ResumeWait
+RecoveryContinuation = RecoveryWmsContinuation | RecoveryDeviceContinuation | RecoveryDeferContinuation
 
 
 @dataclass(frozen=True, slots=True)
-class ReconciliationDecidedFact(ReconciliationResultReadyFact):
+class RecoveryDecidedFact(BaseRecoveryDecidedFact):
     material_trace_id: str
-    decision: ReconciliationDecision
-    reason_code: str
-    authoritative_position: DevicePosition | None
-    resume_action: ResumeAction | None
+    reconciling_evidence_id: str
+    continuation: RecoveryContinuation | None
 
     def __post_init__(self) -> None:
-        ReconciliationResultReadyFact.__post_init__(self)
+        BaseRecoveryDecidedFact.__post_init__(self)
         _required(self.material_trace_id, "material_trace_id")
-        _required(self.reason_code, "reason_code")
-        if type(self.decision) is not ReconciliationDecision:
-            raise ValueError("decision must be a ReconciliationDecision")
+        _required(self.reconciling_evidence_id, "reconciling_evidence_id")
+        if self.reconciling_evidence_id == self.evidence_id:
+            raise ValueError("reconciling_evidence_id must reference prior causal evidence")
         if self.authoritative_position is not None:
-            if type(self.authoritative_position) is not DevicePosition:
-                raise TypeError("authoritative_position must be a DevicePosition")
             _position_identity(self.authoritative_position, "authoritative_position")
             if self.authoritative_position.material_trace_id != self.material_trace_id:
                 raise ValueError("authoritative_position must reference material_trace_id")
-        if self.decision is ReconciliationDecision.CONTINUE:
-            if self.authoritative_position is None:
-                raise ValueError("CONTINUE requires authoritative_position")
-            if type(self.resume_action) not in {ResumeWmsAction, ResumeDeviceAction, ResumeWait}:
-                raise TypeError("CONTINUE requires a typed resume_action")
-        elif self.resume_action is not None:
-            raise ValueError("ABORT must not include resume_action")
+        if self.decision is RecoveryDecision.CONTINUE:
+            if type(self.continuation) not in {
+                RecoveryWmsContinuation,
+                RecoveryDeviceContinuation,
+                RecoveryDeferContinuation,
+            }:
+                raise TypeError("CONTINUE requires a typed continuation")
+        elif self.continuation is not None:
+            raise ValueError("ABORT must not include continuation")
 
 
 __all__ = [
@@ -726,14 +722,14 @@ __all__ = [
     "MaterialEvidenceReadyFact",
     "PlacementCompletedFact",
     "RackMoveLegPlan",
-    "ReconciliationDecidedFact",
-    "ReconciliationDecision",
+    "RecoveryContinuation",
+    "RecoveryDecidedFact",
+    "RecoveryDecision",
+    "RecoveryDeferContinuation",
+    "RecoveryDeviceContinuation",
+    "RecoveryWmsContinuation",
     "ReplacementPlanDecidedFact",
     "ReplacementResult",
-    "ResumeAction",
-    "ResumeDeviceAction",
-    "ResumeWait",
-    "ResumeWmsAction",
     "ShapeResult",
     "TargetDecidedFact",
     "TargetResult",
