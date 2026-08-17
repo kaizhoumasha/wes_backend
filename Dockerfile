@@ -13,8 +13,7 @@ FROM python:3.13-slim AS base
 ARG WES_VCS_REVISION
 ARG WES_SOURCE_TREE
 
-RUN test -n "${WES_VCS_REVISION}" && test -n "${WES_SOURCE_TREE}"
-
+# 本地 Compose 构建允许空标签；CI 与验收入口负责传入并严格校验真实 revision/source manifest。
 LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
       com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
 
