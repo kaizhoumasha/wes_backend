@@ -1007,8 +1007,15 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/celery_app/tasks/{__init__.py,execution.py}"
+source_glob = "src/celery_app/tasks/__init__.py"
 heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/execution.py"
+heavy_tests = [
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+]
 
 [[mapping]]
 source_glob = "src/app/resource/models/{__init__.py,resource.py}"

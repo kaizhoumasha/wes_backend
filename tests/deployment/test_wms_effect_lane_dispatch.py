@@ -200,7 +200,7 @@ def test_fulfillment_worker_startup_rejects_non_single_celery_concurrency(
     monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "2")
 
     with pytest.raises(ValueError, match="concurrency=1"):
-        celery_app_module._validate_worker_role_queue_contract()
+        celery_app_module._validate_worker_role_queue_contract(frozenset({"wms-fulfillment"}))
 
 
 def test_fulfillment_worker_startup_accepts_single_celery_concurrency(
@@ -216,7 +216,7 @@ def test_fulfillment_worker_startup_accepts_single_celery_concurrency(
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
     monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "1")
 
-    celery_app_module._validate_worker_role_queue_contract()
+    celery_app_module._validate_worker_role_queue_contract(frozenset({"wms-fulfillment"}))
 
 
 @pytest.mark.parametrize(

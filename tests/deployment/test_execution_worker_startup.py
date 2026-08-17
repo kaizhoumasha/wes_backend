@@ -1,5 +1,6 @@
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +20,12 @@ from tests.support.ecs_uniform_wire import (
 )
 
 TASK_NAME = "src.celery_app.tasks.execution.process_execution_facts_batch"
+
+
+def _worker_sender(*queues: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        amqp=SimpleNamespace(queues=SimpleNamespace(consume_from={queue: object() for queue in queues}))
+    )
 
 
 def test_execution_fact_task_is_registered_and_routed_to_wes_worker() -> None:
@@ -81,6 +88,77 @@ async def test_execution_worker_gate_rejects_a_persisted_active_epoch() -> None:
         await LineRunEpochService(repository=repository).assert_execution_worker_startable(object())
 
 
+def test_worker_init_freezes_actual_queues_when_declaration_matches(monkeypatch) -> None:
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
+    monkeypatch.setattr(
+        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration", MagicMock()
+    )
+
+    app_module.on_worker_init(sender=_worker_sender("default", "celery", "device-command"))
+
+    assert app_module._frozen_worker_queues == frozenset({"default", "celery", "device-command"})
+
+
+def test_worker_init_rejects_environment_queue_drift(monkeypatch) -> None:
+    from celery.exceptions import WorkerTerminate
+
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery")
+
+    with pytest.raises(WorkerTerminate, match="worker queue configuration rejected"):
+        app_module.on_worker_init(sender=_worker_sender("device-command"))
+
+
+@pytest.mark.parametrize("failure_stage", ["logger", "runtime", "gate"])
+def test_worker_process_signal_rejects_any_initialization_failure(monkeypatch, failure_stage: str) -> None:
+    from celery.exceptions import WorkerTerminate
+    from celery.signals import worker_process_init
+
+    from src.celery_app import app as app_module
+
+    setup_logger = MagicMock()
+    initialize = MagicMock()
+    gate = AsyncMock()
+    if failure_stage == "logger":
+        setup_logger.side_effect = RuntimeError("logger failed")
+    elif failure_stage == "runtime":
+        initialize.side_effect = RuntimeError("runtime failed")
+    else:
+        gate.side_effect = RuntimeError("gate failed")
+    monkeypatch.setattr(app_module, "setup_logger", setup_logger)
+    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
+    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
+    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
+    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
+
+    with pytest.raises(WorkerTerminate, match="worker process initialization rejected"):
+        worker_process_init.send(sender=app_module.celery_app)
+
+
+def test_execution_worker_child_startup_rejects_unfrozen_queues(monkeypatch) -> None:
+    from celery.exceptions import WorkerTerminate
+
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
+
+    with pytest.raises(WorkerTerminate, match="worker process initialization rejected"):
+        app_module.on_worker_process_init()
+
+
 def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) -> None:
     from celery.exceptions import WorkerTerminate
 
@@ -92,10 +170,11 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
     monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
 
-    with pytest.raises(WorkerTerminate, match="execution worker startup rejected"):
+    with pytest.raises(WorkerTerminate, match="worker process initialization rejected"):
         app_module.on_worker_process_init()
 
     initialize.assert_called_once_with()
@@ -110,6 +189,7 @@ def test_execution_worker_child_startup_allows_epoch_gate_success(monkeypatch) -
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
     monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
 
@@ -128,6 +208,7 @@ def test_fulfillment_child_does_not_run_execution_epoch_gate(monkeypatch) -> Non
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", run_async)
     monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.FULFILLMENT)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"wms-fulfillment"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
 

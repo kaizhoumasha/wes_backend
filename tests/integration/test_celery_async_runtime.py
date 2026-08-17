@@ -550,6 +550,12 @@ def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPa
         runtime.shutdown()
 
 
+def _configure_parent_worker_queues(monkeypatch: pytest.MonkeyPatch, app_module: ModuleType) -> None:
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "celery")
+    monkeypatch.setattr(app_module, "_actual_worker_queues", lambda _sender: frozenset({"celery"}))
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None)
+
+
 def test_worker_init_validates_transport_and_leaves_parent_async_resources_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -567,6 +573,7 @@ def test_worker_init_validates_transport_and_leaves_parent_async_resources_empty
         "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
         validate_transport,
     )
+    _configure_parent_worker_queues(monkeypatch, app_module)
 
     app_module.on_worker_init()
 
@@ -589,6 +596,7 @@ def test_worker_init_fails_before_consuming_tasks_when_wms_transport_is_invalid(
         "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
         MagicMock(side_effect=ValueError("invalid WMS transport")),
     )
+    _configure_parent_worker_queues(monkeypatch, app_module)
 
     with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
         worker_init.send(sender=app_module.celery_app)
@@ -607,6 +615,7 @@ def test_worker_init_validates_transport_before_logger_failure(monkeypatch: pyte
         "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
         validate_transport,
     )
+    _configure_parent_worker_queues(monkeypatch, app_module)
 
     with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
         worker_init.send(sender=app_module.celery_app)
@@ -627,6 +636,7 @@ def test_worker_init_fails_closed_when_logger_initialization_fails(monkeypatch: 
         "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
         validate_transport,
     )
+    _configure_parent_worker_queues(monkeypatch, app_module)
 
     with pytest.raises(WorkerTerminate, match="worker logging initialization rejected"):
         worker_init.send(sender=app_module.celery_app)
@@ -656,6 +666,7 @@ def test_worker_init_fails_closed_when_provider_catalog_import_fails(monkeypatch
     setup_logger = MagicMock()
     monkeypatch.setattr(app_module, "setup_logger", setup_logger)
     monkeypatch.setattr(builtins, "__import__", fail_provider_catalog_import)
+    _configure_parent_worker_queues(monkeypatch, app_module)
 
     with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
         worker_init.send(sender=app_module.celery_app)
@@ -671,6 +682,7 @@ def test_worker_process_signal_initializes_child_before_first_message(monkeypatc
 
     monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"celery"}))
     app_module.on_worker_process_init()
 
     assert runtime.run_async(lambda: asyncio.sleep(0, result="signal")) == "signal"
@@ -1021,6 +1033,7 @@ def test_worker_process_init_redis_stages_share_one_three_second_deadline(
     monkeypatch.setattr(module.asyncio, "wait_for", fake_wait_for)
     monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"celery"}))
 
     try:
         app_module.on_worker_process_init()

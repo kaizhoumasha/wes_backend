@@ -400,11 +400,21 @@ def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
     ]
 
 
-@pytest.mark.parametrize("changed_path", ["src/celery_app/tasks/__init__.py", "src/celery_app/tasks/execution.py"])
-def test_execution_celery_task_exports_select_postgresql_runtime_owner(changed_path: str) -> None:
+def test_execution_celery_task_exports_select_postgresql_runtime_owner() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests([changed_path], config) == [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST]
+    assert select_heavy_tests(["src/celery_app/tasks/__init__.py"], config) == [
+        CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST
+    ]
+
+
+def test_execution_celery_task_selects_runtime_and_prefork_owners() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["src/celery_app/tasks/execution.py"], config) == [
+        DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+    ]
 
 
 def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:

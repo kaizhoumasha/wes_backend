@@ -48,7 +48,10 @@ celery_app = Celery(
 # ============================================
 
 
-def _worker_queues() -> frozenset[str]:
+_frozen_worker_queues: frozenset[str] | None = None
+
+
+def _declared_worker_queues() -> frozenset[str]:
     process_role = celery_async_runtime.process_role
     default_queues = "default,celery,device-command" if process_role is WmsProviderProcessRole.WES else ""
     return frozenset(
@@ -56,24 +59,36 @@ def _worker_queues() -> frozenset[str]:
     )
 
 
-def _validate_worker_role_queue_contract() -> None:
+def _actual_worker_queues(sender: Any) -> frozenset[str]:
+    return frozenset(sender.amqp.queues.consume_from)
+
+
+def _validate_worker_role_queue_contract(actual_queues: frozenset[str]) -> None:
     """部署角色与实际消费队列必须一一对应，配置漂移时阻止 worker 启动。"""
 
     process_role = celery_async_runtime.process_role
-    queues = _worker_queues()
-    if process_role is WmsProviderProcessRole.WES and "wms-fulfillment" in queues:
+    if _declared_worker_queues() != actual_queues:
+        raise ValueError("declared worker queues do not match the actual consume queues")
+    if process_role is WmsProviderProcessRole.WES and "wms-fulfillment" in actual_queues:
         raise ValueError("WES worker must not consume the WMS fulfillment queue")
-    if process_role is WmsProviderProcessRole.FULFILLMENT and queues != frozenset({"wms-fulfillment"}):
+    if process_role is WmsProviderProcessRole.FULFILLMENT and actual_queues != frozenset({"wms-fulfillment"}):
         raise ValueError("fulfillment worker must consume only the WMS fulfillment queue")
     if process_role is WmsProviderProcessRole.FULFILLMENT and os.getenv("CELERY_WORKER_CONCURRENCY", "").strip() != "1":
         raise ValueError("fulfillment worker must use concurrency=1")
 
 
 @worker_init.connect
-def on_worker_init(*args: Any, **kwargs: Any) -> None:
+def on_worker_init(sender: Any | None = None, **kwargs: Any) -> None:
     """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
+    global _frozen_worker_queues
     try:
-        _validate_worker_role_queue_contract()
+        actual_queues = _actual_worker_queues(sender or celery_app)
+        _validate_worker_role_queue_contract(actual_queues)
+        _frozen_worker_queues = actual_queues
+    except Exception as exc:
+        _frozen_worker_queues = None
+        raise WorkerTerminate("worker queue configuration rejected") from exc
+    try:
         from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
             northbound_operations_repository,
         )
@@ -93,19 +108,24 @@ def on_worker_init(*args: Any, **kwargs: Any) -> None:
 @worker_process_init.connect
 def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
     """Worker 子进程启动时初始化基础设施（fork 后独立初始化）"""
-    # 子进程 fork 后 _initialized 标志被继承为 True，需要重置以重新配置日志
-    import src.core.logger as _logger_module
+    try:
+        # 子进程 fork 后 _initialized 标志被继承为 True，需要重置以重新配置日志
+        import src.core.logger as _logger_module
 
-    _logger_module._initialized = False
-    setup_logger()
-    celery_async_runtime.initialize()
-    if celery_async_runtime.process_role is WmsProviderProcessRole.WES and "device-command" in _worker_queues():
-        from src.celery_app.tasks import execution
+        _logger_module._initialized = False
+        setup_logger()
+        celery_async_runtime.initialize()
+        if _frozen_worker_queues is None:
+            raise RuntimeError("worker consume queues were not frozen before fork")
+        if (
+            celery_async_runtime.process_role is WmsProviderProcessRole.WES
+            and "device-command" in _frozen_worker_queues
+        ):
+            from src.celery_app.tasks import execution
 
-        try:
             celery_async_runtime.run_async(execution.assert_execution_worker_startable)
-        except Exception as exc:
-            raise WorkerTerminate("execution worker startup rejected") from exc
+    except Exception as exc:
+        raise WorkerTerminate("worker process initialization rejected") from exc
 
 
 @worker_process_shutdown.connect

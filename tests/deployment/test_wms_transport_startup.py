@@ -271,6 +271,9 @@ def test_celery_startup_rejects_production_in_process_simulation_before_logger(
     monkeypatch.setattr(celery_app_module, "settings", _production_simulation_settings())
     setup_logger = MagicMock()
     monkeypatch.setattr(celery_app_module, "setup_logger", setup_logger)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "celery")
+    monkeypatch.setattr(celery_app_module, "_actual_worker_queues", lambda _sender: frozenset({"celery"}))
+    monkeypatch.setattr(celery_app_module, "_frozen_worker_queues", None)
 
     with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
         celery_app_module.on_worker_init()
