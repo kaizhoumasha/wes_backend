@@ -20,7 +20,10 @@ from wes_plugin_sdk import (
     TransportTaskType,
 )
 
-from src.app.device.models import Device, DeviceCommand
+from deployment._rough_sorter_wms_facts import rack_release_snapshot
+from deployment.rough_sorter_composition import _ROUGH_SORTER_TYPES, build_rough_sorter_runtime
+from src.app.device.models import CommandStatus, Device, DeviceCommand
+from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.services import DeviceCommandService
 from src.app.execution.models import (
     InboundEvidence,
@@ -30,8 +33,10 @@ from src.app.execution.models import (
     MaterialExecutionStatus,
     RackReplacementTransportBinding,
     WmsConfirmation,
+    WmsConfirmationStatus,
 )
 from src.app.execution.repositories import inbound_evidence_repository
+from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services import (
     DecisionApplier,
     MaterialExecutionService,
@@ -42,7 +47,14 @@ from src.app.execution.services import (
 from src.app.transport.models import TransportTask
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
-from src.app.workline.models import LineRunEpoch, LineRunEpochDeviceBinding, WorkLine
+from src.app.workline.epoch_digest import configuration_digest, topology_digest
+from src.app.workline.models import (
+    LineRunEpoch,
+    LineRunEpochDeviceBinding,
+    LineRunEpochPositionBinding,
+    LineRunEpochStatus,
+    WorkLine,
+)
 from src.app.workline.models.workline import LineType
 
 
@@ -329,6 +341,330 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence_id))
+        await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
+        await db.execute(delete(Device).where(Device.id == device_id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_claim_transaction(
+    integration_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 9)
+    roles = (
+        ("MEASUREMENT_DEVICE", "rough_sorter.measurement_device"),
+        ("TRANSFER_DEVICE", "rough_sorter.transfer_device"),
+        ("PLACEMENT_DEVICE", "rough_sorter.placement_device"),
+    )
+    position_values = (
+        ("MEASUREMENT_POSITION", "MEASUREMENT-1"),
+        ("PIPELINE_INLET", "INLET-1"),
+        ("PIPELINE_OUTLET", "OUTLET-1"),
+        ("NG_POSITION", "NG-1"),
+    )
+    async with integration_session_factory.begin() as db:
+        line = WorkLine(
+            line_code=f"ROUGH-SCAN-{identity[:12]}",
+            line_name="Rough sorter scan owner",
+            line_type=LineType.AUTO,
+        )
+        db.add(line)
+        await db.flush()
+        devices = [
+            Device(
+                device_code=f"ROUGH-{role}-{identity[:12]}",
+                device_name=role,
+                work_line_id=line.id,
+                device_role=role,
+            )
+            for role, _contract in roles
+        ]
+        db.add_all(devices)
+        await db.flush()
+        epoch = LineRunEpoch(
+            epoch_code=f"ROUGH-EPOCH-{identity[:12]}",
+            workline_id=line.id,
+            plugin_key="rough_sorter",
+            plugin_version="1.0.0",
+            flow_mode="ROUGH_SORT_INBOUND",
+            topology_digest="0" * 64,
+            configuration_digest=configuration_digest("rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND"),
+            status=LineRunEpochStatus.ACTIVE,
+            started_at=now,
+        )
+        db.add(epoch)
+        await db.flush()
+        device_bindings = [
+            LineRunEpochDeviceBinding(
+                line_run_epoch_id=epoch.id,
+                device_id=device.id,
+                device_code=device.device_code,
+                device_role=role,
+                contract_key=contract,
+                contract_version="1.0",
+                status_max_age_ms=1_000,
+                command_timeout_ms=5_000,
+            )
+            for device, (role, contract) in zip(devices, roles, strict=True)
+        ]
+        position_bindings = [
+            LineRunEpochPositionBinding(
+                line_run_epoch_id=epoch.id,
+                position_role=role,
+                location_id=location_id,
+                location_type=role,
+            )
+            for role, location_id in position_values
+        ]
+        db.add_all([*device_bindings, *position_bindings])
+        await db.flush()
+        epoch.topology_digest = topology_digest(device_bindings, position_bindings)
+        evidence = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"ROUGH-SCAN-{identity}",
+            payload_digest="a" * 64,
+            normalized_payload={
+                "event_type": "SCAN_COMPLETED",
+                "timestamp": 1_787_040_000_000,
+                "data": {
+                    "material_trace_id": f"TRACE-{identity}",
+                    "LotCode": "LOT",
+                    "DateCode": "DATE",
+                    "Qty": "1",
+                    "ProductNo": "PRODUCT",
+                    "MfrPN": "MFR",
+                    "PONumber": "PO",
+                    "diameter_mm": "12.5",
+                    "thickness_mm": "1.2",
+                    "shape_result": "PASS",
+                    "position": {
+                        "location_id": "MEASUREMENT-1",
+                        "location_type": "MEASUREMENT_POSITION",
+                        "material_trace_id": f"TRACE-{identity}",
+                    },
+                },
+            },
+            received_at=now,
+            line_run_epoch_id=epoch.id,
+            device_code=devices[0].device_code,
+            contract_key="rough_sorter.measurement_device",
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        db.add(evidence)
+        await db.flush()
+        evidence_id = evidence.id
+        line_id = line.id
+        epoch_id = epoch.id
+        device_ids = tuple(device.id for device in devices)
+
+    from src.core.task_queue_gateway import task_queue_gateway
+
+    monkeypatch.setattr(task_queue_gateway, "enqueue_wms_confirmations", lambda: None)
+    runtime = build_rough_sorter_runtime(
+        session_factory=integration_session_factory,
+        transport_runtime=SimpleNamespace(service=object(), client=object()),  # type: ignore[arg-type]
+        device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
+    )
+
+    assert await runtime.execution.processor.process_batch() == 1
+
+    async with integration_session_factory.begin() as db:
+        persisted_evidence = await db.get(InboundEvidence, evidence_id)
+        assert persisted_evidence is not None and persisted_evidence.material_execution_id is not None
+        execution = await db.get(MaterialExecution, persisted_evidence.material_execution_id)
+        assert execution is not None
+        assert execution.material_trace_id == f"TRACE-{identity}"
+        assert persisted_evidence.published_at is not None
+        confirmations = list(
+            (
+                await db.execute(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution.id))
+            ).scalars()
+        )
+        assert [item.operation for item in confirmations] == ["inbound.material.admission_decide@v1"]
+        await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution.id))
+        persisted_evidence.material_execution_id = None
+        await db.flush()
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution.id))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence_id))
+        await db.execute(
+            delete(LineRunEpochPositionBinding).where(LineRunEpochPositionBinding.line_run_epoch_id == epoch_id)
+        )
+        await db.execute(
+            delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.line_run_epoch_id == epoch_id)
+        )
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
+        await db.execute(delete(Device).where(Device.id.in_(device_ids)))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_postgresql_rack_release_snapshot_includes_open_placement_from_another_execution(
+    integration_session_factory,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 9)
+    command_code = "019d0000-0000-7000-8000-" + identity[:12]
+    async with integration_session_factory.begin() as db:
+        line = WorkLine(
+            line_code=f"RELEASE-{identity[:12]}",
+            line_name="Rack release owner",
+            line_type=LineType.AUTO,
+        )
+        db.add(line)
+        await db.flush()
+        device = Device(
+            device_code=f"RELEASE-DEVICE-{identity[:12]}",
+            device_name="Placement",
+            work_line_id=line.id,
+            device_role="PLACEMENT_DEVICE",
+        )
+        db.add(device)
+        await db.flush()
+        epoch = LineRunEpoch(
+            epoch_code=f"RELEASE-EPOCH-{identity[:12]}",
+            workline_id=line.id,
+            plugin_key="rough_sorter",
+            plugin_version="1.0.0",
+            flow_mode="ROUGH_SORT_INBOUND",
+            topology_digest="a" * 64,
+            configuration_digest="b" * 64,
+            status=LineRunEpochStatus.ACTIVE,
+            started_at=now,
+        )
+        db.add(epoch)
+        await db.flush()
+        binding = LineRunEpochDeviceBinding(
+            line_run_epoch_id=epoch.id,
+            device_id=device.id,
+            device_code=device.device_code,
+            device_role="PLACEMENT_DEVICE",
+            contract_key="rough_sorter.placement_device",
+            contract_version="1.0",
+            status_max_age_ms=1_000,
+            command_timeout_ms=5_000,
+        )
+        db.add(binding)
+        seeds = [
+            InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=f"RELEASE-SEED-{ordinal}-{identity}",
+                payload_digest=str(ordinal) * 64,
+                normalized_payload={"data": {}},
+                received_at=now,
+                line_run_epoch_id=epoch.id,
+                device_code=device.device_code,
+                contract_version="1.0",
+                apply_status=InboundEvidenceApplyStatus.IGNORED,
+            )
+            for ordinal in (1, 2)
+        ]
+        db.add_all(seeds)
+        await db.flush()
+        executions = [
+            MaterialExecution(
+                execution_code=f"RELEASE-EXEC-{ordinal}-{identity}",
+                material_trace_id=f"RELEASE-TRACE-{ordinal}-{identity}",
+                workline_id=line.id,
+                line_run_epoch_id=epoch.id,
+                last_transition_reason="INITIAL_EVIDENCE",
+                last_transition_evidence_id=seed.id,
+                status_changed_at=now,
+            )
+            for ordinal, seed in enumerate(seeds, start=1)
+        ]
+        db.add_all(executions)
+        await db.flush()
+        command = DeviceCommand(
+            command_code=command_code,
+            device_code=device.device_code,
+            device_binding_id=binding.id,
+            line_run_epoch_id=epoch.id,
+            execution_ref_type="PLUGIN_DECISION",
+            execution_ref_id=f"evidence:{seeds[1].id}:execution:{executions[1].id}:CREATE_DEVICE_COMMAND:0",
+            material_execution_id=executions[1].id,
+            contract_key="rough_sorter.placement_device",
+            contract_version="1.0",
+            task_type="PICK_AND_PUT",
+            params={
+                "material_trace_id": executions[1].material_trace_id,
+                "source": {
+                    "location_id": "OUTLET-1",
+                    "location_type": "PIPELINE_OUTLET",
+                    "material_trace_id": executions[1].material_trace_id,
+                },
+                "target": {
+                    "location_id": "CELL-1",
+                    "location_type": "RACK_CELL",
+                    "material_trace_id": executions[1].material_trace_id,
+                    "rack_id": "RACK-1",
+                    "rack_slot_code": "SLOT-1",
+                    "bin_id": "BIN-1",
+                    "bin_cell_id": "CELL-1",
+                },
+            },
+            deadline_at=now + timedelta(minutes=1),
+            payload_digest="c" * 64,
+            status=CommandStatus.ACKNOWLEDGED,
+        )
+        db.add(command)
+        confirmation = WmsConfirmation(
+            operation="inbound.material.placement_report@v1",
+            operation_id=command_code,
+            material_execution_id=executions[1].id,
+            request_digest="d" * 64,
+            request_payload={
+                "operation": "inbound.material.placement_report@v1",
+                "operation_id": command_code,
+                "timestamp": 1_787_040_000_000,
+                "data": {
+                    "material_execution_id": executions[1].execution_code,
+                    "material_trace_id": executions[1].material_trace_id,
+                    "pkg_id": "PKG-1",
+                    "inbound_admission_id": "ADM-1",
+                    "target_assignment_id": "ASSIGN-1",
+                    "target_position": {
+                        "type": "ONE_LAYER_BIN_CELL",
+                        "rack_id": "RACK-1",
+                        "rack_slot_code": "SLOT-1",
+                        "bin_id": "BIN-1",
+                        "bin_cell_id": "CELL-1",
+                    },
+                    "placement_sequence": 1,
+                    "command_code": command_code,
+                    "placed_at": 1_787_040_000_000,
+                },
+            },
+            deadline_at=now + timedelta(minutes=1),
+            status=WmsConfirmationStatus.PENDING,
+        )
+        db.add(confirmation)
+        await db.flush()
+        execution_ids = tuple(execution.id for execution in executions)
+        seed_ids = tuple(seed.id for seed in seeds)
+        line_id = line.id
+        epoch_id = epoch.id
+        binding_id = binding.id
+        device_id = device.id
+
+        snapshot = await rack_release_snapshot(
+            db=db,
+            execution=executions[0],
+            current_rack_id="RACK-1",
+            types=_ROUGH_SORTER_TYPES,
+            commands=device_command_repository,
+            confirmations=wms_confirmation_repository,
+        )
+        assert [item.command_code for item in snapshot.placements] == [command_code]
+        assert snapshot.placements[0].command_status.value == "ACKNOWLEDGED"
+
+        await db.execute(delete(WmsConfirmation).where(WmsConfirmation.operation_id == command_code))
+        await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
         await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
         await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(Device).where(Device.id == device_id))

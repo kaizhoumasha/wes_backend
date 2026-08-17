@@ -146,7 +146,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     )
 
     def build_transport_runtime(**_: object) -> SimpleNamespace:
-        runtime = SimpleNamespace(aclose=AsyncMock())
+        runtime = SimpleNamespace(aclose=AsyncMock(), service=object(), client=object())
         infra.transport_runtimes.append(runtime)
         return runtime
 
@@ -156,7 +156,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     infra.build_wms_effect_preparation_runtime.return_value = infra.effect_preparation_runtime
 
     def build_device_command_runtime(**_: object) -> SimpleNamespace:
-        runtime = SimpleNamespace(aclose=AsyncMock())
+        runtime = SimpleNamespace(aclose=AsyncMock(), command_service=object())
         infra.device_command_runtimes.append(runtime)
         return runtime
 
@@ -264,6 +264,9 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     assert first_runtime.runner_generation is None
 
     first_runtime.initialize()
+    from src.core.task_queue_gateway import task_queue_gateway
+
+    assert infra.build_device_command_runtime.call_args.kwargs["task_queue_gateway"] is task_queue_gateway
     first_transport_runtime = first_runtime.transport_runtime
     assert infra.build_wms_data_lane_query_runtime.call_args.kwargs["client"] is infra.effect_runtime.client
     assert infra.build_wms_effect_preparation_runtime.call_args.kwargs["catalog"] is infra.startup.catalog

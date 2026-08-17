@@ -26,7 +26,7 @@ class InitialExecutionDescriptor:
 class InitialExecutionCorrelator(Protocol):
     """Task 8 adapter 可异步读取已提交的 immutable evidence typed snapshot。"""
 
-    async def correlate(self, evidence_id: str) -> InitialExecutionDescriptor | None: ...
+    async def correlate(self, db: object, evidence_id: str) -> InitialExecutionDescriptor | None: ...
 
 
 class PluginFactFactory(Protocol):

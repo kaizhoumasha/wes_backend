@@ -113,6 +113,21 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         )
         return list(result.scalars())
 
+    async def list_for_epoch_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+    ) -> list[DeviceCommand]:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(columns.line_run_epoch_id == line_run_epoch_id)
+            .order_by(columns.created_at, columns.id)
+            .with_for_update()
+        )
+        return list(result.scalars())
+
     async def claim_next_pending(
         self,
         db: AsyncSession,

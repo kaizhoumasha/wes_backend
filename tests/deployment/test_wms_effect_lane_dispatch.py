@@ -230,7 +230,7 @@ def test_test_worker_entrypoint_fails_closed_without_explicit_worker_config(miss
     import subprocess
 
     environment = os.environ.copy()
-    environment["CELERY_WORKER_QUEUES"] = "default,celery,device"
+    environment["CELERY_WORKER_QUEUES"] = "default,celery,device-command"
     environment["CELERY_WORKER_CONCURRENCY"] = "4"
     environment["WMS_PROVIDER_PROCESS_ROLE"] = "wes"
     environment.pop(missing_variable)

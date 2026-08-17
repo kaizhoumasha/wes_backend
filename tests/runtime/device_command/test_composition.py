@@ -34,14 +34,17 @@ def test_ecs_base_url_requires_plain_lan_http_origin() -> None:
 @pytest.mark.asyncio
 async def test_runtime_owns_one_transport_and_closes_it() -> None:
     transport = FakeTransport()
+    task_queue_gateway = object()
     runtime = build_device_command_runtime(
         session_factory=object(),  # type: ignore[arg-type]
         base_url="http://192.168.1.20:8080",
         timeout_seconds=3.0,
         transport=transport,
+        task_queue_gateway=task_queue_gateway,  # type: ignore[arg-type]
     )
 
     assert runtime.dispatch_service._adapter is runtime.adapter
     assert runtime.evidence_service is not None
+    assert runtime.evidence_service._task_queue is task_queue_gateway
     await runtime.aclose()
     assert transport.closed is True

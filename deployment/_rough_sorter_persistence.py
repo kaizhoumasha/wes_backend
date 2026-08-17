@@ -59,6 +59,10 @@ class WmsConfirmationRepositoryPort(Protocol):
 
     async def list_for_execution(self, db: Any, material_execution_id: int) -> list[WmsConfirmation]: ...
 
+    async def list_for_executions_for_update(
+        self, db: Any, *, material_execution_ids: tuple[int, ...], operation: str
+    ) -> list[WmsConfirmation]: ...
+
 
 class RackPositionRepositoryPort(Protocol):
     async def get_by_workline_logic_location(
@@ -90,6 +94,8 @@ class DeviceCommandRepositoryPort(Protocol):
     async def list_for_material_execution(
         self, db: Any, *, line_run_epoch_id: int, material_execution_id: int
     ) -> list[DeviceCommand]: ...
+
+    async def list_for_epoch_for_update(self, db: Any, *, line_run_epoch_id: int) -> list[DeviceCommand]: ...
 
 
 class DeviceReadinessReader(Protocol):
@@ -132,35 +138,31 @@ class PersistedDeviceReadinessReader:
 class RoughSorterInitialExecutionCorrelator:
     """只从已提交的 SCAN evidence 建立稳定初始 execution identity。"""
 
-    def __init__(
-        self, *, session_factory: Any, evidence_repository: EvidenceRepositoryPort = inbound_evidence_repository
-    ) -> None:
-        self._sessions = session_factory
+    def __init__(self, *, evidence_repository: EvidenceRepositoryPort = inbound_evidence_repository) -> None:
         self._evidences = evidence_repository
 
-    async def correlate(self, evidence_id: str) -> InitialExecutionDescriptor | None:
+    async def correlate(self, db: object, evidence_id: str) -> InitialExecutionDescriptor | None:
         if not evidence_id.isascii() or not evidence_id.isdigit() or evidence_id.startswith("0"):
             raise ValueError("initial evidence_id 必须是 canonical positive integer string")
-        async with self._sessions.begin() as db:
-            evidence = await self._evidences.get_by_id_for_update(db, int(evidence_id))
-            if evidence is None:
-                return None
-            if (
-                evidence.kind != InboundEvidenceKind.DEVICE_EVENT
-                or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
-                or evidence.line_run_epoch_id is None
-                or evidence.normalized_payload.get("event_type") != "SCAN_COMPLETED"
-            ):
-                raise ValueError("initial execution 只能关联已应用的 SCAN_COMPLETED")
-            data = evidence.normalized_payload.get("data")
-            if not isinstance(data, dict):
-                raise TypeError("SCAN_COMPLETED.data 缺失")
-            material_trace_id = _required_string(data.get("material_trace_id"), "material_trace_id")
-            digest = hashlib.sha256(f"{evidence.line_run_epoch_id}:{material_trace_id}".encode()).hexdigest()
-            return InitialExecutionDescriptor(
-                material_trace_id=material_trace_id,
-                execution_code=f"rough-sorter-{digest}",
-            )
+        evidence = await self._evidences.get_by_id_for_update(db, int(evidence_id))
+        if evidence is None:
+            return None
+        if (
+            evidence.kind != InboundEvidenceKind.DEVICE_EVENT
+            or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
+            or evidence.line_run_epoch_id is None
+            or evidence.normalized_payload.get("event_type") != "SCAN_COMPLETED"
+        ):
+            raise ValueError("initial execution 只能关联已应用的 SCAN_COMPLETED")
+        data = evidence.normalized_payload.get("data")
+        if not isinstance(data, dict):
+            raise TypeError("SCAN_COMPLETED.data 缺失")
+        material_trace_id = _required_string(data.get("material_trace_id"), "material_trace_id")
+        digest = hashlib.sha256(f"{evidence.line_run_epoch_id}:{material_trace_id}".encode()).hexdigest()
+        return InitialExecutionDescriptor(
+            material_trace_id=material_trace_id,
+            execution_code=f"rough-sorter-{digest}",
+        )
 
 
 def _required_string(value: object, field_name: str) -> str:

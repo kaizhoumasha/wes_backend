@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "emit":
             role = cast("WmsDeploymentRole", os.environ.get("WMS_DEPLOYMENT_ROLE", ""))
             image_identity = os.environ.get("WMS_DEPLOYMENT_IMAGE_ID", "")
-            default_queues = "default,celery,device" if role == "wes-worker" else ""
+            default_queues = "default,celery,device-command" if role == "wes-worker" else ""
             artifact = build_wms_deployment_attestation(
                 role=role,
                 image_identity=image_identity,

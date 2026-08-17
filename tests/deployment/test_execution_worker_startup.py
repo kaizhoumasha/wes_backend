@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.wms_integration.deployment_attestation import _beat_role_facts
 from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
 from src.celery_app.app import celery_app
@@ -41,6 +42,21 @@ def test_execution_fact_task_is_registered_and_routed_to_wes_worker() -> None:
         "kwargs": {"limit": 100},
         "options": {"expires": 10.0},
     }
+
+
+@pytest.mark.parametrize("drift", ("missing-schedule", "missing-route", "wrong-route"))
+def test_execution_fact_scanner_is_required_by_deployment_attestation(drift: str) -> None:
+    schedules = dict(beat_schedule)
+    routes = dict(task_routes)
+    if drift == "missing-schedule":
+        schedules.pop("process-execution-facts-batch")
+    elif drift == "missing-route":
+        routes.pop(TASK_NAME)
+    else:
+        routes[TASK_NAME] = {"queue": "celery"}
+
+    with pytest.raises(ValueError, match=r"Beat required schedule|device-command"):
+        _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
 
 
 def test_execution_task_requires_an_explicit_child_runtime(monkeypatch) -> None:

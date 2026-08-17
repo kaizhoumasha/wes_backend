@@ -26,6 +26,8 @@ from src.app.workline.repositories.line_run_epoch_repository import line_run_epo
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncContextManager, Callable
+
     from src.app.execution.plugin_binding import StaticPluginBinding
     from src.core.task_queue_gateway import TaskQueueGateway
 
@@ -67,6 +69,10 @@ class InitialExecutionServicePort(Protocol):
     async def transition(self, db: object, execution: MaterialExecution, **kwargs: object) -> MaterialExecution: ...
 
 
+class SessionFactoryPort(Protocol):
+    def begin(self) -> AsyncContextManager[object]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedFact:
     fact: FactReference
@@ -79,7 +85,7 @@ class FactProcessor:
     def __init__(
         self,
         *,
-        session_factory: object,
+        session_factory: SessionFactoryPort,
         plugin_binding: StaticPluginBinding,
         decision_applier: DecisionApplier,
         evidence_repository: EvidenceRepositoryPort | None = None,
@@ -87,20 +93,22 @@ class FactProcessor:
         epoch_repository: EpochRepositoryPort | None = None,
         material_execution_service: InitialExecutionServicePort | None = None,
         fact_builder: FactBuilder | None = None,
-        clock: object = timezone.now_for_db,
-        token_factory: object = lambda: uuid.uuid4().hex,
+        clock: Callable[[], datetime] = timezone.now_for_db,
+        token_factory: Callable[[], str] = lambda: uuid.uuid4().hex,
         task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
         self._plugins = plugin_binding
         self._applier = decision_applier
-        self._evidences = evidence_repository or inbound_evidence_repository
-        self._executions = execution_repository or material_execution_repository
-        self._epochs = epoch_repository or line_run_epoch_repository
-        self._execution_service = material_execution_service or MaterialExecutionService()
+        self._evidences = evidence_repository or cast("EvidenceRepositoryPort", inbound_evidence_repository)
+        self._executions = execution_repository or cast("ExecutionRepositoryPort", material_execution_repository)
+        self._epochs = epoch_repository or cast("EpochRepositoryPort", line_run_epoch_repository)
+        self._execution_service = material_execution_service or cast(
+            "InitialExecutionServicePort", MaterialExecutionService()
+        )
         self._fact_builder = fact_builder or FactBuilder()
-        self._clock = cast("callable", clock)
-        self._token_factory = cast("callable", token_factory)
+        self._clock = clock
+        self._token_factory = token_factory
         self._task_queue = task_queue_gateway
 
     async def process_batch(self, limit: int = _MAX_BATCH_SIZE) -> int:
@@ -122,24 +130,18 @@ class FactProcessor:
         for evidence_id in evidence_ids:
             try:
                 prepared = await self._prepare_fact(evidence_id, token)
-                decision_groups = []
-                for item in prepared:
-                    handler = self._plugins.resolve_handler(item.plugin_key, item.plugin_version, item.fact)
-                    group = handler(item.fact)
-                    if type(group) is not tuple or not group:
-                        raise ValueError("handler must return a non-empty Decision tuple")
-                    decision_groups.append(group)
+                decision_groups = self._decision_groups(prepared)
                 decisions = tuple(decision for group in decision_groups for decision in group)
                 defer = self._single_defer(decision_groups)
                 if defer is not None:
-                    await self._defer(evidence_id, token, defer)
+                    await self._defer(evidence_id, token)
                     processed += 1
                     continue
                 digest = decision_digest(decisions)
                 if not await self._record_digest(evidence_id, token, digest):
                     processed += 1
                     continue
-                await self._apply(evidence_id, token, digest, tuple(decision_groups))
+                await self._apply(evidence_id, token, digest)
                 if any(type(decision) is CreateWmsConfirmation for decision in decisions):
                     self._enqueue_wms_confirmations()
                 processed += 1
@@ -188,7 +190,6 @@ class FactProcessor:
         evidence_id: int,
         token: str,
         digest: str,
-        decision_groups: tuple[tuple[object, ...], ...],
     ) -> None:
         now = self._clock()
         async with self._sessions.begin() as db:
@@ -196,15 +197,12 @@ class FactProcessor:
             if evidence.decision_digest != digest:
                 raise RuntimeError("fenced Decision digest changed")
             prepared = await self._prepare_facts_in_session(db, evidence, now)
-            if len(prepared) != len(decision_groups):
-                raise RuntimeError("prepared Fact membership changed")
-            flattened: list[object] = []
-            for item, group in zip(prepared, decision_groups, strict=True):
-                self._plugins.resolve_handler(item.plugin_key, item.plugin_version, item.fact)
-                await self._applier.apply(db, evidence, item.execution, item.fact, group)
-                flattened.extend(group)
-            if decision_digest(tuple(flattened)) != digest:
-                raise RuntimeError("Decision digest changed during application")
+            current_groups = self._decision_groups(prepared)
+            current_decisions = tuple(decision for group in current_groups for decision in group)
+            if decision_digest(current_decisions) != digest:
+                raise RuntimeError("Decision digest changed during locked Fact rebuild")
+            for item, group in zip(prepared, current_groups, strict=True):
+                _ = await self._applier.apply(db, evidence, item.execution, item.fact, group)
             evidence.published_at = now
             evidence.decision_claim_token = None
             evidence.decision_claim_expires_at = None
@@ -246,7 +244,7 @@ class FactProcessor:
             raise ValueError("DeferExecution must not be mixed with another Decision")
         return decision
 
-    async def _defer(self, evidence_id: int, token: str, decision: DeferExecution) -> None:
+    async def _defer(self, evidence_id: int, token: str) -> None:
         now = self._clock()
         async with self._sessions.begin() as db:
             evidence = await self._claimed(db, evidence_id, token, now)
@@ -254,6 +252,9 @@ class FactProcessor:
             if len(prepared) != 1:
                 raise ValueError("DeferExecution requires exactly one prepared Fact")
             item = prepared[0]
+            decision = self._single_defer(self._decision_groups(prepared))
+            if decision is None:
+                raise RuntimeError("locked Fact no longer produces DeferExecution")
             if (
                 decision.material_execution_id != item.execution.execution_code
                 or decision.fact_id != item.fact.fact_id
@@ -263,7 +264,7 @@ class FactProcessor:
             evidence.decision_claim_token = None
             evidence.decision_claim_expires_at = None
             evidence.decision_next_attempt_at = now
-            await self._execution_service.transition(
+            _ = await self._execution_service.transition(
                 db,
                 item.execution,
                 target=MaterialExecutionStatus.HOLD,
@@ -272,6 +273,16 @@ class FactProcessor:
                 evidence_id=cast("int", evidence.id),
             )
             await self._evidences.flush(db)
+
+    def _decision_groups(self, prepared: tuple[_PreparedFact, ...]) -> list[tuple[object, ...]]:
+        decision_groups: list[tuple[object, ...]] = []
+        for item in prepared:
+            handler = self._plugins.resolve_handler(item.plugin_key, item.plugin_version, item.fact)
+            group = handler(item.fact)
+            if type(group) is not tuple or not group:
+                raise ValueError("handler must return a non-empty Decision tuple")
+            decision_groups.append(group)
+        return decision_groups
 
     async def _claimed(self, db: object, evidence_id: int, token: str, now: datetime) -> InboundEvidence:
         evidence = await self._evidences.get_decision_claim_for_update(
@@ -363,7 +374,7 @@ class FactProcessor:
         for execution in executions:
             if MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.CLOSED:
                 continue
-            await self._execution_service.transition(
+            _ = await self._execution_service.transition(
                 db,
                 execution,
                 target=MaterialExecutionStatus.RECONCILING,
@@ -384,7 +395,7 @@ class FactProcessor:
         if evidence.kind != InboundEvidenceKind.DEVICE_EVENT:
             raise ValueError(f"{InboundEvidenceKind(evidence.kind).value} evidence 缺少 material_execution_id")
         correlator = self._plugins.resolve_initial_execution_correlator(epoch.plugin_key, epoch.plugin_version)
-        descriptor = await correlator.correlate(str(evidence.id))
+        descriptor = await correlator.correlate(db, str(evidence.id))
         if descriptor is None:
             raise ValueError("initial evidence cannot be correlated")
         execution = await self._execution_service.create_or_get_for_initial_evidence(

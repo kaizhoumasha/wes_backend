@@ -120,7 +120,7 @@ def build_rough_sorter_runtime(
                 plugin_version=PLUGIN_VERSION,
                 handlers=build_handlers(),
                 fact_factory=factory,
-                initial_execution_correlator=RoughSorterInitialExecutionCorrelator(session_factory=session_factory),
+                initial_execution_correlator=RoughSorterInitialExecutionCorrelator(),
             ),
         )
     )

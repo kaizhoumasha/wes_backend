@@ -5,13 +5,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from celery.exceptions import WorkerTerminate
+from fastapi import FastAPI
 
 from src import register as register_module
 from src.app.runtime.system_capabilities.wms import provider_catalog
 from src.celery_app import app as celery_app_module
 from src.core.conf import settings
+from src.core.task_queue_gateway import task_queue_gateway
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +124,8 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     )
     monkeypatch.setattr(database, "init_db", AsyncMock())
     monkeypatch.setattr(database, "close_db", AsyncMock())
-    monkeypatch.setattr(database, "AsyncSessionLocal", MagicMock())
+    session_factory = MagicMock()
+    monkeypatch.setattr(database, "AsyncSessionLocal", session_factory)
     monkeypatch.setattr(
         transport_composition,
         "build_transport_runtime",
@@ -138,9 +142,29 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     monkeypatch.setattr(observability, "configure_runtime_open_telemetry_backend", MagicMock(return_value=False))
     monkeypatch.setattr(observability.runtime_observability_registry, "close", MagicMock())
 
-    app = SimpleNamespace(state=SimpleNamespace())
+    app = FastAPI()
+    register_module.register_routers(app)
     async with register_init(app):
+        from src.app.wms_adapter.inbound_event_handler import InboundEventHandler
+
         assert app.state.wms_effect_preparation_runtime is preparation_runtime
+        assert type(app.state.wms_inbound_event_handler) is InboundEventHandler
+        assert app.state.wms_inbound_event_handler._recorder._sessions is session_factory
+        assert app.state.wms_inbound_event_handler._recorder._task_queue is task_queue_gateway
+        assert app.state.device_evidence_service._task_queue is task_queue_gateway
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/wms/events",
+                json={
+                    "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+                    "operation": "inbound.execution.recovery_decided@v1",
+                    "timestamp": 1,
+                    "data": {},
+                },
+            )
+        assert response.status_code == 422
+        assert response.json()["code"] == "REJECTED"
+        assert response.json()["data"] == {"reason_code": "INVALID_DATA"}
 
     build_preparation.assert_called_once_with(
         catalog=startup.catalog,
@@ -149,6 +173,7 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     bind_preparation.assert_called_once_with(preparation_runtime)
     close_preparation.assert_awaited_once_with(preparation_runtime)
     transport_runtime.aclose.assert_awaited_once()
+    assert app.state.wms_inbound_event_handler is None
 
 
 @pytest.mark.asyncio

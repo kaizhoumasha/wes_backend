@@ -4,8 +4,10 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from rough_sorter.handlers import ReplacementPlanDecidedHandler
 from wes_plugin_sdk import (
     CreateWmsConfirmation,
+    DeferExecution,
     DevicePosition,
     DeviceResultReadyFact,
     EvidenceReadyFact,
@@ -142,6 +144,16 @@ class _Confirmations:
         del db
         return [item for item in self.confirmations if item.material_execution_id == material_execution_id]
 
+    async def list_for_executions_for_update(
+        self, db: object, *, material_execution_ids: tuple[int, ...], operation: str
+    ) -> list[WmsConfirmation]:
+        del db
+        return [
+            item
+            for item in self.confirmations
+            if item.material_execution_id in material_execution_ids and item.operation == operation
+        ]
+
 
 class _Readiness:
     async def is_ready(self, db: object, binding: object, *, observed_at: datetime) -> bool:
@@ -168,6 +180,10 @@ class _Commands:
             for item in self.commands
             if item.line_run_epoch_id == line_run_epoch_id and item.material_execution_id == material_execution_id
         ]
+
+    async def list_for_epoch_for_update(self, db: object, *, line_run_epoch_id: int) -> list[DeviceCommand]:
+        del db
+        return [item for item in self.commands if item.line_run_epoch_id == line_run_epoch_id]
 
 
 class _RackPositions:
@@ -785,11 +801,76 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         response_result="READY",
         completed_at=NOW,
     )
+    placement_command_code = "019d0000-0000-7000-8000-000000000099"
+    placement_command = DeviceCommand(
+        id=99,
+        command_code=placement_command_code,
+        device_code="DEVICE-3",
+        device_binding_id=3,
+        line_run_epoch_id=11,
+        execution_ref_type="PLUGIN_DECISION",
+        execution_ref_id="evidence:98:execution:22:CREATE_DEVICE_COMMAND:0",
+        material_execution_id=22,
+        contract_key="rough_sorter.placement_device",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={
+            "material_trace_id": "TRACE-22",
+            "source": {
+                "location_id": "OUTLET-1",
+                "location_type": "PIPELINE_OUTLET",
+                "material_trace_id": "TRACE-22",
+            },
+            "target": {
+                "location_id": "CELL-99",
+                "location_type": "RACK_CELL",
+                "material_trace_id": "TRACE-22",
+                "rack_id": "RACK-1",
+                "rack_slot_code": "SLOT-99",
+                "bin_id": "BIN-99",
+                "bin_cell_id": "CELL-99",
+            },
+        },
+        deadline_at=NOW,
+        payload_digest="9" * 64,
+        status=CommandStatus.ACKNOWLEDGED,
+    )
+    placement_confirmation = WmsConfirmation(
+        id=99,
+        operation="inbound.material.placement_report@v1",
+        operation_id=placement_command_code,
+        material_execution_id=22,
+        request_digest="9" * 64,
+        request_payload={
+            "operation": "inbound.material.placement_report@v1",
+            "operation_id": placement_command_code,
+            "timestamp": 1_787_040_000_450,
+            "data": {
+                "material_execution_id": "EXEC-22",
+                "material_trace_id": "TRACE-22",
+                "pkg_id": "PKG-22",
+                "inbound_admission_id": "ADM-22",
+                "target_assignment_id": "ASSIGN-22",
+                "target_position": {
+                    "type": "ONE_LAYER_BIN_CELL",
+                    "rack_id": "RACK-1",
+                    "rack_slot_code": "SLOT-99",
+                    "bin_id": "BIN-99",
+                    "bin_cell_id": "CELL-99",
+                },
+                "placement_sequence": 1,
+                "command_code": placement_command_code,
+                "placed_at": 1_787_040_000_440,
+            },
+        },
+        deadline_at=NOW,
+        status=WmsConfirmationStatus.PENDING,
+    )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
-    factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
+    factory._wms_confirmations = _Confirmations(confirmation, placement_confirmation)  # type: ignore[attr-defined]
     factory._rack_positions = _RackPositions()  # type: ignore[attr-defined]
     factory._rack_placements = _Placements()  # type: ignore[attr-defined]
-    factory._commands = _Commands()  # type: ignore[attr-defined]
+    factory._commands = _Commands(placement_command)  # type: ignore[attr-defined]
 
     fact = await factory.build(
         object(),
@@ -798,7 +879,10 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
 
     assert fact.result.value == "READY"
     assert fact.release_snapshot.current_rack_id == "RACK-1"
-    assert fact.release_snapshot.placements == ()
+    assert tuple(item.command_code for item in fact.release_snapshot.placements) == (placement_command_code,)
+    assert ReplacementPlanDecidedHandler()(fact) == (
+        DeferExecution("EXEC-21", "evidence:36", "RACK_RELEASE_GATE_NOT_CLOSED"),
+    )
     assert fact.old_loaded_rack.rack_id == "RACK-1"
     assert fact.new_empty_rack.rack_id == "RACK-2"
 
@@ -873,7 +957,9 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             return SimpleNamespace(leg="NEW_IN", source_evidence_id=36, rack_replacement_id="REPLACE-1")
 
     factory._evidences = _Evidences(transport_evidence, evidence, admission_evidence)  # type: ignore[attr-defined]
-    factory._wms_confirmations = _Confirmations(confirmation, admission_confirmation)  # type: ignore[attr-defined]
+    factory._wms_confirmations = _Confirmations(  # type: ignore[attr-defined]
+        confirmation, admission_confirmation, placement_confirmation
+    )
     factory._rack_replacement_bindings = Bindings()  # type: ignore[attr-defined]
 
     transport_fact = await factory.build(
@@ -1258,12 +1344,11 @@ class _Sessions:
 async def test_initial_correlator_rebuilds_stable_execution_identity_from_persisted_scan() -> None:
     factory, base = _factory()
     evidence = factory._evidences.evidence  # type: ignore[attr-defined]
-    correlator = RoughSorterInitialExecutionCorrelator(
-        session_factory=_Sessions(object()), evidence_repository=_Evidences(evidence)
-    )
+    correlator = RoughSorterInitialExecutionCorrelator(evidence_repository=_Evidences(evidence))
+    db = object()
 
-    first = await correlator.correlate(base.evidence_id)
-    second = await correlator.correlate(base.evidence_id)
+    first = await correlator.correlate(db, base.evidence_id)
+    second = await correlator.correlate(db, base.evidence_id)
 
     assert first == second
     assert first is not None

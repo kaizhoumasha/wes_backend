@@ -29,7 +29,12 @@ ImageIdentity = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$
 StableText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 _MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True, strict=True)
-_EXPECTED_ROLES: tuple[WmsDeploymentRole, ...] = (
+_EXPECTED_ROLES: tuple[
+    Literal["api"],
+    Literal["wes-worker"],
+    Literal["fulfillment-worker"],
+    Literal["beat"],
+] = (
     "api",
     "wes-worker",
     "fulfillment-worker",
@@ -62,6 +67,10 @@ _REQUIRED_BEAT_SCHEDULES = (
     (
         "dispatch-wms-confirmations-batch",
         "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
+    ),
+    (
+        "process-execution-facts-batch",
+        "src.celery_app.tasks.execution.process_execution_facts_batch",
     ),
     ("scan-wms-effect-status-batch", "src.celery_app.tasks.workline.scan_wms_effect_status_batch"),
     ("submit-transport-tasks-batch", "src.celery_app.tasks.transport.submit_transport_tasks_batch"),
@@ -133,7 +142,7 @@ class WesWorkerDeploymentFacts(BaseModel):
     model_config = _MODEL_CONFIG
 
     kind: Literal["wes-worker"] = "wes-worker"
-    queues: tuple[Literal["default"], Literal["celery"], Literal["device"]]
+    queues: tuple[Literal["default"], Literal["celery"], Literal["device-command"]]
     readiness: WmsLaneReadinessFacts
 
 
@@ -257,6 +266,18 @@ def _beat_role_facts(
                 f"Beat fulfillment task expires must be positive and no greater than schedule: {schedule_name}"
             )
 
+    execution_task = "src.celery_app.tasks.execution.process_execution_facts_batch"
+    execution_schedule = beat_schedule_source["process-execution-facts-batch"]
+    execution_options = execution_schedule.get("options")
+    if (
+        execution_schedule.get("schedule") != 10.0
+        or not isinstance(execution_options, Mapping)
+        or execution_options.get("expires") != 10.0
+    ):
+        raise ValueError("Beat execution scanner must use schedule=10s and expires=10s")
+    if task_routes_source.get(execution_task, {}).get("queue") != "device-command":
+        raise ValueError("Beat execution scanner must route to device-command")
+
     routes: list[tuple[str, str]] = []
     for task_name in _REQUIRED_FULFILLMENT_ROUTES:
         route = task_routes_source.get(task_name)
@@ -322,10 +343,10 @@ def build_wms_deployment_attestation(
         role_facts: WmsDeploymentRoleFacts = ApiDeploymentFacts(readiness=_lane_readiness_facts(startup.wes_readiness))
     elif role == "wes-worker":
         queues = _worker_queues(worker_queues)
-        if queues != ("default", "celery", "device"):
-            raise ValueError("WES worker queues must be exactly default,celery,device")
+        if queues != ("default", "celery", "device-command"):
+            raise ValueError("WES worker queues must be exactly default,celery,device-command")
         role_facts = WesWorkerDeploymentFacts(
-            queues=queues,
+            queues=("default", "celery", "device-command"),
             readiness=_lane_readiness_facts(startup.wes_readiness),
         )
     elif role == "fulfillment-worker":
@@ -339,7 +360,7 @@ def build_wms_deployment_attestation(
         if concurrency != 1:
             raise ValueError("fulfillment worker must use concurrency=1")
         role_facts = FulfillmentWorkerDeploymentFacts(
-            queues=queues,
+            queues=("wms-fulfillment",),
             concurrency=concurrency,
             readiness=_lane_readiness_facts(startup.fulfillment_readiness),
         )
@@ -361,7 +382,11 @@ def _verify_role_facts(artifact: WmsDeploymentAttestation) -> None:
         expected_readiness = _static_lane_readiness_facts(WmsProviderProcessRole.WES)
         if artifact.role_facts.readiness != expected_readiness:
             raise ValueError(f"{artifact.role} WES/data readiness drift")
-        if artifact.role == "wes-worker" and artifact.role_facts.queues != ("default", "celery", "device"):
+        if artifact.role == "wes-worker" and artifact.role_facts.queues != (
+            "default",
+            "celery",
+            "device-command",
+        ):
             raise ValueError("wes-worker queue facts drift")
         return
     if artifact.role == "fulfillment-worker":

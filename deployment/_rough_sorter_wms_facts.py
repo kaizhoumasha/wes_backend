@@ -280,10 +280,24 @@ async def rack_release_snapshot(
 ) -> Any:
     if execution.id is None:
         raise ValueError("rack release requires persisted execution")
-    command_records = await commands.list_for_material_execution(
-        db, line_run_epoch_id=execution.line_run_epoch_id, material_execution_id=execution.id
+    command_records = await commands.list_for_epoch_for_update(db, line_run_epoch_id=execution.line_run_epoch_id)
+    rack_commands: list[Any] = []
+    for command in command_records:
+        if command.task_type != "PICK_AND_PUT":
+            continue
+        material_trace_id = required_string(command.params.get("material_trace_id"), "placement material_trace_id")
+        target = command_position(command.params.get("target"), material_trace_id)
+        if target.location_type != "RACK_CELL" or target.rack_id != current_rack_id:
+            continue
+        if command.material_execution_id is None:
+            raise ValueError("placement command missing material execution correlation")
+        rack_commands.append(command)
+    execution_ids = tuple(sorted({cast("int", command.material_execution_id) for command in rack_commands}))
+    confirmation_records = await confirmations.list_for_executions_for_update(
+        db,
+        material_execution_ids=execution_ids,
+        operation="inbound.material.placement_report@v1",
     )
-    confirmation_records = await confirmations.list_for_execution(db, execution.id)
     placement_confirmations: dict[str, WmsConfirmation] = {}
     for confirmation in confirmation_records:
         if confirmation.operation != "inbound.material.placement_report@v1":
@@ -296,15 +310,12 @@ async def rack_release_snapshot(
             raise ValueError("duplicate placement confirmation command correlation")
         placement_confirmations[command_code] = confirmation
     items: list[Any] = []
-    for command in command_records:
-        if command.task_type != "PICK_AND_PUT":
-            continue
-        target = command_position(command.params.get("target"), execution.material_trace_id)
-        if target.location_type != "RACK_CELL" or target.rack_id != current_rack_id:
-            continue
+    for command in rack_commands:
         confirmation = placement_confirmations.get(command.command_code)
         if confirmation is None:
             raise ValueError("placement command missing exact confirmation correlation")
+        if confirmation.material_execution_id != command.material_execution_id:
+            raise ValueError("placement confirmation execution correlation mismatch")
         items.append(
             types.PlacementReleaseEvidence(
                 command_code=command.command_code,

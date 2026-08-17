@@ -55,6 +55,27 @@ class WmsConfirmationRepository(BaseRepository[WmsConfirmation]):
         )
         return list(result.scalars())
 
+    async def list_for_executions_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        material_execution_ids: tuple[int, ...],
+        operation: str,
+    ) -> list[WmsConfirmation]:
+        if not material_execution_ids:
+            return []
+        columns = cast("Any", WmsConfirmation).__table__.c
+        result = await db.execute(
+            select(WmsConfirmation)
+            .where(
+                columns.material_execution_id.in_(material_execution_ids),
+                columns.operation == operation,
+            )
+            .order_by(columns.created_at, columns.id)
+            .with_for_update()
+        )
+        return list(result.scalars())
+
     async def claim_eligible(
         self,
         db: AsyncSession,

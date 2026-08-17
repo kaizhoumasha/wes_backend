@@ -47,7 +47,8 @@ def _handle_evidence(fact: EvidenceReadyFact) -> tuple[Wait, ...]:
 class _FakeCorrelator:
     descriptor: InitialExecutionDescriptor | None
 
-    async def correlate(self, evidence_id: str) -> InitialExecutionDescriptor | None:
+    async def correlate(self, db: object, evidence_id: str) -> InitialExecutionDescriptor | None:
+        assert db is _FACTORY_DB
         assert evidence_id == "1"
         return self.descriptor
 

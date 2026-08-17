@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -56,6 +57,7 @@ class _Sessions:
 class _Evidences:
     def __init__(self, evidence: InboundEvidence) -> None:
         self.evidence = evidence
+        self.locked_databases: list[object] = []
 
     async def claim_decision_batch(self, db: object, **kwargs: object) -> list[InboundEvidence]:
         del db
@@ -65,7 +67,7 @@ class _Evidences:
         return [self.evidence]
 
     async def get_decision_claim_for_update(self, db: object, **kwargs: object) -> InboundEvidence | None:
-        del db
+        self.locked_databases.append(db)
         if self.evidence.decision_claim_token != kwargs["claim_token"]:
             return None
         if self.evidence.decision_claim_expires_at < kwargs["now"]:
@@ -157,7 +159,11 @@ class _ExecutionService:
 
 
 class _Correlator:
-    async def correlate(self, evidence_id: str) -> InitialExecutionDescriptor:
+    def __init__(self) -> None:
+        self.databases: list[object] = []
+
+    async def correlate(self, db: object, evidence_id: str) -> InitialExecutionDescriptor:
+        self.databases.append(db)
         assert evidence_id == "31"
         return InitialExecutionDescriptor("TRACE-1", "EXEC-1")
 
@@ -166,8 +172,8 @@ class _RejectingCorrelator:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def correlate(self, evidence_id: str) -> InitialExecutionDescriptor:
-        del evidence_id
+    async def correlate(self, db: object, evidence_id: str) -> InitialExecutionDescriptor:
+        del db, evidence_id
         self.calls += 1
         raise AssertionError("non-initial evidence must not call correlator")
 
@@ -175,6 +181,40 @@ class _RejectingCorrelator:
 class _IdentityFactFactory:
     async def build(self, _db: object, fact: FactReference) -> FactReference:
         return fact
+
+
+@dataclass(frozen=True, slots=True)
+class _ChangingFact(EvidenceReadyFact):
+    decision: str
+
+
+class _ChangingFactFactory:
+    def __init__(self, decisions: tuple[str, ...], *, on_rebuild: object | None = None) -> None:
+        self._decisions = iter(decisions)
+        self._on_rebuild = on_rebuild
+        self.calls = 0
+
+    async def build(self, db: object, fact: FactReference) -> FactReference:
+        del db
+        self.calls += 1
+        if self.calls == 2 and self._on_rebuild is not None:
+            self._on_rebuild()
+        return _ChangingFact(
+            fact_id=fact.fact_id,
+            evidence_id=fact.evidence_id,
+            fact_version=fact.fact_version,
+            material_execution_id=fact.material_execution_id,
+            decision=next(self._decisions),
+        )
+
+
+@handler(fact_type=_ChangingFact, name="changing", supported_versions=("1.0",))
+def _handle_changing(fact: _ChangingFact) -> tuple[DeferExecution | PauseForReconciliation | Wait, ...]:
+    if fact.decision == "DEFER":
+        return (DeferExecution(fact.material_execution_id, fact.fact_id, "SNAPSHOT_NOT_READY"),)
+    if fact.decision == "PAUSE":
+        return (PauseForReconciliation(fact.material_execution_id, fact.fact_id, "SNAPSHOT_CONFLICT", ()),)
+    return (Wait(fact.material_execution_id, fact.fact_id, "SNAPSHOT_READY"),)
 
 
 class _Applier:
@@ -370,6 +410,55 @@ def _processor(
     return processor, service, decision_applier
 
 
+def _changing_processor(
+    decisions: tuple[str, str], *, reconcile_on_rebuild: bool = False
+) -> tuple[FactProcessor, InboundEvidence, _Executions, _ExecutionService, DecisionApplier, _ChangingFactFactory]:
+    evidence = _evidence()
+    executions = _Executions()
+
+    def mark_reconciling() -> None:
+        assert executions.execution is not None
+        executions.execution.status = MaterialExecutionStatus.RECONCILING
+        executions.execution.last_transition_reason = "NEW_CAUSAL_CONFLICT"
+        executions.execution.last_transition_evidence_id = 32
+
+    factory = _ChangingFactFactory(decisions, on_rebuild=mark_reconciling if reconcile_on_rebuild else None)
+    binding = StaticPluginBinding(
+        (
+            PluginRuntimeBinding(
+                plugin_key="rough_sorter",
+                plugin_version="1.0.0",
+                handlers=(_handle_changing,),
+                fact_factory=factory,
+                initial_execution_correlator=_Correlator(),
+            ),
+        )
+    )
+    service = _ExecutionService(executions)
+    applier = DecisionApplier(
+        epoch_repository=object(),  # type: ignore[arg-type]
+        device_command_service=object(),  # type: ignore[arg-type]
+        wms_confirmation_service=object(),  # type: ignore[arg-type]
+        wms_request_resolver=object(),  # type: ignore[arg-type]
+        rack_binding_repository=object(),  # type: ignore[arg-type]
+        transport_service=object(),  # type: ignore[arg-type]
+        material_execution_service=service,
+        clock=lambda: NOW,
+    )
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=binding,
+        decision_applier=applier,
+        evidence_repository=_Evidences(evidence),
+        execution_repository=executions,
+        epoch_repository=_Epochs(),
+        material_execution_service=service,
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-changing",
+    )
+    return processor, evidence, executions, service, applier, factory
+
+
 @pytest.mark.asyncio
 async def test_committed_immediate_confirmation_wakes_wms_dispatcher_without_payload() -> None:
     evidence = _evidence()
@@ -398,7 +487,8 @@ async def test_wms_wake_failure_does_not_rollback_applied_decisions() -> None:
 @pytest.mark.asyncio
 async def test_initial_evidence_is_correlated_then_decisions_are_published() -> None:
     evidence = _evidence()
-    processor, _, applier = _processor(evidence)
+    correlator = _Correlator()
+    processor, _, applier = _processor(evidence, correlator=correlator)
 
     assert await processor.process_batch() == 1
 
@@ -406,6 +496,7 @@ async def test_initial_evidence_is_correlated_then_decisions_are_published() -> 
     assert evidence.decision_digest == decision_digest(applier.calls[0][1])
     assert evidence.published_at == NOW
     assert evidence.decision_claim_token is None
+    assert correlator.databases == [processor._evidences.locked_databases[0]]  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -463,6 +554,35 @@ async def test_mixed_defer_fails_closed_as_a_real_handler_failure() -> None:
     assert evidence.decision_attempt_count == 1
     assert evidence.decision_next_attempt_at == datetime(2026, 8, 17, 10, 0, 1)
     assert applier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_apply_rebuilds_fact_and_never_applies_the_lock_free_decision_after_snapshot_drift() -> None:
+    processor, evidence, _, service, _, factory = _changing_processor(("WAIT", "PAUSE"))
+
+    assert await processor.process_batch() == 0
+
+    assert factory.calls == 2
+    assert service.transitions == []
+    assert evidence.published_at is None
+    assert evidence.decision_attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_defer_rebuilds_fact_and_never_overwrites_a_new_reconciling_snapshot_with_old_hold() -> None:
+    processor, evidence, executions, service, _, factory = _changing_processor(
+        ("DEFER", "PAUSE"), reconcile_on_rebuild=True
+    )
+
+    assert await processor.process_batch() == 0
+
+    assert factory.calls == 2
+    assert executions.execution is not None
+    assert MaterialExecutionStatus(executions.execution.status) is MaterialExecutionStatus.RECONCILING
+    assert executions.execution.last_transition_evidence_id == 32
+    assert service.transitions == []
+    assert evidence.published_at is None
+    assert evidence.decision_attempt_count == 1
 
 
 @pytest.mark.asyncio
