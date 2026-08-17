@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import CheckConstraint, delete, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from wes_plugin_sdk import (
     CreateDeviceCommand,
     CreateTransportTask,
@@ -380,6 +381,13 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
     integration_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    production_session_factory = async_sessionmaker(
+        integration_session_factory.kw["bind"],
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
     identity = uuid4().hex
     now = datetime(2026, 8, 18, 9)
     roles = (
@@ -393,7 +401,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
         ("PIPELINE_OUTLET", "OUTLET-1"),
         ("NG_POSITION", "NG-1"),
     )
-    async with integration_session_factory.begin() as db:
+    async with production_session_factory.begin() as db:
         line = WorkLine(
             line_code=f"ROUGH-SCAN-{identity[:12]}",
             line_name="Rough sorter scan owner",
@@ -493,20 +501,21 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
 
     monkeypatch.setattr(task_queue_gateway, "enqueue_wms_confirmations", lambda: None)
     runtime = build_rough_sorter_runtime(
-        session_factory=integration_session_factory,
+        session_factory=production_session_factory,
         transport_runtime=SimpleNamespace(service=object(), repository=object(), client=object()),  # type: ignore[arg-type]
-        device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
+        device_command_service=DeviceCommandService(session_factory=production_session_factory, clock=lambda: now),
     )
 
     assert await runtime.execution.fact_processor.process_batch() == 1
 
-    async with integration_session_factory.begin() as db:
+    async with production_session_factory.begin() as db:
         persisted_evidence = await db.get(InboundEvidence, evidence_id)
         assert persisted_evidence is not None and persisted_evidence.material_execution_id is not None
         execution = await db.get(MaterialExecution, persisted_evidence.material_execution_id)
         assert execution is not None
         assert execution.material_trace_id == f"TRACE-{identity}"
         assert persisted_evidence.published_at is not None
+        assert persisted_evidence.decision_digest is not None
         confirmations = list(
             (
                 await db.execute(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution.id))

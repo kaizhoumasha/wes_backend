@@ -170,6 +170,7 @@ class FactProcessor:
             digest = decision_digest(current_decisions)
             if evidence.decision_digest is None:
                 evidence.decision_digest = digest
+                await self._evidences.flush(db)
             elif evidence.decision_digest != digest:
                 evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
                 evidence.decision_claim_token = None

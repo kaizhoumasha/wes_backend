@@ -241,6 +241,34 @@ class _Applier:
         return decision_digest(decisions)
 
 
+class _PersistingEvidences(_Evidences):
+    def __init__(self, evidence: InboundEvidence) -> None:
+        super().__init__(evidence)
+        self.persisted_decision_digest = evidence.decision_digest
+
+    async def flush(self, db: object) -> None:
+        del db
+        self.persisted_decision_digest = self.evidence.decision_digest
+
+
+class _PopulateExistingApplier(_Applier):
+    def __init__(self, evidences: _PersistingEvidences) -> None:
+        super().__init__()
+        self._evidences = evidences
+
+    async def apply(
+        self,
+        db: object,
+        evidence: object,
+        execution: object,
+        fact: object,
+        decisions: tuple[object, ...],
+    ) -> str:
+        assert isinstance(evidence, InboundEvidence)
+        evidence.decision_digest = self._evidences.persisted_decision_digest
+        return await super().apply(db, evidence, execution, fact, decisions)
+
+
 @handler(fact_type=EvidenceReadyFact, name="initial", supported_versions=("1.0",))
 def _handle_initial(fact: EvidenceReadyFact) -> tuple[Wait, ...]:
     return (Wait(fact.material_execution_id, fact.fact_id, "WAIT_FOR_WMS"),)
@@ -494,6 +522,31 @@ async def test_initial_evidence_is_correlated_then_decisions_are_published() -> 
     assert evidence.published_at == NOW
     assert evidence.decision_claim_token is None
     assert correlator.databases == [processor._evidences.locked_databases[0]]  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_decision_digest_is_flushed_before_populate_existing_can_reload_the_evidence() -> None:
+    evidence = _evidence()
+    evidences = _PersistingEvidences(evidence)
+    executions = _Executions()
+    service = _ExecutionService(executions)
+    applier = _PopulateExistingApplier(evidences)
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=_plugins(_handle_wms),
+        decision_applier=applier,
+        evidence_repository=evidences,
+        execution_repository=executions,
+        epoch_repository=_Epochs(),
+        material_execution_service=service,
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-autoflush-disabled",
+    )
+
+    assert await processor.process_batch() == 1
+
+    assert evidence.published_at == NOW
+    assert evidence.decision_digest == decision_digest(applier.calls[0][1])
 
 
 @pytest.mark.asyncio
