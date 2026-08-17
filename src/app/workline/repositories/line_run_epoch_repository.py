@@ -35,6 +35,11 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         )
         return result.scalar_one_or_none()
 
+    async def has_active_epoch(self, db: AsyncSession) -> bool:
+        columns = cast("Any", LineRunEpoch).__table__.c
+        result = await db.execute(select(columns.id).where(columns.status == LineRunEpochStatus.ACTIVE).limit(1))
+        return result.scalar_one_or_none() is not None
+
     async def add_epoch(self, db: AsyncSession, epoch: LineRunEpoch) -> LineRunEpoch:
         db.add(epoch)
         await db.flush()

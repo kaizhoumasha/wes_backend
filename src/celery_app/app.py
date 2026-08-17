@@ -39,6 +39,7 @@ celery_app = Celery(
         "src.celery_app.tasks.sys",  # 系统级统一任务
         "src.celery_app.tasks.transport",  # Transport 可靠对象后台驱动
         "src.celery_app.tasks.workline",  # 作业线编排任务
+        "src.celery_app.tasks.execution",  # Execution Fact 持久处理
     ],
 )
 
@@ -47,17 +48,22 @@ celery_app = Celery(
 # ============================================
 
 
+def _worker_queues() -> frozenset[str]:
+    process_role = celery_async_runtime.process_role
+    default_queues = "default,celery,device-command" if process_role is WmsProviderProcessRole.WES else ""
+    return frozenset(
+        queue.strip() for queue in os.getenv("CELERY_WORKER_QUEUES", default_queues).split(",") if queue.strip()
+    )
+
+
 def _validate_worker_role_queue_contract() -> None:
     """部署角色与实际消费队列必须一一对应，配置漂移时阻止 worker 启动。"""
 
     process_role = celery_async_runtime.process_role
-    default_queues = "default,celery,device-command" if process_role is WmsProviderProcessRole.WES else ""
-    queues = frozenset(
-        queue.strip() for queue in os.getenv("CELERY_WORKER_QUEUES", default_queues).split(",") if queue.strip()
-    )
+    queues = _worker_queues()
     if process_role is WmsProviderProcessRole.WES and "wms-fulfillment" in queues:
         raise ValueError("WES worker must not consume the WMS fulfillment queue")
-    if process_role is WmsProviderProcessRole.FULFILLMENT and queues != {"wms-fulfillment"}:
+    if process_role is WmsProviderProcessRole.FULFILLMENT and queues != frozenset({"wms-fulfillment"}):
         raise ValueError("fulfillment worker must consume only the WMS fulfillment queue")
     if process_role is WmsProviderProcessRole.FULFILLMENT and os.getenv("CELERY_WORKER_CONCURRENCY", "").strip() != "1":
         raise ValueError("fulfillment worker must use concurrency=1")
@@ -93,6 +99,13 @@ def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
     _logger_module._initialized = False
     setup_logger()
     celery_async_runtime.initialize()
+    if celery_async_runtime.process_role is WmsProviderProcessRole.WES and "device-command" in _worker_queues():
+        from src.celery_app.tasks import execution
+
+        try:
+            celery_async_runtime.run_async(execution.assert_execution_worker_startable)
+        except Exception as exc:
+            raise WorkerTerminate("execution worker startup rejected") from exc
 
 
 @worker_process_shutdown.connect

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from wes_plugin_sdk import (
+    DeferExecution,
     DeviceResultReadyFact,
     EvidenceReadyFact,
     FactReference,
@@ -59,7 +60,6 @@ class _Evidences:
         token = kwargs["claim_token"]
         self.evidence.decision_claim_token = token
         self.evidence.decision_claim_expires_at = kwargs["claim_expires_at"]
-        self.evidence.decision_attempt_count += 1
         return [self.evidence]
 
     async def get_decision_claim_for_update(self, db: object, **kwargs: object) -> InboundEvidence | None:
@@ -196,9 +196,27 @@ def _failing_handler(fact: EvidenceReadyFact) -> tuple[Wait, ...]:
     raise RuntimeError("handler failed")
 
 
+@handler(fact_type=EvidenceReadyFact, name="defer", supported_versions=("1.0",))
+def _defer_handler(fact: EvidenceReadyFact) -> tuple[DeferExecution, ...]:
+    return (DeferExecution(fact.material_execution_id, fact.fact_id, "DEVICE_BUSY"),)
+
+
+@handler(fact_type=EvidenceReadyFact, name="mixed-defer", supported_versions=("1.0",))
+def _mixed_defer_handler(fact: EvidenceReadyFact) -> tuple[DeferExecution | Wait, ...]:
+    return (
+        DeferExecution(fact.material_execution_id, fact.fact_id, "DEVICE_BUSY"),
+        Wait(fact.material_execution_id, fact.fact_id, "MUST_NOT_MIX"),
+    )
+
+
 @handler(fact_type=ReconciliationResultReadyFact, name="reconciliation", supported_versions=("1.0",))
 def _handle_reconciliation(fact: ReconciliationResultReadyFact) -> tuple[Wait, ...]:
     return (Wait(fact.material_execution_id, fact.fact_id, "MANUAL_REVIEW"),)
+
+
+@handler(fact_type=ReconciliationResultReadyFact, name="reconciliation-defer", supported_versions=("1.0",))
+def _handle_reconciliation_defer(fact: ReconciliationResultReadyFact) -> tuple[DeferExecution, ...]:
+    return (DeferExecution(fact.material_execution_id, fact.fact_id, "DEVICE_BUSY"),)
 
 
 def _evidence(**changes: object) -> InboundEvidence:
@@ -291,6 +309,38 @@ async def test_handler_failure_releases_claim_with_bounded_backoff() -> None:
     assert evidence.decision_claim_token is None
     assert evidence.decision_next_attempt_at == datetime(2026, 8, 17, 10, 0, 1)
     assert evidence.published_at is None
+    assert evidence.decision_attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_single_defer_releases_claim_holds_execution_without_publishing_or_attempt() -> None:
+    evidence = _evidence()
+    processor, execution_service, applier = _processor(evidence, target=_defer_handler)
+
+    assert await processor.process_batch() == 1
+
+    assert evidence.published_at is None
+    assert evidence.decision_digest is None
+    assert evidence.decision_attempt_count == 0
+    assert evidence.decision_next_attempt_at == NOW
+    assert evidence.decision_claim_token is None
+    assert evidence.decision_claim_expires_at is None
+    assert execution_service.transitions == [MaterialExecutionStatus.HOLD]
+    assert applier.calls == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_defer_fails_closed_as_a_real_handler_failure() -> None:
+    evidence = _evidence()
+    processor, _, applier = _processor(evidence, target=_mixed_defer_handler)
+
+    assert await processor.process_batch() == 0
+
+    assert evidence.published_at is None
+    assert evidence.decision_digest is None
+    assert evidence.decision_attempt_count == 1
+    assert evidence.decision_next_attempt_at == datetime(2026, 8, 17, 10, 0, 1)
+    assert applier.calls == []
 
 
 @pytest.mark.asyncio
@@ -451,7 +501,7 @@ async def test_digest_conflict_keeps_closed_execution_terminal_and_reconciles_ev
 
 
 @pytest.mark.asyncio
-async def test_multi_execution_reconciliation_applies_all_groups_in_one_transaction() -> None:
+async def test_multi_execution_reconciliation_defer_fails_closed() -> None:
     evidence = _evidence(
         kind=InboundEvidenceKind.WMS_EVENT,
         operation="inbound.execution.reconciliation_decided@v1",
@@ -497,7 +547,7 @@ async def test_multi_execution_reconciliation_applies_all_groups_in_one_transact
                 PluginRuntimeBinding(
                     plugin_key="rough_sorter",
                     plugin_version="1.0.0",
-                    handlers=(_handle_reconciliation,),
+                    handlers=(_handle_reconciliation_defer,),
                     fact_factory=_IdentityFactFactory(),
                 ),
             )
@@ -512,12 +562,13 @@ async def test_multi_execution_reconciliation_applies_all_groups_in_one_transact
         token_factory=lambda: "claim-1",
     )
 
-    assert await processor.process_batch() == 1
+    assert await processor.process_batch() == 0
 
-    assert len(applier.calls) == 2
-    assert applier.calls[0][0] is applier.calls[1][0]
-    assert [call[1][0].material_execution_id for call in applier.calls] == ["EXEC-1", "EXEC-2"]
-    assert evidence.published_at == NOW
+    assert applier.calls == []
+    assert evidence.published_at is None
+    assert evidence.decision_digest is None
+    assert evidence.decision_attempt_count == 1
+    assert evidence.decision_next_attempt_at == datetime(2026, 8, 17, 10, 0, 1)
 
 
 @pytest.mark.asyncio

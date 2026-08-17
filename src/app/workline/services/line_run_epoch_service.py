@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
-from typing import Protocol
+from typing import Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
@@ -26,6 +26,8 @@ class LineRunEpochRepositoryPort(Protocol):
     """Service 所需的最小持久化端口。"""
 
     async def get_active_for_workline_for_update(self, db: object, workline_id: int) -> LineRunEpoch | None: ...
+
+    async def has_active_epoch(self, db: object) -> bool: ...
 
     async def add_epoch(self, db: object, epoch: LineRunEpoch) -> LineRunEpoch: ...
 
@@ -63,6 +65,11 @@ class LineRunEpochService:
 
     def __init__(self, repository: LineRunEpochRepositoryPort | None = None) -> None:
         self._repository = repository or line_run_epoch_repository
+
+    async def assert_execution_worker_startable(self, db: AsyncSession | object) -> None:
+        repository = cast("LineRunEpochRepositoryPort", self._repository)
+        if await repository.has_active_epoch(db):
+            raise ActiveLineRunEpochExistsError("execution worker cannot start while an ACTIVE LineRunEpoch exists")
 
     async def create_epoch(
         self,

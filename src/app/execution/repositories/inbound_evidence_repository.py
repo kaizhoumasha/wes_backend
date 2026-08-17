@@ -14,6 +14,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
+from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
 from src.database.base_repository import BaseRepository
 
 
@@ -99,11 +100,14 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         limit: int,
     ) -> list[InboundEvidence]:
         columns = cast("Any", InboundEvidence).__table__.c
+        epoch_columns = cast("Any", LineRunEpoch).__table__.c
         result = await db.execute(
             select(InboundEvidence)
+            .join(LineRunEpoch, columns.line_run_epoch_id == epoch_columns.id)
             .where(
                 columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
                 columns.published_at.is_(None),
+                epoch_columns.status == LineRunEpochStatus.ACTIVE,
                 not_(
                     and_(
                         columns.kind == InboundEvidenceKind.DEVICE_RESULT,
@@ -113,7 +117,12 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
                 (columns.decision_next_attempt_at.is_(None) | (columns.decision_next_attempt_at <= now)),
                 (columns.decision_claim_token.is_(None) | (columns.decision_claim_expires_at < now)),
             )
-            .order_by(columns.received_at, columns.id)
+            .order_by(
+                columns.decision_next_attempt_at.is_not(None),
+                columns.decision_next_attempt_at,
+                columns.received_at,
+                columns.id,
+            )
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
@@ -121,7 +130,6 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         for evidence in evidences:
             evidence.decision_claim_token = claim_token
             evidence.decision_claim_expires_at = claim_expires_at
-            evidence.decision_attempt_count += 1
         await db.flush()
         return evidences
 

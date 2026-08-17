@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
-from wes_plugin_sdk import FactReference
+from wes_plugin_sdk import DeferExecution, FactReference
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -142,6 +142,11 @@ class FactProcessor:
                         raise ValueError("handler must return a non-empty Decision tuple")
                     decision_groups.append(group)
                 decisions = tuple(decision for group in decision_groups for decision in group)
+                defer = self._single_defer(decision_groups)
+                if defer is not None:
+                    await self._defer(evidence_id, token, defer)
+                    processed += 1
+                    continue
                 digest = decision_digest(decisions)
                 if not await self._record_digest(evidence_id, token, digest):
                     processed += 1
@@ -221,6 +226,7 @@ class FactProcessor:
                 return
             evidence.decision_claim_token = None
             evidence.decision_claim_expires_at = None
+            evidence.decision_attempt_count += 1
             if evidence.decision_attempt_count >= _MAX_ATTEMPTS:
                 evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
                 evidence.decision_next_attempt_at = None
@@ -228,6 +234,45 @@ class FactProcessor:
             else:
                 backoff_seconds = min(2 ** max(evidence.decision_attempt_count - 1, 0), _MAX_BACKOFF_SECONDS)
                 evidence.decision_next_attempt_at = now + timedelta(seconds=backoff_seconds)
+            await self._evidences.flush(db)
+
+    @staticmethod
+    def _single_defer(decision_groups: list[tuple[object, ...]]) -> DeferExecution | None:
+        decisions = tuple(decision for group in decision_groups for decision in group)
+        if not any(type(decision) is DeferExecution for decision in decisions):
+            return None
+        if len(decision_groups) != 1 or len(decision_groups[0]) != 1:
+            raise ValueError("DeferExecution must be the only Decision for one Fact")
+        decision = decision_groups[0][0]
+        if type(decision) is not DeferExecution:
+            raise ValueError("DeferExecution must not be mixed with another Decision")
+        return decision
+
+    async def _defer(self, evidence_id: int, token: str, decision: DeferExecution) -> None:
+        now = self._clock()
+        async with self._sessions.begin() as db:
+            evidence = await self._claimed(db, evidence_id, token, now)
+            prepared = await self._prepare_facts_in_session(db, evidence, now)
+            if len(prepared) != 1:
+                raise ValueError("DeferExecution requires exactly one prepared Fact")
+            item = prepared[0]
+            if (
+                decision.material_execution_id != item.execution.execution_code
+                or decision.fact_id != item.fact.fact_id
+                or item.fact.evidence_id != str(evidence.id)
+            ):
+                raise ValueError("DeferExecution identity does not match the claimed Fact")
+            evidence.decision_claim_token = None
+            evidence.decision_claim_expires_at = None
+            evidence.decision_next_attempt_at = now
+            await self._execution_service.transition(
+                db,
+                item.execution,
+                target=MaterialExecutionStatus.HOLD,
+                changed_at=now,
+                reason_code=decision.reason_code,
+                evidence_id=cast("int", evidence.id),
+            )
             await self._evidences.flush(db)
 
     async def _claimed(self, db: object, evidence_id: int, token: str, now: datetime) -> InboundEvidence:

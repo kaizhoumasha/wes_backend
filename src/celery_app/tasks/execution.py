@@ -20,6 +20,16 @@ def _current_processor() -> FactProcessor:
     return runtime.fact_processor
 
 
+async def assert_execution_worker_startable() -> None:
+    from src.app.workline.services.line_run_epoch_service import LineRunEpochService
+    from src.database import db as db_module
+
+    if db_module.AsyncSessionLocal is None:
+        raise RuntimeError("Database session factory is unavailable for execution worker startup")
+    async with db_module.AsyncSessionLocal() as db:
+        await LineRunEpochService().assert_execution_worker_startable(db)
+
+
 @celery_app.task(name="src.celery_app.tasks.execution.process_execution_facts_batch")
 def process_execution_facts_batch(limit: int = 100) -> int:
     if limit != _EXECUTION_BATCH_LIMIT:
@@ -31,4 +41,4 @@ def process_execution_facts_batch(limit: int = 100) -> int:
     return run_async(_process)
 
 
-__all__ = ["process_execution_facts_batch"]
+__all__ = ["assert_execution_worker_startable", "process_execution_facts_batch"]

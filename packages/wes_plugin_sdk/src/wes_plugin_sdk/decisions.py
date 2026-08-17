@@ -75,6 +75,18 @@ class Wait:
 
 
 @dataclass(frozen=True, slots=True)
+class DeferExecution:
+    material_execution_id: str
+    fact_id: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        _required(self.material_execution_id, "material_execution_id")
+        _required(self.fact_id, "fact_id")
+        _required(self.reason_code, "reason_code")
+
+
+@dataclass(frozen=True, slots=True)
 class CreateDeviceCommand:
     material_execution_id: str
     fact_id: str
@@ -180,6 +192,7 @@ class CompleteExecution:
 
 Decision = (
     Wait
+    | DeferExecution
     | CreateDeviceCommand
     | CreateWmsConfirmation
     | CreateTransportTask

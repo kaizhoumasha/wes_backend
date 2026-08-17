@@ -80,9 +80,19 @@ def test_plugin_sdk_exposes_only_the_approved_fact_and_decision_categories() -> 
         "CreateDeviceCommand",
         "CreateTransportTask",
         "CreateWmsConfirmation",
+        "DeferExecution",
         "PauseForReconciliation",
         "Wait",
     }
+
+    decision = sdk.DeferExecution(
+        material_execution_id="execution-1",
+        fact_id="fact-1",
+        reason_code="DEVICE_BUSY",
+    )
+    assert decision.material_execution_id == "execution-1"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        decision.reason_code = "CHANGED"
 
 
 def test_plugin_frozen_fact_subclass_can_carry_typed_decision_data() -> None:
