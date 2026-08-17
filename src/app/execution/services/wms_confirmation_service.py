@@ -15,6 +15,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
+from src.app.execution.repositories.material_execution_repository import material_execution_repository
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceConflictResult,
@@ -26,6 +27,7 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.execution.models.material_execution import MaterialExecution
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,10 @@ class WmsConfirmationRepositoryPort(Protocol):
     ) -> WmsConfirmation | None: ...
 
     async def flush(self, db: object) -> None: ...
+
+
+class MaterialExecutionEpochRepositoryPort(Protocol):
+    async def get_by_id(self, db: object, execution_id: int) -> MaterialExecution | None: ...
 
 
 class WmsConfirmationDispatchResultPort(Protocol):
@@ -151,6 +157,7 @@ class WmsConfirmationService:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         adapter: WmsConfirmationAdapterPort | None = None,
         evidence_service: InboundEvidenceService | None = None,
+        execution_repository: MaterialExecutionEpochRepositoryPort | None = None,
         business_wait_planner: WmsBusinessWaitPlanner | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
@@ -158,6 +165,10 @@ class WmsConfirmationService:
         self._sessions = session_factory
         self._adapter = adapter
         self._evidence = evidence_service or InboundEvidenceService()
+        self._executions = execution_repository or cast(
+            "MaterialExecutionEpochRepositoryPort",
+            material_execution_repository,
+        )
         self._business_wait_planner = business_wait_planner
         self._task_queue = task_queue_gateway
 
@@ -369,12 +380,23 @@ class WmsConfirmationService:
                 return
             code = getattr(result.code, "value", result.code)
             if code in {"DETERMINATE", "RECONCILING"} and result.normalized_response is not None:
+                execution = await self._executions.get_by_id(db, confirmation.material_execution_id)
+                if execution is None:
+                    raise LookupError("MaterialExecution 不存在")
+                line_run_epoch_id = execution.line_run_epoch_id
+                if (
+                    not isinstance(line_run_epoch_id, int)
+                    or isinstance(line_run_epoch_id, bool)
+                    or line_run_epoch_id <= 0
+                ):
+                    raise ValueError("MaterialExecution 缺少有效 line_run_epoch_id")
                 evidence_result = await self._evidence.accept(
                     db,
                     kind=InboundEvidenceKind.WMS_RESULT,
                     source_identity=f"{operation}:{operation_id}",
                     normalized_payload=result.normalized_response,
                     received_at=changed_at,
+                    line_run_epoch_id=line_run_epoch_id,
                     material_execution_id=confirmation.material_execution_id,
                     contract_key="rough_sorter_inbound",
                     contract_version="1.0",

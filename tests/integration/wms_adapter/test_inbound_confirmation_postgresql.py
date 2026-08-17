@@ -21,7 +21,7 @@ from src.app.execution.models import (
     WmsConfirmation,
     WmsConfirmationStatus,
 )
-from src.app.execution.repositories import WmsConfirmationRepository
+from src.app.execution.repositories import InboundEvidenceRepository, WmsConfirmationRepository
 from src.app.execution.services import (
     WmsBusinessWaitFollowUp,
     WmsConfirmationFollowUpPlan,
@@ -345,6 +345,7 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
     ids: dict[str, int] = {}
     async with integration_session_factory.begin() as db:
         execution = await _seed_execution(db)
+        epoch_id = execution.line_run_epoch_id
         for name, deadline in {
             "COMPLETE": now + timedelta(minutes=5),
             "EXPIRED": now,
@@ -373,7 +374,7 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
     )
     assert await service.dispatch_batch(limit=10, now=now) == 3
 
-    async with integration_session_factory() as db:
+    async with integration_session_factory.begin() as db:
         rows = {
             row.id: row
             for row in (await db.execute(select(WmsConfirmation).where(WmsConfirmation.id.in_(ids.values())))).scalars()
@@ -381,7 +382,18 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
         completed = rows[ids["COMPLETE"]]
         assert completed.status == WmsConfirmationStatus.COMPLETED
         assert completed.response_evidence_id is not None
-        assert await db.get(InboundEvidence, completed.response_evidence_id) is not None
+        response_evidence = await db.get(InboundEvidence, completed.response_evidence_id)
+        assert response_evidence is not None
+        assert response_evidence.line_run_epoch_id == epoch_id
+        assert response_evidence.material_execution_id == completed.material_execution_id
+        claimed = await InboundEvidenceRepository().claim_decision_batch(
+            db,
+            now=now,
+            claim_token=new_uuid7(),
+            claim_expires_at=now + timedelta(minutes=1),
+            limit=10,
+        )
+        assert [evidence.id for evidence in claimed] == [response_evidence.id]
         assert rows[ids["EXPIRED"]].status == WmsConfirmationStatus.RECONCILING
         unknown = rows[ids["UNKNOWN"]]
         assert unknown.status == WmsConfirmationStatus.PENDING

@@ -11,6 +11,7 @@ import pytest
 from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import (
     InboundEvidenceAcceptance,
+    InboundEvidenceConflictResult,
     WmsBusinessWaitFollowUp,
     WmsConfirmationFollowUpPlan,
     WmsConfirmationIdentityConflictResult,
@@ -463,10 +464,35 @@ class _ConfirmationRepository:
 class _EvidenceService:
     def __init__(self) -> None:
         self.calls = []
+        self.dbs = []
 
     async def accept(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        self.dbs.append(db)
         self.calls.append(kwargs)
         return InboundEvidenceAcceptance(SimpleNamespace(id=501, received_at=kwargs["received_at"]), duplicate=False)
+
+
+class _ConflictEvidenceService(_EvidenceService):
+    async def accept(self, db, **kwargs):  # type: ignore[no-untyped-def]
+        await super().accept(db, **kwargs)
+        return InboundEvidenceConflictResult(
+            evidence=SimpleNamespace(id=501),
+            conflict=SimpleNamespace(),
+            source_identity=kwargs["source_identity"],
+        )
+
+
+_DEFAULT_EXECUTION = object()
+
+
+class _ExecutionRepository:
+    def __init__(self, execution: object | None = _DEFAULT_EXECUTION) -> None:
+        self.execution = SimpleNamespace(id=21, line_run_epoch_id=11) if execution is _DEFAULT_EXECUTION else execution
+        self.calls = []
+
+    async def get_by_id(self, db, execution_id):  # type: ignore[no-untyped-def]
+        self.calls.append((db, execution_id))
+        return self.execution
 
 
 class _TaskQueue:
@@ -575,8 +601,10 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
         )
     )
     queue = _TaskQueue()
+    execution_repository = _ExecutionRepository()
     service = WmsConfirmationService(
         repository=repository,
+        execution_repository=execution_repository,
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=adapter,
         evidence_service=evidence,  # type: ignore[arg-type]
@@ -588,6 +616,11 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
     assert processed == 100
     assert len(adapter.calls) == len(evidence.calls) == 100
     assert all(call["apply_status"] is InboundEvidenceApplyStatus.APPLIED for call in evidence.calls)
+    assert all(call["line_run_epoch_id"] == 11 for call in evidence.calls)
+    assert all(
+        read_db is evidence_db
+        for (read_db, _), evidence_db in zip(execution_repository.calls, evidence.dbs, strict=True)
+    )
     assert all(confirmation.status == WmsConfirmationStatus.COMPLETED for confirmation in confirmations[:100])
     assert confirmations[100].status == WmsConfirmationStatus.PENDING
     assert queue.execution_wakes == 100
@@ -613,6 +646,7 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
     )
     service = WmsConfirmationService(
         repository=repository,
+        execution_repository=_ExecutionRepository(),
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=adapter,
         evidence_service=_EvidenceService(),  # type: ignore[arg-type]
@@ -658,6 +692,7 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
     queue = _TaskQueue()
     service = WmsConfirmationService(
         repository=repository,
+        execution_repository=_ExecutionRepository(),
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
@@ -797,6 +832,7 @@ async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(i
     )
     service = WmsConfirmationService(
         repository=repository,
+        execution_repository=_ExecutionRepository(),
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
@@ -834,6 +870,7 @@ async def test_confirmation_persists_received_json_object_before_marking_reconci
     }
     service = WmsConfirmationService(
         repository=repository,
+        execution_repository=_ExecutionRepository(),
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
@@ -850,6 +887,77 @@ async def test_confirmation_persists_received_json_object_before_marking_reconci
     assert await service.dispatch_batch(now=now) == 1
     assert confirmation.status == WmsConfirmationStatus.RECONCILING
     assert [call["normalized_payload"] for call in evidence.calls] == [response_body]
+    assert [call["line_run_epoch_id"] for call in evidence.calls] == [11]
+
+
+@pytest.mark.asyncio
+async def test_wms_result_identity_conflict_keeps_execution_epoch_and_fails_closed() -> None:
+    now = datetime(2026, 8, 16, tzinfo=UTC)
+    confirmation = _confirmation(1, now)
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    repository = _ConfirmationRepository([confirmation])
+    evidence = _ConflictEvidenceService()
+    execution_repository = _ExecutionRepository()
+    service = WmsConfirmationService(
+        repository=repository,
+        execution_repository=execution_repository,
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=InboundDispatchCode.DETERMINATE,
+                normalized_response={
+                    "operation_id": confirmation.operation_id,
+                    "code": "DECIDED",
+                    "timestamp": 2,
+                    "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
+                },
+                response_result="ACCEPT",
+                retry_after_ms=None,
+                follow_up_plan=None,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == WmsConfirmationStatus.RECONCILING
+    assert confirmation.response_evidence_id is None
+    assert evidence.calls[0]["line_run_epoch_id"] == 11
+    assert execution_repository.calls[0][1] == confirmation.material_execution_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execution", [None, SimpleNamespace(id=21, line_run_epoch_id=None)])
+async def test_wms_result_fails_closed_when_execution_epoch_cannot_be_resolved(execution: object | None) -> None:
+    now = datetime(2026, 8, 16, tzinfo=UTC)
+    confirmation = _confirmation(1, now)
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    repository = _ConfirmationRepository([confirmation])
+    evidence = _EvidenceService()
+    service = WmsConfirmationService(
+        repository=repository,
+        execution_repository=_ExecutionRepository(execution),
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=InboundDispatchCode.RECONCILING,
+                normalized_response={
+                    "operation_id": confirmation.operation_id,
+                    "code": "DECIDED",
+                    "timestamp": 2,
+                    "data": {"result": "ACCEPT"},
+                },
+                response_result=None,
+                retry_after_ms=None,
+                follow_up_plan=None,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises((LookupError, ValueError), match=r"MaterialExecution|line_run_epoch_id"):
+        await service.dispatch_batch(now=now)
+    assert evidence.calls == []
 
 
 @pytest.mark.asyncio
@@ -861,6 +969,7 @@ async def test_inflight_identity_conflict_fences_late_response_in_fast_dispatch(
     evidence = _EvidenceService()
     service = WmsConfirmationService(
         repository=repository,
+        execution_repository=_ExecutionRepository(),
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_ConflictDuringDispatchAdapter(
             WmsConfirmationService(repository=repository),
