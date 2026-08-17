@@ -455,6 +455,7 @@ class PreforkWorker:
         environment["PREFORK_REDIS_KEY_PREFIX"] = self.key_prefix
         environment["PYTHONPATH"] = f"{REPO_ROOT}:{environment.get('PYTHONPATH', '')}".rstrip(":")
         environment["WORKLINE_ALLOW_NULL_PLUGIN"] = "1"
+        environment["CELERY_WORKER_QUEUES"] = self.queue
         command = [
             "uv",
             "run",
