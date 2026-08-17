@@ -124,7 +124,7 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
                 columns.id,
             )
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=InboundEvidence, skip_locked=True)
         )
         evidences = list(result.scalars().all())
         for evidence in evidences:

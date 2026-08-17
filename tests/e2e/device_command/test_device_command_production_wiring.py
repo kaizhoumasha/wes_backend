@@ -58,18 +58,17 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
     success = False
 
     async def _cleanup_database() -> None:
-        if command_code is None:
-            return
         async with integration_session_factory.begin() as db:
-            evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
-            await db.execute(
-                delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
-            )
-            await db.execute(
-                delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
-            )
-            await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
-            await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
+            if command_code is not None:
+                evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
+                await db.execute(
+                    delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
+                )
+                await db.execute(
+                    delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
+                )
+                await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
+                await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
             if binding_id is not None:
                 await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
             if epoch_id is not None:
@@ -98,9 +97,25 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             db.add(device)
             await db.flush()
             device_id = device.id
+        callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
+        ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
+        provider_payload = build_provider_profile_payload()
+        provider_payload["server_url"] = ecs_server.url
+        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
+        worker = DeviceCommandBrokerWorker(
+            database_url=database_url,
+            redis_url=redis_url,
+            provider_file=provider_file,
+            ecs_base_url=ecs_server.url,
+        )
+        worker.start()
+
+        assert line_id is not None
+        assert device_id is not None
+        async with integration_session_factory.begin() as db:
             epoch = LineRunEpoch(
                 epoch_code=f"EPOCH-E2E-{suffix}",
-                workline_id=line.id,
+                workline_id=line_id,
                 plugin_key="device_command_test",
                 plugin_version="1.0.0",
                 flow_mode="TEST",
@@ -113,9 +128,9 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             epoch_id = epoch.id
             binding = LineRunEpochDeviceBinding(
                 line_run_epoch_id=epoch.id,
-                device_id=device.id,
-                device_code=device.device_code,
-                device_role=device.device_role,
+                device_id=device_id,
+                device_code=f"ARM-E2E-{suffix}",
+                device_role="ROBOT_ARM",
                 contract_key="arm.pick",
                 contract_version="2.0",
                 status_max_age_ms=30_000,
@@ -141,19 +156,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             )
         )
         command_code = handle.command_code
-
-        callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
-        ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
-        provider_payload = build_provider_profile_payload()
-        provider_payload["server_url"] = ecs_server.url
-        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
-        worker = DeviceCommandBrokerWorker(
-            database_url=database_url,
-            redis_url=redis_url,
-            provider_file=provider_file,
-            ecs_base_url=ecs_server.url,
-        )
-        worker.start()
 
         assert worker.run_task(DISPATCH_TASK) == 1
         async with integration_session_factory() as db:

@@ -320,15 +320,16 @@ def _claim_evidence(
 
 
 async def _claim_epoch(db, identity: str, now: datetime) -> tuple[WorkLine, LineRunEpoch]:
+    suffix = identity.rsplit("-", maxsplit=1)[-1][:12]
     line = WorkLine(
-        line_code=f"CLAIM-LINE-{identity}",
+        line_code=f"CL-{suffix}",
         line_name="Decision claim",
         line_type=LineType.AUTO,
     )
     db.add(line)
     await db.flush()
     epoch = LineRunEpoch(
-        epoch_code=f"CLAIM-EPOCH-{identity}",
+        epoch_code=f"CE-{suffix}",
         workline_id=line.id,
         plugin_key="rough_sorter",
         plugin_version="1.0.0",
@@ -340,6 +341,21 @@ async def _claim_epoch(db, identity: str, now: datetime) -> tuple[WorkLine, Line
     db.add(epoch)
     await db.flush()
     return line, epoch
+
+
+async def _cleanup_claim_epoch(
+    integration_session_factory,
+    *,
+    source_identity_prefix: str,
+    epoch: LineRunEpoch,
+    line: WorkLine,
+) -> None:
+    async with integration_session_factory.begin() as db:
+        await db.execute(
+            delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{source_identity_prefix}%"))
+        )
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
 
 
 @pytest.mark.asyncio
@@ -487,11 +503,12 @@ async def test_postgresql_decision_claim_skip_locked_does_not_reissue_to_second_
     finally:
         await first_session.close()
         await second_session.close()
-
-    async with integration_session_factory.begin() as db:
-        await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{prefix}%")))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-        await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
+        await _cleanup_claim_epoch(
+            integration_session_factory,
+            source_identity_prefix=prefix,
+            epoch=epoch,
+            line=line,
+        )
 
 
 @pytest.mark.asyncio
@@ -504,41 +521,44 @@ async def test_postgresql_decision_claim_respects_live_lease_and_recovers_expire
         line, epoch = await _claim_epoch(db, identity, now)
         db.add(_claim_evidence(identity, received_at=now, line_run_epoch_id=epoch.id))
 
-    async with integration_session_factory.begin() as db:
-        first = await inbound_evidence_repository.claim_decision_batch(
-            db,
-            now=now,
-            claim_token="claim-first",
-            claim_expires_at=now + timedelta(seconds=30),
-            limit=1,
-        )
-        assert [item.source_identity for item in first] == [identity]
+    try:
+        async with integration_session_factory.begin() as db:
+            first = await inbound_evidence_repository.claim_decision_batch(
+                db,
+                now=now,
+                claim_token="claim-first",
+                claim_expires_at=now + timedelta(seconds=30),
+                limit=1,
+            )
+            assert [item.source_identity for item in first] == [identity]
 
-    async with integration_session_factory.begin() as db:
-        live_lease = await inbound_evidence_repository.claim_decision_batch(
-            db,
-            now=now + timedelta(seconds=10),
-            claim_token="claim-too-early",
-            claim_expires_at=now + timedelta(seconds=40),
-            limit=1,
-        )
-        assert live_lease == []
+        async with integration_session_factory.begin() as db:
+            live_lease = await inbound_evidence_repository.claim_decision_batch(
+                db,
+                now=now + timedelta(seconds=10),
+                claim_token="claim-too-early",
+                claim_expires_at=now + timedelta(seconds=40),
+                limit=1,
+            )
+            assert live_lease == []
 
-    async with integration_session_factory.begin() as db:
-        recovered = await inbound_evidence_repository.claim_decision_batch(
-            db,
-            now=now + timedelta(seconds=31),
-            claim_token="claim-recovered",
-            claim_expires_at=now + timedelta(seconds=61),
-            limit=1,
+        async with integration_session_factory.begin() as db:
+            recovered = await inbound_evidence_repository.claim_decision_batch(
+                db,
+                now=now + timedelta(seconds=31),
+                claim_token="claim-recovered",
+                claim_expires_at=now + timedelta(seconds=61),
+                limit=1,
+            )
+            assert [item.source_identity for item in recovered] == [identity]
+            assert recovered[0].decision_attempt_count == 0
+    finally:
+        await _cleanup_claim_epoch(
+            integration_session_factory,
+            source_identity_prefix=identity,
+            epoch=epoch,
+            line=line,
         )
-        assert [item.source_identity for item in recovered] == [identity]
-        assert recovered[0].decision_attempt_count == 0
-
-    async with integration_session_factory.begin() as db:
-        await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-        await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
 
 
 @pytest.mark.asyncio
@@ -579,30 +599,35 @@ async def test_postgresql_decision_claim_filters_status_and_backoff_and_caps_fif
     async with integration_session_factory.begin() as db:
         db.add_all([*eligible, pending, future, deferred])
 
-    async with integration_session_factory.begin() as db:
-        claimed = await inbound_evidence_repository.claim_decision_batch(
-            db,
-            now=now,
-            claim_token="claim-batch",
-            claim_expires_at=now + timedelta(seconds=30),
-            limit=100,
-        )
-        assert [item.source_identity for item in claimed] == [
-            f"{prefix}-eligible-{ordinal:03d}" for ordinal in range(100)
-        ]
+    try:
+        async with integration_session_factory.begin() as db:
+            claimed = await inbound_evidence_repository.claim_decision_batch(
+                db,
+                now=now,
+                claim_token="claim-batch",
+                claim_expires_at=now + timedelta(seconds=30),
+                limit=100,
+            )
+            assert [item.source_identity for item in claimed] == [
+                f"{prefix}-eligible-{ordinal:03d}" for ordinal in range(100)
+            ]
 
-    async with integration_session_factory.begin() as db:
-        rotated = await inbound_evidence_repository.claim_decision_batch(
-            db,
-            now=now,
-            claim_token="claim-deferred",
-            claim_expires_at=now + timedelta(seconds=30),
-            limit=100,
+        async with integration_session_factory.begin() as db:
+            rotated = await inbound_evidence_repository.claim_decision_batch(
+                db,
+                now=now,
+                claim_token="claim-deferred",
+                claim_expires_at=now + timedelta(seconds=30),
+                limit=100,
+            )
+            assert [item.source_identity for item in rotated] == [f"{prefix}-deferred"]
+    finally:
+        await _cleanup_claim_epoch(
+            integration_session_factory,
+            source_identity_prefix=prefix,
+            epoch=epoch,
+            line=line,
         )
-        assert [item.source_identity for item in rotated] == [f"{prefix}-deferred"]
-        await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{prefix}%")))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-        await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
 
 
 @pytest.mark.asyncio
@@ -616,15 +641,20 @@ async def test_postgresql_decision_claim_never_claims_a_closed_epoch(integration
         evidence = _claim_evidence(f"CLAIM-CLOSED-{identity}", received_at=now, line_run_epoch_id=epoch.id)
         db.add(evidence)
 
-    async with integration_session_factory.begin() as db:
-        claimed = await inbound_evidence_repository.claim_decision_batch(
-            db,
-            now=now,
-            claim_token="claim-closed",
-            claim_expires_at=now + timedelta(seconds=30),
-            limit=100,
+    try:
+        async with integration_session_factory.begin() as db:
+            claimed = await inbound_evidence_repository.claim_decision_batch(
+                db,
+                now=now,
+                claim_token="claim-closed",
+                claim_expires_at=now + timedelta(seconds=30),
+                limit=100,
+            )
+            assert claimed == []
+    finally:
+        await _cleanup_claim_epoch(
+            integration_session_factory,
+            source_identity_prefix=f"CLAIM-CLOSED-{identity}",
+            epoch=epoch,
+            line=line,
         )
-        assert claimed == []
-        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence.id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-        await db.execute(delete(WorkLine).where(WorkLine.id == line.id))

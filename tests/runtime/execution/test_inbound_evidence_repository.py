@@ -66,6 +66,7 @@ async def test_decision_claim_and_partial_index_exclude_foundation_device_result
     assert "wes_biz.inbound_evidences.material_execution_id IS NULL" in sql
     assert "wes_biz.line_run_epochs.status = 'ACTIVE'" in sql
     assert "inbound_evidences.decision_next_attempt_at IS NULL" in sql
+    assert "FOR UPDATE OF inbound_evidences SKIP LOCKED" in sql
 
     index = next(
         item for item in InboundEvidence.__table__.indexes if item.name == "ix_inbound_evidences_decision_eligible"
