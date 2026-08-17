@@ -99,7 +99,7 @@ def _commands(output_dir: Path) -> tuple[AcceptanceCommand, ...]:
                 "run",
                 "--no-sync",
                 "pytest",
-                "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py::test_writeback_crash_rolls_back_effects_before_reprocessing_once",
+                "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py::test_writeback_crash_recovers_terminal_processing_once",
                 "-q",
                 f"--junitxml={junit / 'crash-before-terminal.xml'}",
             ),

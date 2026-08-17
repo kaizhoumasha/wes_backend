@@ -34,7 +34,9 @@ RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_
 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
 RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST = "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"
 RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST = "tests/integration/test_runtime_inbox_consumer_service.py"
+RUNTIME_INBOX_MIGRATION_HEAVY_TEST = "tests/integration/test_runtime_inbox_migration_postgresql.py"
 RUNTIME_INBOX_PROCESSING_HEAVY_TEST = "tests/integration/test_runtime_inbox_processing_postgresql.py"
+RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST = "tests/load/test_runtime_inbox_claim_benchmark.py"
 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST = "tests/integration/test_runtime_inbox_service_internal_events.py"
 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_effect_repository.py"
 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
@@ -968,6 +970,15 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
         ("scripts/check_runtime_production_e2e_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
         ("scripts/run_runtime_benchmarks.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
         ("scripts/run_runtime_inbox_postgresql_acceptance_ci.sh", [RUNTIME_INBOX_PROCESSING_HEAVY_TEST]),
+        (
+            "scripts/run_runtime_inbox_postgresql_acceptance.py",
+            [
+                RUNTIME_INBOX_MIGRATION_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ],
+        ),
         (
             "tests/load/runtime_benchmark_scenarios.py",
             [

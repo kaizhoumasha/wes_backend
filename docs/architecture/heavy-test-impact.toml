@@ -199,6 +199,15 @@ source_glob = "scripts/run_runtime_inbox_postgresql_acceptance_ci.sh"
 heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 
 [[mapping]]
+source_glob = "scripts/run_runtime_inbox_postgresql_acceptance.py"
+heavy_tests = [
+    "tests/integration/test_runtime_inbox_migration_postgresql.py",
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+    "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
+    "tests/load/test_runtime_inbox_claim_benchmark.py",
+]
+
+[[mapping]]
 source_glob = "tests/load/runtime_benchmark_scenarios.py"
 heavy_tests = [
     "tests/integration/test_runtime_production_closure_contract.py",
