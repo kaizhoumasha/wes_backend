@@ -53,6 +53,22 @@ class FakeLineRunEpochRepository:
     ) -> LineRunEpochDeviceBinding | None:
         return self.bindings.get((line_run_epoch_id, device_code))
 
+    async def get_binding_by_role_for_update(
+        self,
+        _db: object,
+        *,
+        line_run_epoch_id: int,
+        device_role: str,
+    ) -> LineRunEpochDeviceBinding | None:
+        return next(
+            (
+                binding
+                for (epoch_id, _), binding in self.bindings.items()
+                if epoch_id == line_run_epoch_id and binding.device_role == device_role
+            ),
+            None,
+        )
+
     async def add_binding(
         self,
         _db: object,
@@ -121,6 +137,7 @@ async def test_binding_same_identity_is_idempotent_but_cannot_be_rewritten() -> 
         line_run_epoch_id=epoch.id,
         device_id=7,
         device_code="ARM-01",
+        device_role="MEASUREMENT_DEVICE",
         contract_key="arm.pick",
         contract_version="2.0",
         status_max_age_ms=1_000,
@@ -131,6 +148,7 @@ async def test_binding_same_identity_is_idempotent_but_cannot_be_rewritten() -> 
         line_run_epoch_id=epoch.id,
         device_id=7,
         device_code="ARM-01",
+        device_role="MEASUREMENT_DEVICE",
         contract_key="arm.pick",
         contract_version="2.0",
         status_max_age_ms=1_000,
@@ -144,8 +162,67 @@ async def test_binding_same_identity_is_idempotent_but_cannot_be_rewritten() -> 
             line_run_epoch_id=epoch.id,
             device_id=7,
             device_code="ARM-01",
+            device_role="MEASUREMENT_DEVICE",
             contract_key="arm.pick",
             contract_version="2.1",
+            status_max_age_ms=1_000,
+            command_timeout_ms=30_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_binding_role_cannot_be_reassigned_to_another_device() -> None:
+    service, _ = _service()
+    await service.bind_device(
+        object(),
+        line_run_epoch_id=11,
+        device_id=7,
+        device_code="ARM-01",
+        device_role="MEASUREMENT_DEVICE",
+        contract_key="arm.pick",
+        contract_version="2.0",
+        status_max_age_ms=1_000,
+        command_timeout_ms=30_000,
+    )
+
+    with pytest.raises(DeviceBindingConflictError, match="角色"):
+        await service.bind_device(
+            object(),
+            line_run_epoch_id=11,
+            device_id=8,
+            device_code="ARM-02",
+            device_role="MEASUREMENT_DEVICE",
+            contract_key="arm.pick",
+            contract_version="2.0",
+            status_max_age_ms=1_000,
+            command_timeout_ms=30_000,
+        )
+
+
+@pytest.mark.asyncio
+async def test_binding_device_cannot_be_reassigned_to_another_role() -> None:
+    service, _ = _service()
+    await service.bind_device(
+        object(),
+        line_run_epoch_id=11,
+        device_id=7,
+        device_code="ARM-01",
+        device_role="MEASUREMENT_DEVICE",
+        contract_key="arm.pick",
+        contract_version="2.0",
+        status_max_age_ms=1_000,
+        command_timeout_ms=30_000,
+    )
+
+    with pytest.raises(DeviceBindingConflictError, match="设备"):
+        await service.bind_device(
+            object(),
+            line_run_epoch_id=11,
+            device_id=7,
+            device_code="ARM-01",
+            device_role="TRANSFER_DEVICE",
+            contract_key="arm.pick",
+            contract_version="2.0",
             status_max_age_ms=1_000,
             command_timeout_ms=30_000,
         )
@@ -231,3 +308,7 @@ async def test_epoch_freezes_plugin_identity_and_flow_mode_without_generic_state
     assert epoch.plugin_version == "1.0.0"
     assert epoch.flow_mode == "ROUGH_SORT_INBOUND"
     assert "plugin_state" not in LineRunEpoch.model_fields
+
+
+def test_epoch_device_binding_freezes_business_role() -> None:
+    assert "device_role" in LineRunEpochDeviceBinding.model_fields

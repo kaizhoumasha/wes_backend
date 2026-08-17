@@ -31,6 +31,7 @@ CANDIDATE_GLOBS = (
     ".dockerignore",
     "Jenkinsfile.backend-ci",
     "pyproject.toml",
+    "uv.lock",
     ".env*",
     "scripts/**",
     "docs/**/*.{toml,csv,yaml,yml,json}",

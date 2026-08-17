@@ -2182,6 +2182,7 @@ dependencies = [
     { name = "starlette-context" },
     { name = "user-agents" },
     { name = "uvicorn" },
+    { name = "wes-plugin-sdk" },
     { name = "xdbsearchip" },
 ]
 
@@ -2246,6 +2247,7 @@ requires-dist = [
     { name = "starlette-context", specifier = ">=0.5.1" },
     { name = "user-agents", specifier = ">=2.2.0" },
     { name = "uvicorn", specifier = ">=0.44.0" },
+    { name = "wes-plugin-sdk", directory = "packages/wes_plugin_sdk" },
     { name = "xdbsearchip", specifier = ">=1.0.2" },
 ]
 provides-extras = ["dev"]
@@ -2269,6 +2271,11 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-html", specifier = ">=4.2.0" },
 ]
+
+[[package]]
+name = "wes-plugin-sdk"
+version = "0.1.0"
+source = { directory = "packages/wes_plugin_sdk" }
 
 [[package]]
 name = "win32-setctime"

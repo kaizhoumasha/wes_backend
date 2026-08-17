@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.app.execution.models import WmsConfirmation, WmsConfirmationStatus
+from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import (
     InboundEvidenceAcceptance,
     WmsConfirmationIdentityConflictResult,
@@ -519,6 +519,7 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
 
     assert processed == 100
     assert len(adapter.calls) == len(evidence.calls) == 100
+    assert all(call["apply_status"] is InboundEvidenceApplyStatus.APPLIED for call in evidence.calls)
     assert all(confirmation.status == WmsConfirmationStatus.COMPLETED for confirmation in confirmations[:100])
     assert confirmations[100].status == WmsConfirmationStatus.PENDING
 

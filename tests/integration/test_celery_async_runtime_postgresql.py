@@ -507,7 +507,9 @@ class PreforkWorker:
             actual_target = {key: ready_probe[key] for key in expected_target}
             if actual_target != expected_target:
                 raise AssertionError(f"worker connected to unexpected target: {ready_probe}")
-            if not ready_probe["server_host"] or int(ready_probe["server_port"]) != int(expected_database.port or 5432):
+            # 经 Docker/NAT 访问时，配置端口是宿主映射端口，PostgreSQL 报告的是容器内监听端口；
+            # 上方已校验完整配置目标和数据库名，此处只要求实际服务端端点有效。
+            if not ready_probe["server_host"] or int(ready_probe["server_port"]) <= 0:
                 raise AssertionError(f"worker PostgreSQL server endpoint mismatch: {ready_probe}")
             if self.run_id not in str(ready_probe["application_name"]):
                 raise AssertionError(f"worker application run-id missing: {ready_probe}")

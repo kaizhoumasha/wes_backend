@@ -86,6 +86,7 @@ class DeviceCommandRequestData(BaseMixin):
     line_run_epoch_id: int
     execution_ref_type: str = Field(min_length=1, max_length=50)
     execution_ref_id: str = Field(min_length=1, max_length=120)
+    material_execution_id: int | None = Field(foreign_key="wes_biz.material_executions.id", index=True)
     contract_key: str = Field(min_length=1, max_length=100)
     contract_version: str = Field(min_length=1, max_length=50)
     task_type: str = Field(min_length=1, max_length=100)

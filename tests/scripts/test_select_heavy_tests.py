@@ -72,6 +72,7 @@ TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfi
 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_device_command_constraints.py"
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
+DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST = "tests/integration/execution/test_decision_processing_postgresql.py"
 WMS_INBOUND_CONFIRMATION_HEAVY_TEST = "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
@@ -358,6 +359,27 @@ def test_plugin_sdk_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) 
         select_heavy_tests([changed_path], config, repo_root=tmp_path)
 
 
+def test_uv_lock_is_exact_reviewed_none_for_current_sdk_dependency() -> None:
+    changed_path = "uv.lock"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
+
+    assert len(matching_mappings) == 1
+    mapping = matching_mappings[0]
+    assert mapping.heavy_tests == ()
+    assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
+def test_uv_lock_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    drifted_path = tmp_path / "uv.lock"
+    drifted_path.write_bytes((REPO_ROOT / "uv.lock").read_bytes() + b"\n# drift\n")
+
+    with pytest.raises(SelectorError, match="reviewed mapping 内容指纹不匹配"):
+        select_heavy_tests(["uv.lock"], config, repo_root=tmp_path)
+
+
 def test_core_composition_root_keeps_its_heavy_owners() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
@@ -365,6 +387,24 @@ def test_core_composition_root_keeps_its_heavy_owners() -> None:
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
     ]
+
+
+def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["src/app/workline/models/line_run_epoch.py"], config) == [
+        DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+        EXECUTION_CONSTRAINTS_HEAVY_TEST,
+    ]
+
+
+@pytest.mark.parametrize("changed_path", ["src/celery_app/tasks/__init__.py", "src/celery_app/tasks/execution.py"])
+def test_execution_celery_task_exports_select_postgresql_runtime_owner(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == [CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST]
 
 
 def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:
@@ -776,10 +816,8 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     assert len(source_globs) == len(set(source_globs))
     assert "docs/architecture/heavy-test-impact.toml" in source_globs
     assert "tests/conftest.py" in source_globs
-    assert (
-        "src/app/device/services/{__init__.py,device_command_service.py,device_dispatch_service.py,device_evidence_service.py}"
-        in source_globs
-    )
+    assert "src/app/device/services/{__init__.py,device_dispatch_service.py,device_evidence_service.py}" in source_globs
+    assert "src/app/device/services/device_command_service.py" in source_globs
 
 
 @pytest.mark.parametrize(
@@ -898,6 +936,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         (
             "src/app/transport/service.py",
             [
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
@@ -914,7 +953,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
         ),
         ("src/app/wms_adapter/inbound_adapter.py", [WMS_INBOUND_CONFIRMATION_HEAVY_TEST]),
-        ("src/app/wms_adapter/inbound_event_handler.py", [WMS_INBOUND_CONFIRMATION_HEAVY_TEST]),
+        (
+            "src/app/wms_adapter/inbound_event_handler.py",
+            [DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
+        ),
         ("src/app/wms_adapter/inbound_wire.py", [WMS_INBOUND_CONFIRMATION_HEAVY_TEST]),
         ("src/app/wms_adapter/inbound_openapi.py", []),
         (
@@ -1412,12 +1454,20 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
         ("src/app/contracts/__init__.py", []),
         (
             "src/app/device/models/command.py",
-            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+            ],
         ),
         ("src/app/device/models/device.py", [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]),
         (
             "src/app/device/services/device_command_service.py",
-            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST],
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+            ],
         ),
         (
             "src/app/device/repositories/evidence_repository.py",
@@ -1436,6 +1486,7 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
             [
                 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
                 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 EXECUTION_CONSTRAINTS_HEAVY_TEST,
             ],
         ),

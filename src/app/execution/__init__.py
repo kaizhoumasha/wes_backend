@@ -4,9 +4,11 @@ from .models import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
     InboundEvidenceConflict,
+    InboundEvidenceExecutionBinding,
     InboundEvidenceKind,
     MaterialExecution,
     MaterialExecutionStatus,
+    RackReplacementTransportBinding,
     WmsConfirmation,
     WmsConfirmationStatus,
 )
@@ -15,9 +17,11 @@ __all__ = [
     "InboundEvidence",
     "InboundEvidenceApplyStatus",
     "InboundEvidenceConflict",
+    "InboundEvidenceExecutionBinding",
     "InboundEvidenceKind",
     "MaterialExecution",
     "MaterialExecutionStatus",
+    "RackReplacementTransportBinding",
     "WmsConfirmation",
     "WmsConfirmationStatus",
 ]

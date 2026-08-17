@@ -54,8 +54,35 @@ class _EvidenceService:
     async def accept(self, db, **kwargs):  # type: ignore[no-untyped-def]
         return SimpleNamespace(
             duplicate=False,
-            evidence=SimpleNamespace(received_at=kwargs["received_at"]),
+            evidence=SimpleNamespace(id=31, received_at=kwargs["received_at"]),
         )
+
+
+class _Executions:
+    def __init__(self) -> None:
+        self.values = {
+            "EXEC-1": SimpleNamespace(id=21, execution_code="EXEC-1", material_trace_id="TRACE-1"),
+            "EXEC-2": SimpleNamespace(id=22, execution_code="EXEC-2", material_trace_id="TRACE-2"),
+        }
+
+    async def get_by_execution_code_for_update(self, db, execution_code):  # type: ignore[no-untyped-def]
+        del db
+        return self.values.get(execution_code)
+
+
+class _Bindings:
+    def __init__(self) -> None:
+        self.values = []
+
+    async def list_for_evidence_for_update(self, db, evidence_id):  # type: ignore[no-untyped-def]
+        del db
+        return [item for item in self.values if item.inbound_evidence_id == evidence_id]
+
+    async def add(self, db, binding):  # type: ignore[no-untyped-def]
+        del db
+        binding.id = len(self.values) + 1
+        self.values.append(binding)
+        return binding
 
 
 def _body(
@@ -114,7 +141,12 @@ async def test_recorder_interprets_naive_database_received_at_as_utc_in_non_utc_
         process.setattr(timezone, "now_for_db", lambda: db_received_at)
         time.tzset()
         response = await InboundEventHandler(
-            InboundEventEvidenceRecorder(_Sessions(), _EvidenceService()),  # type: ignore[arg-type]
+            InboundEventEvidenceRecorder(
+                _Sessions(),
+                _EvidenceService(),
+                material_execution_repository=_Executions(),
+                evidence_execution_binding_repository=_Bindings(),
+            ),  # type: ignore[arg-type]
         ).handle(_body())
     time.tzset()
 
@@ -167,3 +199,50 @@ async def test_persistence_failure_returns_unavailable_without_false_ack() -> No
     response = await InboundEventHandler(_UnavailableRecorder()).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (503, "UNAVAILABLE")
+
+
+@pytest.mark.asyncio
+async def test_recorder_freezes_all_reconciliation_execution_bindings_before_ack() -> None:
+    body = json.loads(_body())
+    body["data"]["affected_execution_ids"] = ["EXEC-1", "EXEC-2"]
+    body["data"]["authoritative_positions"] = [
+        {
+            "material_execution_id": "EXEC-1",
+            "material_trace_id": "TRACE-1",
+            "position": {"type": "HANDOFF_POSITION", "location_code": "LINE-OUT"},
+        },
+        {
+            "material_execution_id": "EXEC-2",
+            "material_trace_id": "TRACE-2",
+            "position": {"type": "HANDOFF_POSITION", "location_code": "LINE-OUT"},
+        },
+    ]
+    bindings = _Bindings()
+    recorder = InboundEventEvidenceRecorder(
+        _Sessions(),
+        _EvidenceService(),
+        material_execution_repository=_Executions(),
+        evidence_execution_binding_repository=bindings,
+    )
+
+    response = await InboundEventHandler(recorder).handle(json.dumps(body).encode())
+
+    assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
+    assert [(item.ordinal, item.material_execution_id) for item in bindings.values] == [(0, 21), (1, 22)]
+
+
+@pytest.mark.asyncio
+async def test_recorder_rejects_trace_mismatch_without_received_ack() -> None:
+    executions = _Executions()
+    executions.values["EXEC-1"].material_trace_id = "OTHER"
+    recorder = InboundEventEvidenceRecorder(
+        _Sessions(),
+        _EvidenceService(),
+        material_execution_repository=executions,
+        evidence_execution_binding_repository=_Bindings(),
+    )
+
+    response = await InboundEventHandler(recorder).handle(_body())
+
+    assert (response.http_status, response.body["code"]) == (422, "REJECTED")
+    assert response.body["data"] == {"reason_code": "INVALID_EXECUTION_CORRELATION"}

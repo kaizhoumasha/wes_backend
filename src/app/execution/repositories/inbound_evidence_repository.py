@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models.inbound_evidence import (
@@ -70,16 +70,85 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         await db.flush()
         return conflict
 
-    async def claim_next_pending(self, db: AsyncSession) -> InboundEvidence | None:
+    async def claim_next_pending(
+        self,
+        db: AsyncSession,
+        *,
+        kinds: tuple[InboundEvidenceKind, ...],
+    ) -> InboundEvidence | None:
         columns = cast("Any", InboundEvidence).__table__.c
         result = await db.execute(
             select(InboundEvidence)
-            .where(columns.apply_status == InboundEvidenceApplyStatus.PENDING)
+            .where(
+                columns.apply_status == InboundEvidenceApplyStatus.PENDING,
+                columns.kind.in_(kinds),
+            )
             .order_by(columns.received_at, columns.id)
             .limit(1)
             .with_for_update(skip_locked=True)
         )
         return result.scalar_one_or_none()
+
+    async def claim_decision_batch(
+        self,
+        db: AsyncSession,
+        *,
+        now: datetime,
+        claim_token: str,
+        claim_expires_at: datetime,
+        limit: int,
+    ) -> list[InboundEvidence]:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(
+            select(InboundEvidence)
+            .where(
+                columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
+                columns.published_at.is_(None),
+                not_(
+                    and_(
+                        columns.kind == InboundEvidenceKind.DEVICE_RESULT,
+                        columns.material_execution_id.is_(None),
+                    )
+                ),
+                (columns.decision_next_attempt_at.is_(None) | (columns.decision_next_attempt_at <= now)),
+                (columns.decision_claim_token.is_(None) | (columns.decision_claim_expires_at < now)),
+            )
+            .order_by(columns.received_at, columns.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        evidences = list(result.scalars().all())
+        for evidence in evidences:
+            evidence.decision_claim_token = claim_token
+            evidence.decision_claim_expires_at = claim_expires_at
+            evidence.decision_attempt_count += 1
+        await db.flush()
+        return evidences
+
+    async def get_decision_claim_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        evidence_id: int,
+        claim_token: str,
+        now: datetime,
+    ) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(
+            select(InboundEvidence)
+            .where(
+                columns.id == evidence_id,
+                columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
+                columns.published_at.is_(None),
+                columns.decision_claim_token == claim_token,
+                columns.decision_claim_expires_at >= now,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def flush(self, db: AsyncSession) -> None:
+        await db.flush()
 
     async def mark_applied(
         self,

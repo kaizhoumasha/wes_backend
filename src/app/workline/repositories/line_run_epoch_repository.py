@@ -40,6 +40,11 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         await db.flush()
         return epoch
 
+    async def get_by_id_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> LineRunEpoch | None:
+        columns = cast("Any", LineRunEpoch).__table__.c
+        result = await db.execute(select(LineRunEpoch).where(columns.id == line_run_epoch_id).with_for_update())
+        return result.scalar_one_or_none()
+
     async def close_epoch(
         self,
         db: AsyncSession,
@@ -94,6 +99,24 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
                 binding_columns.line_run_epoch_id == line_run_epoch_id,
                 binding_columns.device_code == device_code,
             )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_binding_by_role_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        device_role: str,
+    ) -> LineRunEpochDeviceBinding | None:
+        columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochDeviceBinding)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.device_role == device_role,
+            )
+            .with_for_update()
         )
         return result.scalar_one_or_none()
 

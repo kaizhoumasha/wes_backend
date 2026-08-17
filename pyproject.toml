@@ -34,7 +34,11 @@ dependencies = [
     "flower>=2.0.1",
     "redis>=7.4.0",
     "pyyaml>=6.0.3",
+    "wes-plugin-sdk",
 ]
+
+[tool.uv.sources]
+wes-plugin-sdk = { path = "packages/wes_plugin_sdk" }
 
 [project.optional-dependencies]
 dev = [

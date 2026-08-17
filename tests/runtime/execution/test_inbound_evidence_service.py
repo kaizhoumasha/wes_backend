@@ -167,3 +167,13 @@ def test_kind_is_closed_and_raw_supplier_payload_is_not_an_owner() -> None:
     }
     assert "raw_payload" not in InboundEvidence.model_fields
     assert "normalized_payload" in InboundEvidence.model_fields
+
+
+def test_evidence_has_a_separate_durable_decision_application_lease() -> None:
+    assert {
+        "decision_digest",
+        "decision_attempt_count",
+        "decision_next_attempt_at",
+        "decision_claim_token",
+        "decision_claim_expires_at",
+    } <= InboundEvidence.model_fields.keys()

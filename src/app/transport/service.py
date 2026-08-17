@@ -94,6 +94,23 @@ class TransportService:
     ) -> TransportHandle:
         return await self._create_task(MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face))
 
+    async def move_rack_in_session(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        source: RackPosition,
+        target: RackPosition,
+        target_face: RackFace,
+    ) -> TransportHandle:
+        """在调用方事务中持久化 RACK_MOVE；不会提交或派发。"""
+
+        return await self._create_task_in_session(
+            db,
+            MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face),
+        )
+
     async def rotate_rack(
         self,
         client_request_id: str,
@@ -469,6 +486,18 @@ class TransportService:
 
     async def _create_task(self, request: TransportRequest) -> TransportHandle:
         request_digest = _request_digest(request)
+        try:
+            async with self._sessions.begin() as db:
+                return await self._create_task_in_session(db, request)
+        except IntegrityError as error:
+            async with self._sessions() as db:
+                existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
+                if existing is not None:
+                    return _idempotent_handle(existing, request_digest)
+            raise TransportResourceConflict("transport resource is already active") from error
+
+    async def _create_task_in_session(self, db: AsyncSession, request: TransportRequest) -> TransportHandle:
+        request_digest = _request_digest(request)
         task_id = f"transport-{uuid.uuid4()}"
         now = timezone.now_for_db()
         submit_operation_id = new_uuid7()
@@ -503,42 +532,30 @@ class TransportService:
             )
             for resource_type, resource_id in sorted(_resource_keys(request))
         ]
-        try:
-            async with self._sessions.begin() as db:
-                existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
-                if existing is not None:
-                    return _idempotent_handle(existing, request_digest)
-                if isinstance(request, RotateRackRequest):
-                    projection = await self._repository.get_projection(
-                        db,
-                        "RACK",
-                        request.rack_id,
-                        for_update=True,
-                    )
-                    if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
-                        raise TransportContractError("rack current face is unknown")
-                    if projection.position_json != _json_value(request.position):
-                        raise TransportContractError("rack current position is not confirmed")
-                    if projection.arrival_face == request.target_face.value:
-                        raise TransportContractError("target face equals current face")
-                elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
-                    for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
-                        projection = await self._repository.get_projection(db, "RACK", rack_id, for_update=True)
-                        if (
-                            projection is None
-                            or projection.position_unknown
-                            or projection.arrival_face not in {"A", "B"}
-                        ):
-                            raise TransportContractError("rack current face is unknown")
-                        if projection.arrival_face != requested_face.value:
-                            raise TransportContractError("rack current face does not match request")
-                await self._repository.add_aggregate(db, task, members, bindings)
-        except IntegrityError as error:
-            async with self._sessions() as db:
-                existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
-                if existing is not None:
-                    return _idempotent_handle(existing, request_digest)
-            raise TransportResourceConflict("transport resource is already active") from error
+        existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
+        if existing is not None:
+            return _idempotent_handle(existing, request_digest)
+        if isinstance(request, RotateRackRequest):
+            projection = await self._repository.get_projection(
+                db,
+                "RACK",
+                request.rack_id,
+                for_update=True,
+            )
+            if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
+                raise TransportContractError("rack current face is unknown")
+            if projection.position_json != _json_value(request.position):
+                raise TransportContractError("rack current position is not confirmed")
+            if projection.arrival_face == request.target_face.value:
+                raise TransportContractError("target face equals current face")
+        elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
+            for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
+                projection = await self._repository.get_projection(db, "RACK", rack_id, for_update=True)
+                if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
+                    raise TransportContractError("rack current face is unknown")
+                if projection.arrival_face != requested_face.value:
+                    raise TransportContractError("rack current face does not match request")
+        await self._repository.add_aggregate(db, task, members, bindings)
         return TransportHandle(task_id, request.client_request_id)
 
     def _apply_submit_result(

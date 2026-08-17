@@ -39,6 +39,14 @@ class LineRunEpochRepositoryPort(Protocol):
         device_code: str,
     ) -> LineRunEpochDeviceBinding | None: ...
 
+    async def get_binding_by_role_for_update(
+        self,
+        db: object,
+        *,
+        line_run_epoch_id: int,
+        device_role: str,
+    ) -> LineRunEpochDeviceBinding | None: ...
+
     async def add_binding(
         self,
         db: object,
@@ -91,6 +99,7 @@ class LineRunEpochService:
         line_run_epoch_id: int,
         device_id: int,
         device_code: str,
+        device_role: str,
         contract_key: str,
         contract_version: str,
         status_max_age_ms: int,
@@ -100,21 +109,29 @@ class LineRunEpochService:
             line_run_epoch_id=line_run_epoch_id,
             device_id=device_id,
             device_code=device_code,
+            device_role=device_role,
             contract_key=contract_key,
             contract_version=contract_version,
             status_max_age_ms=status_max_age_ms,
             command_timeout_ms=command_timeout_ms,
         )
-        existing = await self._repository.get_binding_for_update(
+        existing_device = await self._repository.get_binding_for_update(
             db,
             line_run_epoch_id=line_run_epoch_id,
             device_code=device_code,
         )
-        if existing is None:
+        existing_role = await self._repository.get_binding_by_role_for_update(
+            db,
+            line_run_epoch_id=line_run_epoch_id,
+            device_role=device_role,
+        )
+        if existing_device is None and existing_role is None:
             return await self._repository.add_binding(db, candidate)
-        if existing.identity_tuple() == candidate.identity_tuple():
-            return existing
-        raise DeviceBindingConflictError(f"Epoch {line_run_epoch_id} 的设备 {device_code} 已冻结为其他合同绑定")
+        if existing_device is not None and existing_device.identity_tuple() == candidate.identity_tuple():
+            return existing_device
+        if existing_device is not None:
+            raise DeviceBindingConflictError(f"Epoch {line_run_epoch_id} 的设备 {device_code} 已冻结为其他角色或合同")
+        raise DeviceBindingConflictError(f"Epoch {line_run_epoch_id} 的角色 {device_role} 已冻结为其他设备")
 
     async def close_active_epoch(
         self,

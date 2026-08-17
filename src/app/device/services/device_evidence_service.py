@@ -57,7 +57,12 @@ class EvidenceProcessingRepositoryPort(Protocol):
         command_code: str,
     ) -> InboundEvidence | None: ...
 
-    async def claim_next_pending(self, db: object) -> InboundEvidence | None: ...
+    async def claim_next_pending(
+        self,
+        db: object,
+        *,
+        kinds: tuple[InboundEvidenceKind, ...],
+    ) -> InboundEvidence | None: ...
 
     async def mark_applied(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
@@ -131,6 +136,7 @@ class DeviceEvidenceService:
                 normalized_payload=payload,
                 received_at=timezone.now_for_db(),
                 line_run_epoch_id=line_run_epoch_id,
+                material_execution_id=command.material_execution_id if command is not None else None,
                 device_code=result.device_code,
                 command_code=command_code,
                 contract_key=result.contract_key,
@@ -208,11 +214,14 @@ class DeviceEvidenceService:
         return receipt
 
     async def process_one(self) -> bool:
-        """异步应用一条 evidence；事件无业务 consumer，仅完成公共验证。"""
+        """异步完成设备 evidence 的基础验证，业务消费由 FactProcessor 承接。"""
 
         now = timezone.now_for_db()
         async with self._sessions.begin() as db:
-            evidence = await self._processing.claim_next_pending(db)
+            evidence = await self._processing.claim_next_pending(
+                db,
+                kinds=(InboundEvidenceKind.DEVICE_EVENT, InboundEvidenceKind.DEVICE_RESULT),
+            )
             if evidence is None:
                 return False
             if evidence.kind == InboundEvidenceKind.DEVICE_EVENT:

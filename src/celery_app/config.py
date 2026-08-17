@@ -86,6 +86,12 @@ beat_schedule: dict[str, dict[str, Any]] = {
         "kwargs": {"limit": 100},
         "options": {"expires": 30.0},
     },
+    "process-execution-facts-batch": {
+        "task": "src.celery_app.tasks.execution.process_execution_facts_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
 }
 
 # ============================================
@@ -93,6 +99,7 @@ beat_schedule: dict[str, dict[str, Any]] = {
 # ============================================
 
 task_routes = {
+    "src.celery_app.tasks.execution.process_execution_facts_batch": {"queue": "device-command"},
     "src.celery_app.tasks.device_command.dispatch_device_commands_batch": {"queue": "device-command"},
     "src.celery_app.tasks.device_command.process_device_evidence_batch": {"queue": "device-command"},
     "src.celery_app.tasks.device_command.reconcile_device_commands_batch": {"queue": "device-command"},

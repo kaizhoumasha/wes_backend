@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from src.app.execution.models.inbound_evidence import InboundEvidenceKind
+from src.app.execution.models.inbound_evidence import (
+    InboundEvidenceApplyStatus,
+    InboundEvidenceKind,
+)
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services.inbound_evidence_service import (
@@ -345,6 +348,7 @@ class WmsConfirmationService:
                     contract_version="1.0",
                     operation=operation,
                     operation_id=operation_id,
+                    apply_status=InboundEvidenceApplyStatus.APPLIED,
                 )
                 if isinstance(evidence_result, InboundEvidenceConflictResult):
                     _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)

@@ -13,6 +13,7 @@ from src.app.execution.models.material_execution import (
 )
 from src.app.execution.services.material_execution_service import (
     ActiveMaterialExecutionExistsError,
+    InitialExecutionCorrelationConflictError,
     MaterialExecutionService,
 )
 
@@ -105,6 +106,29 @@ async def test_one_trace_rejects_a_second_active_execution_but_closed_trace_can_
     second = await _create(service, execution_code="EXEC-002")
 
     assert second.id != first.id
+
+
+@pytest.mark.asyncio
+async def test_initial_evidence_correlation_reuses_only_the_same_frozen_execution_identity() -> None:
+    service, _ = _service()
+    kwargs = {
+        "execution_code": "EXEC-INITIAL",
+        "material_trace_id": "TRACE-INITIAL",
+        "workline_id": 1,
+        "line_run_epoch_id": 11,
+        "changed_at": datetime(2026, 8, 17),
+        "evidence_id": 101,
+    }
+
+    first = await service.create_or_get_for_initial_evidence(object(), **kwargs)
+    duplicate = await service.create_or_get_for_initial_evidence(object(), **kwargs)
+
+    assert duplicate is first
+    with pytest.raises(InitialExecutionCorrelationConflictError):
+        await service.create_or_get_for_initial_evidence(
+            object(),
+            **{**kwargs, "execution_code": "EXEC-CHANGED"},
+        )
 
 
 @pytest.mark.asyncio

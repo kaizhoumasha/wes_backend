@@ -16,9 +16,10 @@ from src.app.device.services.device_evidence_service import (
     DeviceResultConflictError,
     UnknownDeviceCommandError,
 )
-from src.app.execution.models.inbound_evidence import (  # noqa: TC001
+from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
     InboundEvidenceConflict,
+    InboundEvidenceKind,
 )
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
 
@@ -69,8 +70,16 @@ class FakeEvidenceRepository:
         self.conflicts.append(conflict)
         return conflict
 
-    async def claim_next_pending(self, _db: object) -> InboundEvidence | None:
-        return next((item for item in self.evidences.values() if item.apply_status == "PENDING"), None)
+    async def claim_next_pending(
+        self,
+        _db: object,
+        *,
+        kinds: tuple[object, ...],
+    ) -> InboundEvidence | None:
+        return next(
+            (item for item in self.evidences.values() if item.apply_status == "PENDING" and item.kind in kinds),
+            None,
+        )
 
     async def mark_applied(self, _db: object, evidence: InboundEvidence, *, processed_at: datetime) -> None:
         evidence.apply_status = "APPLIED"
@@ -126,6 +135,7 @@ def _command() -> DeviceCommand:
         device_binding_id=21,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
+        material_execution_id=21,
         contract_key="arm.pick",
         contract_version="2.0",
         task_type="PICK",
@@ -369,7 +379,26 @@ async def test_result_evidence_is_only_authority_that_closes_acknowledged_comman
     assert await service.process_one() is True
     assert command.status == CommandStatus.SUCCEEDED
     assert command.result_evidence_id == receipt.evidence_id
-    assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
+    persisted_evidence = repository.evidences[receipt.source_event_id]
+    assert persisted_evidence.material_execution_id == command.material_execution_id
+    assert persisted_evidence.apply_status == "APPLIED"
+
+
+@pytest.mark.asyncio
+async def test_foundation_result_closes_command_and_stays_applied_without_business_identity() -> None:
+    command = _command()
+    command.material_execution_id = None
+    service, repository = _service(command)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert command.status == CommandStatus.SUCCEEDED
+    assert evidence.apply_status == "APPLIED"
+    assert evidence.material_execution_id is None
+    assert evidence.published_at is None
+    assert evidence.decision_digest is None
 
 
 @pytest.mark.asyncio
@@ -416,3 +445,22 @@ async def test_result_for_untrusted_command_state_enters_reconciliation_without_
     assert await service.process_one() is True
     assert command.status == CommandStatus.SUCCEEDED
     assert repository.evidences[receipt.source_event_id].apply_status == "RECONCILING"
+
+
+@pytest.mark.asyncio
+async def test_device_evidence_worker_does_not_claim_wms_evidence() -> None:
+    service, repository = _service(_command())
+    repository.evidences["WMS-1"] = InboundEvidence(
+        id=99,
+        kind=InboundEvidenceKind.WMS_RESULT,
+        source_identity="op:WMS-1",
+        payload_digest="a" * 64,
+        normalized_payload={"data": {}},
+        received_at=datetime(2026, 8, 17),
+        material_execution_id=21,
+        operation="op",
+        operation_id="WMS-1",
+    )
+
+    assert await service.process_one() is False
+    assert repository.evidences["WMS-1"].apply_status == "PENDING"

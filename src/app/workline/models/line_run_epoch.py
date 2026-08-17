@@ -73,6 +73,11 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
             "device_id",
             name="ux_line_run_epoch_device_bindings_epoch_device_id",
         ),
+        UniqueConstraint(
+            "line_run_epoch_id",
+            "device_role",
+            name="ux_line_run_epoch_device_bindings_epoch_device_role",
+        ),
         CheckConstraint("status_max_age_ms > 0", name="line_run_epoch_binding_status_age_positive"),
         CheckConstraint("command_timeout_ms > 0", name="line_run_epoch_binding_timeout_positive"),
         {"schema": SchemaType.BIZ.value},
@@ -81,6 +86,7 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
     line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
     device_id: int = Field(foreign_key="wes_biz.devices.id", index=True)
     device_code: str = Field(min_length=1, max_length=100)
+    device_role: str = Field(min_length=1, max_length=50)
     contract_key: str = Field(min_length=1, max_length=100)
     contract_version: str = Field(min_length=1, max_length=50)
     status_max_age_ms: int = Field(gt=0)
@@ -93,6 +99,7 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
             self.line_run_epoch_id,
             self.device_id,
             self.device_code,
+            self.device_role,
             self.contract_key,
             self.contract_version,
             self.status_max_age_ms,

@@ -15,6 +15,7 @@ from sqlalchemy import delete, or_, select, update
 from src.app.execution.models import (
     InboundEvidence,
     InboundEvidenceConflict,
+    InboundEvidenceExecutionBinding,
     InboundEvidenceKind,
     MaterialExecution,
     MaterialExecutionStatus,
@@ -127,6 +128,11 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id.in_(execution_ids)))
         await db.execute(
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
+        )
+        await db.execute(
+            delete(InboundEvidenceExecutionBinding).where(
+                InboundEvidenceExecutionBinding.inbound_evidence_id.in_(evidence_ids)
+            )
         )
         await db.execute(
             update(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)).values(material_execution_id=None)
@@ -389,7 +395,13 @@ async def test_inflight_identity_conflict_fences_late_http_response(integration_
         assert persisted.status == WmsConfirmationStatus.RECONCILING
 
 
-def _reconciliation(operation_id: str, *, reason_code: str) -> bytes:
+def _reconciliation(
+    operation_id: str,
+    *,
+    reason_code: str,
+    execution_code: str,
+    material_trace_id: str,
+) -> bytes:
     return json.dumps(
         {
             "operation_id": operation_id,
@@ -397,11 +409,11 @@ def _reconciliation(operation_id: str, *, reason_code: str) -> bytes:
             "timestamp": 1,
             "data": {
                 "reconciliation_id": f"{PREFIX}REC-1",
-                "affected_execution_ids": [f"{PREFIX}EXEC-1"],
+                "affected_execution_ids": [execution_code],
                 "authoritative_positions": [
                     {
-                        "material_execution_id": f"{PREFIX}EXEC-1",
-                        "material_trace_id": f"{PREFIX}TRACE-1",
+                        "material_execution_id": execution_code,
+                        "material_trace_id": material_trace_id,
                         "position": None,
                     }
                 ],
@@ -418,9 +430,25 @@ async def test_reconciliation_identity_conflict_is_committed_before_409(integrat
     operation_id = new_uuid7()
     RECONCILIATION_OPERATION_IDS.add(operation_id)
     handler = InboundEventHandler(InboundEventEvidenceRecorder(integration_session_factory))
+    async with integration_session_factory.begin() as db:
+        execution = await _seed_execution(db)
 
-    first = await handler.handle(_reconciliation(operation_id, reason_code="MANUAL_ABORT"))
-    conflict = await handler.handle(_reconciliation(operation_id, reason_code="CHANGED_REASON"))
+    first = await handler.handle(
+        _reconciliation(
+            operation_id,
+            reason_code="MANUAL_ABORT",
+            execution_code=execution.execution_code,
+            material_trace_id=execution.material_trace_id,
+        )
+    )
+    conflict = await handler.handle(
+        _reconciliation(
+            operation_id,
+            reason_code="CHANGED_REASON",
+            execution_code=execution.execution_code,
+            material_trace_id=execution.material_trace_id,
+        )
+    )
 
     assert (first.http_status, conflict.http_status) == (202, 409)
     async with integration_session_factory() as db:

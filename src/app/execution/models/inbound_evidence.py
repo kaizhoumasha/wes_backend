@@ -50,6 +50,15 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             "kind NOT IN ('DEVICE_EVENT', 'DEVICE_RESULT') OR device_code IS NOT NULL",
             name="inbound_evidence_device_identity_required",
         ),
+        CheckConstraint("decision_attempt_count >= 0", name="inbound_evidence_decision_attempt_count_nonnegative"),
+        CheckConstraint(
+            "(decision_claim_token IS NULL) = (decision_claim_expires_at IS NULL)",
+            name="inbound_evidence_decision_claim_complete",
+        ),
+        CheckConstraint(
+            "published_at IS NULL OR (decision_digest IS NOT NULL AND decision_claim_token IS NULL)",
+            name="inbound_evidence_published_decision_complete",
+        ),
         UniqueConstraint("source_identity", name="ux_inbound_evidences_source_identity"),
         Index(
             "ix_inbound_evidences_pending",
@@ -57,6 +66,21 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             "id",
             postgresql_where=text("apply_status = 'PENDING'"),
             sqlite_where=text("apply_status = 'PENDING'"),
+        ),
+        Index(
+            "ix_inbound_evidences_decision_eligible",
+            "decision_next_attempt_at",
+            "decision_claim_expires_at",
+            "received_at",
+            "id",
+            postgresql_where=text(
+                "apply_status = 'APPLIED' AND published_at IS NULL "
+                "AND NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)"
+            ),
+            sqlite_where=text(
+                "apply_status = 'APPLIED' AND published_at IS NULL "
+                "AND NOT (kind = 'DEVICE_RESULT' AND material_execution_id IS NULL)"
+            ),
         ),
         Index("ix_inbound_evidences_device_command", "device_code", "command_code", "kind"),
         Index(
@@ -104,6 +128,11 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     )
     processed_at: datetime | None = Field(default=None)
     published_at: datetime | None = Field(default=None)
+    decision_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    decision_attempt_count: int = Field(default=0, ge=0)
+    decision_next_attempt_at: datetime | None = Field(default=None)
+    decision_claim_token: str | None = Field(default=None, max_length=80)
+    decision_claim_expires_at: datetime | None = Field(default=None)
 
 
 class InboundEvidenceConflict(EnterpriseMixin, DataTableMixin, table=True):

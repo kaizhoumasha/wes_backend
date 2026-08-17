@@ -51,6 +51,7 @@ class CeleryAsyncRuntime:
         self._effect_preparation_runtime: Any | None = None
         self._transport_runtime: Any | None = None
         self._device_command_runtime: Any | None = None
+        self._execution_runtime: Any | None = None
         self._state_lock = threading.RLock()
         # 生命周期与消息执行统一按 run_lock -> state_lock 取锁，禁止交叉顺序。
         self._run_lock = threading.RLock()
@@ -91,6 +92,16 @@ class CeleryAsyncRuntime:
                 return None
             return self._device_command_runtime
 
+    @property
+    def execution_runtime(self) -> Any | None:
+        """返回部署组合已显式绑定的 execution processing runtime。"""
+
+        with self._state_lock:
+            self._assert_owner_pid()
+            if self._state is not RuntimeState.READY:
+                return None
+            return self._execution_runtime
+
     @staticmethod
     def _assert_sync_entrypoint() -> None:
         try:
@@ -119,6 +130,7 @@ class CeleryAsyncRuntime:
         self._effect_preparation_runtime = None
         self._transport_runtime = None
         self._device_command_runtime = None
+        self._execution_runtime = None
         self._state = RuntimeState.NEW
 
     @staticmethod
@@ -402,6 +414,7 @@ class CeleryAsyncRuntime:
                 self._effect_preparation_runtime = None
                 self._transport_runtime = None
                 self._device_command_runtime = None
+                self._execution_runtime = None
                 self._state = RuntimeState.NEW if reusable else RuntimeState.CLOSED
             raise
 
@@ -412,6 +425,7 @@ class CeleryAsyncRuntime:
             self._effect_preparation_runtime = progress["wms_effect_preparation"]
             self._transport_runtime = progress["transport_runtime"]
             self._device_command_runtime = progress["device_command_runtime"]
+            self._execution_runtime = progress.get("execution_runtime")
             self._state = RuntimeState.READY
 
     def run_async(self, factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -596,6 +610,7 @@ class CeleryAsyncRuntime:
                 self._effect_preparation_runtime = None
                 self._transport_runtime = None
                 self._device_command_runtime = None
+                self._execution_runtime = None
                 self._state = RuntimeState.CLOSED
 
 

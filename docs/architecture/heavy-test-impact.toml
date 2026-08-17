@@ -151,6 +151,12 @@ heavy_tests = []
 source_glob = "pyproject.toml"
 heavy_tests = []
 
+# 当前 lock 只冻结已审的本地插件 SDK 依赖，uv lock/QUALITY 承接；内容漂移恢复 fail closed。
+[[mapping]]
+source_glob = "uv.lock"
+heavy_tests = []
+reviewed_content_sha256 = "0acbca68bfbb2bfbb83d76401c70af42ced59751edc35143e8e252842560b1b5"
+
 # 独立插件 SDK 仅定义标准库不可变类型、只读协议和静态元数据；当前精确内容由架构测试承接。
 # 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
 [[mapping]]
@@ -430,17 +436,33 @@ heavy_tests = []
 
 # Phase 7 DeviceCommand/ECS owner 由隔离 PostgreSQL 不变量与真实生产闭环共同承接。
 [[mapping]]
-source_glob = "src/app/device/{__init__.py,composition.py,contracts.py,ecs_adapter.py}"
+source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
 ]
 
 [[mapping]]
-source_glob = "src/app/device/models/{__init__.py,command.py,evidence.py}"
+source_glob = "src/app/device/contracts.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/models/{__init__.py,evidence.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/models/command.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 [[mapping]]
@@ -459,10 +481,18 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/services/{__init__.py,device_command_service.py,device_dispatch_service.py,device_evidence_service.py}"
+source_glob = "src/app/device/services/{__init__.py,device_dispatch_service.py,device_evidence_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/services/device_command_service.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 [[mapping]]
@@ -803,8 +833,15 @@ heavy_tests = []
 
 # 粗分 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
 [[mapping]]
-source_glob = "src/app/wms_adapter/{inbound_adapter.py,inbound_event_handler.py,inbound_wire.py}"
+source_glob = "src/app/wms_adapter/{inbound_adapter.py,inbound_wire.py}"
 heavy_tests = ["tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/inbound_event_handler.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
 
 # OpenAPI 片段不执行运行时逻辑，由同目录 FAST 合同唯一承接。
 [[mapping]]
@@ -818,8 +855,19 @@ heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Transport 领域合同、持久化约束、领取和收敛由隔离 PostgreSQL 验收。
 [[mapping]]
-source_glob = "src/app/transport/{callback_json.py,contracts.py,models.py,repository.py,service.py}"
+source_glob = "src/app/transport/{callback_json.py,contracts.py,models.py,repository.py}"
 heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+[[mapping]]
+source_glob = "src/app/transport/service.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
@@ -903,12 +951,32 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 # 最小 execution owner 由独立 PostgreSQL 约束承接；设备 evidence 切换同时刷新既有 DeviceCommand 闭环。
 [[mapping]]
 source_glob = "src/app/execution/{__init__.py,composition.py,models/__init__.py,repositories/__init__.py,services/__init__.py}"
-heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+heavy_tests = [
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/plugin_binding.py"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/execution/services/{decision_applier.py,fact_builder.py,fact_processor.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/inbound_evidence_execution_binding.py,models/rack_replacement_transport_binding.py,repositories/inbound_evidence_execution_binding_repository.py,repositories/rack_replacement_transport_binding_repository.py}"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/execution/{models/material_execution.py,repositories/material_execution_repository.py,services/material_execution_service.py}"
@@ -927,7 +995,20 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20260817_1325_72ecc4fd560f_add_phase8_decision_processing.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/{__init__.py,execution.py}"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/resource/models/{__init__.py,resource.py}"

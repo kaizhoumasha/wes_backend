@@ -42,6 +42,22 @@ class MaterialExecutionRepository(BaseRepository[MaterialExecution]):
         await db.flush()
         return execution
 
+    async def get_by_id_for_update(self, db: AsyncSession, execution_id: int) -> MaterialExecution | None:
+        columns = cast("Any", MaterialExecution).__table__.c
+        result = await db.execute(select(MaterialExecution).where(columns.id == execution_id).with_for_update())
+        return result.scalar_one_or_none()
+
+    async def get_by_execution_code_for_update(
+        self,
+        db: AsyncSession,
+        execution_code: str,
+    ) -> MaterialExecution | None:
+        columns = cast("Any", MaterialExecution).__table__.c
+        result = await db.execute(
+            select(MaterialExecution).where(columns.execution_code == execution_code).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def flush(self, db: AsyncSession) -> None:
         await db.flush()
 
