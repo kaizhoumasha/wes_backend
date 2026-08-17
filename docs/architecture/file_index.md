@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-16
+**最后更新**：2026-08-17
 
 ## 1. 真源与入口
 
@@ -30,7 +30,9 @@
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 分批计划、Cell 晚绑定、不可逆执行、安全取消、NG 与双面目标架业务设计 |
+| `docs/superpowers/specs/2026-08-17-phase8-persistent-trigger-closure-design.md` | Phase 8 粗分执行的本地暂缓、Transport 结果、WMS 业务 WAIT 与事件驱动唤醒设计；当前实现对齐状态为 `ALIGNMENT_REQUIRED` |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
+| `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 粗分插件收敛的唯一详细实施计划与逐 Task 交付状态 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；说明每个现场场景的调用参数、来源、WMS 事务和回调生成方式 |
 | `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖 T2/T3 客户端生成，T1 服务端合同由 WMS 交付 |

@@ -8,9 +8,19 @@
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Alembic、Celery、PostgreSQL、Redis、Pytest、uv workspace、Ruff、GitNexus。
 
-**当前状态:** `IN_PROGRESS`。Task 1 已于 2026-08-16 关闭文档门禁：独立 Phase 8 粗分入库合同与设备附录均为
-`Approved`，两个 `RACK_MOVE` 的 Transport 消费已获批。后续代码、migration 和行为测试仍必须按本计划逐 Task 实施与验收；
-`IN_PROGRESS` 不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
+**当前状态:** `IN_PROGRESS`。Task 1—7 已分别完成并提交；Task 8 在部署装配前先按
+`docs/superpowers/specs/2026-08-17-phase8-persistent-trigger-closure-design.md` 闭合持久触发。后续装配、migration、分层验收和收尾
+仍必须按本计划完成；`IN_PROGRESS` 不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
+
+| Task | 状态 | Commit |
+| --- | --- | --- |
+| 1 | Complete | `0dc3eab9` |
+| 2 | Complete | `048c3588` |
+| 3 | Complete | `042df417` |
+| 4 | Complete | `5d093d1b` |
+| 5 | Complete | `ab02f42f` |
+| 6 | Complete | `1d5e0209` |
+| 7 | Complete | `7bca4a8f` |
 
 ## Global Constraints
 
@@ -28,9 +38,9 @@
 - 核心生命周期只允许 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING`；不得把扫码、准入、PUT、上报等粗分步骤做成核心状态枚举。
 - 默认不建立插件私有持久状态，更不得新增通用 `plugin_state` JSON。业务进度由 `InboundEvidence`、`DeviceCommand`、`WmsConfirmation`、位置投影和执行终态推导。
 - handler 消费已验证、可关联的类型化 Fact，不接收供应商原始 Payload；装饰器只声明静态元数据，不注册对象、不扫描模块、不产生 import-time 副作用。
-- Decision 是封闭集合，不建设通用 Effect 引擎。Phase 8 集合为 `Wait`、`CreateDeviceCommand`、`CreateWmsConfirmation`、
-  `CreateTransportTask`、`PauseForReconciliation`、`CompleteExecution`；`CreateTransportTask` 只用于获批换架计划的两个既有
-  `RACK_MOVE`。
+- Decision 是封闭集合，不建设通用 Effect 引擎。Phase 8 集合为 `Wait`、`DeferExecution`、`CreateDeviceCommand`、
+  `CreateWmsConfirmation`、`CreateTransportTask`、`PauseForReconciliation`、`CompleteExecution`；`DeferExecution` 只表达未满足
+  本地可执行条件且等待后需重新求值，`CreateTransportTask` 只用于获批换架计划的两个既有 `RACK_MOVE`。
 - ECS 已 ACK 命令或投递结果未知时，必须假定物理动作可能开始，禁止改目标或创建等价重放。只有 ECS 明确未接纳且没有物理副作用时，才允许用新的业务 Decision 恢复目标。
 - 冲突默认冻结当前 `MaterialExecution` 及其已占用/预留资源；旧架 release gate 或位置冲突扩大到该单层货架；只有 Epoch、
   拓扑或现场事实整体不可信时才暂停整条 WorkLine。
@@ -113,21 +123,21 @@
 - Consumes: Task 1 冻结的精确合同与当前 Git/Alembic/测试基线。
 - Produces: 每个旧 owner 的 successor/`NONE`、每项行为的唯一测试 owner、受影响 HEAVY mapping 和原子提交边界。
 
-- [ ] **Step 1: 记录不可变实施基线**
+- [x] **Step 1: 记录不可变实施基线**
 
   Run: `git rev-parse HEAD && git status --short && uv run alembic heads && uv run pytest --collect-only -q -o addopts='' | tail -5`
 
   Expected: 保存精确 commit、工作区状态、单一 Alembic head 和默认测试收集数；不得覆盖用户已有未提交内容。
 
-- [ ] **Step 2: 建立 owner/successor 清单**
+- [x] **Step 2: 建立 owner/successor 清单**
 
   至少逐项裁决 `DeviceEvidence`、`DeviceEvidenceConflict`、`WmsConfirmationStatus`、本阶段直接替换的旧 RuntimeInbox 消费点、WMS 旧 Effect lane、启动装配和旧部署测试。目标是直接用 `InboundEvidence`/冲突证据、独立 `WmsConfirmation` 和新静态处理器接管；没有当前价值的直接旧 owner 标记 `NONE` 并删除，不做兼容代理。跨阶段 Runtime/System Capability/Intent/Hold 残余只记录精确 owner、消费者和 successor，交给 Phase 10；Phase 8 不以全仓零命中为退出条件。
 
-- [ ] **Step 3: 运行 GitNexus 影响分析**
+- [x] **Step 3: 运行 GitNexus 影响分析**
 
   对将被修改的 `DeviceEvidenceService`、`LineRunEpochService`、WMS 事件入口、Celery 任务、Composition Root 以及所有待修改模型逐个执行 upstream impact。记录直接调用者、执行流程和风险级别；HIGH/CRITICAL 停止并向用户确认。
 
-- [ ] **Step 4: 冻结测试所有权与重量**
+- [x] **Step 4: 冻结测试所有权与重量**
 
   - `tests/runtime/execution/`: 核心执行对象、证据身份、Decision 应用幂等和故障边界。
   - `tests/workline/`: Epoch 插件/配置冻结与绑定。
@@ -136,7 +146,7 @@
   - `workline_plugins/rough_sorter/tests/`: 拥有粗分业务 Decision、插件集成和部署闭环，使用插件包自己的 Pytest/CI，不进入核心默认 pytest、覆盖率或 HEAVY selector。
   - 供应商一致性验收: 留在供应商 ECS/网关交付边界，不进入本仓库核心质量门禁。
 
-- [ ] **Step 5: 更新精确 HEAVY mapping**
+- [x] **Step 5: 更新精确 HEAVY mapping**
 
   先为 selector 写失败合同，证明 `workline_plugins/rough_sorter/` 下的源码、单元测试和 E2E 都应返回空核心 HEAVY 集，而核心 Composition Root、migration 和共享支撑资产仍按 mapping 选择真实 owner；同时证明尚未配置的 `packages/wes_plugin_sdk/**` 继续 fail closed。随后把 `workline_plugins/**` 加入核心 selector 的明确 ignore，并把 `packages/wes_plugin_sdk/**` 纳入核心候选路径。插件包自己的测试配置与 CI 是其唯一选择器，不得加入核心 selector。
 
@@ -162,36 +172,36 @@
 - Consumes: Task 1 已批准的粗分实际需求，不接受未来插件猜想。
 - Produces: 无数据库、网络、Celery、容器或注册表依赖的最小稳定 SDK。
 
-- [ ] **Step 1: 先写失败的 SDK 边界测试**
+- [x] **Step 1: 先写失败的 SDK 边界测试**
 
   测试必须锁定：SDK 不导入 `src.app`、SQLAlchemy/SQLModel、FastAPI、Celery 或 HTTP 库；核心 `src/` 不导入具体 `workline_plugins.*`；插件生产代码只允许导入 SDK 和获批公共合同，不允许导入 `src.app.*` 内部实现。
 
-- [ ] **Step 2: 定义实际使用的类型化 Fact**
+- [x] **Step 2: 定义实际使用的类型化 Fact**
 
   只包含粗分闭环需要的不可变输入，例如 SCAN 证据已齐备、WMS 准入/目标/换架计划已决定、设备位置结果已确认、
   Transport 结果已发布、人工对账已决定。Fact 只携带稳定标识、版本和已验证数据，不携带 ORM 对象或原始 wire Payload。
 
-- [ ] **Step 3: 定义封闭 Decision**
+- [x] **Step 3: 定义封闭 Decision**
 
   建立 `Wait`、`CreateDeviceCommand`、`CreateWmsConfirmation`、`CreateTransportTask`、`PauseForReconciliation`、
   `CompleteExecution`。`CreateTransportTask` 只表达两个获批 `RACK_MOVE`，Decision 必须包含应用幂等所需的稳定业务身份，
   不包含 Repository 或执行回调。
 
-- [ ] **Step 4: 定义最窄只读 Protocol**
+- [x] **Step 4: 定义最窄只读 Protocol**
 
   只为 handler 当前决策所需的执行快照、位置/资源快照和 Epoch 配置建立读取协议；禁止通用 `Context`、Service Locator、`dict[str, Any]` 或写端口。
 
-- [ ] **Step 5: 实现无副作用 handler 元数据装饰器**
+- [x] **Step 5: 实现无副作用 handler 元数据装饰器**
 
   装饰器只附加 `fact_type`、handler 名称和支持版本等静态元数据。模块导入不能注册 handler、修改全局集合、扫描 entry point 或实例化依赖。
 
-- [ ] **Step 6: 运行 SDK 和架构门禁**
+- [x] **Step 6: 运行 SDK 和架构门禁**
 
   Run: `uv run pytest tests/architecture/test_plugin_sdk_boundary_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py -q`
 
   Expected: PASS；SDK 为独立包，核心和插件依赖方向单向且静态。
 
-- [ ] **Step 7: 提交 SDK 原子变更**
+- [x] **Step 7: 提交 SDK 原子变更**
 
   Commit suggestion: `feat(plugin-sdk): 建立最小静态插件接口`
 
@@ -232,39 +242,39 @@
 - Consumes: Phase 7 设备可靠性、现有位置/资源投影、Task 3 SDK 身份类型。
 - Produces: 单盘执行、统一入站证据、WMS 可靠义务和 Epoch 插件版本冻结的唯一生产模型。
 
-- [ ] **Step 1: 先写失败的模型与服务测试**
+- [x] **Step 1: 先写失败的模型与服务测试**
 
   覆盖：`MaterialExecution` 只允许 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING` 及合法迁移；一个活动 trace 只能有一个
   执行；`InboundEvidence` 同身份同 digest 幂等、异 digest 冲突；`WmsConfirmation` 稳定 `operation + operation_id`、重试不换
   身份；Epoch 固定 `plugin_key`、`plugin_version`、`flow_mode`；禁止通用插件状态 JSON。
 
-- [ ] **Step 2: 实现 `MaterialExecution`**
+- [x] **Step 2: 实现 `MaterialExecution`**
 
   只保存通用身份、`workline_id`、`line_run_epoch_id`、业务相关键、生命周期、版本和诊断时间。粗分进度不做核心枚举，派生自相关证据、命令、确认和投影。
 
-- [ ] **Step 3: 直接收敛 `InboundEvidence`**
+- [x] **Step 3: 直接收敛 `InboundEvidence`**
 
   将设备 EVENT/RESULT 和 WMS EVENT/RESULT 表达为有限 evidence kind；保留稳定 source identity、payload digest、规范化 payload、关联对象、应用状态、冲突证据和下游发布时间。Phase 7 入口改为经执行应用端口写入该对象，不允许同时写旧 `DeviceEvidence` 和新表。
 
-- [ ] **Step 4: 建立独立 `WmsConfirmation`**
+- [x] **Step 4: 建立独立 `WmsConfirmation`**
 
   保存当前 operation、operation_id、请求 digest、不可变请求、执行关联、派发状态、重试资格和响应 evidence 关联。传输重试沿用原 operation_id；WMS `WAIT` 完成本次决定，后续重试业务决策必须创建新的 operation_id。
 
-- [ ] **Step 5: 扩展 Epoch 冻结字段**
+- [x] **Step 5: 扩展 Epoch 冻结字段**
 
   为 `LineRunEpoch` 增加非空 `plugin_key`、`plugin_version` 和通用 `flow_mode`，沿用现有 topology/configuration digest 与 device binding。不得添加动态插件表或从当前 Epoch 外加载插件版本。
 
-- [ ] **Step 6: 删除被接管的旧 owner**
+- [x] **Step 6: 删除被接管的旧 owner**
 
   successor 测试通过后删除 `DeviceEvidence`/冲突重复定义、`BinMaterialMount` 上只代表旧单点确认的 `WmsConfirmationStatus` 及其无 owner 测试。`DeviceStatusObservation` 若仍由 Phase 7 设备状态拥有则原位保留。
 
-- [ ] **Step 7: 由 Alembic generator 创建直接切换 migration**
+- [x] **Step 7: 由 Alembic generator 创建直接切换 migration**
 
   Run: `uv run alembic revision -m "收敛 Phase 8 执行对象"`
 
   生成后编辑 upgrade，直接删除旧表/字段并建立最终约束、索引和 FK；不复制开发数据，`downgrade()` 明确不支持。
 
-- [ ] **Step 8: 验证核心执行对象**
+- [x] **Step 8: 验证核心执行对象**
 
   Run: `uv run pytest tests/runtime/execution tests/workline/test_line_run_epoch.py -q`
 
@@ -272,7 +282,7 @@
 
   Expected: FAST 与映射到 execution migration 的 PostgreSQL HEAVY 全部 PASS、无跳过；不存在证据双写或旧确认 owner。
 
-- [ ] **Step 9: 提交可靠对象原子变更**
+- [x] **Step 9: 提交可靠对象原子变更**
 
   Commit suggestion: `feat(execution): 建立粗分所需可靠执行对象`
 
@@ -299,31 +309,31 @@
 - Consumes: Task 1 独立获批粗分合同的 operation 与公共信封，现有 WMS `OutboundHttpTransport`/client 边界。
 - Produces: 类型化 WES→WMS 可靠确认与 WMS→WES 持久化事件入口，不把 WMS 业务语义泄漏到基础 HTTP transport。
 
-- [ ] **Step 1: 先写失败的合同测试**
+- [x] **Step 1: 先写失败的合同测试**
 
   精确覆盖获批 operation、严格字段闭集、大小限制、`operation + operation_id` 幂等、同 identity 异 digest 冲突、HTTP 状态、`retry_after_ms`、错误映射和 OpenAPI。禁止把未获批 operation 填进测试作为未来占位。
 
-- [ ] **Step 2: 建立逐盘入库 WES→WMS 类型化 DTO**
+- [x] **Step 2: 建立逐盘入库 WES→WMS 类型化 DTO**
 
   仅实现 `inbound.material.admission_decide@v1`、`inbound.material.target_decide@v1`、
   `inbound.material.placement_report@v1`、`inbound.material.ng_placement_report@v1` 和
   `inbound.source_rack.replacement_plan_decide@v1`；适配器把 transport 响应规范化为 WMS_RESULT `InboundEvidence`，不直接推进
   插件或修改库存投影。
 
-- [ ] **Step 3: 建立 WMS→WES 类型化入口**
+- [x] **Step 3: 建立 WMS→WES 类型化入口**
 
   仅实现 `inbound.execution.reconciliation_decided@v1`。入口先持久化 WMS_EVENT `InboundEvidence` 再返回
   `202 / RECEIVED`；不得在 API 层访问 Repository 或执行 handler。
 
-- [ ] **Step 4: 静态分派现有 WMS 事件端点**
+- [x] **Step 4: 静态分派现有 WMS 事件端点**
 
   在现有固定 `/api/v1/wms/events` 入口按有限 operation 显式分派 Transport 与粗分入库 handler；不引入 operation registry、模块扫描或第二个 HTTP Adapter。
 
-- [ ] **Step 5: 实现 `WmsConfirmation` 有界派发**
+- [x] **Step 5: 实现 `WmsConfirmation` 有界派发**
 
   每批最多处理 100 条资格记录；派发前重新检查 deadline/重试资格；HTTP 未知结果保留原 operation_id 重试；响应必须先持久化为 evidence 再完成 confirmation。不得复用旧 Runtime Effect lane。
 
-- [ ] **Step 6: 运行 WMS ACL 验收**
+- [x] **Step 6: 运行 WMS ACL 验收**
 
   Run: `uv run pytest tests/contracts/wms_adapter -q`
 
@@ -331,7 +341,7 @@
 
   Expected: 新旧 WMS operation 均由显式 ACL 拥有；基础 outbound HTTP 测试不承载粗分业务断言；真实持久化场景 PASS、无跳过。
 
-- [ ] **Step 7: 提交 WMS ACL 原子变更**
+- [x] **Step 7: 提交 WMS ACL 原子变更**
 
   Commit suggestion: `feat(wms-adapter): 接入粗分入库确认合同`
 
@@ -358,37 +368,37 @@
 - Consumes: 已持久化且可关联的 `InboundEvidence`、Task 3 SDK、核心应用端口。
 - Produces: 静态绑定的 handler 调用和类型匹配的原子 Decision 应用；插件没有基础设施写权限。
 
-- [ ] **Step 1: 先写失败的处理与应用测试**
+- [x] **Step 1: 先写失败的处理与应用测试**
 
   覆盖 evidence claim、重复处理、同证据不同 Decision 冲突、handler 异常、未知 Fact/Decision fail closed、事务回滚、worker reclaim，以及每种允许 Decision 的精确应用结果。
 
-- [ ] **Step 2: 构建类型化 Fact**
+- [x] **Step 2: 构建类型化 Fact**
 
   只有 evidence 已持久化、digest/身份验证完成且关联对象存在时才能生成 SDK Fact。原始 Payload 的供应商映射必须在 Phase 7/设备附录边界完成，Fact builder 不猜测字段。
 
-- [ ] **Step 3: 实现静态插件绑定**
+- [x] **Step 3: 实现静态插件绑定**
 
   `plugin_binding.py` 只接收部署时明确传入的 handler 实例映射和只读协议实现；不扫描 filesystem、entry points 或 import 路径，不维护运行时 Catalog。
 
-- [ ] **Step 4: 实现类型匹配的 Decision 应用器**
+- [x] **Step 4: 实现类型匹配的 Decision 应用器**
 
   应用器只分派封闭类型到 `DeviceCommand`、`WmsConfirmation`、执行状态和可选 `TransportTask` 应用端口。每个结果以 evidence identity + decision type/ordinal 幂等；不建立通用 Effect 表或 handler 回调。
 
-- [ ] **Step 5: 实现有界异步处理**
+- [x] **Step 5: 实现有界异步处理**
 
   入口 ACK 与业务处理解耦；worker 每批最多 100 条，claim 超时可恢复，失败有界退避，冲突进入 `RECONCILING`。不得使用无限轮询或 WorkLine 全局锁。
 
-- [ ] **Step 6: 验证不可逆边界**
+- [x] **Step 6: 验证不可逆边界**
 
   对 `CreateDeviceCommand` 明确测试：明确未接纳可以创建新的恢复 Decision；ACK 后或投递未知只能等待 callback/人工对账，不得改目标或重发等价物理动作。
 
-- [ ] **Step 7: 运行核心处理器与启动门禁**
+- [x] **Step 7: 运行核心处理器与启动门禁**
 
   Run: `uv run pytest tests/runtime/execution tests/deployment/test_execution_worker_startup.py -q`
 
   Expected: PASS；核心测试使用最小 fake handler，不导入真实 `rough_sorter` 插件。
 
-- [ ] **Step 8: 提交核心处理器原子变更**
+- [x] **Step 8: 提交核心处理器原子变更**
 
   Commit suggestion: `feat(execution): 应用类型化事实与封闭决策`
 
@@ -416,94 +426,128 @@
 - Consumes: `wes_plugin_sdk` Fact/Decision/Protocol、Task 1 获批粗分合同、核心只读快照。
 - Produces: `rough_sorter` 业务 Decision；无数据库、网络、Celery、供应商 wire 或基础设施实现。
 
-- [ ] **Step 1: 先写插件失败测试**
+- [x] **Step 1: 先写插件失败测试**
 
-  最少覆盖：证据不完整 `Wait`、准入 `ACCEPT` 不含目标、入料/输送顺序、出口后目标 Cell 晚绑定、业务 `WAIT`、
+  最少覆盖：证据不完整 fail closed、准入 `ACCEPT` 不含目标、入料/输送顺序、出口后目标 Cell 晚绑定、业务 `WAIT`、
   `REJECT`/NG、ECS ACK 后禁止等价重放、placement 确认、旧架 release gate、两个 `RACK_MOVE` 稳定身份、新架先成功恢复目标请求、
   两任务失败不级联、delivery unknown、对账完成和重复 Fact 幂等。
 
-- [ ] **Step 2: 实现最小插件入口**
+- [x] **Step 2: 实现最小插件入口**
 
   `plugin.py` 显式构造 handler 列表并注入只读协议；不提供通用容器、registry 或自动 discovery。目录只保留实际文件，不预建 `domain/`、`application/`、`services/`、`repositories/`、`adapters/`、`infrastructure/`、`utils/`、`config/`。
 
-- [ ] **Step 3: 按业务触发拆分 handler**
+- [x] **Step 3: 按业务触发拆分 handler**
 
   一个文件对应一个稳定业务触发及其决策，不对应原始 EVENT/CALLBACK。handler 保持纯决策：输入 Fact + 只读快照，输出一个或多个封闭 Decision。
 
-- [ ] **Step 4: 实现逐盘准入和 PUT 决策**
+- [x] **Step 4: 实现逐盘准入和 PUT 决策**
 
   `SCAN_COMPLETED` 的 trace、六合一码、直径、厚度、外形结果和位置齐备后创建 WMS admission confirmation；`ACCEPT` 后只创建
   入料 `PICK_AND_PUT`，成功后创建 `MOVE_FORWARD`。料盘可靠到达出口后才请求目标 Cell；业务 `WAIT` 不伪装成设备忙，
-  `REJECT` 只按 WMS 决定进入获批 NG 路径。
+  设备忙或 release gate 未释放在 Task 8 按获批设计改为 `DeferExecution`；`REJECT` 只按 WMS 决定进入获批 NG 路径。
 
-- [ ] **Step 5: 实现目标晚绑定和不可逆保护**
+- [x] **Step 5: 实现目标晚绑定和不可逆保护**
 
   WMS 返回精确 Cell 且本地 source/target/设备门禁通过时才创建出料 `PICK_AND_PUT`。没有可用 Cell 时不下发出料命令；
   ECS ACK、FAILED 或结果未知后禁止换 target 或重放等价动作，进入等待或人工对账。
 
-- [ ] **Step 6: 实现 placement、换架和 reconciliation 决策**
+- [x] **Step 6: 实现 placement、换架和 reconciliation 决策**
 
   PUT/NG 可靠完成后创建对应 WMS report；旧架 release gate 闭合后冻结快照；位置/成员冲突进入最小隔离域；获批
   reconciliation Fact 才能恢复或终结相关执行。
 
-- [ ] **Step 7: 实现两个获批 `RACK_MOVE`**
+- [x] **Step 7: 实现两个获批 `RACK_MOVE`**
 
   按同一 `rack_replacement_id` 创建 `OLD_OUT` 和 `NEW_IN` 两个独立 `CreateTransportTask`；以
   `(rack_replacement_id, leg)` 为业务幂等键，由应用端在首次调用前原子持久化到全局唯一 UUIDv7 `client_request_id`，同键重试
   复用原 UUIDv7 和原 Handle。两任务可以同时提交，顺序不由插件控制；新架匹配 T3 成功后可重新请求 Cell，旧架失败只隔离
   旧 rack，新架失败阻止出料。
 
-- [ ] **Step 8: 独立运行插件包测试**
+- [x] **Step 8: 独立运行插件包测试**
 
   Run: `uv run --project workline_plugins/rough_sorter pytest -q`
 
   Expected: 插件测试全部 PASS；核心默认 pytest 不收集该目录；插件 wheel 可独立构建且运行依赖只包含 SDK 和必要公共类型。
 
-- [ ] **Step 9: 提交粗分插件原子变更**
+- [x] **Step 9: 提交粗分插件原子变更**
 
   Commit suggestion: `feat(rough-sorter): 重建粗分机执行决策`
 
-### Task 8: 完成显式部署装配、workspace 与镜像交付
+### Task 8: 闭合持久触发并完成显式部署装配
 
 **Files:**
 
+- Modify: `packages/wes_plugin_sdk/src/wes_plugin_sdk/{decisions.py,__init__.py}`
+- Modify: `src/app/execution/models/inbound_evidence.py`
+- Modify: `src/app/execution/repositories/{inbound_evidence_repository.py,rack_replacement_transport_binding_repository.py}`
+- Modify: `src/app/execution/services/{fact_builder.py,fact_processor.py,wms_confirmation_service.py}`
+- Modify as required: `src/app/execution/{models,repositories,services}/__init__.py`
+- Modify: `src/app/wms_adapter/`
+- Modify: `workline_plugins/rough_sorter/`
+- Create via Alembic generator: direct-cutover migration for `TRANSPORT_RESULT`
 - Modify: `pyproject.toml`
 - Modify: `uv.lock`
 - Modify: `Dockerfile`
 - Create: `deployment/__init__.py`
 - Create: `deployment/rough_sorter_composition.py`
 - Modify: `main.py`
-- Modify: `src/celery_app/app.py`
+- Modify: `src/celery_app/{app.py,config.py,tasks/}`
 - Modify as required: deployment environment profile files without secrets
+- Create/Modify: `tests/runtime/execution/`
+- Create/Modify: `tests/contracts/wms_adapter/`
+- Create/Modify: `tests/integration/{execution,wms_adapter}/`
 - Create: `tests/deployment/test_rough_sorter_plugin_startup.py`
 - Modify: `tests/deployment/test_celery_task_runtime_contract.py`
 
 **Interfaces:**
 
-- Consumes: 核心 execution composition、安装后的 `rough_sorter` 包、已冻结 Epoch/plugin/device 配置。
-- Produces: 一个部署内唯一、静态、可审计的粗分插件绑定和包含 SDK/plugin wheel 的镜像。
+- Consumes: Task 1—7 可靠对象与插件、获批持久触发设计、已冻结 Epoch/plugin/device 配置。
+- Produces: 不丢失的本地暂缓、Transport/WMS 后续触发，以及一个部署内唯一、静态、可审计的粗分插件绑定和包含 SDK/plugin wheel
+  的镜像。
 
-- [ ] **Step 1: 先写失败的部署装配测试**
+- [ ] **Step 1: 先写失败的核心持久触发测试**
+
+  覆盖：`DeferExecution` 必须单独返回；defer 不发布、不写 digest、不增加失败次数且 execution 进入 `HOLD`；真实异常才增加失败
+  次数；`TRANSPORT_RESULT` 身份、duplicate/冲突与 Fact 构建；WMS 业务 `WAIT` 完成原 confirmation 并在同一事务创建带新
+  `operation_id + next_attempt_at` 的后续 confirmation。
+
+- [ ] **Step 2: 实现 `DeferExecution` 通用语义**
+
+  SDK 只增加一个不可变 Decision；插件拥有设备忙和 release gate 判断。Fact processor 只实现通用持久暂缓，不解释粗分角色、位置
+  或原因码，不建立 wakeup 表或 Effect ledger。现有 attempt counter 只统计真实失败。
+
+- [ ] **Step 3: 建立通用 Transport Result Fact 承接**
+
+  `InboundEvidence` 直接增加 `TRANSPORT_RESULT + transport_task_id` 最终 schema；Fact builder 构造通用
+  `TransportResultReadyFact`。基础层不判断 `NEW_IN/OLD_OUT`；Task 8 deployment adapter 按
+  `RackReplacementTransportBinding.client_request_id` 仅把 `NEW_IN` 映射到 material evidence。
+
+- [ ] **Step 4: 建立 WMS 业务 WAIT follow-up 端口**
+
+  execution service 只消费 WMS ACL 返回的 typed follow-up；`src/app/wms_adapter/` 负责识别已验证业务 `WAIT`、生成新 operation
+  identity/请求快照和 `next_attempt_at`。技术重试继续复用原 identity，不得走 follow-up。
+
+- [ ] **Step 5: 生成并验证 direct-cutover migration**
+
+  只能用 Alembic generator 创建随机 revision，再编辑最终列、约束和 index；不迁移开发数据，不提供兼容字段或可用 downgrade。在干净
+  PostgreSQL 上验证当前 base 到 head，并运行 selector 选中的真实事务 owner。
+
+- [ ] **Step 6: 独立提交核心持久触发切片**
+
+  Commit suggestion: `feat(execution): 闭合粗分持久触发`
+
+- [ ] **Step 7: 先写失败的部署装配与唤醒测试**
 
   测试锁定：部署只显式绑定 `rough_sorter`；插件键/版本必须与活动 `LineRunEpoch` 一致；未知键、版本漂移、缺少设备 binding 或 digest 不一致时启动/激活 fail closed；只有仓库顶层 deployment Composition Root 可以导入具体插件，核心 `src/app/**` 不导入任意插件。
+  同时锁定 Device/WMS/Transport 事实提交后只发送无载荷扫描任务、即时消息失败不回滚已提交事实、10 秒 Beat 可恢复遗漏。
 
-- [ ] **Step 2: 配置 uv workspace**
+- [ ] **Step 8: 配置 workspace、Composition Root 与镜像**
 
-  只加入 `packages/wes_plugin_sdk` 和 `workline_plugins/rough_sorter` 两个实际成员并更新 lock；不得创建空的未来插件 workspace。
+  只加入两个实际 workspace 成员。deployment 模块显式 import 插件并构造 Fact factory、correlator、WMS resolver/business-wait
+  planner、Transport publisher、handler map、Fact processor 和 Decision applier。Web/Celery 使用同一静态配置；Docker 在 `uv sync`
+  前复制必要成员元数据和包结构，最终镜像不依赖宿主机 editable install。
 
-- [ ] **Step 3: 建立部署 Composition Root**
-
-  部署模块显式 import `rough_sorter.plugin`，构造只读协议、handler map、Fact processor 和 Decision applier。插件实例只在应用/worker 启动装配处出现，不进入核心领域模块。
-
-- [ ] **Step 4: 调整 Docker 构建顺序**
-
-  在 `uv sync` 前复制 workspace 成员的 `pyproject.toml`/必要包结构，确保 lock 可重现；最终镜像必须包含 SDK 和粗分插件，不能依赖宿主机可编辑安装。
-
-- [ ] **Step 5: 绑定 Web 与 Celery 同一插件版本**
-
-  API ingress 和 worker 使用同一个部署配置及 Epoch 版本验证，不允许 Web/Celery 各自扫描或选择插件。启动日志输出非敏感的 plugin key/version/config digest 供验收。
-
-- [ ] **Step 6: 验证安装、镜像和启动**
+- [ ] **Step 9: 验证并独立提交部署装配**
 
   Run: `uv sync --dev && uv lock --check`
 
@@ -511,9 +555,8 @@
 
   Run: `docker build -t wes-backend:phase8-rough-sorter .`
 
-  Expected: workspace lock 无漂移；Web/Celery 静态绑定一致；镜像内可导入 SDK 和插件，未知/漂移配置 fail closed。
-
-- [ ] **Step 7: 提交部署装配原子变更**
+  Expected: workspace lock 无漂移；持久化后即时唤醒与 Beat 兜底均闭合；Web/Celery 静态绑定一致；镜像内可导入 SDK 和插件，
+  未知/漂移配置 fail closed。
 
   Commit suggestion: `feat(deployment): 显式装配粗分机插件`
 
