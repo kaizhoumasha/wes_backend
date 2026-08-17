@@ -692,6 +692,7 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.APPLIED,
             published_at=now,
+            decision_digest="5" * 64,
         )
         db.add(processed_unknown)
         await db.flush()
