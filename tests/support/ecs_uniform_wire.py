@@ -28,21 +28,26 @@ from sqlalchemy.engine import make_url
 from redis import Redis
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
 from src.app.device.v1.ecs_callback import router as ecs_callback_router
+from src.celery_app.app import celery_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVICE_COMMAND_QUEUE = "device-command"
 BROKER_KEY_PREFIX_ENV = "DEVICE_COMMAND_BROKER_KEY_PREFIX"
-EXECUTION_WORKER_STARTUP_ACCEPTED = "execution_worker_startup=accepted"
+DEVICE_COMMAND_STARTUP_PROBE_TASK = "tests.support.ecs_uniform_wire.device_command_startup_probe"
+DEVICE_COMMAND_STARTUP_PROBE_TOKEN = "device-command-startup-accepted"
 
 
 def _broker_transport_options(key_prefix: str) -> dict[str, object]:
     return {"global_keyprefix": key_prefix}
 
 
+@celery_app.task(name=DEVICE_COMMAND_STARTUP_PROBE_TASK)
+def device_command_startup_probe() -> dict[str, int | str]:
+    return {"token": DEVICE_COMMAND_STARTUP_PROBE_TOKEN, "pid": os.getpid()}
+
+
 # 独立 worker 通过 --include 导入本支撑模块，在建立 broker 连接前绑定隔离前缀。
 if key_prefix := os.getenv(BROKER_KEY_PREFIX_ENV):
-    from src.celery_app.app import celery_app
-
     celery_app.conf.broker_transport_options = _broker_transport_options(key_prefix)
     celery_app.conf.result_backend_transport_options = _broker_transport_options(key_prefix)
 
@@ -305,14 +310,32 @@ class DeviceCommandBrokerWorker:
             text=True,
             start_new_session=True,
         )
-        deadline = time.monotonic() + 30
+        self._wait_for_startup_probe(time.monotonic() + 30)
+        return self
+
+    def _wait_for_startup_probe(self, deadline: float) -> None:
+        assert self.process is not None and self.log_path is not None and self._log_file is not None
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise AssertionError(f"DeviceCommand worker exited early; log={self.log_path}")
             self._log_file.flush()
             log_text = self.log_path.read_text(errors="replace")
-            if " ready." in log_text and EXECUTION_WORKER_STARTUP_ACCEPTED in log_text:
-                return self
+            if " ready." in log_text:
+                result = self.producer.send_task(
+                    DEVICE_COMMAND_STARTUP_PROBE_TASK, kwargs={}, queue=DEVICE_COMMAND_QUEUE
+                )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                response = result.get(timeout=remaining, disable_sync_subtasks=False)
+                if (
+                    not isinstance(response, dict)
+                    or response.get("token") != DEVICE_COMMAND_STARTUP_PROBE_TOKEN
+                    or not isinstance(response.get("pid"), int)
+                    or response["pid"] <= 0
+                ):
+                    raise AssertionError(f"DeviceCommand worker startup probe rejected: {response!r}")
+                return
             time.sleep(0.1)
         raise AssertionError(f"DeviceCommand worker readiness timed out; log={self.log_path}")
 

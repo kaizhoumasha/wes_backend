@@ -1,4 +1,5 @@
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,6 +10,13 @@ from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime
 from src.celery_app.config import beat_schedule, task_routes
 from src.celery_app.tasks import execution
+from tests.support import ecs_uniform_wire
+from tests.support.ecs_uniform_wire import (
+    DEVICE_COMMAND_QUEUE,
+    DEVICE_COMMAND_STARTUP_PROBE_TASK,
+    DEVICE_COMMAND_STARTUP_PROBE_TOKEN,
+    DeviceCommandBrokerWorker,
+)
 
 TASK_NAME = "src.celery_app.tasks.execution.process_execution_facts_batch"
 
@@ -37,6 +45,34 @@ def test_execution_task_requires_an_explicit_child_runtime(monkeypatch) -> None:
         raise AssertionError("unbound execution runtime must fail closed")
 
 
+def test_device_command_startup_probe_returns_child_identity(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_uniform_wire.os, "getpid", lambda: 12345)
+
+    assert ecs_uniform_wire.device_command_startup_probe.run() == {
+        "token": DEVICE_COMMAND_STARTUP_PROBE_TOKEN,
+        "pid": 12345,
+    }
+
+
+def test_device_command_worker_readiness_requires_child_probe_after_parent_ready(tmp_path) -> None:
+    worker = object.__new__(DeviceCommandBrokerWorker)
+    worker.process = MagicMock()
+    worker.process.poll.return_value = None
+    worker.log_path = tmp_path / "worker.log"
+    worker.log_path.write_text("[INFO/MainProcess] celery@localhost ready.\n")
+    worker._log_file = MagicMock()
+    worker.producer = MagicMock()
+    probe = worker.producer.send_task.return_value
+    probe.get.return_value = {"token": DEVICE_COMMAND_STARTUP_PROBE_TOKEN, "pid": 12345}
+
+    worker._wait_for_startup_probe(time.monotonic() + 1)
+
+    worker.producer.send_task.assert_called_once_with(
+        DEVICE_COMMAND_STARTUP_PROBE_TASK, kwargs={}, queue=DEVICE_COMMAND_QUEUE
+    )
+    probe.get.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_execution_worker_gate_rejects_a_persisted_active_epoch() -> None:
     repository = type("_EpochRepository", (), {"has_active_epoch": AsyncMock(return_value=True)})()
@@ -52,9 +88,7 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
 
     gate = AsyncMock(side_effect=ActiveLineRunEpochExistsError("active epoch"))
     initialize = MagicMock()
-    logger = MagicMock()
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module, "logger", logger)
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
     monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
@@ -66,22 +100,13 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
 
     initialize.assert_called_once_with()
     gate.assert_awaited_once_with()
-    logger.info.assert_not_called()
 
 
-def test_execution_worker_child_startup_marks_epoch_gate_acceptance(monkeypatch) -> None:
+def test_execution_worker_child_startup_allows_epoch_gate_success(monkeypatch) -> None:
     from src.celery_app import app as app_module
 
-    events: list[str] = []
-
-    async def accept_gate() -> None:
-        events.append("gate")
-
-    gate = AsyncMock(side_effect=accept_gate)
-    logger = MagicMock()
-    logger.info.side_effect = lambda marker: events.append(marker)
+    gate = AsyncMock()
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module, "logger", logger)
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
     monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
@@ -90,7 +115,6 @@ def test_execution_worker_child_startup_marks_epoch_gate_acceptance(monkeypatch)
 
     app_module.on_worker_process_init()
 
-    assert events == ["gate", "execution_worker_startup=accepted"]
     gate.assert_awaited_once_with()
 
 

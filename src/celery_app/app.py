@@ -18,7 +18,7 @@ from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
 
 from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 from src.core.conf import settings
-from src.core.logger import logger, setup_logger
+from src.core.logger import setup_logger
 
 from . import config
 from .async_runtime import celery_async_runtime
@@ -42,8 +42,6 @@ celery_app = Celery(
         "src.celery_app.tasks.execution",  # Execution Fact 持久处理
     ],
 )
-
-EXECUTION_WORKER_STARTUP_ACCEPTED = "execution_worker_startup=accepted"
 
 # ============================================
 # Worker 启动信号处理器
@@ -108,7 +106,6 @@ def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
             celery_async_runtime.run_async(execution.assert_execution_worker_startable)
         except Exception as exc:
             raise WorkerTerminate("execution worker startup rejected") from exc
-        logger.info(EXECUTION_WORKER_STARTUP_ACCEPTED)
 
 
 @worker_process_shutdown.connect
