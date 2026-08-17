@@ -52,7 +52,9 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
 
     gate = AsyncMock(side_effect=ActiveLineRunEpochExistsError("active epoch"))
     initialize = MagicMock()
+    logger = MagicMock()
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module, "logger", logger)
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
     monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
@@ -63,6 +65,32 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
         app_module.on_worker_process_init()
 
     initialize.assert_called_once_with()
+    gate.assert_awaited_once_with()
+    logger.info.assert_not_called()
+
+
+def test_execution_worker_child_startup_marks_epoch_gate_acceptance(monkeypatch) -> None:
+    from src.celery_app import app as app_module
+
+    events: list[str] = []
+
+    async def accept_gate() -> None:
+        events.append("gate")
+
+    gate = AsyncMock(side_effect=accept_gate)
+    logger = MagicMock()
+    logger.info.side_effect = lambda marker: events.append(marker)
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module, "logger", logger)
+    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
+    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
+    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
+
+    app_module.on_worker_process_init()
+
+    assert events == ["gate", "execution_worker_startup=accepted"]
     gate.assert_awaited_once_with()
 
 

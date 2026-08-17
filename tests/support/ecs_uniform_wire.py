@@ -32,6 +32,7 @@ from src.app.device.v1.ecs_callback import router as ecs_callback_router
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVICE_COMMAND_QUEUE = "device-command"
 BROKER_KEY_PREFIX_ENV = "DEVICE_COMMAND_BROKER_KEY_PREFIX"
+EXECUTION_WORKER_STARTUP_ACCEPTED = "execution_worker_startup=accepted"
 
 
 def _broker_transport_options(key_prefix: str) -> dict[str, object]:
@@ -309,7 +310,8 @@ class DeviceCommandBrokerWorker:
             if self.process.poll() is not None:
                 raise AssertionError(f"DeviceCommand worker exited early; log={self.log_path}")
             self._log_file.flush()
-            if " ready." in self.log_path.read_text(errors="replace"):
+            log_text = self.log_path.read_text(errors="replace")
+            if " ready." in log_text and EXECUTION_WORKER_STARTUP_ACCEPTED in log_text:
                 return self
             time.sleep(0.1)
         raise AssertionError(f"DeviceCommand worker readiness timed out; log={self.log_path}")
