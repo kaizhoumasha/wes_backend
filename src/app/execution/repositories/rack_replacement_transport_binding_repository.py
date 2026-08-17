@@ -74,6 +74,18 @@ class RackReplacementTransportBindingRepository(BaseRepository[RackReplacementTr
             select(RackReplacementTransportBinding)
             .where(columns.client_request_id == client_request_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_client_request_id(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+    ) -> RackReplacementTransportBinding | None:
+        columns = cast("Any", RackReplacementTransportBinding).__table__.c
+        result = await db.execute(
+            select(RackReplacementTransportBinding).where(columns.client_request_id == client_request_id)
         )
         return result.scalar_one_or_none()
 

@@ -30,12 +30,18 @@ class SessionFactoryPort(Protocol):
 
 
 class BindingRepositoryPort(Protocol):
+    async def get_by_client_request_id(
+        self, db: Any, client_request_id: str
+    ) -> RackReplacementTransportBinding | None: ...
+
     async def get_by_client_request_id_for_update(
         self, db: Any, client_request_id: str
     ) -> RackReplacementTransportBinding | None: ...
 
 
 class EvidenceRepositoryPort(Protocol):
+    async def get_by_id_without_lock(self, db: Any, evidence_id: int) -> InboundEvidence | None: ...
+
     async def get_by_id_for_update(self, db: Any, evidence_id: int) -> InboundEvidence | None: ...
 
 
@@ -66,23 +72,23 @@ class RoughSorterTransportOutcomePublisher:
     async def publish(self, outcome: TransportOutcome) -> None:
         should_wake = False
         async with self._sessions.begin() as db:
-            binding = await self._bindings.get_by_client_request_id_for_update(db, outcome.client_request_id)
-            if binding is None:
+            binding_hint = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
+            if binding_hint is None:
                 raise LookupError("Transport outcome 缺少换架 business binding")
-            if binding.leg == "OLD_OUT":
-                return
-            if binding.leg != "NEW_IN":
+            if binding_hint.leg not in {"OLD_OUT", "NEW_IN"}:
                 raise ValueError("Transport binding leg 非法")
-            source = await self._evidences.get_by_id_for_update(db, binding.source_evidence_id)
-            if (
-                source is None
-                or source.id is None
-                or source.material_execution_id is None
-                or source.line_run_epoch_id is None
-                or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
-            ):
+            binding_correlation = _binding_correlation(binding_hint, outcome.client_request_id)
+            source_hint = await self._evidences.get_by_id_without_lock(db, binding_hint.source_evidence_id)
+            if source_hint is None:
                 raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
-            execution = await self._executions.get_by_id_for_update(db, source.material_execution_id)
+            source_correlation = _source_correlation(source_hint)
+            execution = await self._executions.get_by_id_for_update(db, source_correlation[2])
+            binding = await self._bindings.get_by_client_request_id_for_update(db, outcome.client_request_id)
+            if binding is None or _binding_correlation(binding, outcome.client_request_id) != binding_correlation:
+                raise ValueError("Transport binding correlation drift")
+            source = await self._evidences.get_by_id_for_update(db, binding.source_evidence_id)
+            if source is None or _source_correlation(source) != source_correlation:
+                raise ValueError("Transport source evidence correlation drift")
             if (
                 execution is None
                 or execution.id is None
@@ -90,6 +96,8 @@ class RoughSorterTransportOutcomePublisher:
                 or outcome.caller.workline_id != str(execution.workline_id)
             ):
                 raise ValueError("Transport outcome 与 source execution correlation 不匹配")
+            if binding.leg == "OLD_OUT":
+                return
             apply_status = (
                 InboundEvidenceApplyStatus.IGNORED
                 if execution.status == MaterialExecutionStatus.RECONCILING
@@ -123,6 +131,40 @@ class RoughSorterTransportOutcomePublisher:
                         "transport_task_id": outcome.transport_task_id,
                     },
                 )
+
+
+def _binding_correlation(
+    binding: RackReplacementTransportBinding,
+    client_request_id: str,
+) -> tuple[int, int, str, int, int, str, str]:
+    if binding.id is None or binding.client_request_id != client_request_id:
+        raise ValueError("Transport binding identity 非法")
+    return (
+        binding.id,
+        binding.version,
+        binding.leg,
+        binding.source_evidence_id,
+        binding.line_run_epoch_id,
+        binding.current_rack_id,
+        binding.client_request_id,
+    )
+
+
+def _source_correlation(source: InboundEvidence) -> tuple[int, int, int, int, str]:
+    if (
+        source.id is None
+        or source.material_execution_id is None
+        or source.line_run_epoch_id is None
+        or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
+    ):
+        raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
+    return (
+        source.id,
+        source.version,
+        source.material_execution_id,
+        source.line_run_epoch_id,
+        source.operation,
+    )
 
 
 def _outcome_payload(outcome: TransportOutcome) -> dict[str, Any]:

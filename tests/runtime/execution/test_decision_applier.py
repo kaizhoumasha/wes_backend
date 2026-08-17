@@ -345,6 +345,48 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["line_run_epoch_id", "current_rack_id", "source_evidence_id"])
+async def test_create_transport_task_rejects_existing_binding_correlation_drift(mismatch: str) -> None:
+    rack_bindings = _RackBindings()
+    transport = _Transport()
+    persisted = {
+        "line_run_epoch_id": 11,
+        "current_rack_id": "RACK-CURRENT",
+        "source_evidence_id": 31,
+    }
+    persisted[mismatch] = {
+        "line_run_epoch_id": 12,
+        "current_rack_id": "RACK-OTHER",
+        "source_evidence_id": 32,
+    }[mismatch]
+    rack_bindings.bindings[("REPLACE-1", "OLD_OUT")] = SimpleNamespace(
+        rack_replacement_id="REPLACE-1",
+        leg="OLD_OUT",
+        client_request_id="019cd8ce-34b7-7000-8000-000000000099",
+        **persisted,
+    )
+    decision = CreateTransportTask(
+        "EXEC-1",
+        "evidence:31",
+        TransportTaskType.RACK_MOVE,
+        "REPLACE-1",
+        TransportLeg.OLD_OUT,
+        "RACK-CURRENT",
+        "RACK-CURRENT",
+        TransportRackPosition("BUFFER"),
+        TransportRackPosition("SORTER"),
+        RackFace.A,
+    )
+
+    with pytest.raises(ValueError, match="binding correlation"):
+        await _applier(rack_binding_repository=rack_bindings, transport_service=transport).apply(
+            object(), _evidence(), _execution(), _fact(), (decision,)
+        )
+
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("decision", "target"),
     [

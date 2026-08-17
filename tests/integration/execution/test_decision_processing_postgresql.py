@@ -21,6 +21,7 @@ from wes_plugin_sdk import (
     TransportTaskType,
 )
 
+from deployment._rough_sorter_transport import RoughSorterTransportOutcomePublisher
 from deployment._rough_sorter_wms_facts import rack_release_snapshot
 from deployment.rough_sorter_composition import _ROUGH_SORTER_TYPES, build_rough_sorter_runtime
 from src.app.device.models import CommandStatus, Device, DeviceCommand
@@ -36,7 +37,11 @@ from src.app.execution.models import (
     WmsConfirmation,
     WmsConfirmationStatus,
 )
-from src.app.execution.repositories import inbound_evidence_repository, rack_replacement_transport_binding_repository
+from src.app.execution.repositories import (
+    inbound_evidence_repository,
+    material_execution_repository,
+    rack_replacement_transport_binding_repository,
+)
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services import (
     DecisionApplier,
@@ -44,6 +49,16 @@ from src.app.execution.services import (
     WmsConfirmationIdentityConflictError,
     WmsConfirmationRequest,
     WmsConfirmationService,
+)
+from src.app.transport.contracts import (
+    RackFace as CoreRackFace,
+)
+from src.app.transport.contracts import (
+    RackPosition,
+    TransportCaller,
+    TransportMemberOutcome,
+    TransportOutcome,
+    TransportOutcomeStatus,
 )
 from src.app.transport.models import TransportTask
 from src.app.transport.repository import TransportRepository
@@ -860,6 +875,238 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
         await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
         await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(Device).where(Device.id == device_id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_postgresql_decision_applier_rejects_existing_transport_binding_from_other_source(
+    integration_session_factory,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 11)
+    client_request_id = "019d0000-0000-7000-8000-000000000141"
+    async with integration_session_factory.begin() as db:
+        line, epoch = await _claim_epoch(db, f"BINDING-CORRELATION-{identity}", now)
+        sources = [
+            InboundEvidence(
+                kind=InboundEvidenceKind.WMS_RESULT,
+                source_identity=f"BINDING-CORRELATION-SOURCE-{ordinal}-{identity}",
+                payload_digest=str(ordinal) * 64,
+                normalized_payload={"data": {}},
+                received_at=now,
+                line_run_epoch_id=epoch.id,
+                operation="inbound.source_rack.replacement_plan_decide@v1",
+                operation_id=f"BINDING-CORRELATION-OP-{ordinal}-{identity}",
+                contract_version="1.0",
+                apply_status=InboundEvidenceApplyStatus.IGNORED,
+            )
+            for ordinal in (1, 2)
+        ]
+        db.add_all(sources)
+        await db.flush()
+        executions = [
+            MaterialExecution(
+                execution_code=f"BINDING-CORRELATION-EXEC-{ordinal}-{identity}",
+                material_trace_id=f"BINDING-CORRELATION-TRACE-{ordinal}-{identity}",
+                workline_id=line.id,
+                line_run_epoch_id=epoch.id,
+                last_transition_reason="INITIAL_EVIDENCE",
+                last_transition_evidence_id=source.id,
+                status_changed_at=now,
+            )
+            for ordinal, source in enumerate(sources, start=1)
+        ]
+        db.add_all(executions)
+        await db.flush()
+        for source, execution in zip(sources, executions, strict=True):
+            source.material_execution_id = execution.id
+        binding = RackReplacementTransportBinding(
+            rack_replacement_id=f"REPLACE-{identity}",
+            leg="NEW_IN",
+            line_run_epoch_id=epoch.id,
+            current_rack_id="RACK-1",
+            client_request_id=client_request_id,
+            source_evidence_id=sources[0].id,
+        )
+        db.add(binding)
+        await db.flush()
+        line_id = line.id
+        epoch_id = epoch.id
+        source_ids = tuple(source.id for source in sources)
+        execution_ids = tuple(execution.id for execution in executions)
+
+    class Transport:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def move_rack_in_session(self, db: object, **kwargs: object) -> object:
+            del db
+            self.calls.append(kwargs)
+            return object()
+
+    transport = Transport()
+    applier = DecisionApplier(
+        device_command_service=object(),
+        wms_confirmation_service=object(),
+        wms_request_resolver=object(),
+        transport_service=transport,
+        material_execution_service=object(),
+        clock=lambda: now,
+    )
+    fact = EvidenceReadyFact(
+        fact_id=f"evidence:{source_ids[1]}",
+        evidence_id=str(source_ids[1]),
+        fact_version="1.0",
+        material_execution_id=f"BINDING-CORRELATION-EXEC-2-{identity}",
+    )
+    decision = CreateTransportTask(
+        fact.material_execution_id,
+        fact.fact_id,
+        TransportTaskType.RACK_MOVE,
+        f"REPLACE-{identity}",
+        TransportLeg.NEW_IN,
+        "RACK-1",
+        "RACK-2",
+        TransportRackPosition("BUFFER"),
+        TransportRackPosition("OUTLET"),
+        RackFace.B,
+    )
+
+    with pytest.raises(ValueError, match="binding correlation"):
+        async with integration_session_factory.begin() as db:
+            source = await db.get(InboundEvidence, source_ids[1], with_for_update=True)
+            execution = await db.get(MaterialExecution, execution_ids[1], with_for_update=True)
+            assert source is not None and execution is not None
+            await applier.apply(db, source, execution, fact, (decision,))
+
+    assert transport.calls == []
+    async with integration_session_factory.begin() as db:
+        await db.execute(
+            delete(RackReplacementTransportBinding).where(
+                RackReplacementTransportBinding.client_request_id == client_request_id
+            )
+        )
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(source_ids)))
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_postgresql_transport_publisher_revalidates_after_execution_first_concurrent_drift(
+    integration_session_factory,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 12)
+    client_request_id = "019d0000-0000-7000-8000-000000000142"
+    async with integration_session_factory.begin() as db:
+        line, epoch = await _claim_epoch(db, f"PUBLISHER-LOCK-{identity}", now)
+        source = InboundEvidence(
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity=f"PUBLISHER-LOCK-SOURCE-{identity}",
+            payload_digest="a" * 64,
+            normalized_payload={"data": {}},
+            received_at=now,
+            line_run_epoch_id=epoch.id,
+            operation="inbound.source_rack.replacement_plan_decide@v1",
+            operation_id=f"PUBLISHER-LOCK-OP-{identity}",
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.IGNORED,
+        )
+        db.add(source)
+        await db.flush()
+        execution = MaterialExecution(
+            execution_code=f"PUBLISHER-LOCK-EXEC-{identity}",
+            material_trace_id=f"PUBLISHER-LOCK-TRACE-{identity}",
+            workline_id=line.id,
+            line_run_epoch_id=epoch.id,
+            last_transition_reason="INITIAL_EVIDENCE",
+            last_transition_evidence_id=source.id,
+            status_changed_at=now,
+        )
+        db.add(execution)
+        await db.flush()
+        source.material_execution_id = execution.id
+        binding = RackReplacementTransportBinding(
+            rack_replacement_id=f"PUBLISHER-LOCK-REPLACE-{identity}",
+            leg="NEW_IN",
+            line_run_epoch_id=epoch.id,
+            current_rack_id="RACK-1",
+            client_request_id=client_request_id,
+            source_evidence_id=source.id,
+        )
+        db.add(binding)
+        await db.flush()
+        line_id = line.id
+        epoch_id = epoch.id
+        source_id = source.id
+        execution_id = execution.id
+
+    owner_locked_execution = asyncio.Event()
+    publisher_attempting_execution = asyncio.Event()
+
+    class SignallingExecutionRepository:
+        async def get_by_id_for_update(self, db: object, execution_id: int) -> MaterialExecution | None:
+            publisher_attempting_execution.set()
+            return await material_execution_repository.get_by_id_for_update(db, execution_id)  # type: ignore[arg-type]
+
+    async def drift_binding_in_execution_first_order() -> None:
+        async with integration_session_factory.begin() as db:
+            locked_execution = await material_execution_repository.get_by_id_for_update(db, execution_id)
+            assert locked_execution is not None
+            owner_locked_execution.set()
+            await publisher_attempting_execution.wait()
+            locked_binding = await rack_replacement_transport_binding_repository.get_by_client_request_id_for_update(
+                db, client_request_id
+            )
+            locked_source = await inbound_evidence_repository.get_by_id_for_update(db, source_id)
+            assert locked_binding is not None and locked_source is not None
+            locked_binding.current_rack_id = "RACK-DRIFT"
+
+    owner = asyncio.create_task(drift_binding_in_execution_first_order())
+    await owner_locked_execution.wait()
+    publisher = RoughSorterTransportOutcomePublisher(
+        session_factory=integration_session_factory,
+        execution_repository=SignallingExecutionRepository(),
+    )
+    outcome = TransportOutcome(
+        transport_task_id=f"TRANSPORT-{identity}",
+        client_request_id=client_request_id,
+        outcome_version=1,
+        caller=TransportCaller(workline_id=str(line_id)),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(
+            TransportMemberOutcome(
+                object_id="RACK-2",
+                final_position=RackPosition("OUTLET"),
+                arrival_face=CoreRackFace.B,
+            ),
+        ),
+    )
+    publishing = asyncio.create_task(publisher.publish(outcome))
+    await asyncio.wait_for(owner, timeout=5)
+    with pytest.raises(ValueError, match="binding correlation drift"):
+        await asyncio.wait_for(publishing, timeout=5)
+
+    async with integration_session_factory.begin() as db:
+        assert (
+            await db.scalar(
+                select(InboundEvidence.id).where(
+                    InboundEvidence.transport_task_id == outcome.transport_task_id,
+                    InboundEvidence.kind == InboundEvidenceKind.TRANSPORT_RESULT,
+                )
+            )
+            is None
+        )
+        await db.execute(
+            delete(RackReplacementTransportBinding).where(
+                RackReplacementTransportBinding.client_request_id == client_request_id
+            )
+        )
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
 

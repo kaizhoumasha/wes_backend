@@ -1552,15 +1552,50 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> 
             return Transaction()
 
     class Bindings:
+        async def get_by_client_request_id(self, db: object, client_request_id: str) -> object:
+            del db
+            events.append("binding-read")
+            return SimpleNamespace(
+                id=51,
+                version=2,
+                leg="NEW_IN",
+                source_evidence_id=40,
+                line_run_epoch_id=11,
+                current_rack_id="RACK-1",
+                client_request_id=client_request_id,
+            )
+
         async def get_by_client_request_id_for_update(self, db: object, client_request_id: str) -> object:
-            del db, client_request_id
-            return SimpleNamespace(leg="NEW_IN", source_evidence_id=40)
+            del db
+            events.append("binding-lock")
+            return SimpleNamespace(
+                id=51,
+                version=2,
+                leg="NEW_IN",
+                source_evidence_id=40,
+                line_run_epoch_id=11,
+                current_rack_id="RACK-1",
+                client_request_id=client_request_id,
+            )
 
     class EvidenceRepo:
-        async def get_by_id_for_update(self, db: object, evidence_id: int) -> object:
+        async def get_by_id_without_lock(self, db: object, evidence_id: int) -> object:
             del db, evidence_id
+            events.append("source-read")
             return SimpleNamespace(
                 id=40,
+                version=3,
+                material_execution_id=21,
+                line_run_epoch_id=11,
+                operation="inbound.source_rack.replacement_plan_decide@v1",
+            )
+
+        async def get_by_id_for_update(self, db: object, evidence_id: int) -> object:
+            del db, evidence_id
+            events.append("source-lock")
+            return SimpleNamespace(
+                id=40,
+                version=3,
                 material_execution_id=21,
                 line_run_epoch_id=11,
                 operation="inbound.source_rack.replacement_plan_decide@v1",
@@ -1569,6 +1604,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> 
     class ExecutionRepo:
         async def get_by_id_for_update(self, db: object, execution_id: int) -> object:
             del db, execution_id
+            events.append("execution-lock")
             return SimpleNamespace(id=21, line_run_epoch_id=11, workline_id=7, status="HOLD")
 
     class EvidenceService:
@@ -1607,7 +1643,125 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit() -> 
 
     await publisher.publish(outcome)
 
-    assert events == ["begin", "accepted:transport:TRANSPORT-1:outcome:1", "commit", "wake"]
+    assert events == [
+        "begin",
+        "binding-read",
+        "source-read",
+        "execution-lock",
+        "binding-lock",
+        "source-lock",
+        "accepted:transport:TRANSPORT-1:outcome:1",
+        "commit",
+        "wake",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", ["binding", "source"])
+async def test_transport_publisher_revalidates_correlation_after_execution_lock(drift: str) -> None:
+    events: list[str] = []
+
+    class Sessions:
+        def begin(self) -> object:
+            class Transaction:
+                async def __aenter__(self) -> object:
+                    return object()
+
+                async def __aexit__(self, *args: object) -> None:
+                    del args
+
+            return Transaction()
+
+    class Bindings:
+        async def get_by_client_request_id(self, db: object, client_request_id: str) -> object:
+            del db
+            return SimpleNamespace(
+                id=51,
+                version=2,
+                leg="NEW_IN",
+                source_evidence_id=40,
+                line_run_epoch_id=11,
+                current_rack_id="RACK-1",
+                client_request_id=client_request_id,
+            )
+
+        async def get_by_client_request_id_for_update(self, db: object, client_request_id: str) -> object:
+            del db
+            events.append("binding-lock")
+            return SimpleNamespace(
+                id=51,
+                version=3 if drift == "binding" else 2,
+                leg="NEW_IN",
+                source_evidence_id=41 if drift == "binding" else 40,
+                line_run_epoch_id=11,
+                current_rack_id="RACK-1",
+                client_request_id=client_request_id,
+            )
+
+    class EvidenceRepo:
+        async def get_by_id_without_lock(self, db: object, evidence_id: int) -> object:
+            del db, evidence_id
+            return SimpleNamespace(
+                id=40,
+                version=3,
+                material_execution_id=21,
+                line_run_epoch_id=11,
+                operation="inbound.source_rack.replacement_plan_decide@v1",
+            )
+
+        async def get_by_id_for_update(self, db: object, evidence_id: int) -> object:
+            del db, evidence_id
+            events.append("source-lock")
+            return SimpleNamespace(
+                id=40,
+                version=4,
+                material_execution_id=21,
+                line_run_epoch_id=11,
+                operation="inbound.source_rack.replacement_plan_decide@v1",
+            )
+
+    class ExecutionRepo:
+        async def get_by_id_for_update(self, db: object, execution_id: int) -> object:
+            del db, execution_id
+            events.append("execution-lock")
+            return SimpleNamespace(id=21, line_run_epoch_id=11, workline_id=7, status="HOLD")
+
+    class EvidenceService:
+        async def accept(self, db: object, **values: object) -> object:
+            del db, values
+            events.append("accepted")
+            return object()
+
+    publisher = RoughSorterTransportOutcomePublisher(
+        session_factory=Sessions(),  # type: ignore[arg-type]
+        binding_repository=Bindings(),  # type: ignore[arg-type]
+        evidence_repository=EvidenceRepo(),  # type: ignore[arg-type]
+        execution_repository=ExecutionRepo(),  # type: ignore[arg-type]
+        evidence_service=EvidenceService(),  # type: ignore[arg-type]
+    )
+    outcome = TransportOutcome(
+        transport_task_id="TRANSPORT-1",
+        client_request_id="019d0000-0000-7000-8000-000000000041",
+        outcome_version=1,
+        caller=TransportCaller(workline_id="7"),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(
+            TransportMemberOutcome(
+                object_id="RACK-2",
+                final_position=RackPosition("OUTLET-1"),
+                arrival_face=RackFace.B,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match=f"Transport {drift}.*drift"):
+        await publisher.publish(outcome)
+
+    expected_events = ["execution-lock", "binding-lock"]
+    if drift == "source":
+        expected_events.append("source-lock")
+    assert events == expected_events
 
 
 @pytest.mark.asyncio

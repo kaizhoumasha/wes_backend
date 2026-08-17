@@ -23,7 +23,7 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         super().__init__(InboundEvidence)
 
     async def lock_source_identity(self, db: AsyncSession, source_identity: str) -> None:
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:source_identity, 0))"),
             {"source_identity": source_identity},
         )
@@ -41,7 +41,17 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
 
     async def get_by_id_for_update(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
         columns = cast("Any", InboundEvidence).__table__.c
-        result = await db.execute(select(InboundEvidence).where(columns.id == evidence_id).with_for_update())
+        result = await db.execute(
+            select(InboundEvidence)
+            .where(columns.id == evidence_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id_without_lock(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(select(InboundEvidence).where(columns.id == evidence_id))
         return result.scalar_one_or_none()
 
     async def get_device_result_for_command_for_update(

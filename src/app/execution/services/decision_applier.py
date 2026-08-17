@@ -308,6 +308,12 @@ class DecisionApplier:
                     source_evidence_id=cast("int", evidence.id),
                 ),
             )
+        elif (
+            binding.line_run_epoch_id != execution.line_run_epoch_id
+            or binding.current_rack_id != decision.current_rack_id
+            or binding.source_evidence_id != evidence.id
+        ):
+            raise ValueError("existing rack replacement binding correlation conflict")
         _ = await self._transport.move_rack_in_session(
             db,
             client_request_id=binding.client_request_id,
