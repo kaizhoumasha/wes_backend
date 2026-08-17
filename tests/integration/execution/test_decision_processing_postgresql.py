@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -778,9 +779,10 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
             )
             if fence is not None:
                 return False
+            command_code = f"019d{identity[:4]}-{identity[4:8]}-7{identity[8:11]}-8{identity[11:14]}-{suffix}"
             db.add(
                 DeviceCommand(
-                    command_code=f"019d0000-0000-7000-8000-{suffix}",
+                    command_code=command_code,
                     device_code=device_code,
                     device_binding_id=binding_id,
                     line_run_epoch_id=epoch_id,
@@ -818,7 +820,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 await release_first_owner.wait()
             return True
 
-    async def create_old_out_fence(*, hold_lock: bool = False) -> None:
+    async def create_old_out_fence(*, hold_lock: bool = False) -> bool:
         async with integration_session_factory.begin() as db:
             if not hold_lock:
                 contender_started.set()
@@ -827,6 +829,25 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 line_run_epoch_id=epoch_id,
                 current_rack_id="RACK-1",
             )
+            commands = await device_command_repository.list_for_epoch_for_update(
+                db,
+                line_run_epoch_id=epoch_id,
+            )
+            active_statuses = {
+                CommandStatus.PENDING,
+                CommandStatus.DISPATCHING,
+                CommandStatus.ACKNOWLEDGED,
+                CommandStatus.RECONCILING,
+            }
+            if any(
+                command.task_type == "PICK_AND_PUT"
+                and CommandStatus(command.status) in active_statuses
+                and isinstance(target := command.params.get("target"), dict)
+                and target.get("location_type") == "RACK_CELL"
+                and target.get("rack_id") == "RACK-1"
+                for command in commands
+            ):
+                return False
             db.add(
                 RackReplacementTransportBinding(
                     rack_replacement_id=f"REPLACE-{identity}",
@@ -841,6 +862,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
             if hold_lock:
                 first_has_lock.set()
                 await release_first_owner.wait()
+            return True
 
     if first_owner == "replacement":
         first = asyncio.create_task(create_old_out_fence(hold_lock=True))
@@ -854,11 +876,18 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
     release_first_owner.set()
     first_result, contender_result = await asyncio.gather(first, contender)
     if first_owner == "replacement":
-        assert first_result is None and contender_result is False
+        assert first_result is True and contender_result is False
+        assert await create_target_command("RACK-1", "000000000103") is False
     else:
-        assert first_result is True and contender_result is None
+        assert first_result is True and contender_result is False
+        first_command_code = f"019d{identity[:4]}-{identity[4:8]}-7{identity[8:11]}-8{identity[11:14]}-000000000102"
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(DeviceCommand)
+                .where(DeviceCommand.command_code == first_command_code)
+                .values(status=CommandStatus.SUCCEEDED)
+            )
 
-    assert await create_target_command("RACK-1", "000000000103") is False
     assert await create_target_command("RACK-2", "000000000104") is True
 
     async with integration_session_factory.begin() as db:
@@ -1005,7 +1034,7 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
 
 
 @pytest.mark.asyncio
-async def test_postgresql_transport_publisher_revalidates_after_execution_first_concurrent_drift(
+async def test_postgresql_transport_publisher_revalidates_after_accept_first_concurrent_drift(
     integration_session_factory,
 ) -> None:
     identity = uuid4().hex
@@ -1055,19 +1084,20 @@ async def test_postgresql_transport_publisher_revalidates_after_execution_first_
         execution_id = execution.id
 
     owner_locked_execution = asyncio.Event()
-    publisher_attempting_execution = asyncio.Event()
+    publisher_entered_accept = asyncio.Event()
+    real_evidence_service = InboundEvidenceService()
 
-    class SignallingExecutionRepository:
-        async def get_by_id_for_update(self, db: object, execution_id: int) -> MaterialExecution | None:
-            publisher_attempting_execution.set()
-            return await material_execution_repository.get_by_id_for_update(db, execution_id)  # type: ignore[arg-type]
+    class SignallingEvidenceService:
+        async def accept(self, db: object, **values: object) -> object:
+            publisher_entered_accept.set()
+            return await real_evidence_service.accept(db, **cast("Any", values))
 
     async def drift_binding_in_execution_first_order() -> None:
         async with integration_session_factory.begin() as db:
             locked_execution = await material_execution_repository.get_by_id_for_update(db, execution_id)
             assert locked_execution is not None
             owner_locked_execution.set()
-            await publisher_attempting_execution.wait()
+            await publisher_entered_accept.wait()
             locked_binding = await rack_replacement_transport_binding_repository.get_by_client_request_id_for_update(
                 db, client_request_id
             )
@@ -1079,7 +1109,7 @@ async def test_postgresql_transport_publisher_revalidates_after_execution_first_
     await owner_locked_execution.wait()
     publisher = RoughSorterTransportOutcomePublisher(
         session_factory=integration_session_factory,
-        execution_repository=SignallingExecutionRepository(),
+        evidence_service=SignallingEvidenceService(),  # type: ignore[arg-type]
     )
     outcome = TransportOutcome(
         transport_task_id=f"TRANSPORT-{identity}",
