@@ -6,7 +6,6 @@ import sys
 import tomllib
 from pathlib import Path
 
-from conftest import FakeEpochReader, FakeExecutionReader, FakePositionReader, epoch_snapshot, execution_snapshot
 from wes_plugin_sdk import FactReference, HandlerMetadata
 
 from rough_sorter.facts import (
@@ -52,11 +51,7 @@ def test_plugin_has_only_sdk_runtime_dependency_and_stdlib_source_imports() -> N
 
 
 def test_plugin_entry_explicitly_builds_exactly_eight_stable_fact_handlers() -> None:
-    handlers = build_handlers(
-        executions=FakeExecutionReader(execution_snapshot()),
-        positions=FakePositionReader(()),
-        epochs=FakeEpochReader(epoch_snapshot()),
-    )
+    handlers = build_handlers()
     metadata = [handler.__wes_handler__ for handler in handlers]
 
     assert PLUGIN_KEY == "rough_sorter"
@@ -75,6 +70,7 @@ def test_plugin_entry_explicitly_builds_exactly_eight_stable_fact_handlers() -> 
     }
     assert all(issubclass(item.fact_type, FactReference) for item in metadata)
     assert all(item.supported_versions == ("1.0",) for item in metadata)
+    assert all("runtime_snapshot" in item.fact_type.__dataclass_fields__ for item in metadata)
 
 
 def test_plugin_entry_has_no_registry_discovery_or_numbered_process_names() -> None:

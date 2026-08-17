@@ -223,7 +223,8 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
         line_id = line.id
 
     class _Resolver:
-        def resolve(self, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
+        async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
+            del db
             marker = decision.snapshot_refs[0]
             return WmsConfirmationRequest({"marker": marker}, now + timedelta(minutes=1))
 

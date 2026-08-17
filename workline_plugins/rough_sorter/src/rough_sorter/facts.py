@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -9,7 +11,9 @@ from enum import StrEnum
 from wes_plugin_sdk import (
     DevicePosition,
     DeviceResultReadyFact,
+    EpochConfigurationSnapshot,
     EvidenceReadyFact,
+    ExecutionSnapshot,
     RackFace,
     RecoveryDecision,
     TransportLeg,
@@ -74,10 +78,44 @@ class ReplacementResult(StrEnum):
     RECONCILING = "RECONCILING"
 
 
+class PlacementCommandStatus(StrEnum):
+    PENDING = "PENDING"
+    DISPATCHING = "DISPATCHING"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RECONCILING = "RECONCILING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    TIMED_OUT = "TIMED_OUT"
+
+
+class PlacementConfirmationStatus(StrEnum):
+    PENDING = "PENDING"
+    DISPATCHING = "DISPATCHING"
+    COMPLETED = "COMPLETED"
+    RECONCILING = "RECONCILING"
+
+
+class PlacementResponseResult(StrEnum):
+    RECORDED = "RECORDED"
+    DUPLICATE = "DUPLICATE"
+
+
 class TransportOutcome(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class RoughSorterRuntimeSnapshot:
+    execution: ExecutionSnapshot
+    epoch: EpochConfigurationSnapshot
+
+    def __post_init__(self) -> None:
+        if type(self.execution) is not ExecutionSnapshot or type(self.epoch) is not EpochConfigurationSnapshot:
+            raise TypeError("runtime snapshot requires exact SDK snapshot values")
+        if self.execution.line_run_epoch_id != self.epoch.line_run_epoch_id:
+            raise ValueError("execution and Epoch snapshots do not match")
 
 
 def _required(value: str, field_name: str) -> None:
@@ -123,8 +161,24 @@ def _reject_present_fields(branch: str, fields: tuple[tuple[str, object | None],
         raise ValueError(f"{branch} must not include {', '.join(present)} from another result branch")
 
 
+def _runtime_snapshot(
+    snapshot: RoughSorterRuntimeSnapshot,
+    *,
+    material_execution_id: str,
+    material_trace_id: str,
+) -> None:
+    if type(snapshot) is not RoughSorterRuntimeSnapshot:
+        raise TypeError("runtime_snapshot must be a RoughSorterRuntimeSnapshot")
+    if (
+        snapshot.execution.material_execution_id != material_execution_id
+        or snapshot.execution.material_trace_id != material_trace_id
+    ):
+        raise ValueError("runtime snapshot execution identity does not match Fact")
+
+
 @dataclass(frozen=True, slots=True)
 class MaterialEvidenceReadyFact(EvidenceReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     line_run_epoch_id: str
     workline_code: str
@@ -142,6 +196,11 @@ class MaterialEvidenceReadyFact(EvidenceReadyFact):
 
     def __post_init__(self) -> None:
         EvidenceReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         for field_name in (
             "material_trace_id",
             "line_run_epoch_id",
@@ -169,6 +228,7 @@ class MaterialEvidenceReadyFact(EvidenceReadyFact):
 
 @dataclass(frozen=True, slots=True)
 class AdmissionDecidedFact(WmsResultReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     result: AdmissionResult
     source_position: DevicePosition
@@ -180,6 +240,11 @@ class AdmissionDecidedFact(WmsResultReadyFact):
 
     def __post_init__(self) -> None:
         WmsResultReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         _required(self.material_trace_id, "material_trace_id")
         if type(self.result) is not AdmissionResult:
             raise ValueError("result must be an AdmissionResult")
@@ -242,6 +307,7 @@ _DEVICE_STEP_CONTRACT = {
 
 @dataclass(frozen=True, slots=True)
 class DevicePositionConfirmedFact(DeviceResultReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     step: DeviceStep
     device_role: str
     outcome: DeviceOutcome
@@ -262,6 +328,11 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
 
     def __post_init__(self) -> None:
         DeviceResultReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         if type(self.step) is not DeviceStep or type(self.outcome) is not DeviceOutcome:
             raise ValueError("step and outcome must use rough sorter enums")
         expected_role, source_type, target_type = _DEVICE_STEP_CONTRACT[self.step]
@@ -394,6 +465,7 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
 
 @dataclass(frozen=True, slots=True)
 class TargetDecidedFact(WmsResultReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     result: TargetResult
     source_position: DevicePosition
@@ -408,6 +480,11 @@ class TargetDecidedFact(WmsResultReadyFact):
 
     def __post_init__(self) -> None:
         WmsResultReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         _required(self.material_trace_id, "material_trace_id")
         _required(self.current_rack_id, "current_rack_id")
         if type(self.result) is not TargetResult:
@@ -486,6 +563,7 @@ def _required_refs(values: tuple[str, ...], field_name: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class PlacementCompletedFact(WmsResultReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     kind: CompletionKind
     result: CompletionResult
@@ -494,6 +572,11 @@ class PlacementCompletedFact(WmsResultReadyFact):
 
     def __post_init__(self) -> None:
         WmsResultReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         _required(self.material_trace_id, "material_trace_id")
         if type(self.kind) is not CompletionKind or type(self.result) is not CompletionResult:
             raise ValueError("kind and result must use placement completion enums")
@@ -522,30 +605,103 @@ class RackMoveLegPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class PlacementReleaseEvidence:
+    command_code: str
+    command_status: PlacementCommandStatus
+    command_result_evidence_id: int | None
+    confirmation_operation: str
+    confirmation_operation_id: str
+    confirmation_status: PlacementConfirmationStatus
+    response_result: PlacementResponseResult | None
+    response_evidence_id: int | None
+
+    def __post_init__(self) -> None:
+        _required(self.command_code, "command_code")
+        _required(self.confirmation_operation_id, "confirmation_operation_id")
+        if self.confirmation_operation != "inbound.material.placement_report@v1":
+            raise ValueError("release evidence must use placement_report operation")
+        if type(self.command_status) is not PlacementCommandStatus:
+            raise TypeError("command_status must be a PlacementCommandStatus")
+        if type(self.confirmation_status) is not PlacementConfirmationStatus:
+            raise TypeError("confirmation_status must be a PlacementConfirmationStatus")
+        for value, field_name in (
+            (self.command_result_evidence_id, "command_result_evidence_id"),
+            (self.response_evidence_id, "response_evidence_id"),
+        ):
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"{field_name} must be a positive integer or null")
+        if self.response_result is not None and type(self.response_result) is not PlacementResponseResult:
+            raise TypeError("response_result must be a PlacementResponseResult or null")
+
+
+def rack_release_snapshot_ref(
+    current_rack_id: str,
+    placements: tuple[PlacementReleaseEvidence, ...],
+) -> str:
+    values = [
+        [
+            item.command_code,
+            item.command_status.value,
+            item.command_result_evidence_id,
+            item.confirmation_operation,
+            item.confirmation_operation_id,
+            item.confirmation_status.value,
+            item.response_result.value if item.response_result is not None else None,
+            item.response_evidence_id,
+        ]
+        for item in sorted(placements, key=lambda item: item.command_code)
+    ]
+    encoded = json.dumps([current_rack_id, values], ensure_ascii=False, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RackReleaseSnapshot:
+    current_rack_id: str
+    placements: tuple[PlacementReleaseEvidence, ...]
+    snapshot_ref: str
+
+    def __post_init__(self) -> None:
+        _required(self.current_rack_id, "current_rack_id")
+        if type(self.placements) is not tuple or any(
+            type(item) is not PlacementReleaseEvidence for item in self.placements
+        ):
+            raise TypeError("placements must be a tuple of PlacementReleaseEvidence")
+        command_codes = tuple(item.command_code for item in self.placements)
+        if len(command_codes) != len(set(command_codes)):
+            raise ValueError("placements must not contain duplicate command identities")
+        if self.snapshot_ref != rack_release_snapshot_ref(self.current_rack_id, self.placements):
+            raise ValueError("snapshot_ref does not match release evidence")
+
+
+@dataclass(frozen=True, slots=True)
 class ReplacementPlanDecidedFact(WmsResultReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     result: ReplacementResult
     current_rack_id: str
-    release_gate_closed: bool
+    release_snapshot: RackReleaseSnapshot | None = None
     rack_replacement_id: str | None = None
     old_loaded_rack: RackMoveLegPlan | None = None
     new_empty_rack: RackMoveLegPlan | None = None
-    release_snapshot_ref: str | None = None
     reason_code: str | None = None
 
     def __post_init__(self) -> None:
         WmsResultReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         _required(self.material_trace_id, "material_trace_id")
         _required(self.current_rack_id, "current_rack_id")
         if type(self.result) is not ReplacementResult:
             raise ValueError("result must be a ReplacementResult")
-        if type(self.release_gate_closed) is not bool:
-            raise TypeError("release_gate_closed must be a boolean")
         if self.result is ReplacementResult.READY:
             self._require_ready()
         else:
             _required(self.reason_code or "", "reason_code")
-            if any((self.rack_replacement_id, self.old_loaded_rack, self.new_empty_rack, self.release_snapshot_ref)):
+            if any((self.rack_replacement_id, self.old_loaded_rack, self.new_empty_rack, self.release_snapshot)):
                 raise ValueError(f"{self.result.value} must not include a rack move plan")
 
     def _require_ready(self) -> None:
@@ -556,16 +712,17 @@ class ReplacementPlanDecidedFact(WmsResultReadyFact):
             raise ValueError("old_loaded_rack must match current_rack_id")
         if self.old_loaded_rack.rack_id == self.new_empty_rack.rack_id:
             raise ValueError("old and new rack identities must differ")
-        if self.release_gate_closed:
-            _required(self.release_snapshot_ref or "", "release_snapshot_ref")
-        elif self.release_snapshot_ref is not None:
-            raise ValueError("open release gate must not claim a frozen snapshot")
+        if type(self.release_snapshot) is not RackReleaseSnapshot:
+            raise TypeError("READY requires a typed RackReleaseSnapshot")
+        if self.release_snapshot.current_rack_id != self.current_rack_id:
+            raise ValueError("release snapshot rack must match current_rack_id")
         if self.reason_code is not None:
             raise ValueError("READY must not include reason_code")
 
 
 @dataclass(frozen=True, slots=True)
 class TransportOutcomePublishedFact(TransportResultReadyFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     rack_replacement_id: str
     leg: TransportLeg
@@ -584,6 +741,11 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
 
     def __post_init__(self) -> None:
         TransportResultReadyFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         for field_name in ("material_trace_id", "rack_replacement_id", "rack_id"):
             _required(getattr(self, field_name), field_name)
         if type(self.leg) is not TransportLeg or type(self.outcome) is not TransportOutcome:
@@ -686,12 +848,18 @@ RecoveryContinuation = RecoveryWmsContinuation | RecoveryDeviceContinuation | Re
 
 @dataclass(frozen=True, slots=True)
 class RecoveryDecidedFact(BaseRecoveryDecidedFact):
+    runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     reconciling_evidence_id: str
     continuation: RecoveryContinuation | None
 
     def __post_init__(self) -> None:
         BaseRecoveryDecidedFact.__post_init__(self)
+        _runtime_snapshot(
+            self.runtime_snapshot,
+            material_execution_id=self.material_execution_id,
+            material_trace_id=self.material_trace_id,
+        )
         _required(self.material_trace_id, "material_trace_id")
         _required(self.reconciling_evidence_id, "reconciling_evidence_id")
         if self.reconciling_evidence_id == self.evidence_id:
@@ -720,8 +888,13 @@ __all__ = [
     "DevicePositionConfirmedFact",
     "DeviceStep",
     "MaterialEvidenceReadyFact",
+    "PlacementCommandStatus",
     "PlacementCompletedFact",
+    "PlacementConfirmationStatus",
+    "PlacementReleaseEvidence",
+    "PlacementResponseResult",
     "RackMoveLegPlan",
+    "RackReleaseSnapshot",
     "RecoveryContinuation",
     "RecoveryDecidedFact",
     "RecoveryDecision",
@@ -730,9 +903,11 @@ __all__ = [
     "RecoveryWmsContinuation",
     "ReplacementPlanDecidedFact",
     "ReplacementResult",
+    "RoughSorterRuntimeSnapshot",
     "ShapeResult",
     "TargetDecidedFact",
     "TargetResult",
     "TransportOutcome",
     "TransportOutcomePublishedFact",
+    "rack_release_snapshot_ref",
 ]

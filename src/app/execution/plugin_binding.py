@@ -32,7 +32,7 @@ class InitialExecutionCorrelator(Protocol):
 class PluginFactFactory(Protocol):
     """借助自身的具名 typed reader 把基础 Fact 引用增强为插件 Fact。"""
 
-    async def build(self, fact: FactReference) -> FactReference: ...
+    async def build(self, db: object, fact: FactReference) -> FactReference: ...
 
 
 @dataclass(frozen=True, slots=True)

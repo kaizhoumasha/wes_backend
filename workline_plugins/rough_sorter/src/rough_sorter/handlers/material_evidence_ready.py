@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from wes_plugin_sdk import (
     CreateWmsConfirmation,
-    EpochConfigurationSnapshotReader,
-    ExecutionSnapshotReader,
-    PositionResourceSnapshotReader,
     handler,
 )
 
 from rough_sorter.facts import MaterialEvidenceReadyFact
-from rough_sorter.handlers._guards import require_epoch, require_execution, require_source
+from rough_sorter.handlers._guards import require_epoch, require_execution
 
 ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
 
@@ -23,22 +18,17 @@ ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
     name="material-evidence-ready",
     supported_versions=("1.0",),
 )
-@dataclass(frozen=True, slots=True)
 class MaterialEvidenceReadyHandler:
-    executions: ExecutionSnapshotReader
-    positions: PositionResourceSnapshotReader
-    epochs: EpochConfigurationSnapshotReader
-
     def __call__(self, fact: MaterialEvidenceReadyFact) -> tuple[CreateWmsConfirmation]:
+        snapshot = fact.runtime_snapshot
         execution = require_execution(
-            self.executions,
+            snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
         if execution.line_run_epoch_id != fact.line_run_epoch_id:
             raise ValueError("execution Epoch does not match scan Fact")
-        require_epoch(self.epochs, line_run_epoch_id=fact.line_run_epoch_id, workline_code=fact.workline_code)
-        require_source(self.positions, fact.source_position, material_trace_id=fact.material_trace_id)
+        require_epoch(snapshot.epoch, line_run_epoch_id=fact.line_run_epoch_id, workline_code=fact.workline_code)
         return (
             CreateWmsConfirmation(
                 material_execution_id=fact.material_execution_id,

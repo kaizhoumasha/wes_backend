@@ -213,6 +213,20 @@ class CeleryAsyncRuntime:
                 timeout_seconds=device_config.timeout_seconds,
             )
 
+        from deployment.rough_sorter_composition import build_rough_sorter_runtime
+        from src.app.device.services import DeviceCommandService
+
+        device_command_service = (
+            progress["device_command_runtime"].command_service
+            if progress["device_command_runtime"] is not None
+            else DeviceCommandService(session_factory=db_module.AsyncSessionLocal)
+        )
+        progress["execution_runtime"] = build_rough_sorter_runtime(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+            device_command_service=device_command_service,
+        )
+
         from src.app.wms_integration.effect_lane_runtime import (
             bind_wms_effect_lane_runtime,
             build_wms_effect_lane_runtime,
@@ -381,6 +395,7 @@ class CeleryAsyncRuntime:
             "wms_effect_preparation": None,
             "transport_runtime": None,
             "device_command_runtime": None,
+            "execution_runtime": None,
         }
         try:
             runner = asyncio.Runner()
@@ -546,10 +561,11 @@ class CeleryAsyncRuntime:
                 failure_result=None,
             )
             if self._effect_preparation_runtime is not None:
+                effect_preparation_runtime = self._effect_preparation_runtime
                 self._run_runner_stage(
                     runner,
                     self._run_shutdown_stage(
-                        lambda: close_wms_effect_preparation_runtime(self._effect_preparation_runtime),
+                        lambda: close_wms_effect_preparation_runtime(effect_preparation_runtime),
                         "wms-effect-preparation",
                     ),
                     "wms-effect-preparation cleanup",

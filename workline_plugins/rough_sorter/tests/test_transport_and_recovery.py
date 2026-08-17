@@ -4,12 +4,7 @@ import pytest
 from conftest import (
     EXECUTION_ID,
     TRACE_ID,
-    FakeEpochReader,
-    FakeExecutionReader,
-    FakePositionReader,
-    epoch_snapshot,
-    execution_snapshot,
-    position_snapshot,
+    runtime_snapshot,
 )
 from wes_plugin_sdk import (
     CompleteExecution,
@@ -47,6 +42,7 @@ def _outlet() -> DevicePosition:
 def _transport_fact(leg: TransportLeg, outcome: TransportOutcome, **overrides: object) -> TransportOutcomePublishedFact:
     values: dict[str, object] = {
         "fact_id": f"transport:{leg.value}",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": f"transport-evidence:{leg.value}",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -63,23 +59,8 @@ def _transport_fact(leg: TransportLeg, outcome: TransportOutcome, **overrides: o
     return TransportOutcomePublishedFact(**values)
 
 
-def _transport_handler(
-    *, lifecycle: ExecutionLifecycle = ExecutionLifecycle.RUNNING
-) -> TransportOutcomePublishedHandler:
-    return TransportOutcomePublishedHandler(
-        FakeExecutionReader(execution_snapshot(lifecycle=lifecycle)),
-        FakePositionReader(
-            (
-                position_snapshot(
-                    "pipeline-outlet",
-                    "PIPELINE_OUTLET",
-                    material_trace_id=TRACE_ID,
-                    accepts_material=False,
-                ),
-            )
-        ),
-        FakeEpochReader(epoch_snapshot()),
-    )
+def _transport_handler() -> TransportOutcomePublishedHandler:
+    return TransportOutcomePublishedHandler()
 
 
 def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack() -> None:
@@ -135,7 +116,7 @@ def test_determinate_new_rack_outcome_can_cross_verified_unknown_reconciling_fen
         )
     fact = _transport_fact(TransportLeg.NEW_IN, outcome, **values)
 
-    decisions = _transport_handler(lifecycle=ExecutionLifecycle.RECONCILING)(fact)
+    decisions = _transport_handler()(fact)
 
     if outcome is TransportOutcome.SUCCEEDED:
         assert isinstance(decisions[0], CreateWmsConfirmation)
@@ -266,24 +247,12 @@ def test_old_rack_outcome_cannot_enter_material_decision_lane(outcome: Transport
 
 
 def _recovery_handler() -> RecoveryDecidedHandler:
-    return RecoveryDecidedHandler(
-        FakeExecutionReader(execution_snapshot(lifecycle=ExecutionLifecycle.RECONCILING)),
-        FakePositionReader(
-            (
-                position_snapshot(
-                    "pipeline-outlet",
-                    "PIPELINE_OUTLET",
-                    material_trace_id=TRACE_ID,
-                    accepts_material=False,
-                ),
-            )
-        ),
-        FakeEpochReader(epoch_snapshot()),
-    )
+    return RecoveryDecidedHandler()
 
 
 def test_recovery_abort_closes_without_deleting_or_inventing_position() -> None:
     fact = RecoveryDecidedFact(
+        runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
         fact_id="recovery:abort",
         evidence_id="recovery-evidence",
         fact_version="1.0",
@@ -316,6 +285,7 @@ def test_recovery_authoritative_non_rack_position_rejects_rack_identity() -> Non
 
     with pytest.raises(ValueError, match="non-RACK_CELL"):
         RecoveryDecidedFact(
+            runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
             fact_id="recovery:invalid-position",
             evidence_id="recovery-invalid-position-evidence",
             fact_version="1.0",
@@ -342,6 +312,7 @@ def test_recovery_authoritative_position_rejects_incomplete_rack_cell_identity()
 
     with pytest.raises(ValueError, match="RACK_CELL requires complete rack/bin identity"):
         RecoveryDecidedFact(
+            runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
             fact_id="recovery:incomplete-cell",
             evidence_id="recovery-incomplete-cell-evidence",
             fact_version="1.0",
@@ -402,6 +373,7 @@ def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> Non
         snapshot_refs=(f"execution:{EXECUTION_ID}", "position:pipeline-outlet", "rack:rack-new"),
     )
     fact = RecoveryDecidedFact(
+        runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
         fact_id="recovery:continue",
         evidence_id="recovery-evidence",
         fact_version="1.0",
@@ -443,6 +415,7 @@ def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
     )
     outlet = _outlet()
     fact = RecoveryDecidedFact(
+        runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
         fact_id="recovery:continue-device",
         evidence_id="recovery-device-evidence",
         fact_version="1.0",
@@ -461,26 +434,7 @@ def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
             device_ready=False,
         ),
     )
-    handler = RecoveryDecidedHandler(
-        FakeExecutionReader(execution_snapshot(lifecycle=ExecutionLifecycle.RECONCILING)),
-        FakePositionReader(
-            (
-                position_snapshot(
-                    inlet.location_id,
-                    inlet.location_type,
-                    material_trace_id=TRACE_ID,
-                    accepts_material=False,
-                ),
-                position_snapshot(
-                    outlet.location_id,
-                    outlet.location_type,
-                    material_trace_id=None,
-                    accepts_material=True,
-                ),
-            )
-        ),
-        FakeEpochReader(epoch_snapshot()),
-    )
+    handler = RecoveryDecidedHandler()
 
     assert handler(fact) == (
         DeferExecution(
@@ -493,6 +447,7 @@ def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
 
 def test_recovery_explicit_defer_keeps_the_same_recovery_evidence_rebuildable() -> None:
     fact = RecoveryDecidedFact(
+        runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
         fact_id="recovery:defer",
         evidence_id="recovery-defer-evidence",
         fact_version="1.0",
@@ -518,6 +473,7 @@ def test_recovery_explicit_defer_keeps_the_same_recovery_evidence_rebuildable() 
 def test_recovery_continue_requires_authoritative_position() -> None:
     with pytest.raises(ValueError, match="authoritative_position"):
         RecoveryDecidedFact(
+            runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
             fact_id="recovery:invalid",
             evidence_id="recovery-evidence",
             fact_version="1.0",
@@ -540,6 +496,7 @@ def test_recovery_continue_requires_authoritative_position() -> None:
 def test_recovery_continue_requires_typed_continuation() -> None:
     with pytest.raises(TypeError, match="typed continuation"):
         RecoveryDecidedFact(
+            runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
             fact_id="recovery:missing-continuation",
             evidence_id="recovery-evidence",
             fact_version="1.0",
@@ -562,6 +519,7 @@ def test_recovery_abort_forbids_continuation_and_self_causal_identity() -> None:
         snapshot_refs=(f"execution:{EXECUTION_ID}",),
     )
     values = {
+        "runtime_snapshot": runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
         "fact_id": "recovery:abort-invalid",
         "evidence_id": "recovery-evidence",
         "fact_version": "1.0",

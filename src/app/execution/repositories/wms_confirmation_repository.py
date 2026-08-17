@@ -42,6 +42,19 @@ class WmsConfirmationRepository(BaseRepository[WmsConfirmation]):
         await db.flush()
         return confirmation
 
+    async def list_for_execution(
+        self,
+        db: AsyncSession,
+        material_execution_id: int,
+    ) -> list[WmsConfirmation]:
+        columns = cast("Any", WmsConfirmation).__table__.c
+        result = await db.execute(
+            select(WmsConfirmation)
+            .where(columns.material_execution_id == material_execution_id)
+            .order_by(columns.created_at, columns.id)
+        )
+        return list(result.scalars())
+
     async def claim_eligible(
         self,
         db: AsyncSession,

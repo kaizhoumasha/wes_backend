@@ -107,4 +107,32 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
         )
 
 
-__all__ = ["LineRunEpoch", "LineRunEpochDeviceBinding", "LineRunEpochStatus"]
+class LineRunEpochPositionBinding(EnterpriseMixin, DataTableMixin, table=True):
+    """Epoch 内冻结的逻辑位置拓扑；不承载动态占用状态。"""
+
+    __tablename__: ClassVar[str] = "line_run_epoch_position_bindings"  # pyright: ignore[reportIncompatibleVariableOverride]
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        UniqueConstraint(
+            "line_run_epoch_id",
+            "position_role",
+            name="ux_line_run_epoch_position_bindings_epoch_role",
+        ),
+        UniqueConstraint(
+            "line_run_epoch_id",
+            "location_id",
+            name="ux_line_run_epoch_position_bindings_epoch_location",
+        ),
+        {"schema": SchemaType.BIZ.value},
+    )
+
+    line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
+    position_role: str = Field(min_length=1, max_length=50)
+    location_id: str = Field(min_length=1, max_length=120)
+    location_type: str = Field(min_length=1, max_length=50)
+
+    def identity_tuple(self) -> tuple[object, ...]:
+        return self.line_run_epoch_id, self.position_role, self.location_id, self.location_type
+
+
+__all__ = ["LineRunEpoch", "LineRunEpochDeviceBinding", "LineRunEpochPositionBinding", "LineRunEpochStatus"]

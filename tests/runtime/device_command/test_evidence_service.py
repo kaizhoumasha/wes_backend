@@ -125,6 +125,17 @@ class FakeEpochRepository:
         )()
 
 
+class FakeTaskQueue:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.execution_wakes = 0
+        self.error = error
+
+    def enqueue_execution_facts(self) -> None:
+        self.execution_wakes += 1
+        if self.error is not None:
+            raise self.error
+
+
 def _command() -> DeviceCommand:
     now = datetime(2026, 8, 13)
     return DeviceCommand(
@@ -184,6 +195,7 @@ def _service(
     command: DeviceCommand | None,
     *,
     event_epoch_id: int | None = None,
+    task_queue: FakeTaskQueue | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
     return (
@@ -193,6 +205,7 @@ def _service(
             processing_repository=evidences,  # type: ignore[arg-type]
             command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
             epoch_repository=FakeEpochRepository(event_epoch_id),  # type: ignore[arg-type]
+            task_queue_gateway=task_queue,  # type: ignore[arg-type]
         ),
         evidences,
     )
@@ -372,7 +385,8 @@ async def test_rejected_event_cannot_rebind_after_original_epoch_closes() -> Non
 @pytest.mark.asyncio
 async def test_result_evidence_is_only_authority_that_closes_acknowledged_command() -> None:
     command = _command()
-    service, repository = _service(command)
+    queue = FakeTaskQueue()
+    service, repository = _service(command, task_queue=queue)
     receipt = await service.accept_result(_result())
 
     assert command.status == CommandStatus.ACKNOWLEDGED
@@ -382,13 +396,29 @@ async def test_result_evidence_is_only_authority_that_closes_acknowledged_comman
     persisted_evidence = repository.evidences[receipt.source_event_id]
     assert persisted_evidence.material_execution_id == command.material_execution_id
     assert persisted_evidence.apply_status == "APPLIED"
+    assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
+async def test_execution_wake_failure_does_not_rollback_applied_device_evidence() -> None:
+    command = _command()
+    queue = FakeTaskQueue(error=RuntimeError("queue unavailable"))
+    service, repository = _service(command, task_queue=queue)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+
+    assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
+    assert command.status == CommandStatus.SUCCEEDED
+    assert queue.execution_wakes == 1
 
 
 @pytest.mark.asyncio
 async def test_foundation_result_closes_command_and_stays_applied_without_business_identity() -> None:
     command = _command()
     command.material_execution_id = None
-    service, repository = _service(command)
+    queue = FakeTaskQueue()
+    service, repository = _service(command, task_queue=queue)
     receipt = await service.accept_result(_result())
 
     assert await service.process_one() is True
@@ -399,6 +429,7 @@ async def test_foundation_result_closes_command_and_stays_applied_without_busine
     assert evidence.material_execution_id is None
     assert evidence.published_at is None
     assert evidence.decision_digest is None
+    assert queue.execution_wakes == 0
 
 
 @pytest.mark.asyncio

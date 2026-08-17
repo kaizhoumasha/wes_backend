@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 from wes_plugin_sdk import (
-    DevicePosition,
     EpochConfigurationSnapshot,
-    EpochConfigurationSnapshotReader,
     ExecutionLifecycle,
     ExecutionSnapshot,
-    ExecutionSnapshotReader,
-    PositionResourceSnapshotReader,
 )
 
 PLUGIN_KEY = "rough_sorter"
@@ -23,13 +19,12 @@ ROLE_CONTRACTS = {
 
 
 def require_execution(
-    reader: ExecutionSnapshotReader,
+    snapshot: ExecutionSnapshot,
     *,
     material_execution_id: str,
     material_trace_id: str,
     allow_reconciling: bool = False,
 ) -> ExecutionSnapshot:
-    snapshot = reader.get_execution(material_execution_id)
     if snapshot.material_execution_id != material_execution_id or snapshot.material_trace_id != material_trace_id:
         raise ValueError("execution identity does not match Fact")
     if snapshot.lifecycle is ExecutionLifecycle.CLOSED or (
@@ -40,12 +35,11 @@ def require_execution(
 
 
 def require_epoch(
-    reader: EpochConfigurationSnapshotReader,
+    snapshot: EpochConfigurationSnapshot,
     *,
     line_run_epoch_id: str,
     workline_code: str | None = None,
 ) -> EpochConfigurationSnapshot:
-    snapshot = reader.get_epoch_configuration(line_run_epoch_id)
     if snapshot.line_run_epoch_id != line_run_epoch_id:
         raise ValueError("epoch identity does not match Fact")
     if snapshot.plugin_key != PLUGIN_KEY or snapshot.plugin_version != PLUGIN_VERSION:
@@ -62,32 +56,9 @@ def require_epoch(
     return snapshot
 
 
-def require_source(
-    reader: PositionResourceSnapshotReader,
-    position: DevicePosition,
-    *,
-    material_trace_id: str,
-) -> None:
-    snapshot = reader.get_position_resource(position.location_id)
-    if snapshot.resource_id != position.location_id or snapshot.resource_type != position.location_type:
-        raise ValueError("source position snapshot does not match Fact")
-    if snapshot.material_trace_id != material_trace_id:
-        raise ValueError("source position does not contain material trace")
-
-
-def require_target(reader: PositionResourceSnapshotReader, position: DevicePosition) -> None:
-    snapshot = reader.get_position_resource(position.location_id)
-    if snapshot.resource_id != position.location_id or snapshot.resource_type != position.location_type:
-        raise ValueError("target position snapshot does not match Fact")
-    if not snapshot.accepts_material or snapshot.material_trace_id is not None:
-        raise ValueError("target position cannot accept material")
-
-
 __all__ = [
     "PLUGIN_KEY",
     "PLUGIN_VERSION",
     "require_epoch",
     "require_execution",
-    "require_source",
-    "require_target",
 ]

@@ -59,6 +59,10 @@ RUN sed -i \
 
 # 复制依赖文件
 COPY pyproject.toml uv.lock ./
+COPY packages/wes_plugin_sdk/pyproject.toml packages/wes_plugin_sdk/pyproject.toml
+COPY packages/wes_plugin_sdk/src packages/wes_plugin_sdk/src
+COPY workline_plugins/rough_sorter/pyproject.toml workline_plugins/rough_sorter/pyproject.toml
+COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
 
 # ============================================
 # Stage 2: Builder - 依赖安装

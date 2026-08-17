@@ -326,9 +326,13 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
     binding = sdk.DeviceBindingSnapshot(
         device_role="PLUGIN_DEVICE",
         device_code="device-1",
-        endpoint_code="endpoint-1",
         contract_key="contract-1",
         contract_version="1.0",
+    )
+    position_binding = sdk.PositionBindingSnapshot(
+        position_role="PIPELINE_INLET",
+        location_id="LOCATION-IN",
+        location_type="RACK_CELL",
     )
     with pytest.raises(TypeError):
         sdk.EpochConfigurationSnapshot(
@@ -339,6 +343,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             config_digest="config-digest",
             topology_digest="topology-digest",
             device_bindings=[binding],
+            position_bindings=(position_binding,),
         )
     with pytest.raises(TypeError):
         sdk.EpochConfigurationSnapshot(
@@ -349,6 +354,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             config_digest="config-digest",
             topology_digest="topology-digest",
             device_bindings=(MutableBinding(),),
+            position_bindings=(position_binding,),
         )
 
     external_bindings = [binding]
@@ -360,6 +366,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         config_digest="config-digest",
         topology_digest="topology-digest",
         device_bindings=tuple(external_bindings),
+        position_bindings=(position_binding,),
     )
     external_bindings.clear()
     assert snapshot.device_bindings == (binding,)
@@ -367,7 +374,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         source.location_id = "CHANGED"
 
 
-def test_plugin_sdk_read_protocols_return_typed_frozen_snapshots() -> None:
+def test_plugin_sdk_exposes_typed_frozen_runtime_snapshots() -> None:
     sdk = _load_sdk()
     execution = sdk.ExecutionSnapshot(
         material_execution_id="execution-1",
@@ -377,14 +384,6 @@ def test_plugin_sdk_read_protocols_return_typed_frozen_snapshots() -> None:
         version=2,
     )
 
-    class ExecutionReader:
-        def get_execution(self, material_execution_id: str):
-            assert material_execution_id == "execution-1"
-            return execution
-
-    reader = ExecutionReader()
-    assert isinstance(reader, sdk.ExecutionSnapshotReader)
-    assert reader.get_execution("execution-1") is execution
     with pytest.raises(dataclasses.FrozenInstanceError):
         execution.version = 3
 

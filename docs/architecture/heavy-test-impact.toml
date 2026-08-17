@@ -155,7 +155,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "uv.lock"
 heavy_tests = []
-reviewed_content_sha256 = "0acbca68bfbb2bfbb83d76401c70af42ced59751edc35143e8e252842560b1b5"
+reviewed_content_sha256 = "c03c5c168d8b453271891672e8f2a0145caa45032d17d2a5e13c0e94cd77e7b3"
 
 # 独立插件 SDK 仅定义标准库不可变类型、只读协议和静态元数据；当前精确内容由架构测试承接。
 # 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
@@ -167,7 +167,7 @@ reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
 heavy_tests = []
-reviewed_content_sha256 = "fe7d63a49eb6668bdb7d6e9192b0f8dc1a546b8e8fa87cbeefb4f7e90299e73b"
+reviewed_content_sha256 = "ac2ef3861762734651a01f65f1b80e605b19aa395509835d124754fdd9a34cf9"
 
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
@@ -187,7 +187,7 @@ reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
 heavy_tests = []
-reviewed_content_sha256 = "305414911ba52023d32ace89b7db8eae786205ec0de877fceb34168d58050c72"
+reviewed_content_sha256 = "2b3b74a22bf16160c7efbf5a96886661b1b0749e0f5cd7ecea2640023dafd00b"
 
 # 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。
 [[mapping]]
@@ -1013,6 +1013,35 @@ heavy_tests = [
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
+
+# Phase 8 静态插件装配、同事务 Fact 重建与持久触发由真实 execution/Celery/Transport owner 承接。
+[[mapping]]
+source_glob = "deployment/**"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+]
+
+[[mapping]]
+source_glob = "src/app/workline/epoch_digest.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260818_0131_ec18b2a79400_闭合粗分持久触发.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/rack_position_repository.py"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/celery_app/tasks/__init__.py"

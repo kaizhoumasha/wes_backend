@@ -84,6 +84,17 @@ class _CausalEvidences:
         return SimpleNamespace(id=30, material_execution_id=21, line_run_epoch_id=11)
 
 
+class _TaskQueue:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.execution_wakes = 0
+        self.error = error
+
+    def enqueue_execution_facts(self) -> None:
+        self.execution_wakes += 1
+        if self.error is not None:
+            raise self.error
+
+
 def _body(
     *,
     decision: str = "CONTINUE",
@@ -201,16 +212,36 @@ async def test_persistence_failure_returns_unavailable_without_false_ack() -> No
 @pytest.mark.asyncio
 async def test_recorder_freezes_single_execution_and_current_causal_evidence_before_ack() -> None:
     evidence_service = _EvidenceService()
+    queue = _TaskQueue()
     recorder = InboundEventEvidenceRecorder(
         _Sessions(),
         evidence_service,
         material_execution_repository=_Executions(),
         inbound_evidence_repository=_CausalEvidences(),
+        task_queue_gateway=queue,  # type: ignore[arg-type]
     )
 
     response = await InboundEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
+    assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_wake_failure_does_not_change_committed_received_result() -> None:
+    queue = _TaskQueue(error=RuntimeError("queue unavailable"))
+    recorder = InboundEventEvidenceRecorder(
+        _Sessions(),
+        _EvidenceService(),
+        material_execution_repository=_Executions(),
+        inbound_evidence_repository=_CausalEvidences(),
+        task_queue_gateway=queue,  # type: ignore[arg-type]
+    )
+
+    response = await InboundEventHandler(recorder).handle(_body())
+
+    assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
+    assert queue.execution_wakes == 1
 
 
 @pytest.mark.asyncio

@@ -4,14 +4,16 @@ import pytest
 from conftest import (
     EXECUTION_ID,
     TRACE_ID,
-    FakeEpochReader,
-    FakeExecutionReader,
-    FakePositionReader,
-    epoch_snapshot,
-    execution_snapshot,
-    position_snapshot,
+    runtime_snapshot,
 )
-from wes_plugin_sdk import CreateDeviceCommand, CreateWmsConfirmation, DevicePosition, PauseForReconciliation, Wait
+from wes_plugin_sdk import (
+    CreateDeviceCommand,
+    CreateWmsConfirmation,
+    DeferExecution,
+    DevicePosition,
+    PauseForReconciliation,
+    Wait,
+)
 
 from rough_sorter.facts import (
     DeviceOutcome,
@@ -33,22 +35,8 @@ def _position(location_id: str, location_type: str, **ids: str) -> DevicePositio
     )
 
 
-def _readers(*positions: tuple[str, str, str | None, bool]):
-    return (
-        FakeExecutionReader(execution_snapshot()),
-        FakePositionReader(
-            tuple(
-                position_snapshot(
-                    resource_id,
-                    resource_type,
-                    material_trace_id=trace_id,
-                    accepts_material=accepts_material,
-                )
-                for resource_id, resource_type, trace_id, accepts_material in positions
-            )
-        ),
-        FakeEpochReader(epoch_snapshot()),
-    )
+def _readers(*_positions: tuple[str, str, str | None, bool]):
+    return ()
 
 
 def _device_fact(step: DeviceStep, **overrides: object) -> DevicePositionConfirmedFact:
@@ -56,6 +44,7 @@ def _device_fact(step: DeviceStep, **overrides: object) -> DevicePositionConfirm
     target = _position("pipeline-inlet", "PIPELINE_INLET")
     values: dict[str, object] = {
         "fact_id": "evidence:3",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": "3",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -76,6 +65,7 @@ def _device_fact(step: DeviceStep, **overrides: object) -> DevicePositionConfirm
 def _target_fact(result: TargetResult, **overrides: object) -> TargetDecidedFact:
     values: dict[str, object] = {
         "fact_id": "evidence:4",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": "4",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -311,7 +301,40 @@ def test_transfer_waits_when_device_is_not_ready() -> None:
     )
 
     assert DevicePositionConfirmedHandler(*readers)(fact) == (
-        Wait(material_execution_id=EXECUTION_ID, fact_id=fact.fact_id, reason_code="TRANSFER_DEVICE_NOT_READY"),
+        DeferExecution(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="TRANSFER_DEVICE_NOT_READY",
+        ),
+    )
+
+
+def test_assigned_target_defers_when_placement_device_is_not_ready() -> None:
+    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    cell = _position(
+        "cell-1",
+        "RACK_CELL",
+        rack_id="rack-current",
+        rack_slot_code="slot-1",
+        bin_id="bin-1",
+        bin_cell_id="cell-1",
+    )
+    fact = _target_fact(
+        TargetResult.ASSIGNED,
+        source_position=outlet,
+        target_position=cell,
+        target_assignment_id="assignment-1",
+        placement_sequence=1,
+        expected_height_mm="2.0",
+        device_ready=False,
+    )
+
+    assert TargetDecidedHandler()(fact) == (
+        DeferExecution(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="PLACEMENT_DEVICE_NOT_READY",
+        ),
     )
 
 

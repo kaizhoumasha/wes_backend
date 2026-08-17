@@ -17,7 +17,7 @@ def _current_service() -> WmsConfirmationService:
     runtime = celery_async_runtime.execution_runtime
     if runtime is None:
         raise RuntimeError("Execution runtime is unavailable in the current Celery child")
-    return runtime.wms_confirmation_service
+    return runtime.execution.wms_confirmation_service
 
 
 @celery_app.task(name="src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch")

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
-from wes_plugin_sdk import DeferExecution, FactReference
+from wes_plugin_sdk import CreateWmsConfirmation, DeferExecution, FactReference
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -27,6 +27,7 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.execution.plugin_binding import StaticPluginBinding
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,7 @@ class FactProcessor:
         fact_builder: FactBuilder | None = None,
         clock: object = timezone.now_for_db,
         token_factory: object = lambda: uuid.uuid4().hex,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
         self._plugins = plugin_binding
@@ -99,6 +101,7 @@ class FactProcessor:
         self._fact_builder = fact_builder or FactBuilder()
         self._clock = cast("callable", clock)
         self._token_factory = cast("callable", token_factory)
+        self._task_queue = task_queue_gateway
 
     async def process_batch(self, limit: int = _MAX_BATCH_SIZE) -> int:
         if not 1 <= limit <= _MAX_BATCH_SIZE:
@@ -137,6 +140,8 @@ class FactProcessor:
                     processed += 1
                     continue
                 await self._apply(evidence_id, token, digest, tuple(decision_groups))
+                if any(type(decision) is CreateWmsConfirmation for decision in decisions):
+                    self._enqueue_wms_confirmations()
                 processed += 1
             except Exception:  # worker 必须隔离单条 evidence，并通过持久状态有界恢复。
                 logger.exception("execution.fact_processing_failed", extra={"evidence_id": evidence_id})
@@ -145,6 +150,14 @@ class FactProcessor:
                 except Exception:
                     logger.exception("execution.fact_failure_recording_failed", extra={"evidence_id": evidence_id})
         return processed
+
+    def _enqueue_wms_confirmations(self) -> None:
+        if self._task_queue is None:
+            return
+        try:
+            self._task_queue.enqueue_wms_confirmations()
+        except Exception:
+            logger.exception("execution.wms_confirmation_wake_failed", extra={"event": "wms_confirmation_wake_failed"})
 
     async def _prepare_fact(self, evidence_id: int, token: str) -> tuple[_PreparedFact, ...]:
         now = self._clock()
@@ -300,9 +313,9 @@ class FactProcessor:
             raise LookupError("MaterialExecution 不存在")
         return execution
 
-    async def _augment_fact(self, epoch: LineRunEpoch, base_fact: FactReference) -> FactReference:
+    async def _augment_fact(self, db: object, epoch: LineRunEpoch, base_fact: FactReference) -> FactReference:
         factory = self._plugins.resolve_fact_factory(epoch.plugin_key, epoch.plugin_version)
-        fact = await factory.build(base_fact)
+        fact = await factory.build(db, base_fact)
         if not isinstance(fact, FactReference):
             raise TypeError("PluginFactFactory must return FactReference")
         if (
@@ -330,6 +343,7 @@ class FactProcessor:
         ):
             causal_evidence = await self._evidences.get_by_id_for_update(db, execution.last_transition_evidence_id)
         fact = await self._augment_fact(
+            db,
             epoch,
             self._fact_builder.build(evidence, execution, causal_evidence=causal_evidence),
         )

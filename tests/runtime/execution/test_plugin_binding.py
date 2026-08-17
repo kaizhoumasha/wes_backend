@@ -21,7 +21,8 @@ def _handle_typed_evidence(fact: _TypedEvidenceFact) -> tuple[Wait, ...]:
 
 
 class _TypedFactFactory:
-    async def build(self, fact: FactReference) -> FactReference:
+    async def build(self, db: object, fact: FactReference) -> FactReference:
+        assert db is _FACTORY_DB
         return _TypedEvidenceFact(
             fact_id=fact.fact_id,
             evidence_id=fact.evidence_id,
@@ -52,8 +53,11 @@ class _FakeCorrelator:
 
 
 class _IdentityFactFactory:
-    async def build(self, fact: FactReference) -> FactReference:
+    async def build(self, _db: object, fact: FactReference) -> FactReference:
         return fact
+
+
+_FACTORY_DB = object()
 
 
 def _fact(*, version: str = "1.0") -> EvidenceReadyFact:
@@ -161,7 +165,7 @@ async def test_fact_factory_augments_only_an_immutable_reference_without_raw_pay
         )
     )
 
-    typed_fact = await binding.resolve_fact_factory("rough_sorter", "1.0.0").build(_fact())
+    typed_fact = await binding.resolve_fact_factory("rough_sorter", "1.0.0").build(_FACTORY_DB, _fact())
 
     assert typed_fact == _TypedEvidenceFact(
         fact_id="fact-1",

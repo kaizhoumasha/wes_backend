@@ -67,6 +67,12 @@ beat_schedule: dict[str, dict[str, Any]] = {
         "kwargs": {"limit": 100},
         "options": {"expires": 30.0},
     },
+    "publish-transport-outcomes-batch": {
+        "task": "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 100},
+        "options": {"expires": 10.0},
+    },
     # DeviceCommand 三类任务只携带扫描上限，不携带命令快照。
     "dispatch-device-commands-batch": {
         "task": "src.celery_app.tasks.device_command.dispatch_device_commands_batch",
@@ -120,6 +126,7 @@ task_routes = {
     "src.celery_app.tasks.transport.submit_transport_tasks_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.transport.process_transport_evidence_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": {"queue": "wms-fulfillment"},
+    "src.celery_app.tasks.transport.publish_transport_outcomes_batch": {"queue": "wms-fulfillment"},
     # 核心任务 -> default 队列
     "src.celery_app.tasks.core.*": {"queue": "default"},
     # RuntimeInbox 主链路任务 -> celery 队列

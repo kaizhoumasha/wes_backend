@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
 
 
 def _required(value: str, field_name: str) -> None:
@@ -37,34 +36,25 @@ class ExecutionSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class PositionResourceSnapshot:
-    resource_id: str
-    resource_type: str
-    state_version: int
-    material_trace_id: str | None
-    accepts_material: bool
-
-    def __post_init__(self) -> None:
-        _required(self.resource_id, "resource_id")
-        _required(self.resource_type, "resource_type")
-        if not isinstance(self.state_version, int) or isinstance(self.state_version, bool) or self.state_version < 0:
-            raise ValueError("state_version must be a non-negative integer")
-        if self.material_trace_id is not None:
-            _required(self.material_trace_id, "material_trace_id")
-        if not isinstance(self.accepts_material, bool):
-            raise ValueError("accepts_material must be a boolean")  # noqa: TRY004 - stable SDK contract.
-
-
-@dataclass(frozen=True, slots=True)
 class DeviceBindingSnapshot:
     device_role: str
     device_code: str
-    endpoint_code: str
     contract_key: str
     contract_version: str
 
     def __post_init__(self) -> None:
-        for field_name in ("device_role", "device_code", "endpoint_code", "contract_key", "contract_version"):
+        for field_name in ("device_role", "device_code", "contract_key", "contract_version"):
+            _required(getattr(self, field_name), field_name)
+
+
+@dataclass(frozen=True, slots=True)
+class PositionBindingSnapshot:
+    position_role: str
+    location_id: str
+    location_type: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("position_role", "location_id", "location_type"):
             _required(getattr(self, field_name), field_name)
 
 
@@ -77,6 +67,7 @@ class EpochConfigurationSnapshot:
     config_digest: str
     topology_digest: str
     device_bindings: tuple[DeviceBindingSnapshot, ...]
+    position_bindings: tuple[PositionBindingSnapshot, ...]
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -97,18 +88,15 @@ class EpochConfigurationSnapshot:
         roles = [binding.device_role for binding in self.device_bindings]
         if len(roles) != len(set(roles)):
             raise ValueError("device_bindings must not contain duplicate roles")
-
-
-@runtime_checkable
-class ExecutionSnapshotReader(Protocol):
-    def get_execution(self, material_execution_id: str) -> ExecutionSnapshot: ...
-
-
-@runtime_checkable
-class PositionResourceSnapshotReader(Protocol):
-    def get_position_resource(self, resource_id: str) -> PositionResourceSnapshot: ...
-
-
-@runtime_checkable
-class EpochConfigurationSnapshotReader(Protocol):
-    def get_epoch_configuration(self, line_run_epoch_id: str) -> EpochConfigurationSnapshot: ...
+        if type(self.position_bindings) is not tuple:
+            raise TypeError("position_bindings must be a tuple")
+        if not self.position_bindings:
+            raise ValueError("position_bindings must not be empty")
+        if any(type(binding) is not PositionBindingSnapshot for binding in self.position_bindings):
+            raise TypeError("position_bindings must contain PositionBindingSnapshot values")
+        position_roles = [binding.position_role for binding in self.position_bindings]
+        if len(position_roles) != len(set(position_roles)):
+            raise ValueError("position_bindings must not contain duplicate roles")
+        location_ids = [binding.location_id for binding in self.position_bindings]
+        if len(location_ids) != len(set(location_ids)):
+            raise ValueError("position_bindings must not contain duplicate locations")

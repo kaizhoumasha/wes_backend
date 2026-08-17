@@ -1,0 +1,405 @@
+"""粗分机 WMS 结果 Fact 的持久因果重建。"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, cast
+
+from deployment._rough_sorter_values import (
+    bound_position,
+    command_position,
+    device_binding,
+    position_binding,
+    positive_int,
+    rack_move_plan,
+    required_string,
+    wire_position,
+)
+from src.app.wms_adapter.inbound_wire import parse_outbound_request, parse_outbound_response
+
+if TYPE_CHECKING:
+    from wes_plugin_sdk import WmsResultReadyFact
+
+    from deployment._rough_sorter_persistence import (
+        DeviceCommandRepositoryPort,
+        DeviceReadinessReader,
+        EpochRepositoryPort,
+        EvidenceRepositoryPort,
+        WmsConfirmationRepositoryPort,
+    )
+    from deployment._rough_sorter_types import RoughSorterTypes
+    from src.app.execution.models import InboundEvidence, MaterialExecution, WmsConfirmation
+
+
+def validate_wms_execution(data: dict[str, Any], execution: MaterialExecution) -> None:
+    if (
+        data.get("material_execution_id") != execution.execution_code
+        or data.get("material_trace_id") != execution.material_trace_id
+    ):
+        raise ValueError("WMS request execution identity 不匹配")
+
+
+async def build_wms_fact(
+    *,
+    db: object,
+    fact: WmsResultReadyFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    types: RoughSorterTypes,
+    evidences: EvidenceRepositoryPort,
+    epochs: EpochRepositoryPort,
+    confirmations: WmsConfirmationRepositoryPort,
+    commands: DeviceCommandRepositoryPort,
+    readiness: DeviceReadinessReader,
+    current_rack_id: Any,
+) -> Any:
+    operation = required_string(evidence.operation, "evidence.operation")
+    operation_id = required_string(evidence.operation_id, "evidence.operation_id")
+    if fact.operation_id != operation_id:
+        raise ValueError("WMS Fact operation_id 与 evidence 不匹配")
+    confirmation = await confirmations.get_by_identity_for_update(db, operation, operation_id)
+    if (
+        confirmation is None
+        or confirmation.material_execution_id != execution.id
+        or confirmation.response_evidence_id != evidence.id
+    ):
+        raise ValueError("WMS confirmation/evidence correlation 不匹配")
+    request = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)
+    if request.get("operation") != operation or request.get("operation_id") != operation_id:
+        raise ValueError("WMS confirmation request identity 不匹配")
+    if operation == "inbound.material.admission_decide@v1":
+        return await build_admission_fact(
+            db=db,
+            fact=fact,
+            evidence=evidence,
+            execution=execution,
+            runtime=runtime,
+            request=request,
+            types=types,
+            epochs=epochs,
+            readiness=readiness,
+        )
+    if operation == "inbound.material.target_decide@v1":
+        return await build_target_fact(
+            db=db,
+            fact=fact,
+            evidence=evidence,
+            execution=execution,
+            runtime=runtime,
+            request=request,
+            types=types,
+            epochs=epochs,
+            readiness=readiness,
+        )
+    if operation in {"inbound.material.placement_report@v1", "inbound.material.ng_placement_report@v1"}:
+        return build_completion_fact(
+            fact=fact, evidence=evidence, execution=execution, runtime=runtime, request=request, types=types
+        )
+    if operation == "inbound.source_rack.replacement_plan_decide@v1":
+        return await build_replacement_fact(
+            db=db,
+            fact=fact,
+            evidence=evidence,
+            execution=execution,
+            runtime=runtime,
+            request=request,
+            types=types,
+            commands=commands,
+            confirmations=confirmations,
+            current_rack_id=current_rack_id,
+        )
+    raise ValueError(f"rough sorter 不支持 WMS operation: {operation}")
+
+
+async def build_admission_fact(
+    *,
+    db: object,
+    fact: WmsResultReadyFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    request: dict[str, Any],
+    types: RoughSorterTypes,
+    epochs: EpochRepositoryPort,
+    readiness: DeviceReadinessReader,
+) -> Any:
+    request_data = cast("dict[str, Any]", request["data"])
+    validate_wms_execution(request_data, execution)
+    source = wire_position(request_data["source_position"], execution.material_trace_id, "MEASUREMENT_POSITION")
+    if source.location_id != position_binding(runtime, "MEASUREMENT_POSITION").location_id:
+        raise ValueError("admission source position 与 Epoch binding 不匹配")
+    response = parse_outbound_response(
+        "inbound.material.admission_decide@v1", 200, evidence.normalized_payload
+    ).model_dump(mode="json", exclude_none=True)
+    response_data = cast("dict[str, Any]", response["data"])
+    result = types.AdmissionResult(required_string(response_data.get("result"), "admission.result"))
+    binding = device_binding(runtime, "MEASUREMENT_DEVICE")
+    persisted = await epochs.get_binding_by_role_for_update(
+        db, line_run_epoch_id=execution.line_run_epoch_id, device_role=binding.device_role
+    )
+    if persisted is None or persisted.device_code != binding.device_code:
+        raise ValueError("measurement device binding drift")
+    device_ready = await readiness.is_ready(db, persisted, observed_at=evidence.received_at)
+    common: dict[str, Any] = {
+        "fact_id": fact.fact_id,
+        "evidence_id": fact.evidence_id,
+        "fact_version": fact.fact_version,
+        "material_execution_id": fact.material_execution_id,
+        "operation_id": fact.operation_id,
+        "runtime_snapshot": runtime,
+        "material_trace_id": execution.material_trace_id,
+        "result": result,
+        "source_position": source,
+        "device_ready": device_ready,
+    }
+    if result is types.AdmissionResult.ACCEPT:
+        return types.AdmissionDecidedFact(
+            **common,
+            pkg_id=required_string(response_data.get("pkg_id"), "pkg_id"),
+            inbound_admission_id=required_string(response_data.get("inbound_admission_id"), "inbound_admission_id"),
+            next_position=bound_position(runtime, "PIPELINE_INLET", execution.material_trace_id),
+        )
+    if result is types.AdmissionResult.REJECT:
+        destination = wire_position(response_data.get("ng_destination"), execution.material_trace_id, "NG_POSITION")
+        if destination.location_id != position_binding(runtime, "NG_POSITION").location_id:
+            raise ValueError("WMS NG destination 与 Epoch binding 不匹配")
+        return types.AdmissionDecidedFact(
+            **common,
+            reason_code=required_string(response_data.get("reason_code"), "reason_code"),
+            next_position=destination,
+        )
+    return types.AdmissionDecidedFact(
+        **common, reason_code=required_string(response_data.get("reason_code"), "reason_code")
+    )
+
+
+def build_completion_fact(
+    *,
+    fact: WmsResultReadyFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    request: dict[str, Any],
+    types: RoughSorterTypes,
+) -> Any:
+    request_data = cast("dict[str, Any]", request["data"])
+    validate_wms_execution(request_data, execution)
+    response = parse_outbound_response(
+        required_string(evidence.operation, "evidence.operation"), 200, evidence.normalized_payload
+    ).model_dump(mode="json", exclude_none=True)
+    result = types.CompletionResult(required_string(response.get("code"), "completion code"))
+    if evidence.operation == "inbound.material.placement_report@v1":
+        target = wire_position(request_data.get("target_position"), execution.material_trace_id, "RACK_CELL")
+        affected = (
+            required_string(request_data.get("command_code"), "command_code"),
+            required_string(target.rack_id, "rack_id"),
+            required_string(target.bin_cell_id, "bin_cell_id"),
+        )
+        kind = types.CompletionKind.PLACEMENT
+    else:
+        destination = wire_position(request_data.get("ng_position"), execution.material_trace_id, "NG_POSITION")
+        affected = (required_string(request_data.get("ng_evidence_id"), "ng_evidence_id"), destination.location_id)
+        kind = types.CompletionKind.NG_PLACEMENT
+    return types.PlacementCompletedFact(
+        fact_id=fact.fact_id,
+        evidence_id=fact.evidence_id,
+        fact_version=fact.fact_version,
+        material_execution_id=fact.material_execution_id,
+        operation_id=fact.operation_id,
+        runtime_snapshot=runtime,
+        material_trace_id=execution.material_trace_id,
+        kind=kind,
+        result=result,
+        affected_resource_ids=affected,
+    )
+
+
+async def build_replacement_fact(
+    *,
+    db: object,
+    fact: WmsResultReadyFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    request: dict[str, Any],
+    types: RoughSorterTypes,
+    commands: DeviceCommandRepositoryPort,
+    confirmations: WmsConfirmationRepositoryPort,
+    current_rack_id: Any,
+) -> Any:
+    request_data = cast("dict[str, Any]", request["data"])
+    validate_wms_execution(request_data, execution)
+    rack_id = required_string(request_data.get("current_rack_id"), "current_rack_id")
+    if rack_id != await current_rack_id(db, runtime):
+        raise ValueError("replacement request current rack 与 projection 不匹配")
+    response = parse_outbound_response(
+        "inbound.source_rack.replacement_plan_decide@v1", 200, evidence.normalized_payload
+    ).model_dump(mode="json", exclude_none=True)
+    response_data = cast("dict[str, Any]", response["data"])
+    result = types.ReplacementResult(required_string(response_data.get("result"), "replacement.result"))
+    common: dict[str, Any] = {
+        "fact_id": fact.fact_id,
+        "evidence_id": fact.evidence_id,
+        "fact_version": fact.fact_version,
+        "material_execution_id": fact.material_execution_id,
+        "operation_id": fact.operation_id,
+        "runtime_snapshot": runtime,
+        "material_trace_id": execution.material_trace_id,
+        "result": result,
+        "current_rack_id": rack_id,
+    }
+    if result is not types.ReplacementResult.READY:
+        return types.ReplacementPlanDecidedFact(
+            **common, reason_code=required_string(response_data.get("reason_code"), "reason_code")
+        )
+    release = await rack_release_snapshot(
+        db=db,
+        execution=execution,
+        current_rack_id=rack_id,
+        types=types,
+        commands=commands,
+        confirmations=confirmations,
+    )
+    return types.ReplacementPlanDecidedFact(
+        **common,
+        release_snapshot=release,
+        rack_replacement_id=required_string(response_data.get("rack_replacement_id"), "rack_replacement_id"),
+        old_loaded_rack=rack_move_plan(response_data.get("old_loaded_rack"), types),
+        new_empty_rack=rack_move_plan(response_data.get("new_empty_rack"), types),
+    )
+
+
+async def rack_release_snapshot(
+    *,
+    db: object,
+    execution: MaterialExecution,
+    current_rack_id: str,
+    types: RoughSorterTypes,
+    commands: DeviceCommandRepositoryPort,
+    confirmations: WmsConfirmationRepositoryPort,
+) -> Any:
+    if execution.id is None:
+        raise ValueError("rack release requires persisted execution")
+    command_records = await commands.list_for_material_execution(
+        db, line_run_epoch_id=execution.line_run_epoch_id, material_execution_id=execution.id
+    )
+    confirmation_records = await confirmations.list_for_execution(db, execution.id)
+    placement_confirmations: dict[str, WmsConfirmation] = {}
+    for confirmation in confirmation_records:
+        if confirmation.operation != "inbound.material.placement_report@v1":
+            continue
+        request = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)
+        command_code = required_string(
+            cast("dict[str, Any]", request["data"]).get("command_code"), "placement command_code"
+        )
+        if command_code in placement_confirmations:
+            raise ValueError("duplicate placement confirmation command correlation")
+        placement_confirmations[command_code] = confirmation
+    items: list[Any] = []
+    for command in command_records:
+        if command.task_type != "PICK_AND_PUT":
+            continue
+        target = command_position(command.params.get("target"), execution.material_trace_id)
+        if target.location_type != "RACK_CELL" or target.rack_id != current_rack_id:
+            continue
+        confirmation = placement_confirmations.get(command.command_code)
+        if confirmation is None:
+            raise ValueError("placement command missing exact confirmation correlation")
+        items.append(
+            types.PlacementReleaseEvidence(
+                command_code=command.command_code,
+                command_status=types.PlacementCommandStatus(command.status),
+                command_result_evidence_id=command.result_evidence_id,
+                confirmation_operation=confirmation.operation,
+                confirmation_operation_id=confirmation.operation_id,
+                confirmation_status=types.PlacementConfirmationStatus(confirmation.status),
+                response_result=(
+                    types.PlacementResponseResult(confirmation.response_result)
+                    if confirmation.response_result is not None
+                    else None
+                ),
+                response_evidence_id=confirmation.response_evidence_id,
+            )
+        )
+    placements = tuple(sorted(items, key=lambda item: item.command_code))
+    return types.RackReleaseSnapshot(
+        current_rack_id=current_rack_id,
+        placements=placements,
+        snapshot_ref=types.rack_release_snapshot_ref(current_rack_id, placements),
+    )
+
+
+async def build_target_fact(
+    *,
+    db: object,
+    fact: WmsResultReadyFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    request: dict[str, Any],
+    types: RoughSorterTypes,
+    epochs: EpochRepositoryPort,
+    readiness: DeviceReadinessReader,
+) -> Any:
+    request_data = cast("dict[str, Any]", request["data"])
+    validate_wms_execution(request_data, execution)
+    source = wire_position(request_data["source_position"], execution.material_trace_id, "PIPELINE_OUTLET")
+    if source.location_id != position_binding(runtime, "PIPELINE_OUTLET").location_id:
+        raise ValueError("target source position 与 Epoch binding 不匹配")
+    rack_id = required_string(request_data.get("current_rack_id"), "current_rack_id")
+    response = parse_outbound_response(
+        "inbound.material.target_decide@v1", 200, evidence.normalized_payload
+    ).model_dump(mode="json", exclude_none=True)
+    response_data = cast("dict[str, Any]", response["data"])
+    result = types.TargetResult(required_string(response_data.get("result"), "target.result"))
+    persisted = await epochs.get_binding_by_role_for_update(
+        db, line_run_epoch_id=execution.line_run_epoch_id, device_role="PLACEMENT_DEVICE"
+    )
+    if persisted is None:
+        raise ValueError("placement device binding missing")
+    device_ready = await readiness.is_ready(db, persisted, observed_at=evidence.received_at)
+    common: dict[str, Any] = {
+        "fact_id": fact.fact_id,
+        "evidence_id": fact.evidence_id,
+        "fact_version": fact.fact_version,
+        "material_execution_id": fact.material_execution_id,
+        "operation_id": fact.operation_id,
+        "runtime_snapshot": runtime,
+        "material_trace_id": execution.material_trace_id,
+        "result": result,
+        "source_position": source,
+        "current_rack_id": rack_id,
+        "device_ready": device_ready,
+    }
+    if result is types.TargetResult.ASSIGNED:
+        target = wire_position(response_data.get("target_position"), execution.material_trace_id, "RACK_CELL")
+        if target.rack_id != rack_id:
+            raise ValueError("assigned target rack 与 current rack 不匹配")
+        return types.TargetDecidedFact(
+            **common,
+            target_position=target,
+            target_assignment_id=required_string(response_data.get("target_assignment_id"), "target_assignment_id"),
+            placement_sequence=positive_int(response_data.get("placement_sequence"), "placement_sequence"),
+            expected_height_mm=required_string(response_data.get("expected_height_mm"), "expected_height_mm"),
+        )
+    if result is types.TargetResult.NO_AVAILABLE_CELL:
+        return types.TargetDecidedFact(
+            **common,
+            reason_code=required_string(response_data.get("reason_code"), "reason_code"),
+            request_operation_id=fact.operation_id,
+        )
+    if result is types.TargetResult.REJECT:
+        destination = wire_position(response_data.get("ng_destination"), execution.material_trace_id, "NG_POSITION")
+        if destination.location_id != position_binding(runtime, "NG_POSITION").location_id:
+            raise ValueError("target reject NG destination 与 Epoch binding 不匹配")
+        return types.TargetDecidedFact(
+            **common,
+            target_position=destination,
+            reason_code=required_string(response_data.get("reason_code"), "reason_code"),
+        )
+    return types.TargetDecidedFact(
+        **common, reason_code=required_string(response_data.get("reason_code"), "reason_code")
+    )
+
+
+__all__ = ["build_wms_fact"]

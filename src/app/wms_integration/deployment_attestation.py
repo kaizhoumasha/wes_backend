@@ -70,6 +70,10 @@ _REQUIRED_BEAT_SCHEDULES = (
         "src.celery_app.tasks.transport.process_transport_evidence_batch",
     ),
     ("reconcile-transport-tasks-batch", "src.celery_app.tasks.transport.reconcile_transport_tasks_batch"),
+    (
+        "publish-transport-outcomes-batch",
+        "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
+    ),
 )
 _REQUIRED_FULFILLMENT_ROUTES = (
     "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
@@ -78,6 +82,7 @@ _REQUIRED_FULFILLMENT_ROUTES = (
     "src.celery_app.tasks.transport.submit_transport_tasks_batch",
     "src.celery_app.tasks.transport.process_transport_evidence_batch",
     "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+    "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
     "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
 )
 

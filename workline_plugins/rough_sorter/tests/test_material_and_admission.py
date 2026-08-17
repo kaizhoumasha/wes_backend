@@ -6,14 +6,16 @@ from conftest import (
     EXECUTION_ID,
     TRACE_ID,
     WORKLINE_CODE,
-    FakeEpochReader,
-    FakeExecutionReader,
-    FakePositionReader,
-    epoch_snapshot,
-    execution_snapshot,
-    position_snapshot,
+    runtime_snapshot,
 )
-from wes_plugin_sdk import CreateDeviceCommand, CreateWmsConfirmation, DevicePosition, PauseForReconciliation, Wait
+from wes_plugin_sdk import (
+    CreateDeviceCommand,
+    CreateWmsConfirmation,
+    DeferExecution,
+    DevicePosition,
+    PauseForReconciliation,
+    Wait,
+)
 
 from rough_sorter.facts import (
     AdmissionDecidedFact,
@@ -33,27 +35,14 @@ def _position(location_id: str, location_type: str) -> DevicePosition:
     )
 
 
-def _readers(*positions: tuple[str, str, str | None, bool]):
-    return (
-        FakeExecutionReader(execution_snapshot()),
-        FakePositionReader(
-            tuple(
-                position_snapshot(
-                    resource_id,
-                    resource_type,
-                    material_trace_id=trace_id,
-                    accepts_material=accepts_material,
-                )
-                for resource_id, resource_type, trace_id, accepts_material in positions
-            )
-        ),
-        FakeEpochReader(epoch_snapshot()),
-    )
+def _readers(*_positions: tuple[str, str, str | None, bool]):
+    return ()
 
 
 def _material_fact(**overrides: object) -> MaterialEvidenceReadyFact:
     values: dict[str, object] = {
         "fact_id": "evidence:1",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": "1",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -79,6 +68,7 @@ def _material_fact(**overrides: object) -> MaterialEvidenceReadyFact:
 def _admission_fact(result: AdmissionResult, **overrides: object) -> AdmissionDecidedFact:
     values: dict[str, object] = {
         "fact_id": "evidence:2",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": "2",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -209,7 +199,11 @@ def test_admission_does_not_dispatch_when_device_is_not_ready() -> None:
     )
 
     assert AdmissionDecidedHandler(*readers)(fact) == (
-        Wait(material_execution_id=EXECUTION_ID, fact_id=fact.fact_id, reason_code="MEASUREMENT_DEVICE_NOT_READY"),
+        DeferExecution(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="MEASUREMENT_DEVICE_NOT_READY",
+        ),
     )
 
 

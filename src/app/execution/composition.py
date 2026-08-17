@@ -25,7 +25,12 @@ if TYPE_CHECKING:
 
     from src.app.device.services import DeviceCommandService
     from src.app.execution.plugin_binding import StaticPluginBinding
+    from src.app.execution.services.wms_confirmation_service import (
+        WmsBusinessWaitPlanner,
+        WmsConfirmationAdapterPort,
+    )
     from src.app.transport.service import TransportService
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +48,9 @@ def build_execution_runtime(
     wms_request_resolver: WmsConfirmationRequestResolver,
     device_command_service: DeviceCommandService,
     transport_service: TransportService,
+    wms_confirmation_adapter: WmsConfirmationAdapterPort,
+    wms_business_wait_planner: WmsBusinessWaitPlanner,
+    task_queue_gateway: TaskQueueGateway,
 ) -> ExecutionRuntime:
     """只组合已显式注入的插件/WMS typed adapter，不发现或导入具体插件。"""
 
@@ -52,7 +60,14 @@ def build_execution_runtime(
     rack_binding_repository = RackReplacementTransportBindingRepository()
     material_service = MaterialExecutionService(repository=material_repository)
     evidence_service = InboundEvidenceService(repository=evidence_repository)
-    confirmation_service = WmsConfirmationService(repository=confirmation_repository)
+    confirmation_service = WmsConfirmationService(
+        repository=confirmation_repository,
+        session_factory=session_factory,
+        adapter=wms_confirmation_adapter,
+        evidence_service=evidence_service,
+        business_wait_planner=wms_business_wait_planner,
+        task_queue_gateway=task_queue_gateway,
+    )
     applier = DecisionApplier(
         device_command_service=device_command_service,
         wms_confirmation_service=confirmation_service,

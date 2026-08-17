@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from wes_plugin_sdk import EpochConfigurationSnapshotReader, ExecutionSnapshotReader, PositionResourceSnapshotReader
-
 from rough_sorter.handlers import (
     AdmissionDecidedHandler,
     DevicePositionConfirmedHandler,
@@ -30,23 +28,18 @@ type RoughSorterHandler = (
 )
 
 
-def build_handlers(
-    *,
-    executions: ExecutionSnapshotReader,
-    positions: PositionResourceSnapshotReader,
-    epochs: EpochConfigurationSnapshotReader,
-) -> tuple[RoughSorterHandler, ...]:
+def build_handlers() -> tuple[RoughSorterHandler, ...]:
     """只在部署组合时构造固定 handler. 模块导入不实例化依赖."""
 
     return (
-        MaterialEvidenceReadyHandler(executions, positions, epochs),
-        AdmissionDecidedHandler(executions, positions, epochs),
-        DevicePositionConfirmedHandler(executions, positions, epochs),
-        TargetDecidedHandler(executions, positions, epochs),
-        PlacementCompletedHandler(executions),
-        ReplacementPlanDecidedHandler(executions, epochs),
-        TransportOutcomePublishedHandler(executions, positions, epochs),
-        RecoveryDecidedHandler(executions, positions, epochs),
+        MaterialEvidenceReadyHandler(),
+        AdmissionDecidedHandler(),
+        DevicePositionConfirmedHandler(),
+        TargetDecidedHandler(),
+        PlacementCompletedHandler(),
+        ReplacementPlanDecidedHandler(),
+        TransportOutcomePublishedHandler(),
+        RecoveryDecidedHandler(),
     )
 
 

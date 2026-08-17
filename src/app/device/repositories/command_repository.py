@@ -95,6 +95,24 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         await db.flush()
         return command
 
+    async def list_for_material_execution(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        material_execution_id: int,
+    ) -> list[DeviceCommand]:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.material_execution_id == material_execution_id,
+            )
+            .order_by(columns.created_at, columns.id)
+        )
+        return list(result.scalars())
+
     async def claim_next_pending(
         self,
         db: AsyncSession,

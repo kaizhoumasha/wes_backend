@@ -47,7 +47,7 @@ class WmsConfirmationRequest:
 class WmsConfirmationRequestResolver(Protocol):
     """只把 Decision 的稳定 refs 解析为该 operation 已批准的严格请求。"""
 
-    def resolve(self, decision: CreateWmsConfirmation) -> WmsConfirmationRequest: ...
+    async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest: ...
 
 
 class EpochRepositoryPort(Protocol):
@@ -260,7 +260,7 @@ class DecisionApplier:
         decision: CreateWmsConfirmation,
         now: datetime,
     ) -> None:
-        request = self._wms_requests.resolve(decision)
+        request = await self._wms_requests.resolve(db, decision)
         result = await self._wms_confirmations.create_or_get(
             db,
             operation=decision.operation,

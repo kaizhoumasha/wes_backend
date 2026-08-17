@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 from src.app.workline.models.line_run_epoch import (
     LineRunEpoch,
     LineRunEpochDeviceBinding,
+    LineRunEpochPositionBinding,
     LineRunEpochStatus,
 )
 from src.database.base_repository import BaseRepository
@@ -167,6 +168,65 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         db.add(binding)
         await db.flush()
         return binding
+
+    async def list_bindings(self, db: AsyncSession, line_run_epoch_id: int) -> list[LineRunEpochDeviceBinding]:
+        columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochDeviceBinding)
+            .where(columns.line_run_epoch_id == line_run_epoch_id)
+            .order_by(columns.device_role)
+        )
+        return list(result.scalars())
+
+    async def get_position_binding_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        position_role: str,
+    ) -> LineRunEpochPositionBinding | None:
+        columns = cast("Any", LineRunEpochPositionBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochPositionBinding)
+            .where(columns.line_run_epoch_id == line_run_epoch_id, columns.position_role == position_role)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def get_position_binding_by_location_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        location_id: str,
+    ) -> LineRunEpochPositionBinding | None:
+        columns = cast("Any", LineRunEpochPositionBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochPositionBinding)
+            .where(columns.line_run_epoch_id == line_run_epoch_id, columns.location_id == location_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def add_position_binding(
+        self,
+        db: AsyncSession,
+        binding: LineRunEpochPositionBinding,
+    ) -> LineRunEpochPositionBinding:
+        db.add(binding)
+        await db.flush()
+        return binding
+
+    async def list_position_bindings(
+        self, db: AsyncSession, line_run_epoch_id: int
+    ) -> list[LineRunEpochPositionBinding]:
+        columns = cast("Any", LineRunEpochPositionBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochPositionBinding)
+            .where(columns.line_run_epoch_id == line_run_epoch_id)
+            .order_by(columns.position_role)
+        )
+        return list(result.scalars())
 
 
 line_run_epoch_repository = LineRunEpochRepository()

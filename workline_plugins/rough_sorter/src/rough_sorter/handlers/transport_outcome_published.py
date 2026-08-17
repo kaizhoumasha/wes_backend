@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from wes_plugin_sdk import (
     CreateWmsConfirmation,
-    EpochConfigurationSnapshotReader,
-    ExecutionSnapshotReader,
     PauseForReconciliation,
-    PositionResourceSnapshotReader,
     handler,
 )
 
 from rough_sorter.facts import TransportOutcome, TransportOutcomePublishedFact
-from rough_sorter.handlers._guards import require_epoch, require_execution, require_source
+from rough_sorter.handlers._guards import require_epoch, require_execution
 
 TARGET_OPERATION = "inbound.material.target_decide@v1"
 
@@ -24,23 +19,19 @@ TARGET_OPERATION = "inbound.material.target_decide@v1"
     name="transport-outcome-published",
     supported_versions=("1.0",),
 )
-@dataclass(frozen=True, slots=True)
 class TransportOutcomePublishedHandler:
-    executions: ExecutionSnapshotReader
-    positions: PositionResourceSnapshotReader
-    epochs: EpochConfigurationSnapshotReader
-
     def __call__(
         self,
         fact: TransportOutcomePublishedFact,
     ) -> tuple[CreateWmsConfirmation | PauseForReconciliation]:
+        snapshot = fact.runtime_snapshot
         execution = require_execution(
-            self.executions,
+            snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
             allow_reconciling=True,
         )
-        require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
+        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.outcome is not TransportOutcome.SUCCEEDED:
             return (
                 PauseForReconciliation(
@@ -74,7 +65,6 @@ class TransportOutcomePublishedHandler:
         source_position = fact.source_position
         if source_position is None:
             raise ValueError("NEW_IN success requires material source_position")
-        require_source(self.positions, source_position, material_trace_id=fact.material_trace_id)
         return (
             CreateWmsConfirmation(
                 material_execution_id=fact.material_execution_id,

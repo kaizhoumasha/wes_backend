@@ -29,12 +29,9 @@ from .handler import HandlerMetadata, handler
 from .protocols import (
     DeviceBindingSnapshot,
     EpochConfigurationSnapshot,
-    EpochConfigurationSnapshotReader,
     ExecutionLifecycle,
     ExecutionSnapshot,
-    ExecutionSnapshotReader,
-    PositionResourceSnapshot,
-    PositionResourceSnapshotReader,
+    PositionBindingSnapshot,
 )
 
 __all__ = (
@@ -48,17 +45,14 @@ __all__ = (
     "DevicePosition",
     "DeviceResultReadyFact",
     "EpochConfigurationSnapshot",
-    "EpochConfigurationSnapshotReader",
     "EvidenceReadyFact",
     "ExecutionLifecycle",
     "ExecutionSnapshot",
-    "ExecutionSnapshotReader",
     "Fact",
     "FactReference",
     "HandlerMetadata",
     "PauseForReconciliation",
-    "PositionResourceSnapshot",
-    "PositionResourceSnapshotReader",
+    "PositionBindingSnapshot",
     "RackFace",
     "RecoveryDecidedFact",
     "RecoveryDecision",

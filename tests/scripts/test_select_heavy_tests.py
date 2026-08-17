@@ -336,6 +336,19 @@ def test_unmapped_plugin_sdk_asset_is_a_core_candidate_and_fails_closed() -> Non
         select_heavy_tests([changed_path], config)
 
 
+def test_deployment_composition_is_candidate_with_explicit_heavy_owners() -> None:
+    changed_path = "deployment/rough_sorter_composition.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert is_candidate(changed_path)
+    assert select_heavy_tests([changed_path], config) == [
+        "tests/e2e/transport/test_transport_production_wiring.py",
+        "tests/integration/execution/test_decision_processing_postgresql.py",
+        "tests/integration/test_celery_async_runtime_postgresql.py",
+        "tests/integration/test_wms_deployment_attestation.py",
+    ]
+
+
 def test_plugin_sdk_assets_are_exact_reviewed_none_mappings() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 

@@ -17,7 +17,7 @@ def _current_processor() -> FactProcessor:
     runtime = celery_async_runtime.execution_runtime
     if runtime is None:
         raise RuntimeError("Execution runtime is unavailable in the current Celery child")
-    return runtime.fact_processor
+    return runtime.execution.fact_processor
 
 
 async def assert_execution_worker_startable() -> None:

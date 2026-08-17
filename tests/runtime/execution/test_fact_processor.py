@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from wes_plugin_sdk import (
+    CreateWmsConfirmation,
     DeferExecution,
     DeviceResultReadyFact,
     EvidenceReadyFact,
@@ -172,7 +173,7 @@ class _RejectingCorrelator:
 
 
 class _IdentityFactFactory:
-    async def build(self, fact: FactReference) -> FactReference:
+    async def build(self, _db: object, fact: FactReference) -> FactReference:
         return fact
 
 
@@ -199,6 +200,31 @@ class _Applier:
 @handler(fact_type=EvidenceReadyFact, name="initial", supported_versions=("1.0",))
 def _handle_initial(fact: EvidenceReadyFact) -> tuple[Wait, ...]:
     return (Wait(fact.material_execution_id, fact.fact_id, "WAIT_FOR_WMS"),)
+
+
+@handler(fact_type=EvidenceReadyFact, name="wms", supported_versions=("1.0",))
+def _handle_wms(fact: EvidenceReadyFact) -> tuple[CreateWmsConfirmation, ...]:
+    return (
+        CreateWmsConfirmation(
+            fact.material_execution_id,
+            fact.fact_id,
+            "inbound.material.admission_decide@v1",
+            "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+            (fact.evidence_id,),
+            (f"execution:{fact.material_execution_id}",),
+        ),
+    )
+
+
+class _TaskQueue:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.wms_wakes = 0
+        self.error = error
+
+    def enqueue_wms_confirmations(self) -> None:
+        self.wms_wakes += 1
+        if self.error is not None:
+            raise self.error
 
 
 @handler(fact_type=DeviceResultReadyFact, name="device_result", supported_versions=("1.0",))
@@ -324,6 +350,7 @@ def _processor(
     target: object = _handle_initial,
     correlator: object | None = _Correlator(),
     applier: _Applier | None = None,
+    task_queue: _TaskQueue | None = None,
 ) -> tuple[FactProcessor, _ExecutionService, _Applier]:
     executions = _Executions()
     service = _ExecutionService(executions)
@@ -338,8 +365,34 @@ def _processor(
         material_execution_service=service,
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
+        task_queue_gateway=task_queue,  # type: ignore[arg-type]
     )
     return processor, service, decision_applier
+
+
+@pytest.mark.asyncio
+async def test_committed_immediate_confirmation_wakes_wms_dispatcher_without_payload() -> None:
+    evidence = _evidence()
+    queue = _TaskQueue()
+    processor, _, _ = _processor(evidence, target=_handle_wms, task_queue=queue)
+
+    assert await processor.process_batch() == 1
+
+    assert evidence.published_at == NOW
+    assert queue.wms_wakes == 1
+
+
+@pytest.mark.asyncio
+async def test_wms_wake_failure_does_not_rollback_applied_decisions() -> None:
+    evidence = _evidence()
+    queue = _TaskQueue(error=RuntimeError("queue unavailable"))
+    processor, _, applier = _processor(evidence, target=_handle_wms, task_queue=queue)
+
+    assert await processor.process_batch() == 1
+
+    assert evidence.published_at == NOW
+    assert len(applier.calls) == 1
+    assert queue.wms_wakes == 1
 
 
 @pytest.mark.asyncio

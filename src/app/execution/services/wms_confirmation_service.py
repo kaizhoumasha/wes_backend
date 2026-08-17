@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -24,6 +25,8 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +152,14 @@ class WmsConfirmationService:
         adapter: WmsConfirmationAdapterPort | None = None,
         evidence_service: InboundEvidenceService | None = None,
         business_wait_planner: WmsBusinessWaitPlanner | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._repository: WmsConfirmationRepositoryPort = repository or wms_confirmation_repository
         self._sessions = session_factory
         self._adapter = adapter
         self._evidence = evidence_service or InboundEvidenceService()
         self._business_wait_planner = business_wait_planner
+        self._task_queue = task_queue_gateway
 
     async def create_or_get(
         self,
@@ -358,7 +363,7 @@ class WmsConfirmationService:
             request_digest=request_digest,
         )
         changed_at = now if now is not None else timezone.now_for_db()
-        async with sessions.begin() as db:
+        async with self._execution_wake_transaction(sessions) as (db, wake_execution):
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
             if confirmation is None:
                 return
@@ -380,6 +385,7 @@ class WmsConfirmationService:
                 if isinstance(evidence_result, InboundEvidenceConflictResult):
                     _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                     return
+                wake_execution[0] = True
                 if code == "DETERMINATE":
                     if evidence_result.evidence.id is None or result.response_result is None:
                         _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
@@ -414,6 +420,22 @@ class WmsConfirmationService:
                     )
                     return
             _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
+
+    @asynccontextmanager
+    async def _execution_wake_transaction(self, sessions: object):
+        wake_execution = [False]
+        async with sessions.begin() as db:  # type: ignore[attr-defined]
+            yield db, wake_execution
+        if wake_execution[0]:
+            self._enqueue_execution_facts()
+
+    def _enqueue_execution_facts(self) -> None:
+        if self._task_queue is None:
+            return
+        try:
+            self._task_queue.enqueue_execution_facts()
+        except Exception:
+            logger.exception("execution.wms_result_wake_failed", extra={"event": "execution_wake_failed"})
 
     async def _create_business_wait_follow_up(
         self,

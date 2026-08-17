@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from wes_plugin_sdk import (
     CompleteExecution,
     CreateDeviceCommand,
     CreateWmsConfirmation,
     DeferExecution,
-    EpochConfigurationSnapshotReader,
-    ExecutionSnapshotReader,
-    PositionResourceSnapshotReader,
     handler,
 )
 
@@ -22,7 +17,7 @@ from rough_sorter.facts import (
     RecoveryDeviceContinuation,
     RecoveryWmsContinuation,
 )
-from rough_sorter.handlers._guards import require_epoch, require_execution, require_source, require_target
+from rough_sorter.handlers._guards import require_epoch, require_execution
 
 _POSITION_WMS_OPERATIONS = {
     "MEASUREMENT_POSITION": {"inbound.material.admission_decide@v1"},
@@ -48,23 +43,19 @@ _DEVICE_RECOVERY_TOPOLOGY = {
     name="recovery-decided",
     supported_versions=("1.0",),
 )
-@dataclass(frozen=True, slots=True)
 class RecoveryDecidedHandler:
-    executions: ExecutionSnapshotReader
-    positions: PositionResourceSnapshotReader
-    epochs: EpochConfigurationSnapshotReader
-
     def __call__(
         self,
         fact: RecoveryDecidedFact,
     ) -> tuple[CompleteExecution | CreateDeviceCommand | CreateWmsConfirmation | DeferExecution]:
+        snapshot = fact.runtime_snapshot
         execution = require_execution(
-            self.executions,
+            snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
             allow_reconciling=True,
         )
-        _ = require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
+        _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.decision is RecoveryDecision.ABORT:
             return (
                 CompleteExecution(
@@ -76,7 +67,6 @@ class RecoveryDecidedHandler:
         position = fact.authoritative_position
         if position is None:
             raise ValueError("CONTINUE requires authoritative_position")
-        require_source(self.positions, position, material_trace_id=fact.material_trace_id)
         continuation = fact.continuation
         if type(continuation) is RecoveryWmsContinuation:
             return (self._continue_wms(fact, continuation),)
@@ -126,7 +116,6 @@ class RecoveryDecidedHandler:
                 fact_id=fact.fact_id,
                 reason_code=f"{continuation.device_role}_NOT_READY",
             )
-        require_target(self.positions, continuation.target)
         return CreateDeviceCommand(
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,

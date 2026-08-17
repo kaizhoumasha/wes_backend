@@ -3,24 +3,19 @@ from __future__ import annotations
 from conftest import (
     EXECUTION_ID,
     TRACE_ID,
-    FakeEpochReader,
-    FakeExecutionReader,
-    FakePositionReader,
-    epoch_snapshot,
-    execution_snapshot,
-    position_snapshot,
+    runtime_snapshot,
 )
 from wes_plugin_sdk import (
     CompleteExecution,
     CreateTransportTask,
     CreateWmsConfirmation,
+    DeferExecution,
     DevicePosition,
     PauseForReconciliation,
     RackFace,
     TransportLeg,
     TransportRackPosition,
     TransportTaskType,
-    Wait,
 )
 
 from rough_sorter.facts import (
@@ -29,10 +24,16 @@ from rough_sorter.facts import (
     DeviceOutcome,
     DevicePositionConfirmedFact,
     DeviceStep,
+    PlacementCommandStatus,
     PlacementCompletedFact,
+    PlacementConfirmationStatus,
+    PlacementReleaseEvidence,
+    PlacementResponseResult,
     RackMoveLegPlan,
+    RackReleaseSnapshot,
     ReplacementPlanDecidedFact,
     ReplacementResult,
+    rack_release_snapshot_ref,
 )
 from rough_sorter.handlers.device_position_confirmed import DevicePositionConfirmedHandler
 from rough_sorter.handlers.placement_completed import PlacementCompletedHandler
@@ -48,27 +49,14 @@ def _position(location_id: str, location_type: str, **ids: str) -> DevicePositio
     )
 
 
-def _readers(*positions: tuple[str, str, str | None, bool]):
-    return (
-        FakeExecutionReader(execution_snapshot()),
-        FakePositionReader(
-            tuple(
-                position_snapshot(
-                    resource_id,
-                    resource_type,
-                    material_trace_id=trace_id,
-                    accepts_material=accepts_material,
-                )
-                for resource_id, resource_type, trace_id, accepts_material in positions
-            )
-        ),
-        FakeEpochReader(epoch_snapshot()),
-    )
+def _readers(*_positions: tuple[str, str, str | None, bool]):
+    return ()
 
 
 def _placement_result(result: CompletionResult, **overrides: object) -> PlacementCompletedFact:
     values: dict[str, object] = {
         "fact_id": "evidence:6",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": "6",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -85,6 +73,7 @@ def _placement_result(result: CompletionResult, **overrides: object) -> Placemen
 def _replacement_fact(result: ReplacementResult, **overrides: object) -> ReplacementPlanDecidedFact:
     values: dict[str, object] = {
         "fact_id": "evidence:7",
+        "runtime_snapshot": runtime_snapshot(),
         "evidence_id": "7",
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
@@ -92,10 +81,28 @@ def _replacement_fact(result: ReplacementResult, **overrides: object) -> Replace
         "material_trace_id": TRACE_ID,
         "result": result,
         "current_rack_id": "rack-old",
-        "release_gate_closed": False,
     }
     values.update(overrides)
     return ReplacementPlanDecidedFact(**values)
+
+
+def _release_snapshot(*, closed: bool) -> RackReleaseSnapshot:
+    placement = PlacementReleaseEvidence(
+        command_code="placement-command-1",
+        command_status=PlacementCommandStatus.SUCCEEDED if closed else PlacementCommandStatus.ACKNOWLEDGED,
+        command_result_evidence_id=51 if closed else None,
+        confirmation_operation="inbound.material.placement_report@v1",
+        confirmation_operation_id="placement-operation-1",
+        confirmation_status=(PlacementConfirmationStatus.COMPLETED if closed else PlacementConfirmationStatus.PENDING),
+        response_result=PlacementResponseResult.RECORDED if closed else None,
+        response_evidence_id=61 if closed else None,
+    )
+    placements = (placement,)
+    return RackReleaseSnapshot(
+        current_rack_id="rack-old",
+        placements=placements,
+        snapshot_ref=rack_release_snapshot_ref("rack-old", placements),
+    )
 
 
 def test_successful_cell_position_creates_placement_report() -> None:
@@ -110,6 +117,7 @@ def test_successful_cell_position_creates_placement_report() -> None:
     )
     readers = _readers((cell.location_id, cell.location_type, TRACE_ID, False))
     fact = DevicePositionConfirmedFact(
+        runtime_snapshot=runtime_snapshot(),
         fact_id="evidence:5",
         evidence_id="5",
         fact_version="1.0",
@@ -152,6 +160,7 @@ def test_successful_ng_position_creates_ng_report() -> None:
     ng = _position("ng-1", "NG_POSITION")
     readers = _readers((ng.location_id, ng.location_type, TRACE_ID, False))
     fact = DevicePositionConfirmedFact(
+        runtime_snapshot=runtime_snapshot(),
         fact_id="evidence:ng-command",
         evidence_id="ng-command",
         fact_version="1.0",
@@ -183,7 +192,7 @@ def test_successful_ng_position_creates_ng_report() -> None:
 
 
 def test_recorded_or_duplicate_placement_is_the_only_automatic_close() -> None:
-    handler = PlacementCompletedHandler(FakeExecutionReader(execution_snapshot()))
+    handler = PlacementCompletedHandler()
 
     for result in (CompletionResult.RECORDED, CompletionResult.DUPLICATE):
         fact = _placement_result(result)
@@ -199,7 +208,7 @@ def test_recorded_or_duplicate_placement_is_the_only_automatic_close() -> None:
 def test_placement_conflict_pauses_instead_of_closing() -> None:
     fact = _placement_result(CompletionResult.RECONCILING, reason_code="WMS_PLACEMENT_CONFLICT")
 
-    assert PlacementCompletedHandler(FakeExecutionReader(execution_snapshot()))(fact) == (
+    assert PlacementCompletedHandler()(fact) == (
         PauseForReconciliation(
             material_execution_id=EXECUTION_ID,
             fact_id=fact.fact_id,
@@ -212,6 +221,7 @@ def test_placement_conflict_pauses_instead_of_closing() -> None:
 def test_open_release_gate_creates_no_rack_move_and_does_not_claim_recovery() -> None:
     fact = _replacement_fact(
         ReplacementResult.READY,
+        release_snapshot=_release_snapshot(closed=False),
         rack_replacement_id="replacement-1",
         old_loaded_rack=RackMoveLegPlan(
             rack_id="rack-old",
@@ -226,15 +236,16 @@ def test_open_release_gate_creates_no_rack_move_and_does_not_claim_recovery() ->
             target_face=RackFace.B,
         ),
     )
-    handler = ReplacementPlanDecidedHandler(
-        FakeExecutionReader(execution_snapshot()),
-        FakeEpochReader(epoch_snapshot()),
-    )
+    handler = ReplacementPlanDecidedHandler()
 
     decisions = handler(fact)
 
     assert decisions == (
-        Wait(material_execution_id=EXECUTION_ID, fact_id=fact.fact_id, reason_code="RACK_RELEASE_GATE_NOT_CLOSED"),
+        DeferExecution(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="RACK_RELEASE_GATE_NOT_CLOSED",
+        ),
     )
     assert not any(isinstance(decision, CreateTransportTask) for decision in decisions)
 
@@ -254,16 +265,12 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
     )
     fact = _replacement_fact(
         ReplacementResult.READY,
-        release_gate_closed=True,
-        release_snapshot_ref="rack-release-snapshot-1",
+        release_snapshot=_release_snapshot(closed=True),
         rack_replacement_id="replacement-1",
         old_loaded_rack=old_plan,
         new_empty_rack=new_plan,
     )
-    handler = ReplacementPlanDecidedHandler(
-        FakeExecutionReader(execution_snapshot()),
-        FakeEpochReader(epoch_snapshot()),
-    )
+    handler = ReplacementPlanDecidedHandler()
 
     first = handler(fact)
     second = handler(fact)

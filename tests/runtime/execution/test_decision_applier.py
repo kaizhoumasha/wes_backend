@@ -100,8 +100,10 @@ class _DeviceCommands:
 @dataclass
 class _WmsResolver:
     result: WmsConfirmationRequest
+    db: object | None = None
 
-    def resolve(self, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
+    async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
+        self.db = db
         assert decision.operation == "inbound.material.admission_decide@v1"
         return self.result
 
@@ -263,7 +265,9 @@ async def test_device_command_execution_identity_is_bounded_when_execution_code_
 @pytest.mark.asyncio
 async def test_create_wms_confirmation_uses_narrow_resolver_without_guessing_wire() -> None:
     confirmations = _WmsConfirmations()
-    applier = _applier(wms_confirmation_service=confirmations)
+    resolver = _WmsResolver(WmsConfirmationRequest({"strict": "payload"}, NOW + timedelta(seconds=8)))
+    db = object()
+    applier = _applier(wms_confirmation_service=confirmations, wms_request_resolver=resolver)
     decision = CreateWmsConfirmation(
         "EXEC-1",
         "evidence:31",
@@ -273,8 +277,9 @@ async def test_create_wms_confirmation_uses_narrow_resolver_without_guessing_wir
         ("execution:EXEC-1",),
     )
 
-    await applier.apply(object(), _evidence(), _execution(), _fact(), (decision,))
+    await applier.apply(db, _evidence(), _execution(), _fact(), (decision,))
 
+    assert resolver.db is db
     assert confirmations.calls == [
         {
             "operation": decision.operation,

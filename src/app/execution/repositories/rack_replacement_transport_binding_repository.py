@@ -39,6 +39,19 @@ class RackReplacementTransportBindingRepository(BaseRepository[RackReplacementTr
         )
         return result.scalar_one_or_none()
 
+    async def get_by_client_request_id_for_update(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+    ) -> RackReplacementTransportBinding | None:
+        columns = cast("Any", RackReplacementTransportBinding).__table__.c
+        result = await db.execute(
+            select(RackReplacementTransportBinding)
+            .where(columns.client_request_id == client_request_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def add(
         self,
         db: AsyncSession,

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from wes_plugin_sdk import (
     CreateTransportTask,
-    EpochConfigurationSnapshotReader,
-    ExecutionSnapshotReader,
+    DeferExecution,
     PauseForReconciliation,
     TransportLeg,
     TransportTaskType,
@@ -15,7 +12,13 @@ from wes_plugin_sdk import (
     handler,
 )
 
-from rough_sorter.facts import ReplacementPlanDecidedFact, ReplacementResult
+from rough_sorter.facts import (
+    PlacementCommandStatus,
+    PlacementConfirmationStatus,
+    PlacementResponseResult,
+    ReplacementPlanDecidedFact,
+    ReplacementResult,
+)
 from rough_sorter.handlers._guards import require_epoch, require_execution
 
 
@@ -24,21 +27,18 @@ from rough_sorter.handlers._guards import require_epoch, require_execution
     name="replacement-plan-decided",
     supported_versions=("1.0",),
 )
-@dataclass(frozen=True, slots=True)
 class ReplacementPlanDecidedHandler:
-    executions: ExecutionSnapshotReader
-    epochs: EpochConfigurationSnapshotReader
-
     def __call__(
         self,
         fact: ReplacementPlanDecidedFact,
-    ) -> tuple[CreateTransportTask | PauseForReconciliation | Wait, ...]:
+    ) -> tuple[CreateTransportTask | DeferExecution | PauseForReconciliation | Wait, ...]:
+        snapshot = fact.runtime_snapshot
         execution = require_execution(
-            self.executions,
+            snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
+        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is ReplacementResult.WAIT:
             return (self._wait(fact, fact.reason_code or "WMS_REPLACEMENT_WAIT"),)
         if fact.result is ReplacementResult.RECONCILING:
@@ -50,8 +50,24 @@ class ReplacementPlanDecidedHandler:
                     affected_resource_ids=(fact.current_rack_id,),
                 ),
             )
-        if not fact.release_gate_closed:
-            return (self._wait(fact, "RACK_RELEASE_GATE_NOT_CLOSED"),)
+        release_snapshot = fact.release_snapshot
+        if release_snapshot is None:
+            raise ValueError("READY replacement requires release snapshot")
+        if any(
+            item.command_status is not PlacementCommandStatus.SUCCEEDED
+            or item.command_result_evidence_id is None
+            or item.confirmation_status is not PlacementConfirmationStatus.COMPLETED
+            or item.response_result not in {PlacementResponseResult.RECORDED, PlacementResponseResult.DUPLICATE}
+            or item.response_evidence_id is None
+            for item in release_snapshot.placements
+        ):
+            return (
+                DeferExecution(
+                    material_execution_id=fact.material_execution_id,
+                    fact_id=fact.fact_id,
+                    reason_code="RACK_RELEASE_GATE_NOT_CLOSED",
+                ),
+            )
         old_plan = fact.old_loaded_rack
         new_plan = fact.new_empty_rack
         if old_plan is None or new_plan is None:

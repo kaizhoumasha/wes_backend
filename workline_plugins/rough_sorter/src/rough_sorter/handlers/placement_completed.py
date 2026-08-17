@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from wes_plugin_sdk import CompleteExecution, ExecutionSnapshotReader, PauseForReconciliation, handler
+from wes_plugin_sdk import CompleteExecution, PauseForReconciliation, handler
 
 from rough_sorter.facts import CompletionKind, CompletionResult, PlacementCompletedFact
 from rough_sorter.handlers._guards import require_execution
@@ -15,13 +13,10 @@ from rough_sorter.handlers._guards import require_execution
     name="placement-completed",
     supported_versions=("1.0",),
 )
-@dataclass(frozen=True, slots=True)
 class PlacementCompletedHandler:
-    executions: ExecutionSnapshotReader
-
     def __call__(self, fact: PlacementCompletedFact) -> tuple[CompleteExecution | PauseForReconciliation]:
         require_execution(
-            self.executions,
+            fact.runtime_snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )

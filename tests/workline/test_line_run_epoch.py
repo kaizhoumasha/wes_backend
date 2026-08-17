@@ -9,12 +9,14 @@ import pytest
 from src.app.workline.models.line_run_epoch import (
     LineRunEpoch,
     LineRunEpochDeviceBinding,
+    LineRunEpochPositionBinding,
     LineRunEpochStatus,
 )
 from src.app.workline.services.line_run_epoch_service import (
     ActiveLineRunEpochExistsError,
     DeviceBindingConflictError,
     LineRunEpochService,
+    PositionBindingConflictError,
 )
 
 
@@ -24,6 +26,7 @@ class FakeLineRunEpochRepository:
     def __init__(self) -> None:
         self.active_epoch: LineRunEpoch | None = None
         self.bindings: dict[tuple[int, str], LineRunEpochDeviceBinding] = {}
+        self.positions: dict[tuple[int, str], LineRunEpochPositionBinding] = {}
 
     async def get_active_for_workline_for_update(self, _db: object, workline_id: int) -> LineRunEpoch | None:
         if self.active_epoch is not None and self.active_epoch.workline_id == workline_id:
@@ -76,6 +79,26 @@ class FakeLineRunEpochRepository:
     ) -> LineRunEpochDeviceBinding:
         binding.id = 21
         self.bindings[(binding.line_run_epoch_id, binding.device_code)] = binding
+        return binding
+
+    async def get_position_binding_for_update(self, _db: object, *, line_run_epoch_id: int, position_role: str):
+        return self.positions.get((line_run_epoch_id, position_role))
+
+    async def get_position_binding_by_location_for_update(
+        self, _db: object, *, line_run_epoch_id: int, location_id: str
+    ):
+        return next(
+            (
+                binding
+                for (epoch_id, _), binding in self.positions.items()
+                if epoch_id == line_run_epoch_id and binding.location_id == location_id
+            ),
+            None,
+        )
+
+    async def add_position_binding(self, _db: object, binding: LineRunEpochPositionBinding):
+        binding.id = 31
+        self.positions[(binding.line_run_epoch_id, binding.position_role)] = binding
         return binding
 
 
@@ -312,3 +335,51 @@ async def test_epoch_freezes_plugin_identity_and_flow_mode_without_generic_state
 
 def test_epoch_device_binding_freezes_business_role() -> None:
     assert "device_role" in LineRunEpochDeviceBinding.model_fields
+
+
+@pytest.mark.asyncio
+async def test_epoch_position_binding_is_idempotent_but_role_and_location_are_immutable() -> None:
+    service, _ = _service()
+    first = await service.bind_position(
+        object(),
+        line_run_epoch_id=11,
+        position_role="PIPELINE_OUTLET",
+        location_id="ROUGH-LINE-1-OUTLET",
+        location_type="HANDOFF_POSITION",
+    )
+    duplicate = await service.bind_position(
+        object(),
+        line_run_epoch_id=11,
+        position_role="PIPELINE_OUTLET",
+        location_id="ROUGH-LINE-1-OUTLET",
+        location_type="HANDOFF_POSITION",
+    )
+
+    assert duplicate is first
+    with pytest.raises(PositionBindingConflictError):
+        await service.bind_position(
+            object(),
+            line_run_epoch_id=11,
+            position_role="PIPELINE_OUTLET",
+            location_id="OTHER-OUTLET",
+            location_type="HANDOFF_POSITION",
+        )
+    with pytest.raises(PositionBindingConflictError):
+        await service.bind_position(
+            object(),
+            line_run_epoch_id=11,
+            position_role="NG_POSITION",
+            location_id="ROUGH-LINE-1-OUTLET",
+            location_type="NG_POSITION",
+        )
+
+
+def test_epoch_position_binding_identity_contains_complete_static_topology() -> None:
+    binding = LineRunEpochPositionBinding(
+        line_run_epoch_id=11,
+        position_role="NG_POSITION",
+        location_id="ROUGH-LINE-1-NG",
+        location_type="NG_POSITION",
+    )
+
+    assert binding.identity_tuple() == (11, "NG_POSITION", "ROUGH-LINE-1-NG", "NG_POSITION")

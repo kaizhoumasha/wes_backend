@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Protocol
 
 from src.app.device.contracts import (
@@ -32,6 +33,10 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from src.core.task_queue_gateway import TaskQueueGateway
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownDeviceCommandError(LookupError):
@@ -94,12 +99,14 @@ class DeviceEvidenceService:
         processing_repository: EvidenceProcessingRepositoryPort | None = None,
         command_repository: EvidenceCommandRepositoryPort | None = None,
         epoch_repository: EvidenceEpochRepositoryPort | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
         self._ingress = inbound_evidence_service or default_inbound_evidence_service
         self._processing = processing_repository or inbound_evidence_repository
         self._commands = command_repository or device_command_repository
         self._epochs = epoch_repository or line_run_epoch_repository
+        self._task_queue = task_queue_gateway
 
     async def accept_result(self, result: EcsCommandResult) -> DeviceEvidenceReceipt:
         payload = result.model_dump(mode="json", exclude_unset=True)
@@ -217,6 +224,7 @@ class DeviceEvidenceService:
         """异步完成设备 evidence 的基础验证，业务消费由 FactProcessor 承接。"""
 
         now = timezone.now_for_db()
+        wake_execution = False
         async with self._sessions.begin() as db:
             evidence = await self._processing.claim_next_pending(
                 db,
@@ -226,33 +234,48 @@ class DeviceEvidenceService:
                 return False
             if evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
                 await self._processing.mark_applied(db, evidence, processed_at=now)
-                return True
-            if evidence.command_code is None:
+                wake_execution = True
+            elif evidence.command_code is None:
                 await self._processing.mark_reconciling(db, evidence, processed_at=now)
-                return True
-            command = await self._commands.get_by_command_code(db, evidence.command_code, for_update=True)
-            if command is None or evidence.line_run_epoch_id != command.line_run_epoch_id:
-                await self._processing.mark_reconciling(db, evidence, processed_at=now)
-                return True
-            if command.status not in {
-                CommandStatus.DISPATCHING,
-                CommandStatus.ACKNOWLEDGED,
-                CommandStatus.RECONCILING,
-            }:
-                await self._processing.mark_reconciling(db, evidence, processed_at=now)
-                return True
-            payload = EcsCommandResult.model_validate(evidence.normalized_payload)
-            command.result_evidence_id = evidence.id
-            command.transition_to(
-                CommandStatus.SUCCEEDED if payload.result is EcsCommandResultValue.SUCCESS else CommandStatus.FAILED
-            )
-            if payload.result is EcsCommandResultValue.FAILED:
-                command.failure_code = "DEVICE_REPORTED_FAILURE"
-            command.claim_token = None
-            command.claimed_at = None
-            command.claim_expires_at = None
-            await self._processing.mark_applied(db, evidence, processed_at=now)
+            else:
+                command = await self._commands.get_by_command_code(db, evidence.command_code, for_update=True)
+                if (
+                    command is None
+                    or evidence.line_run_epoch_id != command.line_run_epoch_id
+                    or command.status
+                    not in {
+                        CommandStatus.DISPATCHING,
+                        CommandStatus.ACKNOWLEDGED,
+                        CommandStatus.RECONCILING,
+                    }
+                ):
+                    await self._processing.mark_reconciling(db, evidence, processed_at=now)
+                else:
+                    payload = EcsCommandResult.model_validate(evidence.normalized_payload)
+                    command.result_evidence_id = evidence.id
+                    command.transition_to(
+                        CommandStatus.SUCCEEDED
+                        if payload.result is EcsCommandResultValue.SUCCESS
+                        else CommandStatus.FAILED
+                    )
+                    if payload.result is EcsCommandResultValue.FAILED:
+                        command.failure_code = "DEVICE_REPORTED_FAILURE"
+                    command.claim_token = None
+                    command.claimed_at = None
+                    command.claim_expires_at = None
+                    await self._processing.mark_applied(db, evidence, processed_at=now)
+                    wake_execution = evidence.material_execution_id is not None
+        if wake_execution:
+            self._enqueue_execution_facts()
         return True
+
+    def _enqueue_execution_facts(self) -> None:
+        if self._task_queue is None:
+            return
+        try:
+            self._task_queue.enqueue_execution_facts()
+        except Exception:
+            logger.exception("device.evidence.execution_wake_failed", extra={"event": "execution_wake_failed"})
 
 
 def _validate_result_identity(command: DeviceCommand, result: EcsCommandResult) -> None:

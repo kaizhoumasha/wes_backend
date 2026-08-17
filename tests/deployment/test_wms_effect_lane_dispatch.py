@@ -44,6 +44,7 @@ def test_fulfillment_beat_messages_are_replaceable_database_scan_wakeups() -> No
         "src.celery_app.tasks.transport.submit_transport_tasks_batch": (30.0, {"limit": 100}),
         "src.celery_app.tasks.transport.process_transport_evidence_batch": (10.0, {"limit": 100}),
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": (30.0, {"limit": 100}),
+        "src.celery_app.tasks.transport.publish_transport_outcomes_batch": (10.0, {"limit": 100}),
         CONFIRMATION_TASK: (10.0, {"limit": 100}),
         FULFILLMENT_TASK: (10.0, None),
         "src.celery_app.tasks.workline.scan_wms_effect_status_batch": (10.0, None),

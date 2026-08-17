@@ -1,0 +1,304 @@
+"""粗分机 Transport 与 recovery Fact 的持久因果重建。"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, cast
+
+from wes_plugin_sdk import (
+    RackFace,
+    RecoveryDecision,
+    TransportLeg,
+    TransportResultReadyFact,
+    WmsResultReadyFact,
+)
+from wes_plugin_sdk import (
+    RecoveryDecidedFact as BaseRecoveryDecidedFact,
+)
+
+from deployment._rough_sorter_device_facts import completed_response
+from deployment._rough_sorter_values import (
+    bound_position,
+    canonical_evidence_id,
+    command_position,
+    device_step,
+    position_binding,
+    required_position,
+    required_string,
+    stable_operation_id,
+    strict_object,
+    transport_rack_position,
+)
+from deployment._rough_sorter_wms_facts import build_wms_fact
+from src.app.execution.models import InboundEvidenceKind
+
+if TYPE_CHECKING:
+    from deployment._rough_sorter_persistence import (
+        DeviceCommandRepositoryPort,
+        DeviceReadinessReader,
+        EpochRepositoryPort,
+        EvidenceRepositoryPort,
+        RackPlacementRepositoryPort,
+        RackPositionRepositoryPort,
+        RackReplacementBindingRepositoryPort,
+        WmsConfirmationRepositoryPort,
+    )
+    from deployment._rough_sorter_types import RoughSorterTypes
+    from src.app.execution.models import InboundEvidence, MaterialExecution
+
+
+async def current_rack_id(
+    *,
+    db: object,
+    runtime: Any,
+    rack_positions: RackPositionRepositoryPort,
+    rack_placements: RackPlacementRepositoryPort,
+) -> str:
+    outlet = position_binding(runtime, "PIPELINE_OUTLET")
+    rack_position = await rack_positions.get_by_workline_logic_location(
+        db, workline_code=runtime.epoch.workline_code, logic_location_code=outlet.location_id
+    )
+    if rack_position is None or not rack_position.enabled:
+        raise ValueError("PIPELINE_OUTLET 未精确关联 enabled WorklineRackPosition")
+    placements = await rack_placements.list_active_by_workline_position(
+        db, workline_code=runtime.epoch.workline_code, position_code=rack_position.position_code
+    )
+    if len(placements) != 1:
+        raise ValueError("PIPELINE_OUTLET current rack missing or ambiguous")
+    placement = placements[0]
+    if placement.logic_location_code != outlet.location_id or placement.placement_status != "ARRIVED":
+        raise ValueError("PIPELINE_OUTLET current rack projection 不确定")
+    return required_string(placement.rack_code, "current_rack_id")
+
+
+async def build_transport_fact(
+    *,
+    db: object,
+    fact: TransportResultReadyFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    types: RoughSorterTypes,
+    evidences: EvidenceRepositoryPort,
+    epochs: EpochRepositoryPort,
+    confirmations: WmsConfirmationRepositoryPort,
+    commands: DeviceCommandRepositoryPort,
+    readiness: DeviceReadinessReader,
+    bindings: RackReplacementBindingRepositoryPort,
+    current_rack: Any,
+) -> Any:
+    payload = evidence.normalized_payload
+    if (
+        evidence.transport_task_id != fact.transport_task_id
+        or payload.get("transport_task_id") != fact.transport_task_id
+    ):
+        raise ValueError("Transport fact/evidence task identity 不匹配")
+    client_request_id = required_string(payload.get("client_request_id"), "client_request_id")
+    binding = await bindings.get_by_client_request_id_for_update(db, client_request_id)
+    if binding is None or binding.leg != "NEW_IN":
+        raise ValueError("material Transport fact 只接受持久 NEW_IN binding")
+    source = await evidences.get_by_id_for_update(db, binding.source_evidence_id)
+    if (
+        source is None
+        or source.material_execution_id != execution.id
+        or source.line_run_epoch_id != execution.line_run_epoch_id
+        or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
+    ):
+        raise ValueError("NEW_IN binding source evidence correlation 不匹配")
+    replacement = await build_wms_fact(
+        db=db,
+        fact=WmsResultReadyFact(
+            fact_id=f"evidence:{source.id}",
+            evidence_id=str(source.id),
+            fact_version=required_string(source.contract_version, "source.contract_version"),
+            material_execution_id=execution.execution_code,
+            operation_id=required_string(source.operation_id, "source.operation_id"),
+        ),
+        evidence=source,
+        execution=execution,
+        runtime=runtime,
+        types=types,
+        evidences=evidences,
+        epochs=epochs,
+        confirmations=confirmations,
+        commands=commands,
+        readiness=readiness,
+        current_rack_id=current_rack,
+    )
+    if (
+        type(replacement) is not types.ReplacementPlanDecidedFact
+        or replacement.result is not types.ReplacementResult.READY
+    ):
+        raise ValueError("NEW_IN source evidence 未冻结 READY replacement plan")
+    plan = replacement.new_empty_rack
+    if plan is None:
+        raise ValueError("READY replacement 缺少 NEW_IN plan")
+    status = required_string(payload.get("status"), "transport.status")
+    outcome = {
+        "SUCCEEDED": types.TransportOutcome.SUCCEEDED,
+        "FAILED": types.TransportOutcome.FAILED,
+        "REJECTED": types.TransportOutcome.FAILED,
+        "UNKNOWN": types.TransportOutcome.UNKNOWN,
+    }.get(status)
+    if outcome is None:
+        raise ValueError("Transport outcome status 非法")
+    common: dict[str, Any] = {
+        "fact_id": fact.fact_id,
+        "evidence_id": fact.evidence_id,
+        "fact_version": fact.fact_version,
+        "material_execution_id": fact.material_execution_id,
+        "transport_task_id": fact.transport_task_id,
+        "runtime_snapshot": runtime,
+        "material_trace_id": execution.material_trace_id,
+        "rack_replacement_id": binding.rack_replacement_id,
+        "leg": TransportLeg.NEW_IN,
+        "outcome": outcome,
+        "rack_id": plan.rack_id,
+        "expected_target": plan.target,
+        "expected_face": plan.target_face,
+    }
+    if outcome is not types.TransportOutcome.SUCCEEDED:
+        return types.TransportOutcomePublishedFact(
+            **common, reason_code=required_string(payload.get("reason_code"), "transport.reason_code")
+        )
+    members = payload.get("members")
+    if not isinstance(members, list) or len(members) != 1 or not isinstance(members[0], dict):
+        raise ValueError("NEW_IN success 必须只有一个 rack member outcome")
+    member = cast("dict[str, Any]", members[0])
+    if member.get("object_id") != plan.rack_id or member.get("position_unknown") is not False:
+        raise ValueError("NEW_IN rack member identity/position 不匹配")
+    final = transport_rack_position(member.get("final_position"))
+    admission = await completed_response(
+        db=db,
+        execution=execution,
+        operation="inbound.material.admission_decide@v1",
+        confirmations=confirmations,
+        evidences=evidences,
+    )
+    if admission.get("result") != "ACCEPT":
+        raise ValueError("NEW_IN target request 缺少已完成 admission ACCEPT")
+    return types.TransportOutcomePublishedFact(
+        **common,
+        final_position=final,
+        arrival_face=RackFace(required_string(member.get("arrival_face"), "arrival_face")),
+        actual_rack_id=required_string(member.get("object_id"), "object_id"),
+        source_position=bound_position(runtime, "PIPELINE_OUTLET", execution.material_trace_id),
+        request_operation_id=client_request_id,
+        pkg_id=required_string(admission.get("pkg_id"), "pkg_id"),
+        inbound_admission_id=required_string(admission.get("inbound_admission_id"), "inbound_admission_id"),
+    )
+
+
+async def build_recovery_fact(
+    *,
+    db: object,
+    fact: BaseRecoveryDecidedFact,
+    evidence: InboundEvidence,
+    execution: MaterialExecution,
+    runtime: Any,
+    types: RoughSorterTypes,
+    evidences: EvidenceRepositoryPort,
+    epochs: EpochRepositoryPort,
+    commands: DeviceCommandRepositoryPort,
+    readiness: DeviceReadinessReader,
+) -> Any:
+    if evidence.kind != InboundEvidenceKind.WMS_EVENT or evidence.operation != "inbound.execution.recovery_decided@v1":
+        raise ValueError("Recovery Fact 必须引用 recovery_decided evidence")
+    data = evidence.normalized_payload.get("data")
+    if not isinstance(data, dict):
+        raise TypeError("recovery evidence.data 缺失")
+    causal_id = canonical_evidence_id(data.get("reconciling_evidence_id"), "reconciling_evidence_id")
+    causal = await evidences.get_by_id_for_update(db, causal_id)
+    if (
+        causal is None
+        or causal.material_execution_id != execution.id
+        or causal.line_run_epoch_id != execution.line_run_epoch_id
+    ):
+        raise ValueError("recovery causal evidence correlation 不匹配")
+    common: dict[str, Any] = {
+        "fact_id": fact.fact_id,
+        "evidence_id": fact.evidence_id,
+        "fact_version": fact.fact_version,
+        "material_execution_id": fact.material_execution_id,
+        "recovery_id": fact.recovery_id,
+        "decision": fact.decision,
+        "authoritative_position": fact.authoritative_position,
+        "reason_code": fact.reason_code,
+        "runtime_snapshot": runtime,
+        "material_trace_id": execution.material_trace_id,
+        "reconciling_evidence_id": str(causal_id),
+    }
+    if fact.decision is RecoveryDecision.ABORT:
+        return types.RecoveryDecidedFact(**common, continuation=None)
+    authoritative = required_position(fact.authoritative_position, "authoritative_position")
+    if causal.kind == InboundEvidenceKind.WMS_RESULT:
+        operation = required_string(causal.operation, "causal.operation")
+        return types.RecoveryDecidedFact(
+            **common,
+            continuation=types.RecoveryWmsContinuation(
+                operation=operation,
+                operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
+                evidence_refs=(fact.evidence_id, str(causal_id)),
+                snapshot_refs=(
+                    f"execution:{execution.execution_code}",
+                    f"causal-evidence:{causal_id}",
+                    f"position:{authoritative.location_id}",
+                ),
+            ),
+        )
+    if causal.kind == InboundEvidenceKind.DEVICE_RESULT:
+        command_code = required_string(causal.command_code, "causal.command_code")
+        command = await commands.get_by_command_code(db, command_code, for_update=True)
+        if command is None or command.material_execution_id != execution.id or command.result_evidence_id != causal.id:
+            raise ValueError("recovery causal DeviceCommand correlation 不匹配")
+        params = strict_object(command.params, {"material_trace_id", "source", "target"}, "DeviceCommand params")
+        source = command_position(params["source"], execution.material_trace_id)
+        target = command_position(params["target"], execution.material_trace_id)
+        step, role = device_step(command.task_type, source, target, types)
+        if authoritative == source:
+            binding = await epochs.get_binding_by_role_for_update(
+                db, line_run_epoch_id=execution.line_run_epoch_id, device_role=role
+            )
+            if binding is None:
+                raise ValueError("recovery device binding missing")
+            return types.RecoveryDecidedFact(
+                **common,
+                continuation=types.RecoveryDeviceContinuation(
+                    device_role=role,
+                    task_type=command.task_type,
+                    source=source,
+                    target=target,
+                    device_ready=await readiness.is_ready(db, binding, observed_at=evidence.received_at),
+                ),
+            )
+        if authoritative != target:
+            raise ValueError("authoritative position 不在 causal command frozen topology")
+        operation = {
+            types.DeviceStep.TRANSFER_TO_OUTLET: "inbound.material.target_decide@v1",
+            types.DeviceStep.PLACEMENT_TO_CELL: "inbound.material.placement_report@v1",
+            types.DeviceStep.MEASUREMENT_TO_NG: "inbound.material.ng_placement_report@v1",
+            types.DeviceStep.PLACEMENT_TO_NG: "inbound.material.ng_placement_report@v1",
+        }.get(step)
+        if operation is None:
+            return types.RecoveryDecidedFact(
+                **common,
+                continuation=types.RecoveryDeferContinuation(reason_code="RECOVERY_NEXT_DEVICE_REBUILD_REQUIRED"),
+            )
+        return types.RecoveryDecidedFact(
+            **common,
+            continuation=types.RecoveryWmsContinuation(
+                operation=operation,
+                operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
+                evidence_refs=(fact.evidence_id, str(causal_id)),
+                snapshot_refs=(
+                    f"execution:{execution.execution_code}",
+                    f"causal-command:{command_code}",
+                    f"position:{authoritative.location_id}",
+                ),
+            ),
+        )
+    return types.RecoveryDecidedFact(
+        **common, continuation=types.RecoveryDeferContinuation(reason_code="RECOVERY_CAUSAL_FACT_NOT_ACTIONABLE")
+    )
+
+
+__all__ = ["build_recovery_fact", "build_transport_fact", "current_rack_id"]

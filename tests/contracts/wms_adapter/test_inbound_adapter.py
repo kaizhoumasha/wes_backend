@@ -469,6 +469,21 @@ class _EvidenceService:
         return InboundEvidenceAcceptance(SimpleNamespace(id=501, received_at=kwargs["received_at"]), duplicate=False)
 
 
+class _TaskQueue:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.execution_wakes = 0
+        self.wms_wakes = 0
+        self.error = error
+
+    def enqueue_execution_facts(self) -> None:
+        self.execution_wakes += 1
+        if self.error is not None:
+            raise self.error
+
+    def enqueue_wms_confirmations(self) -> None:
+        self.wms_wakes += 1
+
+
 class _Adapter:
     def __init__(self, result) -> None:  # type: ignore[no-untyped-def]
         self.result = result
@@ -559,11 +574,13 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
             follow_up_plan=None,
         )
     )
+    queue = _TaskQueue()
     service = WmsConfirmationService(
         repository=repository,
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=adapter,
         evidence_service=evidence,  # type: ignore[arg-type]
+        task_queue_gateway=queue,  # type: ignore[arg-type]
     )
 
     processed = await service.dispatch_batch(limit=101, now=now)
@@ -573,6 +590,8 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
     assert all(call["apply_status"] is InboundEvidenceApplyStatus.APPLIED for call in evidence.calls)
     assert all(confirmation.status == WmsConfirmationStatus.COMPLETED for confirmation in confirmations[:100])
     assert confirmations[100].status == WmsConfirmationStatus.PENDING
+    assert queue.execution_wakes == 100
+    assert queue.wms_wakes == 0
 
 
 @pytest.mark.asyncio
@@ -636,6 +655,7 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
             next_attempt_at=now + timedelta(milliseconds=250),
         )
     )
+    queue = _TaskQueue()
     service = WmsConfirmationService(
         repository=repository,
         session_factory=_Sessions(),  # type: ignore[arg-type]
@@ -650,6 +670,7 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
         ),
         evidence_service=evidence,  # type: ignore[arg-type]
         business_wait_planner=planner,
+        task_queue_gateway=queue,  # type: ignore[arg-type]
     )
 
     assert await service.dispatch_batch(now=now) == 1
@@ -662,6 +683,8 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
     assert follow_up.next_attempt_at == now + timedelta(milliseconds=250)
     assert len(evidence.calls) == len(planner.calls) == 1
     assert await service.dispatch_batch(now=now) == 0
+    assert queue.execution_wakes == 1
+    assert queue.wms_wakes == 0
 
     service._adapter = _Adapter(
         SimpleNamespace(

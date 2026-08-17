@@ -38,6 +38,8 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.core.task_queue_gateway import TaskQueueGateway
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,6 +89,7 @@ class InboundEventEvidenceRecorder:
         evidence_service: InboundEvidenceService | None = None,
         material_execution_repository: _MaterialExecutionRepository | None = None,
         inbound_evidence_repository: _InboundEvidenceRepository | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
         self._evidence = evidence_service or InboundEvidenceService()
@@ -98,6 +101,7 @@ class InboundEventEvidenceRecorder:
             "_InboundEvidenceRepository",
             inbound_evidence_repository or default_inbound_evidence_repository,
         )
+        self._task_queue = task_queue_gateway
 
     async def record(
         self,
@@ -142,7 +146,17 @@ class InboundEventEvidenceRecorder:
                     await self._validate_causal_fence(db, execution, envelope.data.reconciling_evidence_id)
                 persisted_code = "DUPLICATE" if result.duplicate else "RECEIVED"
                 timestamp_ms = int(timezone.to_utc(result.evidence.received_at).timestamp() * 1000)
+        if persisted_code in {"RECEIVED", "DUPLICATE"}:
+            self._enqueue_execution_facts()
         return InboundEventPersistenceResult(code=persisted_code, timestamp_ms=timestamp_ms)
+
+    def _enqueue_execution_facts(self) -> None:
+        if self._task_queue is None:
+            return
+        try:
+            self._task_queue.enqueue_execution_facts()
+        except Exception:
+            logger.exception("wms.recovery.execution_wake_failed", extra={"event": "execution_wake_failed"})
 
     async def _validate_causal_fence(
         self,

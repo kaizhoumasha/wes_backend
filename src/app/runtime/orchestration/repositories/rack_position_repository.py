@@ -57,6 +57,25 @@ class WorklineRackPositionRepository(BaseRepository[WorklineRackPosition]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_workline_logic_location(
+        self,
+        db: AsyncSession,
+        *,
+        workline_code: str,
+        logic_location_code: str,
+    ) -> WorklineRackPosition | None:
+        """按 Epoch 冻结逻辑位置精确解析一个工作位；重复配置失败关闭。"""
+
+        columns = cast("Any", WorklineRackPosition).__table__.c
+        result = await db.execute(
+            select(WorklineRackPosition).where(
+                columns.workline_code == workline_code,
+                columns.logic_location_code == logic_location_code,
+                columns.enabled.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
 
 workline_rack_position_repository = WorklineRackPositionRepository()
 

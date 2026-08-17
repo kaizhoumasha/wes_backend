@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from wes_plugin_sdk import (
     CreateDeviceCommand,
     CreateWmsConfirmation,
+    DeferExecution,
     DevicePosition,
-    EpochConfigurationSnapshotReader,
-    ExecutionSnapshotReader,
     PauseForReconciliation,
-    PositionResourceSnapshotReader,
-    Wait,
     handler,
 )
 
 from rough_sorter.facts import DeviceOutcome, DevicePositionConfirmedFact, DeviceStep
-from rough_sorter.handlers._guards import require_epoch, require_execution, require_source, require_target
+from rough_sorter.handlers._guards import require_epoch, require_execution
 
 TARGET_OPERATION = "inbound.material.target_decide@v1"
 PLACEMENT_OPERATION = "inbound.material.placement_report@v1"
@@ -29,22 +24,18 @@ NG_PLACEMENT_OPERATION = "inbound.material.ng_placement_report@v1"
     name="device-position-confirmed",
     supported_versions=("1.0",),
 )
-@dataclass(frozen=True, slots=True)
 class DevicePositionConfirmedHandler:
-    executions: ExecutionSnapshotReader
-    positions: PositionResourceSnapshotReader
-    epochs: EpochConfigurationSnapshotReader
-
     def __call__(
         self,
         fact: DevicePositionConfirmedFact,
-    ) -> tuple[CreateDeviceCommand | CreateWmsConfirmation | PauseForReconciliation | Wait]:
+    ) -> tuple[CreateDeviceCommand | CreateWmsConfirmation | DeferExecution | PauseForReconciliation]:
+        snapshot = fact.runtime_snapshot
         execution = require_execution(
-            self.executions,
+            snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
+        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.outcome is not DeviceOutcome.SUCCESS:
             return (
                 PauseForReconciliation(
@@ -62,7 +53,6 @@ class DevicePositionConfirmedHandler:
         actual_position = fact.actual_position
         if actual_position is None:
             raise ValueError("successful device result requires actual_position")
-        require_source(self.positions, actual_position, material_trace_id=fact.material_trace_id)
         if fact.step is DeviceStep.MEASUREMENT_TO_INLET:
             return self._move_to_outlet(fact)
         if fact.step is DeviceStep.TRANSFER_TO_OUTLET:
@@ -71,10 +61,10 @@ class DevicePositionConfirmedHandler:
             return (self._report_placement(fact),)
         return (self._report_ng(fact),)
 
-    def _move_to_outlet(self, fact: DevicePositionConfirmedFact) -> tuple[CreateDeviceCommand | Wait]:
+    def _move_to_outlet(self, fact: DevicePositionConfirmedFact) -> tuple[CreateDeviceCommand | DeferExecution]:
         if not fact.next_device_ready:
             return (
-                Wait(
+                DeferExecution(
                     material_execution_id=fact.material_execution_id,
                     fact_id=fact.fact_id,
                     reason_code="TRANSFER_DEVICE_NOT_READY",
@@ -84,7 +74,6 @@ class DevicePositionConfirmedHandler:
         if target is None:
             raise ValueError("MEASUREMENT_TO_INLET requires next_position")
         actual_position = self._confirmed_position(fact)
-        require_target(self.positions, target)
         return (
             CreateDeviceCommand(
                 material_execution_id=fact.material_execution_id,
