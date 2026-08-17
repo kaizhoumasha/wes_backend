@@ -56,6 +56,7 @@ from src.app.execution.repositories.wms_confirmation_repository import wms_confi
 from src.app.resource.repositories import rack_placement_repository
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
 from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.transport.repository import TransportRepository
 from src.app.workline.epoch_digest import configuration_digest, topology_digest
 from src.app.workline.models.line_run_epoch import LineRunEpochStatus
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
@@ -93,6 +94,7 @@ class RoughSorterPluginFactFactory:
         rack_replacement_binding_repository: RackReplacementBindingRepositoryPort = (
             rack_replacement_transport_binding_repository
         ),
+        transport_repository: TransportRepository | None = None,
     ) -> None:
         self.types = types
         self._evidences = evidence_repository
@@ -105,6 +107,7 @@ class RoughSorterPluginFactFactory:
         self._rack_positions = rack_position_repository
         self._rack_placements = rack_placement_repository
         self._rack_replacement_bindings = rack_replacement_binding_repository
+        self._transport_tasks = transport_repository or TransportRepository()
 
     async def build(self, db: object, fact: FactReference) -> FactReference:
         evidence = await self._load_evidence(db, fact.evidence_id)
@@ -129,6 +132,7 @@ class RoughSorterPluginFactFactory:
                 confirmations=self._wms_confirmations,
                 commands=self._commands,
                 readiness=self._device_readiness,
+                rack_bindings=self._rack_replacement_bindings,
                 current_rack_id=self._current_rack_id,
             )
         if type(fact) is DeviceResultReadyFact:
@@ -155,12 +159,9 @@ class RoughSorterPluginFactFactory:
                 runtime=runtime,
                 types=self.types,
                 evidences=self._evidences,
-                epochs=self._epochs,
                 confirmations=self._wms_confirmations,
-                commands=self._commands,
-                readiness=self._device_readiness,
                 bindings=self._rack_replacement_bindings,
-                current_rack=self._current_rack_id,
+                transport_tasks=self._transport_tasks,
             )
         if type(fact) is BaseRecoveryDecidedFact:
             return await build_recovery_fact(

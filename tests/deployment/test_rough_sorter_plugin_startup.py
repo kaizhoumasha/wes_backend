@@ -4,13 +4,14 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from rough_sorter.handlers import ReplacementPlanDecidedHandler, TransportOutcomePublishedHandler
+from rough_sorter.handlers import ReplacementPlanDecidedHandler, TargetDecidedHandler, TransportOutcomePublishedHandler
 from wes_plugin_sdk import (
     CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
     DeviceResultReadyFact,
     EvidenceReadyFact,
+    PauseForReconciliation,
     RecoveryDecision,
     TransportResultReadyFact,
     WmsResultReadyFact,
@@ -185,6 +186,31 @@ class _Commands:
     async def list_for_epoch_for_update(self, db: object, *, line_run_epoch_id: int) -> list[DeviceCommand]:
         del db
         return [item for item in self.commands if item.line_run_epoch_id == line_run_epoch_id]
+
+
+class _RackBindings:
+    def __init__(self, *, fenced: bool = False, events: list[str] | None = None) -> None:
+        self.fenced = fenced
+        self.events = events
+        self.locked: list[tuple[int, str]] = []
+
+    async def lock_rack_fence(self, db: object, *, line_run_epoch_id: int, current_rack_id: str) -> None:
+        del db
+        self.locked.append((line_run_epoch_id, current_rack_id))
+        if self.events is not None:
+            self.events.append("rack-fence-lock")
+
+    async def get_old_out_fence_for_update(
+        self, db: object, *, line_run_epoch_id: int, current_rack_id: str
+    ) -> object | None:
+        del db
+        if not self.fenced:
+            return None
+        return SimpleNamespace(
+            line_run_epoch_id=line_run_epoch_id,
+            current_rack_id=current_rack_id,
+            leg="OLD_OUT",
+        )
 
 
 class _RackPositions:
@@ -446,6 +472,8 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
     factory._device_readiness = _Readiness()  # type: ignore[attr-defined]
+    rack_bindings = _RackBindings(fenced=True)
+    factory._rack_replacement_bindings = rack_bindings  # type: ignore[attr-defined]
     base = WmsResultReadyFact("evidence:33", "33", "1.0", "EXEC-21", TARGET_OPERATION_ID)
 
     fact = await factory.build(object(), base)
@@ -456,6 +484,16 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     assert fact.target_assignment_id == "ASSIGN-1"
     assert fact.placement_sequence == 1
     assert fact.device_ready is True
+    assert fact.current_rack_fenced is True
+    assert rack_bindings.locked == [(11, "RACK-1")]
+    assert TargetDecidedHandler()(fact) == (
+        PauseForReconciliation(
+            material_execution_id="EXEC-21",
+            fact_id="evidence:33",
+            reason_code="CURRENT_RACK_ALREADY_REPLACED",
+            affected_resource_ids=("RACK-1",),
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -840,7 +878,16 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
     factory._rack_positions = _RackPositions()  # type: ignore[attr-defined]
     factory._rack_placements = _Placements()  # type: ignore[attr-defined]
-    factory._commands = _Commands(placement_command)  # type: ignore[attr-defined]
+    events: list[str] = []
+
+    class Commands(_Commands):
+        async def list_for_epoch_for_update(self, db: object, *, line_run_epoch_id: int) -> list[DeviceCommand]:
+            events.append("release-snapshot")
+            return await super().list_for_epoch_for_update(db, line_run_epoch_id=line_run_epoch_id)
+
+    rack_bindings = _RackBindings(events=events)
+    factory._commands = Commands(placement_command)  # type: ignore[attr-defined]
+    factory._rack_replacement_bindings = rack_bindings  # type: ignore[attr-defined]
 
     fact = await factory.build(
         object(),
@@ -852,6 +899,8 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     assert tuple(item.command_code for item in fact.release_snapshot.placements) == (placement_command_code,)
     assert fact.release_snapshot.placements[0].confirmation_status.value == "ABSENT"
     assert fact.release_snapshot.placements[0].confirmation_operation_id is None
+    assert rack_bindings.locked == [(11, "RACK-1")]
+    assert events == ["rack-fence-lock", "release-snapshot"]
     assert ReplacementPlanDecidedHandler()(fact) == (
         DeferExecution("EXEC-21", "evidence:36", "RACK_RELEASE_GATE_NOT_CLOSED"),
     )
@@ -926,11 +975,51 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         async def get_by_client_request_id_for_update(self, db: object, client_request_id: str) -> object:
             del db
             assert client_request_id == "019d0000-0000-7000-8000-000000000041"
-            return SimpleNamespace(leg="NEW_IN", source_evidence_id=36, rack_replacement_id="REPLACE-1")
+            return SimpleNamespace(
+                leg="NEW_IN",
+                source_evidence_id=36,
+                rack_replacement_id="REPLACE-1",
+                line_run_epoch_id=11,
+                current_rack_id="RACK-1",
+            )
+
+    class ProjectedNewRack:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def list_active_by_workline_position(
+            self, db: object, *, workline_code: str, position_code: str
+        ) -> list[object]:
+            del db, workline_code, position_code
+            self.calls += 1
+            return [SimpleNamespace(rack_code="RACK-2", logic_location_code="OUTLET-1", placement_status="ARRIVED")]
+
+    transport_task = SimpleNamespace(
+        transport_task_id="TRANSPORT-NEW",
+        client_request_id="019d0000-0000-7000-8000-000000000041",
+        kind="RACK_MOVE",
+        request_json={
+            "client_request_id": "019d0000-0000-7000-8000-000000000041",
+            "caller": {"workline_id": "7", "station_id": None},
+            "rack_id": "RACK-2",
+            "source": {"location_code": "BUFFER-NEW", "kind": "RACK_POSITION"},
+            "target": {"location_code": "OUTLET-1", "kind": "RACK_POSITION"},
+            "target_face": "B",
+            "kind": "RACK_MOVE",
+        },
+    )
+
+    class TransportTasks:
+        async def get_task_by_client_request(self, db: object, client_request_id: str) -> object | None:
+            del db
+            return transport_task if client_request_id == transport_task.client_request_id else None
 
     factory._evidences = _Evidences(transport_evidence, evidence, admission_evidence)  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation, admission_confirmation)  # type: ignore[attr-defined]
     factory._rack_replacement_bindings = Bindings()  # type: ignore[attr-defined]
+    factory._transport_tasks = TransportTasks()  # type: ignore[attr-defined]
+    projected_new_rack = ProjectedNewRack()
+    factory._rack_placements = projected_new_rack  # type: ignore[attr-defined]
 
     transport_fact = await factory.build(
         object(),
@@ -941,6 +1030,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     assert transport_fact.rack_id == "RACK-2"
     assert transport_fact.final_position.location_code == "OUTLET-1"
     assert transport_fact.request_operation_id == "019d0000-0000-7000-8000-000000000041"
+    assert projected_new_rack.calls == 0
 
     decisions = TransportOutcomePublishedHandler()(transport_fact)
 
@@ -998,6 +1088,29 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             "created_at": NOW,
         }
     ]
+
+    transport_evidence.normalized_payload["members"][0]["object_id"] = "RACK-UNPLANNED"  # type: ignore[index]
+    mismatch_fact = await factory.build(
+        object(),
+        TransportResultReadyFact("evidence:38", "38", "1.0", "EXEC-21", "TRANSPORT-NEW"),
+    )
+
+    assert mismatch_fact.actual_rack_id == "RACK-UNPLANNED"
+    assert TransportOutcomePublishedHandler()(mismatch_fact) == (
+        PauseForReconciliation(
+            material_execution_id="EXEC-21",
+            fact_id="evidence:38",
+            reason_code="NEW_RACK_ARRIVAL_MISMATCH",
+            affected_resource_ids=("RACK-2", "RACK-UNPLANNED"),
+        ),
+    )
+
+    transport_task.request_json["target"] = {"location_code": "DRIFTED", "kind": "RACK_POSITION"}
+    with pytest.raises(ValueError, match="TransportTask frozen plan"):
+        await factory.build(
+            object(),
+            TransportResultReadyFact("evidence:38", "38", "1.0", "EXEC-21", "TRANSPORT-NEW"),
+        )
 
 
 @pytest.mark.asyncio

@@ -77,6 +77,12 @@ class RackPlacementRepositoryPort(Protocol):
 
 
 class RackReplacementBindingRepositoryPort(Protocol):
+    async def lock_rack_fence(self, db: Any, *, line_run_epoch_id: int, current_rack_id: str) -> None: ...
+
+    async def get_old_out_fence_for_update(
+        self, db: Any, *, line_run_epoch_id: int, current_rack_id: str
+    ) -> RackReplacementTransportBinding | None: ...
+
     async def get_by_client_request_id_for_update(
         self, db: Any, client_request_id: str
     ) -> RackReplacementTransportBinding | None: ...

@@ -170,8 +170,10 @@ reviewed_content_sha256 = "ac2ef3861762734651a01f65f1b80e605b19aa395509835d12475
 
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
-heavy_tests = []
-reviewed_content_sha256 = "9b309462b85917775b769751efca27149a8e66d3802a02512ba5af635081a690"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py"

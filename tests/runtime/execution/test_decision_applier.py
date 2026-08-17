@@ -120,18 +120,40 @@ class _WmsConfirmations:
 
 class _RackBindings:
     def __init__(self) -> None:
-        self.binding = None
+        self.bindings: dict[tuple[str, str], object] = {}
+        self.locked: list[tuple[str, str]] = []
+        self.rack_locks: list[tuple[int, str]] = []
 
     async def lock_business_identity(self, db: object, rack_replacement_id: str, leg: str) -> None:
-        del db, rack_replacement_id, leg
+        del db
+        self.locked.append((rack_replacement_id, leg))
 
     async def get_by_business_identity_for_update(self, db: object, **kwargs: object) -> object | None:
-        del db, kwargs
-        return self.binding
+        del db
+        return self.bindings.get((str(kwargs["rack_replacement_id"]), str(kwargs["leg"])))
+
+    async def lock_rack_fence(self, db: object, *, line_run_epoch_id: int, current_rack_id: str) -> None:
+        del db
+        self.rack_locks.append((line_run_epoch_id, current_rack_id))
+
+    async def get_old_out_fence_for_update(
+        self, db: object, *, line_run_epoch_id: int, current_rack_id: str
+    ) -> object | None:
+        del db
+        return next(
+            (
+                binding
+                for binding in self.bindings.values()
+                if binding.leg == "OLD_OUT"
+                and binding.line_run_epoch_id == line_run_epoch_id
+                and binding.current_rack_id == current_rack_id
+            ),
+            None,
+        )
 
     async def add(self, db: object, binding: object) -> object:
         del db
-        self.binding = binding
+        self.bindings[binding.business_identity] = binding
         return binding
 
 
@@ -302,8 +324,9 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
         "evidence:31",
         TransportTaskType.RACK_MOVE,
         "REPLACE-1",
-        TransportLeg.NEW_IN,
-        "RACK-NEW",
+        TransportLeg.OLD_OUT,
+        "RACK-CURRENT",
+        "RACK-CURRENT",
         TransportRackPosition("BUFFER"),
         TransportRackPosition("SORTER"),
         RackFace.A,
@@ -311,9 +334,13 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
 
     await applier.apply(object(), _evidence(), _execution(), _fact(), (decision,))
 
-    assert rack_bindings.binding.business_identity == ("REPLACE-1", "NEW_IN")
-    assert transport.calls[0]["client_request_id"] == rack_bindings.binding.client_request_id
-    assert transport.calls[0]["rack_id"] == "RACK-NEW"
+    binding = rack_bindings.bindings[("REPLACE-1", "OLD_OUT")]
+    assert binding.line_run_epoch_id == 11
+    assert binding.current_rack_id == "RACK-CURRENT"
+    assert rack_bindings.locked == [("REPLACE-1", "OLD_OUT")]
+    assert rack_bindings.rack_locks == [(11, "RACK-CURRENT")]
+    assert transport.calls[0]["client_request_id"] == binding.client_request_id
+    assert transport.calls[0]["rack_id"] == "RACK-CURRENT"
     assert transport.calls[0]["caller"].workline_id == "7"
 
 

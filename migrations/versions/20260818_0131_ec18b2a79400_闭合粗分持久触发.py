@@ -61,6 +61,37 @@ def upgrade() -> None:
         ["line_run_epoch_id"],
         schema="wes_biz",
     )
+    op.add_column(
+        "rack_replacement_transport_bindings",
+        sa.Column("line_run_epoch_id", sa.BigInteger(), nullable=False),
+        schema="wes_biz",
+    )
+    op.add_column(
+        "rack_replacement_transport_bindings",
+        sa.Column("current_rack_id", sa.String(length=80), nullable=False),
+        schema="wes_biz",
+    )
+    op.create_foreign_key(
+        "fk_rack_replacement_transport_bindings_epoch",
+        "rack_replacement_transport_bindings",
+        "line_run_epochs",
+        ["line_run_epoch_id"],
+        ["id"],
+        source_schema="wes_biz",
+        referent_schema="wes_biz",
+    )
+    op.create_unique_constraint(
+        "ux_rack_replacement_transport_bindings_epoch_rack_leg",
+        "rack_replacement_transport_bindings",
+        ["line_run_epoch_id", "current_rack_id", "leg"],
+        schema="wes_biz",
+    )
+    op.create_index(
+        "ix_wes_biz_rack_replacement_transport_bindings_epoch_rack",
+        "rack_replacement_transport_bindings",
+        ["line_run_epoch_id", "current_rack_id"],
+        schema="wes_biz",
+    )
 
 
 def downgrade() -> None:

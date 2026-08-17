@@ -116,7 +116,7 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     build_preparation = MagicMock(return_value=preparation_runtime)
     bind_preparation = MagicMock()
     close_preparation = AsyncMock()
-    transport_runtime = SimpleNamespace(service=object(), client=object(), aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(service=object(), repository=object(), client=object(), aclose=AsyncMock())
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
@@ -188,7 +188,7 @@ async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
 
     candidate = object()
     unbind_candidate = AsyncMock()
-    transport_runtime = SimpleNamespace(service=object(), client=object(), aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(service=object(), repository=object(), client=object(), aclose=AsyncMock())
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
@@ -246,6 +246,7 @@ async def test_fastapi_cleanup_contains_each_failure_and_preserves_primary_error
     startup = SimpleNamespace(catalog=object(), compiled_profile=build_compiled_provider_profile())
     transport_runtime = SimpleNamespace(
         service=object(),
+        repository=object(),
         client=object(),
         aclose=AsyncMock(side_effect=RuntimeError("transport cleanup failed")),
     )

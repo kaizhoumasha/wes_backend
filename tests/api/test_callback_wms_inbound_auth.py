@@ -154,7 +154,7 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_compiled_wms_policy
 
     compiled_profile = build_compiled_provider_profile()
     startup = SimpleNamespace(compiled_profile=compiled_profile, catalog=SimpleNamespace())
-    transport_runtime = SimpleNamespace(service=object(), client=object(), aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(service=object(), repository=object(), client=object(), aclose=AsyncMock())
     build_transport_runtime = AsyncMock(return_value=transport_runtime)
     app = FastAPI()
     with (

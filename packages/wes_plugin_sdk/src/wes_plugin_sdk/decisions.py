@@ -138,6 +138,7 @@ class CreateTransportTask:
     task_type: TransportTaskType
     rack_replacement_id: str
     leg: TransportLeg
+    current_rack_id: str
     rack_id: str
     source: TransportRackPosition
     target: TransportRackPosition
@@ -147,6 +148,7 @@ class CreateTransportTask:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.fact_id, "fact_id")
         _required(self.rack_replacement_id, "rack_replacement_id")
+        _required(self.current_rack_id, "current_rack_id")
         _required(self.rack_id, "rack_id")
         if type(self.task_type) is not TransportTaskType or self.task_type is not TransportTaskType.RACK_MOVE:
             raise ValueError("task_type must be RACK_MOVE")
@@ -158,6 +160,8 @@ class CreateTransportTask:
             raise ValueError("target_face must be a RackFace")
         if self.source == self.target:
             raise ValueError("source and target must differ")
+        if self.leg is TransportLeg.OLD_OUT and self.rack_id != self.current_rack_id:
+            raise ValueError("OLD_OUT rack_id must match current_rack_id")
 
     @property
     def business_identity(self) -> tuple[str, TransportLeg]:

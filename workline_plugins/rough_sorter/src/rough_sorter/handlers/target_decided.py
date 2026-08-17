@@ -6,6 +6,7 @@ from wes_plugin_sdk import (
     CreateDeviceCommand,
     CreateWmsConfirmation,
     DeferExecution,
+    DevicePosition,
     PauseForReconciliation,
     Wait,
     handler,
@@ -33,7 +34,7 @@ class TargetDecidedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is TargetResult.WAIT:
             return (self._wait(fact, fact.reason_code or "WMS_TARGET_WAIT"),)
         if fact.result is TargetResult.RECONCILING:
@@ -59,6 +60,12 @@ class TargetDecidedHandler:
                     ),
                 ),
             )
+        target = fact.target_position
+        if target is None:
+            raise ValueError("target action requires target_position")
+        conflict = self._assigned_conflict(fact, target)
+        if conflict is not None:
+            return (conflict,)
         if not fact.device_ready:
             return (
                 DeferExecution(
@@ -67,9 +74,6 @@ class TargetDecidedHandler:
                     reason_code="PLACEMENT_DEVICE_NOT_READY",
                 ),
             )
-        target = fact.target_position
-        if target is None:
-            raise ValueError("target action requires target_position")
         return (
             CreateDeviceCommand(
                 material_execution_id=fact.material_execution_id,
@@ -81,6 +85,27 @@ class TargetDecidedHandler:
                 target=target,
             ),
         )
+
+    @staticmethod
+    def _assigned_conflict(fact: TargetDecidedFact, target: DevicePosition) -> PauseForReconciliation | None:
+        if fact.result is not TargetResult.ASSIGNED:
+            return None
+        if fact.current_rack_fenced:
+            return PauseForReconciliation(
+                material_execution_id=fact.material_execution_id,
+                fact_id=fact.fact_id,
+                reason_code="CURRENT_RACK_ALREADY_REPLACED",
+                affected_resource_ids=(fact.current_rack_id,),
+            )
+        target_rack_id = target.rack_id
+        if target_rack_id != fact.current_rack_id:
+            return PauseForReconciliation(
+                material_execution_id=fact.material_execution_id,
+                fact_id=fact.fact_id,
+                reason_code="TARGET_RACK_MISMATCH",
+                affected_resource_ids=(fact.current_rack_id, target_rack_id or ""),
+            )
+        return None
 
     @staticmethod
     def _wait(fact: TargetDecidedFact, reason_code: str) -> Wait:

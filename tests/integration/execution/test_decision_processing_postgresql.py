@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -35,7 +36,7 @@ from src.app.execution.models import (
     WmsConfirmation,
     WmsConfirmationStatus,
 )
-from src.app.execution.repositories import inbound_evidence_repository
+from src.app.execution.repositories import inbound_evidence_repository, rack_replacement_transport_binding_repository
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.execution.services import (
     DecisionApplier,
@@ -79,6 +80,8 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
             "fk_device_commands_material_execution_id_material_executions",
             "ux_rack_replacement_transport_bindings_business_identity",
             "ux_rack_replacement_transport_bindings_client_request_id",
+            "ux_rack_replacement_transport_bindings_epoch_rack_leg",
+            "fk_rack_replacement_transport_bindings_epoch",
             "ux_line_run_epoch_device_bindings_epoch_device_role",
             *transport_constraint_names,
         }
@@ -108,7 +111,8 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
                         "names": [
                             "ix_inbound_evidences_transport_task",
                             "ix_wes_biz_inbound_evidences_transport_task_id",
-                        ]
+                            "ix_wes_biz_rack_replacement_transport_bindings_epoch_rack",
+                        ],
                     },
                 )
             ).scalars()
@@ -117,6 +121,7 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
     assert transport_indexes == {
         "ix_inbound_evidences_transport_task",
         "ix_wes_biz_inbound_evidences_transport_task_id",
+        "ix_wes_biz_rack_replacement_transport_bindings_epoch_rack",
     }
 
     async with integration_session_factory() as db:
@@ -275,6 +280,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             TransportTaskType.RACK_MOVE,
             rack_replacement_id,
             TransportLeg.NEW_IN,
+            f"RACK-CURRENT-{identity}",
             f"RACK-{identity}",
             TransportRackPosition("BUFFER"),
             TransportRackPosition("SORTER"),
@@ -466,11 +472,11 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
     monkeypatch.setattr(task_queue_gateway, "enqueue_wms_confirmations", lambda: None)
     runtime = build_rough_sorter_runtime(
         session_factory=integration_session_factory,
-        transport_runtime=SimpleNamespace(service=object(), client=object()),  # type: ignore[arg-type]
+        transport_runtime=SimpleNamespace(service=object(), repository=object(), client=object()),  # type: ignore[arg-type]
         device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
     )
 
-    assert await runtime.execution.processor.process_batch() == 1
+    assert await runtime.execution.fact_processor.process_batch() == 1
 
     async with integration_session_factory.begin() as db:
         persisted_evidence = await db.get(InboundEvidence, evidence_id)
@@ -633,6 +639,222 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
         assert snapshot.placements[0].confirmation_operation_id is None
 
         await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
+        await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
+        await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
+        await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
+        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
+        await db.execute(delete(Device).where(Device.id == device_id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_owner", ["replacement", "target"])
+async def test_postgresql_rack_fence_serializes_replacement_and_late_target_across_executions(
+    integration_session_factory,
+    first_owner: str,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 18, 10)
+    first_has_lock = asyncio.Event()
+    contender_started = asyncio.Event()
+    release_first_owner = asyncio.Event()
+    async with integration_session_factory.begin() as db:
+        line = WorkLine(
+            line_code=f"RACK-FENCE-{identity[:12]}",
+            line_name="Rack fence concurrency owner",
+            line_type=LineType.AUTO,
+        )
+        db.add(line)
+        await db.flush()
+        device = Device(
+            device_code=f"RACK-FENCE-DEVICE-{identity[:12]}",
+            device_name="Placement",
+            work_line_id=line.id,
+            device_role="PLACEMENT_DEVICE",
+        )
+        db.add(device)
+        await db.flush()
+        epoch = LineRunEpoch(
+            epoch_code=f"RACK-FENCE-EPOCH-{identity[:12]}",
+            workline_id=line.id,
+            plugin_key="rough_sorter",
+            plugin_version="1.0.0",
+            flow_mode="ROUGH_SORT_INBOUND",
+            topology_digest="a" * 64,
+            configuration_digest="b" * 64,
+            status=LineRunEpochStatus.ACTIVE,
+            started_at=now,
+        )
+        db.add(epoch)
+        await db.flush()
+        device_binding = LineRunEpochDeviceBinding(
+            line_run_epoch_id=epoch.id,
+            device_id=device.id,
+            device_code=device.device_code,
+            device_role="PLACEMENT_DEVICE",
+            contract_key="rough_sorter.placement_device",
+            contract_version="1.0",
+            status_max_age_ms=1_000,
+            command_timeout_ms=5_000,
+        )
+        db.add(device_binding)
+        seeds = [
+            InboundEvidence(
+                kind=InboundEvidenceKind.WMS_RESULT,
+                source_identity=f"RACK-FENCE-SEED-{ordinal}-{identity}",
+                payload_digest=str(ordinal) * 64,
+                normalized_payload={"data": {}},
+                received_at=now,
+                line_run_epoch_id=epoch.id,
+                operation="inbound.material.target_decide@v1",
+                operation_id=f"RACK-FENCE-OP-{ordinal}-{identity}",
+                contract_version="1.0",
+                apply_status=InboundEvidenceApplyStatus.IGNORED,
+            )
+            for ordinal in (1, 2)
+        ]
+        db.add_all(seeds)
+        await db.flush()
+        executions = [
+            MaterialExecution(
+                execution_code=f"RACK-FENCE-EXEC-{ordinal}-{identity}",
+                material_trace_id=f"RACK-FENCE-TRACE-{ordinal}-{identity}",
+                workline_id=line.id,
+                line_run_epoch_id=epoch.id,
+                last_transition_reason="INITIAL_EVIDENCE",
+                last_transition_evidence_id=seed.id,
+                status_changed_at=now,
+            )
+            for ordinal, seed in enumerate(seeds, start=1)
+        ]
+        db.add_all(executions)
+        await db.flush()
+        for seed, execution in zip(seeds, executions, strict=True):
+            seed.material_execution_id = execution.id
+        await db.flush()
+        line_id = line.id
+        device_id = device.id
+        device_code = device.device_code
+        epoch_id = epoch.id
+        binding_id = device_binding.id
+        seed_ids = tuple(seed.id for seed in seeds)
+        execution_ids = tuple(execution.id for execution in executions)
+        target_trace_id = executions[0].material_trace_id
+
+    async def create_target_command(rack_id: str, suffix: str, *, hold_lock: bool = False) -> bool:
+        async with integration_session_factory.begin() as db:
+            if not hold_lock:
+                contender_started.set()
+            await rack_replacement_transport_binding_repository.lock_rack_fence(
+                db,
+                line_run_epoch_id=epoch_id,
+                current_rack_id=rack_id,
+            )
+            fence = await rack_replacement_transport_binding_repository.get_old_out_fence_for_update(
+                db,
+                line_run_epoch_id=epoch_id,
+                current_rack_id=rack_id,
+            )
+            if fence is not None:
+                return False
+            db.add(
+                DeviceCommand(
+                    command_code=f"019d0000-0000-7000-8000-{suffix}",
+                    device_code=device_code,
+                    device_binding_id=binding_id,
+                    line_run_epoch_id=epoch_id,
+                    execution_ref_type="PLUGIN_DECISION",
+                    execution_ref_id=f"evidence:{seed_ids[0]}:execution:{execution_ids[0]}:CREATE_DEVICE_COMMAND:{suffix}",
+                    material_execution_id=execution_ids[0],
+                    contract_key="rough_sorter.placement_device",
+                    contract_version="1.0",
+                    task_type="PICK_AND_PUT",
+                    params={
+                        "material_trace_id": target_trace_id,
+                        "source": {
+                            "location_id": "OUTLET-1",
+                            "location_type": "PIPELINE_OUTLET",
+                            "material_trace_id": target_trace_id,
+                        },
+                        "target": {
+                            "location_id": f"CELL-{suffix}",
+                            "location_type": "RACK_CELL",
+                            "material_trace_id": target_trace_id,
+                            "rack_id": rack_id,
+                            "rack_slot_code": f"SLOT-{suffix}",
+                            "bin_id": f"BIN-{suffix}",
+                            "bin_cell_id": f"CELL-{suffix}",
+                        },
+                    },
+                    deadline_at=now + timedelta(minutes=1),
+                    payload_digest=suffix[0] * 64,
+                    status=CommandStatus.PENDING,
+                )
+            )
+            await db.flush()
+            if hold_lock:
+                first_has_lock.set()
+                await release_first_owner.wait()
+            return True
+
+    async def create_old_out_fence(*, hold_lock: bool = False) -> None:
+        async with integration_session_factory.begin() as db:
+            if not hold_lock:
+                contender_started.set()
+            await rack_replacement_transport_binding_repository.lock_rack_fence(
+                db,
+                line_run_epoch_id=epoch_id,
+                current_rack_id="RACK-1",
+            )
+            db.add(
+                RackReplacementTransportBinding(
+                    rack_replacement_id=f"REPLACE-{identity}",
+                    leg="OLD_OUT",
+                    line_run_epoch_id=epoch_id,
+                    current_rack_id="RACK-1",
+                    client_request_id=f"019d0000-0000-7000-8001-{identity[:12]}",
+                    source_evidence_id=seed_ids[1],
+                )
+            )
+            await db.flush()
+            if hold_lock:
+                first_has_lock.set()
+                await release_first_owner.wait()
+
+    if first_owner == "replacement":
+        first = asyncio.create_task(create_old_out_fence(hold_lock=True))
+        await first_has_lock.wait()
+        contender = asyncio.create_task(create_target_command("RACK-1", "000000000101"))
+    else:
+        first = asyncio.create_task(create_target_command("RACK-1", "000000000102", hold_lock=True))
+        await first_has_lock.wait()
+        contender = asyncio.create_task(create_old_out_fence())
+    await contender_started.wait()
+    release_first_owner.set()
+    first_result, contender_result = await asyncio.gather(first, contender)
+    if first_owner == "replacement":
+        assert first_result is None and contender_result is False
+    else:
+        assert first_result is True and contender_result is None
+
+    assert await create_target_command("RACK-1", "000000000103") is False
+    assert await create_target_command("RACK-2", "000000000104") is True
+
+    async with integration_session_factory.begin() as db:
+        commands = list(
+            (
+                await db.execute(
+                    select(DeviceCommand).where(DeviceCommand.line_run_epoch_id == epoch_id).order_by(DeviceCommand.id)
+                )
+            ).scalars()
+        )
+        r1_commands = [command for command in commands if command.params["target"]["rack_id"] == "RACK-1"]
+        assert len(r1_commands) == (0 if first_owner == "replacement" else 1)
+        assert [command.params["target"]["rack_id"] for command in commands][-1] == "RACK-2"
+        await db.execute(delete(DeviceCommand).where(DeviceCommand.line_run_epoch_id == epoch_id))
+        await db.execute(
+            delete(RackReplacementTransportBinding).where(RackReplacementTransportBinding.line_run_epoch_id == epoch_id)
+        )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
         await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         DeviceReadinessReader,
         EpochRepositoryPort,
         EvidenceRepositoryPort,
+        RackReplacementBindingRepositoryPort,
         WmsConfirmationRepositoryPort,
     )
     from deployment._rough_sorter_types import RoughSorterTypes
@@ -51,6 +52,7 @@ async def build_wms_fact(
     confirmations: WmsConfirmationRepositoryPort,
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
+    rack_bindings: RackReplacementBindingRepositoryPort,
     current_rack_id: Any,
 ) -> Any:
     operation = required_string(evidence.operation, "evidence.operation")
@@ -90,6 +92,7 @@ async def build_wms_fact(
             types=types,
             epochs=epochs,
             readiness=readiness,
+            rack_bindings=rack_bindings,
         )
     if operation in {"inbound.material.placement_report@v1", "inbound.material.ng_placement_report@v1"}:
         return build_completion_fact(
@@ -106,6 +109,7 @@ async def build_wms_fact(
             types=types,
             commands=commands,
             confirmations=confirmations,
+            rack_bindings=rack_bindings,
             current_rack_id=current_rack_id,
         )
     raise ValueError(f"rough sorter 不支持 WMS operation: {operation}")
@@ -225,6 +229,7 @@ async def build_replacement_fact(
     types: RoughSorterTypes,
     commands: DeviceCommandRepositoryPort,
     confirmations: WmsConfirmationRepositoryPort,
+    rack_bindings: RackReplacementBindingRepositoryPort,
     current_rack_id: Any,
 ) -> Any:
     request_data = cast("dict[str, Any]", request["data"])
@@ -252,6 +257,11 @@ async def build_replacement_fact(
         return types.ReplacementPlanDecidedFact(
             **common, reason_code=required_string(response_data.get("reason_code"), "reason_code")
         )
+    await rack_bindings.lock_rack_fence(
+        db,
+        line_run_epoch_id=execution.line_run_epoch_id,
+        current_rack_id=rack_id,
+    )
     release = await rack_release_snapshot(
         db=db,
         execution=execution,
@@ -363,6 +373,7 @@ async def build_target_fact(
     types: RoughSorterTypes,
     epochs: EpochRepositoryPort,
     readiness: DeviceReadinessReader,
+    rack_bindings: RackReplacementBindingRepositoryPort,
 ) -> Any:
     request_data = cast("dict[str, Any]", request["data"])
     validate_wms_execution(request_data, execution)
@@ -375,6 +386,21 @@ async def build_target_fact(
     ).model_dump(mode="json", exclude_none=True)
     response_data = cast("dict[str, Any]", response["data"])
     result = types.TargetResult(required_string(response_data.get("result"), "target.result"))
+    current_rack_fenced = False
+    if result is types.TargetResult.ASSIGNED:
+        await rack_bindings.lock_rack_fence(
+            db,
+            line_run_epoch_id=execution.line_run_epoch_id,
+            current_rack_id=rack_id,
+        )
+        current_rack_fenced = (
+            await rack_bindings.get_old_out_fence_for_update(
+                db,
+                line_run_epoch_id=execution.line_run_epoch_id,
+                current_rack_id=rack_id,
+            )
+            is not None
+        )
     persisted = await epochs.get_binding_by_role_for_update(
         db, line_run_epoch_id=execution.line_run_epoch_id, device_role="PLACEMENT_DEVICE"
     )
@@ -392,12 +418,11 @@ async def build_target_fact(
         "result": result,
         "source_position": source,
         "current_rack_id": rack_id,
+        "current_rack_fenced": current_rack_fenced,
         "device_ready": device_ready,
     }
     if result is types.TargetResult.ASSIGNED:
         target = wire_position(response_data.get("target_position"), execution.material_trace_id, "RACK_CELL")
-        if target.rack_id != rack_id:
-            raise ValueError("assigned target rack 与 current rack 不匹配")
         return types.TargetDecidedFact(
             **common,
             target_position=target,

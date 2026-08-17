@@ -112,7 +112,7 @@ def build_rough_sorter_runtime(
 ) -> RoughSorterDeploymentRuntime:
     """Web/Celery 共用的唯一静态 rough sorter 运行时装配。"""
 
-    factory = RoughSorterPluginFactFactory()
+    factory = RoughSorterPluginFactFactory(transport_repository=transport_runtime.repository)
     plugin_binding = StaticPluginBinding(
         (
             PluginRuntimeBinding(

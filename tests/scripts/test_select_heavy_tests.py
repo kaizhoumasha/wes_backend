@@ -95,7 +95,6 @@ SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
 PLUGIN_SDK_REVIEWED_NONE_PATHS = (
     "packages/wes_plugin_sdk/pyproject.toml",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py",
-    "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py",
@@ -359,6 +358,15 @@ def test_plugin_sdk_assets_are_exact_reviewed_none_mappings() -> None:
         assert mapping.heavy_tests == ()
         assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
         assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
+def test_plugin_sdk_transport_decisions_select_real_transport_and_execution_owners() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"], config) == [
+        TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+    ]
 
 
 def test_plugin_sdk_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) -> None:

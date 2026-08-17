@@ -16,10 +16,35 @@ class RackReplacementTransportBindingRepository(BaseRepository[RackReplacementTr
         super().__init__(RackReplacementTransportBinding)
 
     async def lock_business_identity(self, db: AsyncSession, rack_replacement_id: str, leg: str) -> None:
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": f"{rack_replacement_id}:{leg}"},
         )
+
+    async def lock_rack_fence(self, db: AsyncSession, *, line_run_epoch_id: int, current_rack_id: str) -> None:
+        _ = await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": f"rack-fence:{line_run_epoch_id}:{current_rack_id}"},
+        )
+
+    async def get_old_out_fence_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        current_rack_id: str,
+    ) -> RackReplacementTransportBinding | None:
+        columns = cast("Any", RackReplacementTransportBinding).__table__.c
+        result = await db.execute(
+            select(RackReplacementTransportBinding)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.current_rack_id == current_rack_id,
+                columns.leg == "OLD_OUT",
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
 
     async def get_by_business_identity_for_update(
         self,

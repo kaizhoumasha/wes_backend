@@ -69,6 +69,8 @@ class WmsConfirmationServicePort(Protocol):
 
 
 class RackBindingRepositoryPort(Protocol):
+    async def lock_rack_fence(self, db: object, *, line_run_epoch_id: int, current_rack_id: str) -> None: ...
+
     async def lock_business_identity(self, db: object, rack_replacement_id: str, leg: str) -> None: ...
 
     async def get_by_business_identity_for_update(
@@ -94,7 +96,7 @@ class MaterialExecutionServicePort(Protocol):
     async def transition(self, db: object, execution: MaterialExecution, **kwargs: object) -> MaterialExecution: ...
 
 
-_DECISION_DISCRIMINATORS = {
+_DECISION_DISCRIMINATORS: dict[type[object], str] = {
     Wait: "WAIT",
     CreateDeviceCommand: "CREATE_DEVICE_COMMAND",
     CreateWmsConfirmation: "CREATE_WMS_CONFIRMATION",
@@ -116,7 +118,7 @@ def decision_digest(decisions: tuple[object, ...]) -> str:
             {
                 "decision_type": discriminator,
                 "ordinal": ordinal,
-                "payload": asdict(decision),
+                "payload": asdict(cast("Any", decision)),
             }
         )
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
@@ -137,11 +139,13 @@ class DecisionApplier:
         clock: Any = timezone.now_for_db,
         uuid_factory: Any = new_uuid7,
     ) -> None:
-        self._epochs = epoch_repository or line_run_epoch_repository
+        self._epochs: EpochRepositoryPort = epoch_repository or line_run_epoch_repository
         self._device_commands = device_command_service
         self._wms_confirmations = wms_confirmation_service
         self._wms_requests = wms_request_resolver
-        self._rack_bindings = rack_binding_repository or rack_replacement_transport_binding_repository
+        self._rack_bindings: RackBindingRepositoryPort = (
+            rack_binding_repository or rack_replacement_transport_binding_repository
+        )
         self._transport = transport_service
         self._executions = material_execution_service
         self._clock = clock
@@ -237,7 +241,7 @@ class DecisionApplier:
             "source": asdict(decision.source),
             "target": asdict(decision.target),
         }
-        await self._device_commands.create_command_in_session(
+        _ = await self._device_commands.create_command_in_session(
             db,
             DeviceCommandRequest(
                 device_code=binding.device_code,
@@ -281,6 +285,11 @@ class DecisionApplier:
         decision: CreateTransportTask,
     ) -> None:
         leg = decision.leg.value
+        await self._rack_bindings.lock_rack_fence(
+            db,
+            line_run_epoch_id=execution.line_run_epoch_id,
+            current_rack_id=decision.current_rack_id,
+        )
         await self._rack_bindings.lock_business_identity(db, decision.rack_replacement_id, leg)
         binding = await self._rack_bindings.get_by_business_identity_for_update(
             db,
@@ -293,11 +302,13 @@ class DecisionApplier:
                 RackReplacementTransportBinding(
                     rack_replacement_id=decision.rack_replacement_id,
                     leg=leg,
+                    line_run_epoch_id=execution.line_run_epoch_id,
+                    current_rack_id=decision.current_rack_id,
                     client_request_id=self._uuid_factory(),
                     source_evidence_id=cast("int", evidence.id),
                 ),
             )
-        await self._transport.move_rack_in_session(
+        _ = await self._transport.move_rack_in_session(
             db,
             client_request_id=binding.client_request_id,
             caller=TransportCaller(workline_id=str(execution.workline_id)),
@@ -318,7 +329,7 @@ class DecisionApplier:
         *,
         refresh_reconciliation_fence: bool = False,
     ) -> None:
-        await self._executions.transition(
+        _ = await self._executions.transition(
             db,
             execution,
             target=target,

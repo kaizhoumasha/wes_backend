@@ -74,6 +74,7 @@ def _target_fact(result: TargetResult, **overrides: object) -> TargetDecidedFact
         "result": result,
         "source_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
         "current_rack_id": "rack-current",
+        "current_rack_fenced": False,
         "device_ready": True,
     }
     values.update(overrides)
@@ -370,6 +371,59 @@ def test_assigned_target_creates_placement_pick_and_put() -> None:
             material_trace_id=TRACE_ID,
             source=outlet,
             target=cell,
+        ),
+    )
+
+
+def test_assigned_target_for_fenced_current_rack_reconciles_without_device_command() -> None:
+    fact = _target_fact(
+        TargetResult.ASSIGNED,
+        current_rack_fenced=True,
+        target_position=_position(
+            "cell-1",
+            "RACK_CELL",
+            rack_id="rack-current",
+            rack_slot_code="slot-1",
+            bin_id="bin-1",
+            bin_cell_id="cell-1",
+        ),
+        target_assignment_id="assignment-1",
+        placement_sequence=1,
+        expected_height_mm="2.0",
+    )
+
+    assert TargetDecidedHandler()(fact) == (
+        PauseForReconciliation(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="CURRENT_RACK_ALREADY_REPLACED",
+            affected_resource_ids=("rack-current",),
+        ),
+    )
+
+
+def test_assigned_target_for_different_actual_rack_reconciles_without_device_command() -> None:
+    fact = _target_fact(
+        TargetResult.ASSIGNED,
+        target_position=_position(
+            "cell-2",
+            "RACK_CELL",
+            rack_id="rack-actual",
+            rack_slot_code="slot-2",
+            bin_id="bin-2",
+            bin_cell_id="cell-2",
+        ),
+        target_assignment_id="assignment-2",
+        placement_sequence=2,
+        expected_height_mm="2.0",
+    )
+
+    assert TargetDecidedHandler()(fact) == (
+        PauseForReconciliation(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="TARGET_RACK_MISMATCH",
+            affected_resource_ids=("rack-current", "rack-actual"),
         ),
     )
 

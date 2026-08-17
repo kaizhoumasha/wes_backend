@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, cast
 
 from wes_plugin_sdk import (
@@ -9,7 +10,6 @@ from wes_plugin_sdk import (
     RecoveryDecision,
     TransportLeg,
     TransportResultReadyFact,
-    WmsResultReadyFact,
 )
 from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
@@ -22,16 +22,22 @@ from deployment._rough_sorter_values import (
     command_position,
     device_step,
     position_binding,
+    rack_move_plan,
     required_position,
     required_string,
     stable_operation_id,
     strict_object,
     transport_rack_position,
 )
-from deployment._rough_sorter_wms_facts import build_wms_fact
+from deployment._rough_sorter_wms_facts import validate_wms_execution
 from src.app.execution.models import InboundEvidenceKind
+from src.app.transport.contracts import MoveRackRequest, RackPosition, TransportCaller
+from src.app.transport.contracts import RackFace as CoreRackFace
+from src.app.wms_adapter.inbound_wire import parse_outbound_request, parse_outbound_response
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from deployment._rough_sorter_persistence import (
         DeviceCommandRepositoryPort,
         DeviceReadinessReader,
@@ -44,6 +50,7 @@ if TYPE_CHECKING:
     )
     from deployment._rough_sorter_types import RoughSorterTypes
     from src.app.execution.models import InboundEvidence, MaterialExecution
+    from src.app.transport.repository import TransportRepository
 
 
 async def current_rack_id(
@@ -79,12 +86,9 @@ async def build_transport_fact(
     runtime: Any,
     types: RoughSorterTypes,
     evidences: EvidenceRepositoryPort,
-    epochs: EpochRepositoryPort,
     confirmations: WmsConfirmationRepositoryPort,
-    commands: DeviceCommandRepositoryPort,
-    readiness: DeviceReadinessReader,
     bindings: RackReplacementBindingRepositoryPort,
-    current_rack: Any,
+    transport_tasks: TransportRepository,
 ) -> Any:
     payload = evidence.normalized_payload
     if (
@@ -96,6 +100,8 @@ async def build_transport_fact(
     binding = await bindings.get_by_client_request_id_for_update(db, client_request_id)
     if binding is None or binding.leg != "NEW_IN":
         raise ValueError("material Transport fact 只接受持久 NEW_IN binding")
+    if binding.line_run_epoch_id != execution.line_run_epoch_id:
+        raise ValueError("NEW_IN binding Epoch correlation 不匹配")
     source = await evidences.get_by_id_for_update(db, binding.source_evidence_id)
     if (
         source is None
@@ -104,34 +110,52 @@ async def build_transport_fact(
         or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
     ):
         raise ValueError("NEW_IN binding source evidence correlation 不匹配")
-    replacement = await build_wms_fact(
-        db=db,
-        fact=WmsResultReadyFact(
-            fact_id=f"evidence:{source.id}",
-            evidence_id=str(source.id),
-            fact_version=required_string(source.contract_version, "source.contract_version"),
-            material_execution_id=execution.execution_code,
-            operation_id=required_string(source.operation_id, "source.operation_id"),
-        ),
-        evidence=source,
-        execution=execution,
-        runtime=runtime,
-        types=types,
-        evidences=evidences,
-        epochs=epochs,
-        confirmations=confirmations,
-        commands=commands,
-        readiness=readiness,
-        current_rack_id=current_rack,
+    source_operation_id = required_string(source.operation_id, "source.operation_id")
+    confirmation = await confirmations.get_by_identity_for_update(db, source.operation, source_operation_id)
+    if (
+        confirmation is None
+        or confirmation.material_execution_id != execution.id
+        or confirmation.response_evidence_id != source.id
+    ):
+        raise ValueError("NEW_IN source confirmation correlation 不匹配")
+    request = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)
+    if request.get("operation") != source.operation or request.get("operation_id") != source_operation_id:
+        raise ValueError("NEW_IN source confirmation identity 不匹配")
+    request_data = cast("dict[str, Any]", request["data"])
+    validate_wms_execution(request_data, execution)
+    if required_string(request_data.get("current_rack_id"), "current_rack_id") != binding.current_rack_id:
+        raise ValueError("NEW_IN binding current rack identity 不匹配")
+    response = parse_outbound_response(source.operation, 200, source.normalized_payload).model_dump(
+        mode="json", exclude_none=True
+    )
+    response_data = cast("dict[str, Any]", response["data"])
+    if required_string(response_data.get("result"), "replacement.result") != "READY":
+        raise ValueError("NEW_IN source evidence 未冻结 READY replacement plan")
+    if required_string(response_data.get("rack_replacement_id"), "rack_replacement_id") != binding.rack_replacement_id:
+        raise ValueError("NEW_IN binding replacement identity 不匹配")
+    old_plan = rack_move_plan(response_data.get("old_loaded_rack"), types)
+    if old_plan.rack_id != binding.current_rack_id:
+        raise ValueError("NEW_IN binding old rack identity 不匹配")
+    plan = rack_move_plan(response_data.get("new_empty_rack"), types)
+    transport_task = await transport_tasks.get_task_by_client_request(cast("AsyncSession", db), client_request_id)
+    expected_request = asdict(
+        MoveRackRequest(
+            client_request_id=client_request_id,
+            caller=TransportCaller(workline_id=str(execution.workline_id)),
+            rack_id=plan.rack_id,
+            source=RackPosition(plan.source.location_code),
+            target=RackPosition(plan.target.location_code),
+            target_face=CoreRackFace(plan.target_face.value),
+        )
     )
     if (
-        type(replacement) is not types.ReplacementPlanDecidedFact
-        or replacement.result is not types.ReplacementResult.READY
+        transport_task is None
+        or transport_task.transport_task_id != fact.transport_task_id
+        or transport_task.client_request_id != client_request_id
+        or transport_task.kind != "RACK_MOVE"
+        or transport_task.request_json != expected_request
     ):
-        raise ValueError("NEW_IN source evidence 未冻结 READY replacement plan")
-    plan = replacement.new_empty_rack
-    if plan is None:
-        raise ValueError("READY replacement 缺少 NEW_IN plan")
+        raise ValueError("NEW_IN TransportTask frozen plan 与 WMS replacement plan 不匹配")
     status = required_string(payload.get("status"), "transport.status")
     outcome = {
         "SUCCEEDED": types.TransportOutcome.SUCCEEDED,
@@ -164,8 +188,8 @@ async def build_transport_fact(
     if not isinstance(members, list) or len(members) != 1 or not isinstance(members[0], dict):
         raise ValueError("NEW_IN success 必须只有一个 rack member outcome")
     member = cast("dict[str, Any]", members[0])
-    if member.get("object_id") != plan.rack_id or member.get("position_unknown") is not False:
-        raise ValueError("NEW_IN rack member identity/position 不匹配")
+    if member.get("position_unknown") is not False:
+        raise ValueError("NEW_IN rack member position 不确定")
     final = transport_rack_position(member.get("final_position"))
     admission = await completed_response(
         db=db,

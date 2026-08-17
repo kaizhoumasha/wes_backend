@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sqlalchemy import CheckConstraint, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -18,6 +18,11 @@ class RackReplacementTransportBinding(EnterpriseMixin, DataTableMixin, table=Tru
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         CheckConstraint("leg IN ('OLD_OUT', 'NEW_IN')", name="rack_replacement_transport_binding_leg_valid"),
+        ForeignKeyConstraint(
+            ["line_run_epoch_id"],
+            ["wes_biz.line_run_epochs.id"],
+            name="fk_rack_replacement_transport_bindings_epoch",
+        ),
         UniqueConstraint(
             "rack_replacement_id",
             "leg",
@@ -27,17 +32,34 @@ class RackReplacementTransportBinding(EnterpriseMixin, DataTableMixin, table=Tru
             "client_request_id",
             name="ux_rack_replacement_transport_bindings_client_request_id",
         ),
+        UniqueConstraint(
+            "line_run_epoch_id",
+            "current_rack_id",
+            "leg",
+            name="ux_rack_replacement_transport_bindings_epoch_rack_leg",
+        ),
+        Index(
+            "ix_wes_biz_rack_replacement_transport_bindings_epoch_rack",
+            "line_run_epoch_id",
+            "current_rack_id",
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 
     rack_replacement_id: str = Field(min_length=1, max_length=160)
     leg: str = Field(min_length=1, max_length=20)
+    line_run_epoch_id: int
+    current_rack_id: str = Field(min_length=1, max_length=80)
     client_request_id: str = Field(min_length=1, max_length=120)
     source_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", index=True)
 
     @property
     def business_identity(self) -> tuple[str, str]:
         return self.rack_replacement_id, self.leg
+
+    @property
+    def rack_fence_identity(self) -> tuple[int, str]:
+        return self.line_run_epoch_id, self.current_rack_id
 
 
 __all__ = ["RackReplacementTransportBinding"]
