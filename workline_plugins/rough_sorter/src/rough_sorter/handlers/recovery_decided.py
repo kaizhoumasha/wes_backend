@@ -8,10 +8,10 @@ from wes_plugin_sdk import (
     CompleteExecution,
     CreateDeviceCommand,
     CreateWmsConfirmation,
+    DeferExecution,
     EpochConfigurationSnapshotReader,
     ExecutionSnapshotReader,
     PositionResourceSnapshotReader,
-    Wait,
     handler,
 )
 
@@ -57,7 +57,7 @@ class RecoveryDecidedHandler:
     def __call__(
         self,
         fact: RecoveryDecidedFact,
-    ) -> tuple[CompleteExecution | CreateDeviceCommand | CreateWmsConfirmation | Wait]:
+    ) -> tuple[CompleteExecution | CreateDeviceCommand | CreateWmsConfirmation | DeferExecution]:
         execution = require_execution(
             self.executions,
             material_execution_id=fact.material_execution_id,
@@ -84,7 +84,7 @@ class RecoveryDecidedHandler:
             return (self._continue_device(fact, continuation),)
         if type(continuation) is RecoveryDeferContinuation:
             return (
-                Wait(
+                DeferExecution(
                     material_execution_id=fact.material_execution_id,
                     fact_id=fact.fact_id,
                     reason_code=continuation.reason_code,
@@ -114,14 +114,14 @@ class RecoveryDecidedHandler:
         self,
         fact: RecoveryDecidedFact,
         continuation: RecoveryDeviceContinuation,
-    ) -> CreateDeviceCommand | Wait:
+    ) -> CreateDeviceCommand | DeferExecution:
         if continuation.source != fact.authoritative_position:
             raise ValueError("device continuation source must equal authoritative position")
         expected = _DEVICE_RECOVERY_TOPOLOGY.get((continuation.source.location_type, continuation.target.location_type))
         if expected != (continuation.device_role, continuation.task_type):
             raise ValueError("device continuation does not match approved topology")
         if not continuation.device_ready:
-            return Wait(
+            return DeferExecution(
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 reason_code=f"{continuation.device_role}_NOT_READY",

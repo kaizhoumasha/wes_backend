@@ -306,7 +306,7 @@ def test_beat_rejects_missing_required_schedule_or_route(tmp_path) -> None:
 
     settings_source = _settings(write_provider_profile(tmp_path / "provider.yaml"))
     missing_schedule = dict(config.beat_schedule)
-    missing_schedule.pop("dispatch-wms-data-outbox-batch")
+    missing_schedule.pop("dispatch-wms-confirmations-batch")
     with pytest.raises(ValueError, match="Beat required schedule"):
         module.build_wms_deployment_attestation(
             role="beat",
@@ -317,7 +317,7 @@ def test_beat_rejects_missing_required_schedule_or_route(tmp_path) -> None:
         )
 
     missing_route = dict(config.task_routes)
-    missing_route.pop("src.celery_app.tasks.workline.scan_wms_effect_status_batch")
+    missing_route.pop("src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch")
     with pytest.raises(ValueError, match="wms-fulfillment"):
         module.build_wms_deployment_attestation(
             role="beat",

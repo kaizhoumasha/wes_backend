@@ -76,11 +76,21 @@ class FactBuilder:
         data = evidence.normalized_payload.get("data")
         if not isinstance(data, dict):
             raise TypeError("recovery evidence 缺少 data")
+        execution_status = MaterialExecutionStatus(execution.status)
+        reconciling_evidence_id = data.get("reconciling_evidence_id")
+        initial_fence = execution_status is MaterialExecutionStatus.RECONCILING and reconciling_evidence_id == str(
+            execution.last_transition_evidence_id
+        )
+        deferred_fence = (
+            execution_status is MaterialExecutionStatus.HOLD
+            and execution.last_transition_evidence_id == evidence.id
+            and isinstance(reconciling_evidence_id, str)
+            and reconciling_evidence_id != str(evidence.id)
+        )
         if (
-            MaterialExecutionStatus(execution.status) is not MaterialExecutionStatus.RECONCILING
+            not (initial_fence or deferred_fence)
             or data.get("material_execution_id") != execution.execution_code
             or data.get("material_trace_id") != execution.material_trace_id
-            or data.get("reconciling_evidence_id") != str(execution.last_transition_evidence_id)
         ):
             raise ValueError("reconciling_evidence_id does not match the current execution fence")
         decision = RecoveryDecision(_required_string(data.get("decision"), "decision"))

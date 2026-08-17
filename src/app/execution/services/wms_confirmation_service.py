@@ -19,7 +19,7 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceConflictResult,
     InboundEvidenceService,
 )
-from src.core.uuid7 import new_uuid7
+from src.core.uuid7 import is_uuid7, new_uuid7
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -468,7 +468,12 @@ class WmsConfirmationService:
         try:
             if type(follow_up) is not WmsBusinessWaitFollowUp or not isinstance(follow_up.request_payload, dict):
                 return False
-            _ = _immutable_request(cast("dict[str, Any]", follow_up.request_payload))
+            original_payload, _ = _immutable_request(confirmation.request_payload)
+            follow_up_payload, _ = _immutable_request(cast("dict[str, Any]", follow_up.request_payload))
+            original_payload.pop("operation_id", None)
+            original_timestamp = original_payload.pop("timestamp", None)
+            follow_up_payload.pop("operation_id", None)
+            follow_up_timestamp = follow_up_payload.pop("timestamp", None)
             return (
                 isinstance(retry_after_ms, int)
                 and not isinstance(retry_after_ms, bool)
@@ -477,9 +482,16 @@ class WmsConfirmationService:
                 and follow_up.operation == confirmation.operation
                 and isinstance(follow_up.operation_id, str)
                 and bool(follow_up.operation_id.strip())
+                and len(follow_up.operation_id) <= 160
+                and is_uuid7(follow_up.operation_id)
                 and follow_up.operation_id != confirmation.operation_id
                 and follow_up.request_payload.get("operation") == follow_up.operation
                 and follow_up.request_payload.get("operation_id") == follow_up.operation_id
+                and isinstance(original_timestamp, int)
+                and not isinstance(original_timestamp, bool)
+                and isinstance(follow_up_timestamp, int)
+                and not isinstance(follow_up_timestamp, bool)
+                and follow_up_payload == original_payload
                 and isinstance(follow_up.next_attempt_at, datetime)
                 and follow_up.next_attempt_at == received_at + timedelta(milliseconds=retry_after_ms)
                 and follow_up.next_attempt_at < confirmation.deadline_at

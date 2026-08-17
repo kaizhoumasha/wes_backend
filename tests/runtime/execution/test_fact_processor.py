@@ -138,6 +138,8 @@ class _ExecutionService:
     async def transition(self, db: object, execution: MaterialExecution, **kwargs: object) -> MaterialExecution:
         del db
         execution.status = kwargs["target"]
+        execution.last_transition_reason = kwargs["reason_code"]
+        execution.last_transition_evidence_id = kwargs["evidence_id"]
         self.transitions.append(kwargs["target"])
         return execution
 
@@ -217,6 +219,16 @@ def _handle_recovery(fact: RecoveryDecidedFact) -> tuple[Wait, ...]:
     return (Wait(fact.material_execution_id, fact.fact_id, "RECOVERY_ABORTED"),)
 
 
+_RECOVERY_CONTINUATION_READY = False
+
+
+@handler(fact_type=RecoveryDecidedFact, name="recovery-continuation", supported_versions=("1.0",))
+def _handle_recovery_continuation(fact: RecoveryDecidedFact) -> tuple[DeferExecution | Wait, ...]:
+    if not _RECOVERY_CONTINUATION_READY:
+        return (DeferExecution(fact.material_execution_id, fact.fact_id, "RECOVERY_CONTINUATION_NOT_READY"),)
+    return (Wait(fact.material_execution_id, fact.fact_id, "RECOVERY_CONTINUED"),)
+
+
 def _evidence(**changes: object) -> InboundEvidence:
     values: dict[str, object] = {
         "id": 31,
@@ -231,6 +243,52 @@ def _evidence(**changes: object) -> InboundEvidence:
     }
     values.update(changes)
     return InboundEvidence(**values)
+
+
+def _recovery_continuation_processor() -> tuple[FactProcessor, InboundEvidence, MaterialExecution, _Applier]:
+    evidence = _evidence(
+        kind=InboundEvidenceKind.WMS_EVENT,
+        operation="inbound.execution.recovery_decided@v1",
+        operation_id="OP-RECOVERY-CONTINUATION",
+        material_execution_id=21,
+        normalized_payload={
+            "data": {
+                "recovery_id": "REC-CONTINUATION",
+                "material_execution_id": "EXEC-1",
+                "material_trace_id": "TRACE-1",
+                "reconciling_evidence_id": "30",
+                "decision": "CONTINUE",
+                "authoritative_position": {"type": "HANDOFF_POSITION", "location_code": "LINE-OUT"},
+                "reason_code": "POSITION_CONFIRMED",
+            }
+        },
+    )
+    executions = _Executions()
+    execution = MaterialExecution(
+        id=21,
+        execution_code="EXEC-1",
+        material_trace_id="TRACE-1",
+        workline_id=7,
+        line_run_epoch_id=11,
+        status=MaterialExecutionStatus.RECONCILING,
+        last_transition_reason="TRANSPORT_UNKNOWN",
+        last_transition_evidence_id=30,
+        status_changed_at=NOW,
+    )
+    executions.execution = execution
+    applier = _Applier()
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=_plugins(_handle_recovery_continuation),
+        decision_applier=applier,
+        evidence_repository=_Evidences(evidence),
+        execution_repository=executions,
+        epoch_repository=_Epochs(),
+        material_execution_service=_ExecutionService(executions),
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-recovery-continuation",
+    )
+    return processor, evidence, execution, applier
 
 
 def _plugins(target: object = _handle_initial, *, correlator: object | None = _Correlator()) -> StaticPluginBinding:
@@ -556,6 +614,48 @@ async def test_recovery_fact_targets_exactly_one_execution() -> None:
     assert await processor.process_batch() == 1
     assert len(applier.calls) == 1
     assert evidence.published_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_recovery_defer_rebuilds_and_applies_the_same_evidence_once_when_ready() -> None:
+    global _RECOVERY_CONTINUATION_READY
+    _RECOVERY_CONTINUATION_READY = False
+    processor, evidence, execution, applier = _recovery_continuation_processor()
+    try:
+        assert await processor.process_batch() == 1
+        assert MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.HOLD
+        assert execution.last_transition_evidence_id == evidence.id
+        assert evidence.published_at is None
+        assert evidence.decision_digest is None
+        assert evidence.decision_attempt_count == 0
+
+        _RECOVERY_CONTINUATION_READY = True
+        assert await processor.process_batch() == 1
+        assert evidence.published_at == NOW
+        assert len(applier.calls) == 1
+        assert await processor.process_batch() == 0
+        assert len(applier.calls) == 1
+    finally:
+        _RECOVERY_CONTINUATION_READY = False
+
+
+@pytest.mark.asyncio
+async def test_recovery_defer_does_not_cross_a_new_last_transition_conflict() -> None:
+    global _RECOVERY_CONTINUATION_READY
+    _RECOVERY_CONTINUATION_READY = False
+    processor, evidence, execution, applier = _recovery_continuation_processor()
+    try:
+        assert await processor.process_batch() == 1
+        execution.last_transition_evidence_id = 32
+
+        _RECOVERY_CONTINUATION_READY = True
+        assert await processor.process_batch() == 0
+        assert evidence.published_at is None
+        assert evidence.decision_digest is None
+        assert evidence.decision_attempt_count == 1
+        assert applier.calls == []
+    finally:
+        _RECOVERY_CONTINUATION_READY = False
 
 
 @pytest.mark.asyncio

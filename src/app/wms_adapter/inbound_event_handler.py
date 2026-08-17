@@ -150,9 +150,11 @@ class InboundEventEvidenceRecorder:
         execution: MaterialExecution,
         reconciling_evidence_id: str,
     ) -> None:
-        if not reconciling_evidence_id.isascii() or not reconciling_evidence_id.isdigit():
+        causal_id: object = execution.last_transition_evidence_id
+        if reconciling_evidence_id != str(causal_id):
             raise InboundEventCorrelationError(reconciling_evidence_id)
-        causal_id = int(reconciling_evidence_id)
+        if not isinstance(causal_id, int) or causal_id < 1:
+            raise InboundEventCorrelationError(reconciling_evidence_id)
         causal = await self._evidences.get_by_id_for_update(db, causal_id)
         if (
             MaterialExecutionStatus(execution.status) is not MaterialExecutionStatus.RECONCILING

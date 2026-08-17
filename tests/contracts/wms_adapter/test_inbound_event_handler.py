@@ -253,6 +253,8 @@ async def test_recorder_maps_stale_reconciling_evidence_to_execution_correlation
     [
         pytest.param(_body(material_execution_id="MISSING"), id="missing-execution"),
         pytest.param(_body(reconciling_evidence_id="not-an-evidence-id"), id="invalid-causal-identity"),
+        pytest.param(_body(reconciling_evidence_id="030"), id="noncanonical-leading-zero"),
+        pytest.param(_body(reconciling_evidence_id="9" * 10_000), id="oversized-causal-identity"),
     ],
 )
 async def test_recorder_maps_other_execution_correlation_failures_to_conflict(body: bytes) -> None:

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.app.wms_integration.deployment_attestation import _beat_role_facts
 from src.celery_app.app import celery_app
 from src.celery_app.config import beat_schedule, task_routes
 from src.celery_app.tasks import wms_confirmation
@@ -21,6 +22,19 @@ def test_wms_confirmation_dispatcher_has_dedicated_route_and_ten_second_beat() -
         "kwargs": {"limit": 100},
         "options": {"expires": 10.0},
     }
+
+
+@pytest.mark.parametrize("missing_owner", ["schedule", "route"])
+def test_wms_confirmation_dispatcher_is_required_by_deployment_attestation(missing_owner: str) -> None:
+    schedules = dict(beat_schedule)
+    routes = dict(task_routes)
+    if missing_owner == "schedule":
+        schedules.pop("dispatch-wms-confirmations-batch")
+    else:
+        routes.pop(TASK_NAME)
+
+    with pytest.raises(ValueError, match=r"Beat required schedule|wms-fulfillment"):
+        _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
 
 
 def test_wms_confirmation_dispatcher_uses_runtime_owner_and_fixed_batch(monkeypatch: pytest.MonkeyPatch) -> None:

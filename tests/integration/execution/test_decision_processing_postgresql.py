@@ -548,6 +548,104 @@ async def test_postgresql_decision_claim_skip_locked_does_not_reissue_to_second_
 
 
 @pytest.mark.asyncio
+async def test_postgresql_transport_outcomes_are_claimed_in_unknown_causal_order_across_sessions(
+    integration_session_factory,
+) -> None:
+    identity = uuid4().hex
+    now = datetime(2026, 8, 17, 12)
+    prefix = f"CLAIM-TRANSPORT-ORDER-{identity}"
+    async with integration_session_factory.begin() as db:
+        line, epoch = await _claim_epoch(db, identity, now)
+        seed = InboundEvidence(
+            kind=InboundEvidenceKind.DEVICE_EVENT,
+            source_identity=f"{prefix}-SEED",
+            payload_digest="1" * 64,
+            normalized_payload={"data": {}},
+            received_at=now,
+            line_run_epoch_id=epoch.id,
+            device_code="CLAIM-DEVICE",
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.IGNORED,
+        )
+        db.add(seed)
+        await db.flush()
+        execution = MaterialExecution(
+            execution_code=f"{prefix}-EXEC",
+            material_trace_id=f"{prefix}-TRACE",
+            workline_id=line.id,
+            line_run_epoch_id=epoch.id,
+            last_transition_reason="INITIAL_EVIDENCE",
+            last_transition_evidence_id=seed.id,
+            status_changed_at=now,
+        )
+        db.add(execution)
+        await db.flush()
+        task_id = f"{prefix}-TASK"
+        unknown = InboundEvidence(
+            kind=InboundEvidenceKind.TRANSPORT_RESULT,
+            source_identity=f"transport:{task_id}:outcome:1",
+            payload_digest="2" * 64,
+            normalized_payload={"transport_task_id": task_id, "outcome_version": 1, "status": "UNKNOWN"},
+            received_at=now,
+            line_run_epoch_id=epoch.id,
+            material_execution_id=execution.id,
+            transport_task_id=task_id,
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        succeeded = InboundEvidence(
+            kind=InboundEvidenceKind.TRANSPORT_RESULT,
+            source_identity=f"transport:{task_id}:outcome:2",
+            payload_digest="3" * 64,
+            normalized_payload={"transport_task_id": task_id, "outcome_version": 2, "status": "SUCCEEDED"},
+            received_at=now + timedelta(microseconds=1),
+            line_run_epoch_id=epoch.id,
+            material_execution_id=execution.id,
+            transport_task_id=task_id,
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        )
+        db.add_all([unknown, succeeded])
+        await db.flush()
+        evidence_ids = (unknown.id, succeeded.id)
+        execution_id = execution.id
+
+    first_session = integration_session_factory()
+    second_session = integration_session_factory()
+    try:
+        async with first_session.begin():
+            first = await inbound_evidence_repository.claim_decision_batch(
+                first_session,
+                now=now,
+                claim_token="claim-unknown",
+                claim_expires_at=now + timedelta(seconds=30),
+                limit=1,
+            )
+            async with second_session.begin():
+                second = await inbound_evidence_repository.claim_decision_batch(
+                    second_session,
+                    now=now,
+                    claim_token="claim-determinate",
+                    claim_expires_at=now + timedelta(seconds=30),
+                    limit=1,
+                )
+                assert [item.id for item in first] == [evidence_ids[0]]
+                assert second == []
+    finally:
+        await first_session.close()
+        await second_session.close()
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                update(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)).values(material_execution_id=None)
+            )
+            await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{prefix}%")))
+            await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
+            await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
+
+
+@pytest.mark.asyncio
 async def test_postgresql_decision_claim_respects_live_lease_and_recovers_expired_lease(
     integration_session_factory,
 ) -> None:

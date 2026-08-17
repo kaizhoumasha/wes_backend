@@ -59,6 +59,10 @@ _REQUIRED_BEAT_SCHEDULES = (
         "dispatch-wms-fulfillment-outbox-batch",
         "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
     ),
+    (
+        "dispatch-wms-confirmations-batch",
+        "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
+    ),
     ("scan-wms-effect-status-batch", "src.celery_app.tasks.workline.scan_wms_effect_status_batch"),
     ("submit-transport-tasks-batch", "src.celery_app.tasks.transport.submit_transport_tasks_batch"),
     (
@@ -74,6 +78,7 @@ _REQUIRED_FULFILLMENT_ROUTES = (
     "src.celery_app.tasks.transport.submit_transport_tasks_batch",
     "src.celery_app.tasks.transport.process_transport_evidence_batch",
     "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+    "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
 )
 
 

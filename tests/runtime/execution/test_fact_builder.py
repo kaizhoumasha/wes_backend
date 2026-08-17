@@ -200,6 +200,14 @@ def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() 
             execution,
         )
 
+    execution.status = MaterialExecutionStatus.HOLD
+    execution.last_transition_evidence_id = evidence.id
+    assert _builder().build(evidence, execution) == fact
+
+    execution.last_transition_evidence_id = 32
+    with pytest.raises(ValueError, match="current execution fence"):
+        _builder().build(evidence, execution)
+
 
 @pytest.mark.parametrize(
     ("evidence", "execution"),

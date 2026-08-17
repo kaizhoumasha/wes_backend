@@ -409,6 +409,52 @@ async def test_business_wait_completion_and_follow_up_are_committed_together(int
 
 
 @pytest.mark.asyncio
+async def test_invalid_business_wait_follow_up_preserves_response_evidence_before_reconciling(
+    integration_session_factory,
+) -> None:
+    now = datetime(2026, 8, 16)
+    async with integration_session_factory.begin() as db:
+        execution = await _seed_execution(db)
+        original_operation_id = new_uuid7()
+        payload = _request(original_operation_id, execution.execution_code)
+        confirmation = WmsConfirmation(
+            operation=ADMISSION_OPERATION,
+            operation_id=original_operation_id,
+            material_execution_id=execution.id,
+            request_digest=_digest(payload),
+            request_payload=payload,
+            deadline_at=now + timedelta(minutes=5),
+            created_at=now,
+        )
+        db.add(confirmation)
+        await db.flush()
+        confirmation_id = confirmation.id
+        execution_id = execution.id
+
+    service = WmsConfirmationService(
+        repository=WmsConfirmationRepository(),
+        session_factory=integration_session_factory,
+        adapter=_WaitDispatchAdapter(),
+        business_wait_planner=WmsInboundBusinessWaitPlanner(operation_id_factory=lambda: "not-a-uuid7"),
+    )
+
+    assert await service.dispatch_batch(limit=1, now=now) == 1
+    async with integration_session_factory() as db:
+        rows = list(
+            (
+                await db.execute(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution_id))
+            ).scalars()
+        )
+        assert len(rows) == 1
+        original = rows[0]
+        assert original.id == confirmation_id
+        assert original.status == WmsConfirmationStatus.RECONCILING
+        assert original.response_result == "WAIT"
+        assert original.response_evidence_id is not None
+        assert await db.get(InboundEvidence, original.response_evidence_id) is not None
+
+
+@pytest.mark.asyncio
 async def test_inflight_identity_conflict_fences_late_http_response(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
     now = datetime(2026, 8, 16)
     deadline_at = now + timedelta(minutes=5)

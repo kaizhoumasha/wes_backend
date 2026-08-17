@@ -1029,6 +1029,7 @@ heavy_tests = [
 source_glob = "src/celery_app/tasks/wms_confirmation.py"
 heavy_tests = [
     "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_wms_deployment_attestation.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
 

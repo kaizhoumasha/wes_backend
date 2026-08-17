@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import postgresql, sqlite
 
 from src.app.execution.models import InboundEvidence
 from src.app.execution.repositories.inbound_evidence_repository import InboundEvidenceRepository
@@ -67,6 +67,24 @@ async def test_decision_claim_and_partial_index_exclude_foundation_device_result
     assert "wes_biz.line_run_epochs.status = 'ACTIVE'" in sql
     assert "inbound_evidences.decision_next_attempt_at IS NULL" in sql
     assert "FOR UPDATE OF inbound_evidences SKIP LOCKED" in sql
+
+    sqlite_sql = str(
+        db.statement.compile(  # type: ignore[union-attr]
+            dialect=sqlite.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    for compiled in (sql, sqlite_sql):
+        assert "earlier_transport_outcomes" in compiled
+        assert "transport_task_id" in compiled
+        assert "material_execution_id" in compiled
+        assert "outcome_version" in compiled
+        assert "UNKNOWN" in compiled
+        assert "NOT (EXISTS" in compiled
+    assert "CAST((earlier_transport_outcomes.normalized_payload ->> 'status') AS VARCHAR) = 'UNKNOWN'" in sql
+    assert "CAST((earlier_transport_outcomes.normalized_payload ->> 'outcome_version') AS INTEGER)" in sql
+    assert "JSON_EXTRACT(earlier_transport_outcomes.normalized_payload, '$.\"status\"') = 'UNKNOWN'" in sqlite_sql
+    assert "JSON_EXTRACT(earlier_transport_outcomes.normalized_payload, '$.\"outcome_version\"')" in sqlite_sql
 
     index = next(
         item for item in InboundEvidence.__table__.indexes if item.name == "ix_inbound_evidences_decision_eligible"

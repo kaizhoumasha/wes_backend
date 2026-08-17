@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import and_, not_, select, text
+from sqlalchemy import and_, exists, not_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.models.inbound_evidence import (
@@ -105,6 +105,8 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         limit: int,
     ) -> list[InboundEvidence]:
         columns = cast("Any", InboundEvidence).__table__.c
+        earlier_transport_outcomes = InboundEvidence.__table__.alias("earlier_transport_outcomes")
+        earlier_columns = earlier_transport_outcomes.c
         epoch_columns = cast("Any", LineRunEpoch).__table__.c
         result = await db.execute(
             select(InboundEvidence)
@@ -117,6 +119,19 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
                     and_(
                         columns.kind == InboundEvidenceKind.DEVICE_RESULT,
                         columns.material_execution_id.is_(None),
+                    )
+                ),
+                not_(
+                    exists(
+                        select(1).where(
+                            earlier_columns.kind == InboundEvidenceKind.TRANSPORT_RESULT,
+                            earlier_columns.transport_task_id == columns.transport_task_id,
+                            earlier_columns.material_execution_id == columns.material_execution_id,
+                            earlier_columns.published_at.is_(None),
+                            earlier_columns.normalized_payload["status"].as_string() == "UNKNOWN",
+                            earlier_columns.normalized_payload["outcome_version"].as_integer()
+                            < columns.normalized_payload["outcome_version"].as_integer(),
+                        )
                     )
                 ),
                 (columns.decision_next_attempt_at.is_(None) | (columns.decision_next_attempt_at <= now)),

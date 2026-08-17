@@ -38,6 +38,7 @@ class TransportOutcomePublishedHandler:
             self.executions,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
+            allow_reconciling=True,
         )
         require_epoch(self.epochs, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.outcome is not TransportOutcome.SUCCEEDED:

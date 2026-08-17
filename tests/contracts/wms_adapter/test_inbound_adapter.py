@@ -674,7 +674,18 @@ def test_wms_business_wait_planner_uses_new_identity_timestamp_and_received_time
 
 
 @pytest.mark.asyncio
-async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed() -> None:
+@pytest.mark.parametrize(
+    "invalid_case",
+    [
+        "identity-format",
+        "identity-overlong",
+        "missing-field",
+        "cross-execution",
+        "cross-trace",
+        "extra-business-field",
+    ],
+)
+async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(invalid_case: str) -> None:
     now = datetime(2026, 8, 16, tzinfo=UTC)
     confirmation = _confirmation(1, now)
     confirmation.request_digest = _digest(confirmation.request_payload)
@@ -686,10 +697,28 @@ async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed()
         "timestamp": 2,
         "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
     }
+    follow_up_operation_id = OTHER_OPERATION_ID
+    follow_up_payload = json.loads(json.dumps(confirmation.request_payload))
+    follow_up_payload["operation_id"] = follow_up_operation_id
+    follow_up_payload["timestamp"] = 3
+    if invalid_case == "identity-format":
+        follow_up_operation_id = "not-a-uuid"
+        follow_up_payload["operation_id"] = follow_up_operation_id
+    elif invalid_case == "identity-overlong":
+        follow_up_operation_id = "7" * 161
+        follow_up_payload["operation_id"] = follow_up_operation_id
+    elif invalid_case == "missing-field":
+        del follow_up_payload["data"]["workline_code"]
+    elif invalid_case == "cross-execution":
+        follow_up_payload["data"]["material_execution_id"] = "EXEC-OTHER"
+    elif invalid_case == "cross-trace":
+        follow_up_payload["data"]["material_trace_id"] = "TRACE-OTHER"
+    else:
+        follow_up_payload["data"]["unexpected_business_field"] = "MUST_NOT_CHANGE"
     invalid = WmsBusinessWaitFollowUp(
         operation=confirmation.operation,
-        operation_id=confirmation.operation_id,
-        request_payload=confirmation.request_payload,
+        operation_id=follow_up_operation_id,
+        request_payload=follow_up_payload,
         next_attempt_at=now + timedelta(milliseconds=250),
     )
     service = WmsConfirmationService(

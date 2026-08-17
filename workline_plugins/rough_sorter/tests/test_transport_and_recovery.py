@@ -14,18 +14,19 @@ from conftest import (
 from wes_plugin_sdk import (
     CompleteExecution,
     CreateWmsConfirmation,
+    DeferExecution,
     DevicePosition,
     ExecutionLifecycle,
     PauseForReconciliation,
     RackFace,
     TransportLeg,
     TransportRackPosition,
-    Wait,
 )
 
 from rough_sorter.facts import (
     RecoveryDecidedFact,
     RecoveryDecision,
+    RecoveryDeferContinuation,
     RecoveryDeviceContinuation,
     RecoveryWmsContinuation,
     TransportOutcome,
@@ -62,9 +63,11 @@ def _transport_fact(leg: TransportLeg, outcome: TransportOutcome, **overrides: o
     return TransportOutcomePublishedFact(**values)
 
 
-def _transport_handler() -> TransportOutcomePublishedHandler:
+def _transport_handler(
+    *, lifecycle: ExecutionLifecycle = ExecutionLifecycle.RUNNING
+) -> TransportOutcomePublishedHandler:
     return TransportOutcomePublishedHandler(
-        FakeExecutionReader(execution_snapshot()),
+        FakeExecutionReader(execution_snapshot(lifecycle=lifecycle)),
         FakePositionReader(
             (
                 position_snapshot(
@@ -108,6 +111,43 @@ def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack()
             ),
         ),
     )
+
+
+@pytest.mark.parametrize("outcome", [TransportOutcome.SUCCEEDED, TransportOutcome.FAILED])
+def test_determinate_new_rack_outcome_can_cross_verified_unknown_reconciling_fence(
+    outcome: TransportOutcome,
+) -> None:
+    values: dict[str, object] = {
+        "fact_id": "transport:task-NEW_IN:outcome:2",
+        "evidence_id": "transport-evidence:task-NEW_IN:outcome:2",
+        "reason_code": "NEW_RACK_MOVE_FAILED",
+    }
+    if outcome is TransportOutcome.SUCCEEDED:
+        values.update(
+            final_position=TransportRackPosition("work-position"),
+            arrival_face=RackFace.B,
+            actual_rack_id="rack-new",
+            source_position=_outlet(),
+            request_operation_id="stable-target-request-after-unknown-v1",
+            pkg_id="pkg-1",
+            inbound_admission_id="admission-1",
+            reason_code=None,
+        )
+    fact = _transport_fact(TransportLeg.NEW_IN, outcome, **values)
+
+    decisions = _transport_handler(lifecycle=ExecutionLifecycle.RECONCILING)(fact)
+
+    if outcome is TransportOutcome.SUCCEEDED:
+        assert isinstance(decisions[0], CreateWmsConfirmation)
+    else:
+        assert decisions == (
+            PauseForReconciliation(
+                material_execution_id=EXECUTION_ID,
+                fact_id=fact.fact_id,
+                reason_code="NEW_RACK_MOVE_FAILED",
+                affected_resource_ids=("rack-new",),
+            ),
+        )
 
 
 def test_new_rack_success_with_wrong_actual_rack_reconciles_without_requesting_target() -> None:
@@ -443,7 +483,35 @@ def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
     )
 
     assert handler(fact) == (
-        Wait(material_execution_id=EXECUTION_ID, fact_id=fact.fact_id, reason_code="TRANSFER_DEVICE_NOT_READY"),
+        DeferExecution(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="TRANSFER_DEVICE_NOT_READY",
+        ),
+    )
+
+
+def test_recovery_explicit_defer_keeps_the_same_recovery_evidence_rebuildable() -> None:
+    fact = RecoveryDecidedFact(
+        fact_id="recovery:defer",
+        evidence_id="recovery-defer-evidence",
+        fact_version="1.0",
+        material_execution_id=EXECUTION_ID,
+        recovery_id="recovery-defer",
+        material_trace_id=TRACE_ID,
+        decision=RecoveryDecision.CONTINUE,
+        reason_code="POSITION_CONFIRMED",
+        authoritative_position=_outlet(),
+        reconciling_evidence_id="causal-unknown-evidence",
+        continuation=RecoveryDeferContinuation(reason_code="RELEASE_GATE_CLOSED"),
+    )
+
+    assert _recovery_handler()(fact) == (
+        DeferExecution(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            reason_code="RELEASE_GATE_CLOSED",
+        ),
     )
 
 

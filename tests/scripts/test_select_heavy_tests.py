@@ -422,6 +422,7 @@ def test_wms_confirmation_dispatcher_and_schema_cutover_select_exact_owners() ->
 
     assert select_heavy_tests(["src/celery_app/tasks/wms_confirmation.py"], config) == [
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+        WMS_DEPLOYMENT_HEAVY_TEST,
         WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
     ]
     assert select_heavy_tests(
