@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,6 +10,7 @@ from wes_plugin_sdk import (
     DeviceResultReadyFact,
     EvidenceReadyFact,
     FactReference,
+    PauseForReconciliation,
     RecoveryDecidedFact,
     Wait,
     handler,
@@ -22,8 +23,9 @@ from src.app.execution.plugin_binding import (
     PluginRuntimeBinding,
     StaticPluginBinding,
 )
-from src.app.execution.services.decision_applier import decision_digest
+from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.execution.services.fact_processor import FactProcessor
+from src.app.execution.services.material_execution_service import MaterialExecutionService
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
 
 NOW = datetime(2026, 8, 17, 10, 0, 0)
@@ -112,6 +114,15 @@ class _Executions:
         return (
             self.execution if self.execution is not None and self.execution.execution_code == execution_code else None
         )
+
+
+class _ExecutionFlushRepository:
+    def __init__(self) -> None:
+        self.flush_count = 0
+
+    async def flush(self, db: object) -> None:
+        del db
+        self.flush_count += 1
 
 
 class _ExecutionService:
@@ -245,7 +256,9 @@ def _evidence(**changes: object) -> InboundEvidence:
     return InboundEvidence(**values)
 
 
-def _recovery_continuation_processor() -> tuple[FactProcessor, InboundEvidence, MaterialExecution, _Applier]:
+def _recovery_continuation_processor(
+    *, execution: MaterialExecution | None = None
+) -> tuple[FactProcessor, InboundEvidence, MaterialExecution, _Applier]:
     evidence = _evidence(
         kind=InboundEvidenceKind.WMS_EVENT,
         operation="inbound.execution.recovery_decided@v1",
@@ -264,7 +277,7 @@ def _recovery_continuation_processor() -> tuple[FactProcessor, InboundEvidence, 
         },
     )
     executions = _Executions()
-    execution = MaterialExecution(
+    execution = execution or MaterialExecution(
         id=21,
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
@@ -654,6 +667,48 @@ async def test_recovery_defer_does_not_cross_a_new_last_transition_conflict() ->
         assert evidence.decision_digest is None
         assert evidence.decision_attempt_count == 1
         assert applier.calls == []
+    finally:
+        _RECOVERY_CONTINUATION_READY = False
+
+
+@pytest.mark.asyncio
+async def test_determinate_pause_refreshes_reconciling_fence_before_late_recovery_is_applied() -> None:
+    global _RECOVERY_CONTINUATION_READY
+    _RECOVERY_CONTINUATION_READY = True
+    processor, recovery_evidence, execution, recovery_applier = _recovery_continuation_processor()
+    determinate_evidence = _evidence(
+        id=32,
+        kind=InboundEvidenceKind.TRANSPORT_RESULT,
+        source_identity="transport:T-1:outcome:2",
+        material_execution_id=21,
+    )
+    fact = FactReference("transport:T-1:outcome:2", "32", "1.0", "EXEC-1")
+    decision = PauseForReconciliation("EXEC-1", fact.fact_id, "DETERMINATE_MISMATCH", ("rack-new",))
+    repository = _ExecutionFlushRepository()
+    transition_times = iter((NOW + timedelta(seconds=1), NOW + timedelta(seconds=2)))
+    pause_applier = DecisionApplier(
+        epoch_repository=object(),
+        device_command_service=object(),
+        wms_confirmation_service=object(),
+        wms_request_resolver=object(),
+        rack_binding_repository=object(),
+        transport_service=object(),
+        material_execution_service=MaterialExecutionService(repository),
+        clock=lambda: next(transition_times),
+    )
+    try:
+        await pause_applier.apply(object(), determinate_evidence, execution, fact, (decision,))
+        await pause_applier.apply(object(), determinate_evidence, execution, fact, (decision,))
+
+        assert await processor.process_batch() == 0
+        assert MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.RECONCILING
+        assert execution.last_transition_reason == "DETERMINATE_MISMATCH"
+        assert execution.last_transition_evidence_id == 32
+        assert execution.status_changed_at == NOW + timedelta(seconds=1)
+        assert repository.flush_count == 2
+        assert recovery_evidence.published_at is None
+        assert recovery_evidence.decision_attempt_count == 1
+        assert recovery_applier.calls == []
     finally:
         _RECOVERY_CONTINUATION_READY = False
 

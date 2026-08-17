@@ -119,14 +119,25 @@ class MaterialExecutionService:
         changed_at: datetime,
         reason_code: str,
         evidence_id: int,
+        refresh_reconciliation_fence: bool = False,
     ) -> MaterialExecution:
         reason, evidence_id = _transition_evidence(reason_code, evidence_id)
-        execution.transition_to(
-            target,
-            changed_at=changed_at,
-            reason_code=reason,
-            evidence_id=evidence_id,
-        )
+        if (
+            refresh_reconciliation_fence
+            and MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.RECONCILING
+            and target is MaterialExecutionStatus.RECONCILING
+            and execution.last_transition_evidence_id != evidence_id
+        ):
+            execution.status_changed_at = changed_at
+            execution.last_transition_reason = reason
+            execution.last_transition_evidence_id = evidence_id
+        else:
+            execution.transition_to(
+                target,
+                changed_at=changed_at,
+                reason_code=reason,
+                evidence_id=evidence_id,
+            )
         await self._repository.flush(db)
         return execution
 

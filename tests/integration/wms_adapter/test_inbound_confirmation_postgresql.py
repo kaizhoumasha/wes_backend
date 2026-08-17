@@ -22,7 +22,11 @@ from src.app.execution.models import (
     WmsConfirmationStatus,
 )
 from src.app.execution.repositories import WmsConfirmationRepository
-from src.app.execution.services import WmsConfirmationIdentityConflictResult, WmsConfirmationService
+from src.app.execution.services import (
+    WmsBusinessWaitFollowUp,
+    WmsConfirmationIdentityConflictResult,
+    WmsConfirmationService,
+)
 from src.app.wms_adapter.inbound_adapter import (
     InboundDispatchCode,
     WmsInboundBusinessWaitPlanner,
@@ -306,6 +310,28 @@ class _WaitDispatchAdapter:
         )
 
 
+class _OversizedTimestampPlanner:
+    def __init__(self, operation_id: str) -> None:
+        self._operation_id = operation_id
+
+    def plan(
+        self,
+        confirmation: WmsConfirmation,
+        response_payload: dict[str, object],
+    ) -> WmsBusinessWaitFollowUp:
+        del response_payload
+        assert confirmation.completed_at is not None
+        request_payload = json.loads(json.dumps(confirmation.request_payload))
+        request_payload["operation_id"] = self._operation_id
+        request_payload["timestamp"] = 2**63
+        return WmsBusinessWaitFollowUp(
+            operation=confirmation.operation,
+            operation_id=self._operation_id,
+            request_payload=request_payload,
+            next_attempt_at=confirmation.completed_at + timedelta(milliseconds=250),
+        )
+
+
 @pytest.mark.asyncio
 async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evidence_before_completion(
     integration_session_factory,
@@ -409,10 +435,11 @@ async def test_business_wait_completion_and_follow_up_are_committed_together(int
 
 
 @pytest.mark.asyncio
-async def test_invalid_business_wait_follow_up_preserves_response_evidence_before_reconciling(
+async def test_oversized_business_wait_timestamp_preserves_response_evidence_before_reconciling(
     integration_session_factory,
 ) -> None:
     now = datetime(2026, 8, 16)
+    follow_up_operation_id = new_uuid7()
     async with integration_session_factory.begin() as db:
         execution = await _seed_execution(db)
         original_operation_id = new_uuid7()
@@ -435,7 +462,7 @@ async def test_invalid_business_wait_follow_up_preserves_response_evidence_befor
         repository=WmsConfirmationRepository(),
         session_factory=integration_session_factory,
         adapter=_WaitDispatchAdapter(),
-        business_wait_planner=WmsInboundBusinessWaitPlanner(operation_id_factory=lambda: "not-a-uuid7"),
+        business_wait_planner=_OversizedTimestampPlanner(follow_up_operation_id),
     )
 
     assert await service.dispatch_batch(limit=1, now=now) == 1

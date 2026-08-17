@@ -200,6 +200,7 @@ class DecisionApplier:
                 MaterialExecutionStatus.RECONCILING,
                 decision.reason_code,
                 now,
+                refresh_reconciliation_fence=True,
             )
             return
         if type(decision) is CompleteExecution:
@@ -314,6 +315,8 @@ class DecisionApplier:
         target: MaterialExecutionStatus,
         reason_code: str,
         changed_at: datetime,
+        *,
+        refresh_reconciliation_fence: bool = False,
     ) -> None:
         await self._executions.transition(
             db,
@@ -322,6 +325,7 @@ class DecisionApplier:
             changed_at=changed_at,
             reason_code=reason_code,
             evidence_id=cast("int", evidence.id),
+            refresh_reconciliation_fence=refresh_reconciliation_fence,
         )
 
 

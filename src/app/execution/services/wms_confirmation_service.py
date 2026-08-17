@@ -468,12 +468,26 @@ class WmsConfirmationService:
         try:
             if type(follow_up) is not WmsBusinessWaitFollowUp or not isinstance(follow_up.request_payload, dict):
                 return False
+            original_timestamp = confirmation.request_payload.get("timestamp")
+            follow_up_timestamp = follow_up.request_payload.get("timestamp")
+            canonical_follow_up_timestamp = int(timezone.to_utc(received_at).timestamp() * 1000)
+            if (
+                not isinstance(original_timestamp, int)
+                or isinstance(original_timestamp, bool)
+                or not 0 < original_timestamp <= 2**63 - 1
+                or not isinstance(follow_up_timestamp, int)
+                or isinstance(follow_up_timestamp, bool)
+                or not 0 < follow_up_timestamp <= 2**63 - 1
+                or follow_up_timestamp != canonical_follow_up_timestamp
+                or follow_up_timestamp <= original_timestamp
+            ):
+                return False
             original_payload, _ = _immutable_request(confirmation.request_payload)
             follow_up_payload, _ = _immutable_request(cast("dict[str, Any]", follow_up.request_payload))
             original_payload.pop("operation_id", None)
-            original_timestamp = original_payload.pop("timestamp", None)
+            original_payload.pop("timestamp", None)
             follow_up_payload.pop("operation_id", None)
-            follow_up_timestamp = follow_up_payload.pop("timestamp", None)
+            follow_up_payload.pop("timestamp", None)
             return (
                 isinstance(retry_after_ms, int)
                 and not isinstance(retry_after_ms, bool)
@@ -487,10 +501,6 @@ class WmsConfirmationService:
                 and follow_up.operation_id != confirmation.operation_id
                 and follow_up.request_payload.get("operation") == follow_up.operation
                 and follow_up.request_payload.get("operation_id") == follow_up.operation_id
-                and isinstance(original_timestamp, int)
-                and not isinstance(original_timestamp, bool)
-                and isinstance(follow_up_timestamp, int)
-                and not isinstance(follow_up_timestamp, bool)
                 and follow_up_payload == original_payload
                 and isinstance(follow_up.next_attempt_at, datetime)
                 and follow_up.next_attempt_at == received_at + timedelta(milliseconds=retry_after_ms)

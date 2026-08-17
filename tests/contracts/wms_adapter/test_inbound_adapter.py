@@ -595,7 +595,11 @@ async def test_business_wait_completes_original_and_atomically_creates_due_follo
         "timestamp": 2,
         "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
     }
-    follow_up_payload = {**confirmation.request_payload, "operation_id": OTHER_OPERATION_ID, "timestamp": 3}
+    follow_up_payload = {
+        **confirmation.request_payload,
+        "operation_id": OTHER_OPERATION_ID,
+        "timestamp": int(now.timestamp() * 1000),
+    }
     planner = _BusinessWaitPlanner(
         WmsBusinessWaitFollowUp(
             operation=confirmation.operation,
@@ -683,11 +687,19 @@ def test_wms_business_wait_planner_uses_new_identity_timestamp_and_received_time
         "cross-execution",
         "cross-trace",
         "extra-business-field",
+        "timestamp-bool",
+        "timestamp-zero",
+        "timestamp-negative",
+        "timestamp-equal",
+        "timestamp-older",
+        "timestamp-noncanonical-new",
+        "timestamp-over-int64",
     ],
 )
 async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(invalid_case: str) -> None:
     now = datetime(2026, 8, 16, tzinfo=UTC)
     confirmation = _confirmation(1, now)
+    confirmation.request_payload["timestamp"] = 10
     confirmation.request_digest = _digest(confirmation.request_payload)
     repository = _ConfirmationRepository([confirmation])
     evidence = _EvidenceService()
@@ -700,7 +712,7 @@ async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(i
     follow_up_operation_id = OTHER_OPERATION_ID
     follow_up_payload = json.loads(json.dumps(confirmation.request_payload))
     follow_up_payload["operation_id"] = follow_up_operation_id
-    follow_up_payload["timestamp"] = 3
+    follow_up_payload["timestamp"] = int(now.timestamp() * 1000)
     if invalid_case == "identity-format":
         follow_up_operation_id = "not-a-uuid"
         follow_up_payload["operation_id"] = follow_up_operation_id
@@ -713,8 +725,22 @@ async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(i
         follow_up_payload["data"]["material_execution_id"] = "EXEC-OTHER"
     elif invalid_case == "cross-trace":
         follow_up_payload["data"]["material_trace_id"] = "TRACE-OTHER"
-    else:
+    elif invalid_case == "extra-business-field":
         follow_up_payload["data"]["unexpected_business_field"] = "MUST_NOT_CHANGE"
+    elif invalid_case == "timestamp-bool":
+        follow_up_payload["timestamp"] = True
+    elif invalid_case == "timestamp-zero":
+        follow_up_payload["timestamp"] = 0
+    elif invalid_case == "timestamp-negative":
+        follow_up_payload["timestamp"] = -1
+    elif invalid_case == "timestamp-equal":
+        follow_up_payload["timestamp"] = 10
+    elif invalid_case == "timestamp-older":
+        follow_up_payload["timestamp"] = 9
+    elif invalid_case == "timestamp-noncanonical-new":
+        follow_up_payload["timestamp"] = int(now.timestamp() * 1000) + 1
+    else:
+        follow_up_payload["timestamp"] = 2**63
     invalid = WmsBusinessWaitFollowUp(
         operation=confirmation.operation,
         operation_id=follow_up_operation_id,
