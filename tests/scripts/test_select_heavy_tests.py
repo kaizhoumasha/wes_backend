@@ -1023,7 +1023,6 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             [
                 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
                 TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
-                DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
                 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST,
             ],
