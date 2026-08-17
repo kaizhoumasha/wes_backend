@@ -59,8 +59,9 @@ def _declared_worker_queues() -> frozenset[str]:
     )
 
 
-def _actual_worker_queues(sender: Any) -> frozenset[str]:
-    return frozenset(sender.amqp.queues.consume_from)
+def _actual_worker_queues(sender: Any | None) -> frozenset[str]:
+    app = celery_app if sender is None else sender.app
+    return frozenset(app.amqp.queues.consume_from)
 
 
 def _validate_worker_role_queue_contract(actual_queues: frozenset[str]) -> None:
@@ -82,7 +83,7 @@ def on_worker_init(sender: Any | None = None, **kwargs: Any) -> None:
     """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
     global _frozen_worker_queues
     try:
-        actual_queues = _actual_worker_queues(sender or celery_app)
+        actual_queues = _actual_worker_queues(sender)
         _validate_worker_role_queue_contract(actual_queues)
         _frozen_worker_queues = actual_queues
     except Exception as exc:

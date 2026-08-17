@@ -24,7 +24,9 @@ TASK_NAME = "src.celery_app.tasks.execution.process_execution_facts_batch"
 
 def _worker_sender(*queues: str) -> SimpleNamespace:
     return SimpleNamespace(
-        amqp=SimpleNamespace(queues=SimpleNamespace(consume_from={queue: object() for queue in queues}))
+        app=SimpleNamespace(
+            amqp=SimpleNamespace(queues=SimpleNamespace(consume_from={queue: object() for queue in queues}))
+        )
     )
 
 
@@ -86,6 +88,39 @@ async def test_execution_worker_gate_rejects_a_persisted_active_epoch() -> None:
 
     with pytest.raises(ActiveLineRunEpochExistsError, match="execution worker"):
         await LineRunEpochService(repository=repository).assert_execution_worker_startable(object())
+
+
+def test_actual_worker_queues_reads_work_controller_sender_app() -> None:
+    from src.celery_app import app as app_module
+
+    assert app_module._actual_worker_queues(_worker_sender("default", "device-command")) == frozenset(
+        {"default", "device-command"}
+    )
+
+
+def test_actual_worker_queues_falls_back_to_celery_app_for_direct_invocation() -> None:
+    from src.celery_app import app as app_module
+
+    assert app_module._actual_worker_queues(None) == frozenset(app_module.celery_app.amqp.queues.consume_from)
+
+
+@pytest.mark.parametrize(
+    "sender",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(app=SimpleNamespace()),
+        SimpleNamespace(app=SimpleNamespace(amqp=SimpleNamespace())),
+    ],
+)
+def test_worker_init_rejects_incomplete_work_controller_sender(monkeypatch, sender: SimpleNamespace | None) -> None:
+    from celery.exceptions import WorkerTerminate
+
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
+
+    with pytest.raises(WorkerTerminate, match="worker queue configuration rejected"):
+        app_module.on_worker_init(sender=sender)
 
 
 def test_worker_init_freezes_actual_queues_when_declaration_matches(monkeypatch) -> None:
