@@ -8,10 +8,10 @@
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Alembic、Celery、PostgreSQL、Redis、Pytest、uv workspace、Ruff、GitNexus。
 
-**当前状态:** `IN_PROGRESS`。Task 1—7 已分别完成并提交；Task 8 在部署装配前先按
-`docs/superpowers/specs/2026-08-17-phase8-persistent-trigger-closure-design.md` 闭合持久触发。后续装配、migration、分层验收和收尾
-仍必须按本计划完成。Task 4/7 已提交的批量 reconciliation 只是当前待替换实现，Task 8 必须直接收缩为单 execution
-`recovery_decided`，不保留旧 operation、binding 或兼容路径；`IN_PROGRESS` 不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
+**当前状态:** `IN_PROGRESS — EXTERNAL BLOCKED`。Task 1—8 已分别完成并提交；Task 9 的仓内部署 E2E、分层状态文档和受影响
+HEAVY 已完成，供应商一致性与现场联合验收仍为 `NOT RUN — BLOCKED`。Task 10 已同步当前真源并将被实现取代的过程设计移出项目归档。
+Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decided`，未保留旧 operation、binding 或兼容路径；仓内实现和
+测试通过不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
 
 | Task | 状态 | Commit |
 | --- | --- | --- |
@@ -22,6 +22,9 @@
 | 5 | Complete | `ab02f42f` |
 | 6 | Complete | `1d5e0209` |
 | 7 | Complete | `7bca4a8f` |
+| 8 | Complete | 独立原子提交链；最终装配修复至 `714f1c1a` |
+| 9 | In progress — external blocked | 仓内部署 E2E 与验收资产完成；供应商一致性、现场联合验收未运行 |
+| 10 | Repository complete | 当前文档真源同步与过期过程设计归档；不改变 Phase 8 外部阻塞状态 |
 
 ## Global Constraints
 
@@ -502,7 +505,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 - Consumes: `FactProcessor.process_batch(limit=100)`、`InboundEvidence.decision_next_attempt_at`、`LineRunEpochStatus.ACTIVE`。
 - Produces: SDK `DeferExecution`；claim 只加 lease、不加失败次数；单 execution defer 原子释放 claim；worker 启动 Epoch 门禁。
 
-- [ ] **Step 1: 写 defer 与领取顺序的失败测试**
+- [x] **Step 1: 写 defer 与领取顺序的失败测试**
 
   测试先锁定以下可观察结果；不通过新增通用 scheduler 或 mock 业务角色来达成：
 
@@ -521,13 +524,13 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   另加三个负例：`DeferExecution` 与其它 Decision 混合；一个 WMS_EVENT 关联多个 execution 后 defer；真实 handler 异常。前两项
   fail closed 且不按 defer 处理，第三项才把 `decision_attempt_count` 从 `0` 增到 `1`。
 
-- [ ] **Step 2: 运行精确 RED**
+- [x] **Step 2: 运行精确 RED**
 
   Run: `uv run pytest tests/architecture/test_plugin_sdk_boundary_guardrail.py tests/runtime/execution/test_fact_processor.py tests/runtime/execution/test_inbound_evidence_repository.py -q`
 
   Expected: 只因 SDK 尚无 `DeferExecution`、claim 仍递增 attempt、processor 仍写 digest/published、领取顺序未实现而失败。
 
-- [ ] **Step 3: 实现最小 SDK 与 processor 语义**
+- [x] **Step 3: 实现最小 SDK 与 processor 语义**
 
   SDK 只增加以下不可变类型并加入既有 `Decision` union；不增加 context、retry time 或下一动作：
 
@@ -551,7 +554,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   `claim_decision_batch()` 删除 claim 时的 attempt 自增；领取按 `decision_next_attempt_at IS NULL` 优先，再按
   `decision_next_attempt_at, received_at, id`。`_record_failure()` 是唯一 attempt 增量 owner，并继续使用既有有界退避/耗尽语义。
 
-- [ ] **Step 4: 写并实现重启 Epoch 门禁**
+- [x] **Step 4: 写并实现重启 Epoch 门禁**
 
   Repository 增加只读查询：
 
@@ -563,7 +566,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   worker child 初始化调用该门禁；`claim_decision_batch()` 通过 join/exists 只领取关联 `ACTIVE` Epoch 的 evidence，`CLOSED` 永久不领。
   新 Epoch 激活仍由 Web/API 事务 owner 完成，不由 worker 自动创建或关闭。
 
-- [ ] **Step 5: 运行 GREEN 与真实 PostgreSQL owner**
+- [x] **Step 5: 运行 GREEN 与真实 PostgreSQL owner**
 
   Run: `uv run pytest tests/architecture/test_plugin_sdk_boundary_guardrail.py tests/runtime/execution/test_fact_processor.py tests/runtime/execution/test_inbound_evidence_repository.py tests/deployment/test_execution_worker_startup.py -q`
 
@@ -571,7 +574,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Expected: 新 evidence 优先、超过 batch limit 的 defer 公平轮转、CLOSED Epoch 不领取、遗留 ACTIVE Epoch 启动失败均 PASS 且无 skip。
 
-- [ ] **Step 6: Review、selector 与独立提交**
+- [x] **Step 6: Review、selector 与独立提交**
 
   更新精确 HEAVY mapping 后运行 selector 合同、Ruff、basedpyright 和 `git diff --check`；Review 确认核心未解释
   `DEVICE_BUSY`/release gate 等业务 reason。
@@ -626,7 +629,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   `MaterialExecution.last_transition_evidence_id`。
 - Produces: `InboundEvidenceKind.TRANSPORT_RESULT`；单 execution `RecoveryDecidedFact`；typed business WAIT follow-up；独立 WMS dispatcher。
 
-- [ ] **Step 1: 写 Transport 与单对象 recovery 的失败合同**
+- [x] **Step 1: 写 Transport 与单对象 recovery 的失败合同**
 
   `InboundEvidence` 最终字段必须满足：
 
@@ -641,20 +644,20 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   `recovery_id/material_execution_id/material_trace_id/reconciling_evidence_id/decision/authoritative_position/reason_code`。删除批量数组、
   `ReconciliationData` 和多 execution binding 测试；测试必须先证明旧 operation、旧字段和 stale evidence 均被拒绝。
 
-- [ ] **Step 2: 运行 Transport/recovery RED**
+- [x] **Step 2: 运行 Transport/recovery RED**
 
   Run: `uv run pytest tests/runtime/execution/test_fact_builder.py tests/runtime/execution/test_fact_processor.py tests/contracts/wms_adapter/test_inbound_wire_acceptance.py tests/contracts/wms_adapter/test_inbound_event_handler.py tests/contracts/wms_adapter/test_inbound_openapi.py workline_plugins/rough_sorter/tests/test_transport_and_recovery.py -q`
 
   Expected: 因缺 `TRANSPORT_RESULT`、旧批量 recovery 仍存在、插件路由仍指向 reconciliation 而失败；不得通过保留 alias 使其转绿。
 
-- [ ] **Step 3: 实现 Transport evidence 与 causal fence**
+- [x] **Step 3: 实现 Transport evidence 与 causal fence**
 
   `InboundEvidence` 增加 nullable `transport_task_id`，但 `TRANSPORT_RESULT` 由 CheckConstraint 强制非空且 WMS/device identity 为空。
   `FactBuilder.build()` 构建 SDK `TransportResultReadyFact`；基础层不识别 `NEW_IN/OLD_OUT`。同一 task 更高确定版本只有在
   `execution.status == RECONCILING` 且 `last_transition_evidence_id` 指向该 task 较低 UNKNOWN evidence 时才可进入恢复 Fact；其它结果只
   持久化。插件 handler 继续负责 rack/position/face 比较和最终 Decision。
 
-- [ ] **Step 4: 实现单对象 recovery direct replacement**
+- [x] **Step 4: 实现单对象 recovery direct replacement**
 
   删除 `InboundEvidenceExecutionBinding` model/repository/export 及 FactProcessor 的多 Fact 展开。WMS ingress 在 ACK 前解析
   `reconciling_evidence_id`，锁定 execution 与 causal evidence，并冻结到单条 WMS_EVENT evidence。Fact 形态固定为：
@@ -671,13 +674,13 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   应用前再次验证 execution 仍为 `RECONCILING` 且 `last_transition_evidence_id` 未变化；`CONTINUE` 用权威位置恢复，`ABORT` 关闭业务推进。
   旧 operation、旧类、旧 handler 和旧 binding 全仓零生产命中。
 
-- [ ] **Step 5: 写 WMS business WAIT follow-up RED**
+- [x] **Step 5: 写 WMS business WAIT follow-up RED**
 
   在 `tests/runtime/execution/test_wms_confirmation_service.py` 锁定：确定 `WAIT` 先保存 WMS_RESULT evidence，原 confirmation
   `COMPLETED`，同一事务创建新 `PENDING` confirmation；新 `operation_id` 不等于原值，`next_attempt_at = received_at + retry_after_ms`。
   未到期 `dispatch_batch()` 返回 `0`，到期只领取一次。技术投递未知仍复用原 operation identity。
 
-- [ ] **Step 6: 实现 typed follow-up 与独立 dispatcher**
+- [x] **Step 6: 实现 typed follow-up 与独立 dispatcher**
 
   execution service 只依赖窄端口：
 
@@ -696,7 +699,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   planner 的粗分 operation/DTO 解释只位于 `src/app/wms_adapter/`。新增无业务载荷 Celery task
   `dispatch_wms_confirmations_batch(limit=100)`，固定路由 `wms-fulfillment`、Beat 10 秒；禁止 ETA/countdown，execution scanner 不调用 WMS。
 
-- [ ] **Step 7: 生成 direct-cutover migration 并验证 GREEN**
+- [x] **Step 7: 生成 direct-cutover migration 并验证 GREEN**
 
   migration 直接增加 transport identity/约束/index，删除批量 binding 表，不迁移开发数据，`downgrade()` 明确不支持。先运行聚焦 FAST，
   再在独占干净 PostgreSQL 上验证当前 base→head、metadata 一致、stale recovery CAS、Transport version fence、WAIT 原子事务。
@@ -707,7 +710,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Run: `uv run pytest tests/integration/execution/test_decision_processing_postgresql.py tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py -q`
 
-- [ ] **Step 8: Review、selector 与独立提交**
+- [x] **Step 8: Review、selector 与独立提交**
 
   Review 必须确认不存在批量 recovery、compatibility alias、基础层 `NEW_IN/OLD_OUT` 分支或 WES 人工工单。selector 只选择实际 schema、WMS、
   Transport/execution PostgreSQL owner。
@@ -745,7 +748,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 - Consumes: Task 8A/8B 的两个无载荷扫描任务、Task 7 rough_sorter 静态 handlers、既有 `TaskQueueGateway`。
 - Produces: Web/Celery 共用的单一 `RoughSorterComposition`；commit 后低延迟提示；10 秒 Beat 最终恢复；包含 SDK/plugin 的镜像。
 
-- [ ] **Step 1: 写 post-commit 唤醒 RED**
+- [x] **Step 1: 写 post-commit 唤醒 RED**
 
   `TaskQueueGateway` 只增加两个无载荷方法：
 
@@ -757,20 +760,20 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   测试分别证明 Device/WMS_RESULT/Transport material evidence 提交后只发送 execution scan，立即可派发的普通 confirmation 提交后只发送
   WMS scan，未来到期的 business WAIT follow-up 不即时发送；事务回滚不发送，enqueue 异常只记录结构化日志且不改变已提交事实。
 
-- [ ] **Step 2: 运行唤醒 RED 并实现事务 owner 调用**
+- [x] **Step 2: 运行唤醒 RED 并实现事务 owner 调用**
 
   Run: `uv run pytest tests/deployment/test_celery_task_runtime_contract.py tests/runtime/execution/test_wms_confirmation_service.py -q`
 
   Expected: 因 gateway 和 commit 后调用点不存在而失败。GREEN 时只能由真正执行 `commit`/session context 退出的应用服务调用 gateway，
   Repository、model、插件和 handler 不得导入 Celery。
 
-- [ ] **Step 3: 写静态 Composition Root 与版本门禁 RED**
+- [x] **Step 3: 写静态 Composition Root 与版本门禁 RED**
 
   `tests/deployment/test_rough_sorter_plugin_startup.py` 锁定：仅 `deployment/rough_sorter_composition.py` 可 import `rough_sorter`；未知
   `plugin_key`、版本漂移、Epoch digest 漂移或角色缺绑定时 fail closed；Web 和 Celery 获得同一不可变配置。核心
   `src/app/**` 对 `workline_plugins.*`/`rough_sorter` 零命中。
 
-- [ ] **Step 4: 实现显式装配、workspace 与镜像**
+- [x] **Step 4: 实现显式装配、workspace 与镜像**
 
   新 Composition Root 只暴露一个明确工厂，不扫描 entry point 或 filesystem：
 
@@ -785,7 +788,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   `pyproject.toml` workspace 只加入 `packages/wes_plugin_sdk` 与 `workline_plugins/rough_sorter`；Web/Celery 调同一工厂。Docker 在 `uv sync`
   前复制两个成员的 `pyproject.toml` 与包目录，镜像不依赖宿主 editable install。配置只使用现有非 secret profile，不新增动态插件目录。
 
-- [ ] **Step 5: 运行部署 GREEN、镜像与最终门禁**
+- [x] **Step 5: 运行部署 GREEN、镜像与最终门禁**
 
   Run: `uv sync --dev && uv lock --check`
 
@@ -802,7 +805,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   Expected: Web/Celery 静态绑定一致；两个 Beat 分别恢复遗漏；插件与 SDK 在镜像内可导入；QUALITY、选中 HEAVY、干净 migration chain
   全绿且无跳过。插件 FAST、核心 FAST、PostgreSQL HEAVY 仍分别报告，不能互相代证。
 
-- [ ] **Step 6: Fresh Review 与独立提交**
+- [x] **Step 6: Fresh Review 与独立提交**
 
   Reviewer 核对当前完整 Task 8 diff：基础/业务边界、重启安全、WMS/RCS/ECS 权威、post-commit 时序、旧 recovery absence、测试所有权和
   HEAVY mapping。修复后只刷新失效证据。
@@ -827,11 +830,11 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   覆盖附录 task/event、字段闭集、身份、ACK、CALLBACK、错误、时限、投递未知和不可逆点。结果只记录版本、环境、通过/失败和证据位置；供应商私有 DTO/认证/原始映射不复制进 WES 核心或插件。
 
-- [ ] **Step 2: 先在插件包建立失败的部署 E2E**
+- [x] **Step 2: 先在插件包建立失败的部署 E2E**
 
   单场景必须通过插件包独立测试配置，经过真实 HTTP ingress、持久化 evidence、Celery handler、DeviceCommand 派发、callback、WmsConfirmation 和 execution 完成；不得直接调用 Service 跳过装配。失败原因应是闭环尚未接通，不是依赖缺失或测试跳过。该测试不进入核心 `tests/`、核心覆盖率或核心 HEAVY selector。
 
-- [ ] **Step 3: 跑通主成功路径**
+- [x] **Step 3: 跑通主成功路径**
 
   `SCAN_COMPLETED` → WMS `ACCEPT` → 入料 `PICK_AND_PUT` → `MOVE_FORWARD` → WMS 目标 Cell 晚绑定 → 出料
   `PICK_AND_PUT` → placement report → WMS `RECORDED` → `MaterialExecution.CLOSED`。验证每个可靠对象身份稳定且无双写。
@@ -842,7 +845,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和单对象人工核验恢复。非功能性负载、HA 和多供应商矩阵不作为
   MVP 退出条件。
 
-- [ ] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
+- [x] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
 
   Run: `uv run --project workline_plugins/rough_sorter pytest workline_plugins/rough_sorter/tests/e2e -q`
 
@@ -852,11 +855,11 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Expected: 插件包独立闭环全部通过；核心 selector 只包含实际受影响的核心 integration/E2E owner，不包含粗分插件私有测试。两类结果分别报告，JUnit 均 `total > 0`、`failed = 0`、`skipped = 0`。
 
-- [ ] **Step 6: 记录分层验收结论**
+- [x] **Step 6: 记录分层验收结论**
 
   分别记录核心基线、WMS Adapter、供应商一致性、插件业务和现场联合验收状态。任一层未通过时整体不得标记完成，也不得用其他层测试替代。
 
-- [ ] **Step 7: 提交验收资产原子变更**
+- [x] **Step 7: 提交验收资产原子变更**
 
   Commit suggestion: `test(rough-sorter): 验收粗分业务闭环`
 
@@ -877,15 +880,17 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 - Consumes: Task 3—9 全部实现、测试和联合验收证据。
 - Produces: 无本阶段直接替换的旧粗分/WMS Effect 双路径、Phase 10 残余 owner 清单、当前开发指南与主计划一致、可独立交付的 Phase 8 最终状态。
 
-- [ ] **Step 1: 执行本阶段直接旧路径 absence 扫描并冻结 Phase 10 交接**
+- [x] **Step 1: 执行本阶段直接旧路径 absence 扫描并冻结 Phase 10 交接**
 
-  Run: `rg -n "plugin_state|src\.app\.runtime\.workline_plugins|old_rough_sorter|confirm_inbound|notify_pkg_binding" src packages workline_plugins tests --glob '*.py'`
+  Run: `rg -n "plugin_state|src\.app\.runtime\.workline_plugins|old_rough_sorter" src packages workline_plugins tests --glob '*.py'`
+
+  Run: `rg -n "confirm_inbound|notify_pkg_binding" src packages workline_plugins tests --glob '*.py'`
 
   Run: `rg -n "RuntimeInbox|ExecutionSession|RuntimeIntent|RuntimeHold|SystemCapability" src packages workline_plugins tests --glob '*.py'`
 
-  Expected: 第一组本阶段直接旧路径在生产代码零命中，测试只允许明确的 absence 字面量；不得保留 dual path、shim、registry 或被新对象取代的旧状态 owner。第二组跨阶段 Runtime 命中必须逐项记录当前 owner、消费者和 successor，作为 Phase 10 输入，不要求 Phase 8 越权删除或全仓零命中。
+  Expected: 第一组本阶段直接旧路径在生产代码零命中，测试只允许明确的 absence 字面量；不得保留 dual path、shim、registry 或被新对象取代的旧状态 owner。`confirm_inbound`/`notify_pkg_binding` 是后续入库/上架合同仍使用的通用 WMS operation，记录其当前 owner 和 Phase 9/10 guardrail，不由粗分 Phase 8 删除。跨阶段 Runtime 命中必须逐项记录当前 owner、消费者和 successor，作为 Phase 10 输入，不要求 Phase 8 越权删除或全仓零命中。
 
-- [ ] **Step 2: 验证依赖方向和测试拓扑**
+- [x] **Step 2: 验证依赖方向和测试拓扑**
 
   Run: `uv run pytest tests/architecture/test_suite_topology_guardrail.py tests/architecture/test_core_plugin_test_ownership_guardrail.py tests/architecture/test_plugin_sdk_boundary_guardrail.py -q`
 
@@ -893,7 +898,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Expected: 核心默认收集不包含插件和供应商测试；核心、SDK、插件依赖方向符合计划。
 
-- [ ] **Step 3: 运行插件和核心 FAST**
+- [x] **Step 3: 运行插件和核心 FAST**
 
   Run: `uv run --project workline_plugins/rough_sorter pytest -q`
 
@@ -901,7 +906,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Expected: 全部 PASS；插件结果单独报告，不合并成核心覆盖率数字。
 
-- [ ] **Step 4: 运行完整质量与受影响 HEAVY**
+- [x] **Step 4: 运行完整质量与受影响 HEAVY**
 
   Run: `uv run ruff format --check . && uv run ruff check .`
 
@@ -911,21 +916,21 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Expected: 质量门禁和受影响 HEAVY 全部 PASS，真实 HEAVY 无跳过；不使用 `--no-verify` 或降低断言换取通过。
 
-- [ ] **Step 5: GitNexus 最终范围检测与独立评审**
+- [x] **Step 5: GitNexus 最终范围检测与独立评审**
 
   运行 GitNexus detect changes，确认受影响符号/流程只属于 Phase 8。独立评审重点检查：WMS/WES/ECS/RCS 权威边界、物理不可逆点、并发隔离域、插件基础设施泄漏、测试代证和超出 MVP 的抽象。
 
-- [ ] **Step 6: 更新当前开发真源**
+- [x] **Step 6: 更新当前开发真源**
 
   用已验证实现更新 `docs/plugin_development_guide.md`：保持“一插件一子目录”，handler 按业务触发拆分，不写成“一物理 EVENT/CALLBACK 一文件”；明确装饰器元数据、显式 DI 和无动态注册表。主计划只在所有分层验收通过后把 Phase 8 标为完成。
 
-- [ ] **Step 7: 归档被当前结果取代的过程文档**
+- [x] **Step 7: 归档被当前结果取代的过程文档**
 
   逐个确认 obsolete 文档及当前引用，移动到 `../archive_docs/wes_backend/` 对应原相对路径；项目内不保留副本、占位、软链接或转发页。`docs/hardware/**` 永不进入此清理。
 
-- [ ] **Step 8: 提交 Phase 8 收尾**
+- [x] **Step 8: 提交 Phase 8 仓内收尾**
 
-  Commit suggestion: `docs(phase8): 关闭粗分机插件收敛阶段`
+  Commit suggestion: `docs(phase8): 收敛仓内交付与外部阻塞`
 
 ## Phase 8 Exit Gate
 

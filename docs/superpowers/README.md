@@ -21,8 +21,8 @@
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 核心基线已完成；Phase 8 Task 1 已批准并进入实施，Phase 9 至 12 未开始 |
-| `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 粗分机参考插件的合同、SDK、可靠对象和业务闭环实施计划 | In progress；Task 1 文档门禁已关闭 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 核心基线已完成；Phase 8 仓内实现与插件部署 E2E 已完成，但供应商一致性和现场联合验收仍阻塞；Phase 9 至 12 未开始 |
+| `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 粗分机参考插件的合同、SDK、可靠对象和业务闭环实施计划 | In progress — external blocked；Tasks 1–8、Task 9 仓内部署 E2E 与 Task 10 仓内收尾已完成，Task 9 供应商一致性/现场联合验收未运行 |
 | `plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Phase 5 后活动源码、诊断合同和当前 schema 中的退役插件身份收敛 | In progress；Tasks 1–5 已实施，Task 6 正在完成合入前门禁与独立复审；合入后执行 tombstone 清理和外部归档 |
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 

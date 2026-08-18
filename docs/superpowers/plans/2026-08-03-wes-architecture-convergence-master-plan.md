@@ -18,8 +18,8 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
 Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；退役插件活动残留收敛已完成 Tasks 1–5，
-正在执行合入前门禁与独立复审。Phase 8 的粗分业务合同与设备附录已获批，详细实施已进入 `IN_PROGRESS`；供应商一致性、
-现场联调和业务验收尚未完成。
+正在执行合入前门禁与独立复审。Phase 8 仓内实现、质量门禁和插件部署 E2E 已完成，但仍为
+`IN_PROGRESS — EXTERNAL BLOCKED`；供应商一致性、现场联调和业务验收尚未完成。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -130,8 +130,8 @@ Transport/Adapter/核心所有权。
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8 Task 1 合同与设备附录已批准，
-详细实施为 `IN_PROGRESS`；Phase 9–12 尚未开始。
+Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8 仓内实现、质量门禁和插件部署 E2E
+已完成，但因供应商一致性与现场联合验收尚未运行，仍为 `IN_PROGRESS — EXTERNAL BLOCKED`；Phase 9–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -537,6 +537,17 @@ Transport Port 消费；以第一
 **旧所有者删除或交接清单:** 旧粗分业务代码和测试已在 Phase 5 删除，本阶段只按当前合同重新实现，不从 Git 历史搬运；
 设备旧 sender 已由 Phase 7 删除。本阶段不得恢复供应商私有 DTO、HTTP Client、HMAC 工具、路径或映射副本。
 
+Phase 8 最终扫描确认 `plugin_state`、`src.app.runtime.workline_plugins` 和旧粗分实现没有生产 owner。下列跨阶段通用对象不是
+粗分插件的第二路径，Phase 8 不越权删除；它们按当前 owner 与 successor 精确交给 Phase 9/10：
+
+| 残余对象 | 当前 owner / 主要消费者 | 已批准 successor / 交接 |
+| --- | --- | --- |
+| `RuntimeInbox` | `runtime/orchestration/runtime_inbox.py`、repository/service、callback writer、WMS handler、Celery scanner | 具体执行证据已由 `InboundEvidence` 承接；剩余通用 callback/inbox 消费闭包由 Phase 10 原子切换 |
+| `ExecutionSession` | session model/repository、WorkLine runtime/query/safety | `LineRunEpoch` 加具体对象 Execution；Phase 10 按消费者删除通用 session 路径 |
+| `RuntimeIntent` / Effect / `SystemCapability` / `SystemOutbox` | intent/effect service、system capability definitions、WMS sync 与 outbox dispatch | `DeviceCommand`、`TransportTask`、`WmsConfirmation` 和类型化领域 Service；Phase 10 删除通用热路径，不建立兼容桥 |
+| `RuntimeHold` | hold model/repository/service、safety/resource/query | 业务 NG、设备故障、依赖暂停和人工清线的具体状态；Phase 10 逐消费者归属，不以粗分业务测试代证 |
+| `confirm_inbound` / `notify_pkg_binding` 通用 WMS operation | WMS operation definitions、generated capability index、sync obligation 与 observability | 不是 Phase 8 粗分 operation；分别由既有 Phase 9/10 cutover guardrail 管理，Phase 8 不删除或改写 |
+
 **设备合同附录责任:** 本阶段只冻结粗分机真实支持的 `task_type`、`event_type`、Payload、错误和时限，并完成 endpoint/device/
 ECS 版本与 `LineRunEpoch` 绑定。固定路径、公共包络、identity、ACK/CALLBACK、状态新鲜度和冲突处理全部复用 Phase 7，
 不得在插件中复制或覆盖。相关诊断文档若已被当前合同取代，按项目规则移出项目目录归档，不保留转发页或重复真源。
@@ -553,8 +564,8 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 全部设备 HTTP 调用仍经 Phase 7 唯一生产 Adapter，核心无供应商特殊分支；最小 SPI 只包含本插件实际使用的稳定接口。
 
 **需要单独编写的子计划:** 唯一详细计划已建立为
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`。其当前状态为 `IN_PROGRESS`；Task 1 文档门禁已关闭，
-后续仍按该计划完成实现、供应商一致性和现场验收。
+`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`。其当前状态为 `IN_PROGRESS`；仓内实现、插件部署 E2E、
+QUALITY、迁移链和所选 HEAVY 已完成，供应商一致性和现场联合验收仍为 `NOT RUN — BLOCKED`。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、
 认证或凭据；禁止因供应商内部协议不同而修改 WES 固定路径、公共包络或增加兼容 Adapter。
@@ -729,7 +740,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 Task 1 已批准且详细实施为 `IN_PROGRESS`；Phase 9 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 仓内实现已完成但外部验收阻塞，仍为 `IN_PROGRESS`；Phase 9 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -746,18 +757,18 @@ Adapter、设备统一接口和明确插件。
 ## 21. Implementation Tasks
 
 Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。两阶段分别拥有独立可靠对象、生产装配和测试证据；
-已完成的过程计划已归档，不再保留为项目内当前真源。退役插件活动残留收敛仍在完成合入前门禁与独立复审；Phase 8 Task 1
-合同与设备附录已批准，粗分机参考插件实施已进入 `IN_PROGRESS`。供应商一致性和现场闭环仍须在后续任务独立验收；不得把
-Phase 7 核心测试或 Task 1 文档批准当成现场设备或业务插件验收。
+已完成的过程计划已归档，不再保留为项目内当前真源。退役插件活动残留收敛仍在完成合入前门禁与独立复审；Phase 8 合同、
+SDK、可靠对象、粗分插件、静态装配、迁移链、质量门禁和插件部署 E2E 已完成。供应商一致性和现场闭环仍须独立验收；不得把
+核心测试、mock 边界或插件部署 E2E 当成真实供应商或现场验收。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
 | --- | --- | --- | --- |
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
 | 3 | Phase 5 后退役插件活动残留收敛 | In progress | Tasks 1–5 已实施；完成合入前门禁和独立复审后合入，tombstone 清理与计划归档只在合入后执行 |
-| 4 | Phase 8 粗分机参考插件实施 | In progress | Task 1 合同与附录已批准；继续实施插件并分别验收供应商一致性与现场闭环 |
+| 4 | Phase 8 粗分机参考插件实施 | In progress — external blocked | 仓内实现与插件部署 E2E 已完成；等待真实供应商一致性和现场联合验收 |
 
-Phase 8 已获准按详细计划实施；这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
+Phase 8 仓内实施与插件部署 E2E 已完成；这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 
 ## 22. 工程复审完成摘要
 
@@ -767,7 +778,7 @@ Phase 8 已获准按详细计划实施；这不表示供应商一致性、真实
 - **Test Review：** 核心、WMS Adapter、供应商一致性和插件测试所有权严格分离；通用不变量先有 successor，旧业务测试后删除。
 - **Performance：** 本轮阶段调整不引入新轮询、缓存、registry 或运行时扫描；后续 worker 必须有界。
 - **Failure modes：** 已覆盖只删目录、短命 Transport 接线、空插件、旧 DeviceCommand 升格、批量误删测试和历史文档残留。
-- **Parallelization：** Phase 5 至 7 核心基线已完成；Phase 8 Task 1 已批准，后续供应商一致性和插件实施按详细计划推进，
+- **Parallelization：** Phase 5 至 7 核心基线和 Phase 8 仓内实施已完成；后续供应商一致性与现场联合验收按详细计划推进，
   核心公共 wire 不并行改造。
 - **NOT in scope：** Phase 7 不实现 Phase 8/9 的业务插件；任何阶段都不得删除 `docs/hardware/`。
 
@@ -783,7 +794,7 @@ Phase 8 已获准按详细计划实施；这不表示供应商一致性、真实
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段顺序已冻结；Phase 1 至 7 核心基线均已完成；Phase 8 Task 1 合同与设备附录已批准，详细实施为
-`IN_PROGRESS`；供应商一致性和现场闭环尚未通过；Phase 9 至 12 未开始。**
+**VERDICT：十二阶段顺序已冻结；Phase 1 至 7 核心基线均已完成；Phase 8 仓内实现与插件部署 E2E 已完成，但仍为
+`IN_PROGRESS — EXTERNAL BLOCKED`；供应商一致性和现场闭环尚未通过；Phase 9 至 12 未开始。**
 
 NO UNRESOLVED DECISIONS
