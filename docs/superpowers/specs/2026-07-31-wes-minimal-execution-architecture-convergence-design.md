@@ -32,11 +32,14 @@ related:
 
 ## 1. 文档定位
 
-`docs/architecture/SRS.md` 是产品范围、参与方职责和功能/非功能需求真源；本文在该需求边界内定义 WES
+`docs/architecture/SRS.md` 是产品范围、参与方职责和功能/非功能需求的唯一依据；本文在该需求边界内定义 WES
 产品的最终目标架构。产品售卖给不同客户，每个工厂独立部署；各工厂使用相同北向 WMS
-业务边界，差异主要来自南向设备合同附录以及入库、出库工作线流程；所有供应商共同遵循同一顶层设备接口（wire）。
+业务边界，差异主要来自南向设备合同附录以及入库、出库工作线流程；所有供应商共同遵循同一顶层设备接口。
 
-文档权威顺序为：SRS 定义“需要什么”，本文定义“目标架构如何满足”，Master Plan 定义“按什么顺序实施”。
+本文主要供 WES 架构和开发人员使用。WMS C# 开发人员只需要阅读 §11.3 了解自动出库流程，不需要实现本文中的 WES 内部对象。
+接口 URL、DTO、枚举和错误码以 `docs/contracts/wms-outbound-picking-task-integration-requirements.md` 为准。
+
+阅读顺序为：SRS 定义“需要什么”，本文定义“目标架构如何满足”，Master Plan 定义“按什么顺序实施”。
 如本文与 SRS 的业务范围或权责发生冲突，必须先显式修订其中一方，不得用实施计划静默覆盖需求。
 
 本系统尚未发布，不存在必须兼容的生产旧版本或必须迁移的历史业务数据。开发和测试数据可以清空，
@@ -140,7 +143,7 @@ SPI/SDK、封闭 Decision、注入端口和通用执行保障；每个具体插�
 - MQTT、OPC UA、WebSocket 等未确认的南向协议。
 - 由 WES 核心定义跨所有设备的 `task_type`、`event_type` 全集或 ECS 内部步骤；具体允许值由获批设备合同附录拥有。
 - Vendor Manifest、通用工作流 DSL、低代码流程引擎或运行时动态插件发现。
-- 自动物理恢复、自动清线、推测式回放和自动补偿编排。
+- 自动重新执行物理动作、自动清线、根据猜测重放请求或自动创建反向动作。
 - 为未来客户预建可复用执行插件模板。
 - 四条串联分拣线之上的 `SorterCorridor` 领域对象或跨线执行引擎。
 
@@ -252,14 +255,14 @@ WMS 普通业务事件通过 `/api/v1/wms/events` 接收，必须先持久化为
 动态发现、配置驱动 API 或 WMS codegen。只有真实重复出现后才提取业务 helper。
 
 `docs/hardware/wms_rcs_interface_requirements.md` 是 WMS 交互约定初稿，作为业务输入只读保留；具体 API 开发时再逐项确认。
-任何具体业务 wire 未确认只阻断该业务 API，不阻断 Phase 3 共享 Client。
+任何具体业务接口未确认只阻断该业务 API，不阻断 Phase 3 共享 Client。
 
 当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3。Phase 4 通过 Transport Port 和复用 `WmsClient` 的 WMS 转发 Adapter
 调用 WMS，并由 `TransportTask` 统一拥有任务持久化、提交、同步接纳 ACK、CTU 逐箱位置事实、异步终态、超期对账和
 批次成员最终事实。首版不提供状态查询、取消或任意外部内部进度；只接收 `SOURCE_PICKED / TARGET_PLACED` 两个会改变
 料箱位置的标准里程碑，任务仍不增加 `ACTIVE` 或成员级第二套生命周期。
 
-WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但 wire 只发送对应外部合同批准的唯一
+WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但对外接口只发送对应外部合同批准的唯一
 幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显、安全重提、Transport submit ACK 与异步结果关联规则，
 必须分别写入对应业务合同和 Phase 4 Transport 合同，不能由 WES 单方面推定。
 
@@ -272,7 +275,7 @@ Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界�
 - 已下发的设备命令继续等待并消费最终 CALLBACK。
 - 已完成的物理事实写为待 WMS 确认义务。
 - WMS 恢复后，只有逐 operation 合同明确批准安全重提且对象显式 `retryable=true` 时，可靠对象才保留内部原
-  `dispatch_key`，映射为唯一获批 wire 字段后重提；否则保持暂停并进入人工对账。
+  `dispatch_key`，映射为唯一获批的对外字段后重提；否则保持暂停并进入人工对账。
 
 这属于依赖暂停，不属于 NG，也不属于硬件故障。`WmsBusinessReject` 交由插件按 9.1 节处理；
 `WmsContractFailure` 记录合同告警并封闭失败。两者都不得进入依赖重试。
@@ -357,7 +360,7 @@ DeviceCommand  TransportTask  WmsConfirmation
 
 插件职责：
 
-- 解释已经按统一接口（wire）和设备合同附录验证并映射到设备角色的事件。
+- 解释已经按统一接口和设备合同附录验证并映射到设备角色的事件。
 - 读取注入的只读工作线投影，并通过对应业务模块取得 WMS 封闭业务结果。
 - 校验结果的关联、版本、时效和物理可执行性，不改变其业务语义。
 - 将 WMS 业务结果映射为等待、发送、暂停、隔离或对账等封闭执行 Decision。
@@ -395,7 +398,7 @@ workline_plugins/<plugin_key>/
 
 所有供应商必须适配
 [`docs/integration/third_party_integration_whitepaper.md`](../../integration/third_party_integration_whitepaper.md)
-定义的统一接口（wire）。供应商可以在 ECS 或局域网网关内适配其内部协议，但不得要求 WES 增加私有路径、DTO 别名、
+定义的统一接口。供应商可以在 ECS 或局域网网关内适配其内部协议，但不得要求 WES 增加私有路径、DTO 别名、
 认证分支或供应商 Adapter。
 
 `docs/hardware/` 原样保留供应商提供的协议与联调资料；即使资料较旧或与目标接口存在差异，也不得按历史设计移出项目或
@@ -533,8 +536,8 @@ ECS 每次物理搬运一个完整料盘。设备扫码形成一个不可变六�
 ### 10.3 出库来源
 
 `PkgID` 是完整料盘的唯一业务身份，不定义其他身份字段或兼容别名。排队任务只保存任务身份和排队信息；WMS 在异步准备阶段
-按连续 `plan_revision` 分批发布不可变计划增量，增量中的直接取料 SLOT 和候选 Bin 分别建立 `DirectPickExecution` 与
-`BinWorkExecution`。WES 持久化首批满足执行前提的增量后即可开始相关运输和取料，不等待 WMS 完成整单资源运算。Cell 在实际
+按连续 `plan_revision` 分批发布不可变计划增量，增量中的直接取料 SLOT 建立 `DirectPickExecution`，五层来源货架面到位后由
+`inbound_batch` 分批选择 Bin 并建立 `BinWorkExecution`。WES 持久化首批满足执行前提的增量后即可开始相关运输和取料，不等待 WMS 完成整单资源运算。Cell 在实际
 Bin 到达 SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或 `PkgID`。退料货架来源以单储位、单料盘的 `RACK_SLOT`
 表达，WES 校验并建立作业期执行，不自行分配来源、选择物料或重排料盘。
 
@@ -603,28 +606,39 @@ Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integrati
 1. WMS 根据订单、波次、库存和产线需求形成执行级 `PickingTask`；任务发布只负责进入自动出库任务池，不指定具体 WorkLine，
    也不分配来源和目标资源。
 2. WES 从多条同构分拣机工作线中选择一条就绪线，并以任务池当前最高优先级的可执行任务请求 WMS 准备执行。WMS 先返回
-   接收 ACK，再根据实际 WorkLine 及其关联 STATION 执行耗时资源运算，并按连续 `plan_revision` 分批回调直接取料、候选 Bin
-   等不可变计划增量；首批必须且只能定义一个初始目标窗口，后续新窗口只由逐盘终局 `ACCEPT` 创建。WES 必须先持久化增量再
+   接收 ACK，再根据实际 WorkLine 及其关联 STATION 执行耗时资源运算，并按连续 `plan_revision` 分批回调直接取料来源和五层来源货架面
+   等不可变计划增量；首批必须且只能定义一个初始目标货架和货架面，后续精确目标只由逐盘终局 `ACCEPT` 返回。WES 必须先持久化增量再
    ACK；首批满足局部执行前提的增量即可冻结 WorkLine 并驱动相关货架进场。后续增量继续追加，不等待整单计算完成。
 3. `PickingTask` 的业务成员是 `DirectPickExecution` 和 `BinWorkExecution`。WMS 可以在任务执行中通过更高
-   `plan_revision` 追加新成员或取消指定 `BinWorkExecution`；已接纳成员不得原地改写。Cell 在实际 Bin 到达 SCAN2 后由 WMS
-   工作计划创建，CTU 投箱顺序不构成业务顺序。
+   `plan_revision` 追加来源，但不能改写已经接纳的来源或 Bin。Cell 在实际 Bin 到达 SCAN2 后由 WMS
+   工作计划创建。五层来源按 `rack_id + rack_face` 逐面记录；同一货架的 A、B 面都有来源时记录两项。每条 WorkLine 只有一台 CTU，
+   入站和退箱批次串行。自动出库业务模块在计划、缓存、重试或 Transport 结果变化后，
+   通过同一个入口原子声明一个下一动作。有退箱候选时先退箱，候选仍在且 WMS 暂不能形成批次时禁止新入站。没有退箱候选时，
+   WES 报告 CTU 空闲背篓数和入料缓存空闲数的较小值，WMS 选择本批 Bin，WES 再补充本地目标并创建 Transport。WMS `READY`
+   只冻结决定；Transport 确定成功且位置保存后才完成批次。这个流程不建立缓存位预留、租约或基础层业务锁。
+   退箱目标只能位于当前 CTU 工作位的 `rack_id + rack_face`；`return_batch` 不触发换面或换架。WMS 确定当前面没有可用储位时返回
+   `409 / CONFLICT + STATE_CONFLICT`，WES 暂停并告警。即使 WMS 已返回 `RACK_FACE_DONE`，WES 也必须等从当前面选出的所有 Bin 都有
+   确定最终去向，才能换面、换架或让货架离场。
 4. 设备取盘并扫描完整六合一码后，WMS 返回业务资格、稳定异常分类和精确目标 SLOT；目标需要换面或换架时，同一终局
    `ACCEPT` 还返回完整目标准备方案。WES 不选料、不计算转运货架容量，也不自行决定换面或换架。
 5. 目标架、退料架和五层货架允许并行调度。退料直接取料优先，但不阻塞没有资源冲突的 CTU 和 Bin 流。
-6. WMS 为可执行来源分配目标货架、货架面和代际。精确 SLOT 仍在逐盘扫码决定中返回；实际尺寸只能在扫码后确认时，当前盘
+6. WMS 为可执行来源分配目标货架和货架面。精确 SLOT 仍在逐盘扫码决定中返回；实际尺寸只能在扫码后确认时，当前盘
    可以在扫码台等待换面或换架完成。达到本地技术超时后，WES 只暂停、告警并进入对账。两个机械臂按不同 `device_code`
    独立推进，扫码台交接、防撞和动作互锁由 ECS/PLC 硬件锁负责。没有安全暂存位时，硬件锁必须在下一盘离开来源前确认扫码台
    交接路径可用；WES 不增加扫码台中间事件、资源锁或跨机械臂软件互锁，也不要求当前 PUT 完成后才允许另一机械臂接纳下一条
    命令。
-7. WES 根据业务异常分类和设备证据决定料盘、Cell 或 Bin 的物理 NG 路由。CELL NG 当前盘位置事实确认后关闭当前 Cell；来源
-   缺口由 WMS 决定不追加来源，或追加新的直接取料成员和候选 Bin。未匹配物理 Bin 的 NG 事实必须引用把它送入工作线的预期
-   Bin 工作成员，但该引用不能证明实际 Bin 身份，也不能自动关闭原成员。
+7. WES 根据业务异常分类和设备证据决定料盘、Cell 或 Bin 的物理 NG 路由。CELL NG 当前盘位置事实确认后关闭当前 Cell。空取和 NG
+   造成的需求缺口不再通过当前任务的后续计划补充，由 WMS 创建新的 PickingTask。未匹配物理 Bin 的 NG 事实必须引用把它送入工作线的
+   预期 Bin 工作成员，但该引用不能证明实际 Bin 身份，也不能自动关闭原成员。
 8. 每盘物理完成后形成独立位置变化事实并可靠提交 WMS；任一物理结果未知时保持相关资源未决并暂停依赖动作。
-9. WES 当前没有未闭合的任务业务义务、逐盘事实或取消动作时，携带 `last_applied_plan_revision` 请求 WMS 确认 PickingTask
-   权威状态。尚无首批计划时 `last_applied_plan_revision=0`。WMS 根据既有逐盘确认返回 `COMPLETED | NOT_COMPLETED`，不接收
-   成员完成全集；版本落后时补发增量，业务仍在进行时返回强制重试间隔，状态完成后不再发布该任务的计划变更。物理 Rack、
-   Bin、Transport、目标架移出和下一任务准入由各自负责模块独立闭环。
+9. Transport 为 `UNKNOWN/RECONCILING` 时，WES 只暂停受影响的任务明细，等待同一 `transport_task_id` 的更高版本结果或人工核对。
+   Transport 确定失败时，WES 根据本地对应关系结束失败对象的任务明细，其他明细继续。WMS/RCS 产生并发送 Transport 结果，因此 WMS
+   可以直接统计没有满足的需求并创建新的 PickingTask。双方不增加 Transport 失败上报或 PickingTask 恢复接口，Transport 请求也不接收
+   `task_id`。
+10. 当前任务所有已接收明细都有成功、已确认 NG 或确定无法完成的结果，而且 WMS 已确认所有必须上报的逐盘结果后，WES 携带
+    `last_applied_plan_revision` 请求 WMS 确认 PickingTask 状态。尚无首批计划时该字段为 `0`。WMS 返回
+    `COMPLETED | PLAN_REVISION_STALE | BUSINESS_IN_PROGRESS`，WES 不重复发送所有历史明细。`COMPLETED` 只表示当前任务结束，不表示
+    订单需求全部满足。PickingTask 不设置 `FAILED` 状态。Rack、Bin、Transport、目标架移出和下一任务启动条件分别处理。
 
 ### 11.4 满箱交换
 
@@ -636,7 +650,7 @@ Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integrati
 4. WMS 根据冻结快照独占判断满箱资格、空箱资格和交换成员，并把决定纳入完整上架计划。
 5. WES 只在来源单层货架和 WMS 指定五层货架均可靠到位后，通过 Transport Port 执行已批准成员。
 6. TransportTask 拥有搬运中间事实；业务层只在实际身份和最终位置确定后向 WMS 报告库存位置事实，避免双写。
-7. 全部交换成员最终位置均可靠闭合后，交换批次才成功；任一成员失败或 UNKNOWN 即停线等待人工恢复，不自动补偿。
+7. 全部交换成员的最终位置都已确定后，交换批次才成功；任一成员失败或 `UNKNOWN` 时停线等待人工处理，不自动创建替代或反向搬运。
 8. 剩余逐盘来源成员进入获选自动 WorkLine，继续位置迁移，不再次执行入库确认。
 
 满箱交换不在粗分机持续装料期间并发判断，也不与自动分拣线货架位混用。
@@ -845,7 +859,7 @@ CTU 投箱
 任何可靠性不变量都必须先在最终具体对象上有实现和测试，才能删除旧实现；这只是同一收敛分支内的
 依赖顺序，不允许通过兼容层、双路径或旧数据迁移完成过渡。
 
-测试治理贯穿阶段 1–9 和 12；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7 分别承接
+测试治理贯穿阶段 1 到 9 和 12；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7 分别承接
 Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 只做跨阶段残留闭环；目标数据模型按最终对象建立，
 历史 migration 只在阶段 11 一次性重建。十二阶段的详细入口、交付物和退出门禁由
 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 统一控制。
@@ -935,21 +949,33 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 容量、对象占用、投影更新和 Decision 执行等通用机制，不在核心 `tests/` 重复具体业务场景。
 
 - 出库任务发布只携带身份和排队信息。WMS 同步 ACK 准备请求，再按连续 `plan_revision` 异步发布计划增量。`plan_revision=1`
-  必须且只能定义一个初始目标窗口，可以同时新增来源成员；后续增量可以追加直接取料来源、候选 Bin 或取消 Bin，但不能新增
-  目标窗口或携带货架动作。新窗口只由
-  逐盘 `ACCEPT` 创建，Cell 在 Bin 到达 SCAN2 后创建，`PkgID` 和六合一码在逐盘扫码后绑定。WMS 计算进度不进入 WES 计划增量。
+  必须且只能定义一个初始 `target_rack`，可以同时新增来源成员；后续增量只能追加直接取料来源或五层来源货架面，不能新增
+  目标货架或携带货架动作。每盘的精确目标格只由逐盘 `ACCEPT` 返回，Cell 在 Bin 到达 SCAN2 后创建，`PkgID` 和六合一码在
+  逐盘扫码后绑定。WMS 计算进度不进入 WES 计划增量。
+- 每条 WorkLine 只有一台 CTU。入站和退箱共用一个串行通道，同一时刻最多一个 WMS 请求或 Transport 尚未结束。业务模块通过事务
+  处理并发触发，只声明一个下一动作；这不是缓存位预留或租约。退箱候选优先，候选仍在时 `NO_BATCH` 阻止新入站。入站时 WES
+  提交可取数量，WMS 选择 Bin；退箱时 WES 提交 FIFO 队首候选，WMS 只在当前工作位货架面分配目标储位。Transport 核心不理解 PickingTask、FIFO、
+  批次数量或下一动作判断。
+- 计划中的多个五层来源货架面按 `rack_id + rack_face` 逐面记录，并形成待执行集合。WES 一次只选择一个当前来源面；同架不同面使用
+  `RACK_ROTATE`，不同货架先移出
+  旧架再移入新架。Transport 确定成功和完整位置是批次完成的唯一物理依据；CTU 非空、结果未知，或者当前面仍有已选 Bin 没有最终
+  去向时，禁止换面、换架和下一批。PickingTask 完成也不能绕过这个货架面离开条件。
 - WES 持久化局部完整的计划增量后，即可根据可靠位置投影和 WorkLine 固定工作位组织货架进场。版本跳号、同版本不同内容或
-  缺少目标窗口引用必须失败关闭。
-- 单面目标不执行空面动作；只有目标面确实变化时才创建旋转任务，窗口代际变化本身不代表物理动作。目标准备和扫码台单盘
-  预取可以并行，PUT 在目标货架、货架面、代际和精确 SLOT 全部可靠一致处汇合。每盘位置事实独立提交；最终只请求 WMS
+  缺少 `target_rack` 必须失败关闭。
+- 单面目标不执行空面动作；只有目标面确实变化时才创建旋转任务。目标准备和扫码台单盘预取可以并行，PUT 在目标货架、
+  货架面和精确 SLOT 全部可靠一致处汇合。每盘位置事实独立提交；最终只请求 WMS
   确认任务状态，不重复提交完成项。未知物理结果保持相关资源未决。
-- 料盘从原储位或料格取出后不可放回。取消命中尚未开始的 Bin 成员时立即关闭；Bin 已在运输或 FIFO 且尚未接纳取盘命令时
-  停止后续取料并让 Bin 正常退回；取盘命令已接纳或料盘已离开来源时，必须先把当前盘闭合到目标或 NG，再取消剩余工作。
+- `inbound_batch` 返回 `READY` 后，所选 Bin 不再撤销或改选。Bin 到达 SCAN2 时，WMS 通过 `work_plan READY | NO_WORK | WAIT`
+  给出结果；`READY.cell_ids[]` 首次接收后不可撤销、删减或改写，后续通过逐 Cell、空取、NG 和结果确认流程闭合。
+- `return_batch` 的 FIFO 候选在每次请求中从 1 连续设置 `sequence_no`；WMS 只处理连续前缀，并在响应中原样返回
+  `sequence_no + bin_id`。该顺序号不跨请求延续。目标只能位于当前 `rack_id + rack_face`，退箱不自动换面或换架。
+- 正常计划增量只追加当前任务尚未发布的来源。空取、NG 或确定的 Transport 失败只结束受影响的任务明细。WMS 使用新的 PickingTask
+  处理没有满足的需求。`UNKNOWN/RECONCILING` 表示受影响的任务明细还没有处理完。WES 不上报 Transport 失败，WMS 不发送恢复方案。
 - 两个机械臂通过 ECS/PLC 硬件锁防撞和完成扫码台交接。没有安全暂存位时，硬件锁必须在料盘离开来源前取得扫码台交接许可。
   WES 只维持每个 `device_code` 至多一条已接纳未终态命令，不建立扫码台释放事件、扫码台资源锁或跨设备软件互锁。
-- PickingTask 最终交互是状态确认。WES 没有未闭合的任务业务义务、逐盘事实或取消动作时携带
-  `last_applied_plan_revision` 请求 WMS；WMS 根据既有逐盘交互返回 `COMPLETED | NOT_COMPLETED`。请求不携带成员结果、完成数量
-  或本地完成时间，版本字段只承担增量围栏。
+- PickingTask 最后一次业务交互是状态确认。当前任务所有已接收明细都有处理结果，而且没有待发送的逐盘结果时，WES 携带
+  `last_applied_plan_revision` 请求 WMS。WMS 根据自己已经保存的结果返回 `COMPLETED | PLAN_REVISION_STALE | BUSINESS_IN_PROGRESS`。
+  请求不携带成员结果、完成数量或本地完成时间。版本字段只用于检查是否漏了计划增量。`COMPLETED` 不表示上游需求全部满足。
 - 退货、转运货架单储位只能有一个完整料盘。
 - 一个扫码证据只关联一个完整六合一码快照和一个 `MaterialExecution`；`Qty` 只表示包装内物料数量。
 - 自动线目标格由 WMS 在 PUT 前返回；WES 只校验物理可执行性，失败后的目标仍由 WMS 决定。

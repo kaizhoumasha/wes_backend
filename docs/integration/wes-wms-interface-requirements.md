@@ -18,7 +18,7 @@ migration_strategy: direct_replacement
 
 | 合同版本 | 日期 | 状态 | 主要变化 |
 | --- | --- | --- | --- |
-| `0.2.0` | 2026-08-14 | 待外发 | Transport 收敛为货架/料箱两族 DTO，统一 `container_id`，冻结目标工作面，并删除 T1 BUSY 分支 |
+| `0.2.0` | 2026-08-14 | 待外发 | Transport 分为货架和料箱两套 DTO，统一使用 `container_id`；目标工作面保存后不再修改；T1 不再返回 BUSY |
 
 `contract_version` 只用于双方确认拿到的是同一份外发合同，不进入任何 JSON 信封，也不产生旧版本兼容逻辑。正式外发时将
 `published_at` 改为实际日期；在此之前，本版本不得用于宣称现场联调已经就绪。
@@ -38,7 +38,7 @@ migration_strategy: direct_replacement
 
 本文只定义两个系统共同遵守的交互语言和对外可验证结果，不规定 WMS 内部的代码结构、数据库表、事务技术、任务调度方式或
 WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 的场景，其字段类型、条件必填、完整响应联合和错误码以该场景
-链接的独立合同真源为准，本文只解释参数来源和可观察流程。标为 `ReviewRequired` 的场景允许保留待联合评审项。禁止依据旧文档、
+链接的独立合同为准，本文只解释参数来源和处理流程。标为 `ReviewRequired` 的场景允许保留待联合评审项。禁止依据旧文档、
 旧代码或示例自行增加兼容字段。
 
 本文出现“可靠保存”“一致生效”等表述时，只要求成功响应已经具有可恢复、不可重复执行的对外效果。WMS 可以使用其现有技术能力
@@ -128,7 +128,7 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 ### 0.6 外发文档完整性
 
 - WMS 团队只需要本文及其直接链接的独立合同即可实现标为 `Approved` 的交互，不依赖 WES 内部代码或测试。
-- `Approved` 场景的完整字段、条件必填、响应联合和错误处理必须在其独立合同中闭合；本文提供参数来源和场景顺序。
+- `Approved` 场景的完整字段、条件必填、响应联合和错误处理必须在其独立合同中完整定义；本文提供参数来源和场景顺序。
 - `ReviewRequired` 场景可以保留业务流程和候选字段，但未冻结部分必须明确标记“待联合评审”，不能要求 WMS 根据内部引用补全。
 - WES 项目内部合同只用于文档治理，不向 WMS 增加本文之外的义务；内部合同变更只有同步更新本文后才对 WMS 生效。
 - 本文内部出现冲突时必须停止实现并先修正文档，不能在代码中建立双路径。
@@ -154,14 +154,15 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 | 固定 JSON 样例（fixture） | 双方共同确认的请求和响应样例，用于开发和联调 |
 | `TransportTask` | WES 保存的一次可靠搬运任务 |
 | `DeviceCommand` | WES 发给 ECS 的一条设备命令 |
-| generation / revision | 单调递增的代际号或版本号，用来拒绝过期决定和乱序消息 |
-| `outcome_revision` | WMS 在线上 T3 中为同一搬运任务生成的 `1..Int64.MaxValue` 连续结果版本，用于排序多次完整权威结果 |
+| generation / revision | 连续递增的版本号，用来判断消息是否过期或乱序 |
+| `outcome_revision` | WMS 在线上 T3 中为同一搬运任务生成的 `1..Int64.MaxValue` 连续结果版本，用于排序多次完整结果 |
 | `outcome_version` | WES 内部发布给业务使用方的搬运结果版本；与线上 `outcome_revision` 不是同一字段 |
 | WMS 主账 | WMS 中已经提交的业务单据、库存和位置数据。发生冲突时以这些数据为准 |
 | 幂等 | 同一条消息重复发送时，系统只执行业务动作一次，并按合同重放第一次结果或返回 `DUPLICATE` |
 | 一致生效 | 成功响应所代表的业务结果、资源占用和消息身份已经共同生效，不会出现只完成其中一部分的对外状态 |
-| 冻结 | 把字段和值保存下来，此后不再修改。重试只能读取已经保存的内容 |
-| 不可变来源计划 | WMS 一次冻结完整来源成员和业务资格，后续不允许追加、删除或覆盖；执行目标可按已批准场景晚绑定 |
+| 冻结 | 把字段和值保存下来，以后不再修改。文中出现“冻结”时都按这个含义理解 |
+| 待发送记录（部分章节称“发送义务”） | 已经保存、但还没有取得明确回复的请求或主动通知。它不是新的 WMS 业务单据 |
+| 不可变来源计划 | WMS 一次保存完整来源成员和业务资格，后续不允许追加、删除或覆盖；执行目标可以按已批准场景稍后确定 |
 | 最终状态 | 普通重试不能再改变的确定结果。`UNKNOWN` 不是最终状态 |
 | 对账 | 自动流程无法安全继续时，由人员核对实物、WMS 主账和原始证据 |
 
@@ -172,7 +173,7 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 | 系统 | 唯一责任 |
 | --- | --- |
 | WMS | PickingTask、GRN、`pkg_id`、库存、来源与目标分配、容量兼容、优先级、取消、恢复、全局位置和业务最终状态 |
-| WES | WorkLine 准入、本地执行身份、扫码/设备/位置证据、搬运任务、设备命令、可靠外部义务和冲突隔离 |
+| WES | WorkLine 启动条件、本地执行记录、扫码/设备/位置证据、搬运任务、设备命令、必须得到确认的外部请求和冲突隔离 |
 | RCS/AGV/CTU | 车辆、路线、交通管理以及货架和 Bin 的物理搬运 |
 | ECS/PLC/设备 | 扫码、测量、取放、输送、设备互锁和单设备物理最终状态 |
 
@@ -197,7 +198,7 @@ flowchart LR
 
 - WES 不直连 RCS；WMS/RCS 内部接口不属于本文。
 - WMS 不调用设备 callback 路径发送业务数据。
-- 搬运任务、设备命令和 WMS 业务义务是三个独立对象，不能共用一个状态机。
+- 搬运任务、设备命令和对 WMS 的待确认请求是三个独立对象，不能共用一个状态机。
 - WES 不通过查询 WMS 通用资源列表自行决定来源、目标或容量；WMS 必须在具名场景接口中返回封闭决定。
 
 ## 2. 所有场景共用的协议
@@ -800,7 +801,7 @@ async Task<HttpResult> ReceiveAsync(
 | ECS 原始证据 | ECS/PLC 已确定并由 WES 原样持久化的扫码、测量或动作结果 | `scan_evidence_id`、六合一码、测量值、`command_code` |
 | 搬运结果 | 已确定搬运任务的成员位置和结果版本 | WMS接口契约使用 `transport_task_id + outcome_revision`；WES 业务结果另有内部 `outcome_version` |
 | WES 现场位置记录 | WES 根据可靠设备和搬运证据形成的作业期现场位置 | `current_location`、`from_position`、`to_position` |
-| WMS 前序响应 | WMS 已经返回并由 WES 保存的业务身份或代际号 | `target_assignment_id`、`route_decision_id`、`putaway_plan_id` |
+| WMS 前序响应 | WMS 已经返回并由 WES 保存的业务编号或版本号 | `target_assignment_id`、`route_decision_id`、`putaway_plan_id` |
 | 人工对账 | 操作员核对实物、WMS 主账和原始证据后形成的批准结果 | `reconciliation_id`、权威位置、`CONTINUE/ABORT` |
 
 ### 2.4 WMS 主动通知必须满足什么外部结果
@@ -1120,7 +1121,7 @@ T1 `422 / REJECTED` 的 `reason_code` 只能使用：
 | `POSITION_UNKNOWN` | 已确认对象当前位置无法确定，必须同时使用 `position_unknown=true` |
 | `MANUAL_ABORTED` | 操作员基于现场安全或人工处置明确终止搬运 |
 
-WMS 必须把供应商私有码归一化到上述闭集，不得透传新码。WES 不根据 `failure_code` 自动重试或补偿；是否允许后续动作只由
+WMS 必须把供应商私有码转换为上述固定值，不得透传新码。WES 不根据 `failure_code` 自动重试或创建替代搬运；是否允许后续动作只由
 `status + final_position/position_unknown` 和业务场景共同决定。需要新增稳定码时必须先联合修改本文。
 
 当 `position_unknown=true` 时，`failure_code` 固定为 `POSITION_UNKNOWN`，位置不确定优先于记录 RCS 的原始失败原因；其它三个
@@ -2037,7 +2038,7 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | T1 Transport submit 明确未发送或收到 `503` | 原冻结 `operation_id + timestamp + 完整消息` | 固定等待 2000 毫秒，并在最多实际发送 3 次的预算内按 T1 规则重试 |
 | T2/T3 主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
 | Transport submit `DELIVERY_UNKNOWN` | 原 `transport_task_id` | 禁止自动重提，进入 `UNKNOWN/RECONCILING` |
-| `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 新 `operation_id`，引用 `previous_operation_id` | 等待新事实或到期后，根据当前现场数据重新请求决定 |
+| `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 使用新 `operation_id`；是否引用 `previous_operation_id` 由具体业务合同决定 | 等待新事实或到期后，根据当前现场数据重新请求决定；自动出库合同不传请求链字段 |
 | `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |
 
 ## 5. WMS 交付物和场景验收
@@ -2072,7 +2073,7 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 - [ ] 需要主动通知时，已经形成的完整消息不会因进程重启或发送失败而丢失或改变。
 - [ ] 接收确认、业务决定、事实报告、搬运最终结果和设备最终结果没有互相替代。
 - [ ] 同一身份、同一完整消息不会重复扣库存、占目标、创建 RCS 任务或执行取消。
-- [ ] 位置未知、不可逆动作和身份冲突不会进入自动补偿。
+- [ ] 位置未知、不可逆动作和身份冲突不会触发自动改计划或反向动作。
 - [ ] 场景结束条件明确，且不会把 "消息已接收" 误判为 "业务已完成"。
 
 ### 5.3 分层验收不能替代
@@ -2102,7 +2103,7 @@ WES 也会逐步复制出一套不完整的 WMS 业务逻辑。
 
 ## 7. 文档治理
 
-本文是交付 WMS 团队的场景化入口；每个场景链接的独立合同是严格 wire 真源。修改公共接口时，先由 WMS/WES 联合评审并更新
+本文是交付 WMS 团队的场景化入口；每个场景链接的独立合同是字段和接口规则的唯一依据。修改公共接口时，先由 WMS/WES 联合评审并更新
 独立合同，再同步本文的流程、参数来源和场景说明。任何内部文档或代码与获批合同冲突时，不能据此要求对方兼容；应先修正合同
 并重新确认版本。未发布系统直接切换新合同并清理开发/测试数据，不保留兼容路径。
 
@@ -2114,248 +2115,103 @@ WES 项目内部保留了一份 2026-03 的 WMS 交互约定初稿，保存其�
 
 ## 附录 A. 自动出库场景（ReviewRequired）
 
-> **待联合评审：** 本节只用于确认业务流程和候选交互语言，不构成开发放行。未冻结的字段、响应联合和场景必须保持待补，
-> WMS 开发人员不得自行补充 operation、字段或兼容分支。
+> 本附录只说明调用顺序。字段、状态值、错误码和 JSON 示例以
+> [《WMS 自动出库 PickingTask 对接需求》](../contracts/wms-outbound-picking-task-integration-requirements.md) 为准。
+> WMS 开发时不要从本附录复制数据结构。
 
-### O1：WMS 发布 PickingTask，必要时调整排队顺序
+WMS C# 代码应为每个 `operation` 使用独立的 DTO 和 Handler。本附录只帮助开发人员理解什么时候会调用这些 Handler，以及 WMS 应该
+根据哪些已保存数据返回结果。
 
-触发条件：WMS 已经生成一张允许自动执行的 PickingTask。
+### O1：WMS 发布任务
 
-WMS 主动通知 WES：
+WMS 通过 `outbound.picking_task.issued@v1` 发布任务；排队顺序变化时，通过
+`outbound.picking_task.queue_changed@v1` 通知 WES。此时只处理 `task_id` 和排队信息，不下发来源货架、Bin、Cell 或目标货架。
 
-| operation | 何时发送 | `data` 参数及来源 |
+### O2：WES 请求准备，WMS 下发计划
+
+WES 选中工作线后，以 `task_id + workline_code` 调用 `outbound.picking_task.prepare@v1`。WMS 接收后，通过
+`outbound.picking_task.plan_delta@v1` 连续下发计划。
+
+计划增量只包含初始目标货架、直接取料来源和五层来源货架面，不提前下发五层货架上的 Bin。双方使用 `task_id + plan_revision`
+判断计划顺序，不增加 `execution_id`、`prepare_operation_id` 或其他版本字段。更高版本只能追加当前任务尚未发布的正常来源，不能撤销或
+修改已经接收的来源和 Bin，也不能替换空取、NG 或 Transport 确定失败的任务明细。没有满足的需求由新的 PickingTask 处理。
+
+计划中可以有多个五层来源货架面，`added_bin_source_racks[]` 的每一项只表示一个 `rack_id + rack_face`。同一货架的 A、B 面都有当前
+任务需要取出的 Bin 时，WMS 必须返回两项；只用于承接退箱的货架面不进入来源计划。CTU 工作位一次只能有一个货架，WES 只选择一个
+当前来源面并创建货架搬运任务。同一货架切换到另一面时使用 `RACK_ROTATE`；更换货架时先移出旧架，再移入新架。
+
+### O3：CTU 循环搬运，Bin 到位后返回 Cell 计划
+
+每条 WorkLine 只有一台 CTU，所以入站和退箱必须串行。同一时刻最多存在一个尚未结束的批次请求或 CTU Transport。多个事件同时到达时，
+WES 会在一个数据库事务中只选择一个下一动作。WMS 不需要为 WES 的缓存位增加预留或租约字段。
+
+`inbound_batch` 返回 `READY` 后，所选 Bin 不再撤销或改选。Bin 到达 SCAN2 时，WMS 通过 `work_plan READY | NO_WORK | WAIT`
+给出结果；如果已经没有取料需求，返回 `NO_WORK`，Bin 继续正常退箱。`READY.cell_ids[]` 首次接收后不可撤销、删减或改写。
+
+五层来源货架到位后，WES 先检查 `RETURN_BUFFER`：
+
+- 有正常可退 Bin：先调用 `outbound.bin.return_batch@v1`，不能开始新的入站批次；
+- 没有可退 Bin：取 CTU 空闲背篓数和入料缓存空闲数的较小值，作为 `max_bin_count` 调用
+  `outbound.bin.inbound_batch@v1`。
+
+`return_batch.return_candidates[]` 按 FIFO 排列，每个候选增加本次请求内从 1 连续递增的 `sequence_no`。WMS 只为连续前缀分配目标，
+并在 `moves[]` 中原样返回 `sequence_no + bin_id`。每个目标必须位于请求中的当前 `rack_id + rack_face`。顺序号只在当前
+`operation_id` 内有效；新请求根据当时的队首候选重新从 1 编号。
+
+WMS 返回不超过 `max_bin_count` 的 Bin 和精确来源。WES 再选择本地入料位置，组成 Transport `BIN_MOVE`。WMS 返回 `READY` 只表示
+本批 Bin 已经选定；对应 Transport 确定成功并保存完整位置后，本批才完成。WES 随后重新从退箱优先开始判断下一动作。
+
+入站 `NO_BATCH` 表示当前来源面暂时没有可取 Bin，货架面保持开放。`RACK_FACE_DONE` 表示不会再从当前面选择新 Bin，但不表示货架可以
+立即离场，也不表示以前选中的 Bin 已经退回。WES 需要切换来源时，只能从已经接收的 `added_bin_source_racks[]` 中选择下一面；同架换面
+使用 `RACK_ROTATE`，不同货架先移出旧架、再移入新架。但从当前面选出的所有 Bin 必须先有确定最终去向。`inbound_batch` 不返回新的
+来源货架方案。入站 `NO_BATCH` 到期前，WES 不重复请求，也不据此换面；期间仍可优先处理退箱。
+退箱候选存在时，退箱 `NO_BATCH` 只允许等待和重试，不能转去新入站。
+
+`return_batch` 不返回换面或换架方案。WMS 暂时不能完成当前面目标分配时返回 `NO_BATCH`；已确定当前面没有可用储位时返回
+`409 / CONFLICT + STATE_CONFLICT`，WES 暂停并告警。只要当前面仍有已选 Bin 位于缓存、CTU 或 Transport 中，或者位置结果未知，
+当前货架面就必须保持在工作位。PickingTask 完成也不能提前换面、换架或离场。
+
+Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_id + scanned_at` 调用
+`outbound.bin.work_plan@v1`。WMS 核对 Bin 后返回需要处理的 Cell。
+
+### O4：逐盘决定和位置上报
+
+料盘到达扫码位后，WES 以 `task_id + source_locator + PkgID` 调用 `outbound.material.decide@v1`。
+`PkgID` 来自硬件扫码结果，在本项目中是料盘的唯一编号。请求同时携带六合一码和扫码时间，但不再生成
+`scan_evidence_id`、`source_lock_generation` 或 `face_window_generation`。
+
+WMS 返回精确的目标货架、货架面和目标格。物理放置完成后，WES 调用
+`outbound.material.movement_report@v1` 上报实际来源、实际目标、设备命令和发生时间。
+
+### O5：设备确认来源没有料盘
+
+`空取` 是指设备按计划到来源位置取料，但设备的确定结果表明该位置没有料盘。WES 以
+`task_id + source_locator + observed_at` 调用 `outbound.source.empty_decide@v1`。WMS 根据库存主账返回
+`RETRY`、`WAIT` 或 `SOURCE_DONE`。设备结果不确定时不能按空取处理。
+
+### O6：Bin 到达 NG 出口
+
+Bin 实际到达 NG 出口后，WES 调用 `outbound.bin.ng_exit_report@v1`。WMS 记录实际 Bin、NG 原因、出口位置和设备发生时间。
+各原因对应的必填字段以自动出库合同为准。
+
+### O7：退箱、货架离场、任务完成和 Transport 结果
+
+| 场景 | WES 处理 | WMS 处理 |
 | --- | --- | --- |
-| `outbound.picking_task.issued@v1` | 新任务首次进入自动出库队列 | `task_id` 来自 WMS PickingTask；`queue_revision=1` 由 WMS 生成；`dispatch_sequence` 来自 WMS 优先级排序；`not_before` 来自业务时间约束，可省略 |
-| `outbound.picking_task.queue_changed@v1` | 任务仍在 `QUEUED` 且 WMS 调整优先级或最早领取时间 | `task_id` 引用原任务；`queue_revision` 在 WMS 内连续 `+1`；其余字段使用调整后的业务排序数据 |
+| 退箱 | 按 FIFO 取不超过 CTU 空闲背篓数的队首候选，按本次请求从 1 设置 `sequence_no`，调用 `outbound.bin.return_batch@v1` | 只在请求的当前 `rack_id + rack_face` 为连续前缀分配目标格，并原样返回 `sequence_no + bin_id`；不返回换面或换架方案 |
+| 货架离场 | 调用 `outbound.rack.departure_decide@v1` | 返回下一目的地 `rack_destination` |
+| Transport 为 `UNKNOWN/RECONCILING` | 暂停受影响的任务明细，保留资源，不创建替代 TransportTask | 等待 RCS 的确定结果或完成人工核对，再发送同一 `transport_task_id` 的更高版本结果 |
+| Transport 确定失败 | 结束失败对象对应的任务明细；已经成功和不受影响的明细继续执行 | 根据自己已经掌握的 Transport 结果统计没有满足的需求，创建新的 PickingTask；不等待 WES 再次上报失败 |
+| 任务状态确认 | 所有已接收明细都有处理结果后，调用 `outbound.picking_task.completion_confirm@v1` | 根据已经保存的逐盘、空取、NG 和 Transport 结果返回任务状态 |
 
-WMS 按第 2.4 节的可靠通知要求发送到 `/api/v1/wms/events`。回调禁止携带来源货架、Bin、Cell、料盘或目标；这些资源尚未为具体
-WorkLine 准备。待联合评审：两个 operation 的完整 DTO、响应联合和 JSON 样例尚未冻结。
+Transport 请求不增加 `task_id`。WES 在本地保存任务明细与 `transport_task_id` 的对应关系。WMS 使用任务分配、批次结果以及 Transport
+中的货架或 Bin 编号找到受影响的任务明细。
 
-WES 保存消息并返回 `RECEIVED/DUPLICATE` 后，这次通知结束。任务此时只是进入队列，还没有开始执行。
+WMS 不能把同一个正在搬运的货架或 Bin 同时分配给两个未结束的 PickingTask 或批次。否则 WMS 无法判断 Transport 结果属于哪张任务。
+这个限制不需要增加接口字段或跨系统锁。
 
-待联合评审：排队任务撤回、PickingTask 整单取消和 DirectPick 取消尚未定义跨系统表达。批准前不得借用
-`queue_changed@v1` 或 `cancelled_bin_works[]` 推测这些语义。
-
-### O2：WES 选中任务，WMS 异步准备并回调可执行计划
-
-触发条件：WES 根据 WorkLine 的健康状态、运行模式和占用情况，从已经接收的队列中选中一张任务。
-
-WES 调用 WMS：
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.picking_task.prepare@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id` | O1 中 WMS 发布的原值 |
-| `execution_id` | WES 为这次任务执行创建并持久化的稳定身份 |
-| `workline_code` | WES 从本地配置和实时准入结果选中的 WorkLine |
-
-WMS 先确认任务仍可准备并可靠接纳“为该 `task_id + execution_id + workline_code` 计算资源”的后续义务，然后返回
-`202 / PREPARE_ACCEPTED`。WMS 不能改派另一条 WorkLine，也不能在接收确认中返回不完整计划。
-
-WMS 准备好一批可执行资源后，主动通知 WES：
-
-```text
-POST /api/v1/wms/events
-operation = outbound.picking_task.plan_delta@v1
-```
-
-| 回调参数 | 如何生成 |
-| --- | --- |
-| `task_id/execution_id` | 引用准备请求原值 |
-| `prepare_operation_id` | 引用 O2 准备请求的 `operation_id` |
-| `plan_revision` | WMS 对同一任务执行从 1 连续递增；前一版本收到明确接收确认后再发下一版 |
-| `added_target_windows[]` | revision 1 由 WMS 根据目标转运货架、面和当前窗口代际生成，固定一项 |
-| `added_direct_picks[]` | WMS 根据已经预留的退料货架来源和目标窗口生成；每项包含来源执行 ID、来源位置和锁代际 |
-| `added_bin_works[]` | WMS 根据已经预留的五层货架 Bin 来源生成；只到 Bin，不提前生成 Cell |
-| `cancelled_bin_works[]` | WMS 业务取消已接纳 Bin 成员时，引用原 `bin_work_execution_id` 生成 |
-
-每次 `plan_delta` 回调都必须是一批已经预留完成、WES 收到后可以执行的数据。“WMS 还在计算”不能变成可执行的半成品。
-待联合评审：各增量数组的成员字段、数量上限、响应联合和 JSON 样例尚未冻结。
-
-### O3：五层货架到位后，WES 请求 Bin 投入；Bin 到工作位后请求 Cell 计划
-
-#### 场景 A：请求投入 Bin
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.bin.inbound_batch@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id` | O1/O2 已保存原值 |
-| `rack_id/rack_face` | O2 `added_bin_works[].source_locator` |
-| `rack_transport_task_id/rack_outcome_version` | T1/T3 已确定成功的五层货架 TransportTask |
-| `reserved_ingress_positions` | WES 根据 WorkLine 固定位置关系和位置预留形成的当前空闲入料位记录 |
-
-WMS 根据当前任务成员、来源锁和仍有效的 Bin 资格生成 `READY/NO_BATCH/FACE_DONE`。`READY.moves[]` 中的 Bin 必须来自 O2 已发布
-成员，目标交接位必须来自本次 WES 预留集合；WMS 不能凭历史缓存返回其他位置。
-
-#### 场景 B：Bin 到 SCAN2 后请求 Cell 工作计划
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.bin.work_plan@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id/bin_work_execution_id/bin_id/source_lock_generation` | O2 计划成员原值 |
-| `bin_execution_id` | WES 为实际到线 Bin 创建的本地执行身份 |
-| `bin_scan_evidence_id/scanned_at` | ECS 扫码原文被 WES 持久化后生成的证据身份和发生时间 |
-
-WMS 将实际 Bin 与任务成员核对，再根据主账生成 `READY/NO_WORK/WAIT`。`READY.cells[]` 由 WMS 为该 Bin 创建稳定
-`cell_execution_id`，绑定来源 Cell 和任务需求。待联合评审：两个 operation 的完整请求/响应字段和 JSON 样例尚未冻结。
-
-### O4：料盘到扫码位后请求 WMS 决定目标；放置完成后报告事实
-
-WES 请求业务决定：
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.material.decide@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id` | 当前任务执行 |
-| `source_execution_id/source_execution_type/source_locator/source_lock_generation` | O2 直接取料成员或 O3 Cell 工作计划 |
-| `scan_evidence_id/scanned_at/six_in_one` | ECS 扫码原文经 WES 持久化和完整性校验后生成 |
-| `target_assignment_id` | 当前 WMS 计划定义的目标窗口原值 |
-
-WMS 使用 PickingTask 需求、来源锁、物料资格、目标容量与兼容性生成：
-
-- `ACCEPT`：返回精确目标、目标窗口代际和下一来源动作；必要时一致创建新目标窗口；
-- `REJECT`：返回稳定业务异常、NG 位置和来源处置；
-- `WAIT`：返回原因和重新求值等待时间。
-
-物理放置完成后，WES 报告 WMS：
-
-```text
-POST /api/v1/wes/facts
-operation = outbound.material.movement_report@v1
-```
-
-| 事实报告参数 | 来源 |
-| --- | --- |
-| `decision_operation_id` | 上一步决定请求的原 `operation_id` |
-| 任务、来源、扫码、目标身份 | 上一步请求和 WMS 响应原值 |
-| `from_locator/to_locator` | WES 放置前后的现场位置记录；目标必须与 WMS 决定一致 |
-| `command_code` | 实际完成这次放置的设备命令 |
-| `occurred_at` | ECS 确定放置成功的设备发生时间 |
-| `ng_evidence_id` | 只有 NG 到位时，由 WES 对可靠 NG 设备证据生成 |
-
-WMS 检查决定、来源锁、目标代际号和物理证据；只有库存、位置和目标占用已经一致更新后才返回 `RECORDED`。只有
-`RECORDED/DUPLICATE` 才关闭该盘 WMS 确认义务。
-
-### O5：设备可靠发现来源为空
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.source.empty_decide@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| 任务、来源执行、来源位置和锁代际 | O2/O3 已接纳计划成员 |
-| `source_observation_id/observed_at` | WES 对一次确定空取设备证据生成的不可变身份和时间 |
-| `command_code` | 返回确定 "无料" 结果的设备命令原值 |
-
-WMS 根据主账和任务需求生成 `RETRY/WAIT/SOURCE_DONE`。设备结果 `UNKNOWN` 不是空取，不允许调用此接口。WMS 返回
-`SOURCE_DONE` 时必须已经关闭该来源业务成员，而不是只给展示提示。
-
-### O6：Bin 进入 NG 出口，或物料所在 Cell 导致整箱 NG
-
-```text
-POST /api/v1/wes/facts
-operation = outbound.bin.ng_exit_report@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id/bin_execution_id` | 当前 O1/O2 任务和 O3 实际 Bin 执行 |
-| `bin_id/bin_work_execution_id/cell_execution_id` | O2/O3 计划身份与出口处实际扫码结果；按 NG 原因条件携带 |
-| `cause_ng_evidence_id` | 导致整箱 NG 的前序 O4 料盘 NG 事实报告；只有存在该因果时携带 |
-| `bin_observation_id/observed_bin_code` | Bin 身份不符时，由 WES 对出口前的实际扫码观察生成 |
-| `command_code/ng_evidence_id/ng_exit_code/occurred_at` | 实际完成出口动作的设备命令、ECS 到位证据、WES 配置的固定出口码和设备发生时间 |
-| `reason_code/cause_scope/bin_identity_kind` | 从已持久化的 WMS 决定和实际身份核对结果生成的固定枚举 |
-
-待联合评审：不同 NG 原因的条件字段、枚举闭集和完整 JSON 样例尚未冻结。
-
-WMS 校验因果引用和实际 Bin 身份，只有出口位置和业务异常已经一致记录后才返回 `RECORDED/DUPLICATE`。WMS 不需要再向 WES
-发送“人工处理完成”回调。
-
-### O7：退箱、货架清场、任务完成和 Transport 失败恢复
-
-#### 退箱目标分配
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.bin.return_batch@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id` | O1/O2 当前任务执行 |
-| `rack_id/rack_face` | 当前退料货架计划身份 |
-| `rack_transport_task_id/rack_outcome_version` | T3 已确定到位的退料货架 Transport 结果 |
-| `return_candidates[]` | 调用接口时，WES 退料缓存中已经实际到位的 `bin_execution_id + bin_id + buffer_position` 列表 |
-
-WMS 根据当前任务成员、全局 Bin 位置和五层货架可用槽位生成 `READY.moves[]`，或生成
-`NO_BATCH/RACK_PREPARATION_REQUIRED`。每个 `READY` 成员必须来自本次候选，不得把仍在途的 Bin 加入响应。
-
-#### 货架清场决定
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.rack.clearance_decide@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id/rack_id` | 当前任务和已接纳计划成员 |
-| `current_face/current_location` | T3 和 WES 现场位置记录 |
-| `clearance_reason` | WES 本地执行门禁形成的固定枚举，不是自由文本 |
-
-WMS 根据全局位置、任务占用和后续用途生成 `READY + clearance_target_location` 或 `WAIT`。目标由 WMS 主账决定，WES 随后另建 T1。
-
-#### PickingTask 完成裁决
-
-```text
-POST /api/v1/wes/decisions
-operation = outbound.picking_task.completion_confirm@v1
-```
-
-| 请求参数 | 来源 |
-| --- | --- |
-| `task_id/execution_id` | 当前任务执行 |
-| `last_applied_plan_revision` | WES 已连续可靠应用的最高 O2 计划版本；没有计划时为 0 |
-| `previous_operation_id` | 前次 `NOT_COMPLETED` 请求；首次确认禁止携带 |
-
-WMS 根据主账、已经记录的逐盘事实报告、空取决定、NG 事实报告、取消记录和当前版本，生成 `COMPLETED/NOT_COMPLETED`。WMS 不接收
-WES 自报的成员完成数组；`PLAN_REVISION_STALE` 时由 WMS 重发缺失计划，`BUSINESS_IN_PROGRESS` 时返回等待时间。
-
-#### Transport 失败恢复回调
-
-Transport 确定失败且位置明确、并经人工批准恢复后，WMS 回调：
-
-```text
-POST /api/v1/wms/events
-operation = outbound.picking_task.transport_recovery_decided@v1
-```
-
-| 回调参数 | 如何生成 |
-| --- | --- |
-| `task_id/execution_id` | 原 O1/O2 任务执行 |
-| `transport_task_id/transport_outcome` | 原 T3 已确定失败结果，不得改写 |
-| `replacement_transport_plan` | WMS 操作员核对实际位置和业务主账后批准的新对象、来源和目标；位置未知时禁止生成 |
-
-`transport_recovery_decided` 的 `replacement_transport_plan` 来自 WMS 人工核对后的来源/目标决定，不能由 RCS 瞬时失败码自动生成。
-位置未知时禁止发送替代计划，必须对账。待联合评审：替代计划 DTO、响应联合和完整 JSON 样例尚未冻结。
+PickingTask 不设置 `FAILED` 状态。`COMPLETED` 只表示当前任务的明细都已处理完，不表示订单需求全部满足。空取、NG 和 Transport
+确定失败造成的未满足需求，都由新的 PickingTask 处理。任务完成后的退箱和货架离场继续按各自流程执行。
 
 ## 附录 B. Phase 8 粗分自动入库场景（Approved）
 
@@ -2410,7 +2266,7 @@ WMS 根据最新主账返回 `ASSIGNED/NO_AVAILABLE_CELL/REJECT/WAIT`。只有 `
 
 设备命令成功只生成 WES 可以报告的物理证据，不能替代 WMS 的 `RECORDED`。NG 后续人工处置由 WMS 管理，不再回调 WES。
 
-### I4：WES 请求稳定换架计划，或接收单盘人工核验恢复决定
+### I4：WES 请求换架计划，或接收单盘人工核验结果
 
 无可用 Cell 时，WES 请求：
 
@@ -2600,7 +2456,7 @@ WMS 只有在已有库存从来源 Cell 到目标 Cell 的迁移已经一致生�
 | 退回到位：`putaway.target_bin.movement_report@v1` | `movement_kind=RETURN_PLACED`；Bin 执行来自 P3；目标来自退回决定；实际位置和 Transport 身份来自 T3 | Bin 全局位置已经一致记录后返回 `RECORDED/DUPLICATE` |
 | NG 出口：`putaway.target_bin.ng_exit_report@v1` | Bin/路由身份来自 P3/P4；NG 原因来自 WMS 路由决定；`ng_evidence_id`、出口位置和发生时间来自 ECS/WES 到位证据 | NG 出口位置和处置已经一致记录后返回 `RECORDED/DUPLICATE` |
 
-### P8：上架完成、来源货架清场和人工对账
+### P8：上架完成、来源货架离场和人工对账
 
 #### 上架完成裁决
 
@@ -2616,7 +2472,7 @@ P2/P5/P6/P7 事实报告和成员最终状态
 > **待联合评审：** 当前定义只写了“本地门禁摘要”，还没有确定具体 JSON 字段。P8 转为 `Approved` 前必须补齐这部分
 > 参数规则。开发人员不得自行增加 `completed_members`、计数或布尔字段。
 
-#### 来源货架清场决定
+#### 来源货架离场决定
 
 ```text
 POST /api/v1/wes/decisions
@@ -2629,8 +2485,8 @@ operation = putaway.source_rack.clearance_decide@v1
 | 当前工作位 | T3 和 WES 现场位置记录 |
 | 本地空架观察 | 待联合评审；具体字段尚未确定，批准前不得实现 |
 
-WMS 根据全局位置、货架业务状态和后续用途生成 `CLEAR_TO_DESTINATION/HOLD/REJECT/WAIT`。返回目的地后由 WES 另建 T1，不能把
-业务决定当作货架已经搬走。
+这里的“离场”是指来源货架已经完成本次上架工作，可以离开当前工作位；不是清空库存，也不表示货架已经搬走。
+WMS 根据全局位置、货架业务状态和后续用途生成 `CLEAR_TO_DESTINATION/HOLD/REJECT/WAIT`。返回目的地后由 WES 另建 T1。
 
 #### 上架人工对账回调
 
