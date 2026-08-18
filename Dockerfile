@@ -10,6 +10,13 @@
 # ============================================
 FROM python:3.13-slim AS base
 
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
+
+# 本地 Compose 构建允许空标签；CI 与验收入口负责传入并严格校验真实 revision/source manifest。
+LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
+      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
+
 # 设置工作目录
 WORKDIR /app
 
@@ -59,6 +66,10 @@ RUN sed -i \
 
 # 复制依赖文件
 COPY pyproject.toml uv.lock ./
+COPY packages/wes_plugin_sdk/pyproject.toml packages/wes_plugin_sdk/pyproject.toml
+COPY packages/wes_plugin_sdk/src packages/wes_plugin_sdk/src
+COPY workline_plugins/rough_sorter/pyproject.toml workline_plugins/rough_sorter/pyproject.toml
+COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
 
 # ============================================
 # Stage 2: Builder - 依赖安装

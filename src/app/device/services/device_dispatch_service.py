@@ -12,7 +12,7 @@ from src.app.device.ecs_adapter import EcsAdapter  # noqa: TC001
 from src.app.device.models.command import DeviceCommand  # noqa: TC001
 from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.device.repositories.evidence_repository import device_evidence_repository
+from src.app.device.repositories.status_observation_repository import device_status_observation_repository
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
@@ -77,7 +77,7 @@ class DeviceDispatchService:
         self._adapter = adapter
         self._commands = command_repository or device_command_repository
         self._epochs = epoch_repository or line_run_epoch_repository
-        self._observations = observation_repository or device_evidence_repository
+        self._observations = observation_repository or device_status_observation_repository
         self._clock = clock
 
     async def dispatch_one(self, *, now: datetime) -> bool:  # noqa: PLR0911

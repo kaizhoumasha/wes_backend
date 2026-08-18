@@ -5,13 +5,16 @@ from .command_repository import (
     device_command_repository,
 )
 from .device_repository import DeviceRepository, device_repository
-from .evidence_repository import DeviceEvidenceRepository, device_evidence_repository
+from .status_observation_repository import (
+    DeviceStatusObservationRepository,
+    device_status_observation_repository,
+)
 
 __all__ = [
     "DeviceCommandRepository",
-    "DeviceEvidenceRepository",
     "DeviceRepository",
+    "DeviceStatusObservationRepository",
     "device_command_repository",
-    "device_evidence_repository",
     "device_repository",
+    "device_status_observation_repository",
 ]

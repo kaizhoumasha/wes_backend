@@ -13,6 +13,8 @@ DISPATCH_WMS_FULFILLMENT_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_wms_fu
 PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE = "src.celery_app.tasks.{target_code}.process_signal"
 CHECK_WMS_EFFECT_STATUS_TASK = "src.celery_app.tasks.workline.check_wms_effect_status"
 PROCESS_TRANSPORT_EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
+PROCESS_EXECUTION_FACTS_TASK = "src.celery_app.tasks.execution.process_execution_facts_batch"
+DISPATCH_WMS_CONFIRMATIONS_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 
 
 class OutboxDispatchTarget(StrEnum):
@@ -43,6 +45,10 @@ class TaskQueueGateway(Protocol):
 
     def enqueue_transport_evidence(self) -> None: ...
 
+    def enqueue_execution_facts(self) -> None: ...
+
+    def enqueue_wms_confirmations(self) -> None: ...
+
 
 class CeleryTaskQueueGateway:
     """Celery 适配器；业务代码只依赖 TaskQueueGateway 端口。"""
@@ -72,14 +78,22 @@ class CeleryTaskQueueGateway:
     def enqueue_transport_evidence(self) -> None:
         self._send_task(PROCESS_TRANSPORT_EVIDENCE_TASK, kwargs={"limit": 100})
 
+    def enqueue_execution_facts(self) -> None:
+        self._send_task(PROCESS_EXECUTION_FACTS_TASK, kwargs={})
+
+    def enqueue_wms_confirmations(self) -> None:
+        self._send_task(DISPATCH_WMS_CONFIRMATIONS_TASK, kwargs={})
+
 
 task_queue_gateway = CeleryTaskQueueGateway()
 
 __all__ = [
     "CHECK_WMS_EFFECT_STATUS_TASK",
     "DISPATCH_SYSTEM_OUTBOX_TASK",
+    "DISPATCH_WMS_CONFIRMATIONS_TASK",
     "DISPATCH_WMS_DATA_OUTBOX_TASK",
     "DISPATCH_WMS_FULFILLMENT_OUTBOX_TASK",
+    "PROCESS_EXECUTION_FACTS_TASK",
     "PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE",
     "PROCESS_RUNTIME_INBOX_TASK",
     "PROCESS_TRANSPORT_EVIDENCE_TASK",

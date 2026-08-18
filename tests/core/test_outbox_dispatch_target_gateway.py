@@ -67,3 +67,17 @@ def test_gateway_enqueues_transport_evidence_with_its_fixed_batch_limit() -> Non
     gateway.enqueue_transport_evidence()
 
     assert gateway.sent == [("src.celery_app.tasks.transport.process_transport_evidence_batch", {"limit": 100})]
+
+
+def test_gateway_execution_and_wms_wakes_are_exactly_two_no_payload_methods() -> None:
+    gateway = _CapturingGateway()
+
+    assert tuple(inspect.signature(gateway_module.TaskQueueGateway.enqueue_execution_facts).parameters) == ("self",)
+    assert tuple(inspect.signature(gateway_module.TaskQueueGateway.enqueue_wms_confirmations).parameters) == ("self",)
+    gateway.enqueue_execution_facts()
+    gateway.enqueue_wms_confirmations()
+
+    assert gateway.sent == [
+        ("src.celery_app.tasks.execution.process_execution_facts_batch", {}),
+        ("src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch", {}),
+    ]

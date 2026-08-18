@@ -18,6 +18,7 @@ def _command(*, device_code: str = "ARM-01", status: CommandStatus = CommandStat
         device_binding_id=21,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
+        material_execution_id=21,
         contract_key="arm.pick",
         contract_version="2.0",
         task_type="PICK",

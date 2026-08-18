@@ -84,7 +84,6 @@ from .resource import (
     ResourceStateEventType,
     ResourceStateEventUpdate,
     ResourceType,
-    WmsConfirmationStatus,
 )
 
 __all__ = [
@@ -173,5 +172,4 @@ __all__ = [
     "ResourceStateEventType",
     "ResourceStateEventUpdate",
     "ResourceType",
-    "WmsConfirmationStatus",
 ]

@@ -1,4 +1,4 @@
-"""QA ISSUE-004：核心 pytest 拓扑配置改动应有明确的 HEAVY NONE 分类。"""
+"""核心 workspace 配置变化必须选择 concrete rough sorter PostgreSQL owner。"""
 
 from pathlib import Path
 
@@ -8,7 +8,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MAPPING_PATH = REPO_ROOT / "docs" / "architecture" / "heavy-test-impact.toml"
 
 
-def test_pyproject_test_topology_change_is_explicitly_classified_as_no_heavy() -> None:
-    """FAST/QUALITY 收集与报告配置由自身门禁承接，不触发运行时 HEAVY。"""
+def test_pyproject_workspace_change_selects_concrete_rough_sorter_owner() -> None:
+    """workspace/plugin 依赖拓扑不能只靠 FAST/QUALITY 收集证明。"""
 
-    assert select_heavy_tests(["pyproject.toml"], load_config(MAPPING_PATH)) == []
+    assert select_heavy_tests(["pyproject.toml"], load_config(MAPPING_PATH)) == [
+        "tests/integration/execution/test_decision_processing_postgresql.py"
+    ]

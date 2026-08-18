@@ -42,6 +42,7 @@ def _command(status: CommandStatus) -> DeviceCommand:
         device_binding_id=21,
         execution_ref_type="TEST",
         execution_ref_id="EXEC-001",
+        material_execution_id=None,
         contract_key="arm.pick",
         contract_version="2.0",
         task_type="PICK",

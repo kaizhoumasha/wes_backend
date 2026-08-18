@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.core.task_queue_gateway import TaskQueueGateway
+
 
 @dataclass(slots=True)
 class DeviceCommandRuntime:
@@ -94,6 +96,7 @@ def build_device_command_runtime(
     session_factory: async_sessionmaker[AsyncSession],
     base_url: str,
     timeout_seconds: float,
+    task_queue_gateway: TaskQueueGateway,
     transport: OutboundHttpTransport | None = None,
 ) -> DeviceCommandRuntime:
     base_url = validate_ecs_base_url(base_url)
@@ -108,7 +111,10 @@ def build_device_command_runtime(
         adapter=adapter,
         command_service=DeviceCommandService(session_factory=session_factory),
         dispatch_service=DeviceDispatchService(session_factory=session_factory, adapter=adapter),
-        evidence_service=DeviceEvidenceService(session_factory=session_factory),
+        evidence_service=DeviceEvidenceService(
+            session_factory=session_factory,
+            task_queue_gateway=task_queue_gateway,
+        ),
     )
 
 

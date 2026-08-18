@@ -36,6 +36,8 @@ def test_dev_worker_autoreload_replaces_worker_process_on_restart() -> None:
     assert 'kill -TERM "$worker_pid"' in script_text
     assert 'kill -TERM "$stop_target"' not in script_text
     assert 'kill -KILL "$stop_target"' in script_text
+    assert "--queues=${CELERY_WORKER_QUEUES}" in script_text
+    assert '--queues=default,celery"' not in script_text
 
 
 def test_celery_shutdown_deadlines_are_strictly_layered() -> None:

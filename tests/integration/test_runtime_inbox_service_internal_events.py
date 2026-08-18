@@ -1,6 +1,6 @@
 """RuntimeInbox 内部事件、定时超时、幂等身份与提交边界合同。
 
-设备结果与设备事件由 DeviceEvidence 独占；本文件只验证通用 RuntimeInbox producer。
+设备结果与设备事件由 InboundEvidence 独占；本文件只验证通用 RuntimeInbox producer。
 """
 
 from __future__ import annotations

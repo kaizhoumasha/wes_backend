@@ -22,6 +22,8 @@ RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
 RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
 CANDIDATE_GLOBS = (
     "src/**",
+    "deployment/**",
+    "packages/wes_plugin_sdk/**",
     "main.py",
     "migrations/**",
     "alembic.ini",
@@ -30,6 +32,7 @@ CANDIDATE_GLOBS = (
     ".dockerignore",
     "Jenkinsfile.backend-ci",
     "pyproject.toml",
+    "uv.lock",
     ".env*",
     "scripts/**",
     "docs/**/*.{toml,csv,yaml,yml,json}",

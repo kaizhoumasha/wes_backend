@@ -37,6 +37,20 @@ def _construct_compose_sequence(loader: _ComposeSafeLoader, node: yaml.nodes.Seq
 _ComposeSafeLoader.add_constructor("!override", _construct_compose_sequence)
 
 
+def test_local_compose_build_does_not_require_ci_provenance_arguments() -> None:
+    compose = yaml.load(
+        (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+        Loader=_ComposeSafeLoader,  # noqa: S506 - 仓库内受控 Compose，需解析 !override 标签
+    )
+    build_args = compose["services"]["api"]["build"]["args"]
+    dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "WES_VCS_REVISION" not in build_args
+    assert "WES_SOURCE_TREE" not in build_args
+    assert 'test -n "${WES_VCS_REVISION}"' not in dockerfile_text
+    assert 'test -n "${WES_SOURCE_TREE}"' not in dockerfile_text
+
+
 def test_production_capacity_formula_matches_single_api_and_four_celery_containers() -> None:
     plan = CapacityPlan(
         api_replicas=1,

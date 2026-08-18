@@ -59,7 +59,7 @@ def _build_artifact(*, role: str, settings_source: object, image_marker: str = "
     worker_queues = None
     worker_concurrency = None
     if role == "wes-worker":
-        worker_queues = "default,celery,device"
+        worker_queues = "default,celery,device-command"
     elif role == "fulfillment-worker":
         worker_queues = "wms-fulfillment"
         worker_concurrency = "1"
@@ -283,7 +283,7 @@ def test_verify_rejects_worker_queue_or_concurrency_drift(tmp_path) -> None:
     module = _attestation_module()
     settings_source = _settings(write_provider_profile(tmp_path / "provider.yaml"))
 
-    with pytest.raises(ValueError, match="default,celery,device"):
+    with pytest.raises(ValueError, match="default,celery,device-command"):
         module.build_wms_deployment_attestation(
             role="wes-worker",
             image_identity=_image_identity(),
@@ -306,7 +306,7 @@ def test_beat_rejects_missing_required_schedule_or_route(tmp_path) -> None:
 
     settings_source = _settings(write_provider_profile(tmp_path / "provider.yaml"))
     missing_schedule = dict(config.beat_schedule)
-    missing_schedule.pop("dispatch-wms-data-outbox-batch")
+    missing_schedule.pop("dispatch-wms-confirmations-batch")
     with pytest.raises(ValueError, match="Beat required schedule"):
         module.build_wms_deployment_attestation(
             role="beat",
@@ -317,7 +317,7 @@ def test_beat_rejects_missing_required_schedule_or_route(tmp_path) -> None:
         )
 
     missing_route = dict(config.task_routes)
-    missing_route.pop("src.celery_app.tasks.workline.scan_wms_effect_status_batch")
+    missing_route.pop("src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch")
     with pytest.raises(ValueError, match="wms-fulfillment"):
         module.build_wms_deployment_attestation(
             role="beat",
@@ -393,7 +393,7 @@ def test_cli_emits_and_verifies_four_offline_redacted_artifacts(tmp_path) -> Non
         role_environment["WMS_DEPLOYMENT_ROLE"] = role
         role_environment["WMS_DEPLOYMENT_IMAGE_ID"] = _image_identity()
         if role == "wes-worker":
-            role_environment["CELERY_WORKER_QUEUES"] = "default,celery,device"
+            role_environment["CELERY_WORKER_QUEUES"] = "default,celery,device-command"
         elif role == "fulfillment-worker":
             role_environment["CELERY_WORKER_QUEUES"] = "wms-fulfillment"
             role_environment["CELERY_WORKER_CONCURRENCY"] = "1"

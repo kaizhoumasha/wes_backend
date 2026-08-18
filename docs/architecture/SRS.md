@@ -11,8 +11,9 @@
 > 负责把这些需求收敛为当前目标架构；
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 只负责实施顺序。
 > `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口（wire）真源。
-> `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是粗分逐盘入库、满箱交换和自动上架的业务合同评审真源；
-> 当前状态为 `ReviewRequired`，不构成代码实施授权。
+> `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 是 Phase 8 粗分逐盘入库的 `Approved` 业务合同真源；
+> `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是后续满箱交换和自动上架的 `ReviewRequired` 合同，
+> 不构成 Phase 9 实施授权。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
 
 ## 1. 引言 (Introduction)
@@ -372,19 +373,21 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.3.1 SMT 智能装箱协调 (Smart Kitting Coordination)
 
-粗分逐盘入库、满箱交换和自动上架的 operation、严格 DTO、幂等、物理门禁与失败边界由
-`docs/contracts/wms-inbound-putaway-integration-requirements.md` 集中定义。本节与 §3.3.2 只保留产品级场景和职责边界，
-不得复制或覆盖该合同；合同获批前不得据此开始 Phase 8/9 业务实现。
+粗分逐盘入库的 operation、严格 DTO、幂等、物理门禁与失败边界由已获批的
+`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 定义；后续满箱交换和自动上架由
+`docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义并保持 `ReviewRequired`。本节与 §3.3.2 只保留产品级
+场景和职责边界，不得复制或把 Phase 8 授权扩大到 Phase 9。
 
 * **场景**: 工人把标准整盘物料放入粗分机入口，设备自动输送、扫码、测量并放入单层货架目标 Bin/Cell。
-* **入库完成点**: WES 校验 ECS 身份与测量证据后请求 WMS 准入；WMS 原子绑定 GRN，返回稳定料盘身份及唯一目标。
-  只有机械臂可靠 PUT 且 WMS 原子记录最终位置事实后，该盘才完成入库。
+* **入库完成点**: WES 校验 ECS 身份与测量证据后请求 WMS 准入；WMS 原子绑定 GRN 并返回稳定料盘身份，但不分配目标 Cell。
+  料盘经入料机械臂和流水线可靠到达出口后，WMS 才晚绑定唯一目标 Cell。只有出料机械臂可靠 PUT 且 WMS 原子记录最终位置
+  事实后，该盘才进入 `CLOSED`。
 * **权威边界**: WMS 决定业务准入、GRN、料盘身份、目标 Cell、容量、兼容性和 NG；WES 只拥有本地执行、物理证据、
   位置投影以及 `DeviceCommand` / `TransportTask` 编排。粗分入库不建立顶层 `InboundTask`，WES 不在本地选择替代料格。
-* **目标恢复**: PUT 不可逆点前发现目标不可执行时，WES 携带原始失败证据请求 WMS 返回新目标、NG 或等待；进入不可逆
-  PUT 后只能停机对账，不能改址或重发等价物理动作。
-* **货架释放**: 仅 WMS 可以作出释放决定。WES 接纳决定后停止新目标，但必须等待已接受料盘、所有已发出准入请求、
-  设备命令、位置和外部 Fact 全部取得确定结果，才能冻结货架释放快照；顺序不明或迟到结果与释放冲突时必须停机对账。
+* **换架**: 无可用 Cell 时不下发出料命令。WMS 返回旧装载架和新空架的稳定计划；WES 在旧架 release gate 闭合后创建两个
+  独立 `RACK_MOVE`，不新增 `RACK_EXCHANGE`。新架匹配 T3 成功即可重新请求 Cell；两个任务的实际顺序由 RCS 控制，仍是外部
+  未验证前提。
+* **失败恢复**: ACK 后 FAILED、交付未知、位置未知或身份冲突进入 `RECONCILING`，不能改址、自动 NG 或重发等价物理动作。
 * **NG**: 料盘可靠进入粗分 NG 交接区并由 WMS 记录业务专属 NG Fact 后，本盘执行结束；后续人工处置由 WMS 负责。
 
 #### 3.3.2 混合入库策略 (Hybrid Inbound Strategy)

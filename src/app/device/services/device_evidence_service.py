@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from typing import TYPE_CHECKING, Any, Protocol
+import logging
+from typing import TYPE_CHECKING, Protocol
 
 from src.app.device.contracts import (
     DeviceEvidenceReceipt,
@@ -13,20 +12,31 @@ from src.app.device.contracts import (
     EcsDeviceEvent,
 )
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.device.models.evidence import (
-    DeviceEvidence,
-    DeviceEvidenceApplyStatus,
-    DeviceEvidenceConflict,
-    DeviceEvidenceKind,
-)
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.device.repositories.evidence_repository import device_evidence_repository
+from src.app.execution.models.inbound_evidence import (
+    InboundEvidence,
+    InboundEvidenceApplyStatus,
+    InboundEvidenceKind,
+)
+from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
+from src.app.execution.services.inbound_evidence_service import (
+    InboundEvidenceConflictResult,
+    InboundEvidenceDigestPolicy,
+    InboundEvidenceService,
+)
+from src.app.execution.services.inbound_evidence_service import (
+    inbound_evidence_service as default_inbound_evidence_service,
+)
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from src.core.task_queue_gateway import TaskQueueGateway
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownDeviceCommandError(LookupError):
@@ -45,22 +55,23 @@ class DeviceEventContractMismatchError(ValueError):
     """事件合同与活动 Epoch 冻结绑定不一致。"""
 
 
-class EvidenceRepositoryPort(Protocol):
-    async def lock_source_event_id(self, db: object, source_event_id: str) -> None: ...
+class EvidenceProcessingRepositoryPort(Protocol):
+    async def get_device_result_for_command_for_update(
+        self,
+        db: object,
+        command_code: str,
+    ) -> InboundEvidence | None: ...
 
-    async def get_by_source_event_id_for_update(self, db: object, source_event_id: str) -> DeviceEvidence | None: ...
+    async def claim_next_pending(
+        self,
+        db: object,
+        *,
+        kinds: tuple[InboundEvidenceKind, ...],
+    ) -> InboundEvidence | None: ...
 
-    async def get_result_for_command_for_update(self, db: object, command_code: str) -> DeviceEvidence | None: ...
+    async def mark_applied(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
-    async def add(self, db: object, evidence: DeviceEvidence) -> DeviceEvidence: ...
-
-    async def add_conflict(self, db: object, conflict: DeviceEvidenceConflict) -> DeviceEvidenceConflict: ...
-
-    async def claim_next_pending(self, db: object) -> DeviceEvidence | None: ...
-
-    async def mark_applied(self, db: object, evidence: DeviceEvidence, *, processed_at: object) -> None: ...
-
-    async def mark_reconciling(self, db: object, evidence: DeviceEvidence, *, processed_at: object) -> None: ...
+    async def mark_reconciling(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
 
 class EvidenceCommandRepositoryPort(Protocol):
@@ -84,93 +95,83 @@ class DeviceEvidenceService:
         self,
         *,
         session_factory: async_sessionmaker[AsyncSession],
-        evidence_repository: EvidenceRepositoryPort | None = None,
+        inbound_evidence_service: InboundEvidenceService | None = None,
+        processing_repository: EvidenceProcessingRepositoryPort | None = None,
         command_repository: EvidenceCommandRepositoryPort | None = None,
         epoch_repository: EvidenceEpochRepositoryPort | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
-        self._evidences = evidence_repository or device_evidence_repository
+        self._ingress = inbound_evidence_service or default_inbound_evidence_service
+        self._processing = processing_repository or inbound_evidence_repository
         self._commands = command_repository or device_command_repository
         self._epochs = epoch_repository or line_run_epoch_repository
+        self._task_queue = task_queue_gateway
 
     async def accept_result(self, result: EcsCommandResult) -> DeviceEvidenceReceipt:
         payload = result.model_dump(mode="json", exclude_unset=True)
-        digest = normalized_evidence_digest(payload)
         rejection: Exception | None = None
         receipt: DeviceEvidenceReceipt | None = None
         async with self._sessions.begin() as db:
-            await self._evidences.lock_source_event_id(db, result.source_event_id)
-            existing = await self._evidences.get_by_source_event_id_for_update(db, result.source_event_id)
-            if existing is not None:
-                if existing.payload_digest != digest:
-                    await self._record_conflict(
+            command = await self._commands.get_by_command_code(db, result.command_code, for_update=True)
+            line_run_epoch_id = command.line_run_epoch_id if command is not None else None
+            command_code: str | None = None
+            apply_status = InboundEvidenceApplyStatus.IGNORED
+            prior_result: InboundEvidence | None = None
+            if command is None:
+                rejection = UnknownDeviceCommandError(result.command_code)
+            else:
+                try:
+                    _validate_result_identity(command, result)
+                except DeviceResultConflictError as error:
+                    rejection = error
+                if rejection is None:
+                    prior_result = await self._processing.get_device_result_for_command_for_update(
                         db,
-                        first=existing,
-                        digest=digest,
-                        payload=payload,
-                        reason="SOURCE_EVENT_ID_PAYLOAD_CONFLICT",
+                        result.command_code,
                     )
-                    rejection = DeviceEvidenceConflictError(existing.source_event_id)
-                elif existing.apply_status != DeviceEvidenceApplyStatus.IGNORED:
-                    receipt = _receipt(existing, duplicate=True, trace_id=result.trace_id)
-            if receipt is None and rejection is None:
-                command = await self._commands.get_by_command_code(db, result.command_code, for_update=True)
-                if command is None:
-                    if existing is None:
-                        await self._evidences.add(db, _result_evidence(result, payload, digest, ignored=True))
+                    if prior_result is None or prior_result.source_identity == result.source_event_id:
+                        command_code = result.command_code
+                        apply_status = InboundEvidenceApplyStatus.PENDING
+                    else:
+                        rejection = DeviceResultConflictError(result.command_code)
+
+            accepted = await self._ingress.accept(
+                db,
+                kind=InboundEvidenceKind.DEVICE_RESULT,
+                source_identity=result.source_event_id,
+                normalized_payload=payload,
+                received_at=timezone.now_for_db(),
+                line_run_epoch_id=line_run_epoch_id,
+                material_execution_id=command.material_execution_id if command is not None else None,
+                device_code=result.device_code,
+                command_code=command_code,
+                contract_key=result.contract_key,
+                contract_version=result.contract_version,
+                apply_status=apply_status,
+                digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE,
+            )
+            if isinstance(accepted, InboundEvidenceConflictResult):
+                if (
+                    accepted.conflict.reason_code == "SOURCE_IDENTITY_CORRELATION_CONFLICT"
+                    and accepted.evidence.apply_status == InboundEvidenceApplyStatus.IGNORED
+                    and accepted.evidence.command_code is None
+                ):
                     rejection = UnknownDeviceCommandError(result.command_code)
                 else:
-                    try:
-                        _validate_result_identity(command, result)
-                    except DeviceResultConflictError as error:
-                        if existing is None:
-                            await self._evidences.add(
-                                db,
-                                _result_evidence(
-                                    result,
-                                    payload,
-                                    digest,
-                                    line_run_epoch_id=command.line_run_epoch_id,
-                                    ignored=True,
-                                ),
-                            )
-                        rejection = error
-
-                if command is not None and rejection is None:
-                    prior_result = await self._evidences.get_result_for_command_for_update(db, result.command_code)
-                    if prior_result is not None and prior_result is not existing:
-                        if existing is None:
-                            await self._evidences.add(
-                                db,
-                                _result_evidence(
-                                    result,
-                                    payload,
-                                    digest,
-                                    line_run_epoch_id=command.line_run_epoch_id,
-                                    ignored=True,
-                                ),
-                            )
-                        await self._record_conflict(
-                            db,
-                            first=prior_result,
-                            digest=digest,
-                            payload=payload,
-                            reason="COMMAND_RESULT_CONFLICT",
-                        )
-                        rejection = DeviceResultConflictError(result.command_code)
-                    elif existing is not None:
-                        rejection = UnknownDeviceCommandError(result.command_code)
-                    else:
-                        evidence = await self._evidences.add(
-                            db,
-                            _result_evidence(
-                                result,
-                                payload,
-                                digest,
-                                line_run_epoch_id=command.line_run_epoch_id,
-                            ),
-                        )
-                        receipt = _receipt(evidence, duplicate=False, trace_id=result.trace_id)
+                    rejection = DeviceEvidenceConflictError(accepted.evidence.source_identity)
+            elif isinstance(rejection, DeviceResultConflictError) and prior_result is not None:
+                await self._ingress.record_conflict(
+                    db,
+                    first=prior_result,
+                    source_identity=result.source_event_id,
+                    normalized_payload=payload,
+                    reason_code="COMMAND_RESULT_CONFLICT",
+                    received_at=timezone.now_for_db(),
+                    digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE,
+                )
+            elif rejection is None:
+                receipt = _receipt(accepted.evidence, duplicate=accepted.duplicate, trace_id=result.trace_id)
         if rejection is not None:
             raise rejection
         if receipt is None:
@@ -179,51 +180,40 @@ class DeviceEvidenceService:
 
     async def accept_event(self, event: EcsDeviceEvent) -> DeviceEvidenceReceipt:
         payload = event.model_dump(mode="json", exclude_unset=True)
-        digest = normalized_evidence_digest(payload)
         rejection: Exception | None = None
         receipt: DeviceEvidenceReceipt | None = None
         async with self._sessions.begin() as db:
-            await self._evidences.lock_source_event_id(db, event.source_event_id)
-            existing = await self._evidences.get_by_source_event_id_for_update(db, event.source_event_id)
-            if existing is not None:
-                if existing.payload_digest != digest:
-                    await self._record_conflict(
-                        db,
-                        first=existing,
-                        digest=digest,
-                        payload=payload,
-                        reason="SOURCE_EVENT_ID_PAYLOAD_CONFLICT",
-                    )
-                    rejection = DeviceEvidenceConflictError(existing.source_event_id)
-                elif existing.apply_status != DeviceEvidenceApplyStatus.IGNORED:
-                    receipt = _receipt(existing, duplicate=True, trace_id=event.trace_id)
-            if receipt is None and rejection is None:
-                binding = await self._epochs.get_active_binding_for_device(db, event.device_code)
-                binding_matches = (
-                    binding is not None
-                    and binding.contract_key == event.contract_key
-                    and binding.contract_version == event.contract_version
-                    and existing.line_run_epoch_id == binding.line_run_epoch_id
-                    if existing is not None
-                    else binding is None
-                    or (
-                        binding.contract_key == event.contract_key
-                        and binding.contract_version == event.contract_version
-                    )
+            binding = await self._epochs.get_active_binding_for_device(db, event.device_code)
+            binding_matches = binding is None or (
+                binding.contract_key == event.contract_key and binding.contract_version == event.contract_version
+            )
+            accepted = await self._ingress.accept(
+                db,
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=event.source_event_id,
+                normalized_payload=payload,
+                received_at=timezone.now_for_db(),
+                line_run_epoch_id=binding.line_run_epoch_id if binding is not None else None,
+                device_code=event.device_code,
+                contract_key=event.contract_key,
+                contract_version=event.contract_version,
+                apply_status=(
+                    InboundEvidenceApplyStatus.PENDING if binding_matches else InboundEvidenceApplyStatus.IGNORED
+                ),
+                digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE,
+            )
+            if isinstance(accepted, InboundEvidenceConflictResult):
+                rejection = (
+                    DeviceEventContractMismatchError(event.device_code)
+                    if accepted.conflict.reason_code == "SOURCE_IDENTITY_CORRELATION_CONFLICT"
+                    else DeviceEvidenceConflictError(accepted.evidence.source_identity)
                 )
-                if not binding_matches:
-                    if existing is None:
-                        await self._evidences.add(
-                            db,
-                            _event_evidence(event, payload, digest, binding=binding, ignored=True),
-                        )
-                    rejection = DeviceEventContractMismatchError(event.device_code)
-                elif existing is not None:
-                    existing.apply_status = DeviceEvidenceApplyStatus.PENDING
-                    receipt = _receipt(existing, duplicate=False, trace_id=event.trace_id)
-                else:
-                    evidence = await self._evidences.add(db, _event_evidence(event, payload, digest, binding=binding))
-                    receipt = _receipt(evidence, duplicate=False, trace_id=event.trace_id)
+            elif accepted.duplicate and accepted.evidence.apply_status != InboundEvidenceApplyStatus.IGNORED:
+                receipt = _receipt(accepted.evidence, duplicate=True, trace_id=event.trace_id)
+            elif not binding_matches or accepted.evidence.apply_status == InboundEvidenceApplyStatus.IGNORED:
+                rejection = DeviceEventContractMismatchError(event.device_code)
+            else:
+                receipt = _receipt(accepted.evidence, duplicate=accepted.duplicate, trace_id=event.trace_id)
         if rejection is not None:
             raise rejection
         if receipt is None:
@@ -231,119 +221,61 @@ class DeviceEvidenceService:
         return receipt
 
     async def process_one(self) -> bool:
-        """异步应用一条 evidence；事件无业务 consumer，仅完成公共验证。"""
+        """异步完成设备 evidence 的基础验证，业务消费由 FactProcessor 承接。"""
 
         now = timezone.now_for_db()
+        wake_execution = False
         async with self._sessions.begin() as db:
-            evidence = await self._evidences.claim_next_pending(db)
+            evidence = await self._processing.claim_next_pending(
+                db,
+                kinds=(InboundEvidenceKind.DEVICE_EVENT, InboundEvidenceKind.DEVICE_RESULT),
+            )
             if evidence is None:
                 return False
-            if evidence.kind == DeviceEvidenceKind.EVENT:
-                await self._evidences.mark_applied(db, evidence, processed_at=now)
-                return True
-            if evidence.command_code is None:
-                await self._evidences.mark_reconciling(db, evidence, processed_at=now)
-                return True
-            command = await self._commands.get_by_command_code(db, evidence.command_code, for_update=True)
-            if command is None or evidence.line_run_epoch_id != command.line_run_epoch_id:
-                await self._evidences.mark_reconciling(db, evidence, processed_at=now)
-                return True
-            if command.status not in {
-                CommandStatus.DISPATCHING,
-                CommandStatus.ACKNOWLEDGED,
-                CommandStatus.RECONCILING,
-            }:
-                await self._evidences.mark_reconciling(db, evidence, processed_at=now)
-                return True
-            payload = EcsCommandResult.model_validate(evidence.raw_payload)
-            command.result_evidence_id = evidence.id
-            command.transition_to(
-                CommandStatus.SUCCEEDED if payload.result is EcsCommandResultValue.SUCCESS else CommandStatus.FAILED
-            )
-            if payload.result is EcsCommandResultValue.FAILED:
-                command.failure_code = "DEVICE_REPORTED_FAILURE"
-            command.claim_token = None
-            command.claimed_at = None
-            command.claim_expires_at = None
-            await self._evidences.mark_applied(db, evidence, processed_at=now)
+            if evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
+                await self._processing.mark_applied(db, evidence, processed_at=now)
+                wake_execution = True
+            elif evidence.command_code is None:
+                await self._processing.mark_reconciling(db, evidence, processed_at=now)
+            else:
+                command = await self._commands.get_by_command_code(db, evidence.command_code, for_update=True)
+                if (
+                    command is None
+                    or evidence.line_run_epoch_id != command.line_run_epoch_id
+                    or command.status
+                    not in {
+                        CommandStatus.DISPATCHING,
+                        CommandStatus.ACKNOWLEDGED,
+                        CommandStatus.RECONCILING,
+                    }
+                ):
+                    await self._processing.mark_reconciling(db, evidence, processed_at=now)
+                else:
+                    payload = EcsCommandResult.model_validate(evidence.normalized_payload)
+                    command.result_evidence_id = evidence.id
+                    command.transition_to(
+                        CommandStatus.SUCCEEDED
+                        if payload.result is EcsCommandResultValue.SUCCESS
+                        else CommandStatus.FAILED
+                    )
+                    if payload.result is EcsCommandResultValue.FAILED:
+                        command.failure_code = "DEVICE_REPORTED_FAILURE"
+                    command.claim_token = None
+                    command.claimed_at = None
+                    command.claim_expires_at = None
+                    await self._processing.mark_applied(db, evidence, processed_at=now)
+                    wake_execution = evidence.material_execution_id is not None
+        if wake_execution:
+            self._enqueue_execution_facts()
         return True
 
-    async def _record_conflict(
-        self,
-        db: object,
-        *,
-        first: DeviceEvidence,
-        digest: str,
-        payload: dict[str, Any],
-        reason: str,
-    ) -> None:
-        if first.id is None:
-            raise RuntimeError("持久化 evidence 缺少主键")
-        await self._evidences.add_conflict(
-            db,
-            DeviceEvidenceConflict(
-                source_event_id=payload["source_event_id"],
-                first_evidence_id=first.id,
-                conflicting_digest=digest,
-                raw_payload=payload,
-                reason_code=reason,
-                received_at=timezone.now_for_db(),
-            ),
-        )
-
-
-def _result_evidence(
-    result: EcsCommandResult,
-    payload: dict[str, Any],
-    digest: str,
-    *,
-    line_run_epoch_id: int | None = None,
-    ignored: bool = False,
-) -> DeviceEvidence:
-    return DeviceEvidence(
-        kind=DeviceEvidenceKind.RESULT,
-        source_event_id=result.source_event_id,
-        device_code=result.device_code,
-        command_code=None if ignored else result.command_code,
-        contract_key=result.contract_key,
-        contract_version=result.contract_version,
-        line_run_epoch_id=line_run_epoch_id,
-        payload_digest=digest,
-        raw_payload=payload,
-        received_at=timezone.now_for_db(),
-        apply_status=DeviceEvidenceApplyStatus.IGNORED if ignored else DeviceEvidenceApplyStatus.PENDING,
-    )
-
-
-def _event_evidence(
-    event: EcsDeviceEvent,
-    payload: dict[str, Any],
-    digest: str,
-    *,
-    binding: LineRunEpochDeviceBinding | None,
-    ignored: bool = False,
-) -> DeviceEvidence:
-    return DeviceEvidence(
-        kind=DeviceEvidenceKind.EVENT,
-        source_event_id=event.source_event_id,
-        device_code=event.device_code,
-        command_code=None,
-        contract_key=event.contract_key,
-        contract_version=event.contract_version,
-        line_run_epoch_id=binding.line_run_epoch_id if binding is not None else None,
-        payload_digest=digest,
-        raw_payload=payload,
-        received_at=timezone.now_for_db(),
-        apply_status=DeviceEvidenceApplyStatus.IGNORED if ignored else DeviceEvidenceApplyStatus.PENDING,
-    )
-
-
-def normalized_evidence_digest(payload: dict[str, Any]) -> str:
-    """按 uniform wire 语义规范化，唯一排除诊断字段 trace_id。"""
-
-    semantic_payload = {key: value for key, value in payload.items() if key != "trace_id"}
-    encoded = json.dumps(semantic_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    def _enqueue_execution_facts(self) -> None:
+        if self._task_queue is None:
+            return
+        try:
+            self._task_queue.enqueue_execution_facts()
+        except Exception:
+            logger.exception("device.evidence.execution_wake_failed", extra={"event": "execution_wake_failed"})
 
 
 def _validate_result_identity(command: DeviceCommand, result: EcsCommandResult) -> None:
@@ -356,7 +288,7 @@ def _validate_result_identity(command: DeviceCommand, result: EcsCommandResult) 
 
 
 def _receipt(
-    evidence: DeviceEvidence,
+    evidence: InboundEvidence,
     *,
     duplicate: bool,
     trace_id: str | None,
@@ -365,7 +297,7 @@ def _receipt(
         raise RuntimeError("持久化 evidence 缺少主键")
     return DeviceEvidenceReceipt(
         evidence_id=evidence.id,
-        source_event_id=evidence.source_event_id,
+        source_event_id=evidence.source_identity,
         duplicate=duplicate,
         trace_id=trace_id,
     )
@@ -377,5 +309,4 @@ __all__ = [
     "DeviceEvidenceService",
     "DeviceResultConflictError",
     "UnknownDeviceCommandError",
-    "normalized_evidence_digest",
 ]

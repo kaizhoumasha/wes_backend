@@ -22,6 +22,7 @@ class DeviceCommandRequest:
     line_run_epoch_id: int
     execution_ref_type: str
     execution_ref_id: str
+    material_execution_id: int | None
     contract_key: str
     contract_version: str
     task_type: str

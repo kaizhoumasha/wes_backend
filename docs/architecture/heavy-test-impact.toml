@@ -1,6 +1,7 @@
 # HEAVY selector 的机器可读真源。分类顺序固定为：直接 HEAVY 测试、人类文档、候选 mapping、ignore。
 ignore_globs = [
     ".codex/**",
+    "workline_plugins/**",
     "VERSION",
     "tests/**",
     "Jenkinsfile.test-deploy",
@@ -145,10 +146,49 @@ heavy_tests = []
 source_glob = "scripts/markdownlint.sh"
 heavy_tests = []
 
-# pytest 收集、报告和 FAST/QUALITY 拓扑由质量门禁直接承接。
+# workspace 依赖与插件安装拓扑由 concrete rough sorter PostgreSQL composition owner 承接。
 [[mapping]]
 source_glob = "pyproject.toml"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+# lock 变化同样必须证明 concrete rough sorter composition 可从冻结依赖启动。
+[[mapping]]
+source_glob = "uv.lock"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+# 独立插件 SDK 仅定义标准库不可变类型、只读协议和静态元数据；当前精确内容由架构测试承接。
+# 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/pyproject.toml"
 heavy_tests = []
+reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85359e8386954"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "ac2ef3861762734651a01f65f1b80e605b19aa395509835d124754fdd9a34cf9"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py"
+heavy_tests = []
+reviewed_content_sha256 = "675228a7f75bc9b549f2937ee78ba11f9386c61744bef8bf76d3317778894053"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
+heavy_tests = []
+reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa35126a8eb4c"
+
+[[mapping]]
+source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
+heavy_tests = []
+reviewed_content_sha256 = "2b3b74a22bf16160c7efbf5a96886661b1b0749e0f5cd7ecea2640023dafd00b"
 
 # 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。
 [[mapping]]
@@ -406,31 +446,64 @@ heavy_tests = []
 
 # Phase 7 DeviceCommand/ECS owner 由隔离 PostgreSQL 不变量与真实生产闭环共同承接。
 [[mapping]]
-source_glob = "src/app/device/{__init__.py,composition.py,contracts.py,ecs_adapter.py}"
+source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
 ]
 
 [[mapping]]
-source_glob = "src/app/device/models/{__init__.py,command.py,evidence.py}"
+source_glob = "src/app/device/contracts.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/models/{__init__.py,evidence.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
 ]
 
 [[mapping]]
-source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,evidence_repository.py}"
+source_glob = "src/app/device/models/command.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,status_observation_repository.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+# 被 InboundEvidenceRepository 直接接管的旧路径 tombstone，删除 diff 仍必须选中 DeviceCommand 闭环。
+[[mapping]]
+source_glob = "src/app/device/repositories/evidence_repository.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
 ]
 
 [[mapping]]
-source_glob = "src/app/device/services/{__init__.py,device_command_service.py,device_dispatch_service.py,device_evidence_service.py}"
+source_glob = "src/app/device/services/{__init__.py,device_dispatch_service.py,device_evidence_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/services/device_command_service.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 [[mapping]]
@@ -753,10 +826,13 @@ heavy_tests = ["tests/resilience/test_wms_circuit_breaker.py"]
 source_glob = "src/core/outbound_http/**"
 heavy_tests = []
 
-# WMS Adapter 公共导出已承载唯一 Transport router，由真实生产路由 E2E 承接。
+# WMS Adapter 公共导出同时承载 Transport 与粗分 ACL，由各自唯一 HEAVY owner 承接。
 [[mapping]]
 source_glob = "src/app/wms_adapter/__init__.py"
-heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/client.py"
@@ -766,6 +842,23 @@ heavy_tests = []
 source_glob = "src/app/wms_adapter/factory.py"
 heavy_tests = []
 
+# 粗分 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
+[[mapping]]
+source_glob = "src/app/wms_adapter/{inbound_adapter.py,inbound_wire.py}"
+heavy_tests = ["tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/inbound_event_handler.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
+
+# OpenAPI 片段不执行运行时逻辑，由同目录 FAST 合同唯一承接。
+[[mapping]]
+source_glob = "src/app/wms_adapter/inbound_openapi.py"
+heavy_tests = []
+
 # Transport 公共入口和唯一生产组合根由真实 broker/worker/HTTP/PostgreSQL E2E 验收。
 [[mapping]]
 source_glob = "src/app/transport/{__init__.py,composition.py}"
@@ -773,8 +866,19 @@ heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Transport 领域合同、持久化约束、领取和收敛由隔离 PostgreSQL 验收。
 [[mapping]]
-source_glob = "src/app/transport/{callback_json.py,contracts.py,models.py,repository.py,service.py}"
+source_glob = "src/app/transport/{callback_json.py,contracts.py,models.py,repository.py}"
 heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+[[mapping]]
+source_glob = "src/app/transport/service.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
@@ -845,6 +949,7 @@ source_glob = "migrations/env.py"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 [[mapping]]
@@ -856,6 +961,129 @@ source_glob = "src/app/workline/{models/line_run_epoch.py,repositories/line_run_
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+# 最小 execution owner 由独立 PostgreSQL 约束承接；设备 evidence 切换同时刷新既有 DeviceCommand 闭环。
+[[mapping]]
+source_glob = "src/app/execution/{__init__.py,composition.py,models/__init__.py,repositories/__init__.py,services/__init__.py}"
+heavy_tests = [
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/plugin_binding.py"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/execution/services/{decision_applier.py,fact_builder.py,fact_processor.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/inbound_evidence_execution_binding.py,models/rack_replacement_transport_binding.py,repositories/inbound_evidence_execution_binding_repository.py,repositories/rack_replacement_transport_binding_repository.py}"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/material_execution.py,repositories/material_execution_repository.py,services/material_execution_service.py}"
+heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_confirmation_repository.py,services/wms_confirmation_service.py}"
+heavy_tests = [
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/{models/inbound_evidence.py,repositories/inbound_evidence_repository.py,services/inbound_evidence_service.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260817_1325_72ecc4fd560f_add_phase8_decision_processing.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260817_2308_5695afa99545_闭合粗分持久触发.py"
+heavy_tests = [
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
+
+# Phase 8 静态插件装配、同事务 Fact 重建与持久触发由真实 execution/Celery/Transport owner 承接。
+[[mapping]]
+source_glob = "deployment/**"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+]
+
+[[mapping]]
+source_glob = "src/app/workline/epoch_digest.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260818_0131_ec18b2a79400_闭合粗分持久触发.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/rack_position_repository.py"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/__init__.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/execution.py"
+heavy_tests = [
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+]
+
+[[mapping]]
+source_glob = "src/celery_app/tasks/wms_confirmation.py"
+heavy_tests = [
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/resource/models/{__init__.py,resource.py}"
+heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260816_2248_48c71f31cafb_收敛执行对象.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 # Phase 5 已批准为 destructive removal：嵌入式插件包无核心行为 successor，仅由 FAST 缺席门禁验收。
@@ -1109,10 +1337,13 @@ heavy_tests = [
     "tests/integration/test_callback_external_payload_limit.py",
 ]
 
-# 唯一 Transport evidence route 由真实 broker、HTTP、route 与 PostgreSQL E2E 承接。
+# 唯一 WMS event route 同时静态分派 Transport 与粗分对账；不建立第二入口。
 [[mapping]]
 source_glob = "src/app/wms_adapter/v1/**"
-heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
 
 # Transport worker 只由 Transport 队列竞争与生产接线 E2E 承接。
 [[mapping]]
@@ -1128,7 +1359,16 @@ source_glob = "src/celery_app/app.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
     "tests/integration/test_transport_fulfillment_queue.py",
+]
+
+# 开发 wrapper 必须与生产 worker 使用同一队列声明，并由真实 Celery 接线承接。
+[[mapping]]
+source_glob = "src/celery_app/dev_worker_autoreload.sh"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
 ]
 
 # evidence 即时唤醒必须真实经过生产接线 E2E。
