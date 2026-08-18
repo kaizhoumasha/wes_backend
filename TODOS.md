@@ -95,6 +95,27 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 
 ## Reliability
 
+### 历史现场热修复的 Current-develop Successor
+
+**What:** 从当前 `develop` 重新实现并验证三个仍未闭合的现场缺口：树形 `parent_id` 与雪花主键类型一致、唯一空库角色 bootstrap owner，以及 API/Worker 跨进程就绪快照。
+
+**Why:** 历史 `codex/fix-0.12.0.1-fresh-db-migration` 分支不能整体合并，但审计确认当前 metadata 仍为 `BIGINT id / INTEGER parent_id`，初始化手册仍调用不存在的 `scripts/data/bootstrap_roles.py`，`/ready` 仍读取 API 进程内单例而 Celery 只更新 Worker 进程副本。
+
+**Scope:**
+
+- 先对 `TreeMixin`、Permission/Menu metadata、当前 migration chain 和 Phase 11 计划做影响分析；用新随机 migration 或 Phase 11 successor 解决，不复制历史 revision
+- 冻结 `init_production_base_data.sql`、`seed_initial_data.py`、角色/权限/菜单同步和管理员 bootstrap 的唯一 owner，修正文档与可执行路径分叉
+- 为 `/ready` 建立跨进程真实测试，明确共享快照、缺失/损坏/stale 的 fail-closed 语义；不直接复用历史 Redis 实现而跳过当前 Redis 降级评审
+- 每个行为先建立 current-develop RED，再做最小实现；禁止 cherry-pick 六个历史提交或恢复 `0.12` release 元数据
+
+**Depends on:** 当前 Phase 10/11 schema 边界确认；Redis 共享快照的 fail-closed 所有权批准；历史 bundle 与补丁审计保留。
+
+**Effort:** M
+
+**Priority:** P1
+
+---
+
 ### FAST 测试执行时间优化与 60 秒预算恢复
 
 **What:** 定位并消除 Transport、OpenAPI 和 callback 路由 FAST 测试中的重复应用初始化与重复装配，使 Jenkins
@@ -159,6 +180,28 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 **Effort:** M (human: ~1 day / CC: ~30 min)
 
 **Priority:** P3
+
+---
+
+### 空库 Checksums 与最小数据库角色
+
+**What:** 在 Phase 10 退出门禁通过、Phase 11 冻结最终 schema 后，为新建 PostgreSQL 数据目录评审 data checksums，并拆分 bootstrap/migrator/runtime 的最小权限角色。
+
+**Why:** 当前生产 Compose 仍使用同一 `POSTGRES_USER` 启动数据库、迁移和应用。直接在现场韧性计划中同时改角色、schema 和恢复流程会扩大故障面，并与 Phase 11 空库基线重置的所有权重叠。
+
+**Scope:**
+
+- 在独立空数据目录验证 checksums 初始化、检测和失败回滚，不转换旧数据目录
+- 定义 bootstrap、migrator、runtime 的 owner、连接变量和最小数据库/schema权限
+- 先建立空库角色与 Alembic successor 测试，再替换单一运行账号
+- 与 `docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` 的最终 schema manifest、空库迁移链和实施窗口联合评审
+- 不提供旧角色别名、兼容 wrapper、双账号回退或旧数据迁移路径
+
+**Depends on:** Phase 10 零旧生产路径退出；Phase 11 Task 1 冻结最终 schema 与专有对象；独立数据库安全 wrapper 可用。
+
+**Effort:** M
+
+**Priority:** P2
 
 ---
 

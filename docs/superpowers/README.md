@@ -25,12 +25,15 @@
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 粗分机参考插件的合同、SDK、可靠对象和业务闭环实施计划 | In progress — external blocked；Tasks 1–8、Task 9 仓内部署 E2E 与 Task 10 仓内收尾已完成，Task 9 供应商一致性/现场联合验收未运行 |
 | `plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Phase 5 后活动源码、诊断合同和当前 schema 中的退役插件身份收敛 | In progress；Tasks 1–5 已实施，Task 6 正在完成合入前门禁与独立复审；合入后执行 tombstone 清理和外部归档 |
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
+| `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
+| `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 
 ## 项目外历史归档
 
 以下文档已完成或已由当前设计取代，仅在项目外保留完整
 历史内容：
 
+- `../archive_docs/wes_backend/local-development/2026-08-18-fresh-db-migration-history/2026-08-17-onsite-data-resilience-and-runtime-stability.original.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-16-wes-transport-dto-contract-alignment.md`
 
