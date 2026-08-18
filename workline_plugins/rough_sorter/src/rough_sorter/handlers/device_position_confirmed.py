@@ -132,7 +132,7 @@ class DevicePositionConfirmedHandler:
             fact_id=fact.fact_id,
             operation=NG_PLACEMENT_OPERATION,
             operation_id=fact.request_operation_id or "",
-            evidence_refs=(fact.evidence_id,),
+            evidence_refs=tuple(dict.fromkeys((fact.evidence_id, fact.ng_evidence_id or ""))),
             snapshot_refs=(
                 f"execution:{fact.material_execution_id}",
                 f"command:{fact.command_code}",

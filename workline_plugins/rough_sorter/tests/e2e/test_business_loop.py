@@ -65,9 +65,48 @@ def _recent_past_timestamp_ms(now_seconds: float) -> int:
     return math.floor(now_seconds * 1000) - 100
 
 
+def _measurement_scan() -> dict[str, Any]:
+    return {
+        "device_code": "RS-E2E-MEASUREMENT",
+        "contract_key": "rough_sorter.measurement_device",
+        "contract_version": "1.0",
+        "event_type": "SCAN_COMPLETED",
+        "timestamp": int(time.time() * 1000),
+        "source_event_id": "RS-E2E-SCAN-001",
+        "trace_id": "RS-E2E-TRACE-001",
+        "data": {
+            "material_trace_id": TRACE_ID,
+            "LotCode": "LOT-001",
+            "DateCode": "20260818",
+            "Qty": "1",
+            "ProductNo": "PRODUCT-001",
+            "MfrPN": "MFR-001",
+            "PONumber": "PO-001",
+            "diameter_mm": "12.5",
+            "thickness_mm": "1.2",
+            "shape_result": "PASS",
+            "position": {
+                "location_id": "MEASUREMENT-1",
+                "location_type": "MEASUREMENT_POSITION",
+                "material_trace_id": TRACE_ID,
+            },
+        },
+    }
+
+
+def _released_event() -> threading.Event:
+    event = threading.Event()
+    event.set()
+    return event
+
+
 @dataclass(slots=True)
 class _BoundaryState:
     api_url: str = ""
+    admission_results: list[str] = field(default_factory=lambda: ["ACCEPT"])
+    admission_retry_after_ms: int = 500
+    admission_accept_release: threading.Event = field(default_factory=_released_event)
+    ecs_callback_release: threading.Event = field(default_factory=_released_event)
     wms_requests: list[dict[str, Any]] = field(default_factory=list)
     ecs_commands: list[dict[str, Any]] = field(default_factory=list)
     callback_errors: list[str] = field(default_factory=list)
@@ -112,15 +151,40 @@ class _WmsStubHandler(_JsonHandler):
             return
         with self.state.lock:
             self.state.wms_requests.append(request)
+            if operation == "inbound.material.admission_decide@v1":
+                if not self.state.admission_results:
+                    self._write_json(500, {"error": "unexpected admission request"})
+                    return
+                admission_result = self.state.admission_results.pop(0)
         common = {
             "operation_id": request["operation_id"],
             "timestamp": int(time.time() * 1000),
         }
         if operation == "inbound.material.admission_decide@v1":
-            response = common | {
-                "code": "DECIDED",
-                "data": {"result": "ACCEPT", "pkg_id": "PKG-RS-E2E-001", "inbound_admission_id": "ADM-RS-E2E-001"},
-            }
+            if admission_result == "WAIT":
+                response = common | {
+                    "code": "DECIDED",
+                    "data": {
+                        "result": "WAIT",
+                        "reason_code": "CELL_PENDING",
+                        "retry_after_ms": self.state.admission_retry_after_ms,
+                    },
+                }
+            elif admission_result == "ACCEPT":
+                if not self.state.admission_accept_release.wait(timeout=API_TIMEOUT_SECONDS):
+                    self._write_json(504, {"error": "timed out waiting to release admission ACCEPT"})
+                    return
+                response = common | {
+                    "code": "DECIDED",
+                    "data": {
+                        "result": "ACCEPT",
+                        "pkg_id": "PKG-RS-E2E-001",
+                        "inbound_admission_id": "ADM-RS-E2E-001",
+                    },
+                }
+            else:
+                self._write_json(500, {"error": f"unsupported admission result: {admission_result}"})
+                return
         elif operation == "inbound.material.target_decide@v1":
             response = common | {
                 "code": "DECIDED",
@@ -187,6 +251,10 @@ class _EcsStubHandler(_JsonHandler):
         threading.Thread(target=self._callback_success, args=(command,), daemon=True).start()
 
     def _callback_success(self, command: dict[str, Any]) -> None:
+        if not self.state.ecs_callback_release.wait(timeout=API_TIMEOUT_SECONDS):
+            with self.state.lock:
+                self.state.callback_errors.append("timed out waiting to release ECS callback")
+            return
         time.sleep(0.4)
         callback = {
             "command_code": command["command_code"],
@@ -454,6 +522,16 @@ class _DockerStack:
     def query(self, sql: str) -> str:
         return _run("docker", "exec", self.db, "psql", "-U", "wes", "-d", "wes", "-At", "-c", sql).stdout.strip()
 
+    def wait_query(self, sql: str, expected: str, *, timeout: float = API_TIMEOUT_SECONDS) -> None:
+        deadline = time.monotonic() + timeout
+        actual = ""
+        while time.monotonic() < deadline:
+            actual = self.query(sql)
+            if actual == expected:
+                return
+            time.sleep(0.5)
+        raise AssertionError(f"query did not reach {expected!r}; actual={actual!r}\n{self.diagnostics()}")
+
     def diagnostics(self) -> str:
         state = self.query(
             "SELECT 'execution=' || coalesce(string_agg(execution_code || ':' || status || ':' || "
@@ -482,6 +560,28 @@ class _DockerStack:
 
     def worker_logs(self) -> str:
         return self._complete_log(self.worker)[0]
+
+    def log_occurrences(self, name: str, marker: str) -> int:
+        return sum(marker in line and " succeeded in " in line for line in self._complete_log(name)[0].splitlines())
+
+    def wait_log_occurrences(
+        self,
+        name: str,
+        marker: str,
+        minimum: int,
+        *,
+        timeout: float = API_TIMEOUT_SECONDS,
+    ) -> None:
+        deadline = time.monotonic() + timeout
+        actual = 0
+        while time.monotonic() < deadline:
+            actual = self.log_occurrences(name, marker)
+            if actual >= minimum:
+                return
+            if _run("docker", "inspect", "-f", "{{.State.Running}}", name, check=False).stdout.strip() != "true":
+                break
+            time.sleep(0.5)
+        raise AssertionError(f"log marker {marker!r} did not reach {minimum}; actual={actual}\n{self.diagnostics()}")
 
     def persist_logs(self) -> None:
         for name in (self.api, self.worker, self.fulfillment):
@@ -636,6 +736,100 @@ def test_ecs_status_timestamp_is_recent_past_despite_one_millisecond_sampling_sk
     assert 0 < wes_observed_at_ms - status_timestamp_ms < 600_000
 
 
+def test_wms_wait_creates_new_due_operation_without_device_command_then_closes() -> None:
+    accept_release = threading.Event()
+    state = _BoundaryState(admission_results=["WAIT", "ACCEPT"], admission_accept_release=accept_release)
+    with _serve(_WmsStubHandler, state) as wms_port, _serve(_EcsStubHandler, state) as ecs_port:
+        stack = _DockerStack(wms_port=wms_port, ecs_port=ecs_port)
+        try:
+            stack.start()
+            state.api_url = f"http://127.0.0.1:{stack.api_port}"
+            stack.seed_initial_environment()
+            assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
+
+            deadline = time.monotonic() + API_TIMEOUT_SECONDS
+            admission_requests: list[dict[str, Any]] = []
+            while time.monotonic() < deadline:
+                with state.lock:
+                    admission_requests = [
+                        item
+                        for item in state.wms_requests
+                        if item["operation"] == "inbound.material.admission_decide@v1"
+                    ]
+                if len(admission_requests) == 2:
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail(f"follow-up admission request was not observed\n{stack.diagnostics()}")
+
+            assert (
+                stack.query(
+                    "SELECT count(*) FROM wes_biz.wms_confirmations "
+                    "WHERE operation = 'inbound.material.admission_decide@v1' AND status = 'COMPLETED'"
+                )
+                == "1"
+            )
+            assert stack.query("SELECT count(*) FROM wes_biz.device_commands") == "0"
+            assert len({item["operation_id"] for item in admission_requests}) == 2
+
+            accept_release.set()
+            stack.wait_query(
+                f"SELECT status FROM wes_biz.material_executions WHERE material_trace_id = '{TRACE_ID}'",
+                "CLOSED",
+            )
+            assert state.callback_errors == []
+            assert (
+                stack.query(
+                    "SELECT count(*) || ':' || count(DISTINCT operation_id) "
+                    "FROM wes_biz.wms_confirmations "
+                    "WHERE operation = 'inbound.material.admission_decide@v1'"
+                )
+                == "2:2"
+            )
+        finally:
+            accept_release.set()
+            stack.close()
+
+
+def test_ecs_ack_does_not_replay_command_while_callback_is_withheld() -> None:
+    callback_release = threading.Event()
+    state = _BoundaryState(ecs_callback_release=callback_release)
+    with _serve(_WmsStubHandler, state) as wms_port, _serve(_EcsStubHandler, state) as ecs_port:
+        stack = _DockerStack(wms_port=wms_port, ecs_port=ecs_port)
+        try:
+            stack.start()
+            state.api_url = f"http://127.0.0.1:{stack.api_port}"
+            stack.seed_initial_environment()
+            assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
+
+            command_state_sql = (
+                "SELECT status || ':' || attempt_count::text FROM wes_biz.device_commands ORDER BY created_at LIMIT 1"
+            )
+            stack.wait_query(command_state_sql, "ACKNOWLEDGED:1")
+            with state.lock:
+                assert len(state.ecs_commands) == 1
+                first_command_code = state.ecs_commands[0]["command_code"]
+
+            marker = "Task src.celery_app.tasks.device_command.dispatch_device_commands_batch"
+            completed_before = stack.log_occurrences(stack.worker, marker)
+            stack.wait_log_occurrences(stack.worker, marker, completed_before + 1)
+
+            assert stack.query(command_state_sql) == "ACKNOWLEDGED:1"
+            with state.lock:
+                assert [item["command_code"] for item in state.ecs_commands] == [first_command_code]
+
+            callback_release.set()
+            stack.wait_query(
+                f"SELECT status FROM wes_biz.material_executions WHERE material_trace_id = '{TRACE_ID}'",
+                "CLOSED",
+            )
+            stack.persist_logs()
+            assert state.callback_errors == []
+        finally:
+            callback_release.set()
+            stack.close()
+
+
 def test_installed_plugin_closes_one_material_through_public_ingress_and_real_workers() -> None:
     """Prove the installed plugin loop, not supplier or onsite acceptance."""
 
@@ -646,33 +840,7 @@ def test_installed_plugin_closes_one_material_through_public_ingress_and_real_wo
             stack.start()
             state.api_url = f"http://127.0.0.1:{stack.api_port}"
             stack.seed_initial_environment()
-            scan = {
-                "device_code": "RS-E2E-MEASUREMENT",
-                "contract_key": "rough_sorter.measurement_device",
-                "contract_version": "1.0",
-                "event_type": "SCAN_COMPLETED",
-                "timestamp": int(time.time() * 1000),
-                "source_event_id": "RS-E2E-SCAN-001",
-                "trace_id": "RS-E2E-TRACE-001",
-                "data": {
-                    "material_trace_id": TRACE_ID,
-                    "LotCode": "LOT-001",
-                    "DateCode": "20260818",
-                    "Qty": "1",
-                    "ProductNo": "PRODUCT-001",
-                    "MfrPN": "MFR-001",
-                    "PONumber": "PO-001",
-                    "diameter_mm": "12.5",
-                    "thickness_mm": "1.2",
-                    "shape_result": "PASS",
-                    "position": {
-                        "location_id": "MEASUREMENT-1",
-                        "location_type": "MEASUREMENT_POSITION",
-                        "material_trace_id": TRACE_ID,
-                    },
-                },
-            }
-            assert _json_request(f"{state.api_url}/api/v1/callback/event", scan)["code"] == 200
+            assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
 
             deadline = time.monotonic() + API_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
