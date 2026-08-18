@@ -38,6 +38,7 @@ async def completed_response(
     db: object,
     execution: MaterialExecution,
     operation: str,
+    required_result: str,
     confirmations: WmsConfirmationRepositoryPort,
     evidences: EvidenceRepositoryPort,
 ) -> dict[str, Any]:
@@ -47,7 +48,10 @@ async def completed_response(
     matches = tuple(
         item
         for item in records
-        if item.operation == operation and item.status == "COMPLETED" and item.response_evidence_id is not None
+        if item.operation == operation
+        and item.status == "COMPLETED"
+        and item.response_result == required_result
+        and item.response_evidence_id is not None
     )
     if len(matches) != 1:
         raise ValueError(f"execution completed {operation} confirmation missing or ambiguous")
@@ -158,13 +162,14 @@ async def build_device_fact(
             outcome=types.DeviceOutcome.SUCCESS,
             actual_position=actual,
             next_position=bound_position(runtime, "PIPELINE_OUTLET", execution.material_trace_id),
-            next_device_ready=await readiness.is_ready(db, transfer, observed_at=evidence.received_at),
+            next_device_ready=await readiness.is_ready(db, transfer),
         )
     if step is types.DeviceStep.TRANSFER_TO_OUTLET:
         admission_data = await completed_response(
             db=db,
             execution=execution,
             operation="inbound.material.admission_decide@v1",
+            required_result="ACCEPT",
             confirmations=confirmations,
             evidences=evidences,
         )
@@ -184,6 +189,7 @@ async def build_device_fact(
             db=db,
             execution=execution,
             operation="inbound.material.admission_decide@v1",
+            required_result="ACCEPT",
             confirmations=confirmations,
             evidences=evidences,
         )
@@ -191,6 +197,7 @@ async def build_device_fact(
             db=db,
             execution=execution,
             operation="inbound.material.target_decide@v1",
+            required_result="ASSIGNED",
             confirmations=confirmations,
             evidences=evidences,
         )

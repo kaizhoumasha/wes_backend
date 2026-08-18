@@ -13,6 +13,7 @@ from src.app.execution.repositories import inbound_evidence_repository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from src.app.device.models.command import DeviceCommand
@@ -109,28 +110,29 @@ class DeviceReadinessReader(Protocol):
         self,
         db: Any,
         binding: LineRunEpochDeviceBinding,
-        *,
-        observed_at: datetime,
     ) -> bool: ...
 
 
 class PersistedDeviceReadinessReader:
     """只用冻结合同与已持久 ECS status observation 判断设备准入。"""
 
-    def __init__(self, repository: DeviceStatusRepositoryPort = device_status_observation_repository) -> None:
+    def __init__(
+        self,
+        repository: DeviceStatusRepositoryPort = device_status_observation_repository,
+        clock: Callable[[], datetime] = timezone.now_for_db,
+    ) -> None:
         self._repository = repository
+        self._clock = clock
 
     async def is_ready(
         self,
         db: object,
         binding: LineRunEpochDeviceBinding,
-        *,
-        observed_at: datetime,
     ) -> bool:
         status = await self._repository.get_latest_for_device(db, binding.device_code)
         if status is None:
             return False
-        observed_at_ms = int(timezone.to_utc(observed_at).timestamp() * 1000)
+        observed_at_ms = int(timezone.to_utc(self._clock()).timestamp() * 1000)
         return (
             status.contract_key == binding.contract_key
             and status.contract_version == binding.contract_version

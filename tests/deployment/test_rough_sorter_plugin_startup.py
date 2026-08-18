@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +20,8 @@ from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
 
+from deployment._rough_sorter_device_facts import completed_response
+from deployment._rough_sorter_persistence import PersistedDeviceReadinessReader
 from deployment._rough_sorter_transport import RoughSorterTransportOutcomePublisher
 from deployment.rough_sorter_composition import (
     RoughSorterInitialExecutionCorrelator,
@@ -27,6 +29,7 @@ from deployment.rough_sorter_composition import (
     RoughSorterWmsConfirmationRequestResolver,
 )
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
@@ -157,10 +160,137 @@ class _Confirmations:
         ]
 
 
+@pytest.mark.asyncio
+async def test_completed_response_selects_required_terminal_result_after_retry_decision() -> None:
+    operation = "inbound.material.target_decide@v1"
+    first_operation_id = "019d0000-0000-7000-8000-000000000041"
+    second_operation_id = "019d0000-0000-7000-8000-000000000042"
+    execution = MaterialExecution(
+        id=21,
+        execution_code="EXEC-21",
+        material_trace_id="TRACE-21",
+        workline_id=7,
+        line_run_epoch_id=11,
+        status=MaterialExecutionStatus.RUNNING,
+        last_transition_reason="RUNNING",
+        last_transition_evidence_id=31,
+        status_changed_at=NOW,
+    )
+    responses = (
+        InboundEvidence(
+            id=40,
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity="target:no-cell",
+            payload_digest="a" * 64,
+            normalized_payload={
+                "operation_id": first_operation_id,
+                "code": "DECIDED",
+                "timestamp": 1_787_040_000_000,
+                "data": {"result": "NO_AVAILABLE_CELL"},
+            },
+            received_at=NOW,
+            line_run_epoch_id=11,
+            material_execution_id=21,
+            contract_key="rough_sorter_inbound",
+            contract_version="1.0",
+            operation=operation,
+            operation_id=first_operation_id,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        ),
+        InboundEvidence(
+            id=41,
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity="target:assigned",
+            payload_digest="b" * 64,
+            normalized_payload={
+                "operation_id": second_operation_id,
+                "code": "DECIDED",
+                "timestamp": 1_787_040_000_001,
+                "data": {
+                    "result": "ASSIGNED",
+                    "target_assignment_id": "A-1",
+                    "target_position": {
+                        "type": "ONE_LAYER_BIN_CELL",
+                        "rack_id": "R-1",
+                        "rack_slot_code": "S-1",
+                        "bin_id": "B-1",
+                        "bin_cell_id": "C-1",
+                    },
+                    "placement_sequence": 1,
+                    "expected_height_mm": "1.0",
+                },
+            },
+            received_at=NOW,
+            line_run_epoch_id=11,
+            material_execution_id=21,
+            contract_key="rough_sorter_inbound",
+            contract_version="1.0",
+            operation=operation,
+            operation_id=second_operation_id,
+            apply_status=InboundEvidenceApplyStatus.APPLIED,
+        ),
+    )
+    confirmations = tuple(
+        WmsConfirmation(
+            id=60 + index,
+            operation=operation,
+            operation_id=operation_id,
+            material_execution_id=21,
+            request_digest="c" * 64,
+            request_payload={},
+            deadline_at=NOW,
+            status=WmsConfirmationStatus.COMPLETED,
+            response_evidence_id=39 + index,
+            response_result=result,
+            completed_at=NOW,
+        )
+        for index, (operation_id, result) in enumerate(
+            ((first_operation_id, "NO_AVAILABLE_CELL"), (second_operation_id, "ASSIGNED")), start=1
+        )
+    )
+
+    data = await completed_response(
+        db=object(),
+        execution=execution,
+        operation=operation,
+        required_result="ASSIGNED",
+        confirmations=_Confirmations(confirmations[0], confirmations[1]),
+        evidences=_Evidences(responses[0], responses[1]),
+    )
+
+    assert data["result"] == "ASSIGNED"
+
+
 class _Readiness:
-    async def is_ready(self, db: object, binding: object, *, observed_at: datetime) -> bool:
-        del db, binding, observed_at
+    async def is_ready(self, db: object, binding: object) -> bool:
+        del db, binding
         return True
+
+
+@pytest.mark.asyncio
+async def test_deferred_readiness_uses_retry_processing_time() -> None:
+    status = DeviceStatusObservation(
+        device_code="DEVICE-1",
+        contract_key="rough_sorter.measurement_device",
+        contract_version="1.0",
+        mode="AUTO",
+        status="IDLE",
+        current_command_code=None,
+        device_timestamp=1_787_040_001_000,
+        received_at=NOW,
+        payload_digest="a" * 64,
+        raw_payload={},
+    )
+    repository = type("_Statuses", (), {"get_latest_for_device": lambda self, db, code: _async_value(status)})()
+    reader = PersistedDeviceReadinessReader(
+        repository=repository, clock=lambda: datetime.fromtimestamp(1_787_040_001.5, UTC)
+    )
+
+    assert await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
+
+
+async def _async_value(value: object) -> object:
+    return value
 
 
 class _Commands:

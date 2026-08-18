@@ -1,5 +1,7 @@
 import asyncio
+import os
 import time
+from multiprocessing import Value
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -309,6 +311,40 @@ def test_execution_worker_child_startup_allows_epoch_gate_success(monkeypatch) -
     app_module.on_worker_process_init()
 
     gate.assert_awaited_once_with()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="Celery production prefork requires POSIX fork")
+def test_replacement_execution_worker_child_does_not_repeat_epoch_restart_gate_across_forks(monkeypatch) -> None:
+    from src.celery_app import app as app_module
+
+    gate_calls = Value("i", 0)
+
+    def run_gate_once(_factory: object) -> None:
+        with gate_calls.get_lock():
+            gate_calls.value += 1
+
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
+    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", run_gate_once)
+    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
+    app_module._execution_restart_gate_passed.value = False
+
+    child_pids: list[int] = []
+    for _ in range(2):
+        child_pid = os.fork()
+        if child_pid == 0:
+            try:
+                app_module.on_worker_process_init()
+            except BaseException:
+                os._exit(1)
+            os._exit(0)
+        child_pids.append(child_pid)
+
+    statuses = [os.waitpid(child_pid, 0)[1] for child_pid in child_pids]
+
+    assert all(os.waitstatus_to_exitcode(status) == 0 for status in statuses)
+    assert gate_calls.value == 1
 
 
 def test_fulfillment_child_does_not_run_execution_epoch_gate(monkeypatch) -> None:

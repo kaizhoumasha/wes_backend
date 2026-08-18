@@ -1354,6 +1354,14 @@ heavy_tests = [
     "tests/integration/test_transport_fulfillment_queue.py",
 ]
 
+# 开发 wrapper 必须与生产 worker 使用同一队列声明，并由真实 Celery 接线承接。
+[[mapping]]
+source_glob = "src/celery_app/dev_worker_autoreload.sh"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]
+
 # evidence 即时唤醒必须真实经过生产接线 E2E。
 [[mapping]]
 source_glob = "src/core/task_queue_gateway.py"

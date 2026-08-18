@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from wes_plugin_sdk import (
     DevicePosition,
     DeviceResultReadyFact,
@@ -21,6 +23,9 @@ from src.app.execution.models import (
     MaterialExecutionStatus,
 )
 
+if TYPE_CHECKING:
+    from src.app.workline.models import LineRunEpochPositionBinding
+
 
 class FactBuilder:
     """只从持久化身份和已关联对象构建 Fact，不解释供应商私有字段。"""
@@ -31,6 +36,7 @@ class FactBuilder:
         execution: MaterialExecution,
         *,
         causal_evidence: InboundEvidence | None = None,
+        position_bindings: tuple[LineRunEpochPositionBinding, ...] = (),
     ) -> FactReference:
         self._validate_correlations(evidence, execution)
         fact_id = f"evidence:{evidence.id}"
@@ -62,7 +68,7 @@ class FactBuilder:
                 transport_task_id=_required(evidence.transport_task_id, "transport_task_id"),
             )
         if kind is InboundEvidenceKind.WMS_EVENT:
-            return self._build_recovery(evidence, execution, common)
+            return self._build_recovery(evidence, execution, common, position_bindings)
         raise ValueError(f"不支持的 InboundEvidence kind: {kind}")
 
     @staticmethod
@@ -70,6 +76,7 @@ class FactBuilder:
         evidence: InboundEvidence,
         execution: MaterialExecution,
         common: dict[str, str],
+        position_bindings: tuple[LineRunEpochPositionBinding, ...],
     ) -> RecoveryDecidedFact:
         if evidence.operation != "inbound.execution.recovery_decided@v1":
             raise ValueError("WMS_EVENT 只接受 recovery_decided operation")
@@ -98,7 +105,9 @@ class FactBuilder:
             **common,
             recovery_id=_required_string(data.get("recovery_id"), "recovery_id"),
             decision=decision,
-            authoritative_position=_device_position(data.get("authoritative_position"), execution.material_trace_id),
+            authoritative_position=_device_position(
+                data.get("authoritative_position"), execution.material_trace_id, position_bindings
+            ),
             reason_code=_required_string(data.get("reason_code"), "reason_code"),
         )
 
@@ -153,17 +162,27 @@ def _required_string(value: object, field_name: str) -> str:
     return _required(value if isinstance(value, str) else None, field_name)
 
 
-def _device_position(value: object, material_trace_id: str) -> DevicePosition | None:
+def _device_position(
+    value: object,
+    material_trace_id: str,
+    position_bindings: tuple[LineRunEpochPositionBinding, ...],
+) -> DevicePosition | None:
     if value is None:
         return None
     if not isinstance(value, dict):
         raise TypeError("authoritative_position must be an object or null")
-    location_type = _required_string(value.get("type"), "authoritative_position.type")
-    location_id_value = (
-        value.get("location_code") if location_type != "ONE_LAYER_BIN_CELL" else value.get("bin_cell_id")
-    )
+    wire_type = _required_string(value.get("type"), "authoritative_position.type")
+    location_id_value = value.get("location_code") if wire_type != "ONE_LAYER_BIN_CELL" else value.get("bin_cell_id")
+    location_id = _required_string(location_id_value, "authoritative_position identity")
+    if wire_type == "ONE_LAYER_BIN_CELL":
+        location_type = "RACK_CELL"
+    else:
+        matches = tuple(binding for binding in position_bindings if binding.location_id == location_id)
+        if len(matches) != 1:
+            raise ValueError("authoritative HANDOFF_POSITION must match one active Epoch position binding")
+        location_type = matches[0].location_type
     return DevicePosition(
-        location_id=_required_string(location_id_value, "authoritative_position identity"),
+        location_id=location_id,
         location_type=location_type,
         material_trace_id=material_trace_id,
         rack_id=value.get("rack_id") if isinstance(value.get("rack_id"), str) else None,

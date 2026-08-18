@@ -22,6 +22,7 @@ from src.app.execution.models import (
     MaterialExecution,
     MaterialExecutionStatus,
 )
+from src.app.workline.models import LineRunEpochPositionBinding
 
 
 def _builder():
@@ -207,6 +208,62 @@ def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() 
     execution.last_transition_evidence_id = 32
     with pytest.raises(ValueError, match="current execution fence"):
         _builder().build(evidence, execution)
+
+
+@pytest.mark.parametrize(
+    ("wire_position", "bindings", "expected_type"),
+    [
+        (
+            {"type": "HANDOFF_POSITION", "location_code": "OUTLET-1"},
+            (
+                LineRunEpochPositionBinding(
+                    line_run_epoch_id=11,
+                    position_role="PIPELINE_OUTLET",
+                    location_id="OUTLET-1",
+                    location_type="PIPELINE_OUTLET",
+                ),
+            ),
+            "PIPELINE_OUTLET",
+        ),
+        (
+            {
+                "type": "ONE_LAYER_BIN_CELL",
+                "rack_id": "RACK-1",
+                "rack_slot_code": "SLOT-1",
+                "bin_id": "BIN-1",
+                "bin_cell_id": "CELL-1",
+            },
+            (),
+            "RACK_CELL",
+        ),
+    ],
+)
+def test_recovery_position_is_normalized_before_plugin_dispatch(
+    wire_position: dict[str, str], bindings: tuple[LineRunEpochPositionBinding, ...], expected_type: str
+) -> None:
+    execution = _execution()
+    execution.status = MaterialExecutionStatus.RECONCILING
+    evidence = _evidence(
+        InboundEvidenceKind.WMS_EVENT,
+        operation="inbound.execution.recovery_decided@v1",
+        operation_id="019cd8ce-34b7-7000-8000-000000000001",
+        normalized_payload={
+            "data": {
+                "recovery_id": "REC-1",
+                "material_execution_id": "EXEC-001",
+                "material_trace_id": "TRACE-001",
+                "reconciling_evidence_id": "30",
+                "decision": "CONTINUE",
+                "authoritative_position": wire_position,
+                "reason_code": "CONTINUE",
+            }
+        },
+    )
+
+    fact = _builder().build(evidence, execution, position_bindings=bindings)
+
+    assert fact.authoritative_position is not None
+    assert fact.authoritative_position.location_type == expected_type
 
 
 @pytest.mark.parametrize(

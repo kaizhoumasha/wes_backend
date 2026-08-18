@@ -142,6 +142,30 @@ def test_outlet_success_requests_target_cell_and_does_not_place_early() -> None:
     )
 
 
+@pytest.mark.parametrize("step", [DeviceStep.MEASUREMENT_TO_NG, DeviceStep.PLACEMENT_TO_NG])
+def test_ng_report_references_callback_evidence_once(step: DeviceStep) -> None:
+    ng = _position("ng-1", "NG_POSITION")
+    fact = _device_fact(
+        step,
+        device_role="MEASUREMENT_DEVICE" if step is DeviceStep.MEASUREMENT_TO_NG else "PLACEMENT_DEVICE",
+        source_position=(
+            _position("measurement", "MEASUREMENT_POSITION")
+            if step is DeviceStep.MEASUREMENT_TO_NG
+            else _position("pipeline-outlet", "PIPELINE_OUTLET")
+        ),
+        target_position=ng,
+        actual_position=ng,
+        request_operation_id="019d0000-0000-7000-8000-000000000009",
+        ng_evidence_id="3",
+        reason_code="QUALITY_NG",
+    )
+
+    decision = DevicePositionConfirmedHandler()(fact)[0]
+
+    assert isinstance(decision, CreateWmsConfirmation)
+    assert decision.evidence_refs == ("3",)
+
+
 @pytest.mark.parametrize(
     ("outcome", "reason_code"),
     [

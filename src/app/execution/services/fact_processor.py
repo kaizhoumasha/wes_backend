@@ -62,6 +62,8 @@ class ExecutionRepositoryPort(Protocol):
 class EpochRepositoryPort(Protocol):
     async def get_by_id_for_update(self, db: object, line_run_epoch_id: int) -> LineRunEpoch | None: ...
 
+    async def list_position_bindings(self, db: object, line_run_epoch_id: int) -> list[object]: ...
+
 
 class InitialExecutionServicePort(Protocol):
     async def create_or_get_for_initial_evidence(self, db: object, **kwargs: object) -> MaterialExecution: ...
@@ -333,10 +335,20 @@ class FactProcessor:
             and MaterialExecutionStatus(execution.status) is MaterialExecutionStatus.RECONCILING
         ):
             causal_evidence = await self._evidences.get_by_id_for_update(db, execution.last_transition_evidence_id)
+        position_bindings = (
+            tuple(await self._epochs.list_position_bindings(db, epoch.id))
+            if evidence.kind == InboundEvidenceKind.WMS_EVENT
+            else ()
+        )
         fact = await self._augment_fact(
             db,
             epoch,
-            self._fact_builder.build(evidence, execution, causal_evidence=causal_evidence),
+            self._fact_builder.build(
+                evidence,
+                execution,
+                causal_evidence=causal_evidence,
+                position_bindings=position_bindings,
+            ),
         )
         return (_PreparedFact(fact, epoch.plugin_key, epoch.plugin_version, execution),)
 

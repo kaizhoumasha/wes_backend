@@ -154,6 +154,7 @@ class RoughSorterWmsConfirmationRequestResolver:
                 db=db,
                 execution=execution,
                 operation="inbound.material.admission_decide@v1",
+                required_result="ACCEPT",
                 confirmations=self._wms_confirmations,
                 evidences=self._evidences,
             )
@@ -176,6 +177,7 @@ class RoughSorterWmsConfirmationRequestResolver:
                 db=db,
                 execution=execution,
                 operation="inbound.material.admission_decide@v1",
+                required_result="ACCEPT",
                 confirmations=self._wms_confirmations,
                 evidences=self._evidences,
             )
@@ -183,6 +185,7 @@ class RoughSorterWmsConfirmationRequestResolver:
                 db=db,
                 execution=execution,
                 operation="inbound.material.target_decide@v1",
+                required_result="ASSIGNED",
                 confirmations=self._wms_confirmations,
                 evidences=self._evidences,
             )

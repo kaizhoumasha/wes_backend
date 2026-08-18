@@ -195,6 +195,7 @@ async def build_transport_fact(
         db=db,
         execution=execution,
         operation="inbound.material.admission_decide@v1",
+        required_result="ACCEPT",
         confirmations=confirmations,
         evidences=evidences,
     )
@@ -291,7 +292,7 @@ async def build_recovery_fact(
                     task_type=command.task_type,
                     source=source,
                     target=target,
-                    device_ready=await readiness.is_ready(db, binding, observed_at=evidence.received_at),
+                    device_ready=await readiness.is_ready(db, binding),
                 ),
             )
         if authoritative != target:

@@ -143,7 +143,7 @@ async def build_admission_fact(
     )
     if persisted is None or persisted.device_code != binding.device_code:
         raise ValueError("measurement device binding drift")
-    device_ready = await readiness.is_ready(db, persisted, observed_at=evidence.received_at)
+    device_ready = await readiness.is_ready(db, persisted)
     common: dict[str, Any] = {
         "fact_id": fact.fact_id,
         "evidence_id": fact.evidence_id,
@@ -406,7 +406,7 @@ async def build_target_fact(
     )
     if persisted is None:
         raise ValueError("placement device binding missing")
-    device_ready = await readiness.is_ready(db, persisted, observed_at=evidence.received_at)
+    device_ready = await readiness.is_ready(db, persisted)
     common: dict[str, Any] = {
         "fact_id": fact.fact_id,
         "evidence_id": fact.evidence_id,

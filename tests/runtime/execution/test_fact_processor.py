@@ -28,7 +28,7 @@ from src.app.execution.plugin_binding import (
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.execution.services.fact_processor import FactProcessor
 from src.app.execution.services.material_execution_service import MaterialExecutionService
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
+from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochPositionBinding, LineRunEpochStatus
 
 NOW = datetime(2026, 8, 17, 10, 0, 0)
 
@@ -102,6 +102,19 @@ class _Epochs:
     async def get_by_id_for_update(self, db: object, line_run_epoch_id: int) -> LineRunEpoch | None:
         del db
         return self.epoch if line_run_epoch_id == 11 else None
+
+    async def list_position_bindings(self, db: object, line_run_epoch_id: int) -> list[LineRunEpochPositionBinding]:
+        del db
+        if line_run_epoch_id != 11:
+            return []
+        return [
+            LineRunEpochPositionBinding(
+                line_run_epoch_id=11,
+                position_role="PIPELINE_OUTLET",
+                location_id="LINE-OUT",
+                location_type="PIPELINE_OUTLET",
+            )
+        ]
 
 
 class _Executions:
