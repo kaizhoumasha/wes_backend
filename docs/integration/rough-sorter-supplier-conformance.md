@@ -10,9 +10,9 @@
 
 | 项目 | 值 |
 | --- | --- |
-| WES Commit | `cfa9b89b5e70087b53abc3420b3fbb8e5f59af68` |
+| WES Commit | `a3a801d4e93d56334b38ab084851e91cf456e8a2` |
 | 插件 / SDK 版本 | `wes-rough-sorter-plugin 1.0.0` / `wes-plugin-sdk 0.1.0` |
-| 后端镜像 | `sha256:96b0a43c5421a979c959932bea618b74145d8fea9789aa1e77208403e88fa23b`；OCI revision/source-manifest 已与当前 Commit/tree 严格匹配 |
+| 后端镜像 | `sha256:471305f490c2abe1c29baeaa064c20361fb9f34c1b5ce8b2cfb7268e25b41b1f`；OCI revision/source-manifest 已与上述 WES Commit/tree 严格匹配 |
 | 仓库部署 E2E | PASS；`8 passed, 0 skipped`；真实 WES HTTP、PostgreSQL、Redis、Celery/Beat，WMS 与 ECS 均为明确 mock 边界 |
 | 供应商一致性 | NOT RUN；无真实供应商实现参与 |
 
