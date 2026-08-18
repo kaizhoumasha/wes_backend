@@ -3,7 +3,7 @@ status: Approved
 implementation_authorization: true
 annex_key: rough-sorter-device-contract
 contract_version: "1.0"
-approved_at: 2026-08-16
+approved_at: 2026-08-19
 scope: Phase 8 粗分机测量、输送和出料设备统一合同
 owners: [ECS, WES, 业务负责人, 项目交付负责人]
 ---
@@ -24,7 +24,7 @@ WES wire；供应商私有路径、坐标、字段、错误和适配只留在 EC
 
 ## 2. WorkLine、角色与合同身份
 
-一个 WorkLine 只对应一个 ECS。`device_code` 全厂唯一；每个 WorkLine 各绑定一个以下角色：
+`device_code` 全厂唯一；每个 WorkLine 各绑定一个以下角色：
 
 | `device_role` | `contract_key` | 允许能力 |
 | --- | --- | --- |
@@ -37,20 +37,51 @@ WES wire；供应商私有路径、坐标、字段、错误和适配只留在 EC
 
 ## 3. Endpoint、设备与 Epoch 绑定
 
-每个部署实例必须把以下不可变值写入现有 `LineRunEpochDeviceBinding` 并参与 Epoch digest：
+`Device.endpoint_base_url` 是可派发物理设备的 Endpoint 主数据；纯上报、人工或逻辑设备允许为空。多个 Device 可以共享同一
+Endpoint，同一 WorkLine 内的 Device 也可以分别指向不同 Endpoint。Endpoint 不属于插件配置，不新增 `DeviceEndpoint` 实体。
+
+每个部署实例必须把派发链实际读取的不可变值写入现有 `LineRunEpochDeviceBinding`。`topology_digest` 只摘要创建前即可形成的稳定
+topology input，不摘要数据库生成的 `line_run_epoch_id`、`device_id`、binding 主键、审计字段或时间戳；父 Epoch 关联仍必须持久化，
+但它不是 topology 内容。Device 的稳定摘要输入包含 `device_code`、`device_role`、Endpoint、合同身份和派发策略，Position 的稳定摘要输入
+包含角色、`location_id` 和固定 `location_type`：
 
 | 绑定项 | 规则 |
 | --- | --- |
-| `workline_id`、`device_role` | 每个 WorkLine 三个角色各一个绑定 |
+| `line_run_epoch_id` | 指向父 Epoch；WorkLine 归属由 `LineRunEpoch.workline_id` 唯一确定，不重复保存 `workline_id` |
+| `device_role` | 每个 WorkLine 三个角色各一个绑定 |
 | `device_code` | 全厂唯一；不能用 Endpoint 数量替代设备身份 |
-| `endpoint_code`、Endpoint Base URL | 指向该 WorkLine 唯一 ECS；固定路径不进入配置 |
+| Endpoint Base URL | 从可派发 `Device` 复制；必须为非空局域网 HTTP origin，固定路径不进入配置 |
 | `contract_key`、`contract_version=1.0` | 必须与状态接口返回值一致 |
-| ECS/网关版本、设备/固件版本 | 必须等于通过供应商一致性验收的版本 |
 | `status_max_age_ms`、`command_timeout_ms` | 正整数；值来自该部署验收包，不进入命令 `params` |
-| 时间来源、允许时钟偏差、回调重传窗口、证据保留期 | 必须由该部署验收包冻结 |
 
-活动 Epoch 内任何绑定值变化都必须停止新接纳、闭合或人工清理活动对象，形成新附录/验收版本并创建新 Epoch；不得静默替换，
-也不新增数据库插件注册表。
+ECS/网关版本、设备/固件版本、时间来源、允许时钟偏差、回调重传窗口、证据保留期以及位置绑定属于粗分机部署配置，
+不得扩展通用 Device binding。START 必须把规范化后的完整 `WorkLine.config["rough_sorter"]` 保存为
+`LineRunEpoch.configuration_snapshot_json`；`configuration_digest` 由插件身份、运行模式和该 canonical JSON 快照共同生成。
+基础层只负责保存和摘要快照，不解释任何粗分机字段。
+
+`WorkLine.config["rough_sorter"]` 的闭集如下：
+
+- `device_contracts` 必须且只能包含 `MEASUREMENT_DEVICE`、`TRANSFER_DEVICE`、`PLACEMENT_DEVICE`；
+- 每个角色合同必须且只能包含下表字段；
+- `position_bindings` 必须且只能包含 `MEASUREMENT_POSITION`、`PIPELINE_INLET`、`PIPELINE_OUTLET`、`NG_POSITION`。
+
+| 角色合同字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `ecs_version`、`gateway_version` | string | 去空白后非空；等于供应商一致性验收版本 |
+| `device_model`、`firmware_version` | string | 去空白后非空；按角色独立冻结 |
+| `status_max_age_ms`、`command_timeout_ms` | integer | 严格正整数；同时复制到通用 binding 供派发读取 |
+| `time_source` | string | 去空白后非空 |
+| `allowed_clock_skew_ms`、`callback_retry_window_ms` | integer | 严格正整数 |
+| `evidence_retention_days` | integer | 严格正整数 |
+
+四个 `position_bindings` 值必须是非空且互不重复的稳定 `location_id`；`location_type` 由对应 position role 固定，不接受配置覆盖。
+`plugin_key="rough_sorter"`、`plugin_version="1.0.0"`、`flow_mode="ROUGH_SORT_INBOUND"`、三组 `contract_key` 和
+`contract_version="1.0"` 来自静态部署组合，不由数据库配置选择。Endpoint 不进入该业务配置。
+
+粗分插件只声明角色、合同和业务处理逻辑，不读取或保存 Endpoint。START 对三个可派发角色逐一要求 Device Endpoint 非空，并复制到
+Epoch binding；活动 Epoch 和派发链只读取冻结 binding，不回读可变 Device 主数据。业务诊断读取 Epoch 快照，不把当前
+`WorkLine.config` 伪装成历史运行配置。活动 Epoch 内任何绑定或配置变化都必须停止新接纳、闭合或人工清理活动对象并使用新的
+`request_id` 创建新 Epoch；不得静默替换，也不新增数据库插件注册表或 Endpoint 注册表。
 
 ## 4. 命令闭集
 

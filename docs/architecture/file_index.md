@@ -32,7 +32,8 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 分批计划、Cell 晚绑定、不可逆执行、安全取消、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 粗分插件收敛的唯一详细实施计划与逐 Task 交付状态 |
+| `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 初始收敛交付、逐 Task 状态、仓内验收和外部阻塞主记录 |
+| `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活、多 Endpoint 派发及其前端入口的增量实施真源；工程评审通过，等待实施授权与执行基线冻结 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |

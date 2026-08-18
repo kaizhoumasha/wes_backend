@@ -8,8 +8,9 @@
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Alembic、Celery、PostgreSQL、Redis、Pytest、uv workspace、Ruff、GitNexus。
 
-**当前状态:** `IN_PROGRESS — EXTERNAL BLOCKED`。Task 1—8 已分别完成并提交；Task 9 的仓内部署 E2E、分层状态文档和受影响
-HEAVY 已完成，供应商一致性与现场联合验收仍为 `NOT RUN — BLOCKED`。Task 10 已同步当前真源并将被实现取代的过程设计移出项目归档。
+**当前状态:** `IN_PROGRESS — EXTERNAL BLOCKED`。Task 1—8 已分别完成并提交；Task 9 的仓内工程验收、本机 Mock 模拟联调、
+分层状态文档和受影响 HEAVY 已完成，供应商一致性、真实 WMS 联调与现场联合验收仍为 `NOT RUN — BLOCKED`。Task 10
+已同步当前真源并将被实现取代的过程设计移出项目归档。
 Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decided`，未保留旧 operation、binding 或兼容路径；仓内实现和
 测试通过不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
 
@@ -23,12 +24,14 @@ Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decide
 | 6 | Complete | `1d5e0209` |
 | 7 | Complete | `7bca4a8f` |
 | 8 | Complete | 独立原子提交链；最终装配修复至 `714f1c1a` |
-| 9 | In progress — external blocked | 仓内部署 E2E 与验收资产完成；供应商一致性、现场联合验收未运行 |
+| 9 | In progress — external blocked | Commit `d90d0df6` 仓内工程与本机 Mock 验收完成；供应商一致性、真实 WMS 与现场联合验收未运行 |
 | 10 | Repository complete | 当前文档真源同步与过期过程设计归档；不改变 Phase 8 外部阻塞状态 |
 
 ## Global Constraints
 
-- 本计划是主计划 Phase 8 的唯一详细实施计划，不新增 Phase 8A/8B 等正式阶段；任务可以作为原子交付批次，但不能改变 Phase 1—12 的阶段语义。
+- 本计划是 Phase 8 初始收敛交付、仓内验收和外部阻塞状态的主记录。后续 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口以
+  `2026-08-19-rough-sorter-workline-epoch-activation.md` 为增量实施真源；该增量计划不新增 Phase 8A/8B 等正式阶段，也不能改写
+  本计划已经完成的 Task、Commit 和分层验收事实。
 - 必须遵循 `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` 和 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`。两者与本计划不一致时先修订并联合批准当前真源，不得由代码自行选择解释。
 - 系统尚未发布：直接切换最终模型和表，不迁移旧数据，不保留兼容字段、双写、双读、旧 operation、转发模块、适配 shim 或 downgrade。
 - `docs/hardware/` 是供应商原始资料，只读保留。设备字段归一化、错误映射、时限和不可逆点写入获批设备合同附录，不反向改写厂商原文。
@@ -40,7 +43,7 @@ Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decide
 - 业务并发边界是 `MaterialExecution`；设备串行/并发约束归 `DeviceCommand.device_code`；旧架通过获批 release gate 与冻结快照
   围栏。禁止新增 WorkLine 全局锁。
 - 核心生命周期只允许 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING`；不得把扫码、准入、PUT、上报等粗分步骤做成核心状态枚举。
-- 默认不建立插件私有持久状态，更不得新增通用 `plugin_state` JSON。业务进度由 `InboundEvidence`、`DeviceCommand`、`WmsConfirmation`、位置投影和执行终态推导。
+- 默认不建立插件私有持久状态，更不得新增通用 `plugin_state` JSON。业务进度由 `InboundEvidence`、`DeviceCommand`、`WmsConfirmation`、位置投影和执行终态推导。Epoch 的不可变 `configuration_snapshot_json` 只保存部署证据，不承载可变业务进度或插件运行状态。
 - handler 消费已验证、可关联的类型化 Fact，不接收供应商原始 Payload；装饰器只声明静态元数据，不注册对象、不扫描模块、不产生 import-time 副作用。
 - Decision 是封闭集合，不建设通用 Effect 引擎。Phase 8 集合为 `Wait`、`DeferExecution`、`CreateDeviceCommand`、
   `CreateWmsConfirmation`、`CreateTransportTask`、`PauseForReconciliation`、`CompleteExecution`；`DeferExecution` 只表达未满足
@@ -83,8 +86,11 @@ Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decide
 
 - [x] **Step 3: 冻结 endpoint/device/Epoch 绑定规则**
 
-  每个 WorkLine 绑定一个 ECS 和三个一对一角色；具体 `device_code`、`endpoint_code`、`contract_key`、合同版本、超时与版本证据在
-  部署一致性验收中进入现有 `LineRunEpochDeviceBinding` 与 Epoch digest，不新增数据库插件注册表。
+  每个 WorkLine 绑定三个一对一角色；每个可派发 Device 各有一个 Endpoint，多个 Device 可共享或分别使用不同 Endpoint。
+  `device_code`、Endpoint Base URL、合同身份、状态新鲜度与命令超时进入现有 `LineRunEpochDeviceBinding` 和
+  `topology_digest`。ECS/网关/设备/固件版本、时钟、重传、证据策略和位置配置作为规范化业务快照写入
+  `LineRunEpoch.configuration_snapshot_json`，并与插件身份、运行模式共同生成 `configuration_digest`。基础层不解释快照字段；
+  不新增数据库插件注册表或 `DeviceEndpoint` 实体。
 
 - [x] **Step 4: 裁决 Phase 6 Transport Port 属于粗分换架闭环**
 
@@ -845,15 +851,20 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和单对象人工核验恢复。非功能性负载、HA 和多供应商矩阵不作为
   MVP 退出条件。
 
+  2026-08-19 仓内子集已通过：WMS `WAIT` 完成本次确认、创建新 operation 且 `ACCEPT` 前无设备命令；ECS `ACK` 后跨真实
+  下一次 Beat 保持 `ACKNOWLEDGED:1` 且不重放，匹配 callback 后才关闭 execution。其余需要真实外部系统或物理事实的场景
+  继续保留在本 Step，不以 Mock 代证。
+
 - [x] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
 
   Run: `uv run --project workline_plugins/rough_sorter pytest workline_plugins/rough_sorter/tests/e2e -q`
 
-  Run: `uv run scripts/select_heavy_tests.py --scope unstaged`
+  Run: `uv run scripts/select_heavy_tests.py --base 'ab02f42f^'`
 
-  Run: `./scripts/run_selected_heavy_local.sh --scope unstaged`
+  Run: `./scripts/run_selected_heavy_local.sh --base 'ab02f42f^'`
 
-  Expected: 插件包独立闭环全部通过；核心 selector 只包含实际受影响的核心 integration/E2E owner，不包含粗分插件私有测试。两类结果分别报告，JUnit 均 `total > 0`、`failed = 0`、`skipped = 0`。
+  Result（2026-08-19）: 插件 E2E `10 passed, 0 skipped`；计划锁定核心 owner `21 passed`；selector 选中 31 个 HEAVY
+  资产，实际执行 `362 passed, 0 skipped`。核心 selector 不包含粗分插件私有测试。
 
 - [x] **Step 6: 记录分层验收结论**
 

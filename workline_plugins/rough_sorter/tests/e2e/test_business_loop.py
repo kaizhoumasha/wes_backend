@@ -812,7 +812,9 @@ def test_ecs_ack_does_not_replay_command_while_callback_is_withheld() -> None:
 
             marker = "Task src.celery_app.tasks.device_command.dispatch_device_commands_batch"
             completed_before = stack.log_occurrences(stack.worker, marker)
-            stack.wait_log_occurrences(stack.worker, marker, completed_before + 1)
+            # ACK can become visible before the current dispatch logs success. Two later completions guarantee that
+            # at least one full dispatch run happened after the ACK-producing run.
+            stack.wait_log_occurrences(stack.worker, marker, completed_before + 2)
 
             assert stack.query(command_state_sql) == "ACKNOWLEDGED:1"
             with state.lock:

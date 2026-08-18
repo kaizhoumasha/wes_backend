@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-**NOT RUN — BLOCKED**（2026-08-18）。
+**NOT RUN — BLOCKED**（2026-08-19）。
 
 仓库内没有可访问的真实供应商 ECS/网关、设备/固件版本、设备序列号、供应商执行人签字或供应商侧原始证据，因此未运行、也不能宣称通过供应商一致性验收。`workline_plugins/rough_sorter/tests/e2e/` 使用的 stdlib ECS mock 只模拟 WES 统一 wire，不能替代供应商实现。
 
@@ -10,13 +10,14 @@
 
 | 项目 | 值 |
 | --- | --- |
-| WES Commit | `a3a801d4e93d56334b38ab084851e91cf456e8a2` |
+| WES Commit / tree | `d90d0df6f6044fbb008e3fbaaa6a92e2d3b99eb6` / `eed9e8cb2f8802a2ffee88db5eba1ef85839d585` |
 | 插件 / SDK 版本 | `wes-rough-sorter-plugin 1.0.0` / `wes-plugin-sdk 0.1.0` |
-| 后端镜像 | `sha256:471305f490c2abe1c29baeaa064c20361fb9f34c1b5ce8b2cfb7268e25b41b1f`；OCI revision/source-manifest 已与上述 WES Commit/tree 严格匹配 |
-| 仓库部署 E2E | PASS；`8 passed, 0 skipped`；真实 WES HTTP、PostgreSQL、Redis、Celery/Beat，WMS 与 ECS 均为明确 mock 边界 |
+| 后端镜像 | `sha256:b16303df7964945c528cdc16b26686d906405786c04a3f26b88e655de8fa45f4`；OCI revision/source-manifest 已与上述 WES Commit/tree 严格匹配 |
+| 仓内工程验收 | PASS；QUALITY `3532 passed, 4 skipped`，核心 owner `21 passed`，Phase 8 HEAVY `362 passed, 0 skipped` |
+| 本机 Mock 模拟联调 | PASS；插件 E2E `10 passed, 0 skipped`；真实 WES HTTP、PostgreSQL、Redis、Celery/Beat，WMS 与 ECS 均为明确 mock 边界 |
 | 供应商一致性 | NOT RUN；无真实供应商实现参与 |
 
-仓库部署 E2E 证明固定统一 wire 可以驱动插件业务闭环，不证明供应商私有协议映射、PLC 动作、物理状态、时限或安全联锁正确。
+本机 Mock E2E 证明固定统一 wire 可以驱动插件业务闭环，并验证 WMS `WAIT` 后继及 ECS `ACK` 跨下一次真实 Beat 不重放；它不证明供应商私有协议映射、PLC 动作、物理状态、时限或安全联锁正确。
 该 E2E 启动后用 direct SQL 设置初始环境：静态 WorkLine/Epoch/设备/位置配置，以及 Phase 7 DeviceStatusObservation 和 Transport RackPlacement 两个可信运行态投影。direct SQL 不证明投影的生产 owner，也不写本次 material execution、evidence、command 或 confirmation 状态。
 
 ## 解除阻塞所需外部输入

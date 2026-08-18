@@ -1,8 +1,8 @@
 ---
-title: WMS 异步回调统一信封合同
+title: WMS 异步回调公共消息格式
 status: Approved
 created_at: 2026-08-09
-updated_at: 2026-08-14
+updated_at: 2026-08-18
 scope: WMS 到 WES 的异步业务事件回调及同步接收应答
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -12,9 +12,9 @@ related:
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
 
-# WMS 异步回调统一信封合同
+# WMS 异步回调公共消息格式
 
-## 1. 边界
+## 1. 这份文档规定什么
 
 WMS 通过以下入口向 WES 发送异步业务事件：
 
@@ -22,39 +22,39 @@ WMS 通过以下入口向 WES 发送异步业务事件：
 POST {{WES_BASE_URL}}/api/v1/wms/events
 ```
 
-本文只定义公共线上信封（wire envelope）、同步接收应答（ACK）和共享入口的原始 Body 上限。各业务合同负责 operation 名称、
-`data` 字段、业务状态和允许的应答码。WES 到 WMS 的请求、事实报告以及 Transport submit/同步 ACK 不在本文范围内；WMS 到
-WES 的 Transport evidence 回调仍使用本文信封。
+本文只规定所有 WMS 回调共用的四个 JSON 字段、WES 的同步响应格式，以及请求大小上限。每个业务 operation 的 `data` 字段和
+业务结果由对应业务合同规定。
 
-共享入口的原始 Body 上限固定为 `256 KiB`，必须在 JSON 解码前检查。业务 operation 如需更小限制，只能在解码并取得合法
-`operation_id` 后作为 DTO 校验处理，返回 `422 / REJECTED`，不能影响预关联 `413` 判定。
+WES 到 WMS 的业务请求和结果上报不使用本接口。Transport 结果由 WMS 回调 WES 时，仍使用本文格式。
 
-## 2. operation_id
+请求原始 Body 不能超过 `256 KiB`。WES 必须在解析 JSON 前检查大小，超限直接返回空 Body 的 `413`。如果某个 operation 还有限制，
+WES 在读到合法 `operation_id` 后按业务字段错误处理，返回 `422 / REJECTED`。
 
-WMS 为每条异步回调在其 `operation` 命名空间内分配 UUIDv7 `operation_id`，并在首次提交前与完整请求正文一起持久化；首次提交的
-`operation + operation_id` 组合不得与该 operation 的既有消息重复。超时和背压重试复用原组合。同步 HTTP响应只回显请求
-`operation_id`，不生成新身份。
+## 2. `operation_id` 怎么生成和重试
 
-回调通过业务 DTO 引用上游请求或稳定业务对象，不复用上游请求 ID。例如，每批
-`outbound.picking_task.plan_delta@v1` 使用新的 `operation_id`，通过
-`prepare_operation_id + task_id + execution_id + plan_revision` 建立因果与顺序。每条 Transport 结果回调也使用新的
-`operation_id`，通过 `transport_task_id` 关联原提交。
+WMS 每发送一条新回调，都要生成一个 UUIDv7 `operation_id`。第一次发送前，WMS 要保存 `operation`、`operation_id` 和完整请求 JSON。
+网络超时或 `UNAVAILABLE` 后重试时，继续使用原来的值和原请求内容。
 
-ID 边界固定如下：
+WES 的同步响应必须原样返回请求中的 `operation_id`，不能生成另一个 ID。
+
+不同业务数据使用自己的字段建立关联。例如，计划回调用 `task_id + plan_revision` 关联 PickingTask，Transport 结果用
+`transport_task_id` 关联原运输任务。不要复用上一个请求的 `operation_id` 作为新回调 ID。
+
+各类 ID 的用途如下：
 
 | ID | 生成方 | 本合同中的职责 |
 | --- | --- | --- |
-| `operation_id` | 每条主动事件、分批回调和终局回调都由 WMS 生成；同步响应只回显请求 ID | 与 `operation` 共同构成异步消息身份和幂等身份 |
-| `task_id`、`transport_task_id`、证据 ID | 对应业务对象的权威方 | 只建立业务关联，不替代 `operation_id` |
-| `previous_operation_id`、`decision_operation_id` | 不生成新值，由业务 DTO 引用已有 `operation_id` | 表达业务因果，不是新的消息身份 |
+| `operation_id` | 每条新回调由 WMS 生成；同步响应只返回请求值 | 与 `operation` 一起判断是不是同一条消息 |
+| `task_id`、`transport_task_id`、扫码或设备记录 ID | 对应业务数据的负责方 | 用来查找业务数据，不能代替 `operation_id` |
+| `previous_operation_id`、`decision_operation_id` | 业务字段引用已有 `operation_id` | 用来找到前一条请求，不是新消息的 ID |
 
-业务 JSON 不定义 `event_id` 或 `request_id`。HTTP 中间件可以使用 `X-Request-ID` 记录单次访问，但该值不得进入业务请求正文、
-参与幂等或替代 `operation_id`。具体业务 ID 规则由业务合同定义；自动出库以
-[WMS / WES 自动出库 PickingTask 交互要求](wms-outbound-picking-task-integration-requirements.md#6-id-和版本由谁生成)为准。
+业务 JSON 不增加 `event_id` 或 `request_id`。HTTP 日志可以使用 `X-Request-ID` 记录一次访问，但不能把它写入业务 JSON，也不能
+用它判断重复提交。自动出库还要遵守
+[WMS / WES 自动出库 PickingTask 交互要求](wms-outbound-picking-task-integration-requirements.md#6-id-和版本由谁生成)中的 ID 规则。
 
-## 3. 回调请求信封
+## 3. 回调请求格式
 
-顶层是严格闭集：
+请求顶层只能有以下四个字段：
 
 ```text
 operation_id
@@ -74,24 +74,23 @@ data
 
 | 字段 | 含义 |
 | --- | --- |
-| `operation_id` | 当前异步消息在 `operation` 命名空间内的身份。首次生成后保持不变 |
-| `operation` | 已批准的业务动作和合同版本 |
-| `timestamp` | 发送方首次形成并可靠保存该不可变请求或事件时的 UTC Unix 毫秒时间戳 |
-| `data` | operation 专属闭集 DTO |
+| `operation_id` | 本次回调的唯一 ID，重试时保持不变 |
+| `operation` | 业务动作名称和接口版本 |
+| `timestamp` | WMS 第一次保存这条回调时的 UTC Unix 毫秒时间，C# 使用 `long` |
+| `data` | 当前 operation 的业务字段，只能使用对应业务合同列出的字段 |
 
-`timestamp` 只用于审计和链路诊断，不参与业务排序、fencing、超时判断或设备事实发生时间判断。相同交互重试或幂等重放时，
-必须保持首次保存的 `timestamp`，不能按每次 HTTP 尝试刷新。
+`timestamp` 只用于日志和问题排查。业务排序看业务版本字段，设备发生时间看业务 `data` 中的时间字段。
+同一条回调重试时，不能刷新 `timestamp`。
 
-接收方使用 `operation + operation_id` 作为消息身份，并保存规范化 Payload 摘要：
+WES 用 `operation + operation_id` 判断是不是重复消息，并比较完整请求内容：
 
-- 相同 `operation + operation_id` 和相同 Payload 返回 `DUPLICATE`。
-- 相同 `operation + operation_id` 和不同 Payload 返回 `CONFLICT`。
-- 不同 `operation` 下相同 `operation_id` 是相互独立的消息，不表示业务因果；不同业务阶段、主动事件和异步终局通过
-  operation 专属 DTO 引用前序请求或稳定业务对象。
+- `operation + operation_id` 相同，请求内容也相同：返回 `DUPLICATE`。
+- `operation + operation_id` 相同，但请求内容不同：返回 `CONFLICT`。
+- `operation` 不同时，即使 `operation_id` 相同，也按两条不同消息处理。业务上的前后关系由 `task_id`、`transport_task_id` 等字段表示。
 
-## 4. 同步接收应答
+## 4. WES 同步响应格式
 
-能够从请求中提取合法 `operation_id` 后，应答顶层是严格闭集：
+只要 WES 能从请求中读到合法 `operation_id`，响应就使用以下四个字段：
 
 ```text
 operation_id
@@ -109,47 +108,44 @@ data
 }
 ```
 
-应答方在首次形成并可靠保存完整应答时写入 `timestamp`。相同请求的幂等重放返回 `DUPLICATE`，同时复用首次应答的
-`timestamp + data`，不能生成新的响应时间或改写业务数据。该时间同样只用于审计和诊断。
+WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返回 `DUPLICATE`，并继续使用第一次响应的 `timestamp + data`。
 
 | 字段 | 生成方与用途 |
 | --- | --- |
-| `operation_id` | 应答方原样回显已解析的请求身份，用于把 ACK 关联到原交互；应答方不得另行生成 |
-| `code` | 应答方根据可靠持久化结果和合同校验生成的闭集协议结果；调用方据此决定结束、重试或对账 |
-| `timestamp` | 应答方首次形成并可靠保存完整应答的 UTC Unix 毫秒时间；只用于审计和诊断 |
-| `data` | `code` 专属闭集 DTO；只承载 `reason_code`、`retry_after_ms` 等有程序消费者的结构化信息，无内容时为 `{}` |
+| `operation_id` | 原样返回请求值 |
+| `code` | WES 根据保存结果和字段校验返回；WMS 根据它结束、重试或转人工检查 |
+| `timestamp` | WES 第一次保存响应时的 UTC Unix 毫秒时间，C# 使用 `long` |
+| `data` | 当前 `code` 需要的字段，例如 `reason_code`；没有字段时返回 `{}` |
 
 | HTTP / `code` | 含义 |
 | --- | --- |
-| `202 / RECEIVED` | 首次可靠持久化，WMS 可以结束本次提交 |
-| `200 / DUPLICATE` | 相同身份和相同 Payload 已持久化 |
-| `409 / CONFLICT` | 相同身份对应不同 Payload，或违反 operation 的不可变约束 |
+| `202 / RECEIVED` | 首次成功保存，WMS 可以结束本次提交 |
+| `200 / DUPLICATE` | 这条消息以前已经保存，且内容相同 |
+| `409 / CONFLICT` | 相同消息 ID 对应的内容不同，或者业务数据与已保存内容冲突 |
 | `400`，空响应体 | 请求不是合法 JSON，或无法提取合法 `operation_id`；尚未建立消息关联 |
 | `413`，空响应体 | 原始 Body 超过共享入口 `256 KiB` 上限，在解码前拒绝；尚未建立消息关联 |
-| `422 / REJECTED` | 已有合法 `operation_id`，但信封其余字段、operation 或专属 DTO 不合法 |
-| `429 / BUSY` | 暂时没有接收容量，未接纳；`data.retry_after_ms` 必须是 `1..60000` 的整数 |
-| `503 / UNAVAILABLE` | 当前无法可靠持久化，未接纳 |
+| `422 / REJECTED` | `operation_id` 合法，但其他公共字段、operation 或业务字段不合法 |
+| `503 / UNAVAILABLE` | 当前无法成功保存，未接收 |
 
-`400` 和 `413` 预关联失败不使用 ACK 信封，响应体长度为 0，接收方不得生成或猜测 `operation_id`。除此以外，接收方必须
-原样回显已解析的 `operation_id`。诊断原因使用 operation 专属 `data.reason_code` 等闭集字段表达，不增加与 `code` 重复且
-无程序消费者的自由文本字段。异步回调不使用 HTTP `Retry-After`，`BUSY` 的重试延迟只读取 `data.retry_after_ms`。
+`400` 和 `413` 返回空 Body，因为 WES 还不能确认这条请求的 `operation_id`。其他响应必须返回请求中的 `operation_id`。
+错误原因只使用业务合同规定的 `data.reason_code`，不增加自由文本错误字段。异步回调不使用 HTTP `Retry-After`。
+本合同不使用 `429 / BUSY`。WES 暂时无法保存请求时返回 `503 / UNAVAILABLE`；只有成功保存后才返回 `RECEIVED`。
 
-## 5. ACK 与业务结果
+## 5. 收到响应后怎么处理
 
-接收 ACK 只证明消息已可靠持久化，不证明业务处理、运输或设备动作已经完成。需要异步终局结果的 operation 必须另行定义
-结果回调。结果回调在首次发送前生成并持久化新的 `operation_id`，通过 operation 专属 DTO 引用原请求或稳定业务对象，禁止
-复用原请求 `operation_id`。
+`RECEIVED` 只表示 WES 已经保存回调，不表示业务处理、运输或设备动作已经完成。如果某个业务还要返回异步执行结果，
+对应业务合同会定义另一条结果回调。结果回调必须使用新的 `operation_id`，再通过业务字段关联原请求。
 
-收到 `BUSY`、`UNAVAILABLE` 或响应未知时，发送方使用原 `operation_id` 和原 Payload 重试。主动事件收到 `400 | 413 | 422`
-后停止重试原 Payload，修正内容后创建新的 `operation_id`。任何回调都不得沿用上游请求身份；接收方不能把非法、超限或被拒绝
-内容保存为该 operation 的幂等摘要。收到 `CONFLICT` 后进入合同对账，不能通过更换 ID 掩盖冲突。
+收到 `UNAVAILABLE`，或者没有收到明确响应时，WMS 使用原 `operation_id` 和原请求内容重试。
+收到 `400 | 413 | 422` 后不要继续重试原内容。修正请求后生成新的 `operation_id`。
+收到 `CONFLICT` 后停止自动发送并转人工检查，不能只换一个 ID 再发。
 
-## 6. operation 合同责任
+## 6. 每个业务 operation 还要说明什么
 
-每个异步回调 operation 必须在自己的业务合同中定义：
+每个异步回调 operation 必须在自己的业务合同中写清楚：
 
-- operation 字面量和 `data` 闭集 DTO；
-- 首次持久化内容和冲突条件；
-- 允许的应答子集；
-- 持久化后的处理责任；
-- 需要异步终局时的结果 operation、状态和超时处置。
+- operation 的完整字符串和 `data` 字段；
+- 什么情况下算重复，什么情况下算冲突；
+- 可能返回哪些 HTTP 状态和 `code`；
+- WES 保存消息后要继续做什么；
+- 如果还有异步结果，结果 operation、状态和超时怎么处理。

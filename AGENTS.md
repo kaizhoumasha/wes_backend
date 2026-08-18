@@ -271,17 +271,18 @@ QUALITY、HEAVY、Commit hook 和 GitNexus 等长输出默认使用 RTK 摘要�
 ## 11. 项目命令与配置
 
 ```bash
-./scripts/init-env.sh dev
-docker-compose up -d
-uv sync --dev
-./scripts/migrate.sh upgrade
-uv run uvicorn main:app --reload --host 0.0.0.0 --port 8001
-uv run celery -A src.celery_app.app worker --loglevel=info --queues=default,celery
+./scripts/dev-env.sh up
+./scripts/dev-env.sh check
+./scripts/dev-env.sh logs api celery frontend
+./scripts/dev-env.sh down
 uv run ruff format --check .
 uv run ruff check .
 uv run bandit -r src/
 ```
 
+- 本机完整前后端调试以 `scripts/dev-env.sh` 和 `docs/devops/local-development-environment.md` 为唯一入口；编排归后端仓库所有，不复用前端独立 Compose。
+- `up` 必须完成迁移、幂等基础数据初始化和健康检查；后端核心/SDK/插件与前端 Vite 均支持代码热更新。依赖或镜像输入变化仍须重建。
+- `down` 不得携带 `-v`/`--volumes`；初始化数据不得伪造 WorkLine、库存、设备或 Transport 业务事实。本机 Mock/健康检查不等于真实联调或业务验收。
 - 新 Alembic migration 必须由 `uv run alembic revision -m "<message>"` 或仓库 wrapper 生成随机 revision，再编辑生成文件；不得手写模板式 revision ID。
 - `.env.dev`、`.env.test`、`.env.prod` 生成运行时 `.env`，不得提交 secrets。
 - Python 目标版本为 3.13；Ruff 使用双引号、120 字符行宽和项目既有规则。
