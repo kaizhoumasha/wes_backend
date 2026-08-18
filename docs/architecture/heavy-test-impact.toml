@@ -248,6 +248,10 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "tests/load/runtime_inbox_postgresql_benchmark.py"
+heavy_tests = ["tests/load/test_runtime_inbox_claim_benchmark.py"]
+
+[[mapping]]
 source_glob = "tests/load/runtime_benchmark_scenarios.py"
 heavy_tests = [
     "tests/integration/test_runtime_production_closure_contract.py",

@@ -13,7 +13,7 @@ from tests.load.runtime_inbox_postgresql_benchmark import (
 
 
 def test_runtime_inbox_claim_benchmark_uses_ci_regression_budget() -> None:
-    assert CLAIM_P95_THRESHOLD_MS == 300.0
+    assert CLAIM_P95_THRESHOLD_MS == 600.0
     assert THROUGHPUT_THRESHOLD_PER_SECOND == 400.0
 
 

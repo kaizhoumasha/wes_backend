@@ -1178,6 +1178,10 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
             ],
         ),
         (
+            "tests/load/runtime_inbox_postgresql_benchmark.py",
+            [RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST],
+        ),
+        (
             "tests/load/runtime_benchmark_scenarios.py",
             [
                 RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST,
