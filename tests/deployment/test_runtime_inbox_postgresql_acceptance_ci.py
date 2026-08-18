@@ -48,6 +48,7 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "allowEmptyArchive: true" in jenkins
     assert "fingerprint: true" in jenkins
     assert "timescale/timescaledb:latest-pg17" in lifecycle
+    assert 'test "$(cat /proc/1/comm)" = postgres && pg_isready' in lifecycle
     assert "docker network create" in lifecycle
     assert "docker volume create" in lifecycle
     assert "ALTER ROLE runtime_acceptance CREATEDB" in lifecycle
