@@ -30,7 +30,11 @@ class FakeBegin(AbstractAsyncContextManager[object]):
 
 
 class FakeSessionFactory:
+    def __init__(self) -> None:
+        self.begin_count = 0
+
     def begin(self) -> FakeBegin:
+        self.begin_count += 1
         return FakeBegin()
 
 
@@ -90,6 +94,7 @@ def _binding(device_code: str = "ARM-01") -> LineRunEpochDeviceBinding:
         line_run_epoch_id=11,
         device_id=7,
         device_code=device_code,
+        device_role="PLACEMENT_DEVICE",
         contract_key="arm.pick",
         contract_version="2.0",
         status_max_age_ms=1_000,
@@ -103,6 +108,7 @@ def _request(device_code: str = "ARM-01") -> DeviceCommandRequest:
         line_run_epoch_id=11,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
+        material_execution_id=21,
         contract_key="arm.pick",
         contract_version="2.0",
         task_type="PICK",
@@ -124,6 +130,24 @@ def _service(*bindings: LineRunEpochDeviceBinding) -> tuple[DeviceCommandService
         clock=lambda: datetime(2026, 8, 13),
     )
     return service, command_repository
+
+
+@pytest.mark.asyncio
+async def test_same_session_creation_does_not_open_an_independent_transaction() -> None:
+    binding = _binding()
+    command_repository = FakeCommandRepository()
+    session_factory = FakeSessionFactory()
+    service = DeviceCommandService(
+        session_factory=session_factory,  # type: ignore[arg-type]
+        command_repository=command_repository,  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository({(binding.line_run_epoch_id, binding.device_code): binding}),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13),
+    )
+
+    handle = await service.create_command_in_session(object(), _request())
+
+    assert handle.command_code == command_repository.created[0].command_code
+    assert session_factory.begin_count == 0
 
 
 @pytest.mark.asyncio
@@ -164,6 +188,17 @@ async def test_same_execution_identity_with_different_payload_is_conflict() -> N
 
     with pytest.raises(DeviceCommandIdentityConflictError):
         await service.create_command(replace(_request(), params={"source_location": "STATION-B"}))
+
+    assert len(repository.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_execution_identity_with_different_material_execution_is_conflict() -> None:
+    service, repository = _service(_binding())
+    await service.create_command(_request())
+
+    with pytest.raises(DeviceCommandIdentityConflictError):
+        await service.create_command(replace(_request(), material_execution_id=22))
 
     assert len(repository.created) == 1
 

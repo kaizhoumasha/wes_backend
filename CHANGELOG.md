@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.3.0] - 2026-08-18
+
+### Added
+- 可通过独立安装的 `wes_plugin_sdk`、类型化 Fact 和封闭 Decision 开发业务插件，并保持核心执行基础能力不依赖具体工作线。
+- 新增粗分机入库插件、WMS 北向合同、可靠确认、NG 处理、换架、恢复与设备回调闭环，以及对应的静态部署装配。
+- 新增 `MaterialExecution`、`InboundEvidence`、`WmsConfirmation` 和换架绑定等持久化对象及直接切换 migration，为重启恢复和人工对账保留事实依据。
+
+### Changed
+- Execution worker 使用持久 defer、ACTIVE Epoch 领取、队列声明和进程启动围栏，设备未就绪、外部等待及子进程替换均可按当前事实继续处理。
+- Docker 镜像冻结仓库源码快照，同时保留本地 Compose 构建入口；HEAVY selector 精确覆盖 Execution、Celery、WMS Adapter、迁移与部署装配。
+- 粗分业务测试保持在插件包内，核心 QUALITY、HEAVY 与供应商 ECS/网关一致性验收继续按基础能力、业务能力和外部设备边界分离。
+
+### Fixed
+- 修复设备就绪重试永久 HOLD、重复 WMS 终态选择失败、恢复位置未按 Epoch 绑定规范化及 NG 证据重复引用的问题。
+- 修复 WMS 结果与 Epoch 关联、决策摘要持久化顺序、换架并发锁序、恢复因果围栏和 Transport evidence 重放竞争问题。
+- 修复 Celery prefork 替换子进程重复执行 Epoch 重启门禁，以及开发 worker 队列声明与启动命令不一致的问题。
+
+### Verification
+- QUALITY 全门禁通过：3531 passed、4 个既有外部服务条件 skip；Ruff、Bandit、架构、测试拓扑和 FAST 预算均通过。
+- 以 `de034e72` 快照为发布基线选出的 19 个 HEAVY 文件全部通过：183 passed；测试所有权审计覆盖率 100%，最终预落地评审无剩余意见。
+- 仓内交付已闭合；供应商 ECS/网关一致性与 WMS/WES/RCS/ECS 现场联合验收仍为外部阻塞，Phase 8 不标记为业务验收完成。
+
 ## [0.26.2.0] - 2026-08-16
 
 ### Added

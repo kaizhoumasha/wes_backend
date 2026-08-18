@@ -225,7 +225,7 @@ WMS 使用 `operation + operation_id` 作为接口契约幂等身份，并保证
 不建立业务绑定，也不冻结为首次终局响应。WES 已形成的原任务和诊断事实不得被覆盖。
 
 `WmsTransportAdapter` 调用 `WmsClient.post_json_bytes()` 发送 TransportTask 已冻结的最终请求体字节，并传入
-`max_request_body_bytes=256 KiB` 和 `max_response_body_bytes=256 KiB`。`WmsClient` 不重新编码该 payload，只在调用 Phase 2
+`max_request_body_bytes=256 KiB` 和 `max_response_body_bytes=256 KiB`。`WmsClient` 不重新编码该请求体，只在调用 Phase 2
 Transport 前校验请求体字节数，并把响应上限映射为 `max_wire_bytes=256 KiB`、`max_decoded_bytes=256 KiB` 的
 `OutboundHttpResponseLimits`；Phase 4 Adapter 不导入 Phase 2 合同，也不绕过 `WmsClient`。
 
@@ -304,9 +304,9 @@ WES 固定保存实际发送的完整 UTF-8 JSON 请求体及其 `request_body_d
 也不得加入 HTTP Header、连接信息等单次访问元数据。相同身份不同消息必须稳定冲突。
 
 活动资源冲突的最小范围为：同一 `rack_id` 或同一内部 `bin_id` 已绑定另一未闭合任务。接口契约 `container_id` 在 Adapter 边界映射为
-对应内部 `bin_id`。`RACK_BIN_SLOT` 的精确身份为
-`rack_id + rack_face + slot_id`；`HANDOFF_POSITION` 允许由多个任务引用，不能仅因 `location_code` 相同就冲突。资源只在前一任务
-取得确定终态或经人工对账关闭后解除。
+对应内部 `bin_id`。`RACK_BIN_SLOT` 的精确身份 `rack_id + rack_face + slot_id` 用于请求内位置唯一性、成员目标校验和结果匹配，
+不另建活动资源绑定；其所在 `rack_id` 已整体互斥。`HANDOFF_POSITION` 允许由多个任务引用，不能仅因 `location_code` 相同就冲突。
+资源只在前一任务取得确定终态或经人工对账关闭后解除。
 
 ### 4.3 提交可靠性
 
@@ -550,8 +550,9 @@ CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一�
 只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态事务释放绑定；`RECONCILING` 即使已向插件发布 `UNKNOWN` 也必须继续保持绑定，
 直到匹配的权威确定结果完成消歧。资源冲突在创建阶段失败关闭，不等待 RCS 再拒绝。
 
-精确储位身份使用 `RACK_BIN_SLOT(rack_id + rack_face + slot_id)`；同一精确储位不得同时作为两个活动任务的独占来源或目标。
-`HANDOFF_POSITION` 可以由多个任务引用，其瞬时容量属于 WMS/RCS 或业务 owner，不因 `location_code` 相同就在 Transport 核心互斥。
+精确储位身份使用 `RACK_BIN_SLOT(rack_id + rack_face + slot_id)`，只承担请求内位置唯一性、成员目标校验和结果匹配；活动任务通过
+其所在 `rack_id` 整体互斥，不重复建立精确储位资源绑定。`HANDOFF_POSITION` 可以由多个任务引用，其瞬时容量属于 WMS/RCS 或
+业务 owner，不因 `location_code` 相同就在 Transport 核心互斥。
 
 位置或终态证据可以先于 submit ACK 到达；匹配证据本身可以证明远端已接纳。后到 ACK 只补充接纳事实，不得回退位置或终态。
 
@@ -576,7 +577,7 @@ CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一�
 | --- | --- | --- |
 | 四个公共方法 | 核心 runtime/transport | 参数、`move_rack.target_face`、幂等、一个调用一个任务、统一 handle/outcome |
 | 任务和资源可靠性 | PostgreSQL integration/transport | 唯一约束、资源互斥、领取和原子结果应用 |
-| WES → WMS T1 payload 与 ACK | WMS Adapter contract | 冻结 payload、固定 path/operation、两族 T1、ACK 和 WMS 所有的服务端 OpenAPI 一致性 |
+| WES → WMS T1 请求体与 ACK | WMS Adapter contract | 冻结请求体、固定 path/operation、两族 T1、ACK 和 WMS 所有的服务端 OpenAPI 一致性 |
 | WMS → WES T2/T3 DTO | WMS Adapter contract | WES 所有的 OpenAPI 3.0.3、固定 path/operation、T2、两族 T3、ACK、严格 JSON 和事件转换 |
 | 协调交换真实行为 | WMS/RCS 联调 | 同面 1～2 个二元闭环、内部顺序、部分失败和最终位置 |
 | 分拣机开工顺序 | 分拣机插件测试 | WMS 分配、并行调架、五层货架成功后投箱 |

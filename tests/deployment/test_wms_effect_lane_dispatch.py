@@ -19,6 +19,7 @@ from src.app.wms_integration.provider_readiness import WmsProviderProcessRole, W
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_TASK = "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch"
 FULFILLMENT_TASK = "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch"
+CONFIRMATION_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 SYSTEM_TASK = "src.celery_app.tasks.sys.dispatch_system_outbox_batch"
 
 
@@ -43,6 +44,8 @@ def test_fulfillment_beat_messages_are_replaceable_database_scan_wakeups() -> No
         "src.celery_app.tasks.transport.submit_transport_tasks_batch": (30.0, {"limit": 100}),
         "src.celery_app.tasks.transport.process_transport_evidence_batch": (10.0, {"limit": 100}),
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch": (30.0, {"limit": 100}),
+        "src.celery_app.tasks.transport.publish_transport_outcomes_batch": (10.0, {"limit": 100}),
+        CONFIRMATION_TASK: (10.0, {"limit": 100}),
         FULFILLMENT_TASK: (10.0, None),
         "src.celery_app.tasks.workline.scan_wms_effect_status_batch": (10.0, None),
     }
@@ -200,7 +203,7 @@ def test_fulfillment_worker_startup_rejects_non_single_celery_concurrency(
     monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "2")
 
     with pytest.raises(ValueError, match="concurrency=1"):
-        celery_app_module._validate_worker_role_queue_contract()
+        celery_app_module._validate_worker_role_queue_contract(frozenset({"wms-fulfillment"}))
 
 
 def test_fulfillment_worker_startup_accepts_single_celery_concurrency(
@@ -216,7 +219,7 @@ def test_fulfillment_worker_startup_accepts_single_celery_concurrency(
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
     monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "1")
 
-    celery_app_module._validate_worker_role_queue_contract()
+    celery_app_module._validate_worker_role_queue_contract(frozenset({"wms-fulfillment"}))
 
 
 @pytest.mark.parametrize(
@@ -227,7 +230,7 @@ def test_test_worker_entrypoint_fails_closed_without_explicit_worker_config(miss
     import subprocess
 
     environment = os.environ.copy()
-    environment["CELERY_WORKER_QUEUES"] = "default,celery,device"
+    environment["CELERY_WORKER_QUEUES"] = "default,celery,device-command"
     environment["CELERY_WORKER_CONCURRENCY"] = "4"
     environment["WMS_PROVIDER_PROCESS_ROLE"] = "wes"
     environment.pop(missing_variable)

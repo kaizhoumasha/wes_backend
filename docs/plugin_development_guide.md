@@ -145,9 +145,13 @@ Handler 只返回以下封闭 Decision 类别；具体 SDK 使用可判别类型
 持久化的异步终态才能终结任务。
 一个 Handler 不等待整条工作线执行完成。
 
-### 2.5 注册和配置
+### 2.5 静态元数据、显式组合和配置
 
-插件使用稳定 Python 引用显式注册。注册内容只包括：
+每个 Handler 类使用 SDK `@handler(...)` 声明不可变静态元数据：类型化 Fact、稳定名称和支持版本。装饰器只把
+`HandlerMetadata` 附着到类，不扫描包、不实例化 Handler，也不写入全局注册表。插件入口通过稳定 Python 引用返回固定
+Handler tuple；部署 Composition Root 显式导入该入口并注入核心侧 factory、resolver 和可靠对象应用端口。
+
+静态元数据和组合内容只包括：
 
 - 插件身份和版本；
 - 支持的工作线流程模式；
@@ -170,21 +174,29 @@ Epoch。
 ```text
 workline_plugins/<plugin_key>/
 ├── pyproject.toml
+├── uv.lock
 ├── src/
 │   └── <plugin_package>/
 │       ├── __init__.py
-│       ├── contracts.py
-│       ├── handlers.py
-│       └── registration.py
+│       ├── facts.py
+│       ├── plugin.py
+│       └── handlers/
+│           ├── __init__.py
+│           ├── _guards.py
+│           └── <business_trigger>.py
 ├── tests/
-│   ├── unit/
-│   └── sdk_integration/
+│   ├── <handler_or_contract_test>.py
+│   └── e2e/
 └── fixtures/
 ```
 
 插件包只声明 WES SDK 和业务侧依赖，独立维护测试配置和构建入口。核心 `src/` 和核心 `tests/` 不保存具体插件源码或测试；
 已交付插件只放在仓库根目录的独立插件包中。只有出现真实独立职责时才增加文件，不预建设备 Adapter 包、客户尚未需要的
 扩展点或业务模板。
+
+Handler 按稳定业务触发拆分，而不是按物理 `EVENT`、`COMMAND`、`ACK`、`CALLBACK` 各建一套文件。`plugin.py` 只显式构造
+固定 tuple，不扫描 `handlers/`、不使用动态 import，也不提供可变 registry。插件所需执行、Epoch 和位置快照由核心
+Composition Root 在同一事务构造为类型化 Fact；Handler 只消费该不可变快照。
 
 供应商一致性验收是对外部 ECS/网关实现的验收，不与 WorkLine 插件同包，也不进入核心业务测试。
 

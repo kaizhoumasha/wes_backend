@@ -1,7 +1,7 @@
 # Architecture guardrails seed allowlist (legacy matrix bootstrap)
 #
 # 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
-#   rule_id          WMS_INTEGRATION_BOUNDARY/EXECUTION_CORRELATION_BOUNDARY/AUTHORITY_METADATA_BOUNDARY/DEVICE_COMMAND_BOUNDARY/CAPABILITY_FORBIDDEN_DEPENDENCY/CAPABILITY_IMPLEMENTATION_IMPORT/INBOUND_NORMALIZER_OWNERSHIP
+#   rule_id          含 PLUGIN_SDK_DEPENDENCY_BOUNDARY/CORE_PLUGIN_DEPENDENCY_BOUNDARY/WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY 等 architecture-guardrails.sh 已声明规则
 #   path             违规文件路径 (CAPABILITY_IMPLEMENTATION_IMPORT / INBOUND_NORMALIZER_OWNERSHIP 必须逐文件枚举)
 #   reason           豁免原因
 #   expires_at       过期日期 YYYY-MM-DD (无过期视为失败)
@@ -11,6 +11,7 @@
 # baseline validation: 所有 seed 条目引用存在的 legacy_entry_id, drop_phase 与 matrix 一致
 # enforced mode: allowlist 之外违规阻塞 PR
 # expiry-check mode: 过期 allowlist 阻塞 PR
+# 新 SDK、核心→插件和具体插件依赖方向不设 seed 豁免，任何命中都直接阻塞。
 #
 # 删除任意一行后, --mode enforced 必须对对应历史违规返回非零 (证明 enforcement 生效)
 

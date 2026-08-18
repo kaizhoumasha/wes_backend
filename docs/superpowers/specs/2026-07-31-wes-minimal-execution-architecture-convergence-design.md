@@ -24,6 +24,7 @@ related:
   - docs/contracts/wms-northbound-interaction-contract.md
   - docs/contracts/wms-outbound-picking-task-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
+  - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
 ---
 
@@ -553,19 +554,23 @@ Bin 到达 SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或
 
 ## 11. 业务流程
 
-自动入库与上架的 operation、严格 DTO、幂等、物理门禁和失败边界由
-`docs/contracts/wms-inbound-putaway-integration-requirements.md` 集中定义；该合同当前为 `ReviewRequired`。
-本节只保留顶层流程和基础对象边界，不构成 Phase 8/9 代码实施授权。
+Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 集中定义并已获批；满箱交换和自动
+上架由 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义，仍为 `ReviewRequired`。本节只保留顶层流程和
+基础对象边界；不得把 Phase 8 授权扩大为 Phase 9 授权。
 
 ### 11.1 粗分机
 
 1. 操作员将完整料盘放入入口。
 2. ECS 上报完整身份与测量证据；WES 先保存不可变 `InboundEvidence`，再请求 WMS 业务准入。
-3. WMS 原子完成 GRN 绑定和目标预留，返回稳定料盘身份及唯一目标，或者返回拒绝/等待；WES 不重算业务资格、容量或目标。
-4. WES 只在目标与当前拓扑、位置投影和设备状态一致时创建 `DeviceCommand`；PUT 不可逆点后禁止改址或重发等价动作。
-5. ECS 可靠 PUT 后，WES 保存位置证据并向 WMS 报告；只有 WMS 原子记录最终位置后，该盘才完成入库。
-6. WMS 的货架释放决定先围栏新准入；WES 必须等待已接受料盘和所有已发出准入请求取得确定结果，才能冻结释放快照。
-7. 迟到业务结果与释放状态冲突、设备结果未知或现场身份不符时，冻结最小安全范围并进入人工对账。
+3. WMS 原子完成 GRN 绑定和业务准入，但不分配目标 Cell；WES 不重算业务资格、容量或目标。
+4. `ACCEPT` 后依次完成入料 `PICK_AND_PUT` 和流水线 `MOVE_FORWARD`；可靠到达出口后才向 WMS 请求精确目标 Cell。
+5. WES 只在目标与当前拓扑、位置投影和设备状态一致时创建出料 `PICK_AND_PUT`；ACK 后失败、交付未知或位置未知禁止改址或
+   重发等价动作，进入对账。
+6. ECS 可靠 PUT 后，WES 保存位置证据并向 WMS 报告；只有 WMS 原子记录最终位置后，该盘进入 `CLOSED`。
+7. 无可用 Cell 时不下发出料命令。WMS 返回稳定换架计划，WES 通过既有 Transport Port 创建旧架移出与新架移入两个独立
+   `RACK_MOVE`；新架匹配 T3 成功后可重新请求 Cell，不等待旧架结果。
+8. 生命周期固定为 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING`；设备结果未知、身份冲突或现场事实不符时冻结最小安全
+   范围并进入人工对账。
 
 粗分入库不建立顶层 `InboundTask`。设备可以并行推进，但同一料盘必须以 `MaterialExecution` 和不可变证据串起完整闭环。
 

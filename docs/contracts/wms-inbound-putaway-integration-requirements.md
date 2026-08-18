@@ -1,11 +1,12 @@
 ---
-title: WMS / WES 自动入库与上架交互要求
+title: WMS / WES 满箱交换与自动上架交互要求
 status: ReviewRequired
 created_at: 2026-08-13
-updated_at: 2026-08-14
+updated_at: 2026-08-16
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
-scope: 粗分机单盘入库、单层货架释放、满箱交换、自动分拣线上架、目标 Bin 投退料、NG、事实确认和人工对账
+scope: Phase 9 满箱交换、自动分拣线上架、目标 Bin 投退料、NG、事实确认和人工对账
 related:
+  - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/architecture/SRS.md
   - docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
   - docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md
@@ -16,23 +17,24 @@ related:
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
 ---
 
-# WMS / WES 自动入库与上架交互要求
+# WMS / WES 满箱交换与自动上架交互要求
 
 ## 1. 文档定位
 
-本文定义标准完整料盘从粗分机入口进入自动化系统，到完成单盘入库、满箱交换和自动分拣线上架的 WMS/WES 交互要求。
+本文定义已完成粗分入库的料盘和单层货架进入满箱交换及自动分拣线上架后的 WMS/WES 交互要求。
 本文是 `ReviewRequired` 的联合评审基线，拟冻结调用方向、operation、请求与响应字段、幂等、物理证据门禁、失败边界和联调验收口径；
 只有第 20 节确认项全部闭合并转为 `Approved` 后，才构成正式实施授权。
+
+Phase 8 粗分逐盘入库已经拆分到获批真源
+[`wms-rough-sorter-inbound-integration-requirements.md`](wms-rough-sorter-inbound-integration-requirements.md)。本文只消费其已闭合的
+placement、单层货架和释放快照事实，不复制其准入、目标晚绑定、设备链、换架 Transport 或五态生命周期。
 
 本文只依赖重构后的 `MaterialExecution`、`BinExecution`、`PositionProjection`、`DeviceCommand`、`TransportTask`、
 `WmsConfirmation`、`InboundEvidence` 和 `LineRunEpoch`。旧 `rough_sorter`、`smt_sorting_inbound`、旧通用
 operation registry、旧 `confirm_inbound`、旧 `notify_pkg_binding`、通用 Runtime/Effect 和兼容路径均不是实现模板。
 
-本文把完整流程明确分成两个业务阶段：
-
-- `ROUGH_SORT_INBOUND`：粗分机把标准完整料盘放入单层货架 Bin/Cell，WMS 原子完成 GRN 绑定和入库记账。
-- `FULL_BIN_EXCHANGE` / `AUTOMATIC_PUTAWAY`：满箱交换和自动分拣线把已经完成入库的料盘或 Bin 上架，
-  只迁移权威位置，不重复入库确认。
+本文只定义 `FULL_BIN_EXCHANGE` / `AUTOMATIC_PUTAWAY`：满箱交换和自动分拣线把已经完成入库的料盘或 Bin 上架，
+只迁移权威位置，不重复入库确认。
 
 码头收货、IQC、特殊/MSD 物料、人工入库和生产退料不属于本文。系统尚未发布，不提供旧 operation、兼容字段、
 双路径、历史数据迁移或通用动作接口。
@@ -41,11 +43,6 @@ operation registry、旧 `confirm_inbound`、旧 `notify_pkg_binding`、通用 R
 
 | 阶段 | 触发条件 | WMS/WES 交互 | 成功后的处理 |
 | --- | --- | --- | --- |
-| 粗分证据形成 | 标准完整料盘到达粗分扫码/测量流程 | ECS 证据先持久化为 `InboundEvidence`，WES 创建 `MaterialExecution` | 六个码、直径和厚度完整后才请求 WMS |
-| 入库准入 | 扫码与测量证据完整 | WES 请求 `inbound.material.admission_decide@v1` | WMS 原子完成 GRN 绑定和目标预留，返回 `ACCEPT \| REJECT \| WAIT` |
-| 粗分 PUT | WMS 返回 `ACCEPT` 且目标可执行 | WES 创建独立 `DeviceCommand` | ECS 确定成功后更新位置投影，不以 ACK 代替完成 |
-| 单盘入库 | 粗分 PUT 形成可靠成功证据 | WES 报告 `inbound.material.placement_report@v1` | WMS 原子记录目标位置、消耗预留并完成该盘入库 |
-| 单层货架释放 | WMS 判定满箱、无兼容 Cell 或策略释放 | WMS 发送 `inbound.source_rack.release_decided@v1` | WES 停止新目标准入，待在途命令和 Fact 闭合后冻结 `rack_release_id` |
 | 上架来源计划 | 释放快照完整且无未知位置 | WES 请求 `putaway.source_rack.plan_decide@v1` | WMS 返回不可变 `putaway_plan_id`，冻结全部来源成员和业务资格，不提前冻结交换目标 |
 | 满箱交换 | 当前面来源待处理，且 WMS 当前批次决定为 `READY` | WES 为同面 1～2 对创建一个 `exchange_bins()` Transport | T3 全成功且全部成员 Fact 被 WMS 记录后才重算下一批；否则人工恢复 |
 | 自动线上架准入 | 人工已把 WorkLine 切换为 `INBOUND`，WES 选择一条就绪线 | WES 运送来源单层货架，并按缓存需求请求目标 Bin | 同一 WorkLine 只激活一个 `putaway_execution_id` |
@@ -57,8 +54,8 @@ operation registry、旧 `confirm_inbound`、旧 `notify_pkg_binding`、通用 R
 | 目标 Bin 退料 | Bin 可靠进入本线退料缓存 | WES 请求 `putaway.target_bin.return_batch@v1` | WMS 为实际候选分配精确五层货架储位 |
 | 上架完成 | 不可变来源成员和逐盘业务 Fact 全部闭合 | WES 请求 `putaway.execution.completion_confirm@v1` | WMS 返回 `COMPLETED \| NOT_COMPLETED`；物理清线独立闭环 |
 
-不定义 WMS 预发的 `InboundTask`、`ReceivingTask` 或 `WMS_GRN_RECEIVED` 设备启动语义。粗分由实物证据驱动，
-上架由冻结货架快照驱动，目标 Bin 供给由 WorkLine 当前物理容量驱动。
+不定义 WMS 预发的 `InboundTask`、`ReceivingTask` 或 `WMS_GRN_RECEIVED` 设备启动语义。上架由获批粗分合同形成的冻结货架
+快照驱动，目标 Bin 供给由 WorkLine 当前物理容量驱动。
 
 ## 3. 权威边界
 
@@ -81,11 +78,11 @@ A/B 位和缓存位置；RCS 选择车辆与路线。三者不得相互替代。
 ```json
 {
   "operation_id": "019f3e20-96b7-77f2-9f10-2b46993ef401",
-  "operation": "inbound.material.admission_decide@v1",
+  "operation": "putaway.source_rack.plan_decide@v1",
   "timestamp": 1786579200000,
   "data": {
-    "material_execution_id": "MAT-EXEC-20260813-001",
-    "scan_evidence_id": "SCAN-EVIDENCE-20260813-001"
+    "rack_release_id": "RR-20260813-001",
+    "rack_id": "RACK-01"
   }
 }
 ```
@@ -200,18 +197,7 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 
 ## 5. Operation 实现索引
 
-### 5.1 粗分机单盘入库
-
-| operation | 方向 | 触发条件 | 首次成功响应 | 详见 |
-| --- | --- | --- | --- | --- |
-| `inbound.material.admission_decide@v1` | WES 到 WMS | 扫码与测量证据完整 | `200 / DECIDED`：`ACCEPT \| REJECT \| WAIT` | §7.2 |
-| `inbound.material.target_recovery_decide@v1` | WES 到 WMS | PUT前发现目标物理不可执行 | `200 / DECIDED`：`REASSIGNED \| REJECT \| WAIT` | §7.3 |
-| `inbound.material.placement_report@v1` | WES 到 WMS | 料盘可靠 PUT到单层货架目标 Cell | `200 / RECORDED` | §7.4 |
-| `inbound.material.ng_placement_report@v1` | WES 到 WMS | 料盘可靠到达粗分 NG交接区 | `200 / RECORDED` | §7.5 |
-| `inbound.source_rack.release_decided@v1` | WMS 到 WES | WMS决定释放或更换单层货架 | `202 / RECEIVED` | §8.1 |
-| `inbound.execution.reconciliation_decided@v1` | WMS 到 WES | 粗分多对象人工对账已形成权威结果 | `202 / RECEIVED` | §8.3 |
-
-### 5.2 满箱交换与自动上架
+### 5.1 满箱交换与自动上架
 
 | operation | 方向 | 触发条件 | 首次成功响应 | 详见 |
 | --- | --- | --- | --- | --- |
@@ -240,13 +226,9 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | --- | --- | --- |
 | `operation_id` | 当前消息发起方 | 一次不可变消息身份；重试保持不变 |
 | `previous_operation_id` | 引用前序请求 | 位于 operation 专属 `data`；`WAIT`或 `NO_BATCH`后新请求引用同一证据的直接前序请求；首次禁止 |
-| `material_execution_id` | WES | 一盘实物本次进入粗分或上架执行的本地身份 |
-| `scan_evidence_id` | WES | 一组完整、不可变的六合一码与测量证据身份 |
+| `material_execution_id` | WES | 一盘实物本次进入自动上架执行的本地身份 |
 | `pkg_id` | WMS | GRN准入事务返回的稳定料盘业务身份；WES不得拼接生成 |
-| `inbound_admission_id` | WMS | 一次终局粗分准入身份，绑定 GRN、`pkg_id`和首次目标 |
 | `target_assignment_id` | WMS | 一次不可变目标预留；目标恢复必须生成新身份 |
-| `rack_target_generation` | WMS | 按 `rack_id + rack_slot_code` 对已提交的 `ACCEPT | REASSIGNED` 目标预留从 1 单调递增；释放决定据此冻结目标水位 |
-| `release_decision_id` | WMS | 一次不可撤回的单层货架释放决定 |
 | `rack_release_id` | WES | 单层货架停止接纳后形成的冻结物理快照身份 |
 | `putaway_plan_id` | WMS | 一份不可变上架来源计划；不定义 revision |
 | `putaway_execution_id` | WES | `putaway_plan_id`在一条自动 WorkLine上的本地执行身份 |
@@ -263,189 +245,6 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 
 投料和退料批次不新增业务批次 ID，直接由其不可变请求 `operation_id`标识。Transport `outcome_version`只属于 Transport结果，
 不成为业务计划版本。
-
-## 7. 粗分机逐盘入库
-
-### 7.1 物理前提和证据
-
-人工只负责把标准整盘物料放入粗分机入口。ECS把料盘送到扫码位并上报六合一码、直径、厚度和外形检测结果；WES必须先把
-原始上报保存为 `InboundEvidence`，再执行格式、完整性和设备结果一致性校验。WES不得自行解释 GRN、生成 `pkg_id`、选择
-库存目标，或者根据本地阈值决定释放货架。
-
-只有同时满足下列条件，WES才可请求业务准入：
-
-- `material_execution_id`、`scan_evidence_id`和当前 `LineRunEpoch`已建立；
-- 六合一码唯一且完整，直径、厚度和外形检测均有确定结果；
-- 粗分扫码位、机械臂和当前单层货架身份可确认；
-- 未存在同一物理料盘的另一条活动执行；
-- 设备结果不是 `UNKNOWN`。
-
-### 7.2 `inbound.material.admission_decide@v1`
-
-请求用于一次性完成 GRN绑定、入库准入和目标 Cell分配：
-
-```json
-{
-  "operation_id": "0197f300-0000-7000-8000-000000000001",
-  "operation": "inbound.material.admission_decide@v1",
-  "timestamp": 1786587000000,
-  "data": {
-    "material_execution_id": "ME-IN-0001",
-    "scan_evidence_id": "SE-0001",
-    "line_run_epoch_id": "LRE-ROUGH-008",
-    "workline_code": "ROUGH_SORTER-01",
-    "six_in_one": {"LotCode": "LOT-01", "DateCode": "20260813", "Qty": "5000", "ProductNo": "P-01", "MfrPN": "MPN-01", "PONumber": "PO-01"},
-    "measurements": {"diameter_mm": "178.000", "thickness_mm": "88.000"},
-    "source_position": {"type": "HANDOFF_POSITION", "location_code": "ROUGH_SORTER-01:SCAN"},
-    "available_source_rack": {"rack_id": "SR-01", "rack_slot_code": "A"}
-  }
-}
-```
-
-| 字段 | 必填 | 约束 |
-| --- | --- | --- |
-| `material_execution_id` | 是 | WES本地活动执行；同一执行只能得到一个终局准入 |
-| `scan_evidence_id` | 是 | 指向已持久化的不可变原始证据 |
-| `six_in_one` | 是 | 六字段设备原文快照；WES不得拼接为另一业务身份 |
-| `measurements` | 是 | 经设备确认的直径和厚度规范字符串；单位固定为毫米 |
-| `available_source_rack` | 是 | 当前实际到位的单层货架，不表示 WMS已经接受其容量 |
-
-`data.result`是严格联合：
-
-| `result` | 必填字段 | 含义 |
-| --- | --- | --- |
-| `ACCEPT` | `pkg_id`、`inbound_admission_id`、`target_assignment_id`、`target_position`、`rack_target_generation`、`placement_sequence`、`expected_height_mm` | WMS已原子绑定 GRN、预留唯一目标并返回执行约束 |
-| `REJECT` | `reason_code`、`ng_destination` | 不允许正常入库；WES执行粗分 NG交接 |
-| `WAIT` | `reason_code`、`retry_after_ms` | 尚不能形成业务决定；料盘原地等待 |
-
-`target_position`必须同时含 `rack_id`、`rack_slot_code`、`bin_id`、`bin_cell_id`。WMS在提交 `ACCEPT` 的同一事务内为该
-`rack_id + rack_slot_code` 分配下一个 `rack_target_generation`；该代际与目标预留永久绑定，不得复用或回退。
-`ACCEPT`只授权该目标，不代表入库完成；WES必须等目标 PUT事实被 WMS记录后才能关闭执行。WMS对同一 `operation_id`重放完整首次响应。
-
-### 7.3 `inbound.material.target_recovery_decide@v1`
-
-仅当机械臂尚未从来源位取走料盘或尚未开始向原目标不可逆 PUT，且可靠证据表明原目标不可执行时调用。
-
-| 请求字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `material_execution_id` | 是 | 原粗分执行 |
-| `inbound_admission_id` | 是 | 已接受准入身份 |
-| `failed_target_assignment_id` | 是 | 当前不可执行的目标预留 |
-| `failure_evidence` | 是 | 目标占用、设备不可达或身份不符的确定证据 |
-
-| `result` | 必填字段 | 处理 |
-| --- | --- | --- |
-| `REASSIGNED` | 新 `target_assignment_id`、新 `target_position`、新 `rack_target_generation`、`placement_sequence`、`expected_height_mm` | 原预留失效，只执行新目标 |
-| `REJECT` | `reason_code`、`ng_destination` | 转入粗分 NG交接 |
-| `WAIT` | `reason_code`、`retry_after_ms` | 保持料盘和机械臂安全状态，以新 operation重求值 |
-
-WMS在提交 `REASSIGNED` 的同一事务内为新目标所属 `rack_id + rack_slot_code` 分配新的
-`rack_target_generation`，并使其参与该货架释放围栏。一旦料盘进入原目标的不可逆 PUT区间，禁止调用本 operation掩盖
-物理未知；必须停机并进入对账。
-
-### 7.4 `inbound.material.placement_report@v1`
-
-机械臂完成 PUT、ECS返回确定成功、WES确认目标身份后上报：
-
-```json
-{
-  "operation_id": "0197f300-0000-7000-8000-000000000002",
-  "operation": "inbound.material.placement_report@v1",
-  "timestamp": 1786587090000,
-  "data": {
-    "material_execution_id": "ME-IN-0001",
-    "pkg_id": "PKG-9001",
-    "inbound_admission_id": "IA-9001",
-    "target_assignment_id": "TA-9001",
-    "target_position": {"type": "ONE_LAYER_BIN_CELL", "rack_id": "SR-01", "rack_slot_code": "A", "bin_id": "BIN-010", "bin_cell_id": "C03"},
-    "placement_sequence": 17,
-    "command_code": "CMD-ROUGH-PUT-17",
-    "placed_at": 1786587088000
-  }
-}
-```
-
-WMS必须在一个事务中验证准入、目标和序号，记录 `pkg_id`最终位置并完成该盘入库，然后返回 `RECORDED`；重复事实返回
-`DUPLICATE`。目标、`pkg_id`或序号冲突返回 `409 / CONFLICT`，WES不得改字段重试。只有 `RECORDED`或 `DUPLICATE`
-才能关闭 `MaterialExecution`；HTTP ACK、DeviceCommand成功或 WES本地投影都不等于 WMS已完成入库。
-
-### 7.5 `inbound.material.ng_placement_report@v1`
-
-WMS返回 `REJECT`后，WES仅在 ECS/PLC确认粗分 NG交接位 `READY`，且料盘可靠到位后上报。
-
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| `material_execution_id`、`scan_evidence_id` | 是 | 原执行和原扫码证据 |
-| `pkg_id` | 否 | WMS在拒绝前已建立时回传；WES不得伪造 |
-| `ng_evidence_id`、`ng_position` | 是 | 本次 NG到位证据和批准位置 |
-| `reason_code` | 是 | 必须来自准入响应或对账决定 |
-| `business_context` | 是 | 固定为 `ROUGH_SORT_INBOUND` |
-
-WMS返回 `RECORDED`或 `DUPLICATE`后，该盘任务结束；后续人工处置完全由 WMS负责，不再向 WES发送结案回调。
-
-## 8. 单层货架释放与粗分对账
-
-### 8.1 `inbound.source_rack.release_decided@v1`
-
-单层货架释放只能由 WMS主动决定，不能夹带在单盘准入响应中：
-
-```json
-{
-  "operation_id": "0197f300-0000-7000-8000-000000000010",
-  "operation": "inbound.source_rack.release_decided@v1",
-  "timestamp": 1786587600000,
-  "data": {
-    "release_decision_id": "RD-001",
-    "rack_id": "SR-01",
-    "rack_slot_code": "A",
-    "reason": "FULL",
-    "target_preparation": "REPLACE",
-    "reserved_through_rack_target_generation": 17
-  }
-}
-```
-
-| 字段 | 取值 |
-| --- | --- |
-| `reason` | `FULL \| NO_COMPATIBLE_CELL \| POLICY_RELEASE` |
-| `target_preparation` | `NONE \| REPLACE` |
-| `reserved_through_rack_target_generation` | 该 `rack_id + rack_slot_code` 释放事务已提交的最高 `rack_target_generation`；尚无目标预留时为 `0` |
-
-WES持久化 Event后立即禁止为该货架发起新的准入或目标恢复请求，但不撤销已经可靠持久化的 `ACCEPT | REASSIGNED`；已预留目标的
-料盘必须完成到批准目标、NG或人工对账。WMS在提交释放决定的同一事务中冻结
-`reserved_through_rack_target_generation`，此后不得再为该货架提交新的 `ACCEPT | REASSIGNED`。所有 Event 到达前已发出但尚未
-取得确定响应的准入或目标恢复请求必须继续保留为活动围栏：迟到 `ACCEPT | REASSIGNED`只有在其 `rack_target_generation` 不大于
-释放水位、目标仍属于该货架且可安全执行时继续；超过水位、缺少代际或目标不匹配时冻结当前料盘和货架并对账，不得把迟到
-结果当作普通新决定丢弃。
-`REPLACE`只要求准备下一只单层货架，不授权移动当前货架。重复 `release_decision_id`必须幂等。
-
-### 8.2 `rack_release_id`冻结快照
-
-只有全部满足下列门禁，WES才生成 `rack_release_id`：
-
-- 已收到并持久化 `release_decision_id` 及其目标水位，且不再接纳新目标；
-- 该货架关联的所有已发出准入或目标恢复请求均已取得确定响应；不存在仍可能迟到 `ACCEPT | REASSIGNED` 的未闭合请求；
-- 该货架所有 DeviceCommand均处于确定终局；
-- 每个已接受料盘的 placement或 NG Fact均被 WMS记录；
-- WES位置投影不存在 `UNKNOWN`，货架和槽位身份已复核；
-- 快照列出全部实际占用 Cell，不根据业务记录推测空格。
-
-快照一旦生成即不可修改，是上架计划请求的唯一来源证据。
-
-### 8.3 `inbound.execution.reconciliation_decided@v1`
-
-粗分出现目标冲突、设备结果未知或现场人工移动时，WES冻结受影响最小范围，WMS完成人工主账核对后发送：
-
-| 字段 | 必填 | 约束 |
-| --- | --- | --- |
-| `reconciliation_id` | 是 | WMS稳定身份 |
-| `affected_execution_ids` | 是 | 非空、无重复，只包含已冻结对象 |
-| `authoritative_positions` | 是 | 每个受影响 `pkg_id`的 WMS权威位置或明确缺失 |
-| `decision` | 是 | `CONTINUE \| ABORT` |
-| `reason_code` | 是 | 人工处理原因 |
-
-`CONTINUE`只允许 WES依据新权威位置重新建立后续本地步骤；`ABORT`关闭业务推进但不得删除仍在现场的实物或改写
-TransportTask结果。WES持久化后返回 `202 / RECEIVED`，重复事件不得重复执行副作用。
 
 ## 9. 上架不可变来源计划
 
@@ -696,8 +495,8 @@ SCAN1负责生产准入/NG业务判断，SCAN2负责可用性，SCAN3负责 NG/�
 
 PUT前发现已分配 Cell物理不可执行时，使用原 `source_execution_id`、`pkg_id`、失败 `target_assignment_id`、失败证据和当前仍可用
 目标集合请求恢复。响应严格为 `REASSIGNED | REJECT | WAIT`：`REASSIGNED`必须返回新的 `target_assignment_id`、
-`target_position`、`placement_sequence`和 `expected_height_mm`；`REJECT`、`WAIT`字段分别沿用 §7.3的对应分支。进入不可逆
-PUT后禁止恢复改址，必须停机对账。
+`target_position`、`placement_sequence`和 `expected_height_mm`；`REJECT`必须返回 `reason_code + ng_destination`，`WAIT`
+必须返回 `reason_code + retry_after_ms`。进入不可逆 PUT后禁止恢复改址，必须停机对账。
 
 ### 14.3 `putaway.material.placement_report@v1`
 
@@ -723,7 +522,7 @@ PUT后禁止恢复改址，必须停机对账。
 ```
 
 WMS必须在同一事务中验证来源成员、目标预留和序号，把 `pkg_id`从来源 Cell原子迁移到目标 Bin/Cell，再返回 `RECORDED`。
-该 Fact是位置迁移，不是再次入库确认；GRN和原粗分 `inbound_admission_id`不得重建。`DUPLICATE`可关闭义务，冲突必须对账。
+该 Fact是位置迁移，不是再次入库确认；GRN和获批粗分合同形成的原准入身份不得重建。`DUPLICATE`可关闭义务，冲突必须对账。
 
 ### 14.4 `putaway.material.ng_placement_report@v1`
 
@@ -861,10 +660,6 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 
 | 场景 | 预期结果 |
 | --- | --- |
-| 粗分同一扫码证据重复准入 | WMS重放同一 `pkg_id`、准入和目标；不重复绑定 GRN |
-| 粗分目标在 PUT前不可用 | 只允许目标恢复新 `target_assignment_id`；PUT开始后必须停机对账 |
-| 粗分 placement重放 | 首次 `RECORDED`，后续 `DUPLICATE`；库存只迁移一次 |
-| WMS发送货架释放 | WES停止新准入，闭合已接受盘后才冻结 `rack_release_id` |
 | 上架来源计划存在遗漏或重复成员 | WES拒绝 `READY`计划，不创建动作 |
 | 当前面需要两对但目标货架只有一个合格空 Bin | 不缩成一对；优先返回换架要求，没有合格替换货架则 `WAIT` |
 | A/B 两面都存在合格满 Bin | 当前面批次全部业务闭环后才换面并重新求值；不得预建下一面 TransportTask |
@@ -892,7 +687,6 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 | --- | --- | --- |
 | 本文 WMS ACL DTO与路由 | `src/app/wms_adapter/` | 当前已具名的 23 个 operation，以及批准后补齐的下一交换批次 operation 的严格 schema、幂等、冲突和失败响应 |
 | 可靠执行基础 | WES核心 | MaterialExecution、BinExecution、PositionProjection、InboundEvidence、LineRunEpoch的不变量；不验证具体工作线业务 |
-| 粗分业务编排 | 独立粗分入库插件 | §7—§8的准入、PUT、释放和 NG场景；测试随插件交付 |
 | 满箱交换与自动上架编排 | 独立自动上架插件 | §9—§16的计划、交换、SCAN和逐盘上架；测试随插件交付 |
 | TransportTask | Transport基础能力 | 可靠提交、结果版本和 UNKNOWN；不证明库存业务正确 |
 | DeviceCommand和统一设备 wire | DeviceCommand基础与供应商 ECS | 命令幂等、回调版本、物理安全和原始码映射；供应商验收不进入 WES核心测试 |
@@ -903,13 +697,20 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 
 ## 20. 正式实施前确认项
 
-1. WMS、WES、RCS和 ECS联合审批本文，状态由 `ReviewRequired`变为 `Approved`后才能冻结接口。
-2. 冻结下一交换批次的 operation 字面量和完整 DTO；为全部 operation 生成并联合确认严格 JSON Schema、共享正反 fixture 和字段大小限制。
-3. WMS确认 GRN绑定与粗分 placement在一个可审计事务链中，逐盘上架只迁移位置、不重复入库。
-4. WMS确认所有 Cell容量、兼容性、Usage、空箱资格、生产准入、NG和清退规则均以 WMS主账决定为唯一权威。
-5. ECS确认粗分测量字段、机械臂不可逆点、NG区状态以及 SCAN1—SCAN4物理含义；厂商映射写入设备合同附录，不改写硬件原文。
-6. RCS确认 CTU背篓容量、投料/退料缓存的可观测状态和货架交换位 Transport边界。
-7. 联合冻结超时、退避、`retry_after_ms`上下限、人工停线恢复 SOP和对账证据导出格式。
-8. 在业务插件包内完成 §18场景验收；WES核心仓库只验收共享合同和可靠性不变量。
-9. 现场验证两对交换的“非同批全成功即停线”策略不会把人员或机械臂置于危险状态。
-10. 审批 SRS、最小执行架构和主计划中的当前真源同步，删除任何仍把 WES写成库存阈值决策者或把 SCAN链写成三点的过期表述。
+下表是实施授权记录，不是完成情况说明。责任方必须提供可追溯的审批人、版本和证据位置；不得由 WES 单方把 `PENDING` 改为
+`APPROVED`，也不得用代码或测试结果替代跨系统业务授权。
+
+| ID | 确认项 | 主要责任方 | 状态 | 冻结版本/审批证据 |
+| --- | --- | --- | --- | --- |
+| C1 | WMS、WES、RCS 和 ECS 联合审批本文，状态由 `ReviewRequired` 变为 `Approved` | 联合 | PENDING | 未提供 |
+| C2 | 冻结下一交换批次 operation 字面量和完整 DTO；联合确认全部 operation 的严格 JSON Schema、共享正反 fixture 和字段大小限制 | WMS、WES | PENDING | 未提供 |
+| C3 | 确认本文逐盘上架只迁移获批粗分入库事实的位置，不重复 GRN 绑定或入库确认 | WMS | PENDING | 未提供 |
+| C4 | 确认 Cell 容量、兼容性、Usage、空箱资格、生产准入、NG 和清退规则均以 WMS 主账决定为唯一权威 | WMS | PENDING | 未提供 |
+| C5 | 确认自动上架机械臂不可逆点、NG 区状态和 SCAN1—SCAN4 物理含义，并形成各设备获批合同附录 | ECS、WES | PENDING | Phase 9 设备附录尚未提供 |
+| C6 | 确认 CTU 背篓容量、投料/退料缓存可观测状态和货架交换位 Transport 边界 | RCS、WMS | PENDING | 未提供 |
+| C7 | 联合冻结超时、退避、`retry_after_ms` 上下限、人工停线恢复 SOP 和对账证据导出格式 | 联合 | PENDING | 未提供 |
+| C8 | 在业务插件包内完成 §18 场景验收；WES 核心仓库只验收共享合同和可靠性不变量 | WES、交付 | BLOCKED | 依赖 C1—C7 获批后实施 |
+| C9 | 现场验证两对交换的“非同批全成功即停线”策略不会把人员或机械臂置于危险状态 | ECS、RCS、现场 | PENDING | 未提供 |
+| C10 | 审批 SRS、最小执行架构和主计划当前真源同步，清除库存阈值或三点 SCAN 等过期表述 | 联合 | PENDING | 未提供 |
+
+只有 C1—C10 全部为 `APPROVED`，本文才构成代码实施授权。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +13,8 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from src.app.wms_adapter.inbound_event_handler import InboundEventResponse
+from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
 from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
     TransportEventResponse,
@@ -460,3 +463,41 @@ def test_application_registers_exactly_one_wms_transport_events_route() -> None:
     matches = [route for route in app.routes if getattr(route, "path", None) == "/api/v1/wms/events"]
     assert len(matches) == 1
     assert matches[0].methods == {"POST"}
+
+
+def test_shared_wms_event_route_dispatches_recovery_to_the_single_inbound_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _events_module()
+    transport_handler = AsyncMock()
+    inbound_handler = AsyncMock(
+        return_value=InboundEventResponse(
+            http_status=202,
+            body={
+                "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+                "code": "RECEIVED",
+                "timestamp": 2,
+                "data": {},
+            },
+        )
+    )
+    enqueue = MagicMock()
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", enqueue)
+    app = _route_app(module, transport_handler, _none_policy(module))
+    app.state.wms_inbound_event_handler = SimpleNamespace(handle=inbound_handler)
+    raw_body = json.dumps(
+        {
+            "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+            "operation": RECOVERY_OPERATION,
+            "timestamp": 1,
+            "data": {},
+        }
+    ).encode()
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 202
+    inbound_handler.assert_awaited_once_with(raw_body)
+    transport_handler.assert_not_awaited()
+    enqueue.assert_not_called()

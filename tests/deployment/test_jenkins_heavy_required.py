@@ -36,6 +36,24 @@ def test_heavy_required_does_not_expose_the_host_docker_daemon_to_pytest() -> No
     assert "COPY --from=docker_cli" not in dockerfile_text
 
 
+def test_backend_images_embed_the_checked_out_revision_and_source_tree() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
+    ci_build_body = _stage_body(jenkins_text, "Build CI Image", "Quality Gate")
+    runtime_build_body = _stage_body(jenkins_text, "Build Runtime Image", "Push Runtime Image")
+
+    assert "ARG WES_VCS_REVISION" in dockerfile_text
+    assert "ARG WES_SOURCE_TREE" in dockerfile_text
+    assert 'org.opencontainers.image.revision="${WES_VCS_REVISION}"' in dockerfile_text
+    assert 'com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"' in dockerfile_text
+    assert "env.CI_SOURCE_TREE = sourceTree" in checkout_body
+    assert "git rev-parse HEAD^{tree}" in checkout_body
+    for build_body in (ci_build_body, runtime_build_body):
+        assert '--build-arg "WES_VCS_REVISION=${CI_COMMIT_SHA}"' in build_body
+        assert '--build-arg "WES_SOURCE_TREE=${CI_SOURCE_TREE}"' in build_body
+
+
 def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs() -> None:
     required_paths = (
         "Dockerfile",

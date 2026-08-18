@@ -6,6 +6,7 @@ spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-conve
 wire_authority: docs/integration/third_party_integration_whitepaper.md
 scope: WES 核心设备命令基础能力边界
 related:
+  - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
 

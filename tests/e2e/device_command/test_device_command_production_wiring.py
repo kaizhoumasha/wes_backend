@@ -12,8 +12,9 @@ from sqlalchemy import delete, select
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
-from src.app.device.models.evidence import DeviceEvidence, DeviceEvidenceConflict, DeviceStatusObservation
+from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
@@ -57,18 +58,17 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
     success = False
 
     async def _cleanup_database() -> None:
-        if command_code is None:
-            return
         async with integration_session_factory.begin() as db:
-            evidence_ids = select(DeviceEvidence.id).where(DeviceEvidence.command_code == command_code)
-            await db.execute(
-                delete(DeviceEvidenceConflict).where(DeviceEvidenceConflict.first_evidence_id.in_(evidence_ids))
-            )
-            await db.execute(
-                delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
-            )
-            await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
-            await db.execute(delete(DeviceEvidence).where(DeviceEvidence.command_code == command_code))
+            if command_code is not None:
+                evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
+                await db.execute(
+                    delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
+                )
+                await db.execute(
+                    delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
+                )
+                await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
+                await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
             if binding_id is not None:
                 await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
             if epoch_id is not None:
@@ -97,9 +97,28 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             db.add(device)
             await db.flush()
             device_id = device.id
+        callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
+        ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
+        provider_payload = build_provider_profile_payload()
+        provider_payload["server_url"] = ecs_server.url
+        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
+        worker = DeviceCommandBrokerWorker(
+            database_url=database_url,
+            redis_url=redis_url,
+            provider_file=provider_file,
+            ecs_base_url=ecs_server.url,
+        )
+        worker.start()
+
+        assert line_id is not None
+        assert device_id is not None
+        async with integration_session_factory.begin() as db:
             epoch = LineRunEpoch(
                 epoch_code=f"EPOCH-E2E-{suffix}",
-                workline_id=line.id,
+                workline_id=line_id,
+                plugin_key="device_command_test",
+                plugin_version="1.0.0",
+                flow_mode="TEST",
                 topology_digest="a" * 64,
                 configuration_digest="b" * 64,
                 started_at=timezone.now_for_db(),
@@ -109,8 +128,9 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             epoch_id = epoch.id
             binding = LineRunEpochDeviceBinding(
                 line_run_epoch_id=epoch.id,
-                device_id=device.id,
-                device_code=device.device_code,
+                device_id=device_id,
+                device_code=f"ARM-E2E-{suffix}",
+                device_role="ROBOT_ARM",
                 contract_key="arm.pick",
                 contract_version="2.0",
                 status_max_age_ms=30_000,
@@ -126,6 +146,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 line_run_epoch_id=epoch_id,
                 execution_ref_type="E2E_EXECUTION",
                 execution_ref_id=f"EXEC-{suffix}",
+                material_execution_id=None,
                 contract_key="arm.pick",
                 contract_version="2.0",
                 task_type="PICK",
@@ -135,19 +156,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             )
         )
         command_code = handle.command_code
-
-        callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
-        ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
-        provider_payload = build_provider_profile_payload()
-        provider_payload["server_url"] = ecs_server.url
-        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
-        worker = DeviceCommandBrokerWorker(
-            database_url=database_url,
-            redis_url=redis_url,
-            provider_file=provider_file,
-            ecs_base_url=ecs_server.url,
-        )
-        worker.start()
 
         assert worker.run_task(DISPATCH_TASK) == 1
         async with integration_session_factory() as db:
@@ -165,7 +173,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
 
         async with integration_session_factory() as db:
             command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == command_code))
-            evidence = await db.scalar(select(DeviceEvidence).where(DeviceEvidence.command_code == command_code))
+            evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.command_code == command_code))
             observations = list(
                 (
                     await db.execute(

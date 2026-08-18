@@ -51,6 +51,7 @@ class CeleryAsyncRuntime:
         self._effect_preparation_runtime: Any | None = None
         self._transport_runtime: Any | None = None
         self._device_command_runtime: Any | None = None
+        self._execution_runtime: Any | None = None
         self._state_lock = threading.RLock()
         # 生命周期与消息执行统一按 run_lock -> state_lock 取锁，禁止交叉顺序。
         self._run_lock = threading.RLock()
@@ -91,6 +92,16 @@ class CeleryAsyncRuntime:
                 return None
             return self._device_command_runtime
 
+    @property
+    def execution_runtime(self) -> Any | None:
+        """返回部署组合已显式绑定的 execution processing runtime。"""
+
+        with self._state_lock:
+            self._assert_owner_pid()
+            if self._state is not RuntimeState.READY:
+                return None
+            return self._execution_runtime
+
     @staticmethod
     def _assert_sync_entrypoint() -> None:
         try:
@@ -119,6 +130,7 @@ class CeleryAsyncRuntime:
         self._effect_preparation_runtime = None
         self._transport_runtime = None
         self._device_command_runtime = None
+        self._execution_runtime = None
         self._state = RuntimeState.NEW
 
     @staticmethod
@@ -195,11 +207,28 @@ class CeleryAsyncRuntime:
             )
 
             device_config = resolve_device_command_runtime_config()
+            from src.core.task_queue_gateway import task_queue_gateway
+
             progress["device_command_runtime"] = build_device_command_runtime(
                 session_factory=db_module.AsyncSessionLocal,
                 base_url=device_config.base_url,
                 timeout_seconds=device_config.timeout_seconds,
+                task_queue_gateway=task_queue_gateway,
             )
+
+        from deployment.rough_sorter_composition import build_rough_sorter_runtime
+        from src.app.device.services import DeviceCommandService
+
+        device_command_service = (
+            progress["device_command_runtime"].command_service
+            if progress["device_command_runtime"] is not None
+            else DeviceCommandService(session_factory=db_module.AsyncSessionLocal)
+        )
+        progress["execution_runtime"] = build_rough_sorter_runtime(
+            session_factory=db_module.AsyncSessionLocal,
+            transport_runtime=transport_runtime,
+            device_command_service=device_command_service,
+        )
 
         from src.app.wms_integration.effect_lane_runtime import (
             bind_wms_effect_lane_runtime,
@@ -369,6 +398,7 @@ class CeleryAsyncRuntime:
             "wms_effect_preparation": None,
             "transport_runtime": None,
             "device_command_runtime": None,
+            "execution_runtime": None,
         }
         try:
             runner = asyncio.Runner()
@@ -402,6 +432,7 @@ class CeleryAsyncRuntime:
                 self._effect_preparation_runtime = None
                 self._transport_runtime = None
                 self._device_command_runtime = None
+                self._execution_runtime = None
                 self._state = RuntimeState.NEW if reusable else RuntimeState.CLOSED
             raise
 
@@ -412,6 +443,7 @@ class CeleryAsyncRuntime:
             self._effect_preparation_runtime = progress["wms_effect_preparation"]
             self._transport_runtime = progress["transport_runtime"]
             self._device_command_runtime = progress["device_command_runtime"]
+            self._execution_runtime = progress.get("execution_runtime")
             self._state = RuntimeState.READY
 
     def run_async(self, factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -532,10 +564,11 @@ class CeleryAsyncRuntime:
                 failure_result=None,
             )
             if self._effect_preparation_runtime is not None:
+                effect_preparation_runtime = self._effect_preparation_runtime
                 self._run_runner_stage(
                     runner,
                     self._run_shutdown_stage(
-                        lambda: close_wms_effect_preparation_runtime(self._effect_preparation_runtime),
+                        lambda: close_wms_effect_preparation_runtime(effect_preparation_runtime),
                         "wms-effect-preparation",
                     ),
                     "wms-effect-preparation cleanup",
@@ -596,6 +629,7 @@ class CeleryAsyncRuntime:
                 self._effect_preparation_runtime = None
                 self._transport_runtime = None
                 self._device_command_runtime = None
+                self._execution_runtime = None
                 self._state = RuntimeState.CLOSED
 
 

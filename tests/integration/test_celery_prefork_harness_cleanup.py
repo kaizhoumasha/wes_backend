@@ -68,6 +68,32 @@ def test_worker_popen_failure_closes_and_removes_unowned_temporary_resources(
     assert worker.project_log_dir is not None and not worker.project_log_dir.exists()
 
 
+def test_worker_start_declares_the_dynamic_cli_queue_in_its_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = harness.PreforkWorker(SERVICES)
+    captured_environment: dict[str, str] = {}
+    fake_process = type("FakeProcess", (), {"pid": 43210})()
+
+    def fake_popen(*args: object, **kwargs: object) -> object:
+        captured_environment.update(cast("dict[str, str]", kwargs["env"]))
+        return fake_process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        harness,
+        "_wait_until",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("injected readiness failure")),
+    )
+    monkeypatch.setattr(worker, "stop", lambda **kwargs: None)
+
+    with pytest.raises(AssertionError, match="injected readiness failure"):
+        worker.start()
+
+    assert captured_environment["CELERY_WORKER_QUEUES"] == worker.queue
+    worker._log_file.close()
+    worker.log_path.unlink(missing_ok=True)
+    worker.project_log_dir.rmdir()
+
+
 def test_worker_log_preserves_probe_markers_across_subprocess_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     worker = harness.PreforkWorker(SERVICES)
     fake_process = type("FakeProcess", (), {"pid": 43210})()

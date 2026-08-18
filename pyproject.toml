@@ -34,7 +34,13 @@ dependencies = [
     "flower>=2.0.1",
     "redis>=7.4.0",
     "pyyaml>=6.0.3",
+    "wes-plugin-sdk",
+    "wes-rough-sorter-plugin",
 ]
+
+[tool.uv.sources]
+wes-plugin-sdk = { path = "packages/wes_plugin_sdk" }
+wes-rough-sorter-plugin = { path = "workline_plugins/rough_sorter" }
 
 [project.optional-dependencies]
 dev = [

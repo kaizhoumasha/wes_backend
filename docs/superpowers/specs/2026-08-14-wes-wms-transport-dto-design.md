@@ -269,8 +269,9 @@ T1 同步响应闭集为：
 `transport_task_id`，不能返回占用资源的旧任务 ID。
 
 活动资源围栏固定为：每个未闭合任务绑定其全部 `container_id`、货架任务的 `rack_id`，以及 Bin 任务所有
-`RACK_BIN_SLOT` 中出现的 `rack_id` 和精确槽位 `(rack_id, rack_face, slot_id)`。`HANDOFF_POSITION` 不得仅因
-`location_code` 相同而全局互斥。资源只有在任务取得确定终态或经人工对账关闭后才释放。
+`RACK_BIN_SLOT` 中出现的 `rack_id`。精确槽位 `(rack_id, rack_face, slot_id)` 用于请求内位置唯一性、成员目标校验和结果匹配，
+不另建活动资源绑定；其所在 `rack_id` 已被任务整体互斥。`HANDOFF_POSITION` 不得仅因 `location_code` 相同而全局互斥。
+资源只有在任务取得确定终态或经人工对账关闭后才释放。
 
 删除 `429 / BUSY`、`BUSY`、`retry_after_ms` 及所有相关分支。RCS 或内部调度容量不足不是拒绝 WES 义务的理由：WMS 应先
 可靠接纳，再在内部排队。`503` 固定等待 2000 毫秒，单任务发送预算仍为最多 3 次；请求可能已经送达但响应未知时继续进入
