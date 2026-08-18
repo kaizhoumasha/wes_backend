@@ -37,13 +37,13 @@ from src.app.sys.repositories import SystemOutboxRepository
 from src.app.sys.services.outbox_engine import SystemOutboxEngine
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.utils.timezone import timezone
-from tests.mock.wms_northbound_contract import build_typed_ack
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 from tests.support.external_http import (
     StaticTestCredentialProvider,
     frozen_external_http_binding,
     frozen_outbox_namespace,
 )
+from tests.support.wms_integration.northbound_contract import build_typed_ack
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 
 
 def _outbox(*, operation_identity: str = "tests.external-http.effect@v1") -> SimpleNamespace:

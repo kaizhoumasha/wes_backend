@@ -120,6 +120,26 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 
 ---
 
+### Mock 镜像依赖锁定与纯局域网分发
+
+**What:** 为 tests/mock/Dockerfile 建立可复现的 Python 依赖锁定和预构建镜像离线分发流程。
+
+**Why:** 当前 Mock 镜像通过 pip 安装未锁版本，并在构建时依赖 Debian/PyPI 镜像；预构建镜像可以在局域网离线运行，但无法保证现场离线构建或未来重建得到相同结果。
+
+**Pros:** 固定 FastAPI、Swagger UI 兼容性和 Mock 运行环境，便于现场保存、校验和重建同一镜像。
+
+**Cons:** 会影响 ECS/WMS 共用 Mock 镜像的构建方式，需要独立评估 uv.lock、离线 wheel、基础镜像归档和 CI 发布，不应混入单次 Swagger 调试面改动。
+
+**Context:** WMS Transport Mock Swagger 计划只承诺预构建镜像离线运行，并通过 image ID 绑定验收对象。本 TODO 应优先复用仓库现有 uv.lock、镜像构建和 SHA-256 交付约定，不另建包管理器或私有依赖体系。
+
+**Depends on:** 当前 WMS/ECS Mock 重构和镜像职责稳定，并明确现场是否要求离线重建而不只是离线运行。
+
+**Effort:** M
+
+**Priority:** P2
+
+---
+
 ### 全仓 Redis fail-open/fail-closed/fallback 审计
 
 **What:** 审计整个仓库所有 Redis 调用点，明确每个调用是 fail-open、fail-closed 还是带 fallback，并补齐缺失的降级或错误处理。

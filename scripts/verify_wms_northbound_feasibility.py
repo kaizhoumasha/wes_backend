@@ -1,23 +1,15 @@
-"""通过实际 WMS Mock 的公开 HTTP 面执行脱敏北向合同探针。"""
+"""验证 WMS Mock 是否实现当前冻结的 Transport 北向合同。"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import hmac
 import json
-import math
-import os
-import re
 import sys
+from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
-from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urlsplit
-from uuid import uuid4
+from typing import Any
 
 import httpx
 
@@ -25,39 +17,113 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration  # noqa: E402
-from src.app.sys.canonical_dispatch import canonical_json_bytes, payload_sha256  # noqa: E402
-from src.app.sys.external_http_credentials import EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE  # noqa: E402
-from src.app.wms_integration.operation_contract import WmsCompletionMode  # noqa: E402
-from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS  # noqa: E402
-from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck  # noqa: E402
-from src.core.conf import settings  # noqa: E402
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES  # noqa: E402
+from src.app.wms_adapter.strict_json import is_json_utf8_media_type  # noqa: E402
+from src.core.uuid7 import new_uuid7  # noqa: E402
 
-if TYPE_CHECKING:
-    from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
+TRANSPORT_PATH = "/api/v1/wes/transport-requests"
+MAX_RESPONSE_BYTES = 256 * 1024
+SIGNED_INT64_MAX = 2**63 - 1
 
-_STATES = frozenset({"ACCEPTED", "PROCESSING", "COMPLETED", "REJECTED", "NOT_FOUND"})
-_REASON_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
-_OPAQUE_REFERENCE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
-_MAX_SAFE_RESPONSE_BYTES = 1024 * 1024
-_RESPONSE_CLOSE_TIMEOUT_SECONDS = 1.0
-_ASYNC_OPERATIONS = tuple(
-    operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
-)
-_OPERATION_SPECS: dict[str, dict[str, Any]] = {
-    operation.identity: {
-        "payload": REQUEST_FIXTURES[operation.identity],
-        "rejection": operation.reject_codes[0],
-    }
-    for operation in _ASYNC_OPERATIONS
+RACK_MOVE: dict[str, Any] = {
+    "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+    "operation": "transport.task.submit@v1",
+    "timestamp": 1786060800000,
+    "data": {
+        "transport_task_id": "transport-rack-probe",
+        "kind": "RACK_MOVE",
+        "rack_id": "rack-probe",
+        "source": {"kind": "RACK_POSITION", "location_code": "buffer-a"},
+        "target": {"kind": "RACK_POSITION", "location_code": "station-a"},
+        "target_face": "A",
+    },
 }
-_EXPECTED_STATUS_DEADLINE_SECONDS = float(settings.WMS_EFFECT_STATUS_TIMEOUT_SECONDS)
+
+RACK_ROTATE: dict[str, Any] = {
+    "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+    "operation": "transport.task.submit@v1",
+    "timestamp": 1786060800001,
+    "data": {
+        "transport_task_id": "transport-rotate-probe",
+        "kind": "RACK_ROTATE",
+        "rack_id": "rack-rotate-probe",
+        "source": {"kind": "RACK_POSITION", "location_code": "station-b"},
+        "target": {"kind": "RACK_POSITION", "location_code": "station-b"},
+        "target_face": "B",
+    },
+}
+
+BIN_MOVE: dict[str, Any] = {
+    "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4474",
+    "operation": "transport.task.submit@v1",
+    "timestamp": 1786060800002,
+    "data": {
+        "transport_task_id": "transport-bin-probe",
+        "kind": "BIN_MOVE",
+        "moves": [
+            {
+                "container_id": "bin-move",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "3"},
+                "target": {"kind": "HANDOFF_POSITION", "location_code": "roller-in"},
+            }
+        ],
+    },
+}
+
+BIN_EXCHANGE: dict[str, Any] = {
+    "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4475",
+    "operation": "transport.task.submit@v1",
+    "timestamp": 1786060800003,
+    "data": {
+        "transport_task_id": "transport-exchange-probe",
+        "kind": "BIN_EXCHANGE",
+        "moves": [
+            {
+                "container_id": "bin-a",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "1"},
+            },
+            {
+                "container_id": "bin-b",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "1"},
+            },
+            {
+                "container_id": "bin-c",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "2"},
+            },
+            {
+                "container_id": "bin-d",
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "2"},
+            },
+        ],
+    },
+}
+
+
+def _fresh_probe_payload(template: dict[str, Any], task_prefix: str) -> dict[str, Any]:
+    payload = deepcopy(template)
+    payload["operation_id"] = new_uuid7()
+    payload["data"]["transport_task_id"] = f"{task_prefix}-{payload['operation_id']}"
+    suffix = payload["operation_id"].rsplit("-", maxsplit=1)[-1]
+    data = payload["data"]
+    if data["kind"] in {"RACK_MOVE", "RACK_ROTATE"}:
+        data["rack_id"] = f"{data['rack_id']}-{suffix}"
+    else:
+        rack_ids: dict[str, str] = {}
+        for move in data["moves"]:
+            move["container_id"] = f"{move['container_id']}-{suffix}"
+            for position in (move["source"], move["target"]):
+                if position["kind"] == "RACK_BIN_SLOT":
+                    rack_ids.setdefault(position["rack_id"], f"{position['rack_id']}-{suffix}")
+                    position["rack_id"] = rack_ids[position["rack_id"]]
+    return payload
 
 
 @dataclass(frozen=True)
 class ProbeCaseResult:
-    """仅含本地枚举和布尔结论的探针结果。"""
+    """单个合同断言的脱敏结果。"""
 
     case_id: str
     passed: bool
@@ -66,7 +132,7 @@ class ProbeCaseResult:
 
 @dataclass(frozen=True)
 class FeasibilityReport:
-    """可写入可行性报告的最小探针输出。"""
+    """当前 Transport Mock 可行性报告。"""
 
     cases: tuple[ProbeCaseResult, ...]
 
@@ -81,43 +147,32 @@ async def _request(
     path: str,
     *,
     request_timeout_seconds: float,
-    max_response_bytes: int = _MAX_SAFE_RESPONSE_BYTES,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    """请求 deadline 覆盖 send 与流式 body；清理使用独立短期限保证连接关闭。"""
-
-    response: httpx.Response | None = None
-    deadline = asyncio.get_running_loop().time() + request_timeout_seconds
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout(request_timeout_seconds):
             request = client.build_request(method, path, **kwargs)
             response = await client.send(request, stream=True)
-            content = bytearray()
-            async for chunk in response.aiter_raw(chunk_size=8192):
-                content.extend(chunk)
-                if len(content) > max_response_bytes:
-                    response.extensions["probe_body_exceeded"] = True
-                    response._content = b""  # 关闭 stream 前仅保留本地失败标记
-                    await response.aclose()
-                    return response
-            response._content = bytes(content)
-            await response.aclose()
-            return response
+            try:
+                content = bytearray()
+                async for chunk in response.aiter_raw(chunk_size=8192):
+                    content.extend(chunk)
+                    if len(content) > MAX_RESPONSE_BYTES:
+                        return None
+                return httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    content=bytes(content),
+                    request=request,
+                )
+            finally:
+                await response.aclose()
     except (httpx.HTTPError, TimeoutError):
         return None
-    finally:
-        if response is not None:
-            try:
-                async with asyncio.timeout(_RESPONSE_CLOSE_TIMEOUT_SECONDS):
-                    await response.aclose()
-            except (httpx.HTTPError, TimeoutError):
-                pass
 
 
-def _json_object(response: httpx.Response | None, *, max_response_bytes: int) -> dict[str, Any] | None:
-    """拒绝超限、非对象或畸形 JSON；不传递远端 body 到报告。"""
-
-    if response is None or response.extensions.get("probe_body_exceeded") or len(response.content) > max_response_bytes:
+def _json_object(response: httpx.Response | None) -> dict[str, Any] | None:
+    if response is None:
         return None
     try:
         payload = response.json()
@@ -126,1060 +181,319 @@ def _json_object(response: httpx.Response | None, *, max_response_bytes: int) ->
     return payload if isinstance(payload, dict) else None
 
 
-def _is_aware_rfc3339(value: object) -> bool:
-    if not isinstance(value, str) or len(value) > 64:
+def _valid_json_response_headers(response: httpx.Response) -> bool:
+    headers = response.headers.multi_items()
+    content_types = [value for name, value in headers if name.casefold() == "content-type"]
+    if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
         return False
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return parsed.tzinfo is not None and parsed.utcoffset() == UTC.utcoffset(parsed)
+    encodings = [value for name, value in headers if name.casefold() == "content-encoding"]
+    return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
 
 
-def _contract_values(
-    contract: object,
+def _matches_ack(
+    response: httpx.Response | None,
     *,
-    compiled_profile: CompiledWmsProviderProfile,
-) -> dict[str, Any] | None:
-    """仅接受实际 Mock 声明且覆盖 WES 安全窗口的公开承诺参数。"""
-
-    if not isinstance(contract, dict):
-        return None
-    required_positive_integers = (
-        "idempotency_retention_seconds",
-        "max_response_bytes",
-    )
-    required_positive_times = (
-        "status_visibility_sla_seconds",
-        "submit_deadline_seconds",
-        "status_deadline_seconds",
-    )
-    values = {name: contract.get(name) for name in (*required_positive_integers, *required_positive_times)}
-    credential_reference = contract.get("credential_reference")
-    if any(
-        isinstance(values[name], bool) or not isinstance(values[name], int) or values[name] <= 0
-        for name in required_positive_integers
-    ):
-        return None
-    if any(
-        isinstance(values[name], bool)
-        or not isinstance(values[name], (int, float))
-        or not math.isfinite(float(values[name]))
-        or values[name] <= 0
-        for name in required_positive_times
-    ):
-        return None
-    minimum_retention = (
-        settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + settings.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
-    )
-    if values["idempotency_retention_seconds"] < minimum_retention:
-        return None
-    if values["status_visibility_sla_seconds"] > settings.WES_EFFECT_NOT_FOUND_GRACE_SECONDS:
-        return None
-    active_credential_reference = compiled_profile.profile.outbound_auth.credential_reference
-    if credential_reference != active_credential_reference:
-        return None
-    return {**values, "credential_reference": credential_reference}
-
-
-def _is_snapshot(  # noqa: PLR0911
-    snapshot: object,
-    *,
-    operation_identity: str,
-    payload: dict[str, Any],
-    frozen_ack: WmsEffectAck | None = None,
+    status_code: int,
+    operation_id: str,
+    code: str,
+    transport_task_id: str,
+    reason_code: str | None = None,
 ) -> bool:
-    """严格验证五态快照及对应 operation 的 typed completed result。"""
-
-    if not isinstance(snapshot, dict) or set(snapshot) != {
-        "state",
-        "provider_reference",
-        "reason_code",
-        "updated_at",
-        "source_version",
-        "result_payload",
-    }:
+    payload = _json_object(response)
+    if response is None or response.status_code != status_code or payload is None:
         return False
-    state = snapshot["state"]
-    if state not in _STATES:
-        return False
-    if state == "NOT_FOUND":
-        return all(
-            snapshot[field] is None
-            for field in (
-                "provider_reference",
-                "reason_code",
-                "updated_at",
-                "source_version",
-                "result_payload",
-            )
-        )
-    if frozen_ack is not None and (
-        frozen_ack.operation_identity != operation_identity
-        or snapshot["provider_reference"] != frozen_ack.provider_reference
-    ):
-        return False
-    source_version = snapshot["source_version"]
-    if isinstance(source_version, bool) or not isinstance(source_version, int) or not 0 <= source_version < 2**63:
-        return False
-    if not isinstance(snapshot["provider_reference"], str) or not _OPAQUE_REFERENCE.fullmatch(
-        snapshot["provider_reference"]
-    ):
-        return False
-    if not _is_aware_rfc3339(snapshot["updated_at"]):
-        return False
-    if state == "REJECTED":
-        return (
-            isinstance(snapshot["reason_code"], str)
-            and bool(_REASON_CODE.fullmatch(snapshot["reason_code"]))
-            and snapshot["result_payload"] is None
-        )
-    if snapshot["reason_code"] is not None:
-        return False
-    if state in {"ACCEPTED", "PROCESSING"}:
-        return snapshot["result_payload"] is None
-    result = snapshot["result_payload"]
-    if not isinstance(result, dict):
-        return False
-    try:
-        typed_result = WMS_OPERATION_BY_IDENTITY[operation_identity].result_model.model_validate(result)
-    except (KeyError, ValueError):
-        return False
-    normalized = typed_result.model_dump(mode="json")
+    timestamp = payload.get("timestamp")
+    expected_data = {"transport_task_id": transport_task_id}
+    if reason_code is not None:
+        expected_data["reason_code"] = reason_code
     return (
-        normalized["dispatch_key"] == payload["dispatch_key"]
-        and isinstance(normalized["provider_reference"], str)
-        and bool(normalized["provider_reference"])
-        and normalized["source_version"] == str(source_version)
+        set(payload) == {"operation_id", "code", "timestamp", "data"}
+        and payload["operation_id"] == operation_id
+        and payload["code"] == code
+        and _valid_json_response_headers(response)
+        and isinstance(timestamp, int)
+        and not isinstance(timestamp, bool)
+        and 0 <= timestamp <= SIGNED_INT64_MAX
+        and payload["data"] == expected_data
     )
-
-
-def _is_ack(
-    value: object,
-    *,
-    operation_identity: str,
-    idempotency_key: str,
-    request: object,
-) -> bool:
-    """验证异步 EFFECT 的公共 ACK 关联身份。"""
-
-    return (
-        _validated_ack(
-            value,
-            operation_identity=operation_identity,
-            idempotency_key=idempotency_key,
-            request=request,
-        )
-        is not None
-    )
-
-
-def _validated_ack(
-    value: object,
-    *,
-    operation_identity: str,
-    idempotency_key: str,
-    request: object,
-) -> WmsEffectAck | None:
-    try:
-        ack = WmsEffectAck.model_validate(value)
-    except ValueError:
-        return None
-    if ack.operation_identity != operation_identity or ack.idempotency_key != idempotency_key:
-        return None
-    return ack
-
-
-def _same_ack_binding(first: WmsEffectAck | None, replay: WmsEffectAck | None) -> bool:
-    """跨 submit replay/status 冻结 provider reference。"""
-
-    return first is not None and replay is not None and replay.provider_reference == first.provider_reference
-
-
-def _retry_after_is_valid(value: str | None) -> bool:
-    if value is None or len(value) > 64:
-        return False
-    if value.isdecimal():
-        return True
-    try:
-        parsed = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return False
-    return parsed.tzinfo is not None and parsed.astimezone(UTC) >= datetime.now(UTC)
-
-
-def _result(case_id: str, passed: bool) -> ProbeCaseResult:
-    return ProbeCaseResult(case_id=case_id, passed=passed)
-
-
-def _signature(secret: bytes, canonical: str) -> str:
-    return hmac.new(secret, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def _submit_headers(
-    *,
-    secret: bytes,
-    credential_reference: str,
-    path: str,
-    body: bytes,
-    operation_identity: str,
-    key: str,
-    timestamp: str | None = None,
-    nonce: str | None = None,
-) -> dict[str, str]:
-    timestamp = timestamp or str(int(datetime.now(UTC).timestamp()))
-    nonce = nonce or uuid4().hex
-    body_hash = payload_sha256(body)
-    canonical = f"POST\n{path}\n{timestamp}\n{nonce}\n{body_hash}\n{operation_identity}\n{key}"
-    return {
-        "Content-Type": "application/json",
-        "Idempotency-Key": key,
-        "X-WES-Content-SHA256": body_hash,
-        "X-WES-Credential-Reference": credential_reference,
-        "X-WES-Nonce": nonce,
-        "X-WES-Operation-Identity": operation_identity,
-        "X-WES-Signature": _signature(secret, canonical),
-        "X-WES-Signature-Algorithm": "HMAC_SHA256",
-        "X-WES-Timestamp": timestamp,
-    }
-
-
-def _status_headers(*, secret: bytes, credential_reference: str, raw_path: str) -> dict[str, str]:
-    timestamp = str(int(datetime.now(UTC).timestamp()))
-    nonce = uuid4().hex
-    body_hash = hashlib.sha256(b"").hexdigest()
-    canonical = f"GET\n{raw_path}\n{timestamp}\n{nonce}\n{body_hash}"
-    return {
-        "X-WMS-Content-SHA256": body_hash,
-        "X-WMS-Credential-Reference": credential_reference,
-        "X-WMS-Nonce": nonce,
-        "X-WMS-Signature": _signature(secret, canonical),
-        "X-WMS-Signature-Algorithm": "HMAC_SHA256",
-        "X-WMS-Timestamp": timestamp,
-    }
 
 
 async def run_probe(
     client: httpx.AsyncClient,
     *,
-    compiled_profile: CompiledWmsProviderProfile,
-    operation_identity: str | None = None,
-    request_timeout_seconds: float = 2.0,
-    submit_timeout_seconds: float | None = None,
-    status_timeout_seconds: float | None = None,
+    request_timeout_seconds: float,
 ) -> FeasibilityReport:
-    """通过实际 Mock 的公开路由验收三类 typed EFFECT，绝不读取其内部状态。"""
+    """只通过公开 HTTP 面验证当前合同，不读取 Mock 内部状态。"""
 
-    effective_submit_timeout = submit_timeout_seconds or request_timeout_seconds
-    effective_status_timeout = status_timeout_seconds or request_timeout_seconds
-    active_credential_reference = compiled_profile.profile.outbound_auth.credential_reference
-    if active_credential_reference is None:
-        raise ValueError("WMS northbound feasibility probe requires outbound HMAC authentication")
-    try:
-        active_hmac_secret_env = EXTERNAL_HTTP_CREDENTIAL_ENV_BY_REFERENCE[active_credential_reference]
-    except KeyError as exc:
-        raise ValueError("WMS northbound feasibility probe credential reference is not resolvable") from exc
-    operation_specs = {
-        identity: {
-            **spec,
-            "submit_path": urlsplit(compiled_profile.operations[identity].endpoint_template).path,
-        }
-        for identity, spec in _OPERATION_SPECS.items()
+    rack_move = _fresh_probe_payload(RACK_MOVE, "transport-rack-probe")
+    rack_rotate = _fresh_probe_payload(RACK_ROTATE, "transport-rotate-probe")
+    bin_move = _fresh_probe_payload(BIN_MOVE, "transport-bin-probe")
+    bin_exchange = _fresh_probe_payload(BIN_EXCHANGE, "transport-exchange-probe")
+    invalid = _fresh_probe_payload(BIN_EXCHANGE, "transport-invalid-probe")
+    invalid["data"]["moves"][0]["vehicle_id"] = "private-agv"
+    same_face_rotate = _fresh_probe_payload(RACK_ROTATE, "transport-same-face-probe")
+    unknown_face_rotate = _fresh_probe_payload(RACK_ROTATE, "transport-unknown-face-probe")
+    active_rack_conflict = _fresh_probe_payload(RACK_MOVE, "transport-active-rack-probe")
+    active_rack_conflict["data"]["rack_id"] = rack_move["data"]["rack_id"]
+    active_rack_conflict["data"]["target"]["location_code"] = "station-active-conflict"
+    rack_faces = {
+        rack_rotate["data"]["rack_id"]: "A",
+        same_face_rotate["data"]["rack_id"]: same_face_rotate["data"]["target_face"],
     }
-    typed_effect_submit_deadlines = {
-        float(compiled_profile.operations[identity].budget.deadline_seconds) for identity in operation_specs
-    }
-    if len(typed_effect_submit_deadlines) != 1:
-        raise RuntimeError("typed WMS EFFECT operations must share one submit deadline")
-    expected_submit_deadline_seconds = next(iter(typed_effect_submit_deadlines))
-    status_endpoints = {
-        endpoint.status_endpoint
-        for identity, endpoint in compiled_profile.operations.items()
-        if identity in operation_specs
-    }
-    if len(status_endpoints) != 1 or None in status_endpoints:
-        raise RuntimeError("typed WMS EFFECT operations must share one status endpoint")
-    status_target = urlsplit(next(iter(status_endpoints))).path
-    results: list[ProbeCaseResult] = []
-    bootstrap_limit = 64 * 1024
-    contract_response = await _request(
-        client, "GET", "/northbound/contract", request_timeout_seconds=request_timeout_seconds
-    )
-    contract = _json_object(contract_response, max_response_bytes=bootstrap_limit)
-    contract_values = _contract_values(contract, compiled_profile=compiled_profile)
-    contract_ok = contract_response is not None and contract_response.status_code == 200 and contract_values is not None
-    results.append(_result("public_contract_parameters", contract_ok))
-    if contract_values is None:
-        return FeasibilityReport(cases=tuple(results))
-    results.append(
-        _result(
-            "public_contract_deadline_alignment",
-            contract_values["submit_deadline_seconds"] == expected_submit_deadline_seconds
-            and contract_values["status_deadline_seconds"] == _EXPECTED_STATUS_DEADLINE_SECONDS,
-        )
-    )
-
-    configured_secret = os.getenv(active_hmac_secret_env) or getattr(settings, active_hmac_secret_env, "")
-    secret = configured_secret.encode("utf-8")
-    results.append(_result("active_v2_hmac_secret_available", bool(secret)))
-    if not secret:
-        return FeasibilityReport(cases=tuple(results))
-    max_response_bytes = min(contract_values["max_response_bytes"], _MAX_SAFE_RESPONSE_BYTES)
-    current_material_path = "/api/wms/master-data/materials/MAT001"
-    current_material = await _request(
+    for payload in (bin_move, bin_exchange):
+        for move in payload["data"]["moves"]:
+            for position in (move["source"], move["target"]):
+                if position["kind"] == "RACK_BIN_SLOT":
+                    rack_faces[position["rack_id"]] = position["rack_face"]
+    await _request(
         client,
-        "GET",
-        current_material_path,
+        "POST",
+        "/debug/rack-faces",
         request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        headers=_status_headers(
-            secret=secret,
-            credential_reference=contract_values["credential_reference"],
-            raw_path=current_material_path,
-        ),
+        json={"rack_faces": rack_faces},
     )
-    legacy_material = await _request(
+    root = await _request(client, "GET", "/", request_timeout_seconds=request_timeout_seconds)
+    root_payload = _json_object(root)
+
+    unsupported = deepcopy(rack_move)
+    unsupported["operation"] = "transport.task.unsupported@v1"
+    unsupported_response = await _request(
         client,
-        "GET",
-        "/api/wms/materials/MAT001",
+        "POST",
+        TRANSPORT_PATH,
         request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
+        json=unsupported,
     )
-    results.append(
-        _result(
-            "current_master_data_route_is_live_and_legacy_route_is_removed",
-            current_material is not None
-            and current_material.status_code == 200
-            and legacy_material is not None
-            and legacy_material.status_code == 404,
-        )
+    first = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=rack_move,
     )
-    selected = (operation_identity,) if operation_identity else tuple(operation_specs)
-    if any(identity not in operation_specs for identity in selected):
-        results.append(_result("requested_operation_supported", False))
-        return FeasibilityReport(cases=tuple(results))
+    duplicate = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=rack_move,
+    )
+    changed = deepcopy(rack_move)
+    changed["data"]["target"]["location_code"] = "station-b"
+    conflict = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=changed,
+    )
+    active_conflict = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=active_rack_conflict,
+    )
+    rotate = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=rack_rotate,
+    )
+    same_face = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=same_face_rotate,
+    )
+    unknown_face = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=unknown_face_rotate,
+    )
+    move_bin = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=bin_move,
+    )
+    exchange = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=bin_exchange,
+    )
+    rejected = await _request(
+        client,
+        "POST",
+        TRANSPORT_PATH,
+        request_timeout_seconds=request_timeout_seconds,
+        json=invalid,
+    )
 
-    async def submit(
-        identity: str, key: str, payload: dict[str, Any], *, header_overrides: dict[str, str] | None = None
-    ) -> httpx.Response | None:
-        spec = operation_specs[identity]
-        body = canonical_json_bytes(payload)
-        headers = _submit_headers(
-            secret=secret,
-            credential_reference=contract_values["credential_reference"],
-            path=spec["submit_path"],
-            body=body,
-            operation_identity=identity,
-            key=key,
-        )
-        headers.update(header_overrides or {})
-        return await _request(
-            client,
-            "POST",
-            spec["submit_path"],
-            request_timeout_seconds=effective_submit_timeout,
-            max_response_bytes=max_response_bytes,
-            content=body,
-            headers=headers,
-        )
-
-    async def status(identity: str, key: str) -> httpx.Response | None:
-        raw_path = status_target + "?" + urlencode((("operation_identity", identity), ("idempotency_key", key)))
-        return await _request(
-            client,
-            "GET",
-            raw_path,
-            request_timeout_seconds=effective_status_timeout,
-            max_response_bytes=max_response_bytes,
-            headers=_status_headers(
-                secret=secret, credential_reference=contract_values["credential_reference"], raw_path=raw_path
-            ),
-        )
-
-    async def effect_count(identity: str, key: str) -> int | None:
-        response = await _request(
-            client,
-            "GET",
-            "/debug/northbound/effects",
-            request_timeout_seconds=request_timeout_seconds,
-            max_response_bytes=max_response_bytes,
-            params={"operation_identity": identity, "idempotency_key": key},
-        )
-        payload = _json_object(response, max_response_bytes=max_response_bytes)
-        value = payload.get("effect_count") if payload else None
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-    async def configure_fault(**payload: Any) -> bool:
-        response = await _request(
-            client,
-            "POST",
-            "/debug/northbound/faults",
-            request_timeout_seconds=request_timeout_seconds,
-            max_response_bytes=max_response_bytes,
-            json=payload,
-        )
-        return response is not None and response.status_code == 200
-
-    async def configure_visibility(identity: str, key: str, *, delay_seconds: float) -> bool:
-        response = await _request(
-            client,
-            "POST",
-            "/debug/northbound/visibility",
-            request_timeout_seconds=request_timeout_seconds,
-            max_response_bytes=max_response_bytes,
-            json={
-                "operation_identity": identity,
-                "idempotency_key": key,
-                "delay_seconds": delay_seconds,
-            },
-        )
-        payload = _json_object(response, max_response_bytes=max_response_bytes)
-        return (
-            response is not None
-            and response.status_code == 200
-            and payload
+    first_payload = _json_object(first)
+    duplicate_payload = _json_object(duplicate)
+    cases = (
+        ProbeCaseResult(
+            "service_contract",
+            root is not None
+            and root.status_code == 200
+            and root_payload
             == {
-                "operation_identity": identity,
-                "idempotency_key": key,
-                "delay_seconds": delay_seconds,
-            }
-        )
-
-    async def configure_clock(now: datetime | None) -> bool:
-        response = await _request(
-            client,
-            "POST",
-            "/debug/northbound/clock",
-            request_timeout_seconds=request_timeout_seconds,
-            max_response_bytes=max_response_bytes,
-            json={"now": now.isoformat() if now is not None else None},
-        )
-        payload = _json_object(response, max_response_bytes=max_response_bytes)
-        expected = now.astimezone(UTC).isoformat() if now is not None else None
-        return (
-            response is not None
-            and response.status_code == 200
-            and payload is not None
-            and payload.get("data", {}).get("now") == expected
-        )
-
-    async def callback_hints(identity: str, key: str) -> dict[str, Any] | None:
-        response = await _request(
-            client,
-            "GET",
-            "/debug/northbound/callback-hints",
-            request_timeout_seconds=request_timeout_seconds,
-            max_response_bytes=max_response_bytes,
-            params={"operation_identity": identity, "idempotency_key": key},
-        )
-        return _json_object(response, max_response_bytes=max_response_bytes)
-
-    for identity in selected:
-        spec = operation_specs[identity]
-        payload = dict(spec["payload"])
-        typed_request = WMS_OPERATION_BY_IDENTITY[identity].request_model.model_validate(payload)
-        key = f"probe-{uuid4().hex}"
-        first = await submit(identity, key, payload)
-        first_body = _json_object(first, max_response_bytes=max_response_bytes)
-        first_ack = _validated_ack(
-            first_body.get("data") if first_body else None,
-            operation_identity=identity,
-            idempotency_key=key,
-            request=typed_request,
-        )
-        results.append(
-            _result(
-                f"{identity}:first_submit",
-                first is not None and first.status_code == 202 and first_ack is not None,
+                "service": "wms-transport-mock",
+                "ready": True,
+                "transport_path": TRANSPORT_PATH,
+                "authentication": "NONE",
+            },
+        ),
+        ProbeCaseResult(
+            "operation_identity_scoped",
+            _matches_ack(
+                unsupported_response,
+                status_code=422,
+                operation_id=unsupported["operation_id"],
+                code="REJECTED",
+                transport_task_id=unsupported["data"]["transport_task_id"],
+                reason_code="UNSUPPORTED_OPERATION",
+            ),
+        ),
+        ProbeCaseResult(
+            "rack_move_received",
+            _matches_ack(
+                first,
+                status_code=202,
+                operation_id=rack_move["operation_id"],
+                code="RECEIVED",
+                transport_task_id=rack_move["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "rack_move_duplicate",
+            _matches_ack(
+                duplicate,
+                status_code=200,
+                operation_id=rack_move["operation_id"],
+                code="DUPLICATE",
+                transport_task_id=rack_move["data"]["transport_task_id"],
             )
-        )
-
-        processing_replay = await submit(identity, key, payload)
-        processing_body = _json_object(processing_replay, max_response_bytes=max_response_bytes)
-        processing_ack = _validated_ack(
-            processing_body.get("data") if processing_body else None,
-            operation_identity=identity,
-            idempotency_key=key,
-            request=typed_request,
-        )
-        results.append(
-            _result(
-                f"{identity}:in_progress_replay",
-                processing_replay is not None
-                and processing_replay.status_code == 409
-                and processing_body is not None
-                and processing_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
-                and _same_ack_binding(first_ack, processing_ack),
-            )
-        )
-        hint_evidence = await callback_hints(identity, key)
-
-        snapshots = [_json_object(await status(identity, key), max_response_bytes=max_response_bytes) for _ in range(3)]
-        results.append(
-            _result(
-                f"{identity}:five_state_progression_and_typed_result",
-                first_ack is not None
-                and all(
-                    _is_snapshot(
-                        snapshot,
-                        operation_identity=identity,
-                        payload=payload,
-                        frozen_ack=first_ack,
-                    )
-                    for snapshot in snapshots
-                )
-                and [snapshot["state"] for snapshot in snapshots] == ["ACCEPTED", "PROCESSING", "COMPLETED"]
-                and snapshots[0]["source_version"] < snapshots[1]["source_version"] < snapshots[2]["source_version"],
-            )
-        )
-
-        completed_replay = await submit(identity, key, payload)
-        completed_body = _json_object(completed_replay, max_response_bytes=max_response_bytes)
-        completed_ack = _validated_ack(
-            completed_body.get("data") if completed_body else None,
-            operation_identity=identity,
-            idempotency_key=key,
-            request=typed_request,
-        )
-        results.append(
-            _result(
-                f"{identity}:completed_replay",
-                completed_replay is not None
-                and completed_replay.status_code == 200
-                and _same_ack_binding(first_ack, completed_ack),
-            )
-        )
-
-        conflicting_payload = {**payload, "dispatch_key": f"{payload['dispatch_key']}-conflict"}
-        conflict = await submit(identity, key, conflicting_payload)
-        conflict_body = _json_object(conflict, max_response_bytes=max_response_bytes)
-        results.append(
-            _result(
-                f"{identity}:idempotency_conflict",
-                conflict is not None
-                and conflict.status_code == 422
-                and conflict_body is not None
-                and conflict_body.get("code") == "IDEMPOTENCY_CONFLICT"
-                and await effect_count(identity, key) == 1,
-            )
-        )
-
-        required_field = next(
-            field_name
-            for field_name, field_info in WMS_OPERATION_BY_IDENTITY[identity].request_model.model_fields.items()
-            if field_info.is_required() and field_name != "dispatch_key"
-        )
-        missing_payload = {field: value for field, value in payload.items() if field != required_field}
-        invalid_payloads = (
-            missing_payload,
-            {**payload, "unexpected_wire_field": "forbidden"},
-        )
-        validation_responses = []
-        for invalid_index, invalid_payload in enumerate(invalid_payloads):
-            validation_responses.append(
-                await submit(
-                    identity,
-                    f"probe-invalid-{invalid_index}-{uuid4().hex}",
-                    invalid_payload,
-                )
-            )
-        recovery_key = f"probe-invalid-recovery-{uuid4().hex}"
-        rejected_before_write = await submit(identity, recovery_key, missing_payload)
-        accepted_after_rejection = await submit(identity, recovery_key, payload)
-        results.append(
-            _result(
-                f"{identity}:typed_request_validation",
-                all(
-                    response is not None
-                    and response.status_code == 422
-                    and _json_object(response, max_response_bytes=max_response_bytes)
-                    == {"code": "INVALID_TYPED_REQUEST"}
-                    for response in (*validation_responses, rejected_before_write)
-                )
-                and accepted_after_rejection is not None
-                and accepted_after_rejection.status_code == 202
-                and await effect_count(identity, recovery_key) == 1,
-            )
-        )
-
-        rejected_key = f"probe-rejected-{uuid4().hex}"
-        rejected_submit = await submit(identity, rejected_key, payload)
-        rejected_submit_body = _json_object(rejected_submit, max_response_bytes=max_response_bytes)
-        rejected_ack = _validated_ack(
-            rejected_submit_body.get("data") if rejected_submit_body else None,
-            operation_identity=identity,
-            idempotency_key=rejected_key,
-            request=typed_request,
-        )
-        rejected = await _request(
-            client,
-            "POST",
-            "/debug/northbound/reject",
-            request_timeout_seconds=request_timeout_seconds,
-            max_response_bytes=max_response_bytes,
-            json={"operation_identity": identity, "idempotency_key": rejected_key, "reason_code": spec["rejection"]},
-        )
-        rejected_snapshots = [
-            _json_object(await status(identity, rejected_key), max_response_bytes=max_response_bytes) for _ in range(2)
-        ]
-        results.append(
-            _result(
-                f"{identity}:rejected_stable_reason",
-                rejected_submit is not None
-                and rejected_submit.status_code == 202
-                and rejected_ack is not None
-                and rejected is not None
-                and rejected.status_code == 200
-                and all(
-                    _is_snapshot(
-                        snapshot,
-                        operation_identity=identity,
-                        payload=payload,
-                        frozen_ack=rejected_ack,
-                    )
-                    for snapshot in rejected_snapshots
-                )
-                and rejected_snapshots[0] == rejected_snapshots[1]
-                and rejected_snapshots[0]["state"] == "REJECTED"
-                and rejected_snapshots[0]["reason_code"] == spec["rejection"],
-            )
-        )
-
-        missing = _json_object(await status(identity, f"missing-{uuid4().hex}"), max_response_bytes=max_response_bytes)
-        results.append(
-            _result(
-                f"{identity}:not_found",
-                _is_snapshot(missing, operation_identity=identity, payload=payload) and missing["state"] == "NOT_FOUND",
-            )
-        )
-
-        hint = hint_evidence.get("hints") if hint_evidence else None
-        expected_hint = {
-            "callback_type": "WMS_EFFECT_STATUS_HINT",
-            "dispatch_key": payload["dispatch_key"],
-            "idempotency_key": key,
-            "operation_identity": identity,
-        }
-        # Submit 仅记录脱敏 hint；最终状态仍只由后续 status 公开面提供。
-        results.append(
-            _result(
-                f"{identity}:callback_hint_evidence_and_status_authority",
-                isinstance(hint, list)
-                and hint == [expected_hint]
-                and all(set(item) == set(expected_hint) for item in hint if isinstance(item, dict))
-                and snapshots[-1].get("state") == "COMPLETED",
-            )
-        )
-
-        visibility_key = f"probe-visibility-{uuid4().hex}"
-        visibility_sla = contract_values["status_visibility_sla_seconds"]
-        retention = contract_values["idempotency_retention_seconds"]
-        # 使用探针执行时刻，避免固定历史时钟复位后让本轮更早创建的记录被误判为已过保留期。
-        accepted_at = datetime.now(UTC)
-        clock_started = await configure_clock(accepted_at)
-        visibility_configured = await configure_visibility(
-            identity,
-            visibility_key,
-            delay_seconds=visibility_sla,
-        )
-        first_visibility_submit = await submit(identity, visibility_key, payload)
-        first_visibility_body = _json_object(first_visibility_submit, max_response_bytes=max_response_bytes)
-        first_visibility_ack = _validated_ack(
-            first_visibility_body.get("data") if first_visibility_body else None,
-            operation_identity=identity,
-            idempotency_key=visibility_key,
-            request=typed_request,
-        )
-        hidden_at_accept = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
-        before_sla_clock = await configure_clock(accepted_at + timedelta(seconds=max(visibility_sla - 1, 0)))
-        hidden_before_sla = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
-        at_sla_clock = await configure_clock(accepted_at + timedelta(seconds=visibility_sla))
-        visible_at_sla = _json_object(await status(identity, visibility_key), max_response_bytes=max_response_bytes)
-        before_retention_clock = await configure_clock(accepted_at + timedelta(seconds=retention - 1))
-        replay_before_retention = await submit(identity, visibility_key, payload)
-        at_retention_clock = await configure_clock(accepted_at + timedelta(seconds=retention))
-        expired_at_retention = _json_object(
-            await status(identity, visibility_key),
-            max_response_bytes=max_response_bytes,
-        )
-        recovered_at_retention = await submit(identity, visibility_key, payload)
-        effect_count_after_recovery = await effect_count(identity, visibility_key)
-        clock_restored = await configure_clock(None)
-        results.append(
-            _result(
-                f"{identity}:visibility_sla_and_retention_boundaries",
-                clock_started
-                and visibility_configured
-                and first_visibility_submit is not None
-                and first_visibility_submit.status_code == 202
-                and first_visibility_ack is not None
-                and _is_snapshot(hidden_at_accept, operation_identity=identity, payload=payload)
-                and hidden_at_accept["state"] == "NOT_FOUND"
-                and before_sla_clock
-                and _is_snapshot(hidden_before_sla, operation_identity=identity, payload=payload)
-                and hidden_before_sla["state"] == "NOT_FOUND"
-                and at_sla_clock
-                and _is_snapshot(
-                    visible_at_sla,
-                    operation_identity=identity,
-                    payload=payload,
-                    frozen_ack=first_visibility_ack,
-                )
-                and visible_at_sla["state"] == "ACCEPTED"
-                and before_retention_clock
-                and replay_before_retention is not None
-                and replay_before_retention.status_code == 409
-                and at_retention_clock
-                and _is_snapshot(expired_at_retention, operation_identity=identity, payload=payload)
-                and expired_at_retention["state"] == "NOT_FOUND"
-                and recovered_at_retention is not None
-                and recovered_at_retention.status_code == 202
-                and effect_count_after_recovery == 2
-                and clock_restored,
-            )
-        )
-
-        visible_then_lost_configured = await configure_fault(
-            status=200,
-            target_path=status_target,
-            method="GET",
-            operation_identity=identity,
-            not_found=True,
-        )
-        lost_after_visible = _json_object(await status(identity, key), max_response_bytes=max_response_bytes)
-        visible_again = _json_object(await status(identity, key), max_response_bytes=max_response_bytes)
-        results.append(
-            _result(
-                f"{identity}:visible_then_lost_is_independent_fault",
-                visible_then_lost_configured
-                and _is_snapshot(lost_after_visible, operation_identity=identity, payload=payload)
-                and lost_after_visible["state"] == "NOT_FOUND"
-                and visible_again == snapshots[-1],
-            )
-        )
-
-        signature_tamper = await submit(
-            identity,
-            f"probe-submit-hmac-{uuid4().hex}",
-            payload,
-            header_overrides={"X-WES-Signature": "0" * 64},
-        )
-        signature_tamper_body = _json_object(signature_tamper, max_response_bytes=max_response_bytes)
-        results.append(
-            _result(
-                f"{identity}:submit_hmac_signature_tamper",
-                signature_tamper is not None
-                and signature_tamper.status_code == 401
-                and signature_tamper_body == {"code": "INVALID_HMAC_SIGNATURE"},
-            )
-        )
-
-    fault_identity = selected[0]
-    fault_key = f"probe-fault-{uuid4().hex}"
-    fault_payload = dict(operation_specs[fault_identity]["payload"])
-    fault_typed_request = WMS_OPERATION_BY_IDENTITY[fault_identity].request_model.model_validate(fault_payload)
-    await submit(fault_identity, fault_key, fault_payload)
-    rate_configured = await configure_fault(
-        status=429,
-        retry_after=2,
-        target_path=status_target,
-        method="GET",
-        operation_identity=fault_identity,
-    )
-    rate_limited = await status(fault_identity, fault_key)
-    unavailable_configured = await configure_fault(
-        status=503,
-        target_path=status_target,
-        method="GET",
-        operation_identity=fault_identity,
-    )
-    unavailable = await status(fault_identity, fault_key)
-    unavailable_body = _json_object(unavailable, max_response_bytes=max_response_bytes)
-    results.append(
-        _result(
-            "fault_matrix_rate_limit_and_fixed_5xx",
-            rate_configured
-            and rate_limited is not None
-            and rate_limited.status_code == 429
-            and _retry_after_is_valid(rate_limited.headers.get("Retry-After"))
-            and unavailable_configured
-            and unavailable is not None
-            and unavailable.status_code == 503
-            and unavailable_body == {"code": "TEMPORARILY_UNAVAILABLE"},
-        )
-    )
-
-    scope_configured = await configure_fault(
-        status=503,
-        target_path=status_target,
-        method="GET",
-        operation_identity=fault_identity,
-    )
-    health = await _request(
-        client,
-        "GET",
-        "/",
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-    )
-    current_inventory = await _request(
-        client,
-        "GET",
-        current_material_path,
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        headers=_status_headers(
-            secret=secret,
-            credential_reference=contract_values["credential_reference"],
-            raw_path=current_material_path,
+            and first_payload is not None
+            and duplicate_payload is not None
+            and duplicate_payload["timestamp"] == first_payload["timestamp"]
+            and duplicate_payload["data"] == first_payload["data"],
+        ),
+        ProbeCaseResult(
+            "rack_move_conflict",
+            _matches_ack(
+                conflict,
+                status_code=409,
+                operation_id=rack_move["operation_id"],
+                code="CONFLICT",
+                transport_task_id=rack_move["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "active_rack_conflict",
+            _matches_ack(
+                active_conflict,
+                status_code=409,
+                operation_id=active_rack_conflict["operation_id"],
+                code="CONFLICT",
+                transport_task_id=active_rack_conflict["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "rack_rotate_received",
+            _matches_ack(
+                rotate,
+                status_code=202,
+                operation_id=rack_rotate["operation_id"],
+                code="RECEIVED",
+                transport_task_id=rack_rotate["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "rack_rotate_same_face_conflict",
+            _matches_ack(
+                same_face,
+                status_code=409,
+                operation_id=same_face_rotate["operation_id"],
+                code="CONFLICT",
+                transport_task_id=same_face_rotate["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "rack_rotate_unknown_face_unavailable",
+            _matches_ack(
+                unknown_face,
+                status_code=503,
+                operation_id=unknown_face_rotate["operation_id"],
+                code="UNAVAILABLE",
+                transport_task_id=unknown_face_rotate["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "bin_move_received",
+            _matches_ack(
+                move_bin,
+                status_code=202,
+                operation_id=bin_move["operation_id"],
+                code="RECEIVED",
+                transport_task_id=bin_move["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "bin_exchange_received",
+            _matches_ack(
+                exchange,
+                status_code=202,
+                operation_id=bin_exchange["operation_id"],
+                code="RECEIVED",
+                transport_task_id=bin_exchange["data"]["transport_task_id"],
+            ),
+        ),
+        ProbeCaseResult(
+            "closed_payload_rejected",
+            _matches_ack(
+                rejected,
+                status_code=422,
+                operation_id=invalid["operation_id"],
+                code="REJECTED",
+                transport_task_id=invalid["data"]["transport_task_id"],
+                reason_code="INVALID_DATA",
+            ),
         ),
     )
-    unregistered = await _request(
-        client,
-        "POST",
-        "/api/wms/fulfillment/unregistered-operation",
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        json={"dispatch_key": f"probe-unregistered-scope-{uuid4().hex}"},
-    )
-    scoped_fault = await status(fault_identity, fault_key)
-    results.append(
-        _result(
-            "northbound_fault_scope_excludes_health_inventory_and_unregistered_paths",
-            scope_configured
-            and health is not None
-            and health.status_code == 200
-            and current_inventory is not None
-            and current_inventory.status_code == 200
-            and unregistered is not None
-            and unregistered.status_code == 404
-            and scoped_fault is not None
-            and scoped_fault.status_code == 503,
-        )
-    )
+    return FeasibilityReport(cases=cases)
 
-    submit_deadline_key = f"probe-submit-deadline-{uuid4().hex}"
-    submit_deadline_configured = await configure_fault(
-        status=200,
-        target_path=operation_specs[fault_identity]["submit_path"],
-        method="POST",
-        operation_identity=fault_identity,
-        delay=max(effective_submit_timeout * 2, 0.05),
-        after_response=True,
-    )
-    ambiguous_submit = await submit(fault_identity, submit_deadline_key, fault_payload)
-    ambiguous_retry = await submit(fault_identity, submit_deadline_key, fault_payload)
-    ambiguous_retry_body = _json_object(ambiguous_retry, max_response_bytes=max_response_bytes)
-    results.append(
-        _result(
-            "submit_deadline_ambiguous_retry_one_effect",
-            submit_deadline_configured
-            and ambiguous_submit is None
-            and ambiguous_retry is not None
-            and ambiguous_retry.status_code == 409
-            and ambiguous_retry_body is not None
-            and ambiguous_retry_body.get("code") == "IDEMPOTENCY_REQUEST_IN_PROGRESS"
-            and await effect_count(fault_identity, submit_deadline_key) == 1,
-        )
-    )
 
-    status_deadline_key = f"probe-status-deadline-{uuid4().hex}"
-    status_deadline_submit = await submit(fault_identity, status_deadline_key, fault_payload)
-    status_deadline_body = _json_object(status_deadline_submit, max_response_bytes=max_response_bytes)
-    status_deadline_ack = _validated_ack(
-        status_deadline_body.get("data") if status_deadline_body else None,
-        operation_identity=fault_identity,
-        idempotency_key=status_deadline_key,
-        request=fault_typed_request,
-    )
-    status_deadline_configured = await configure_fault(
-        status=200,
-        target_path=status_target,
-        method="GET",
-        operation_identity=fault_identity,
-        delay=max(effective_status_timeout * 2, 0.05),
-    )
-    timed_out_status = await status(fault_identity, status_deadline_key)
-    status_after_timeout = _json_object(
-        await status(fault_identity, status_deadline_key),
-        max_response_bytes=max_response_bytes,
-    )
-    results.append(
-        _result(
-            "status_deadline",
-            status_deadline_submit is not None
-            and status_deadline_submit.status_code == 202
-            and status_deadline_ack is not None
-            and status_deadline_configured
-            and timed_out_status is None
-            and _is_snapshot(
-                status_after_timeout,
-                operation_identity=fault_identity,
-                payload=fault_payload,
-                frozen_ack=status_deadline_ack,
-            )
-            and status_after_timeout["state"] == "ACCEPTED",
-        )
-    )
-
-    stale_submit_path = operation_specs[fault_identity]["submit_path"]
-    stale_submit_body = canonical_json_bytes(fault_payload)
-    stale_submit_key = f"probe-stale-submit-{uuid4().hex}"
-    stale_submit = await _request(
-        client,
-        "POST",
-        stale_submit_path,
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        content=stale_submit_body,
-        headers=_submit_headers(
-            secret=secret,
-            credential_reference=contract_values["credential_reference"],
-            path=stale_submit_path,
-            body=stale_submit_body,
-            operation_identity=fault_identity,
-            key=stale_submit_key,
-            timestamp="1721865600",
-        ),
-    )
-    results.append(
-        _result(
-            "submit_stale_timestamp_rejected_without_remote_echo",
-            stale_submit is not None
-            and stale_submit.status_code == 401
-            and _json_object(stale_submit, max_response_bytes=max_response_bytes)
-            == {"code": "SIGNATURE_TIMESTAMP_OUT_OF_WINDOW"},
-        )
-    )
-
-    replay_raw_path = (
-        status_target + "?" + urlencode((("operation_identity", fault_identity), ("idempotency_key", fault_key)))
-    )
-    replay_headers = _status_headers(
-        secret=secret,
-        credential_reference=contract_values["credential_reference"],
-        raw_path=replay_raw_path,
-    )
-    first_status_attempt = await _request(
-        client,
-        "GET",
-        replay_raw_path,
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        headers=replay_headers,
-    )
-    replayed_status_attempt = await _request(
-        client,
-        "GET",
-        replay_raw_path,
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        headers=replay_headers,
-    )
-    results.append(
-        _result(
-            "status_nonce_replay_rejected_without_remote_echo",
-            first_status_attempt is not None
-            and first_status_attempt.status_code == 200
-            and replayed_status_attempt is not None
-            and replayed_status_attempt.status_code == 401
-            and _json_object(replayed_status_attempt, max_response_bytes=max_response_bytes)
-            == {"code": "HMAC_NONCE_REPLAYED"},
-        )
-    )
-
-    tampered_raw_path = (
-        status_target + "?" + urlencode((("operation_identity", fault_identity), ("idempotency_key", fault_key)))
-    )
-    tampered_headers = _status_headers(
-        secret=secret, credential_reference=contract_values["credential_reference"], raw_path=tampered_raw_path
-    )
-    tampered_headers["X-WMS-Signature"] = "0" * 64
-    tampered = await _request(
-        client,
-        "GET",
-        tampered_raw_path,
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-        headers=tampered_headers,
-    )
-    results.append(
-        _result("status_hmac_tamper_rejected_without_remote_echo", tampered is not None and tampered.status_code == 401)
-    )
-
-    oversized_configured = await configure_fault(
-        status=503,
-        target_path=status_target,
-        method="GET",
-        operation_identity=fault_identity,
-        response_body_bytes=contract_values["max_response_bytes"] + 1,
-    )
-    oversized = await status(fault_identity, fault_key)
-    results.append(
-        _result(
-            "response_body_budget_exceeded_without_remote_echo",
-            oversized_configured
-            and oversized is not None
-            and oversized.status_code == 503
-            and oversized.extensions.get("probe_body_exceeded") is True
-            and oversized.content == b""
-            and _json_object(oversized, max_response_bytes=max_response_bytes) is None,
-        )
-    )
-
-    reset = await _request(
-        client,
-        "POST",
-        "/debug/reset",
-        request_timeout_seconds=request_timeout_seconds,
-        max_response_bytes=max_response_bytes,
-    )
-    after_reset = _json_object(await status(fault_identity, fault_key), max_response_bytes=max_response_bytes)
-    results.append(
-        _result(
-            "public_reset_clears_observable_operation",
-            reset is not None
-            and reset.status_code == 200
-            and _is_snapshot(after_reset, operation_identity=fault_identity, payload=fault_payload)
-            and after_reset["state"] == "NOT_FOUND",
-        )
-    )
-    return FeasibilityReport(cases=tuple(results))
+def _positive_seconds(value: str) -> float:
+    seconds = float(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("必须大于 0")
+    return seconds
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="验证实际 WMS Mock 北向交互合同")
-    parser.add_argument("--base-url", default=os.getenv("WMS_NORTHBOUND_STUB_BASE_URL"))
-    parser.add_argument("--operation-identity", choices=tuple(_OPERATION_SPECS))
-    parser.add_argument("--timeout-seconds", type=float, default=2.0)
-    parser.add_argument("--submit-timeout-seconds", type=float)
-    parser.add_argument("--status-timeout-seconds", type=float)
+    parser = argparse.ArgumentParser(description="验证当前 WMS Transport Mock 北向合同")
+    parser.add_argument("--base-url", default="http://127.0.0.1:8011")
+    parser.add_argument("--timeout-seconds", type=_positive_seconds, default=2.0)
     return parser.parse_args()
 
 
 async def _main() -> int:
     args = _parse_args()
-    if not args.base_url:
-        raise SystemExit("需要 --base-url 或 WMS_NORTHBOUND_STUB_BASE_URL；不得将认证信息写入命令行。")
-    startup = validate_wms_transport_configuration(settings_source=settings)
-    client_timeout = max(
-        args.timeout_seconds,
-        args.submit_timeout_seconds or 0,
-        args.status_timeout_seconds or 0,
-    )
     async with httpx.AsyncClient(
         base_url=args.base_url,
-        timeout=httpx.Timeout(client_timeout),
+        timeout=httpx.Timeout(args.timeout_seconds),
         trust_env=False,
     ) as client:
-        report = await run_probe(
-            client,
-            compiled_profile=startup.compiled_profile,
-            operation_identity=args.operation_identity,
-            request_timeout_seconds=args.timeout_seconds,
-            submit_timeout_seconds=args.submit_timeout_seconds,
-            status_timeout_seconds=args.status_timeout_seconds,
-        )
+        report = await run_probe(client, request_timeout_seconds=args.timeout_seconds)
     print(json.dumps({"passed": report.passed, "cases": [asdict(case) for case in report.cases]}, ensure_ascii=False))
     return 0 if report.passed else 1
 

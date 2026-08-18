@@ -27,9 +27,9 @@ from src.app.wms_integration.effect_runtime import typed_wms_effect_ack_hash
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
-from tests.mock.wms_northbound_contract import build_typed_ack
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 from tests.support.external_http import signed_external_http_request
+from tests.support.wms_integration.northbound_contract import build_typed_ack
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import (
     NOW,
     _claim,

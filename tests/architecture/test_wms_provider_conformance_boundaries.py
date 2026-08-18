@@ -7,7 +7,7 @@ import inspect
 from pathlib import Path
 
 from src.app.runtime.system_capabilities.wms import provider_conformance
-from tests.mock import wms_scripted_provider
+from tests.support.wms_integration import scripted_provider
 from tests.support.wms_provider_replay import QueryInventoryReplayFactory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,11 +32,11 @@ def test_pure_runner_has_no_network_credential_or_persistence_import_capability(
 
 
 def test_simulator_is_test_only_in_process_and_does_not_copy_production_lifecycle() -> None:
-    simulator_path = Path(wms_scripted_provider.__file__).resolve()
+    simulator_path = Path(scripted_provider.__file__).resolve()
     source = simulator_path.read_text(encoding="utf-8")
 
-    assert simulator_path.is_relative_to(REPO_ROOT / "tests/mock")
-    assert set(wms_scripted_provider.ScriptedWmsQueryInventoryProvider.__slots__) == {"_case"}
+    assert simulator_path.is_relative_to(REPO_ROOT / "tests/support/wms_integration")
+    assert set(scripted_provider.ScriptedWmsQueryInventoryProvider.__slots__) == {"_case"}
     assert all(
         token not in source
         for token in (
@@ -56,7 +56,7 @@ def test_production_tree_cannot_import_or_register_the_test_simulator() -> None:
     violations: list[str] = []
     for path in (REPO_ROOT / "src").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        if "tests.mock.wms_scripted_provider" in source or "ScriptedWmsQueryInventoryProvider" in source:
+        if "tests.support.wms_integration.scripted_provider" in source or "ScriptedWmsQueryInventoryProvider" in source:
             violations.append(path.relative_to(REPO_ROOT).as_posix())
     assert violations == []
 

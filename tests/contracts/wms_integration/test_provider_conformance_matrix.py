@@ -123,13 +123,13 @@ def test_provider_manifest_guards_business_coverage_and_full_registry(monkeypatc
 
 
 def test_fixture_matrix_reuses_typed_happy_fixtures_and_is_fail_closed() -> None:
-    from tests.mock.wms_operation_fixtures import (
+    from tests.support.wms_conformance_runner import build_operation_fixture_matrix
+    from tests.support.wms_integration.operation_fixtures import (
         IDENTITY_MISMATCH_FIXTURES,
         REJECT_FIXTURES,
         REQUEST_FIXTURES,
         RESULT_FIXTURES,
     )
-    from tests.support.wms_conformance_runner import build_operation_fixture_matrix
 
     matrix = build_operation_fixture_matrix(
         operations=WMS_OPERATIONS,
@@ -150,20 +150,20 @@ def test_fixture_matrix_reuses_typed_happy_fixtures_and_is_fail_closed() -> None
 
 
 def test_fixture_matrix_is_built_during_module_import_for_collection_fail_closed() -> None:
-    from tests.mock.wms_operation_fixtures import WMS_OPERATION_FIXTURE_MATRIX
+    from tests.support.wms_integration.operation_fixtures import WMS_OPERATION_FIXTURE_MATRIX
 
     assert len(WMS_OPERATION_FIXTURE_MATRIX) == 29
 
 
 @pytest.mark.parametrize("mutation", ("missing", "extra", "duplicate"))
 def test_fixture_parameter_generation_rejects_missing_extra_or_duplicate_identity(mutation: str) -> None:
-    from tests.mock.wms_operation_fixtures import (
+    from tests.support.wms_conformance_runner import build_operation_fixture_matrix
+    from tests.support.wms_integration.operation_fixtures import (
         IDENTITY_MISMATCH_FIXTURES,
         REJECT_FIXTURES,
         REQUEST_FIXTURES,
         RESULT_FIXTURES,
     )
-    from tests.support.wms_conformance_runner import build_operation_fixture_matrix
 
     request_pairs = list(REQUEST_FIXTURES.items())
     if mutation == "missing":

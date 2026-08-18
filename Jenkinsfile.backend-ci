@@ -200,12 +200,8 @@ pipeline {
                     docker build -f tests/mock/Dockerfile -t ${MOCK_ECS_IMAGE} -t ${MOCK_WMS_IMAGE} .
                     docker run --rm ${MOCK_ECS_IMAGE} python -c 'import ecs_mock_server'
                     docker run --rm ${MOCK_WMS_IMAGE} python -c 'import wms_mock_server'
-                    docker run --rm \
-                        -e WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS=2.5 \
-                        -e WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS=30.5 \
-                        -e WMS_EFFECT_STATUS_TIMEOUT_SECONDS=2.5 \
-                        ${MOCK_WMS_IMAGE} \
-                        python -c "import asyncio; import wms_mock_server as module; contract=asyncio.run(module.northbound_contract()); assert contract['status_visibility_sla_seconds'] == 2.5; assert contract['submit_deadline_seconds'] == 30.5; assert contract['status_deadline_seconds'] == 2.5"
+                    docker run --rm ${MOCK_WMS_IMAGE} \
+                        python -c "import asyncio; import wms_mock_server as module; status=asyncio.run(module.root()); assert status['transport_path'] == '/api/v1/wes/transport-requests'; assert status['authentication'] == 'NONE'"
                 '''
             }
             post {

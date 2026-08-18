@@ -20,7 +20,7 @@ from src.app.runtime.system_capabilities.wms.effect_runtime import (
     build_wms_effect_capability_definition,
 )
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 
 
 class _PreparedIntentService:

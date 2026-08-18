@@ -29,7 +29,7 @@ from src.app.runtime.system_capabilities.wms.effect_runtime import build_wms_eff
 from src.app.sys.external_http_transport import ExternalHttpProtocolResult, ExternalHttpTransportResult
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 
 def _claim() -> dict[str, object]:

@@ -1,4 +1,4 @@
-"""Mock 镜像与 conformance runner 共享的纯 typed fixture matrix。"""
+"""WMS typed-operation 测试与 conformance runner 共享的 fixture matrix。"""
 
 from __future__ import annotations
 

@@ -35,8 +35,8 @@ from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
     build_hmac_provider_profile_payload,
 )
-from tests.mock.wms_northbound_contract import build_typed_ack, build_typed_result
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+from tests.support.wms_integration.northbound_contract import build_typed_ack, build_typed_result
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 
 try:
     from src.app.runtime.orchestration.repositories.wms_effect_status_repository import WmsEffectStatusClaim

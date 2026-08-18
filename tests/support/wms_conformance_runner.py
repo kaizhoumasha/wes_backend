@@ -27,7 +27,7 @@ from src.app.wms_integration.services.http_transport import (
     send_bounded_wms_request,
     sign_wms_hmac_request,
 )
-from tests.mock.wms_fixture_matrix import (
+from tests.support.wms_integration.fixture_matrix import (
     IdentityMismatchFixture,
     OperationFixture,
     RejectFixture,

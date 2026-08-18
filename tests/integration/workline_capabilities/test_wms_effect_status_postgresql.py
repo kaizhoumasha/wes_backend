@@ -30,7 +30,7 @@ from tests.contracts.wms_integration.provider_profile_support import (
     build_hmac_provider_profile_payload,
     build_provider_catalog,
 )
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import _settings
 
 if TYPE_CHECKING:

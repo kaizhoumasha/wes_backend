@@ -54,12 +54,15 @@ reviewed_content_sha256 = "07c95a0c5b9e352440c3ee7ac2f0bcb0e75c6f9b310747d68655a
 source_glob = "src/app/runtime/orchestration/models/operation.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
-# 后端 CI 编排变更同时验证当前数据库合同和 Transport 生产接线。
+# 后端 CI 编排变更同时验证当前数据库合同、Transport 生产接线和 WMS Mock 镜像合同。
 [[mapping]]
 source_glob = "Jenkinsfile.backend-ci"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/mock/test_mock_dockerfile.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_transport_mock_server.py",
 ]
 
 # 本地 HEAVY 入口及其 compose 覆盖共同负责构建隔离依赖、迁移并执行 Transport 生产接线。
@@ -94,20 +97,29 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "docker-compose.yml"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
 
 [[mapping]]
 source_glob = "docker-compose.test-deploy.yml"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+
+[[mapping]]
+source_glob = "docker-compose.wms-acceptance.yml"
+heavy_tests = [
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
 
 # 环境 profile 的当前 WMS deadline 已按冻结合同评审；任意后续内容变化先恢复 fail closed。
 [[mapping]]
 source_glob = ".env.dev"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 reviewed_content_sha256 = "5cd9d4ca997a1e9bb8596e6c3a06dd5426d3b83f4ba3da6bb93aed8913352ffc"
 
@@ -115,9 +127,7 @@ reviewed_content_sha256 = "5cd9d4ca997a1e9bb8596e6c3a06dd5426d3b83f4ba3da6bb93ae
 source_glob = ".env.test"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 reviewed_content_sha256 = "ea5ebbec85375bc0250607aae6db2e57f8240dce5105d714cb125f45a6a30c67"
 
@@ -125,9 +135,7 @@ reviewed_content_sha256 = "ea5ebbec85375bc0250607aae6db2e57f8240dce5105d714cb125
 source_glob = ".env.prod"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 reviewed_content_sha256 = "d0ee142f857e492d64ce8eb09fc27a1b873c29cbf637977ec533cc0c20d36999"
 
@@ -205,14 +213,14 @@ heavy_tests = []
 source_glob = "scripts/generate_runtime_extensions.py"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/generated_index.py"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 # WMS deployment attestation 的 CLI、领域事实与 Beat 路由必须共同验证四角色部署产物。
@@ -739,22 +747,26 @@ heavy_tests = [
 source_glob = "tests/support/test_suite_topology.py"
 heavy_tests = []
 
-# 保留的通用 ECS mock 资产由服务合同和 Dockerfile 静态合同承接；镜像入口由 MR 固定构建步骤验证。
+# Mock 镜像入口由 MR 固定构建步骤验证，Dockerfile 同时承接 ECS 与 Transport 依赖。
 [[mapping]]
-source_glob = "tests/mock/{Dockerfile,ecs_mock_catalog.py,ecs_mock_server.py}"
+source_glob = "tests/mock/Dockerfile"
+heavy_tests = [
+    "tests/mock/test_ecs_mock_server.py",
+    "tests/mock/test_mock_dockerfile.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
+
+[[mapping]]
+source_glob = "tests/mock/{ecs_mock_catalog.py,ecs_mock_server.py}"
 heavy_tests = [
     "tests/mock/test_ecs_mock_server.py",
     "tests/mock/test_mock_dockerfile.py",
 ]
 
-# WMS document wire DTO 由共享可行性探测与两个 Mock wire 合同共同承接。
+# 旧 WMS document wire DTO 由其所属 WMS integration 合同承接，不再耦合 Transport Mock。
 [[mapping]]
 source_glob = "src/app/wms_integration/ports/document_operations.py"
-heavy_tests = [
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
-]
+heavy_tests = ["tests/integration/wms_integration/test_northbound_contract.py"]
 
 # WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。
 [[mapping]]
@@ -765,61 +777,61 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "tests/support/wms_conformance_runner.py"
-heavy_tests = [
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/integration/test_wms_provider_conformance_collection.py",
-    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
-]
+heavy_tests = ["tests/integration/test_wms_provider_conformance_collection.py"]
 
-# 纯 fixture matrix 同时服务 conformance runner 与 Mock WMS 服务合同。
 [[mapping]]
-source_glob = "tests/mock/wms_fixture_matrix.py"
+source_glob = "tests/support/wms_provider_conformance.py"
+heavy_tests = ["tests/integration/wms_integration/test_provider_conformance_simulator.py"]
+
+# 纯 fixture matrix 只服务旧 WMS integration 一致性测试，不进入 Transport Mock。
+[[mapping]]
+source_glob = "{tests/mock/wms_fixture_matrix.py,tests/support/wms_integration/fixture_matrix.py}"
 heavy_tests = [
     "tests/integration/test_runtime_intent_log_effect_repository.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/test_wms_provider_conformance_collection.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 [[mapping]]
 source_glob = "tests/contracts/wms_integration/provider_profile_support.py"
 heavy_tests = [
     "tests/integration/test_wms_deployment_attestation.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_provider_conformance_simulator.py",
+    "tests/integration/wms_integration/test_provider_conformance_simulator.py",
 ]
 
 [[mapping]]
-source_glob = "tests/mock/wms_mock_server.py"
+source_glob = "tests/mock/{wms_mock_server.py,wms_transport_mock_openapi.py}"
 heavy_tests = [
     "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/mock/test_wms_transport_mock_server.py",
 ]
 
 [[mapping]]
-source_glob = "tests/mock/wms_northbound_contract.py"
-heavy_tests = [
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
-]
+source_glob = "{tests/mock/wms_northbound_contract.py,tests/support/wms_integration/northbound_contract.py}"
+heavy_tests = ["tests/integration/wms_integration/test_northbound_contract.py"]
 
 [[mapping]]
-source_glob = "tests/mock/wms_operation_fixtures.py"
+source_glob = "{tests/mock/wms_operation_fixtures.py,tests/support/wms_integration/operation_fixtures.py}"
 heavy_tests = [
     "tests/integration/test_runtime_intent_log_effect_repository.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_mock_server.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
+
+[[mapping]]
+source_glob = "tests/mock/wms_scripted_provider.py"
+heavy_tests = ["tests/integration/wms_integration/test_provider_conformance_simulator.py"]
+
+[[mapping]]
+source_glob = "tests/support/wms_integration/__init__.py"
+heavy_tests = []
+reviewed_content_sha256 = "28cfc851260d1451d2c2920609c50c9ce5290e96b255ee91e994a9f46e50dc04"
+
+[[mapping]]
+source_glob = "tests/support/wms_integration/scripted_provider.py"
+heavy_tests = ["tests/integration/wms_integration/test_provider_conformance_simulator.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py"
@@ -868,9 +880,21 @@ heavy_tests = []
 source_glob = "src/app/transport/{__init__.py,composition.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
-# Transport 领域合同、持久化约束、领取和收敛由隔离 PostgreSQL 验收。
+# Transport wire 合同还被 WMS Transport Mock 镜像直接导入。
 [[mapping]]
-source_glob = "src/app/transport/{callback_json.py,contracts.py,models.py,repository.py}"
+source_glob = "src/app/transport/contracts.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
+
+# Transport 持久化约束、领取和收敛由隔离 PostgreSQL 验收。
+[[mapping]]
+source_glob = "src/app/transport/{models.py,repository.py}"
 heavy_tests = [
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
@@ -890,6 +914,17 @@ heavy_tests = [
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
 ]
 
+[[mapping]]
+source_glob = "src/app/transport/callback_json.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
+
 # submit snapshot 同时经过持久化闭环与真实 worker/HTTP 生产接线。
 [[mapping]]
 source_glob = "src/app/transport/submit_snapshot.py"
@@ -907,13 +942,40 @@ heavy_tests = []
 source_glob = "src/app/wms_adapter/transport_adapter.py"
 heavy_tests = ["tests/integration/transport/test_dark_transport_loop.py"]
 
-# 入站 handler/wire 必须由真实 route E2E 承接，同时保留暗闭环覆盖。
+# 入站 handler 必须由真实 route E2E 承接，同时保留暗闭环覆盖。
 [[mapping]]
-source_glob = "src/app/wms_adapter/{strict_json.py,transport_event_handler.py,transport_openapi.py,transport_wire.py}"
+source_glob = "src/app/wms_adapter/transport_event_handler.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+# 共享 callback wire/OpenAPI 同时由生产 route 和 WMS Transport Mock 消费。
+[[mapping]]
+source_glob = "src/app/wms_adapter/{transport_openapi.py,transport_wire.py}"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/strict_json.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
+
+# 离线 Swagger 资产既影响 Mock 镜像内容，也影响运行时文档页面。
+[[mapping]]
+source_glob = "src/static/swagger-ui/**"
+heavy_tests = [
+    "tests/mock/test_mock_dockerfile.py",
+    "tests/mock/test_wms_transport_mock_server.py",
 ]
 
 [[mapping]]
@@ -1216,14 +1278,14 @@ heavy_tests = [
 source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/wms_integration/{effect_preparation_runtime.py,effect_runtime.py,endpoint_compiler.py,operation_contract.py,operation_registry.py,provider_manifest.py,provider_profile.py,ports/effect_preparation.py,ports/effect_status.py,ports/fulfillment_operations.py}"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 [[mapping]]
@@ -1292,7 +1354,7 @@ reviewed_content_sha256 = "e83f7ab0dfbbe70fad586c1fbc22c97118185d0f9432078df138e
 source_glob = "tests/support/wms_conformance_coverage.py"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 # 生产初始化仅收敛退役业务 seed 与菜单路由，由部署 FAST 合同验证；内容变化后恢复 fail closed。
@@ -1330,7 +1392,7 @@ heavy_tests = ["tests/integration/workline_capabilities/test_wms_rack_supply_sch
 source_glob = "src/app/runtime/system_capabilities/wms/fulfillment/{request_load_unit_transport/definition.py,request_rack_transport/definition.py}"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
-    "tests/mock/test_wms_northbound_contract.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
 # 共享认证 owner 同时由 callback payload 边界和 Transport 生产接线 E2E 承接。
@@ -1386,6 +1448,7 @@ source_glob = "src/core/uuid7.py"
 heavy_tests = [
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/mock/test_wms_transport_mock_server.py",
 ]
 
 # API 路由由生产接线 E2E 承接；完整 lifespan 由真实 PostgreSQL/Redis owner 承接。

@@ -38,8 +38,14 @@ RUN pip install --no-cache-dir \
 # 复制 mock 服务代码
 WORKDIR /app
 COPY tests/mock/ /app/tests/mock/
-# WMS Mock 只读取静态 registry 与 typed models，确保 validator 不维护第二份 operation schema。
-COPY src/app/wms_integration/ /app/src/app/wms_integration/
+COPY src/static/swagger-ui/ /app/src/static/swagger-ui/
+# WMS Transport Mock 复用基础线协议能力，不依赖旧业务 operation registry。
+COPY src/app/wms_adapter/strict_json.py /app/src/app/wms_adapter/strict_json.py
+COPY src/app/wms_adapter/transport_openapi.py /app/src/app/wms_adapter/transport_openapi.py
+COPY src/app/wms_adapter/transport_wire.py /app/src/app/wms_adapter/transport_wire.py
+COPY src/app/transport/callback_json.py /app/src/app/transport/callback_json.py
+COPY src/app/transport/contracts.py /app/src/app/transport/contracts.py
+COPY src/core/uuid7.py /app/src/core/uuid7.py
 # ECS Mock 仅复用 callback 域无外部依赖的事件分类常量与判定函数。
 COPY src/app/callback/contracts/runtime_events.py /app/src/app/callback/contracts/runtime_events.py
 

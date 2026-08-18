@@ -17,7 +17,7 @@ from src.app.sys.external_http_transport import ExternalHttpProtocolResult, Exte
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.effect_status import WmsEffectStatus
 from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 from tests.workline_runtime.system_capabilities.test_wms_effect_status_service import (
     NOW,
     _claim,

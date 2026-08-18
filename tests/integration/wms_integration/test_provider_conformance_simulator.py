@@ -1,11 +1,11 @@
-"""最小 WMS conformance simulator 的 mock 目录显式门禁。"""
+"""最小 WMS typed-operation conformance simulator。"""
 
 from __future__ import annotations
 
 import httpx
 import pytest
 
-from tests.mock.wms_scripted_provider import ScriptedWmsQueryInventoryProvider
+from tests.support.wms_integration.scripted_provider import ScriptedWmsQueryInventoryProvider
 from tests.support.wms_provider_conformance import QUERY_INVENTORY_SCRIPT_FIXTURE
 
 

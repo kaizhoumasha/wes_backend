@@ -1,10 +1,7 @@
-"""29 项 WMS operation 的最小 typed fixture。
-
-本文件是 Mock WMS 的独立测试资产；覆盖测试会按静态 registry fail closed 校验键集合与模型。
-"""
+"""29 项 WMS typed-operation 的最小领域测试 fixture。"""
 
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
-from tests.mock.wms_fixture_matrix import build_operation_fixture_matrix
+from tests.support.wms_integration.fixture_matrix import build_operation_fixture_matrix
 
 REQUEST_FIXTURES = {
     "wms.master_data.get_material@v1": {"material_code": "MAT-001"},
