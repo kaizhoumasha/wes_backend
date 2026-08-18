@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-17
+**最后更新**：2026-08-18
 
 ## 1. 真源与入口
 
@@ -19,6 +19,7 @@
 | `docker-compose.yml` / `docker-compose.deploy.yml` | 本地与生产部署编排 |
 | `docker-compose.test-deploy.yml` | TEST 环境部署编排 |
 | `docker-compose.ci-heavy.yml` | MR HEAVY 的隔离 PostgreSQL/Redis 编排 |
+| `docker-compose.wms-acceptance.yml` | 预构建 WMS Transport Mock 镜像的 provider-local 验收编排；不构建镜像、不挂载宿主源码 |
 | `Jenkinsfile.backend-ci` | 后端 QUALITY、验收、HEAVY、镜像构建与发布入口 |
 | `Jenkinsfile.test-deploy` | TEST 环境部署入口 |
 | `TODOS.md` | 已有真实触发条件但尚未排期的独立工作 |
@@ -111,6 +112,7 @@ API → Service → Repository → Database
 | `scripts/select_heavy_tests.py` | 根据 Git 差异和机器可读映射选择 HEAVY |
 | `scripts/run_selected_heavy_tests.py` | 执行选中 HEAVY 并拒绝零执行/跳过 |
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
+| `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport T1 合同；不替代真实 WMS 或现场验收 |
 | `docs/runbooks/transport-operations.md` | Transport 结构化日志与 PostgreSQL 事实的只读诊断入口 |
 | `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
