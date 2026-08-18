@@ -58,6 +58,7 @@ WMS_DEPLOYMENT_HEAVY_TEST = "tests/integration/test_wms_deployment_attestation.p
 WMS_CIRCUIT_BREAKER_HEAVY_TEST = "tests/resilience/test_wms_circuit_breaker.py"
 WMS_FEASIBILITY_HEAVY_TEST = "tests/integration/test_wms_northbound_feasibility_probe.py"
 WMS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_wms_transport_mock_server.py"
+WMS_PROVIDER_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_wms_provider_mock_server.py"
 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST = "tests/integration/wms_integration/test_northbound_contract.py"
 WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py"
 WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_conformance_collection.py"
@@ -348,6 +349,12 @@ def test_deployment_composition_is_candidate_with_explicit_heavy_owners() -> Non
         "tests/integration/test_celery_async_runtime_postgresql.py",
         "tests/integration/test_wms_deployment_attestation.py",
     ]
+
+
+def test_development_wms_provider_profile_selects_its_mock_contract_owner() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["deployment/dev/wms-provider.yaml"], config) == [WMS_PROVIDER_MOCK_SERVER_HEAVY_TEST]
 
 
 def test_plugin_sdk_assets_are_exact_reviewed_none_mappings() -> None:
@@ -869,7 +876,9 @@ def test_repository_mapping_selects_device_and_wms_mock_owners_for_local_compose
 
     assert select_heavy_tests(["docker-compose.yml"], config) == [
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
         WMS_FEASIBILITY_HEAVY_TEST,
+        WMS_PROVIDER_MOCK_SERVER_HEAVY_TEST,
         WMS_MOCK_SERVER_HEAVY_TEST,
     ]
 

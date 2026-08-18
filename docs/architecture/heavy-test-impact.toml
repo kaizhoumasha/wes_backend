@@ -99,7 +99,9 @@ heavy_tests = [
 source_glob = "docker-compose.yml"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
     "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_provider_mock_server.py",
     "tests/mock/test_wms_transport_mock_server.py",
 ]
 
@@ -121,7 +123,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
-reviewed_content_sha256 = "5cd9d4ca997a1e9bb8596e6c3a06dd5426d3b83f4ba3da6bb93aed8913352ffc"
+reviewed_content_sha256 = "8de706340f52942a5d6d5aafbc0b2800e9f5a82a4bb20545674a9dc9b84ec7ed"
 
 [[mapping]]
 source_glob = ".env.test"
@@ -1094,13 +1096,17 @@ heavy_tests = [
 
 # Phase 8 静态插件装配、同事务 Fact 重建与持久触发由真实 execution/Celery/Transport owner 承接。
 [[mapping]]
-source_glob = "deployment/**"
+source_glob = "deployment/*.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
     "tests/integration/test_wms_deployment_attestation.py",
 ]
+
+[[mapping]]
+source_glob = "deployment/dev/wms-provider.yaml"
+heavy_tests = ["tests/mock/test_wms_provider_mock_server.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/epoch_digest.py"
@@ -1436,6 +1442,59 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "src/celery_app/dev_beat_autoreload.sh"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/beat_healthcheck.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/celery_app/dev_reload_fingerprint.sh"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]
+
+# 本机联调 overlay 会向真实进程注入 WMS Provider profile，由 WMS integration owner 承接。
+[[mapping]]
+source_glob = "docker-compose.frontend.yml"
+heavy_tests = ["tests/mock/test_wms_provider_mock_server.py"]
+
+# 本机 dev 编排由真实 Provider HTTP 合同和隔离 PostgreSQL seed 收敛共同承接。
+[[mapping]]
+source_glob = "scripts/dev-env.sh"
+heavy_tests = [
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
+    "tests/mock/test_wms_provider_mock_server.py",
+]
+
+[[mapping]]
+source_glob = "scripts/frontend-dev-entrypoint.sh"
+heavy_tests = []
+reviewed_content_sha256 = "a9e79638bc6043b61a762fd966d2f93691effae80d55087ebc70c6888b2fa18e"
+
+[[mapping]]
+source_glob = "scripts/data/seed_initial_data.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/utils/permission_scanner.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/services/menu_sync_service.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/repositories/menu_repository.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "tests/mock/wms_provider_mock_server.py"
+heavy_tests = ["tests/mock/test_wms_provider_mock_server.py"]
 
 # evidence 即时唤醒必须真实经过生产接线 E2E。
 [[mapping]]

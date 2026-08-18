@@ -1,722 +1,368 @@
-"""
-使用 SQLModel 对象初始化系统基础数据
+"""为本机开发环境收敛确定、幂等且可校验的基础调试数据。"""
 
-优势：
-- 自动维护 tree_path（通过 TreeRepository Hook）
-- 类型安全（Pydantic 验证）
-- 自动处理自增 ID（ORM flush）
-- 易于维护和扩展
-"""
 # ruff: noqa: E402
 
+from __future__ import annotations
+
+import argparse
 import asyncio
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from sqlalchemy import delete, insert, select, tuple_
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from src.app.admin.models.perm import Permission
-from src.app.admin.models.role import Role
-from src.app.admin.models.user import User
-from src.core.security import get_password_hash
-from src.database.hooks import HookType
-
-
-def _disable_audit_hooks(repo) -> None:
-    """
-    禁用 Repository 的审计日志 Hook
-
-    在种子数据初始化期间禁用审计日志，避免 ENUM 类型问题。
-    只移除审计日志 hooks（priority=100），保留其他 hooks（如 tree_path 维护）。
-
-    Args:
-        repo: Repository 实例
-    """
-    for hook_type in [HookType.AFTER_CREATE, HookType.AFTER_UPDATE, HookType.AFTER_DELETE]:
-        # 只移除审计日志 hooks（priority=100），保留 tree_path hooks（priority=10）
-        repo.hook_manager.hooks[hook_type] = [
-            hook for hook in repo.hook_manager.hooks[hook_type] if hook.priority != 100
-        ]
+from src.app.admin.models import Role, User, user_role
+from src.app.admin.services.menu_sync_service import menu_sync_service
+from src.core.rbac import invalidate_users_permissions
+from src.core.security import get_password_hash, verify_password
+from src.database.db import get_db_context, init_db
+from src.database.redis_cache import get_cache
+from src.register import create_app
+from src.utils.permission_scanner import (
+    managed_permission_names_for_app,
+    sync_builtin_role_permissions,
+    sync_permissions_to_db,
+)
 
 
-if TYPE_CHECKING:
-    from src.core.conf import Settings
-else:
-    Settings = "Settings"
+@dataclass(frozen=True, slots=True)
+class RoleSeed:
+    name: str
+    description: str
 
 
-async def seed_permissions(db: AsyncSession) -> None:
-    """
-    初始化 API 权限数据
+@dataclass(frozen=True, slots=True)
+class UserSeed:
+    username: str
+    email: str
+    full_name: str
+    role_name: str
+    is_superuser: bool = False
+    is_multi_login: bool = False
 
-    注意：
-    - TreeRepository 会自动计算 tree_path
-    - tree_path 格式：/父ID/当前ID/
-    - 需要使用 flush() 获取自增 ID
-    - 权限按模块分组（使用 user_api 类型）
-    """
-    from src.app.admin.repositories.perm_repository import PermissionRepository
 
-    repo = PermissionRepository()
-    _disable_audit_hooks(repo)  # 禁用审计 Hook
+ROLE_SEEDS = (
+    RoleSeed("系统管理员", "系统最高权限，拥有所有操作权限"),
+    RoleSeed("管理员", "系统管理员，拥有大部分管理权限"),
+    RoleSeed("运营人员", "日常运营操作人员"),
+    RoleSeed("财务人员", "财务相关操作人员"),
+    RoleSeed("普通用户", "普通用户，基础查看权限"),
+)
 
-    # ========== 1. 系统管理根分组 ==========
-    system_group = await repo.create(
-        db,
-        {
-            "name": "admin:system:group",
-            "description": "系统管理权限分组",
-            "type": "user_api",
-            "category": "admin",
-            "resource": "system",
-            "action": "group",
-            "method": "GET",
-            "path": "/admin",
-            "sort_order": 1,
-        },
+USER_SEEDS = (
+    UserSeed(
+        "admin",
+        "admin@localhost.localdomain",
+        "系统管理员",
+        "系统管理员",
+        is_superuser=True,
+        is_multi_login=True,
+    ),
+    UserSeed("manager", "manager@localhost.localdomain", "管理员", "管理员"),
+    UserSeed("operator", "operator@localhost.localdomain", "运营人员", "运营人员"),
+    UserSeed("finance", "finance@localhost.localdomain", "财务人员", "财务人员"),
+    UserSeed("user1", "user1@localhost.localdomain", "普通用户1", "普通用户"),
+    UserSeed("user2", "user2@localhost.localdomain", "普通用户2", "普通用户"),
+)
+
+
+def require_development_environment(env: Mapping[str, str] | None = None) -> None:
+    values = env or os.environ
+    if values.get("ENV", "").strip().lower() != "dev":
+        raise RuntimeError("初始化调试数据仅允许在 dev 环境运行")
+    if values.get("DEV_SEED_ALLOWED", "").strip().lower() != "true":
+        raise RuntimeError("初始化调试数据仅允许通过本机开发编排运行")
+    if values.get("POSTGRES_HOST", "").strip().lower() != "db":
+        raise RuntimeError("初始化调试数据仅允许连接 Compose 开发数据库")
+
+
+def _seed_password(env: Mapping[str, str] | None = None) -> str:
+    values = env or os.environ
+    password = values.get("DEV_SEED_PASSWORD", "admin123")
+    if len(password) < 8:
+        raise ValueError("DEV_SEED_PASSWORD 长度必须至少为 8")
+    return password
+
+
+async def _active_roles(db: AsyncSession) -> dict[str, Role]:
+    result = await db.execute(select(Role).where(Role.is_deleted.is_(False)))
+    return {role.name: role for role in result.scalars().all()}
+
+
+async def _active_users(db: AsyncSession) -> dict[str, User]:
+    result = await db.execute(select(User).where(User.is_deleted.is_(False)))
+    return {user.username: user for user in result.scalars().all()}
+
+
+async def ensure_roles(db: AsyncSession) -> dict[str, int]:
+    roles = await _active_roles(db)
+    result = {"created": 0, "updated": 0, "skipped": 0}
+
+    for seed in ROLE_SEEDS:
+        role = roles.get(seed.name)
+        if role is None:
+            role = Role(name=seed.name, description=seed.description)
+            db.add(role)
+            roles[seed.name] = role
+            result["created"] += 1
+        elif role.description != seed.description:
+            role.description = seed.description
+            result["updated"] += 1
+        else:
+            result["skipped"] += 1
+
+    await db.flush()
+    return result
+
+
+async def ensure_users(db: AsyncSession, password: str) -> dict[str, int]:
+    users = await _active_users(db)
+    result = {"created": 0, "updated": 0, "skipped": 0}
+
+    for seed in USER_SEEDS:
+        user = users.get(seed.username)
+        if user is None:
+            user = User(
+                username=seed.username,
+                email=seed.email,
+                full_name=seed.full_name,
+                hashed_password=get_password_hash(password),
+                is_superuser=seed.is_superuser,
+                is_multi_login=seed.is_multi_login,
+            )
+            db.add(user)
+            users[seed.username] = user
+            result["created"] += 1
+            continue
+
+        changed = False
+        for field_name, expected in (
+            ("email", seed.email),
+            ("full_name", seed.full_name),
+            ("is_superuser", seed.is_superuser),
+            ("is_multi_login", seed.is_multi_login),
+        ):
+            if getattr(user, field_name) != expected:
+                setattr(user, field_name, expected)
+                changed = True
+        if not verify_password(password, user.hashed_password):
+            user.hashed_password = get_password_hash(password)
+            changed = True
+
+        result["updated" if changed else "skipped"] += 1
+
+    await db.flush()
+    return result
+
+
+async def ensure_user_roles(db: AsyncSession) -> dict[str, int]:
+    roles = await _active_roles(db)
+    users = await _active_users(db)
+    existing = {
+        (int(user_id), int(role_id))
+        for user_id, role_id in (await db.execute(select(user_role.c.user_id, user_role.c.role_id))).all()
+    }
+    expected: set[tuple[int, int]] = set()
+
+    for seed in USER_SEEDS:
+        user = users[seed.username]
+        role = roles[seed.role_name]
+        if user.id is None or role.id is None:
+            raise RuntimeError(f"初始化身份尚未持久化: {seed.username}/{seed.role_name}")
+        expected.add((user.id, role.id))
+
+    seed_user_ids = {user_id for user_id, _role_id in expected}
+    missing = expected - existing
+    extra = {pair for pair in existing if pair[0] in seed_user_ids and pair not in expected}
+
+    if missing:
+        await db.execute(
+            insert(user_role),
+            [{"user_id": user_id, "role_id": role_id} for user_id, role_id in sorted(missing)],
+        )
+    if extra:
+        await db.execute(delete(user_role).where(tuple_(user_role.c.user_id, user_role.c.role_id).in_(extra)))
+    return {
+        "added": len(missing),
+        "removed": len(extra),
+        "skipped": len(expected & existing),
+    }
+
+
+async def _builtin_role_user_ids(db: AsyncSession) -> list[int]:
+    result = await db.execute(
+        select(user_role.c.user_id)
+        .join(Role, Role.id == user_role.c.role_id)
+        .where(Role.name.in_([seed.name for seed in ROLE_SEEDS]), Role.is_deleted.is_(False))
+        .distinct()
     )
-    # ✅ Hook 自动计算：tree_path = "/{id}/", level = 1
-
-    # ========== 2. 用户管理模块 ==========
-    user_group = await repo.create(
-        db,
-        {
-            "name": "admin:user:group",
-            "description": "用户管理权限分组",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": system_group.id,
-            "resource": "user",
-            "action": "group",
-            "method": "GET",
-            "path": "/admin/users",
-            "sort_order": 1,
-        },
-    )
-    # ✅ Hook 自动计算：tree_path = "/{system_id}/{user_group_id}/", level = 2
-
-    # 用户 API 权限
-    await repo.create(
-        db,
-        {
-            "name": "admin:user:create",
-            "description": "创建用户",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": user_group.id,
-            "path": "/api/v1/admin/users",
-            "method": "POST",
-            "resource": "user",
-            "action": "create",
-            "sort_order": 1,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:user:update",
-            "description": "更新用户",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": user_group.id,
-            "path": "/api/v1/admin/users/{id}",
-            "method": "PUT",
-            "resource": "user",
-            "action": "update",
-            "sort_order": 2,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:user:delete",
-            "description": "删除用户",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": user_group.id,
-            "path": "/api/v1/admin/users/{id}",
-            "method": "DELETE",
-            "resource": "user",
-            "action": "delete",
-            "sort_order": 3,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:user:detail",
-            "description": "查看用户详情",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": user_group.id,
-            "path": "/api/v1/admin/users/{id}",
-            "method": "GET",
-            "resource": "user",
-            "action": "read",
-            "sort_order": 4,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:user:list",
-            "description": "查询用户列表",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": user_group.id,
-            "path": "/api/v1/admin/users/query",
-            "method": "POST",
-            "resource": "user",
-            "action": "read",
-            "sort_order": 5,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:user:export",
-            "description": "导出用户数据",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": user_group.id,
-            "path": "/api/v1/admin/users/export",
-            "method": "GET",
-            "resource": "user",
-            "action": "export",
-            "sort_order": 6,
-        },
-    )
-
-    # ========== 3. 角色管理模块 ==========
-    role_group = await repo.create(
-        db,
-        {
-            "name": "admin:role:group",
-            "description": "角色管理权限分组",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": system_group.id,
-            "resource": "role",
-            "action": "group",
-            "method": "GET",
-            "path": "/admin/roles",
-            "sort_order": 2,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:role:create",
-            "description": "创建角色",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": role_group.id,
-            "path": "/api/v1/admin/roles",
-            "method": "POST",
-            "resource": "role",
-            "action": "create",
-            "sort_order": 1,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:role:update",
-            "description": "更新角色",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": role_group.id,
-            "path": "/api/v1/admin/roles/{id}",
-            "method": "PUT",
-            "resource": "role",
-            "action": "update",
-            "sort_order": 2,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:role:delete",
-            "description": "删除角色",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": role_group.id,
-            "path": "/api/v1/admin/roles/{id}",
-            "method": "DELETE",
-            "resource": "role",
-            "action": "delete",
-            "sort_order": 3,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:role:detail",
-            "description": "查看角色详情",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": role_group.id,
-            "path": "/api/v1/admin/roles/{id}",
-            "method": "GET",
-            "resource": "role",
-            "action": "read",
-            "sort_order": 4,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:role:list",
-            "description": "查询角色列表",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": role_group.id,
-            "path": "/api/v1/admin/roles/query",
-            "method": "POST",
-            "resource": "role",
-            "action": "read",
-            "sort_order": 5,
-        },
-    )
-
-    # ========== 4. 权限管理模块 ==========
-    perm_group = await repo.create(
-        db,
-        {
-            "name": "admin:permission:group",
-            "description": "权限管理权限分组",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": system_group.id,
-            "resource": "permission",
-            "action": "group",
-            "method": "GET",
-            "path": "/admin/permissions",
-            "sort_order": 3,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:permission:create",
-            "description": "创建权限",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": perm_group.id,
-            "path": "/api/v1/admin/permissions",
-            "method": "POST",
-            "resource": "permission",
-            "action": "create",
-            "sort_order": 1,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:permission:update",
-            "description": "更新权限",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": perm_group.id,
-            "path": "/api/v1/admin/permissions/{id}",
-            "method": "PUT",
-            "resource": "permission",
-            "action": "update",
-            "sort_order": 2,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:permission:delete",
-            "description": "删除权限",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": perm_group.id,
-            "path": "/api/v1/admin/permissions/{id}",
-            "method": "DELETE",
-            "resource": "permission",
-            "action": "delete",
-            "sort_order": 3,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:permission:detail",
-            "description": "查看权限详情",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": perm_group.id,
-            "path": "/api/v1/admin/permissions/{id}",
-            "method": "GET",
-            "resource": "permission",
-            "action": "read",
-            "sort_order": 4,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:permission:list",
-            "description": "查询权限列表",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": perm_group.id,
-            "path": "/api/v1/admin/permissions/query",
-            "method": "POST",
-            "resource": "permission",
-            "action": "read",
-            "sort_order": 5,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:permission:tree",
-            "description": "获取权限树",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": perm_group.id,
-            "path": "/api/v1/admin/permissions/tree",
-            "method": "GET",
-            "resource": "permission",
-            "action": "read",
-            "sort_order": 6,
-        },
-    )
-
-    # ========== 5. 审计日志模块 ==========
-    audit_group = await repo.create(
-        db,
-        {
-            "name": "admin:audit:group",
-            "description": "审计日志权限分组",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": system_group.id,
-            "resource": "audit",
-            "action": "group",
-            "method": "GET",
-            "path": "/admin/audit-logs",
-            "sort_order": 4,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:audit:list",
-            "description": "查询审计日志",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": audit_group.id,
-            "path": "/api/v1/admin/audit-logs/query",
-            "method": "POST",
-            "resource": "audit",
-            "action": "read",
-            "sort_order": 1,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "admin:audit:export",
-            "description": "导出审计日志",
-            "type": "user_api",
-            "category": "admin",
-            "parent_id": audit_group.id,
-            "path": "/api/v1/admin/audit-logs/export",
-            "method": "GET",
-            "resource": "audit",
-            "action": "export",
-            "sort_order": 2,
-        },
-    )
+    return [int(user_id) for user_id in result.scalars().all()]
 
 
-async def seed_roles(db: AsyncSession) -> None:
-    """初始化角色数据"""
-    from src.app.admin.repositories.role_repository import RoleRepository
-
-    repo = RoleRepository()
-    _disable_audit_hooks(repo)  # 禁用审计 Hook
-
-    await repo.create(
-        db,
-        {
-            "name": "系统管理员",
-            "description": "系统最高权限，拥有所有操作权限",
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "管理员",
-            "description": "系统管理员，拥有大部分管理权限",
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "运营人员",
-            "description": "日常运营操作人员",
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "财务人员",
-            "description": "财务相关操作人员",
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "name": "普通用户",
-            "description": "普通用户，基础查看权限",
-        },
-    )
+async def _invalidate_builtin_role_user_permission_cache(db: AsyncSession) -> None:
+    await invalidate_users_permissions(get_cache(), await _builtin_role_user_ids(db))
 
 
-async def seed_users(db: AsyncSession) -> None:
-    """初始化用户数据"""
-    from src.app.admin.repositories.user_repository import UserRepository
-
-    repo = UserRepository()
-    _disable_audit_hooks(repo)  # 禁用审计 Hook
-
-    await repo.create(
-        db,
-        {
-            "username": "admin",
-            "email": "admin@localhost.localdomain",
-            "full_name": "系统管理员",
-            "hashed_password": get_password_hash("admin123"),
-            "is_superuser": True,
-            "is_multi_login": True,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "username": "manager",
-            "email": "manager@localhost.localdomain",
-            "full_name": "管理员",
-            "hashed_password": get_password_hash("admin123"),
-            "is_superuser": False,
-            "is_multi_login": False,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "username": "operator",
-            "email": "operator@localhost.localdomain",
-            "full_name": "运营人员",
-            "hashed_password": get_password_hash("admin123"),
-            "is_superuser": False,
-            "is_multi_login": False,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "username": "finance",
-            "email": "finance@localhost.localdomain",
-            "full_name": "财务人员",
-            "hashed_password": get_password_hash("admin123"),
-            "is_superuser": False,
-            "is_multi_login": False,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "username": "user1",
-            "email": "user1@localhost.localdomain",
-            "full_name": "普通用户1",
-            "hashed_password": get_password_hash("admin123"),
-            "is_superuser": False,
-            "is_multi_login": False,
-        },
-    )
-
-    await repo.create(
-        db,
-        {
-            "username": "user2",
-            "email": "user2@localhost.localdomain",
-            "full_name": "普通用户2",
-            "hashed_password": get_password_hash("admin123"),
-            "is_superuser": False,
-            "is_multi_login": False,
-        },
-    )
-
-
-async def seed_role_permissions(db: AsyncSession) -> None:
-    """初始化角色权限关联 - 按内置角色规则补齐缺失关系"""
-    from src.utils.permission_scanner import sync_builtin_role_permissions
-
-    result = await sync_builtin_role_permissions(db)
-    print(f"     ✅ 处理角色 {result['roles_processed']} 个，新增关联 {result['added']} 条")
-
-
-async def seed_user_roles(db: AsyncSession) -> None:
-    """初始化用户角色关联 - 直接插入关系表"""
-    # 获取所有用户和角色
-    users_result = await db.execute(select(User))
-    users = users_result.scalars().all()
-
-    roles_result = await db.execute(select(Role))
-    roles = roles_result.scalars().all()
-
-    # 创建角色映射
-    role_map = {role.name: role for role in roles}
-
-    # 准备批量插入数据
-    from src.app.admin.models.relationships import user_role
-
-    user_role_links = []
-
-    # admin -> 系统管理员
-    admin_user = next(u for u in users if u.username == "admin")
-    user_role_links.append({"user_id": admin_user.id, "role_id": role_map["系统管理员"].id})
-
-    # manager -> 管理员
-    manager_user = next(u for u in users if u.username == "manager")
-    user_role_links.append({"user_id": manager_user.id, "role_id": role_map["管理员"].id})
-
-    # operator -> 运营人员
-    operator_user = next(u for u in users if u.username == "operator")
-    user_role_links.append({"user_id": operator_user.id, "role_id": role_map["运营人员"].id})
-
-    # finance -> 财务人员
-    finance_user = next(u for u in users if u.username == "finance")
-    user_role_links.append({"user_id": finance_user.id, "role_id": role_map["财务人员"].id})
-
-    # user1, user2 -> 普通用户
-    user1 = next(u for u in users if u.username == "user1")
-    user_role_links.append({"user_id": user1.id, "role_id": role_map["普通用户"].id})
-
-    user2 = next(u for u in users if u.username == "user2")
-    user_role_links.append({"user_id": user2.id, "role_id": role_map["普通用户"].id})
-
-    # 批量插入
-    if user_role_links:
-        await db.execute(user_role.insert(), user_role_links)
-
-    await db.commit()
-
-
-async def seed_all(db: AsyncSession) -> None:
-    """初始化所有数据"""
-    from src.register import create_app
-    from src.utils.permission_scanner import sync_permissions_to_db
-
+async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: str) -> None:
     app = create_app()
-
-    print("🌱 开始初始化系统数据...")
-
-    print("  1️⃣ 初始化 API 权限数据...")
-    await seed_permissions(db)
-    sync_result = await sync_permissions_to_db(app, db)
-    print(
-        "     🔄 代码权限同步: "
-        f"新增 {sync_result['created']} 条，更新 {sync_result['updated']} 条，跳过 {sync_result['skipped']} 条"
-    )
-    perm_count_result = await db.execute(select(Permission))
-    print(f"     ✅ 权限数量: {perm_count_result.scalar()}")
-
-    print("  2️⃣ 初始化角色数据...")
-    await seed_roles(db)
-    role_count_result = await db.execute(select(Role))
-    print(f"     ✅ 角色数量: {role_count_result.scalar()}")
-
-    print("  3️⃣ 初始化用户数据...")
-    await seed_users(db)
-    user_count_result = await db.execute(select(User))
-    print(f"     ✅ 用户数量: {user_count_result.scalar()}")
-
-    print("  4️⃣ 初始化角色权限关联...")
-    await seed_role_permissions(db)
-
-    print("  5️⃣ 初始化用户角色关联...")
-    await seed_user_roles(db)
-
-    print("🎉 系统数据初始化完成！")
-    print("\n📝 默认登录账号:")
-    print("  - admin / admin123 (系统管理员 - 多端登录)")
-    print("  - manager / admin123 (管理员)")
-    print("  - operator / admin123 (运营人员)")
-    print("  - finance / admin123 (财务人员)")
-    print("  - user1 / admin123 (普通用户)")
-    print("  - user2 / admin123 (普通用户)")
-    print("\n⚠️  生产环境请立即修改默认密码！")
-
-
-# ============================================
-# 入口点：可以直接运行此脚本
-# ============================================
-
-
-async def main() -> None:
-    """主函数：初始化所有数据"""
-    from src.core.conf import settings
-
-    # 创建异步引擎
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        echo=False,
-    )
-
-    # 创建 Session Maker
-    async_session_maker = async_sessionmaker(
-        engine,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )
+    menu_definitions = menu_sync_service.load_frontend_menu_definitions(frontend_path)
+    if not menu_definitions:
+        raise RuntimeError("前端菜单定义为空，拒绝生成不可调试的开发数据")
+    managed_permission_names = managed_permission_names_for_app(app)
+    if not managed_permission_names:
+        raise RuntimeError("权限定义为空，拒绝生成不可调试的开发数据")
+    managed_menu_names = {definition.name for definition in menu_definitions}
 
     try:
-        async with async_session_maker() as db:
-            await seed_all(db)
-    finally:
-        await engine.dispose()
+        role_result = await ensure_roles(db)
+        user_result = await ensure_users(db, password)
+        user_role_result = await ensure_user_roles(db)
+        permission_result = await sync_permissions_to_db(app, db, auto_commit=False)
+        role_permission_result = await sync_builtin_role_permissions(
+            db,
+            auto_commit=False,
+            exact=True,
+            managed_permission_names=managed_permission_names,
+        )
+        menu_result = await menu_sync_service.sync_menus(db, menu_definitions, auto_commit=False)
+        if menu_result.errors:
+            raise RuntimeError(f"前端菜单同步失败: {menu_result.errors}")
+        role_menu_result = await menu_sync_service.sync_builtin_role_menus(
+            db,
+            auto_commit=False,
+            exact=True,
+            managed_menu_names=managed_menu_names,
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    print("开发基础数据已收敛:")
+    print(f"  roles={role_result}")
+    print(f"  users={user_result}")
+    print(f"  user_roles={user_role_result}")
+    print(f"  permissions={permission_result}")
+    print(f"  role_permissions={role_permission_result}")
+    print(f"  menus=created:{menu_result.created},updated:{menu_result.updated},skipped:{menu_result.skipped}")
+    print(
+        "  role_menus="
+        f"processed:{role_menu_result.roles_processed},added:{role_menu_result.added},"
+        f"removed:{role_menu_result.removed},skipped:{role_menu_result.skipped}"
+    )
+
+
+async def _check_foundation_data(db: AsyncSession, frontend_path: str, password: str) -> None:
+    errors: list[str] = []
+    roles = await _active_roles(db)
+    users = await _active_users(db)
+
+    for seed in ROLE_SEEDS:
+        role = roles.get(seed.name)
+        if role is None:
+            errors.append(f"缺少角色 {seed.name}")
+        elif role.description != seed.description:
+            errors.append(f"角色字段漂移 {seed.name}")
+
+    existing_links = {
+        (int(user_id), int(role_id))
+        for user_id, role_id in (await db.execute(select(user_role.c.user_id, user_role.c.role_id))).all()
+    }
+    for seed in USER_SEEDS:
+        user = users.get(seed.username)
+        role = roles.get(seed.role_name)
+        if user is None:
+            errors.append(f"缺少用户 {seed.username}")
+            continue
+        if (
+            user.email != seed.email
+            or user.full_name != seed.full_name
+            or user.is_superuser != seed.is_superuser
+            or user.is_multi_login != seed.is_multi_login
+            or not verify_password(password, user.hashed_password)
+        ):
+            errors.append(f"用户字段漂移 {seed.username}")
+        if user.id is not None and role is not None and role.id is not None:
+            actual_role_ids = {role_id for user_id, role_id in existing_links if user_id == user.id}
+            if actual_role_ids != {role.id}:
+                errors.append(f"用户角色未收敛 {seed.username}/{seed.role_name}")
+        else:
+            errors.append(f"缺少用户角色关系 {seed.username}/{seed.role_name}")
+
+    app = create_app()
+    managed_permission_names = managed_permission_names_for_app(app)
+    if not managed_permission_names:
+        errors.append("权限定义为空")
+    permission_result = await sync_permissions_to_db(app, db, dry_run=True, auto_commit=False)
+    if permission_result["created"] or permission_result["updated"]:
+        errors.append(f"权限未收敛 {permission_result}")
+    role_permission_result = await sync_builtin_role_permissions(
+        db,
+        dry_run=True,
+        auto_commit=False,
+        exact=True,
+        managed_permission_names=managed_permission_names,
+    )
+    if role_permission_result["added"] or role_permission_result["removed"]:
+        errors.append(f"角色权限未收敛 {role_permission_result}")
+
+    menu_definitions = menu_sync_service.load_frontend_menu_definitions(frontend_path)
+    if not menu_definitions:
+        errors.append("前端菜单定义为空")
+    menu_result = await menu_sync_service.sync_menus(db, menu_definitions, dry_run=True, auto_commit=False)
+    if menu_result.created or menu_result.updated or menu_result.errors:
+        errors.append(f"菜单未收敛 {menu_result.summary()}")
+    role_menu_result = await menu_sync_service.sync_builtin_role_menus(
+        db,
+        dry_run=True,
+        auto_commit=False,
+        exact=True,
+        managed_menu_names={definition.name for definition in menu_definitions},
+    )
+    if role_menu_result.added or role_menu_result.removed:
+        errors.append(f"角色菜单未收敛 added={role_menu_result.added},removed={role_menu_result.removed}")
+
+    if errors:
+        raise RuntimeError("开发基础数据检查失败: " + "; ".join(errors))
+    print("开发基础数据检查通过")
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    require_development_environment()
+    password = _seed_password()
+
+    await init_db()
+    async with get_db_context() as db:
+        if args.check:
+            await _check_foundation_data(db, args.frontend_path, password)
+        else:
+            await _seed_foundation_data(db, args.frontend_path, password)
+            await _invalidate_builtin_role_user_permission_cache(db)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="收敛本机 dev 环境的基础调试数据")
+    parser.add_argument("--frontend-path", required=True, help="当前前端源码根目录")
+    parser.add_argument("--check", action="store_true", help="只读检查数据是否已经收敛")
+    args = parser.parse_args()
+    frontend_path = Path(args.frontend_path).resolve()
+    if not Path(frontend_path, "src/router/index.ts").is_file():
+        raise FileNotFoundError(f"前端源码路径无效: {frontend_path}")
+    args.frontend_path = str(frontend_path)
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
-    """直接运行此脚本时执行初始化"""
-    asyncio.run(main())
+    main()

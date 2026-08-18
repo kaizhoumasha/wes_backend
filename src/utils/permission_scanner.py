@@ -3,7 +3,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from sqlalchemy import select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.admin.models import Permission, Role, role_permission
@@ -179,6 +179,15 @@ def _build_group_payloads(scanned_perms: list[dict[str, Any]]) -> list[dict[str,
     return payloads
 
 
+def managed_permission_names_for_app(app: FastAPI) -> set[str]:
+    """返回当前路由扫描器拥有的叶子权限和分组权限名称。"""
+    scanned_permissions = scan_routes_for_permissions(app)
+    return {
+        *(permission["name"] for permission in scanned_permissions),
+        *(payload["name"] for payload in _build_group_payloads(scanned_permissions)),
+    }
+
+
 def _build_update_data(existing: Permission, payload: dict[str, Any]) -> dict[str, Any]:
     update_data: dict[str, Any] = {}
     for field in _SYNC_FIELDS:
@@ -245,7 +254,9 @@ async def sync_permissions_to_db(
         return result
 
     repo = PermissionRepository()
-    existing_permissions: list[Permission] = list((await db.execute(select(Permission))).scalars().all())
+    existing_permissions: list[Permission] = list(
+        (await db.execute(select(Permission).where(Permission.is_deleted.is_(False)))).scalars().all()
+    )
     existing_by_name = {permission.name: permission for permission in existing_permissions}
     resolved_ids = {permission.name: permission.id for permission in existing_permissions if permission.id is not None}
     temp_id_state = {"next": -1}
@@ -311,10 +322,17 @@ async def sync_builtin_role_permissions(
     db: AsyncSession,
     dry_run: bool = False,
     auto_commit: bool = True,
+    *,
+    exact: bool = False,
+    managed_permission_names: set[str] | None = None,
 ) -> dict[str, int]:
-    """按内置角色规则补齐角色-权限关联"""
-    roles: list[Role] = list((await db.execute(select(Role))).scalars().all())
-    permissions: list[Permission] = list((await db.execute(select(Permission))).scalars().all())
+    """按内置角色规则同步角色-权限关联；通用入口默认只增不删。"""
+    roles: list[Role] = list((await db.execute(select(Role).where(Role.is_deleted.is_(False)))).scalars().all())
+    permissions: list[Permission] = list(
+        (await db.execute(select(Permission).where(Permission.is_deleted.is_(False)))).scalars().all()
+    )
+    if managed_permission_names is not None:
+        permissions = [permission for permission in permissions if permission.name in managed_permission_names]
     existing_links: set[tuple[int, int]] = {
         (int(role_id), int(permission_id))
         for role_id, permission_id in (
@@ -323,8 +341,9 @@ async def sync_builtin_role_permissions(
     }
     role_by_name = {role.name: role for role in roles}
 
-    result = {"added": 0, "skipped": 0, "roles_processed": 0}
+    result = {"added": 0, "removed": 0, "skipped": 0, "roles_processed": 0}
     new_links: list[dict[str, int]] = []
+    expected_links: set[tuple[int, int]] = set()
 
     for role_name, matcher in _ROLE_PERMISSION_RULES.items():
         role = role_by_name.get(role_name)
@@ -338,6 +357,7 @@ async def sync_builtin_role_permissions(
                 continue
 
             link_key = (role.id, permission.id)
+            expected_links.add(link_key)
             if link_key in existing_links:
                 result["skipped"] += 1
                 continue
@@ -346,10 +366,26 @@ async def sync_builtin_role_permissions(
             new_links.append({"role_id": role.id, "permission_id": permission.id})
             result["added"] += 1
 
+    extra_links: set[tuple[int, int]] = set()
+    if exact:
+        builtin_role_ids = {
+            role.id
+            for role_name, role in role_by_name.items()
+            if role_name in _ROLE_PERMISSION_RULES and role.id is not None
+        }
+        extra_links = {link for link in existing_links if link[0] in builtin_role_ids and link not in expected_links}
+    result["removed"] = len(extra_links)
+
     if new_links and not dry_run:
         _ = await db.execute(role_permission.insert(), new_links)
-        if auto_commit:
-            await db.commit()
-        logger.info("内置角色权限回填完成: 新增 %s 条关联", result["added"])
+    if extra_links and not dry_run:
+        _ = await db.execute(
+            delete(role_permission).where(
+                tuple_(role_permission.c.role_id, role_permission.c.permission_id).in_(extra_links)
+            )
+        )
+    if auto_commit and not dry_run and (new_links or extra_links):
+        await db.commit()
+        logger.info("内置角色权限收敛完成: 新增 %s 条，移除 %s 条", result["added"], result["removed"])
 
     return result

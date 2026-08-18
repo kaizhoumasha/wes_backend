@@ -1,4 +1,28 @@
 services:
+  api:
+    environment:
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+    volumes:
+      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+
+  celery:
+    environment:
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+    volumes:
+      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+
+  celery-wms-fulfillment:
+    environment:
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+    volumes:
+      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+
+  celery_beat:
+    environment:
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+    volumes:
+      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+
   frontend:
     image: node:22-bookworm-slim
     container_name: wes_frontend_${ENV:-dev}
@@ -17,6 +41,9 @@ services:
       FRONTEND_APP_DIR: /app
       PNPM_HOME: /pnpm
       PNPM_STORE_DIR: /pnpm/store
+      # Docker Desktop/macOS 的文件事件可能丢失，轮询保证 Vite HMR 可重复触发。
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "300"
     volumes:
       - ${FRONTEND_ROOT:-../wes_frontend}:/app:rw
       - ./scripts/frontend-dev-entrypoint.sh:/usr/local/bin/frontend-dev-entrypoint.sh:ro

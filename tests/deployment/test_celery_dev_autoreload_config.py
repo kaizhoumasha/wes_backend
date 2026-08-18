@@ -1,8 +1,21 @@
+import os
+import subprocess
 from pathlib import Path
 
+from src.celery_app.beat_healthcheck import has_celery_beat_process
 from src.celery_app.worker_healthcheck import has_celery_worker_process
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _fingerprint(watch_path: Path) -> str:
+    completed = subprocess.run(
+        ["/bin/sh", str(BACKEND_ROOT / "src/celery_app/dev_reload_fingerprint.sh"), str(watch_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
 
 
 def test_docker_compose_dev_uses_beat_autoreload_script() -> None:
@@ -23,7 +36,7 @@ def test_dev_beat_autoreload_script_runs_celery_beat() -> None:
     script_text = (BACKEND_ROOT / "src/celery_app/dev_beat_autoreload.sh").read_text(encoding="utf-8")
 
     assert "Development-only auto-restart wrapper for Celery beat." in script_text
-    assert 'WATCH_PATH="${CELERY_WATCH_PATH:-/app/src}"' in script_text
+    assert 'WATCH_PATHS="${CELERY_WATCH_PATHS:-$DEFAULT_WATCH_PATHS}"' in script_text
     assert 'CELERY_CMD="celery -A src.celery_app.app beat --loglevel=${CELERY_LOG_LEVEL:-INFO}"' in script_text
     assert 'echo "[celery-beat-dev-reload] code change detected, restarting beat"' in script_text
 
@@ -62,6 +75,13 @@ def test_celery_worker_healthcheck_uses_process_probe() -> None:
     assert "celery -A src.celery_app.app inspect ping" not in compose_text
 
 
+def test_celery_beat_healthcheck_uses_process_probe() -> None:
+    compose_text = (BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert '["CMD", "python", "/app/src/celery_app/beat_healthcheck.py"]' in compose_text
+    assert "/proc/1/cmdline" not in compose_text
+
+
 def test_deploy_overlay_inherits_local_worker_healthcheck() -> None:
     deploy_compose_text = (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
     worker_section = deploy_compose_text.split("  celery:", maxsplit=1)[1].split(
@@ -97,6 +117,20 @@ def test_worker_healthcheck_ignores_healthcheck_process_itself(tmp_path: Path) -
     assert not has_celery_worker_process(tmp_path)
 
 
+def test_beat_healthcheck_detects_real_beat_child_not_wrapper(tmp_path: Path) -> None:
+    wrapper_dir = tmp_path / "1"
+    wrapper_dir.mkdir()
+    (wrapper_dir / "cmdline").write_bytes(b"sh\0/app/src/celery_app/dev_beat_autoreload.sh\0")
+
+    assert not has_celery_beat_process(tmp_path)
+
+    beat_dir = tmp_path / "123"
+    beat_dir.mkdir()
+    (beat_dir / "cmdline").write_bytes(b"python\0-m\0celery\0-A\0src.celery_app.app\0beat\0")
+
+    assert has_celery_beat_process(tmp_path)
+
+
 def test_dev_beat_autoreload_replaces_beat_process_on_restart() -> None:
     script_text = (BACKEND_ROOT / "src/celery_app/dev_beat_autoreload.sh").read_text(encoding="utf-8")
 
@@ -104,3 +138,18 @@ def test_dev_beat_autoreload_replaces_beat_process_on_restart() -> None:
     assert '\n    sh -c "exec $CELERY_CMD" &' in script_text
     assert 'kill -TERM "$stop_target"' in script_text
     assert 'kill -KILL "$stop_target"' in script_text
+
+
+def test_dev_reload_fingerprint_detects_same_timestamp_same_size_rewrite(tmp_path: Path) -> None:
+    source = tmp_path / "task.py"
+    source.write_text("value = 'a'\n", encoding="utf-8")
+    fixed_timestamp = 1_787_000_000_123_456_789
+    os.utime(source, ns=(fixed_timestamp, fixed_timestamp))
+    before = _fingerprint(tmp_path)
+
+    source.write_text("value = 'b'\n", encoding="utf-8")
+    os.utime(source, ns=(fixed_timestamp, fixed_timestamp))
+
+    assert source.stat().st_size == len("value = 'a'\n")
+    assert source.stat().st_mtime_ns == fixed_timestamp
+    assert _fingerprint(tmp_path) != before

@@ -27,11 +27,13 @@ mkdir -p "$STORE_DIR" "$APP_DIR/node_modules"
 pnpm config set store-dir "$STORE_DIR" >/dev/null
 
 LOCK_HASH="$(sha256sum "$LOCKFILE" | awk '{print $1}')"
+RUNTIME_PLATFORM="$(node -p "process.platform + '/' + process.arch")"
+DEPENDENCY_FINGERPRINT="$LOCK_HASH:$RUNTIME_PLATFORM"
 NEEDS_INSTALL=0
 
 if [ ! -f "$STAMP_FILE" ]; then
   NEEDS_INSTALL=1
-elif [ "$(cat "$STAMP_FILE")" != "$LOCK_HASH" ]; then
+elif [ "$(cat "$STAMP_FILE")" != "$DEPENDENCY_FINGERPRINT" ]; then
   NEEDS_INSTALL=1
 elif [ ! -f "$APP_DIR/node_modules/.modules.yaml" ]; then
   NEEDS_INSTALL=1
@@ -39,19 +41,12 @@ fi
 
 if [ "$NEEDS_INSTALL" -eq 1 ]; then
   echo "Installing frontend dependencies with pnpm..."
-  if pnpm install --frozen-lockfile; then
-    printf '%s' "$LOCK_HASH" >"$STAMP_FILE"
-    echo "Frontend dependencies installed successfully."
-  else
-    echo "WARNING: Frozen lockfile failed, trying without --frozen-lockfile..." >&2
-    if pnpm install; then
-      printf '%s' "$LOCK_HASH" >"$STAMP_FILE"
-      echo "Frontend dependencies installed (lockfile was out of sync)."
-    else
-      echo "ERROR: Failed to install frontend dependencies" >&2
-      exit 1
-    fi
+  if ! pnpm install --frozen-lockfile; then
+    echo "ERROR: Frozen frontend dependency installation failed; refusing to modify pnpm-lock.yaml" >&2
+    exit 1
   fi
+  printf '%s' "$DEPENDENCY_FINGERPRINT" >"$STAMP_FILE"
+  echo "Frontend dependencies installed successfully."
 else
   echo "Frontend dependencies are up to date."
 fi

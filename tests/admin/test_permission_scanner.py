@@ -92,12 +92,12 @@ async def test_sync_builtin_role_permissions_does_not_grant_permanent_delete_to_
                     SimpleNamespace(id=13, name="admin:menu:permanent_delete"),
                 ]
             ),
-            _RowsResult([]),
+            _RowsResult([(1, 13)]),
         ]
     )
 
     result = await sync_builtin_role_permissions(db, dry_run=True, auto_commit=False)
 
-    assert result == {"added": 4, "skipped": 0, "roles_processed": 2}
+    assert result == {"added": 4, "removed": 0, "skipped": 0, "roles_processed": 2}
     assert db.execute.await_count == 3
     db.commit.assert_not_awaited()

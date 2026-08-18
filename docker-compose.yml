@@ -110,6 +110,10 @@ services:
     volumes:
       # 开发环境挂载源码
       - ${SOURCE_MOUNT:-./src}:/app/src:rw
+      - ./main.py:/app/main.py:ro
+      - ./deployment:/app/deployment:rw
+      - ./packages/wes_plugin_sdk/src:/app/packages/wes_plugin_sdk/src:rw
+      - ./workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:rw
       # 日志目录
       - ./logs:/app/logs
     healthcheck:
@@ -200,6 +204,10 @@ services:
     volumes:
       # 开发环境挂载源码
       - ${SOURCE_MOUNT:-./src}:/app/src:rw
+      - ./main.py:/app/main.py:ro
+      - ./deployment:/app/deployment:rw
+      - ./packages/wes_plugin_sdk/src:/app/packages/wes_plugin_sdk/src:rw
+      - ./workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:rw
       # 日志目录
       - ./logs:/app/logs
     healthcheck:
@@ -244,11 +252,17 @@ services:
     extends:
       service: celery
     command: >
-      celery -A src.celery_app.app worker
-      --loglevel=${CELERY_LOG_LEVEL:-INFO}
-      --concurrency=1
-      --max-tasks-per-child=${CELERY_MAX_TASKS:-1000}
-      --queues=wms-fulfillment
+      sh -c '
+      if [ "${ENV:-prod}" = "dev" ]; then
+        exec sh /app/src/celery_app/dev_worker_autoreload.sh;
+      else
+        exec celery -A src.celery_app.app worker
+        --loglevel=${CELERY_LOG_LEVEL:-INFO}
+        --concurrency=1
+        --max-tasks-per-child=${CELERY_MAX_TASKS:-1000}
+        --queues=wms-fulfillment;
+      fi
+      '
     environment:
       CELERY_WORKER_QUEUES: wms-fulfillment
       CELERY_WORKER_CONCURRENCY: "1"
@@ -299,15 +313,15 @@ services:
       LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
     volumes:
       # 源码目录（开发环境热重载）
-      - ./src:/app/src:rw
+      - ${SOURCE_MOUNT:-./src}:/app/src:rw
+      - ./main.py:/app/main.py:ro
+      - ./deployment:/app/deployment:rw
+      - ./packages/wes_plugin_sdk/src:/app/packages/wes_plugin_sdk/src:rw
+      - ./workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:rw
       # 日志目录
       - ./logs:/app/logs
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "tr '\\000' ' ' </proc/1/cmdline | grep -q 'celery.*beat' || exit 1",
-        ]
+      test: ["CMD", "python", "/app/src/celery_app/beat_healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -648,7 +662,7 @@ services:
       API_APP_SECRET: ${API_APP_SECRET:-local_mock_change_me}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8010/api/v1/device/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:8010/"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -722,6 +736,51 @@ services:
       - dev
       - e2e
       - smt
+
+  # ============================================
+  # WMS Provider Mock - 29 项 full-factory query/effect 本机联调面
+  # 与 Transport T1/回调 Mock 分离，避免把业务 Provider 合同耦合进传输基础能力。
+  # ============================================
+  mock_wms_provider:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-production}
+      args: *no-localhost-proxy-build-args
+    image: wes-backend:${ENV:-dev}
+    container_name: wes_mock_wms_provider_${ENV:-dev}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    ports:
+      - "${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_PROVIDER_PORT:-8012}:8012"
+    working_dir: /app
+    command: >
+      python -m uvicorn
+      tests.mock.wms_provider_mock_server:app
+      --host 0.0.0.0
+      --port 8012
+      --log-level info
+      --reload
+      --reload-dir /app/tests
+      --reload-dir /app/src
+    environment:
+      <<: *no-localhost-proxy
+      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
+    volumes:
+      - ./tests:/app/tests:rw
+      - ./src:/app/src:rw
+      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8012/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      wesp9-network:
+        aliases:
+          - mock-wms-provider
+    profiles:
+      - dev
 
 # ============================================
 # 网络配置

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, tuple_
 
 from src.app.admin.models import Menu, Role, role_menu
 from src.app.admin.repositories.menu_repository import MenuRepository, menu_repository
@@ -81,9 +81,10 @@ class MenuSyncResult:
 
 @dataclass(slots=True)
 class RoleMenuSyncResult:
-    """默认角色菜单回填结果"""
+    """默认角色菜单收敛结果"""
 
     added: int = 0
+    removed: int = 0
     skipped: int = 0
     roles_processed: int = 0
 
@@ -120,6 +121,7 @@ class MenuSyncService:
         db: AsyncSession,
         menu_definitions: Sequence[FrontendMenuDefinition],
         dry_run: bool = False,
+        auto_commit: bool = True,
     ) -> MenuSyncResult:
         """同步菜单定义到数据库"""
 
@@ -179,7 +181,7 @@ class MenuSyncService:
             if existing_id is not None:
                 resolved_ids[definition.name] = existing_id
 
-        if mutated and not dry_run:
+        if auto_commit and mutated and not dry_run:
             await db.commit()
 
         return result
@@ -207,11 +209,16 @@ class MenuSyncService:
         db: AsyncSession,
         dry_run: bool = False,
         auto_commit: bool = True,
+        *,
+        exact: bool = False,
+        managed_menu_names: set[str] | None = None,
     ) -> RoleMenuSyncResult:
-        """按内置角色规则补齐默认菜单关联"""
+        """按内置角色规则同步默认菜单关联；通用入口默认只增不删。"""
 
-        roles = list((await db.execute(select(Role))).scalars().all())
-        menus = list((await db.execute(select(Menu))).scalars().all())
+        roles = list((await db.execute(select(Role).where(Role.is_deleted.is_(False)))).scalars().all())
+        menus = list((await db.execute(select(Menu).where(Menu.is_deleted.is_(False)))).scalars().all())
+        if managed_menu_names is not None:
+            menus = [menu for menu in menus if menu.name in managed_menu_names]
         existing_links: set[tuple[int, int]] = {
             (int(role_id), int(menu_id))
             for role_id, menu_id in (await db.execute(select(role_menu.c.role_id, role_menu.c.menu_id))).all()
@@ -220,6 +227,7 @@ class MenuSyncService:
 
         result = RoleMenuSyncResult()
         new_links: list[dict[str, int]] = []
+        expected_links: set[tuple[int, int]] = set()
 
         for role_name, matcher in _ROLE_MENU_RULES.items():
             role = role_by_name.get(role_name)
@@ -233,6 +241,7 @@ class MenuSyncService:
                     continue
 
                 link_key = (role.id, menu.id)
+                expected_links.add(link_key)
                 if link_key in existing_links:
                     result.skipped += 1
                     continue
@@ -241,10 +250,26 @@ class MenuSyncService:
                 new_links.append({"role_id": role.id, "menu_id": menu.id})
                 result.added += 1
 
+        extra_links: set[tuple[int, int]] = set()
+        if exact:
+            builtin_role_ids = {
+                role.id
+                for role_name, role in role_by_name.items()
+                if role_name in _ROLE_MENU_RULES and role.id is not None
+            }
+            extra_links = {
+                link for link in existing_links if link[0] in builtin_role_ids and link not in expected_links
+            }
+        result.removed = len(extra_links)
+
         if new_links and not dry_run:
             _ = await db.execute(role_menu.insert(), new_links)
-            if auto_commit:
-                await db.commit()
+        if extra_links and not dry_run:
+            _ = await db.execute(
+                delete(role_menu).where(tuple_(role_menu.c.role_id, role_menu.c.menu_id).in_(extra_links))
+            )
+        if auto_commit and not dry_run and (new_links or extra_links):
+            await db.commit()
 
         return result
 

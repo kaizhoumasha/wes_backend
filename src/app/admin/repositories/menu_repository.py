@@ -40,7 +40,7 @@ class MenuRepository(TreeRepository[Menu]):
     async def list_for_sync(self, db: AsyncSession) -> list[Menu]:
         """获取菜单同步所需的完整菜单列表。"""
         result = await db.execute(
-            select(Menu).order_by(Menu.sort_order, Menu.id)  # type: ignore[arg-type]
+            select(Menu).where(Menu.is_deleted.is_(False)).order_by(Menu.sort_order, Menu.id)  # type: ignore[arg-type]
         )
         return list(result.scalars().all())
 

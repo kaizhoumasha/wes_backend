@@ -4,22 +4,17 @@ set -eu
 # Development-only auto-restart wrapper for Celery worker.
 # It watches python source files and restarts the worker process on changes.
 
-WATCH_PATH="${CELERY_WATCH_PATH:-/app/src}"
+DEFAULT_WATCH_PATHS="/app/src /app/deployment /app/packages/wes_plugin_sdk/src /app/workline_plugins/rough_sorter/src"
+WATCH_PATHS="${CELERY_WATCH_PATHS:-$DEFAULT_WATCH_PATHS}"
 RELOAD_INTERVAL="${CELERY_RELOAD_INTERVAL:-2}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+. "$SCRIPT_DIR/dev_reload_fingerprint.sh"
 
-CELERY_CMD="celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=${CELERY_WORKER_QUEUES}"
+CELERY_CMD="celery -A src.celery_app.app worker --loglevel=${CELERY_LOG_LEVEL:-INFO} --concurrency=${CELERY_WORKER_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS:-1000} --queues=${CELERY_WORKER_QUEUES}"
 SHUTDOWN_GRACE_SECONDS="${CELERY_RELOAD_SHUTDOWN_GRACE_SECONDS:-20}"
 
 worker_pid=""
 worker_stop_target=""
-
-calculate_fingerprint() {
-  find "$WATCH_PATH" -type f -name "*.py" -print0 \
-    | xargs -0 stat -c "%n:%Y" 2>/dev/null \
-    | sort \
-    | sha256sum \
-    | awk "{print \$1}"
-}
 
 start_worker() {
   if command -v setsid >/dev/null 2>&1; then
@@ -63,7 +58,7 @@ cleanup() {
 
 trap cleanup INT TERM
 
-fingerprint="$(calculate_fingerprint || true)"
+fingerprint="$(calculate_python_fingerprint $WATCH_PATHS || true)"
 start_worker
 
 while true; do
@@ -73,11 +68,11 @@ while true; do
   if ! kill -0 "$worker_pid" 2>/dev/null; then
     echo "[celery-dev-reload] worker exited unexpectedly, restarting"
     start_worker
-    fingerprint="$(calculate_fingerprint || true)"
+    fingerprint="$(calculate_python_fingerprint $WATCH_PATHS || true)"
     continue
   fi
 
-  new_fingerprint="$(calculate_fingerprint || true)"
+  new_fingerprint="$(calculate_python_fingerprint $WATCH_PATHS || true)"
   if [ "$new_fingerprint" != "$fingerprint" ]; then
     echo "[celery-dev-reload] code change detected, restarting worker"
     fingerprint="$new_fingerprint"
