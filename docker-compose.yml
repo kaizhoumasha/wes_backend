@@ -672,7 +672,7 @@ services:
       - smt
 
   # ============================================
-  # WMS Mock 服务 - 模拟上位系统主数据
+  # WMS Transport Mock - 模拟 Transport T1 与 callback 调试面
   # 注意：本机通用 test profile 不启动 WMS Mock；开发/E2E/SMT 联调场景显式启用。
   # ============================================
   mock_wms:
@@ -699,17 +699,7 @@ services:
     environment:
       <<: *no-localhost-proxy
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      WES_EXTERNAL_CALLBACK_URL: ${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}
-      API_APP_ID: ${API_APP_ID:-app_local_mock}
-      API_APP_SECRET: ${API_APP_SECRET:-local_mock_change_me}
-      WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1:-}
-      WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2:-}
-      WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
-      WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS: ${WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS}
-      WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
-      WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS: ${WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS}
-      WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
-      MOCK_WMS_CELL_CAPACITY_DEPTH_MM: ${MOCK_WMS_CELL_CAPACITY_DEPTH_MM:-50}
+      WES_TRANSPORT_EVENT_URL: ${CONTAINER_WES_TRANSPORT_EVENT_URL:-http://api:8001/api/v1/wms/events}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8011/"]
       interval: 30s

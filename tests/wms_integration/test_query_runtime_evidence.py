@@ -25,7 +25,7 @@ from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
     build_hmac_provider_profile_payload,
 )
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 
 class TrackingTransport(httpx.AsyncBaseTransport):

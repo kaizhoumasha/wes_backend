@@ -31,7 +31,7 @@ from src.app.wms_integration import effect_runtime as effect_runtime_module
 from src.app.wms_integration.effect_runtime import interpret_sync_effect_response
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS, QUERY_OPERATIONS
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 SYNC_OPERATIONS = tuple(
     operation for operation in EFFECT_OPERATIONS if operation.completion_mode is WmsCompletionMode.SYNC_RESULT

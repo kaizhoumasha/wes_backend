@@ -16,17 +16,6 @@ HMAC_SECRET_NAMES = (
     "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2",
 )
 REVOKED_CREDENTIAL_REFERENCES_NAME = "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES"
-MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES = (
-    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
-    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
-)
-ACCEPTANCE_CONTRACT_CONFIG_NAMES = (
-    "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
-    "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
-    "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
-    "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS",
-    "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
-)
 STATUS_CONFIG_NAMES = (
     "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
     "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
@@ -46,16 +35,11 @@ STATUS_CONFIG_NAMES = (
 
 def test_docker_compose_uses_one_provider_profile_path_for_wms_processes() -> None:
     compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    acceptance_compose = yaml.safe_load(
-        (BACKEND_ROOT / "docker-compose.wms-acceptance.yml").read_text(encoding="utf-8")
-    )
     services = compose["services"]
 
     api_env = services["api"]["environment"]
     celery_env = services["celery"]["environment"]
     celery_beat_env = services["celery_beat"]["environment"]
-    mock_wms_env = services["mock_wms"]["environment"]
-
     assert api_env["WMS_PROVIDER_PROFILE_FILE"] == "${WMS_PROVIDER_PROFILE_FILE:-}"
     assert celery_env["WMS_PROVIDER_PROFILE_FILE"] == api_env["WMS_PROVIDER_PROFILE_FILE"]
     assert celery_beat_env["WMS_PROVIDER_PROFILE_FILE"] == api_env["WMS_PROVIDER_PROFILE_FILE"]
@@ -70,24 +54,50 @@ def test_docker_compose_uses_one_provider_profile_path_for_wms_processes() -> No
     assert api_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == f"${{{REVOKED_CREDENTIAL_REFERENCES_NAME}:-}}"
     assert celery_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == api_env[REVOKED_CREDENTIAL_REFERENCES_NAME]
     assert celery_beat_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == api_env[REVOKED_CREDENTIAL_REFERENCES_NAME]
-    assert (
-        mock_wms_env["WES_EXTERNAL_CALLBACK_URL"]
-        == "${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}"
+
+
+def test_wms_transport_acceptance_uses_current_callback_and_health_contract() -> None:
+    acceptance_compose = yaml.safe_load(
+        (BACKEND_ROOT / "docker-compose.wms-acceptance.yml").read_text(encoding="utf-8")
     )
-    assert mock_wms_env["API_APP_ID"] == "${API_APP_ID:-app_local_mock}"
-    assert mock_wms_env["API_APP_SECRET"] == "${API_APP_SECRET:-local_mock_change_me}"
-    for secret_name in MOCK_WMS_MATERIAL_FLOW_SECRET_NAMES:
-        assert mock_wms_env[secret_name] == f"${{{secret_name}:-}}"
-    assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1" not in mock_wms_env
-    assert acceptance_compose["services"]["mock_wms_acceptance"]["healthcheck"]["test"] == [
+    acceptance_mock = acceptance_compose["services"]["mock_wms_acceptance"]
+
+    assert acceptance_mock["healthcheck"]["test"] == [
         "CMD",
         "curl",
         "-f",
-        "http://localhost:8011/northbound/contract",
+        "http://localhost:8011/",
     ]
-    acceptance_mock_env = acceptance_compose["services"]["mock_wms_acceptance"]["environment"]
-    for setting_name in ACCEPTANCE_CONTRACT_CONFIG_NAMES:
-        assert acceptance_mock_env[setting_name] == f"${{{setting_name}}}"
+    assert acceptance_mock["environment"]["WES_TRANSPORT_EVENT_URL"] == (
+        "${CONTAINER_WES_TRANSPORT_EVENT_URL:?required}"
+    )
+    assert set(acceptance_mock["environment"]) == {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "NO_PROXY",
+        "no_proxy",
+        "LOG_LEVEL",
+        "WES_TRANSPORT_EVENT_URL",
+    }
+
+
+def test_development_wms_mock_uses_only_the_current_transport_callback_contract() -> None:
+    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    mock_environment = compose["services"]["mock_wms"]["environment"]
+
+    assert mock_environment["WES_TRANSPORT_EVENT_URL"] == (
+        "${CONTAINER_WES_TRANSPORT_EVENT_URL:-http://api:8001/api/v1/wms/events}"
+    )
+    assert set(mock_environment) == {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "LOG_LEVEL",
+        "WES_TRANSPORT_EVENT_URL",
+    }
 
 
 def test_wms_acceptance_compose_is_isolated_from_the_development_mock() -> None:
@@ -103,31 +113,6 @@ def test_wms_acceptance_compose_is_isolated_from_the_development_mock() -> None:
     assert "container_name" not in acceptance_mock
     assert acceptance_mock["ports"] == ["${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_ACCEPTANCE_PORT:-18011}:8011"]
     assert acceptance_mock["ports"] != development_mock["ports"]
-
-
-def test_mock_wms_receives_the_same_public_northbound_contract_settings_as_wes() -> None:
-    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    services = compose["services"]
-    api_env = services["api"]["environment"]
-    mock_wms_env = services["mock_wms"]["environment"]
-
-    for setting_name in (
-        "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
-        "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
-        "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
-        "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
-    ):
-        assert mock_wms_env[setting_name] == api_env[setting_name]
-
-
-def test_mock_wms_submit_deadline_is_independently_configurable() -> None:
-    compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    mock_wms_env = compose["services"]["mock_wms"]["environment"]
-
-    assert mock_wms_env["WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS"] == "${WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS}"
-    for env_file in (".env.dev", ".env.test", ".env.prod"):
-        env_text = (BACKEND_ROOT / env_file).read_text(encoding="utf-8")
-        assert "WMS_EFFECT_SUBMIT_TIMEOUT_SECONDS=30" in env_text
 
 
 def test_mock_wms_disables_query_bearing_uvicorn_access_log() -> None:

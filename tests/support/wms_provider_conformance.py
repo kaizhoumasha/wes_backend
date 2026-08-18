@@ -174,7 +174,7 @@ class QueryInventoryAdapterFactory:
     __slots__ = ()
 
     async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
-        from tests.mock.wms_scripted_provider import scripted_query_inventory_response
+        from tests.support.wms_integration.scripted_provider import scripted_query_inventory_response
 
         return await _execute_adapter_case(
             case,
@@ -191,7 +191,7 @@ class QueryInventorySimulatorFactory:
     __slots__ = ()
 
     async def execute(self, case: ScriptedQueryCase) -> ConformanceObservation:
-        from tests.mock.wms_scripted_provider import ScriptedWmsQueryInventoryProvider
+        from tests.support.wms_integration.scripted_provider import ScriptedWmsQueryInventoryProvider
 
         provider = ScriptedWmsQueryInventoryProvider(case)
         return await _execute_adapter_case(case, handler=provider.handle)

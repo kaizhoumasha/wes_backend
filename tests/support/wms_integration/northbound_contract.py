@@ -1,7 +1,4 @@
-"""WMS 北向 Mock 的认证、幂等、typed validator 与状态机核心。
-
-Mock 镜像只复制静态 operation registry 与 typed ports，不导入 WES runtime。
-"""
+"""WMS typed-operation 测试的认证、幂等与状态机支持。"""
 
 from __future__ import annotations
 
@@ -23,7 +20,7 @@ from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOpe
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.ports.operation_common import validate_json_payload
-from tests.mock.wms_operation_fixtures import RESULT_FIXTURES
+from tests.support.wms_integration.operation_fixtures import RESULT_FIXTURES
 
 if TYPE_CHECKING:
     from collections.abc import Callable

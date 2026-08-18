@@ -1,4 +1,4 @@
-"""WMS 北向 Mock 的认证、幂等与状态核心合同测试。"""
+"""WMS typed-operation 域的认证、幂等与状态核心合同测试。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,7 @@ import pytest
 
 from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationDefinition, WmsOperationMode
 from src.app.wms_integration.operation_registry import WMS_OPERATIONS
-from tests.mock import wms_mock_server
-from tests.mock.wms_northbound_contract import (
+from tests.support.wms_integration.northbound_contract import (
     ACTIVE_MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE,
     MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V1,
     MATERIAL_FLOW_SANDBOX_CREDENTIAL_REFERENCE_V2,
@@ -28,7 +27,7 @@ from tests.mock.wms_northbound_contract import (
     verify_status_hmac,
     verify_submit_hmac,
 )
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 
 ASYNC_RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
 ASYNC_CHANGE_RACK_FACE = "wms.fulfillment.change_rack_face@v1"
@@ -356,20 +355,6 @@ def test_callback_hint_is_registered_once_and_reset_removes_northbound_records()
 
     assert store.query(operation_identity, "idem-001").state == "NOT_FOUND"
     assert store.register_callback_hint(operation_identity, "idem-001") is False
-
-
-def test_wms_mock_reset_clears_shared_northbound_operation_store() -> None:
-    operation_identity = ASYNC_RACK_SUPPLY
-    wms_mock_server.northbound_operation_store.submit(
-        operation_identity,
-        "idem-reset",
-        "a" * 64,
-        _operation_payload(operation_identity),
-    )
-
-    wms_mock_server.reset_mock_wms_state()
-
-    assert wms_mock_server.northbound_operation_store.query(operation_identity, "idem-reset").state == "NOT_FOUND"
 
 
 def test_mock_credential_uses_material_flow_sandbox_rotation_references(

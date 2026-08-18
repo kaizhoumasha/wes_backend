@@ -102,10 +102,12 @@ def test_merge_request_mock_image_contracts_run_as_fixed_host_commands() -> None
     assert "docker build -f tests/mock/Dockerfile -t ${MOCK_ECS_IMAGE} -t ${MOCK_WMS_IMAGE} ." in mock_body
     assert "docker run --rm ${MOCK_ECS_IMAGE} python -c 'import ecs_mock_server'" in mock_body
     assert "docker run --rm ${MOCK_WMS_IMAGE} python -c 'import wms_mock_server'" in mock_body
-    assert "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS=2.5" in mock_body
-    assert "asyncio.run(module.northbound_contract())" in mock_body
+    assert "asyncio.run(module.root())" in mock_body
     assert "TestClient" not in mock_body
-    assert "assert contract['status_visibility_sla_seconds'] == 2.5" in mock_body
+    assert "assert status['transport_path'] == '/api/v1/wes/transport-requests'" in mock_body
+    assert "assert status['authentication'] == 'NONE'" in mock_body
+    assert "northbound_contract" not in mock_body
+    assert "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS" not in mock_body
     assert "docker image rm -f ${MOCK_ECS_IMAGE} ${MOCK_WMS_IMAGE}" in mock_body
     assert "wes-mock:ecs" not in mock_body
     assert "wes-mock:wms" not in mock_body

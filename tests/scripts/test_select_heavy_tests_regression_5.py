@@ -27,7 +27,7 @@ def test_retired_governance_script_paths_fail_closed(changed_path: str) -> None:
 
 
 def test_convergence_governance_and_mock_assets_have_complete_heavy_ownership() -> None:
-    """治理资产为 NONE；保留 ECS mock 运行其现存核心 HEAVY 消费者。"""
+    """治理资产为 NONE；共享镜像运行 ECS 与 WMS Transport HEAVY owner。"""
 
     changed_paths = [
         "scripts/architecture-guardrails.sh",
@@ -46,4 +46,5 @@ def test_convergence_governance_and_mock_assets_have_complete_heavy_ownership() 
     assert select_heavy_tests(changed_paths, load_config(MAPPING_PATH)) == [
         "tests/mock/test_ecs_mock_server.py",
         "tests/mock/test_mock_dockerfile.py",
+        "tests/mock/test_wms_transport_mock_server.py",
     ]

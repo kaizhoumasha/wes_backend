@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.4.0] - 2026-08-18
+
+### Added
+- 新增 provider-local WMS Transport Mock，覆盖 `RACK_MOVE`、`BIN_MOVE`、`RACK_EXCHANGE` 和 `BIN_EXCHANGE` 四类 T1 请求，并提供幂等快照、故障注入和 callback 转发调试面。
+- 新增与 Mock 同源的离线 Swagger UI、冻结 OpenAPI 示例及验收镜像，使预构建镜像可在纯局域网环境中完成合同浏览和联调验证。
+
+### Changed
+- 将公开可用性探针收敛为 Transport T1 与 callback 边界检查，并同步 WMS conformance fixture、测试支持模块、Compose 入口和 HEAVY 精确映射。
+- 同步 GitLab `develop` 中的 Transport 资源围栏术语与 CI 基线；RuntimeInbox 验收改为等待最终 PostgreSQL 进程就绪，并将 FAST 临时预算校准为套件 90 秒、单项 4 秒。
+
+### Fixed
+- 修复 RuntimeInbox PostgreSQL 验收在 CI 节点选择、最终进程就绪和延迟预算上的不稳定问题。
+- 修复移动端 Swagger 操作标签挤压描述文本的问题，375 px 视口下不再出现横向溢出。
+
+### Verification
+- QUALITY 全门禁通过：FAST 为 3532 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和预算检查均通过。
+- 相对 `origin/develop` 选出的 16 个 HEAVY owner 在隔离 PostgreSQL、Redis 与迁移环境中 195 passed、0 skipped。
+- 行为路径覆盖审计为 90%，实施计划 25/25 完成，预落地 Review 无剩余问题。
+- 真实浏览器验证离线 Swagger 资源、四类 T1、幂等与冲突、故障注入及三类 callback 示例；该证据仅证明 provider-local Mock，不替代 WES/WMS/供应商或现场业务验收。
+
 ## [0.26.3.0] - 2026-08-18
 
 ### Added

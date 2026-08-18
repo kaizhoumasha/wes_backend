@@ -185,7 +185,7 @@ def test_provider_conformance_scenarios_and_mock_fixtures_derive_from_registry()
     registry = _load("src.app.wms_integration.operation_registry")
     manifest = _load("src.app.wms_integration.provider_manifest")
     conformance = _load("src.app.runtime.system_capabilities.wms.conformance_manifest")
-    fixtures = _load("tests.mock.wms_operation_fixtures")
+    fixtures = _load("tests.support.wms_integration.operation_fixtures")
 
     expected = tuple(item.identity for item in registry.WMS_OPERATIONS)
     compiled_profile = build_compiled_provider_profile()
@@ -287,8 +287,8 @@ def test_mock_validator_consumes_static_effect_definitions_and_rejects_query_sub
     import pytest
 
     registry = _load("src.app.wms_integration.operation_registry")
-    fixtures = _load("tests.mock.wms_operation_fixtures")
-    mock_contract = _load("tests.mock.wms_northbound_contract")
+    fixtures = _load("tests.support.wms_integration.operation_fixtures")
+    mock_contract = _load("tests.support.wms_integration.northbound_contract")
 
     for operation in registry.EFFECT_OPERATIONS:
         validated = mock_contract.validate_typed_request(

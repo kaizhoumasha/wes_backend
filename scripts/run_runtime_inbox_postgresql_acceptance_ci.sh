@@ -45,7 +45,7 @@ docker run -d --name "${POSTGRES_CONTAINER}" \
     --network "${POSTGRES_NETWORK}" --network-alias "${POSTGRES_HOST}" \
     --env-file "${ENV_FILE}" \
     -v "${POSTGRES_VOLUME}:/var/lib/postgresql/data" \
-    --health-cmd='pg_isready -U runtime_acceptance -d postgres' \
+    --health-cmd='test "$(cat /proc/1/comm)" = postgres && pg_isready -U runtime_acceptance -d postgres' \
     --health-interval=2s --health-timeout=3s --health-retries=30 \
     timescale/timescaledb:latest-pg17 \
     postgres -c max_connections=100 >/dev/null

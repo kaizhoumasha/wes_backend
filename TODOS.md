@@ -95,6 +95,51 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 
 ## Reliability
 
+### FAST 测试执行时间优化与 60 秒预算恢复
+
+**What:** 定位并消除 Transport、OpenAPI 和 callback 路由 FAST 测试中的重复应用初始化与重复装配，使 Jenkins
+参考环境中的完整 FAST 套件重新稳定在 60 秒预算内。
+
+**Why:** Jenkins `wes_backend-ci #78` 的功能断言全部通过，但 FAST 套件在 `2 CPU / 4 GB` 限制下耗时
+`74.741s`，超过原 60 秒预算并阻断 TEST 环境部署。为优先恢复可联调环境，套件总预算临时调整为 90 秒；
+后续 `#79` 中一个数据库模型测试因 CI 节点抖动从 `2.82s` 升至 `3.229s`，因此单测试预算临时从 3 秒调整为
+4 秒；`tests/unit/` p95 门禁保持不变。
+
+**Scope:**
+
+- 在 Jenkins 等价 `2 CPU / 4 GB` 容器限制下分析 Transport、OpenAPI 和 callback 路由测试耗时
+- 复用不会改变测试隔离性的 FastAPI/OpenAPI 装配结果，消除重复初始化
+- 保留现有 FAST 断言和测试所有权，不以迁移到 HEAVY 或删除覆盖作为提速手段
+- 完整 FAST 套件稳定不超过 60 秒、单测试稳定不超过 3 秒后，将临时 90 秒/4 秒预算恢复为 60 秒/3 秒
+
+**Depends on:** TEST 联调环境成功部署后安排，不阻塞当前 WMS/WES 非业务联调。
+
+**Effort:** S
+
+**Priority:** P1
+
+---
+
+### Mock 镜像依赖锁定与纯局域网分发
+
+**What:** 为 tests/mock/Dockerfile 建立可复现的 Python 依赖锁定和预构建镜像离线分发流程。
+
+**Why:** 当前 Mock 镜像通过 pip 安装未锁版本，并在构建时依赖 Debian/PyPI 镜像；预构建镜像可以在局域网离线运行，但无法保证现场离线构建或未来重建得到相同结果。
+
+**Pros:** 固定 FastAPI、Swagger UI 兼容性和 Mock 运行环境，便于现场保存、校验和重建同一镜像。
+
+**Cons:** 会影响 ECS/WMS 共用 Mock 镜像的构建方式，需要独立评估 uv.lock、离线 wheel、基础镜像归档和 CI 发布，不应混入单次 Swagger 调试面改动。
+
+**Context:** WMS Transport Mock Swagger 计划只承诺预构建镜像离线运行，并通过 image ID 绑定验收对象。本 TODO 应优先复用仓库现有 uv.lock、镜像构建和 SHA-256 交付约定，不另建包管理器或私有依赖体系。
+
+**Depends on:** 当前 WMS/ECS Mock 重构和镜像职责稳定，并明确现场是否要求离线重建而不只是离线运行。
+
+**Effort:** M
+
+**Priority:** P2
+
+---
+
 ### 全仓 Redis fail-open/fail-closed/fallback 审计
 
 **What:** 审计整个仓库所有 Redis 调用点，明确每个调用是 fail-open、fail-closed 还是带 fallback，并补齐缺失的降级或错误处理。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -47,6 +48,7 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "allowEmptyArchive: true" in jenkins
     assert "fingerprint: true" in jenkins
     assert "timescale/timescaledb:latest-pg17" in lifecycle
+    assert 'test "$(cat /proc/1/comm)" = postgres && pg_isready' in lifecycle
     assert "docker network create" in lifecycle
     assert "docker volume create" in lifecycle
     assert "ALTER ROLE runtime_acceptance CREATEDB" in lifecycle
@@ -64,7 +66,7 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "tests/integration/test_runtime_inbox_migration_postgresql.py" in runner
     assert "tests/integration/test_runtime_inbox_processing_postgresql.py" in runner
     assert "test_claim_crash_recovers_with_new_owner_and_rejects_old_fence" in runner
-    assert "test_writeback_crash_rolls_back_effects_before_reprocessing_once" in runner
+    assert "test_writeback_crash_recovers_terminal_processing_once" in runner
     assert "tests/load/test_runtime_inbox_claim_benchmark.py" in runner
     assert "validate_runtime_inbox_benchmark_evidence" in runner
     assert 'source_environment.get("GIT_COMMIT") != expected_commit' in runner
@@ -123,6 +125,17 @@ def test_acceptance_runner_runs_required_suites_in_order_and_validates_evidence(
     ]
     diagnostic = json.loads((tmp_path / "diagnostic.json").read_text(encoding="utf-8"))
     assert diagnostic["status"] == "passed"
+
+
+def test_acceptance_runner_named_pytest_targets_exist(tmp_path: Path) -> None:
+    for command in acceptance_runner._commands(tmp_path):
+        target = next(argument for argument in command.argv if argument.startswith("tests/"))
+        path_text, separator, function_name = target.partition("::")
+        if not separator:
+            continue
+        tree = ast.parse((REPO_ROOT / path_text).read_text(encoding="utf-8"))
+        functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+        assert function_name in functions, target
 
 
 def test_acceptance_runner_rejects_commit_mismatch_before_postgresql_preflight(tmp_path: Path):

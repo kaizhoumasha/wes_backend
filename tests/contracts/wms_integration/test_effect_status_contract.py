@@ -37,8 +37,8 @@ from tests.contracts.wms_integration.provider_profile_support import (
     build_compiled_provider_profile,
     build_hmac_provider_profile_payload,
 )
-from tests.mock.wms_northbound_contract import build_typed_ack
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
+from tests.support.wms_integration.northbound_contract import build_typed_ack
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES, RESULT_FIXTURES
 
 RACK_SUPPLY = "wms.fulfillment.request_rack_supply@v1"
 CHANGE_RACK_FACE = "wms.fulfillment.change_rack_face@v1"

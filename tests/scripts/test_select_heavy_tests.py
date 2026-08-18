@@ -35,7 +35,9 @@ RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_
 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
 RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST = "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"
 RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST = "tests/integration/test_runtime_inbox_consumer_service.py"
+RUNTIME_INBOX_MIGRATION_HEAVY_TEST = "tests/integration/test_runtime_inbox_migration_postgresql.py"
 RUNTIME_INBOX_PROCESSING_HEAVY_TEST = "tests/integration/test_runtime_inbox_processing_postgresql.py"
+RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST = "tests/load/test_runtime_inbox_claim_benchmark.py"
 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST = "tests/integration/test_runtime_inbox_service_internal_events.py"
 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_effect_repository.py"
 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
@@ -55,11 +57,11 @@ SYSTEM_OUTBOX_REPOSITORY_HEAVY_TEST = "tests/integration/test_system_outbox_repo
 WMS_DEPLOYMENT_HEAVY_TEST = "tests/integration/test_wms_deployment_attestation.py"
 WMS_CIRCUIT_BREAKER_HEAVY_TEST = "tests/resilience/test_wms_circuit_breaker.py"
 WMS_FEASIBILITY_HEAVY_TEST = "tests/integration/test_wms_northbound_feasibility_probe.py"
-WMS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_wms_mock_server.py"
-WMS_NORTHBOUND_CONTRACT_HEAVY_TEST = "tests/mock/test_wms_northbound_contract.py"
+WMS_MOCK_SERVER_HEAVY_TEST = "tests/mock/test_wms_transport_mock_server.py"
+WMS_NORTHBOUND_CONTRACT_HEAVY_TEST = "tests/integration/wms_integration/test_northbound_contract.py"
 WMS_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py"
 WMS_PROVIDER_COLLECTION_HEAVY_TEST = "tests/integration/test_wms_provider_conformance_collection.py"
-WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/mock/test_wms_provider_conformance_simulator.py"
+WMS_PROVIDER_SIMULATOR_HEAVY_TEST = "tests/integration/wms_integration/test_provider_conformance_simulator.py"
 TRANSPORT_DARK_LOOP_HEAVY_TEST = "tests/integration/transport/test_dark_transport_loop.py"
 TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evidence_transaction.py"
 TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST = "tests/integration/wms_adapter/test_transport_callback_receipts.py"
@@ -862,10 +864,14 @@ def test_repository_mapping_selects_shared_fast_database_fixture_consumers() -> 
     assert select_heavy_tests(["tests/conftest.py"], config) == list(SHARED_FAST_DB_FIXTURE_HEAVY_TESTS)
 
 
-def test_repository_mapping_selects_device_e2e_for_local_compose() -> None:
+def test_repository_mapping_selects_device_and_wms_mock_owners_for_local_compose() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests(["docker-compose.yml"], config) == [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]
+    assert select_heavy_tests(["docker-compose.yml"], config) == [
+        DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        WMS_FEASIBILITY_HEAVY_TEST,
+        WMS_MOCK_SERVER_HEAVY_TEST,
+    ]
 
 
 def test_repository_mapping_declares_required_ignore_globs() -> None:
@@ -937,31 +943,31 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/runtime/system_capabilities/generated_index.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/system_capabilities/wms/conformance_manifest.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/system_capabilities/wms/conformance_matrix.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/system_capabilities/wms/effect_runtime.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/system_capabilities/wms/fulfillment/request_load_unit_transport/definition.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/system_capabilities/wms/fulfillment/request_rack_transport/definition.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/runtime/system_capabilities/wms/generated_operation_index.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/transport/__init__.py",
@@ -979,6 +985,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
                 TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
             ],
         ),
         (
@@ -1041,7 +1048,21 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
                 TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
             ],
+        ),
+        (
+            "src/app/wms_adapter/transport_openapi.py",
+            [
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST,
+                WMS_MOCK_SERVER_HEAVY_TEST,
+            ],
+        ),
+        (
+            "src/static/swagger-ui/swagger-ui.css",
+            [MOCK_DOCKERFILE_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST],
         ),
         ("src/app/wms_adapter/transport_adapter.py", [TRANSPORT_DARK_LOOP_HEAVY_TEST]),
         (
@@ -1092,7 +1113,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/core/task_queue_gateway.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
         (
             "src/core/uuid7.py",
-            [TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST],
+            [TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST],
         ),
         (
             "src/register.py",
@@ -1105,39 +1126,39 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ("src/app/wms_integration/deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
         (
             "src/app/wms_integration/effect_preparation_runtime.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/endpoint_compiler.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/operation_contract.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/operation_registry.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/ports/effect_preparation.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/ports/effect_status.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/ports/fulfillment_operations.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/provider_manifest.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/provider_profile.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "tests/support/transport_broker.py",
@@ -1166,6 +1187,19 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
         ("scripts/check_runtime_production_e2e_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
         ("scripts/run_runtime_benchmarks.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
         ("scripts/run_runtime_inbox_postgresql_acceptance_ci.sh", [RUNTIME_INBOX_PROCESSING_HEAVY_TEST]),
+        (
+            "scripts/run_runtime_inbox_postgresql_acceptance.py",
+            [
+                RUNTIME_INBOX_MIGRATION_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ],
+        ),
+        (
+            "tests/load/runtime_inbox_postgresql_benchmark.py",
+            [RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST],
+        ),
         (
             "tests/load/runtime_benchmark_scenarios.py",
             [
@@ -1357,21 +1391,18 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
         ),
         (
             "tests/support/wms_conformance_runner.py",
-            [
-                WMS_FEASIBILITY_HEAVY_TEST,
-                WMS_PROVIDER_COLLECTION_HEAVY_TEST,
-                WMS_POSTGRESQL_HEAVY_TEST,
-                WMS_MOCK_SERVER_HEAVY_TEST,
-                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
-            ],
+            [WMS_PROVIDER_COLLECTION_HEAVY_TEST],
+        ),
+        (
+            "tests/support/wms_provider_conformance.py",
+            [WMS_PROVIDER_SIMULATOR_HEAVY_TEST],
         ),
         (
             "tests/contracts/wms_integration/provider_profile_support.py",
             [
                 WMS_DEPLOYMENT_HEAVY_TEST,
-                WMS_FEASIBILITY_HEAVY_TEST,
-                WMS_POSTGRESQL_HEAVY_TEST,
                 WMS_PROVIDER_SIMULATOR_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
             ],
         ),
         (
@@ -1379,27 +1410,23 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
             [
                 WMS_FEASIBILITY_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
-                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
             ],
         ),
         (
-            "tests/mock/wms_northbound_contract.py",
-            [
-                WMS_FEASIBILITY_HEAVY_TEST,
-                WMS_POSTGRESQL_HEAVY_TEST,
-                WMS_MOCK_SERVER_HEAVY_TEST,
-                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
-            ],
+            "tests/support/wms_integration/northbound_contract.py",
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
         ),
         (
-            "tests/mock/wms_operation_fixtures.py",
+            "tests/support/wms_integration/operation_fixtures.py",
             [
                 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST,
-                WMS_FEASIBILITY_HEAVY_TEST,
-                WMS_POSTGRESQL_HEAVY_TEST,
-                WMS_MOCK_SERVER_HEAVY_TEST,
                 WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
             ],
+        ),
+        (
+            "tests/support/wms_integration/scripted_provider.py",
+            [WMS_PROVIDER_SIMULATOR_HEAVY_TEST],
         ),
         (
             "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py",
@@ -1466,11 +1493,11 @@ def test_repository_mapping_keeps_database_runtime_broad_dependencies_fail_close
     [
         (
             "src/app/wms_integration/operation_registry.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/wms_integration/effect_preparation_runtime.py",
-            [WMS_POSTGRESQL_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
         ),
         (
             "src/app/device/services/device_service.py",
@@ -1640,6 +1667,9 @@ def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> Non
     assert select_heavy_tests(["Jenkinsfile.backend-ci"], config) == [
         TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+        WMS_FEASIBILITY_HEAVY_TEST,
+        MOCK_DOCKERFILE_HEAVY_TEST,
+        WMS_MOCK_SERVER_HEAVY_TEST,
     ]
     with pytest.raises(SelectorError, match="未分类改动路径"):
         select_heavy_tests(["Jenkinsfile"], config)
@@ -1711,8 +1741,6 @@ def test_repository_mapping_pins_runtime_profiles_to_current_content(changed_pat
 
     assert mapping.heavy_tests == (
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
-        WMS_FEASIBILITY_HEAVY_TEST,
-        WMS_MOCK_SERVER_HEAVY_TEST,
         WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
     )
     assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
@@ -1724,7 +1752,7 @@ def test_repository_mapping_pins_runtime_profiles_to_current_content(changed_pat
     [
         (
             "src/app/wms_integration/ports/document_operations.py",
-            [WMS_FEASIBILITY_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST, WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
+            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST],
         ),
         (
             "tests/support/runtime_inbox_processing_postgresql.py",

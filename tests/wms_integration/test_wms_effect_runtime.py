@@ -30,8 +30,8 @@ from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsExe
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS, QUERY_OPERATIONS
 from src.core.task_queue_gateway import OutboxDispatchTarget
 from tests.contracts.wms_integration.provider_profile_support import build_provider_catalog
-from tests.mock.wms_northbound_contract import build_typed_ack
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
+from tests.support.wms_integration.northbound_contract import build_typed_ack
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 
 
 class _PreparationPort:

@@ -33,8 +33,8 @@ from src.app.sys.services.outbox_engine import (
 )
 from src.app.wms_integration.operation_contract import WmsCompletionMode
 from src.app.wms_integration.operation_registry import EFFECT_OPERATIONS
-from tests.mock.wms_operation_fixtures import REQUEST_FIXTURES
 from tests.support.external_http import StaticTestCredentialProvider, signed_external_http_request
+from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 from tests.sys.test_system_outbox_engine import (
     FakeDispatchAttemptService,
     FakeFairDispatchScheduler,

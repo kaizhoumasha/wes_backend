@@ -1,4 +1,4 @@
-"""仅供 conformance 使用的进程内最小 WMS scripted provider。"""
+"""仅供 WMS typed-operation conformance 使用的进程内 scripted provider。"""
 
 from __future__ import annotations
 

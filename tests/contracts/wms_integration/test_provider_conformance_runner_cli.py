@@ -24,13 +24,6 @@ from tests.contracts.wms_integration.provider_profile_support import (
     build_hmac_provider_profile_payload,
     build_provider_profile_payload,
 )
-from tests.mock.wms_operation_fixtures import (
-    IDENTITY_MISMATCH_FIXTURES,
-    REJECT_FIXTURES,
-    REQUEST_FIXTURES,
-    RESULT_FIXTURES,
-    WMS_OPERATION_FIXTURE_MATRIX,
-)
 from tests.support.wms_conformance_runner import (
     GenericConformanceRunner,
     IdentityMismatchFixture,
@@ -41,6 +34,13 @@ from tests.support.wms_conformance_runner import (
     build_operation_fixture_matrix,
     build_real_tcp_scenario_matrix,
     scenario_asset_digest,
+)
+from tests.support.wms_integration.operation_fixtures import (
+    IDENTITY_MISMATCH_FIXTURES,
+    REJECT_FIXTURES,
+    REQUEST_FIXTURES,
+    RESULT_FIXTURES,
+    WMS_OPERATION_FIXTURE_MATRIX,
 )
 
 
