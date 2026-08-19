@@ -170,12 +170,11 @@ git push gitlab develop
   - [ ] Mock Image Contracts（MR）
   - [ ] HEAVY Required（MR）
   - [ ] Build Runtime Image
-  - [ ] Push Runtime Image（非 MR）
-  - [ ] Trigger Test Deploy（仅 develop push）
+  - [ ] Push Runtime Image（仅 GitLab PUSH；MR/手工构建不发布）
 
 ### 10. 测试 TEST 部署 Pipeline
 
-- [ ] Jenkins → **wes_test_deploy** → 查看是否被 `wes_backend-ci` 自动触发
+- [ ] Jenkins → **wes_test_deploy** → 由部署人员手工触发并明确选择前后端镜像版本
 - [ ] 查看部署日志
 - [ ] 验证 TEST 环境健康检查
 - [ ] 验证日志中出现“同步 TEST 环境菜单”且 `TEST 环境菜单数量` 大于 0
@@ -304,9 +303,8 @@ sudo usermod -aG docker jenkins
    - 构建 CI 镜像
    - 代码检查（并行）
    - 单元测试（并行）
-   - 非 MR 推送 backend immutable tag 和 channel tag
-   - 仅 develop 自动触发 TEST 部署
-4. **TEST 部署健康检查**
+   - 仅 GitLab PUSH 推送 backend immutable tag 和 channel tag
+4. **部署人员按需单独运行 TEST/现场部署**
 5. **通知结果**（可选配置）
 
 ## 📞 需要帮助？

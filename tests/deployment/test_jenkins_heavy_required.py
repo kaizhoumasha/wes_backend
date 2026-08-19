@@ -179,3 +179,13 @@ def test_non_publishing_builds_still_validate_the_production_target() -> None:
     assert "when {" not in build_body
     assert '--target "${RUNTIME_BUILD_TARGET}"' in build_body
     assert '-t "${RUNTIME_IMAGE_LOCAL}"' in build_body
+
+
+def test_runtime_image_publication_requires_a_gitlab_push_without_cross_repo_deploy() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    push_body = jenkins_text.split("stage('Push Runtime Image')", maxsplit=1)[1].split("\n    post {", maxsplit=1)[0]
+
+    assert "env.CI_EVENT_TYPE == 'PUSH'" in push_body
+    assert "env.CI_IS_MERGE_REQUEST != 'true'" in push_body
+    assert "stage('Trigger Test Deploy')" not in jenkins_text
+    assert "FRONTEND_IMAGE_TAG" not in jenkins_text

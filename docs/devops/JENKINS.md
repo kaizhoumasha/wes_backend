@@ -85,15 +85,11 @@ git push gitlab develop
     ├─ Mock Image Contracts（仅 MR）
     ├─ HEAVY Required（仅 MR，按目标分支差异选择）
     ├─ Build Runtime Image
-    ├─ Push Runtime Image（非 MR，推送 immutable + channel tag）
-    └─ Trigger Test Deploy（仅 develop push）
-         ↓
-      `wes_test_deploy`
-        ├─ 拉取 backend `develop` / frontend `develop` 镜像
-        ├─ 重建 TEST 应用服务
-        ├─ 从 `/opt/wes_frontend/src/router/index.ts` 同步菜单到 `wes_sys.menus`
-        └─ 健康检查
+    └─ Push Runtime Image（仅 GitLab PUSH，推送 immutable + channel tag）
 ```
+
+`wes_backend-ci` 只构建和发布后端镜像，不自动选择前端版本或触发 `wes_test_deploy`。需要 TEST/现场部署时，由部署人员单独运行
+部署任务并明确选择前后端镜像；MR 和 Jenkins 手工构建只验证，不发布镜像。
 
 生产环境建议顺序：
 

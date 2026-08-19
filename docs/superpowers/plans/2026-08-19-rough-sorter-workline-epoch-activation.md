@@ -1,16 +1,17 @@
 # 粗分机 WorkLine Epoch 激活与多 Endpoint 派发实施计划
 
-**状态：** 后端工程包 1–4 已合入 `develop@bda2079d`；前端工程包 5 待独立实施
+**状态：** 后端工程包 1–4 已合入 `develop@bda2079d`；前端工程包 5 在前端仓库独立实施，不阻塞后端 RC
 
 **目标：** 提供唯一生产 START 入口，原子冻结 WorkLine 运行代际，并让每个可派发物理 Device 按其 Epoch Endpoint 派发。
 
-**范围：** 后端四个顺序工程包和前端一个独立工程包；每包必须形成可独立评审、可独立验证的绿色快照。
+**范围：** 后端四个顺序工程包和前端一个独立工程包；两仓分别形成可独立评审、验证和发布的绿色快照，不要求版本或进度一一对应。
 
 **直接替换：** 系统未发布，不保留旧 START、旧 admission/probe 字段、别名、wrapper、fallback 或旧数据迁移。
 
 **真源定位：** 本计划是 Phase 8 已有仓内闭环之上的增量实施真源，只负责 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口。
-`2026-08-03-rough-sorter-plugin-convergence.md` 继续保存 Phase 8 初始收敛交付、仓内验收和外部阻塞状态，不再指导本计划范围内的新增实现；
+`2026-08-03-rough-sorter-plugin-convergence.md` 继续保存 Phase 8 后端收敛交付、本机 Mock 验收和 RC 关闭状态，不再指导本计划范围内的新增实现；
 本计划不新增 Phase 8A/8B 等正式阶段，也不改写旧计划的历史交付事实。
+现场部署人员自行选择前后端镜像并完成真实系统联调；本计划不创建跨仓库 RC manifest、现场 runner 或验收 bundle。
 
 ## 1. 架构裁决
 

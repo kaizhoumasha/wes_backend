@@ -272,19 +272,17 @@ docker-compose --version
 - `develop`：
   - 构建 CI 镜像
   - 执行质量检查与测试
-  - 构建并推送 backend immutable tag 与 `develop` channel tag
-  - 自动触发 `wes_test_deploy`
+  - GitLab PUSH 时构建并推送 backend immutable tag 与 `develop` channel tag
 - `main` / 其他分支：
   - `wes_backend-ci` 仍执行 CI
-  - 非 MR 时推送 backend immutable tag 与 channel tag
+  - GitLab PUSH 时推送 backend immutable tag 与 channel tag
     - `main` → `prod`
     - 其他分支 → 分支同名 tag
-  - 不自动触发 TEST 部署
+- MR 和 Jenkins 手工构建：执行验证但不推送镜像
 
 部署行为约束：
 
-- `wes_test_deploy` 负责 TEST 环境部署
-- 自动链路默认拉取 backend `develop` 与 frontend `develop` 镜像
+- `wes_test_deploy` 是独立部署任务，由部署人员手工触发并选择前后端镜像
 - 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
 - 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
 - API 容器会只读挂载同机的 `../wes_frontend`，供部署后菜单同步使用
@@ -295,7 +293,7 @@ docker-compose --version
 
 PROD 边界说明：
 
-- 当前 Jenkins 只负责 CI 与 TEST 自动部署，不直接连接生产环境
+- `wes_backend-ci` 只负责后端 CI 与镜像发布，不自动部署 TEST 或生产环境
 - 生产环境按手动部署 runbook 执行，不复用 `seed_initial_data.py`
 - 生产发布说明文档：`prod-release-deploy.md`
 - 推荐顺序：
@@ -314,7 +312,7 @@ PROD 边界说明：
 建议核对项：
 
 ```bash
-rg -n "IMAGE_REPO|Trigger Test Deploy|Push Runtime Image" Jenkinsfile.backend-ci
+rg -n "IMAGE_REPO|Push Runtime Image|CI_EVENT_TYPE" Jenkinsfile.backend-ci
 rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
 ```
 
@@ -354,8 +352,9 @@ git push gitlab develop
 - ✅ **Mock Image Contracts**：MR 构建并验证 Mock 镜像
 - ✅ **HEAVY Required**：MR 按目标分支差异选择并执行 HEAVY
 - ✅ **Build Runtime Image**：运行时镜像构建
-- ✅ **Push Runtime Image**：非 MR 镜像推送
-- ✅ **Trigger Test Deploy**：develop push 自动触发 TEST 部署
+- ✅ **Push Runtime Image**：仅 GitLab PUSH 发布后端镜像；MR/手工构建不发布
+
+`wes_backend-ci` 不再自动触发 TEST 部署或选择前端镜像。`wes_test_deploy` 由部署人员单独运行并显式选择前后端版本。
 
 #### 10.3 查看报告
 

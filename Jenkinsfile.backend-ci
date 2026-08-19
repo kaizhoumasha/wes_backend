@@ -299,6 +299,7 @@ pipeline {
         stage('Push Runtime Image') {
             when {
                 expression {
+                    env.CI_EVENT_TYPE == 'PUSH' &&
                     env.CI_IS_MERGE_REQUEST != 'true'
                 }
             }
@@ -314,29 +315,6 @@ pipeline {
                         docker push "${RUNTIME_IMAGE_COMMIT}"
                         docker push "${RUNTIME_IMAGE_CHANNEL}"
                     '''
-                }
-            }
-        }
-
-        stage('Trigger Test Deploy') {
-            when {
-                expression {
-                    env.CI_SOURCE_BRANCH == 'develop' &&
-                    env.CI_EVENT_TYPE == 'PUSH'
-                }
-            }
-            steps {
-                script {
-                    echo "🚀 Trigger Test Deploy: source=${env.CI_SOURCE_BRANCH}, event=${env.CI_EVENT_TYPE}, is_mr=${env.CI_IS_MERGE_REQUEST}, backend_tag=${env.CI_CHANNEL_TAG}"
-                    build job: 'wes_test_deploy',
-                        wait: true,
-                        propagate: true,
-                        parameters: [
-                            string(name: 'BACKEND_IMAGE_TAG', value: "${env.BUILD_NUMBER}-${env.CI_SHORT_COMMIT}"),
-                            string(name: 'FRONTEND_IMAGE_TAG', value: 'develop'),
-                            string(name: 'SOURCE_BRANCH', value: env.CI_SOURCE_BRANCH),
-                            string(name: 'SOURCE_COMMIT_SHA', value: env.CI_COMMIT_SHA)
-                        ]
                 }
             }
         }
