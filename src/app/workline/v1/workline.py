@@ -14,8 +14,9 @@ from src.app.workline.models import (
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
 )
-from src.app.workline.services import workline_plane_service, workline_service
+from src.app.workline.services import workline_plane_service
 from src.app.workline.services.plane_service import PlaneReadPrincipal, plane_read_security_policy
+from src.app.workline.services.workline_service import workline_service
 from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
 from src.core.response import (

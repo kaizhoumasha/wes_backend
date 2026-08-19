@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.8.0] - 2026-08-20
+
+### Fixed
+- WorkLine 查询在应用首次加载、重启及不同模块导入顺序下均会绑定正式 `WorkLineService`，不再因误用同名模块返回 HTTP 500。
+
+### Verification
+- 合并最新 `develop` 后，QUALITY 全门禁通过：3626 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和 FAST 预算检查均通过。
+- 当前差异未选择核心 HEAVY 测试；fresh-process 路由回归测试通过，行为路径覆盖审计为 100%，预落地 Review 无剩余问题。
+- 完整本地环境停止并重新启动后，正式路由 `POST /api/v1/workline/work_lines/query` 返回 HTTP 200 和标准分页响应。
+
 ## [0.26.7.0] - 2026-08-20
 
 ### Changed
