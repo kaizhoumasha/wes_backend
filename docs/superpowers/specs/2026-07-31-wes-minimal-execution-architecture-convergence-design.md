@@ -2,9 +2,9 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-13
+updated_at: 2026-08-19
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: Phase 7 DeviceCommand/ECS core completed on feature/phase7-device-ecs
+implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 repository implementation completed, external acceptance blocked
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73

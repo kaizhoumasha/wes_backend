@@ -23,8 +23,7 @@
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 核心基线已完成；Phase 8 仓内工程与本机 Mock 验收已完成，但供应商一致性、真实 WMS 和现场联合验收仍阻塞；Phase 9 至 12 未开始 |
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 初始收敛交付、仓内验收和外部阻塞状态主记录 | In progress — external blocked；Tasks 1–8、Task 9 仓内工程/本机 Mock 验收与 Task 10 仓内收尾已完成，Task 9 外部验收未运行 |
-| `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活、多 Endpoint 派发及其前端入口的增量实施真源 | 工程评审通过 — 等待实施授权与执行基线冻结；不改变 Phase 8 外部验收阻塞状态 |
-| `plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Phase 5 后活动源码、诊断合同和当前 schema 中的退役插件身份收敛 | In progress；Tasks 1–5 已实施，Task 6 正在完成合入前门禁与独立复审；合入后执行 tombstone 清理和外部归档 |
+| `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活、多 Endpoint 派发及其前端入口的增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端工程包 5 待独立实施，不改变 Phase 8 外部验收阻塞状态 |
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
@@ -36,6 +35,7 @@
 
 - `../archive_docs/wes_backend/local-development/2026-08-18-fresh-db-migration-history/2026-08-17-onsite-data-resilience-and-runtime-stability.original.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-16-wes-transport-dto-contract-alignment.md`
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`

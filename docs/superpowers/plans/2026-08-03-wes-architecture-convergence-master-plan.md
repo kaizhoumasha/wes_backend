@@ -17,8 +17,8 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
-Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；退役插件活动残留收敛已完成 Tasks 1–5，
-正在执行合入前门禁与独立复审。Phase 8 仓内实现、质量门禁和插件部署 E2E 已完成，但仍为
+Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；退役插件活动残留收敛已合入，
+合入后 tombstone 已清理且完成计划已移出项目归档。Phase 8 仓内实现、质量门禁和插件部署 E2E 已完成，但仍为
 `IN_PROGRESS — EXTERNAL BLOCKED`；供应商一致性、现场联调和业务验收尚未完成。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
@@ -29,7 +29,8 @@ Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/E
 
 **Phase 9 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Implementation baseline:** `feature/phase7-device-ecs`（Phase 7 核心实现基线；Phase 8/9 仍无业务插件或 producer）
+**Implementation baseline:** `develop@bda2079d523984f25265c113b2fb213429da40f0`（Phase 8 仓内实现与 Epoch 激活已合入；
+外部验收仍阻塞，Phase 9 尚未开始）
 
 ---
 
@@ -125,12 +126,12 @@ Transport/Adapter/核心所有权。
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 5 只解除旧插件闭包；Device/ECS 裸 Client 由 Phase 7 处理 |
 | 目标对象扫描 | 已有 `TransportTask`、Transport member-position/result evidence 和 Transport 位置投影 | Phase 4 暗构建完成；Phase 6 只收敛 Transport 直接旧 owner |
 | `34837439` / `src/app/runtime/workline_plugins/` 缺席 | 旧工作线插件、binding、dispatcher、attempt 及目录外活动 owner 已原子退役 | Phase 5 零插件基线完成；后续插件按 Phase 8/9 目标合同重新实现 |
-| `docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Tasks 1–5 已删除活动 Trace/Diagnostic/Hold/Intent/replay 的退役插件身份，并由当前 PostgreSQL head 与测试 owner 验证 | Task 6 合入前门禁和独立复审进行中；合入后才清理 deletion tombstone 并外部归档本计划 |
+| `5fe59968` / 项目外归档 `2026-08-15-wes-retired-plugin-residual-convergence.md` | 退役插件活动残留收敛已合入 `develop`，两个 deletion tombstone 已完成合入后清理 | Completed；归档只作历史证据，不再是项目内实施入口 |
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8 仓内实现、质量门禁和插件部署 E2E
+Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 仓内实现、质量门禁和插件部署 E2E
 已完成，但因供应商一致性与现场联合验收尚未运行，仍为 `IN_PROGRESS — EXTERNAL BLOCKED`；Phase 9–12 尚未开始。
 
 ## 5. 总控依赖模型
@@ -757,7 +758,7 @@ Adapter、设备统一接口和明确插件。
 ## 21. Implementation Tasks
 
 Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。两阶段分别拥有独立可靠对象、生产装配和测试证据；
-已完成的过程计划已归档，不再保留为项目内当前真源。退役插件活动残留收敛仍在完成合入前门禁与独立复审；Phase 8 合同、
+已完成的过程计划已归档，不再保留为项目内当前真源。退役插件活动残留收敛及合入后 tombstone 清理已完成；Phase 8 合同、
 SDK、可靠对象、粗分插件、静态装配、迁移链、质量门禁和插件部署 E2E 已完成。供应商一致性和现场闭环仍须独立验收；不得把
 核心测试、mock 边界或插件部署 E2E 当成真实供应商或现场验收。
 
@@ -765,7 +766,7 @@ SDK、可靠对象、粗分插件、静态装配、迁移链、质量门禁和�
 | --- | --- | --- | --- |
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
-| 3 | Phase 5 后退役插件活动残留收敛 | In progress | Tasks 1–5 已实施；完成合入前门禁和独立复审后合入，tombstone 清理与计划归档只在合入后执行 |
+| 3 | Phase 5 后退役插件活动残留收敛 | Completed | `5fe59968` 已合入；deletion tombstone 已清理，完成计划已移出项目归档 |
 | 4 | Phase 8 粗分机参考插件实施 | In progress — external blocked | 仓内实现与插件部署 E2E 已完成；等待真实供应商一致性和现场联合验收 |
 
 Phase 8 仓内实施与插件部署 E2E 已完成；这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。

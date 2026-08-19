@@ -863,8 +863,10 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Run: `./scripts/run_selected_heavy_local.sh --base 'ab02f42f^'`
 
-  Result（2026-08-19）: 插件 E2E `10 passed, 0 skipped`；计划锁定核心 owner `21 passed`；selector 选中 31 个 HEAVY
-  资产，实际执行 `362 passed, 0 skipped`。核心 selector 不包含粗分插件私有测试。
+  当前 E2E Result（2026-08-19，`develop@bda2079d`，source manifest `e60415d18a05ef02d1961e30e4572d59c5a544ab`）:
+  插件 E2E `11 passed, 0 skipped`。先前 Phase 8 快照 `aab69fd7` 的证据为：计划锁定核心 owner `21 passed`；
+  selector 选中 31 个 HEAVY 资产，实际执行 `362 passed, 0 skipped`。该历史绿灯不作为 `bda2079d` 的当前 HEAVY 证据；
+  核心 selector 不包含粗分插件私有测试。
 
 - [x] **Step 6: 记录分层验收结论**
 
@@ -911,7 +913,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
 - [x] **Step 3: 运行插件和核心 FAST**
 
-  Run: `uv run --project workline_plugins/rough_sorter pytest -q`
+  Run: `uv run --project workline_plugins/rough_sorter pytest workline_plugins/rough_sorter/tests --ignore=workline_plugins/rough_sorter/tests/e2e -q`
 
   Run: `uv run pytest tests/ -q`
 

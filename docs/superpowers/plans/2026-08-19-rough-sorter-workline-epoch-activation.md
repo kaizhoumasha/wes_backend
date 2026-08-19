@@ -1,6 +1,6 @@
 # 粗分机 WorkLine Epoch 激活与多 Endpoint 派发实施计划
 
-**状态：** 后端工程包 1–4 已完成并提交（`fe9845df`）；前端工程包 5 等待后端合同进入干净 `develop` 后独立实施
+**状态：** 后端工程包 1–4 已合入 `develop@bda2079d`；前端工程包 5 待独立实施
 
 **目标：** 提供唯一生产 START 入口，原子冻结 WorkLine 运行代际，并让每个可派发物理 Device 按其 Epoch Endpoint 派发。
 
