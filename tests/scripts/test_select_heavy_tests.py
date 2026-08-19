@@ -1710,7 +1710,7 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     assert "./scripts/git-quality-gate.sh --profile quality" in jenkinsfile
     assert "stage('HEAVY Required')" in jenkinsfile
     assert "git config --global --add safe.directory /app" in jenkinsfile
-    assert 'uv run --no-sync scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"' in jenkinsfile
+    assert 'uv run --no-sync scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' in jenkinsfile
     assert "reports/heavy-tests.txt" in jenkinsfile
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in jenkinsfile
     assert "run_script_contract_tests" in quality_gate

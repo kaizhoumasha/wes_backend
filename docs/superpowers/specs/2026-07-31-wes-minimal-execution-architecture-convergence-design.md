@@ -2,9 +2,10 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-13
+updated_at: 2026-08-20
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: Phase 7 DeviceCommand/ECS core completed on feature/phase7-device-ecs
+implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 backend RC closed at f51677b62f5da906d4b60fa5a528d04692aff7a2 with immutable image 88-f51677b; current status in docs/integration/rough-sorter-joint-acceptance.md
+delivery_gate: backend and frontend close and publish their own RC independently; onsite deployment and validation are separate project activities
 system_stage: pre_release
 migration_strategy: direct_replacement
 historical_reference: ee1f3b670c5ed33cfd5be1fd0370b53570790e73
@@ -849,9 +850,10 @@ CTU 投箱
    PostgreSQL 可靠性测试所有权和直接旧 owner 删除；零插件时保持可安装但未绑定业务 consumer 的状态。
 7. DeviceCommand/ECS 通用能力生产收敛：独立交付命令可靠生命周期、设备状态/事件/结果证据、固定统一接口、
    ACK/CALLBACK、`LineRunEpoch` fencing、唯一生产装配和旧 Device owner 删除；不包含供应商私有 DTO 或插件业务。
-8. 粗分机参考插件优化：消费 Phase 6/7 基础能力，从真实业务合同重新实现首个独立插件，并由真实使用冻结最小 SPI；
-   不搬运 Phase 5 已删除的旧插件源码。
-9. 分拣执行插件优化：消费 Phase 6/7 基础能力和 Phase 8 已验收最小 SPI，按实际工作线交付插件。
+8. 粗分机参考插件优化：消费 Phase 6/7 基础能力，从真实业务合同重新实现首个独立插件，并以本机分层测试、Mock 验收和
+   GitLab PUSH 生成可追溯后端镜像关闭后端 RC；前端在独立仓库关闭自己的 RC，不搬运 Phase 5 已删除的旧插件源码。
+9. 分拣执行插件优化：消费 Phase 6/7 基础能力和 Phase 8 后端 RC 已冻结的最小 SPI，按实际工作线交付插件；不等待前端进度或
+   现场验收才开始开发，也不得借此宣称粗分生产验收通过。
 10. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 11. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
 12. 最终基线与系统验收：从空库分别验证核心、Adapter、供应商一致性、插件、质量、部署装配和旧架构缺席门禁。

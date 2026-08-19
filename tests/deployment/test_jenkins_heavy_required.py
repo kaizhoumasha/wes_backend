@@ -58,6 +58,7 @@ def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs()
     required_paths = (
         "Dockerfile",
         "docker-compose.ci-heavy.yml",
+        "docker-compose.frontend.yml",
         "docker-compose.test-deploy.yml",
         "docker-compose.wms-acceptance.yml",
         "redis/redis.conf",
@@ -72,6 +73,7 @@ def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs()
             "**/*.pyc",
             "!Dockerfile",
             "!docker-compose.ci-heavy.yml",
+            "!docker-compose.frontend.yml",
             "!docker-compose.test-deploy.yml",
             "!docker-compose.wms-acceptance.yml",
             "!redis/",
@@ -94,11 +96,11 @@ def test_host_compose_contracts_render_production_and_test_deploy_stacks() -> No
     assert compose_body.count("config --no-env-resolution --quiet") == 2
 
 
-def test_merge_request_mock_image_contracts_run_as_fixed_host_commands() -> None:
+def test_mock_image_contracts_run_for_merge_requests_and_verified_develop_pushes() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     mock_body = _stage_body(jenkins_text, "Mock Image Contracts", "HEAVY Required")
 
-    assert "env.CI_IS_MERGE_REQUEST == 'true'" in mock_body
+    assert "env.CI_IS_MERGE_REQUEST == 'true' || env.CI_RELEASE_GATE_READY == 'true'" in mock_body
     assert "docker build -f tests/mock/Dockerfile -t ${MOCK_ECS_IMAGE} -t ${MOCK_WMS_IMAGE} ." in mock_body
     assert "docker run --rm ${MOCK_ECS_IMAGE} python -c 'import ecs_mock_server'" in mock_body
     assert "docker run --rm ${MOCK_WMS_IMAGE} python -c 'import wms_mock_server'" in mock_body
@@ -123,6 +125,34 @@ def test_heavy_required_uses_a_build_scoped_compose_project() -> None:
     assert "down --volumes --remove-orphans" in heavy_body
     assert "--profile test" not in heavy_body
     assert "wesp9-test-network" not in heavy_body
+
+
+def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
+    heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
+
+    assert "String beforeCommit = (env.gitlabBefore ?: '').trim()" in checkout_body
+    assert "String afterCommit = (env.gitlabAfter ?: '').trim()" in checkout_body
+    assert (
+        "boolean isDevelopPush = gitlabActionType == 'PUSH' && sourceBranch == 'develop' && !isMergeRequest"
+        in checkout_body
+    )
+    assert "env.CI_DIFF_BASE = isMergeRequest ? \"origin/${targetBranch}\" : ''" in checkout_body
+    assert "if (!(beforeCommit ==~ /^[0-9a-fA-F]{40}$/) || beforeCommit ==~ /^0{40}$/)" in checkout_body
+    assert "error('Develop push requires a non-zero 40-character gitlabBefore')" in checkout_body
+    assert "if (!(afterCommit ==~ /^[0-9a-fA-F]{40}$/) || !afterCommit.equalsIgnoreCase(fullCommit))" in checkout_body
+    assert "error('Develop push gitlabAfter must match the checked out HEAD')" in checkout_body
+    assert "git merge-base --is-ancestor '${beforeCommit}' '${fullCommit}'" in checkout_body
+    assert "if (ancestryStatus != 0)" in checkout_body
+    assert "error('Develop push must fast-forward from gitlabBefore')" in checkout_body
+    assert "env.CI_DIFF_BASE = beforeCommit" in checkout_body
+    assert "env.CI_RELEASE_GATE_READY = 'true'" in checkout_body
+
+    assert "env.CI_IS_MERGE_REQUEST == 'true' || env.CI_RELEASE_GATE_READY == 'true'" in heavy_body
+    assert '-e CI_DIFF_BASE="${CI_DIFF_BASE}"' in heavy_body
+    assert 'scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' in heavy_body
+    assert '--base "origin/${CI_TARGET_BRANCH}"' not in heavy_body
 
 
 def test_heavy_required_uses_non_zero_build_scoped_redis_database() -> None:
@@ -179,3 +209,15 @@ def test_non_publishing_builds_still_validate_the_production_target() -> None:
     assert "when {" not in build_body
     assert '--target "${RUNTIME_BUILD_TARGET}"' in build_body
     assert '-t "${RUNTIME_IMAGE_LOCAL}"' in build_body
+
+
+def test_runtime_image_publication_requires_a_verified_gitlab_develop_push_without_cross_repo_deploy() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    push_body = jenkins_text.split("stage('Push Runtime Image')", maxsplit=1)[1].split("\n    post {", maxsplit=1)[0]
+
+    assert "env.CI_EVENT_TYPE == 'PUSH'" in push_body
+    assert "env.CI_IS_MERGE_REQUEST != 'true'" in push_body
+    assert "env.CI_SOURCE_BRANCH == 'develop'" in push_body
+    assert "env.CI_RELEASE_GATE_READY == 'true'" in push_body
+    assert "stage('Trigger Test Deploy')" not in jenkins_text
+    assert "FRONTEND_IMAGE_TAG" not in jenkins_text

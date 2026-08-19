@@ -5,6 +5,7 @@
 - **GitLab 服务器**：192.168.0.220:9080（Docker）
 - **Jenkins 服务器**：192.168.0.220（Docker）
 - **Jenkins Node 节点**：192.168.0.221（已配置）
+- **GitHub 开发真源**：https://github.com/kaizhoumasha/wes_backend.git
 - **GitLab 仓库**：http://192.168.0.220:9080/wes/wes_backend.git
 - **LDAP 账号**：zhoukai / Ctt123456
 - **部署目标**：192.168.0.221（测试环境）
@@ -141,16 +142,18 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 
 ##### Build Triggers
 
-选择以下之一：
+发布流水线必须使用 GitLab Webhook：
 
-**方式 1：GitLab Webhook（推荐）**
+**方式 1：GitLab Webhook（发布必需）**
 - ✅ **Build when a change is pushed to GitLab**
+- 展开 **Advanced**，点击 **Secret Token → Generate**，只把生成值配置到 GitLab Webhook
 - GitLab webhook URL: `http://192.168.0.220:9081/project/wes_backend-ci`
 - 记录这个 URL，稍后在 GitLab 中配置
 
-**方式 2：Poll SCM（备选）**
+**方式 2：Poll SCM（仅验证，不可发布）**
 - ✅ **Poll SCM**
 - Schedule: `H/5 * * * *`（每 5 分钟检查一次）
+- Poll SCM 不提供 webhook 的 `gitlabBefore` / `gitlabAfter`，因此发布门禁会 fail closed，不能作为 `develop` 发布触发
 
 ##### Pipeline 配置
 
@@ -158,14 +161,16 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 - **SCM**: Git
   - **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
   - **Credentials**: 选择 `gitlab-credentials`
-  - **Branches to build**: `*/develop`（或 `*/main`）
+  - **Branches to build**: `*/develop`
 - **Script Path**: `Jenkinsfile.backend-ci`
+
+发布 Job 的 Pipeline SCM 必须固定从 `develop` 加载当前门禁脚本；`main` 或其他分支如需验证，另建不发布镜像的 Job。
 
 #### 5.3 保存配置
 
 点击 **Save** 保存配置。
 
-### 步骤 6：配置 GitLab Webhook（推荐）
+### 步骤 6：配置 GitLab Webhook（发布必需）
 
 #### 6.1 在 GitLab 中配置 Webhook
 
@@ -175,7 +180,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 4. 配置 Webhook：
    ```
    URL: http://192.168.0.220:9081/project/wes_backend-ci
-   Secret token: (留空或设置一个密钥)
+   Secret token: 与 Jenkins Job Advanced 中生成的 per-project token 完全一致（必填）
    Trigger:
      ✅ Push events
      ✅ Merge request events
@@ -184,6 +189,8 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
      或取消勾选（如果使用 HTTP）
    ```
 5. 点击 **Add webhook**
+
+Secret token 不得写入仓库、文档或构建日志；Jenkins 与 GitLab 任一侧缺失或不一致时，发布触发必须视为未配置。
 
 #### 6.2 测试 Webhook
 
@@ -272,19 +279,16 @@ docker-compose --version
 - `develop`：
   - 构建 CI 镜像
   - 执行质量检查与测试
-  - 构建并推送 backend immutable tag 与 `develop` channel tag
-  - 自动触发 `wes_test_deploy`
+  - GitLab PUSH 时校验 `gitlabBefore` → `gitlabAfter` fast-forward，以前一 SHA 为基线执行 Mock 与选中的 HEAVY
+  - 上述门禁通过后构建并推送 backend immutable tag 与 `develop` channel tag
 - `main` / 其他分支：
   - `wes_backend-ci` 仍执行 CI
-  - 非 MR 时推送 backend immutable tag 与 channel tag
-    - `main` → `prod`
-    - 其他分支 → 分支同名 tag
-  - 不自动触发 TEST 部署
+  - 不推送 runtime 镜像或 channel tag
+- MR 和 Jenkins 手工构建：执行验证但不推送镜像
 
 部署行为约束：
 
-- `wes_test_deploy` 负责 TEST 环境部署
-- 自动链路默认拉取 backend `develop` 与 frontend `develop` 镜像
+- `wes_test_deploy` 是独立部署任务，由部署人员手工触发并选择前后端镜像
 - 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
 - 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
 - API 容器会只读挂载同机的 `../wes_frontend`，供部署后菜单同步使用
@@ -295,7 +299,7 @@ docker-compose --version
 
 PROD 边界说明：
 
-- 当前 Jenkins 只负责 CI 与 TEST 自动部署，不直接连接生产环境
+- `wes_backend-ci` 只负责后端 CI 与镜像发布，不自动部署 TEST 或生产环境
 - 生产环境按手动部署 runbook 执行，不复用 `seed_initial_data.py`
 - 生产发布说明文档：`prod-release-deploy.md`
 - 推荐顺序：
@@ -314,7 +318,7 @@ PROD 边界说明：
 建议核对项：
 
 ```bash
-rg -n "IMAGE_REPO|Trigger Test Deploy|Push Runtime Image" Jenkinsfile.backend-ci
+rg -n "IMAGE_REPO|Push Runtime Image|CI_EVENT_TYPE" Jenkinsfile.backend-ci
 rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
 ```
 
@@ -325,14 +329,26 @@ rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_C
 - **Script Path**: `Jenkinsfile.backend-ci`
 - **Build when a change is pushed to GitLab**: 已勾选
 
-### 步骤 9：提交现役 Jenkins Pipeline 到 GitLab
+GitHub `origin/develop` 是代码评审与合入真源；GitLab `gitlab/develop` 只接收同一 GitHub merge SHA 并触发 Jenkins。
+禁止直接在 GitLab 修复或用 force push 覆盖分叉。
+
+### 步骤 9：从 GitHub 真源发布现役 Jenkins Pipeline
 
 ```bash
-# 提交现役 Pipeline
+# 先在功能分支提交并通过 GitHub PR 合入。
 git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
 git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
-git push gitlab develop
+git push origin <feature-branch>
+
+# GitHub Merge 与 GitLab Push 分别取得授权后，发布精确 SHA。
+git fetch origin
+git fetch gitlab
+release_sha="$(git rev-parse origin/develop)"
+git merge-base --is-ancestor gitlab/develop "$release_sha"
+git push gitlab "$release_sha:refs/heads/develop"
 ```
+
+`git merge-base --is-ancestor` 失败表示远端已分叉，必须停止并治理；不得直接 cherry-pick、merge 或强推发布。
 
 ### 步骤 10：测试 Pipeline
 
@@ -351,11 +367,12 @@ git push gitlab develop
 - ✅ **Quality Gate**：格式、Lint、Bandit、架构门禁、脚本合同和 FAST
 - ✅ **Compose Contracts**：主机端渲染生产与 TEST 部署配置
 - ✅ **RuntimeInbox PostgreSQL Acceptance**：隔离 PostgreSQL 验收
-- ✅ **Mock Image Contracts**：MR 构建并验证 Mock 镜像
-- ✅ **HEAVY Required**：MR 按目标分支差异选择并执行 HEAVY
+- ✅ **Mock Image Contracts**：MR 与已验证的 `develop` PUSH 构建并验证 Mock 镜像
+- ✅ **HEAVY Required**：MR 按目标分支、`develop` PUSH 按 `gitlabBefore` 差异选择并执行 HEAVY
 - ✅ **Build Runtime Image**：运行时镜像构建
-- ✅ **Push Runtime Image**：非 MR 镜像推送
-- ✅ **Trigger Test Deploy**：develop push 自动触发 TEST 部署
+- ✅ **Push Runtime Image**：仅门禁通过的 GitLab `develop` PUSH 发布后端镜像；MR、其他分支 PUSH 和手工构建不发布
+
+`wes_backend-ci` 不再自动触发 TEST 部署或选择前端镜像。`wes_test_deploy` 由部署人员单独运行并显式选择前后端版本。
 
 #### 10.3 查看报告
 
@@ -442,6 +459,7 @@ docker exec wes_api_test curl -f http://127.0.0.1:8001/health
 - [ ] SSH 凭据已配置
 - [ ] SSH 连接测试通过
 - [ ] Pipeline 项目已创建
+- [ ] `wes_backend-ci` 是普通 Pipeline Job，不是 Multibranch Pipeline
 - [ ] GitLab Webhook 已配置
 - [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交到 GitLab
 - [ ] 手动构建测试通过
@@ -456,9 +474,9 @@ docker exec wes_api_test curl -f http://127.0.0.1:8001/health
    - 安装 Email Extension 插件
    - 配置构建失败邮件通知
 
-2. **多分支 Pipeline**：
-   - 创建 Multibranch Pipeline
-   - 自动发现和构建所有分支
+2. **分支验证 Job**：
+   - 如需自动发现分支，可另建不发布镜像的 Multibranch Pipeline
+   - 不得替换依赖 `gitlabBefore` / `gitlabAfter` 的 `wes_backend-ci` 发布 Job
 
 3. **生产环境部署**：
    - 添加生产环境部署阶段

@@ -1277,15 +1277,6 @@ heavy_tests = [
     "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
 ]
 
-# 无生产消费者的 recorded replay 草案 DELETE → NONE；专属测试 successor 为 NONE。
-[[mapping]]
-source_glob = "src/app/runtime/system_capabilities/replay.py"
-heavy_tests = []
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/repositories/timeline_recorded_replay_repository.py"
-heavy_tests = []
-
 # SystemCapability 包入口仅移除 replay 导出，存活 QueryEvidence 行为由其 FAST 合同承接。
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/__init__.py"

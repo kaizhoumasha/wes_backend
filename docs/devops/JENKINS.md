@@ -5,6 +5,7 @@
 - **GitLab**：192.168.0.220:9080
 - **Jenkins**：192.168.0.220（Docker）
 - **Jenkins Node**：192.168.0.221（构建和部署）
+- **GitHub 开发真源**：https://github.com/kaizhoumasha/wes_backend.git
 - **GitLab 仓库**：http://192.168.0.220:9080/wes/wes_backend.git
 - **LDAP 账号**：zhoukai / Ctt123456
 
@@ -13,10 +14,25 @@
 | 文件 | 说明 |
 |------|------|
 | `Jenkinsfile.backend-ci` | 后端 CI 与镜像发布 |
-| `Jenkinsfile.test-deploy` | TEST 环境自动部署 |
+| `Jenkinsfile.test-deploy` | TEST 环境独立部署入口 |
 | `prod-release-deploy.md` | 生产环境手动发布 Runbook |
 | `jenkins-setup-current-env.md` | 详细配置指南 |
 | `jenkins-checklist.md` | 快速配置清单 |
+
+## 仓库与发布权威
+
+- GitHub `origin/develop` 是唯一代码评审与合入真源；功能、修复、CI 和文档变更都先通过 GitHub PR 合入。
+- GitLab `gitlab/develop` 是 Jenkins 发布镜像，只允许接收 GitHub `origin/develop` 的精确 Commit，不接受 GitLab-only 修复。
+- GitLab 推送前必须确认其当前 HEAD 是目标 GitHub Commit 的祖先；不满足时停止并治理分叉，禁止 force push、聚合 cherry-pick 或
+  用时间顺序猜测真源。
+- GitHub Merge 与 GitLab Push 是两次独立授权。只有 GitLab `PUSH` 触发镜像发布；GitHub PR、GitLab MR 和 Jenkins 手工构建均不发布。
+- GitLab `develop` PUSH 必须从 webhook 的 `gitlabBefore` fast-forward 到 `gitlabAfter`；Jenkins 以前一 SHA 为差异基线执行 Mock
+  合同与 selector 选中的 HEAVY，字段缺失、HEAD 不匹配或 ancestry 不成立时均 fail closed。
+- `wes_backend-ci` 必须保持普通 Pipeline Job 并由 GitLab webhook 触发；GitLab Plugin 不向 Multibranch Pipeline 提供
+  `gitlabBefore` / `gitlabAfter`，Poll SCM 和手工构建也不能替代发布触发。
+- GitLab webhook 必须使用 Jenkins Job `Advanced → Secret Token → Generate` 生成的 per-project token；GitLab 与 Jenkins 两端取值
+  必须一致，token 不得写入仓库、文档或日志，未认证的 `/project/wes_backend-ci` 请求不得触发发布 Job。
+- RC 与现场选版只记录 immutable tag、manifest digest 和 OCI revision。`develop` channel 只用于定位最新候选，不能作为验收证据。
 
 ## 🚀 快速开始
 
@@ -34,7 +50,7 @@ http://192.168.0.220:9081
 
 当前保留的 Jenkins Job：
 
-- `wes_backend-ci`：后端 CI、镜像推送、触发 TEST 部署
+- `wes_backend-ci`：后端 CI、镜像发布
 - `wes_frontend-ci`：前端 CI、镜像推送
 - `wes_test_deploy`：拉取 immutable 镜像并部署 TEST
 
@@ -44,7 +60,7 @@ http://192.168.0.220:9081
 
 部署边界：
 
-- TEST：由 Jenkins 自动部署，默认跟随 `develop` channel 镜像
+- TEST：由部署人员单独运行 `wes_test_deploy`，并明确选择 immutable 前后端镜像
 - PROD：不依赖 Jenkins 直连生产环境，按手动部署 runbook 执行迁移、权限同步、菜单同步和首个管理员 bootstrap
 
 ### 3. 修改现役 Pipeline 脚本
@@ -59,13 +75,20 @@ agent {
 }
 ```
 
-### 4. 提交到 GitLab
+### 4. 从 GitHub 真源发布到 GitLab
 
 ```bash
-git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
-git commit -m "chore(ci): align active Jenkins jobs"
-git push gitlab develop
+# 先在功能分支提交并通过 GitHub PR 合入 origin/develop，然后刷新两个远端。
+git fetch origin
+git fetch gitlab
+release_sha="$(git rev-parse origin/develop)"
+
+# 只允许 fast-forward 发布；失败时停止，不得强推。
+git merge-base --is-ancestor gitlab/develop "$release_sha"
+git push gitlab "$release_sha:refs/heads/develop"
 ```
+
+推送前应再次核对 `release_sha` 是已经批准的 GitHub merge SHA；不得直接从本地功能分支或仅存在于 GitLab 的提交发布。
 
 ### 5. 配置 Jenkins Pipeline
 
@@ -82,18 +105,14 @@ git push gitlab develop
     ├─ Quality Gate（唯一 QUALITY profile）
     ├─ Compose Contracts（主机端渲染生产与 TEST 部署配置）
     ├─ RuntimeInbox PostgreSQL Acceptance
-    ├─ Mock Image Contracts（仅 MR）
-    ├─ HEAVY Required（仅 MR，按目标分支差异选择）
+    ├─ Mock Image Contracts（MR 与已验证的 develop PUSH）
+    ├─ HEAVY Required（MR 按目标分支、develop PUSH 按 gitlabBefore 差异选择）
     ├─ Build Runtime Image
-    ├─ Push Runtime Image（非 MR，推送 immutable + channel tag）
-    └─ Trigger Test Deploy（仅 develop push）
-         ↓
-      `wes_test_deploy`
-        ├─ 拉取 backend `develop` / frontend `develop` 镜像
-        ├─ 重建 TEST 应用服务
-        ├─ 从 `/opt/wes_frontend/src/router/index.ts` 同步菜单到 `wes_sys.menus`
-        └─ 健康检查
+    └─ Push Runtime Image（仅门禁通过的 GitLab develop PUSH，推送 immutable + channel tag）
 ```
+
+`wes_backend-ci` 只构建和发布后端镜像，不自动选择前端版本或触发 `wes_test_deploy`。需要 TEST/现场部署时，由部署人员单独运行
+部署任务并明确选择前后端镜像；MR、其他分支 PUSH 和 Jenkins 手工构建只验证，不发布镜像。
 
 生产环境建议顺序：
 
