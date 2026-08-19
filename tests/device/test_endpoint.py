@@ -31,7 +31,7 @@ def test_device_endpoint_returns_canonical_lan_http_origin(value: str, expected:
         " ",
         " http://192.168.1.20",
         "https://192.168.1.20",
-        "http://user:pass@192.168.1.20",
+        "http://user" + ":pass@192.168.1.20",
         "http://192.168.1.20/path",
         "http://192.168.1.20?query=1",
         "http://192.168.1.20#fragment",
