@@ -63,6 +63,7 @@ def _device(role: str, device_id: int, contract_key: str) -> LineRunEpochDeviceB
         device_id=device_id,
         device_code=f"DEVICE-{device_id}",
         device_role=role,
+        endpoint_base_url="http://ecs-plugin:8080",
         contract_key=contract_key,
         contract_version="1.0",
         status_max_age_ms=1000,
@@ -362,6 +363,7 @@ class _Placements:
 
 
 def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPluginFactFactory, EvidenceReadyFact]:
+    configuration_snapshot = {"deployment": "ROUGH-SORTER-TEST"}
     devices = (
         _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"),
         _device("TRANSFER_DEVICE", 2, "rough_sorter.transfer_device"),
@@ -381,7 +383,10 @@ def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPlugin
         plugin_version="1.0.0",
         flow_mode="ROUGH_SORT_INBOUND",
         topology_digest=topology_override or topology_digest(devices, positions),
-        configuration_digest=configuration_digest("rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND"),
+        configuration_digest=configuration_digest(
+            "rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND", configuration_snapshot
+        ),
+        configuration_snapshot_json=configuration_snapshot,
         status=LineRunEpochStatus.ACTIVE,
         started_at=NOW,
     )

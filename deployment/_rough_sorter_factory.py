@@ -67,14 +67,6 @@ if TYPE_CHECKING:
     from src.app.workline.models import LineRunEpochDeviceBinding, LineRunEpochPositionBinding
 
 
-_DEVICE_CONTRACTS = {
-    "MEASUREMENT_DEVICE": "rough_sorter.measurement_device",
-    "TRANSFER_DEVICE": "rough_sorter.transfer_device",
-    "PLACEMENT_DEVICE": "rough_sorter.placement_device",
-}
-_POSITION_ROLES = frozenset({"MEASUREMENT_POSITION", "PIPELINE_INLET", "PIPELINE_OUTLET", "NG_POSITION"})
-
-
 class RoughSorterPluginFactFactory:
     """在 FactProcessor 当前事务中重建并验证插件 typed Fact。"""
 
@@ -195,7 +187,12 @@ class RoughSorterPluginFactFactory:
         devices = tuple(await self._epochs.list_bindings(db, epoch.id))
         positions = tuple(await self._epochs.list_position_bindings(db, epoch.id))
         self._validate_bindings(devices, positions)
-        if epoch.configuration_digest != configuration_digest(epoch.plugin_key, epoch.plugin_version, epoch.flow_mode):
+        if epoch.configuration_digest != configuration_digest(
+            epoch.plugin_key,
+            epoch.plugin_version,
+            epoch.flow_mode,
+            epoch.configuration_snapshot_json,
+        ):
             raise ValueError("Epoch configuration digest drift")
         if epoch.topology_digest != topology_digest(devices, positions):
             raise ValueError("Epoch topology digest drift")
@@ -237,15 +234,18 @@ class RoughSorterPluginFactFactory:
             ),
         )
 
-    @staticmethod
     def _validate_bindings(
-        devices: tuple[LineRunEpochDeviceBinding, ...], positions: tuple[LineRunEpochPositionBinding, ...]
+        self,
+        devices: tuple[LineRunEpochDeviceBinding, ...],
+        positions: tuple[LineRunEpochPositionBinding, ...],
     ) -> None:
-        if {item.device_role: item.contract_key for item in devices} != _DEVICE_CONTRACTS:
+        if {item.device_role: item.contract_key for item in devices} != self.types.role_contracts:
             raise ValueError("rough sorter Epoch 必须精确绑定三个设备角色与合同")
         if any(item.contract_version != "1.0" for item in devices):
             raise ValueError("rough sorter device contract_version 必须固定为 1.0")
-        if {item.position_role for item in positions} != set(_POSITION_ROLES) or len(positions) != len(_POSITION_ROLES):
+        if {item.position_role for item in positions} != set(self.types.position_roles) or len(positions) != len(
+            self.types.position_roles
+        ):
             raise ValueError("rough sorter Epoch 必须精确绑定四个位置角色")
         if any(item.location_type != item.position_role for item in positions):
             raise ValueError("rough sorter position binding type 与 role 不匹配")

@@ -22,7 +22,6 @@ FORBIDDEN_IMPORT_PREFIXES = (
 FORBIDDEN_PUBLIC_TERMS = ("httpx", "auth", "credential", "hmac", "clock", "nonce", "registry", "fake")
 LEGACY_ASYNC_CLIENT_CREATORS = frozenset(
     {
-        "app/runtime/capabilities/material_flow/start_admission_service.py",
         "app/sys/services/outbox_engine.py",
         "app/wms_integration/effect_lane_runtime.py",
         "app/wms_integration/query_runtime.py",

@@ -71,9 +71,7 @@ MIGRATED_SERVICE_IMPLS = {
     "src/app/workline/services/runtime_reconciliation_service.py": (
         "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
     ),
-    "src/app/workline/services/start_admission_service.py": (
-        "src/app/runtime/capabilities/material_flow/start_admission_service.py"
-    ),
+    "src/app/workline/services/start_admission_service.py": ("src/app/workline/services/workline_start_service.py"),
     "src/app/workline/services/station_lease_service.py": (
         "src/app/runtime/capabilities/material_flow/station_lease_service.py"
     ),
@@ -420,6 +418,14 @@ ACTIVE_PLATFORM_SYMBOLS = frozenset(
         ),
     }
 )
+
+# 当前 WorkLine START 事务边界所需的最小 Port，不属于待迁移的旧 runtime/orchestration 载体。
+CURRENT_CONTRACT_SYMBOLS = frozenset(
+    {
+        ("src/app/workline/services/workline_start_service.py", "RuntimeHoldRepositoryPort"),
+        ("src/app/workline/services/workline_start_service.py", "OutboxRepositoryPort"),
+    }
+)
 ACTIVE_PLATFORM_FORBIDDEN_IMPORTS = frozenset()
 
 
@@ -558,7 +564,7 @@ class Entry:
 
 
 def git_grep(pattern: str, paths: list[str]) -> list[str]:
-    """运行 git grep，返回匹配行列表。"""
+    """合并 tracked 与 filesystem 匹配，覆盖当前尚未纳入 index 的新文件。"""
     compiled = re.compile(pattern)
 
     def python_grep() -> list[str]:
@@ -580,6 +586,7 @@ def git_grep(pattern: str, paths: list[str]) -> list[str]:
                         matches.append(f"{rel}:{lineno}:{line}")
         return matches
 
+    git_matches: list[str] = []
     try:
         result = subprocess.run(  # noqa: S603
             ["git", "grep", "-n", "-E", pattern, "--", *paths],  # noqa: S607
@@ -589,10 +596,10 @@ def git_grep(pattern: str, paths: list[str]) -> list[str]:
             check=False,
         )
         if result.returncode == 0:
-            return [ln for ln in result.stdout.splitlines() if ln.strip()]
+            git_matches = [ln for ln in result.stdout.splitlines() if ln.strip()]
     except Exception:
         pass
-    return python_grep()
+    return list(dict.fromkeys([*git_matches, *python_grep()]))
 
 
 def classify_business_semantics(symbol: str, path: str) -> tuple[str, bool]:
@@ -662,7 +669,7 @@ def _target_phase4_capability(text: str) -> tuple[str, str]:
         (("bin_cell_reservation",), "BinCellReservationCapability.reserve"),
         (("material_identity",), "MaterialIdentityCapability.resolve"),
         (("six_in_one",), "SixInOneContractCapability.validate"),
-        (("start_admission", "admission"), "StartAdmissionCapability.evaluate"),
+        (("start_admission", "admission"), "WorkLineStartService.start"),
         (("smt_usage",), "SmtUsagePolicyCapability.evaluate"),
     ]
     capability = _first_matching_value(text, phase4_targets, "MaterialFlowBusinessCapability.execute")
@@ -713,6 +720,8 @@ def resolve_migration_target(
         return "src/app/runtime/orchestration/ports/device_command.py", "DeviceCommandPort.dispatch"
     if "执行状态" in business_semantics:
         return _target_runtime_capability(entry_type, path, text)
+    if "start_admission" in text or "start admission" in text:
+        return "src/app/workline/services/workline_start_service.py", "WorkLineStartService.start"
     if path == "src/app/workline/domain/ng_reason.py":
         target = (MIGRATED_DOMAIN_IMPLS[path], symbol)
     elif "[phase4]" in business_semantics:
@@ -753,7 +762,11 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
         ),
         (
             ("WorkLine 配置",),
-            "tests/contracts/workline/test_start_admission_contract.py",
+            "tests/workline/test_workline_start_service.py;tests/api/test_workline_start_api.py",
+        ),
+        (
+            ("start admission", "start_admission"),
+            "tests/workline/test_workline_start_service.py;tests/api/test_workline_start_api.py",
         ),
         (("技术残留",), "tests/architecture/test_core_plugin_test_ownership_guardrail.py"),
     ]
@@ -935,7 +948,7 @@ def parse_entries() -> list[Entry]:
         ):
             return
         seen.add(eid)
-        bs, p4 = classify_business_semantics(sym, rel)
+        bs, p4 = ("none", False) if (rel, sym) in CURRENT_CONTRACT_SYMBOLS else classify_business_semantics(sym, rel)
         strat, phase, risk = assign_strategy(bs, entry_type)
         target_path, target_capability = resolve_migration_target(bs, entry_type, rel, sym, strat)
         blocking_tests = resolve_blocking_tests(bs, entry_type, rel, strat)

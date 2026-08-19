@@ -39,6 +39,8 @@ WES wire；供应商私有路径、坐标、字段、错误和适配只留在 EC
 
 `Device.endpoint_base_url` 是可派发物理设备的 Endpoint 主数据；纯上报、人工或逻辑设备允许为空。多个 Device 可以共享同一
 Endpoint，同一 WorkLine 内的 Device 也可以分别指向不同 Endpoint。Endpoint 不属于插件配置，不新增 `DeviceEndpoint` 实体。
+Endpoint 主机接受 RFC1918、IPv6 ULA、回环地址、内部单段服务名或带点完整域名；公网 IP 及 unspecified、广播、multicast、link-local、
+reserved、文档网段和 legacy numeric host 均失败关闭。域名在配置校验阶段只做语法与 canonicalization，不把 DNS 解析结果冻结为设备身份。
 
 每个部署实例必须把派发链实际读取的不可变值写入现有 `LineRunEpochDeviceBinding`。`topology_digest` 只摘要创建前即可形成的稳定
 topology input，不摘要数据库生成的 `line_run_epoch_id`、`device_id`、binding 主键、审计字段或时间戳；父 Epoch 关联仍必须持久化，
@@ -74,7 +76,7 @@ ECS/网关版本、设备/固件版本、时间来源、允许时钟偏差、回
 | `allowed_clock_skew_ms`、`callback_retry_window_ms` | integer | 严格正整数 |
 | `evidence_retention_days` | integer | 严格正整数 |
 
-四个 `position_bindings` 值必须是非空且互不重复的稳定 `location_id`；`location_type` 由对应 position role 固定，不接受配置覆盖。
+四个 `position_bindings` 值必须是去空白后 1–120 字符且互不重复的稳定 `location_id`；`location_type` 由对应 position role 固定，不接受配置覆盖。
 `plugin_key="rough_sorter"`、`plugin_version="1.0.0"`、`flow_mode="ROUGH_SORT_INBOUND"`、三组 `contract_key` 和
 `contract_version="1.0"` 来自静态部署组合，不由数据库配置选择。Endpoint 不进入该业务配置。
 

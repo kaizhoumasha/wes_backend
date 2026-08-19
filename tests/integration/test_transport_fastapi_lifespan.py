@@ -56,7 +56,6 @@ async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
     monkeypatch.setattr(register_module, "settings", integration_settings)
     monkeypatch.setattr(database, "settings", integration_settings)
     monkeypatch.setattr(redis_client, "settings", integration_settings)
-    monkeypatch.setenv("ECS_BASE_URL", "http://127.0.0.1:18080")
     monkeypatch.setenv("ECS_CONNECT_TIMEOUT_SECONDS", "0.5")
     monkeypatch.setenv("ECS_READ_TIMEOUT_SECONDS", "1.0")
     monkeypatch.setenv("DEVICE_COMMAND_QUEUE", "device-command")
@@ -70,6 +69,7 @@ async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
     async with register_init(app):
         runtime = app.state.transport_runtime
         assert runtime is not None and runtime.closed is False
+        assert app.state.workline_start_service is not None
         assert app.state.wms_inbound_auth_policy.allows_unsigned_wms_callbacks is True
         assert database.AsyncSessionLocal is not None
         async with database.AsyncSessionLocal() as session:
@@ -79,6 +79,7 @@ async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
 
     assert runtime is not None and runtime.closed is True
     assert app.state.transport_runtime is None
+    assert app.state.workline_start_service is None
     assert app.state.wms_inbound_auth_policy is None
     assert database.engine is None
     assert database.AsyncSessionLocal is None

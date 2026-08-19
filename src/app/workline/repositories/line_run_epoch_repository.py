@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.workline.models.line_run_epoch import (
@@ -16,12 +16,31 @@ from src.app.workline.models.line_run_epoch import (
 )
 from src.database.base_repository import BaseRepository
 
+if TYPE_CHECKING:
+    from src.app.workline.epoch_activation import (
+        LineRunEpochDeviceBindingInput,
+        LineRunEpochPositionBindingInput,
+    )
+
 
 class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
     """活动 Epoch 与绑定的唯一数据库 owner。"""
 
     def __init__(self) -> None:
         super().__init__(LineRunEpoch)
+
+    async def lock_start_request(self, db: AsyncSession, request_id: str) -> None:
+        """按稳定 request identity 获取 PostgreSQL 事务级串行锁。"""
+
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:request_id, 0))"),
+            {"request_id": request_id},
+        )
+
+    async def get_by_epoch_code_for_update(self, db: AsyncSession, epoch_code: str) -> LineRunEpoch | None:
+        columns = cast("Any", LineRunEpoch).__table__.c
+        result = await db.execute(select(LineRunEpoch).where(columns.epoch_code == epoch_code).with_for_update())
+        return result.scalar_one_or_none()
 
     async def get_active_for_workline_for_update(
         self,
@@ -41,8 +60,44 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         result = await db.execute(select(columns.id).where(columns.status == LineRunEpochStatus.ACTIVE).limit(1))
         return result.scalar_one_or_none() is not None
 
-    async def add_epoch(self, db: AsyncSession, epoch: LineRunEpoch) -> LineRunEpoch:
+    async def add_complete_epoch(
+        self,
+        db: AsyncSession,
+        epoch: LineRunEpoch,
+        device_bindings: tuple[LineRunEpochDeviceBindingInput, ...],
+        position_bindings: tuple[LineRunEpochPositionBindingInput, ...],
+    ) -> LineRunEpoch:
+        """在调用方事务内完整写入 Epoch 及其全部冻结 binding。"""
+
         db.add(epoch)
+        await db.flush()
+        if epoch.id is None:
+            raise RuntimeError("LineRunEpoch flush 后缺少主键")
+        db.add_all(
+            [
+                LineRunEpochDeviceBinding(
+                    line_run_epoch_id=epoch.id,
+                    device_id=binding.device_id,
+                    device_code=binding.device_code,
+                    device_role=binding.device_role,
+                    endpoint_base_url=binding.endpoint_base_url,
+                    contract_key=binding.contract_key,
+                    contract_version=binding.contract_version,
+                    status_max_age_ms=binding.status_max_age_ms,
+                    command_timeout_ms=binding.command_timeout_ms,
+                )
+                for binding in device_bindings
+            ]
+            + [
+                LineRunEpochPositionBinding(
+                    line_run_epoch_id=epoch.id,
+                    position_role=binding.position_role,
+                    location_id=binding.location_id,
+                    location_type=binding.location_type,
+                )
+                for binding in position_bindings
+            ]
+        )
         await db.flush()
         return epoch
 
@@ -62,24 +117,6 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         epoch.closed_at = closed_at
         await db.flush()
         return epoch
-
-    async def get_binding_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        line_run_epoch_id: int,
-        device_code: str,
-    ) -> LineRunEpochDeviceBinding | None:
-        columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
-        result = await db.execute(
-            select(LineRunEpochDeviceBinding)
-            .where(
-                columns.line_run_epoch_id == line_run_epoch_id,
-                columns.device_code == device_code,
-            )
-            .with_for_update()
-        )
-        return result.scalar_one_or_none()
 
     async def get_binding_for_command_creation(
         self,
@@ -160,15 +197,6 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         )
         return result.scalar_one_or_none()
 
-    async def add_binding(
-        self,
-        db: AsyncSession,
-        binding: LineRunEpochDeviceBinding,
-    ) -> LineRunEpochDeviceBinding:
-        db.add(binding)
-        await db.flush()
-        return binding
-
     async def list_bindings(self, db: AsyncSession, line_run_epoch_id: int) -> list[LineRunEpochDeviceBinding]:
         columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
         result = await db.execute(
@@ -177,45 +205,6 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
             .order_by(columns.device_role)
         )
         return list(result.scalars())
-
-    async def get_position_binding_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        line_run_epoch_id: int,
-        position_role: str,
-    ) -> LineRunEpochPositionBinding | None:
-        columns = cast("Any", LineRunEpochPositionBinding).__table__.c
-        result = await db.execute(
-            select(LineRunEpochPositionBinding)
-            .where(columns.line_run_epoch_id == line_run_epoch_id, columns.position_role == position_role)
-            .with_for_update()
-        )
-        return result.scalar_one_or_none()
-
-    async def get_position_binding_by_location_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        line_run_epoch_id: int,
-        location_id: str,
-    ) -> LineRunEpochPositionBinding | None:
-        columns = cast("Any", LineRunEpochPositionBinding).__table__.c
-        result = await db.execute(
-            select(LineRunEpochPositionBinding)
-            .where(columns.line_run_epoch_id == line_run_epoch_id, columns.location_id == location_id)
-            .with_for_update()
-        )
-        return result.scalar_one_or_none()
-
-    async def add_position_binding(
-        self,
-        db: AsyncSession,
-        binding: LineRunEpochPositionBinding,
-    ) -> LineRunEpochPositionBinding:
-        db.add(binding)
-        await db.flush()
-        return binding
 
     async def list_position_bindings(
         self, db: AsyncSession, line_run_epoch_id: int

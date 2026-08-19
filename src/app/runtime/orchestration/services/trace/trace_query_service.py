@@ -72,8 +72,6 @@ from src.core.base_service import BaseService
 from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection, RuntimeInboxQueryPort
@@ -121,12 +119,6 @@ class TraceQueryResult:
     rack_bin_mounts: list[RackBinMount] = field(default_factory=list)
     runtime_holds: list[RuntimeHold] = field(default_factory=list)
     workline_runtime_status: str | None = None
-    workline_start_admission_status: str | None = None
-    workline_start_admission_message: str | None = None
-    workline_start_admission_failed_device_code: str | None = None
-    workline_start_admission_checked_at: datetime | None = None
-    workline_last_start_request_id: str | None = None
-    workline_last_start_trace_id: str | None = None
 
     @property
     def summary(self) -> dict[str, int]:
@@ -532,14 +524,6 @@ class TraceQueryService(BaseService[Any, Any]):
         )
         return {
             "workline_runtime_status": runtime_snapshot.runtime_status,
-            "workline_start_admission_status": coerce_optional_str(getattr(workline, "start_admission_status", None)),
-            "workline_start_admission_message": coerce_optional_str(getattr(workline, "start_admission_message", None)),
-            "workline_start_admission_failed_device_code": coerce_optional_str(
-                getattr(workline, "start_admission_failed_device_code", None)
-            ),
-            "workline_start_admission_checked_at": getattr(workline, "start_admission_checked_at", None),
-            "workline_last_start_request_id": coerce_optional_str(getattr(workline, "last_start_request_id", None)),
-            "workline_last_start_trace_id": coerce_optional_str(getattr(workline, "last_start_trace_id", None)),
         }
 
     @staticmethod

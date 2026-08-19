@@ -688,7 +688,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
         summary.failed_session_count = int(recent_failed_total)
         summary.stopped_at = _api_utc_datetime(summary.stopped_at)
         summary.resumed_at = _api_utc_datetime(summary.resumed_at)
-        summary.start_admission_checked_at = _api_utc_datetime(summary.start_admission_checked_at)
         summary.last_activity_at = _api_utc_datetime(summary.last_activity_at)
 
         device_nodes = [
@@ -1375,12 +1374,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
             stopped_at=runtime_snapshot.stopped_at,
             stopped_reason=runtime_snapshot.stopped_reason,
             resumed_at=runtime_snapshot.resumed_at,
-            start_admission_status=getattr(workline, "start_admission_status", None),
-            start_admission_message=getattr(workline, "start_admission_message", None),
-            start_admission_failed_device_code=getattr(workline, "start_admission_failed_device_code", None),
-            start_admission_checked_at=getattr(workline, "start_admission_checked_at", None),
-            last_start_request_id=getattr(workline, "last_start_request_id", None),
-            last_start_trace_id=getattr(workline, "last_start_trace_id", None),
             last_activity_at=_latest_activity_at(sessions),
         )
 

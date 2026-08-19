@@ -71,6 +71,11 @@ def test_runtime_targets_use_explicit_schema_identity_and_retire_workline_inbox(
     identities = {(target.schema, target.table) for target in reset_module.RUNTIME_TABLES}
 
     assert ("wes_runtime", "runtime_inbox") in identities
+    assert {
+        ("wes_biz", "line_run_epochs"),
+        ("wes_biz", "line_run_epoch_device_bindings"),
+        ("wes_biz", "line_run_epoch_position_bindings"),
+    }.issubset(identities)
     assert ("wes_biz", "workline_inbox") not in identities
     assert all(target.schema and target.table for target in reset_module.RUNTIME_TABLES)
     assert identities.isdisjoint({(target.schema, target.table) for target in reset_module.MASTER_DATA_TABLES})
@@ -222,9 +227,7 @@ async def test_no_reset_mocks_is_the_only_apply_opt_out(monkeypatch: pytest.Monk
     ("fail_on_sql", "fail_commit"),
     (
         ("TRUNCATE ", False),
-        ("UPDATE wes_biz.devices", False),
         ("INSERT INTO wes_runtime.workline_runtime_status_projections", False),
-        ("UPDATE wes_biz.work_lines", False),
         (None, True),
     ),
 )

@@ -214,6 +214,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             flow_mode="ROUGH_SORT_INBOUND",
             topology_digest="a" * 64,
             configuration_digest="b" * 64,
+            configuration_snapshot_json={},
             started_at=now,
         )
         db.add(epoch)
@@ -223,6 +224,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             device_id=device.id,
             device_code=device.device_code,
             device_role="TRANSFER_DEVICE",
+            endpoint_base_url="http://ecs-decision:8080",
             contract_key="rough_sorter.transfer",
             contract_version="1.0",
             status_max_age_ms=1_000,
@@ -427,7 +429,8 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
             plugin_version="1.0.0",
             flow_mode="ROUGH_SORT_INBOUND",
             topology_digest="0" * 64,
-            configuration_digest=configuration_digest("rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND"),
+            configuration_digest=configuration_digest("rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND", {}),
+            configuration_snapshot_json={},
             status=LineRunEpochStatus.ACTIVE,
             started_at=now,
         )
@@ -439,6 +442,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
                 device_id=device.id,
                 device_code=device.device_code,
                 device_role=role,
+                endpoint_base_url="http://ecs-decision:8080",
                 contract_key=contract,
                 contract_version="1.0",
                 status_max_age_ms=1_000,
@@ -569,6 +573,7 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
             flow_mode="ROUGH_SORT_INBOUND",
             topology_digest="a" * 64,
             configuration_digest="b" * 64,
+            configuration_snapshot_json={},
             status=LineRunEpochStatus.ACTIVE,
             started_at=now,
         )
@@ -579,6 +584,7 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
             device_id=device.id,
             device_code=device.device_code,
             device_role="PLACEMENT_DEVICE",
+            endpoint_base_url="http://ecs-decision:8080",
             contract_key="rough_sorter.placement_device",
             contract_version="1.0",
             status_max_age_ms=1_000,
@@ -713,6 +719,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
             flow_mode="ROUGH_SORT_INBOUND",
             topology_digest="a" * 64,
             configuration_digest="b" * 64,
+            configuration_snapshot_json={},
             status=LineRunEpochStatus.ACTIVE,
             started_at=now,
         )
@@ -723,6 +730,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
             device_id=device.id,
             device_code=device.device_code,
             device_role="PLACEMENT_DEVICE",
+            endpoint_base_url="http://ecs-decision:8080",
             contract_key="rough_sorter.placement_device",
             contract_version="1.0",
             status_max_age_ms=1_000,
@@ -1412,6 +1420,7 @@ async def _claim_epoch(db, identity: str, now: datetime) -> tuple[WorkLine, Line
         flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
+        configuration_snapshot_json={},
         started_at=now,
     )
     db.add(epoch)
@@ -1456,6 +1465,7 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             flow_mode="ROUGH_SORT_INBOUND",
             topology_digest="a" * 64,
             configuration_digest="b" * 64,
+            configuration_snapshot_json={},
             started_at=now,
         )
         db.add(epoch)

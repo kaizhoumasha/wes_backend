@@ -21,3 +21,18 @@ def test_production_base_data_does_not_seed_retired_rough_sorter_execution() -> 
 
     assert "'biz:workline:list'" in source
     assert "'POST', '/api/v1/workline/work_lines/query'" in source
+    assert "'biz:workline:activate'" in source
+    assert "'biz:workline:start'" in source
+    assert "'POST', '/api/v1/workline/operations/worklines/{workline_id}/start'" in source
+
+
+def test_workline_permission_sort_orders_are_unique() -> None:
+    source = Path("scripts/data/init_production_base_data.sql").read_text(encoding="utf-8")
+    rows = [
+        line
+        for line in source.splitlines()
+        if line.startswith("('biz:workline:") and "'biz:workline:group'" in line and line.endswith(", 3),")
+    ]
+    sort_orders = [int(row.rsplit(", ", maxsplit=2)[-2]) for row in rows]
+
+    assert len(sort_orders) == len(set(sort_orders))

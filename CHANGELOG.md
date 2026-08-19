@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.5.0] - 2026-08-19
+
+### Added
+- 新增 `LineRunEpoch` 及设备、位置冻结绑定，为 WorkLine START 提供可重放、可审计的连续运行代际。
+- 新增设备统一 HTTP Endpoint 配置，支持 RFC1918、IPv6 ULA、回环地址、内部服务名和带点完整域名，并在 Epoch 激活时冻结规范化结果。
+
+### Changed
+- WorkLine START 收敛为 replay-first 的事务入口，按请求身份串行创建 Epoch，并以 `200/404/409/503` 分别表达成功、不存在、冲突和暂不可用。
+- 粗分机激活改为依赖冻结的 Epoch 配置、拓扑摘要与设备合同；运行时数据清理同步覆盖 Epoch 及其绑定。
+- 直接删除旧 START 准入字段和遗留运行态路径，不保留兼容别名、shim 或双路径。
+
+### Fixed
+- 修复 START OpenAPI 将错误响应并入 `200`、未声明实际非成功状态码的问题。
+- 修复 Endpoint 接受 unspecified、广播、multicast、link-local、reserved、文档网段及 legacy numeric host 的问题。
+
+### Verification
+- QUALITY 全门禁通过：FAST 为 3623 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和预算检查均通过。
+- staged HEAVY 在隔离 PostgreSQL、Redis、Celery 与迁移环境中 32 passed、0 skipped，包含 Epoch 激活、START、DeviceCommand、真实 worker wiring 与 runtime reset。
+- 行为路径覆盖审计为 100%，独立预落地 Review 经三轮反馈闭环后无剩余问题。
+- 本次证据证明后端工程包与本地集成闭合，不替代前端工程包、供应商 ECS/WMS 联调或现场业务验收。
+
 ## [0.26.4.0] - 2026-08-18
 
 ### Added

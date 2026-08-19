@@ -6,6 +6,7 @@ import csv
 import importlib
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import generate_legacy_matrix
 from scripts.generate_legacy_matrix import parse_entries
@@ -13,6 +14,29 @@ from scripts.generate_legacy_matrix import parse_entries
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_CLEANUP_MATRIX_CSV = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
 BUSINESS_LEGACY_ABSENCE_LEDGER_CSV = REPO_ROOT / "docs" / "architecture" / "business-legacy-absence-ledger.csv"
+
+
+def test_git_grep_merges_tracked_and_untracked_matches(tmp_path: Path, monkeypatch) -> None:
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    (source_root / "tracked.py").write_text("class TrackedService:\n    pass\n", encoding="utf-8")
+    (source_root / "untracked.py").write_text("class UntrackedService:\n    pass\n", encoding="utf-8")
+    monkeypatch.setattr(generate_legacy_matrix, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        generate_legacy_matrix.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="src/tracked.py:1:class TrackedService:\n",
+        ),
+    )
+
+    matches = generate_legacy_matrix.git_grep(r"class .*Service", ["src"])
+
+    assert matches == [
+        "src/tracked.py:1:class TrackedService:",
+        "src/untracked.py:1:class UntrackedService:",
+    ]
 
 
 def _matrix_rows() -> list[dict[str, str]]:
@@ -23,6 +47,23 @@ def _matrix_rows() -> list[dict[str, str]]:
 def _ledger_rows() -> list[dict[str, str]]:
     with BUSINESS_LEGACY_ABSENCE_LEDGER_CSV.open(encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def test_workline_start_transaction_ports_remain_current_contracts() -> None:
+    rows_by_symbol = {
+        row["symbol_or_route"]: row
+        for row in _matrix_rows()
+        if row["relative_path"] == "src/app/workline/services/workline_start_service.py"
+    }
+
+    for symbol in ("RuntimeHoldRepositoryPort", "OutboxRepositoryPort"):
+        row = rows_by_symbol[symbol]
+        assert row["business_semantics"] == "none"
+        assert row["strategy"] == "keep-contract"
+        assert row["drop_phase"] == "phase5-tech"
+        assert row["risk"] == "LOW"
+        assert row["target_path"] == ""
+        assert row["target_capability"] == ""
 
 
 def test_business_legacy_matrix_has_no_dedicated_drop_items() -> None:
@@ -97,11 +138,16 @@ def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> Non
     unresolved_targets: list[str] = []
     for row in ledger_rows:
         namespace, _, identifier = row["target_capability"].partition(":")
-        if namespace != "material-flow" or "." not in identifier:
+        if namespace not in {"material-flow", "workline-config"} or "." not in identifier:
             unresolved_targets.append(row["entry_id"])
             continue
         module_name, symbol = identifier.rsplit(".", 1)
-        module = importlib.import_module(f"src.app.runtime.capabilities.material_flow.{module_name}")
+        module_prefix = (
+            "src.app.runtime.capabilities.material_flow"
+            if namespace == "material-flow"
+            else "src.app.workline.services"
+        )
+        module = importlib.import_module(f"{module_prefix}.{module_name}")
         if not hasattr(module, symbol):
             unresolved_targets.append(row["entry_id"])
 

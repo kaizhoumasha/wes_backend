@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _device_command_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ECS_BASE_URL", "http://ecs")
     monkeypatch.setenv("ECS_CONNECT_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("ECS_READ_TIMEOUT_SECONDS", "2")
     monkeypatch.setenv("DEVICE_COMMAND_QUEUE", "device-command")

@@ -1,11 +1,10 @@
 """作业线模型及其 API Schema。"""
 
-from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel
-from sqlalchemy import JSON, Column, Text, text
+from sqlalchemy import JSON, Column, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -66,20 +65,6 @@ class WorkLine(WorkLineBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, t
     __tablename__: ClassVar[Literal["work_lines"]] = "work_lines"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
 
-    start_admission_status: str | None = Field(default=None, max_length=50, description="最近一次 START 准入检查状态")
-    start_admission_message: str | None = Field(
-        default=None,
-        sa_column=Column(Text),
-        description="最近一次 START 准入检查说明",
-    )
-    start_admission_failed_device_code: str | None = Field(
-        default=None,
-        max_length=100,
-        description="最近一次 START 准入失败设备编码",
-    )
-    start_admission_checked_at: datetime | None = Field(default=None, description="最近一次 START 准入检查时间")
-    last_start_request_id: str | None = Field(default=None, max_length=100, description="最近一次 START 请求 ID")
-    last_start_trace_id: str | None = Field(default=None, max_length=100, description="最近一次 START Trace ID")
     is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
 
     @property

@@ -80,6 +80,7 @@ class _Epochs:
             device_id=5,
             device_code="TRANSFER-1",
             device_role="TRANSFER_DEVICE",
+            endpoint_base_url="http://ecs-decision:8080",
             contract_key="rough_sorter.transfer",
             contract_version="1.0",
             status_max_age_ms=1000,

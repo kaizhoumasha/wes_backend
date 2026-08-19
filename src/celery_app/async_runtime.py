@@ -211,7 +211,6 @@ class CeleryAsyncRuntime:
 
             progress["device_command_runtime"] = build_device_command_runtime(
                 session_factory=db_module.AsyncSessionLocal,
-                base_url=device_config.base_url,
                 timeout_seconds=device_config.timeout_seconds,
                 task_queue_gateway=task_queue_gateway,
             )

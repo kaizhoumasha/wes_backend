@@ -12,14 +12,12 @@ from src.app.device.composition import resolve_device_command_runtime_config
 def test_ecs_runtime_config_is_fail_closed_and_has_fixed_queue() -> None:
     config = resolve_device_command_runtime_config(
         {
-            "ECS_BASE_URL": "http://192.168.1.20:8080",
             "ECS_CONNECT_TIMEOUT_SECONDS": "1.5",
             "ECS_READ_TIMEOUT_SECONDS": "2.5",
             "DEVICE_COMMAND_QUEUE": "device-command",
         }
     )
 
-    assert config.base_url == "http://192.168.1.20:8080"
     assert config.timeout_seconds == 4.0
     assert config.queue == "device-command"
 
@@ -28,7 +26,6 @@ def test_ecs_runtime_config_is_fail_closed_and_has_fixed_queue() -> None:
     with pytest.raises(ValueError):
         resolve_device_command_runtime_config(
             {
-                "ECS_BASE_URL": "http://192.168.1.20:8080",
                 "ECS_CONNECT_TIMEOUT_SECONDS": "1",
                 "ECS_READ_TIMEOUT_SECONDS": "1",
                 "DEVICE_COMMAND_QUEUE": "device",

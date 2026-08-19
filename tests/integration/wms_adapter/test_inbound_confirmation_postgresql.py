@@ -59,6 +59,7 @@ async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-d
         flow_mode="ROUGH_SORT_INBOUND",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
+        configuration_snapshot_json={},
         started_at=datetime(2026, 8, 16),
     )
     db.add(epoch)

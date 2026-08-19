@@ -106,7 +106,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             database_url=database_url,
             redis_url=redis_url,
             provider_file=provider_file,
-            ecs_base_url=ecs_server.url,
         )
         worker.start()
 
@@ -121,6 +120,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 flow_mode="TEST",
                 topology_digest="a" * 64,
                 configuration_digest="b" * 64,
+                configuration_snapshot_json={},
                 started_at=timezone.now_for_db(),
             )
             db.add(epoch)
@@ -131,6 +131,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 device_id=device_id,
                 device_code=f"ARM-E2E-{suffix}",
                 device_role="ROBOT_ARM",
+                endpoint_base_url=ecs_server.url,
                 contract_key="arm.pick",
                 contract_version="2.0",
                 status_max_age_ms=30_000,

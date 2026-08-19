@@ -47,7 +47,7 @@ RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST = "tests/load/test_ecs_status_command_be
 RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_lab.py"
 RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST = "tests/load/test_plane_snapshot_benchmark.py"
 RUNTIME_SCENARIO_REPLAY_HEAVY_TEST = "tests/resilience/test_runtime_scenario_replay.py"
-START_ADMISSION_POSTGRESQL_HEAVY_TEST = "tests/integration/test_start_admission_postgresql.py"
+WORKLINE_START_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_workline_start_postgresql.py"
 SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST = "tests/integration/test_system_outbox_canonical_payload_postgresql.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST = "tests/integration/test_system_outbox_dispatch_concurrency.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST = (
@@ -76,6 +76,9 @@ DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_d
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST = "tests/integration/execution/test_decision_processing_postgresql.py"
+LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST = (
+    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py"
+)
 WMS_INBOUND_CONFIRMATION_HEAVY_TEST = "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
@@ -338,7 +341,7 @@ def test_unmapped_plugin_sdk_asset_is_a_core_candidate_and_fails_closed() -> Non
         select_heavy_tests([changed_path], config)
 
 
-def test_deployment_composition_is_candidate_with_explicit_heavy_owners() -> None:
+def test_deployment_start_composition_is_candidate_with_explicit_heavy_owners() -> None:
     changed_path = "deployment/rough_sorter_composition.py"
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
@@ -348,6 +351,7 @@ def test_deployment_composition_is_candidate_with_explicit_heavy_owners() -> Non
         "tests/integration/execution/test_decision_processing_postgresql.py",
         "tests/integration/test_celery_async_runtime_postgresql.py",
         "tests/integration/test_wms_deployment_attestation.py",
+        WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
 
 
@@ -395,6 +399,25 @@ def test_core_composition_root_keeps_its_heavy_owners() -> None:
     assert select_heavy_tests(["src/app/device/composition.py"], config) == [
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+        CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+    ]
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/device/endpoint.py",
+        "migrations/versions/20260819_1359_0a6378b66e1a_增加设备派发端点.py",
+    ],
+)
+def test_device_endpoint_paths_select_exact_runtime_and_schema_owners(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == [
+        DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+        CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
+        LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
     ]
 
 
@@ -446,7 +469,24 @@ def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
         EXECUTION_CONSTRAINTS_HEAVY_TEST,
+        LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
+        WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/workline/models/start.py",
+        "src/app/workline/services/workline_start_service.py",
+        "src/app/runtime/capabilities/material_flow/start_admission_service.py",
+        "migrations/versions/20260819_1202_a05b2676f681_删除旧start准入字段.py",
+    ],
+)
+def test_workline_start_paths_select_postgresql_owner(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([changed_path], config) == [WORKLINE_START_POSTGRESQL_HEAVY_TEST]
 
 
 def test_execution_celery_task_exports_select_postgresql_runtime_owner() -> None:
@@ -940,6 +980,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
+                WORKLINE_START_POSTGRESQL_HEAVY_TEST,
             ],
         ),
         (
@@ -948,6 +989,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
                 WMS_POSTGRESQL_HEAVY_TEST,
+                WORKLINE_START_POSTGRESQL_HEAVY_TEST,
             ],
         ),
         (
@@ -1240,10 +1282,8 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
             ],
         ),
-        (
-            "src/app/runtime/capabilities/material_flow/start_admission_service.py",
-            [START_ADMISSION_POSTGRESQL_HEAVY_TEST],
-        ),
+        ("src/app/workline/services/workline_start_service.py", [WORKLINE_START_POSTGRESQL_HEAVY_TEST]),
+        ("tests/support/workline_contracts.py", []),
         ("src/app/callback/contracts/trace_context.py", []),
         ("src/app/resource/services/projection_service.py", []),
         ("src/app/resource/services/relation_service.py", []),
@@ -1569,7 +1609,14 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
             ],
         ),
-        ("src/app/device/models/device.py", [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/app/device/models/device.py",
+            [
+                DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+                DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
+            ],
+        ),
         (
             "src/app/device/services/device_command_service.py",
             [

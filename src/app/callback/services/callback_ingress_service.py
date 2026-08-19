@@ -571,14 +571,6 @@ def _build_conflict_fail(message: str, *, reason_code: str) -> CallbackRejectedI
     )
 
 
-def _build_start_admission_conflict_fail(message: str, *, reason_code: str, diagnostic: JsonDict) -> JsonDict:
-    return response_builder.fail(
-        code=ResourceErrorCode.CONFLICT,
-        message=message,
-        data=build_callback_rejected_response(reason_code=reason_code, diagnostic=diagnostic),
-    )
-
-
 def _build_not_found_fail(message: str) -> CallbackRejectedIngressResponse:
     return cast(
         "CallbackRejectedIngressResponse",

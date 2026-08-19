@@ -200,7 +200,6 @@ def _worker_environment(
     database_url: str,
     redis_url: str,
     provider_file: Path,
-    ecs_base_url: str,
     run_id: str,
     key_prefix: str,
 ) -> dict[str, str]:
@@ -229,7 +228,6 @@ def _worker_environment(
         "CELERY_WORKER_CONCURRENCY": "1",
         "WMS_PROVIDER_PROCESS_ROLE": "wes",
         "WMS_PROVIDER_PROFILE_FILE": str(provider_file),
-        "ECS_BASE_URL": ecs_base_url,
         "ECS_CONNECT_TIMEOUT_SECONDS": "2",
         "ECS_READ_TIMEOUT_SECONDS": "3",
         "DEVICE_COMMAND_QUEUE": DEVICE_COMMAND_QUEUE,
@@ -245,7 +243,6 @@ class DeviceCommandBrokerWorker:
     database_url: str
     redis_url: str
     provider_file: Path
-    ecs_base_url: str
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     process: subprocess.Popen[str] | None = field(default=None, init=False)
     log_path: Path | None = field(default=None, init=False)
@@ -301,7 +298,6 @@ class DeviceCommandBrokerWorker:
                 database_url=self.database_url,
                 redis_url=self.redis_url,
                 provider_file=self.provider_file,
-                ecs_base_url=self.ecs_base_url,
                 run_id=self.run_id,
                 key_prefix=self.key_prefix,
             ),

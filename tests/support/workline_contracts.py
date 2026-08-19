@@ -13,38 +13,6 @@ from typing import Any
 
 
 @dataclass
-class AdmissionDecision:
-    """BC-01 start admission 目标态决策结果。"""
-
-    accepted: bool
-    reason_code: str | None = None
-    session_created: bool = False
-    intent_created: bool = False
-
-
-def evaluate_start_admission(
-    *,
-    manifest_valid: bool,
-    device_roles_satisfied: bool,
-    external_ports_available: bool,
-    projection_blocked: bool,
-) -> AdmissionDecision:
-    """BC-01: admission 必须校验 manifest/设备/port/projection 四前置。
-
-    任一不满足即拒绝, 且不创建 session/intent。
-    """
-    if not manifest_valid:
-        return AdmissionDecision(accepted=False, reason_code="INVALID_MANIFEST")
-    if not device_roles_satisfied:
-        return AdmissionDecision(accepted=False, reason_code="DEVICE_ROLE_UNSATISFIED")
-    if not external_ports_available:
-        return AdmissionDecision(accepted=False, reason_code="EXTERNAL_PORT_UNAVAILABLE")
-    if projection_blocked:
-        return AdmissionDecision(accepted=False, reason_code="PROJECTION_BLOCKED")
-    return AdmissionDecision(accepted=True, session_created=True, intent_created=True)
-
-
-@dataclass
 class HandoffEvidence:
     """BC-03 handoff evidence。"""
 
@@ -156,11 +124,9 @@ def validate_authority_metadata(meta: AuthorityMetadata | dict | None) -> tuple[
 __all__ = [
     "COMMAND_LIKE_FIELDS",
     "ActiveOwnership",
-    "AdmissionDecision",
     "AuthorityMetadata",
     "HandoffEvidence",
     "assert_single_active_ownership",
-    "evaluate_start_admission",
     "event_can_advance_correlation",
     "handoff_can_advance",
     "validate_authority_metadata",

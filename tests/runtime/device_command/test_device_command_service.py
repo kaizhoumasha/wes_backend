@@ -95,6 +95,7 @@ def _binding(device_code: str = "ARM-01") -> LineRunEpochDeviceBinding:
         device_id=7,
         device_code=device_code,
         device_role="PLACEMENT_DEVICE",
+        endpoint_base_url="http://ecs-command:8080",
         contract_key="arm.pick",
         contract_version="2.0",
         status_max_age_ms=1_000,

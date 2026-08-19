@@ -8,14 +8,16 @@
 
 ## 启动配置与 worker
 
-API 和 Celery 子进程启动时必须同时取得以下配置，缺失或格式错误会失败关闭：
+API 和 Celery 子进程启动时必须同时取得以下环境配置，缺失或格式错误会失败关闭：
 
 | 配置 | 约束 |
 | --- | --- |
-| `ECS_BASE_URL` | 局域网 HTTP origin；不得含凭据、路径、query 或 fragment |
 | `ECS_CONNECT_TIMEOUT_SECONDS` | 大于 0 |
 | `ECS_READ_TIMEOUT_SECONDS` | 大于 0 |
 | `DEVICE_COMMAND_QUEUE` | 固定为 `device-command` |
+
+`Device.endpoint_base_url` 不是进程启动配置，静态主数据允许为空。参与业务运行的必需角色 Device 必须在公开 START 前配置有效的
+局域网 HTTP origin；START 将规范化后的值冻结到 Epoch binding，派发只读取该冻结值。
 
 `device-command` worker 必须消费三个固定任务：
 
