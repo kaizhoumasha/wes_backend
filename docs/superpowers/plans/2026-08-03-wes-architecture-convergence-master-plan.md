@@ -16,10 +16,10 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** In progress — Phase 1–3 已完成；Phase 3 已交付 Axios 式 WMS HTTP Client；Phase 4 已完成暗构建和后端 QA 验收；
-Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；退役插件活动残留收敛已完成 Tasks 1–5，
-正在执行合入前门禁与独立复审。Phase 8 仓内实现、质量门禁和插件部署 E2E 已完成，但仍为
-`IN_PROGRESS — EXTERNAL BLOCKED`；供应商一致性、现场联调和业务验收尚未完成。
+**Status:** In progress — Phase 1–7 核心基线已完成。Phase 8 后端功能实现、本机 Mock 验收、WorkLine Epoch 激活和多 Endpoint
+派发已完成；`backend_rc = CLOSED`。GitLab 发布提交 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成
+不可变后端 RC 镜像 `88-f51677b`。
+前端在独立仓库关闭自己的 RC；真实 WMS/RCS/ECS、设备、版本组合、现场部署和业务验收不属于开发阶段关闭门禁。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -29,7 +29,8 @@ Phase 5 已完成零插件基线；Phase 6 Transport 与 Phase 7 DeviceCommand/E
 
 **Phase 9 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Implementation baseline:** `feature/phase7-device-ecs`（Phase 7 核心实现基线；Phase 8/9 仍无业务插件或 producer）
+**Implementation baseline:** `develop@bda2079d523984f25265c113b2fb213429da40f0`（Phase 8 后端功能与 Epoch 激活已合入）；
+RC 发布证据为 `f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`；Phase 9 尚未开始
 
 ---
 
@@ -125,13 +126,13 @@ Transport/Adapter/核心所有权。
 | 多处 `httpx.AsyncClient()` | DeviceCommand、旧 Outbox、WMS runtime、旧 Gateway 等仍自行创建 Client | Phase 5 只解除旧插件闭包；Device/ECS 裸 Client 由 Phase 7 处理 |
 | 目标对象扫描 | 已有 `TransportTask`、Transport member-position/result evidence 和 Transport 位置投影 | Phase 4 暗构建完成；Phase 6 只收敛 Transport 直接旧 owner |
 | `34837439` / `src/app/runtime/workline_plugins/` 缺席 | 旧工作线插件、binding、dispatcher、attempt 及目录外活动 owner 已原子退役 | Phase 5 零插件基线完成；后续插件按 Phase 8/9 目标合同重新实现 |
-| `docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md` | Tasks 1–5 已删除活动 Trace/Diagnostic/Hold/Intent/replay 的退役插件身份，并由当前 PostgreSQL head 与测试 owner 验证 | Task 6 合入前门禁和独立复审进行中；合入后才清理 deletion tombstone 并外部归档本计划 |
+| `5fe59968` / 项目外归档 `2026-08-15-wes-retired-plugin-residual-convergence.md` | 退役插件活动残留收敛已合入 `develop`，两个 deletion tombstone 已完成合入后清理 | Completed；归档只作历史证据，不再是项目内实施入口 |
 | 当前规划增量 | Phase 3 已删除业务 Port、operation 矩阵和单项业务门禁，只保留 WMS HTTP Client 与开发示例 | Phase 3 已完成实施与验收 |
 | 其他旧 feature 分支 | 大幅落后或已被 develop 取代，包含旧 Manifest/Runtime 语义 | 只作 Git 历史，不作为实施输入 |
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
-Phase 6 与 Phase 7 核心生产基线已完成；退役插件活动残留收敛处于合入前复审；Phase 8 仓内实现、质量门禁和插件部署 E2E
-已完成，但因供应商一致性与现场联合验收尚未运行，仍为 `IN_PROGRESS — EXTERNAL BLOCKED`；Phase 9–12 尚未开始。
+Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 后端功能和本机 Mock 已完成，
+后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -515,7 +516,7 @@ Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运
 ## 13. Phase 8：粗分机参考插件优化
 
 **Objective:** 在独立 Device/ECS 基础能力已批准、实施并切换为唯一生产路径后，以粗分机交付首个真实执行插件、
-设备合同附录、endpoint/device 绑定和供应商一致性验收。
+设备合同附录、endpoint/device 绑定，并以分层测试、本机 Mock 验收和 GitLab PUSH 生成可追溯后端镜像关闭后端 RC。
 
 **Authoritative inputs:** 顶层 SPEC §7/§11.1、`docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`、
 第三方设备统一接口白皮书、Phase 7 Device/ECS 验收证据、粗分机真实拓扑、供应商原始资料和 Phase 6 Transport 基线。
@@ -523,16 +524,18 @@ Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运
 **Entry conditions:** Phase 7 Device/ECS 退出门禁通过；入库合同已由 WMS、WES、RCS 和 ECS 联合批准；粗分机供应商资料
 完整；设备 `task_type`、`event_type`、字段闭集、错误和时限已形成可批准附录。
 
-**Scope:** 粗分机设备合同附录、endpoint/device 绑定、供应商一致性验收和独立插件包；身份与测量证据、WMS 原子 GRN
+**Scope:** 粗分机设备合同附录、endpoint/device 绑定和独立插件包；身份与测量证据、WMS 原子 GRN
 绑定、目标 Cell 晚绑定、placement/NG Fact、旧架 release gate 与快照、人工对账，以及两个既有 `RACK_MOVE` 的 Phase 6
 Transport Port 消费；以第一
 个真实插件为依据冻结最小、静态、显式注入的插件 SPI。设备 HTTP 只复用 Phase 7 唯一生产 Adapter。
 
-**Explicit out-of-scope:** 其他分拣线、第二个 WES 设备 HTTP Adapter、公共 HTTP Client、凭据、通用认证配置、WMS wire 合同重定义、通用插件模板。
+**Explicit out-of-scope:** 其他分拣线、第二个 WES 设备 HTTP Adapter、公共 HTTP Client、凭据、通用认证配置、WMS wire 合同重定义、
+通用插件模板、真实 WMS/RCS/ECS/设备验证、供应商一致性、现场部署、前后端版本组合和业务验收。
 
-**Deliverables:** 独立获批 Phase 8 粗分入库合同和粗分机设备合同附录、endpoint/device 绑定、通过一致性验收的供应商 ECS/网关、
-可独立构建/测试的粗分机插件、由真实使用驱动的最小 SPI、显式插件 Composition Root 绑定和真实业务验收结果；不新增
-顶层 `InboundTask`、兼容 operation 或 WES HTTP Adapter。
+**Deliverables:** 独立获批 Phase 8 粗分入库合同和粗分机设备合同附录、endpoint/device 绑定、可独立构建/测试的粗分机插件、
+由真实使用驱动的最小 SPI、显式插件 Composition Root、本机 Mock 验收证据和 GitLab PUSH 生成的可追溯后端镜像。前端由前端
+仓库独立实现和发布；现场人员自行选择版本。不新增顶层 `InboundTask`、兼容 operation、WES HTTP Adapter、跨仓库 manifest、
+现场 runner 或验收 bundle。
 
 **旧所有者删除或交接清单:** 旧粗分业务代码和测试已在 Phase 5 删除，本阶段只按当前合同重新实现，不从 Git 历史搬运；
 设备旧 sender 已由 Phase 7 删除。本阶段不得恢复供应商私有 DTO、HTTP Client、HMAC 工具、路径或映射副本。
@@ -560,12 +563,15 @@ ACK/CALLBACK；供应商一致性验收拥有设备
 **与前后阶段的 atomic handoff:** 消费 Phase 7 Device/ECS 和 Phase 6 Transport；发现公共设备能力缺口时回到
 Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。本阶段不得实现第二个 Adapter。
 
-**Exit gate:** 供应商 ECS/网关通过一致性验收，endpoint/device 绑定明确，插件独立安装、构建和测试；业务闭环仅由插件拥有；
-全部设备 HTTP 调用仍经 Phase 7 唯一生产 Adapter，核心无供应商特殊分支；最小 SPI 只包含本插件实际使用的稳定接口。
+**Backend RC close gate:** 后端唯一生产路径、插件独立安装/构建/测试、本机 Mock、QUALITY、所选 HEAVY、干净 migration、旧路径
+absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从该快照生成带 Commit/source-tree 标签的后端镜像。MR、手工构建、
+前端进度和现场验证均不得参与或替代该门禁。
 
-**需要单独编写的子计划:** 唯一详细计划已建立为
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md`。其当前状态为 `IN_PROGRESS`；仓内实现、插件部署 E2E、
-QUALITY、迁移链和所选 HEAVY 已完成，供应商一致性和现场联合验收仍为 `NOT RUN — BLOCKED`。
+**需要单独编写的子计划:** 初始插件收敛以
+`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` 保存实施历史；Epoch/前端增量以
+`docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` 为真源；当前 RC 与外部验收状态以
+`docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
+GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、
 认证或凭据；禁止因供应商内部协议不同而修改 WES 固定路径、公共包络或增加兼容 Adapter。
@@ -578,8 +584,8 @@ QUALITY、迁移链和所选 HEAVY 已完成，供应商一致性和现场联合
 `docs/contracts/wms-outbound-picking-task-integration-requirements.md`、第三方设备统一接口白皮书、每条线真实拓扑与供应商原始资料、
 Phase 8 复审结果、Phase 7 Device/ECS 和 Phase 6 Transport。
 
-**Entry conditions:** Phase 8 退出门禁通过；入库上架与自动出库合同均已联合批准；每个实际插件、设备合同附录和部署组合明确；
-各详细计划获批。
+**Entry conditions:** Phase 8 后端 RC 关闭；入库上架与自动出库合同均已联合批准；每个实际插件、设备合同附录和部署组合明确；
+各详细计划获批。前端进度和 Phase 8 现场验收不阻塞本阶段后端开发。
 
 **Scope:** 自动上架、人工分拣、满箱交换和复杂出库执行插件；所需设备合同附录、endpoint/device 绑定和供应商一致性验收；
 复用既有 Phase 7 生产 Adapter 与 Phase 6 Transport Port；完整上架计划、获批交换成员、目标 Bin 供退、SCAN1—SCAN4、
@@ -598,7 +604,7 @@ Phase 8 复审结果、Phase 7 Device/ECS 和 Phase 6 Transport。
 **测试所有权与重量要求:** 供应商一致性验收独立拥有设备附录/集成/异常/恢复场景；插件独立拥有业务单元/集成/E2E/
 韧性/并发/负载；核心只验证统一公共协议和通用机制，Phase 2 只验证 Transport。
 
-**与前后阶段的 atomic handoff:** 消费 Phase 7 Device/ECS、Phase 6 Transport 和 Phase 8 已验收的最小 SPI；全部实际
+**与前后阶段的 atomic handoff:** 消费 Phase 7 Device/ECS、Phase 6 Transport 和 Phase 8 后端 RC 已冻结的最小 SPI；全部实际
 交付包完成后向 Phase 10 提交零散旧所有者清单。本阶段不得直接消费 Phase 2 HTTP Transport 或实现第二个 Adapter。
 
 **Exit gate:** 两条自动线和两条人工线使用同一插件的不同配置实例；全部 endpoint/device 绑定明确，供应商与插件分别通过；
@@ -740,7 +746,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 仓内实现已完成但外部验收阻塞，仍为 `IN_PROGRESS`；Phase 9 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 后端 RC 已关闭，当前证据以 `docs/integration/rough-sorter-joint-acceptance.md` 为准；前端和现场活动独立推进；Phase 9 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -756,19 +762,19 @@ Adapter、设备统一接口和明确插件。
 
 ## 21. Implementation Tasks
 
-Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。两阶段分别拥有独立可靠对象、生产装配和测试证据；
-已完成的过程计划已归档，不再保留为项目内当前真源。退役插件活动残留收敛仍在完成合入前门禁与独立复审；Phase 8 合同、
-SDK、可靠对象、粗分插件、静态装配、迁移链、质量门禁和插件部署 E2E 已完成。供应商一致性和现场闭环仍须独立验收；不得把
-核心测试、mock 边界或插件部署 E2E 当成真实供应商或现场验收。
+Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。退役插件活动残留收敛及合入后 tombstone 清理已完成；Phase 8
+后端合同、SDK、可靠对象、粗分插件、静态装配、迁移链、质量门禁、插件部署 E2E、Epoch 激活和多 Endpoint 派发已完成。
+本机 Mock 验收、最终候选工作树和 GitLab PUSH-only 发布边界验证已完成；不可变后端 RC 镜像 `88-f51677b` 已发布。前端和现场活动不参与后端
+RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
 | --- | --- | --- | --- |
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
-| 3 | Phase 5 后退役插件活动残留收敛 | In progress | Tasks 1–5 已实施；完成合入前门禁和独立复审后合入，tombstone 清理与计划归档只在合入后执行 |
-| 4 | Phase 8 粗分机参考插件实施 | In progress — external blocked | 仓内实现与插件部署 E2E 已完成；等待真实供应商一致性和现场联合验收 |
+| 3 | Phase 5 后退役插件活动残留收敛 | Completed | `5fe59968` 已合入；deletion tombstone 已清理，完成计划已移出项目归档 |
+| 4 | Phase 8 粗分机后端 RC | Closed | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；Jenkins #88 已发布不可变镜像 `88-f51677b` |
 
-Phase 8 仓内实施与插件部署 E2E 已完成；这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
+Phase 8 后端实施、本机 Mock 和不可变 RC 镜像发布已完成。这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 
 ## 22. 工程复审完成摘要
 
@@ -778,8 +784,8 @@ Phase 8 仓内实施与插件部署 E2E 已完成；这不表示供应商一致�
 - **Test Review：** 核心、WMS Adapter、供应商一致性和插件测试所有权严格分离；通用不变量先有 successor，旧业务测试后删除。
 - **Performance：** 本轮阶段调整不引入新轮询、缓存、registry 或运行时扫描；后续 worker 必须有界。
 - **Failure modes：** 已覆盖只删目录、短命 Transport 接线、空插件、旧 DeviceCommand 升格、批量误删测试和历史文档残留。
-- **Parallelization：** Phase 5 至 7 核心基线和 Phase 8 仓内实施已完成；后续供应商一致性与现场联合验收按详细计划推进，
-  核心公共 wire 不并行改造。
+- **Parallelization：** Phase 8 后端 RC 关闭后可立即推进 Phase 9 后端开发；前端 RC 和现场活动独立推进。现场差异按 owner 修复，
+  不并行改造核心公共 wire。
 - **NOT in scope：** Phase 7 不实现 Phase 8/9 的业务插件；任何阶段都不得删除 `docs/hardware/`。
 
 ## GSTACK REVIEW REPORT
@@ -794,7 +800,7 @@ Phase 8 仓内实施与插件部署 E2E 已完成；这不表示供应商一致�
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段顺序已冻结；Phase 1 至 7 核心基线均已完成；Phase 8 仓内实现与插件部署 E2E 已完成，但仍为
-`IN_PROGRESS — EXTERNAL BLOCKED`；供应商一致性和现场闭环尚未通过；Phase 9 至 12 未开始。**
+**VERDICT：十二阶段职责边界保持冻结；Phase 1 至 7 核心基线均已完成；Phase 8 后端 RC 已关闭并发布不可变镜像
+`88-f51677b`。前端及现场部署验收独立推进，不阻塞后端 RC，也不得被本地 Mock 宣称为已通过。**
 
 NO UNRESOLVED DECISIONS

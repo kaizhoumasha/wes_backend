@@ -8,9 +8,10 @@
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Alembic、Celery、PostgreSQL、Redis、Pytest、uv workspace、Ruff、GitNexus。
 
-**当前状态:** `IN_PROGRESS — EXTERNAL BLOCKED`。Task 1—8 已分别完成并提交；Task 9 的仓内工程验收、本机 Mock 模拟联调、
-分层状态文档和受影响 HEAVY 已完成，供应商一致性、真实 WMS 联调与现场联合验收仍为 `NOT RUN — BLOCKED`。Task 10
-已同步当前真源并将被实现取代的过程设计移出项目归档。
+**当前状态:** `backend_functional_implementation = COMPLETE`、`local_mock_acceptance = PASS`、
+`backend_rc = CLOSED`。Task 1—8、Task 9 仓内工程/Mock 验收和 Task 10 仓内收尾已完成；GitLab 发布提交
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 发布为后端 RC 不可变镜像 `88-f51677b`。前端在独立仓库关闭自己的 RC；
+现场部署、版本选择与真实 WMS/RCS/ECS 联调是独立项目活动，不进入本计划关闭门禁。
 Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decided`，未保留旧 operation、binding 或兼容路径；仓内实现和
 测试通过不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
 
@@ -24,14 +25,17 @@ Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decide
 | 6 | Complete | `1d5e0209` |
 | 7 | Complete | `7bca4a8f` |
 | 8 | Complete | 独立原子提交链；最终装配修复至 `714f1c1a` |
-| 9 | In progress — external blocked | Commit `d90d0df6` 仓内工程与本机 Mock 验收完成；供应商一致性、真实 WMS 与现场联合验收未运行 |
-| 10 | Repository complete | 当前文档真源同步与过期过程设计归档；不改变 Phase 8 外部阻塞状态 |
+| 9 | Complete | Commit `d90d0df6` 仓内工程与本机 Mock 验收完成；真实外部系统和现场活动不属于本 Task |
+| 10 | Repository complete | 当前文档真源同步与过期过程设计归档 |
 
 ## Global Constraints
 
-- 本计划是 Phase 8 初始收敛交付、仓内验收和外部阻塞状态的主记录。后续 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口以
+- 本计划保存 Phase 8 后端功能交付、本机 Mock 验收和 RC 关闭门禁的实施历史；当前状态、不可变镜像证据及外部验收边界以
+  `docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。后续 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口以
   `2026-08-19-rough-sorter-workline-epoch-activation.md` 为增量实施真源；该增量计划不新增 Phase 8A/8B 等正式阶段，也不能改写
   本计划已经完成的 Task、Commit 和分层验收事实。
+- 后端和前端分别由各自仓库的 GitLab PUSH 生成镜像，不互相组合、不要求版本一一对应；现场部署人员自行选择并记录实际版本。
+- 不建设跨仓库 RC manifest、现场验证 runner/session、验收 bundle 或证据平台；现场反馈按缺陷回流并生成新的不可变镜像。
 - 必须遵循 `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` 和 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`。两者与本计划不一致时先修订并联合批准当前真源，不得由代码自行选择解释。
 - 系统尚未发布：直接切换最终模型和表，不迁移旧数据，不保留兼容字段、双写、双读、旧 operation、转发模块、适配 shim 或 downgrade。
 - `docs/hardware/` 是供应商原始资料，只读保留。设备字段归一化、错误映射、时限和不可逆点写入获批设备合同附录，不反向改写厂商原文。
@@ -818,7 +822,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Commit: `feat(deployment): 显式装配粗分机插件`
 
-### Task 9: 完成供应商一致性、插件闭环和业务验收
+### Task 9: 完成插件闭环与本机 Mock 功能验收
 
 **Files:**
 
@@ -829,12 +833,13 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
 **Interfaces:**
 
-- Consumes: 供应商 ECS/网关、WMS mock/联调端、真实 PostgreSQL/Redis/Celery/HTTP、获批附录与插件镜像。
-- Produces: 供应商一致性结果、单条真实 event→evidence→decision→command→callback→confirmation→complete 闭环和现场联合验收证据。
+- Consumes: 团队维护的 WMS/ECS Mock、真实 PostgreSQL/Redis/Celery/HTTP、获批合同与当前插件镜像。
+- Produces: event→evidence→decision→command→callback→confirmation→complete 的仓内 Mock 闭环证据，以及明确的现场责任边界。
 
-- [ ] **Step 1: 在供应商交付边界运行一致性验收**
+- [x] **Step 1: 冻结外部系统与现场责任边界**
 
-  覆盖附录 task/event、字段闭集、身份、ACK、CALLBACK、错误、时限、投递未知和不可逆点。结果只记录版本、环境、通过/失败和证据位置；供应商私有 DTO/认证/原始映射不复制进 WES 核心或插件。
+  开发环境不连接真实 WMS、RCS、ECS 或设备。供应商一致性和物理闭环由现场部署验收人员负责，不阻塞仓内功能实现、Mock 验收
+  或后端 RC；供应商私有 DTO、认证和原始映射仍不得复制进 WES 核心或插件。
 
 - [x] **Step 2: 先在插件包建立失败的部署 E2E**
 
@@ -845,15 +850,15 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
   `SCAN_COMPLETED` → WMS `ACCEPT` → 入料 `PICK_AND_PUT` → `MOVE_FORWARD` → WMS 目标 Cell 晚绑定 → 出料
   `PICK_AND_PUT` → placement report → WMS `RECORDED` → `MaterialExecution.CLOSED`。验证每个可靠对象身份稳定且无双写。
 
-- [ ] **Step 4: 跑通安全失败路径**
+- [x] **Step 4: 跑通 WES 自有的安全失败路径**
 
-  至少现场/集成验证：重复与冲突 evidence、业务 `WAIT`、无 Cell 不下发出料、ACK 后禁止等价重放、callback 未知、旧架 release
-  gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和单对象人工核验恢复。非功能性负载、HA 和多供应商矩阵不作为
-  MVP 退出条件。
+  仓库 owner 分层覆盖：重复与冲突 evidence、业务 `WAIT`、无 Cell 不下发出料、ACK 后禁止等价重放、callback 未知、旧架
+  release gate、两个 `RACK_MOVE` 独立失败、新架先成功恢复目标请求和单对象人工核验恢复。非功能性负载、HA、多供应商矩阵
+  和真实 RCS 执行顺序不作为 RC 退出条件。
 
   2026-08-19 仓内子集已通过：WMS `WAIT` 完成本次确认、创建新 operation 且 `ACCEPT` 前无设备命令；ECS `ACK` 后跨真实
-  下一次 Beat 保持 `ACKNOWLEDGED:1` 且不重放，匹配 callback 后才关闭 execution。其余需要真实外部系统或物理事实的场景
-  继续保留在本 Step，不以 Mock 代证。
+  下一次 Beat 保持 `ACKNOWLEDGED:1` 且不重放，匹配 callback 后才关闭 execution。Mock 只证明 WES 按批准合同执行，不证明
+  供应商实现、WMS 主账、RCS 互锁或物理动作。
 
 - [x] **Step 5: 分别执行插件闭环与受影响核心 HEAVY**
 
@@ -863,12 +868,17 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Run: `./scripts/run_selected_heavy_local.sh --base 'ab02f42f^'`
 
-  Result（2026-08-19）: 插件 E2E `10 passed, 0 skipped`；计划锁定核心 owner `21 passed`；selector 选中 31 个 HEAVY
-  资产，实际执行 `362 passed, 0 skipped`。核心 selector 不包含粗分插件私有测试。
+  当前 E2E Result（2026-08-20，`HEAD@c8144050` 的干净 archive，source manifest
+  `783132672d9a0ac6f5626f56368ad15a53244e0a`，本地 production image
+  `sha256:19852fdfb89abf8fb77ccc91036a87ccaa049a0aea39ff16d630db39b437fac5`）：插件 E2E `11 passed, 0 skipped`。
+  先前 Phase 8 快照 `aab69fd7` 的证据为：计划锁定核心 owner `21 passed`；selector 选中 31 个 HEAVY 资产，实际执行
+  `362 passed, 0 skipped`。该历史绿灯不作为当前候选工作树的 HEAVY 证据；
+  核心 selector 不包含粗分插件私有测试。
 
 - [x] **Step 6: 记录分层验收结论**
 
-  分别记录核心基线、WMS Adapter、供应商一致性、插件业务和现场联合验收状态。任一层未通过时整体不得标记完成，也不得用其他层测试替代。
+  分别记录核心基线、WMS Adapter、插件业务和本机 Mock 状态；供应商与现场状态只作为独立边界记录，不参与后端 RC 判定，
+  也不得用本地证据宣称其通过。
 
 - [x] **Step 7: 提交验收资产原子变更**
 
@@ -911,7 +921,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
 - [x] **Step 3: 运行插件和核心 FAST**
 
-  Run: `uv run --project workline_plugins/rough_sorter pytest -q`
+  Run: `uv run --project workline_plugins/rough_sorter pytest workline_plugins/rough_sorter/tests --ignore=workline_plugins/rough_sorter/tests/e2e -q`
 
   Run: `uv run pytest tests/ -q`
 
@@ -933,7 +943,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
 - [x] **Step 6: 更新当前开发真源**
 
-  用已验证实现更新 `docs/plugin_development_guide.md`：保持“一插件一子目录”，handler 按业务触发拆分，不写成“一物理 EVENT/CALLBACK 一文件”；明确装饰器元数据、显式 DI 和无动态注册表。主计划只在所有分层验收通过后把 Phase 8 标为完成。
+  用已验证实现更新 `docs/plugin_development_guide.md`：保持“一插件一子目录”，handler 按业务触发拆分，不写成“一物理 EVENT/CALLBACK 一文件”；明确装饰器元数据、显式 DI 和无动态注册表。主计划分别记录后端功能、Mock 验收和 RC 镜像发布状态；前端与现场活动独立记录。
 
 - [x] **Step 7: 归档被当前结果取代的过程文档**
 
@@ -941,20 +951,34 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
 - [x] **Step 8: 提交 Phase 8 仓内收尾**
 
-  Commit suggestion: `docs(phase8): 收敛仓内交付与外部阻塞`
+  Commit suggestion: `docs(phase8): 收敛后端 RC 关闭门禁`
 
-## Phase 8 Exit Gate
+## Phase 8 Backend RC Close Gate
 
-只有以下条件同时成立，Phase 8 才能从 `GATED/IN_PROGRESS` 改为 `COMPLETE`：
+以下条件同时成立时，Phase 8 后端 RC 才能关闭；前端进度和现场验收不参与本门禁：
 
 1. 独立 Phase 8 粗分入库合同和粗分机设备合同附录已联合批准；Transport 消费唯一结论为两个既有 `RACK_MOVE`。
 2. `MaterialExecution`、`InboundEvidence`、`WmsConfirmation`、Epoch 插件冻结和封闭 Decision 应用器成为唯一生产路径，无旧 owner/双写/兼容路径。
 3. `wes_plugin_sdk` 与 `rough_sorter` 均可独立安装、构建和测试；SDK 只含真实使用的稳定接口。
 4. Web 与 Celery 通过一个显式 Composition Root 绑定同一插件版本、配置 digest 和设备 binding；核心无具体插件 import 或供应商分支。
-5. Phase 7 Device/ECS、WMS Adapter、供应商一致性、插件业务和现场联合验收分别通过，且证据不互相代替。
-6. 成功闭环及重复、冲突、WAIT、投递未知、不可逆、释放围栏和人工核验恢复路径全部通过；受影响 HEAVY `failed = 0` 且
-   `skipped = 0`。
+5. Phase 7 Device/ECS、WMS Adapter、插件业务和团队 Mock 各自通过本地 owner；基础能力和粗分业务能力不互相代证。
+6. WES 自有的成功闭环、重复、冲突、WAIT、投递未知、不可逆身份围栏和人工恢复语义通过；受影响 HEAVY `failed = 0` 且
+   `skipped = 0`。Mock 不证明供应商物理实现、WMS 主账或 RCS 互锁。
 7. 本阶段直接替换的旧粗分/WMS Effect 双路径 absence 扫描通过，跨阶段 Runtime 残余已形成 Phase 10 精确交接清单；当前文档真源已更新，过期过程文档已移出项目目录，`docs/hardware/` 保持原样。
+8. 最终源码快照经 GitLab `PUSH` 生成带 Commit/source-tree 标签的后端镜像；MR、手工构建和后端流水线均不得发布或组合前端镜像。
+
+功能、Mock 和最终门禁已通过但尚未获得 Push 授权时，只能标记为 `BACKEND RC SOURCE READY — IMAGE NOT PUBLISHED`；镜像实际发布后才标记 `BACKEND RC CLOSED`。
+
+关闭证据：Jenkins #88 由 GitLab push 触发并成功；不可变镜像 `88-f51677b` 的 manifest 为
+`sha256:e38dec0294d406540c734d86c70da85682438627a9f8e685d54e3a2f3883a453`，OCI revision 与 source-manifest 分别为
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` 和 `bd1a1d33d4e27ac54ddbddd126eef660aea1c13c`。`develop` channel 可继续移动，
+不作为关闭证据或现场部署版本。
+
+## 现场部署与验收边界
+
+真实 WMS、RCS、ECS、设备、供应商一致性、前后端版本选择、Docker 部署和联合业务验收由现场部署验收人员负责。它们既不阻塞
+后端或前端各自发布 RC，也不要求产品仓库新增 runner、session、bundle、跨仓库 manifest 或证据平台。现场发现缺陷后回流对应
+owner 修复并发布新镜像；不得覆盖原镜像或在 WES 核心加入供应商特殊分支。
 
 ## 明确延期到后续阶段
 

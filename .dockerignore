@@ -92,6 +92,7 @@ docker-compose*.yml
 !docker-compose.yml
 !docker-compose.deploy.yml
 !docker-compose.ci-heavy.yml
+!docker-compose.frontend.yml
 !docker-compose.test-deploy.yml
 !docker-compose.wms-acceptance.yml
 .dockerignore

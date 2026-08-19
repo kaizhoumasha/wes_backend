@@ -42,6 +42,7 @@
 - [ ] Jenkins 首页 → **New Item**
 - [ ] 项目名称：`wes_backend-ci`
 - [ ] 类型：**Pipeline**
+- [ ] 未使用 **Multibranch Pipeline**；发布门禁依赖 GitLab webhook 的 `gitlabBefore` / `gitlabAfter`
 - [ ] 点击 **OK**
 
 ### 5. 配置 Pipeline
@@ -53,6 +54,7 @@
 #### Build Triggers
 
 - [ ] **Build when a change is pushed to GitLab**
+- [ ] 展开 **Advanced**，点击 **Secret Token → Generate**；token 只配置到 GitLab Webhook，不写入仓库或文档
 - [ ] 记录 Webhook URL：`http://192.168.0.220:9081/project/wes_backend-ci`
 
 #### Pipeline
@@ -72,6 +74,7 @@
 - [ ] 配置：
   ```
   URL: http://192.168.0.220:9081/project/wes_backend-ci
+  Secret token: 与 Jenkins Job 中生成的 per-project token 完全一致（必填）
   Trigger: Push events, Merge request events
   SSL verification: 取消勾选（HTTP）
   ```
@@ -146,16 +149,25 @@ cd /Users/kaizhou/codeDev/wes_backend
 vim Jenkinsfile.backend-ci
 vim Jenkinsfile.test-deploy
 
-# 提交到 GitLab
+# 提交到 GitHub 并通过 PR 合入
 git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
 git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
-git push gitlab develop
+git push origin <feature-branch>
+
+# GitHub PR 合入后，按精确 SHA fast-forward 到 GitLab。
+git fetch origin
+git fetch gitlab
+release_sha="$(git rev-parse origin/develop)"
+git merge-base --is-ancestor gitlab/develop "$release_sha"
+git push gitlab "$release_sha:refs/heads/develop"
 ```
 
 - [ ] Jenkinsfile.backend-ci 已核对
 - [ ] Jenkinsfile.test-deploy 已核对
 - [ ] agent 标签已修改
-- [ ] 已提交到 GitLab
+- [ ] 已通过 GitHub PR 合入 `origin/develop`
+- [ ] GitLab Push 已获得独立授权
+- [ ] `gitlab/develop` 已 fast-forward 到同一 GitHub merge SHA
 
 ### 9. 测试后端 CI Pipeline
 
@@ -167,15 +179,14 @@ git push gitlab develop
   - [ ] Quality Gate（格式、Lint、Bandit、架构、脚本合同与 FAST）
   - [ ] Compose Contracts（主机端渲染生产与 TEST 部署配置）
   - [ ] RuntimeInbox PostgreSQL Acceptance
-  - [ ] Mock Image Contracts（MR）
-  - [ ] HEAVY Required（MR）
+  - [ ] Mock Image Contracts（MR 与已验证的 `develop` PUSH）
+  - [ ] HEAVY Required（MR 按目标分支、`develop` PUSH 按 `gitlabBefore` 差异选择）
   - [ ] Build Runtime Image
-  - [ ] Push Runtime Image（非 MR）
-  - [ ] Trigger Test Deploy（仅 develop push）
+  - [ ] Push Runtime Image（仅门禁通过的 GitLab `develop` PUSH；MR、其他分支 PUSH 和手工构建不发布）
 
 ### 10. 测试 TEST 部署 Pipeline
 
-- [ ] Jenkins → **wes_test_deploy** → 查看是否被 `wes_backend-ci` 自动触发
+- [ ] Jenkins → **wes_test_deploy** → 由部署人员手工触发并明确选择前后端镜像版本
 - [ ] 查看部署日志
 - [ ] 验证 TEST 环境健康检查
 - [ ] 验证日志中出现“同步 TEST 环境菜单”且 `TEST 环境菜单数量` 大于 0
@@ -298,16 +309,16 @@ sudo usermod -aG docker jenkins
 
 配置完成后，您的 CI/CD 流程将自动运行：
 
-1. **开发人员推送代码** → GitLab
-2. **GitLab 触发 Webhook** → Jenkins
-3. **Jenkins 在 Node 上执行**：
+1. **开发人员推送功能分支** → GitHub PR → `origin/develop`
+2. **发布人员核对并 fast-forward 同一 SHA** → GitLab `develop`
+3. **GitLab 触发 Webhook** → Jenkins
+4. **Jenkins 在 Node 上执行**：
    - 构建 CI 镜像
    - 代码检查（并行）
    - 单元测试（并行）
-   - 非 MR 推送 backend immutable tag 和 channel tag
-   - 仅 develop 自动触发 TEST 部署
-4. **TEST 部署健康检查**
-5. **通知结果**（可选配置）
+   - 仅门禁通过的 GitLab `develop` PUSH 推送 backend immutable tag 和 channel tag
+5. **部署人员只用 immutable tag/digest 按需运行 TEST/现场部署**
+6. **通知结果**（可选配置）
 
 ## 📞 需要帮助？
 

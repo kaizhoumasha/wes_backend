@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.26.5.0
+**Version**: 0.26.7.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -55,7 +55,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [WES - WMS 对接接口需求](docs/integration/wes-wms-interface-requirements.md)：WES/WMS 公共接口外发真源；当前公共协议和 Transport 为 `Approved`，WES 实现为 `ALIGNED`；Phase 8 粗分业务合同已批准并完成仓内交付，其余业务附录按各自状态评审。
 - [WES 出库操作顶层设计](docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md)：评审中的 `PickingTask` 分批计划、不可逆执行和安全取消业务设计；当前不构成实施授权。
 - [WMS / WES 自动入库与上架交互要求](docs/contracts/wms-inbound-putaway-integration-requirements.md)：Phase 9 满箱交换和自动上架的业务合同评审真源；当前为 `ReviewRequired`，不代表已实施。
-- [WES 架构收敛十二阶段总控](docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md)：Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 仓内实现与插件部署 E2E 已完成，但供应商一致性和现场联合验收仍为 `IN_PROGRESS — EXTERNAL BLOCKED`。
+- [WES 架构收敛十二阶段总控](docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md)：Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 backend RC 已 `CLOSED`，供应商一致性、现场联调和业务验收仍为 `NOT RUN`，分层证据见[粗分机后端开发验收与现场边界状态](docs/integration/rough-sorter-joint-acceptance.md)。
 - [粗分机 WorkLine Epoch 激活与多 Endpoint 派发计划](docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md)：后端工程包 1–4 已完成并提交；前端 Device、WorkLine 配置与 START 操作按独立合同冻结门禁待实施。
 - [WORKLINE 业务插件二次开发指南](docs/plugin_development_guide.md)：最小插件 SPI、封闭 Decision 与独立插件包交付约定。
 - [WMS 北向交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义共享 Client 与后续新增具体 WMS API 的开发标准；业务结果由 WMS 给出，搬运与 RCS 状态归 Phase 4。
@@ -73,6 +73,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [休斯顿现场服务器现状信息采集表](docs/devops/rocky-linux-server-inspection.md)
 - [休斯顿现场服务器初始化与基础支撑环境配置手册](docs/devops/rocky-linux-server-initialization.md)
 - [生产发布 Runbook](docs/devops/prod-release-deploy.md)
+- [Jenkins CI/CD 配置](docs/devops/JENKINS.md)
 
 ## Production Bootstrap
 
