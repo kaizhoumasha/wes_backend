@@ -359,7 +359,7 @@ def _start_workline(stack: _DockerStack, api_url: str) -> None:
         {"request_id": "RS-E2E-START-001"},
         headers={"authorization": f"Bearer {access_token}"},
     )
-    assert result["code"] == 200
+    assert result["code"] == "1000"
     assert result["data"]["created"] is True
     assert result["data"]["plugin_key"] == "rough_sorter"
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epochs") == "1"
