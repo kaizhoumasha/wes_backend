@@ -21,8 +21,10 @@
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 源码就绪、镜像未发布；前端与现场活动独立推进 |
-| `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭主记录 | 后端功能完成、本机 Mock PASS、最终候选工作树已验证；待 Commit 与 GitLab PUSH 发布镜像 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；前端与现场活动独立推进 |
+| `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
+| `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
+| `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |
 | `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |

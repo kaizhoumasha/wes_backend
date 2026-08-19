@@ -146,16 +146,24 @@ cd /Users/kaizhou/codeDev/wes_backend
 vim Jenkinsfile.backend-ci
 vim Jenkinsfile.test-deploy
 
-# 提交到 GitLab
+# 提交到 GitHub 并通过 PR 合入
 git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
 git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
-git push gitlab develop
+git push origin <feature-branch>
+
+# GitHub PR 合入后，按精确 SHA fast-forward 到 GitLab。
+git fetch origin gitlab
+release_sha="$(git rev-parse origin/develop)"
+git merge-base --is-ancestor gitlab/develop "$release_sha"
+git push gitlab "$release_sha:refs/heads/develop"
 ```
 
 - [ ] Jenkinsfile.backend-ci 已核对
 - [ ] Jenkinsfile.test-deploy 已核对
 - [ ] agent 标签已修改
-- [ ] 已提交到 GitLab
+- [ ] 已通过 GitHub PR 合入 `origin/develop`
+- [ ] GitLab Push 已获得独立授权
+- [ ] `gitlab/develop` 已 fast-forward 到同一 GitHub merge SHA
 
 ### 9. 测试后端 CI Pipeline
 
@@ -297,15 +305,16 @@ sudo usermod -aG docker jenkins
 
 配置完成后，您的 CI/CD 流程将自动运行：
 
-1. **开发人员推送代码** → GitLab
-2. **GitLab 触发 Webhook** → Jenkins
-3. **Jenkins 在 Node 上执行**：
+1. **开发人员推送功能分支** → GitHub PR → `origin/develop`
+2. **发布人员核对并 fast-forward 同一 SHA** → GitLab `develop`
+3. **GitLab 触发 Webhook** → Jenkins
+4. **Jenkins 在 Node 上执行**：
    - 构建 CI 镜像
    - 代码检查（并行）
    - 单元测试（并行）
    - 仅 GitLab PUSH 推送 backend immutable tag 和 channel tag
-4. **部署人员按需单独运行 TEST/现场部署**
-5. **通知结果**（可选配置）
+5. **部署人员只用 immutable tag/digest 按需运行 TEST/现场部署**
+6. **通知结果**（可选配置）
 
 ## 📞 需要帮助？
 

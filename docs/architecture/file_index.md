@@ -32,7 +32,9 @@
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 分批计划、Cell 晚绑定、不可逆执行、安全取消、NG 与双面目标架业务设计 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
-| `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能实现、本机 Mock 验收、RC 关闭门禁与现场边界主记录 |
+| `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
+| `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
+| `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能实现、本机 Mock 验收和 RC 关闭门禁的实施历史 |
 | `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |

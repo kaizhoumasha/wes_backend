@@ -9,8 +9,8 @@
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Alembic、Celery、PostgreSQL、Redis、Pytest、uv workspace、Ruff、GitNexus。
 
 **当前状态:** `backend_functional_implementation = COMPLETE`、`local_mock_acceptance = PASS`、
-`backend_rc = SOURCE_READY_IMAGE_NOT_PUBLISHED`。Task 1—8、Task 9 仓内工程/Mock 验收和 Task 10 仓内收尾已完成；最终候选工作树
-及 GitLab PUSH-only 镜像发布边界已验证，当前只剩 Commit 与 GitLab PUSH 触发实际 RC 镜像发布。前端在独立仓库关闭自己的 RC；
+`backend_rc = CLOSED`。Task 1—8、Task 9 仓内工程/Mock 验收和 Task 10 仓内收尾已完成；GitLab 发布提交
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 发布为后端 RC 不可变镜像 `88-f51677b`。前端在独立仓库关闭自己的 RC；
 现场部署、版本选择与真实 WMS/RCS/ECS 联调是独立项目活动，不进入本计划关闭门禁。
 Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decided`，未保留旧 operation、binding 或兼容路径；仓内实现和
 测试通过不代表供应商一致性、现场联调或 Phase 8 业务验收完成。
@@ -30,7 +30,8 @@ Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decide
 
 ## Global Constraints
 
-- 本计划是 Phase 8 后端功能交付、本机 Mock 验收和 RC 关闭状态的主记录。后续 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口以
+- 本计划保存 Phase 8 后端功能交付、本机 Mock 验收和 RC 关闭门禁的实施历史；当前状态、不可变镜像证据及外部验收边界以
+  `docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。后续 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口以
   `2026-08-19-rough-sorter-workline-epoch-activation.md` 为增量实施真源；该增量计划不新增 Phase 8A/8B 等正式阶段，也不能改写
   本计划已经完成的 Task、Commit 和分层验收事实。
 - 后端和前端分别由各自仓库的 GitLab PUSH 生成镜像，不互相组合、不要求版本一一对应；现场部署人员自行选择并记录实际版本。
@@ -967,6 +968,11 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 8. 最终源码快照经 GitLab `PUSH` 生成带 Commit/source-tree 标签的后端镜像；MR、手工构建和后端流水线均不得发布或组合前端镜像。
 
 功能、Mock 和最终门禁已通过但尚未获得 Push 授权时，只能标记为 `BACKEND RC SOURCE READY — IMAGE NOT PUBLISHED`；镜像实际发布后才标记 `BACKEND RC CLOSED`。
+
+关闭证据：Jenkins #88 由 GitLab push 触发并成功；不可变镜像 `88-f51677b` 的 manifest 为
+`sha256:e38dec0294d406540c734d86c70da85682438627a9f8e685d54e3a2f3883a453`，OCI revision 与 source-manifest 分别为
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` 和 `bd1a1d33d4e27ac54ddbddd126eef660aea1c13c`。`develop` channel 可继续移动，
+不作为关闭证据或现场部署版本。
 
 ## 现场部署与验收边界
 

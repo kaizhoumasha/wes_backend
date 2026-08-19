@@ -5,6 +5,7 @@
 - **GitLab**：192.168.0.220:9080
 - **Jenkins**：192.168.0.220（Docker）
 - **Jenkins Node**：192.168.0.221（构建和部署）
+- **GitHub 开发真源**：https://github.com/kaizhoumasha/wes_backend.git
 - **GitLab 仓库**：http://192.168.0.220:9080/wes/wes_backend.git
 - **LDAP 账号**：zhoukai / Ctt123456
 
@@ -17,6 +18,15 @@
 | `prod-release-deploy.md` | 生产环境手动发布 Runbook |
 | `jenkins-setup-current-env.md` | 详细配置指南 |
 | `jenkins-checklist.md` | 快速配置清单 |
+
+## 仓库与发布权威
+
+- GitHub `origin/develop` 是唯一代码评审与合入真源；功能、修复、CI 和文档变更都先通过 GitHub PR 合入。
+- GitLab `gitlab/develop` 是 Jenkins 发布镜像，只允许接收 GitHub `origin/develop` 的精确 Commit，不接受 GitLab-only 修复。
+- GitLab 推送前必须确认其当前 HEAD 是目标 GitHub Commit 的祖先；不满足时停止并治理分叉，禁止 force push、聚合 cherry-pick 或
+  用时间顺序猜测真源。
+- GitHub Merge 与 GitLab Push 是两次独立授权。只有 GitLab `PUSH` 触发镜像发布；GitHub PR、GitLab MR 和 Jenkins 手工构建均不发布。
+- RC 与现场选版只记录 immutable tag、manifest digest 和 OCI revision。`develop` channel 只用于定位最新候选，不能作为验收证据。
 
 ## 🚀 快速开始
 
@@ -59,13 +69,19 @@ agent {
 }
 ```
 
-### 4. 提交到 GitLab
+### 4. 从 GitHub 真源发布到 GitLab
 
 ```bash
-git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
-git commit -m "chore(ci): align active Jenkins jobs"
-git push gitlab develop
+# 先在功能分支提交并通过 GitHub PR 合入 origin/develop，然后刷新两个远端。
+git fetch origin gitlab
+release_sha="$(git rev-parse origin/develop)"
+
+# 只允许 fast-forward 发布；失败时停止，不得强推。
+git merge-base --is-ancestor gitlab/develop "$release_sha"
+git push gitlab "$release_sha:refs/heads/develop"
 ```
+
+推送前应再次核对 `release_sha` 是已经批准的 GitHub merge SHA；不得直接从本地功能分支或仅存在于 GitLab 的提交发布。
 
 ### 5. 配置 Jenkins Pipeline
 

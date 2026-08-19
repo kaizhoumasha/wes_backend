@@ -5,6 +5,7 @@
 - **GitLab 服务器**：192.168.0.220:9080（Docker）
 - **Jenkins 服务器**：192.168.0.220（Docker）
 - **Jenkins Node 节点**：192.168.0.221（已配置）
+- **GitHub 开发真源**：https://github.com/kaizhoumasha/wes_backend.git
 - **GitLab 仓库**：http://192.168.0.220:9080/wes/wes_backend.git
 - **LDAP 账号**：zhoukai / Ctt123456
 - **部署目标**：192.168.0.221（测试环境）
@@ -323,14 +324,25 @@ rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_C
 - **Script Path**: `Jenkinsfile.backend-ci`
 - **Build when a change is pushed to GitLab**: 已勾选
 
-### 步骤 9：提交现役 Jenkins Pipeline 到 GitLab
+GitHub `origin/develop` 是代码评审与合入真源；GitLab `gitlab/develop` 只接收同一 GitHub merge SHA 并触发 Jenkins。
+禁止直接在 GitLab 修复或用 force push 覆盖分叉。
+
+### 步骤 9：从 GitHub 真源发布现役 Jenkins Pipeline
 
 ```bash
-# 提交现役 Pipeline
+# 先在功能分支提交并通过 GitHub PR 合入。
 git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
 git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
-git push gitlab develop
+git push origin <feature-branch>
+
+# GitHub Merge 与 GitLab Push 分别取得授权后，发布精确 SHA。
+git fetch origin gitlab
+release_sha="$(git rev-parse origin/develop)"
+git merge-base --is-ancestor gitlab/develop "$release_sha"
+git push gitlab "$release_sha:refs/heads/develop"
 ```
+
+`git merge-base --is-ancestor` 失败表示远端已分叉，必须停止并治理；不得直接 cherry-pick、merge 或强推发布。
 
 ### 步骤 10：测试 Pipeline
 

@@ -17,8 +17,8 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–7 核心基线已完成。Phase 8 后端功能实现、本机 Mock 验收、WorkLine Epoch 激活和多 Endpoint
-派发已完成；`backend_rc = SOURCE_READY_IMAGE_NOT_PUBLISHED`，最终候选工作树和 GitLab PUSH-only 发布边界已经验证，当前只剩
-Commit 与 GitLab PUSH 触发后端镜像发布。
+派发已完成；`backend_rc = CLOSED`。GitLab 发布提交 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成
+不可变后端 RC 镜像 `88-f51677b`。
 前端在独立仓库关闭自己的 RC；真实 WMS/RCS/ECS、设备、版本组合、现场部署和业务验收不属于开发阶段关闭门禁。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
@@ -29,8 +29,8 @@ Commit 与 GitLab PUSH 触发后端镜像发布。
 
 **Phase 9 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Implementation baseline:** `develop@bda2079d523984f25265c113b2fb213429da40f0`（Phase 8 后端功能与 Epoch 激活已合入；
-RC 发布边界已在当前候选工作树验证，尚未 Commit 或发布镜像；Phase 9 尚未开始）
+**Implementation baseline:** `develop@bda2079d523984f25265c113b2fb213429da40f0`（Phase 8 后端功能与 Epoch 激活已合入）；
+RC 发布证据为 `f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`；Phase 9 尚未开始
 
 ---
 
@@ -132,7 +132,7 @@ Transport/Adapter/核心所有权。
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
 Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 后端功能和本机 Mock 已完成，
-后端 RC 源码就绪、镜像未发布；前端与现场活动独立推进。Phase 9–12 尚未开始。
+后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9–12 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -568,9 +568,10 @@ absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从�
 前端进度和现场验证均不得参与或替代该门禁。
 
 **需要单独编写的子计划:** 初始插件收敛以
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` 为主记录；Epoch/前端增量以
-`docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` 为真源。当前后端功能与 Mock 已完成，最终候选工作树和
-GitLab PUSH-only 发布边界已验证，RC 镜像尚未发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
+`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` 保存实施历史；Epoch/前端增量以
+`docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` 为真源；当前 RC 与外部验收状态以
+`docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
+GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
 
 **风险及防止阶段越权的约束:** 插件只可访问 Transport Port 和 DeviceCommand 应用端口，不得访问其内部状态机、HTTP、
 认证或凭据；禁止因供应商内部协议不同而修改 WES 固定路径、公共包络或增加兼容 Adapter。
@@ -745,7 +746,7 @@ Adapter、设备统一接口和明确插件。
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 后端 RC 源码就绪、镜像未发布；前端和现场活动独立推进；Phase 9 至 12 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 后端 RC 已关闭，当前证据以 `docs/integration/rough-sorter-joint-acceptance.md` 为准；前端和现场活动独立推进；Phase 9 至 12 未开始 |
 
 ## 20. 总体完成定义
 
@@ -763,7 +764,7 @@ Adapter、设备统一接口和明确插件。
 
 Phase 6 Transport 与 Phase 7 Device/ECS 核心生产基线均已完成。退役插件活动残留收敛及合入后 tombstone 清理已完成；Phase 8
 后端合同、SDK、可靠对象、粗分插件、静态装配、迁移链、质量门禁、插件部署 E2E、Epoch 激活和多 Endpoint 派发已完成。
-本机 Mock 验收、最终候选工作树和 GitLab PUSH-only 发布边界验证已完成；后端 RC 镜像尚未发布。前端和现场活动不参与后端
+本机 Mock 验收、最终候选工作树和 GitLab PUSH-only 发布边界验证已完成；不可变后端 RC 镜像 `88-f51677b` 已发布。前端和现场活动不参与后端
 RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 
 | 顺序 | 任务 | 状态 | 主要验收 |
@@ -771,9 +772,9 @@ RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 | 1 | Phase 6 Transport 正式基础基线 | Completed | Transport 可安装但无业务 producer；旧 owner 已收敛 |
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
 | 3 | Phase 5 后退役插件活动残留收敛 | Completed | `5fe59968` 已合入；deletion tombstone 已清理，完成计划已移出项目归档 |
-| 4 | Phase 8 粗分机后端 RC | Source ready; image not published | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；等待 Commit 与 GitLab PUSH 镜像 |
+| 4 | Phase 8 粗分机后端 RC | Closed | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；Jenkins #88 已发布不可变镜像 `88-f51677b` |
 
-Phase 8 后端实施与本机 Mock 已完成；后端 RC 尚未发布。这也不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
+Phase 8 后端实施、本机 Mock 和不可变 RC 镜像发布已完成。这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 
 ## 22. 工程复审完成摘要
 
@@ -799,7 +800,7 @@ Phase 8 后端实施与本机 Mock 已完成；后端 RC 尚未发布。这也�
 | DESIGN REVIEW | N/A | 0 | 0 | 无 UI/交互范围 |
 | DX REVIEW | CLEAR | 0 | 0 | 新阶段使用显式 owner、静态装配和独立包，避免动态平台和 Service Locator |
 
-**VERDICT：十二阶段职责边界保持冻结；Phase 1 至 7 核心基线均已完成；Phase 8 后端 RC 源码就绪、镜像未发布，当前仅等待
-Commit 与 GitLab PUSH。前端及现场部署验收独立推进，不阻塞后端 RC，也不得被本地 Mock 宣称为已通过。**
+**VERDICT：十二阶段职责边界保持冻结；Phase 1 至 7 核心基线均已完成；Phase 8 后端 RC 已关闭并发布不可变镜像
+`88-f51677b`。前端及现场部署验收独立推进，不阻塞后端 RC，也不得被本地 Mock 宣称为已通过。**
 
 NO UNRESOLVED DECISIONS
