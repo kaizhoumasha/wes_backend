@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.7.0] - 2026-08-20
+
+### Changed
+- 将 GitHub `develop` 固定为代码与评审真源、GitLab `develop` 固定为发布镜像；合入必须使用 merge commit，再经独立授权将 GitLab fast-forward 到同一 SHA，禁止 squash、rebase 和 force push。
+- 后端发布 Job 固定从 `develop` 加载普通 Pipeline，并要求 GitLab webhook 使用项目级 Secret Token；Poll SCM、Multibranch 和手工构建仅可用于不发布验证。
+- Phase 8 当前态收敛为 backend RC `CLOSED`，以 `88-f51677b`、manifest digest、OCI revision 和 source-manifest 作为不可变证据；供应商一致性、现场联调和业务验收继续保持 `NOT RUN`。
+
+### Fixed
+- 发布门禁改为只接受经验证的 GitLab `develop` PUSH：`gitlabBefore` 必须为非零 previous SHA，`gitlabAfter` 必须匹配检出 HEAD，且 before 必须为 HEAD 祖先。
+- 经验证的 `develop` PUSH 在发布前按 previous SHA 执行 Mock 合同和 selector 选中的 HEAVY；MR 使用目标分支作为差异基线，其他分支 PUSH、MR、手工和轮询构建均不能发布镜像。
+- 移除后端 CI 自动触发 TEST 部署的陈旧说明，TEST 部署改为部署人员独立触发并显式选择 immutable 前后端镜像。
+
+### Verification
+- 提交钩子 QUALITY 全门禁通过：3625 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和 FAST 预算检查均通过。
+- Jenkins 与 selector 聚焦合同测试 17 passed；staged selector 选出的 5 个 HEAVY owner 共 85 passed、0 skipped。
+- 应用代码覆盖率不适用；CI fail-closed 合同缺口为 0，预落地 Review 无剩余意见，计划完成度为 14/17，其余 3 项等待独立 merge、GitLab fast-forward 和后续重放授权。
+- 本次证据只证明仓内治理与 CI 合同闭合，不替代 Jenkins/GitLab 现场 Secret Token 配置、供应商一致性、现场联调或业务验收。
+
 ## [0.26.5.0] - 2026-08-19
 
 ### Added
