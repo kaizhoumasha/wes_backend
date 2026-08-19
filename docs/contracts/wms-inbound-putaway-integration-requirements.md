@@ -2,7 +2,7 @@
 title: WMS / WES 满箱交换与自动上架交互要求
 status: ReviewRequired
 created_at: 2026-08-13
-updated_at: 2026-08-16
+updated_at: 2026-08-20
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: Phase 9 满箱交换、自动分拣线上架、目标 Bin 投退料、NG、事实确认和人工对账
 related:
@@ -41,17 +41,39 @@ operation registry、旧 `confirm_inbound`、旧 `notify_pkg_binding`、通用 R
 
 ## 2. 主流程
 
+### 2.1 四段因果结构
+
+自动上架按“执行任务驱动 → 机械臂执行 → 业务完成 → Bin/货架独立清场”四段闭合。这里的“任务”不是新增的
+WMS `InboundTask`：WMS 以 `putaway_plan_id` 冻结必须处理的来源成员，WES 以 `putaway_execution_id` 标识该计划在当前
+`LineRunEpoch` 的一次本地执行；二者共同构成自动上架的执行任务边界。
+
+| 分段 | 开始条件 | 完成条件 | 不得混淆 |
+| --- | --- | --- | --- |
+| 执行任务驱动 | 粗分释放快照完整，WMS 返回不可变来源计划，WES 在自动线创建上架执行 | 来源成员、当前 WorkLine 和 Epoch 已冻结；目标资源仍按批次或逐盘晚绑定 | 不新增入库单、波次或兼容任务键，不把计划 `READY` 当作物理完成 |
+| 机械臂执行 | 来源与目标 Bin 均通过物理准入，WMS 为当前料盘返回精确目标 | 北向机械臂完成取盘和复扫，南向机械臂完成 PUT，并形成确定设备结果和位置 Fact | ACK、设备忙闲或已下发命令都不是 PUT 完成；WES 不自选 Bin/Cell |
+| 业务完成 | 正常 PUT、Material NG 和满箱交换已有 WMS 接纳的终局 Fact，来源缺失已有明确 `SOURCE_ABSENT` 决定 | WMS 根据不可变计划和自身持久化事实返回 `COMPLETED` | 不等待目标 Bin 退回、NG Bin 人工取走或来源货架搬离 |
+| Bin/货架独立清场 | 业务成员闭合后仍存在目标 Bin、NG Bin、来源货架或 Transport 义务 | 各对象到达确定位置，外部义务闭合后才满足 WorkLine 释放门禁 | 业务 `COMPLETED` 不释放 WorkLine；清场未完成时不得切换插件或创建新 Epoch |
+
+正常来源成员只有在机械臂可靠 PUT 且 `putaway.material.placement_report@v1` 被 WMS 返回
+`RECORDED | DUPLICATE` 后才完成。`REJECT` 后的 NG 到位 Fact、可靠空取后的 `SOURCE_ABSENT` 等分支可以关闭来源成员，
+但属于各自明确终态，不能冒充正常 PUT 完成。
+
+满箱 `exchange_source` 是同一执行任务中的独立 Transport 分支：它在交换成员位置 Fact 全部闭合后结束，不进入机械臂逐盘执行段；
+其未闭合成员仍会阻止上架业务 `COMPLETED`。四段结构表达因果边界，不要求每类来源都经过相同设备。
+
+### 2.2 Operation 流程映射
+
 | 阶段 | 触发条件 | WMS/WES 交互 | 成功后的处理 |
 | --- | --- | --- | --- |
 | 上架来源计划 | 释放快照完整且无未知位置 | WES 请求 `putaway.source_rack.plan_decide@v1` | WMS 返回不可变 `putaway_plan_id`，冻结全部来源成员和业务资格，不提前冻结交换目标 |
 | 满箱交换 | 当前面来源待处理，且 WMS 当前批次决定为 `READY` | WES 为同面 1～2 对创建一个 `exchange_bins()` Transport | T3 全成功且全部成员 Fact 被 WMS 记录后才重算下一批；否则人工恢复 |
-| 自动线上架准入 | 人工已把 WorkLine 切换为 `INBOUND`，WES 选择一条就绪线 | WES 运送来源单层货架，并按缓存需求请求目标 Bin | 同一 WorkLine 只激活一个 `putaway_execution_id` |
+| 自动线上架准入 | WorkLine 已清线，并在新 Epoch 激活 `automatic_putaway` | WES 运送来源单层货架，并按缓存需求请求目标 Bin | 同一 WorkLine 只激活一个 `putaway_execution_id` |
 | 目标 Bin 投料 | 投料缓存有具体空位且 CTU 有背篓空间 | WES 请求 `putaway.target_bin.supply_batch@v1` | WMS 返回库存主账中至少有一个可分配空 Cell 的精确 Bin |
 | SCAN1 路由 | 实际 Bin 到达 SCAN1 并已完成 `SUPPLY_PLACED` | WES 请求 `putaway.target_bin.route_decide@v1` | WMS 返回进入生产、正常无任务、标记 NG 或等待 |
 | SCAN2 可用性 | SCAN1 返回进入生产 | WES 请求 `putaway.target_bin.work_admission_decide@v1` | WMS 判断实际 Bin 当前是否仍有可分配 Cell |
 | 逐盘上架 | 来源盘到扫码平台并复扫完整六合一码 | WES 请求 `putaway.material.decide@v1` | WMS 返回精确目标 Bin/Cell；PUT 后只记录位置迁移 |
 | SCAN3/SCAN4 分流 | 目标 Bin 完成生产或不进入生产 | WES 按已保存的 NORMAL/NG 结果做物理路由 | NG 跨线到统一出口；NORMAL 经 SCAN4 进入本线退料缓存 |
-| 目标 Bin 退料 | Bin 可靠进入本线退料缓存 | WES 请求 `putaway.target_bin.return_batch@v1` | WMS 为实际候选分配精确五层货架储位 |
+| 目标 Bin 退料 | Bin 可靠进入本次上架执行的 FIFO | WES 请求 `putaway.target_bin.return_batch@v1` | WMS 为连续队首分配当前五层货架面的精确空位 |
 | 上架完成 | 不可变来源成员和逐盘业务 Fact 全部闭合 | WES 请求 `putaway.execution.completion_confirm@v1` | WMS 返回 `COMPLETED \| NOT_COMPLETED`；物理清线独立闭环 |
 
 不定义 WMS 预发的 `InboundTask`、`ReceivingTask` 或 `WMS_GRN_RECEIVED` 设备启动语义。上架由获批粗分合同形成的冻结货架
@@ -214,7 +236,8 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | `putaway.material.ng_placement_report@v1` | WES 到 WMS | 上架料盘可靠到达 NG交接区 | `200 / RECORDED` | §14.4 |
 | `putaway.source.empty_decide@v1` | WES 到 WMS | 来源 Cell形成可靠空取证据 | `200 / DECIDED`：`RETRY \| SOURCE_ABSENT \| WAIT` | §14.5 |
 | `putaway.target_bin.clearance_decide@v1` | WES 到 WMS | 每盘 Fact闭合或不可变来源全部闭合 | `200 / DECIDED`：`KEEP \| RETURN \| WAIT` | §15.1 |
-| `putaway.target_bin.return_batch@v1` | WES 到 WMS | 退料缓存存在实际 Bin候选 | `200 / DECIDED`：四类退料结果 | §15.2 |
+| `putaway.target_bin.return_batch@v1` | WES 到 WMS | 退料缓存存在实际 Bin候选 | `200 / DECIDED`：`READY \| NO_BATCH \| WAIT` | §15.2 |
+| `workline.return_buffer.drain_rack_decide@v1`（候选，未获批） | WES 到 WMS | 停止或切换已请求，当前面持续 `NO_BATCH` 且需要为当前 `putaway_execution_id` 的 FIFO 选择排空货架面 | 候选：`200 / DECIDED`：`READY \| WAIT` | 共同实施硬门禁 |
 | `putaway.target_bin.ng_exit_report@v1` | WES 到 WMS | NG Bin可靠到达统一末端出口 | `200 / RECORDED` | §15.4 |
 | `putaway.execution.completion_confirm@v1` | WES 到 WMS | 本地静态成员与逐盘义务全部闭合 | `200 / DECIDED`：`COMPLETED \| NOT_COMPLETED` | §16.1 |
 | `putaway.source_rack.clearance_decide@v1` | WES 到 WMS | 单层货架已无业务成员 | `200 / DECIDED`：四类清场结果 | §16.2 |
@@ -232,6 +255,7 @@ WMS业务目标只返回逻辑位置。设备坐标、供应商 `location_id`、
 | `rack_release_id` | WES | 单层货架停止接纳后形成的冻结物理快照身份 |
 | `putaway_plan_id` | WMS | 一份不可变上架来源计划；不定义 revision |
 | `putaway_execution_id` | WES | `putaway_plan_id`在一条自动 WorkLine上的本地执行身份 |
+| `line_run_epoch_id` | WES | 一次 WorkLine 插件激活的技术身份；约束本地执行与拓扑，不代替 `putaway_execution_id` 或 WMS 业务键 |
 | `source_execution_id` | WMS | 一个不可变逐盘上架来源成员身份 |
 | `exchange_execution_id` | WMS | 下一交换批次决定中返回的一个满 Bin/空 Bin 交换对身份；不属于来源计划静态成员 |
 | `bin_execution_id` | WES | 实际 Bin本次进入串联 WorkLine后的物理执行身份 |
@@ -345,15 +369,16 @@ WMS 返回 `RECORDED` 或 `DUPLICATE`。只有本批 T3 全部成员 `SUCCEEDED`
 
 ## 11. WorkLine、货架搬运和并发边界
 
-### 11.1 人工模式和 `LineRunEpoch`
+### 11.1 插件切换和 `LineRunEpoch`
 
-自动分拣线由人工切换 `INBOUND`或 `OUTBOUND`工作属性。只有该线无活动 `MaterialExecution`、`BinExecution`、
-`putaway_execution_id`、DeviceCommand和未闭合 TransportTask时允许切换；每次成功切换必须创建新的 `LineRunEpoch`。
-旧 epoch的证据、决定和回调不得驱动新 epoch。
+自动 WorkLine 可以配置 `automatic_putaway` 和 `automatic_picking`，但一个 `LineRunEpoch` 只能激活其中一个插件。只有该线无活动
+`MaterialExecution`、`BinExecution`、`putaway_execution_id`、DeviceCommand、未闭合 TransportTask 和现场对象时才允许切换；
+每次切换必须关闭旧 Epoch 并创建新的 `LineRunEpoch`。旧 Epoch 的证据、决定和回调不得驱动新 Epoch。
 
 ### 11.2 静态工位与 Transport
 
-WES从处于 `INBOUND`、设备健康且无活动上架执行的 WorkLine中选择一条，选择本地静态交换位、来源工作位和缓存位；WMS只
+WES 只从活动 Epoch 已激活 `automatic_putaway`、设备健康且无活动上架执行的 WorkLine 中选择一条，并选择本地静态交换位、
+来源工作位和缓存位；WMS 只
 决定业务货架身份及最终库存位置。所有货架/CTU搬运必须使用 TransportTask，所有机械动作必须使用 DeviceCommand；业务 ACK
 不得代替二者终局。
 
@@ -383,8 +408,8 @@ WES只在投料缓存存在已预留空闲位、CTU背篓存在可用空间且�
 }
 ```
 
-`max_bins`必须等于投料缓存已预留空闲位数与 CTU可用背篓位数的较小值；若退料缓存已满或存在优先退回批次，则必须为零且
-禁止请求供给。
+`max_bins`必须等于投料缓存已预留空闲位数与 CTU可用背篓位数的较小值；退料缓存已满或当前面已有可执行退回批次时，则必须为零且
+禁止请求供给。仅有 FIFO 候选但当前面无合格空位时，可由新供给需求驱动换面或换架。
 
 | `result` | 必填字段 | 含义 |
 | --- | --- | --- |
@@ -410,20 +435,22 @@ WES缓存投影推断库存空闲。收到 `NO_BATCH` 后，新事实可提前�
 `transport_task_id`和 `placed_at`。WMS返回 `RECORDED`或 `DUPLICATE`。Transport中间取走、在途和缓存间移动不产生
 `SOURCE_PICKED`或其他 WMS业务 Fact。
 
-若实际扫码 Bin与供给响应不一致，WES不得创建替代业务身份或继续 SCAN1；冻结实际 Bin、保留 Transport证据并进入对账。
+若实际扫码 Bin与供给响应不一致，WES不得创建替代业务身份或继续 SCAN1；保留 `expected_bin_id + actual_bin_id` 和 Transport 证据，
+将实际 Bin 冻结在当前安全位置，等待独立恢复 wire 获批。现有 `putaway.target_bin.return_batch@v1` 只处理已经进入正常退料 FIFO 的 Bin，
+不能授权这次异常位置迁移；预期 Bin 保持未完成。
 
 ### 12.3 投料与退料批次算法
 
 供给和退回是两个独立请求，不共享批次计数：
 
 - 投料数量上限：`min(投料缓存已预留空闲位, CTU可用背篓位, WMS返回的可用五层货架 Bin数)`；
-- 退料数量上限：`min(退料缓存中已实际到位 Bin数, CTU可用背篓位, WMS返回的可用五层货架储位数)`；
+- 退料数量上限：`min(当前 putaway_execution_id 退料 FIFO 中已实际到位 Bin数, CTU可用背篓位, WMS返回的当前面合格空位数)`；
 - “缓存可用”必须来自 WES位置预留或可靠到位事实，不能用 PLC瞬时计数直接覆盖本地投影；
 - 一次请求的成员与目标响应持久化后不可在重试时增删。
 
 ### 12.4 背压
 
-退料缓存满时停止所有新供给并优先发起退回；投料缓存无预留空闲位时也不得请求供给。当前合同不引入高低水位、自适应吞吐
+退料缓存满时停止把新 Bin 供给到线上；仍允许已接收的新供给需求驱动货架换面或换架，以及执行能够确定释放退料容量的已冻结搬运。当前面有可执行退回批次时优先退回。投料缓存无预留空闲位时也不得请求供给。当前合同不引入高低水位、自适应吞吐
 或预测算法。现场需要更复杂节拍时，必须基于实测数据另行审批，不能由插件私自添加第二套规则。
 
 ## 13. SCAN1—SCAN4 路由
@@ -566,19 +593,23 @@ WMS根据库存主账、剩余可用 Cell和业务策略决定清退；WES不得
 
 | 请求字段 | 约束 |
 | --- | --- |
-| `putaway_execution_id`、`workline_code`、`line_run_epoch_id` | 当前活动执行和 epoch |
-| `return_buffer_bins` | 仅含已实际到位的 `bin_execution_id+bin_id+buffer_position` |
+| `workline_code`、`line_run_epoch_id` | 当前 WorkLine 和活动 Epoch；不新增 WMS 业务任务键 |
+| `putaway_execution_id` | 当前上架执行；退料 FIFO 不跨执行共享 |
+| `rack_id`、`rack_face` | 已确认到达、当前准备承接退料 Bin 的五层货架和实际面 |
+| `return_buffer_bins` | 当前 `putaway_execution_id` 退料 FIFO 的连续队首，仅含已实际到位的 `bin_execution_id+bin_id+buffer_position` |
 | `ctu_free_slots`、`max_bins` | `max_bins=min(实际候选数, CTU空位数)` |
 
 | `result` | 必填字段 | 含义 |
 | --- | --- | --- |
-| `READY` | `returns` | 每个成员含精确 `bin_id`和目标五层货架 `rack_id+rack_face+slot_id` |
-| `NO_BATCH` | `reason_code`、`retry_after_ms` | 当前快照没有可执行退回批次 |
+| `READY` | `returns` | 每个成员含精确 `bin_id`和请求当前面的目标 `rack_id+rack_face+slot_id` |
+| `NO_BATCH` | `reason_code`、`retry_after_ms` | WMS 本次不能为 FIFO 队首分配当前面合格空位 |
 | `WAIT` | `reason_code`、`retry_after_ms` | 暂不能可靠分配 |
 
-`READY`成员不得超过请求候选且不得重复；响应一经持久化不可换成员或换目标。到位后逐 Bin调用 §12.2的 `RETURN_PLACED`。
-收到 `NO_BATCH` 后，新事实可提前唤醒；否则 WES等待 `retry_after_ms`到期，再以新的 `operation_id + previous_operation_id` 基于
-仍在退料缓存的当前候选重新求值。
+`READY`成员必须是请求 FIFO 列表的连续前缀，不得超过请求候选或包含重复成员；每个目标必须位于请求的 `rack_id + rack_face`，但不要求是 Bin 的原货架、原面或原储位。响应一经持久化不可换成员或换目标。到位后逐 Bin调用 §12.2的
+`RETURN_PLACED`。
+
+当前面没有合格空位属于正常 `NO_BATCH`，不是 NG 或 `STATE_CONFLICT`。正常运行时退料 Bin 留在 FIFO，不为自己触发换面或换架；新目标 Bin 供给需求可以驱动货架切换，新面到位后重新评估 FIFO。停止或切换已请求时，目标合同允许 WMS 为排空当前 `putaway_execution_id` 的既有 FIFO 选择货架面；但候选 `workline.return_buffer.drain_rack_decide@v1` 尚未获批。在其严格 DTO、完整货架切换目标和幂等 fixture 冻结前，该路径保持 `ReviewRequired/BLOCKED`：WES 停止新任务和新 Bin，Epoch 保持 `ACTIVE`，不创建货架切换或退料 Transport。
+收到 `NO_BATCH` 后，新货架面到位或新事实可提前唤醒；否则 WES等待 `retry_after_ms`到期，再以新的 `operation_id + previous_operation_id` 基于仍在退料缓存的当前候选重新求值。
 
 ### 15.3 NG Bin跨线规则
 
@@ -620,7 +651,7 @@ WMS 必须依据其持久化的不可变来源计划、逐批决定和事实裁�
 | `REJECT` | `reason_code` | 状态冲突，进入人工处理 |
 | `WAIT` | `reason_code`、`retry_after_ms` | WMS暂不能决定 |
 
-只有 Transport确定成功且所有本地清理对象闭合，WorkLine才进入 `RELEASE_READY`并允许切模式或接纳下一执行。
+只有 Transport确定成功且所有本地清理对象闭合，WorkLine才满足释放门禁并允许切模式或接纳下一执行。排空阶段不接纳下一执行；全部清场义务闭合后才关闭 Epoch。
 
 ### 16.3 `putaway.execution.reconciliation_decided@v1`
 
@@ -666,7 +697,9 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 | 两对交换混入不同 Left 面或不同 Right 面 | 整条 T1 确定拒绝，不创建部分任务 |
 | 两对满箱交换仅一对成功 | 整批不成功，停止交换并冻结最小安全范围等待人工恢复 |
 | 投料缓存只有一空位、CTU有四空位 | `max_bins=1`，不得超发 |
-| 退料缓存满 | 停止新供给，优先退回；不启用未定义水位算法 |
+| 当前面有可执行退回批次 | 优先消耗当前 `putaway_execution_id` 的 FIFO；不启用未定义水位算法 |
+| 当前面无合格退料空位 | WMS返回 `NO_BATCH`，Bin留在 FIFO；不转 NG、不返回 `STATE_CONFLICT`，新供给需求可驱动换面或换架 |
+| 退料缓存满 | 停止新 Bin 供给；仍允许能够释放 FIFO 容量的货架切换或已冻结搬运 |
 | 供给响应 Bin与投料口实扫不一致 | 不创建替代业务身份，不进 SCAN1，冻结对账 |
 | SCAN1无生产任务 | 返回 `NO_PRODUCTION_TASK`，不标 NG，经 SCAN3/SCAN4进入本线退料缓存 |
 | SCAN1标记 NG | 下游 SCAN1不再次问 WMS；最终进入 `BIN_NG_EXIT` |
@@ -678,8 +711,8 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 | NG Bin到出口但未人工取走 | WMS NG Fact可闭合，WES仍保留本地位置；人工扫码取走后关闭 BinExecution |
 | Fact响应丢失 | 原 operation重试，WMS返回 `DUPLICATE`，不得生成同义新 Fact |
 | DeviceCommand或 Transport未知 | 等待或消费同一对象后续发布的更高权威版本，不重发等价物理动作 |
-| WMS业务完成但仍有物理清理 | 计划可 `COMPLETED`，WorkLine不得 `RELEASE_READY` |
-| 人工切换 WorkLine模式时仍有活动对象 | 切换被拒绝，不生成新 `LineRunEpoch` |
+| WMS业务完成但仍有物理清理 | 计划可 `COMPLETED`，但 WorkLine 尚未满足释放门禁 |
+| 切换自动上架/自动拣货插件时仍有活动对象 | 切换被拒绝，不关闭旧 Epoch，也不生成新 `LineRunEpoch` |
 
 ## 19. 实施与验收所有权
 
@@ -712,5 +745,6 @@ WES只修正后续业务投影和准入门禁，不改写 DeviceCommand或 Trans
 | C8 | 在业务插件包内完成 §18 场景验收；WES 核心仓库只验收共享合同和可靠性不变量 | WES、交付 | BLOCKED | 依赖 C1—C7 获批后实施 |
 | C9 | 现场验证两对交换的“非同批全成功即停线”策略不会把人员或机械臂置于危险状态 | ECS、RCS、现场 | PENDING | 未提供 |
 | C10 | 审批 SRS、最小执行架构和主计划当前真源同步，清除库存阈值或三点 SCAN 等过期表述 | 联合 | PENDING | 未提供 |
+| C11 | 冻结 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、严格 DTO、当前 `putaway_execution_id`、旧架离场去向、新架可靠来源/工作位/到达面、目标 rack/face 原子绑定与非空 FIFO 前缀容量保留、`WAIT` 和幂等 fixture | WMS、WES、RCS | BLOCKED | 未提供 |
 
-只有 C1—C10 全部为 `APPROVED`，本文才构成代码实施授权。
+只有 C1—C11 全部为 `APPROVED`，本文才构成代码实施授权。

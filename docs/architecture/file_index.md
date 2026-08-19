@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-19
+**最后更新**：2026-08-20
 
 ## 1. 真源与入口
 
@@ -30,7 +30,7 @@
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
-| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 分批计划、Cell 晚绑定、不可逆执行、安全取消、NG 与双面目标架业务设计 |
+| `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段架构收敛总控计划 |
 | `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
@@ -39,14 +39,14 @@
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
-| `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；说明每个现场场景的调用参数、来源、WMS 事务和回调生成方式 |
+| `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；自动出库和 Phase 9 上架待评审，人工分拣目前仅登记业务设计、尚无 wire |
 | `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖 T2/T3 客户端生成，T1 服务端合同由 WMS 交付 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
-| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库推荐端点、Payload、返回 JSON、幂等和联调评审基线；正式 Schema 待双方冻结 |
+| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；正常 Bin 通过 Epoch 级 `return_batch` FIFO 回库，可识别但非预期 Bin 冻结并等待独立恢复 wire；停线排空货架面决定 wire 未获批 |
 | `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` | Phase 8 粗分逐盘入库的获批业务合同；目标 Cell 晚绑定、五态生命周期和两个既有 `RACK_MOVE` 的唯一真源 |
-| `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 9 满箱交换和自动上架的严格 DTO、幂等、物理门禁和联调评审基线；当前为 `ReviewRequired` |
+| `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 9 满箱交换和自动上架的执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线排空货架面决定 wire 未获批，当前为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
 | `docs/hardware/wms_rcs_interface_requirements.md` | WMS 交互约定初稿；只读差异清洗输入，不是当前实现真源 |
 | `docs/architecture/device-command-contract.md` | DeviceCommand、设备统一接口与 WorkLine 插件边界 |
