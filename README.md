@@ -56,6 +56,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [WES 出库操作顶层设计](docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md)：评审中的 `PickingTask` 分批计划、不可逆执行和安全取消业务设计；当前不构成实施授权。
 - [WMS / WES 自动入库与上架交互要求](docs/contracts/wms-inbound-putaway-integration-requirements.md)：Phase 9 满箱交换和自动上架的业务合同评审真源；当前为 `ReviewRequired`，不代表已实施。
 - [WES 架构收敛十二阶段总控](docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md)：Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 仓内实现与插件部署 E2E 已完成，但供应商一致性和现场联合验收仍为 `IN_PROGRESS — EXTERNAL BLOCKED`。
+- [粗分机 WorkLine Epoch 激活与多 Endpoint 派发计划](docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md)：后端工程包 1–4 已完成并提交；前端 Device、WorkLine 配置与 START 操作按独立合同冻结门禁待实施。
 - [WORKLINE 业务插件二次开发指南](docs/plugin_development_guide.md)：最小插件 SPI、封闭 Decision 与独立插件包交付约定。
 - [WMS 北向交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义共享 Client 与后续新增具体 WMS API 的开发标准；业务结果由 WMS 给出，搬运与 RCS 状态归 Phase 4。
 - [AGV/CTU 通用搬运能力合同](docs/contracts/transport-fulfillment-contract.md)：定义四类搬运请求、同步接纳 ACK、成员位置事实、异步最终结果、幂等和对账边界；Phase 6 已接入唯一生产路由、API/Celery 生命周期和可靠队列，但尚无业务 producer。

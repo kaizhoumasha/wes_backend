@@ -1,6 +1,6 @@
 # 粗分机 WorkLine Epoch 激活与多 Endpoint 派发实施计划
 
-**状态：** 工程评审通过 — 等待实施授权与执行基线冻结
+**状态：** 后端工程包 1–4 已完成并提交（`fe9845df`）；前端工程包 5 等待后端合同进入干净 `develop` 后独立实施
 
 **目标：** 提供唯一生产 START 入口，原子冻结 WorkLine 运行代际，并让每个可派发物理 Device 按其 Epoch Endpoint 派发。
 
@@ -140,6 +140,7 @@ START 成功只表示通用门禁通过、Epoch 已冻结且 WorkLine 投影为 
 唯一纯函数 `src/app/device/endpoint.py::validate_device_endpoint_base_url()` 同时负责校验和 canonicalization：
 
 - 只接受无凭据、无业务路径、无 query/fragment 的局域网 `http` origin；
+- 主机接受 RFC1918、IPv6 ULA、回环地址、内部单段服务名或带点完整域名；显式拒绝公网 IP、特殊 IP 和 legacy numeric host；
 - 主机名小写，IP 使用规范形式，IPv6 正确保留方括号；
 - 显式端口必须可解析且处于 `1..65535`；默认端口 `80` 归一为省略；
 - 去除末尾 `/`，返回重建后的 canonical origin。

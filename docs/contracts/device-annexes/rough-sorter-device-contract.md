@@ -39,6 +39,8 @@ WES wire；供应商私有路径、坐标、字段、错误和适配只留在 EC
 
 `Device.endpoint_base_url` 是可派发物理设备的 Endpoint 主数据；纯上报、人工或逻辑设备允许为空。多个 Device 可以共享同一
 Endpoint，同一 WorkLine 内的 Device 也可以分别指向不同 Endpoint。Endpoint 不属于插件配置，不新增 `DeviceEndpoint` 实体。
+Endpoint 主机接受 RFC1918、IPv6 ULA、回环地址、内部单段服务名或带点完整域名；公网 IP 及 unspecified、广播、multicast、link-local、
+reserved、文档网段和 legacy numeric host 均失败关闭。域名在配置校验阶段只做语法与 canonicalization，不把 DNS 解析结果冻结为设备身份。
 
 每个部署实例必须把派发链实际读取的不可变值写入现有 `LineRunEpochDeviceBinding`。`topology_digest` 只摘要创建前即可形成的稳定
 topology input，不摘要数据库生成的 `line_run_epoch_id`、`device_id`、binding 主键、审计字段或时间戳；父 Epoch 关联仍必须持久化，
