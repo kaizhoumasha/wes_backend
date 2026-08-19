@@ -4,7 +4,7 @@ status: Approved
 created_at: 2026-07-31
 updated_at: 2026-08-20
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
-implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 backend RC candidate source verified, image not published
+implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 backend RC closed at f51677b62f5da906d4b60fa5a528d04692aff7a2 with immutable image 88-f51677b; current status in docs/integration/rough-sorter-joint-acceptance.md
 delivery_gate: backend and frontend close and publish their own RC independently; onsite deployment and validation are separate project activities
 system_stage: pre_release
 migration_strategy: direct_replacement

@@ -28,8 +28,11 @@ pipeline {
                     String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: 'develop'
                     String targetBranch = env.gitlabTargetBranch ?: ''
                     String gitlabActionType = (env.gitlabActionType ?: env.GITLAB_OBJECT_KIND ?: '').trim().toUpperCase()
+                    String beforeCommit = (env.gitlabBefore ?: '').trim()
+                    String afterCommit = (env.gitlabAfter ?: '').trim()
                     boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
                     boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
+                    boolean isDevelopPush = gitlabActionType == 'PUSH' && sourceBranch == 'develop' && !isMergeRequest
                     if (isMergeRequest && !targetBranch) {
                         error('Merge request build requires gitlabTargetBranch')
                     }
@@ -38,6 +41,8 @@ pipeline {
                     env.CI_TARGET_BRANCH = targetBranch
                     env.CI_EVENT_TYPE = gitlabActionType ?: 'MANUAL'
                     env.CI_IS_MERGE_REQUEST = isMergeRequest ? 'true' : 'false'
+                    env.CI_DIFF_BASE = isMergeRequest ? "origin/${targetBranch}" : ''
+                    env.CI_RELEASE_GATE_READY = 'false'
 
                     echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.CI_EVENT_TYPE}"
 
@@ -70,6 +75,24 @@ pipeline {
                     String shortCommit = fullCommit.take(7)
                     String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
                     String channelTag = branchTag
+
+                    if (isDevelopPush) {
+                        if (!(beforeCommit ==~ /^[0-9a-fA-F]{40}$/) || beforeCommit ==~ /^0{40}$/) {
+                            error('Develop push requires a non-zero 40-character gitlabBefore')
+                        }
+                        if (!(afterCommit ==~ /^[0-9a-fA-F]{40}$/) || !afterCommit.equalsIgnoreCase(fullCommit)) {
+                            error('Develop push gitlabAfter must match the checked out HEAD')
+                        }
+                        int ancestryStatus = sh(
+                            returnStatus: true,
+                            script: "git merge-base --is-ancestor '${beforeCommit}' '${fullCommit}'"
+                        )
+                        if (ancestryStatus != 0) {
+                            error('Develop push must fast-forward from gitlabBefore')
+                        }
+                        env.CI_DIFF_BASE = beforeCommit
+                        env.CI_RELEASE_GATE_READY = 'true'
+                    }
 
                     switch (sourceBranch) {
                         case 'develop':
@@ -191,7 +214,7 @@ pipeline {
         stage('Mock Image Contracts') {
             when {
                 expression {
-                    env.CI_IS_MERGE_REQUEST == 'true'
+                    env.CI_IS_MERGE_REQUEST == 'true' || env.CI_RELEASE_GATE_READY == 'true'
                 }
             }
             steps {
@@ -214,7 +237,8 @@ pipeline {
         stage('HEAVY Required') {
             when {
                 expression {
-                    env.CI_IS_MERGE_REQUEST == 'true' && env.CI_TARGET_BRANCH?.trim()
+                    (env.CI_IS_MERGE_REQUEST == 'true' || env.CI_RELEASE_GATE_READY == 'true') &&
+                    env.CI_DIFF_BASE?.trim()
                 }
             }
             steps {
@@ -223,10 +247,10 @@ pipeline {
                     mkdir -p reports
 
                     docker run --rm \
-                        -e CI_TARGET_BRANCH="${CI_TARGET_BRANCH}" \
+                        -e CI_DIFF_BASE="${CI_DIFF_BASE}" \
                         -v "$WORKSPACE/.git:/app/.git:ro" \
                         "${CI_IMAGE}" \
-                        sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "origin/${CI_TARGET_BRANCH}"' \
+                        sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' \
                         > reports/heavy-tests.txt
 
                     if [ ! -s reports/heavy-tests.txt ]; then
@@ -300,7 +324,9 @@ pipeline {
             when {
                 expression {
                     env.CI_EVENT_TYPE == 'PUSH' &&
-                    env.CI_IS_MERGE_REQUEST != 'true'
+                    env.CI_IS_MERGE_REQUEST != 'true' &&
+                    env.CI_SOURCE_BRANCH == 'develop' &&
+                    env.CI_RELEASE_GATE_READY == 'true'
                 }
             }
             steps {

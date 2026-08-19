@@ -25,8 +25,12 @@ GitLab 最终 tree 相对 GitHub 只包含 CI、测试治理、发布文档和�
 2. GitLab `gitlab/develop` 只接收已经合入 GitHub 的精确 Commit，并通过 webhook 触发 Jenkins。
 3. GitLab 发布前必须证明当前 GitLab HEAD 是目标 GitHub SHA 的祖先；不满足时停止，禁止 force push 和聚合 cherry-pick。
 4. GitHub Merge 与 GitLab Push 分别取得授权；GitHub PR、GitLab MR 和 Jenkins 手工构建不发布镜像。
-5. RC 和现场选版只使用 immutable tag、manifest digest 与 OCI revision；`develop` channel 不是验收证据。
-6. `docs/integration/rough-sorter-joint-acceptance.md` 是 Phase 8 当前状态、RC 证据和外部验收边界的唯一真源；实施计划只保存历史和门禁。
+5. GitLab `develop` PUSH 必须校验 webhook `gitlabBefore` → `gitlabAfter` 为 fast-forward，并以前一 SHA 为基线运行 Mock
+   合同与 selector 选中的 HEAVY；字段缺失、HEAD 不匹配或 ancestry 不成立时不得发布。
+6. 发布 Job 必须是由 GitLab webhook 触发的普通 Pipeline，并使用 per-project Secret Token 认证；Poll SCM、Multibranch Pipeline
+   和手工构建均不得替代发布触发。
+7. RC 和现场选版只使用 immutable tag、manifest digest 与 OCI revision；`develop` channel 不是验收证据。
+8. `docs/integration/rough-sorter-joint-acceptance.md` 是 Phase 8 当前状态、RC 证据和外部验收边界的唯一真源；实施计划只保存历史和门禁。
 
 ## 3. 执行顺序
 
@@ -37,7 +41,8 @@ GitLab 最终 tree 相对 GitHub 只包含 CI、测试治理、发布文档和�
 - [x] 重放 `6e27227e` 的 RC 关闭语义，统一主计划、实施历史和验收真源。
 - [x] 更新 Jenkins 文档，冻结 GitHub 真源、GitLab 发布镜像和 fast-forward 门禁。
 - [x] 完成纯文档检查、Jenkins 聚焦测试、HEAVY selector 与 staged GitNexus 范围检测。
-- [ ] 提交治理分支并推送 GitHub；创建历史汇合 PR 前单独确认授权。
+- [x] 修复 GitLab `develop` PUSH 的 previous-SHA、Mock/HEAVY 与 webhook 认证门禁，并用 Jenkins/selector 合同测试锁定。
+- [x] 提交治理分支并推送 GitHub；经单独授权已创建历史汇合 PR #120。
 - [ ] GitHub 合入后确认 GitLab HEAD 是 merge SHA 的祖先，再单独授权 fast-forward 推送 GitLab。
 - [ ] 新规范 `develop` 稳定后，只把 `bec1ccd7` 的文档提交重放到新分支并独立评审。
 

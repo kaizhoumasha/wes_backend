@@ -142,16 +142,18 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 
 ##### Build Triggers
 
-选择以下之一：
+发布流水线必须使用 GitLab Webhook：
 
-**方式 1：GitLab Webhook（推荐）**
+**方式 1：GitLab Webhook（发布必需）**
 - ✅ **Build when a change is pushed to GitLab**
+- 展开 **Advanced**，点击 **Secret Token → Generate**，只把生成值配置到 GitLab Webhook
 - GitLab webhook URL: `http://192.168.0.220:9081/project/wes_backend-ci`
 - 记录这个 URL，稍后在 GitLab 中配置
 
-**方式 2：Poll SCM（备选）**
+**方式 2：Poll SCM（仅验证，不可发布）**
 - ✅ **Poll SCM**
 - Schedule: `H/5 * * * *`（每 5 分钟检查一次）
+- Poll SCM 不提供 webhook 的 `gitlabBefore` / `gitlabAfter`，因此发布门禁会 fail closed，不能作为 `develop` 发布触发
 
 ##### Pipeline 配置
 
@@ -159,14 +161,16 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 - **SCM**: Git
   - **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
   - **Credentials**: 选择 `gitlab-credentials`
-  - **Branches to build**: `*/develop`（或 `*/main`）
+  - **Branches to build**: `*/develop`
 - **Script Path**: `Jenkinsfile.backend-ci`
+
+发布 Job 的 Pipeline SCM 必须固定从 `develop` 加载当前门禁脚本；`main` 或其他分支如需验证，另建不发布镜像的 Job。
 
 #### 5.3 保存配置
 
 点击 **Save** 保存配置。
 
-### 步骤 6：配置 GitLab Webhook（推荐）
+### 步骤 6：配置 GitLab Webhook（发布必需）
 
 #### 6.1 在 GitLab 中配置 Webhook
 
@@ -176,7 +180,7 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
 4. 配置 Webhook：
    ```
    URL: http://192.168.0.220:9081/project/wes_backend-ci
-   Secret token: (留空或设置一个密钥)
+   Secret token: 与 Jenkins Job Advanced 中生成的 per-project token 完全一致（必填）
    Trigger:
      ✅ Push events
      ✅ Merge request events
@@ -185,6 +189,8 @@ ssh -i ~/.ssh/jenkins_rsa root@192.168.0.221 "echo 'SSH 连接成功'"
      或取消勾选（如果使用 HTTP）
    ```
 5. 点击 **Add webhook**
+
+Secret token 不得写入仓库、文档或构建日志；Jenkins 与 GitLab 任一侧缺失或不一致时，发布触发必须视为未配置。
 
 #### 6.2 测试 Webhook
 
@@ -273,12 +279,11 @@ docker-compose --version
 - `develop`：
   - 构建 CI 镜像
   - 执行质量检查与测试
-  - GitLab PUSH 时构建并推送 backend immutable tag 与 `develop` channel tag
+  - GitLab PUSH 时校验 `gitlabBefore` → `gitlabAfter` fast-forward，以前一 SHA 为基线执行 Mock 与选中的 HEAVY
+  - 上述门禁通过后构建并推送 backend immutable tag 与 `develop` channel tag
 - `main` / 其他分支：
   - `wes_backend-ci` 仍执行 CI
-  - GitLab PUSH 时推送 backend immutable tag 与 channel tag
-    - `main` → `prod`
-    - 其他分支 → 分支同名 tag
+  - 不推送 runtime 镜像或 channel tag
 - MR 和 Jenkins 手工构建：执行验证但不推送镜像
 
 部署行为约束：
@@ -336,7 +341,8 @@ git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
 git push origin <feature-branch>
 
 # GitHub Merge 与 GitLab Push 分别取得授权后，发布精确 SHA。
-git fetch origin gitlab
+git fetch origin
+git fetch gitlab
 release_sha="$(git rev-parse origin/develop)"
 git merge-base --is-ancestor gitlab/develop "$release_sha"
 git push gitlab "$release_sha:refs/heads/develop"
@@ -361,10 +367,10 @@ git push gitlab "$release_sha:refs/heads/develop"
 - ✅ **Quality Gate**：格式、Lint、Bandit、架构门禁、脚本合同和 FAST
 - ✅ **Compose Contracts**：主机端渲染生产与 TEST 部署配置
 - ✅ **RuntimeInbox PostgreSQL Acceptance**：隔离 PostgreSQL 验收
-- ✅ **Mock Image Contracts**：MR 构建并验证 Mock 镜像
-- ✅ **HEAVY Required**：MR 按目标分支差异选择并执行 HEAVY
+- ✅ **Mock Image Contracts**：MR 与已验证的 `develop` PUSH 构建并验证 Mock 镜像
+- ✅ **HEAVY Required**：MR 按目标分支、`develop` PUSH 按 `gitlabBefore` 差异选择并执行 HEAVY
 - ✅ **Build Runtime Image**：运行时镜像构建
-- ✅ **Push Runtime Image**：仅 GitLab PUSH 发布后端镜像；MR/手工构建不发布
+- ✅ **Push Runtime Image**：仅门禁通过的 GitLab `develop` PUSH 发布后端镜像；MR、其他分支 PUSH 和手工构建不发布
 
 `wes_backend-ci` 不再自动触发 TEST 部署或选择前端镜像。`wes_test_deploy` 由部署人员单独运行并显式选择前后端版本。
 
@@ -453,6 +459,7 @@ docker exec wes_api_test curl -f http://127.0.0.1:8001/health
 - [ ] SSH 凭据已配置
 - [ ] SSH 连接测试通过
 - [ ] Pipeline 项目已创建
+- [ ] `wes_backend-ci` 是普通 Pipeline Job，不是 Multibranch Pipeline
 - [ ] GitLab Webhook 已配置
 - [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交到 GitLab
 - [ ] 手动构建测试通过
@@ -467,9 +474,9 @@ docker exec wes_api_test curl -f http://127.0.0.1:8001/health
    - 安装 Email Extension 插件
    - 配置构建失败邮件通知
 
-2. **多分支 Pipeline**：
-   - 创建 Multibranch Pipeline
-   - 自动发现和构建所有分支
+2. **分支验证 Job**：
+   - 如需自动发现分支，可另建不发布镜像的 Multibranch Pipeline
+   - 不得替换依赖 `gitlabBefore` / `gitlabAfter` 的 `wes_backend-ci` 发布 Job
 
 3. **生产环境部署**：
    - 添加生产环境部署阶段

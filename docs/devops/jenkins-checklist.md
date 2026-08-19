@@ -42,6 +42,7 @@
 - [ ] Jenkins 首页 → **New Item**
 - [ ] 项目名称：`wes_backend-ci`
 - [ ] 类型：**Pipeline**
+- [ ] 未使用 **Multibranch Pipeline**；发布门禁依赖 GitLab webhook 的 `gitlabBefore` / `gitlabAfter`
 - [ ] 点击 **OK**
 
 ### 5. 配置 Pipeline
@@ -53,6 +54,7 @@
 #### Build Triggers
 
 - [ ] **Build when a change is pushed to GitLab**
+- [ ] 展开 **Advanced**，点击 **Secret Token → Generate**；token 只配置到 GitLab Webhook，不写入仓库或文档
 - [ ] 记录 Webhook URL：`http://192.168.0.220:9081/project/wes_backend-ci`
 
 #### Pipeline
@@ -72,6 +74,7 @@
 - [ ] 配置：
   ```
   URL: http://192.168.0.220:9081/project/wes_backend-ci
+  Secret token: 与 Jenkins Job 中生成的 per-project token 完全一致（必填）
   Trigger: Push events, Merge request events
   SSL verification: 取消勾选（HTTP）
   ```
@@ -152,7 +155,8 @@ git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
 git push origin <feature-branch>
 
 # GitHub PR 合入后，按精确 SHA fast-forward 到 GitLab。
-git fetch origin gitlab
+git fetch origin
+git fetch gitlab
 release_sha="$(git rev-parse origin/develop)"
 git merge-base --is-ancestor gitlab/develop "$release_sha"
 git push gitlab "$release_sha:refs/heads/develop"
@@ -175,10 +179,10 @@ git push gitlab "$release_sha:refs/heads/develop"
   - [ ] Quality Gate（格式、Lint、Bandit、架构、脚本合同与 FAST）
   - [ ] Compose Contracts（主机端渲染生产与 TEST 部署配置）
   - [ ] RuntimeInbox PostgreSQL Acceptance
-  - [ ] Mock Image Contracts（MR）
-  - [ ] HEAVY Required（MR）
+  - [ ] Mock Image Contracts（MR 与已验证的 `develop` PUSH）
+  - [ ] HEAVY Required（MR 按目标分支、`develop` PUSH 按 `gitlabBefore` 差异选择）
   - [ ] Build Runtime Image
-  - [ ] Push Runtime Image（仅 GitLab PUSH；MR/手工构建不发布）
+  - [ ] Push Runtime Image（仅门禁通过的 GitLab `develop` PUSH；MR、其他分支 PUSH 和手工构建不发布）
 
 ### 10. 测试 TEST 部署 Pipeline
 
@@ -312,7 +316,7 @@ sudo usermod -aG docker jenkins
    - 构建 CI 镜像
    - 代码检查（并行）
    - 单元测试（并行）
-   - 仅 GitLab PUSH 推送 backend immutable tag 和 channel tag
+   - 仅门禁通过的 GitLab `develop` PUSH 推送 backend immutable tag 和 channel tag
 5. **部署人员只用 immutable tag/digest 按需运行 TEST/现场部署**
 6. **通知结果**（可选配置）
 
