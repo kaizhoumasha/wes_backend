@@ -75,6 +75,9 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         for table in (
             "callback_logs",
             "device_commands",
+            "line_run_epoch_device_bindings",
+            "line_run_epoch_position_bindings",
+            "line_run_epochs",
             "ng_return_items",
             "resource_bin_cell_occupancies",
             "resource_bin_content_snapshot_items",

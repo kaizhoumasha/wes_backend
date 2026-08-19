@@ -359,6 +359,12 @@ async def simulate_workline_estop(
     "/worklines/{workline_id}/start",
     summary="[biz:workline:start] 启动 WorkLine 并激活运行代际",
     response_model=ResponseSchemaModel[WorkLineStartResponse | WorkLineStartErrorResponse],
+    responses={
+        200: {"model": ResponseSchemaModel[WorkLineStartResponse], "description": "START 成功或幂等 replay 成功"},
+        404: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "WorkLine 不存在"},
+        409: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "START 状态或幂等身份冲突"},
+        503: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "START 服务不可用"},
+    },
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:start"))],
 )

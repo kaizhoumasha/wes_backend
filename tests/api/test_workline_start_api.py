@@ -97,6 +97,22 @@ def test_start_route_replaces_sandbox_contract_and_uses_dedicated_permission() -
     assert permissions == ["biz:workline:start"]
 
 
+def test_start_openapi_declares_success_and_runtime_failure_contracts_separately() -> None:
+    app = FastAPI()
+    app.include_router(operation_api.router, prefix="/api/v1/workline/operations")
+
+    responses = app.openapi()["paths"]["/api/v1/workline/operations/worklines/{workline_id}/start"]["post"]["responses"]
+
+    assert set(responses) == {"200", "404", "409", "422", "503"}
+    assert responses["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ResponseSchemaModel_WorkLineStartResponse_"
+    }
+    for status_code in ("404", "409", "503"):
+        assert responses[status_code]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ResponseSchemaModel_WorkLineStartErrorResponse_"
+        }
+
+
 def test_start_request_is_closed_and_normalizes_stable_identity() -> None:
     payload = operation_api.WorkLineStartRequest(request_id="  REQUEST-1  ")
     assert payload.request_id == "REQUEST-1"
