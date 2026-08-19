@@ -58,6 +58,7 @@ def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs()
     required_paths = (
         "Dockerfile",
         "docker-compose.ci-heavy.yml",
+        "docker-compose.frontend.yml",
         "docker-compose.test-deploy.yml",
         "docker-compose.wms-acceptance.yml",
         "redis/redis.conf",
@@ -72,6 +73,7 @@ def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs()
             "**/*.pyc",
             "!Dockerfile",
             "!docker-compose.ci-heavy.yml",
+            "!docker-compose.frontend.yml",
             "!docker-compose.test-deploy.yml",
             "!docker-compose.wms-acceptance.yml",
             "!redis/",
