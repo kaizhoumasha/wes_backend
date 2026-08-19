@@ -13,7 +13,7 @@
 
 | 层级 | 状态 | 当前有效证据 | 证据边界 / 阻塞 |
 | --- | --- | --- | --- |
-| 核心与共享基础能力 | PASS；最终工作树已验证 | 当前候选快照 QUALITY：`3624 passed, 4 skipped`；本次 selector HEAVY：`85 passed, 0 skipped`；计划锁定的核心 FAST owner：`21 passed` | 本次未修改 Phase 8 生产代码、插件 E2E、migration 或 schema；对应既有相同指纹证据继续有效 |
+| 核心与共享基础能力 | PASS；最终工作树已验证 | 当前候选快照 QUALITY：`3625 passed, 4 skipped`；本次 selector HEAVY：`85 passed, 0 skipped`；计划锁定的核心 FAST owner：`21 passed` | 本次未修改 Phase 8 生产代码、插件 E2E、migration 或 schema；对应既有相同指纹证据继续有效 |
 | WMS Adapter 合同 | PASS | FAST owner、QUALITY 与 HEAVY 均通过；operation、DTO、幂等、`WAIT` 后继与投递未知由仓库合同测试拥有 | 只证明 WES 侧 ACL 与合同；真实 WMS 联调为 `NOT RUN` |
 | 粗分业务能力本机 Mock 联调 | PASS | `HEAD@c8144050` 干净 archive production image（source manifest `78313267…`）插件 E2E：`11 passed, 0 skipped` | 真实 WES HTTP/PostgreSQL/Redis/Celery/Beat；WMS/ECS 为 stdlib mock，不证明供应商、PLC、RCS 或现场物理闭环 |
 | 后端 RC 镜像 | PASS；PUBLISHED | 不可变标签 `88-f51677b`，manifest `sha256:e38dec0294d406540c734d86c70da85682438627a9f8e685d54e3a2f3883a453`；OCI revision=`f51677b62f5da906d4b60fa5a528d04692aff7a2`，source-manifest=`bd1a1d33d4e27ac54ddbddd126eef660aea1c13c` | Jenkins #88 由 GitLab push 触发并成功；`develop` channel 仅表示最新候选，不作为 RC 关闭或现场选版证据 |

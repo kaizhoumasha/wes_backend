@@ -14,7 +14,7 @@
 | 文件 | 说明 |
 |------|------|
 | `Jenkinsfile.backend-ci` | 后端 CI 与镜像发布 |
-| `Jenkinsfile.test-deploy` | TEST 环境自动部署 |
+| `Jenkinsfile.test-deploy` | TEST 环境独立部署入口 |
 | `prod-release-deploy.md` | 生产环境手动发布 Runbook |
 | `jenkins-setup-current-env.md` | 详细配置指南 |
 | `jenkins-checklist.md` | 快速配置清单 |
