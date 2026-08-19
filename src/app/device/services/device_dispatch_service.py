@@ -60,6 +60,10 @@ class ObservationRepositoryPort(Protocol):
     async def add_status_observation(self, db: object, observation: DeviceStatusObservation): ...
 
 
+class EndpointAdapterProviderPort(Protocol):
+    async def get_adapter(self, endpoint_base_url: str) -> EcsAdapter: ...
+
+
 class DeviceDispatchService:
     """HTTP 在事务外执行；每次写回都用 claim token 重新锁定。"""
 
@@ -67,14 +71,14 @@ class DeviceDispatchService:
         self,
         *,
         session_factory: async_sessionmaker[AsyncSession],
-        adapter: EcsAdapter,
+        adapter_provider: EndpointAdapterProviderPort,
         command_repository: DispatchCommandRepositoryPort | None = None,
         epoch_repository: DispatchEpochRepositoryPort | None = None,
         observation_repository: ObservationRepositoryPort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
         self._sessions = session_factory
-        self._adapter = adapter
+        self._adapter_provider = adapter_provider
         self._commands = command_repository or device_command_repository
         self._epochs = epoch_repository or line_run_epoch_repository
         self._observations = observation_repository or device_status_observation_repository
@@ -93,9 +97,26 @@ class DeviceDispatchService:
                 return False
             command_code = command.command_code
             device_code = command.device_code
+            binding = await self._epochs.get_binding_for_dispatch(
+                db,
+                line_run_epoch_id=command.line_run_epoch_id,
+                device_code=device_code,
+            )
+            if binding is None:
+                await self._commands.mark_reconciling(db, command, reason="EPOCH_BINDING_UNAVAILABLE")
+                return True
 
         try:
-            status = await self._adapter.fetch_status(device_code)
+            adapter = await self._adapter_provider.get_adapter(binding.endpoint_base_url)
+        except ValueError:
+            await self._write_reconciling(command_code, claim_token, "EPOCH_BINDING_ENDPOINT_INVALID")
+            return True
+        except Exception:
+            await self._write_retryable(command_code, claim_token, now=now)
+            return True
+
+        try:
+            status = await adapter.fetch_status(device_code)
         except Exception:
             # 状态探测发生在命令发送前，失败时可证明请求未离开 WES。
             await self._write_retryable(command_code, claim_token, now=now)
@@ -109,14 +130,6 @@ class DeviceDispatchService:
                 db, command_code=command_code, claim_token=claim_token
             )
             if command is None:
-                return True
-            binding = await self._epochs.get_binding_for_dispatch(
-                db,
-                line_run_epoch_id=command.line_run_epoch_id,
-                device_code=command.device_code,
-            )
-            if binding is None:
-                await self._commands.mark_reconciling(db, command, reason="EPOCH_BINDING_UNAVAILABLE")
                 return True
             await self._observations.add_status_observation(
                 db,
@@ -140,7 +153,7 @@ class DeviceDispatchService:
                 if command is not None:
                     await self._commands.mark_timed_out(db, command)
             return True
-        submit_result = await self._adapter.submit_command(**submit_snapshot, deadline_at=command.deadline_at)
+        submit_result = await adapter.submit_command(**submit_snapshot, deadline_at=command.deadline_at)
         response_at = self._clock()
         async with self._sessions.begin() as db:
             command = await self._commands.get_claimed_for_update(

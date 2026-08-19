@@ -31,6 +31,7 @@ from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
     task_received,
     worker_before_create_process,
     worker_process_init,
+    worker_process_shutdown,
 )
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -59,6 +60,7 @@ VISIBILITY_TIMEOUT = 4
 PROBE_TASK = "tests.integration.celery_prefork.runtime_probe"
 IDEMPOTENT_RETRY_TASK = "tests.integration.celery_prefork.idempotent_retry"
 TRANSACTION_TASK = "tests.integration.celery_prefork.transaction_probe"
+ENDPOINT_PROVIDER_PROBE_TASK = "tests.integration.celery_prefork.endpoint_provider_probe"
 FAMILY_TASKS = (
     "src.celery_app.tasks.core.health_check",
     "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
@@ -95,6 +97,11 @@ def _record_child_init_complete(**_: object) -> None:
     )
 
 
+@worker_process_shutdown.connect
+def _record_child_shutdown_complete(**_: object) -> None:
+    _write_probe_marker("child_shutdown_complete", pid=os.getpid())
+
+
 @task_prerun.connect
 def _record_task_pid(task_id: str | None = None, task: Any = None, **_: object) -> None:
     task_name = str(getattr(task, "name", ""))
@@ -128,6 +135,64 @@ def _transport_options() -> dict[str, object]:
 if os.getenv("PREFORK_REDIS_KEY_PREFIX"):
     celery_app.conf.broker_transport_options = _transport_options()
     celery_app.conf.result_backend_transport_options = _transport_options()
+
+    from src.app.device import composition as _device_composition
+    from src.core.outbound_http import build_outbound_http_transport as _build_outbound_http_transport
+
+    class _RecordingEndpointTransport:
+        def __init__(self, delegate: Any, endpoint_base_url: str) -> None:
+            self._delegate = delegate
+            self._endpoint_base_url = endpoint_base_url
+            self._close_count = 0
+            _write_probe_marker(
+                "endpoint_transport_created",
+                pid=os.getpid(),
+                endpoint_base_url=endpoint_base_url,
+                transport_id=id(self),
+            )
+
+        async def send(self, request: Any) -> Any:
+            return await self._delegate.send(request)
+
+        async def aclose(self) -> None:
+            self._close_count += 1
+            try:
+                await self._delegate.aclose()
+            except BaseException as error:
+                _write_probe_marker(
+                    "endpoint_transport_close_failed",
+                    pid=os.getpid(),
+                    endpoint_base_url=self._endpoint_base_url,
+                    transport_id=id(self),
+                    close_count=self._close_count,
+                    error_type=type(error).__name__,
+                )
+                raise
+            _write_probe_marker(
+                "endpoint_transport_closed",
+                pid=os.getpid(),
+                endpoint_base_url=self._endpoint_base_url,
+                transport_id=id(self),
+                close_count=self._close_count,
+            )
+
+    def _recording_endpoint_transport_factory(endpoint_base_url: str, timeout_seconds: float) -> Any:
+        return _RecordingEndpointTransport(
+            _build_outbound_http_transport(
+                system_id="ecs",
+                base_url=endpoint_base_url,
+                timeout_seconds=timeout_seconds,
+            ),
+            endpoint_base_url,
+        )
+
+    _production_device_runtime_builder = _device_composition.build_device_command_runtime
+
+    def _build_recording_device_runtime(**kwargs: Any) -> Any:
+        kwargs["transport_factory"] = _recording_endpoint_transport_factory
+        return _production_device_runtime_builder(**kwargs)
+
+    _device_composition.build_device_command_runtime = _build_recording_device_runtime
 
 
 @celery_app.task(name=PROBE_TASK)
@@ -171,6 +236,30 @@ def runtime_probe(label: str) -> dict[str, object]:
     logger.info(f"PREFORK_RUNTIME_PROBE {json.dumps(result, sort_keys=True)}")
     _write_probe_marker("runtime_probe", **result)
     return result
+
+
+@celery_app.task(name=ENDPOINT_PROVIDER_PROBE_TASK)
+def endpoint_provider_probe() -> dict[str, object]:
+    """证明每个 prefork child 内按 canonical Endpoint 复用并隔离 transport。"""
+
+    async def _probe() -> dict[str, object]:
+        runtime = celery_async_runtime.device_command_runtime
+        assert runtime is not None
+        provider = runtime.provider
+        first = await provider.get_adapter("HTTP://ECS-A:80/")
+        same = await provider.get_adapter("http://ecs-a")
+        different = await provider.get_adapter("http://ecs-a:8080")
+        await asyncio.sleep(0.05)
+        return {
+            "pid": os.getpid(),
+            "provider_id": id(provider),
+            "first_adapter_id": id(first),
+            "same_adapter_id": id(same),
+            "different_adapter_id": id(different),
+            "transport_count": len(provider._transports),
+        }
+
+    return run_async(_probe)
 
 
 @celery_app.task(bind=True, name=IDEMPOTENT_RETRY_TASK, max_retries=1)
@@ -270,7 +359,6 @@ def _component_environment(database_url: str, redis_url: str, *, run_id: str) ->
         "REDIS_DB": str((redis.database or "0").lstrip("/")),
         "CELERY_BROKER_URL": redis_url,
         "CELERY_RESULT_BACKEND": redis_url,
-        "ECS_BASE_URL": "http://127.0.0.1:18081",
         "ECS_CONNECT_TIMEOUT_SECONDS": "2",
         "ECS_READ_TIMEOUT_SECONDS": "3",
         "DEVICE_COMMAND_QUEUE": "device-command",
@@ -827,6 +915,61 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         success = True
     finally:
         worker.stop(success=success)
+
+
+def test_prefork_endpoint_provider_is_child_local_and_closes_each_transport_once(
+    prefork_services: dict[str, str],
+) -> None:
+    worker = PreforkWorker(prefork_services, concurrency=2).start()
+    stopped = False
+    success = False
+    try:
+        results = [worker.submit(ENDPOINT_PROVIDER_PROBE_TASK) for _ in range(20)]
+        rows = [cast("dict[str, object]", worker.result(result)) for result in results]
+        by_pid: dict[int, list[dict[str, object]]] = {}
+        for row in rows:
+            by_pid.setdefault(int(row["pid"]), []).append(row)
+
+        assert len(by_pid) == 2
+        for child_rows in by_pid.values():
+            assert len({int(row["provider_id"]) for row in child_rows}) == 1
+            assert all(row["first_adapter_id"] == row["same_adapter_id"] for row in child_rows)
+            assert all(row["first_adapter_id"] != row["different_adapter_id"] for row in child_rows)
+            assert {int(row["transport_count"]) for row in child_rows} == {2}
+
+        parent_pids = {int(marker["parent_pid"]) for marker in _probe_markers(worker.log_text(), "child_fork_start")}
+        assert set(by_pid).isdisjoint(parent_pids)
+
+        worker.stop(success=False)
+        stopped = True
+        assert worker.log_path is not None
+        log_text = worker.log_path.read_text(errors="replace")
+        created = _probe_markers(log_text, "endpoint_transport_created")
+        closed = _probe_markers(log_text, "endpoint_transport_closed")
+        assert len(created) == len(closed) == 4
+        created_keys = {
+            (int(marker["pid"]), str(marker["endpoint_base_url"]), int(marker["transport_id"])) for marker in created
+        }
+        closed_keys = {
+            (int(marker["pid"]), str(marker["endpoint_base_url"]), int(marker["transport_id"])) for marker in closed
+        }
+        assert created_keys == closed_keys
+        assert {int(marker["close_count"]) for marker in closed} == {1}
+        assert {str(marker["endpoint_base_url"]) for marker in created} == {
+            "http://ecs-a",
+            "http://ecs-a:8080",
+        }
+        assert {int(marker["pid"]) for marker in created} == set(by_pid)
+        assert len(_probe_markers(log_text, "child_shutdown_complete")) == 2
+        success = True
+    finally:
+        if not stopped:
+            worker.stop(success=False)
+        if success:
+            assert worker.log_path is not None
+            worker.log_path.unlink(missing_ok=True)
+            if worker.project_log_dir is not None:
+                shutil.rmtree(worker.project_log_dir)
 
 
 def test_max_tasks_per_child_rebuilds_runtime_engine_and_application_name(prefork_services: dict[str, str]) -> None:

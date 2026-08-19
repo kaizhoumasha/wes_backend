@@ -423,12 +423,6 @@ class RuntimeWorklineSummary(BaseModel):
     stopped_at: datetime | None = None
     stopped_reason: str | None = None
     resumed_at: datetime | None = None
-    start_admission_status: str | None = None
-    start_admission_message: str | None = None
-    start_admission_failed_device_code: str | None = None
-    start_admission_checked_at: datetime | None = None
-    last_start_request_id: str | None = None
-    last_start_trace_id: str | None = None
     last_activity_at: datetime | None = None
 
 

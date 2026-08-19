@@ -8,8 +8,8 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 - 固定 schema-qualified 运行时表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
 - 默认 ``--dry-run``:只打印将清空的表 + 当前行数,不写库。
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
-- 清空后重置设备投影字段(``current_command_id``、``device_status=IDLE``)与
-  ``wes_runtime.workline_runtime_status_projections=STOPPED``,以便干净地重跑 START。
+- 清空后将 ``wes_runtime.workline_runtime_status_projections`` 重置为 ``STOPPED``，
+  以便干净地重跑 START；Device 主数据不承载运行态，不做改写。
 - 仅在 ``APP_DEBUG=True`` 时允许执行,生产环境直接拒绝(可用 ``--force`` 覆盖,
   仅限确有需要的人工运维场景)。
 
@@ -125,7 +125,6 @@ class ResetSummary:
 
     mode: str = "dry-run"
     truncated: list[dict[str, Any]] = field(default_factory=list)
-    reset_devices: int = 0
     reset_worklines: int = 0
     included_audit_logs: bool = False
     mock_wms_reset: dict[str, Any] | None = None
@@ -248,22 +247,7 @@ async def reset_runtime_data(
             joined = ", ".join(_qualified(target) for target in targets)
             await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
 
-            # 清空命令后,devices.current_command_id 指向的命令已不存在,重置回空闲。
-            dev_result = await db.execute(
-                text(
-                    "UPDATE wes_biz.devices "
-                    "   SET current_command_id = NULL, "
-                    "       device_status = 'IDLE', "
-                    "       error_code = NULL, "
-                    "       last_heartbeat_at = NULL "
-                    " WHERE current_command_id IS NOT NULL "
-                    "    OR device_status <> 'IDLE' "
-                    "    OR error_code IS NOT NULL",
-                ),
-            )
-            summary.reset_devices = int(dev_result.rowcount or 0)
-
-            # WorkLine runtime 投影回到 STOPPED,重新走 START 准入。
+            # WorkLine runtime 投影回到 STOPPED，等待新的 START 激活 Epoch。
             wl_result = await db.execute(
                 text(
                     "INSERT INTO wes_runtime.workline_runtime_status_projections ("
@@ -285,7 +269,6 @@ async def reset_runtime_data(
                 ),
             )
             summary.reset_worklines = int(wl_result.rowcount or 0)
-            await db.execute(text("UPDATE wes_biz.work_lines SET start_admission_status = NULL"))
             await db.commit()
         except Exception:
             # 本函数拥有 apply 的 commit，也必须在所有 mutation/commit 失败路径释放事务。
@@ -312,9 +295,7 @@ def _format_summary(summary: ResetSummary) -> str:
     lines.extend(f"  {t['table']:<48} {t['rows_before']:>8}" for t in summary.truncated)
     lines.append(f"  {'合计':<48} {total:>8}")
     if summary.mode == "apply":
-        lines.append(
-            f"\n设备投影重置: {summary.reset_devices} 行 | 工作线回 STOPPED: {summary.reset_worklines} 行",
-        )
+        lines.append(f"\n工作线回 STOPPED: {summary.reset_worklines} 行")
         if summary.included_audit_logs:
             lines.append("已一并清理 wes_sys.audit_logs")
         if summary.mock_wms_reset is not None:

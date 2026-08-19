@@ -3,31 +3,26 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
-from src.app.workline.models.line_run_epoch import (
-    LineRunEpoch,
-    LineRunEpochDeviceBinding,
-    LineRunEpochPositionBinding,
-)
+from src.app.workline.epoch_digest import canonical_configuration_snapshot, configuration_digest, topology_digest
+from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.repositories.line_run_epoch_repository import (
     LineRunEpochRepository,
     line_run_epoch_repository,
 )
 
+if TYPE_CHECKING:
+    from src.app.workline.epoch_activation import (
+        LineRunEpochDeviceBindingInput,
+        LineRunEpochPositionBindingInput,
+    )
+
 
 class ActiveLineRunEpochExistsError(ValueError):
     """同一 WorkLine 已有活动 Epoch。"""
-
-
-class DeviceBindingConflictError(ValueError):
-    """同一 Epoch 的设备绑定被请求改写。"""
-
-
-class PositionBindingConflictError(ValueError):
-    """同一 Epoch 的静态逻辑位置绑定被请求改写。"""
 
 
 class LineRunEpochRepositoryPort(Protocol):
@@ -37,47 +32,19 @@ class LineRunEpochRepositoryPort(Protocol):
 
     async def has_active_epoch(self, db: Any) -> bool: ...
 
-    async def add_epoch(self, db: Any, epoch: LineRunEpoch) -> LineRunEpoch: ...
+    async def add_complete_epoch(
+        self,
+        db: Any,
+        epoch: LineRunEpoch,
+        device_bindings: tuple[LineRunEpochDeviceBindingInput, ...],
+        position_bindings: tuple[LineRunEpochPositionBindingInput, ...],
+    ) -> LineRunEpoch: ...
 
     async def close_epoch(self, db: Any, epoch: LineRunEpoch, *, closed_at: datetime) -> LineRunEpoch: ...
 
-    async def get_binding_for_update(
-        self,
-        db: Any,
-        *,
-        line_run_epoch_id: int,
-        device_code: str,
-    ) -> LineRunEpochDeviceBinding | None: ...
 
-    async def get_binding_by_role_for_update(
-        self,
-        db: Any,
-        *,
-        line_run_epoch_id: int,
-        device_role: str,
-    ) -> LineRunEpochDeviceBinding | None: ...
-
-    async def add_binding(
-        self,
-        db: Any,
-        binding: LineRunEpochDeviceBinding,
-    ) -> LineRunEpochDeviceBinding: ...
-
-    async def get_position_binding_for_update(
-        self, db: Any, *, line_run_epoch_id: int, position_role: str
-    ) -> LineRunEpochPositionBinding | None: ...
-
-    async def get_position_binding_by_location_for_update(
-        self, db: Any, *, line_run_epoch_id: int, location_id: str
-    ) -> LineRunEpochPositionBinding | None: ...
-
-    async def add_position_binding(
-        self, db: Any, binding: LineRunEpochPositionBinding
-    ) -> LineRunEpochPositionBinding: ...
-
-
-class SendableCommandRepositoryPort(Protocol):
-    async def has_sendable_for_epoch_for_update(self, db: Any, line_run_epoch_id: int) -> bool: ...
+class UnclosedCommandRepositoryPort(Protocol):
+    async def has_unclosed_for_epoch_for_update(self, db: Any, line_run_epoch_id: int) -> bool: ...
 
 
 class LineRunEpochService:
@@ -93,7 +60,7 @@ class LineRunEpochService:
         if await repository.has_active_epoch(db):
             raise ActiveLineRunEpochExistsError("execution worker cannot start while an ACTIVE LineRunEpoch exists")
 
-    async def create_epoch(
+    async def activate_epoch(
         self,
         db: AsyncSession | object,
         *,
@@ -102,65 +69,27 @@ class LineRunEpochService:
         plugin_key: str,
         plugin_version: str,
         flow_mode: str,
-        topology_digest: str,
-        configuration_digest: str,
+        configuration_snapshot: dict[str, object],
+        device_bindings: tuple[LineRunEpochDeviceBindingInput, ...],
+        position_bindings: tuple[LineRunEpochPositionBindingInput, ...],
         started_at: datetime,
     ) -> LineRunEpoch:
         active = await self._repository.get_active_for_workline_for_update(db, workline_id)
         if active is not None:
             raise ActiveLineRunEpochExistsError(f"workline {workline_id} 已存在活动 Epoch {active.epoch_code}")
+        frozen_snapshot = canonical_configuration_snapshot(configuration_snapshot)
         epoch = LineRunEpoch(
             epoch_code=epoch_code,
             workline_id=workline_id,
             plugin_key=plugin_key,
             plugin_version=plugin_version,
             flow_mode=flow_mode,
-            topology_digest=topology_digest,
-            configuration_digest=configuration_digest,
+            topology_digest=topology_digest(device_bindings, position_bindings),
+            configuration_digest=configuration_digest(plugin_key, plugin_version, flow_mode, frozen_snapshot),
+            configuration_snapshot_json=frozen_snapshot,
             started_at=started_at,
         )
-        return await self._repository.add_epoch(db, epoch)
-
-    async def bind_device(
-        self,
-        db: AsyncSession | object,
-        *,
-        line_run_epoch_id: int,
-        device_id: int,
-        device_code: str,
-        device_role: str,
-        contract_key: str,
-        contract_version: str,
-        status_max_age_ms: int,
-        command_timeout_ms: int,
-    ) -> LineRunEpochDeviceBinding:
-        candidate = LineRunEpochDeviceBinding(
-            line_run_epoch_id=line_run_epoch_id,
-            device_id=device_id,
-            device_code=device_code,
-            device_role=device_role,
-            contract_key=contract_key,
-            contract_version=contract_version,
-            status_max_age_ms=status_max_age_ms,
-            command_timeout_ms=command_timeout_ms,
-        )
-        existing_device = await self._repository.get_binding_for_update(
-            db,
-            line_run_epoch_id=line_run_epoch_id,
-            device_code=device_code,
-        )
-        existing_role = await self._repository.get_binding_by_role_for_update(
-            db,
-            line_run_epoch_id=line_run_epoch_id,
-            device_role=device_role,
-        )
-        if existing_device is None and existing_role is None:
-            return await self._repository.add_binding(db, candidate)
-        if existing_device is not None and existing_device.identity_tuple() == candidate.identity_tuple():
-            return existing_device
-        if existing_device is not None:
-            raise DeviceBindingConflictError(f"Epoch {line_run_epoch_id} 的设备 {device_code} 已冻结为其他角色或合同")
-        raise DeviceBindingConflictError(f"Epoch {line_run_epoch_id} 的角色 {device_role} 已冻结为其他设备")
+        return await self._repository.add_complete_epoch(db, epoch, device_bindings, position_bindings)
 
     async def close_active_epoch(
         self,
@@ -168,57 +97,22 @@ class LineRunEpochService:
         *,
         workline_id: int,
         closed_at: datetime,
-        command_repository: SendableCommandRepositoryPort,
+        command_repository: UnclosedCommandRepositoryPort,
     ) -> LineRunEpoch | None:
         active = await self._repository.get_active_for_workline_for_update(db, workline_id)
         if active is None:
             return None
         if active.id is None:
             raise RuntimeError("活动 Epoch 缺少持久化主键")
-        if await command_repository.has_sendable_for_epoch_for_update(db, active.id):
-            raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在 sendable DeviceCommand")
+        if await command_repository.has_unclosed_for_epoch_for_update(db, active.id):
+            raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在 unclosed DeviceCommand")
         return await self._repository.close_epoch(db, active, closed_at=closed_at)
-
-    async def bind_position(
-        self,
-        db: AsyncSession | object,
-        *,
-        line_run_epoch_id: int,
-        position_role: str,
-        location_id: str,
-        location_type: str,
-    ) -> LineRunEpochPositionBinding:
-        candidate = LineRunEpochPositionBinding(
-            line_run_epoch_id=line_run_epoch_id,
-            position_role=position_role,
-            location_id=location_id,
-            location_type=location_type,
-        )
-        existing_role = await self._repository.get_position_binding_for_update(
-            db,
-            line_run_epoch_id=line_run_epoch_id,
-            position_role=position_role,
-        )
-        existing_location = await self._repository.get_position_binding_by_location_for_update(
-            db,
-            line_run_epoch_id=line_run_epoch_id,
-            location_id=location_id,
-        )
-        if existing_role is None and existing_location is None:
-            return await self._repository.add_position_binding(db, candidate)
-        if existing_role is not None and existing_role.identity_tuple() == candidate.identity_tuple():
-            return existing_role
-        raise PositionBindingConflictError(
-            f"Epoch {line_run_epoch_id} 的位置角色 {position_role} 或 location {location_id} 已冻结"
-        )
 
 
 line_run_epoch_service = LineRunEpochService(repository=LineRunEpochRepository())
 
 __all__ = [
     "ActiveLineRunEpochExistsError",
-    "DeviceBindingConflictError",
     "LineRunEpochService",
-    "PositionBindingConflictError",
     "line_run_epoch_service",
 ]

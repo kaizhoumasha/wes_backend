@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
-from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
-from src.app.runtime.orchestration.models.operation import (
+from src.app.runtime.orchestration.models.operation import (  # noqa: TC001 - FastAPI resolves runtime annotations
     ReplayInboxRequest,
     ResolveEffectReconciliationRequest,
     ResolveRuntimeReconciliationRequest,
     SandboxAckRequest,
     SandboxExternalCallbackRequest,
-    SandboxWorklineStartRequest,
-    SandboxWorklineStartResponse,
 )
 from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
     effect_reconciliation_resolution_service,
@@ -36,17 +34,26 @@ from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runt
     ClearWorkLineEstopRequest,
     SimulateWorkLineEstopRequest,
 )
+from src.app.workline.models.start import WorkLineStartErrorResponse, WorkLineStartRequest, WorkLineStartResponse
 from src.app.workline.services import WorkLineSafetyBlocked, workline_safety_service
+from src.app.workline.services.workline_start_service import (
+    WorkLineStartConfigurationError,
+    WorkLineStartIdempotencyConflictError,
+    WorkLineStartInvalidStateError,
+    WorkLineStartNotFoundError,
+    WorkLineStartService,
+)
 from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
-from src.core.response import ResponseSchemaModel, response_builder
+from src.core.response import ResponseCode, ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode, ServerErrorCode
 from src.core.security import require_auth
-from src.core.task_queue_gateway import task_queue_gateway
+from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 from src.utils.value_normalization import enum_value
 
 workline_operation_service = operation_service.workline_operation_service
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["工作线诊断操作"])
 
@@ -111,41 +118,25 @@ def _clear_estop_response(incident: Any) -> dict[str, Any]:
     return data
 
 
-def _sandbox_start_response(
-    *,
-    workline_id: int,
-    device_code: str,
-    trace_id: str,
-    admission: Any,
-) -> SandboxWorklineStartResponse:
-    if bool(getattr(admission, "accepted", False)):
-        return SandboxWorklineStartResponse(
-            status="accepted",
-            device_code=device_code,
-            request_id=trace_id,
-            trace_id=trace_id,
-            event_id=trace_id,
-            causation_id=None,
-            diagnostic=getattr(admission, "diagnostic", None),
-        )
-
-    diagnostic = dict(getattr(admission, "diagnostic", None) or {})
-    message = getattr(admission, "message", None)
-    if isinstance(message, str) and message:
-        diagnostic.setdefault("message", message)
-    diagnostic.setdefault("workline_id", workline_id)
-    return SandboxWorklineStartResponse(
-        ack=False,
-        reason_code=getattr(admission, "reason_code", None) or "START_ADMISSION_FAILED",
-        diagnostic=diagnostic,
-    )
-
-
 def _operation_error_response(exc: Exception) -> dict[str, Any]:
     message = str(exc)
     if "不存在" in message or "NOT_FOUND" in message:
         return response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=message)
     return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
+
+
+def _workline_start_error_response(
+    response: Response,
+    exc: Exception,
+    *,
+    code: ResponseCode,
+    reason: str,
+) -> ResponseSchemaModel[WorkLineStartErrorResponse]:
+    response.status_code = code.http_status
+    return cast(
+        "ResponseSchemaModel[WorkLineStartErrorResponse]",
+        response_builder.fail(code=code, message=str(exc), data={"reason": reason}),
+    )
 
 
 def _enqueue_runtime_inbox_processing() -> None:
@@ -365,39 +356,98 @@ async def simulate_workline_estop(
 
 
 @router.post(
-    "/sandbox/worklines/{workline_id}/start",
-    summary="[biz:workline:update] 沙箱模拟现场硬件 START",
-    response_model=ResponseSchemaModel[SandboxWorklineStartResponse],
+    "/worklines/{workline_id}/start",
+    summary="[biz:workline:start] 启动 WorkLine 并激活运行代际",
+    response_model=ResponseSchemaModel[WorkLineStartResponse | WorkLineStartErrorResponse],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+    dependencies=[Depends(RequirePermission("biz:workline:start"))],
 )
-async def start_sandbox_workline(
+async def start_workline(
     workline_id: int,
-    payload: SandboxWorklineStartRequest,
+    payload: WorkLineStartRequest,
+    request: Request,
+    response: Response,
     db: AsyncSessionDep,
-) -> ResponseSchemaModel[SandboxWorklineStartResponse]:
-    trace_id = payload.trace_id or f"sandbox:start:{workline_id}"
-    admission = await start_admission_service.admit_start(
-        db,
-        workline_id,
-        source_device_code=payload.device_code,
-        request_id=trace_id,
-        trace_id=trace_id,
-    )
-    if bool(getattr(admission, "accepted", False)):
-        await publish_deferred_sse_events(db)
-    return cast(
-        "ResponseSchemaModel[SandboxWorklineStartResponse]",
-        response_builder.success(
-            message=getattr(admission, "message", "START 准入完成"),
-            data=_sandbox_start_response(
-                workline_id=workline_id,
-                device_code=payload.device_code,
-                trace_id=trace_id,
-                admission=admission,
+) -> ResponseSchemaModel[WorkLineStartResponse | WorkLineStartErrorResponse]:
+    """In one transaction replay or create the complete Epoch, then wake SYSTEM outbox."""
+
+    service_candidate = getattr(request.app.state, "workline_start_service", None)
+    if service_candidate is None:
+        response.status_code = ServerErrorCode.SERVICE_UNAVAILABLE.http_status
+        return cast(
+            "ResponseSchemaModel[WorkLineStartErrorResponse]",
+            response_builder.fail(
+                code=ServerErrorCode.SERVICE_UNAVAILABLE,
+                data={"reason": "SERVICE_UNAVAILABLE"},
             ),
-        ),
-    )
+        )
+    service = cast("WorkLineStartService", service_candidate)
+
+    try:
+        async with WorklineUnitOfWork(db=db) as uow:
+            result = await service.start(
+                uow.session,
+                workline_id=workline_id,
+                request_id=payload.request_id,
+            )
+            await uow.commit()
+    except WorkLineStartNotFoundError as exc:
+        return _workline_start_error_response(
+            response,
+            exc,
+            code=ResourceErrorCode.NOT_FOUND,
+            reason="WORKLINE_NOT_FOUND",
+        )
+    except WorkLineStartIdempotencyConflictError as exc:
+        return _workline_start_error_response(
+            response,
+            exc,
+            code=ResourceErrorCode.CONFLICT,
+            reason="IDEMPOTENCY_CONFLICT",
+        )
+    except WorkLineStartInvalidStateError as exc:
+        return _workline_start_error_response(
+            response,
+            exc,
+            code=ResourceErrorCode.CONFLICT,
+            reason="INVALID_STATE",
+        )
+    except WorkLineStartConfigurationError as exc:
+        return _workline_start_error_response(
+            response,
+            exc,
+            code=ResourceErrorCode.CONFLICT,
+            reason="CONFIGURATION_INVALID",
+        )
+    else:
+        if result.released_outbox_count:
+            queue_candidate = getattr(request.app.state, "task_queue_gateway", None)
+            if queue_candidate is None:
+                logger.warning("WorkLine START 已提交，但 queue app-state port 未安装；依赖 Beat 扫描 SYSTEM Outbox")
+            else:
+                queue_gateway = cast("TaskQueueGateway", queue_candidate)
+                try:
+                    queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
+                except Exception:
+                    logger.warning("WorkLine START 已提交，但 SYSTEM Outbox 唤醒失败", exc_info=True)
+        epoch = result.epoch
+        data = WorkLineStartResponse(
+            line_run_epoch_id=epoch.id,
+            epoch_code=epoch.epoch_code,
+            workline_id=epoch.workline_id,
+            plugin_key=epoch.plugin_key,
+            plugin_version=epoch.plugin_version,
+            flow_mode=epoch.flow_mode,
+            epoch_status=enum_value(epoch.status),
+            epoch_started_at=epoch.started_at,
+            epoch_closed_at=epoch.closed_at,
+            current_workline_runtime_status=result.current_workline_runtime_status,
+            created=result.created,
+        )
+        return cast(
+            "ResponseSchemaModel[WorkLineStartResponse]",
+            response_builder.success(data=data.model_dump(mode="json")),
+        )
 
 
 @router.post(

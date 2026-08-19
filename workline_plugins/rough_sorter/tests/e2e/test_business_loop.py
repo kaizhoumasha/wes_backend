@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -27,6 +26,8 @@ FIXTURE_ROOT = REPO_ROOT / "workline_plugins/rough_sorter/fixtures"
 BACKEND_IMAGE = os.getenv("ROUGH_SORTER_E2E_BACKEND_IMAGE", "wes-backend:phase8-rough-sorter")
 TRACE_ID = "TRACE-RS-E2E-001"
 API_TIMEOUT_SECONDS = 180.0
+ADMIN_USERNAME = "rough-sorter-e2e-admin"
+ADMIN_PASSWORD = "RoughSorterE2ePassw0rd!"
 
 DEVICE_CONTRACTS = {
     "RS-E2E-MEASUREMENT": "rough_sorter.measurement_device",
@@ -46,12 +47,21 @@ def _run(*args: str, input_text: str | None = None, check: bool = True) -> subpr
     )
 
 
-def _json_request(url: str, payload: dict[str, Any] | None = None, *, timeout: float = 5.0) -> dict[str, Any]:
+def _json_request(
+    url: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
     body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
+    request_headers = dict(headers or {})
+    if body is not None:
+        request_headers.setdefault("content-type", "application/json")
     request = urllib.request.Request(
         url,
         data=body,
-        headers={"content-type": "application/json"} if body is not None else {},
+        headers=request_headers,
         method="POST" if body is not None else "GET",
     )
     try:
@@ -295,46 +305,66 @@ def _serve(handler: type[_JsonHandler], state: _BoundaryState):
         thread.join(timeout=5)
 
 
-def _digest(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+def _rough_sorter_configuration() -> dict[str, object]:
+    contract = {
+        "ecs_version": "ecs-e2e-1",
+        "gateway_version": "gateway-e2e-1",
+        "device_model": "rough-sorter-e2e",
+        "firmware_version": "firmware-e2e-1",
+        "status_max_age_ms": 600_000,
+        "command_timeout_ms": 30_000,
+        "time_source": "ecs-stub",
+        "allowed_clock_skew_ms": 1_000,
+        "callback_retry_window_ms": 60_000,
+        "evidence_retention_days": 30,
+    }
+    return {
+        "rough_sorter": {
+            "device_contracts": {
+                "MEASUREMENT_DEVICE": dict(contract),
+                "TRANSFER_DEVICE": dict(contract),
+                "PLACEMENT_DEVICE": dict(contract),
+            },
+            "position_bindings": {
+                "MEASUREMENT_POSITION": "MEASUREMENT-1",
+                "PIPELINE_INLET": "INLET-1",
+                "PIPELINE_OUTLET": "OUTLET-1",
+                "NG_POSITION": "NG-1",
+            },
+        }
+    }
 
 
-def _render_seed() -> str:
+def _render_seed(ecs_port: int) -> str:
     now_ms = int(time.time() * 1000)
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now_ms / 1000))
-    devices = [
-        (
-            9201,
-            9101,
-            "RS-E2E-MEASUREMENT",
-            "MEASUREMENT_DEVICE",
-            "rough_sorter.measurement_device",
-            "1.0",
-            600000,
-            30000,
-        ),
-        (9201, 9102, "RS-E2E-TRANSFER", "TRANSFER_DEVICE", "rough_sorter.transfer_device", "1.0", 600000, 30000),
-        (9201, 9103, "RS-E2E-PLACEMENT", "PLACEMENT_DEVICE", "rough_sorter.placement_device", "1.0", 600000, 30000),
-    ]
-    positions = [
-        (9201, "MEASUREMENT_POSITION", "MEASUREMENT-1", "MEASUREMENT_POSITION"),
-        (9201, "PIPELINE_INLET", "INLET-1", "PIPELINE_INLET"),
-        (9201, "PIPELINE_OUTLET", "OUTLET-1", "PIPELINE_OUTLET"),
-        (9201, "NG_POSITION", "NG-1", "NG_POSITION"),
-    ]
-    topology = _digest({"devices": sorted(devices), "positions": sorted(positions)})
-    configuration = _digest(
-        {"flow_mode": "ROUGH_SORT_INBOUND", "plugin_key": "rough_sorter", "plugin_version": "1.0.0"}
-    )
     return (
         (FIXTURE_ROOT / "business-loop-seed.sql")
         .read_text(encoding="utf-8")
         .replace("__NOW__", now)
         .replace("__NOW_MS__", str(now_ms))
-        .replace("__TOPOLOGY_DIGEST__", topology)
-        .replace("__CONFIGURATION_DIGEST__", configuration)
+        .replace("__ROUGH_SORTER_CONFIG__", json.dumps(_rough_sorter_configuration(), separators=(",", ":")))
+        .replace("__ECS_ENDPOINT__", f"http://ecs-stub:{ecs_port}")
     )
+
+
+def _start_workline(stack: _DockerStack, api_url: str) -> None:
+    login = _json_request(
+        f"{api_url}/api/v1/auth/login",
+        {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
+    )
+    access_token = login["data"]["access_token"]
+    result = _json_request(
+        f"{api_url}/api/v1/workline/operations/worklines/9001/start",
+        {"request_id": "RS-E2E-START-001"},
+        headers={"authorization": f"Bearer {access_token}"},
+    )
+    assert result["code"] == 200
+    assert result["data"]["created"] is True
+    assert result["data"]["plugin_key"] == "rough_sorter"
+    assert stack.query("SELECT count(*) FROM wes_biz.line_run_epochs") == "1"
+    assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_device_bindings") == "3"
+    assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_position_bindings") == "4"
 
 
 class _DockerStack:
@@ -419,11 +449,16 @@ class _DockerStack:
             *common,
             "-e",
             "WMS_DEPLOYMENT_ROLE=api",
+            "-e",
+            f"BOOTSTRAP_ADMIN_USERNAME={ADMIN_USERNAME}",
+            "-e",
+            f"BOOTSTRAP_ADMIN_PASSWORD={ADMIN_PASSWORD}",
             "--entrypoint",
             "sh",
             self.image,
             "-c",
-            "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8001",
+            "alembic upgrade head && python scripts/data/bootstrap_admin.py "
+            "&& exec uvicorn main:app --host 0.0.0.0 --port 8001",
         )
         self._wait_http(f"http://127.0.0.1:{self.api_port}/health")
         self._start_worker(self.worker, "wes", "wes-worker", "default,celery,device-command", "1")
@@ -459,8 +494,6 @@ class _DockerStack:
             "CELERY_BROKER_URL=redis://:rough-sorter-e2e@redis:6379/1",
             "-e",
             "CELERY_RESULT_BACKEND=redis://:rough-sorter-e2e@redis:6379/2",
-            "-e",
-            f"ECS_BASE_URL=http://ecs-stub:{self.ecs_port}",
             "-e",
             "WMS_PROVIDER_PROFILE_FILE=/run/rough-sorter/wms-provider.yaml",
             "-e",
@@ -515,7 +548,7 @@ class _DockerStack:
             "wes",
             "-d",
             "wes",
-            input_text=_render_seed(),
+            input_text=_render_seed(self.ecs_port),
         )
         assert "ERROR" not in result.stderr
 
@@ -736,6 +769,15 @@ def test_ecs_status_timestamp_is_recent_past_despite_one_millisecond_sampling_sk
     assert 0 < wes_observed_at_ms - status_timestamp_ms < 600_000
 
 
+def test_render_seed_contains_static_configuration_but_no_epoch_placeholders() -> None:
+    rendered = _render_seed(18080)
+
+    assert "__ROUGH_SORTER_CONFIG__" not in rendered
+    assert "__ECS_ENDPOINT__" not in rendered
+    assert '"MEASUREMENT_DEVICE"' in rendered
+    assert "http://ecs-stub:18080" in rendered
+
+
 def test_wms_wait_creates_new_due_operation_without_device_command_then_closes() -> None:
     accept_release = threading.Event()
     state = _BoundaryState(admission_results=["WAIT", "ACCEPT"], admission_accept_release=accept_release)
@@ -745,6 +787,7 @@ def test_wms_wait_creates_new_due_operation_without_device_command_then_closes()
             stack.start()
             state.api_url = f"http://127.0.0.1:{stack.api_port}"
             stack.seed_initial_environment()
+            _start_workline(stack, state.api_url)
             assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
 
             deadline = time.monotonic() + API_TIMEOUT_SECONDS
@@ -800,6 +843,7 @@ def test_ecs_ack_does_not_replay_command_while_callback_is_withheld() -> None:
             stack.start()
             state.api_url = f"http://127.0.0.1:{stack.api_port}"
             stack.seed_initial_environment()
+            _start_workline(stack, state.api_url)
             assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
 
             command_state_sql = (
@@ -842,6 +886,7 @@ def test_installed_plugin_closes_one_material_through_public_ingress_and_real_wo
             stack.start()
             state.api_url = f"http://127.0.0.1:{stack.api_port}"
             stack.seed_initial_environment()
+            _start_workline(stack, state.api_url)
             assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
 
             deadline = time.monotonic() + API_TIMEOUT_SECONDS

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
+from pydantic import AfterValidator
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, Index, Relationship
 
+from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.workline.models.workline import WorkLine  # noqa: TC001 - 保证 mapper 注册
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+
+DeviceEndpointBaseUrl = Annotated[str, AfterValidator(validate_device_endpoint_base_url)]
 
 
 class DeviceBase(BaseMixin):
@@ -30,6 +34,7 @@ class DeviceBase(BaseMixin):
         ondelete="SET NULL",
     )
     diagnostic_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    endpoint_base_url: DeviceEndpointBaseUrl | None = Field(default=None, max_length=255)
 
 
 class Device(DeviceBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
@@ -69,6 +74,7 @@ class DeviceEditableBase(BaseMixin):
     role_index: int = Field(default=1, ge=1)
     upstream_device_id: int | None = None
     diagnostic_profile: dict[str, Any] = Field(default_factory=dict)
+    endpoint_base_url: DeviceEndpointBaseUrl | None = Field(default=None, max_length=255)
 
 
 class DeviceCreate(ModelFactory(DeviceBase).for_create()):

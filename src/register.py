@@ -26,6 +26,7 @@ def register_logger() -> None:
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     """注册初始化"""
+    from src.core.task_queue_gateway import task_queue_gateway
     from src.database import db as db_module
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
@@ -50,6 +51,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.transport_runtime = None
         _app.state.device_evidence_service = None
         _app.state.rough_sorter_runtime = None
+        _app.state.workline_start_service = None
+        _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_inbound_event_handler = None
         startup = validate_wms_transport_configuration(settings_source=settings)
         validate_transport_runtime_profile(startup)
@@ -61,7 +64,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             raise RuntimeError("Database session factory is unavailable after initialization")
 
         from src.app.wms_adapter.inbound_event_handler import InboundEventEvidenceRecorder, InboundEventHandler
-        from src.core.task_queue_gateway import task_queue_gateway
 
         _app.state.wms_inbound_event_handler = InboundEventHandler(
             InboundEventEvidenceRecorder(
@@ -86,12 +88,11 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         device_config = resolve_device_command_runtime_config()
         device_command_runtime = build_device_command_runtime(
             session_factory=db_module.AsyncSessionLocal,
-            base_url=device_config.base_url,
             timeout_seconds=device_config.timeout_seconds,
             task_queue_gateway=task_queue_gateway,
         )
         _app.state.device_evidence_service = device_command_runtime.evidence_service
-        from deployment.rough_sorter_composition import build_rough_sorter_runtime
+        from deployment.rough_sorter_composition import build_rough_sorter_runtime, build_rough_sorter_start_service
 
         rough_sorter_runtime = build_rough_sorter_runtime(
             session_factory=db_module.AsyncSessionLocal,
@@ -99,6 +100,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             device_command_service=device_command_runtime.command_service,
         )
         _app.state.rough_sorter_runtime = rough_sorter_runtime
+        _app.state.workline_start_service = build_rough_sorter_start_service()
         await init_redis()
 
         from src.app.wms_integration.effect_preparation_runtime import (
@@ -151,6 +153,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.transport_runtime = None
         _app.state.device_evidence_service = None
         _app.state.rough_sorter_runtime = None
+        _app.state.workline_start_service = None
+        _app.state.task_queue_gateway = None
         _app.state.wms_inbound_event_handler = None
         cleanup_errors: list[BaseException] = []
         try:

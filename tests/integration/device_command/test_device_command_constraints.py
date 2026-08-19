@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEvent
@@ -52,6 +52,7 @@ async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpo
         flow_mode="TEST",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
+        configuration_snapshot_json={},
         started_at=datetime(2026, 8, 13),
     )
     db.add(epoch)
@@ -61,6 +62,7 @@ async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpo
         device_id=device.id,
         device_code=device.device_code,
         device_role=device.device_role,
+        endpoint_base_url="http://ecs-constraints:8080",
         contract_key="arm.pick",
         contract_version="2.0",
         status_max_age_ms=1_000,
@@ -213,6 +215,7 @@ async def test_postgresql_rejects_second_active_epoch(integration_session_factor
                 flow_mode="TEST",
                 topology_digest="c" * 64,
                 configuration_digest="d" * 64,
+                configuration_snapshot_json={},
                 started_at=datetime(2026, 8, 13),
             )
         )
@@ -236,6 +239,7 @@ async def test_postgresql_closed_epoch_releases_active_generation_slot(integrati
             flow_mode="TEST",
             topology_digest="c" * 64,
             configuration_digest="d" * 64,
+            configuration_snapshot_json={},
             started_at=closed_at,
         )
         db.add(second)
@@ -244,6 +248,115 @@ async def test_postgresql_closed_epoch_releases_active_generation_slot(integrati
         assert closed is first
         assert first.closed_at == closed_at
         assert second.id is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING])
+async def test_postgresql_unclosed_result_states_block_epoch_close(
+    integration_session_factory,
+    status: CommandStatus,
+) -> None:
+    async with integration_session_factory.begin() as db:
+        line, _, epoch, binding = await _seed_topology(db)
+        db.add(_command(binding, f"CMD-{uuid4().hex}", status))
+        await db.flush()
+
+        with pytest.raises(ActiveLineRunEpochExistsError, match="unclosed DeviceCommand"):
+            await LineRunEpochService().close_active_epoch(
+                db,
+                workline_id=line.id,
+                closed_at=datetime(2026, 8, 13, 0, 1),
+                command_repository=device_command_repository,
+            )
+
+        assert epoch.status == "ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_postgresql_epoch_close_waits_for_concurrent_result_terminal_transition(
+    integration_session_factory,
+) -> None:
+    async with integration_session_factory.begin() as db:
+        line, _, epoch, binding = await _seed_topology(db)
+        command = _command(binding, f"CMD-{uuid4().hex}", CommandStatus.ACKNOWLEDGED)
+        db.add(command)
+        await db.flush()
+        command_code = command.command_code
+
+    result_holds_command = asyncio.Event()
+    release_result = asyncio.Event()
+
+    async def settle_result() -> None:
+        async with integration_session_factory.begin() as db:
+            locked = await device_command_repository.get_by_command_code(db, command_code, for_update=True)
+            assert locked is not None
+            result_holds_command.set()
+            await release_result.wait()
+            locked.transition_to(CommandStatus.SUCCEEDED)
+
+    result_task = asyncio.create_task(settle_result())
+    await asyncio.wait_for(result_holds_command.wait(), timeout=2)
+    close_backend_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+
+    async def close_epoch() -> LineRunEpoch | None:
+        async with integration_session_factory.begin() as db:
+            backend_pid = await db.scalar(text("SELECT pg_backend_pid()"))
+            assert isinstance(backend_pid, int)
+            close_backend_pid.set_result(backend_pid)
+            return await LineRunEpochService().close_active_epoch(
+                db,
+                workline_id=line.id,
+                closed_at=datetime(2026, 8, 13, 0, 1),
+                command_repository=device_command_repository,
+            )
+
+    close_task = asyncio.create_task(close_epoch())
+    backend_pid = await asyncio.wait_for(close_backend_pid, timeout=2)
+    try:
+        lock_wait_deadline = asyncio.get_running_loop().time() + 10
+        last_wait_state: dict[str, object] | None = None
+        async with integration_session_factory() as observer_db:
+            while True:
+                wait_state = (
+                    (
+                        await observer_db.execute(
+                            text(
+                                "SELECT state, wait_event_type, wait_event "
+                                "FROM pg_stat_activity WHERE pid = :backend_pid"
+                            ),
+                            {"backend_pid": backend_pid},
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                last_wait_state = dict(wait_state) if wait_state is not None else None
+                if last_wait_state is not None and last_wait_state["wait_event_type"] == "Lock":
+                    break
+                if close_task.done():
+                    pytest.fail(
+                        "epoch close completed before PostgreSQL command-row lock wait; "
+                        f"last_wait_state={last_wait_state!r}, exception={close_task.exception()!r}"
+                    )
+                if asyncio.get_running_loop().time() >= lock_wait_deadline:
+                    pytest.fail(
+                        "epoch close did not enter PostgreSQL lock wait before deadline; "
+                        f"last_wait_state={last_wait_state!r}"
+                    )
+                await observer_db.rollback()
+                await asyncio.sleep(0.01)
+
+        assert last_wait_state is not None
+        assert last_wait_state["state"] == "active"
+        assert not close_task.done()
+    finally:
+        release_result.set()
+    await asyncio.wait_for(result_task, timeout=2)
+    closed = await asyncio.wait_for(close_task, timeout=2)
+
+    assert closed is not None
+    assert closed.id == epoch.id
+    assert closed.status == "CLOSED"
 
 
 @pytest.mark.asyncio
@@ -298,7 +411,7 @@ async def test_postgresql_create_and_close_serialize_on_epoch(integration_sessio
     assert not close_task.done()
     release_creation.set()
     await asyncio.wait_for(create_task, timeout=2)
-    with pytest.raises(ActiveLineRunEpochExistsError, match="sendable DeviceCommand"):
+    with pytest.raises(ActiveLineRunEpochExistsError, match="unclosed DeviceCommand"):
         await asyncio.wait_for(close_task, timeout=2)
 
     async with integration_session_factory() as db:

@@ -55,13 +55,13 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         )
         return result.scalar_one_or_none()
 
-    async def has_sendable_for_epoch_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> bool:
+    async def has_unclosed_for_epoch_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> bool:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
             select(columns.id)
             .where(
                 columns.line_run_epoch_id == line_run_epoch_id,
-                columns.status.in_((CommandStatus.PENDING, CommandStatus.DISPATCHING)),
+                columns.status.in_(_UNCLOSED_STATUSES),
             )
             .limit(1)
             .with_for_update()

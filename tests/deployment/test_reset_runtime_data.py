@@ -222,9 +222,7 @@ async def test_no_reset_mocks_is_the_only_apply_opt_out(monkeypatch: pytest.Monk
     ("fail_on_sql", "fail_commit"),
     (
         ("TRUNCATE ", False),
-        ("UPDATE wes_biz.devices", False),
         ("INSERT INTO wes_runtime.workline_runtime_status_projections", False),
-        ("UPDATE wes_biz.work_lines", False),
         (None, True),
     ),
 )

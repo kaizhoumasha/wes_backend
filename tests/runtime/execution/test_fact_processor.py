@@ -95,6 +95,7 @@ class _Epochs:
             flow_mode="AUTO",
             topology_digest="a" * 64,
             configuration_digest="b" * 64,
+            configuration_snapshot_json={},
             status=LineRunEpochStatus.ACTIVE,
             started_at=NOW,
         )

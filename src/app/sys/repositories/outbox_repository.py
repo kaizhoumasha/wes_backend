@@ -1250,10 +1250,10 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         return await self._release_blocked(
             db,
             columns.workline_id == workline_id,
-            or_(
-                columns.blocked_workline_id == workline_id,
-                columns.blocked_by_reconciliation_session_id.isnot(None),
-            ),
+            columns.blocked_workline_id == workline_id,
+            columns.blocked_reason == "WORKLINE_STOPPED_WAITING_START",
+            columns.blocked_by_runtime_hold_id.is_(None),
+            columns.blocked_by_reconciliation_session_id.is_(None),
         )
 
     async def get_sandbox_pending_messages(

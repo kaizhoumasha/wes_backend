@@ -13,6 +13,7 @@ _EXPORTS = {
     "WorkLineSafetyBlocked": ("safety_service", "WorkLineSafetyBlocked"),
     "WorkLineSafetyService": ("safety_service", "WorkLineSafetyService"),
     "workline_safety_service": ("safety_service", "workline_safety_service"),
+    "WorkLineStartService": ("workline_start_service", "WorkLineStartService"),
     "WorkLineService": ("workline_service", "WorkLineService"),
     "workline_service": ("workline_service", "workline_service"),
     "WorklineDiagnosticService": ("diagnostic_service", "WorklineDiagnosticService"),

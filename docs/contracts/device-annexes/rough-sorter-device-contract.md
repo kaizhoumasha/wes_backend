@@ -74,7 +74,7 @@ ECS/网关版本、设备/固件版本、时间来源、允许时钟偏差、回
 | `allowed_clock_skew_ms`、`callback_retry_window_ms` | integer | 严格正整数 |
 | `evidence_retention_days` | integer | 严格正整数 |
 
-四个 `position_bindings` 值必须是非空且互不重复的稳定 `location_id`；`location_type` 由对应 position role 固定，不接受配置覆盖。
+四个 `position_bindings` 值必须是去空白后 1–120 字符且互不重复的稳定 `location_id`；`location_type` 由对应 position role 固定，不接受配置覆盖。
 `plugin_key="rough_sorter"`、`plugin_version="1.0.0"`、`flow_mode="ROUGH_SORT_INBOUND"`、三组 `contract_key` 和
 `contract_version="1.0"` 来自静态部署组合，不由数据库配置选择。Endpoint 不进入该业务配置。
 

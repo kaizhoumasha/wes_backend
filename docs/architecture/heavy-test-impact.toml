@@ -29,12 +29,12 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/business-legacy-absence-ledger.csv"
 heavy_tests = []
-reviewed_content_sha256 = "313c2f0d0576f9c11db2345c0b3c0ca8f8a77b77121da697241d28276573ee6c"
+reviewed_content_sha256 = "a8070cd02c3bcc345b478ac839a993dc36130e3aca867252ad2a5b6141287962"
 
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "260b75cc8399d7b0b2a1ab812cc5fc50ccdf1e278580b8137680fa11d79e8f6d"
+reviewed_content_sha256 = "802f2735246ff5e932a09c5031bbcfe1610d67bd9fa383903ce3c699f0def7cc"
 
 [[mapping]]
 source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
@@ -52,7 +52,10 @@ reviewed_content_sha256 = "07c95a0c5b9e352440c3ee7ac2f0bcb0e75c6f9b310747d68655a
 # 旧命令请求/响应 Schema 退役后，由 DeviceCommand 生产闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 # 后端 CI 编排变更同时验证当前数据库合同、Transport 生产接线和 WMS Mock 镜像合同。
 [[mapping]]
@@ -123,7 +126,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
-reviewed_content_sha256 = "8de706340f52942a5d6d5aafbc0b2800e9f5a82a4bb20545674a9dc9b84ec7ed"
+reviewed_content_sha256 = "8de5d47269b1e1b50a23f4b0f64915d23649d550d2ecc3532ea321794fd72f90"
 
 [[mapping]]
 source_glob = ".env.test"
@@ -131,7 +134,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
-reviewed_content_sha256 = "ea5ebbec85375bc0250607aae6db2e57f8240dce5105d714cb125f45a6a30c67"
+reviewed_content_sha256 = "fc7b28ddca92ae0ec28ef7377891c1444e6f65a9129425c95df16de792a4d4fc"
 
 [[mapping]]
 source_glob = ".env.prod"
@@ -139,7 +142,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
-reviewed_content_sha256 = "d0ee142f857e492d64ce8eb09fc27a1b873c29cbf637977ec533cc0c20d36999"
+reviewed_content_sha256 = "d68602ff4e67d94a16f0f143cbbb6e34f329b1fcfa124cbea35b76e99387d0f9"
 
 # MR HEAVY 专用数据库编排由当前命令结果关联 PostgreSQL 合同承接；Redis 由 Compose healthcheck 验证。
 [[mapping]]
@@ -464,6 +467,16 @@ source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/endpoint.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
 ]
 
 [[mapping]]
@@ -526,7 +539,11 @@ heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.p
 
 [[mapping]]
 source_glob = "src/app/device/{models/device.py,repositories/device_repository.py,v1/device.py}"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+]
 
 # runtime 包入口移除旧 DeviceProjection 导出，由 Phase 7 生产闭环承接。
 [[mapping]]
@@ -563,7 +580,10 @@ reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb
 # Trace/Runtime 读模型收敛 DeviceCommand 状态后，由生产闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/runtime.py"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/diagnostic.py"
@@ -607,8 +627,7 @@ reviewed_content_sha256 = "5ed576fccada10cc3beee698829d7ab73bf4018b17db992cf0230
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/trace/trace_query_service.py"
-heavy_tests = []
-reviewed_content_sha256 = "609485f73816196cc5ef6b9328ca979f78b0705ce8553375c95512e060aba37e"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/runtime_snapshot_assembler.py"
@@ -637,6 +656,7 @@ source_glob = "src/app/sys/{models/__init__.py,models/outbox.py,repositories/out
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_system_outbox_repository.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
 [[mapping]]
@@ -1025,12 +1045,14 @@ source_glob = "migrations/versions/20260813_1016_a08d72f135d2_rebuild_device_com
 heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
 
 [[mapping]]
-source_glob = "src/app/workline/{models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"
+source_glob = "src/app/workline/{epoch_activation.py,models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
 # 最小 execution owner 由独立 PostgreSQL 约束承接；设备 evidence 切换同时刷新既有 DeviceCommand 闭环。
@@ -1094,14 +1116,25 @@ heavy_tests = [
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
 
-# Phase 8 静态插件装配、同事务 Fact 重建与持久触发由真实 execution/Celery/Transport owner 承接。
+# Phase 8 运行时部署适配、同事务 Fact 重建与持久触发由真实 execution/Celery/Transport owner 承接。
 [[mapping]]
-source_glob = "deployment/*.py"
+source_glob = "deployment/{__init__.py,_rough_sorter_device_facts.py,_rough_sorter_factory.py,_rough_sorter_persistence.py,_rough_sorter_transport.py,_rough_sorter_transport_recovery_facts.py,_rough_sorter_types.py,_rough_sorter_values.py,_rough_sorter_wms_facts.py,_rough_sorter_wms_resolver.py}"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
     "tests/integration/test_wms_deployment_attestation.py",
+]
+
+# 公开 START 的粗分机部署组合同时由通用 PostgreSQL START owner 承接；插件业务 E2E 按插件边界显式运行。
+[[mapping]]
+source_glob = "deployment/rough_sorter_composition.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_wms_deployment_attestation.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
 [[mapping]]
@@ -1113,6 +1146,24 @@ source_glob = "src/app/workline/epoch_digest.py"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260819_0804_53e560430c1a_为运行代际冻结配置快照.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260819_1202_a05b2676f681_删除旧start准入字段.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260819_1359_0a6378b66e1a_增加设备派发端点.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
 ]
 
 [[mapping]]
@@ -1205,11 +1256,6 @@ source_glob = "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py
 heavy_tests = []
 reviewed_content_sha256 = "58d75e9bd78dc94e3b1ecfa132d115e6affce86a3863f0505ca2bbde929a4a8d"
 
-# 存活的 START 准入由真实 PostgreSQL、HTTP status wire 与 READY 写回闭环承接。
-[[mapping]]
-source_glob = "src/app/runtime/capabilities/material_flow/start_admission_service.py"
-heavy_tests = ["tests/integration/test_start_admission_postgresql.py"]
-
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/material_flow/smt_source_pick_*/**"
 heavy_tests = []
@@ -1277,6 +1323,7 @@ source_glob = "src/app/runtime/orchestration/services/{__init__.py,full_box_exch
 heavy_tests = [
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
     "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
 ]
 
@@ -1300,7 +1347,14 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/workline/models/{__init__.py,migration_inventory.py,migration_matrix.py,plugin_binding.py,workline.py}"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+heavy_tests = [
+    "tests/integration/test_workline_plugin_schema_retirement.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/workline/models/start.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/repositories/{__init__.py,plugin_binding_repository.py,workline_repository.py}"
@@ -1311,7 +1365,21 @@ source_glob = "src/app/workline/runtime_services.py"
 heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/workline/services/{__init__.py,manifest_validator.py,migration_inventory_service.py,migration_matrix_service.py,plugin_binding_service.py}"
+source_glob = "src/app/workline/services/{manifest_validator.py,migration_inventory_service.py,migration_matrix_service.py,plugin_binding_service.py}"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/workline/services/{__init__.py,workline_start_service.py}"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+# 旧 START admission 路径已删除；删除 diff 仍由唯一 WorkLine START PostgreSQL owner 承接。
+[[mapping]]
+source_glob = "src/app/runtime/capabilities/material_flow/start_admission_service.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+# 共享 FAST helper 仅删除无消费者的旧 admission 模拟；其现存消费者全部由默认 QUALITY 收集。
+[[mapping]]
+source_glob = "tests/support/workline_contracts.py"
 heavy_tests = []
 
 [[mapping]]
@@ -1327,7 +1395,10 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/workline/services/diagnosis_verdict_builder_service.py"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 # RuntimeInbox 不再派发设备 SystemOutbox，保留的 inbox/outbox 行为仍由其 PostgreSQL owner 承接。
 [[mapping]]
@@ -1345,7 +1416,10 @@ heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 # WorkLine facade 删除旧设备命令入口，由唯一 ECS callback/worker 生产闭环承接。
 [[mapping]]
 source_glob = "src/app/workline/v1/operation.py"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/workline/v1/workline.py"
@@ -1367,7 +1441,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "scripts/data/init_production_base_data.sql"
 heavy_tests = []
-reviewed_content_sha256 = "8094c5f2364db50b1ccc16b27129c9e08a849d8d4b36f1b32cf8d9aa2f7a61d4"
+reviewed_content_sha256 = "6dd684ed5ab2db1ec9ffbaa01c4d8f4eda3c03a367a75ec43ad3af4adb0c3b6b"
 
 [[mapping]]
 source_glob = "scripts/data/reset_runtime_data.py"

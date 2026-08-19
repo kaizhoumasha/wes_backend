@@ -12,24 +12,6 @@ from src.app.runtime.orchestration.wms_sync_obligation import (  # noqa: TC001 -
 )
 
 
-class SandboxWorklineStartRequest(BaseModel):
-    """沙箱 WorkLine START 请求。"""
-
-    device_code: str = Field(min_length=1, max_length=100, description="触发 START 的设备编码")
-    trace_id: str | None = Field(default=None, max_length=200, description="Trace ID（可选，自动生成）")
-
-
-class SandboxWorklineStartResponse(BaseModel):
-    """沙箱 WorkLine START 准入结果。"""
-
-    status: str | None = None
-    ack: bool | None = None
-    device_code: str | None = None
-    trace_id: str | None = None
-    reason_code: str | None = None
-    diagnostic: dict[str, Any] | None = None
-
-
 class SandboxAckRequest(BaseModel):
     """沙箱 Command ACK 模拟请求。"""
 
@@ -123,6 +105,4 @@ __all__ = [
     "ResolveRuntimeReconciliationRequest",
     "SandboxAckRequest",
     "SandboxExternalCallbackRequest",
-    "SandboxWorklineStartRequest",
-    "SandboxWorklineStartResponse",
 ]

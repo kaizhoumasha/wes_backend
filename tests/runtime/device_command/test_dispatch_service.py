@@ -77,10 +77,15 @@ class FakeCommandRepository:
 
 
 class FakeEpochRepository:
-    def __init__(self, binding: LineRunEpochDeviceBinding) -> None:
+    def __init__(self, binding: LineRunEpochDeviceBinding | None, events: list[str] | None = None) -> None:
         self.binding = binding
+        self.events = events
 
     async def get_binding_for_dispatch(self, _db, *, line_run_epoch_id, device_code):
+        if self.events is not None:
+            self.events.append("binding")
+        if self.binding is None:
+            return None
         if (line_run_epoch_id, device_code) == (self.binding.line_run_epoch_id, self.binding.device_code):
             return self.binding
         return None
@@ -99,8 +104,10 @@ class FakeAdapter:
     def __init__(self, result: EcsSubmitResult) -> None:
         self.result = result
         self.submitted: list[str] = []
+        self.status_requests: list[str] = []
 
     async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+        self.status_requests.append(device_code)
         return EcsDeviceStatus.model_validate(
             {
                 "device_code": device_code,
@@ -122,6 +129,28 @@ class FakeAdapter:
 class UnavailableStatusAdapter(FakeAdapter):
     async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
         raise ConnectionError(device_code)
+
+
+class FakeAdapterProvider:
+    def __init__(
+        self,
+        adapter: FakeAdapter,
+        *,
+        error: Exception | None = None,
+        events: list[str] | None = None,
+    ) -> None:
+        self.adapter = adapter
+        self.error = error
+        self.events = events
+        self.requested: list[str] = []
+
+    async def get_adapter(self, endpoint_base_url: str) -> FakeAdapter:
+        if self.events is not None:
+            self.events.append("provider")
+        self.requested.append(endpoint_base_url)
+        if self.error is not None:
+            raise self.error
+        return self.adapter
 
 
 def _command() -> DeviceCommand:
@@ -152,6 +181,7 @@ def _binding() -> LineRunEpochDeviceBinding:
         device_id=7,
         device_code="ARM-01",
         device_role="PLACEMENT_DEVICE",
+        endpoint_base_url="http://ecs-dispatch:8080",
         contract_key="arm.pick",
         contract_version="2.0",
         status_max_age_ms=1_000,
@@ -172,13 +202,15 @@ def _binding() -> LineRunEpochDeviceBinding:
 async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expected) -> None:
     command = _command()
     adapter = FakeAdapter(EcsSubmitResult(disposition))
+    events: list[str] = []
+    provider = FakeAdapterProvider(adapter, events=events)
     observations = FakeObservationRepository()
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(_binding(), events),  # type: ignore[arg-type]
         observation_repository=observations,  # type: ignore[arg-type]
-        adapter=adapter,  # type: ignore[arg-type]
+        adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
     )
 
@@ -188,6 +220,31 @@ async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expect
     assert command.status == expected
     assert adapter.submitted == ["CMD-001"]
     assert len(observations.created) == 1
+    assert provider.requested == ["http://ecs-dispatch:8080"]
+    assert events[:2] == ["binding", "provider"]
+
+
+@pytest.mark.asyncio
+async def test_missing_or_invalid_binding_endpoint_never_reaches_http() -> None:
+    for binding, provider_error in (
+        (None, None),
+        (_binding(), ValueError("invalid endpoint")),
+    ):
+        command = _command()
+        adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+        provider = FakeAdapterProvider(adapter, error=provider_error)
+        service = DeviceDispatchService(
+            session_factory=FakeSessions(),  # type: ignore[arg-type]
+            command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+            epoch_repository=FakeEpochRepository(binding),  # type: ignore[arg-type]
+            observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+            adapter_provider=provider,  # type: ignore[arg-type]
+        )
+
+        assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+        assert command.status == CommandStatus.RECONCILING
+        assert adapter.submitted == []
+        assert adapter.status_requests == []
 
 
 @pytest.mark.asyncio
@@ -199,7 +256,7 @@ async def test_status_probe_failure_returns_to_pending_because_command_was_not_s
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
         epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
-        adapter=adapter,  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
     )
 
     assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
@@ -216,7 +273,7 @@ async def test_command_crossing_deadline_during_status_probe_is_timed_out_before
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
         epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
-        adapter=adapter,  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: command.deadline_at,
     )
 
@@ -235,7 +292,7 @@ async def test_command_crossing_deadline_after_admission_is_timed_out_at_final_s
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
         epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
-        adapter=adapter,  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter([command.deadline_at - timedelta(microseconds=1), command.deadline_at]).__next__,
     )
 
@@ -253,7 +310,7 @@ async def test_retryable_response_uses_retry_after_delay() -> None:
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
         epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
-        adapter=adapter,  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter(
             [
                 datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -279,7 +336,7 @@ async def test_huge_retry_after_is_fenced_by_command_deadline() -> None:
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
         epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
-        adapter=adapter,  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter([datetime(2026, 8, 13, 0, 0, 0, 500_000), response_at, response_at, response_at]).__next__,
     )
 
@@ -299,7 +356,7 @@ async def test_ack_received_after_deadline_enters_reconciliation_with_response_t
         command_repository=FakeCommandRepository(command),
         epoch_repository=FakeEpochRepository(_binding()),
         observation_repository=FakeObservationRepository(),
-        adapter=adapter,
+        adapter_provider=FakeAdapterProvider(adapter),
         clock=iter(
             [datetime(2026, 8, 13, 0, 0, 0, 500_000), datetime(2026, 8, 13, 0, 0, 0, 750_000), response_at]
         ).__next__,

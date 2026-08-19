@@ -10,6 +10,8 @@ from typing import Any
 class RoughSorterTypes:
     plugin_key: str
     plugin_version: str
+    role_contracts: dict[str, str]
+    position_roles: tuple[str, ...]
     build_handlers: Any
     AdmissionDecidedFact: Any
     AdmissionResult: Any

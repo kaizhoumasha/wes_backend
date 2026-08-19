@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, cast
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import JSON, CheckConstraint, Column, Index, UniqueConstraint, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -46,6 +46,7 @@ class LineRunEpoch(EnterpriseMixin, DataTableMixin, table=True):
     flow_mode: str = Field(min_length=1, max_length=100)
     topology_digest: str = Field(min_length=64, max_length=64)
     configuration_digest: str = Field(min_length=64, max_length=64)
+    configuration_snapshot_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
     status: LineRunEpochStatus = Field(
         default=LineRunEpochStatus.ACTIVE,
         sa_type=cast(
@@ -80,6 +81,10 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
         ),
         CheckConstraint("status_max_age_ms > 0", name="line_run_epoch_binding_status_age_positive"),
         CheckConstraint("command_timeout_ms > 0", name="line_run_epoch_binding_timeout_positive"),
+        CheckConstraint(
+            "length(endpoint_base_url) > 0",
+            name="line_run_epoch_binding_endpoint_nonempty",
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -87,6 +92,7 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
     device_id: int = Field(foreign_key="wes_biz.devices.id", index=True)
     device_code: str = Field(min_length=1, max_length=100)
     device_role: str = Field(min_length=1, max_length=50)
+    endpoint_base_url: str = Field(min_length=1, max_length=255)
     contract_key: str = Field(min_length=1, max_length=100)
     contract_version: str = Field(min_length=1, max_length=50)
     status_max_age_ms: int = Field(gt=0)
@@ -100,6 +106,7 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
             self.device_id,
             self.device_code,
             self.device_role,
+            self.endpoint_base_url,
             self.contract_key,
             self.contract_version,
             self.status_max_age_ms,

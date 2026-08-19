@@ -19,7 +19,6 @@ _FAILED_COMMAND_STATUSES = {"FAILED", "TIMEOUT"}
 _FAILED_OUTBOX_STATUSES = {"FAILED"}
 _RUNNING_SESSION_STATUSES = {"NEW", "RUNNING", "PROCESSING", "WAITING_COMMAND", "WAITING_CALLBACK"}
 _WAITING_SESSION_STATUSES = {"WAITING", "WAITING_COMMAND", "WAITING_CALLBACK"}
-_ADMISSION_RECOVERING_STATUSES = {"FAILED", "CHECKING", "RECOVERING", "WAITING", "BLOCKED"}
 
 
 class DiagnosisVerdictBuilder:
@@ -168,20 +167,15 @@ class DiagnosisVerdictBuilder:
         if self._is_completed_clear(result):
             return None
 
-        admission_wait = self._admission_wait_outbox(result)
-        admission_status = coerce_optional_str(getattr(result, "workline_start_admission_status", None))
-        if admission_wait is not None or self._has_start_admission_projection(result):
-            requires_action = admission_status == "BLOCKED"
-            state = "blocked" if requires_action else "waiting"
+        if self._start_wait_outbox(result) is not None:
             return DiagnosisVerdictResponse(
-                state=state,
-                severity="danger" if requires_action else "warning",
-                title="START 准入等待" if not requires_action else "START 准入阻塞",
-                summary=coerce_optional_str(getattr(result, "workline_start_admission_message", None))
-                or "WorkLine 正在等待 START 准入或恢复链路。",
-                requires_operator_action=requires_action,
-                primary_action=self._admission_action(result, requires_action=requires_action),
-                blocking_point="admission",
+                state="waiting",
+                severity="warning",
+                title="等待现场 START",
+                summary="WorkLine 已停止，相关消息会在成功 START 后恢复派发。",
+                requires_operator_action=False,
+                primary_action="确认现场条件后发起 START",
+                blocking_point="workline_start",
                 owner="workline",
                 evidence_health=evidence_health,
             )
@@ -254,7 +248,6 @@ class DiagnosisVerdictBuilder:
         command_count = len(getattr(result, "commands", []))
         outbox_count = len(getattr(result, "outboxes", []))
         diagnostics_count = len(getattr(result, "diagnostics", []))
-        has_admission = self._has_start_admission_projection(result)
         has_resource_wait = self._resource_wait_outbox(result) is not None
         completed = self._is_completed_clear(result)
 
@@ -278,13 +271,6 @@ class DiagnosisVerdictBuilder:
             self._item("outbox", "Outbox", outbox_count, required=False, empty_hint="当前结论无待处理 outbox"),
             self._item(
                 "diagnostics", "Diagnostics", diagnostics_count, required=False, empty_hint="当前结论不依赖持久化诊断"
-            ),
-            DiagnosisEvidenceHealthItemResponse(
-                key="workline_admission",
-                label="WorkLine Admission",
-                count=1 if has_admission else 0,
-                state="present" if has_admission else "not_required",
-                hint="START 准入投影已就绪" if has_admission else "当前结论不依赖 START 准入投影",
             ),
             DiagnosisEvidenceHealthItemResponse(
                 key="resource_wait",
@@ -341,7 +327,7 @@ class DiagnosisVerdictBuilder:
         return None
 
     @staticmethod
-    def _admission_wait_outbox(result: Any) -> Any | None:
+    def _start_wait_outbox(result: Any) -> Any | None:
         return next(
             (
                 item
@@ -358,22 +344,6 @@ class DiagnosisVerdictBuilder:
         return coerce_optional_str(detail.get("device_code")) or coerce_optional_str(
             getattr(outbox, "target_code", None)
         )
-
-    @staticmethod
-    def _has_start_admission_projection(result: Any) -> bool:
-        status = coerce_optional_str(getattr(result, "workline_start_admission_status", None))
-        runtime_status = coerce_optional_str(getattr(result, "workline_runtime_status", None))
-        return bool(status and (status in _ADMISSION_RECOVERING_STATUSES or runtime_status == "STOPPED"))
-
-    @staticmethod
-    def _admission_action(result: Any, *, requires_action: bool) -> str:
-        device_code = coerce_optional_str(getattr(result, "workline_start_admission_failed_device_code", None))
-        message = coerce_optional_str(getattr(result, "workline_start_admission_message", None))
-        if requires_action:
-            return message or "处理 START 准入阻塞后重新发起 START"
-        if device_code:
-            return f"等待设备 {device_code} 满足 START 准入条件，观察恢复链路"
-        return message or "等待 START 准入恢复链路完成"
 
     @staticmethod
     def _manual_hold_block(result: Any) -> tuple[Any, dict[str, Any]] | None:

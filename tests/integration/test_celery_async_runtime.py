@@ -139,9 +139,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         transport_runtimes=[],
         build_transport_runtime=AsyncMock(),
         device_command_runtimes=[],
-        resolve_device_command_runtime_config=MagicMock(
-            return_value=SimpleNamespace(base_url="http://127.0.0.1:18081", timeout_seconds=3.0)
-        ),
+        resolve_device_command_runtime_config=MagicMock(return_value=SimpleNamespace(timeout_seconds=3.0)),
         build_device_command_runtime=MagicMock(),
     )
 
@@ -266,7 +264,10 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     first_runtime.initialize()
     from src.core.task_queue_gateway import task_queue_gateway
 
-    assert infra.build_device_command_runtime.call_args.kwargs["task_queue_gateway"] is task_queue_gateway
+    device_runtime_kwargs = infra.build_device_command_runtime.call_args.kwargs
+    assert device_runtime_kwargs["task_queue_gateway"] is task_queue_gateway
+    assert device_runtime_kwargs["timeout_seconds"] == 3.0
+    assert "base_url" not in device_runtime_kwargs
     first_transport_runtime = first_runtime.transport_runtime
     assert infra.build_wms_data_lane_query_runtime.call_args.kwargs["client"] is infra.effect_runtime.client
     assert infra.build_wms_effect_preparation_runtime.call_args.kwargs["catalog"] is infra.startup.catalog
