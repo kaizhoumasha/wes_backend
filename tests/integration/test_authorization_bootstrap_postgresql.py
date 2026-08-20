@@ -73,11 +73,10 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     service = AuthorizationBootstrapService()
                     fresh_preview = await service.converge_authorization(app, db, dry_run=True)
                     assert fresh_preview.roles == {"created": 5, "updated": 0, "skipped": 0}
-                    # Regression: ISSUE-003 — 退役 external callback 后授权快照仍保留旧计数
-                    # Found by /qa on 2026-08-21
-                    assert fresh_preview.permissions.created == 168
+                    # Regression: 合并 Transport 调试契约后，授权快照必须包含新增目录与只读权限。
+                    assert fresh_preview.permissions.created == 172
                     assert fresh_preview.role_permissions == {
-                        "added": 434,
+                        "added": 444,
                         "removed": 0,
                         "skipped": 0,
                         "roles_processed": 5,
@@ -125,11 +124,11 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     for role_id, permission_id in (await db.execute(select(role_permission))).all():
                         actual_role_permissions[role_names_by_id[role_id]].add(permission_names_by_id[permission_id])
                     assert {role_name: len(names) for role_name, names in actual_role_permissions.items()} == {
-                        "系统管理员": 168,
+                        "系统管理员": 172,
                         "管理员": 51,
-                        "运营人员": 106,
+                        "运营人员": 109,
                         "财务人员": 3,
-                        "普通用户": 106,
+                        "普通用户": 109,
                     }
                     assert actual_role_permissions["系统管理员"] == expected_permission_names
                     assert actual_role_permissions["财务人员"] == {
@@ -157,7 +156,7 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     assert new_permission_preview.role_permissions == {
                         "added": 4,
                         "removed": 0,
-                        "skipped": 434,
+                        "skipped": 444,
                         "roles_processed": 5,
                     }
                     assert await _count(db, Permission) == permission_count
