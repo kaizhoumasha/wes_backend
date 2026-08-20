@@ -7,7 +7,7 @@
 
 - 前后端必须作为同一批准合同发布，禁止只部署其中一端。
 - 后端和前端都必须使用 Jenkins 产出的 immutable tag，并在切换前固定为 registry digest。
-- fresh DB 使用 `bootstrap_foundation`；已有部署数据库使用权限 `--apply`。两者之后都必须执行独立的 `--check`。
+- fresh DB 使用 `bootstrap_foundation`；已有部署数据库使用受控的权限 `--apply`。任一 mutation 如精确报告 post-commit cache marker，只 repair 一次且不重跑 mutation；两者之后都必须执行独立的 `--check`。
 - 维护态就是停止 Nginx 并确认外部端口关闭。任何后续门禁失败都保持 Nginx 关闭并报告失败阶段。
 - 不允许生产 seed、旧同步入口、静态权限 SQL、兼容 API、双 schema、双读写或旧镜像回退。
 
@@ -202,26 +202,44 @@ fi
 ### 6.2 已有部署数据库
 
 ```bash
-compose run --rm --no-deps \
+# EXISTING_DATABASE_AUTHORIZATION_BEGIN
+if AUTHORIZATION_APPLY_OUTPUT=$(compose run --rm --no-deps \
   -e DATABASE_RUNTIME_ROLE=cli \
   -e DATABASE_POOL_SIZE=1 \
   -e DATABASE_MAX_OVERFLOW=0 \
   --entrypoint /opt/venv/bin/python \
-  api scripts/data/sync_permissions.py --apply
+  api scripts/data/sync_permissions.py --apply 2>&1); then
+  printf '%s\n' "$AUTHORIZATION_APPLY_OUTPUT"
+else
+  AUTHORIZATION_APPLY_STATUS=$?
+  printf '%s\n' "$AUTHORIZATION_APPLY_OUTPUT"
+  echo "authorization apply exit status: ${AUTHORIZATION_APPLY_STATUS}" >&2
+  printf '%s\n' "$AUTHORIZATION_APPLY_OUTPUT" \
+    | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED' \
+    || fail_cutover authorization-apply
+  compose run --rm --no-deps \
+    --entrypoint /opt/venv/bin/python \
+    api scripts/data/sync_permissions.py --repair-cache \
+    || fail_cutover authorization-cache-repair
+fi
+# EXISTING_DATABASE_AUTHORIZATION_END
 ```
 
 无论选择哪条路径，随后都必须运行新的只读检查：
 
 ```bash
+# AUTHORIZATION_FRESH_CHECK_BEGIN
 compose run --rm --no-deps \
   -e DATABASE_RUNTIME_ROLE=cli \
   -e DATABASE_POOL_SIZE=1 \
   -e DATABASE_MAX_OVERFLOW=0 \
   --entrypoint /opt/venv/bin/python \
-  api scripts/data/sync_permissions.py --check
+  api scripts/data/sync_permissions.py --check \
+  || fail_cutover authorization-check
+# AUTHORIZATION_FRESH_CHECK_END
 ```
 
-6.1 的失败分支只接受独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，并已在同一分支执行一次 `--repair-cache`；不得重跑 bootstrap 或再次 repair。`--apply` 的任何非零退出都 fail closed。`--repair-cache` 只清理两个权限缓存命名空间；repair 或随后独立的 `--check` 失败时，EXIT trap 会再次停止 Nginx。
+两个 mutation 的失败分支都只接受独占整行、且与详情行分离的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，并在同一分支执行一次 `--repair-cache`；不得重跑 bootstrap、`--apply` 或再次 repair。没有该精确整行的普通失败立即 fail closed。`--repair-cache` 只清理当前数据库前缀下的两个权限缓存命名空间；repair 或随后独立的 fresh `--check` 失败时，EXIT trap 会再次停止 Nginx。
 
 ## 7. 启动固定版本并执行内部门禁
 
@@ -300,7 +318,7 @@ trap - EXIT
 - Nginx 在迁移/授权阶段关闭，外部端口实测不可达；
 - Compose 标签发现无未知 service，迁移前只有 PostgreSQL/Redis 运行；
 - 新后端镜像一次性 Alembic 成功；
-- fresh DB bootstrap 或已有 DB `--apply` 成功，随后 `--check` 零漂移；
+- fresh DB bootstrap 或已有 DB `--apply` 成功；若出现精确 post-commit marker 则只 repair 一次且不重跑 mutation；随后 fresh `--check` 零漂移；
 - post-commit cache failure 如发生，只执行 repair 后新的 check；
 - 六个固定版本应用服务完成内部门禁；
 - Nginx 最后恢复，外部健康与首页通过；

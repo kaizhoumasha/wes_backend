@@ -92,16 +92,16 @@ uv run python scripts/data/sync_permissions.py --check
 
 1. 授权事务先提交；
 2. 仅对受影响用户、API Application 及角色关系执行精确缓存失效；
-3. 缓存失效失败时命令以专用标记 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED` 和退出码 `3` 结束。
+3. 缓存失效失败时命令以独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`、下一行 `CACHE_INVALIDATION_FAILURE_DETAIL:` 诊断和退出码 `3` 结束。
 
-看到该标记表示数据库已经提交。此时不得重复 bootstrap 或 `--apply`；保持 Nginx 关闭，只执行：
+受控发布流程只在输出包含上述精确裸 marker 行时认定数据库已经提交；`marker: detail` 等子串形式不进入恢复分支。此时不得重复 bootstrap 或 `--apply`；保持 Nginx 关闭，只执行一次 repair，再执行新的检查：
 
 ```bash
 uv run python scripts/data/sync_permissions.py --repair-cache
 uv run python scripts/data/sync_permissions.py --check
 ```
 
-`--repair-cache` 只清理两个权限缓存命名空间，不扫描或修改数据库。没有专用标记的失败不得进入 repair 分支。
+`--repair-cache` 只清理当前数据库前缀下的两个权限缓存命名空间，不扫描或修改数据库。没有专用裸 marker 行的失败不得进入 repair 分支。
 
 ## 7. 部署顺序
 

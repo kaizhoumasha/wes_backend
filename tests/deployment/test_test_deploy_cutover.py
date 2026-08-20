@@ -24,6 +24,18 @@ def _cutover_shell() -> str:
     return "set -e\nset -o pipefail\n" + textwrap.dedent(pipeline[start:end])
 
 
+def _existing_database_authorization_shell() -> str:
+    runbook = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
+    snippets: list[str] = []
+    for marker_name in ("EXISTING_DATABASE_AUTHORIZATION", "AUTHORIZATION_FRESH_CHECK"):
+        start_marker = f"# {marker_name}_BEGIN"
+        end_marker = f"# {marker_name}_END"
+        start = runbook.index(start_marker) + len(start_marker)
+        end = runbook.index(end_marker, start)
+        snippets.append(textwrap.dedent(runbook[start:end]))
+    return "set -e\nset -o pipefail\n" + "\n".join(snippets)
+
+
 def _write_executable(path: Path, source: str) -> None:
     path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
     path.chmod(0o755)
@@ -209,6 +221,7 @@ def _fake_docker_source() -> str:
                         fi
                         if fail_at repair-failure || fail_at postcommit-recovery; then
                             printf 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED\n'
+                            printf 'CACHE_INVALIDATION_FAILURE_DETAIL: RuntimeError: injected redis failure\n'
                             exit 50
                         fi
                         ;;
@@ -360,6 +373,64 @@ def _run_cutover(tmp_path: Path, fail_stage: str = "") -> tuple[subprocess.Compl
     )
     trace = trace_path.read_text(encoding="utf-8").splitlines() if trace_path.exists() else []
     return completed, trace, nginx_state_path.read_text(encoding="utf-8").strip()
+
+
+def _run_existing_database_authorization(
+    tmp_path: Path, fail_stage: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    trace_file = tmp_path / "existing-db-trace.log"
+    script = tmp_path / "existing-db-authorization.sh"
+    _write_executable(
+        script,
+        f"""
+        #!/bin/bash
+        TRACE_FILE={trace_file!s}
+        FAIL_STAGE={fail_stage!s}
+        trace() {{ printf '%s\\n' "$1" >>"$TRACE_FILE"; }}
+        fail_cutover() {{ trace "fail:$1"; exit 1; }}
+        compose() {{
+          args="$*"
+          case "$args" in
+            *"sync_permissions.py --apply"*)
+              trace apply
+              case "$FAIL_STAGE" in
+                apply-normal-failure)
+                  printf 'PERMISSION_SYNC_FAILED: RuntimeError: injected database failure\\n'
+                  return 1
+                  ;;
+                detailed-marker-only)
+                  printf 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED: RuntimeError: injected redis failure\\n'
+                  return 3
+                  ;;
+                repair-failure|postcommit-recovery)
+                  printf 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED\\n'
+                  printf 'CACHE_INVALIDATION_FAILURE_DETAIL: RuntimeError: injected redis failure\\n'
+                  return 3
+                  ;;
+                *)
+                  printf 'apply completed\\n'
+                  return 0
+                  ;;
+              esac
+              ;;
+            *"sync_permissions.py --repair-cache"*)
+              trace repair
+              [ "$FAIL_STAGE" != repair-failure ] || return 4
+              return 0
+              ;;
+            *"sync_permissions.py --check"*)
+              trace permission-check
+              return 0
+              ;;
+            *) return 9 ;;
+          esac
+        }}
+        {_existing_database_authorization_shell()}
+        """,
+    )
+    completed = subprocess.run([str(script)], text=True, capture_output=True, check=False)
+    trace = trace_file.read_text(encoding="utf-8").splitlines() if trace_file.exists() else []
+    return completed, trace
 
 
 def _assert_subsequence(trace: list[str], expected: list[str]) -> None:
@@ -546,7 +617,38 @@ def test_test_deploy_postcommit_recovery_repairs_once_checks_again_and_continues
     assert trace.count("bootstrap") == 1
     assert trace.count("repair") == 1
     assert trace.count("permission-check") == 1
+    assert completed.stdout.splitlines().count("DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED") == 1
+    assert "CACHE_INVALIDATION_FAILURE_DETAIL: RuntimeError: injected redis failure" in completed.stdout.splitlines()
     _assert_subsequence(trace, ["bootstrap", "repair", "permission-check", "application-start", "nginx-start"])
+
+
+@pytest.mark.parametrize("fail_stage", ["apply-normal-failure", "detailed-marker-only"])
+def test_existing_database_apply_rejects_failures_without_the_exact_bare_marker(
+    tmp_path: Path, fail_stage: str
+) -> None:
+    completed, trace = _run_existing_database_authorization(tmp_path, fail_stage)
+
+    assert completed.returncode != 0, (completed.stdout, completed.stderr, trace)
+    assert trace == ["apply", "fail:authorization-apply"]
+
+
+def test_existing_database_postcommit_recovery_repairs_once_then_runs_fresh_check(tmp_path: Path) -> None:
+    completed, trace = _run_existing_database_authorization(tmp_path, "postcommit-recovery")
+
+    assert completed.returncode == 0, (completed.stdout, completed.stderr, trace)
+    assert trace == ["apply", "repair", "permission-check"]
+    assert trace.count("apply") == 1
+    assert trace.count("repair") == 1
+    assert completed.stdout.splitlines().count("DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED") == 1
+    assert "CACHE_INVALIDATION_FAILURE_DETAIL: RuntimeError: injected redis failure" in completed.stdout.splitlines()
+    assert "authorization apply exit status: 3" in completed.stderr
+
+
+def test_existing_database_repair_failure_stops_before_fresh_check(tmp_path: Path) -> None:
+    completed, trace = _run_existing_database_authorization(tmp_path, "repair-failure")
+
+    assert completed.returncode != 0, (completed.stdout, completed.stderr, trace)
+    assert trace == ["apply", "repair", "fail:authorization-cache-repair"]
 
 
 def test_test_deploy_success_proves_complete_order_with_nginx_started_last(tmp_path: Path) -> None:

@@ -294,7 +294,7 @@ docker-compose --version
 - 迁移前只允许 `db` 与 `redis` 运行；未知 service 使切换失败并保持 Nginx 关闭
 - 每次部署先在保留的 TEST PostgreSQL volume 中创建由 Jenkins build/commit 唯一命名的新数据库并证明无业务表；不删除或复用旧 TEST 数据库
 - 使用新后端镜像的一次性命令执行 Alembic、fresh-DB `bootstrap_foundation` 和权限 `--check`
-- 若 bootstrap 报告 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，只执行 `--repair-cache`，再执行新的 `--check`，不得重跑数据库 mutation
+- 若 bootstrap 报告独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`（详情另以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 输出），只执行一次 `--repair-cache`，再执行新的 `--check`，不得重跑数据库 mutation
 - 零漂移后才使用 `docker-compose.test-deploy.yml` 重建 `api`、两个 Celery worker、Beat、Flower 与 frontend，并从固定前端镜像提取菜单清单
 - 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
 - 后端 `/ready`、前端资源、两端 revision、前端绑定的 backend revision、OpenAPI/permission labels 和菜单同步均通过后，才以 `compose up -d --no-deps nginx` 恢复入口；任一外部检查失败立即再次停止 Nginx
@@ -311,7 +311,7 @@ PROD 边界说明：
   4. `uv run python scripts/data/sync_permissions.py --check`
 - 前后端分别维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法
 - 生产建议在 `.env.prod` 中启用 `USE_SNOWFLAKE_ID=true`
-- 已有数据库改用 `sync_permissions.py --apply`，随后必须 `--check`；缓存提交后失败按 `--repair-cache` → `--check` 恢复
+- 已有数据库按生产 Runbook 捕获 `sync_permissions.py --apply` 输出，普通非零立即 fail closed；只有精确裸 marker 行才按一次 `--repair-cache` → fresh `--check` 恢复，且不得重跑 `--apply`
 - 固定版本应用启动后，从批准的前端 digest 提取菜单 manifest；菜单同步通过后才恢复 Nginx
 
 建议核对项：

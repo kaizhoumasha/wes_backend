@@ -103,9 +103,10 @@ uv run python scripts/data/sync_permissions.py --check
 Notes:
 
 - `bootstrap_foundation` idempotently converges the five built-in roles, route-owned permission catalog, built-in role grants and first superuser.
-- Existing deployed databases use `sync_permissions.py --apply`, immediately followed by `--check`; `--preview` does not connect to the database.
-- `--repair-cache` is only for `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`. Keep Nginx closed, repair the two permission-cache namespaces,
-  then repeat `--check`; do not use it as routine synchronization.
+- Existing deployed databases use the captured-output `sync_permissions.py --apply` control flow in the production runbook, followed by a fresh
+  `--check`; `--preview` does not connect to the database.
+- `--repair-cache` is only for one exact bare `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED` line; diagnostics are emitted separately with
+  `CACHE_INVALIDATION_FAILURE_DETAIL:`. Keep Nginx closed, repair once, never rerun `--apply`, then run the fresh `--check`.
 - After the pinned application pair starts, sync menus from the approved frontend image manifest before restoring Nginx; see
   `docs/auth/menu-sync-guide.md`.
 - Production should enable snowflake IDs in `.env.prod` with `USE_SNOWFLAKE_ID=true`.

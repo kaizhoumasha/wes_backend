@@ -674,7 +674,7 @@ compose run --rm --no-deps \
   api scripts/data/sync_permissions.py --check
 ```
 
-`bootstrap_foundation` 统一收敛五个内置角色、路由权限目录、内置角色授权和首个管理员。失败分支只接受独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，并只执行一次 cache repair；不得重跑 bootstrap。`--check` 必须报告零漂移。没有专用标记的失败、repair 失败或新的检查有漂移时，EXIT trap 会再次停止 Nginx，不得继续启动应用。
+`bootstrap_foundation` 统一收敛五个内置角色、路由权限目录、内置角色授权和首个管理员。真实 post-commit 失败输出包含独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，下一行以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 开头记录诊断；控制流只匹配前者并只执行一次 cache repair，不得重跑 bootstrap。`--check` 必须报告零漂移。没有专用整行标记的失败、repair 失败或新的检查有漂移时，EXIT trap 会再次停止 Nginx，不得继续启动应用。
 
 ### 14.4 启动固定版本应用并完成内部门禁
 

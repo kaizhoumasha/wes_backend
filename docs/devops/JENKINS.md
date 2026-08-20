@@ -131,8 +131,8 @@ uv run python scripts/data/sync_permissions.py --check
 - `scripts/data/seed_initial_data.py` 仅用于 dev/test/demo，不用于生产
 - `.env.prod` 与 `.env.frontend.prod` 分离维护即可，不要求合并
 - 生产建议开启 `USE_SNOWFLAKE_ID=true`
-- 已有数据库使用 `sync_permissions.py --apply` 后必须执行 `--check`；入口在检查零漂移前保持关闭
-- `--repair-cache` 只处理 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，成功后必须重新 `--check`
+- 已有数据库按生产 Runbook 捕获 `sync_permissions.py --apply` 输出，成功或一次 post-commit repair 后都必须执行新的 `--check`；入口在检查零漂移前保持关闭
+- `--repair-cache` 只处理独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`；详情另以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 输出，repair 只执行一次且不得重跑 `--apply`
 - `bootstrap_foundation.sh` 依赖上述 `BOOTSTRAP_ADMIN_*` 环境变量，必须由部署环境注入真实值
 - 固定版本应用启动后，从批准的前端 digest 提取菜单 manifest；同步通过后才恢复入口，详见 `../auth/menu-sync-guide.md`
 
