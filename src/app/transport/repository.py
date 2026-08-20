@@ -256,6 +256,18 @@ class TransportRepository:
             statement = statement.with_for_update()
         return await db.scalar(statement)
 
+    async def get_latest_evidence(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+    ) -> TransportEvidence | None:
+        return await db.scalar(
+            select(TransportEvidence)
+            .where(TransportEvidence.transport_task_id == transport_task_id)
+            .order_by(TransportEvidence.received_at.desc(), TransportEvidence.id.desc())
+            .limit(1)
+        )
+
     async def has_evidence(self, db: AsyncSession, transport_task_id: str) -> bool:
         evidence_id = await db.scalar(
             select(TransportEvidence.id).where(TransportEvidence.transport_task_id == transport_task_id).limit(1)

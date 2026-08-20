@@ -8,8 +8,8 @@ import json
 import logging
 import time
 import uuid
-from dataclasses import asdict
-from datetime import timedelta
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError
@@ -51,6 +51,7 @@ from src.app.transport.models import (
     TransportTask,
 )
 from src.app.transport.submit_snapshot import build_submit_data, build_submit_request_body, request_body_digest
+from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
@@ -68,6 +69,30 @@ _RETRY_DELAY = timedelta(seconds=2)
 _SUBMIT_CONTINUE_BUDGET_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class TransportEvidenceSnapshot:
+    operation: str
+    operation_id: str
+    outcome_revision: int | None
+    status: str
+    conflict_code: str | None
+    received_at: str
+    processed_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TransportTaskSnapshot:
+    transport_task_id: str
+    client_request_id: str
+    submit_operation_id: str
+    kind: str
+    status: str
+    reason_code: str | None
+    created_at: str
+    updated_at: str
+    latest_evidence: TransportEvidenceSnapshot | None
 
 
 class TransportService:
@@ -136,6 +161,38 @@ class TransportService:
         exchange_pairs: tuple[BinExchangePair, ...],
     ) -> TransportHandle:
         return await self._create_task(ExchangeBinsRequest(client_request_id, caller, exchange_pairs))
+
+    async def get_task_snapshot(self, transport_task_id: str) -> TransportTaskSnapshot:
+        """返回 WES 已持久化的任务与最新 callback evidence，不查询 WMS/RCS。"""
+
+        async with self._sessions() as db:
+            task = await self._repository.get_task(db, transport_task_id)
+            if task is None:
+                raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
+            evidence = await self._repository.get_latest_evidence(db, transport_task_id)
+
+        latest_evidence = None
+        if evidence is not None:
+            latest_evidence = TransportEvidenceSnapshot(
+                operation=evidence.operation,
+                operation_id=evidence.operation_id,
+                outcome_revision=evidence.outcome_revision,
+                status=evidence.status,
+                conflict_code=evidence.conflict_code,
+                received_at=_utc_z(evidence.received_at),
+                processed_at=_utc_z(evidence.processed_at) if evidence.processed_at is not None else None,
+            )
+        return TransportTaskSnapshot(
+            transport_task_id=task.transport_task_id,
+            client_request_id=task.client_request_id,
+            submit_operation_id=task.submit_operation_id,
+            kind=task.kind,
+            status=task.status,
+            reason_code=task.reason_code,
+            created_at=_utc_z(task.created_at),
+            updated_at=_utc_z(task.updated_at),
+            latest_evidence=latest_evidence,
+        )
 
     async def submit_pending_tasks(self, limit: int) -> int:
         _validate_limit(limit)
@@ -1200,6 +1257,10 @@ def _source_outcome_revision(operation: str, payload: dict[str, Any]) -> int | N
     return value
 
 
+def _utc_z(value: datetime) -> str:
+    return timezone.to_utc(value).isoformat().replace("+00:00", "Z")
+
+
 def _applicable_outcome_revision(evidence: TransportEvidence, task: TransportTask) -> int | None:
     value = evidence.outcome_revision
     if value is None or value <= 0:
@@ -1207,4 +1268,4 @@ def _applicable_outcome_revision(evidence: TransportEvidence, task: TransportTas
     return value if value > task.last_applied_wms_outcome_revision else None
 
 
-__all__ = ["TransportService"]
+__all__ = ["TransportEvidenceSnapshot", "TransportService", "TransportTaskSnapshot"]

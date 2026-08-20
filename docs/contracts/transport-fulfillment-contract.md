@@ -44,7 +44,9 @@ Phase 4。
 术语约定：调用方（caller）是发起搬运的工作线/工作站；搬运句柄（handle）是创建任务后立即返回的标识；搬运结果
 （outcome）是异步通知插件的统一结果；适配器（Adapter）只负责内部对象与跨系统线上接口契约（wire contract）的转换。
 
-系统尚未发布，首版直接实现本文目标合同，不保留旧 Effect、状态查询、回调提示、别名、兼容路径或数据迁移。
+系统尚未发布，首版直接实现本文目标合同，不保留旧 Effect、WMS/RCS 状态查询、回调提示、别名、兼容路径或数据迁移。
+WES 可以提供只读的本地 TransportTask 运维观察接口；该接口不进入 WMS/RCS 对接合同，也不能驱动轮询、取消、重试、
+状态修改或业务完成判定。
 
 ## 2. 权威与职责
 
@@ -554,6 +556,11 @@ evidence，后续同身份同消息信封稳定重放该冲突响应。低于已
 | `FAILED` | 权威失败结果已接受且位置明确 |
 | `RECONCILING` | 交付、结果或位置未知，或证据冲突 |
 
+WES 本地运维观察接口可以按 `transport_task_id` 返回任务当前状态、原因、submit 身份和最近一条已可靠持久化的
+`TransportEvidence` 摘要。最近 evidence 按本地 `(received_at DESC, id DESC)` 确定，包含 `PENDING / APPLIED / CONFLICT`，
+不得按 WMS 事件时间或最大 `outcome_revision` 推断顺序，也不得返回原始 callback payload。该投影只用于开发和现场诊断，
+不属于 WMS/RCS 状态查询、物理完成证明或业务验收。
+
 同一货架或料箱最多属于一个非终态任务。Bin 任务必须绑定每个成员来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，
 同时绑定被搬运的每个内部 `bin_id`；Adapter 接收的接口契约`container_id` 必须先解析为该冻结成员身份。这样可以防止 AGV 搬架与
 CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一个事务中取得；
@@ -607,6 +614,6 @@ Transport 按服务端所有权分别使用两份 OpenAPI 3.0.3 权威文件：W
 - WES 直连 RCS/AGV/CTU；
 - ECS/DeviceCommand、设备状态和供应商私有协议；
 - 车辆、路径、交通、充电、CTU 取放顺序和临时位规划；
-- 状态轮询、取消、暂停、恢复、改派和自动补偿；
+- WMS/RCS 状态轮询，以及取消、暂停、恢复、改派和自动补偿；
 - 通用 Runtime/Effect、动态 Provider、Service Locator、插件 SDK 或工作流引擎；
 - 旧字段、旧表、旧 API、旧数据和兼容路径。
