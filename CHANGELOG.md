@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - 现场开发与运维可通过受权限保护的 Swagger 接口创建四类真实 `TransportTask`，并查询 WES 已持久化的任务状态与最新 callback evidence。
-- 补充 Transport 调试入口的合同、架构边界、运维说明和实施计划，明确本地观察不能替代 WMS/RCS 联调、物理完成或业务验收。
+- 补充 Transport 调试入口的合同、架构边界和运维说明；实施计划完成后移至项目外归档，并明确本地观察不能替代 WMS/RCS 联调、物理完成或业务验收。
 
 ### Changed
 - 调试任务完整复用既有 Transport 创建、提交、ACK、callback、evidence 和终态链路；粗分发布器仅精确消费 `TRANSPORT_DEBUG` 的无业务绑定 outcome，普通业务 caller 继续 fail closed。
