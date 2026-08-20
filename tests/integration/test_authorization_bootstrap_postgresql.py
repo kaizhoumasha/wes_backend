@@ -72,9 +72,9 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     service = AuthorizationBootstrapService()
                     fresh_preview = await service.converge_authorization(app, db, dry_run=True)
                     assert fresh_preview.roles == {"created": 5, "updated": 0, "skipped": 0}
-                    assert fresh_preview.permissions.created == 180
+                    assert fresh_preview.permissions.created == 170
                     assert fresh_preview.role_permissions == {
-                        "added": 460,
+                        "added": 438,
                         "removed": 0,
                         "skipped": 0,
                         "roles_processed": 5,
@@ -122,11 +122,11 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     for role_id, permission_id in (await db.execute(select(role_permission))).all():
                         actual_role_permissions[role_names_by_id[role_id]].add(permission_names_by_id[permission_id])
                     assert {role_name: len(names) for role_name, names in actual_role_permissions.items()} == {
-                        "系统管理员": 180,
-                        "管理员": 61,
-                        "运营人员": 108,
+                        "系统管理员": 170,
+                        "管理员": 51,
+                        "运营人员": 107,
                         "财务人员": 3,
-                        "普通用户": 108,
+                        "普通用户": 107,
                     }
                     assert actual_role_permissions["系统管理员"] == expected_permission_names
                     assert actual_role_permissions["财务人员"] == {
@@ -154,7 +154,7 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     assert new_permission_preview.role_permissions == {
                         "added": 4,
                         "removed": 0,
-                        "skipped": 460,
+                        "skipped": 438,
                         "roles_processed": 5,
                     }
                     assert await _count(db, Permission) == permission_count
