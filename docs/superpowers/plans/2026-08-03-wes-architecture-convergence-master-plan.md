@@ -588,15 +588,18 @@ Phase 8 复审结果、Phase 7 Device/ECS 和 Phase 6 Transport。
 各详细计划获批。前端进度和 Phase 8 现场验收不阻塞本阶段后端开发。
 
 **Scope:** 自动上架、人工分拣、满箱交换和复杂出库执行插件；所需设备合同附录、endpoint/device 绑定和供应商一致性验收；
-复用既有 Phase 7 生产 Adapter 与 Phase 6 Transport Port；完整上架计划、获批交换成员、目标 Bin 供退、SCAN1—SCAN4、
-逐盘晚绑定 PUT、业务专属 NG、同线进出和 WMS 库存权威。
+复用既有 Phase 7 生产 Adapter 与 Phase 6 Transport Port；交付 `BinExecution` 及其活动管辖期位置投影，完整上架计划、获批交换成员、
+目标 Bin 供退、SCAN1—SCAN4、逐盘晚绑定 PUT、业务专属 NG、同线进出和 WMS 库存权威。当前 CTU/RCS 只返回完整最终到位结果，
+入线前由 TransportTask负责提交、接纳、失败、位置未知和资源围栏；最终结果确认到达工作线且实扫身份匹配后才创建
+`BinExecution`，自动上架不得依赖或伪造逐容器中间位置事件。
 
 **Explicit out-of-scope:** `SorterCorridor`、库存权威、动态发现、统一厂商认证三选一、第二个 WES 设备 HTTP Adapter、
 公共 HTTP Client、预建 BASIC、通用工作流 DSL。
 
 **Deliverables:** 获批入库上架和出库业务合同、每个真实设备的获批合同附录、endpoint/device 绑定和供应商一致性验收；
-每个插件独立包、fixture、测试、构建产物和显式装配；目标 Bin 供退、四扫描点、NG 出口和人工恢复的现场验收；客户镜像
-清单；不新增 WES HTTP Adapter。
+每个插件独立包、fixture、测试、构建产物和显式装配；同一 `bin_id` 唯一活动执行、搬运最终结果前位置未知、正常回库后释放、整线NGZone
+人工扫码释放以及旧投影不得跨执行复用的基础不变量；目标 Bin 供退、四扫描点、NG 出口和人工恢复的现场验收；客户镜像清单；
+不新增 WES HTTP Adapter。
 
 **旧所有者删除或交接清单:** 旧业务代码和测试已由 Phase 5 删除；设备旧 sender 已由 Phase 7 删除。本阶段不得新增供应商
 私有裸 Client、重复连接池/HMAC/路径或协议映射；插件包下线时同步移除 workspace、镜像和 Composition Root 绑定。

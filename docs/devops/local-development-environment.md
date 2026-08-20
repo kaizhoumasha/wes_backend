@@ -82,7 +82,10 @@ Celery/Beat按 Python 文件内容计算指纹，不依赖秒级修改时间；�
 
 初始化数据不创建 WorkLine、库存、设备、命令、搬运任务或物理结果。此类数据属于具体业务场景或现场事实，应由对应测试fixture、Mock场景或人工调试操作拥有。
 
-`deployment/dev/wms-provider.yaml` 也是本环境固定输入，只允许指向容器内 `mock-wms-provider:8012`。该 Provider Mock 从同一 profile 注册29项公开路由，并复用现有 typed operation fixture；`check` 会实际调用代表性的 query 与 effect。8011端口的 Transport Mock保持独立，不承载WMS业务Provider接口。两者都只用于本机合同调试，不得复制为 TEST/生产 Provider 配置。
+`deployment/dev/wms-provider.yaml` 也是本环境固定输入，只允许指向容器内 `mock-wms-provider:8012`，并显式保留本机 Mock 的
+`transport_submit_path: /api/v1/wes/transport-requests`。该 Provider Mock 从同一 profile 注册29项公开路由，并复用现有 typed
+operation fixture；`check` 会实际调用代表性的 query 与 effect。8011端口的 Transport Mock保持独立，不承载WMS业务Provider接口。
+两者都只用于本机合同调试，不得复制为 TEST/生产 Provider 配置。
 
 ## 7. 快速排障顺序
 

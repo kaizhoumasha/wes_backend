@@ -40,7 +40,7 @@
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
 | `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；自动出库和 Phase 9 上架待评审，人工分拣目前仅登记业务设计、尚无 wire |
-| `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖 T2/T3 客户端生成，T1 服务端合同由 WMS 交付 |
+| `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖容器中间位置事件和搬运最终结果的客户端生成，搬运提交服务端合同由 WMS 交付 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
@@ -117,7 +117,7 @@ API → Service → Repository → Database
 | `scripts/select_heavy_tests.py` | 根据 Git 差异和机器可读映射选择 HEAVY |
 | `scripts/run_selected_heavy_tests.py` | 执行选中 HEAVY 并拒绝零执行/跳过 |
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
-| `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport T1 合同；不替代真实 WMS 或现场验收 |
+| `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport 搬运提交合同；不替代真实 WMS 或现场验收 |
 | `docs/runbooks/transport-operations.md` | Transport 结构化日志与 PostgreSQL 事实的只读诊断入口 |
 | `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
