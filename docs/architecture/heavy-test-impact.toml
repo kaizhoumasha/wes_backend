@@ -1670,6 +1670,10 @@ heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 source_glob = "src/database/redis_cache.py"
 heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 
+[[mapping]]
+source_glob = "src/database/redis_namespace.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
 # 运行时目录重扫路由已删除；路由不存在性由 FAST 精确测试承接，无对应 HEAVY 行为。
 [[mapping]]
 source_glob = "src/app/api_auth/v1/api_application.py"

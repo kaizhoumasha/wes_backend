@@ -9,11 +9,12 @@ from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
 from redis.exceptions import RedisError
 
+from src.database.redis_namespace import database_redis_cache_prefix
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 PERMISSION_CACHE_NAMESPACES = ("perms:user:*", "api_app:perms:*")
-_PERMISSION_CACHE_KEY_PREFIX = "app"
 
 
 class PermissionCacheNamespaceStore(Protocol):
@@ -53,6 +54,7 @@ async def repair_permission_cache_namespaces(cache: PermissionCacheNamespaceStor
 
 class _EnvironmentRedisPermissionCache:
     def __init__(self, env: Mapping[str, str]) -> None:
+        self._key_prefix = database_redis_cache_prefix(env.get("POSTGRES_DB", ""))
         self._redis = Redis(
             host=env.get("REDIS_HOST", "localhost"),
             port=int(env.get("REDIS_PORT", "6379")),
@@ -66,7 +68,7 @@ class _EnvironmentRedisPermissionCache:
 
     async def delete_pattern(self, pattern: str) -> int | None:
         try:
-            keys = [key async for key in self._redis.scan_iter(match=f"{_PERMISSION_CACHE_KEY_PREFIX}:{pattern}")]
+            keys = [key async for key in self._redis.scan_iter(match=f"{self._key_prefix}:{pattern}")]
             if not keys:
                 return 0
             return int(await self._redis.delete(*keys))

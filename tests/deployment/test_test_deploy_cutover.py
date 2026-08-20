@@ -378,6 +378,12 @@ def test_test_deploy_compose_declares_the_complete_pre_exposure_application_set(
         parent = services[service_name].get("extends", {}).get("service")
         service = services[parent] if parent else services[service_name]
         assert service["image"] == "${BACKEND_IMAGE:-wes-backend:local}"
+        environment = service.get("environment", {}) | services[service_name].get("environment", {})
+        assert environment["POSTGRES_DB"] == "${POSTGRES_DB}"
+
+    pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+    assert 'POSTGRES_DB="wes_test_${BUILD_NUMBER}_${SHORT_COMMIT}"' in pipeline
+    assert "export POSTGRES_DB" in pipeline
 
 
 def test_test_deploy_requires_and_compares_the_complete_paired_image_provenance() -> None:

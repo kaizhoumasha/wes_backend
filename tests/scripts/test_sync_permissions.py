@@ -146,6 +146,7 @@ async def test_permission_repair_cache_environment_adapter_touches_only_fixed_na
     await authorization_cache.repair_permission_cache_namespaces_from_environment(
         {
             "DATABASE_POOL_SIZE": "not-an-int",
+            "POSTGRES_DB": "wes_test_42_alpha",
             "REDIS_HOST": "cache-only",
             "REDIS_PORT": "6379",
             "REDIS_PASSWORD": "secret",
@@ -153,8 +154,38 @@ async def test_permission_repair_cache_environment_adapter_touches_only_fixed_na
         }
     )
 
-    assert patterns == ["app:perms:user:*", "app:api_app:perms:*"]
+    assert patterns == [
+        "app:6887dee545cc69b1fe9c666337734a295d2b91d9d435b1de495e7ac65020af3d:perms:user:*",
+        "app:6887dee545cc69b1fe9c666337734a295d2b91d9d435b1de495e7ac65020af3d:api_app:perms:*",
+    ]
     assert closed is True
+
+
+@pytest.mark.parametrize(
+    "database_identity",
+    (None, "", "WES_DB", "wes-db", "wes:db", "x" * 64),
+)
+@pytest.mark.asyncio
+async def test_permission_repair_cache_environment_adapter_requires_valid_database_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    database_identity: str | None,
+) -> None:
+    monkeypatch.setattr(
+        authorization_cache,
+        "Redis",
+        lambda **_kwargs: pytest.fail("invalid POSTGRES_DB must fail before Redis construction"),
+    )
+    env = {
+        "REDIS_HOST": "cache-only",
+        "REDIS_PORT": "6379",
+        "REDIS_PASSWORD": "secret",
+        "REDIS_DB": "0",
+    }
+    if database_identity is not None:
+        env["POSTGRES_DB"] = database_identity
+
+    with pytest.raises(ValueError, match="POSTGRES_DB"):
+        await authorization_cache.repair_permission_cache_namespaces_from_environment(env)
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,7 @@ from src.app.admin.services import (
 )
 from src.core.security import get_password_hash
 from src.database.redis_cache import RedisCache
+from src.database.redis_namespace import database_redis_cache_prefix
 from src.register import create_app
 from src.utils.permission_scanner import build_permission_catalog
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
@@ -254,15 +255,24 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
 async def test_permission_cache_invalidation_and_namespace_repair_use_only_exact_real_redis_keys(
     redis_client: Redis,
 ) -> None:
-    prefix = f"auth-bootstrap-{uuid.uuid4().hex}"
+    database_identity = f"wes_test_{uuid.uuid4().hex}"
+    other_database_identity = f"wes_test_{uuid.uuid4().hex}"
+    prefix = database_redis_cache_prefix(database_identity)
+    other_prefix = database_redis_cache_prefix(other_database_identity)
     cache = RedisCache(redis_client, prefix=prefix)
+    other_database_cache = RedisCache(redis_client, prefix=other_prefix)
     service = AuthorizationBootstrapService()
+    shared_logical_key = "role:shared"
     raw_keys = {
         "user": f"{prefix}:perms:user:101",
         "app": f"{prefix}:api_app:perms:202",
         "other": f"{prefix}:unrelated:keep",
     }
     try:
+        assert await cache.set(shared_logical_key, {"database": database_identity}) is True
+        assert await other_database_cache.get(shared_logical_key) is None
+        assert await RedisCache(redis_client, prefix=prefix).get(shared_logical_key) == {"database": database_identity}
+
         await redis_client.mset(dict.fromkeys(raw_keys.values(), "cached"))
         result = AuthorizationSyncResult(
             roles={"created": 0, "updated": 0, "skipped": 5},
@@ -297,6 +307,8 @@ async def test_permission_cache_invalidation_and_namespace_repair_use_only_exact
         assert await redis_client.exists(raw_keys["app"]) == 0
         assert await redis_client.exists(raw_keys["other"]) == 1
     finally:
-        keys = [key async for key in redis_client.scan_iter(match=f"{prefix}:*")]
+        keys = [key async for key in redis_client.scan_iter(match=f"{prefix}:*")] + [
+            key async for key in redis_client.scan_iter(match=f"{other_prefix}:*")
+        ]
         if keys:
             await redis_client.delete(*keys)

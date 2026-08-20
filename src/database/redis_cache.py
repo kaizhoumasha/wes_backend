@@ -20,6 +20,7 @@ from typing import Any, cast
 from redis.asyncio import Redis
 
 from src.core.logger import logger
+from src.database.redis_namespace import database_redis_cache_prefix
 
 
 class CircuitState(Enum):
@@ -550,18 +551,20 @@ def get_cache() -> RedisCache:
     """
     global _cache_instance
     if _cache_instance is None:
+        from src.core.conf import settings
         from src.database.redis_client import get_redis
 
         redis_client = get_redis()
+        prefix = database_redis_cache_prefix(settings.POSTGRES_DB)
 
         if redis_client is not None:
             # Redis 可用，创建正常缓存实例
-            _cache_instance = RedisCache(redis_client, prefix="app")
+            _cache_instance = RedisCache(redis_client, prefix=prefix)
         else:
             # Redis 不可用，创建一个标记为不可用的缓存实例
             # 这样可以避免在 get_cache() 时抛出异常
             # 所有缓存操作会自动降级
             logger.warning("Redis 不可用，缓存服务已降级（将自动检测恢复）")
-            _cache_instance = RedisCache(None, prefix="app")  # type: ignore[arg-type]
+            _cache_instance = RedisCache(None, prefix=prefix)  # type: ignore[arg-type]
 
     return _cache_instance
