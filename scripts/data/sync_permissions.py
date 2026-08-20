@@ -21,14 +21,11 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from src.app.admin.services.authorization_bootstrap_service import authorization_bootstrap_service
 from src.app.admin.services.permission_catalog_service import permission_catalog_service
 from src.database.db import get_db_context, init_db
 from src.register import create_app
-from src.utils.permission_scanner import (
-    build_permission_preview_rows,
-    scan_routes_for_permissions,
-    sync_builtin_role_permissions,
-)
+from src.utils.permission_scanner import build_permission_preview_rows, scan_routes_for_permissions
 
 
 def preview_permissions() -> None:
@@ -64,13 +61,29 @@ async def main_async(args: argparse.Namespace) -> None:
 
     await init_db()
     async with get_db_context() as session:
-        permission_result = await permission_catalog_service.sync(app, session, dry_run=args.dry_run)
-        if not args.dry_run and (permission_result.created or permission_result.updated or permission_result.deleted):
+        if args.permissions_only:
+            permission_result = await permission_catalog_service.sync(app, session, dry_run=args.dry_run)
+            role_result: dict[str, int] | None = None
+            changed = permission_result.created or permission_result.updated or permission_result.deleted
+        else:
+            authorization_result = await authorization_bootstrap_service.converge_authorization(
+                app,
+                session,
+                dry_run=args.dry_run,
+            )
+            permission_result = authorization_result.permissions
+            role_result = authorization_result.role_permissions
+            changed = (
+                authorization_result.roles["created"]
+                or authorization_result.roles["updated"]
+                or permission_result.created
+                or permission_result.updated
+                or permission_result.deleted
+                or role_result["added"]
+                or role_result["removed"]
+            )
+        if not args.dry_run and changed:
             await session.commit()
-        role_result: dict[str, int] | None = None
-
-        if not args.permissions_only:
-            role_result = await sync_builtin_role_permissions(session, dry_run=args.dry_run)
 
     if args.dry_run:
         print("🔍 Dry Run 模式：仅比较代码与数据库，不写入数据")

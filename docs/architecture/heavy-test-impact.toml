@@ -1587,13 +1587,17 @@ reviewed_content_sha256 = "a9e79638bc6043b61a762fd966d2f93691effae80d55087ebc70c
 [[mapping]]
 source_glob = "scripts/data/seed_initial_data.py"
 heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
     "tests/integration/test_dev_seed_initial_data_postgresql.py",
     "tests/integration/test_permission_catalog_sync_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "scripts/data/sync_permissions.py"
-heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "scripts/data/provision_e2e_callback_application.py"
@@ -1602,6 +1606,7 @@ heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 [[mapping]]
 source_glob = "src/utils/permission_scanner.py"
 heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
     "tests/integration/test_dev_seed_initial_data_postgresql.py",
     "tests/integration/test_permission_catalog_sync_postgresql.py",
 ]
@@ -1617,7 +1622,35 @@ heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/admin/services/__init__.py"
-heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+# 内置角色、首个管理员与权限缓存门禁由同一个隔离 PostgreSQL/Redis owner 验收。
+[[mapping]]
+source_glob = "src/app/admin/services/authorization_bootstrap_service.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/repositories/role_repository.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/repositories/user_repository.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/core/rbac.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/api_auth/services/permission_service.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/database/redis_cache.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 
 # 运行时目录重扫路由已删除；路由不存在性由 FAST 精确测试承接，无对应 HEAVY 行为。
 [[mapping]]

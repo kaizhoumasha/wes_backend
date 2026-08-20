@@ -37,7 +37,9 @@ async def get_app_permissions(db: AsyncSession, cache: RedisCache, app_id: int) 
     return permissions
 
 
-async def invalidate_app_permissions(cache: RedisCache, app_id: int) -> None:
+async def invalidate_app_permissions(cache: RedisCache, app_id: int) -> bool:
     cache_key = CacheKeys.app_permissions(app_id)
-    _ = await cache.delete(cache_key)
-    logger.debug(f"清除应用权限缓存: {cache_key}")
+    deleted = await cache.delete(cache_key)
+    if deleted:
+        logger.debug(f"清除应用权限缓存: {cache_key}")
+    return deleted

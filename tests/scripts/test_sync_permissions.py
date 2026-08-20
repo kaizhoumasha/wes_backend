@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from scripts.data import sync_permissions
-from src.app.admin.services import PermissionCatalogSyncResult
+from src.app.admin.services import AuthorizationSyncResult, PermissionCatalogSyncResult
 
 
 class _SessionContext:
@@ -43,3 +43,32 @@ async def test_permission_cli_materializes_catalog_and_preserves_commit_and_outp
     session.commit.assert_awaited_once_with()
     output = capsys.readouterr().out
     assert "新增 3 条，更新 2 条，跳过 4 条，扫描总数 1 条" in output
+
+
+@pytest.mark.asyncio
+async def test_permission_cli_uses_authorization_owner_for_role_sync_without_changing_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = object()
+    session = SimpleNamespace(commit=AsyncMock())
+    authorization_sync = AsyncMock(
+        return_value=AuthorizationSyncResult(
+            roles={"created": 0, "updated": 0, "skipped": 5},
+            permissions=PermissionCatalogSyncResult(created=1, updated=0, deleted=0, unchanged=9, total=10),
+            role_permissions={"added": 2, "removed": 0, "skipped": 8, "roles_processed": 5},
+            affected_user_ids=frozenset(),
+        )
+    )
+    monkeypatch.setattr(sync_permissions, "create_app", lambda: app)
+    monkeypatch.setattr(sync_permissions, "scan_routes_for_permissions", lambda _app: [{"name": "one"}])
+    monkeypatch.setattr(sync_permissions, "init_db", AsyncMock())
+    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: _SessionContext(session))
+    monkeypatch.setattr(sync_permissions.authorization_bootstrap_service, "converge_authorization", authorization_sync)
+
+    await sync_permissions.main_async(Namespace(preview=False, dry_run=False, permissions_only=False))
+
+    authorization_sync.assert_awaited_once_with(app, session, dry_run=False)
+    session.commit.assert_awaited_once_with()
+    output = capsys.readouterr().out
+    assert "处理角色 5 个，新增关联 2 条，跳过 8 条" in output

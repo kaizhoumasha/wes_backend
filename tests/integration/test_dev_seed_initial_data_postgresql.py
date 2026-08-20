@@ -18,7 +18,6 @@ from src.app.admin.models import Menu, Permission, Role, User, role_menu, role_p
 from src.app.admin.services.menu_sync_service import menu_sync_service
 from src.core.security import get_password_hash
 from src.utils.frontend_menu_parser import FrontendMenuDefinition, resolve_frontend_root
-from src.utils.permission_scanner import sync_builtin_role_permissions
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
 FRONTEND_ROOT = resolve_frontend_root()
@@ -178,7 +177,6 @@ def test_dev_seed_is_idempotent_repairs_drift_and_check_is_read_only() -> None:
                     await db.commit()
 
                     drift_counts = await _row_counts(db)
-                    assert (await sync_builtin_role_permissions(db, dry_run=True, auto_commit=False))["removed"] == 0
                     assert (
                         await menu_sync_service.sync_builtin_role_menus(db, dry_run=True, auto_commit=False)
                     ).removed == 0

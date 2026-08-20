@@ -39,7 +39,7 @@ class FakeRedisCache(RedisCache):
         self.storage.pop(key, None)
         return True
 
-    async def delete_pattern(self, pattern: str) -> int:
+    async def delete_pattern(self, pattern: str) -> int | None:
         self.deleted_patterns.append(pattern)
         keys_to_delete = [key for key in self.storage if fnmatch(key, pattern)]
         for key in keys_to_delete:

@@ -1,0 +1,320 @@
+"""内置授权目录与首个管理员的唯一基础收敛服务。"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
+from src.app.admin.repositories.role_repository import RoleRepository, role_repository
+from src.app.admin.repositories.user_repository import UserRepository, user_repository
+from src.app.admin.services.permission_catalog_service import (
+    PermissionCatalogService,
+    PermissionCatalogSyncResult,
+    permission_catalog_service,
+)
+from src.core.rbac import invalidate_users_permissions
+from src.core.security import get_password_hash
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.admin.models import Role, User
+    from src.database.redis_cache import RedisCache
+
+
+@dataclass(frozen=True, slots=True)
+class _BuiltinRoleSpec:
+    name: str
+    description: str
+    matches_permission: Callable[[str], bool]
+
+
+_READ_ONLY_SUFFIXES = (":list", ":detail", ":tree")
+_USER_READ_ONLY_SUFFIXES = (":list", ":detail")
+BUILTIN_ROLE_SPECS = (
+    _BuiltinRoleSpec("系统管理员", "系统最高权限，拥有所有操作权限", lambda _name: True),
+    _BuiltinRoleSpec("管理员", "系统管理员，拥有大部分管理权限", lambda name: name.startswith("admin:")),
+    _BuiltinRoleSpec("运营人员", "日常运营操作人员", lambda name: name.endswith(_READ_ONLY_SUFFIXES)),
+    _BuiltinRoleSpec("财务人员", "财务相关操作人员", lambda name: name.startswith("admin:audit:")),
+    _BuiltinRoleSpec("普通用户", "普通用户，基础查看权限", lambda name: name.endswith(_USER_READ_ONLY_SUFFIXES)),
+)
+
+_CACHE_INVALIDATION_ATTEMPTS = 3
+_CACHE_INVALIDATION_BACKOFF_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapFoundationConfig:
+    username: str
+    password: str
+    full_name: str | None = None
+    email: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationSyncResult:
+    roles: dict[str, int]
+    permissions: PermissionCatalogSyncResult
+    role_permissions: dict[str, int]
+    affected_user_ids: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class FoundationBootstrapResult:
+    authorization: AuthorizationSyncResult
+    admin_action: str
+    admin_username: str
+    admin_role_added: bool
+
+
+class AuthorizationCacheInvalidationError(RuntimeError):
+    """权限缓存删除结果无法确认。"""
+
+    def __init__(
+        self,
+        *,
+        failed_user_ids: frozenset[int] = frozenset(),
+        failed_app_ids: frozenset[int] = frozenset(),
+        failed_namespaces: frozenset[str] = frozenset(),
+    ) -> None:
+        self.failed_user_ids = failed_user_ids
+        self.failed_app_ids = failed_app_ids
+        self.failed_namespaces = failed_namespaces
+        details: list[str] = []
+        if failed_user_ids:
+            details.append(f"user_ids={sorted(failed_user_ids)}")
+        if failed_app_ids:
+            details.append(f"app_ids={sorted(failed_app_ids)}")
+        if failed_namespaces:
+            details.append(f"namespaces={sorted(failed_namespaces)}")
+        super().__init__("权限缓存失效未确认: " + ", ".join(details))
+
+
+class AuthorizationBootstrapService:
+    """精确收敛五个内置角色、权限关系与首个超级管理员。"""
+
+    def __init__(
+        self,
+        *,
+        catalog_service: PermissionCatalogService = permission_catalog_service,
+        permission_repo: PermissionRepository = permission_repository,
+        role_repo: RoleRepository = role_repository,
+        user_repo: UserRepository = user_repository,
+    ) -> None:
+        self.catalog_service = catalog_service
+        self.permission_repo = permission_repo
+        self.role_repo = role_repo
+        self.user_repo = user_repo
+
+    async def _converge_builtin_roles(
+        self,
+        db: AsyncSession,
+        *,
+        dry_run: bool,
+    ) -> tuple[dict[str, int], dict[str, Role]]:
+        role_names = {spec.name for spec in BUILTIN_ROLE_SPECS}
+        roles = await self.role_repo.get_active_by_names(db, role_names)
+        result = {"created": 0, "updated": 0, "skipped": 0}
+
+        for spec in BUILTIN_ROLE_SPECS:
+            role = roles.get(spec.name)
+            if role is None:
+                result["created"] += 1
+                if dry_run:
+                    continue
+                created = await self.role_repo.create(db, {"name": spec.name, "description": spec.description})
+                if created is None or created.id is None:
+                    raise RuntimeError(f"创建内置角色失败: {spec.name}")
+                roles[spec.name] = created
+                continue
+
+            if role.description == spec.description:
+                result["skipped"] += 1
+                continue
+
+            result["updated"] += 1
+            if dry_run:
+                continue
+            updated = await self.role_repo.update(
+                db,
+                role.id,
+                {"description": spec.description, "version": role.version},
+            )
+            if updated is None:
+                raise RuntimeError(f"修复内置角色描述失败: {spec.name}")
+            roles[spec.name] = updated
+
+        return result, roles
+
+    async def _converge_builtin_role_permissions(
+        self,
+        db: AsyncSession,
+        roles: dict[str, Role],
+        *,
+        dry_run: bool,
+    ) -> tuple[dict[str, int], set[int]]:
+        permissions = [
+            permission
+            for permission in await self.permission_repo.list_catalog_nodes(db)
+            if not permission.is_deleted and permission.id is not None
+        ]
+        role_ids = {role.id for role in roles.values() if role.id is not None}
+        current_by_role = await self.role_repo.get_permission_ids_by_role_ids(db, role_ids)
+        affected_user_ids: set[int] = set()
+        result = {"added": 0, "removed": 0, "skipped": 0, "roles_processed": 0}
+
+        for spec in BUILTIN_ROLE_SPECS:
+            role = roles.get(spec.name)
+            if role is None or role.id is None:
+                continue
+            result["roles_processed"] += 1
+            expected = {
+                permission.id
+                for permission in permissions
+                if permission.id is not None and spec.matches_permission(permission.name)
+            }
+            current = current_by_role.get(role.id, set())
+            added = expected - current
+            removed = current - expected
+            result["added"] += len(added)
+            result["removed"] += len(removed)
+            result["skipped"] += len(expected & current)
+
+            if not added and not removed:
+                continue
+            affected_user_ids.update(await self.role_repo.get_user_ids_by_role_id(db, role.id))
+            if not dry_run:
+                await self.role_repo.apply_permission_delta(db, role.id, added, removed)
+
+        return result, affected_user_ids
+
+    async def converge_authorization(
+        self,
+        app: FastAPI,
+        db: AsyncSession,
+        *,
+        dry_run: bool = False,
+    ) -> AuthorizationSyncResult:
+        roles_result, roles = await self._converge_builtin_roles(db, dry_run=dry_run)
+        permission_result = await self.catalog_service.sync(app, db, dry_run=dry_run)
+        role_permission_result, role_user_ids = await self._converge_builtin_role_permissions(
+            db,
+            roles,
+            dry_run=dry_run,
+        )
+        return AuthorizationSyncResult(
+            roles=roles_result,
+            permissions=permission_result,
+            role_permissions=role_permission_result,
+            affected_user_ids=frozenset(permission_result.affected_user_ids | role_user_ids),
+        )
+
+    async def ensure_first_superuser(
+        self,
+        db: AsyncSession,
+        config: BootstrapFoundationConfig,
+    ) -> tuple[User, str]:
+        existing = await self.user_repo.get_first_superuser(db)
+        if existing is not None:
+            return existing, "skipped"
+
+        username = config.username.strip()
+        full_name = (config.full_name or "").strip() or username
+        email = (config.email or "").strip().lower() or f"{username}@bootstrap.localdomain"
+        created = await self.user_repo.create(
+            db,
+            {
+                "username": username,
+                "email": email,
+                "full_name": full_name,
+                "hashed_password": get_password_hash(config.password),
+                "is_superuser": True,
+                "is_multi_login": True,
+            },
+        )
+        if created is None or created.id is None:
+            raise RuntimeError("创建首个超级管理员失败")
+        return created, "created"
+
+    async def ensure_system_admin_role(self, db: AsyncSession, admin: User) -> bool:
+        roles = await self.role_repo.get_active_by_names(db, {"系统管理员"})
+        role = roles.get("系统管理员")
+        if role is None or role.id is None or admin.id is None:
+            raise RuntimeError("系统管理员角色或超级管理员尚未持久化")
+        return await self.user_repo.ensure_role_link(db, admin.id, role.id)
+
+    async def bootstrap(
+        self,
+        app: FastAPI,
+        db: AsyncSession,
+        config: BootstrapFoundationConfig,
+    ) -> FoundationBootstrapResult:
+        authorization = await self.converge_authorization(app, db, dry_run=False)
+        admin, admin_action = await self.ensure_first_superuser(db, config)
+        admin_role_added = await self.ensure_system_admin_role(db, admin)
+        if admin_role_added and admin.id is not None:
+            authorization = AuthorizationSyncResult(
+                roles=authorization.roles,
+                permissions=authorization.permissions,
+                role_permissions=authorization.role_permissions,
+                affected_user_ids=frozenset({*authorization.affected_user_ids, admin.id}),
+            )
+        return FoundationBootstrapResult(
+            authorization=authorization,
+            admin_action=admin_action,
+            admin_username=admin.username,
+            admin_role_added=admin_role_added,
+        )
+
+    async def invalidate_caches(self, result: AuthorizationSyncResult, cache: RedisCache) -> None:
+        from src.app.api_auth.services.permission_service import invalidate_app_permissions
+
+        pending_user_ids = set(result.affected_user_ids)
+        pending_app_ids = set(result.permissions.affected_app_ids)
+
+        for attempt in range(_CACHE_INVALIDATION_ATTEMPTS):
+            user_results = await invalidate_users_permissions(cache, pending_user_ids)
+            pending_user_ids = {user_id for user_id, deleted in user_results.items() if deleted is not True}
+
+            failed_app_ids: set[int] = set()
+            for app_id in sorted(pending_app_ids):
+                if await invalidate_app_permissions(cache, app_id) is not True:
+                    failed_app_ids.add(app_id)
+            pending_app_ids = failed_app_ids
+
+            if not pending_user_ids and not pending_app_ids:
+                return
+            if attempt + 1 < _CACHE_INVALIDATION_ATTEMPTS:
+                await asyncio.sleep(_CACHE_INVALIDATION_BACKOFF_SECONDS)
+
+        raise AuthorizationCacheInvalidationError(
+            failed_user_ids=frozenset(pending_user_ids),
+            failed_app_ids=frozenset(pending_app_ids),
+        )
+
+    async def repair_permission_cache_namespaces(self, cache: RedisCache) -> None:
+        failed_namespaces = {
+            namespace
+            for namespace in ("perms:user:*", "api_app:perms:*")
+            if await cache.delete_pattern(namespace) is None
+        }
+        if failed_namespaces:
+            raise AuthorizationCacheInvalidationError(failed_namespaces=frozenset(failed_namespaces))
+
+
+authorization_bootstrap_service = AuthorizationBootstrapService()
+
+__all__ = [
+    "BUILTIN_ROLE_SPECS",
+    "AuthorizationBootstrapService",
+    "AuthorizationCacheInvalidationError",
+    "AuthorizationSyncResult",
+    "BootstrapFoundationConfig",
+    "FoundationBootstrapResult",
+    "authorization_bootstrap_service",
+]

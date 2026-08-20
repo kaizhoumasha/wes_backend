@@ -15,9 +15,10 @@
 """
 
 from sqlalchemy import desc
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import User
+from src.app.admin.models import User, user_role
 from src.database.base_repository import BaseRepository
 
 
@@ -133,6 +134,16 @@ class UserRepository(BaseRepository[User]):
             order_by_raw=[desc(User.id)],  # type: ignore[arg-type]
         )
         return users[0] if users else None
+
+    async def ensure_role_link(self, db: AsyncSession, user_id: int, role_id: int) -> bool:
+        """幂等补齐用户-角色关系，flush 但不提交。"""
+        result = await db.execute(
+            insert(user_role)
+            .values(user_id=user_id, role_id=role_id)
+            .on_conflict_do_nothing(index_elements=[user_role.c.user_id, user_role.c.role_id])
+        )
+        await db.flush()
+        return result.rowcount == 1
 
     async def count_active(self, db: AsyncSession) -> int:
         """

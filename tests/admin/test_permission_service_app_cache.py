@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.app.admin.services.perm_service import PermissionService
 from src.app.api_auth.constants import CacheExpire, CacheKeys
-from src.app.api_auth.services.permission_service import get_app_permissions
+from src.app.api_auth.services.permission_service import get_app_permissions, invalidate_app_permissions
 from src.core.base_service import BaseService
 from src.core.tree_service import TreeServiceMixin
 from src.database.base_repository import HookContext
@@ -35,9 +36,10 @@ class _FakeCache:
         self.storage[key] = value
         self.set_calls.append((key, value, expire))
 
-    async def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> bool:
         self.deleted_keys.append(key)
         self.storage.pop(key, None)
+        return True
 
 
 class _FakeDBResult:
@@ -86,6 +88,15 @@ async def test_get_app_permissions_caches_empty_set() -> None:
             CacheExpire.APP_PERMISSIONS_EMPTY,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_invalidate_app_permissions_returns_redis_deletion_result() -> None:
+    cache = cast("RedisCache", _FakeCache())
+    cache.delete = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    assert await invalidate_app_permissions(cache, 101) is False
+    cache.delete.assert_awaited_once_with(CacheKeys.app_permissions(101))
 
 
 @pytest.mark.asyncio
