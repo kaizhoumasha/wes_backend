@@ -478,7 +478,32 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _register_soft_delete_routes(self) -> None:
         """注册软删除相关路由（仅当模型支持时）"""
         # 检测模型是否支持软删除
-        if not self.supports_soft_delete or not self.gen_delete:
+        if not self.supports_soft_delete:
+            return
+
+        # 回收站是软删除模型的读取接口，不随写能力开关关闭。
+        trash_summary = self._build_summary("trash", f"获取已删除{self.resource_name}")
+
+        @self.router.get(
+            "/trash",
+            summary=trash_summary,
+            operation_id=self._operation_id("trash"),
+            response_model=ListResponseSchemaModel[self.response_schema],
+            dependencies=self._permission_dependencies("trash"),
+        )
+        async def get_deleted(  # pyright: ignore[reportUnusedFunction]
+            db: AsyncSessionDep,
+            limit: int = Query(10, ge=1, le=100),  # pyright: ignore[reportCallInDefaultInitializer]
+            offset: int = Query(0, ge=0),  # pyright: ignore[reportCallInDefaultInitializer]
+        ) -> dict[str, Any]:
+            response_builder_any = self._response_builder()
+            total, resources = await self.service.get_deleted(db, limit, offset)
+            items = self.service.to_list_response(resources, self.response_schema)
+
+            logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
+            return response_builder_any.success(data=self._list_response_data(total, items, limit, offset))
+
+        if not self.gen_delete:
             return
 
         # 1. 批量恢复接口
@@ -587,28 +612,6 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             logger.info(f"恢复{self.resource_name}成功: id={id}")
             response_data = self.service.to_response(resource, self.response_schema)
             return response_builder_any.success(data=response_data)
-
-        # 4. 回收站接口
-        trash_summary = self._build_summary("trash", f"获取已删除{self.resource_name}")
-
-        @self.router.get(
-            "/trash",
-            summary=trash_summary,
-            operation_id=self._operation_id("trash"),
-            response_model=ListResponseSchemaModel[self.response_schema],
-            dependencies=self._permission_dependencies("trash"),
-        )
-        async def get_deleted(  # pyright: ignore[reportUnusedFunction]
-            db: AsyncSessionDep,
-            limit: int = Query(10, ge=1, le=100),  # pyright: ignore[reportCallInDefaultInitializer]
-            offset: int = Query(0, ge=0),  # pyright: ignore[reportCallInDefaultInitializer]
-        ) -> dict[str, Any]:
-            response_builder_any = self._response_builder()
-            total, resources = await self.service.get_deleted(db, limit, offset)
-            items = self.service.to_list_response(resources, self.response_schema)
-
-            logger.info(f"获取已删除{self.resource_name}: total={total}, limit={limit}, offset={offset}")
-            return response_builder_any.success(data=self._list_response_data(total, items, limit, offset))
 
 
 __all__ = ["BaseAPI"]

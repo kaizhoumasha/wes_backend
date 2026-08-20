@@ -287,6 +287,7 @@ def test_soft_delete_routes_are_absent_when_delete_generation_is_disabled() -> N
 
     assert ("/readonly-dummy/{id}", "GET") in routes
     assert ("/readonly-dummy/query", "POST") in routes
+    assert ("/readonly-dummy/trash", "GET") in routes
     assert ("/readonly-dummy/trash/restore", "POST") not in routes
     assert ("/readonly-dummy/trash/permanent", "DELETE") not in routes
     assert ("/readonly-dummy/{id}/permanent", "DELETE") not in routes
