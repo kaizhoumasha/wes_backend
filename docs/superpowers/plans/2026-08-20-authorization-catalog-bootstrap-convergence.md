@@ -217,7 +217,7 @@ The downgrade must never truncate: abort with a clear error if either column con
 
 - [ ] **Step 5: Add a real PostgreSQL predecessor-to-head test**
 
-Create an exclusive temporary PostgreSQL database at the migration predecessor, insert a parent `Permission` and parent `Menu` whose BIGINT primary keys exceed signed INT32 range while `parent_id` is null, then migrate to head. Insert children referencing those large parent IDs and assert the relations round-trip. Also create fresh multi-level Permission and Menu trees through the production Snowflake ID path after migration.
+Create an exclusive temporary PostgreSQL database at the migration predecessor, insert a parent `Permission` and parent `Menu` whose BIGINT primary keys exceed signed INT32 range while `parent_id` is null, then migrate to head. Insert children referencing those large parent IDs and assert the relations round-trip. Attempt downgrade and assert it fails closed, leaves the revision/schema/data at head, and reports the out-of-range table. In a reset database containing only INT32-safe parent references, prove downgrade succeeds and both columns narrow to INTEGER. Also create fresh multi-level Permission and Menu trees through the production Snowflake ID path after migration.
 
 Run: `rtk uv run pytest tests/integration/test_tree_parent_id_migration_postgresql.py -q`
 
@@ -338,7 +338,7 @@ with pytest.raises(PermissionCatalogError, match="重复权限码"):
     build_permission_catalog(app_with_conflicting_duplicate_permissions)
 ```
 
-Also assert repeated scans return the same ordered names and deterministic HTTP method.
+Also assert repeated scans return the same ordered names and deterministic HTTP method. Add a generated-group collision case where a leaf name conflicts with a derived group name or the same group name resolves to different payloads; final catalog-name validation must raise instead of overwriting either entry.
 
 - [ ] **Step 2: Run scanner tests and verify they fail**
 
@@ -859,3 +859,17 @@ From a clean real backend `develop`, rerun frontend contract/permission freeze. 
 - [ ] **Step 7: Hand off the pair**
 
 Report backend Commit, frontend Commit, OpenAPI SHA, permission SHA, tests, selector manifest and unverified boundaries. Status before separately authorized deployment must be `IMPLEMENTED — NOT DEPLOYED`; never claim WMS/ECS/site/business acceptance.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not required for this ownership/refactor plan |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | UNAVAILABLE | Outside voice timed out; fresh-context fallback was interrupted without findings |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 18 paired findings/test gaps folded into both plans; 0 open critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Frontend recovery behavior is covered by the paired menu plan |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not required |
+
+**VERDICT:** ENG CLEARED — ready to implement as the pinned frontend/backend pair; deployment remains separately authorized.
+
+NO UNRESOLVED DECISIONS
