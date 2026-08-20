@@ -7,7 +7,7 @@ from datetime import timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import (
@@ -184,6 +184,45 @@ async def test_task_snapshot_without_callback_returns_local_task_identity(
     assert snapshot.latest_evidence is None
     assert snapshot.created_at.endswith("Z")
     assert snapshot.updated_at.endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_task_snapshot_reads_task_and_latest_evidence_in_one_statement(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-snapshot-consistent",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+    statements: list[str] = []
+
+    def _capture_statement(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del connection, cursor, parameters, context, executemany
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", _capture_statement)  # type: ignore[attr-defined]
+    try:
+        snapshot = await service.get_task_snapshot(handle.transport_task_id)
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", _capture_statement)  # type: ignore[attr-defined]
+
+    assert snapshot.transport_task_id == handle.transport_task_id
+    assert len(statements) == 1
+    assert "transport_tasks" in statements[0]
+    assert "transport_evidence" in statements[0]
 
 
 @pytest.mark.asyncio

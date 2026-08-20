@@ -256,17 +256,25 @@ class TransportRepository:
             statement = statement.with_for_update()
         return await db.scalar(statement)
 
-    async def get_latest_evidence(
+    async def get_task_with_latest_evidence(
         self,
         db: AsyncSession,
         transport_task_id: str,
-    ) -> TransportEvidence | None:
-        return await db.scalar(
-            select(TransportEvidence)
+    ) -> tuple[TransportTask, TransportEvidence | None] | None:
+        latest_evidence_id = (
+            select(TransportEvidence.id)
             .where(TransportEvidence.transport_task_id == transport_task_id)
             .order_by(TransportEvidence.received_at.desc(), TransportEvidence.id.desc())
             .limit(1)
+            .scalar_subquery()
         )
+        result = await db.execute(
+            select(TransportTask, TransportEvidence)
+            .outerjoin(TransportEvidence, TransportEvidence.id == latest_evidence_id)
+            .where(TransportTask.transport_task_id == transport_task_id)
+        )
+        row = result.one_or_none()
+        return None if row is None else (row[0], row[1])
 
     async def has_evidence(self, db: AsyncSession, transport_task_id: str) -> bool:
         evidence_id = await db.scalar(

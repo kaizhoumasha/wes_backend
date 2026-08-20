@@ -166,10 +166,10 @@ class TransportService:
         """返回 WES 已持久化的任务与最新 callback evidence，不查询 WMS/RCS。"""
 
         async with self._sessions() as db:
-            task = await self._repository.get_task(db, transport_task_id)
-            if task is None:
+            task_with_evidence = await self._repository.get_task_with_latest_evidence(db, transport_task_id)
+            if task_with_evidence is None:
                 raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
-            evidence = await self._repository.get_latest_evidence(db, transport_task_id)
+            task, evidence = task_with_evidence
 
         latest_evidence = None
         if evidence is not None:
