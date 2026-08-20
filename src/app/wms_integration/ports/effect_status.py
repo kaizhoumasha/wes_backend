@@ -482,7 +482,7 @@ def build_wms_effect_status_binding(
     """从当前唯一 active WMS profile 生成新 Intent 使用的状态 binding。"""
 
     if compiled_profile is None:
-        raise RuntimeError("compiled WMS EFFECT profile must be injected by the T3 runtime composition root")
+        raise RuntimeError("compiled WMS EFFECT profile must be injected by the runtime composition root")
     profile_identity = compiled_profile.profile.profile.identity
     outbound_auth = compiled_profile.profile.outbound_auth
     if outbound_auth.scheme.value != "HMAC_SHA256" or outbound_auth.credential_reference is None:

@@ -10,6 +10,8 @@ from src.app.transport.contracts import TransportSubmitCode
 from src.app.wms_adapter.client import WmsClient
 from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
 
+TRANSPORT_SUBMIT_PATH = "/api/v1/wes/transport-requests"
+
 
 @dataclass
 class FakeAccessResult:
@@ -110,13 +112,15 @@ async def test_exchange_pairs_send_one_fixed_persisted_snapshot() -> None:
         ],
     }
 
-    result = await WmsTransportAdapter(client).submit(**_snapshot("019f12d0-58d7-7b4d-a23a-1b90aa5d4472", 1, payload))
+    result = await WmsTransportAdapter(client, submit_path="/api/WES/TransportRequests").submit(
+        **_snapshot("019f12d0-58d7-7b4d-a23a-1b90aa5d4472", 1, payload)
+    )
 
     assert result.code is TransportSubmitCode.RECEIVED
     assert len(client.calls) == 1
     path, request_body, kwargs = client.calls[0]
     envelope = json.loads(request_body)
-    assert path == "/api/v1/wes/transport-requests"
+    assert path == "/api/WES/TransportRequests"
     assert envelope["operation"] == "transport.task.submit@v1"
     assert envelope["data"]["kind"] == "BIN_EXCHANGE"
     assert len(envelope["data"]["moves"]) == 2
@@ -141,7 +145,9 @@ async def test_delivery_unknown_is_not_interpreted_as_rejection() -> None:
         ],
     }
 
-    result = await WmsTransportAdapter(client).submit(**_snapshot("019f12d0-58d7-7b4d-a23a-1b90aa5d4472", 1, payload))
+    result = await WmsTransportAdapter(client, submit_path=TRANSPORT_SUBMIT_PATH).submit(
+        **_snapshot("019f12d0-58d7-7b4d-a23a-1b90aa5d4472", 1, payload)
+    )
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -161,7 +167,7 @@ async def test_oversized_request_is_a_deterministic_request_body_rejection() -> 
         ],
     }
 
-    result = await WmsTransportAdapter(WmsClient(transport)).submit(
+    result = await WmsTransportAdapter(WmsClient(transport), submit_path=TRANSPORT_SUBMIT_PATH).submit(
         **_snapshot("019f12d0-58d7-7b4d-a23a-1b90aa5d4472", 1, payload)
     )
 
@@ -197,7 +203,9 @@ async def test_submit_wire_uses_the_persisted_operation_snapshot_without_local_c
         ],
     }
 
-    result = await WmsTransportAdapter(client).submit(**_snapshot(operation_id, 1710000000000, payload))
+    result = await WmsTransportAdapter(client, submit_path=TRANSPORT_SUBMIT_PATH).submit(
+        **_snapshot(operation_id, 1710000000000, payload)
+    )
 
     assert result.code is TransportSubmitCode.RECEIVED
     assert client.calls == [
@@ -221,7 +229,7 @@ async def test_submit_rejects_a_tampered_persisted_request_body_digest_before_se
         "moves": [],
     }
 
-    result = await WmsTransportAdapter(WmsClient(transport)).submit(
+    result = await WmsTransportAdapter(WmsClient(transport), submit_path=TRANSPORT_SUBMIT_PATH).submit(
         **_snapshot(
             "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
             1,

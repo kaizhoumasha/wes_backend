@@ -1,4 +1,4 @@
-"""T1 北向 WMS 遗留清单的 T12 完成态守护。"""
+"""北向 WMS 遗留清单完成态守护。"""
 
 from __future__ import annotations
 

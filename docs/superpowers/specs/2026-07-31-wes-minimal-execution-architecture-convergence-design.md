@@ -200,13 +200,13 @@ WES 只提交 WMS 已给出的搬运目标并跟踪任务级事实：
 - 来源和目标业务位置。
 - 提交时冻结的批次成员。
 - 批次级同步接纳 ACK 和异步终态。
-- 会改变成员位置投影的标准化 `SOURCE_PICKED`、`TARGET_PLACED` 事实。
 - 批次终态中可携带的成员最终事实。
 
 WES 不关心该请求由 WMS、RCS、MCS 或其他系统最终承接。它们通过同一个 Transport Port 隔离。
-当前产品只实现 WMS 转发适配器。成员事实不是独立生命周期；WES 只要求逐箱取离来源和放到目标两个位置里程碑，不要求
-导航、举升、靠近等设备内部子阶段回调。成员位置事实只更新位置投影；只有通过 Transport evidence 应用端口校验并持久化的
-可靠异步终态才能终结任务，普通 WMS 业务事件不能终结任务。
+当前产品只实现 WMS 转发适配器。Transport 可以接纳上游已经具备的标准化成员位置事实，但当前 CTU/RCS 只能返回完整最终到位
+结果，Phase 9 业务不得依赖或伪造 `SOURCE_PICKED`、`TARGET_PLACED` 等中间事实。同步接纳 ACK 后只能确认搬运义务可能已经开始，
+不能据此推断 Bin 仍在来源或已经离架；只有通过 Transport evidence 应用端口校验并持久化的可靠异步终态才能终结任务，普通 WMS
+业务事件不能终结任务。
 
 ## 5. 集成协议
 
@@ -259,9 +259,9 @@ WMS 普通业务事件通过 `/api/v1/wms/events` 接收，必须先持久化为
 任何具体业务接口未确认只阻断该业务 API，不阻断 Phase 3 共享 Client。
 
 当前由 WMS 转发的 AGV/CTU 操作不属于 Phase 3。Phase 4 通过 Transport Port 和复用 `WmsClient` 的 WMS 转发 Adapter
-调用 WMS，并由 `TransportTask` 统一拥有任务持久化、提交、同步接纳 ACK、CTU 逐箱位置事实、异步终态、超期对账和
-批次成员最终事实。首版不提供状态查询、取消或任意外部内部进度；只接收 `SOURCE_PICKED / TARGET_PLACED` 两个会改变
-料箱位置的标准里程碑，任务仍不增加 `ACTIVE` 或成员级第二套生命周期。
+调用 WMS，并由 `TransportTask` 统一拥有任务持久化、提交、同步接纳 ACK、可选逐箱位置事实、异步终态、超期对账和
+批次成员最终事实。首版不提供状态查询、取消或任意外部内部进度；上游实际提供中间位置事实时才接纳
+`SOURCE_PICKED / TARGET_PLACED`，当前 CTU/RCS 只提供最终结果，业务流程不得把容器中间位置事件作为准入或推进前提。
 
 WMS 业务写操作和 Transport 请求都可在各自可靠对象内部保留 `dispatch_key`，但对外接口只发送对应外部合同批准的唯一
 幂等/关联字段，不自动暴露内部字段名。WMS 原子幂等、回显、安全重提、Transport submit ACK 与异步结果关联规则，
@@ -292,7 +292,7 @@ Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界�
 | `WorkLine` | 工作线静态身份、设备和位置拓扑 |
 | `LineRunEpoch` | 一次活动流程模式和固定版本边界 |
 | `MaterialExecution` | 单个完整料盘或单个可执行物料单位的推进证据 |
-| `BinExecution` | 单个料箱在滚筒线和工作位中的推进证据 |
+| `BinExecution` | 单个已可靠到达工作线的料箱，从入线、滚筒线和工作位推进，直到正常回库或 NGZone 人工接管的执行证据 |
 | `PositionProjection` | 位置和队列的当前占用 |
 | `DeviceRuntimeProjection` | 单设备忙、闲、故障和当前命令 |
 | `DeviceCommand` | ECS 命令、ACK、CALLBACK 和幂等事实 |
@@ -302,6 +302,18 @@ Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界�
 
 不再使用一个通用 Session 同时承载工作线、物料、料箱、设备和恢复状态。`LineRunEpoch` 管版本边界，
 `MaterialExecution` 和 `BinExecution` 管对象推进，具体命令和外部义务各自拥有生命周期。
+
+`BinExecution` 只用于已经可靠到达滚筒线交接位的 Bin，不用于入线前搬运，也不用于单层货架与五层货架之间的满箱交换。WMS 返回并
+冻结精确供给 Bin 后，WES 先创建 TransportTask；提交、接纳、失败、位置未知和资源围栏均由该搬运对象负责。当前 CTU/RCS 没有
+逐容器中间位置事件，只有 `transport.task.resulted@v1` 最终结果确认 Bin成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结
+`bin_id` 一致后，WES才创建唯一活动 `BinExecution`。
+
+缓存位、SCAN点、正常/NG路线和活动 TransportTask由位置投影、证据及关联对象表达，不为 `BinExecution`复制搬运状态。入线后物理
+执行只能以正常回库或整线 `NGZone`人工接管闭合。
+
+正常 Bin 在当前工作线五层货架精确位置可靠到位且 WMS 已记录主账后关闭；NG Bin 到达整线 `NGZone` 后保持活动，直到操作员
+扫码实际取走才关闭。同一 `bin_id` 同时最多一个活动 `BinExecution`；旧执行关闭后其证据不可变，WES 的旧位置投影不再代表
+全局当前位置，下次供给必须使用 WMS 最新主账创建新的 `bin_execution_id`。
 
 ### 6.2 最小执行路径
 
@@ -573,7 +585,7 @@ Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integrati
    重发等价动作，进入对账。
 6. ECS 可靠 PUT 后，WES 保存位置证据并向 WMS 报告；只有 WMS 原子记录最终位置后，该盘进入 `CLOSED`。
 7. 无可用 Cell 时不下发出料命令。WMS 返回稳定换架计划，WES 通过既有 Transport Port 创建旧架移出与新架移入两个独立
-   `RACK_MOVE`；新架匹配 T3 成功后可重新请求 Cell，不等待旧架结果。
+   `RACK_MOVE`；新架匹配搬运最终结果成功后可重新请求 Cell，不等待旧架结果。
 8. 生命周期固定为 `CREATED | RUNNING | HOLD | CLOSED | RECONCILING`；设备结果未知、身份冲突或现场事实不符时冻结最小安全
    范围并进入人工对账。
 

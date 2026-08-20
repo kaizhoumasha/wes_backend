@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _HOST_LABEL_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_MAX_ENDPOINT_PATH_LENGTH = 2048
 
 
 def _stable_digest(payload: object) -> str:
@@ -92,6 +93,8 @@ def _placeholder_names(path_template: str) -> tuple[str, ...]:
 
 
 def _compile_relative_path(path_template: str, expected_placeholders: tuple[str, ...]) -> str:
+    if len(path_template) > _MAX_ENDPOINT_PATH_LENGTH:
+        raise ValueError("endpoint path must not exceed 2048 characters")
     if any(
         character.isspace() or character == "\\" or ord(character) < 32 or ord(character) == 127
         for character in path_template
@@ -110,8 +113,19 @@ def _compile_relative_path(path_template: str, expected_placeholders: tuple[str,
         or parsed.fragment
     ):
         raise ValueError("endpoint must use a relative path without query or fragment")
-    if any(unquote(segment) in {".", ".."} for segment in parsed.path.split("/")):
-        raise ValueError("relative path must not contain a dot segment")
+    decoded_path = parsed.path
+    while True:
+        if any(
+            character.isspace() or character == "\\" or ord(character) < 32 or ord(character) == 127
+            for character in decoded_path
+        ):
+            raise ValueError("endpoint must use a safe relative path")
+        if any(segment in {".", ".."} for segment in re.split(r"[/\\]", decoded_path)):
+            raise ValueError("relative path must not contain a dot segment")
+        next_decoded_path = unquote(decoded_path)
+        if next_decoded_path == decoded_path:
+            break
+        decoded_path = next_decoded_path
     placeholders = _placeholder_names(path_template)
     if set(placeholders) != set(expected_placeholders):
         raise ValueError("path placeholder set must exactly match the static operation contract")
@@ -178,6 +192,7 @@ class CompiledWmsProviderProfile:
     profile: WmsProviderProfileSettings
     profile_revision: str
     profile_digest: str
+    transport_submit_path: str
     operations: Mapping[str, CompiledWmsOperationEndpoint]
 
 
@@ -232,6 +247,7 @@ def compile_wms_provider_profile(profile: WmsProviderProfileSettings) -> Compile
     """以静态 registry 为唯一语义真源编译完整 Provider profile。"""
 
     origin = _compile_origin(profile.server_url)
+    transport_submit_path = _compile_relative_path(profile.transport_submit_path, ())
     status_path = _compile_relative_path(profile.effect_status_path, ())
     status_endpoint = f"{origin}{status_path}"
     operations = {
@@ -257,6 +273,7 @@ def compile_wms_provider_profile(profile: WmsProviderProfileSettings) -> Compile
         profile=profile,
         profile_revision=profile_revision,
         profile_digest=profile_digest,
+        transport_submit_path=transport_submit_path,
         operations=MappingProxyType(operations),
     )
 

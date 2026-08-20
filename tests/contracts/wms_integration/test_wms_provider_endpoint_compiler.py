@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import signal
 from copy import deepcopy
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -54,6 +56,73 @@ def test_compiler_rejects_server_url_that_is_not_a_bare_http_origin(server_url: 
     payload["server_url"] = server_url
 
     with pytest.raises(ValueError, match="HTTP\\(S\\) origin"):
+        _compile(payload)
+
+
+def test_compiler_preserves_the_configured_transport_submit_path_case() -> None:
+    payload = build_provider_profile_payload()
+    payload["transport_submit_path"] = "/api/WES/TransportRequests"
+
+    compiled = _compile(payload)
+
+    assert compiled.transport_submit_path == "/api/WES/TransportRequests"
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        ("//evil.example/TransportRequests", "origin"),
+        ("https://evil.example/TransportRequests", "relative path"),
+        ("api/WES/TransportRequests", "without query"),
+        ("/api/../TransportRequests", "dot segment"),
+        ("/api/%2f..%2fadmin/TransportRequests", "dot segment"),
+        ("/api/%252e%252e/TransportRequests", "dot segment"),
+        ("/api%5cWES/TransportRequests", "safe relative path"),
+        ("/api/%0aWES/TransportRequests", "safe relative path"),
+        ("/api/WES/TransportRequests?tenant=a", "without query"),
+        ("/api/WES/TransportRequests#fragment", "without query"),
+        ("/api\\WES/TransportRequests", "safe relative path"),
+    ],
+)
+def test_compiler_rejects_unsafe_transport_submit_path(path: str, message: str) -> None:
+    payload = build_provider_profile_payload()
+    payload["transport_submit_path"] = path
+
+    with pytest.raises(ValueError, match=message):
+        _compile(payload)
+
+
+def test_compiler_accepts_endpoint_path_at_maximum_length() -> None:
+    payload = build_provider_profile_payload()
+    payload["transport_submit_path"] = "/" + "a" * 2047
+
+    compiled = _compile(payload)
+
+    assert len(compiled.transport_submit_path) == 2048
+
+
+def test_compiler_rejects_deeply_encoded_endpoint_path_before_recursive_decode_cost() -> None:
+    payload = build_provider_profile_payload()
+    payload["transport_submit_path"] = "/api/%" + "25" * 12_000 + "2e"
+
+    def fail_on_timeout(_signum: int, _frame: Any) -> None:
+        raise TimeoutError("endpoint path validation exceeded 0.5 seconds")
+
+    previous_handler = signal.signal(signal.SIGALRM, fail_on_timeout)
+    signal.setitimer(signal.ITIMER_REAL, 0.5)
+    try:
+        with pytest.raises(ValueError, match="2048"):
+            _compile(payload)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+
+def test_transport_submit_path_is_required() -> None:
+    payload = build_provider_profile_payload()
+    payload.pop("transport_submit_path")
+
+    with pytest.raises(ValidationError, match="transport_submit_path"):
         _compile(payload)
 
 

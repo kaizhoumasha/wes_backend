@@ -28,6 +28,7 @@
 
 - `USE_SNOWFLAKE_ID=true` 及唯一的 datacenter/worker ID；
 - `WMS_PROVIDER_PROFILE_HOST_FILE=/etc/wes/wms-provider.yaml`，且部署用户可读；
+- Provider profile 显式提供 WMS origin `server_url` 和搬运提交相对路径 `transport_submit_path`，且与目标 WMS OpenAPI 路由一致；
 - API、Celery 与 CLI 数据库角色、连接池和 overflow 配置符合容量预算；
 - 不存在宿主机源码覆盖 `/app/src` 的 volume。
 
@@ -176,7 +177,7 @@ docker compose --env-file .env.prod \
 
 - 发布来源为 `main` 且已记录 immutable tag；
 - Compose 合并配置通过且无源码挂载；
-- WMS Provider profile 存在、可读并显式挂载；
+- WMS Provider profile 存在、可读、显式挂载，且 `server_url + transport_submit_path` 与目标 WMS 环境一致；
 - 目标数据库为空；
 - live PostgreSQL 容量门禁通过；
 - 当前干净 schema 初始化成功；

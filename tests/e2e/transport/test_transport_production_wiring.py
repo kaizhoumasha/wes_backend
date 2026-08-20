@@ -106,6 +106,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         server = MockWmsHttpServer().start()
         payload = build_provider_profile_payload()
         payload["server_url"] = server.url
+        payload["transport_submit_path"] = "/api/WES/TransportRequests"
         profile_file = write_provider_profile(tmp_path / "provider.yaml", payload)
         startup = assemble_wms_provider_startup(SimpleNamespace(WMS_PROVIDER_PROFILE_FILE=profile_file))
         runtime = await build_transport_runtime(startup=startup, session_factory=integration_session_factory)
@@ -192,6 +193,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         assert member.final_position_json == {"kind": "HANDOFF_POSITION", "location_code": f"HANDOFF-{suffix}"}
         assert evidence is not None and evidence.status == "APPLIED"
         assert len(server.requests) == 1
+        assert server.requests[0]["path"] == "/api/WES/TransportRequests"
         assert server.requests[0]["envelope"]["data"]["transport_task_id"] == task_id
         success = True
     except BaseException as exc:

@@ -474,7 +474,7 @@ Task 8 已将批量 reconciliation 直接替换为单 execution `recovery_decide
 
   按同一 `rack_replacement_id` 创建 `OLD_OUT` 和 `NEW_IN` 两个独立 `CreateTransportTask`；以
   `(rack_replacement_id, leg)` 为业务幂等键，由应用端在首次调用前原子持久化到全局唯一 UUIDv7 `client_request_id`，同键重试
-  复用原 UUIDv7 和原 Handle。两任务可以同时提交，顺序不由插件控制；新架匹配 T3 成功后可重新请求 Cell，旧架失败只隔离
+  复用原 UUIDv7 和原 Handle。两任务可以同时提交，顺序不由插件控制；新架的 `transport.task.resulted@v1` 搬运最终结果匹配成功后可重新请求 Cell，旧架失败只隔离
   旧 rack，新架失败阻止出料。
 
 - [x] **Step 8: 独立运行插件包测试**

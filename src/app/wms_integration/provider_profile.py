@@ -83,6 +83,7 @@ class WmsProviderProfileSettings(BaseModel):
 
     profile: WmsProviderIdentitySettings
     server_url: NonEmptyText
+    transport_submit_path: NonEmptyText
     effect_status_path: NonEmptyText
     network_trust_mode: NonEmptyText
     outbound_auth: WmsProviderAuthSettings

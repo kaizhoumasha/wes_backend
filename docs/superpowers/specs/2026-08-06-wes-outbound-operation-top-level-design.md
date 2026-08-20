@@ -111,14 +111,18 @@ WES 可以按本文请求 WMS 给出来源、目标和任务状态，但不能�
 | `BinWorkExecution` | `inbound_batch` 已选中 Bin 的取料工作，以及 SCAN2 后返回的 Cell 列表 | 滚筒线位置、退箱和 CTU 结果 |
 | `CellExecution` | 管理一个 `BIN_CELL` 的逐盘循环和完成结果 | Bin 搬运和目标架运输 |
 | `MaterialExecution` | 一盘物料的扫码数据、设备动作和位置上报 | 来源选择、任务汇总和容量计算 |
-| `BinExecution` | 跟踪物理 Bin 在 SCAN1、FIFO、SCAN2、SCAN3 和 NG 路径中的位置 | PickingTask 业务完成 |
+| `BinExecution` | 跟踪已经可靠到达工作线的 Bin，经 SCAN1、FIFO、SCAN2、SCAN3，直到正常回库或 NGZone人工接管 | PickingTask 业务完成和入线前搬运 |
 | `TransportTask` | 跟踪货架或 Bin 搬运、接收确认、异步最终结果和未知结果 | PickingTask 和物料业务状态 |
 | `DeviceCommand` | 跟踪一次设备命令、接收确认、结果、超时时间和重复提交记录 | WMS 业务决定 |
 | `WmsConfirmation` | 记录已经成功提交的位置变化和任务状态确认请求 | 重新执行设备动作或修改执行对象 |
-| `PositionProjection` | WES 保存的现场位置，包括空闲、预留、占用、运输中和未知 | WMS 库存和转运货架容量数据 |
+| `PositionProjection` | WES 保存的作业期空闲、预留、占用、确定位置或位置未知；活动 TransportTask表达搬运中，不伪造在途位置 | WMS 库存和转运货架容量数据 |
 
 `BinWorkExecution` 记录这个 Bin 的取料业务是否完成，`BinExecution` 记录物理 Bin 在哪里。两者都使用同一个 `bin_id` 关联，
 WES 内部各自保存独立记录 ID 和状态。内部记录 ID 不进入 WMS/WES 接口。
+
+当前 CTU/RCS 只能返回完整最终到位结果，不提供可靠取箱中间事实。WMS冻结精确供给 Bin 后，WES先创建 TransportTask；只有
+`transport.task.resulted@v1` 最终结果确认 Bin成功到达 `HANDOFF_POSITION`，且现场扫码身份匹配后才创建 `BinExecution`。正常回库并由
+WMS记录主账后关闭；NG Bin到达整线 `NGZone` 后等待人工扫码取走再关闭。该物理生命周期不因 PickingTask 完成、取消或失败而删除。
 
 ## 6. PickingTask 发布与队列
 
@@ -582,8 +586,8 @@ Transport 请求和结果继续遵循独立 Transport 合同。PickingTask opera
 | 同一 WorkLine 的 CTU 批次 | 入站和退箱串行；同一时刻最多一个批次处于 WMS 请求或 Transport 执行中，不建立缓存位预留、租约或锁 |
 | 多个事件同时触发 CTU 判断 | 自动出库业务模块在事务中只声明一个下一动作；其他触发发现已有未结束动作后退出 |
 | 本地入站资源不足 | CTU 没有空闲背篓或入料缓存没有空位时不调用 WMS，等待现场状态变化 |
-| 入站 `READY` 已返回 | 只表示 WMS 已选定本批 Bin，之后不能撤销或改选；对应 `BIN_MOVE` 确定成功并保存完整位置前，不得开始下一 CTU 动作 |
-| 入站搬运完成 | 重新判断下一动作；当前面有可执行退箱批次时先退箱，否则继续入站或切换来源货架 |
+| 入站 `READY` 已返回 | 只表示 WMS 已选定本批 Bin，之后不能撤销或改选；对应 `BIN_MOVE` 最终成功、实扫身份匹配并创建 `BinExecution` 前，不得开始下一 CTU 动作 |
+| 入站搬运完成且实扫匹配 | 创建唯一活动 `BinExecution` 后重新判断下一动作；当前面有可执行退箱批次时先退箱，否则继续入站或切换来源货架 |
 | 当前五层来源货架面暂时无 Bin | WMS 返回 `NO_BATCH` 和重试间隔；到期前不重复请求、不据此换面，期间仍允许退箱优先 |
 | 当前五层来源货架面结束 | WMS 返回 `RACK_FACE_DONE`；CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为冻结目标的退箱决定后才能选择下一来源面并执行换面或换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不阻塞切换 |
 | 退箱暂时无批次 | `NO_BATCH` 必须返回重试间隔；候选留在 FIFO，无资源冲突的入站需求可驱动换面或换架 |

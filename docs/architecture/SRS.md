@@ -388,7 +388,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 * **权威边界**: WMS 决定业务准入、GRN、料盘身份、目标 Cell、容量、兼容性和 NG；WES 只拥有本地执行、物理证据、
   位置投影以及 `DeviceCommand` / `TransportTask` 编排。粗分入库不建立顶层 `InboundTask`，WES 不在本地选择替代料格。
 * **换架**: 无可用 Cell 时不下发出料命令。WMS 返回旧装载架和新空架的稳定计划；WES 在旧架 release gate 闭合后创建两个
-  独立 `RACK_MOVE`，不新增 `RACK_EXCHANGE`。新架匹配 T3 成功即可重新请求 Cell；两个任务的实际顺序由 RCS 控制，仍是外部
+  独立 `RACK_MOVE`，不新增 `RACK_EXCHANGE`。新架匹配搬运最终结果成功即可重新请求 Cell；两个任务的实际顺序由 RCS 控制，仍是外部
   未验证前提。
 * **失败恢复**: ACK 后 FAILED、交付未知、位置未知或身份冲突进入 `RECONCILING`，不能改址、自动 NG 或重发等价物理动作。
 * **NG**: 料盘可靠进入粗分 NG 交接区并由 WMS 记录业务专属 NG Fact 后，本盘执行结束；后续人工处置由 WMS 负责。
@@ -403,11 +403,16 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 * **满箱交换**: WMS 每次决定同面 1～2 对精确成员和最终储位，WES 只通过 Transport Port 原子提交该批全部成员。当前面
   需要两对而目标货架只有一个合格空 Bin 时，禁止缩成一对；优先更换能完整覆盖当前面且尽量覆盖剩余面的五层货架，没有合格
   替换货架则等待。任一成员失败或结果未知时停止后续动作并等待人工恢复，不自动创建替代搬运或反向搬回。
-* **跨面顺序**: 当前面只有在 T3 全部成员成功且位置明确、全部位置迁移 Fact 被 WMS 记录并完成主账更新后才闭环。若另一面
+* **跨面顺序**: 当前面只有在 `transport.task.resulted@v1` 最终结果确认全部成员成功且位置明确、全部位置迁移 Fact 被 WMS
+  记录并完成主账更新后才闭环。若另一面
   仍需交换，WMS 重新计算后，WES 分别完成所需来源货架和目标货架换面，确认所有 `RACK_ROTATE` 成功且到达面正确，再创建下一面
   的新交换任务。需要换目标货架时，同样先完成旧架搬离和新架到位，再重新计算。
 * **目标 Bin 供退**: WMS 只供给库存主账中存在可分配 Cell 的 Bin。正常 Bin 离开工作位后进入本次 `putaway_execution_id` 的 `RETURN_BUFFER` FIFO；WMS 为连续前缀分配当前 CTU 工作位货架面的任意合格精确空位，
   不要求原货架面。当前面无合格空位时 Bin 等待，不转 NG 或冲突；正常运行时只有新供给需求驱动换面、换架。停止或切换已请求时停止新任务和新 Bin，Epoch 保持 `ACTIVE`；目标合同允许 WMS 为排空既有 FIFO 选择货架面，但共同排空货架面决定 wire 尚未获批，当前路径为 `ReviewRequired/BLOCKED`，不得创建货架切换或退料 Transport。全部清场义务闭合后再关闭 Epoch。WES 只按现场缓存和 CTU 物理容量限流，不推断库存可用性。
+* **Bin 执行管辖**: WMS 冻结精确供给 Bin 后，WES 先创建 `TransportTask`；提交、接纳、失败和位置未知均由该搬运对象负责。
+  只有 `transport.task.resulted@v1` 最终结果确认 Bin 成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结 `bin_id` 一致后，WES 才创建
+  `BinExecution`。正常 Bin 只有可靠回到当前工作线五层货架精确位置且 WMS 已记录主账后才释放；NG Bin进入整线 `NGZone` 后由人工
+  扫码取走并释放。下次供给必须使用 WMS 最新主账创建新的执行，禁止复用旧位置投影。
 * **机械臂执行**: SCAN1 承接 WMS 业务路由，SCAN2 只确认当前 Bin 是否可服务。北向机械臂从冻结来源取盘并复扫，WMS
   晚绑定精确目标 Cell，南向机械臂可靠 PUT 后形成位置 Fact；身份不符、位置未知或不可逆动作结果未知时冻结对账。
 * **业务完成**: 正常料盘只有在可靠 PUT 且 WMS 接纳位置 Fact 后才完成；Material NG、可靠空取和满箱交换按各自明确终态闭合。
@@ -439,8 +444,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    当前面能为 `RETURN_BUFFER` FIFO 队首形成可执行批次时，优先调用 `outbound.bin.return_batch@v1`。候选按本次请求从 1 设置 `sequence_no`；WMS 为连续前缀
    分配当前 `rack_id + rack_face` 的任意合格精确空位，并原样返回 `sequence_no + bin_id`。当前面无合格空位时返回 `NO_BATCH`，候选留在 FIFO，不转 NG 或 `STATE_CONFLICT`；无资源冲突的新入站需求可以推动换面或换架。
    没有可执行退箱批次时，WES 计算 CTU 空闲背篓数和入料缓存空闲数的较小值，再通过 `outbound.bin.inbound_batch@v1` 请求 WMS 选择
-   `bin_id + source_locator`，补充本地目标并生成 `BIN_MOVE`。WMS `READY` 不是批次完成；只有 Transport 确定成功且完整位置已保存后，
-   才重新判断。`RACK_FACE_DONE` 只关闭当前面的后续选 Bin 资格；CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
+   `bin_id + source_locator`，补充本地目标并生成 `BIN_MOVE`。WMS `READY` 不是批次完成；只有 Transport 最终成功、实扫身份匹配并创建
+   `BinExecution` 后才重新判断。`RACK_FACE_DONE` 只关闭当前面的后续选 Bin 资格；CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
    计划中选择下一来源面，同架下一面使用
    `RACK_ROTATE`，不同货架严格按
    旧架移出、新架移入的顺序切换。CTU 非空、搬运未完成、位置未知，或存在以当前面为冻结目标的退箱决定时，禁止换面和换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待，不再锁定原来源面。
@@ -461,7 +466,9 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    撤销 `inbound_batch` 已选中的 Bin，也不能用当前任务的后续计划替换空取、NG 或 Transport 确定失败的任务明细。
    Bin 到达 SCAN2 时由 `work_plan` 返回 `READY | NO_WORK | WAIT`；`READY.cell_ids[]` 首次接收后不可撤销、删减或改写。
 8. Transport 为 `UNKNOWN/RECONCILING` 时，只暂停受影响的任务明细。WES 等待同一 `transport_task_id` 的更高版本结果或人工核对。
-   Transport 确定失败时，WES 结束失败对象对应的任务明细，其他明细继续。WMS/RCS 产生并发送 Transport 结果，所以 WMS 可以直接
+   Transport 确定失败时，WES 结束失败对象对应的业务任务明细，其他明细继续。尚未到达工作线的 Bin 不创建 `BinExecution`；既有
+   `BinExecution` 的退回搬运失败时继续保留该执行，后续按确定位置人工处置，只有位置未知才由 Transport 保持 `RECONCILING`。
+   WMS/RCS 产生并发送 Transport 结果，所以 WMS 可以直接
    统计没有满足的需求并创建新的 PickingTask。双方不增加 Transport 失败上报或 PickingTask 恢复接口，Transport 请求也不增加
    `task_id`。
 9. WES 把每盘位置结果可靠提交给 WMS。当前任务的全部已接收明细都有处理结果，而且 WMS 已确认所有必须上报的逐盘结果后，WES
@@ -511,7 +518,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   | 对象 | 需求职责 |
   | --- | --- |
   | `MaterialExecution` | 保存单个完整料盘或可执行物料单位的业务推进证据 |
-  | `BinExecution` | 保存单个料箱在滚筒线和工作位中的推进证据 |
+  | `BinExecution` | 保存已经可靠到达工作线的单个料箱，从入线、滚筒线和工作位推进，直到正常回库或 NGZone 人工接管的执行证据 |
   | `DeviceCommand` | 保存 ECS 命令、ACK、CALLBACK、deadline 和幂等事实 |
   | `TransportTask` | 保存 WMS 转发搬运请求、批次状态和终态中的成员最终事实 |
   | `WmsConfirmation` | 保存需要可靠提交的 WMS 业务确认义务 |
@@ -519,6 +526,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   | `InboundEvidence` | 保存外部事件、输入和回调的原始证据 |
 
   当前投影可以更新，但命令、外部义务、终态和对账证据必须按审计要求保留；不得在执行结束时整体删除或压缩成一个通用任务记录。
+  `PositionProjection` 只表达 WES 活动管辖期内由可靠证据支撑的位置、队列或占用，不是 WMS 全局 Bin 位置镜像。Transport 已接纳但
+  尚无最终结果时，其任务和资源绑定按位置未知处理；`BinExecution` 关闭后保留历史证据，但旧投影不再具有当前权威性。
 * **与现有 WMS 的协同机制 (Coordination with Existing WMS)**:
 
   **1. 库存查询 (Inventory Query)**

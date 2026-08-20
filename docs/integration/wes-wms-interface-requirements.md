@@ -18,7 +18,7 @@ migration_strategy: direct_replacement
 
 | 合同版本 | 日期 | 状态 | 主要变化 |
 | --- | --- | --- | --- |
-| `0.2.0` | 2026-08-14 | 待外发 | Transport 分为货架和料箱两套 DTO，统一使用 `container_id`；目标工作面保存后不再修改；T1 不再返回 BUSY |
+| `0.2.0` | 2026-08-20 | 待外发 | Transport 两族 DTO 保持不变；明确逐容器中间位置事件只在存在权威事实时可选发送；入线前由 TransportTask 负责，最终到位且实扫匹配后才创建 BinExecution |
 
 `contract_version` 只用于双方确认拿到的是同一份外发合同，不进入任何 JSON 信封，也不产生旧版本兼容逻辑。正式外发时将
 `published_at` 改为实际日期；在此之前，本版本不得用于宣称现场联调已经就绪。
@@ -53,13 +53,15 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
 | WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES 代码、OpenAPI 和本地行为证据已对齐两族 DTO；WMS 实现、双方联调和现场验收仍待完成 |
-| 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的 O1～O7 只用于联合评审，批准前禁止实现 |
-| Phase 8 粗分自动入库 | `Approved` | `WES_IMPLEMENTED_LOCAL_MOCK_PASS` | WES 已实现且本机 Mock 通过；真实 WMS、供应商、现场联调与业务验收均为 `NOT RUN` |
-| Phase 9 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的 P1～P8 只用于联合评审，批准前禁止实现 |
+| 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
+| 粗分自动入库 | `Approved` | `WES_IMPLEMENTED_LOCAL_MOCK_PASS` | WES 已实现且本机 Mock 通过；真实 WMS、供应商、现场联调与业务验收均为 `NOT RUN` |
+| 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-F-01、T1～T3 与 I1～I4 的合同生命周期为 `Approved`；当前 Transport 两族 DTO 的 WES 本地实现状态为 `ALIGNED`，I1～I4
+公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`，但容器中间位置事件
+只在供应商能够提供权威逐容器中间事实时启用，当前 CTU/RCS 不实施；
+当前 Transport 两族 DTO 的 WES 本地实现状态为 `ALIGNED`，粗分入库场景
 已由 WES 实现并通过本机 Mock，但真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收通过，不能证明自动上架或自动出库已经通过；设备动作验收也不能替代
 WMS 库存和业务验收。
 
@@ -68,22 +70,22 @@ WMS 库存和业务验收。
 当前开发放行只包含下表任务。表中分别列出 WMS 需要作为服务端提供的接口，以及 WMS 需要作为客户端访问的 WES 接口。
 任务卡负责说明“要完成什么”，第 2～3 节负责说明“线上消息必须是什么”，两者共同构成验收依据。
 
-| 任务编号 | 类型 | WMS 需要提供的接口 | WMS 需要访问的 WES 接口 | 当前任务 | 详细入口 |
+| 任务名称 | 类型 | WMS 需要提供的接口 | WMS 需要访问的 WES 接口 | 当前任务 | 详细入口 |
 | --- | --- | --- | --- | --- | --- |
-| `F-01` | 架构基础能力 | 为 T1 服务端接口提供严格 JSON、公共响应和幂等冲突处理 | 为 T2/T3 调用提供不可变消息、响应分类和可靠重试 | 完成 T1～T3 共用的 HTTP/JSON 能力，不单独新增通用端点 | 第 2 节“F-01 WMS 开发任务卡” |
-| `T1` | Transport 业务能力 | `POST {{WMS_BASE_URL}}/api/v1/wes/transport-requests`<br>`operation=transport.task.submit@v1` | 无 | 接收并可靠接纳四种不可变搬运请求 | 第 3 节“T1 WMS 开发任务卡” |
-| `T2` | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 根据确定 RCS 证据回调单个容器的位置变化 | 第 3 节“T2 WMS 开发任务卡” |
-| `T3` | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.resulted@v1` | 按连续 `outcome_revision` 回调完整搬运结果和各对象最终位置 | 第 3 节“T3 WMS 开发任务卡” |
-| `D-01` | 联调交付 | 无新增运行时接口 | 无新增运行时接口 | 提供 Approved 范围的 OpenAPI、固定 JSON、归一化表和联调证据 | 第 5 节 |
+| 公共通信基础能力 | 架构基础能力 | 为搬运提交服务端接口提供严格 JSON、公共响应和幂等冲突处理 | 为搬运最终结果及条件启用的容器中间位置事件调用提供不可变消息、响应分类和可靠重试 | 完成三个搬运环节共用的 HTTP/JSON 能力，不单独新增通用端点 | 第 2 节“公共通信基础能力开发任务卡” |
+| 搬运提交 | Transport 业务能力 | `POST {{WMS_BASE_URL}}{{TRANSPORT_SUBMIT_PATH}}`<br>`operation=transport.task.submit@v1` | 无 | 接收并可靠接纳四种不可变搬运请求 | 第 3 节“搬运提交开发任务卡” |
+| 容器中间位置事件 | 条件 Transport 能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 当前 CTU/RCS 不实施；未来供应商能提供权威逐容器中间事实时才启用 | 第 3 节“容器中间位置事件条件任务卡” |
+| 搬运最终结果 | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.resulted@v1` | 按连续 `outcome_revision` 回调完整搬运结果和各对象最终位置 | 第 3 节“搬运最终结果开发任务卡” |
+| 联调交付 | 联调交付 | 无新增运行时接口 | 无新增运行时接口 | 提供 Approved 范围的 OpenAPI、固定 JSON、归一化表和联调证据 | 第 5 节 |
 
-因此，当前 WMS 只需要**提供一个接口**：T1 的 `POST /api/v1/wes/transport-requests`；只需要**访问一个 WES 接口**：
-T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分位置事实和最终结果。WMS 如何调用 RCS 属于 WMS/RCS
-内部接口，不在本文定义，也不需要向 WES 暴露。
+因此，当前 WMS 只需要**提供一个接口**：搬运提交的 `POST {{TRANSPORT_SUBMIT_PATH}}`；只需要**访问一个 WES 接口**：
+搬运最终结果使用的 `POST /api/v1/wms/events`。容器中间位置事件与搬运最终结果共用该端点，但当前 CTU/RCS 不产生容器中间位置事件；未来启用时才通过不同 `operation`
+区分中间位置事实和最终结果。WMS 如何调用 RCS 属于 WMS/RCS 内部接口，不在本文定义，也不需要向 WES 暴露。
 
-基础能力 `F-01` 和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，T1～T3 的单个业务样例通过也不能证明
-所有公共幂等、冲突和重试规则正确。
+公共通信基础能力和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，搬运提交、搬运最终结果以及条件启用的容器中间位置事件单个业务
+样例通过，也不能证明所有公共幂等、冲突和重试规则正确。
 
-当前**不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts` 及 O1～O7、I1～I4、P1～P8 operation。它们保持
+当前**不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts` 及自动出库、粗分入库、自动上架场景的 operation。它们保持
 `ReviewRequired`，只能参加联合评审，不能创建临时 DTO、空实现或兼容入口。
 
 ### 0.3 WMS C# 技术基线
@@ -107,24 +109,26 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 | --- | --- | --- |
 | 协议 | `http` | 纯局域网通信，不实现 HTTPS、Token、HMAC 或 Nonce |
 | `WMS_BASE_URL` | WMS 团队在联调前提供 | 包含协议、主机和端口，不以 `/` 结尾；不能硬编码在业务 DTO 中 |
+| `TRANSPORT_SUBMIT_PATH` | WMS 团队在联调前提供 | 最长 2048 个字符；以 `/` 开头；不含 origin、query、fragment、反斜杠或 `.`/`..` 路径段；大小写必须与 WMS 路由一致 |
 | `WES_BASE_URL` | WES 团队在联调前提供 | 包含协议、主机和端口，不以 `/` 结尾；由 WMS 运行配置读取 |
 | JSON `Content-Type` | `application/json` | `charset` 可以省略，存在时只能是 `utf-8`；媒体类型、参数名和值按 HTTP 规则大小写不敏感；其它媒体类型或 charset 返回空响应体 `400` |
 | `Content-Encoding` | `identity` | 禁止 gzip 等压缩编码；缺省等同 `identity`，其它值返回空响应体 `400` |
-| 单次 HTTP 超时 | `10000` 毫秒 | 覆盖连接、完整请求发送和完整有界响应读取；WES → WMS 的 T1 与 WMS → WES 的 T2/T3 使用相同硬超时 |
+| 单次 HTTP 超时 | `10000` 毫秒 | 覆盖连接、完整请求发送和完整有界响应读取；WES → WMS 的搬运提交与 WMS → WES 的容器中间位置事件/搬运最终结果使用相同硬超时 |
 | 请求/响应 Body 上限 | `262144` bytes | 按原始 UTF-8 bytes 计算，不按 C# 字符数计算 |
 | 应用层认证 | `NONE` | 不预留空 Token 字段或认证兼容分支 |
 | 时间 | UTC Unix 毫秒 | 双方主机应使用现场统一时间源；时间戳仅供审计，不因时钟偏差拒绝业务消息 |
 
-具体主机和端口属于环境交付值，不写入接口合同。联调开始前，双方必须交换实际 Base URL 并完成双向连通性确认。
+具体主机、端口和搬运提交相对路径属于环境交付值，不写死在业务 DTO 中。联调开始前，双方必须交换实际 Base URL 与
+`TRANSPORT_SUBMIT_PATH`，确认 WMS OpenAPI 中的实际路由，并完成双向连通性确认。WES 启动时校验并冻结搬运提交路径；修改后必须重启。
 
 ### 0.5 初级开发人员阅读顺序
 
 1. 先阅读第 1～2 节，理解系统职责、公共端点、信封和数据来源术语。
-2. WMS/RCS 团队实现搬运时阅读第 3 节的 T1～T3。
+2. WMS/RCS 团队实现搬运时阅读第 3 节的搬运提交、搬运最终结果；只有供应商能提供权威逐容器中间事实时才实施容器中间位置事件。
 3. 按第 4～7 节确认实现边界、交付物、不提供的接口和文档治理规则。
-4. WMS 出库团队按附录 A 的 O1～O7 顺序参加联合评审；转为 `Approved` 后才实现。
-5. WMS 入库团队按附录 B 的 I1～I4 和其链接的获批粗分合同实施与联调。
-6. WMS 上架团队按附录 C 的 P1～P8 顺序参加联合评审；转为 `Approved` 后才实现。
+4. WMS 出库团队按附录 A 的自动出库场景顺序参加联合评审；转为 `Approved` 后才实现。
+5. WMS 入库团队按附录 B 的粗分入库场景及其链接的获批粗分合同实施与联调。
+6. WMS 上架团队按附录 C 的自动上架场景顺序参加联合评审；转为 `Approved` 后才实现。
 
 ### 0.6 外发文档完整性
 
@@ -150,13 +154,13 @@ T2/T3 共用的 `POST /api/v1/wms/events`，并通过不同 `operation` 区分�
 | 主动通知（Event） | WMS 主动发送给 WES 的消息，不是 WES 发起请求后的同步响应 |
 | 事实报告（Fact） | WES 把已经发生且有证据的业务事实报告给 WMS，例如料盘已经放入目标 Cell |
 | 原始证据（evidence） | ECS、RCS 或人工操作产生的原始结果。WES 必须先保存，再用于后续判断 |
-| WES 现场位置记录（PositionProjection） | WES 根据可靠证据维护的当前位置，只用于现场执行，不能替代 WMS 库存主账 |
+| WES 现场位置记录（PositionProjection） | WES 在活动执行管辖期内根据可靠证据维护的确定位置或位置未知，只用于现场执行；执行关闭后的旧投影不是全局当前位置，不能替代 WMS 库存主账 |
 | 参数规则（Schema） | 约束 JSON 字段、类型、必填条件和枚举的机器可读规则 |
 | 固定 JSON 样例（fixture） | 双方共同确认的请求和响应样例，用于开发和联调 |
 | `TransportTask` | WES 保存的一次可靠搬运任务 |
 | `DeviceCommand` | WES 发给 ECS 的一条设备命令 |
 | generation / revision | 连续递增的版本号，用来判断消息是否过期或乱序 |
-| `outcome_revision` | WMS 在线上 T3 中为同一搬运任务生成的 `1..Int64.MaxValue` 连续结果版本，用于排序多次完整结果 |
+| `outcome_revision` | WMS 在线上搬运最终结果中为同一搬运任务生成的 `1..Int64.MaxValue` 连续结果版本，用于排序多次完整结果 |
 | `outcome_version` | WES 内部发布给业务使用方的搬运结果版本；与线上 `outcome_revision` 不是同一字段 |
 | WMS 主账 | WMS 中已经提交的业务单据、库存和位置数据。发生冲突时以这些数据为准 |
 | 幂等 | 同一条消息重复发送时，系统只执行业务动作一次，并按合同重放第一次结果或返回 `DUPLICATE` |
@@ -204,10 +208,10 @@ flowchart LR
 
 ## 2. 所有场景共用的协议
 
-### F-01 WMS 开发任务卡
+### 公共通信基础能力 WMS 开发任务卡
 
-- **开发目标：** 为当前 Approved 的 T1～T3 提供统一、严格且可恢复的 HTTP/JSON 交互基础能力。
-- **WMS 接口角色：** T1 时作为 HTTP 服务端；T2/T3 时作为 HTTP 客户端。
+- **开发目标：** 为当前 Approved 的搬运提交、搬运最终结果以及条件启用的容器中间位置事件提供统一、严格且可恢复的 HTTP/JSON 交互基础能力。
+- **WMS 接口角色：** 搬运提交时作为 HTTP 服务端；搬运最终结果以及条件启用的容器中间位置事件时作为 HTTP 客户端。
 - **必须完成：**
   1. 对请求和响应执行 `256 KiB` 上限、UTF-8、严格 JSON 和公共信封校验；
   2. 使用 `operation + operation_id` 识别消息，正确处理首次请求、重复消息和相同身份内容冲突；
@@ -217,25 +221,25 @@ flowchart LR
 - **禁止事项：**
   1. 不得提供任意 `action + data` 通用入口，不得忽略未知字段或增加扩展字段；
   2. 不得用全局 `operation_id` 代替 `operation + operation_id`，也不得在技术重试时更换身份或内容；
-  3. 不得因 T1～T3 某个业务样例通过，就宣称全部公共协议能力已经通过；
+  3. 不得因搬运提交、搬运最终结果或条件启用的容器中间位置事件某个业务样例通过，就宣称全部公共协议能力已经通过；
   4. 不得为未批准 operation 建立空实现、默认成功或兼容分支。
 - **完成证据：**
   1. 合法请求、重复请求、内容冲突、非法 JSON、超限和非法 DTO 均得到规定结果；
-  2. T1 只有请求明确未发出或收到 `503 / UNAVAILABLE` 时才使用原完整消息重试；请求可能已送达但响应未知时停止自动重提并进入
-     对账；T2/T3 主动通知在 `503 / UNAVAILABLE`、网络失败或响应未知后仍使用原完整消息继续履约；
+  2. 搬运提交只有请求明确未发出或收到 `503 / UNAVAILABLE` 时才使用原完整消息重试；请求可能已送达但响应未知时停止自动重提并进入
+     对账；搬运最终结果及条件启用的容器中间位置事件主动通知在 `503 / UNAVAILABLE`、网络失败或响应未知后仍使用原完整消息继续履约；
   3. 进程重启后，已经形成但尚未明确接纳的主动通知仍可继续发送；
-  4. F-01 验收记录与 T1～T3 业务验收记录分开保存和判定。
+  4. 公共通信基础能力验收记录与搬运提交、搬运最终结果及条件启用的容器中间位置事件业务验收记录分开保存和判定。
 
-### 2.1 固定端点全景和当前开发范围
+### 2.1 端点全景和当前开发范围
 
 | 方向 | 方法和路径 | 用途 | 当前 WMS 动作 |
 | --- | --- | --- | --- |
-| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | WMS 主动通知业务数据、搬运位置和最终结果 | 实现 T2、T3 调用；其它 operation 待评审 |
+| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | WMS 主动通知业务数据、搬运位置和最终结果 | 实现容器中间位置事件、搬运最终结果调用；其它 operation 待评审 |
 | WES → WMS | `POST {{WMS_BASE_URL}}/api/v1/wes/decisions` | WES 请求 WMS 给出同步业务决定，或可靠接纳耗时准备 | 暂不实现任何 operation |
 | WES → WMS | `POST {{WMS_BASE_URL}}/api/v1/wes/facts` | WES 报告已经发生且有可靠证据支撑的业务事实 | 暂不实现任何 operation |
-| WES → WMS | `POST {{WMS_BASE_URL}}/api/v1/wes/transport-requests` | WES 提交不可变 AGV/CTU 搬运请求 | 实现 T1 接收 |
+| WES → WMS | `POST {{WMS_BASE_URL}}{{TRANSPORT_SUBMIT_PATH}}` | WES 提交不可变 AGV/CTU 搬运请求 | 实现搬运提交接收 |
 
-表中的四个路径是协议全景，不表示四个端点都已开发放行。首版只实现 T1 接收以及 T2/T3 主动通知；不得为空 operation 提前创建
+表中的四个路径是协议全景，不表示四个端点都已开发放行。首版只实现搬运提交接收以及容器中间位置事件/搬运最终结果主动通知；不得为空 operation 提前创建
 通用端点或返回占位结果。
 
 四个端点的原始请求正文和响应正文上限都是 `256 KiB`（`262144` bytes）。首版运行于隔离局域网，固定 HTTP、
@@ -243,7 +247,7 @@ flowchart LR
 
 ### 2.2 请求和响应信封
 
-公共请求信封样例（以 T1 `transport.task.submit@v1` 为例）：
+公共请求信封样例（以搬运提交 `transport.task.submit@v1` 为例）：
 
 ```json
 {
@@ -261,7 +265,7 @@ flowchart LR
 }
 ```
 
-公共响应信封样例（以 T1 首次接纳 `RECEIVED` 为例）：
+公共响应信封样例（以搬运提交首次接纳 `RECEIVED` 为例）：
 
 ```json
 {
@@ -303,7 +307,7 @@ flowchart LR
 接收方可以比较严格 DTO 或规范化 JSON，但不得比较原始 bytes 后把仅有空白或对象字段顺序变化的请求误判为冲突。发送方仍应保存并
 重发首次形成的同一组 UTF-8 bytes，减少跨语言差异。摘要算法属于内部实现。
 
-首版幂等记录不自动过期或清理。WMS 必须保留 T1 的完整请求身份、内容摘要和首次终局响应；WES 必须保留 T2/T3 的对应记录。开发或
+首版幂等记录不自动过期或清理。WMS 必须保留搬运提交的完整请求身份、内容摘要和首次终局响应；WES 必须保留容器中间位置事件/搬运最终结果的对应记录。开发或
 测试数据只有在双方停止相关发送任务，并确认同时重置环境后才能清理。未来确需增加生产清理周期时，必须先修改本文，不能由单方
 自行设置过期时间。
 
@@ -812,7 +816,7 @@ WMS 主动通知必须满足以下可联调验证的结果，具体如何实现�
 1. 只有对应业务事实或决定已经确定后，才能形成主动通知。
 2. 首次发送前生成新的 UUIDv7 `operation_id`，冻结 `operation + timestamp + data`；进程重启或网络失败不能丢失已形成的发送义务。
 3. 调用 `/api/v1/wms/events` 时使用已经冻结的完整消息，技术重试不得重新读取当前主账并改写旧消息。
-4. 当前 T2/T3 收到 `RECEIVED/DUPLICATE` 后结束本次发送义务；收到 `UNAVAILABLE` 或没有取得明确响应时，使用原完整消息重试。
+4. 当前容器中间位置事件/搬运最终结果收到 `RECEIVED/DUPLICATE` 后结束本次发送义务；收到 `UNAVAILABLE` 或没有取得明确响应时，使用原完整消息重试。
 5. 收到 `400/413/422` 后停止重试原消息；修正内容后必须创建新的消息身份。收到 `CONFLICT` 后停止自动发送并进入合同对账。
 6. 新出现的业务事实必须创建新消息身份，不能覆盖已经形成或已经发送的历史消息。
 7. 每次 WMS → WES HTTP 访问使用 `10000` 毫秒硬超时，并限制响应原始 Body 不超过 `262144` bytes。
@@ -1009,13 +1013,21 @@ static string CreateUuidV7()
 
 本节是当前可以直接交付 WMS 开发和联调的完整 Transport 合同，不需要再查阅 WES 内部文档。
 
+本文直接使用业务语义名称描述三个搬运环节；接口的机器身份始终以完整 `operation` 字面量为准：
+
+| 业务环节 | operation | 含义 |
+| --- | --- | --- |
+| 搬运提交 | `transport.task.submit@v1` | WES 向 WMS 提交不可变搬运任务 |
+| 容器中间位置事件 | `transport.task.member_position_changed@v1` | WMS 向 WES 发送可选的逐容器中间位置事件 |
+| 搬运最终结果 | `transport.task.resulted@v1` | WMS 向 WES 发送覆盖全部成员的搬运最终结果 |
+
 ### 3.1 Transport 公共数据类型
 
 #### 3.1.1 标识和枚举
 
 | 字段 | 类型与范围 | 规则 |
 | --- | --- | --- |
-| `transport_task_id` | 非空 UTF-8 string，`1..80` 字符 | WES 生成；贯穿 T1、T2、T3；一个已接纳 ID 只能绑定一个 T1 `operation_id` |
+| `transport_task_id` | 非空 UTF-8 string，`1..80` 字符 | WES 生成；贯穿搬运提交、容器中间位置事件和搬运最终结果；一个已接纳 ID 只能绑定一个搬运提交 `operation_id` |
 | `rack_id` | 非空 UTF-8 string，`1..100` 字符 | 货架身份，精确比较，不根据前缀推断类型 |
 | `container_id` | 非空 UTF-8 string，`1..100` 字符 | WES-WMS 接口契约中的物理料箱/容器身份；对应厂商 `containerId`，不是厂商表示仓位的 `binId` |
 | `slot_id/location_code` | 非空 UTF-8 string，`1..100` 字符 | 由位置权威方提供；不得用空字符串或 `null` |
@@ -1031,9 +1043,9 @@ static string CreateUuidV7()
 
 | `kind` | 完整字段 | 允许用途 |
 | --- | --- | --- |
-| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE/RACK_ROTATE` 的 `source/target`、货架 T3 最终位置 |
-| `RACK_BIN_SLOT` | `kind + rack_id + rack_face + slot_id` | Bin 所在货架储位、Bin T3 最终位置；四个字段共同定位唯一物理储位 |
-| `HANDOFF_POSITION` | `kind + location_code` | WorkLine 入料口、出料口或其它已批准交接位、Bin T3 最终位置 |
+| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE/RACK_ROTATE` 的 `source/target`、货架搬运最终结果最终位置 |
+| `RACK_BIN_SLOT` | `kind + rack_id + rack_face + slot_id` | Bin 所在货架储位、Bin 搬运最终结果最终位置；四个字段共同定位唯一物理储位 |
+| `HANDOFF_POSITION` | `kind + location_code` | WorkLine 入料口、出料口或其它已批准交接位、Bin 搬运最终结果最终位置 |
 
 **位置样例 1：货架停靠位置（`RACK_POSITION`）**
 
@@ -1074,14 +1086,14 @@ static string CreateUuidV7()
 
 #### 3.1.3 WMS 最小 `data` 结构分族
 
-T1 只需要两个 `data` Schema 族：
+搬运提交只需要两个 `data` Schema 族：
 
 | 协议 Schema 族 | `kind` | 固定字段 |
 | --- | --- | --- |
 | `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rack_id + source + target + target_face` |
 | `BinTransportData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + moves[]`；成员固定为 `container_id + source + target` |
 
-T3 同样只需要两个 `data` Schema 族：
+搬运最终结果同样只需要两个 `data` Schema 族：
 
 | 协议 Schema 族 | `kind` | 固定字段 |
 | --- | --- | --- |
@@ -1089,7 +1101,7 @@ T3 同样只需要两个 `data` Schema 族：
 | `BinTransportResultData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + outcome_revision + results[]`；成员使用 `container_id`，以及结果条件字段 |
 
 上述 Schema 名只用于标识线上结构，不规定 WMS 的 C# 类名。货架结果直接展开唯一 `rack_id`，不套只有一项的 `results[]`；料箱结果
-使用 `results[].container_id`。WMS 不需要四套 T1 DTO，不需要自定义多态 `JsonConverter`，也不需要 DTO 注册表。推荐先严格解析
+使用 `results[].container_id`。WMS 不需要四套搬运提交 DTO，不需要自定义多态 `JsonConverter`，也不需要 DTO 注册表。推荐先严格解析
 公共信封并读取 `data.kind`，再进行一次显式分流：
 
 ```text
@@ -1103,17 +1115,17 @@ WMS 可以用一个自行命名的普通 C# 位置类型承载 `kind/location_co
 
 #### 3.1.4 Transport 稳定码闭集
 
-T1 `422 / REJECTED` 的 `reason_code` 只能使用：
+搬运提交 `422 / REJECTED` 的 `reason_code` 只能使用：
 
 | `reason_code` | 含义 |
 | --- | --- |
 | `INVALID_ENVELOPE` | 已取得合法 `operation_id`，但公共信封其余字段不合法 |
 | `UNSUPPORTED_OPERATION` | operation 不属于当前 Approved 闭集 |
-| `INVALID_DATA` | T1 `data` 的字段、类型、长度、枚举、成员数量或条件必填不合法 |
+| `INVALID_DATA` | 搬运提交 `data` 的字段、类型、长度、枚举、成员数量或条件必填不合法 |
 | `COORDINATED_BIN_EXCHANGE_UNSUPPORTED` | WMS/RCS 当前不具备将 `BIN_EXCHANGE` 作为一个协调任务整体执行的能力 |
 
-已知 T2/T3 operation 的信封或 DTO 非法时，`422 / REJECTED` 固定使用 `INVALID_EVIDENCE`；未知 operation 使用
-`UNSUPPORTED_OPERATION`。T3 成员失败时，`failure_code` 只能使用：
+已知容器中间位置事件/搬运最终结果 operation 的信封或 DTO 非法时，`422 / REJECTED` 固定使用 `INVALID_EVIDENCE`；未知 operation 使用
+`UNSUPPORTED_OPERATION`。搬运最终结果成员失败时，`failure_code` 只能使用：
 
 | `failure_code` | 使用条件 |
 | --- | --- |
@@ -1129,24 +1141,24 @@ WMS 必须把供应商私有码转换为上述固定值，不得透传新码。W
 `failure_code` 只在能够同时给出合法 `final_position` 时使用。这样 WMS 开发人员不需要在“失败原因”和“位置是否可依赖”之间
 猜测优先级。
 
-RCS 请求或结果超时本身不能证明搬运失败，也不能证明对象位置。WMS 不得把 timeout 直接转换为 T3 `FAILED`；必须等待 RCS 的
-确定证据或完成人工对账。若最终只能确认位置未知，按 `POSITION_UNKNOWN` 报告。WES 自身的等待超时与 WMS 的 T3 是两个独立事实，
+RCS 请求或结果超时本身不能证明搬运失败，也不能证明对象位置。WMS 不得把 timeout 直接转换为搬运最终结果 `FAILED`；必须等待 RCS 的
+确定证据或完成人工对账。若最终只能确认位置未知，按 `POSITION_UNKNOWN` 报告。WES 自身的等待超时与 WMS 的搬运最终结果是两个独立事实，
 不能互相替代。
 
-### T1：WES 请求 WMS 搬运货架或 Bin
+### 搬运提交：WES 请求 WMS 搬运货架或 Bin
 
 触发条件：业务场景已经确定具体对象、来源和目标。WES 已经保存搬运任务，但尚未调用 RCS。
 
-#### T1 WMS 开发任务卡
+#### 搬运提交开发任务卡
 
 - **开发目标：** 接收 WES 提交的不可变搬运请求，并把可靠接纳的请求转化为可追溯的 WMS/RCS 搬运义务。
-- **WMS 接口角色：** HTTP 服务端，接收 `POST /api/v1/wes/transport-requests`。
+- **WMS 接口角色：** HTTP 服务端，接收 `POST {{TRANSPORT_SUBMIT_PATH}}`。
 - **必须完成：**
-  1. 在 JSON 解码前检查 `256 KiB` Body 上限，再严格校验公共信封和 T1 `data`；
+  1. 在 JSON 解码前检查 `256 KiB` Body 上限，再严格校验公共信封和搬运提交 `data`；
   2. 使用一次 rack/bin 分流严格解析两族 DTO；`BIN_EXCHANGE` 在现场协调能力未确认前可以按稳定码确定拒绝，禁止接受未定义字段；
   3. 使用 `operation + operation_id` 处理首次请求、重复请求和内容冲突；
   4. 保证一个已接纳的 `transport_task_id` 只关联一个不可变提交和一项实际搬运义务；
-  5. 在可靠接纳和首次响应已经一致保存后，按 T1 响应联合返回结果。
+  5. 在可靠接纳和首次响应已经一致保存后，按搬运提交响应联合返回结果。
 - **禁止事项：**
   1. 不得修改 WES 给出的对象、来源、目标或目标面；
   2. 不得把 `BIN_EXCHANGE` 拆成两个独立搬运任务；
@@ -1161,7 +1173,7 @@ RCS 请求或结果超时本身不能证明搬运失败，也不能证明对象�
 WES 调用 WMS：
 
 ```text
-POST /api/v1/wes/transport-requests
+POST {{TRANSPORT_SUBMIT_PATH}}
 operation = transport.task.submit@v1
 ```
 
@@ -1190,7 +1202,7 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 `rack_face` 与已知当前面不一致时返回 `409 / CONFLICT`，无法取得必须的可信当前面时返回 `503 / UNAVAILABLE`。上述情况均不得
 调用 RCS。请求禁止携带货架类型、空/满箱、容量、车辆、路线、RCS 内部动作顺序、WES 工作线调用方身份或供应商私有字段。
 
-四种完整 T1 请求样例：
+四种完整搬运提交请求样例：
 
 **样例 1：整架搬运（`RACK_MOVE`）**
 
@@ -1307,15 +1319,16 @@ WMS 的对外处理结果必须满足：
 4. 首次可靠接纳后返回 `202 / RECEIVED`；同一消息重复请求返回 `200 / DUPLICATE` 并复用第一次响应的 `timestamp + data`。
 5. `RECEIVED` 只表示 WMS 接纳搬运义务，不表示车辆出发或对象到位。
 
-T1 的“可靠接纳”边界固定如下：WMS 已严格校验请求、确认自身具备该 `kind` 的执行能力，并可靠保存不可变请求、幂等身份、首次
+搬运提交的“可靠接纳”边界固定如下：WMS 已严格校验请求、确认自身具备该 `kind` 的执行能力，并可靠保存不可变请求、幂等身份、首次
 响应和后续调用 RCS 的搬运义务后，即可返回 `RECEIVED`；不要求在同步响应前取得 RCS 任务号，也不等待车辆开始或完成。返回
-`RECEIVED` 后，WMS 必须最终调用 RCS，并通过 T2/T3 报告事实和结果。RCS 后续拒绝或执行失败不能撤销 T1 ACK，必须使用 T3
-`FAILED` 和稳定 `failure_code` 闭合。
+`RECEIVED` 后，WMS 必须最终调用 RCS，并通过搬运最终结果 `transport.task.resulted@v1` 报告最终结果；只有上游实际形成权威中间位置事实时
+才另外发送容器中间位置事件 `transport.task.member_position_changed@v1`。RCS 后续拒绝或执行失败不能撤销搬运提交 ACK，必须使用搬运最终结果 `FAILED` 和稳定
+`failure_code` 闭合。
 
 `BIN_EXCHANGE` 只有在 WMS/RCS 集成已经具备“一个请求对应一个协调任务”的确定能力时才能接纳。该判断是能力门禁，不要求在
-T1 HTTP 响应期间同步创建 RCS 任务。
+搬运提交 HTTP 响应期间同步创建 RCS 任务。
 
-T1 同步响应完整联合：
+搬运提交同步响应完整联合：
 
 | HTTP / `code` | `data` 完整结构 | 说明 |
 | --- | --- | --- |
@@ -1327,7 +1340,7 @@ T1 同步响应完整联合：
 | `400`，空响应体 | 无 | 错误 `Content-Type`、非法 UTF-8/JSON，或无法取得合法 `operation_id` |
 | `413`，空响应体 | 无 | 原始请求正文超限 |
 
-T1 失败分类不得混用：
+搬运提交失败分类不得混用：
 
 | 情况 | 固定响应 | 是否允许原消息重试 |
 | --- | --- | --- |
@@ -1338,18 +1351,18 @@ T1 失败分类不得混用：
 活动资源冲突的最小公共范围固定为：任一未闭合 TransportTask 绑定的 `rack_id` 不能再属于另一个未闭合的货架或 Bin 任务；同一
 `container_id` 不能同时属于两个未闭合的 Bin 任务。完整 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 用于请求内位置唯一性、成员目标
 校验和结果匹配，不另建活动资源绑定；Bin 任务必须绑定其所有来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，防止搬架与
-在该架取放 Bin 并发。`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有 T1 ACK 中的 `transport_task_id` 都
+在该架取放 Bin 并发。`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有搬运提交 ACK 中的 `transport_task_id` 都
 回显本次请求中已解析的合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
 
 `RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
-`400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。T1 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有
+`400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。搬运提交 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有
 `REJECTED` 都执行相同的终止处理，不根据诊断码增加自动业务分支。
 
-WES 对每次 T1 HTTP 访问使用 `10` 秒硬超时，单个任务最多实际发送 `3` 次。只有请求明确未发出或收到 `503` 才使用原完整
+WES 对每次搬运提交 HTTP 访问使用 `10` 秒硬超时，单个任务最多实际发送 `3` 次。只有请求明确未发出或收到 `503` 才使用原完整
 消息重试，两者固定等待 `2000` 毫秒。如果请求可能已经
 送达但没有取得确定响应，WES 不自动重提、不查询任务状态，直接把该任务置为待对账，防止同一物理搬运被执行两次。
 
-T1 不提供 `429 / BUSY`，也不定义 `retry_after_ms`。RCS 或 WMS 内部调度容量不足时，WMS 应先可靠保存搬运义务并返回
+搬运提交不提供 `429 / BUSY`，也不定义 `retry_after_ms`。RCS 或 WMS 内部调度容量不足时，WMS 应先可靠保存搬运义务并返回
 `RECEIVED`，随后内部排队，不得把调度繁忙转换为未接纳响应。
 
 `BIN_EXCHANGE` 如果不能作为一个协调任务整体接纳，必须返回
@@ -1380,25 +1393,28 @@ T1 不提供 `429 / BUSY`，也不定义 `retry_after_ms`。RCS 或 WMS 内部�
 }
 ```
 
-### T2：WMS 回调单个容器已离开来源或到达目标
+### 容器中间位置事件（可选）：WMS 回调容器位置事实
 
-只有 `BIN_MOVE/BIN_EXCHANGE` 需要逐容器回调位置。货架不发送此 operation。
+只有 `BIN_MOVE/BIN_EXCHANGE` 在上游实际形成权威中间位置事实时才可以发送此 operation；它不是搬运必经步骤，货架不发送。
+当前 CTU/RCS 只返回完整最终结果，因此目标 Bin 供给、退回和满箱交换均不发送容器中间位置事件。
 
-#### T2 WMS 开发任务卡
+#### 容器中间位置事件条件任务卡
 
-- **开发目标：** RCS 已经确认单个容器离开来源、到达目标或位置未知时，把该位置事实可靠通知 WES。
+- **启用条件：** 供应商能够在搬运最终结果形成前提供单个容器离开来源、到达目标或位置未知的权威事实。当前 CTU/RCS 不满足，
+  因此本期不开发、不发送，也不伪造容器中间位置事件。
+- **启用后的开发目标：** 把已经确认的单个容器中间位置事实可靠通知 WES。
 - **WMS 接口角色：** HTTP 客户端，调用 `POST /api/v1/wms/events`。
-- **必须完成：**
-  1. 从 T1 保存的任务关联取得 `transport_task_id + container_id`，不得重新生成或替换业务身份；
+- **启用后必须完成：**
+  1. 从搬运提交保存的任务关联取得 `transport_task_id + container_id`，不得重新生成或替换业务身份；
   2. 只根据确定的 RCS 物理证据生成 `SOURCE_PICKED`、`TARGET_PLACED` 或 `POSITION_UNKNOWN`；
   3. 为每条新事实生成 UUIDv7 `operation_id`，在首次发送前冻结完整消息并可靠保存发送义务；
   4. 按里程碑处理 `final_position` 条件必填，并使用本文定义的位置严格联合；
   5. 按第 2.4 节处理接纳、重复、不可用、拒绝和冲突，技术重试保持完整消息不变。
 - **禁止事项：**
-  1. 不得为货架任务发送 T2，也不得发送导航中、升降中或接近目标等内部过程；
+  1. 不得为货架任务发送容器中间位置事件，也不得发送导航中、升降中或接近目标等内部过程；
   2. 不得根据预期目标推断 `TARGET_PLACED`，必须具有确定到位证据；
   3. 不得在重试时刷新 `operation_id`、`timestamp` 或重新读取主账改写 `data`。
-- **完成证据：**
+- **启用后的完成证据：**
   1. 三种 `milestone` 各有一组完整请求及 WES 接纳响应；
   2. `TARGET_PLACED` 正确携带最终位置，其余两种不携带；
   3. 网络响应未知或 `UNAVAILABLE` 后仍发送原完整消息；
@@ -1411,17 +1427,17 @@ operation = transport.task.member_position_changed@v1
 
 | 回调字段 | 如何生成 |
 | --- | --- |
-| `transport_task_id` | 从 T1 保存的 WMS/RCS 任务关联读取，禁止重新生成 |
-| `container_id` | 从 T1 已保存的请求成员读取，并与 RCS 实际搬运成员核对 |
+| `transport_task_id` | 从搬运提交保存的 WMS/RCS 任务关联读取，禁止重新生成 |
+| `container_id` | 从搬运提交已保存的请求成员读取，并与 RCS 实际搬运成员核对 |
 | `milestone=SOURCE_PICKED` | RCS 给出容器已物理离开来源、不能再视为位于原槽位的确定证据 |
-| `milestone=TARGET_PLACED` | RCS 给出容器已经放入 T1 指定目标的确定证据 |
+| `milestone=TARGET_PLACED` | RCS 给出容器已经放入搬运提交指定目标的确定证据 |
 | `milestone=POSITION_UNKNOWN` | WMS/RCS 无法确定容器当前处于来源、目标还是中间位置 |
-| `final_position` | 仅 `TARGET_PLACED` 必填；根据 T1 指定目标和 RCS 实际到位结果生成 |
+| `final_position` | 仅 `TARGET_PLACED` 必填；根据搬运提交指定目标和 RCS 实际到位结果生成 |
 
 导航中、升降中、接近目标等 RCS 内部过程不回调 WES。`SOURCE_PICKED` 后 WES 不再把容器当作位于来源；
 出现 `POSITION_UNKNOWN` 后，双方暂停使用相关资源并开始人工对账。
 
-三个完整 T2 请求样例：
+三个完整容器中间位置事件请求样例：
 
 **样例 1：容器已离开来源（`SOURCE_PICKED`）**
 
@@ -1442,7 +1458,7 @@ operation = transport.task.member_position_changed@v1
 
 **样例 2：容器已放入目标（`TARGET_PLACED`）**
 
-容器已到达 T1 指定的工作线交接位，因此必须同时提供 `final_position`。
+容器已到达搬运提交指定的工作线交接位，因此必须同时提供 `final_position`。
 
 ```json
 {
@@ -1475,35 +1491,35 @@ WMS/RCS 无法确认容器位于来源、目标还是搬运途中，此时不得
 }
 ```
 
-`SOURCE_PICKED/POSITION_UNKNOWN` 禁止携带 `final_position`。`TARGET_PLACED` 必须携带与 T1 冻结目标一致的
+`SOURCE_PICKED/POSITION_UNKNOWN` 禁止携带 `final_position`。`TARGET_PLACED` 必须携带与搬运提交冻结目标一致的
 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`。
 
-#### T2 里程碑顺序
+#### 容器中间位置事件的里程碑顺序
 
-| 当前已确认事实 | 允许形成的新 T2 | 说明 |
+| 当前已确认事实 | 允许形成的新容器中间位置事件 | 说明 |
 | --- | --- | --- |
-| 尚无 T2 | `SOURCE_PICKED`、`TARGET_PLACED` 或 `POSITION_UNKNOWN` | 如果 RCS 首个可靠事实已经是到位，可以直接报告 `TARGET_PLACED`，不得伪造补发 `SOURCE_PICKED` |
+| 尚无容器中间位置事件 | `SOURCE_PICKED`、`TARGET_PLACED` 或 `POSITION_UNKNOWN` | 如果 RCS 首个可靠事实已经是到位，可以直接报告 `TARGET_PLACED`，不得伪造补发 `SOURCE_PICKED` |
 | `SOURCE_PICKED` | `TARGET_PLACED` 或 `POSITION_UNKNOWN` | 对象已经离开来源，后续事实不能让位置回退到来源 |
-| `TARGET_PLACED` | 无 | T2 位置事实已经闭合；同一事实的 HTTP 重试必须使用原完整消息 |
-| `POSITION_UNKNOWN` | 无 | 停止普通 T2；当前任务仍发送位置未知的完整 T3，消歧后再发送新的完整 T3 权威结果 |
+| `TARGET_PLACED` | 无 | 容器中间位置事件位置事实已经闭合；同一事实的 HTTP 重试必须使用原完整消息 |
+| `POSITION_UNKNOWN` | 无 | 停止发送普通中间位置事件；当前任务仍发送位置未知的完整搬运最终结果，消歧后再发送新的完整权威结果 |
 
 每个不同里程碑都是一条新的业务事实，必须使用新的 UUIDv7 `operation_id`。同一里程碑因网络未知或 `UNAVAILABLE` 重试时必须复用原消息，不能
-生成新的 `operation_id`。`BIN_EXCHANGE` 中每个容器分别按自身物理事实发送 T2。
+生成新的 `operation_id`。`BIN_EXCHANGE` 中每个容器分别按自身物理事实发送容器中间位置事件。
 
-### T3：WMS 回调搬运最终结果
+### 搬运最终结果：WMS 回调完整任务结果
 
-#### T3 WMS 开发任务卡
+#### 搬运最终结果开发任务卡
 
-- **开发目标：** 搬运已经形成确定结果或权威对账结果后，向 WES 报告 T1 全部对象的最终状态和实际位置。
+- **开发目标：** 搬运已经形成确定结果或权威对账结果后，向 WES 报告搬运提交全部对象的最终状态和实际位置。
 - **WMS 接口角色：** HTTP 客户端，调用 `POST /api/v1/wms/events`。
 - **必须完成：**
-  1. 从 T1 不可变接纳记录读取 `transport_task_id + kind`，按货架或料箱结果族完整覆盖原请求对象；
+  1. 从搬运提交不可变接纳记录读取 `transport_task_id + kind`，按货架或料箱结果族完整覆盖原请求对象；
   2. 将 RCS 结果归一化为 `SUCCEEDED/FAILED`，并按条件生成最终位置、位置未知、失败码和货架到达面；
   3. 失败码必须是稳定归一化码，不得向 WES 发送自由文本或供应商原始业务载荷；
   4. 为每条完整结果生成新的 UUIDv7 `operation_id`，并为同一任务分配连续递增的 `outcome_revision`，发送前冻结消息并按第 2.4 节
      可靠发送；
-  5. `UNKNOWN` 经权威核对取得完整位置后，使用新的消息身份和更高版本重新发送完整 T3；已经确定的 `SUCCEEDED/FAILED`
-     不得通过后续 T3 改写，即使完成人工对账也只能形成独立审计与现场处置，不能伪装成普通 T3 重放。
+  5. `UNKNOWN` 经权威核对取得完整位置后，使用新的消息身份和更高版本重新发送完整搬运最终结果；已经确定的 `SUCCEEDED/FAILED`
+     不得通过后续搬运最终结果改写，即使完成人工对账也只能形成独立审计与现场处置，不能伪装成普通结果重放。
 - **禁止事项：**
   1. 料箱结果不得缺少、增加或重复成员，也不得分批发送可执行的部分结果；
   2. 料箱任务不得发送可由 `results[]` 推导的任务总状态；货架顶层 `status` 就是唯一对象结果；
@@ -1511,7 +1527,7 @@ WMS/RCS 无法确认容器位于来源、目标还是搬运途中，此时不得
   4. 不得同时发送 `final_position` 和 `position_unknown=true`。
 - **完成证据：**
   1. 货架成功、料箱全部成功、位置明确的部分失败和位置未知分别有完整请求/响应；
-  2. 每条 T3 与对应 T1 的 `kind`、对象集合和身份完全一致；
+  2. 每条搬运最终结果与对应搬运提交的 `kind`、对象集合和身份完全一致；
   3. 重复消息、内容冲突、非法成员覆盖和非法条件字段均按合同收敛；
   4. WES 返回 `RECEIVED/DUPLICATE` 后能结束发送义务，位置未知时能停止依赖该位置的后续动作。
 
@@ -1522,39 +1538,39 @@ operation = transport.task.resulted@v1
 
 | 回调字段 | 如何生成 |
 | --- | --- |
-| `transport_task_id/kind` | 从 T1 的不可变接纳记录读取 |
-| `outcome_revision` | WMS 对同一 `transport_task_id` 的完整 T3 从 `1` 开始连续递增；同一版本技术重试保持不变 |
+| `transport_task_id/kind` | 从搬运提交的不可变接纳记录读取 |
+| `outcome_revision` | WMS 对同一 `transport_task_id` 的完整搬运最终结果从 `1` 开始连续递增；同一版本技术重试保持不变 |
 | 货架 `rack_id/status` | `RACK_MOVE/RACK_ROTATE` 直接在 `data` 顶层表达唯一货架及结果，不使用 `results[]` |
 | 货架 `final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
-| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；成功时必须等于 T1 `target_face` |
-| 料箱 `results[]` | 完整覆盖 T1 全部 `container_id`，按 `container_id` 升序输出，不能多、少或重复 |
+| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；成功时必须等于搬运提交 `target_face` |
+| 料箱 `results[]` | 完整覆盖搬运提交全部 `container_id`，按 `container_id` 升序输出，不能多、少或重复 |
 | `results[].status` | RCS 最终结果归一化为 `SUCCEEDED` 或 `FAILED` |
 | `results[].final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
 | `results[].failure_code` | 失败时由 WMS 将 RCS 原始失败码转换为双方已经确定的稳定码 |
 
-T3 两族 DTO 必须满足：
+搬运最终结果两族 DTO 必须满足：
 
-- 货架结果直接携带 T1 唯一 `rack_id`；料箱 `results[]` 完整覆盖 T1 全部 `container_id`；
+- 货架结果直接携带搬运提交中的唯一 `rack_id`；料箱 `results[]` 完整覆盖搬运提交中的全部 `container_id`；
 - `SUCCEEDED` 必须携带 `final_position`，禁止携带 `failure_code` 和 `position_unknown`；
 - `FAILED` 必须携带 `failure_code`，并在 `final_position` 与字面量 `position_unknown=true` 之间严格二选一；
 - `position_unknown=false`、同时携带最终位置和未知标记、或两者都缺少，均为非法 DTO；
 - 货架位置明确时 `final_position.kind=RACK_POSITION` 且必须携带 `arrival_face=A|B`；位置未知时禁止 `arrival_face`；
 - 料箱位置明确时只能使用 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，并禁止携带 `arrival_face`；
-- `RACK_MOVE/RACK_ROTATE` 成功时最终位置与实际到达面必须分别等于 T1 `target + target_face`；
-- `BIN_MOVE/BIN_EXCHANGE` 成功成员的最终位置必须等于该成员 T1 `target`；
+- `RACK_MOVE/RACK_ROTATE` 成功时最终位置与实际到达面必须分别等于搬运提交 `target + target_face`；
+- `BIN_MOVE/BIN_EXCHANGE` 成功成员的最终位置必须等于该成员搬运提交 `target`；
 - 失败但位置明确时可以报告来源、目标或其它已经在第 3.1.2 节建模的实际位置，禁止把预期目标当作实际位置；无法用本文位置联合
   准确表达时必须使用 `position_unknown=true + failure_code=POSITION_UNKNOWN`。
 
-T3 版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES 接纳更高版本并单调应用；低版本迟到时仍可靠 ACK，但不得让结果
+搬运最终结果版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES 接纳更高版本并单调应用；低版本迟到时仍可靠 ACK，但不得让结果
 或位置回退。同一版本、同一完整消息按重复处理；同一版本、不同消息返回 `409 / CONFLICT`。`UNKNOWN` 可以经人工核对或更可靠
-证据修订为 `SUCCEEDED/FAILED`；已经确定的 `SUCCEEDED/FAILED` 不允许通过后续 T3 修订，即使版本更高也按证据冲突处理。
+证据修订为 `SUCCEEDED/FAILED`；已经确定的 `SUCCEEDED/FAILED` 不允许通过后续搬运最终结果修订，即使版本更高也按证据冲突处理。
 人工对账只形成独立审计与现场处置，不能覆盖已经释放资源的确定终态。
 
-七个完整 T3 结果样例，覆盖四种 `kind`、两类失败位置以及协调交换部分失败：
+七个完整搬运最终结果样例，覆盖四种 `kind`、两类失败位置以及协调交换部分失败：
 
 **样例 1：货架搬运成功（`RACK_MOVE`）**
 
-货架已经到达 T1 指定目标，并由 RCS 确认当前到达面为 `A`。
+货架已经到达搬运提交指定目标，并由 RCS 确认当前到达面为 `A`。
 
 ```json
 {
@@ -1575,7 +1591,7 @@ T3 版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES �
 
 **样例 2：货架换面成功（`RACK_ROTATE`）**
 
-货架保持在 T1 指定位置，实际到达面与 `target_face=B` 一致。
+货架保持在搬运提交指定位置，实际到达面与 `target_face=B` 一致。
 
 ```json
 {
@@ -1596,7 +1612,7 @@ T3 版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES �
 
 **样例 3：料箱全部成功（`BIN_MOVE`）**
 
-T1 中的两个料箱都已经到达指定工作线交接位，结果必须一次完整覆盖两个成员。
+搬运提交中的两个料箱都已经到达指定工作线交接位，结果必须一次完整覆盖两个成员。
 
 ```json
 {
@@ -1625,7 +1641,7 @@ T1 中的两个料箱都已经到达指定工作线交接位，结果必须一�
 
 **样例 4：两个货架当前面两对交换全部成功（`BIN_EXCHANGE`）**
 
-四个成员必须在一条 T3 中完整覆盖；每个容器的最终位置就是 T1 同一 `moves[]` 成员冻结的 `target`。
+四个成员必须在一条搬运最终结果中完整覆盖；每个容器的最终位置就是搬运提交同一 `moves[]` 成员冻结的 `target`。
 
 ```json
 {
@@ -1728,7 +1744,7 @@ T1 中的两个料箱都已经到达指定工作线交接位，结果必须一�
 **样例 7：两个货架当前面两对协调交换部分失败且位置明确（`BIN_EXCHANGE`）**
 
 独立任务 `TRANSPORT-000007` 中，第一对已经完成互换，第二对在任何成员移动前执行失败，因此第二对两个容器都仍位于各自来源。
-四个成员仍必须在同一条 T3 中完整报告；不能把第一对成功解释为整批成功，也不能为失败成员虚构反向搬回。
+四个成员仍必须在同一条搬运最终结果中完整报告；不能把第一对成功解释为整批成功，也不能为失败成员虚构反向搬回。
 
 ```json
 {
@@ -1767,26 +1783,31 @@ T1 中的两个料箱都已经到达指定工作线交接位，结果必须一�
 }
 ```
 
-每条 T3 消息都必须完整覆盖全部请求成员，不发送可由成员推导的任务总状态。WES 返回接收确认后，本次结果消息的发送义务结束。
+每条搬运最终结果消息都必须完整覆盖全部请求成员，不发送可由成员推导的任务总状态。WES 返回接收确认后，本次结果消息的发送义务结束。
 如果位置未知，双方必须暂停依赖该位置的后续动作；WMS/RCS 后续取得新的权威完整位置时，使用新的 `operation_id` 和连续的
-`outcome_revision` 再发送一条完整 T3 消息，使 `UNKNOWN` 收敛为确定结果。已经确定的 `SUCCEEDED/FAILED` 不允许被后续 T3 自动
+`outcome_revision` 再发送一条完整搬运最终结果消息，使 `UNKNOWN` 收敛为确定结果。已经确定的 `SUCCEEDED/FAILED` 不允许被后续搬运最终结果自动
 改写；不同的更高版本会形成证据冲突并进入人工处置。使用搬运结果的业务场景还要继续完成自己的业务步骤。
 
-#### T2 与 T3 的固定关系
+#### 容器中间位置事件与搬运最终结果的关系
 
-1. `BIN_MOVE/BIN_EXCHANGE` 的 T2 和 T3 是两个独立义务，不能互相替代：T2 及时报告逐容器位置事实，T3 完整闭合整项任务。
-2. WMS 在对应物理事实出现时形成 T2；在全部请求对象已经形成确定结果或位置未知结论时形成一条完整 T3。
-3. WMS 不等待最后一条 T2 的 ACK 才形成或发送 T3。两个独立可靠发送任务可能因网络重试乱序到达，WES 必须按事实单调合并，不能
-   因 T3 先到而拒绝后到且不矛盾的 T2。
-4. 成功 T3 不免除已经形成的 T2 发送义务；但如果 WMS/RCS 首个可用证据直接是最终结果，不得伪造历史 T2。
-5. 发现位置未知时，WMS 应在首次确认该事实时形成 T2 `POSITION_UNKNOWN`；任务结果形成后仍必须发送包含全部成员的 T3。二者到达
-   顺序不构成冲突。
-6. T3 已形成后出现迟到但不矛盾的 RCS 过程通知，不再创建新的 T2；出现矛盾证据时进入人工对账。只有原结果为 `UNKNOWN` 时，
-   对账取得完整权威位置后才使用新 `operation_id` 和下一连续 `outcome_revision` 发送完整 T3；确定终态不通过 T3 改写。
+以下关系只约束上游实际形成容器中间位置事件时的幂等和乱序处理，不要求每个 Bin 搬运必须产生该事件。当前 CTU/RCS
+只返回完整最终到位结果，因此目标 Bin 供给、退回和满箱交换只等待搬运最终结果；不得从搬运提交 ACK 或最终结果反推并补造
+历史中间位置事件。
 
-### 3.2 T2/T3 接收确认
+1. `BIN_MOVE/BIN_EXCHANGE` 的容器中间位置事件和搬运最终结果是两个独立义务，不能互相替代：前者及时报告逐容器位置事实，后者完整闭合整项任务。
+2. WMS 在对应物理事实出现时形成容器中间位置事件；在全部请求对象已经形成确定结果或位置未知结论时形成一条完整搬运最终结果。
+3. WMS 不等待最后一条容器中间位置事件的 ACK 才形成或发送搬运最终结果。两个独立可靠发送任务可能因网络重试乱序到达，WES
+   必须按事实单调合并，不能因最终结果先到而拒绝后到且不矛盾的中间位置事件。
+4. 成功的搬运最终结果不免除已经形成的容器中间位置事件发送义务；但如果 WMS/RCS 首个可用证据直接是最终结果，不得伪造历史中间位置事件。
+5. 只有上游在最终结果形成前已经独立产生权威位置未知事实时，WMS 才形成 `POSITION_UNKNOWN` 中间位置事件；如果首个可用证据
+   就是完整最终结果，则只发送包含全部成员的搬运最终结果，不补造中间位置事件。
+6. 搬运最终结果已形成后出现迟到但不矛盾的 RCS 过程通知，不再创建新的中间位置事件；出现矛盾证据时进入人工对账。只有原结果
+   为 `UNKNOWN` 时，对账取得完整权威位置后才使用新 `operation_id` 和下一连续 `outcome_revision` 发送完整搬运最终结果；确定终态
+   不通过后续结果改写。
 
-T2 和 T3 使用相同 ACK 规则：
+### 3.2 容器中间位置事件与搬运最终结果的接收确认
+
+容器中间位置事件和搬运最终结果使用相同 ACK 规则：
 
 | HTTP / `code` | `data` 完整结构 | WMS 动作 |
 | --- | --- | --- |
@@ -1806,7 +1827,7 @@ WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/D
 ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入对账；其 `data.transport_task_id` 存在时必须等于冻结任务 ID，
 为空则表示同一消息身份的首份收据没有合法任务 ID。任何已返回关联字段不匹配都属于未知响应，绝不能结束发送义务。
 
-T2/T3 首次接纳响应样例：
+容器中间位置事件/搬运最终结果首次接纳响应样例：
 
 ```json
 {
@@ -1817,7 +1838,7 @@ T2/T3 首次接纳响应样例：
 }
 ```
 
-T2 位置事实 DTO 拒绝响应样例：
+容器中间位置事件位置事实 DTO 拒绝响应样例：
 
 ```json
 {
@@ -1837,15 +1858,15 @@ T2 位置事实 DTO 拒绝响应样例：
 2. 告警必须携带 `operation + operation_id + transport_task_id`，由现场联调/运维人员通知 WMS 共同核对；
 3. WMS 已收到 `RECEIVED`，因此不得自动重发原 evidence，也不得通过更换 ID 掩盖冲突；
 4. 双方根据 RCS 原始证据、现场实物和 WMS 主账形成一致结论；
-5. 如果能够关联到有效 T1 且任务仍为 `UNKNOWN/RECONCILING`，WMS 使用新的 `operation_id` 和下一连续 `outcome_revision` 发送一条
-   覆盖该 T1 全部成员的 T3 权威结果，WES 接纳后解除或继续保持冻结；如果任务已经是确定 `SUCCEEDED/FAILED`，人工核对只形成
-   独立审计和现场处置，不再发送用于改写终态的 T3；如果确认 WES 从未创建对应 TransportTask，则双方把原 evidence 记录为错误
-   消息并人工关闭告警，禁止伪造 T3。
+5. 如果能够关联到有效搬运提交且任务仍为 `UNKNOWN/RECONCILING`，WMS 使用新的 `operation_id` 和下一连续 `outcome_revision` 发送一条
+   覆盖该搬运提交全部成员的权威搬运最终结果，WES 接纳后解除或继续保持冻结；如果任务已经是确定 `SUCCEEDED/FAILED`，人工核对只形成
+   独立审计和现场处置，不再发送用于改写终态的搬运最终结果；如果确认 WES 从未创建对应 TransportTask，则双方把原 evidence 记录为错误
+   消息并人工关闭告警，禁止伪造搬运最终结果。
 
-这是一条明确的人工运行边界，不代表已完成自动化双向冲突通知。若现场要求自动通知，必须另行批准新 operation，不能复用 T2/T3
+这是一条明确的人工运行边界，不代表已完成自动化双向冲突通知。若现场要求自动通知，必须另行批准新 operation，不能复用容器中间位置事件/搬运最终结果
 或临时增加查询接口。
 
-首版不冻结 T2/T3 的毫秒级形成 SLA，只验收证据确定后消息最终可靠形成和送达。RCS timeout 只触发告警和人工核对，不能直接
+首版不冻结容器中间位置事件/搬运最终结果的毫秒级形成 SLA，只验收证据确定后消息最终可靠形成和送达。RCS timeout 只触发告警和人工核对，不能直接
 形成失败或位置未知；联调 SOP 必须另行填写告警阈值、责任人和通知渠道。只有 RCS 给出明确失联结论，或人工核对确认无法确定
 位置后，WMS 才能形成 `POSITION_UNKNOWN`。
 
@@ -1856,18 +1877,18 @@ T2 位置事实 DTO 拒绝响应样例：
 
 | Fixture | 基准与唯一修改 | 固定预期 |
 | --- | --- | --- |
-| `T1-DUPLICATE` | 完整重发样例 1，不改变任何字段 | `200 / DUPLICATE`，复用首次 `timestamp + data` |
-| `T1-CONFLICT` | 复用样例 1 `operation_id`，只把 `target.location_code` 改为其它值 | `409 / CONFLICT`，回显本次 `transport_task_id` |
-| `T1-UNAVAILABLE` | 首次提交样例 1，WMS 无法可靠保存 | `503 / UNAVAILABLE`；原消息可以重试，临时响应不冻结 |
+| `搬运提交-DUPLICATE` | 完整重发样例 1，不改变任何字段 | `200 / DUPLICATE`，复用首次 `timestamp + data` |
+| `搬运提交-CONFLICT` | 复用样例 1 `operation_id`，只把 `target.location_code` 改为其它值 | `409 / CONFLICT`，回显本次 `transport_task_id` |
+| `搬运提交-UNAVAILABLE` | 首次提交样例 1，WMS 无法可靠保存 | `503 / UNAVAILABLE`；原消息可以重试，临时响应不冻结 |
 | `JSON-DUPLICATE-KEY` | 使用下方重复 `kind` 的完整请求 | 空响应体 `400`；不建立幂等记录 |
 | `JSON-WRONG-CASE` | 样例 1 的 `operation_id` 改为 `operationId` | 无法取得合法身份，空响应体 `400` |
 | `JSON-UNKNOWN-FIELD` | 样例 1 `data` 增加 `vehicle_id` | `422 / REJECTED + INVALID_DATA` |
-| `T2-MISSING-POSITION` | T2 `TARGET_PLACED` 省略 `final_position` | `422 / REJECTED + INVALID_EVIDENCE` |
-| `T1-CROSS-FACE-EXCHANGE` | 使用下方跨面请求 | `422 / REJECTED + INVALID_DATA`，不得创建部分任务 |
-| `T3-REVISION-CONFLICT` | 同一任务、同一 `outcome_revision`、相同成员但结果内容不同 | 第二条消息 `409 / CONFLICT` |
-| `T3-OLD-REVISION` | WES 已应用版本 2 后收到内容合法的版本 1 | 可靠 ACK，但不得回退结果和位置 |
+| `member-position-missing-final-position` | 容器中间位置事件 `TARGET_PLACED` 省略 `final_position` | `422 / REJECTED + INVALID_EVIDENCE` |
+| `搬运提交-CROSS-FACE-EXCHANGE` | 使用下方跨面请求 | `422 / REJECTED + INVALID_DATA`，不得创建部分任务 |
+| `搬运最终结果-REVISION-CONFLICT` | 同一任务、同一 `outcome_revision`、相同成员但结果内容不同 | 第二条消息 `409 / CONFLICT` |
+| `搬运最终结果-OLD-REVISION` | WES 已应用版本 2 后收到内容合法的版本 1 | 可靠 ACK，但不得回退结果和位置 |
 
-以下是 T1 其余带 Body 响应的完整结构。`DUPLICATE` 必须复用首次 `RECEIVED` 的 `timestamp + data`；其它样例的
+以下是搬运提交其余带 Body 响应的完整结构。`DUPLICATE` 必须复用首次 `RECEIVED` 的 `timestamp + data`；其它样例的
 `operation_id` 都回显各自请求，不能照抄为生产常量。
 
 **相同消息重复：**
@@ -1934,7 +1955,7 @@ T2 位置事实 DTO 拒绝响应样例：
 }
 ```
 
-**同一货架跨面交换错误请求：** `RACK-SOURCE-01` 在同一任务中同时出现 A、B 面，因此整条 T1 非法。
+**同一货架跨面交换错误请求：** `RACK-SOURCE-01` 在同一任务中同时出现 A、B 面，因此整条搬运提交非法。
 
 ```json
 {
@@ -1983,10 +2004,10 @@ WMS 建议将 WES 到 RCS 的转换集中为货架、料箱两个明确映射职
 | `RACK_POSITION.location_code` | 映射为 `positionCodePath[].positionCode` |
 | `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
 | `target_face` | 只驱动厂商任务分解和预期结果校验，不直接映射为厂商当前面字段 |
-| `arrival_face` | RCS 确认实际到达工作面后用于形成 T3；需要整架上报时再映射为当前面 `ctuSide` |
+| `arrival_face` | RCS 确认实际到达工作面后用于形成搬运最终结果；需要整架上报时再映射为当前面 `ctuSide` |
 | `kind + source + target` | 由 WMS 场景解析器选择厂商 `AGV01..03`、`CTU01..04` 等任务类型 |
 
-厂商 `sideA/sideB` 是 WMS 根据自身库存和货架主数据形成的整架容器上报，不进入 WES T1。WES 不复制 WMS 已拥有的两面容器
+厂商 `sideA/sideB` 是 WMS 根据自身库存和货架主数据形成的整架容器上报，不进入 WES 搬运提交。WES 不复制 WMS 已拥有的两面容器
 全集，也不参与厂商短时 `taskCode + podCode` 幂等规则。
 
 WES `transport_task_id` 长度为 `1..80`，`rack_id`、`container_id` 为 `1..100`；厂商文档中的 `taskCode`、`podCode`、
@@ -2036,8 +2057,8 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 
 | 情况 | 身份规则 | 动作 |
 | --- | --- | --- |
-| T1 Transport submit 明确未发送或收到 `503` | 原冻结 `operation_id + timestamp + 完整消息` | 固定等待 2000 毫秒，并在最多实际发送 3 次的预算内按 T1 规则重试 |
-| T2/T3 主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
+| 搬运提交 Transport submit 明确未发送或收到 `503` | 原冻结 `operation_id + timestamp + 完整消息` | 固定等待 2000 毫秒，并在最多实际发送 3 次的预算内按搬运提交规则重试 |
+| 容器中间位置事件/搬运最终结果主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
 | Transport submit `DELIVERY_UNKNOWN` | 原 `transport_task_id` | 禁止自动重提，进入 `UNKNOWN/RECONCILING` |
 | `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 使用新 `operation_id`；是否引用 `previous_operation_id` 由具体业务合同决定 | 等待新事实或到期后，根据当前现场数据重新请求决定；现有 `outbound.*` operation 不传请求链字段，尚未获批的共同 drain operation 以最终审批为准 |
 | `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |
@@ -2046,19 +2067,20 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 
 ### 5.1 WMS 团队必须交付
 
-当前合同放行范围包含 `F-01`、T1～T3、I1～I4；是否已经进入具体实现迭代以各阶段实施计划为准。O1～O7、P1～P8 只进入
-待评审清单，不提交实现、OpenAPI 或占位 JSON 样例。
+当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景；是否已经进入具体实现迭代以实施计划为准。当前 Transport 实施范围是
+搬运提交、搬运最终结果，容器中间位置事件只保留已批准合同，待供应商能够提供权威逐容器中间事实时再启用。自动出库和自动上架场景只进入待评审清单，不提交实现、
+OpenAPI 或占位 JSON 样例。
 
 | 交付物 | 最低要求 |
 | --- | --- |
-| 当前场景接口矩阵 | 对 F-01、T1～T3、I1～I4 标明负责人、路径、operation 和实现状态；O1～O7、P1～P8 只列为 `ReviewRequired` |
-| T1 OpenAPI | WMS 提供其服务端 `POST /api/v1/wes/transport-requests` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
-| T2/T3 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 按其中 T2/T3 operation 实现客户端，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
+| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景标明负责人、路径、operation 和实现状态，并把容器中间位置事件标为当前供应商未启用；自动出库和自动上架场景只列为 `ReviewRequired` |
+| 搬运提交 OpenAPI | WMS 提供其服务端 `POST {{TRANSPORT_SUBMIT_PATH}}` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
+| 容器中间位置事件/搬运最终结果 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 当前按搬运最终结果 operation 实现客户端，未来启用容器中间位置事件时仍使用该权威定义，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
-| 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和 T3 版本冲突 |
+| 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和搬运最终结果版本冲突 |
 | WMS 运行证据 | WMS 使用本文规范 fixture，提交实际请求、响应和日志；不得由实现方自行发明合同预期 |
 | Transport 对外归一化表 | WMS 提供 RCS 私有码到第 3.1.4 节稳定 `failure_code` 闭集的映射；不得新增线上码或包含供应商原始业务载荷 |
-| 联调环境参数表 | 双方提供实际 `WMS_BASE_URL/WES_BASE_URL`、端口和网络连通结果；超时、Body 上限和认证模式使用第 0.4 节固定值 |
+| 联调环境参数表 | 双方提供实际 `WMS_BASE_URL/TRANSPORT_SUBMIT_PATH/WES_BASE_URL`、端口和网络连通结果；超时、Body 上限和认证模式使用第 0.4 节固定值 |
 | ACK 后冲突 SOP | 双方共同确认告警联系人、通知方式和以 `operation + operation_id + transport_task_id` 检索证据的方法；不新增状态查询接口 |
 | 联调证据 | 能证明首次请求、重复请求、内容冲突、可靠通知和确定业务结果符合合同的完整请求与响应 |
 | 待评审清单 | 列明未冻结的场景、字段和响应联合；没有批准结论时保持空缺，不用临时字段占位 |
@@ -2082,10 +2104,10 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | 层次 | 验证内容 | 不能证明 |
 | --- | --- | --- |
 | 公共协议 | JSON、请求正文上限、消息身份、重复消息处理和响应分类 | 搬运或库存业务正确 |
-| 搬运 | T1～T3 的请求、位置、最终结果和 `UNKNOWN` | 入库、出库、容量与目标分配正确 |
-| 出库业务 | O1～O7 的计划、决定、事实报告和完成裁决 | 入库或上架正确 |
-| 入库业务 | I1～I4 的 GRN、目标、入库记账和释放 | 上架位置迁移正确 |
-| 上架业务 | P1～P8 的不可变来源计划、逐批交换、目标 Bin 和库存位置迁移 | 设备安全或 RCS 路线正确 |
+| 搬运 | 搬运提交、搬运最终结果以及条件启用的容器中间位置事件请求、位置、最终结果和 `UNKNOWN` | 入库、出库、容量与目标分配正确 |
+| 出库业务 | 自动出库场景的计划、决定、事实报告和完成裁决 | 入库或上架正确 |
+| 入库业务 | 粗分入库场景的 GRN、目标、入库记账和释放 | 上架位置迁移正确 |
+| 上架业务 | 自动上架场景的不可变来源计划、逐批交换、目标 Bin 和库存位置迁移 | 设备安全或 RCS 路线正确 |
 | ECS/RCS 现场 | 真实设备动作、车辆路线和硬件安全 | WES/WMS 幂等及主账业务正确 |
 
 ## 6. 明确不提供的旧式接口
@@ -2123,12 +2145,12 @@ WES 项目内部保留了一份 2026-03 的 WMS 交互约定初稿，保存其�
 WMS C# 代码应为每个 `operation` 使用独立的 DTO 和 Handler。本附录只帮助开发人员理解什么时候会调用这些 Handler，以及 WMS 应该
 根据哪些已保存数据返回结果。
 
-### O1：WMS 发布任务
+### WMS 发布出库任务
 
 WMS 通过 `outbound.picking_task.issued@v1` 发布任务；排队顺序变化时，通过
 `outbound.picking_task.queue_changed@v1` 通知 WES。此时只处理 `task_id` 和排队信息，不下发来源货架、Bin、Cell 或目标货架。
 
-### O2：WES 请求准备，WMS 下发计划
+### WES 请求出库准备，WMS 下发计划
 
 WES 选中工作线后，以 `task_id + workline_code` 调用 `outbound.picking_task.prepare@v1`。WMS 接收后，通过
 `outbound.picking_task.plan_delta@v1` 连续下发计划。
@@ -2141,7 +2163,7 @@ WES 选中工作线后，以 `task_id + workline_code` 调用 `outbound.picking_
 任务需要取出的 Bin 时，WMS 必须返回两项；只用于承接退箱的货架面不进入来源计划。CTU 工作位一次只能有一个货架，WES 只选择一个
 当前来源面并创建货架搬运任务。同一货架切换到另一面时使用 `RACK_ROTATE`；更换货架时先移出旧架，再移入新架。
 
-### O3：CTU 循环搬运，Bin 到位后返回 Cell 计划
+### CTU 循环供箱，Bin 到位后返回 Cell 计划
 
 每条 WorkLine 只有一台 CTU，所以入站和退箱必须串行。同一时刻最多存在一个尚未结束的批次请求或 CTU Transport。多个事件同时到达时，
 WES 会在一个数据库事务中只选择一个下一动作。WMS 不需要为 WES 的缓存位增加预留或租约字段。
@@ -2178,7 +2200,7 @@ Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_id + scanned_at` �
 实际 Bin 可识别但不是 `inbound_batch` 选中的预期 Bin 时，WES 不调用 `work_plan`，保存预期/实际身份和位置证据；该 Bin 不进入 NG，
 也不替代预期成员。WES 将其冻结在当前安全位置，等待独立恢复 wire 获批；现有 `return_batch` 不能授权它进入 `RETURN_BUFFER`。
 
-### O4：逐盘决定和位置上报
+### WMS 逐盘决定目标，WES 上报实际位置
 
 料盘到达扫码位后，WES 以 `task_id + source_locator + PkgID` 调用 `outbound.material.decide@v1`。
 `PkgID` 来自硬件扫码结果，在本项目中是料盘的唯一编号。请求同时携带六合一码和扫码时间，但不再生成
@@ -2187,19 +2209,19 @@ Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_id + scanned_at` �
 WMS 返回精确的目标货架、货架面和目标格。物理放置完成后，WES 调用
 `outbound.material.movement_report@v1` 上报实际来源、实际目标、设备命令和发生时间。
 
-### O5：设备确认来源没有料盘
+### 设备确认来源没有料盘
 
 `空取` 是指设备按计划到来源位置取料，但设备的确定结果表明该位置没有料盘。WES 以
 `task_id + source_locator + observed_at` 调用 `outbound.source.empty_decide@v1`。WMS 根据库存主账返回
 `RETRY`、`WAIT` 或 `SOURCE_DONE`。设备结果不确定时不能按空取处理。
 
-### O6：Bin 到达 NG 出口
+### Bin 到达 NG 出口
 
 Bin 因条码无法识别、方向异常、CELL NG 后续路由或 WMS 明确业务 NG 而实际到达 NG 出口后，WES 调用
 `outbound.bin.ng_exit_report@v1`。WMS 记录实际 Bin、NG 原因、出口位置和设备发生时间。可识别但非预期 Bin 不调用本接口；
 各原因对应的必填字段以自动出库合同为准。
 
-### O7：退箱、货架离场、任务完成和 Transport 结果
+### 退箱、货架离场与任务完成
 
 | 场景 | WES 处理 | WMS 处理 |
 | --- | --- | --- |
@@ -2218,12 +2240,12 @@ WMS 不能把同一个正在搬运的货架或 Bin 同时分配给两个未结�
 PickingTask 不设置 `FAILED` 状态。`COMPLETED` 只表示当前任务的明细都已处理完，不表示订单需求全部满足。空取、NG 和 Transport
 确定失败造成的未满足需求，都由新的 PickingTask 处理。任务完成后的退箱和货架离场继续按各自流程执行。
 
-## 附录 B. Phase 8 粗分自动入库场景（Approved）
+## 附录 B. 粗分自动入库场景（Approved）
 
 > 本附录面向联调人员说明场景顺序；严格字段、结果联合和失败门禁以
 > [`wms-rough-sorter-inbound-integration-requirements.md`](../contracts/wms-rough-sorter-inbound-integration-requirements.md) 为唯一真源。
 
-### I1：料盘扫码和测量完成，WES 请求 GRN 准入
+### 料盘扫码和测量完成后请求 GRN 准入
 
 触发条件：ECS 已完成六合一码、直径、厚度和外形检测，WES 已保存原始证据，而且保存后不再修改。
 
@@ -2246,7 +2268,7 @@ WMS 根据主账匹配 GRN、建立或读取 `pkg_id` 并验证业务准入，�
 
 `ACCEPT` 只授权进入正常设备链，不代表目标或入库完成。
 
-### I2：料盘到达流水线出口后，WES 请求目标 Cell
+### 料盘到达流水线出口后请求目标 Cell
 
 ```text
 POST /api/v1/wes/decisions
@@ -2255,23 +2277,23 @@ operation = inbound.material.target_decide@v1
 
 | 请求参数 | 来源 |
 | --- | --- |
-| `material_execution_id/material_trace_id/inbound_admission_id` | I1 请求和 WMS 响应原值 |
+| `material_execution_id/material_trace_id/inbound_admission_id` | 入库准入 请求和 WMS 响应原值 |
 | `source_position` | ECS 已确认的流水线出口位置 |
 | `source_rack` | 当前实际到位的单层货架 |
 
 WMS 根据最新主账返回 `ASSIGNED/NO_AVAILABLE_CELL/REJECT/WAIT`。只有 `ASSIGNED` 携带唯一精确 Cell；无 Cell 时 WES 不下发
-出料命令，并进入 I4 换架计划请求。
+出料命令，并进入入库换架与人工核验场景中的换架计划请求。
 
-### I3：料盘完成正常 PUT 或 NG 到位，WES 报告最终事实
+### 料盘完成正常 PUT 或 NG 到位后报告最终事实
 
 | 物理结果 | WES → WMS 接口 | 参数来源 | WMS 对外结果 |
 | --- | --- | --- | --- |
-| 正常 PUT 到单层货架 Cell | `inbound.material.placement_report@v1` | 严格字段为 `material_execution_id`、`material_trace_id`、`pkg_id`、`inbound_admission_id`、`target_assignment_id`、`target_position`、`placement_sequence`、`command_code`、`placed_at`；来源依次为 I1、I2 与 ECS 确定 PUT 结果 | 验证准入、trace 和目标，写入最终位置，完成该盘 GRN 入库，返回 `RECORDED/DUPLICATE` |
-| 料盘到粗分 NG 交接位 | `inbound.material.ng_placement_report@v1` | 严格字段为 `material_execution_id`、`material_trace_id`、可选非空 `pkg_id`、`ng_evidence_id`、`ng_position`、`reason_code`、`business_context=ROUGH_SORT_INBOUND`；来源为 I1、WMS 拒绝与 ECS 到位证据 | 记录业务拒绝和实际 NG 位置，返回 `RECORDED/DUPLICATE` |
+| 正常 PUT 到单层货架 Cell | `inbound.material.placement_report@v1` | 严格字段为 `material_execution_id`、`material_trace_id`、`pkg_id`、`inbound_admission_id`、`target_assignment_id`、`target_position`、`placement_sequence`、`command_code`、`placed_at`；来源依次为 入库准入、入库目标分配 与 ECS 确定 PUT 结果 | 验证准入、trace 和目标，写入最终位置，完成该盘 GRN 入库，返回 `RECORDED/DUPLICATE` |
+| 料盘到粗分 NG 交接位 | `inbound.material.ng_placement_report@v1` | 严格字段为 `material_execution_id`、`material_trace_id`、可选非空 `pkg_id`、`ng_evidence_id`、`ng_position`、`reason_code`、`business_context=ROUGH_SORT_INBOUND`；来源为 入库准入、WMS 拒绝与 ECS 到位证据 | 记录业务拒绝和实际 NG 位置，返回 `RECORDED/DUPLICATE` |
 
 设备命令成功只生成 WES 可以报告的物理证据，不能替代 WMS 的 `RECORDED`。NG 后续人工处置由 WMS 管理，不再回调 WES。
 
-### I4：WES 请求换架计划，或接收单盘人工核验结果
+### 请求换架计划或接收单盘人工核验结果
 
 无可用 Cell 时，WES 请求：
 
@@ -2288,7 +2310,7 @@ operation = inbound.source_rack.replacement_plan_decide@v1
 
 WES 在旧架 release gate 闭合后，以 `(rack_replacement_id, OLD_OUT)` 和 `(rack_replacement_id, NEW_IN)` 作为两条腿的业务
 幂等键，分别持久化映射到不同的全局唯一 UUIDv7 `client_request_id`，再创建两个独立 `RACK_MOVE`。同一业务键重试复用原
-UUIDv7；两任务可以同时提交，实际顺序由 RCS 控制；新架 T3 成功且身份/位置/朝向匹配后可以重新执行 I2，不等待旧架。
+UUIDv7；两任务可以同时提交，实际顺序由 RCS 控制；新架搬运最终结果成功且身份/位置/朝向匹配后可以重新执行 入库目标分配，不等待旧架。
 
 单盘现场核验完成后，WMS 主动通知 WES：
 
@@ -2308,20 +2330,20 @@ WMS 操作员核对 WMS 主账、现场扫码和 WES 提供的原始证据后，
 > **待联合评审：** 本节只用于确认业务流程和候选交互语言，不构成开发放行。未冻结的字段、响应联合和场景必须保持待补，
 > WMS 开发人员不得自行补充 operation、字段或兼容分支。
 
-P1～P8 按四段理解，不能把接口接纳、业务完成和物理清场混为一件事：
+自动上架流程按四段理解，不能把接口接纳、业务完成和物理清场混为一件事：
 
 | 分段 | 对应场景 | 完成标志 |
 | --- | --- | --- |
-| 执行任务驱动 | P1～P3 | WMS 以 `putaway_plan_id` 冻结来源成员，WES 以 `putaway_execution_id` 绑定当前 WorkLine/Epoch；不新增 WMS `InboundTask` |
-| 机械臂执行 | P4～P6 | 北向机械臂取盘复扫，WMS 晚绑定目标，南向机械臂可靠 PUT；正常料盘的位置 Fact 被 WMS 接纳 |
-| 业务完成 | P8 上架完成裁决 | 全部来源成员以正常 PUT 或其他明确终态闭合，WMS 返回 `COMPLETED` |
-| Bin/货架独立清场 | P7、P8 来源货架离场 | 目标 Bin、NG Bin、来源货架和 Transport 分别到达确定终态后，WorkLine 才能释放或切换插件 |
+| 执行任务驱动 | 上架执行任务驱动场景 | WMS 以 `putaway_plan_id` 冻结来源成员，WES 以 `putaway_execution_id` 绑定当前 WorkLine/Epoch；不新增 WMS `InboundTask` |
+| 机械臂执行 | 上架机械臂执行场景 | 北向机械臂取盘复扫，WMS 晚绑定目标，南向机械臂可靠 PUT；正常料盘的位置 Fact 被 WMS 接纳 |
+| 业务完成 | 上架完成裁决 | 全部来源成员以正常 PUT 或其他明确终态闭合，WMS 返回 `COMPLETED` |
+| Bin/货架独立清场 | 目标 Bin 清退与退回、来源货架离场 | 目标 Bin、NG Bin、来源货架和 Transport 分别到达确定终态后，WorkLine 才能释放或切换插件 |
 
 因此，正常料盘的“机械动作成功”还不是业务完成；只有位置 Fact 被 WMS 返回 `RECORDED | DUPLICATE` 才关闭该正常子任务。
 反过来，上架业务 `COMPLETED` 也不表示目标 Bin 已退回、来源货架已搬走或 WorkLine 已清线。
-P2 的满箱交换成员是同一执行任务中的独立 Transport 分支，在位置 Fact 闭合后结束，不进入 P4～P6 的机械臂逐盘段。
+满箱交换成员属于同一上架执行中的独立 Transport 分支，在位置 Fact 闭合后结束，不进入机械臂逐盘执行。
 
-### P1：单层货架状态固定后，WES 请求不可修改的来源计划
+### 单层货架状态固定后请求不可修改的来源计划
 
 ```text
 POST /api/v1/wes/decisions
@@ -2330,8 +2352,8 @@ operation = putaway.source_rack.plan_decide@v1
 
 | 请求参数 | 来源 |
 | --- | --- |
-| `rack_release_id` | WES 在 I4 释放水位内所有请求、设备命令和事实报告都完成后，为固定现场记录生成的身份 |
-| `rack_id/rack_slot_code` | I4 释放决定和现场复核结果 |
+| `rack_release_id` | WES 在入库换架与人工核验的释放水位内所有请求、设备命令和事实报告都完成后，为固定现场记录生成的身份 |
+| `rack_id/rack_slot_code` | 入库换架与人工核验的释放决定和现场复核结果 |
 | `occupied_cells[]` | WES 固定现场记录中的实际占用 Cell；每项必须带来源 Bin 的 `rack_face=A|B`，由扫码、WES 现场位置记录和已经记录的事实报告交叉确认 |
 
 WMS 将固定现场记录逐项与库存主账核对，并一致生成 `putaway_plan_id` 和完整来源成员：满足满箱交换资格的 Bin 进入冻结的
@@ -2339,24 +2361,24 @@ WMS 将固定现场记录逐项与库存主账核对，并一致生成 `putaway_
 业务资格，不提前冻结所有右侧五层货架、空 Bin 或交换对；这些目标必须按货架面、按批次晚绑定。计划没有 revision，不允许追加、
 删除或覆盖来源成员。WMS 返回 `READY/REJECT/WAIT`。待联合评审：来源成员完整结构、响应联合和 JSON 样例尚未冻结。
 
-### P2：WMS 按货架面决定下一交换批次，WES 执行并逐 Bin 报告位置
+### WMS 按货架面决定交换批次，WES 执行并逐 Bin 报告位置
 
-P1 不包含可执行交换对。当前没有活动交换批次、上一批全部业务 Fact 已记录，且相关货架位置明确时，WES 请求 WMS 计算下一批。
+上架来源计划不包含可执行交换对。当前没有活动交换批次、上一批全部业务 Fact 已记录，且相关货架位置明确时，WES 请求 WMS 计算下一批。
 该具名 operation 和完整 DTO 仍待联合评审，批准前不得实现。结果语义必须冻结为：
 
 | 结果 | 最小语义 |
 | --- | --- |
-| `READY` | 返回当前面 `1..2` 个精确交换对；每对包含稳定 `exchange_execution_id`、来源满 Bin、目标空 Bin和双方最终位置 |
+| `READY` | 返回当前面 `1..2` 个精确交换对；每对包含稳定 `exchange_execution_id`、来源满 Bin、目标空 Bin 和双方最终位置 |
 | `TARGET_RACK_REPLACEMENT_REQUIRED` | 当前右侧五层货架无法完整满足该面需求；WMS 返回经主账批准的替换货架准备要求，不直接创建 Transport |
 | `WAIT` | 当前没有能够完整满足该面需求的合格空 Bin 或货架；保持来源冻结，以新消息身份重新求值 |
-| `COMPLETED` | P1 冻结的全部交换来源已经取得 WMS 已记录的业务终局 |
+| `COMPLETED` | 上架来源计划冻结的全部交换来源已经取得 WMS 已记录的业务终局 |
 
 “空 Bin”必须具有明确 `right_bin_id + right_location`，没有 Bin 的空储位不能参与交换。WMS 选择目标货架时先满足库存资格、
 冷热区、锁定和 RCS 可达性，再优先选择能完整满足当前面的货架，并优先选择能覆盖全部剩余面的同一货架。某面实际剩余两对而
 当前货架只有一个合格空 Bin 时，禁止自动缩成一对；应优先换架，没有合格货架则返回 `WAIT`。
 
-`READY` 一批必须满足 T1 的同面约束：所有 Left Bin 来自同一来源 `rack_id+rack_face`，所有 Right Bin 来自同一目标
-`rack_id+rack_face`。WES 为这一至两对创建一个 `BIN_EXCHANGE` TransportTask。T3 给出全部成员的确定最终位置后，WES 对每个
+`READY` 一批必须满足搬运提交的同面约束：所有 Left Bin 来自同一来源 `rack_id+rack_face`，所有 Right Bin 来自同一目标
+`rack_id+rack_face`。WES 为这一至两对创建一个 `BIN_EXCHANGE` TransportTask。搬运最终结果给出全部成员的确定最终位置后，WES 对每个
 成员调用：
 
 ```text
@@ -2366,17 +2388,17 @@ operation = putaway.bin_exchange.movement_report@v1
 
 | 请求参数 | 来源 |
 | --- | --- |
-| `putaway_plan_id/exchange_execution_id` | P1 不可变来源计划和 P2 当前批次返回的交换对身份 |
-| `bin_id/movement_role/from_position/to_position` | P2 当前批次确定的交换成员；`movement_role` 为满 Bin 入库或空 Bin 补到来源货架 |
-| `transport_task_id/transport_outcome_version/placed_at` | T1/T3 同一个 `BIN_EXCHANGE` 搬运任务及其确定成员结果和到位时间 |
+| `putaway_plan_id/exchange_execution_id` | `putaway_plan_id` 来自不可变上架来源计划；`exchange_execution_id` 来自当前满箱交换批次 |
+| `bin_id/movement_role/from_position/to_position` | 当前满箱交换批次确定的交换成员；`movement_role` 为满 Bin 入库或空 Bin 补到来源货架 |
+| `transport_task_id/transport_outcome_version/placed_at` | 搬运提交/搬运最终结果同一个 `BIN_EXCHANGE` 搬运任务及其确定成员结果和到位时间 |
 
-WMS 逐成员记录最终位置并返回 `RECORDED`。只有本批 T3 全部成员成功且位置明确、全部 movement report 取得
+WMS 逐成员记录最终位置并返回 `RECORDED`。只有本批搬运最终结果全部成员成功且位置明确、全部 movement report 取得
 `RECORDED/DUPLICATE`、WMS 主账完成位置迁移后，本批才闭环并允许重新计算。任一成员失败或位置未知时，停止换面、换架和下一批，
 进入人工恢复；不能自动反向搬回。
 
 两面都需要交换时，流程固定为：当前面交换闭环 → WMS 重新计算 → 对下一面仍需使用的每个货架分别创建 `RACK_ROTATE` → 所有
-换面 T3 成功且 `arrival_face` 正确 → 请求并创建下一面新的 `BIN_EXCHANGE`。如果需要更换右侧五层货架，则先完成旧货架搬离和新
-货架可靠到位，再决定下一批。后续 TransportTask 只能在前一步成功后创建，不能提前形成 T1 或 RCS 义务。
+换面搬运最终结果成功且 `arrival_face` 正确 → 请求并创建下一面新的 `BIN_EXCHANGE`。如果需要更换右侧五层货架，则先完成旧货架搬离和新
+货架可靠到位，再决定下一批。后续 TransportTask 只能在前一步成功后创建，不能提前形成搬运提交或 RCS 义务。
 
 **两面各两箱的分批示例：** 来源单层货架 A 面有 2 个待交换满 Bin、B 面也有 2 个；当前目标五层货架 A 面有 3 个合格空 Bin、
 B 面有 2 个。WMS/WES 必须按下表推进：
@@ -2384,14 +2406,14 @@ B 面有 2 个。WMS/WES 必须按下表推进：
 | 顺序 | 已确定条件 | 允许创建的任务 |
 | --- | --- | --- |
 | 1 | 当前可操作面为 A；两侧 A 面都能完整满足 2 对 | 只创建交换任务 1：来源 A 面 2 个满 Bin 与目标 A 面 2 个空 Bin 的一个 `BIN_EXCHANGE` |
-| 2 | 交换任务 1 的 T3 全成功且位置明确，四个 movement report 均被 WMS 记录并更新主账 | 不直接创建 B 面交换；先请求 WMS 重新计算 |
+| 2 | 交换任务 1 的搬运最终结果全成功且位置明确，四个 movement report 均被 WMS 记录并更新主账 | 不直接创建 B 面交换；先请求 WMS 重新计算 |
 | 3 | WMS 仍确认 B 面 2 对需要执行 | 分别为仍需换面的来源货架和目标货架创建 `RACK_ROTATE`；每个货架一个任务 |
-| 4 | 所有换面任务 T3 成功且到达面为 B | 创建交换任务 2：来源 B 面 2 个满 Bin 与目标 B 面 2 个空 Bin 的一个新 `BIN_EXCHANGE` |
+| 4 | 所有换面任务搬运最终结果成功且到达面为 B | 创建交换任务 2：来源 B 面 2 个满 Bin 与目标 B 面 2 个空 Bin 的一个新 `BIN_EXCHANGE` |
 
 A 面多出的第 3 个空 Bin 不进入任务 1，也不提前预留给任务 2。若步骤 2 重算时目标 B 面只剩 1 个合格空 Bin，WMS 不得把原本
 需要的两对缩成一对；应优先返回换架要求，没有能完整满足 B 面的合格替换货架时返回 `WAIT`。
 
-### P3：WES 请求目标 Bin 投入 WorkLine，并报告实际到线位置
+### 请求目标 Bin 投入 WorkLine 并报告实际到线位置
 
 WES 请求 WMS 提供目标 Bin：
 
@@ -2402,7 +2424,7 @@ operation = putaway.target_bin.supply_batch@v1
 
 | 请求参数 | 来源 |
 | --- | --- |
-| `putaway_execution_id` | WES 为 P1 计划在当前 WorkLine 创建的执行身份 |
+| `putaway_execution_id` | WES 为当前 `putaway_plan_id` 在当前 WorkLine 创建的本地执行身份 |
 | `workline_code/line_run_epoch_id` | WES 配置和当前入库模式运行实例 |
 | `ingress_reserved_positions` | WES 已经预留且当前确实可用的投料缓存位 |
 | `ctu_free_slots` | CTU 当前可靠可用背篓位证据 |
@@ -2411,20 +2433,24 @@ operation = putaway.target_bin.supply_batch@v1
 WMS 根据库存主账选择具有可分配 Cell 的具体 Bin，生成 `READY.bins[]`。每项包含 `bin_id`、五层货架来源和可用 Cell 简要信息。
 当前无批次或暂不能决定时生成 `NO_BATCH/WAIT`，不能返回未在主账确认的候选。
 
-T3 成功且扫码身份一致后，WES 报告 Bin 已经到线。WES 调用 `putaway.target_bin.movement_report@v1`，
-`movement_kind=SUPPLY_PLACED`。执行身份来自 WES，Bin 和来源来自供给响应，目标来自实际投料缓存位置，搬运身份来自 T3。
-WMS 返回 `RECORDED` 后才允许进入 SCAN1。
+WES 持久化 `READY` 后冻结精确 Bin 和交接位，再创建对应 `BIN_MOVE` TransportTask。当前 CTU/RCS 只能返回
+`transport.task.resulted@v1` 完整最终结果，不提供可靠的逐容器中间位置事件；提交、接纳、失败、位置未知和资源围栏均由
+TransportTask 负责，搬运最终成功前不创建 `BinExecution`。
 
-### P4：Bin 经过 SCAN1/SCAN2，WES 请求 WMS 决定路线和可用性
+最终结果确认 Bin 成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结 `bin_id` 一致后，WES 创建唯一活动 `bin_execution_id`，再调用
+`putaway.target_bin.movement_report@v1` 报告 `movement_kind=SUPPLY_PLACED`。Bin 和来源来自供给响应，目标来自实际投料缓存位置，
+搬运身份来自最终结果。WMS 返回 `RECORDED` 后才允许进入 SCAN1。
+
+### Bin 经过 SCAN1/SCAN2 后请求 WMS 决定路线和可用性
 
 | 扫描点 | WES → WMS operation | 请求参数来源 | WMS 如何生成结果 |
 | --- | --- | --- | --- |
-| SCAN1 | `putaway.target_bin.route_decide@v1` | 执行/Bin 身份来自 P3；`scan1_evidence_id` 来自 ECS 扫码；WorkLine/epoch 来自配置；当前位置来自 WES 现场位置记录 | 根据生产需求和 Bin 业务状态生成 `ENTER_PRODUCTION/NO_PRODUCTION_TASK/MARK_NG/WAIT`，并为最终路由生成 `route_decision_id` |
+| SCAN1 | `putaway.target_bin.route_decide@v1` | 执行/Bin 身份来自目标 Bin 供给与到线场景；`scan1_evidence_id` 来自 ECS 扫码；WorkLine/epoch 来自配置；当前位置来自 WES 现场位置记录 | 根据生产需求和 Bin 业务状态生成 `ENTER_PRODUCTION/NO_PRODUCTION_TASK/MARK_NG/WAIT`，并为最终路由生成 `route_decision_id` |
 | SCAN2 | `putaway.target_bin.work_admission_decide@v1` | 引用 SCAN1 `route_decision_id`；`scan2_evidence_id` 来自 ECS；其余引用实际 Bin 执行 | 根据 WMS 当前可分配 Cell 生成 `AVAILABLE/PASS_THROUGH/WAIT`，不在此时分配具体 Cell |
 
 SCAN3 和 SCAN4 是 WES/设备物理分流，不调用 WMS。`NO_PRODUCTION_TASK` 不是 NG；只有 WMS 返回 `MARK_NG` 才按 NG 路线执行。
 
-### P5：来源料盘复扫后请求精确目标；PUT 后报告位置迁移
+### 来源料盘复扫后请求精确目标，PUT 后报告位置迁移
 
 WES 请求 WMS 决定目标：
 
@@ -2435,10 +2461,10 @@ operation = putaway.material.decide@v1
 
 | 请求参数 | 来源 |
 | --- | --- |
-| 计划、上架执行和来源成员身份 | P1 计划及 WES 当前执行 |
+| 计划、上架执行和来源成员身份 | 计划和来源成员来自不可变上架来源计划；上架执行身份来自 WES 当前执行 |
 | `material_execution_id/scan_evidence_id/实际编码` | WES 本地执行和 ECS 复扫证据 |
-| 计划 `pkg_id`、来源位置 | P1 来源成员和 WES 可靠位置投影 |
-| 当前可用目标 Bin 集合 | 仅包含 P3 已 `RECORDED`、P4 得到 `AVAILABLE` 且尚未清退的实际 Bin 执行 |
+| 计划 `pkg_id`、来源位置 | 上架来源计划中的来源成员和 WES 可靠位置投影 |
+| 当前可用目标 Bin 集合 | 仅包含目标 Bin 供给与到线已 `RECORDED`、Bin 路由与可用性决定得到 `AVAILABLE` 且尚未清退的实际 Bin 执行 |
 
 WMS 根据库存主账在请求集合内晚绑定精确 `bin_id + bin_cell_id`，生成 `ACCEPT + target_assignment_id + placement_sequence`；
 业务拒绝或暂不能决定时生成 `REJECT/WAIT`。
@@ -2453,28 +2479,28 @@ POST /api/v1/wes/facts
 operation = putaway.material.placement_report@v1
 ```
 
-计划/来源/`pkg_id` 来自 P1，目标和序号来自 WMS 决定，起终位置来自 WES 投影，`command_code/placed_at` 来自 ECS 确定 PUT。
+计划/来源/`pkg_id` 来自上架来源计划，目标和序号来自 WMS 决定，起终位置来自 WES 投影，`command_code/placed_at` 来自 ECS 确定 PUT。
 WMS 只有在已有库存从来源 Cell 到目标 Cell 的迁移已经一致生效后才返回 `RECORDED`；不得重复执行 GRN 入库。
 
-### P6：上架料盘 NG 到位，或来源 Cell 可靠空取
+### 上架料盘 NG 到位或来源 Cell 可靠空取
 
 | 现场结果 | WES → WMS operation | 参数来源 | WMS 生成结果 |
 | --- | --- | --- | --- |
-| WMS 拒绝的料盘可靠到达 NG | `putaway.material.ng_placement_report@v1` | 计划/来源/`pkg_id` 来自 P1；原因和 NG 位置来自 WMS 决定；`ng_evidence_id` 来自 ECS 到位证据 | 记录 NG 位置和业务异常，返回 `RECORDED/DUPLICATE` |
-| 设备确定来源 Cell 无料 | `putaway.source.empty_decide@v1` | 计划来源和预期 `pkg_id` 来自 P1；`source_observation_id` 和设备证据来自 WES/ECS | 对照库存主账生成 `RETRY/SOURCE_ABSENT/WAIT`；`SOURCE_ABSENT` 表示来源成员已经关闭 |
+| WMS 拒绝的料盘可靠到达 NG | `putaway.material.ng_placement_report@v1` | 计划/来源/`pkg_id` 来自上架来源计划；原因和 NG 位置来自 WMS 决定；`ng_evidence_id` 来自 ECS 到位证据 | 记录 NG 位置和业务异常，返回 `RECORDED/DUPLICATE` |
+| 设备确定来源 Cell 无料 | `putaway.source.empty_decide@v1` | 计划来源和预期 `pkg_id` 来自上架来源计划；`source_observation_id` 和设备证据来自 WES/ECS | 对照库存主账生成 `RETRY/SOURCE_ABSENT/WAIT`；`SOURCE_ABSENT` 表示来源成员已经关闭 |
 
 设备结果未知不属于空取，不能调用 `source.empty_decide`。WES 应暂停使用该来源并开始人工对账。
 
-### P7：目标 Bin 清退、退回货架或到达 NG 出口
+### 目标 Bin 清退、退回货架或到达 NG 出口
 
 | 子场景与 operation | 请求参数及来源 | WMS 如何生成结果 |
 | --- | --- | --- |
-| 是否清退：`putaway.target_bin.clearance_decide@v1` | `putaway_execution_id/bin_execution_id/bin_id` 来自 P3；最后 `placement_sequence` 来自已记录的 P5 事实报告；本地占用观察和触发原因来自 WES | 根据库存主账、剩余 Cell 和业务策略生成 `KEEP/RETURN/WAIT`；`RETURN` 只授权离开工作位，不分配货架目标 |
-| 请求退回：`putaway.target_bin.return_batch@v1` | WorkLine/epoch 来自配置，`putaway_execution_id` 来自 P2；当前 `rack_id+rack_face` 来自可靠到位事实；`return_buffer_bins[]` 是本次上架执行 FIFO 的实际队首；CTU 空位来自可靠设备证据 | 在当前面为连续前缀分配任意合格精确空位，生成 `READY/NO_BATCH/WAIT`；不要求原货架面 |
-| 退回到位：`putaway.target_bin.movement_report@v1` | `movement_kind=RETURN_PLACED`；Bin 执行来自 P3；目标来自退回决定；实际位置和 Transport 身份来自 T3 | Bin 全局位置已经一致记录后返回 `RECORDED/DUPLICATE` |
-| NG 出口：`putaway.target_bin.ng_exit_report@v1` | Bin/路由身份来自 P3/P4；NG 原因来自 WMS 路由决定；`ng_evidence_id`、出口位置和发生时间来自 ECS/WES 到位证据 | NG 出口位置和处置已经一致记录后返回 `RECORDED/DUPLICATE` |
+| 是否清退：`putaway.target_bin.clearance_decide@v1` | `putaway_execution_id/bin_execution_id/bin_id` 来自目标 Bin 供给与到线场景；最后 `placement_sequence` 来自已记录的目标分配与位置迁移事实；本地占用观察和触发原因来自 WES | 根据库存主账、剩余 Cell 和业务策略生成 `KEEP/RETURN/WAIT`；`RETURN` 只授权离开工作位，不分配货架目标 |
+| 请求退回：`putaway.target_bin.return_batch@v1` | WorkLine/epoch 来自配置；`putaway_execution_id` 来自 WES 当前上架执行；当前 `rack_id+rack_face` 来自可靠到位事实；`return_buffer_bins[]` 是该上架执行 FIFO 的实际队首；CTU 空位来自可靠设备证据 | 在当前面为连续前缀分配任意合格精确空位，生成 `READY/NO_BATCH/WAIT`；不要求原货架面 |
+| 退回到位：`putaway.target_bin.movement_report@v1` | `movement_kind=RETURN_PLACED`；Bin 执行来自目标 Bin 供给与到线场景；目标来自退回决定；实际位置和 Transport 身份来自 `transport.task.resulted@v1` 最终结果 | Bin 全局位置已经一致记录后返回 `RECORDED/DUPLICATE`；WES 随后关闭 BinExecution 并释放管辖权 |
+| NG 出口：`putaway.target_bin.ng_exit_report@v1` | Bin/路由身份来自目标 Bin 供给与到线、Bin 路由与可用性决定场景；NG 原因来自 WMS 路由决定；`ng_evidence_id`、整线 NGZone 出口位置和发生时间来自 ECS/WES 到位证据 | NG 出口位置和处置已经一致记录后返回 `RECORDED/DUPLICATE`；BinExecution 保持活动直到人工扫码取走 |
 
-### P8：上架完成、来源货架离场和人工对账
+### 上架完成、来源货架离场和人工对账
 
 #### 上架完成裁决
 
@@ -2483,11 +2509,11 @@ POST /api/v1/wes/decisions
 operation = putaway.execution.completion_confirm@v1
 ```
 
-请求引用 P1 的 `putaway_plan_id` 和 WES 的 `putaway_execution_id`。WMS 只能根据自己保存的不可变来源计划、逐批交换决定、
-P2/P5/P6/P7 事实报告和成员最终状态
+请求引用上架来源计划的 `putaway_plan_id` 和 WES 的 `putaway_execution_id`。WMS 只能根据自己保存的不可变来源计划、逐批交换决定、
+满箱交换、目标分配与位置迁移、上架 NG 与来源空取、目标 Bin 清退与退回事实报告和成员最终状态
 生成 `COMPLETED/NOT_COMPLETED`，不能接受 WES 提交一份可篡改的成员完成数组。
 
-> **待联合评审：** 当前定义只写了“本地门禁摘要”，还没有确定具体 JSON 字段。P8 转为 `Approved` 前必须补齐这部分
+> **待联合评审：** 当前定义只写了“本地门禁摘要”，还没有确定具体 JSON 字段。上架完成与清场转为 `Approved` 前必须补齐这部分
 > 参数规则。开发人员不得自行增加 `completed_members`、计数或布尔字段。
 
 #### 来源货架离场决定
@@ -2499,18 +2525,18 @@ operation = putaway.source_rack.clearance_decide@v1
 
 | 请求参数 | 来源 |
 | --- | --- |
-| 货架、槽位、计划和上架执行身份 | P1 计划及当前 WES 执行 |
-| 当前工作位 | T3 和 WES 现场位置记录 |
+| 货架、槽位、计划和上架执行身份 | 计划来自不可变上架来源计划；上架执行身份来自 WES 当前执行 |
+| 当前工作位 | 搬运最终结果和 WES 现场位置记录 |
 | 本地空架观察 | 待联合评审；具体字段尚未确定，批准前不得实现 |
 
 这里的“离场”是指来源货架已经完成本次上架工作，可以离开当前工作位；不是清空库存，也不表示货架已经搬走。
-WMS 根据全局位置、货架业务状态和后续用途生成 `CLEAR_TO_DESTINATION/HOLD/REJECT/WAIT`。返回目的地后由 WES 另建 T1。
+WMS 根据全局位置、货架业务状态和后续用途生成 `CLEAR_TO_DESTINATION/HOLD/REJECT/WAIT`。返回目的地后由 WES 另建搬运提交。
 
 #### 上架人工对账回调
 
 多对象位置或身份冲突经人工核对后，WMS 回调 `putaway.execution.reconciliation_decided@v1`。`reconciliation_id` 由 WMS 对账单
-生成；`putaway_plan_id` 引用 P1；受影响执行身份来自暂停处理的对象范围；每个 `pkg_id/bin_id/rack_id` 的权威位置来自 WMS 主账和现场扫码
+生成；`putaway_plan_id` 引用上架来源计划；受影响执行身份来自暂停处理的对象范围；每个 `pkg_id/bin_id/rack_id` 的权威位置来自 WMS 主账和现场扫码
 确认；`CONTINUE/ABORT` 和原因来自人工审批结果。WES 返回接收确认后，只修正后续准入，不改写历史设备结果或搬运结果。
 
-业务 `COMPLETED` 不等于 WorkLine 已清线。货架最终搬运仍走 T1～T3；只有搬运、设备命令、WES 现场位置记录和业务义务分别完成后，
+业务 `COMPLETED` 不等于 WorkLine 已清线。货架最终搬运仍经过搬运提交和搬运最终结果；只有搬运、设备命令、WES 现场位置记录和业务义务分别完成后，
 WES 才允许关闭当前 Epoch，并为目标插件创建新 Epoch 或开始下一执行。

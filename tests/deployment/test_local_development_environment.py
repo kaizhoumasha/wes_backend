@@ -91,7 +91,8 @@ def test_development_overlay_mounts_a_valid_mock_wms_profile_for_every_runtime_p
 
     profile = load_wms_provider_profile(BACKEND_ROOT / "deployment/dev/wms-provider.yaml")
     assert profile.server_url == "http://mock-wms-provider:8012"
-    compile_wms_provider_profile(profile)
+    compiled_profile = compile_wms_provider_profile(profile)
+    assert compiled_profile.transport_submit_path == "/api/v1/wes/transport-requests"
     compose = _compose("docker-compose.yml")
     provider = compose["services"]["mock_wms_provider"]
     assert provider["environment"]["WMS_PROVIDER_PROFILE_FILE"] == "/run/wes/wms-provider.yaml"

@@ -2,6 +2,7 @@ profile:
   provider_code: WMS
   contract_version: 2026-07-28.full-factory
 server_url: http://mock-wms-provider:8012
+transport_submit_path: /api/v1/wes/transport-requests
 effect_status_path: /api/wms/operations/status
 network_trust_mode: isolated_lan
 outbound_auth:

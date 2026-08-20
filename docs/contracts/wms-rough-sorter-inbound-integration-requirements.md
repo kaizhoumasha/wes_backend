@@ -252,7 +252,7 @@ Phase 8 真实消费既有 Transport Port，并创建两个互相独立的 `RACK
 不新增 `RACK_EXCHANGE`。两个任务可以同时提交；实际顺序、路径、避让和共享工作位互锁完全由 RCS 负责。该顺序能力是外部未
 验证前提，不是 Phase 8 新增合同条款，也不由 WES 测试代证。
 
-新架 T3 `SUCCEEDED` 且 `rack_id + final_position + arrival_face` 与计划一致后，WES 可以重新请求目标 Cell，不等待旧架结果。
+新架的 `transport.task.resulted@v1` 搬运最终结果为 `SUCCEEDED`，且 `rack_id + final_position + arrival_face` 与计划一致后，WES 可以重新请求目标 Cell，不等待旧架结果。
 旧架失败或未知只隔离旧 rack；新架失败或未知阻止目标请求和出料。两个 TransportTask 状态不得级联或互相改写。
 
 ## 10. 失败与恢复

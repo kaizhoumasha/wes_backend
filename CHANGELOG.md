@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.9.0] - 2026-08-20
+
+### Added
+- WMS Provider profile 新增必填 `transport_submit_path`，支持按目标 WMS OpenAPI 配置并冻结搬运提交相对路径，同时保持路径大小写。
+- 新增权限目录、基础角色、bootstrap 与菜单真源收敛的设计和后续实施计划；本版本仅交付方案，不包含权限生产实现。
+
+### Changed
+- 将搬运交互阶段统一改为“搬运提交、容器中间位置事件、搬运最终结果”等语义名称，不再使用数字阶段代号。
+- 明确 `TransportTask` 负责入线前搬运及资源围栏；只有最终结果确认 Bin 到达工作线且扫码身份匹配后才创建 `BinExecution`。
+
+### Fixed
+- 本机 8012 WMS Provider Mock 按同一 profile 注册搬运提交路径，并与 8011 Transport Mock 复用 `256 KiB` 预缓冲请求体限制。
+- 补齐自定义路径的真实 worker/HTTP E2E、Provider Mock `202/413` 合同测试及共享 Mock 的 HEAVY 精确所有权。
+
+### Verification
+- 提交钩子 QUALITY 全门禁通过：FAST 为 3641 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和预算检查均通过。
+- selector 合同 286 passed；相对 `origin/develop` 选出的 HEAVY owner 在隔离 PostgreSQL、Redis、Celery 与迁移环境中 187 passed、0 skipped。
+- 行为路径覆盖审计为 100%，计划/范围审计 4/4 完成，Greptile 评论 0 条，预落地 Review 无剩余意见。
+- 本次证据证明代码、合同和本地 Mock 闭合，不替代真实 WMS/RCS 联调、现场验证或业务验收；权限目录/bootstrap 仍属于后续实施范围。
+
 ## [0.26.8.0] - 2026-08-20
 
 ### Fixed
@@ -59,11 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.26.4.0] - 2026-08-18
 
 ### Added
-- 新增 provider-local WMS Transport Mock，覆盖 `RACK_MOVE`、`BIN_MOVE`、`RACK_EXCHANGE` 和 `BIN_EXCHANGE` 四类 T1 请求，并提供幂等快照、故障注入和 callback 转发调试面。
+- 新增 provider-local WMS Transport Mock，覆盖 `RACK_MOVE`、`BIN_MOVE`、`RACK_EXCHANGE` 和 `BIN_EXCHANGE` 四类搬运提交请求，并提供幂等快照、故障注入和 callback 转发调试面。
 - 新增与 Mock 同源的离线 Swagger UI、冻结 OpenAPI 示例及验收镜像，使预构建镜像可在纯局域网环境中完成合同浏览和联调验证。
 
 ### Changed
-- 将公开可用性探针收敛为 Transport T1 与 callback 边界检查，并同步 WMS conformance fixture、测试支持模块、Compose 入口和 HEAVY 精确映射。
+- 将公开可用性探针收敛为搬运提交与 callback 边界检查，并同步 WMS conformance fixture、测试支持模块、Compose 入口和 HEAVY 精确映射。
 - 同步 GitLab `develop` 中的 Transport 资源围栏术语与 CI 基线；RuntimeInbox 验收改为等待最终 PostgreSQL 进程就绪，并将 FAST 临时预算校准为套件 90 秒、单项 4 秒。
 
 ### Fixed
@@ -74,7 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - QUALITY 全门禁通过：FAST 为 3532 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和预算检查均通过。
 - 相对 `origin/develop` 选出的 16 个 HEAVY owner 在隔离 PostgreSQL、Redis 与迁移环境中 195 passed、0 skipped。
 - 行为路径覆盖审计为 90%，实施计划 25/25 完成，预落地 Review 无剩余问题。
-- 真实浏览器验证离线 Swagger 资源、四类 T1、幂等与冲突、故障注入及三类 callback 示例；该证据仅证明 provider-local Mock，不替代 WES/WMS/供应商或现场业务验收。
+- 真实浏览器验证离线 Swagger 资源、四类搬运提交、幂等与冲突、故障注入及三类 callback 示例；该证据仅证明 provider-local Mock，不替代 WES/WMS/供应商或现场业务验收。
 
 ## [0.26.3.0] - 2026-08-18
 
@@ -105,13 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 补充 WMS Transport v0.2 的 DTO、OpenAPI、生产 wiring、PostgreSQL 集成与 HEAVY 测试资产。
 
 ### Changed
-- 直接以 `target_face`、`container_id` 和分族 T3 结果替换旧 Transport wire，不保留别名、兼容层或双路径。
+- 直接以 `target_face`、`container_id` 和分族搬运最终结果替换旧 Transport wire，不保留别名、兼容层或双路径。
 - 冻结出站请求原始字节及摘要，并统一 ACK、固定重试、`DELIVERY_UNKNOWN` 与 callback 身份关联语义。
 - 严格区分 UTF-8、JSON 语法、重复键、数字 lexeme 和 DTO 校验边界，使预关联错误不污染幂等身份。
 
 ### Fixed
 - 修复浮点数重序列化导致不同 JSON 数字共享摘要、重复键被错误持久化，以及非法 Unicode 被误判为可重试 `503` 的问题。
-- 修复 rejected receipt 冲突响应沿用 `422` 数据形状、T3 结果数组未校验排序或成员数量，以及 runtime 缺失 fallback 与 handler 身份判定漂移的问题。
+- 修复 rejected receipt 冲突响应沿用 `422` 数据形状、搬运最终结果数组未校验排序或成员数量，以及 runtime 缺失 fallback 与 handler 身份判定漂移的问题。
 - 修复 pre-commit 嵌套 Git 测试继承父仓库环境而污染测试仓库判定的问题。
 
 ### Verification
@@ -147,12 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - 新增面向 WMS 团队的 Transport OpenAPI 3.0.3 外发合同，并以同一 schema builder 约束 FastAPI 路由与冻结交付产物。
-- 为料箱储位补充权威 `rack_face`，支持同侧一至两对 `BIN_EXCHANGE`；为 T3 完整结果增加 WMS 来源 `outcome_revision` 与数据库单调水位。
+- 为料箱储位补充权威 `rack_face`，支持同侧一至两对 `BIN_EXCHANGE`；为完整搬运最终结果增加 WMS 来源 `outcome_revision` 与数据库单调水位。
 
 ### Changed
 - WMS Transport 请求与响应边界改为严格 UTF-8/JSON、重复键拒绝、封闭字段联合和精确 HTTP `Content-Type`/`Content-Encoding` 校验。
-- T3 结果按同一任务的来源版本单调收敛：高版本可将 `UNKNOWN` 收敛为确定结果，低版本仅幂等确认且不得回退投影，已确定终态的矛盾证据进入人工处置。
-- 收紧 T1 ACK、T2 位置证据、T3 失败码、时间戳、位置长度和 UUIDv7 的公共合同，并同步外发需求文档与 WES 内部履约合同。
+- 搬运最终结果按同一任务的来源版本单调收敛：高版本可将 `UNKNOWN` 收敛为确定结果，低版本仅幂等确认且不得回退投影，已确定终态的矛盾证据进入人工处置。
+- 收紧搬运提交 ACK、容器中间位置事件、搬运最终结果失败码、时间戳、位置长度和 UUIDv7 的公共合同，并同步外发需求文档与 WES 内部履约合同。
 
 ### Fixed
 - 修复 ACK 关联字段不匹配被误判为业务冲突、深层 JSON 物化异常逸出、重复 HTTP 头可能绕过严格边界的问题。
@@ -535,7 +555,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - 收束粗分机运行流、入库验收、能力规格与跨系统事件流的文档所有权，上层文档仅保留协议和验收交接，分支判定统一引用权威合同。
-- 更新 WorkLine 插件与系统能力平台设计，批准粗分机窄闭环 T2 合同，并明确后续 typed outcome、QUERY evidence、Intent identity 与 replay 输入。
+- 更新 WorkLine 插件与系统能力平台设计，批准粗分机窄闭环合同，并明确后续 typed outcome、QUERY evidence、Intent identity 与 replay 输入。
 
 ### Fixed
 - 对齐粗分机合同与真实领域枚举及状态所有权：Session 使用 `WAITING_DEVICE_RESULT`，普通 Hold 不再写入 MaterialUnit 或 DeviceCommand 状态。

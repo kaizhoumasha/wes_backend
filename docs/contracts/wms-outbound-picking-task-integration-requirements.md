@@ -690,9 +690,14 @@ WMS 返回 `READY` 前，必须在同一事务中保存完整响应，并保证�
 收到 `READY` 后，WES 按 WorkLine 配置的固定顺序选择当前空闲的 `HANDOFF_POSITION`，将 `bins[]` 逐项映射到不同位置，再生成一个
 Transport `BIN_MOVE`。WMS 不需要在本接口中接收本地缓存位；完整来源和目标会进入 Transport 请求。
 
+WES为冻结成员创建 `BIN_MOVE` TransportTask。当前 CTU/RCS只返回 `transport.task.resulted@v1` 完整最终结果，不提供可靠的
+`transport.task.member_position_changed@v1` 逐容器中间位置事件；提交、接纳、失败、位置未知和资源围栏均由 TransportTask负责。
+只有最终结果确认 Bin成功到达冻结 `HANDOFF_POSITION`，且现场扫码身份匹配后才创建唯一活动 `BinExecution`。入线后不自动取消、
+返回原位或创建替代搬运，物理执行只能以正常回库或整线`NGZone`人工接管闭合。
+
 `READY` 返回后，本批 `bins[]` 已经选定。WMS 不能撤销或改选其中的 Bin；即使本地容量暂时发生变化，WES 也等待原 `bins[]` 具备
 执行条件，并只处理其中尚未完成的成员。若某个 Bin 到达 SCAN2 时已无取料需求，WMS 在 `work_plan` 中返回 `NO_WORK`，让该 Bin 按正常
-退箱路径离开，不再增加单独的取消接口。入站 `BIN_MOVE` 确定成功后重新判断 CTU 下一动作；当前面能为 `RETURN_BUFFER` FIFO 队首
+退箱路径离开，不再增加单独的取消接口。入站 `BIN_MOVE` 最终成功、实扫身份匹配并创建 `BinExecution` 后重新判断 CTU 下一动作；当前面能为 `RETURN_BUFFER` FIFO 队首
 形成可执行退箱批次时先退箱，否则可以再次请求入站。
 
 收到 `RACK_FACE_DONE` 后，WES 关闭当前五层来源货架面。WMS 不能在后续 `plan_delta` 中重新添加同一
@@ -813,7 +818,10 @@ WMS 必须同时校验并原样返回二者，不能只根据数组位置猜测�
 WMS 根据主账确认候选 Bin 可安全回库，并只在请求的当前 `rack_id + rack_face` 中分配合格精确空位。目标不要求等于 Bin 的原货架、原面或原储位；WMS 不得因候选来自其他货架面而返回
 `REFERENCE_CONFLICT`。`READY` 后 WES 只处理所选候选，并调用一次 CTU Transport；未选候选继续留在 `RETURN_BUFFER`。
 
-退箱 `BIN_MOVE` 确定成功后重新判断 CTU 下一动作。当前面仍能为 FIFO 队首形成可执行批次时继续退箱；否则允许入站需求推进或切换来源货架面。已可靠进入 `RETURN_BUFFER` 的 Bin 可跨面等待，不再锁定原来源面。
+退箱 `BIN_MOVE` 的 `transport.task.resulted@v1` 最终结果确认成员位置等于冻结目标且WMS主账已经记录后，WES关闭对应
+`BinExecution`并释放管辖权，再重新判断 CTU下一动作。最终结果 `FAILED` 且位置明确时保留活动 `BinExecution`并按该位置进入人工
+恢复；结果超时或成员位置未知时由 TransportTask保持 `RECONCILING`。两种情况都不得关闭执行。当前面仍能为FIFO队首形成可执行批次时继续退箱；
+否则允许入站需求推进或切换来源货架面。已可靠进入 `RETURN_BUFFER` 的 Bin可跨面等待，不再锁定原来源面。
 
 退箱请求收到 `NO_BATCH` 后，WES 在新货架面到位、新业务数据到达或 `retry_after_ms` 到期时，使用新的 `operation_id` 和当时的 FIFO 队首候选重新请求。
 收到 `NO_BATCH` 后，本次请求已经结束，只保存下次重试时间；新的现场事件可以提前唤醒判断。响应未知或 `UNAVAILABLE` 时，才使用原
@@ -1377,6 +1385,10 @@ WMS 在同一事务中保存出口结果并更新 Bin 位置，然后返回 `200
 `work_plan` 返回 `READY | NO_WORK | WAIT`；因 Bin NG 产生的库存需求缺口由 WMS 创建新的 PickingTask，不通过当前任务的后续计划补充；
 `SOURCE_CELL_MISMATCH` 只补充 Bin 最终位置，不扩大前序 Cell NG 的业务影响范围。
 
+`RECORDED`只闭合WMS业务位置报告，不释放现场实物。Bin到达整线`NGZone`后继续保留活动 `BinExecution`和WES位置投影；只有操作员
+在`NGZone`扫码并实际取走，WES才关闭该执行并释放管辖权。下次该Bin进入系统时必须使用WMS最新主账创建新的
+`bin_execution_id`，禁止复用旧执行或旧位置投影。
+
 合法且可识别、但不是预期成员的 Bin 禁止调用本 operation。它不是 `BIN_CODE_UNREADABLE` 或 NG；WES 保留预期/实际身份和位置证据，
 将其冻结在当前安全位置，等待独立恢复 wire 获批。现有 `return_batch` 不能授权它进入 `RETURN_BUFFER`。
 
@@ -1699,8 +1711,9 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
   业务字段、记录 ID 或当时的资源数据；不增加请求链字段。尚未获批的共同 drain operation 不属于该规则，其 `previous_operation_id` 要求以共同合同最终审批结果为准。
 - Transport `UNKNOWN`：位置和后续步骤继续等待。按照 Transport 合同，等待同一 `transport_task_id` 后续更高版本的确定结果，不创建替代
   TransportTask。
-- Transport `REJECTED | FAILED`：只结束本地对应的任务明细。WMS 根据自己形成并发送的 Transport 结果创建后续 PickingTask，不增加
-  失败上报或恢复接口。
+- Transport `REJECTED | FAILED`：只结束本地对应的业务任务明细。入线搬运未成功时不创建 `BinExecution`；既有
+  `BinExecution` 的退回搬运失败时保留该执行，并按确定位置人工恢复。WMS 根据自己形成并发送的 Transport 结果创建后续
+  PickingTask，不增加失败上报或恢复接口。
 - DeviceCommand 结果未知：保留当前待完成的物理工作，不把未知解释为失败、NG 或完成。
 
 `WmsClient` 每次只执行一次 HTTP/JSON 访问。Outbox、自动重试、计划顺序、状态推进和人工核对由对应业务模块负责。
@@ -1735,18 +1748,21 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | CTU 乱序投箱 | `inbound_batch` 已返回的 Bin 按实际到达顺序请求工作计划，FIFO 队首不能被绕过 |
 | 计划同时包含多个五层来源货架面 | 每个 `rack_id + rack_face` 单独记录；同一货架的 A、B 面都有来源时记录两项；WES 只选择一个当前来源面 |
 | 五层货架入站分批 | WES 发送 `max_bin_count`；WMS 返回不超过该数量的 `bins[]`；WES 再补充本地入料目标并生成 Transport `BIN_MOVE` |
+| 入站 `READY` 返回精确 Bin | WES冻结成员与交接位并创建BIN_MOVE TransportTask；不提前创建BinExecution |
 | 同一 WorkLine 的 CTU 批次 | 入站和退箱串行，同一时刻最多一个批次处于 WMS 请求或 Transport 执行中；不建立缓存位预留、租约或锁 |
 | 多个事件同时触发 CTU 判断 | 自动出库业务模块在事务中只声明一个下一动作；其他触发发现已有未结束动作后退出 |
 | 入站 `READY` 已返回但 Transport 未完成 | 继续等待原批次，不调用 `return_batch`、不再次调用 `inbound_batch`、不改选其他 Bin |
-| 入站 Transport 确定成功 | 重新判断 CTU 下一动作；当前面有可执行退箱批次时先退箱，否则继续入站 |
+| BIN_MOVE已接纳但尚无最终结果 | TransportTask保持资源围栏且位置未知；不得继续使用来源货架位置或创建替代搬运 |
+| 入站 Transport 最终成功且实扫身份匹配 | 创建唯一活动BinExecution，再重新判断 CTU 下一动作；当前面有可执行退箱批次时先退箱，否则继续入站 |
 | 当前五层来源货架面暂时无 Bin | WMS 返回 `NO_BATCH + retry_after_ms`；到期前不重复请求、不据此换面，期间出现退箱候选仍优先退箱 |
 | 当前五层来源货架面结束 | WMS 返回 `RACK_FACE_DONE`；CTU 不携带 Bin、没有未结束搬运或未知位置、没有以当前面为冻结目标的退箱决定后，WES 才从已接收的来源面计划中选择下一面并执行必要的换面或换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 不阻塞切换，`inbound_batch` 不返回新来源方案 |
 | Transport `UNKNOWN/RECONCILING` | 只暂停受影响的任务明细，等待同一 `transport_task_id` 的更高版本结果或人工核对；不结束明细、不释放资源、不创建替代 TransportTask |
-| Transport 确定失败 | WES 结束本地对应的失败明细，其他明细继续；WMS 已知 Transport 结果并用新的 PickingTask 补足需求，双方不交换失败上报或恢复方案 |
+| Transport 确定失败 | WES结束本地对应的业务明细，其他明细继续；入线前不创建BinExecution，既有BinExecution的退回失败则按确定位置人工恢复；WMS用新的PickingTask补足需求 |
 | 退箱候选请求 | WES 按本次请求从 1 连续设置 `sequence_no`；WMS 原样返回连续前缀的 `sequence_no + bin_id`，不得重复、跳号或跳过队首 |
 | WMS 本次只处理部分退箱候选 | 只能返回 FIFO 候选列表的连续前缀；未返回的 Bin 留在 `RETURN_BUFFER` 等下一批，新请求重新从 1 编号 |
 | 退箱暂时无批次 | `NO_BATCH` 必须返回 `retry_after_ms`；候选留在 FIFO，无资源冲突的入站需求可驱动换面或换架 |
 | 退箱目标储位 | `moves[].target` 只能位于请求的当前 `rack_id + rack_face`，但不要求原货架、原面或原储位；`return_batch` 不触发换面或换架 |
+| Bin到整线NGZone但未人工取走 | WMS业务位置可以已记录，WES仍保留活动BinExecution；人工扫码实际取走后才关闭 |
 | 当前面确定没有合格退箱储位 | WMS 返回 `NO_BATCH + retry_after_ms`；不转 NG、不返回 `STATE_CONFLICT`，下一入站需求到位后重新评估 FIFO |
 | Bin 已可靠进入退料缓存 | 作为本 Epoch 跨任务 FIFO 候选，可跨面等待；不锁定原货架面，不重新打开已完成 PickingTask |
 | 可识别但非预期 Bin 到达 SCAN2 | 保存预期/实际身份和位置证据，冻结受影响工作位；不请求工作计划、不送 NG、不替代或关闭预期成员，等待获批恢复合同 |

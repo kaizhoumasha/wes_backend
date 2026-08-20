@@ -166,7 +166,7 @@ class _TestCredentialProvider:
 
 
 class QueryInventoryAdapterFactory:
-    """真实 adapter + T3 executor 对 canonical scripted HTTP response 执行。"""
+    """真实 adapter + 搬运最终结果 executor 对 canonical scripted HTTP response 执行。"""
 
     name = "real-adapter"
     target = ConformanceTarget.CI_ADAPTER
@@ -183,7 +183,7 @@ class QueryInventoryAdapterFactory:
 
 
 class QueryInventorySimulatorFactory:
-    """真实 adapter 连接进程内最小 simulator；仍复用唯一 T3 transport 生命周期。"""
+    """真实 adapter 连接进程内最小 simulator；仍复用唯一搬运最终结果 transport 生命周期。"""
 
     name = "in-process-simulator"
     target = ConformanceTarget.SIMULATOR
@@ -289,7 +289,7 @@ def observe_query_inventory_outcome(
     *,
     case_id: str,
 ) -> ConformanceObservation:
-    """外层 adapter 把 T3 outcome 投影为 runtime conformance observation。"""
+    """外层 adapter 把搬运最终结果投影为 runtime conformance observation。"""
 
     if isinstance(outcome, QuerySuccess):
         return ConformanceObservation(
