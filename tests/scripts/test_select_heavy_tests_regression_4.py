@@ -270,3 +270,30 @@ def test_main_rejects_reintroduced_retired_bootstrap_path(retired_path, tmp_path
 
     assert exit_code == 2
     assert "候选路径未配置 mapping/NONE" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("retired_path", RETIRED_BOOTSTRAP_PATHS)
+def test_main_rejects_reintroduced_dangling_retired_bootstrap_symlink(retired_path, tmp_path, capsys) -> None:
+    bootstrap_path = tmp_path / retired_path
+    bootstrap_path.parent.mkdir(parents=True)
+    bootstrap_path.symlink_to("missing-bootstrap-target.py")
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text('ignore_globs = [".github/**"]\n', encoding="utf-8")
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["git", "diff"],
+            0,
+            stdout=f"{retired_path}\n",
+            stderr="",
+        )
+    )
+
+    exit_code = main(
+        ["--base", "develop"],
+        repo_root=tmp_path,
+        mapping_path=mapping_path,
+        runner=runner,
+    )
+
+    assert exit_code == 2
+    assert "候选路径未配置 mapping/NONE" in capsys.readouterr().err

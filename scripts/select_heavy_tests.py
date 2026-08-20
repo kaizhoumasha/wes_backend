@@ -527,7 +527,8 @@ def filter_deleted_retired_archive_paths(changed_files: Iterable[str], *, repo_r
         is_retired = normalized_path in RETIRED_REMOVED_PATHS or any(
             normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS
         )
-        if is_retired and not (repo_root / normalized_path).exists():
+        current_path = repo_root / normalized_path
+        if is_retired and not (current_path.exists() or current_path.is_symlink()):
             continue
         retained.append(normalized_path)
     return retained
