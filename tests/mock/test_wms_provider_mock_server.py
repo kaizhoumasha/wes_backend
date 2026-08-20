@@ -14,6 +14,7 @@ from src.app.wms_integration.operation_registry import WMS_OPERATIONS
 from src.app.wms_integration.ports.fulfillment_operations import WmsEffectAck
 from src.app.wms_integration.provider_profile import load_wms_provider_profile
 from tests.mock.wms_provider_mock_server import create_app
+from tests.mock.wms_transport_mock_openapi import rack_move
 from tests.support.wms_integration.operation_fixtures import REQUEST_FIXTURES
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +63,13 @@ async def test_all_profile_operations_are_callable_over_public_http(provider_cli
     else:
         assert response.status_code == 200, response.text
         operation.result_model.model_validate(response.json())
+
+
+async def test_configured_transport_submit_path_is_callable_over_public_http(provider_client) -> None:  # type: ignore[no-untyped-def]
+    response = await provider_client.post(COMPILED_PROFILE.transport_submit_path, json=rack_move)
+
+    assert response.status_code == 202, response.text
+    assert response.json()["code"] == "RECEIVED"
 
 
 async def test_async_effect_reaches_a_typed_terminal_status(provider_client) -> None:  # type: ignore[no-untyped-def]

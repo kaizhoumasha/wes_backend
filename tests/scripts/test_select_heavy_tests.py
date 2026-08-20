@@ -1115,7 +1115,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/static/swagger-ui/swagger-ui.css",
             [MOCK_DOCKERFILE_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST],
         ),
-        ("src/app/wms_adapter/transport_adapter.py", [TRANSPORT_DARK_LOOP_HEAVY_TEST]),
+        (
+            "src/app/wms_adapter/transport_adapter.py",
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_DARK_LOOP_HEAVY_TEST],
+        ),
         (
             "src/app/wms_adapter/v1/__init__.py",
             [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, WMS_INBOUND_CONFIRMATION_HEAVY_TEST],
@@ -1181,7 +1184,11 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/wms_integration/endpoint_compiler.py",
-            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
+            [
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+            ],
         ),
         (
             "src/app/wms_integration/operation_contract.py",
@@ -1209,7 +1216,11 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/wms_integration/provider_profile.py",
-            [WMS_NORTHBOUND_CONTRACT_HEAVY_TEST, WMS_POSTGRESQL_HEAVY_TEST],
+            [
+                TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+                WMS_NORTHBOUND_CONTRACT_HEAVY_TEST,
+                WMS_POSTGRESQL_HEAVY_TEST,
+            ],
         ),
         (
             "tests/support/transport_broker.py",

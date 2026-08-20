@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationMode
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
 from src.app.wms_integration.provider_profile import load_wms_provider_profile
+from tests.mock.wms_mock_server import submit_transport
 from tests.support.wms_integration.northbound_contract import (
     NorthboundOperationStore,
     build_typed_ack,
@@ -147,6 +148,13 @@ def create_app(profile_path: Path) -> FastAPI:
             raise HTTPException(status_code=422, detail="WMS_STATUS_REQUEST_INVALID") from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="WMS_STATUS_REQUEST_INVALID") from exc
+
+    app.add_api_route(
+        str(profile.transport_submit_path),
+        submit_transport,
+        methods=["POST"],
+        name="transport.task.submit@v1",
+    )
 
     for operation in WMS_OPERATIONS:
         configured = profile.operations[operation.identity]

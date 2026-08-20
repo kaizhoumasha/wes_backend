@@ -962,7 +962,10 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/transport_adapter.py"
-heavy_tests = ["tests/integration/transport/test_dark_transport_loop.py"]
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+]
 
 # 入站 handler 必须由真实 route E2E 承接，同时保留暗闭环覆盖。
 [[mapping]]
@@ -1326,8 +1329,16 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/wms_integration/{effect_preparation_runtime.py,effect_runtime.py,endpoint_compiler.py,operation_contract.py,operation_registry.py,provider_manifest.py,provider_profile.py,ports/effect_preparation.py,ports/effect_status.py,ports/fulfillment_operations.py}"
+source_glob = "src/app/wms_integration/{effect_preparation_runtime.py,effect_runtime.py,operation_contract.py,operation_registry.py,provider_manifest.py,ports/effect_preparation.py,ports/effect_status.py,ports/fulfillment_operations.py}"
 heavy_tests = [
+    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+    "tests/integration/wms_integration/test_northbound_contract.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/{endpoint_compiler.py,provider_profile.py}"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]

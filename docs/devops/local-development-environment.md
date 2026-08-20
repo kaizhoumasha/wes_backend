@@ -25,7 +25,7 @@
 | PostgreSQL | `127.0.0.1:5432` | 权威持久化数据 |
 | Redis | `127.0.0.1:6379` | 缓存、Celery broker/result |
 | ECS Mock | `http://127.0.0.1:8010` | 统一设备合同本机模拟 |
-| WMS Transport Mock | `http://127.0.0.1:8011` | Transport T1与callback调试 |
+| WMS Transport Mock | `http://127.0.0.1:8011` | 搬运提交与callback调试 |
 | WMS Provider Mock | `http://127.0.0.1:8012` | 29项full-factory query/effect合同调试 |
 
 Celery通用 worker、WMS fulfillment worker和Beat没有额外宿主机端口，由 `check` 校验运行状态。

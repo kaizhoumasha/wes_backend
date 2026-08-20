@@ -738,8 +738,8 @@ services:
       - smt
 
   # ============================================
-  # WMS Provider Mock - 29 项 full-factory query/effect 本机联调面
-  # 与搬运提交/回调 Mock 分离，避免把业务 Provider 合同耦合进传输基础能力。
+  # WMS Provider Mock - full-factory query/effect 与搬运提交本机联调面
+  # 同一 Provider origin 复用搬运提交合同；独立 Transport Mock 保留 callback 与调试能力。
   # ============================================
   mock_wms_provider:
     build:
