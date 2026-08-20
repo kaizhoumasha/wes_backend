@@ -61,7 +61,7 @@ http://192.168.0.220:9081
 部署边界：
 
 - TEST：由部署人员单独运行 `wes_test_deploy`，并明确选择 immutable 前后端镜像
-- PROD：不依赖 Jenkins 直连生产环境，按手动部署 runbook 执行迁移、权限同步、菜单同步和首个管理员 bootstrap
+- PROD：不依赖 Jenkins 直连生产环境，按手动部署 runbook 在维护态执行迁移、基础授权收敛、菜单同步和入口恢复
 
 ### 3. 修改现役 Pipeline 脚本
 
@@ -114,18 +114,16 @@ git push gitlab "$release_sha:refs/heads/develop"
 `wes_backend-ci` 只构建和发布后端镜像，不自动选择前端版本或触发 `wes_test_deploy`。需要 TEST/现场部署时，由部署人员单独运行
 部署任务并明确选择前后端镜像；MR、其他分支 PUSH 和 Jenkins 手工构建只验证，不发布镜像。
 
-生产环境建议顺序：
+生产 fresh DB 的基础授权入口：
 
 ```bash
 ./scripts/migrate.sh upgrade
-bash scripts/data/sync_permissions.sh
-bash scripts/data/sync_menus.sh --frontend-path /opt/wes_frontend
-
 export BOOTSTRAP_ADMIN_USERNAME=admin
 export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
 export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
 export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
-bash scripts/data/bootstrap_admin.sh
+bash scripts/data/bootstrap_foundation.sh
+uv run python scripts/data/sync_permissions.py --check
 ```
 
 其中：
@@ -133,7 +131,10 @@ bash scripts/data/bootstrap_admin.sh
 - `scripts/data/seed_initial_data.py` 仅用于 dev/test/demo，不用于生产
 - `.env.prod` 与 `.env.frontend.prod` 分离维护即可，不要求合并
 - 生产建议开启 `USE_SNOWFLAKE_ID=true`
-- `bootstrap_admin.sh` 依赖上述 `BOOTSTRAP_ADMIN_*` 环境变量，建议由部署环境注入真实值
+- 已有数据库使用 `sync_permissions.py --apply` 后必须执行 `--check`；入口在检查零漂移前保持关闭
+- `--repair-cache` 只处理 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，成功后必须重新 `--check`
+- `bootstrap_foundation.sh` 依赖上述 `BOOTSTRAP_ADMIN_*` 环境变量，必须由部署环境注入真实值
+- 固定版本应用启动后，从批准的前端 digest 提取菜单 manifest；同步通过后才恢复入口，详见 `../auth/menu-sync-guide.md`
 
 ## 📖 详细文档
 

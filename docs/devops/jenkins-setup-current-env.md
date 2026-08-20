@@ -290,36 +290,34 @@ docker-compose --version
 
 - `wes_test_deploy` 是独立部署任务，由部署人员手工触发并选择前后端镜像
 - 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
-- 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
-- API 容器会只读挂载同机的 `../wes_frontend`，供部署后菜单同步使用
-- 部署成功前会执行 `python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend`
+- 前后端镜像拉取后固定到 digest；Nginx 停止且外部端口确认关闭后，按 Compose project/service 标签停止旧应用
+- 迁移前只允许 `db` 与 `redis` 运行；未知 service 使切换失败并保持 Nginx 关闭
+- 使用新后端镜像的一次性命令执行 Alembic、fresh-DB `bootstrap_foundation` 和权限 `--check`
+- 若 bootstrap 报告 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，只执行 `--repair-cache`，再执行新的 `--check`，不得重跑数据库 mutation
+- 零漂移后才使用 `docker-compose.test-deploy.yml` 重建 TEST 应用，并从固定前端镜像提取菜单清单
 - 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
-- 健康检查为 API 容器内 `http://127.0.0.1:8001/health`
-- 同时检查 nginx `/health` 和首页
+- 后端 readiness、前端资源、镜像 revision 和菜单同步均通过后才恢复 Nginx，并检查 `/health` 和首页
 
 PROD 边界说明：
 
 - `wes_backend-ci` 只负责后端 CI 与镜像发布，不自动部署 TEST 或生产环境
 - 生产环境按手动部署 runbook 执行，不复用 `seed_initial_data.py`
 - 生产发布说明文档：`prod-release-deploy.md`
-- 推荐顺序：
+- fresh DB 推荐顺序（完整维护态顺序以 `prod-release-deploy.md` 为准）：
   1. `./scripts/migrate.sh upgrade`
-  2. `bash scripts/data/sync_permissions.sh`
-  3. `bash scripts/data/sync_menus.sh --frontend-path /opt/wes_frontend`
-  4. `export BOOTSTRAP_ADMIN_USERNAME=admin`
-  5. `export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'`
-  6. `export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'`
-  7. `export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'`
-  8. `bash scripts/data/bootstrap_admin.sh`
+  2. 注入 `BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD`、`BOOTSTRAP_ADMIN_FULL_NAME`、`BOOTSTRAP_ADMIN_EMAIL`
+  3. `bash scripts/data/bootstrap_foundation.sh`
+  4. `uv run python scripts/data/sync_permissions.py --check`
 - 前后端分别维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法
 - 生产建议在 `.env.prod` 中启用 `USE_SNOWFLAKE_ID=true`
-- `bootstrap_admin.sh` 只会在系统中还没有超级管理员时创建首个管理员
+- 已有数据库改用 `sync_permissions.py --apply`，随后必须 `--check`；缓存提交后失败按 `--repair-cache` → `--check` 恢复
+- 固定版本应用启动后，从批准的前端 digest 提取菜单 manifest；菜单同步通过后才恢复 Nginx
 
 建议核对项：
 
 ```bash
 rg -n "IMAGE_REPO|Push Runtime Image|CI_EVENT_TYPE" Jenkinsfile.backend-ci
-rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
+rg -n "DEPLOY_COMPOSE_FILE|IMAGE_PULL_RETRIES|bootstrap_foundation|--check|--repair-cache|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
 ```
 
 确认 Jenkins 中 Pipeline 配置：

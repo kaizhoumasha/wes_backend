@@ -95,20 +95,21 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 
 ## Reliability
 
-### 历史现场热修复的 Current-develop Successor
+### API/Worker 跨进程就绪快照
 
-**What:** 从当前 `develop` 重新实现并验证三个仍未闭合的现场缺口：树形 `parent_id` 与雪花主键类型一致、唯一空库角色 bootstrap owner，以及 API/Worker 跨进程就绪快照。
+**What:** 为 `/ready` 建立 API/Worker 共享的跨进程就绪快照，并验证缺失、损坏和 stale 状态均 fail closed。
 
-**Why:** 历史 `codex/fix-0.12.0.1-fresh-db-migration` 分支不能整体合并，但审计确认当前 metadata 仍为 `BIGINT id / INTEGER parent_id`，初始化手册仍调用不存在的 `scripts/data/bootstrap_roles.py`，`/ready` 仍读取 API 进程内单例而 Celery 只更新 Worker 进程副本。
+**Why:** `/ready` 仍读取 API 进程内单例，而 Celery 只更新 Worker 进程副本；多进程部署下无法形成可验证的同一就绪事实。
+
+**Resolved (2026-08-20):** 树形 `parent_id` 已与 Snowflake BIGINT 主键对齐；权限目录、五个内置角色、内置角色授权和首个管理员已由
+`AuthorizationBootstrapService` 与 `bootstrap_foundation` 统一拥有，静态生产 SQL 已删除。
 
 **Scope:**
 
-- 先对 `TreeMixin`、Permission/Menu metadata、当前 migration chain 和 Phase 11 计划做影响分析；用新随机 migration 或 Phase 11 successor 解决，不复制历史 revision
-- 冻结 `init_production_base_data.sql`、`seed_initial_data.py`、角色/权限/菜单同步和管理员 bootstrap 的唯一 owner，修正文档与可执行路径分叉
 - 为 `/ready` 建立跨进程真实测试，明确共享快照、缺失/损坏/stale 的 fail-closed 语义；不直接复用历史 Redis 实现而跳过当前 Redis 降级评审
-- 每个行为先建立 current-develop RED，再做最小实现；禁止 cherry-pick 六个历史提交或恢复 `0.12` release 元数据
+- 每个行为先建立 current-develop RED，再做最小实现；禁止恢复历史 release 元数据或复制未评审的 Redis 实现
 
-**Depends on:** 当前 Phase 10/11 schema 边界确认；Redis 共享快照的 fail-closed 所有权批准；历史 bundle 与补丁审计保留。
+**Depends on:** Redis 共享快照的 fail-closed 所有权批准；历史 bundle 与补丁审计保留。
 
 **Effort:** M
 

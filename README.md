@@ -84,25 +84,32 @@ Use separate env files for backend and frontend:
 - Backend: `.env.prod`
 - Frontend: `.env.frontend.prod`
 
-This separation is expected and does not affect deployment. The backend bootstrap flow only depends on backend env and an optional frontend source path for menu sync.
+This separation is expected and does not affect deployment. Backend route declarations are the only API-permission definition source;
+`wes_sys.permissions` is their read-only materialized catalog. The permission management page can query the catalog but cannot create, edit,
+move or delete definitions.
 
 Recommended first-time production initialization order:
 
 ```bash
 ./scripts/migrate.sh upgrade
-bash scripts/data/sync_permissions.sh
-bash scripts/data/sync_menus.sh --frontend-path /path/to/wes_frontend
-
 export BOOTSTRAP_ADMIN_USERNAME=admin
 export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
 export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
 export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
-bash scripts/data/bootstrap_admin.sh
+bash scripts/data/bootstrap_foundation.sh
+uv run python scripts/data/sync_permissions.py --check
 ```
 
 Notes:
 
-- `bootstrap_admin` is idempotent. If a superuser already exists, it skips creation.
+- `bootstrap_foundation` idempotently converges the five built-in roles, route-owned permission catalog, built-in role grants and first superuser.
+- Existing deployed databases use `sync_permissions.py --apply`, immediately followed by `--check`; `--preview` does not connect to the database.
+- `--repair-cache` is only for `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`. Keep Nginx closed, repair the two permission-cache namespaces,
+  then repeat `--check`; do not use it as routine synchronization.
+- After the pinned application pair starts, sync menus from the approved frontend image manifest before restoring Nginx; see
+  `docs/auth/menu-sync-guide.md`.
 - Production should enable snowflake IDs in `.env.prod` with `USE_SNOWFLAKE_ID=true`.
 - Keep real bootstrap credentials outside git-managed files and inject them from the deployment environment.
+- These commands and local tests prove authorization-foundation convergence only; they do not prove deployment, supplier consistency, onsite
+  integration or business acceptance.
 - Full production release steps: `docs/devops/prod-release-deploy.md`
