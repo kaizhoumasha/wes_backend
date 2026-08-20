@@ -32,12 +32,31 @@ cd /srv/wes/app
 
 export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:<approved-tag>
 export FRONTEND_IMAGE=192.168.0.220:5050/wes/wes_frontend:<approved-tag>
+export EXPECTED_BACKEND_COMMIT_SHA=<approved-backend-commit>
+export EXPECTED_FRONTEND_COMMIT_SHA=<approved-frontend-commit>
+export EXPECTED_OPENAPI_SHA256=<approved-openapi-sha256>
+export EXPECTED_PERMISSIONS_SHA256=<approved-permissions-sha256>
 
 compose() {
   docker compose --env-file .env.prod \
     -f docker-compose.yml \
     -f docker-compose.deploy.yml "$@"
 }
+
+MAINTENANCE_MODE=false
+CUTOVER_STAGE=pre-maintenance
+keep_external_entrypoint_closed() {
+  if [ "$MAINTENANCE_MODE" = true ]; then
+    echo "发布在阶段 ${CUTOVER_STAGE} 失败；外部入口保持关闭" >&2
+    compose stop nginx >/dev/null 2>&1 || true
+  fi
+}
+fail_cutover() {
+  CUTOVER_STAGE="$1"
+  keep_external_entrypoint_closed
+  exit 1
+}
+trap keep_external_entrypoint_closed EXIT
 ```
 
 ## 3. 拉取并固定前后端镜像
@@ -54,6 +73,22 @@ case "$BACKEND_IMAGE" in *@sha256:*) ;; *) echo '后端镜像没有固定 digest
 case "$FRONTEND_IMAGE" in *@sha256:*) ;; *) echo '前端镜像没有固定 digest' >&2; exit 1 ;; esac
 export BACKEND_IMAGE FRONTEND_IMAGE
 
+BACKEND_REVISION=$(docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE")
+FRONTEND_REVISION=$(docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE")
+FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE")
+FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE")
+FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE")
+[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || exit 1
+[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] || exit 1
+
 compose config >/dev/null
 ```
 
@@ -66,11 +101,16 @@ compose config >/dev/null
 ```bash
 NGINX_HTTP_PORT=$(sed -n 's/^NGINX_HTTP_PORT=//p' .env.prod | tail -n 1)
 NGINX_HTTP_PORT=${NGINX_HTTP_PORT:-80}
-compose stop nginx
-if curl -fsS "http://127.0.0.1:${NGINX_HTTP_PORT}/" >/dev/null 2>&1; then
-  echo "Nginx 外部端口仍开放: ${NGINX_HTTP_PORT}" >&2
-  exit 1
-fi
+CUTOVER_STAGE=maintenance-stop
+MAINTENANCE_MODE=true
+compose stop nginx || fail_cutover maintenance-stop
+CLOSE_RETRY=0
+while curl -sS --connect-timeout 1 --max-time 2 \
+  "http://127.0.0.1:${NGINX_HTTP_PORT}/" >/dev/null 2>&1; do
+  CLOSE_RETRY=$((CLOSE_RETRY + 1))
+  [ "$CLOSE_RETRY" -lt 10 ] || fail_cutover listener-closure
+  sleep 1
+done
 ```
 
 只按 Compose project/service 标签识别容器，禁止依赖 `container_name`：
@@ -79,31 +119,35 @@ fi
 compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env.prod | tail -n 1)
 compose_project_name=${compose_project_name:-$(basename "$PWD")}
 
-for container_id in $(docker ps -aq \
-  --filter "label=com.docker.compose.project=${compose_project_name}"); do
+PROJECT_CONTAINER_IDS=$(docker ps -q \
+  --filter "label=com.docker.compose.project=${compose_project_name}") || fail_cutover service-discovery
+for container_id in $PROJECT_CONTAINER_IDS; do
   compose_service=$(docker inspect --format \
-    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id")
+    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id") || fail_cutover service-discovery
   case "$compose_service" in
     db|redis) ;;
     api|celery|celery-wms-fulfillment|celery_beat|flower|frontend|nginx)
-      docker stop "$container_id" >/dev/null
+      docker stop "$container_id" >/dev/null || fail_cutover application-stop
       ;;
     *)
       echo "未知 Compose service，保持维护态: ${compose_service:-<empty>}" >&2
-      exit 1
+      fail_cutover unknown-service
       ;;
   esac
 done
 
-compose up -d --wait db redis
+compose up -d --wait db redis || fail_cutover infrastructure-readiness
 
-for container_id in $(docker ps -q \
-  --filter "label=com.docker.compose.project=${compose_project_name}"); do
+REMAINING_CONTAINER_IDS=$(docker ps -q \
+  --filter "label=com.docker.compose.project=${compose_project_name}") \
+  || fail_cutover remaining-service-discovery
+for container_id in $REMAINING_CONTAINER_IDS; do
   compose_service=$(docker inspect --format \
-    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id")
+    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id") \
+    || fail_cutover remaining-service-discovery
   case "$compose_service" in
     db|redis) ;;
-    *) echo "迁移前仍有应用运行: ${compose_service:-<empty>}" >&2; exit 1 ;;
+    *) echo "迁移前仍有应用运行: ${compose_service:-<empty>}" >&2; fail_cutover remaining-application-service ;;
   esac
 done
 ```
@@ -130,12 +174,25 @@ compose run --rm --no-deps \
 ### 6.1 Fresh DB
 
 ```bash
-compose run --rm --no-deps \
+if BOOTSTRAP_OUTPUT=$(compose run --rm --no-deps \
   -e DATABASE_RUNTIME_ROLE=cli \
   -e DATABASE_POOL_SIZE=1 \
   -e DATABASE_MAX_OVERFLOW=0 \
   --entrypoint /bin/bash \
-  api scripts/data/bootstrap_foundation.sh
+  api scripts/data/bootstrap_foundation.sh 2>&1); then
+  printf '%s\n' "$BOOTSTRAP_OUTPUT"
+else
+  BOOTSTRAP_STATUS=$?
+  printf '%s\n' "$BOOTSTRAP_OUTPUT"
+  echo "bootstrap exit status: ${BOOTSTRAP_STATUS}" >&2
+  printf '%s\n' "$BOOTSTRAP_OUTPUT" \
+    | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED' \
+    || fail_cutover authorization-bootstrap
+  compose run --rm --no-deps \
+    --entrypoint /opt/venv/bin/python \
+    api scripts/data/sync_permissions.py --repair-cache \
+    || fail_cutover authorization-cache-repair
+fi
 ```
 
 ### 6.2 已有部署数据库
@@ -160,22 +217,7 @@ compose run --rm --no-deps \
   api scripts/data/sync_permissions.py --check
 ```
 
-若 mutation 失败且没有 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，立即停止。只有出现该专用标记时，数据库才已提交；不得重跑 bootstrap 或 `--apply`，只允许：
-
-```bash
-compose run --rm --no-deps \
-  --entrypoint /opt/venv/bin/python \
-  api scripts/data/sync_permissions.py --repair-cache
-
-compose run --rm --no-deps \
-  -e DATABASE_RUNTIME_ROLE=cli \
-  -e DATABASE_POOL_SIZE=1 \
-  -e DATABASE_MAX_OVERFLOW=0 \
-  --entrypoint /opt/venv/bin/python \
-  api scripts/data/sync_permissions.py --check
-```
-
-`--repair-cache` 只清理两个权限缓存命名空间。repair 或新的 `--check` 失败时继续保持维护态。
+6.1 的失败分支只接受独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，并已在同一分支执行一次 `--repair-cache`；不得重跑 bootstrap 或再次 repair。`--apply` 的任何非零退出都 fail closed。`--repair-cache` 只清理两个权限缓存命名空间；repair 或随后独立的 `--check` 失败时，EXIT trap 会再次停止 Nginx。
 
 ## 7. 启动固定版本并执行内部门禁
 
@@ -183,14 +225,39 @@ compose run --rm --no-deps \
 
 ```bash
 compose up -d --force-recreate --wait \
-  api celery celery-wms-fulfillment celery_beat flower frontend
+  api celery celery-wms-fulfillment celery_beat flower frontend \
+  || fail_cutover application-start
 
-compose exec -T api curl -fsS http://127.0.0.1:8001/ready >/dev/null
+compose exec -T api curl -fsS http://127.0.0.1:8001/ready >/dev/null \
+  || fail_cutover backend-readiness
 compose exec -T frontend wget --no-verbose --tries=1 --spider \
-  http://127.0.0.1:5173/ >/dev/null
+  http://127.0.0.1:5173/ >/dev/null || fail_cutover frontend-asset
+
+BACKEND_REVISION=$(docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE") \
+  || fail_cutover backend-image-revision
+FRONTEND_REVISION=$(docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover frontend-image-revision
+FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover frontend-backend-provenance
+FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover openapi-provenance
+FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover permission-provenance
+[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || fail_cutover backend-image-revision
+[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || fail_cutover frontend-image-revision
+[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] \
+  || fail_cutover frontend-backend-provenance
+[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || fail_cutover openapi-provenance
+[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] \
+  || fail_cutover permission-provenance
 ```
 
-在恢复 Nginx 前还必须完成并记录：
+上述可执行来源门禁通过后，在恢复 Nginx 前还必须完成并记录：
 
 - 后端和前端实际容器镜像 digest 与第 3 节固定值一致；
 - 镜像 OCI revision 与批准的前后端提交一致；
@@ -205,10 +272,14 @@ compose exec -T frontend wget --no-verbose --tries=1 --spider \
 只有前述全部门禁通过后执行：
 
 ```bash
-compose up -d --force-recreate --wait nginx
-curl --fail "http://127.0.0.1:${NGINX_HTTP_PORT}/health"
-curl --fail --output /dev/null "http://127.0.0.1:${NGINX_HTTP_PORT}/"
-compose ps
+compose up -d --no-deps nginx || fail_cutover external-entrypoint
+curl --fail --show-error --connect-timeout 1 --max-time 10 \
+  "http://127.0.0.1:${NGINX_HTTP_PORT}/health" || fail_cutover external-health
+curl --fail --show-error --connect-timeout 1 --max-time 10 --output /dev/null \
+  "http://127.0.0.1:${NGINX_HTTP_PORT}/" || fail_cutover external-frontend
+compose ps || fail_cutover final-compose-status
+MAINTENANCE_MODE=false
+trap - EXIT
 ```
 
 外部检查失败时立即再次执行 `compose stop nginx`，记录失败阶段，不把内部健康或首页单项成功提升为部署完成。

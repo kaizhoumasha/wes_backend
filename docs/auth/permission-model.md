@@ -105,7 +105,7 @@ uv run python scripts/data/sync_permissions.py --check
 
 ## 7. 部署顺序
 
-生产和 TEST 切换都必须遵守以下顺序：固定前后端镜像 digest → 关闭 Nginx 并确认外部端口关闭 → 通过 Compose 标签停止旧应用且拒绝未知 service → 新后端镜像执行 Alembic → fresh DB bootstrap 或已有 DB `--apply` → 独立 `--check` → 启动固定版本应用并完成内部校验 → 最后恢复 Nginx。
+生产和 TEST 切换都必须遵守以下顺序：固定前后端镜像 digest 并核对 backend/frontend revision、frontend 绑定的 backend revision 与 OpenAPI/permission labels → 关闭 Nginx 并用非 `-f` 监听探针确认外部端口关闭 → 通过已检查的 Compose 标签发现停止旧应用且拒绝未知 service → 新后端镜像执行 Alembic → fresh DB bootstrap 或已有 DB `--apply` → 独立 `--check` → 启动固定版本应用并完成内部校验 → 最后只启动 Nginx。Jenkins TEST 每次部署创建唯一新数据库并先证明为空，不清空持久 volume，也不把旧 TEST 数据库冒充 fresh DB。
 
 任何迁移、授权、缓存修复、内部 readiness 或来源校验失败，都必须保持外部入口关闭。完整命令见：
 

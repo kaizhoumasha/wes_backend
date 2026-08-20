@@ -331,6 +331,33 @@ def test_test_deploy_requires_and_compares_the_complete_paired_image_provenance(
 
 
 @pytest.mark.parametrize(
+    "relative_path",
+    (
+        "docs/devops/prod-release-deploy.md",
+        "docs/devops/rocky-linux-server-initialization.md",
+    ),
+)
+def test_current_release_commands_use_the_same_fail_closed_cutover_contract(relative_path: str) -> None:
+    document = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+    assert "for container_id in $(" not in document
+    assert 'curl -fsS "http://127.0.0.1:${NGINX_HTTP_PORT}/"' not in document
+    assert "compose up -d --force-recreate --wait nginx" not in document
+    for contract_marker in (
+        "PROJECT_CONTAINER_IDS=$(",
+        "REMAINING_CONTAINER_IDS=$(",
+        "curl -sS --connect-timeout 1 --max-time 2",
+        "com.zontec.wes.backend-contract-revision",
+        "com.zontec.wes.openapi-sha256",
+        "com.zontec.wes.permissions-sha256",
+        "compose up -d --no-deps nginx",
+        "fail_cutover external-health",
+        "fail_cutover external-frontend",
+    ):
+        assert contract_marker in document
+
+
+@pytest.mark.parametrize(
     "fail_stage",
     [
         "maintenance-stop",

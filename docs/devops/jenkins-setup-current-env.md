@@ -288,15 +288,16 @@ docker-compose --version
 
 部署行为约束：
 
-- `wes_test_deploy` 是独立部署任务，由部署人员手工触发并选择前后端镜像
+- `wes_test_deploy` 是独立部署任务；前端 producer 传入无默认值的 immutable 前后端 tag、两端 commit、OpenAPI SHA 与权限 SHA，缺少或不匹配即拒绝
 - 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
 - 前后端镜像拉取后固定到 digest；Nginx 停止且外部端口确认关闭后，按 Compose project/service 标签停止旧应用
 - 迁移前只允许 `db` 与 `redis` 运行；未知 service 使切换失败并保持 Nginx 关闭
+- 每次部署先在保留的 TEST PostgreSQL volume 中创建由 Jenkins build/commit 唯一命名的新数据库并证明无业务表；不删除或复用旧 TEST 数据库
 - 使用新后端镜像的一次性命令执行 Alembic、fresh-DB `bootstrap_foundation` 和权限 `--check`
 - 若 bootstrap 报告 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，只执行 `--repair-cache`，再执行新的 `--check`，不得重跑数据库 mutation
-- 零漂移后才使用 `docker-compose.test-deploy.yml` 重建 TEST 应用，并从固定前端镜像提取菜单清单
+- 零漂移后才使用 `docker-compose.test-deploy.yml` 重建 `api`、两个 Celery worker、Beat、Flower 与 frontend，并从固定前端镜像提取菜单清单
 - 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
-- 后端 readiness、前端资源、镜像 revision 和菜单同步均通过后才恢复 Nginx，并检查 `/health` 和首页
+- 后端 `/ready`、前端资源、两端 revision、前端绑定的 backend revision、OpenAPI/permission labels 和菜单同步均通过后，才以 `compose up -d --no-deps nginx` 恢复入口；任一外部检查失败立即再次停止 Nginx
 
 PROD 边界说明：
 
