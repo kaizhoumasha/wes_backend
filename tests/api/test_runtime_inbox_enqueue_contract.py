@@ -10,19 +10,6 @@ if TYPE_CHECKING:
     import pytest
 
 
-def test_callback_enqueue_uses_runtime_gateway_and_absorbs_broker_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.app.callback.v1 import callback
-
-    gateway = MagicMock()
-    gateway.enqueue_runtime_inbox.side_effect = ConnectionError("broker unavailable")
-    monkeypatch.setattr(callback, "task_queue_gateway", gateway)
-
-    callback._enqueue_runtime_inbox_processing()
-
-    gateway.enqueue_runtime_inbox.assert_called_once_with(limit=10)
-    gateway.enqueue_workline_inbox.assert_not_called()
-
-
 def test_all_workline_inbox_callers_use_runtime_enqueue_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.app.workline.v1 import operation
 

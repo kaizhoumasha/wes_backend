@@ -411,7 +411,7 @@ async def test_assign_permissions_commits_and_invalidates_permission_cache() -> 
     app = await _seed_app(repo)
     app_id = _require_id(app)
     permission_key = CacheKeys.app_permissions(app_id)
-    cache.storage[permission_key] = ["api:callback:event"]
+    cache.storage[permission_key] = ["api:try:invoke"]
 
     await service.assign_permissions(db, cache, app_id, [11, 12])
 
@@ -445,7 +445,7 @@ async def test_revoke_app_invalidates_permission_cache() -> None:
     service._query_by_app_id = query  # type: ignore[method-assign]
 
     _ = await service.get_by_app_id(db, cache, app.app_id)
-    cache.storage[permission_key] = ["api:callback:event"]
+    cache.storage[permission_key] = ["api:try:invoke"]
 
     revoked = await service.revoke_app(db, app.app_id, cache)
 

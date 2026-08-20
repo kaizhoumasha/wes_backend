@@ -13,9 +13,7 @@ callback fixture -> trace_id / event_id -> blocking-point -> diagnostic card -> 
 
 1. 后端、Postgres/TimescaleDB、Redis 已启动。
 2. 数据库迁移已执行。
-3. 当前用户或 API token 具备以下权限：
-   - `api:callback:event`
-   - `api:callback:result`
+3. 当前用户具备以下后台诊断权限：
    - `biz:workline:list`
    - `biz:workline:update`
 4. 已有可校验的设备和 WorkLine 配置。Phase 5 当前没有业务插件，本指南只验证入站、诊断和 replay 等通用能力；

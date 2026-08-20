@@ -186,6 +186,12 @@ def test_full_application_permission_routes_are_unique_and_catalog_builds() -> N
     assert len({payload["name"] for payload in catalog}) == len(catalog)
 
 
+def test_full_application_permission_catalog_excludes_retired_external_callback_permission() -> None:
+    permission_names = {permission["name"] for permission in scan_routes_for_permissions(create_app())}
+
+    assert "api:callback:event" not in permission_names
+
+
 def test_scan_routes_for_permissions_excludes_permanent_delete_when_delete_generation_is_disabled() -> None:
     app = FastAPI()
     api = BaseAPI(
