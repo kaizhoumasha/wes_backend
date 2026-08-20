@@ -163,8 +163,11 @@ async def test_bootstrap_foundation_reports_postcommit_cache_failure_without_fal
     )
 
     captured = capsys.readouterr()
-    assert exit_code != 0
-    assert "DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED" in captured.err
+    assert exit_code == bootstrap_foundation.POSTCOMMIT_CACHE_FAILURE_EXIT_CODE
+    assert captured.err.splitlines() == [
+        "DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED",
+        "CACHE_INVALIDATION_FAILURE_DETAIL: RuntimeError: redis unavailable",
+    ]
     assert "回滚" not in captured.out + captured.err
     assert "✅" not in captured.out
     session.commit.assert_awaited_once_with()

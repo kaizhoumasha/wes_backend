@@ -153,8 +153,9 @@ async def main_async(args: argparse.Namespace) -> int:
         try:
             await authorization_service.invalidate_caches(result, _runtime_cache())
         except Exception as exc:
+            print(DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED, file=sys.stderr)
             print(
-                f"{DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED}: {type(exc).__name__}: {exc}",
+                f"CACHE_INVALIDATION_FAILURE_DETAIL: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
             return POSTCOMMIT_CACHE_FAILURE_EXIT_CODE
