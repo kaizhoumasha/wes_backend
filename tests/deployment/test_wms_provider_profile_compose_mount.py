@@ -9,7 +9,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_PROFILE_PATH = "/run/wes/wms-provider.yaml"
 PRODUCTION_PROFILE_CONSUMERS = ("api", "celery", "celery-wms-fulfillment", "celery_beat")
-TEST_DEPLOY_PROFILE_CONSUMERS = ("api", "celery", "celery-wms-fulfillment")
+TEST_DEPLOY_PROFILE_CONSUMERS = ("api", "celery", "celery-wms-fulfillment", "celery_beat")
 REQUIRED_PROFILE_MOUNT = (
     f"${{WMS_PROVIDER_PROFILE_HOST_FILE:?WMS_PROVIDER_PROFILE_HOST_FILE is required}}:{CONTAINER_PROFILE_PATH}:ro"
 )
