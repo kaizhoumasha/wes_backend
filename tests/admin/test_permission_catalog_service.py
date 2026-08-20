@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,6 +12,8 @@ from src.app.admin.services.permission_catalog_service import (
     PermissionCatalogSyncResult,
 )
 from src.utils.permission_scanner import PermissionCatalogError
+
+permission_catalog_module = importlib.import_module("src.app.admin.services.permission_catalog_service")
 
 
 def _catalog_app() -> FastAPI:
@@ -191,5 +194,68 @@ async def test_sync_rejects_cycle_in_actual_parent_graph_and_rolls_back() -> Non
     repository.create_catalog_node.assert_not_awaited()
     repository.update_catalog_node.assert_not_awaited()
     repository.delete_catalog_node.assert_not_awaited()
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_message"),
+    (
+        ("create", "创建权限目录节点失败"),
+        ("update", "更新权限目录节点失败"),
+        ("delete", "删除权限目录节点失败"),
+    ),
+)
+async def test_sync_fails_closed_when_repository_cannot_confirm_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    expected_message: str,
+) -> None:
+    desired_payload = {
+        "name": "ops:system:group",
+        "description": "ops 模块权限分组",
+        "type": "user_api",
+        "category": "ops",
+        "resource": "system",
+        "action": "group",
+        "method": None,
+        "path": None,
+        "parent_id": None,
+        "sort_order": 1,
+    }
+    desired_node = SimpleNamespace(id=1, is_deleted=False, version=1, **desired_payload)
+    nodes: list[SimpleNamespace]
+    if failure_stage == "create":
+        nodes = []
+    elif failure_stage == "update":
+        nodes = [SimpleNamespace(**{**vars(desired_node), "description": "旧说明"})]
+    else:
+        stale_node = _node(
+            node_id=2,
+            name="ops:stale:list",
+            description="stale",
+            resource="stale",
+            action="list",
+            path="/stale",
+            parent_id=None,
+            sort_order=1,
+        )
+        nodes = [desired_node, stale_node]
+
+    repository = _repository(nodes=nodes)
+    if failure_stage == "create":
+        repository.create_catalog_node.return_value = None
+        repository.create_catalog_node.side_effect = None
+    elif failure_stage == "update":
+        repository.update_catalog_node.return_value = None
+    else:
+        repository.delete_catalog_node.return_value = False
+
+    monkeypatch.setattr(permission_catalog_module, "build_permission_catalog", lambda _app: [desired_payload])
+    db = AsyncMock()
+
+    with pytest.raises(PermissionCatalogError, match=expected_message):
+        await PermissionCatalogService(repository).sync(FastAPI(), db, dry_run=False)
+
     db.rollback.assert_awaited_once()
     db.commit.assert_not_awaited()
