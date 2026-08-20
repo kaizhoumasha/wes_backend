@@ -21,6 +21,7 @@ from src.app.admin.services import (
 )
 from src.core.security import get_password_hash
 from src.database.redis_cache import RedisCache
+from src.register import create_app
 from src.utils.permission_scanner import build_permission_catalog
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
@@ -30,34 +31,23 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 
 
-def _authorization_app() -> FastAPI:
-    app = FastAPI()
-    definitions = (
-        ("admin:user:list", "/admin/users", "GET"),
-        ("admin:audit:export", "/admin/audits/export", "POST"),
-        ("biz:order:detail", "/biz/orders/{id}", "GET"),
-        ("biz:order:update", "/biz/orders/{id}", "PUT"),
+def _add_new_current_permission(app: FastAPI) -> None:
+    async def require_permission() -> None:
+        return None
+
+    require_permission.permission_required = "sys:auditlog:recent"  # type: ignore[attr-defined]
+    require_permission.is_rbac = True  # type: ignore[attr-defined]
+
+    async def endpoint() -> None:
+        return None
+
+    app.add_api_route(
+        "/api/v1/sys/audit-logs/recent",
+        endpoint,
+        dependencies=[Depends(require_permission)],
+        methods=["GET"],
+        name="authorization_new_auditlog_read",
     )
-
-    for index, (permission_name, path, method) in enumerate(definitions):
-
-        async def require_permission() -> None:
-            return None
-
-        require_permission.permission_required = permission_name  # type: ignore[attr-defined]
-        require_permission.is_rbac = True  # type: ignore[attr-defined]
-
-        async def endpoint() -> None:
-            return None
-
-        app.add_api_route(
-            path,
-            endpoint,
-            dependencies=[Depends(require_permission)],
-            methods=[method],
-            name=f"authorization_endpoint_{index}",
-        )
-    return app
 
 
 async def _count(db: AsyncSession, table: Any) -> int:
@@ -75,10 +65,26 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
             run_alembic("upgrade", "head", database_url=database_url)
             engine = create_async_engine(database_url, pool_pre_ping=True)
             session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-            app = _authorization_app()
+            app = create_app()
             config = BootstrapFoundationConfig("prod-admin", "StrongPassw0rd!")
             try:
                 async with session_factory() as db:
+                    service = AuthorizationBootstrapService()
+                    fresh_preview = await service.converge_authorization(app, db, dry_run=True)
+                    assert fresh_preview.roles == {"created": 5, "updated": 0, "skipped": 0}
+                    assert fresh_preview.permissions.created == 180
+                    assert fresh_preview.role_permissions == {
+                        "added": 460,
+                        "removed": 0,
+                        "skipped": 0,
+                        "roles_processed": 5,
+                    }
+                    assert await _count(db, Role) == 0
+                    assert await _count(db, Permission) == 0
+                    assert await _count(db, User) == 0
+                    assert await _count(db, role_permission) == 0
+                    assert await _count(db, user_role) == 0
+
                     failing_service = AuthorizationBootstrapService(user_repo=_FailBeforeAdminRoleFlushUserRepository())
                     with pytest.raises(RuntimeError, match="injected failure"):
                         await failing_service.bootstrap(app, db, config)
@@ -90,12 +96,12 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     assert await _count(db, role_permission) == 0
                     assert await _count(db, user_role) == 0
 
-                    service = AuthorizationBootstrapService()
                     first = await service.bootstrap(app, db, config)
                     await db.commit()
 
                     assert first.admin_action == "created"
                     assert first.admin_role_added is True
+                    assert first.authorization.role_permissions == fresh_preview.role_permissions
                     roles = list((await db.execute(select(Role).where(Role.is_deleted.is_(False)))).scalars())
                     assert {role.name for role in roles} == {
                         "系统管理员",
@@ -115,19 +121,49 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     actual_role_permissions: dict[str, set[str]] = {role.name: set() for role in roles}
                     for role_id, permission_id in (await db.execute(select(role_permission))).all():
                         actual_role_permissions[role_names_by_id[role_id]].add(permission_names_by_id[permission_id])
-                    assert actual_role_permissions == {
-                        "系统管理员": expected_permission_names,
-                        "管理员": {
-                            "admin:system:group",
-                            "admin:audit:group",
-                            "admin:user:group",
-                            "admin:audit:export",
-                            "admin:user:list",
-                        },
-                        "运营人员": {"admin:user:list", "biz:order:detail"},
-                        "财务人员": {"admin:audit:group", "admin:audit:export"},
-                        "普通用户": {"admin:user:list", "biz:order:detail"},
+                    assert {role_name: len(names) for role_name, names in actual_role_permissions.items()} == {
+                        "系统管理员": 180,
+                        "管理员": 61,
+                        "运营人员": 108,
+                        "财务人员": 3,
+                        "普通用户": 108,
                     }
+                    assert actual_role_permissions["系统管理员"] == expected_permission_names
+                    assert actual_role_permissions["财务人员"] == {
+                        "sys:auditlog:group",
+                        "sys:auditlog:detail",
+                        "sys:auditlog:list",
+                    }
+                    current_read_permissions = {
+                        "admin:menu:list",
+                        "admin:menu:siblings",
+                        "admin:permission:ancestors",
+                        "biz:workline:active-objects",
+                        "biz:workline:configuration-status",
+                    }
+                    assert current_read_permissions <= actual_role_permissions["运营人员"]
+                    assert current_read_permissions <= actual_role_permissions["普通用户"]
+                    assert "biz:workline:update" not in actual_role_permissions["运营人员"]
+                    assert "biz:workline:update" not in actual_role_permissions["普通用户"]
+
+                    permission_count = await _count(db, Permission)
+                    role_permission_count = await _count(db, role_permission)
+                    _add_new_current_permission(app)
+                    new_permission_preview = await service.converge_authorization(app, db, dry_run=True)
+                    assert new_permission_preview.permissions.created == 1
+                    assert new_permission_preview.role_permissions == {
+                        "added": 4,
+                        "removed": 0,
+                        "skipped": 460,
+                        "roles_processed": 5,
+                    }
+                    assert await _count(db, Permission) == permission_count
+                    assert await _count(db, role_permission) == role_permission_count
+
+                    new_permission_result = await service.converge_authorization(app, db, dry_run=False)
+                    assert new_permission_result.permissions.created == 1
+                    assert new_permission_result.role_permissions == new_permission_preview.role_permissions
+                    await db.commit()
 
                     admin = (await db.execute(select(User).where(User.username == "prod-admin"))).scalar_one()
                     system_role = next(role for role in roles if role.name == "系统管理员")
@@ -171,7 +207,7 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                         permission for permission in permissions if permission.name == "admin:user:list"
                     )
                     unexpected_permission = next(
-                        permission for permission in permissions if permission.name == "biz:order:update"
+                        permission for permission in permissions if permission.name == "biz:workline:update"
                     )
                     assert missing_permission.id is not None
                     assert unexpected_permission.id is not None

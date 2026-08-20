@@ -16,6 +16,7 @@ from src.app.admin.services.permission_catalog_service import (
 )
 from src.core.rbac import invalidate_users_permissions
 from src.core.security import get_password_hash
+from src.utils.permission_scanner import build_permission_catalog
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -31,17 +32,42 @@ if TYPE_CHECKING:
 class _BuiltinRoleSpec:
     name: str
     description: str
-    matches_permission: Callable[[str], bool]
+    matches_permission: Callable[[_PolicyPermission], bool]
 
 
-_READ_ONLY_SUFFIXES = (":list", ":detail", ":tree")
-_USER_READ_ONLY_SUFFIXES = (":list", ":detail")
+@dataclass(frozen=True, slots=True)
+class _PolicyPermission:
+    id: int | None
+    name: str
+    category: str | None
+    resource: str | None
+    action: str | None
+    method: str | None
+    path: str | None
+
+
+def _is_semantic_read(permission: _PolicyPermission) -> bool:
+    return permission.method == "GET" or (
+        permission.method == "POST"
+        and permission.action == "list"
+        and (permission.path or "").rstrip("/").endswith("/query")
+    )
+
+
+def _is_admin_permission(permission: _PolicyPermission) -> bool:
+    return permission.category == "admin"
+
+
+def _is_finance_permission(permission: _PolicyPermission) -> bool:
+    return permission.category == "sys" and permission.resource == "auditlog"
+
+
 BUILTIN_ROLE_SPECS = (
-    _BuiltinRoleSpec("系统管理员", "系统最高权限，拥有所有操作权限", lambda _name: True),
-    _BuiltinRoleSpec("管理员", "系统管理员，拥有大部分管理权限", lambda name: name.startswith("admin:")),
-    _BuiltinRoleSpec("运营人员", "日常运营操作人员", lambda name: name.endswith(_READ_ONLY_SUFFIXES)),
-    _BuiltinRoleSpec("财务人员", "财务相关操作人员", lambda name: name.startswith("admin:audit:")),
-    _BuiltinRoleSpec("普通用户", "普通用户，基础查看权限", lambda name: name.endswith(_USER_READ_ONLY_SUFFIXES)),
+    _BuiltinRoleSpec("系统管理员", "系统最高权限，拥有所有操作权限", lambda _permission: True),
+    _BuiltinRoleSpec("管理员", "系统管理员，拥有大部分管理权限", _is_admin_permission),
+    _BuiltinRoleSpec("运营人员", "日常运营操作人员", _is_semantic_read),
+    _BuiltinRoleSpec("财务人员", "财务相关操作人员", _is_finance_permission),
+    _BuiltinRoleSpec("普通用户", "普通用户，基础查看权限", _is_semantic_read),
 )
 
 _CACHE_INVALIDATION_ATTEMPTS = 3
@@ -157,12 +183,26 @@ class AuthorizationBootstrapService:
         roles: dict[str, Role],
         *,
         dry_run: bool,
+        desired_permissions: tuple[_PolicyPermission, ...] | None = None,
     ) -> tuple[dict[str, int], set[int]]:
-        permissions = [
-            permission
+        persisted_permissions = [
+            _PolicyPermission(
+                id=permission.id,
+                name=permission.name,
+                category=permission.category,
+                resource=permission.resource,
+                action=permission.action,
+                method=permission.method,
+                path=permission.path,
+            )
             for permission in await self.permission_repo.list_catalog_nodes(db)
             if not permission.is_deleted and permission.id is not None
         ]
+        desired = desired_permissions or tuple(persisted_permissions)
+        desired_by_name = {permission.name: permission for permission in desired}
+        persisted_by_name = {
+            permission.name: permission for permission in persisted_permissions if permission.name in desired_by_name
+        }
         role_ids = {role.id for role in roles.values() if role.id is not None}
         current_by_role = await self.role_repo.get_permission_ids_by_role_ids(db, role_ids)
         affected_user_ids: set[int] = set()
@@ -170,26 +210,41 @@ class AuthorizationBootstrapService:
 
         for spec in BUILTIN_ROLE_SPECS:
             role = roles.get(spec.name)
-            if role is None or role.id is None:
-                continue
             result["roles_processed"] += 1
-            expected = {
-                permission.id
-                for permission in permissions
-                if permission.id is not None and spec.matches_permission(permission.name)
+            expected_names = {
+                permission.name for permission in desired_by_name.values() if spec.matches_permission(permission)
             }
-            current = current_by_role.get(role.id, set())
-            added = expected - current
-            removed = current - expected
-            result["added"] += len(added)
-            result["removed"] += len(removed)
-            result["skipped"] += len(expected & current)
+            current_ids = current_by_role.get(role.id, set()) if role is not None and role.id is not None else set()
+            current_names = {
+                name
+                for name, permission in persisted_by_name.items()
+                if permission.id is not None and permission.id in current_ids
+            }
+            added_names = expected_names - current_names
+            removed_names = current_names - expected_names
+            result["added"] += len(added_names)
+            result["removed"] += len(removed_names)
+            result["skipped"] += len(expected_names & current_names)
 
-            if not added and not removed:
+            if not added_names and not removed_names:
+                continue
+            if role is None or role.id is None:
                 continue
             affected_user_ids.update(await self.role_repo.get_user_ids_by_role_id(db, role.id))
             if not dry_run:
-                await self.role_repo.apply_permission_delta(db, role.id, added, removed)
+                added_ids = {
+                    permission.id
+                    for name in added_names
+                    if (permission := persisted_by_name.get(name)) is not None and permission.id is not None
+                }
+                if len(added_ids) != len(added_names):
+                    raise RuntimeError(f"内置角色权限尚未持久化: {spec.name}")
+                removed_ids = {
+                    permission.id
+                    for name in removed_names
+                    if (permission := persisted_by_name.get(name)) is not None and permission.id is not None
+                }
+                await self.role_repo.apply_permission_delta(db, role.id, added_ids, removed_ids)
 
         return result, affected_user_ids
 
@@ -200,12 +255,27 @@ class AuthorizationBootstrapService:
         *,
         dry_run: bool = False,
     ) -> AuthorizationSyncResult:
-        roles_result, roles = await self._converge_builtin_roles(db, dry_run=dry_run)
         permission_result = await self.catalog_service.sync(app, db, dry_run=dry_run)
+        desired_permissions: tuple[_PolicyPermission, ...] | None = None
+        if dry_run:
+            desired_permissions = tuple(
+                _PolicyPermission(
+                    id=None,
+                    name=payload["name"],
+                    category=payload.get("category"),
+                    resource=payload.get("resource"),
+                    action=payload.get("action"),
+                    method=payload.get("method"),
+                    path=payload.get("path"),
+                )
+                for payload in build_permission_catalog(app)
+            )
+        roles_result, roles = await self._converge_builtin_roles(db, dry_run=dry_run)
         role_permission_result, role_user_ids = await self._converge_builtin_role_permissions(
             db,
             roles,
             dry_run=dry_run,
+            desired_permissions=desired_permissions,
         )
         return AuthorizationSyncResult(
             roles=roles_result,
