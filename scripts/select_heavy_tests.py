@@ -19,7 +19,12 @@ from pathlib import Path, PurePosixPath
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
 HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
 RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
-RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
+RETIRED_REMOVED_PATHS = frozenset(
+    {
+        "Jenkinsfile",
+        "scripts/data/init_production_base_data.sql",
+    }
+)
 CANDIDATE_GLOBS = (
     "src/**",
     "deployment/**",

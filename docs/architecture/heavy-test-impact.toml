@@ -1471,12 +1471,6 @@ heavy_tests = [
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
-# 生产初始化仅收敛退役业务 seed 与菜单路由，由部署 FAST 合同验证；内容变化后恢复 fail closed。
-[[mapping]]
-source_glob = "scripts/data/init_production_base_data.sql"
-heavy_tests = []
-reviewed_content_sha256 = "6dd684ed5ab2db1ec9ffbaa01c4d8f4eda3c03a367a75ec43ad3af4adb0c3b6b"
-
 [[mapping]]
 source_glob = "scripts/data/reset_runtime_data.py"
 heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
@@ -1598,14 +1592,6 @@ heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 
 [[mapping]]
 source_glob = "scripts/data/bootstrap_foundation.sh"
-heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
-
-[[mapping]]
-source_glob = "scripts/data/bootstrap_admin.py"
-heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
-
-[[mapping]]
-source_glob = "scripts/data/bootstrap_admin.sh"
 heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 
 [[mapping]]

@@ -163,3 +163,52 @@ def test_main_rejects_reintroduced_root_jenkinsfile(tmp_path, capsys) -> None:
 
     assert exit_code == 2
     assert "未分类改动路径" in capsys.readouterr().err
+
+
+def test_main_skips_deleted_static_production_base_data_sql(tmp_path, capsys) -> None:
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text('ignore_globs = [".github/**"]\n', encoding="utf-8")
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["git", "diff"],
+            0,
+            stdout="scripts/data/init_production_base_data.sql\n",
+            stderr="",
+        )
+    )
+
+    exit_code = main(
+        ["--base", "develop"],
+        repo_root=tmp_path,
+        mapping_path=mapping_path,
+        runner=runner,
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_rejects_reintroduced_static_production_base_data_sql(tmp_path, capsys) -> None:
+    retired_sql = tmp_path / "scripts/data/init_production_base_data.sql"
+    retired_sql.parent.mkdir(parents=True)
+    retired_sql.write_text("SELECT 1;\n", encoding="utf-8")
+    mapping_path = tmp_path / "heavy-test-impact.toml"
+    mapping_path.write_text('ignore_globs = [".github/**"]\n', encoding="utf-8")
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["git", "diff"],
+            0,
+            stdout="scripts/data/init_production_base_data.sql\n",
+            stderr="",
+        )
+    )
+
+    exit_code = main(
+        ["--base", "develop"],
+        repo_root=tmp_path,
+        mapping_path=mapping_path,
+        runner=runner,
+    )
+
+    assert exit_code == 2
+    assert "候选路径未配置 mapping/NONE" in capsys.readouterr().err

@@ -163,10 +163,53 @@ def test_canonical_development_runner_migrates_seeds_checks_and_preserves_data()
     assert "down --volumes" not in runner
 
 
-def test_test_deploy_uses_explicit_permission_apply_mode() -> None:
+def test_test_deploy_converges_authorization_before_starting_application_services() -> None:
     pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
 
-    assert "scripts/data/sync_permissions.py --apply" in pipeline
+    stage_markers = [
+        "🔒 进入维护态并停止旧应用容器",
+        "🗄️ 执行数据库迁移",
+        "🔐 执行 fresh DB 基础授权初始化",
+        "🔎 校验权限目录零漂移",
+        "🐳 启动已固定版本的应用服务",
+        "🌐 恢复外部入口",
+    ]
+    positions = [pipeline.index(marker) for marker in stage_markers]
+
+    assert positions == sorted(positions)
+    assert "label=com.docker.compose.project=${compose_project_name}" in pipeline
+    assert '{{ index .Config.Labels "com.docker.compose.service" }}' in pipeline
+    assert "db|redis)" in pipeline
+    assert "未知 Compose application service" in pipeline
+    assert "--entrypoint /opt/venv/bin/alembic" in pipeline
+    assert "--entrypoint /bin/bash" in pipeline
+    assert "--entrypoint /opt/venv/bin/python" in pipeline
+    assert "api upgrade head" in pipeline
+    assert "api scripts/data/bootstrap_foundation.sh" in pipeline
+    assert "scripts/data/sync_permissions.py --check" in pipeline
+    assert "scripts/data/sync_permissions.py --apply" not in pipeline
+
+
+def test_test_deploy_repairs_postcommit_cache_failure_without_repeating_database_mutation() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    recovery = pipeline.split("DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED", maxsplit=1)[1]
+    recovery = recovery.split("🐳 启动已固定版本的应用服务", maxsplit=1)[0]
+
+    assert "scripts/data/sync_permissions.py --repair-cache" in recovery
+    assert "scripts/data/sync_permissions.py --check" in recovery
+    assert "bootstrap_foundation" not in recovery
+    assert "--apply" not in recovery
+
+
+def test_test_deploy_keeps_external_entrypoint_closed_until_every_gate_passes() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    assert "MAINTENANCE_MODE=true" in pipeline
+    assert "trap keep_external_entrypoint_closed EXIT" in pipeline
+    assert "compose stop nginx" in pipeline
+    assert 'curl -fsS "http://127.0.0.1:${NGINX_PORT}/"' in pipeline
+    assert pipeline.rindex("MAINTENANCE_MODE=false") > pipeline.index("🌐 恢复外部入口")
 
 
 @pytest.mark.parametrize(
