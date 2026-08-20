@@ -7,6 +7,7 @@
 from sqlmodel import Field
 
 from src.core.mixins.base import BaseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 
 
 class TreeMixin(BaseMixin):
@@ -29,6 +30,7 @@ class TreeMixin(BaseMixin):
 
     parent_id: int | None = Field(
         default=None,
+        sa_type=SQL_COMPAT_BIGINT,
         sa_column_kwargs={"comment": "父节点ID"},
     )
     tree_path: str = Field(

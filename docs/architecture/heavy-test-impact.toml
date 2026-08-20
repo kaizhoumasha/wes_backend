@@ -25,6 +25,19 @@ heavy_tests = []
 source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
 
+# TreeMixin 的共享 parent_id、Permission 的 FK 重声明与 schema migration 由真实 PostgreSQL 升降级承接。
+[[mapping]]
+source_glob = "src/core/mixins/tree.py"
+heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/models/perm.py"
+heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260820_1808_db0859fd3259_align_tree_parent_ids.py"
+heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+
 # 遗留缺席台账只承载审计证据；内容变化由质量门禁和当前指纹共同约束，不触发运行时 HEAVY。
 [[mapping]]
 source_glob = "docs/architecture/business-legacy-absence-ledger.csv"

@@ -44,6 +44,7 @@ from sqlalchemy.orm import relationship
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, TreeMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -53,7 +54,12 @@ from src.database.schema_conf import SchemaType
 class PermissionBase(TreeMixin, BaseMixin):
     """API 权限基础字段"""
 
-    parent_id: int | None = Field(default=None, foreign_key="wes_sys.permissions.id", index=True)
+    parent_id: int | None = Field(
+        default=None,
+        foreign_key="wes_sys.permissions.id",
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
 
     # 权限标识
     name: str = Field(max_length=100, description="权限标识，如 admin:role:create")
