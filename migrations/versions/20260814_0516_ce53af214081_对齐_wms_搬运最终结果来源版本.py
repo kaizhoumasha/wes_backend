@@ -1,4 +1,4 @@
-"""对齐 WMS T3 来源结果版本
+"""对齐 WMS 搬运最终结果来源版本。
 
 Revision ID: ce53af214081
 Revises: a08d72f135d2

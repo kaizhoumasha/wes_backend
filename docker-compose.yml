@@ -686,7 +686,7 @@ services:
       - smt
 
   # ============================================
-  # WMS Transport Mock - 模拟 Transport T1 与 callback 调试面
+  # WMS Transport Mock - 模拟搬运提交与 callback 调试面
   # 注意：本机通用 test profile 不启动 WMS Mock；开发/E2E/SMT 联调场景显式启用。
   # ============================================
   mock_wms:
@@ -739,7 +739,7 @@ services:
 
   # ============================================
   # WMS Provider Mock - 29 项 full-factory query/effect 本机联调面
-  # 与 Transport T1/回调 Mock 分离，避免把业务 Provider 合同耦合进传输基础能力。
+  # 与搬运提交/回调 Mock 分离，避免把业务 Provider 合同耦合进传输基础能力。
   # ============================================
   mock_wms_provider:
     build:

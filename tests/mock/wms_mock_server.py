@@ -74,7 +74,7 @@ class _StoredSubmission:
 
 
 class TransportSubmissionStore:
-    """保存 Mock 进程内 T1 身份和首次确定响应。"""
+    """保存 Mock 进程内搬运提交身份和首次确定响应。"""
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -265,7 +265,7 @@ class TransportSubmissionStore:
 
 
 class FixedTransportBodyLimitMiddleware:
-    """在 Starlette 缓冲 T1 请求体前执行固定字节上限。"""
+    """在 Starlette 缓冲搬运提交请求体前执行固定字节上限。"""
 
     def __init__(self, app) -> None:
         self.app = app

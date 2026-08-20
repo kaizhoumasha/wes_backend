@@ -1022,7 +1022,7 @@ source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通
 heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
-source_glob = "migrations/versions/20260814_0516_ce53af214081_对齐_wms_t3_来源结果版本.py"
+source_glob = "migrations/versions/20260814_0516_ce53af214081_对齐_wms_*.py"
 heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]

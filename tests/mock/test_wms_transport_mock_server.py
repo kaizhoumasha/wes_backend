@@ -60,7 +60,7 @@ def test_openapi_groups_transport_contract_and_mock_debug_operations() -> None:
     assert document["paths"]["/"]["get"]["tags"] == ["Mock Debug"]
 
 
-def test_transport_submit_openapi_examples_follow_the_raw_t1_handler() -> None:
+def test_transport_submit_openapi_examples_follow_the_raw_submit_handler() -> None:
     examples = wms_transport_mock_openapi.TRANSPORT_SUBMISSION_EXAMPLES
 
     assert set(examples) == {"rack_move", "rack_rotate", "bin_move", "bin_exchange"}
@@ -74,7 +74,7 @@ def test_transport_submit_openapi_examples_follow_the_raw_t1_handler() -> None:
     assert [response.status_code for response in responses] == [202, 202, 202, 202]
 
 
-def test_t1_openapi_schema_is_closed_and_documents_runtime_invariants() -> None:
+def test_transport_submit_openapi_schema_is_closed_and_documents_runtime_invariants() -> None:
     submit_operation = wms_mock_server.app.openapi()["paths"]["/api/v1/wes/transport-requests"]["post"]
     submit_schema = submit_operation["requestBody"]["content"]["application/json"]["schema"]
 
@@ -111,7 +111,7 @@ def test_t1_openapi_schema_is_closed_and_documents_runtime_invariants() -> None:
     assert rack_id_schema["pattern"] == r".*\S.*"
 
 
-def test_t1_openapi_documents_closed_ack_unions() -> None:
+def test_transport_submit_openapi_documents_closed_ack_unions() -> None:
     responses = wms_mock_server.app.openapi()["paths"]["/api/v1/wes/transport-requests"]["post"]["responses"]
 
     for status_code, code in (("200", "DUPLICATE"), ("202", "RECEIVED"), ("409", "CONFLICT"), ("503", "UNAVAILABLE")):
@@ -193,7 +193,7 @@ def test_transport_callback_rejects_malformed_json_and_non_object_before_relay()
     assert non_object.status_code == 422
 
 
-def test_transport_submission_snapshots_follow_the_t1_state_matrix() -> None:
+def test_transport_submission_snapshots_follow_the_submit_state_matrix() -> None:
     changed = deepcopy(RACK_MOVE)
     changed["data"]["target"]["location_code"] = "station-c"
     invalid = deepcopy(BIN_MOVE)
@@ -854,7 +854,7 @@ def test_higher_revision_cannot_rewrite_a_known_member_from_partial_unknown(monk
     assert conflict.status_code == 409
 
 
-def test_t3_cannot_rewrite_a_position_confirmed_by_target_placed(monkeypatch) -> None:
+def test_transport_final_result_cannot_rewrite_a_position_confirmed_by_target_placed(monkeypatch) -> None:
     target_placed = deepcopy(wms_transport_mock_openapi.TRANSPORT_CALLBACK_EXAMPLES["member_target_placed"]["value"])
     contradictory_result = deepcopy(wms_transport_mock_openapi.TRANSPORT_CALLBACK_EXAMPLES["bin_succeeded"]["value"])
     contradictory_result["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4502"
@@ -868,7 +868,7 @@ def test_t3_cannot_rewrite_a_position_confirmed_by_target_placed(monkeypatch) ->
     ]
     conflicting = deepcopy(BIN_MOVE)
     conflicting["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4503"
-    conflicting["data"]["transport_task_id"] = "transport-bin-t2-conflict"
+    conflicting["data"]["transport_task_id"] = "transport-bin-position-conflict"
 
     async def accepted(_: str, __: dict[str, object]) -> int:
         return 202
