@@ -120,14 +120,36 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
 
 def test_transport_api_and_celery_use_only_production_composition_root() -> None:
     expected_imports = {
-        ("src.app.transport.composition", "build_transport_runtime"),
-        ("src.app.transport.composition", "validate_transport_runtime_profile"),
+        "src/register.py": {
+            ("src.app.transport.composition", "build_transport_runtime"),
+            ("src.app.transport.composition", "validate_transport_runtime_profile"),
+            ("src.app.transport.v1", "router"),
+        },
+        "src/celery_app/async_runtime.py": {
+            ("src.app.transport.composition", "build_transport_runtime"),
+            ("src.app.transport.composition", "validate_transport_runtime_profile"),
+        },
     }
     for relative_path in ("src/register.py", "src/celery_app/async_runtime.py"):
         imports, calls = _transport_imports_and_constructor_calls(ROOT / relative_path)
-        assert imports == expected_imports, relative_path
+        assert imports == expected_imports[relative_path], relative_path
         assert calls.count("build_transport_runtime") == 1, relative_path
         assert "TransportService" not in calls, relative_path
+
+
+def test_transport_http_api_does_not_access_repository_or_database() -> None:
+    tree = ast.parse(
+        (ROOT / "src/app/transport/v1/tasks.py").read_text(encoding="utf-8"),
+        filename="src/app/transport/v1/tasks.py",
+    )
+    imported_modules = {
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module is not None
+    } | {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+
+    assert not any(
+        module.startswith(("sqlalchemy", "src.database")) or module == "src.app.transport.repository"
+        for module in imported_modules
+    )
 
 
 def test_transport_internal_batches_stay_on_internal_service() -> None:

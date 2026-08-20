@@ -39,6 +39,7 @@
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-16-wes-transport-dto-contract-alignment.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-20-transport-debug-task-api.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-18-rough-sorter-local-mock-acceptance-completion.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-19-rough-sorter-functional-rc-and-field-validation.md`
 

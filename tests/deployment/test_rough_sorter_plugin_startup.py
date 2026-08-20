@@ -1816,6 +1816,88 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
 
 
 @pytest.mark.asyncio
+async def test_transport_publisher_confirms_unbound_debug_outcome() -> None:
+    events: list[str] = []
+
+    class Sessions:
+        def begin(self) -> object:
+            class Transaction:
+                async def __aenter__(self) -> object:
+                    events.append("begin")
+                    return object()
+
+                async def __aexit__(
+                    self,
+                    exc_type: type[BaseException] | None,
+                    exc: BaseException | None,
+                    traceback: object,
+                ) -> None:
+                    del exc, traceback
+                    events.append("rollback" if exc_type is not None else "commit")
+
+            return Transaction()
+
+    class Bindings:
+        async def get_by_client_request_id(self, db: object, client_request_id: str) -> None:
+            del db, client_request_id
+            events.append("binding-read")
+
+    publisher = RoughSorterTransportOutcomePublisher(
+        session_factory=Sessions(),  # type: ignore[arg-type]
+        binding_repository=Bindings(),  # type: ignore[arg-type]
+    )
+    outcome = TransportOutcome(
+        transport_task_id="TRANSPORT-DEBUG-1",
+        client_request_id="019d0000-0000-7000-8000-000000000041",
+        outcome_version=1,
+        caller=TransportCaller(workline_id="TRANSPORT_DEBUG", station_id="STATION-DEBUG"),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(
+            TransportMemberOutcome(
+                object_id="RACK-DEBUG",
+                final_position=RackPosition("OUTLET-1"),
+                arrival_face=RackFace.A,
+            ),
+        ),
+    )
+
+    await publisher.publish(outcome)
+
+    assert events == ["begin", "binding-read", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_transport_publisher_still_rejects_unbound_business_outcome() -> None:
+    class Bindings:
+        async def get_by_client_request_id(self, db: object, client_request_id: str) -> None:
+            del db, client_request_id
+
+    publisher = RoughSorterTransportOutcomePublisher(
+        session_factory=_Sessions(object()),
+        binding_repository=Bindings(),  # type: ignore[arg-type]
+    )
+    outcome = TransportOutcome(
+        transport_task_id="TRANSPORT-BUSINESS-1",
+        client_request_id="019d0000-0000-7000-8000-000000000042",
+        outcome_version=1,
+        caller=TransportCaller(workline_id="7"),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(
+            TransportMemberOutcome(
+                object_id="RACK-2",
+                final_position=RackPosition("OUTLET-1"),
+                arrival_face=RackFace.A,
+            ),
+        ),
+    )
+
+    with pytest.raises(LookupError, match="缺少换架 business binding"):
+        await publisher.publish(outcome)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("drift", ["binding", "source"])
 async def test_transport_publisher_revalidates_correlation_after_execution_lock(drift: str) -> None:
     events: list[str] = []

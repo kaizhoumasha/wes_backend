@@ -15,7 +15,7 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceConflictResult,
     InboundEvidenceService,
 )
-from src.app.transport.contracts import TransportOutcome, TransportOutcomeStatus
+from src.app.transport.contracts import TRANSPORT_DEBUG_CALLER_WORKLINE_ID, TransportOutcome, TransportOutcomeStatus
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 
@@ -74,6 +74,8 @@ class RoughSorterTransportOutcomePublisher:
         async with self._sessions.begin() as db:
             binding_hint = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
             if binding_hint is None:
+                if outcome.caller.workline_id == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+                    return
                 raise LookupError("Transport outcome 缺少换架 business binding")
             if binding_hint.leg not in {"OLD_OUT", "NEW_IN"}:
                 raise ValueError("Transport binding leg 非法")
