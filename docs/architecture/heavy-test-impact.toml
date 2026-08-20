@@ -827,6 +827,7 @@ heavy_tests = [
 source_glob = "tests/mock/{wms_mock_server.py,wms_transport_mock_openapi.py}"
 heavy_tests = [
     "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/mock/test_wms_provider_mock_server.py",
     "tests/mock/test_wms_transport_mock_server.py",
 ]
 

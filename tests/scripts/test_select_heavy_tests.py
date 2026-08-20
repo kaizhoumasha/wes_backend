@@ -1469,6 +1469,7 @@ def test_repository_mapping_selects_database_runtime_heavy_consumers(
             "tests/mock/wms_mock_server.py",
             [
                 WMS_FEASIBILITY_HEAVY_TEST,
+                WMS_PROVIDER_MOCK_SERVER_HEAVY_TEST,
                 WMS_MOCK_SERVER_HEAVY_TEST,
             ],
         ),
