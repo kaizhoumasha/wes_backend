@@ -7,11 +7,11 @@ pipeline {
         string(name: 'BACKEND_IMAGE_TAG', description: '已批准的后端不可变镜像标签（构建号-commit 前 7 位）')
         string(name: 'FRONTEND_IMAGE_TAG', description: '已批准的前端不可变镜像标签（构建号-commit 前 7 位）')
         string(name: 'BACKEND_COMMIT_SHA', description: '后端镜像必须携带的完整 revision')
+        string(name: 'DEPLOY_SOURCE_COMMIT_SHA', description: '部署 Compose/脚本必须固定到的后端完整 commit SHA')
         string(name: 'FRONTEND_COMMIT_SHA', description: '前端镜像必须携带的完整 revision')
         string(name: 'OPENAPI_SHA256', description: '前端镜像必须携带的冻结 OpenAPI SHA-256')
         string(name: 'PERMISSIONS_SHA256', description: '前端镜像必须携带的冻结权限 SHA-256')
         string(name: 'SOURCE_BRANCH', defaultValue: 'develop', description: '用于同步部署仓库的源码分支')
-        string(name: 'SOURCE_COMMIT_SHA', defaultValue: '', description: '可选：部署仓库要固定到的提交 SHA')
     }
 
     environment {
@@ -63,10 +63,8 @@ pipeline {
                         extensions: [[$class: 'CleanBeforeCheckout']]
                     ])
 
-                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
-                    String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
-
                     String backendCommitSha = params.BACKEND_COMMIT_SHA?.trim()
+                    String deploySourceCommitSha = params.DEPLOY_SOURCE_COMMIT_SHA?.trim()
                     String frontendCommitSha = params.FRONTEND_COMMIT_SHA?.trim()
                     String openApiSha256 = params.OPENAPI_SHA256?.trim()
                     String permissionsSha256 = params.PERMISSIONS_SHA256?.trim()
@@ -74,6 +72,12 @@ pipeline {
                     String frontendImageTag = params.FRONTEND_IMAGE_TAG?.trim()
                     if (!(backendCommitSha ==~ /[0-9a-f]{40}/)) {
                         error('BACKEND_COMMIT_SHA 必须是 40 位小写 commit SHA')
+                    }
+                    if (!(deploySourceCommitSha ==~ /[0-9a-f]{40}/)) {
+                        error('DEPLOY_SOURCE_COMMIT_SHA 必须是 40 位小写 commit SHA')
+                    }
+                    if (deploySourceCommitSha != backendCommitSha) {
+                        error('DEPLOY_SOURCE_COMMIT_SHA 必须与批准的后端镜像 revision 完全一致')
                     }
                     if (!(frontendCommitSha ==~ /[0-9a-f]{40}/)) {
                         error('FRONTEND_COMMIT_SHA 必须是 40 位小写 commit SHA')
@@ -91,7 +95,15 @@ pipeline {
                         error('FRONTEND_IMAGE_TAG 与批准的前端 commit 不一致')
                     }
 
-                    env.CI_COMMIT_SHA = params.SOURCE_COMMIT_SHA?.trim() ? params.SOURCE_COMMIT_SHA.trim() : fullCommit
+                    sh "git reset --hard '${deploySourceCommitSha}'"
+                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    if (fullCommit != deploySourceCommitSha) {
+                        error('部署仓库未能固定到 DEPLOY_SOURCE_COMMIT_SHA')
+                    }
+                    String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
+
+                    env.CI_COMMIT_SHA = fullCommit
+                    env.DEPLOY_SOURCE_COMMIT_SHA = deploySourceCommitSha
                     env.EXPECTED_BACKEND_COMMIT_SHA = backendCommitSha
                     env.EXPECTED_FRONTEND_COMMIT_SHA = frontendCommitSha
                     env.EXPECTED_OPENAPI_SHA256 = openApiSha256
@@ -118,9 +130,14 @@ pipeline {
 
                         cd "${DEPLOY_PATH}"
 
-                        echo "📥 强制同步部署仓库到提交 ${CI_COMMIT_SHA}"
+                        echo "📥 强制同步部署仓库到提交 ${DEPLOY_SOURCE_COMMIT_SHA}"
                         git fetch origin
-                        git reset --hard "${CI_COMMIT_SHA}"
+                        git reset --hard "${DEPLOY_SOURCE_COMMIT_SHA}"
+                        DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
+                        if [ "${DEPLOY_ACTUAL_COMMIT}" != "${DEPLOY_SOURCE_COMMIT_SHA}" ]; then
+                            echo "❌ 部署仓库 revision 未固定到批准提交: ${DEPLOY_ACTUAL_COMMIT}"
+                            exit 1
+                        fi
                         git clean -fd
                         cp -f "${DEPLOY_ENV_FILE}" .env
 
@@ -189,6 +206,71 @@ pipeline {
                         echo "🔒 已固定后端镜像: ${BACKEND_IMAGE}"
                         echo "🔒 已固定前端镜像: ${FRONTEND_IMAGE}"
 
+                        # TEST_DEPLOY_CUTOVER_BEGIN
+                        compose() {
+                            docker compose \
+                                --env-file "${DEPLOY_ENV_FILE}" \
+                                -f "${DEPLOY_COMPOSE_FILE}" \
+                                "$@"
+                        }
+
+                        MAINTENANCE_MODE=false
+                        CUTOVER_STAGE=image-provenance
+                        keep_external_entrypoint_closed() {
+                            if [ "${MAINTENANCE_MODE}" = "true" ]; then
+                                echo "❌ 发布在阶段 ${CUTOVER_STAGE} 失败；外部入口保持关闭"
+                                compose stop nginx >/dev/null 2>&1 || true
+                            fi
+                        }
+                        fail_cutover() {
+                            CUTOVER_STAGE="$1"
+                            echo "❌ 发布在阶段 ${CUTOVER_STAGE} 失败；立即关闭外部入口"
+                            compose stop nginx >/dev/null 2>&1 || true
+                            exit 1
+                        }
+                        trap keep_external_entrypoint_closed EXIT
+
+                        if ! BACKEND_REVISION=$(docker image inspect --format \
+                            '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${BACKEND_IMAGE}"); then
+                            fail_cutover backend-image-revision
+                        fi
+                        if [ "${BACKEND_REVISION}" != "${EXPECTED_BACKEND_COMMIT_SHA}" ]; then
+                            echo "❌ 后端镜像 revision 与批准提交不一致: ${BACKEND_REVISION:-<empty>}"
+                            fail_cutover backend-image-revision
+                        fi
+                        if ! FRONTEND_REVISION=$(docker image inspect --format \
+                            '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${FRONTEND_IMAGE}"); then
+                            fail_cutover frontend-image-revision
+                        fi
+                        if [ "${FRONTEND_REVISION}" != "${EXPECTED_FRONTEND_COMMIT_SHA}" ]; then
+                            echo "❌ 前端镜像 revision 与批准提交不一致: ${FRONTEND_REVISION:-<empty>}"
+                            fail_cutover frontend-image-revision
+                        fi
+                        if ! FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
+                            '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "${FRONTEND_IMAGE}"); then
+                            fail_cutover frontend-backend-provenance
+                        fi
+                        if [ "${FRONTEND_BACKEND_REVISION}" != "${EXPECTED_BACKEND_COMMIT_SHA}" ]; then
+                            echo "❌ 前端契约绑定的后端 revision 不一致: ${FRONTEND_BACKEND_REVISION:-<empty>}"
+                            fail_cutover frontend-backend-provenance
+                        fi
+                        if ! FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
+                            '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "${FRONTEND_IMAGE}"); then
+                            fail_cutover openapi-provenance
+                        fi
+                        if [ "${FRONTEND_OPENAPI_SHA256}" != "${EXPECTED_OPENAPI_SHA256}" ]; then
+                            echo "❌ 前端镜像 OpenAPI provenance 不一致: ${FRONTEND_OPENAPI_SHA256:-<empty>}"
+                            fail_cutover openapi-provenance
+                        fi
+                        if ! FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
+                            '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "${FRONTEND_IMAGE}"); then
+                            fail_cutover permission-provenance
+                        fi
+                        if [ "${FRONTEND_PERMISSIONS_SHA256}" != "${EXPECTED_PERMISSIONS_SHA256}" ]; then
+                            echo "❌ 前端镜像 permission provenance 不一致: ${FRONTEND_PERMISSIONS_SHA256:-<empty>}"
+                            fail_cutover permission-provenance
+                        fi
+
                         echo "📄 从前端镜像提取菜单清单..."
                         MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
                         MANIFEST_FILE="${MANIFEST_DIR}/menu-manifest.json"
@@ -206,34 +288,10 @@ pipeline {
                         NGINX_PORT=$(grep -E '^NGINX_HTTP_PORT=' "${DEPLOY_ENV_FILE}" | tail -n 1 | cut -d= -f2)
                         NGINX_PORT=${NGINX_PORT:-8080}
 
-                        # TEST_DEPLOY_CUTOVER_BEGIN
-                        compose() {
-                            docker compose \
-                                --env-file "${DEPLOY_ENV_FILE}" \
-                                -f "${DEPLOY_COMPOSE_FILE}" \
-                                "$@"
-                        }
-
-                        MAINTENANCE_MODE=false
-                        CUTOVER_STAGE=pre-maintenance
-                        keep_external_entrypoint_closed() {
-                            if [ "${MAINTENANCE_MODE}" = "true" ]; then
-                                echo "❌ 发布在阶段 ${CUTOVER_STAGE} 失败；外部入口保持关闭"
-                                compose stop nginx >/dev/null 2>&1 || true
-                            fi
-                        }
-                        fail_cutover() {
-                            CUTOVER_STAGE="$1"
-                            echo "❌ 发布在阶段 ${CUTOVER_STAGE} 失败；立即关闭外部入口"
-                            compose stop nginx >/dev/null 2>&1 || true
-                            exit 1
-                        }
-                        trap keep_external_entrypoint_closed EXIT
-
                         case "${BUILD_NUMBER:-}" in
                             ''|*[!0-9]*) fail_cutover fresh-database-name ;;
                         esac
-                        SHORT_COMMIT=$(printf '%.12s' "${CI_COMMIT_SHA}")
+                        SHORT_COMMIT=$(printf '%.12s' "${DEPLOY_SOURCE_COMMIT_SHA}")
                         POSTGRES_DB="wes_test_${BUILD_NUMBER}_${SHORT_COMMIT}"
                         case "${POSTGRES_DB}" in
                             *[!a-z0-9_]*) fail_cutover fresh-database-name ;;
@@ -396,48 +454,6 @@ pipeline {
                         if ! compose exec -T frontend wget --no-verbose --tries=1 --spider \
                             http://127.0.0.1:5173/ >/dev/null; then
                             fail_cutover frontend-asset
-                        fi
-
-                        CUTOVER_STAGE=image-provenance
-                        if ! BACKEND_REVISION=$(docker image inspect --format \
-                            '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${BACKEND_IMAGE}"); then
-                            fail_cutover backend-image-revision
-                        fi
-                        if [ "${BACKEND_REVISION}" != "${EXPECTED_BACKEND_COMMIT_SHA}" ]; then
-                            echo "❌ 后端镜像 revision 与批准提交不一致: ${BACKEND_REVISION:-<empty>}"
-                            fail_cutover backend-image-revision
-                        fi
-                        if ! FRONTEND_REVISION=$(docker image inspect --format \
-                            '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover frontend-image-revision
-                        fi
-                        if [ "${FRONTEND_REVISION}" != "${EXPECTED_FRONTEND_COMMIT_SHA}" ]; then
-                            echo "❌ 前端镜像 revision 与批准提交不一致: ${FRONTEND_REVISION:-<empty>}"
-                            fail_cutover frontend-image-revision
-                        fi
-                        if ! FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
-                            '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover frontend-backend-provenance
-                        fi
-                        if [ "${FRONTEND_BACKEND_REVISION}" != "${EXPECTED_BACKEND_COMMIT_SHA}" ]; then
-                            echo "❌ 前端契约绑定的后端 revision 不一致: ${FRONTEND_BACKEND_REVISION:-<empty>}"
-                            fail_cutover frontend-backend-provenance
-                        fi
-                        if ! FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
-                            '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover openapi-provenance
-                        fi
-                        if [ "${FRONTEND_OPENAPI_SHA256}" != "${EXPECTED_OPENAPI_SHA256}" ]; then
-                            echo "❌ 前端镜像 OpenAPI provenance 不一致: ${FRONTEND_OPENAPI_SHA256:-<empty>}"
-                            fail_cutover openapi-provenance
-                        fi
-                        if ! FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
-                            '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover permission-provenance
-                        fi
-                        if [ "${FRONTEND_PERMISSIONS_SHA256}" != "${EXPECTED_PERMISSIONS_SHA256}" ]; then
-                            echo "❌ 前端镜像 permission provenance 不一致: ${FRONTEND_PERMISSIONS_SHA256:-<empty>}"
-                            fail_cutover permission-provenance
                         fi
 
                         echo "🧭 同步 TEST 环境菜单..."
