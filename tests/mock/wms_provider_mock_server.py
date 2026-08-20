@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from src.app.wms_integration.operation_contract import WmsCompletionMode, WmsOperationMode
 from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY, WMS_OPERATIONS
 from src.app.wms_integration.provider_profile import load_wms_provider_profile
-from tests.mock.wms_mock_server import submit_transport
+from tests.mock.wms_mock_server import FixedTransportBodyLimitMiddleware, submit_transport
 from tests.support.wms_integration.northbound_contract import (
     NorthboundOperationStore,
     build_typed_ack,
@@ -135,6 +135,7 @@ def create_app(profile_path: Path) -> FastAPI:
     profile = load_wms_provider_profile(profile_path.resolve())
     store = NorthboundOperationStore()
     app = FastAPI(title="WES Dev WMS Provider Mock", version=profile.profile.contract_version)
+    app.add_middleware(FixedTransportBodyLimitMiddleware, submit_path=str(profile.transport_submit_path))
 
     @app.get("/")
     async def health() -> dict[str, object]:

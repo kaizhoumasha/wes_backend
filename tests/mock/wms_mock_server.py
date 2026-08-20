@@ -267,11 +267,12 @@ class TransportSubmissionStore:
 class FixedTransportBodyLimitMiddleware:
     """在 Starlette 缓冲搬运提交请求体前执行固定字节上限。"""
 
-    def __init__(self, app) -> None:
+    def __init__(self, app, *, submit_path: str) -> None:
         self.app = app
+        self._submit_path = submit_path
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] != "http" or scope["path"] != TRANSPORT_PATH:
+        if scope["type"] != "http" or scope["path"] != self._submit_path:
             await self.app(scope, receive, send)
             return
         messages: list[dict[str, Any]] = []
@@ -304,7 +305,7 @@ app.mount(
     StaticFiles(directory=Path(__file__).resolve().parents[2] / "src" / "static" / "swagger-ui"),
     name="swagger-ui",
 )
-app.add_middleware(FixedTransportBodyLimitMiddleware)
+app.add_middleware(FixedTransportBodyLimitMiddleware, submit_path=TRANSPORT_PATH)
 transport_submission_store = TransportSubmissionStore()
 
 

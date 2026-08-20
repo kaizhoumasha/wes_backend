@@ -72,6 +72,17 @@ async def test_configured_transport_submit_path_is_callable_over_public_http(pro
     assert response.json()["code"] == "RECEIVED"
 
 
+async def test_configured_transport_submit_path_rejects_oversized_body_before_parsing(provider_client) -> None:  # type: ignore[no-untyped-def]
+    response = await provider_client.post(
+        COMPILED_PROFILE.transport_submit_path,
+        content=b"x" * (256 * 1024 + 1),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.content == b""
+
+
 async def test_async_effect_reaches_a_typed_terminal_status(provider_client) -> None:  # type: ignore[no-untyped-def]
     operation = next(
         operation for operation in WMS_OPERATIONS if operation.completion_mode is WmsCompletionMode.ASYNC_TASK
