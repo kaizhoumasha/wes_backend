@@ -10,9 +10,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from sqlalchemy import delete, func, select
 
-from src.app.transport import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller, build_transport_runtime
+from src.app.transport import RackFace, build_transport_runtime
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -49,6 +50,19 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 SUBMIT_TASK = "src.celery_app.tasks.transport.submit_transport_tasks_batch"
 EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
 RECONCILE_TASK = "src.celery_app.tasks.transport.reconcile_transport_tasks_batch"
+PUBLISH_TASK = "src.celery_app.tasks.transport.publish_transport_outcomes_batch"
+
+
+async def _allow_permission() -> None:
+    return None
+
+
+def _allow_transport_permissions(app: FastAPI) -> None:
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api/v1/transport/"):
+            continue
+        for dependency in route.dependencies:
+            app.dependency_overrides[dependency.dependency] = _allow_permission
 
 
 async def _transport_counts(session_factory) -> tuple[int, int, int, int]:
@@ -122,18 +136,47 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         object_id = f"bin-{suffix}"
         rack_id = f"rack-{suffix}"
         await confirm_rack_faces_with_sessions(integration_session_factory, {rack_id: RackFace.A})
-        handle = await runtime.port.move_bins(
-            new_uuid7(),
-            TransportCaller("TRANSPORT_E2E"),
-            (
-                BinMove(
-                    object_id,
-                    RackBinSlot(rack_id, RackFace.A, "1"),
-                    HandoffPosition(f"HANDOFF-{suffix}"),
-                ),
-            ),
-        )
-        task_id = handle.transport_task_id
+        app = FastAPI()
+        app.state.transport_runtime = runtime
+        app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
+        register_routers(app)
+        _allow_transport_permissions(app)
+        client_request_id = new_uuid7()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://wes.test") as client:
+            created = await client.post(
+                "/api/v1/transport/debug-tasks",
+                json={
+                    "client_request_id": client_request_id,
+                    "station_id": "TRANSPORT-E2E",
+                    "kind": "BIN_MOVE",
+                    "data": {
+                        "moves": [
+                            {
+                                "bin_id": object_id,
+                                "source": {
+                                    "kind": "RACK_BIN_SLOT",
+                                    "rack_id": rack_id,
+                                    "rack_face": "A",
+                                    "slot_id": "1",
+                                },
+                                "target": {
+                                    "kind": "HANDOFF_POSITION",
+                                    "location_code": f"HANDOFF-{suffix}",
+                                },
+                            }
+                        ]
+                    },
+                },
+            )
+            task_id = created.json()["data"]["transport_task_id"]
+            pending = await client.get(f"/api/v1/transport/tasks/{task_id}")
+        assert (created.status_code, created.json()["code"]) == (202, "1004")
+        assert created.json()["data"] == {
+            "transport_task_id": task_id,
+            "client_request_id": client_request_id,
+        }
+        assert pending.json()["data"]["status"] == "PENDING"
+        assert pending.json()["data"]["latest_evidence"] is None
         assert worker.result(worker.send(SUBMIT_TASK, kwargs={"limit": 100})) == 1
         server.wait_for_requests(1)
 
@@ -141,12 +184,15 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
             submitted = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
         assert submitted is not None and submitted.status == "ACCEPTED"
 
-        # Gateway 仍调用生产 Celery API；测试只把 Celery 传输连接指向显式 integration broker。
-        monkeypatch.setattr(celery_app, "send_task", worker.producer.send_task)
-        app = FastAPI()
-        app.state.transport_runtime = runtime
-        app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
-        register_routers(app)
+        # Callback 仍调用生产 Celery API；测试先冻结 PENDING evidence，再显式驱动真实 worker。
+        queued_tasks: list[str] = []
+
+        def _record_task(name: str, *args: object, **kwargs: object) -> SimpleNamespace:
+            del args, kwargs
+            queued_tasks.append(name)
+            return SimpleNamespace(id="transport-e2e-recorded")
+
+        monkeypatch.setattr(celery_app, "send_task", _record_task)
         evidence_operation_id = new_uuid7()
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://wes.test") as client:
             response = await client.post(
@@ -172,8 +218,14 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
                     },
                 },
             )
+            callback_pending = await client.get(f"/api/v1/transport/tasks/{task_id}")
         assert response.status_code == 202
         assert response.json()["code"] == "RECEIVED"
+        assert EVIDENCE_TASK in queued_tasks
+        assert callback_pending.json()["data"]["status"] == "ACCEPTED"
+        assert callback_pending.json()["data"]["latest_evidence"]["status"] == "PENDING"
+
+        assert worker.result(worker.send(EVIDENCE_TASK, kwargs={"limit": 100})) == 1
 
         deadline = asyncio.get_running_loop().time() + 15
         while True:
@@ -192,6 +244,12 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         assert member is not None and member.status == "SUCCEEDED"
         assert member.final_position_json == {"kind": "HANDOFF_POSITION", "location_code": f"HANDOFF-{suffix}"}
         assert evidence is not None and evidence.status == "APPLIED"
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://wes.test") as client:
+            terminal = await client.get(f"/api/v1/transport/tasks/{task_id}")
+        assert terminal.json()["data"]["status"] == "SUCCEEDED"
+        assert terminal.json()["data"]["latest_evidence"]["status"] == "APPLIED"
+        assert worker.result(worker.send(PUBLISH_TASK, kwargs={"limit": 100})) == 1
+        assert worker.result(worker.send(PUBLISH_TASK, kwargs={"limit": 100})) == 0
         assert len(server.requests) == 1
         assert server.requests[0]["path"] == "/api/WES/TransportRequests"
         assert server.requests[0]["envelope"]["data"]["transport_task_id"] == task_id

@@ -7,7 +7,7 @@ from datetime import timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import (
@@ -34,6 +34,7 @@ from src.app.transport.models import (
 )
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
@@ -159,6 +160,121 @@ async def _clean_transport_tables(db_engine: object) -> None:
 
 def _caller() -> TransportCaller:
     return TransportCaller("SORTER", "STATION_A")
+
+
+@pytest.mark.asyncio
+async def test_task_snapshot_without_callback_returns_local_task_identity(
+    service: TransportService,
+) -> None:
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-snapshot-empty",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+
+    snapshot = await service.get_task_snapshot(handle.transport_task_id)
+
+    assert snapshot.transport_task_id == handle.transport_task_id
+    assert snapshot.client_request_id == handle.client_request_id
+    assert snapshot.kind == "RACK_MOVE"
+    assert snapshot.status == "PENDING"
+    assert snapshot.latest_evidence is None
+    assert snapshot.created_at.endswith("Z")
+    assert snapshot.updated_at.endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_task_snapshot_reads_task_and_latest_evidence_in_one_statement(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-snapshot-consistent",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+    statements: list[str] = []
+
+    def _capture_statement(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del connection, cursor, parameters, context, executemany
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", _capture_statement)  # type: ignore[attr-defined]
+    try:
+        snapshot = await service.get_task_snapshot(handle.transport_task_id)
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", _capture_statement)  # type: ignore[attr-defined]
+
+    assert snapshot.transport_task_id == handle.transport_task_id
+    assert len(statements) == 1
+    assert "transport_tasks" in statements[0]
+    assert "transport_evidence" in statements[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_status", ["PENDING", "APPLIED", "CONFLICT"])
+async def test_task_snapshot_returns_latest_callback_evidence_status(
+    service: TransportService,
+    db_engine: object,
+    evidence_status: str,
+) -> None:
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        f"rack-snapshot-{evidence_status.lower()}",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+    now = timezone.now_for_db()
+    evidence = TransportEvidence(
+        operation_id=new_uuid7(),
+        transport_task_id=handle.transport_task_id,
+        operation="transport.task.resulted@v1",
+        outcome_revision=1,
+        event_timestamp_ms=1_723_456_789_011,
+        message_digest="d" * 64,
+        payload_json={"not": "exposed"},
+        ack_timestamp_ms=1_723_456_789_012,
+        ack_data_json={"transport_task_id": handle.transport_task_id},
+        status=evidence_status,
+        received_at=now,
+        processed_at=now if evidence_status != "PENDING" else None,
+        conflict_code="CALLBACK_CONFLICT" if evidence_status == "CONFLICT" else None,
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(evidence)
+
+    snapshot = await service.get_task_snapshot(handle.transport_task_id)
+
+    assert snapshot.latest_evidence is not None
+    assert snapshot.latest_evidence.status == evidence_status
+    assert snapshot.latest_evidence.operation_id == evidence.operation_id
+    assert snapshot.latest_evidence.conflict_code == evidence.conflict_code
+    assert snapshot.latest_evidence.received_at.endswith("Z")
+    assert (snapshot.latest_evidence.processed_at is None) == (evidence_status == "PENDING")
+    assert not hasattr(snapshot.latest_evidence, "payload_json")
+
+
+@pytest.mark.asyncio
+async def test_task_snapshot_raises_not_found_for_unknown_task(service: TransportService) -> None:
+    with pytest.raises(NotFoundException):
+        await service.get_task_snapshot("transport-missing")
 
 
 @pytest.mark.asyncio

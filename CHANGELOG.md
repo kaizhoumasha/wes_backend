@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.10.0] - 2026-08-21
+
+### Added
+- 现场开发与运维可通过受权限保护的 Swagger 接口创建四类真实 `TransportTask`，并查询 WES 已持久化的任务状态与最新 callback evidence。
+- 补充 Transport 调试入口的合同、架构边界和运维说明；实施计划完成后移至项目外归档，并明确本地观察不能替代 WMS/RCS 联调、物理完成或业务验收。
+
+### Changed
+- 调试任务完整复用既有 Transport 创建、提交、ACK、callback、evidence 和终态链路；粗分发布器仅精确消费 `TRANSPORT_DEBUG` 的无业务绑定 outcome，普通业务 caller 继续 fail closed。
+- 状态查询在单条 PostgreSQL 语句中读取任务及最新 evidence，避免并发 callback 提交期间返回不一致的组合快照。
+
+### Fixed
+- 补齐 Transport 调试 API 在 OpenAPI 中的 `400/404/409/422/503` 失败响应合同，Swagger 可直接识别成功与失败结果。
+
+### Verification
+- 当前 `3cfca6ba` 快照的 QUALITY 全门禁通过：3683 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和 FAST 预算检查均通过。
+- 相对 `origin/develop` 选择的 12 个 HEAVY owner 在隔离 PostgreSQL、Redis、Celery 与迁移环境中 129 passed、0 skipped。
+- 行为路径覆盖审计为 94%（30/32），计划完成度 6/6；预落地 Review 无剩余 P1/P2，原状态快照并发一致性意见已闭环。
+- 浏览器 QA 已验证 Swagger 创建、状态观察与错误合同；真实远端 WMS/RCS、现场设备完成和业务验收仍未执行。
+
 ## [0.26.9.0] - 2026-08-20
 
 ### Added

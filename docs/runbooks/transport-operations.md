@@ -1,6 +1,6 @@
 # Transport 运维诊断 Runbook
 
-> 当前状态：Phase 6 基础能力诊断入口。本 Runbook 只读取日志和 PostgreSQL 事实，不执行状态修改、资源释放或重提。
+> 当前状态：Phase 6 基础能力诊断入口。本 Runbook 只读取 WES 本地 API、日志和 PostgreSQL 事实，不执行状态修改、资源释放或重提。
 
 适用对象是 `wes_runtime` schema 中的 Transport 基础对象。查询应使用只读数据库账号，
 时间统一按数据库 UTC 解释；不应为了让结果“消失”而直接改表。以下命令在 `psql` 中执行，
@@ -9,6 +9,19 @@
 ```text
 psql "$READ_ONLY_DATABASE_URL"
 ```
+
+## 先用本地只读 API 定位
+
+具备 `ops:transport:read` 权限时，优先在 Swagger 调用：
+
+```text
+GET /api/v1/transport/tasks/{transport_task_id}
+```
+
+响应只显示 TransportTask 当前状态、原因、submit 身份和最近一条已持久化 evidence 摘要。`latest_evidence.status=PENDING`
+表示 callback 已接收但尚未应用，`CONFLICT` 表示 evidence 已保留但不能与冻结任务收敛，`null` 表示当前没有合法 evidence。
+接口不返回原始 callback，也不证明 RCS 物理动作或 WMS 业务已经完成。API 不可用或需要进一步核对 claim、成员、投影和绑定时，
+再按以下日志与只读 SQL 步骤诊断。
 
 ## 先日志，后数据库事实
 

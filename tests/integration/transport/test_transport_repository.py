@@ -165,3 +165,57 @@ async def test_two_evidence_workers_are_fenced_and_expired_claim_is_recovered(
             )
             if evidence is not None:
                 await cleanup_db.delete(evidence)
+
+
+async def test_task_with_latest_evidence_uses_one_coherent_postgres_snapshot(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    task_id = f"transport-latest-{suffix}"
+    received_at = timezone.now_for_db()
+    repository = TransportRepository()
+    first_operation_id = new_uuid7()
+    second_operation_id = new_uuid7()
+    async with integration_session_factory.begin() as setup_db:
+        setup_db.add(_task(task_id, f"request-{suffix}", "b" * 64, received_at))
+        for operation_id in (first_operation_id, second_operation_id):
+            setup_db.add(
+                TransportEvidence(
+                    operation_id=operation_id,
+                    transport_task_id=task_id,
+                    operation="transport.task.member_position_changed@v1",
+                    outcome_revision=None,
+                    event_timestamp_ms=1_723_456_789_011,
+                    message_digest=uuid.uuid4().hex * 2,
+                    payload_json={"transport_task_id": task_id},
+                    ack_timestamp_ms=1_723_456_789_012,
+                    ack_data_json={"transport_task_id": task_id},
+                    received_at=received_at,
+                )
+            )
+            await setup_db.flush()
+
+    try:
+        async with integration_session_factory() as db:
+            task_with_evidence = await repository.get_task_with_latest_evidence(db, task_id)
+
+        assert task_with_evidence is not None
+        task, latest = task_with_evidence
+        assert task.transport_task_id == task_id
+        assert latest is not None
+        assert latest.operation_id == second_operation_id
+        assert latest.received_at.tzinfo is None
+    finally:
+        async with integration_session_factory.begin() as cleanup_db:
+            for operation_id in (first_operation_id, second_operation_id):
+                evidence = await repository.get_evidence_by_operation_id(
+                    cleanup_db,
+                    "transport.task.member_position_changed@v1",
+                    operation_id,
+                    for_update=True,
+                )
+                if evidence is not None:
+                    await cleanup_db.delete(evidence)
+            task = await repository.get_task(cleanup_db, task_id, for_update=True)
+            if task is not None:
+                await cleanup_db.delete(task)

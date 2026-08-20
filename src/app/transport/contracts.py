@@ -60,6 +60,7 @@ class TransportSubmitCode(StrEnum):
 
 
 MAX_SUBMIT_ATTEMPTS = 3
+TRANSPORT_DEBUG_CALLER_WORKLINE_ID = "TRANSPORT_DEBUG"
 TRANSPORT_POSITION_OPERATION = "transport.task.member_position_changed@v1"
 TRANSPORT_RESULT_OPERATION = "transport.task.resulted@v1"
 
@@ -387,6 +388,7 @@ def _reject_duplicates(values: object, field_name: str) -> None:
 
 __all__ = [
     "MAX_SUBMIT_ATTEMPTS",
+    "TRANSPORT_DEBUG_CALLER_WORKLINE_ID",
     "TRANSPORT_POSITION_OPERATION",
     "TRANSPORT_RESULT_OPERATION",
     "BinExchangePair",

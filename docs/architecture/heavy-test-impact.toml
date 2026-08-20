@@ -935,10 +935,15 @@ heavy_tests = []
 source_glob = "src/app/transport/{__init__.py,composition.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
+[[mapping]]
+source_glob = "src/app/transport/v1/{__init__.py,tasks.py}"
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+
 # Transport wire 合同还被 WMS Transport Mock 镜像直接导入。
 [[mapping]]
 source_glob = "src/app/transport/contracts.py"
 heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
@@ -961,6 +966,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/transport/service.py"
 heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",

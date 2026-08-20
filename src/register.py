@@ -257,6 +257,7 @@ def register_routers(app: FastAPI) -> None:
     from src.app.material import router_v1 as material_router
     from src.app.resource import router_v1 as resource_router
     from src.app.sys import router_v1 as sys_router
+    from src.app.transport.v1 import router as transport_router
     from src.app.wms_adapter import router_v1 as wms_adapter_router
     from src.app.workline import router_v1 as workline_router
 
@@ -270,6 +271,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
+    app.include_router(transport_router, prefix=settings.API_PATH)
 
 
 def register_exception(app: FastAPI) -> None:
