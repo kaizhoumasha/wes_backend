@@ -22,6 +22,8 @@ RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
 RETIRED_REMOVED_PATHS = frozenset(
     {
         "Jenkinsfile",
+        "scripts/data/bootstrap_admin.py",
+        "scripts/data/bootstrap_admin.sh",
         "scripts/data/init_production_base_data.sql",
     }
 )
