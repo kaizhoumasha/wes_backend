@@ -72,6 +72,51 @@ def test_build_permission_catalog_rejects_conflicting_duplicate_permission_names
         permission_scanner_module.build_permission_catalog(app)
 
 
+@pytest.mark.parametrize(
+    "permission_name",
+    [
+        "admin:user",
+        "admin:user:list:extra",
+        ":user:list",
+        "admin::list",
+        "admin:user:",
+    ],
+    ids=["too-few", "too-many", "empty-module", "empty-resource", "empty-action"],
+)
+def test_build_permission_catalog_rejects_malformed_permission_names(permission_name: str) -> None:
+    app = FastAPI()
+    _add_permission_route(app, path="/users", permission_name=permission_name)
+
+    with pytest.raises(permission_scanner_module.PermissionCatalogError, match="权限码格式无效"):
+        permission_scanner_module.build_permission_catalog(app)
+
+
+@pytest.mark.parametrize("field", ["type", "method", "path"])
+def test_build_permission_catalog_rejects_missing_required_leaf_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    permission = {
+        "name": "admin:user:list",
+        "type": "user_api",
+        "category": "admin",
+        "description": "List users",
+        "resource": "user",
+        "action": "list",
+        "method": "GET",
+        "path": "/users",
+    }
+    permission[field] = None
+    monkeypatch.setattr(
+        permission_scanner_module,
+        "scan_routes_for_permissions",
+        lambda _app: [permission],
+    )
+
+    with pytest.raises(permission_scanner_module.PermissionCatalogError, match=f"权限叶子字段无效.*{field}"):
+        permission_scanner_module.build_permission_catalog(FastAPI())
+
+
 def test_build_permission_catalog_is_ordered_and_selects_http_method_deterministically() -> None:
     app = FastAPI()
     _add_permission_route(

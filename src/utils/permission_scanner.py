@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 _READ_ONLY_SUFFIXES = (":list", ":detail", ":tree")
 _USER_READ_ONLY_SUFFIXES = (":list", ":detail")
+_REQUIRED_LEAF_FIELDS = ("type", "category", "resource", "action", "method", "path")
 _ROLE_PERMISSION_RULES: dict[str, Callable[[Permission], bool]] = {
     "系统管理员": lambda _permission: True,
     "管理员": lambda permission: permission.name.startswith("admin:"),
@@ -195,11 +196,26 @@ def _build_group_payloads(scanned_perms: list[dict[str, Any]]) -> list[dict[str,
     return payloads
 
 
+def _validate_scanned_permission(permission: dict[str, Any]) -> None:
+    permission_name = permission.get("name")
+    parts = permission_name.split(":") if isinstance(permission_name, str) else []
+    if len(parts) != 3 or any(not part for part in parts):
+        raise PermissionCatalogError(f"权限码格式无效: `{permission_name}`，必须为 `module:resource:action` 三个非空段")
+
+    for field in _REQUIRED_LEAF_FIELDS:
+        value = permission.get(field)
+        if not isinstance(value, str) or not value:
+            raise PermissionCatalogError(f"权限叶子字段无效: `{permission_name}` 缺少 `{field}`")
+
+
 def build_permission_catalog(app: FastAPI) -> list[dict[str, Any]]:
     """构建完整、确定且无名称歧义的权限目录。"""
     scanned_permissions = scan_routes_for_permissions(app)
     if not scanned_permissions:
         raise PermissionCatalogError("未扫描到权限")
+
+    for permission in scanned_permissions:
+        _validate_scanned_permission(permission)
 
     leaves_by_name: dict[str, dict[str, Any]] = {}
     for permission in scanned_permissions:
