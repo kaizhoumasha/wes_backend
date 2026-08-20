@@ -25,6 +25,15 @@ heavy_tests = []
 source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
 
+# BaseAPI/TreeAPI 的路由注册语义由隔离 FAST router/scanner 测试完整覆盖，且不经过 DB、Redis、worker 或容器路径。
+[[mapping]]
+source_glob = "src/core/base_api.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/core/tree_api.py"
+heavy_tests = []
+
 # TreeMixin 的共享 parent_id、Permission 的 FK 重声明与 schema migration 由真实 PostgreSQL 升降级承接。
 [[mapping]]
 source_glob = "src/core/mixins/tree.py"
