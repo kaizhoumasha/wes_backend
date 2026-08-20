@@ -148,8 +148,28 @@ def test_resolve_effect_reconciliation_route_uses_dedicated_permission() -> None
         for dependency in getattr(route, "dependencies", [])
     ]
 
-    assert "biz:workline:resolve-reconciliation" in permissions
+    assert "biz:workline:resolve-effect-reconciliation" in permissions
     assert "biz:workline:update" not in permissions
+
+
+@pytest.mark.parametrize(
+    ("path", "permission"),
+    [
+        ("/sandbox/pending", "biz:workline:sandbox-pending"),
+        ("/sandbox/completed", "biz:workline:sandbox-completed"),
+        ("/replay/inboxes/{inbox_id}", "biz:workline:replay-inbox"),
+        ("/sandbox/worklines/{workline_id}/simulate-estop", "biz:workline:simulate-estop"),
+        ("/sandbox/ack", "biz:workline:submit-sandbox-ack"),
+        ("/sandbox/external-callbacks", "biz:workline:submit-sandbox-external-callback"),
+    ],
+)
+def test_custom_operation_routes_use_one_route_specific_permission(path: str, permission: str) -> None:
+    route = next(route for route in operation_api.router.routes if getattr(route, "path", None) == path)
+
+    assert [
+        getattr(getattr(dependency, "dependency", None), "permission_required", None)
+        for dependency in getattr(route, "dependencies", [])
+    ] == [permission]
 
 
 @pytest.mark.asyncio

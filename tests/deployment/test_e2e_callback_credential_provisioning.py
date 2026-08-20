@@ -4,11 +4,21 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from scripts.data.provision_e2e_callback_application import (
-    CALLBACK_PERMISSION,
-    provision_e2e_callback_application,
-)
+from scripts.data import provision_e2e_callback_application as provision_module
+from scripts.data.provision_e2e_callback_application import CALLBACK_PERMISSION, provision_e2e_callback_application
+from src.app.admin.services import PermissionCatalogSyncResult
 from src.core.encryption import encryption_service
+
+
+class _SessionContext:
+    def __init__(self, session: object) -> None:
+        self.session = session
+
+    async def __aenter__(self) -> object:
+        return self.session
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -76,6 +86,43 @@ async def test_e2e_callback_provisioning_refreshes_existing_app_without_duplicat
     assert encryption_service.decrypt(app_service.update.await_args.args[2]["app_secret_encrypted"]) == (
         "rotated-test-secret"
     )
+
+
+@pytest.mark.asyncio
+async def test_e2e_main_commits_catalog_before_callback_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    async def catalog_sync(*_args: object, **_kwargs: object) -> PermissionCatalogSyncResult:
+        events.append("catalog")
+        return PermissionCatalogSyncResult(created=1, updated=0, deleted=0, unchanged=0, total=1)
+
+    async def commit() -> None:
+        events.append("commit")
+
+    async def provision(*_args: object, **_kwargs: object) -> int:
+        events.append("provision")
+        return 17
+
+    db = SimpleNamespace(commit=AsyncMock(side_effect=commit))
+    monkeypatch.setattr(provision_module, "settings", SimpleNamespace(APP_ENV="test"))
+    monkeypatch.setattr(provision_module, "init_db", AsyncMock())
+    monkeypatch.setattr(provision_module, "init_redis", AsyncMock())
+    monkeypatch.setattr(provision_module, "close_db", AsyncMock())
+    monkeypatch.setattr(provision_module, "close_redis", AsyncMock())
+    monkeypatch.setattr(provision_module, "get_db_context", lambda: _SessionContext(db))
+    monkeypatch.setattr(provision_module, "get_cache", lambda: object())
+    monkeypatch.setattr(provision_module, "create_app", lambda: object())
+    monkeypatch.setattr(provision_module, "_required_environment", lambda name: name)
+    monkeypatch.setattr(provision_module.permission_catalog_service, "sync", AsyncMock(side_effect=catalog_sync))
+    monkeypatch.setattr(provision_module, "provision_e2e_callback_application", AsyncMock(side_effect=provision))
+
+    await provision_module.main()
+
+    assert events == ["catalog", "commit", "provision"]
+    provision_module.close_redis.assert_awaited_once_with()
+    provision_module.close_db.assert_awaited_once_with()
 
 
 def test_e2e_startup_provisions_callback_application_before_starting_services() -> None:

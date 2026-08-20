@@ -19,10 +19,10 @@ router = APIRouter(tags=["作业线运行视图"])
 
 @router.get(
     "/work_lines/{id}/active-objects",
-    summary="[biz:workline:detail] 查询作业线当前 active objects",
+    summary="[biz:workline:active-objects] 查询作业线当前 active objects",
     response_model=ResponseSchemaModel[WorklineActiveObjectsResponse],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:detail"))],
+    dependencies=[Depends(RequirePermission("biz:workline:active-objects"))],
 )
 async def get_workline_active_objects(
     db: AsyncSessionDep,

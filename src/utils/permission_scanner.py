@@ -1,18 +1,22 @@
-from collections.abc import Callable
-from typing import Any
+from __future__ import annotations
 
-from fastapi import FastAPI
+from typing import TYPE_CHECKING, Any
+
 from fastapi.routing import APIRoute
-from sqlalchemy import delete, select, tuple_
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.admin.models import Permission, Role, role_permission
-from src.app.admin.repositories.perm_repository import PermissionRepository
 from src.core.logger import logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from fastapi import FastAPI
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.admin.models import Permission
+
 
 _READ_ONLY_SUFFIXES = (":list", ":detail", ":tree")
 _USER_READ_ONLY_SUFFIXES = (":list", ":detail")
-_SYNC_FIELDS = ("description", "type", "category", "resource", "action", "method", "path", "parent_id", "sort_order")
 _ROLE_PERMISSION_RULES: dict[str, Callable[[Permission], bool]] = {
     "系统管理员": lambda _permission: True,
     "管理员": lambda permission: permission.name.startswith("admin:"),
@@ -20,6 +24,10 @@ _ROLE_PERMISSION_RULES: dict[str, Callable[[Permission], bool]] = {
     "财务人员": lambda permission: permission.name.startswith("admin:audit:"),
     "普通用户": lambda permission: permission.name.endswith(_USER_READ_ONLY_SUFFIXES),
 }
+
+
+class PermissionCatalogError(RuntimeError):
+    """权限目录不完整或存在歧义。"""
 
 
 def _normalize_path_segment(value: str) -> str:
@@ -44,7 +52,7 @@ def _build_permission_record(route: APIRoute, permission_name: str, permission_t
         "description": _clean_summary(route.summary) or route.name,
         "resource": parts[1] if len(parts) >= 2 else "unknown",
         "action": parts[-1] if len(parts) >= 3 else "unknown",
-        "method": next(iter(route.methods)) if route.methods else None,
+        "method": sorted(route.methods)[0] if route.methods else None,
         "path": route.path,
     }
 
@@ -52,7 +60,6 @@ def _build_permission_record(route: APIRoute, permission_name: str, permission_t
 def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
     """扫描 FastAPI 应用中的所有路由，提取权限信息"""
     permissions_found: list[dict[str, Any]] = []
-    seen_permissions: set[str] = set()
 
     for route in app.routes:
         if not isinstance(route, APIRoute):
@@ -61,7 +68,7 @@ def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
         for dep in route.dependencies:
             dependency_obj = dep.dependency
             perm_name = getattr(dependency_obj, "permission_required", None)
-            if not perm_name or perm_name in seen_permissions:
+            if not perm_name:
                 continue
 
             is_api_auth = getattr(dependency_obj, "is_api_auth", False)
@@ -69,15 +76,22 @@ def scan_routes_for_permissions(app: FastAPI) -> list[dict[str, Any]]:
             is_superuser = getattr(dependency_obj, "is_superuser", False)
 
             if is_api_auth:
-                seen_permissions.add(perm_name)
                 permissions_found.append(_build_permission_record(route, perm_name, "app_api"))
             elif is_rbac:
-                seen_permissions.add(perm_name)
                 permissions_found.append(_build_permission_record(route, perm_name, "user_api"))
             elif is_superuser:
                 continue
 
-    return permissions_found
+    return sorted(
+        permissions_found,
+        key=lambda payload: (
+            payload["name"],
+            payload["type"],
+            payload.get("method") or "",
+            payload.get("path") or "",
+            payload.get("description") or "",
+        ),
+    )
 
 
 def build_permission_preview_rows(permissions: list[dict[str, Any]]) -> list[str]:
@@ -139,183 +153,116 @@ def _build_resource_group_payload(
 
 def _build_group_payloads(scanned_perms: list[dict[str, Any]]) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
+
+    categories = sorted(
+        {
+            (permission["type"], permission["category"])
+            for permission in scanned_perms
+            if permission.get("type") and permission.get("category") and permission.get("resource")
+        }
+    )
     category_orders: dict[str, int] = {}
-    resource_orders: dict[str, int] = {}
-    seen_category_groups: set[str] = set()
-    seen_resource_groups: set[str] = set()
+    for permission_type, category in categories:
+        category_orders[permission_type] = category_orders.get(permission_type, 0) + 1
+        payloads.append(
+            _build_category_group_payload(permission_type, category, sort_order=category_orders[permission_type])
+        )
 
-    for permission in scanned_perms:
-        permission_type = permission.get("type")
-        category = permission.get("category")
-        resource = permission.get("resource")
-        if not permission_type or not category or not resource:
-            continue
-
-        category_group_name = f"{category}:system:group"
-        if category_group_name not in seen_category_groups:
-            category_orders[permission_type] = category_orders.get(permission_type, 0) + 1
-            payloads.append(
-                _build_category_group_payload(permission_type, category, sort_order=category_orders[permission_type])
-            )
-            seen_category_groups.add(category_group_name)
-
-        resource_group_name = f"{category}:{resource}:group"
-        if resource == "system" or resource_group_name in seen_resource_groups:
-            continue
-
-        resource_order_key = f"{permission_type}:{category}"
-        resource_orders[resource_order_key] = resource_orders.get(resource_order_key, 0) + 1
+    resources = sorted(
+        {
+            (permission["type"], permission["category"], permission["resource"])
+            for permission in scanned_perms
+            if permission.get("type")
+            and permission.get("category")
+            and permission.get("resource")
+            and permission["resource"] != "system"
+        }
+    )
+    resource_orders: dict[tuple[str, str], int] = {}
+    for permission_type, category, resource in resources:
+        order_key = (permission_type, category)
+        resource_orders[order_key] = resource_orders.get(order_key, 0) + 1
         payload = _build_resource_group_payload(
             permission_type,
             category,
             resource,
             parent_id=None,
-            sort_order=resource_orders[resource_order_key],
+            sort_order=resource_orders[order_key],
         )
         if payload is not None:
             payloads.append(payload)
-            seen_resource_groups.add(resource_group_name)
 
     return payloads
 
 
-def managed_permission_names_for_app(app: FastAPI) -> set[str]:
-    """返回当前路由扫描器拥有的叶子权限和分组权限名称。"""
+def build_permission_catalog(app: FastAPI) -> list[dict[str, Any]]:
+    """构建完整、确定且无名称歧义的权限目录。"""
     scanned_permissions = scan_routes_for_permissions(app)
-    return {
-        *(permission["name"] for permission in scanned_permissions),
-        *(payload["name"] for payload in _build_group_payloads(scanned_permissions)),
-    }
+    if not scanned_permissions:
+        raise PermissionCatalogError("未扫描到权限")
 
-
-def _build_update_data(existing: Permission, payload: dict[str, Any]) -> dict[str, Any]:
-    update_data: dict[str, Any] = {}
-    for field in _SYNC_FIELDS:
-        if getattr(existing, field) != payload.get(field):
-            update_data[field] = payload.get(field)
-    if update_data:
-        update_data["version"] = existing.version
-    return update_data
-
-
-async def _sync_permission_node(
-    repo: PermissionRepository,
-    db: AsyncSession,
-    payload: dict[str, Any],
-    existing_by_name: dict[str, Permission],
-    resolved_ids: dict[str, int],
-    result: dict[str, int],
-    dry_run: bool,
-    temp_id_state: dict[str, int],
-) -> None:
-    existing = existing_by_name.get(payload["name"])
-    if existing is None:
-        if dry_run:
-            resolved_ids[payload["name"]] = temp_id_state["next"]
-            temp_id_state["next"] -= 1
-        else:
-            created = await repo.create(db, payload)
-            if created is None:
-                return
-            existing_by_name[created.name] = created
-            if created.id is not None:
-                resolved_ids[created.name] = created.id
-
-        result["created"] += 1
-        return
-
-    update_data = _build_update_data(existing, payload)
-    if not update_data:
-        result["skipped"] += 1
-        if existing.id is not None:
-            resolved_ids[existing.name] = existing.id
-        return
-
-    if not dry_run and existing.id is not None:
-        _ = await repo.update(db, existing.id, update_data)
-        await db.refresh(existing)
-
-    result["updated"] += 1
-    if existing.id is not None:
-        resolved_ids[existing.name] = existing.id
-
-
-async def sync_permissions_to_db(
-    app: FastAPI,
-    db: AsyncSession,
-    dry_run: bool = False,
-    auto_commit: bool = True,
-) -> dict[str, int]:
-    """将代码中扫描到的权限同步到数据库"""
-    scanned_perms = scan_routes_for_permissions(app)
-    result = {"created": 0, "updated": 0, "skipped": 0, "total": len(scanned_perms)}
-
-    if not scanned_perms:
-        return result
-
-    repo = PermissionRepository()
-    existing_permissions: list[Permission] = list(
-        (await db.execute(select(Permission).where(Permission.is_deleted.is_(False)))).scalars().all()
-    )
-    existing_by_name = {permission.name: permission for permission in existing_permissions}
-    resolved_ids = {permission.name: permission.id for permission in existing_permissions if permission.id is not None}
-    temp_id_state = {"next": -1}
-
-    for group_payload in _build_group_payloads(scanned_perms):
-        if group_payload["resource"] != "system":
-            group_payload["parent_id"] = resolved_ids.get(f"{group_payload['category']}:system:group")
-        await _sync_permission_node(
-            repo,
-            db,
-            group_payload,
-            existing_by_name,
-            resolved_ids,
-            result,
-            dry_run,
-            temp_id_state,
-        )
+    leaves_by_name: dict[str, dict[str, Any]] = {}
+    for permission in scanned_permissions:
+        existing = leaves_by_name.get(permission["name"])
+        if existing is not None and existing != permission:
+            existing_tuple = (existing["type"], existing.get("method"), existing.get("path"))
+            permission_tuple = (permission["type"], permission.get("method"), permission.get("path"))
+            raise PermissionCatalogError(
+                f"重复权限码 `{permission['name']}` 指向不同定义: {existing_tuple!r} != {permission_tuple!r}"
+            )
+        leaves_by_name[permission["name"]] = permission
 
     leaf_orders: dict[str, int] = {}
-    for permission_data in scanned_perms:
-        category = permission_data.get("category")
-        resource = permission_data.get("resource")
+    leaf_payloads: list[dict[str, Any]] = []
+    for permission in sorted(
+        leaves_by_name.values(),
+        key=lambda payload: (
+            payload["type"],
+            payload.get("category") or "",
+            payload.get("resource") or "",
+            payload["name"],
+            payload.get("method") or "",
+            payload.get("path") or "",
+        ),
+    ):
+        category = permission.get("category")
+        resource = permission.get("resource")
         if not category or not resource:
-            parent_key = "__root__"
-            parent_id = None
+            parent_name = "__root__"
         elif resource == "system":
-            parent_key = f"{category}:system:group"
-            parent_id = resolved_ids.get(parent_key)
+            parent_name = f"{category}:system:group"
         else:
-            parent_key = f"{category}:{resource}:group"
-            parent_id = resolved_ids.get(parent_key)
-
-        leaf_orders[parent_key] = leaf_orders.get(parent_key, 0) + 1
-        payload: dict[str, Any] = {
-            **permission_data,
-            "parent_id": parent_id,
-            "sort_order": leaf_orders[parent_key],
-        }
-        await _sync_permission_node(
-            repo,
-            db,
-            payload,
-            existing_by_name,
-            resolved_ids,
-            result,
-            dry_run,
-            temp_id_state,
+            parent_name = f"{category}:{resource}:group"
+        leaf_orders[parent_name] = leaf_orders.get(parent_name, 0) + 1
+        leaf_payloads.append(
+            {
+                **permission,
+                "parent_id": None,
+                "sort_order": leaf_orders[parent_name],
+            }
         )
 
-    if auto_commit and not dry_run and (result["created"] > 0 or result["updated"] > 0):
-        await db.commit()
-        logger.info(
-            "自动同步权限完成: 新增 %s 条，更新 %s 条，跳过 %s 条",
-            result["created"],
-            result["updated"],
-            result["skipped"],
-        )
+    catalog: list[dict[str, Any]] = []
+    payloads_by_name: dict[str, dict[str, Any]] = {}
+    group_payloads = _build_group_payloads(list(leaves_by_name.values()))
+    colliding_names = sorted(leaves_by_name.keys() & {payload["name"] for payload in group_payloads})
+    if colliding_names:
+        raise PermissionCatalogError(f"权限目录名称冲突: 叶子权限与派生分组同名 `{colliding_names[0]}`")
 
-    return result
+    for payload in [*group_payloads, *leaf_payloads]:
+        existing = payloads_by_name.get(payload["name"])
+        if existing is not None and existing != payload:
+            raise PermissionCatalogError(f"权限目录名称冲突: `{payload['name']}` 对应不同 payload")
+        if existing is None:
+            payloads_by_name[payload["name"]] = payload
+            catalog.append(payload)
+
+    return catalog
+
+
+def managed_permission_names_for_app(app: FastAPI) -> set[str]:
+    """返回当前路由扫描器拥有的叶子权限和分组权限名称。"""
+    return {payload["name"] for payload in build_permission_catalog(app)}
 
 
 async def sync_builtin_role_permissions(
@@ -327,6 +274,10 @@ async def sync_builtin_role_permissions(
     managed_permission_names: set[str] | None = None,
 ) -> dict[str, int]:
     """按内置角色规则同步角色-权限关联；通用入口默认只增不删。"""
+    from sqlalchemy import delete, select, tuple_
+
+    from src.app.admin.models import Permission, Role, role_permission
+
     roles: list[Role] = list((await db.execute(select(Role).where(Role.is_deleted.is_(False)))).scalars().all())
     permissions: list[Permission] = list(
         (await db.execute(select(Permission).where(Permission.is_deleted.is_(False)))).scalars().all()

@@ -26,6 +26,60 @@ class PermissionRepository(TreeRepository[Permission]):
     def __init__(self):
         super().__init__(Permission)
 
+    async def list_catalog_nodes(self, db: AsyncSession) -> list[Permission]:
+        """加载权限目录同步所需的活动节点和回收站节点。"""
+        result = await db.execute(select(Permission).order_by(Permission.id))
+        return list(result.scalars().all())
+
+    async def collect_catalog_affected_ids(
+        self,
+        db: AsyncSession,
+        permission_ids: set[int],
+    ) -> tuple[frozenset[int], frozenset[int]]:
+        """在目录变更前收集需要失效缓存的用户和 API 应用。"""
+        if not permission_ids:
+            return frozenset(), frozenset()
+
+        user_result = await db.execute(
+            select(user_role.c.user_id)
+            .join(role_permission, role_permission.c.role_id == user_role.c.role_id)
+            .where(role_permission.c.permission_id.in_(permission_ids))
+            .distinct()
+        )
+
+        from src.app.api_auth.models.relationships import api_app_permissions
+
+        app_result = await db.execute(
+            select(api_app_permissions.c.app_id)
+            .where(api_app_permissions.c.permission_id.in_(permission_ids))
+            .distinct()
+        )
+        return (
+            frozenset(int(user_id) for user_id in user_result.scalars().all() if user_id is not None),
+            frozenset(int(app_id) for app_id in app_result.scalars().all() if app_id is not None),
+        )
+
+    async def create_catalog_node(self, db: AsyncSession, payload: dict[str, Any]) -> Permission | None:
+        """创建一个活动目录节点。"""
+        return await self.create(db, payload)
+
+    async def update_catalog_node(
+        self,
+        db: AsyncSession,
+        permission: Permission,
+        update_data: dict[str, Any],
+    ) -> Permission | None:
+        """仅更新目录拥有的字段。"""
+        if permission.id is None:
+            return None
+        return await self.update(db, permission.id, {**update_data, "version": permission.version})
+
+    async def delete_catalog_node(self, db: AsyncSession, permission: Permission) -> bool:
+        """物理删除目录节点并由数据库级 FK cascade 清理授权关系。"""
+        if permission.id is None:
+            return False
+        return await self.permanent_delete(db, permission.id)
+
     def _add_deleted_filter(self, where_clauses: list[FilterClause], exclude_deleted: bool) -> None:
         """添加软删除过滤条件（DRY 原则）
 

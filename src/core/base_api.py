@@ -507,14 +507,14 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             return
 
         # 1. 批量恢复接口
-        batch_restore_summary = self._build_summary("restore", f"批量恢复{self.resource_name}")
+        batch_restore_summary = self._build_summary("batch_restore", f"批量恢复{self.resource_name}")
 
         @self.router.post(
             "/trash/restore",
             summary=batch_restore_summary,
             operation_id=self._operation_id("batch_restore"),
             response_model=BatchOperationResponseModel,
-            dependencies=self._permission_dependencies("restore"),
+            dependencies=self._permission_dependencies("batch_restore"),
         )
         async def batch_restore(  # pyright: ignore[reportUnusedFunction]
             ids: Annotated[list[int], Body(...)],
@@ -534,14 +534,16 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
             )
 
         # 2. 批量永久删除接口
-        batch_permanent_delete_summary = self._build_summary("permanent_delete", f"批量永久删除{self.resource_name}")
+        batch_permanent_delete_summary = self._build_summary(
+            "batch_permanent_delete", f"批量永久删除{self.resource_name}"
+        )
 
         @self.router.delete(
             "/trash/permanent",
             summary=batch_permanent_delete_summary,
             operation_id=self._operation_id("batch_permanent_delete"),
             response_model=BatchOperationResponseModel,
-            dependencies=self._permission_dependencies("permanent_delete"),
+            dependencies=self._permission_dependencies("batch_permanent_delete"),
         )
         async def batch_permanent_delete(  # pyright: ignore[reportUnusedFunction]
             ids: Annotated[list[int], Body(...)],

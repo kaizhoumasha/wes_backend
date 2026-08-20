@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,12 +17,11 @@ from scripts.data.seed_initial_data import (
 from src.app.admin.models import Menu, Permission, Role, User, role_menu, role_permission, user_role
 from src.app.admin.services.menu_sync_service import menu_sync_service
 from src.core.security import get_password_hash
-from src.utils.frontend_menu_parser import FrontendMenuDefinition
+from src.utils.frontend_menu_parser import FrontendMenuDefinition, resolve_frontend_root
 from src.utils.permission_scanner import sync_builtin_role_permissions
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
-BACKEND_ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_ROOT = BACKEND_ROOT.parent / "wes_frontend"
+FRONTEND_ROOT = resolve_frontend_root()
 SEED_PASSWORD = "admin123"
 
 
@@ -204,6 +202,7 @@ def test_dev_seed_is_idempotent_repairs_drift_and_check_is_read_only() -> None:
                             role_permission.c.permission_id == retired_permission.id,
                         )
                     )
+                    assert not await db.scalar(select(Permission.id).where(Permission.id == retired_permission.id))
                     assert not await db.scalar(
                         select(role_menu).where(
                             role_menu.c.role_id == manager_role.id,
@@ -213,7 +212,7 @@ def test_dev_seed_is_idempotent_repairs_drift_and_check_is_read_only() -> None:
                     final_counts = await _row_counts(db)
                     assert final_counts[:1] == first_counts[:1]
                     assert final_counts[1] == first_counts[1] + 1
-                    assert final_counts[2] == first_counts[2] + 1
+                    assert final_counts[2] == first_counts[2]
                     assert final_counts[3] == first_counts[3] + 1
                     assert final_counts[4] == first_counts[4] + 1
                     assert final_counts[5:] == first_counts[5:]

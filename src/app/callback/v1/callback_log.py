@@ -25,15 +25,16 @@ from src.database.dependencies import AsyncSessionDep
 def register_callback_log_routes(router: APIRouter, api: BaseAPI[Any, Any, Any]) -> None:
     """注册回调日志专用查询入口。"""
 
-    list_permission = api.get_permission_code("list")
-    detail_permission = api.get_permission_code("detail")
+    request_detail_permission = api.get_permission_code("detail-by-request-id")
+    trace_list_permission = api.get_permission_code("list-by-trace-id")
+    subject_list_permission = api.get_permission_code("list-by-subject-code")
 
     @router.get(
         "/request/{request_id}",
         response_model=ResponseSchemaModel[CallbackLogResponse],
         status_code=status.HTTP_200_OK,
-        summary=f"[{detail_permission}] 根据请求 ID 查询回调日志",
-        dependencies=[Depends(RequirePermission(detail_permission))] if detail_permission else None,
+        summary=f"[{request_detail_permission}] 根据请求 ID 查询回调日志",
+        dependencies=[Depends(RequirePermission(request_detail_permission))] if request_detail_permission else None,
         description="根据 request_id 查询单条回调日志记录",
     )
     async def get_by_request_id(
@@ -63,8 +64,8 @@ def register_callback_log_routes(router: APIRouter, api: BaseAPI[Any, Any, Any])
         "/trace/{trace_id}",
         response_model=ResponseSchemaModel[CallbackLogTraceResponse],
         status_code=status.HTTP_200_OK,
-        summary=f"[{list_permission}] 根据 Trace ID 查询回调日志",
-        dependencies=[Depends(RequirePermission(list_permission))] if list_permission else None,
+        summary=f"[{trace_list_permission}] 根据 Trace ID 查询回调日志",
+        dependencies=[Depends(RequirePermission(trace_list_permission))] if trace_list_permission else None,
         description="根据 trace_id 查询所有相关的回调日志（用于串联整个流程）",
     )
     async def get_by_trace_id(
@@ -86,8 +87,8 @@ def register_callback_log_routes(router: APIRouter, api: BaseAPI[Any, Any, Any])
         "/subject/{subject_code}",
         response_model=ResponseSchemaModel[CallbackLogSubjectResponse],
         status_code=status.HTTP_200_OK,
-        summary=f"[{list_permission}] 根据回调主体编码查询回调日志",
-        dependencies=[Depends(RequirePermission(list_permission))] if list_permission else None,
+        summary=f"[{subject_list_permission}] 根据回调主体编码查询回调日志",
+        dependencies=[Depends(RequirePermission(subject_list_permission))] if subject_list_permission else None,
         description="查询指定回调主体最近的回调记录。设备回调主体通常是 device_code。",
     )
     async def get_by_subject_code(

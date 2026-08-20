@@ -21,13 +21,13 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from src.app.admin.services.permission_catalog_service import permission_catalog_service
 from src.database.db import get_db_context, init_db
 from src.register import create_app
 from src.utils.permission_scanner import (
     build_permission_preview_rows,
     scan_routes_for_permissions,
     sync_builtin_role_permissions,
-    sync_permissions_to_db,
 )
 
 
@@ -64,7 +64,9 @@ async def main_async(args: argparse.Namespace) -> None:
 
     await init_db()
     async with get_db_context() as session:
-        permission_result = await sync_permissions_to_db(app, session, dry_run=args.dry_run)
+        permission_result = await permission_catalog_service.sync(app, session, dry_run=args.dry_run)
+        if not args.dry_run and (permission_result.created or permission_result.updated or permission_result.deleted):
+            await session.commit()
         role_result: dict[str, int] | None = None
 
         if not args.permissions_only:
@@ -77,10 +79,10 @@ async def main_async(args: argparse.Namespace) -> None:
     print("=" * 80)
     print(
         "权限同步: "
-        f"新增 {permission_result['created']} 条，"
-        f"更新 {permission_result['updated']} 条，"
-        f"跳过 {permission_result['skipped']} 条，"
-        f"扫描总数 {permission_result['total']} 条"
+        f"新增 {permission_result.created} 条，"
+        f"更新 {permission_result.updated} 条，"
+        f"跳过 {permission_result.unchanged} 条，"
+        f"扫描总数 {len(permissions)} 条"
     )
 
     if role_result is not None:

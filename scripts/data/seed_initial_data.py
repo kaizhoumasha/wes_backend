@@ -25,6 +25,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from src.app.admin.models import Role, User, user_role
 from src.app.admin.services.menu_sync_service import menu_sync_service
+from src.app.admin.services.permission_catalog_service import permission_catalog_service
 from src.core.rbac import invalidate_users_permissions
 from src.core.security import get_password_hash, verify_password
 from src.database.db import get_db_context, init_db
@@ -33,7 +34,6 @@ from src.register import create_app
 from src.utils.permission_scanner import (
     managed_permission_names_for_app,
     sync_builtin_role_permissions,
-    sync_permissions_to_db,
 )
 
 
@@ -229,7 +229,7 @@ async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: 
         role_result = await ensure_roles(db)
         user_result = await ensure_users(db, password)
         user_role_result = await ensure_user_roles(db)
-        permission_result = await sync_permissions_to_db(app, db, auto_commit=False)
+        permission_result = await permission_catalog_service.sync(app, db, dry_run=False)
         role_permission_result = await sync_builtin_role_permissions(
             db,
             auto_commit=False,
@@ -305,8 +305,8 @@ async def _check_foundation_data(db: AsyncSession, frontend_path: str, password:
     managed_permission_names = managed_permission_names_for_app(app)
     if not managed_permission_names:
         errors.append("权限定义为空")
-    permission_result = await sync_permissions_to_db(app, db, dry_run=True, auto_commit=False)
-    if permission_result["created"] or permission_result["updated"]:
+    permission_result = await permission_catalog_service.sync(app, db, dry_run=True)
+    if permission_result.created or permission_result.updated or permission_result.deleted:
         errors.append(f"权限未收敛 {permission_result}")
     role_permission_result = await sync_builtin_role_permissions(
         db,

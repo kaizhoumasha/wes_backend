@@ -112,7 +112,7 @@ async def test_material_location_query_route_delegates_workline_active_object(
     assert response["data"].location_code == "WL-7:POS-1"
 
 
-def test_workline_active_objects_route_requires_detail_permission() -> None:
+def test_workline_active_objects_route_requires_dedicated_permission() -> None:
     from src.app.workline.v1 import active_objects as active_objects_api
 
     route = next(
@@ -121,7 +121,9 @@ def test_workline_active_objects_route_requires_detail_permission() -> None:
         if route.path == "/work_lines/{id}/active-objects" and "GET" in route.methods
     )
 
-    assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == ["biz:workline:detail"]
+    assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == [
+        "biz:workline:active-objects"
+    ]
 
 
 @pytest.mark.asyncio

@@ -90,12 +90,11 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
 
     def _register_tree_routes(self) -> None:
         """注册树形结构路由"""
-        tree_dependencies = self._permission_dependencies("tree")
 
         @self.router.get(
             "/tree",
             response_model=ResponseSchemaModel[list[self.tree_response_schema]],
-            dependencies=tree_dependencies,
+            dependencies=self._permission_dependencies("tree"),
         )
         async def get_tree(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -128,7 +127,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/siblings/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=tree_dependencies,
+            dependencies=self._permission_dependencies("siblings"),
         )
         async def get_siblings(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -143,7 +142,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/ancestors/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=tree_dependencies,
+            dependencies=self._permission_dependencies("ancestors"),
         )
         async def get_ancestors(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -158,7 +157,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         @self.router.get(
             "/children/{node_id}",
             response_model=ResponseSchemaModel[list[self.tree_node_response_schema]],
-            dependencies=tree_dependencies,
+            dependencies=self._permission_dependencies("children"),
         )
         async def get_children(  # pyright: ignore[reportUnusedFunction]
             db: AsyncSessionDep,
@@ -170,12 +169,11 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             return response_builder_any.success(data=items)
 
         if self.gen_update:
-            update_dependencies = self._permission_dependencies("update")
 
             @self.router.put(
                 "/move",
                 response_model=ResponseSchemaModel[self.tree_node_response_schema],
-                dependencies=update_dependencies,
+                dependencies=self._permission_dependencies("move"),
             )
             async def move_node(  # pyright: ignore[reportUnusedFunction]
                 db: AsyncSessionDep,
@@ -194,7 +192,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             @self.router.put(
                 "/batch-sort",
                 response_model=ResponseSchemaModel[None],
-                dependencies=update_dependencies,
+                dependencies=self._permission_dependencies("batch_sort"),
             )
             async def batch_sort(  # pyright: ignore[reportUnusedFunction]
                 db: AsyncSessionDep,

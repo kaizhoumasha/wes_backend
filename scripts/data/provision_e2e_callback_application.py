@@ -6,7 +6,7 @@ import asyncio
 import os
 from typing import TYPE_CHECKING, Any
 
-from src.app.admin.services import permission_service
+from src.app.admin.services import permission_catalog_service, permission_service
 from src.app.api_auth.services import api_app_service
 from src.core.conf import settings
 from src.core.encryption import encryption_service
@@ -14,7 +14,6 @@ from src.database.db import close_db, get_db_context, init_db
 from src.database.redis_cache import get_cache
 from src.database.redis_client import close_redis, init_redis
 from src.register import create_app
-from src.utils.permission_scanner import sync_permissions_to_db
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,7 +91,9 @@ async def main() -> None:
     await init_redis()
     try:
         async with get_db_context() as db:
-            _ = await sync_permissions_to_db(create_app(), db)
+            permission_result = await permission_catalog_service.sync(create_app(), db, dry_run=False)
+            if permission_result.created or permission_result.updated or permission_result.deleted:
+                await db.commit()
             application_id = await provision_e2e_callback_application(
                 db,
                 get_cache(),
