@@ -40,7 +40,7 @@ class _RowsResult:
         return list(self._rows)
 
 
-def test_scan_routes_for_permissions_includes_permanent_delete_action() -> None:
+def test_scan_routes_for_permissions_excludes_permanent_delete_when_delete_generation_is_disabled() -> None:
     app = FastAPI()
     api = BaseAPI(
         module_name="test",
@@ -58,9 +58,7 @@ def test_scan_routes_for_permissions_includes_permanent_delete_action() -> None:
     scanned = scan_routes_for_permissions(app)
     by_name = {item["name"]: item for item in scanned}
 
-    assert "test:dummysoftdeletemodel:permanent_delete" in by_name
-    assert by_name["test:dummysoftdeletemodel:permanent_delete"]["action"] == "permanent_delete"
-    assert by_name["test:dummysoftdeletemodel:permanent_delete"]["path"] == "/dummy-items/trash/permanent"
+    assert "test:dummysoftdeletemodel:permanent_delete" not in by_name
 
 
 def test_scan_routes_for_permissions_uses_api_application_permission_resource_override() -> None:

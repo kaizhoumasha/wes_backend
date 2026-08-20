@@ -478,7 +478,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _register_soft_delete_routes(self) -> None:
         """注册软删除相关路由（仅当模型支持时）"""
         # 检测模型是否支持软删除
-        if not self.supports_soft_delete:
+        if not self.supports_soft_delete or not self.gen_delete:
             return
 
         # 1. 批量恢复接口

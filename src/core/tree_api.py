@@ -91,7 +91,6 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
     def _register_tree_routes(self) -> None:
         """注册树形结构路由"""
         tree_dependencies = self._permission_dependencies("tree")
-        update_dependencies = self._permission_dependencies("update")
 
         @self.router.get(
             "/tree",
@@ -170,45 +169,48 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             items = await self.service.get_children(db, node_id)
             return response_builder_any.success(data=items)
 
-        @self.router.put(
-            "/move",
-            response_model=ResponseSchemaModel[self.tree_node_response_schema],
-            dependencies=update_dependencies,
-        )
-        async def move_node(  # pyright: ignore[reportUnusedFunction]
-            db: AsyncSessionDep,
-            cache: CacheDep,
-            node_id: Annotated[int, Body(description="要移动的节点ID")],
-            new_parent_id: Annotated[int | None, Body(description="新的父节点ID")],
-        ) -> dict[str, Any]:
-            """移动节点"""
-            response_builder_any = self._response_builder()
-            try:
-                result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
-            except ValueError as e:
-                return self._value_error_response(e, resource_id=node_id)
-            return response_builder_any.success(data=result)
+        if self.gen_update:
+            update_dependencies = self._permission_dependencies("update")
 
-        @self.router.put(
-            "/batch-sort",
-            response_model=ResponseSchemaModel[None],
-            dependencies=update_dependencies,
-        )
-        async def batch_sort(  # pyright: ignore[reportUnusedFunction]
-            db: AsyncSessionDep,
-            cache: CacheDep,
-            request: BatchSortRequest,
-        ) -> dict[str, Any]:
-            """批量排序节点
+            @self.router.put(
+                "/move",
+                response_model=ResponseSchemaModel[self.tree_node_response_schema],
+                dependencies=update_dependencies,
+            )
+            async def move_node(  # pyright: ignore[reportUnusedFunction]
+                db: AsyncSessionDep,
+                cache: CacheDep,
+                node_id: Annotated[int, Body(description="要移动的节点ID")],
+                new_parent_id: Annotated[int | None, Body(description="新的父节点ID")],
+            ) -> dict[str, Any]:
+                """移动节点"""
+                response_builder_any = self._response_builder()
+                try:
+                    result = await self.service.move_node(db, node_id, new_parent_id, cache=cache)
+                except ValueError as e:
+                    return self._value_error_response(e, resource_id=node_id)
+                return response_builder_any.success(data=result)
 
-            适用于拖拽排序场景，一次请求更新多个节点的 parent_id 和 sort_order
-            """
-            items = [item.model_dump() for item in request.items]
-            try:
-                await self.service.batch_sort(db, items, cache=cache)
-            except ValueError as e:
-                return self._value_error_response(e)
-            return self._response_builder().success(data=None)
+            @self.router.put(
+                "/batch-sort",
+                response_model=ResponseSchemaModel[None],
+                dependencies=update_dependencies,
+            )
+            async def batch_sort(  # pyright: ignore[reportUnusedFunction]
+                db: AsyncSessionDep,
+                cache: CacheDep,
+                request: BatchSortRequest,
+            ) -> dict[str, Any]:
+                """批量排序节点
+
+                适用于拖拽排序场景，一次请求更新多个节点的 parent_id 和 sort_order
+                """
+                items = [item.model_dump() for item in request.items]
+                try:
+                    await self.service.batch_sort(db, items, cache=cache)
+                except ValueError as e:
+                    return self._value_error_response(e)
+                return self._response_builder().success(data=None)
 
 
 __all__ = ["TreeAPI"]
