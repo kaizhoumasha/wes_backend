@@ -299,6 +299,11 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
     summary="[ops:transport:debug-create] 创建 Transport 调试任务",
     response_model=ResponseSchemaModel[DebugTransportTaskCreated],
     status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport 请求不满足领域约束"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "幂等身份或 Transport 资源冲突"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
+    },
     dependencies=[Depends(RequirePermission("ops:transport:debug-create"))],
 )
 async def create_debug_transport_task(
@@ -327,6 +332,10 @@ async def create_debug_transport_task(
     summary="[ops:transport:read] 查询本地 Transport 任务",
     response_model=ResponseSchemaModel[TransportTaskResponse],
     status_code=status.HTTP_200_OK,
+    responses={
+        404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "TransportTask 不存在"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
+    },
     dependencies=[Depends(RequirePermission("ops:transport:read"))],
 )
 async def get_transport_task(
