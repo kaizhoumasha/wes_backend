@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.9.0] - 2026-08-20
+
+### Added
+- WMS Provider profile 新增必填 `transport_submit_path`，支持按目标 WMS OpenAPI 配置并冻结搬运提交相对路径，同时保持路径大小写。
+- 新增权限目录、基础角色、bootstrap 与菜单真源收敛的设计和后续实施计划；本版本仅交付方案，不包含权限生产实现。
+
+### Changed
+- 将搬运交互阶段统一改为“搬运提交、容器中间位置事件、搬运最终结果”等语义名称，不再使用数字阶段代号。
+- 明确 `TransportTask` 负责入线前搬运及资源围栏；只有最终结果确认 Bin 到达工作线且扫码身份匹配后才创建 `BinExecution`。
+
+### Fixed
+- 本机 8012 WMS Provider Mock 按同一 profile 注册搬运提交路径，并与 8011 Transport Mock 复用 `256 KiB` 预缓冲请求体限制。
+- 补齐自定义路径的真实 worker/HTTP E2E、Provider Mock `202/413` 合同测试及共享 Mock 的 HEAVY 精确所有权。
+
+### Verification
+- 提交钩子 QUALITY 全门禁通过：FAST 为 3641 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和预算检查均通过。
+- selector 合同 286 passed；相对 `origin/develop` 选出的 HEAVY owner 在隔离 PostgreSQL、Redis、Celery 与迁移环境中 187 passed、0 skipped。
+- 行为路径覆盖审计为 100%，计划/范围审计 4/4 完成，Greptile 评论 0 条，预落地 Review 无剩余意见。
+- 本次证据证明代码、合同和本地 Mock 闭合，不替代真实 WMS/RCS 联调、现场验证或业务验收；权限目录/bootstrap 仍属于后续实施范围。
+
 ## [0.26.8.0] - 2026-08-20
 
 ### Fixed
