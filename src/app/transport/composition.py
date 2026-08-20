@@ -97,7 +97,10 @@ async def build_transport_runtime(
     )
     try:
         repository = TransportRepository()
-        adapter = WmsTransportAdapter(client)
+        adapter = WmsTransportAdapter(
+            client,
+            submit_path=startup.compiled_profile.transport_submit_path,
+        )
         service = TransportService(session_factory, repository, adapter)
         handler = TransportEventHandler(service)
         return TransportRuntime(

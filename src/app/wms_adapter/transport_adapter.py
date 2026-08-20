@@ -15,7 +15,6 @@ from src.app.wms_adapter.strict_json import (
 from src.app.wms_adapter.strict_json import (
     is_json_utf8_media_type as _valid_json_media_type,
 )
-from src.app.wms_adapter.transport_wire import TRANSPORT_PATH
 from src.core.uuid7 import is_uuid7
 
 if TYPE_CHECKING:
@@ -33,8 +32,9 @@ _REJECTED_REASON_CODES = frozenset(
 class WmsTransportAdapter:
     """把一个类型化搬运请求转换成一次固定 WMS 调用。"""
 
-    def __init__(self, client: WmsClient) -> None:
+    def __init__(self, client: WmsClient, *, submit_path: str) -> None:
         self._client = client
+        self._submit_path = submit_path
 
     async def submit(
         self,
@@ -63,7 +63,7 @@ class WmsTransportAdapter:
             )
         try:
             access = await self._client.post_json_bytes(
-                TRANSPORT_PATH,
+                self._submit_path,
                 body=request_body,
                 max_request_body_bytes=_BODY_LIMIT,
                 max_response_body_bytes=_BODY_LIMIT,

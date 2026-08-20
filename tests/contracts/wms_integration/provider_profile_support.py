@@ -27,6 +27,7 @@ def build_provider_profile_payload() -> dict[str, Any]:
             "contract_version": "2026-07-28.full-factory",
         },
         "server_url": "http://factory-wms.example:8080",
+        "transport_submit_path": "/api/v1/wes/transport-requests",
         "effect_status_path": "/api/wms/operations/status",
         "network_trust_mode": "isolated_lan",
         "outbound_auth": {"scheme": "NONE"},

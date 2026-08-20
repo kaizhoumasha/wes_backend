@@ -13,7 +13,6 @@ from src.core.uuid7 import is_uuid7
 
 POSITION_OPERATION = TRANSPORT_POSITION_OPERATION
 RESULT_OPERATION = TRANSPORT_RESULT_OPERATION
-TRANSPORT_PATH = "/api/v1/wes/transport-requests"
 EVENT_PATH = "/api/v1/wms/events"
 SIGNED_INT64_MIN = 0
 SIGNED_INT64_MAX = 2**63 - 1
@@ -217,7 +216,6 @@ __all__ = [
     "POSITION_OPERATION",
     "RESULT_OPERATION",
     "TRANSPORT_FAILURE_CODES",
-    "TRANSPORT_PATH",
     "UnsupportedTransportOperation",
     "validate_callback_envelope",
 ]

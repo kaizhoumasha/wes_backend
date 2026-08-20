@@ -39,6 +39,10 @@ class ClosedClient:
         raise OutboundHttpClosedError("closed")
 
 
+def _adapter(client: FakeClient | ClosedClient) -> WmsTransportAdapter:
+    return WmsTransportAdapter(client, submit_path="/api/v1/wes/transport-requests")
+
+
 def _snapshot() -> dict[str, object]:
     envelope: dict[str, object] = {
         "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
@@ -79,7 +83,7 @@ def _ack(status: int, code: str, data: dict[str, object]) -> FakeAccessResult:
 async def test_removed_busy_ack_is_not_accepted() -> None:
     access = _ack(429, "BUSY", {"transport_task_id": "transport-1"})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -88,7 +92,7 @@ async def test_removed_busy_ack_is_not_accepted() -> None:
 async def test_retry_after_ms_is_rejected_from_all_ack_data() -> None:
     access = _ack(503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -115,7 +119,7 @@ async def test_ack_status_and_code_are_a_closed_pair(
         data["reason_code"] = "INVALID_DATA"
     access = _ack(status, code, data)
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is expected
 
@@ -129,7 +133,7 @@ async def test_nonempty_preassociation_error_is_not_promoted_to_authoritative_re
         {"transport_task_id": "transport-1", "reason_code": "PROXY_GENERATED_ERROR"},
     )
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -144,7 +148,7 @@ async def test_empty_preassociation_error_confirms_request_was_not_accepted(stat
         body_present=False,
     )
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.REJECTED
 
@@ -153,7 +157,7 @@ async def test_empty_preassociation_error_confirms_request_was_not_accepted(stat
 async def test_invalid_ack_pair_with_foreign_task_id_remains_delivery_unknown() -> None:
     access = _ack(500, "RECEIVED", {"transport_task_id": "transport-other"})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -167,7 +171,7 @@ async def test_rejected_ack_preserves_a_persistable_reason_code(status_code: int
         {"transport_task_id": "transport-1", "reason_code": "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"},
     )
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.REJECTED
     assert result.reason_code == "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"
@@ -177,7 +181,7 @@ async def test_rejected_ack_preserves_a_persistable_reason_code(status_code: int
 async def test_rejected_ack_may_omit_transport_task_id() -> None:
     access = _ack(422, "REJECTED", {"reason_code": "INVALID_DATA"})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.REJECTED
     assert result.reason_code == "INVALID_DATA"
@@ -187,7 +191,7 @@ async def test_rejected_ack_may_omit_transport_task_id() -> None:
 async def test_rejected_ack_rejects_explicit_null_transport_task_id() -> None:
     access = _ack(422, "REJECTED", {"transport_task_id": None, "reason_code": "INVALID_DATA"})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -197,7 +201,7 @@ async def test_transport_ack_requires_json_utf8_response_content_type() -> None:
     access = _ack(202, "RECEIVED", {"transport_task_id": "transport-1"})
     access.response_headers = (("Content-Type", "text/plain"),)
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -206,7 +210,7 @@ async def test_transport_ack_requires_json_utf8_response_content_type() -> None:
 async def test_ack_for_another_task_remains_delivery_unknown() -> None:
     access = _ack(202, "RECEIVED", {"transport_task_id": "transport-other"})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -224,7 +228,7 @@ async def test_transport_ack_rejects_malformed_utf8_charset(content_type: str) -
     access = _ack(202, "RECEIVED", {"transport_task_id": "transport-1"})
     access.response_headers = (("Content-Type", content_type),)
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -246,7 +250,7 @@ async def test_ack_identity_and_scalar_types_fail_closed(field: str, value: obje
     assert isinstance(access.json_body, dict)
     access.json_body[field] = value
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
@@ -255,7 +259,7 @@ async def test_ack_identity_and_scalar_types_fail_closed(field: str, value: obje
 async def test_rejected_ack_discards_reason_code_that_cannot_be_persisted() -> None:
     access = _ack(422, "REJECTED", {"transport_task_id": "transport-1", "reason_code": "R" * 121})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
     assert result.reason_code is None
@@ -266,7 +270,7 @@ async def test_rejected_ack_discards_unencodable_reason_code() -> None:
     reason_code = json.loads(r'"\ud800"')
     access = _ack(422, "REJECTED", {"transport_task_id": "transport-1", "reason_code": reason_code})
 
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
     assert result.reason_code is None
@@ -292,14 +296,14 @@ async def test_ack_data_must_match_the_code_specific_closed_contract(
     code: str,
     data: dict[str, object],
 ) -> None:
-    result = await WmsTransportAdapter(FakeClient(_ack(status, code, data))).submit(**_snapshot())
+    result = await _adapter(FakeClient(_ack(status, code, data))).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
 
 
 @pytest.mark.asyncio
 async def test_closed_transport_is_a_deterministic_not_sent_result() -> None:
-    result = await WmsTransportAdapter(ClosedClient()).submit(**_snapshot())
+    result = await _adapter(ClosedClient()).submit(**_snapshot())
 
     assert result.code is TransportSubmitCode.NOT_SENT
 
@@ -318,7 +322,7 @@ async def test_closed_transport_is_a_deterministic_not_sent_result() -> None:
 async def test_transport_and_malformed_ack_failures_preserve_delivery_certainty(
     access: FakeAccessResult,
 ) -> None:
-    result = await WmsTransportAdapter(FakeClient(access)).submit(**_snapshot())
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
     expected = (
         TransportSubmitCode.NOT_SENT if access.delivery_state == "NOT_SENT" else TransportSubmitCode.DELIVERY_UNKNOWN

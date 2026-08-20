@@ -42,7 +42,12 @@ def _startup(
             "inbound_auth": SimpleNamespace(scheme=inbound_scheme, credential_reference=None),
         }
     )
-    return SimpleNamespace(compiled_profile=SimpleNamespace(profile=profile))
+    return SimpleNamespace(
+        compiled_profile=SimpleNamespace(
+            profile=profile,
+            transport_submit_path="/api/WES/TransportRequests",
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -64,6 +69,7 @@ async def test_supported_profile_builds_one_closed_transport_runtime_without_pub
     client_factory.assert_called_once_with(base_url="http://factory-wms.example:8080", timeout_seconds=10.0)
     assert runtime.client is client
     assert runtime.adapter._client is client
+    assert runtime.adapter._submit_path == "/api/WES/TransportRequests"
     assert runtime.port is runtime.service
     assert runtime.service.provider is runtime.adapter
     assert runtime.handler._recorder is runtime.service
