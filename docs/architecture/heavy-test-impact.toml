@@ -1656,6 +1656,10 @@ source_glob = "src/app/admin/services/authorization_bootstrap_service.py"
 heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 
 [[mapping]]
+source_glob = "src/core/authorization_cache.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
 source_glob = "src/app/admin/repositories/role_repository.py"
 heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 

@@ -1,26 +1,20 @@
 """显式检查、应用、预览或修复权限缓存。"""
 
-# ruff: noqa: E402
-
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.app.admin.services.authorization_bootstrap_service import (
-    AuthorizationSyncResult,
-    authorization_bootstrap_service,
-)
-from src.database.db import get_db_context, init_db
-from src.database.redis_cache import get_cache
-from src.register import create_app
-from src.utils.permission_scanner import build_permission_catalog, build_permission_preview_rows
+if TYPE_CHECKING:
+    from src.app.admin.services.authorization_bootstrap_service import AuthorizationSyncResult
 
 DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED = "DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED"
 POSTCOMMIT_CACHE_FAILURE_EXIT_CODE = 3
@@ -60,17 +54,68 @@ def _print_result(result: AuthorizationSyncResult) -> None:
     print(f"  role_permissions={result.role_permissions}")
 
 
+def _create_app() -> Any:
+    from src.register import create_app
+
+    return create_app()
+
+
+async def _initialize_database() -> None:
+    from src.database.db import init_db
+
+    await init_db()
+
+
+def _database_context() -> Any:
+    from src.database.db import get_db_context
+
+    return get_db_context()
+
+
+def _authorization_service() -> Any:
+    from src.app.admin.services.authorization_bootstrap_service import authorization_bootstrap_service
+
+    return authorization_bootstrap_service
+
+
+def _runtime_cache() -> Any:
+    from src.database.redis_cache import get_cache
+
+    return get_cache()
+
+
+def _build_catalog(app: Any) -> list[dict[str, Any]]:
+    from src.utils.permission_scanner import build_permission_catalog
+
+    return build_permission_catalog(app)
+
+
+def _build_preview_rows(catalog: list[dict[str, Any]]) -> list[str]:
+    from src.utils.permission_scanner import build_permission_preview_rows
+
+    return build_permission_preview_rows(catalog)
+
+
+async def _repair_permission_cache_from_environment() -> None:
+    from dotenv import load_dotenv
+
+    from src.core.authorization_cache import repair_permission_cache_namespaces_from_environment
+
+    load_dotenv(BACKEND_ROOT / ".env", override=False)
+    await repair_permission_cache_namespaces_from_environment(os.environ)
+
+
 def preview_permissions() -> None:
-    catalog = build_permission_catalog(create_app())
+    catalog = _build_catalog(_create_app())
     print("📋 代码权限目录预览:")
-    for row in build_permission_preview_rows(catalog):
+    for row in _build_preview_rows(catalog):
         print(row)
     print(f"📊 总计: {len(catalog)} 条权限目录节点")
 
 
 async def _repair_cache() -> int:
     try:
-        await authorization_bootstrap_service.repair_permission_cache_namespaces(get_cache())
+        await _repair_permission_cache_from_environment()
     except Exception as exc:
         print(f"PERMISSION_CACHE_REPAIR_FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
@@ -85,11 +130,12 @@ async def main_async(args: argparse.Namespace) -> int:
     if args.repair_cache:
         return await _repair_cache()
 
-    app = create_app()
-    await init_db()
-    async with get_db_context() as session:
+    authorization_service = _authorization_service()
+    app = _create_app()
+    await _initialize_database()
+    async with _database_context() as session:
         if args.check:
-            result = await authorization_bootstrap_service.converge_authorization(app, session, dry_run=True)
+            result = await authorization_service.converge_authorization(app, session, dry_run=True)
             _print_result(result)
             if _has_delta(result):
                 print("AUTHORIZATION_DELTA_DETECTED", file=sys.stderr)
@@ -98,14 +144,14 @@ async def main_async(args: argparse.Namespace) -> int:
             return 0
 
         try:
-            result = await authorization_bootstrap_service.converge_authorization(app, session, dry_run=False)
+            result = await authorization_service.converge_authorization(app, session, dry_run=False)
             await session.commit()
         except Exception:
             await session.rollback()
             raise
 
         try:
-            await authorization_bootstrap_service.invalidate_caches(result, get_cache())
+            await authorization_service.invalidate_caches(result, _runtime_cache())
         except Exception as exc:
             print(
                 f"{DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED}: {type(exc).__name__}: {exc}",

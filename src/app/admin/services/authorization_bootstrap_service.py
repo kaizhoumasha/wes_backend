@@ -14,6 +14,10 @@ from src.app.admin.services.permission_catalog_service import (
     PermissionCatalogSyncResult,
     permission_catalog_service,
 )
+from src.core.authorization_cache import (
+    AuthorizationCacheInvalidationError,
+    repair_permission_cache_namespaces,
+)
 from src.core.rbac import invalidate_users_permissions
 from src.core.security import get_password_hash
 from src.utils.permission_scanner import build_permission_catalog
@@ -96,29 +100,6 @@ class FoundationBootstrapResult:
     admin_action: str
     admin_username: str
     admin_role_added: bool
-
-
-class AuthorizationCacheInvalidationError(RuntimeError):
-    """权限缓存删除结果无法确认。"""
-
-    def __init__(
-        self,
-        *,
-        failed_user_ids: frozenset[int] = frozenset(),
-        failed_app_ids: frozenset[int] = frozenset(),
-        failed_namespaces: frozenset[str] = frozenset(),
-    ) -> None:
-        self.failed_user_ids = failed_user_ids
-        self.failed_app_ids = failed_app_ids
-        self.failed_namespaces = failed_namespaces
-        details: list[str] = []
-        if failed_user_ids:
-            details.append(f"user_ids={sorted(failed_user_ids)}")
-        if failed_app_ids:
-            details.append(f"app_ids={sorted(failed_app_ids)}")
-        if failed_namespaces:
-            details.append(f"namespaces={sorted(failed_namespaces)}")
-        super().__init__("权限缓存失效未确认: " + ", ".join(details))
 
 
 class AuthorizationBootstrapService:
@@ -368,13 +349,7 @@ class AuthorizationBootstrapService:
         )
 
     async def repair_permission_cache_namespaces(self, cache: RedisCache) -> None:
-        failed_namespaces = {
-            namespace
-            for namespace in ("perms:user:*", "api_app:perms:*")
-            if await cache.delete_pattern(namespace) is None
-        }
-        if failed_namespaces:
-            raise AuthorizationCacheInvalidationError(failed_namespaces=frozenset(failed_namespaces))
+        await repair_permission_cache_namespaces(cache)
 
 
 authorization_bootstrap_service = AuthorizationBootstrapService()

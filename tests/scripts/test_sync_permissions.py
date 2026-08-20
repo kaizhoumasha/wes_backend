@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import pytest
 
 from scripts.data import sync_permissions
 from src.app.admin.services import AuthorizationSyncResult, PermissionCatalogSyncResult
+from src.core import authorization_cache
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,6 +69,94 @@ def test_permission_cli_requires_exactly_one_mode() -> None:
         assert vars(parser.parse_args([mode]))[mode.removeprefix("--").replace("-", "_")] is True
 
 
+def test_sync_permissions_import_does_not_load_mode_specific_dependencies() -> None:
+    code = """
+import sys
+from scripts.data import sync_permissions  # noqa: F401
+
+forbidden = (
+    "src.app.admin.services.authorization_bootstrap_service",
+    "src.core.conf",
+    "src.database.db",
+    "src.database.redis_cache",
+    "src.register",
+    "src.utils.permission_scanner",
+)
+print("\\n".join(name for name in forbidden if name in sys.modules))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=BACKEND_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == ""
+
+
+def test_permission_repair_cache_ignores_invalid_database_configuration() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(BACKEND_ROOT / "scripts/data/sync_permissions.py"), "--repair-cache"],
+        cwd=BACKEND_ROOT,
+        env=os.environ
+        | {
+            "DATABASE_POOL_SIZE": "not-an-int",
+            "REDIS_HOST": "127.0.0.1",
+            "REDIS_PORT": "1",
+            "REDIS_PASSWORD": "",
+            "REDIS_DB": "0",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode == 1
+    assert "PERMISSION_CACHE_REPAIR_FAILED" in completed.stderr
+    assert "DATABASE_POOL_SIZE" not in completed.stderr
+    assert "PERMISSION_SYNC_FAILED" not in completed.stderr
+
+
+@pytest.mark.asyncio
+async def test_permission_repair_cache_environment_adapter_touches_only_fixed_namespaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patterns: list[str] = []
+    closed = False
+
+    class _Redis:
+        async def scan_iter(self, *, match: str):
+            patterns.append(match)
+            if False:
+                yield "unreachable"
+
+        async def delete(self, *_keys: str) -> int:
+            raise AssertionError("zero matches must not call delete")
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    monkeypatch.setattr(authorization_cache, "Redis", lambda **_kwargs: _Redis())
+
+    await authorization_cache.repair_permission_cache_namespaces_from_environment(
+        {
+            "DATABASE_POOL_SIZE": "not-an-int",
+            "REDIS_HOST": "cache-only",
+            "REDIS_PORT": "6379",
+            "REDIS_PASSWORD": "secret",
+            "REDIS_DB": "0",
+        }
+    )
+
+    assert patterns == ["app:perms:user:*", "app:api_app:perms:*"]
+    assert closed is True
+
+
 @pytest.mark.parametrize(
     "result",
     [
@@ -83,17 +173,19 @@ async def test_permission_check_uses_database_dry_run_and_fails_on_any_delta(
     app = object()
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     converge = AsyncMock(return_value=result)
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: app)
-    monkeypatch.setattr(sync_permissions, "init_db", AsyncMock())
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: _SessionContext(session))
-    monkeypatch.setattr(sync_permissions.authorization_bootstrap_service, "converge_authorization", converge)
+    initialize_database = AsyncMock()
+    service = SimpleNamespace(converge_authorization=converge)
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: app)
+    monkeypatch.setattr(sync_permissions, "_initialize_database", initialize_database)
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: _SessionContext(session))
+    monkeypatch.setattr(sync_permissions, "_authorization_service", lambda: service)
 
     exit_code = await sync_permissions.main_async(Namespace(check=True, apply=False, preview=False, repair_cache=False))
 
     assert exit_code != 0
     converge.assert_awaited_once_with(app, session, dry_run=True)
     session.commit.assert_not_awaited()
-    sync_permissions.init_db.assert_awaited_once_with()
+    initialize_database.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -101,14 +193,11 @@ async def test_permission_check_succeeds_only_when_all_authorization_domains_are
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: object())
-    monkeypatch.setattr(sync_permissions, "init_db", AsyncMock())
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: _SessionContext(session))
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "converge_authorization",
-        AsyncMock(return_value=_result()),
-    )
+    service = SimpleNamespace(converge_authorization=AsyncMock(return_value=_result()))
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: object())
+    monkeypatch.setattr(sync_permissions, "_initialize_database", AsyncMock())
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: _SessionContext(session))
+    monkeypatch.setattr(sync_permissions, "_authorization_service", lambda: service)
 
     exit_code = await sync_permissions.main_async(Namespace(check=True, apply=False, preview=False, repair_cache=False))
 
@@ -136,31 +225,26 @@ async def test_permission_apply_commits_once_then_invalidates_exact_service_resu
         events.append("invalidate")
 
     session = SimpleNamespace(commit=AsyncMock(side_effect=commit), rollback=AsyncMock())
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: app)
-    monkeypatch.setattr(sync_permissions, "init_db", AsyncMock())
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: _SessionContext(session))
-    monkeypatch.setattr(sync_permissions, "get_cache", lambda: cache)
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "converge_authorization",
-        AsyncMock(side_effect=converge),
+    service = SimpleNamespace(
+        converge_authorization=AsyncMock(side_effect=converge),
+        invalidate_caches=AsyncMock(side_effect=invalidate),
     )
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "invalidate_caches",
-        AsyncMock(side_effect=invalidate),
-    )
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: app)
+    monkeypatch.setattr(sync_permissions, "_initialize_database", AsyncMock())
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: _SessionContext(session))
+    monkeypatch.setattr(sync_permissions, "_runtime_cache", lambda: cache)
+    monkeypatch.setattr(sync_permissions, "_authorization_service", lambda: service)
 
     exit_code = await sync_permissions.main_async(Namespace(check=False, apply=True, preview=False, repair_cache=False))
 
     assert exit_code == 0
     assert events == ["converge", "commit", "invalidate"]
-    sync_permissions.authorization_bootstrap_service.converge_authorization.assert_awaited_once_with(
+    service.converge_authorization.assert_awaited_once_with(
         app,
         session,
         dry_run=False,
     )
-    sync_permissions.authorization_bootstrap_service.invalidate_caches.assert_awaited_once_with(result, cache)
+    service.invalidate_caches.assert_awaited_once_with(result, cache)
     session.commit.assert_awaited_once_with()
     session.rollback.assert_not_awaited()
 
@@ -170,22 +254,21 @@ async def test_permission_apply_rolls_back_precommit_failure_without_invalidatin
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: object())
-    monkeypatch.setattr(sync_permissions, "init_db", AsyncMock())
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: _SessionContext(session))
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "converge_authorization",
-        AsyncMock(side_effect=RuntimeError("precommit failed")),
+    service = SimpleNamespace(
+        converge_authorization=AsyncMock(side_effect=RuntimeError("precommit failed")),
+        invalidate_caches=AsyncMock(),
     )
-    monkeypatch.setattr(sync_permissions.authorization_bootstrap_service, "invalidate_caches", AsyncMock())
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: object())
+    monkeypatch.setattr(sync_permissions, "_initialize_database", AsyncMock())
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: _SessionContext(session))
+    monkeypatch.setattr(sync_permissions, "_authorization_service", lambda: service)
 
     with pytest.raises(RuntimeError, match="precommit failed"):
         await sync_permissions.main_async(Namespace(check=False, apply=True, preview=False, repair_cache=False))
 
     session.rollback.assert_awaited_once_with()
     session.commit.assert_not_awaited()
-    sync_permissions.authorization_bootstrap_service.invalidate_caches.assert_not_awaited()
+    service.invalidate_caches.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -194,20 +277,15 @@ async def test_permission_apply_reports_postcommit_cache_failure_without_false_r
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     session = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: object())
-    monkeypatch.setattr(sync_permissions, "init_db", AsyncMock())
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: _SessionContext(session))
-    monkeypatch.setattr(sync_permissions, "get_cache", lambda: object())
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "converge_authorization",
-        AsyncMock(return_value=_result()),
+    service = SimpleNamespace(
+        converge_authorization=AsyncMock(return_value=_result()),
+        invalidate_caches=AsyncMock(side_effect=RuntimeError("redis unavailable")),
     )
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "invalidate_caches",
-        AsyncMock(side_effect=RuntimeError("redis unavailable")),
-    )
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: object())
+    monkeypatch.setattr(sync_permissions, "_initialize_database", AsyncMock())
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: _SessionContext(session))
+    monkeypatch.setattr(sync_permissions, "_runtime_cache", lambda: object())
+    monkeypatch.setattr(sync_permissions, "_authorization_service", lambda: service)
 
     exit_code = await sync_permissions.main_async(Namespace(check=False, apply=True, preview=False, repair_cache=False))
 
@@ -235,58 +313,49 @@ async def test_permission_preview_uses_only_pure_catalog_scanning(
             "description": "用户列表",
         }
     ]
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: app)
-    monkeypatch.setattr(
-        sync_permissions, "build_permission_catalog", lambda actual_app: catalog if actual_app is app else []
-    )
-    monkeypatch.setattr(
-        sync_permissions, "init_db", AsyncMock(side_effect=AssertionError("must not connect PostgreSQL"))
-    )
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: pytest.fail("must not open PostgreSQL context"))
-    monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "converge_authorization",
-        AsyncMock(side_effect=AssertionError("must not fabricate database role state")),
-    )
+    initialize_database = AsyncMock(side_effect=AssertionError("must not connect PostgreSQL"))
+    authorization_service = AsyncMock(side_effect=AssertionError("must not fabricate database role state"))
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: app)
+    monkeypatch.setattr(sync_permissions, "_build_catalog", lambda actual_app: catalog if actual_app is app else [])
+    monkeypatch.setattr(sync_permissions, "_initialize_database", initialize_database)
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: pytest.fail("must not open PostgreSQL context"))
+    monkeypatch.setattr(sync_permissions, "_authorization_service", authorization_service)
 
     exit_code = await sync_permissions.main_async(Namespace(check=False, apply=False, preview=True, repair_cache=False))
 
     assert exit_code == 0
     assert "admin:user:list" in capsys.readouterr().out
-    sync_permissions.init_db.assert_not_awaited()
-    sync_permissions.authorization_bootstrap_service.converge_authorization.assert_not_awaited()
+    initialize_database.assert_not_awaited()
+    authorization_service.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_permission_repair_cache_never_builds_catalog_or_connects_postgresql(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cache = object()
     repair = AsyncMock()
-    monkeypatch.setattr(sync_permissions, "create_app", lambda: pytest.fail("must not build app"))
-    monkeypatch.setattr(sync_permissions, "build_permission_catalog", lambda _app: pytest.fail("must not scan catalog"))
-    monkeypatch.setattr(
-        sync_permissions, "init_db", AsyncMock(side_effect=AssertionError("must not connect PostgreSQL"))
-    )
-    monkeypatch.setattr(sync_permissions, "get_db_context", lambda: pytest.fail("must not open PostgreSQL context"))
-    monkeypatch.setattr(sync_permissions, "get_cache", lambda: cache)
-    monkeypatch.setattr(sync_permissions.authorization_bootstrap_service, "repair_permission_cache_namespaces", repair)
+    initialize_database = AsyncMock(side_effect=AssertionError("must not connect PostgreSQL"))
+    monkeypatch.setattr(sync_permissions, "_create_app", lambda: pytest.fail("must not build app"))
+    monkeypatch.setattr(sync_permissions, "_build_catalog", lambda _app: pytest.fail("must not scan catalog"))
+    monkeypatch.setattr(sync_permissions, "_initialize_database", initialize_database)
+    monkeypatch.setattr(sync_permissions, "_database_context", lambda: pytest.fail("must not open PostgreSQL context"))
+    monkeypatch.setattr(sync_permissions, "_authorization_service", lambda: pytest.fail("must not load service"))
+    monkeypatch.setattr(sync_permissions, "_repair_permission_cache_from_environment", repair)
 
     exit_code = await sync_permissions.main_async(Namespace(check=False, apply=False, preview=False, repair_cache=True))
 
     assert exit_code == 0
-    repair.assert_awaited_once_with(cache)
-    sync_permissions.init_db.assert_not_awaited()
+    repair.assert_awaited_once_with()
+    initialize_database.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_permission_repair_cache_fails_when_deletion_cannot_be_confirmed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sync_permissions, "get_cache", lambda: object())
     monkeypatch.setattr(
-        sync_permissions.authorization_bootstrap_service,
-        "repair_permission_cache_namespaces",
+        sync_permissions,
+        "_repair_permission_cache_from_environment",
         AsyncMock(side_effect=RuntimeError("namespace deletion unconfirmed")),
     )
 
