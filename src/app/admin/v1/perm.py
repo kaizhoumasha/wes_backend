@@ -19,7 +19,6 @@ perm_api = TreeAPI(
     gen_update=False,
     gen_delete=False,
     gen_trash=False,
-    gen_tree_navigation=False,
     enable_permission=True,
     max_depth=2,
     tree_response_schema=PermissionTree,

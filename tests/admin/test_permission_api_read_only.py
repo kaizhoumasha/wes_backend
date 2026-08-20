@@ -16,9 +16,9 @@ def test_permission_catalog_openapi_is_read_only() -> None:
     assert permission_paths["/api/v1/admin/permissions/{id}"] == {"get"}
     assert permission_paths["/api/v1/admin/permissions/query"] == {"post"}
     assert "/api/v1/admin/permissions" not in permission_paths
-    assert "/api/v1/admin/permissions/siblings/{node_id}" not in permission_paths
-    assert "/api/v1/admin/permissions/ancestors/{node_id}" not in permission_paths
-    assert "/api/v1/admin/permissions/children/{node_id}" not in permission_paths
+    assert permission_paths["/api/v1/admin/permissions/siblings/{node_id}"] == {"get"}
+    assert permission_paths["/api/v1/admin/permissions/ancestors/{node_id}"] == {"get"}
+    assert permission_paths["/api/v1/admin/permissions/children/{node_id}"] == {"get"}
     assert "/api/v1/admin/permissions/trash" not in permission_paths
     assert "/api/v1/admin/permissions/trash/restore" not in permission_paths
     assert "/api/v1/admin/permissions/trash/permanent" not in permission_paths
