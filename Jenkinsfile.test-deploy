@@ -214,7 +214,7 @@ pipeline {
                             --env-file "${DEPLOY_ENV_FILE}" \
                             -f "${DEPLOY_COMPOSE_FILE}" \
                             exec -T api \
-                            /opt/venv/bin/python scripts/data/sync_permissions.py
+                            /opt/venv/bin/python scripts/data/sync_permissions.py --apply
 
                         PERMISSION_COUNT=$(docker compose \
                             --env-file "${DEPLOY_ENV_FILE}" \

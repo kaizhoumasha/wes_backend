@@ -47,8 +47,6 @@ class UserSeed:
     is_multi_login: bool = False
 
 
-ROLE_SEEDS = BUILTIN_ROLE_SPECS
-
 USER_SEEDS = (
     UserSeed(
         "admin",
@@ -172,7 +170,7 @@ async def _builtin_role_user_ids(db: AsyncSession) -> list[int]:
     result = await db.execute(
         select(user_role.c.user_id)
         .join(Role, Role.id == user_role.c.role_id)
-        .where(Role.name.in_([seed.name for seed in ROLE_SEEDS]), Role.is_deleted.is_(False))
+        .where(Role.name.in_([spec.name for spec in BUILTIN_ROLE_SPECS]), Role.is_deleted.is_(False))
         .distinct()
     )
     return [int(user_id) for user_id in result.scalars().all()]
@@ -232,12 +230,12 @@ async def _check_foundation_data(db: AsyncSession, frontend_path: str, password:
     roles = await _active_roles(db)
     users = await _active_users(db)
 
-    for seed in ROLE_SEEDS:
-        role = roles.get(seed.name)
+    for spec in BUILTIN_ROLE_SPECS:
+        role = roles.get(spec.name)
         if role is None:
-            errors.append(f"缺少角色 {seed.name}")
-        elif role.description != seed.description:
-            errors.append(f"角色字段漂移 {seed.name}")
+            errors.append(f"缺少角色 {spec.name}")
+        elif role.description != spec.description:
+            errors.append(f"角色字段漂移 {spec.name}")
 
     existing_links = {
         (int(user_id), int(role_id))

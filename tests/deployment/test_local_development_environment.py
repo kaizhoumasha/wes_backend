@@ -163,6 +163,12 @@ def test_canonical_development_runner_migrates_seeds_checks_and_preserves_data()
     assert "down --volumes" not in runner
 
 
+def test_test_deploy_uses_explicit_permission_apply_mode() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    assert "scripts/data/sync_permissions.py --apply" in pipeline
+
+
 @pytest.mark.parametrize(
     ("service_state", "expected_message"),
     [
@@ -300,6 +306,7 @@ def test_development_runner_can_stop_when_frontend_checkout_is_missing(tmp_path:
 
 def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() -> None:
     from scripts.data import seed_initial_data
+    from src.app.admin.services.authorization_bootstrap_service import BUILTIN_ROLE_SPECS
 
     with pytest.raises(RuntimeError, match="仅允许在 dev 环境运行"):
         seed_initial_data.require_development_environment({"ENV": "test"})
@@ -313,7 +320,7 @@ def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() 
 
     seed_initial_data.require_development_environment({"ENV": "dev", "DEV_SEED_ALLOWED": "true", "POSTGRES_HOST": "db"})
 
-    assert {seed.name for seed in seed_initial_data.ROLE_SEEDS} == {
+    assert {spec.name for spec in BUILTIN_ROLE_SPECS} == {
         "系统管理员",
         "管理员",
         "运营人员",

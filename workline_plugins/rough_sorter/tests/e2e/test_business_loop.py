@@ -457,7 +457,7 @@ class _DockerStack:
             "sh",
             self.image,
             "-c",
-            "alembic upgrade head && python scripts/data/bootstrap_admin.py "
+            "alembic upgrade head && python scripts/data/bootstrap_foundation.py "
             "&& exec uvicorn main:app --host 0.0.0.0 --port 8001",
         )
         self._wait_http(f"http://127.0.0.1:{self.api_port}/health")
