@@ -43,6 +43,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         gen_create: bool = True,
         gen_update: bool = True,
         gen_delete: bool = True,
+        gen_trash: bool = True,
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
@@ -60,6 +61,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
         self.gen_create = gen_create
         self.gen_update = gen_update
         self.gen_delete = gen_delete
+        self.gen_trash = gen_trash
         self.gen_bulk_delete = gen_bulk_delete
         self.enable_permission = enable_permission
         self.max_depth = max_depth
@@ -478,7 +480,7 @@ class BaseAPI[ModelType, CreateModelType, UpdateModelType]:
     def _register_soft_delete_routes(self) -> None:
         """注册软删除相关路由（仅当模型支持时）"""
         # 检测模型是否支持软删除
-        if not self.supports_soft_delete:
+        if not self.supports_soft_delete or not self.gen_trash:
             return
 
         # 回收站是软删除模型的读取接口，不随写能力开关关闭。

@@ -48,6 +48,8 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         gen_create: bool = True,
         gen_update: bool = True,
         gen_delete: bool = True,
+        gen_trash: bool = True,
+        gen_tree_navigation: bool = True,
         gen_bulk_delete: bool = False,
         enable_permission: bool = True,
         max_depth: int = 2,
@@ -57,6 +59,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
         permission_resource: str | None = None,
     ) -> None:
         self.tree_response_schema = tree_response_schema
+        self.gen_tree_navigation = gen_tree_navigation
         self.tree_node_response_schema = (
             tree_node_response_schema if tree_node_response_schema is not None else response_schema
         )
@@ -72,6 +75,7 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
             gen_create,
             gen_update,
             gen_delete,
+            gen_trash,
             gen_bulk_delete,
             enable_permission,
             max_depth,
@@ -123,6 +127,9 @@ class TreeAPI(BaseAPI[ModelType, CreateModelType, UpdateModelType]):
                 db, root_id, max_depth, tree_depth, schema=self.tree_response_schema, cache=cache
             )
             return response_builder_any.success(data=items)
+
+        if not self.gen_tree_navigation:
+            return
 
         @self.router.get(
             "/siblings/{node_id}",

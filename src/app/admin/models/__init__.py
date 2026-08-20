@@ -19,11 +19,9 @@ from .menu import (
 from .perm import (
     Permission,
     PermissionBase,
-    PermissionCreate,
     PermissionResponse,
     PermissionResponseSimple,
     PermissionTree,
-    PermissionUpdate,
 )
 from .relationships import role_menu, role_permission, user_role
 from .role import (
@@ -115,11 +113,9 @@ __all__ = [
     # Permission 模型
     "Permission",
     "PermissionBase",
-    "PermissionCreate",
     "PermissionResponse",
     "PermissionResponseSimple",
     "PermissionTree",
-    "PermissionUpdate",
     "ResetPasswordRequest",
     # Role 模型
     "Role",

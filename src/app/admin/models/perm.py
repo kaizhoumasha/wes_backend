@@ -36,7 +36,7 @@ async def create_user(data: UserCreate):
 ```
 """
 
-from typing import ClassVar, Literal, cast
+from typing import ClassVar, Literal
 
 from pydantic import field_validator, model_validator
 from sqlalchemy import Index
@@ -45,7 +45,6 @@ from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin, TreeMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
-from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 # ==================== Permission 模型 ====================
@@ -107,24 +106,10 @@ class PermissionBase(TreeMixin, BaseMixin):
             raise ValueError("type 必须是 'user_api' 或 'app_api'")
         return v
 
-    def _get_validation_context(self) -> tuple[set[str], bool]:
-        """获取验证上下文（DRY 优化：避免重复获取 fields_set 和 is_create）"""
-        default_fields_set: set[str] = set()
-        fields_set = cast("set[str]", getattr(self, "__pydantic_fields_set__", default_fields_set))
-        is_create = self.__class__.__name__.endswith("Create")
-        return fields_set, is_create
-
     @model_validator(mode="after")
     def validate_api_fields(self) -> "PermissionBase":
-        """API 权限字段验证：所有 API 类型必须指定 method 和 path"""
-        fields_set, is_create = self._get_validation_context()
-
-        # 创建时必须指定 method 和 path
-        if is_create:
-            if not self.method:
-                raise ValueError("API 权限必须指定 method（HTTP 方法）")
-            if not self.path:
-                raise ValueError("API 权限必须指定 path（API 路径）")
+        """API 权限字段验证：显式提供的 method 和 path 不得为空。"""
+        fields_set = self.model_fields_set
 
         # 更新时如果修改了这些字段，必须提供有效值
         if "method" in fields_set and not self.method:
@@ -160,17 +145,6 @@ class Permission(PermissionBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixi
             postgresql_where="NOT is_deleted",
         ),
     )
-
-
-# ==================== Schemas ====================
-
-
-class PermissionCreate(ModelFactory(PermissionBase).for_create()):
-    """API 权限创建 Schema"""
-
-
-class PermissionUpdate(ModelFactory(PermissionBase).for_optimistic_update()):
-    """API 权限更新 Schema"""
 
 
 class PermissionResponse(PermissionBase):
