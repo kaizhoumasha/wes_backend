@@ -271,20 +271,6 @@ pipeline {
                             fail_cutover permission-provenance
                         fi
 
-                        echo "📄 从前端镜像提取菜单清单..."
-                        MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
-                        MANIFEST_FILE="${MANIFEST_DIR}/menu-manifest.json"
-                        mkdir -p "${MANIFEST_DIR}"
-                        docker rm -f frontend-manifest-extract >/dev/null 2>&1 || true
-                        docker create --name frontend-manifest-extract "${FRONTEND_IMAGE}" >/dev/null
-                        docker cp frontend-manifest-extract:/opt/wes/menu-manifest.json "${MANIFEST_FILE}"
-                        docker rm -f frontend-manifest-extract >/dev/null 2>&1 || true
-
-                        if [ ! -s "${MANIFEST_FILE}" ]; then
-                            echo "❌ 未能从前端镜像提取菜单清单"
-                            exit 1
-                        fi
-
                         NGINX_PORT=$(grep -E '^NGINX_HTTP_PORT=' "${DEPLOY_ENV_FILE}" | tail -n 1 | cut -d= -f2)
                         NGINX_PORT=${NGINX_PORT:-8080}
 
@@ -317,6 +303,28 @@ pipeline {
                             fi
                             sleep 1
                         done
+
+                        echo "📄 在维护态从前端镜像提取菜单清单..."
+                        MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
+                        MANIFEST_FILE="${MANIFEST_DIR}/menu-manifest.json"
+                        mkdir -p "${MANIFEST_DIR}"
+                        cleanup_manifest_extract_container() {
+                            docker rm -f frontend-manifest-extract >/dev/null 2>&1 || true
+                        }
+                        cleanup_manifest_extract_container
+                        if ! docker create --name frontend-manifest-extract "${FRONTEND_IMAGE}" >/dev/null; then
+                            cleanup_manifest_extract_container
+                            fail_cutover manifest-extract-create
+                        fi
+                        if ! docker cp \
+                            frontend-manifest-extract:/opt/wes/menu-manifest.json "${MANIFEST_FILE}"; then
+                            cleanup_manifest_extract_container
+                            fail_cutover manifest-extract-copy
+                        fi
+                        cleanup_manifest_extract_container
+                        if [ ! -s "${MANIFEST_FILE}" ]; then
+                            fail_cutover manifest-extract-empty
+                        fi
 
                         compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${DEPLOY_ENV_FILE}" | tail -n 1)
                         compose_project_name=${compose_project_name:-wes_backend_test}

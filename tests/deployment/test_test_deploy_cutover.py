@@ -92,11 +92,13 @@ def _fake_docker_source() -> str:
         fi
 
         if [ "$1" = "rm" ]; then
+            trace manifest-extract-cleanup
             exit 0
         fi
 
         if [ "$1" = "create" ]; then
             trace manifest-extract-create
+            fail_at manifest-extract-create && exit 64
             printf 'frontend-extract-id\n'
             exit 0
         fi
@@ -104,7 +106,8 @@ def _fake_docker_source() -> str:
         if [ "$1" = "cp" ]; then
             if [ "$2" = "frontend-manifest-extract:/opt/wes/menu-manifest.json" ]; then
                 trace manifest-extract-copy
-                printf '{}\n' >"$3"
+                fail_at manifest-extract-copy && exit 65
+                fail_at manifest-extract-empty && : >"$3" || printf '{}\n' >"$3"
                 exit 0
             fi
             trace menu-manifest-copy
@@ -413,9 +416,9 @@ def test_test_deploy_requires_and_compares_the_complete_paired_image_provenance(
 
     digest_resolution = pipeline.index("export BACKEND_IMAGE FRONTEND_IMAGE")
     backend_revision_gate = pipeline.index("if ! BACKEND_REVISION=$(docker image inspect")
-    manifest_extraction = pipeline.index('echo "📄 从前端镜像提取菜单清单..."')
     maintenance_stop = pipeline.index('echo "🔒 进入维护态并停止旧应用容器"')
-    assert digest_resolution < backend_revision_gate < manifest_extraction < maintenance_stop
+    manifest_extraction = pipeline.index('echo "📄 在维护态从前端镜像提取菜单清单..."')
+    assert digest_resolution < backend_revision_gate < maintenance_stop < manifest_extraction
 
 
 @pytest.mark.parametrize(
@@ -462,6 +465,9 @@ def test_current_release_commands_use_the_same_fail_closed_cutover_contract(rela
         ("fresh-database-name", "fresh-database"),
         ("maintenance-stop", "discovery"),
         ("listener-open", "discovery"),
+        ("manifest-extract-create", "discovery"),
+        ("manifest-extract-copy", "discovery"),
+        ("manifest-extract-empty", "discovery"),
         ("application-discovery", "remaining-check"),
         ("application-inspect", "remaining-check"),
         ("stop-api", "remaining-check"),
@@ -512,6 +518,18 @@ def test_test_deploy_failure_keeps_nginx_closed_and_never_repeats_database_mutat
     if fail_stage == "repair-failure":
         assert trace.count("bootstrap") == 1
         assert trace.count("repair") == 1
+    if fail_stage in {"manifest-extract-create", "manifest-extract-copy", "manifest-extract-empty"}:
+        for later_stage in (
+            "discovery",
+            "container-stop:old-api",
+            "infrastructure-start",
+            "fresh-database",
+            "migration",
+            "application-start",
+            "nginx-start",
+        ):
+            assert later_stage not in trace
+        assert trace.count("manifest-extract-cleanup") == 2
 
 
 def test_test_deploy_postcommit_recovery_repairs_once_checks_again_and_continues(tmp_path: Path) -> None:
@@ -540,10 +558,10 @@ def test_test_deploy_success_proves_complete_order_with_nginx_started_last(tmp_p
             "frontend-backend-provenance-inspect",
             "openapi-provenance-inspect",
             "permission-provenance-inspect",
-            "manifest-extract-create",
-            "manifest-extract-copy",
             "nginx-stop",
             "listener-probe",
+            "manifest-extract-create",
+            "manifest-extract-copy",
             "discovery",
             "remaining-check",
             "infrastructure-start",
