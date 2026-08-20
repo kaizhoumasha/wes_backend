@@ -526,9 +526,29 @@ case "$BACKEND_IMAGE" in *@sha256:*) ;; *) echo 'ERROR: 后端镜像未固定 di
 case "$FRONTEND_IMAGE" in *@sha256:*) ;; *) echo 'ERROR: 前端镜像未固定 digest' >&2; exit 1 ;; esac
 export BACKEND_IMAGE FRONTEND_IMAGE
 export EXPECTED_BACKEND_COMMIT_SHA=<approved-backend-commit>
+export DEPLOY_SOURCE_COMMIT_SHA=<approved-backend-commit>
 export EXPECTED_FRONTEND_COMMIT_SHA=<approved-frontend-commit>
 export EXPECTED_OPENAPI_SHA256=<approved-openapi-sha256>
 export EXPECTED_PERMISSIONS_SHA256=<approved-permissions-sha256>
+[ "$DEPLOY_SOURCE_COMMIT_SHA" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
+[ "$DEPLOY_ACTUAL_COMMIT" = "$DEPLOY_SOURCE_COMMIT_SHA" ] || exit 1
+
+BACKEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE")
+FRONTEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE")
+FRONTEND_BACKEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE")
+FRONTEND_OPENAPI_SHA256=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE")
+FRONTEND_PERMISSIONS_SHA256=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE")
+[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || exit 1
+[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] || exit 1
 compose() {
   sudo docker compose --env-file .env.prod \
     -f docker-compose.yml \

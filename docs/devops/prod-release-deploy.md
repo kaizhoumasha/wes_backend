@@ -33,9 +33,13 @@ cd /srv/wes/app
 export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:<approved-tag>
 export FRONTEND_IMAGE=192.168.0.220:5050/wes/wes_frontend:<approved-tag>
 export EXPECTED_BACKEND_COMMIT_SHA=<approved-backend-commit>
+export DEPLOY_SOURCE_COMMIT_SHA=<approved-backend-commit>
 export EXPECTED_FRONTEND_COMMIT_SHA=<approved-frontend-commit>
 export EXPECTED_OPENAPI_SHA256=<approved-openapi-sha256>
 export EXPECTED_PERMISSIONS_SHA256=<approved-permissions-sha256>
+[ "$DEPLOY_SOURCE_COMMIT_SHA" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
+[ "$DEPLOY_ACTUAL_COMMIT" = "$DEPLOY_SOURCE_COMMIT_SHA" ] || exit 1
 
 compose() {
   docker compose --env-file .env.prod \
@@ -92,7 +96,7 @@ FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
 compose config >/dev/null
 ```
 
-固定后不得重新解析 channel tag。若 digest 与批准发布记录不一致，停止发布。
+固定后不得重新解析 channel tag。部署仓库、后端镜像、前端绑定的后端契约必须是同一个批准 revision；任一 digest、revision 或 SHA 与批准发布记录不一致，在进入维护态前停止发布。
 
 ## 4. 进入维护态并清空旧应用进程
 
