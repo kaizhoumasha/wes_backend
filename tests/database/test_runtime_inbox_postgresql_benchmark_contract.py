@@ -76,7 +76,7 @@ def _valid_evidence() -> dict[str, object]:
             "claim_batch_size": 25,
             "selective_fixture_row_count": 10000,
         },
-        "workload": {"mix": {"received": 14_000, "failed_due": 4_000, "stale_processing": 2_000}},
+        "workload": {"mix": {"received": 2_800, "failed_due": 800, "stale_processing": 400}},
         "sample_count": PENDING_INBOX_COUNT,
         "metrics": {
             "claim_p50_ms": 80.0,
