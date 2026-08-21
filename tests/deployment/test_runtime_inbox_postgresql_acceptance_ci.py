@@ -93,6 +93,7 @@ def test_template_migration_loads_the_same_required_settings_as_acceptance() -> 
     template_migration = template_migration.split("set +e", maxsplit=1)[0]
 
     assert '--env-file "${WORKSPACE}/.env.test"' in template_migration
+    assert "ALEMBIC_DATABASE_URL=postgresql+asyncpg://runtime_acceptance:" in lifecycle
 
 
 def test_acceptance_runner_runs_correctness_suites_concurrently_before_benchmark_and_validates_evidence(

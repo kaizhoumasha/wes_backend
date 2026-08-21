@@ -75,7 +75,7 @@ docker exec "${POSTGRES_CONTAINER}" \
         "${POSTGRES_PASSWORD}"
     printf 'INTEGRATION_DATABASE_SAFE_HOSTS=runtime-inbox-postgres\n'
     printf 'RUNTIME_INBOX_DATABASE_TEMPLATE=%s\n' "${RUNTIME_INBOX_DATABASE_TEMPLATE}"
-    printf 'ALEMBIC_DATABASE_URL=postgresql://runtime_acceptance:%s@runtime-inbox-postgres:5432/%s\n' \
+    printf 'ALEMBIC_DATABASE_URL=postgresql+asyncpg://runtime_acceptance:%s@runtime-inbox-postgres:5432/%s\n' \
         "${POSTGRES_PASSWORD}" "${RUNTIME_INBOX_DATABASE_TEMPLATE}"
     printf 'POSTGRES_HOST=runtime-inbox-postgres\n'
     printf 'POSTGRES_PORT=5432\n'
