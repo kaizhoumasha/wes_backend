@@ -190,6 +190,19 @@ def test_test_deploy_converges_authorization_before_starting_application_service
     assert "scripts/data/sync_permissions.py --apply" not in pipeline
 
 
+def test_test_deploy_injects_dedicated_bootstrap_admin_credentials() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+    bootstrap = pipeline.split("🔐 执行 fresh DB 基础授权初始化", maxsplit=1)[1]
+    bootstrap = bootstrap.split("🔎 校验权限目录零漂移", maxsplit=1)[0]
+
+    assert "credentialsId: 'wes-test-bootstrap-admin'" in pipeline
+    assert "usernameVariable: 'BOOTSTRAP_ADMIN_USERNAME'" in pipeline
+    assert "passwordVariable: 'BOOTSTRAP_ADMIN_PASSWORD'" in pipeline
+    assert "-e BOOTSTRAP_ADMIN_USERNAME" in bootstrap
+    assert "-e BOOTSTRAP_ADMIN_PASSWORD" in bootstrap
+    assert "BOOTSTRAP_ADMIN_PASSWORD=" not in pipeline
+
+
 def test_test_deploy_repairs_postcommit_cache_failure_without_repeating_database_mutation() -> None:
     pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
 

@@ -289,6 +289,7 @@ docker-compose --version
 部署行为约束：
 
 - `wes_test_deploy` 是独立部署任务；前端 producer 传入无默认值的 immutable 前后端 tag、两端 commit、`DEPLOY_SOURCE_COMMIT_SHA`、OpenAPI SHA 与权限 SHA，缺少或不匹配即拒绝
+- `wes_test_deploy` 必须配置 Username with password 类型的 Jenkins 凭据 `wes-test-bootstrap-admin`；用户名和密码仅作为 `BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD` 注入一次性基础授权容器，不写入构建参数、仓库或日志
 - `DEPLOY_SOURCE_COMMIT_SHA` 必须等于批准的后端镜像 revision；部署前会将 `/opt/wes_backend` 强制对齐到该 SHA 并再次核对 `HEAD`
 - 前后端镜像拉取并固定到 digest 后，先核对 backend revision 与 frontend revision/backend-contract/OpenAPI/permission labels；全部通过后才停止 Nginx 并按 Compose project/service 标签停止旧应用
 - 迁移前只允许 `db` 与 `redis` 运行；未知 service 使切换失败并保持 Nginx 关闭

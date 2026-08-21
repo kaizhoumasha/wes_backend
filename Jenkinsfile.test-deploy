@@ -123,7 +123,10 @@ pipeline {
 
         stage('Deploy Test Environment') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'gitlab-http-creds', usernameVariable: 'GITLAB_USER', passwordVariable: 'GITLAB_TOKEN')]) {
+                withCredentials([
+                    usernamePassword(credentialsId: 'gitlab-http-creds', usernameVariable: 'GITLAB_USER', passwordVariable: 'GITLAB_TOKEN'),
+                    usernamePassword(credentialsId: 'wes-test-bootstrap-admin', usernameVariable: 'BOOTSTRAP_ADMIN_USERNAME', passwordVariable: 'BOOTSTRAP_ADMIN_PASSWORD')
+                ]) {
                     sh '''
                         set -e
                         set -o pipefail
@@ -416,6 +419,8 @@ pipeline {
                             -e DATABASE_RUNTIME_ROLE=cli \
                             -e DATABASE_POOL_SIZE=1 \
                             -e DATABASE_MAX_OVERFLOW=0 \
+                            -e BOOTSTRAP_ADMIN_USERNAME \
+                            -e BOOTSTRAP_ADMIN_PASSWORD \
                             --entrypoint /bin/bash \
                             api scripts/data/bootstrap_foundation.sh 2>&1); then
                             printf '%s\n' "${BOOTSTRAP_OUTPUT}"
