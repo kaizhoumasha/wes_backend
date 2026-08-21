@@ -1743,6 +1743,16 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
     assert "run_tool pytest tests/scripts -q" in quality_gate
 
 
+def test_repository_selected_heavy_mounts_read_only_git_provenance() -> None:
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
+    heavy_stage = jenkinsfile.split("stage('HEAVY Required')", maxsplit=1)[1].split(
+        "stage('Build Runtime Image')", maxsplit=1
+    )[0]
+
+    assert heavy_stage.count('-v "$WORKSPACE/.git:/app/.git:ro"') == 2
+    assert heavy_stage.count("git config --global --add safe.directory /app") == 2
+
+
 def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 

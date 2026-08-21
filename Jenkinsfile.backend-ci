@@ -268,11 +268,13 @@ pipeline {
                         --env-file "$WORKSPACE/.env.test" \
                         --network "${HEAVY_COMPOSE_PROJECT}_default" \
                         -e RUN_WORKLINE_INTEGRATION=1 \
+                        -v "$WORKSPACE/.git:/app/.git:ro" \
                         -v "$WORKSPACE/reports/heavy-tests.txt:/artifacts/heavy-tests.txt:ro" \
                         -v "$WORKSPACE/reports:/reports" \
                         "${CI_IMAGE}" \
                         sh -c '
                             set -eu
+                            git config --global --add safe.directory /app
                             export INTEGRATION_DATABASE_URL="postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
                             export INTEGRATION_REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379/15"
                             uv run --no-sync alembic upgrade head
