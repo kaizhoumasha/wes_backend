@@ -18,12 +18,17 @@ fi
 
 while IFS= read -r -d '' changed_path; do
     case "${changed_path}" in
-        Jenkinsfile.test-deploy | \
+        Jenkinsfile.backend-ci | \
+            Jenkinsfile.test-deploy | \
             docker-compose.test-deploy.yml | \
             docker/test/* | \
             docs/architecture/heavy-test-impact.toml | \
             docs/devops/* | \
+            scripts/classify_runtime_inbox_acceptance.py | \
+            scripts/run_runtime_inbox_postgresql_acceptance.py | \
+            scripts/run_runtime_inbox_postgresql_acceptance_ci.sh | \
             tests/deployment/* | \
+            tests/scripts/test_select_heavy_tests.py | \
             tests/scripts/test_select_heavy_tests_regression_2.py | \
             scripts/validate_test_deploy_source_diff.sh)
             ;;
