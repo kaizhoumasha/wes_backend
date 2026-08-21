@@ -177,7 +177,7 @@ def create_app(profile_path: Path) -> FastAPI:
     return app
 
 
-app = create_app(Path(os.getenv("WMS_PROVIDER_PROFILE_FILE", str(DEFAULT_PROFILE_PATH))))
+app = create_app(Path(os.getenv("WMS_PROVIDER_PROFILE_FILE") or DEFAULT_PROFILE_PATH))
 
 
 __all__ = ["app", "create_app"]
