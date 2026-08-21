@@ -143,6 +143,36 @@ def test_device_command_startup_probe_returns_child_identity(monkeypatch) -> Non
     }
 
 
+def test_device_command_worker_accepts_build_scoped_compose_redis_on_non_zero_database(tmp_path) -> None:
+    worker = DeviceCommandBrokerWorker(
+        "postgresql+asyncpg://user:password@db:5432/test_device_command",
+        "redis://redis:6379/15",
+        tmp_path / "provider.yaml",
+        run_id="compose-network-proof",
+    )
+
+    try:
+        assert worker.key_prefix == "it:device-command:compose-network-proof:"
+    finally:
+        worker.producer.close()
+
+
+@pytest.mark.parametrize(
+    "redis_url",
+    (
+        "redis://127.0.0.1:6379/0",
+        "redis://redis.example.com:6379/15",
+    ),
+)
+def test_device_command_worker_rejects_non_isolated_or_non_local_redis(redis_url, tmp_path) -> None:
+    with pytest.raises(AssertionError, match="local/build-scoped non-zero test database"):
+        DeviceCommandBrokerWorker(
+            "postgresql+asyncpg://user:password@db:5432/test_device_command",
+            redis_url,
+            tmp_path / "provider.yaml",
+        )
+
+
 def test_device_command_worker_readiness_requires_child_probe_after_parent_ready(tmp_path) -> None:
     worker = object.__new__(DeviceCommandBrokerWorker)
     worker.process = MagicMock()

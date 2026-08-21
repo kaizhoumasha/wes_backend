@@ -252,9 +252,16 @@ class DeviceCommandBrokerWorker:
 
     def __post_init__(self) -> None:
         redis = make_url(self.redis_url)
-        redis_db = int((redis.database or "0").lstrip("/"))
-        if redis.host not in {"127.0.0.1", "localhost", "::1"} or redis_db <= 0:
-            raise AssertionError("DeviceCommand broker harness requires local non-zero Redis DB")
+        try:
+            redis_db = int((redis.database or "0").lstrip("/"))
+        except ValueError:
+            redis_db = 0
+        if (
+            redis.get_backend_name() != "redis"
+            or redis.host not in {"127.0.0.1", "localhost", "::1", "redis"}
+            or redis_db <= 0
+        ):
+            raise AssertionError("DeviceCommand broker harness requires a local/build-scoped non-zero test database")
         self.key_prefix = f"it:device-command:{self.run_id}:"
         self.producer = Celery(
             f"it-device-command-producer-{self.run_id}",
