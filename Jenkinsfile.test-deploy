@@ -387,7 +387,7 @@ pipeline {
 
                         CUTOVER_STAGE=fresh-database
                         if ! compose exec -T db sh -eu -c \
-                            'createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'; then
+                            'createdb -U "$POSTGRES_USER" -T template0 "$POSTGRES_DB"'; then
                             fail_cutover fresh-database
                         fi
                         if ! FRESH_TABLE_COUNT=$(compose exec -T db sh -eu -c \

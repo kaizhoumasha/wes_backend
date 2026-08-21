@@ -641,6 +641,10 @@ def test_fresh_database_proof_preserves_postgresql_dollar_quotes_after_groovy_re
     assert "malformed-fresh-proof-sql" not in trace
 
 
+def test_fresh_database_is_created_from_pristine_template0() -> None:
+    assert 'createdb -U "$POSTGRES_USER" -T template0 "$POSTGRES_DB"' in _cutover_shell()
+
+
 @pytest.mark.parametrize("fail_stage", ["apply-normal-failure", "detailed-marker-only"])
 def test_existing_database_apply_rejects_failures_without_the_exact_bare_marker(
     tmp_path: Path, fail_stage: str
