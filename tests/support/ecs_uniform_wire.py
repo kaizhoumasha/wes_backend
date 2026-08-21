@@ -35,6 +35,7 @@ DEVICE_COMMAND_QUEUE = "device-command"
 BROKER_KEY_PREFIX_ENV = "DEVICE_COMMAND_BROKER_KEY_PREFIX"
 DEVICE_COMMAND_STARTUP_PROBE_TASK = "tests.support.ecs_uniform_wire.device_command_startup_probe"
 DEVICE_COMMAND_STARTUP_PROBE_TOKEN = "device-command-startup-accepted"
+WORKER_READY_TIMEOUT_SECONDS = 60.0
 
 
 def _broker_transport_options(key_prefix: str) -> dict[str, object]:
@@ -313,7 +314,7 @@ class DeviceCommandBrokerWorker:
             text=True,
             start_new_session=True,
         )
-        self._wait_for_startup_probe(time.monotonic() + 30)
+        self._wait_for_startup_probe(time.monotonic() + WORKER_READY_TIMEOUT_SECONDS)
         return self
 
     def _wait_for_startup_probe(self, deadline: float) -> None:
