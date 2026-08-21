@@ -21,7 +21,8 @@ def _cutover_shell() -> str:
     end_marker = "# TEST_DEPLOY_CUTOVER_END"
     start = pipeline.index(start_marker) + len(start_marker)
     end = pipeline.index(end_marker, start)
-    return "set -e\nset -o pipefail\n" + textwrap.dedent(pipeline[start:end])
+    source = textwrap.dedent(pipeline[start:end]).replace(r"\$", "$")
+    return "set -e\nset -o pipefail\n" + source
 
 
 def _existing_database_authorization_shell() -> str:
@@ -256,6 +257,10 @@ def _fake_docker_source() -> str:
                         :
                         ;;
                     *"pg_catalog.pg_tables"*)
+                        case "$args" in
+                            *'\$\$pg_catalog\$\$'*'\$\$information_schema\$\$'*) ;;
+                            *) trace malformed-fresh-proof-sql; exit 62 ;;
+                        esac
                         trace fresh-proof
                         fail_at fresh-proof && printf '1\n' || printf '0\n'
                         ;;
@@ -626,6 +631,14 @@ def test_test_deploy_postcommit_recovery_repairs_once_checks_again_and_continues
     assert completed.stdout.splitlines().count("DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED") == 1
     assert "CACHE_INVALIDATION_FAILURE_DETAIL: RuntimeError: injected redis failure" in completed.stdout.splitlines()
     _assert_subsequence(trace, ["bootstrap", "repair", "permission-check", "application-start", "nginx-start"])
+
+
+def test_fresh_database_proof_preserves_postgresql_dollar_quotes_after_groovy_rendering(tmp_path: Path) -> None:
+    completed, trace, _ = _run_cutover(tmp_path)
+
+    assert completed.returncode == 0, (completed.stdout, completed.stderr, trace)
+    assert "fresh-proof" in trace
+    assert "malformed-fresh-proof-sql" not in trace
 
 
 @pytest.mark.parametrize("fail_stage", ["apply-normal-failure", "detailed-marker-only"])

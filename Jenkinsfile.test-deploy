@@ -391,7 +391,7 @@ pipeline {
                             fail_cutover fresh-database
                         fi
                         if ! FRESH_TABLE_COUNT=$(compose exec -T db sh -eu -c \
-                            'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from pg_catalog.pg_tables where schemaname not in (\$\$pg_catalog\$\$,\$\$information_schema\$\$)"'); then
+                            'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from pg_catalog.pg_tables where schemaname not in (\\$\\$pg_catalog\\$\\$,\\$\\$information_schema\\$\\$)"'); then
                             fail_cutover fresh-database-proof
                         fi
                         FRESH_TABLE_COUNT=$(printf '%s' "${FRESH_TABLE_COUNT}" | tr -d '[:space:]')
