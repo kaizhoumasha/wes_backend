@@ -64,6 +64,8 @@ except json.JSONDecodeError:
 print(json.dumps({"status_code": response.status_code, "body": body}))
 """
 
+_FRESH_PROCESS_HANG_TIMEOUT_SECONDS = 30
+
 
 def test_workline_query_fresh_import_routes_to_service_singleton() -> None:
     """首次加载时即使 plane service 先导入，查询路由也必须调用 WorkLineService。"""
@@ -75,7 +77,8 @@ def test_workline_query_fresh_import_routes_to_service_singleton() -> None:
         check=True,
         capture_output=True,
         text=True,
-        timeout=10,
+        # 卡死保护与 FAST 性能预算分离；单例耗时仍由质量门禁的 12 秒预算强制裁决。
+        timeout=_FRESH_PROCESS_HANG_TIMEOUT_SECONDS,
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
 
