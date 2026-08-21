@@ -21,8 +21,10 @@ while IFS= read -r -d '' changed_path; do
         Jenkinsfile.test-deploy | \
             docker-compose.test-deploy.yml | \
             docker/test/* | \
+            docs/architecture/heavy-test-impact.toml | \
             docs/devops/* | \
             tests/deployment/* | \
+            tests/scripts/test_select_heavy_tests_regression_2.py | \
             scripts/validate_test_deploy_source_diff.sh)
             ;;
         *)
