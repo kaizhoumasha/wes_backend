@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ def test_wms_provider_mock_import_does_not_load_application_settings() -> None:
         ],
         cwd=REPO_ROOT,
         capture_output=True,
+        env=os.environ | {"WMS_PROVIDER_PROFILE_FILE": ""},
         text=True,
         check=False,
     )
