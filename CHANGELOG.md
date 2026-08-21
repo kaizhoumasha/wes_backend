@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.2.0] - 2026-08-22
+
+### Changed
+
+- 将 Phase 9—13 重排为人工 Bin 纵向闭环、旧平台清理、单次初始 Schema 基线、自动业务插件持续交付和当前范围系统验收，后续实施可按真实产品节奏线性推进。
+- 明确人工物料业务继续由 WMS/PDA 拥有，WES 只负责 Bin 物理执行；自动上架与自动拣货移至 Phase 12，并继续受独立合同和计划批准约束。
+- 同步 SRS、顶层架构 SPEC、总控计划、文档索引、运行手册和 TODO 的阶段归属，消除旧十二阶段及 Phase 9 自动上架表述。
+
+### Removed
+
+- 将已被新阶段策略取代的旧 Phase 11 最终 Schema 基线过程计划移出项目目录，项目内不保留副本、占位或转发入口。
+
+### Verification
+
+- 本次仅修改人类可读文档与 Release 元数据；`git diff --check`、相对链接、归档目标哈希和原路径缺席检查均通过。
+- 未修改生产代码、测试、迁移、机器可读合同或部署配置；候选人工 Bin 严格合同仍保持独立评审状态，未包含在本发布中。
+- 状态边界为 `DOCUMENTED — NOT IMPLEMENTED — NOT DEPLOYED`。
+
 ## [0.27.1.0] - 2026-08-22
 
 ### Changed
