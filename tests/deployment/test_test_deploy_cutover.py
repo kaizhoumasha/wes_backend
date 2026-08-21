@@ -538,6 +538,24 @@ def test_current_release_commands_use_the_same_fail_closed_cutover_contract(rela
     assert document.index("BACKEND_REVISION=$(") < document.index("CUTOVER_STAGE=maintenance-stop")
 
 
+def test_application_start_failure_prints_bounded_service_diagnostics_before_cutover_fails() -> None:
+    pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    start_failure = pipeline.index(
+        "if ! compose up -d --force-recreate --wait \\\n"
+        "                            api celery celery-wms-fulfillment celery_beat flower frontend; then"
+    )
+    status_diagnostics = pipeline.index("compose ps -a", start_failure)
+    log_diagnostics = pipeline.index(
+        "compose logs --no-color --tail=200 \\\n"
+        "                                api celery celery-wms-fulfillment celery_beat flower frontend",
+        status_diagnostics,
+    )
+    fail_closed = pipeline.index("fail_cutover application-start", log_diagnostics)
+
+    assert start_failure < status_diagnostics < log_diagnostics < fail_closed
+
+
 @pytest.mark.parametrize(
     ("fail_stage", "forbidden_later_stage"),
     [
