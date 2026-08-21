@@ -107,4 +107,7 @@ export INTEGRATION_REDIS_URL="redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_PORT}
 export ALEMBIC_DATABASE_URL="$INTEGRATION_DATABASE_URL"
 
 run_foreground uv run alembic upgrade head
+export RUNTIME_INBOX_DATABASE_TEMPLATE="wes_tmp_runtime_inbox_template"
+run_foreground "${COMPOSE[@]}" exec -T db \
+    createdb -U "$POSTGRES_USER" -T "$POSTGRES_DB" "$RUNTIME_INBOX_DATABASE_TEMPLATE"
 run_foreground uv run scripts/run_selected_heavy_tests.py "$MANIFEST_FILE" "$JUNIT_FILE"

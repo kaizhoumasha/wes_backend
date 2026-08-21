@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -178,8 +179,10 @@ async def assert_dead_letter_terminal(db: AsyncSession, *, inbox_id: int, error_
 async def with_temporary_runtime_database(
     scenario: Callable[[async_sessionmaker[AsyncSession], RecordingTaskQueueGateway], Awaitable[None]],
 ) -> None:
-    async with temporary_database() as (_database, database_url):
-        run_alembic("upgrade", "head", database_url=database_url)
+    template_database = os.environ.get("RUNTIME_INBOX_DATABASE_TEMPLATE") or None
+    async with temporary_database(template_database=template_database) as (_database, database_url):
+        if template_database is None:
+            run_alembic("upgrade", "head", database_url=database_url)
         engine = create_async_engine(
             database_url,
             pool_pre_ping=True,

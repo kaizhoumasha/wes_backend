@@ -52,6 +52,9 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "docker network create" in lifecycle
     assert "docker volume create" in lifecycle
     assert "ALTER ROLE runtime_acceptance CREATEDB" in lifecycle
+    assert 'RUNTIME_INBOX_DATABASE_TEMPLATE="wes_tmp_runtime_inbox_template"' in lifecycle
+    assert 'createdb -U runtime_acceptance -T template0 "${RUNTIME_INBOX_DATABASE_TEMPLATE}"' in lifecycle
+    assert "--entrypoint /opt/venv/bin/alembic" in lifecycle
     assert "max_connections=100" in lifecycle
     assert "INTEGRATION_DATABASE_URL=postgresql://runtime_acceptance:" in lifecycle
     assert "INTEGRATION_DATABASE_SAFE_HOSTS=runtime-inbox-postgres" in lifecycle
@@ -84,16 +87,28 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "RUN ln -s /opt/venv /app/.venv" in dockerfile
 
 
-def test_acceptance_runner_runs_required_suites_in_order_and_validates_evidence(tmp_path: Path):
+def test_acceptance_runner_runs_correctness_suites_concurrently_before_benchmark_and_validates_evidence(
+    tmp_path: Path,
+):
     events: list[str] = []
+    correctness_started = threading.Barrier(3)
+    correctness_finished: set[str] = set()
+    event_lock = threading.Lock()
 
     def preflight(_environment, required_free_slots):
         events.append("preflight")
-        assert required_free_slots == REQUIRED_FREE_CONNECTION_SLOTS == 5
+        assert required_free_slots == REQUIRED_FREE_CONNECTION_SLOTS == 10
 
     def execute(command, environment):
-        events.append(command.name)
         assert command.argv[:3] == ("uv", "run", "--no-sync")
+        if command.name != "benchmark":
+            correctness_started.wait(timeout=2)
+            with event_lock:
+                correctness_finished.add(command.name)
+                events.append(command.name)
+            return
+        assert correctness_finished == {"migration_matrix", "processing_integration", "crash_recovery"}
+        events.append(command.name)
         if command.name == "benchmark":
             Path(environment["RUNTIME_INBOX_BENCHMARK_EVIDENCE"]).write_text("{}", encoding="utf-8")
 
@@ -114,28 +129,22 @@ def test_acceptance_runner_runs_required_suites_in_order_and_validates_evidence(
         evidence_validator=validate,
     )
 
-    assert events == [
-        "preflight",
-        "migration_matrix",
-        "processing_integration",
-        "crash_after_claim",
-        "crash_before_terminal",
-        "benchmark",
-        "validator",
-    ]
+    assert events[0] == "preflight"
+    assert set(events[1:4]) == {"migration_matrix", "processing_integration", "crash_recovery"}
+    assert events[4:] == ["benchmark", "validator"]
     diagnostic = json.loads((tmp_path / "diagnostic.json").read_text(encoding="utf-8"))
     assert diagnostic["status"] == "passed"
 
 
 def test_acceptance_runner_named_pytest_targets_exist(tmp_path: Path) -> None:
     for command in acceptance_runner._commands(tmp_path):
-        target = next(argument for argument in command.argv if argument.startswith("tests/"))
-        path_text, separator, function_name = target.partition("::")
-        if not separator:
-            continue
-        tree = ast.parse((REPO_ROOT / path_text).read_text(encoding="utf-8"))
-        functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
-        assert function_name in functions, target
+        for target in (argument for argument in command.argv if argument.startswith("tests/")):
+            path_text, separator, function_name = target.partition("::")
+            if not separator:
+                continue
+            tree = ast.parse((REPO_ROOT / path_text).read_text(encoding="utf-8"))
+            functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)}
+            assert function_name in functions, target
 
 
 def test_acceptance_runner_rejects_commit_mismatch_before_postgresql_preflight(tmp_path: Path):
@@ -214,6 +223,22 @@ def test_default_executor_streams_redacted_full_log_and_raises_with_bounded_tail
     assert len(tail) <= EXECUTOR_TAIL_MAX_CHARS
     assert len(error) <= EXECUTOR_ERROR_MAX_CHARS
     assert "capture_output=True" not in RUNNER.read_text(encoding="utf-8")
+
+
+def test_default_executor_streams_only_redacted_output_to_console(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    (tmp_path / "logs").mkdir()
+    secret_url = "postgresql://runtime_user:top-secret@runtime-inbox-postgres/postgres"
+    command = AcceptanceCommand(
+        "console_stream",
+        (sys.executable, "-c", f"print({secret_url!r})"),
+    )
+
+    _default_executor(command, {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)})
+
+    console = capsys.readouterr().out
+    assert "top-secret" not in console
+    assert secret_url not in console
+    assert "postgresql://***@runtime-inbox-postgres/postgres" in console
 
 
 def test_default_executor_reads_fixed_chunks_and_bounds_unterminated_output(tmp_path: Path, monkeypatch):

@@ -8,6 +8,7 @@ ACCEPTANCE_CONTAINER="wes-runtime-inbox-acceptance-${SUFFIX}"
 POSTGRES_NETWORK="wes-runtime-inbox-net-${SUFFIX}"
 POSTGRES_VOLUME="wes-runtime-inbox-data-${SUFFIX}"
 POSTGRES_HOST="runtime-inbox-postgres"
+RUNTIME_INBOX_DATABASE_TEMPLATE="wes_tmp_runtime_inbox_template"
 REPORT_DIR="${WORKSPACE:-$(pwd)}/reports/runtime-inbox-acceptance"
 ENV_FILE="${REPORT_DIR}/.acceptance.env"
 
@@ -73,6 +74,9 @@ docker exec "${POSTGRES_CONTAINER}" \
     printf 'INTEGRATION_DATABASE_URL=postgresql://runtime_acceptance:%s@runtime-inbox-postgres:5432/postgres\n' \
         "${POSTGRES_PASSWORD}"
     printf 'INTEGRATION_DATABASE_SAFE_HOSTS=runtime-inbox-postgres\n'
+    printf 'RUNTIME_INBOX_DATABASE_TEMPLATE=%s\n' "${RUNTIME_INBOX_DATABASE_TEMPLATE}"
+    printf 'ALEMBIC_DATABASE_URL=postgresql://runtime_acceptance:%s@runtime-inbox-postgres:5432/%s\n' \
+        "${POSTGRES_PASSWORD}" "${RUNTIME_INBOX_DATABASE_TEMPLATE}"
     printf 'POSTGRES_HOST=runtime-inbox-postgres\n'
     printf 'POSTGRES_PORT=5432\n'
     printf 'GIT_COMMIT=%s\n' "${CI_COMMIT_SHA}"
@@ -82,6 +86,15 @@ docker exec "${POSTGRES_CONTAINER}" \
     printf 'UV_PROJECT_ENVIRONMENT=/app/.venv\n'
     printf 'PYTHONPATH=/workspace\n'
 } >>"${ENV_FILE}"
+
+echo "Preparing migrated RuntimeInbox database template"
+docker exec "${POSTGRES_CONTAINER}" \
+    createdb -U runtime_acceptance -T template0 "${RUNTIME_INBOX_DATABASE_TEMPLATE}"
+docker run --rm \
+    --network "${POSTGRES_NETWORK}" \
+    --env-file "${ENV_FILE}" \
+    --entrypoint /opt/venv/bin/alembic \
+    "${CI_IMAGE}" upgrade head
 
 set +e
 docker run --rm --name "${ACCEPTANCE_CONTAINER}" \

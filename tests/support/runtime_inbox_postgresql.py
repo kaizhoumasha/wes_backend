@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAFE_DATABASE_PREFIX = "wes_tmp_runtime_inbox_"
+SAFE_TEMPLATE_DATABASE_NAME = "wes_tmp_runtime_inbox_template"
 REQUIRED_FREE_CONNECTION_SLOTS = 3
 DEFAULT_SAFE_DATABASE_HOSTS = frozenset({"localhost", "db"})
 _SAFE_DATABASE_PATTERN = re.compile(rf"{re.escape(SAFE_DATABASE_PREFIX)}[0-9a-f]{{32}}\Z")
@@ -236,6 +237,11 @@ def _validate_temporary_database_name(database: str) -> None:
         raise HeavyHarnessError("unsafe_target", "拒绝创建或删除非随机安全前缀的数据库")
 
 
+def _validate_template_database_name(database: str) -> None:
+    if database != SAFE_TEMPLATE_DATABASE_NAME:
+        raise HeavyHarnessError("unsafe_target", "拒绝从非固定 RuntimeInbox 模板创建数据库")
+
+
 def _quote_database(database: str) -> str:
     return '"' + database.replace('"', '""') + '"'
 
@@ -308,11 +314,14 @@ async def temporary_database(
     database_name_factory: Callable[[], str] = _random_database_name,
     safe_hosts: Collection[str] | None = None,
     required_free_slots: int = REQUIRED_FREE_CONNECTION_SLOTS,
+    template_database: str | None = None,
 ) -> AsyncIterator[tuple[str, str]]:
     """创建隔离临时数据库，并在成功、失败或取消后强制清理。"""
 
     database = database_name_factory()
     _validate_temporary_database_name(database)
+    if template_database is not None:
+        _validate_template_database_name(template_database)
     checked = await preflight(
         environ=environ,
         driver=driver,
@@ -330,7 +339,10 @@ async def temporary_database(
     try:
         try:
             create_attempted = True
-            await checked.admin.execute(f"CREATE DATABASE {_quote_database(database)}")
+            create_statement = f"CREATE DATABASE {_quote_database(database)}"
+            if template_database is not None:
+                create_statement += f" TEMPLATE {_quote_database(template_database)}"
+            await checked.admin.execute(create_statement)
         except asyncio.CancelledError as exc:
             primary_error = exc
         except Exception:
@@ -380,6 +392,7 @@ def run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[st
 
 __all__ = [
     "SAFE_DATABASE_PREFIX",
+    "SAFE_TEMPLATE_DATABASE_NAME",
     "HeavyHarnessError",
     "PostgreSQLPreflight",
     "connect",
