@@ -10,13 +10,6 @@
 # ============================================
 FROM python:3.13-slim AS base
 
-ARG WES_VCS_REVISION
-ARG WES_SOURCE_TREE
-
-# 本地 Compose 构建允许空标签；CI 与验收入口负责传入并严格校验真实 revision/source manifest。
-LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
-      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
-
 # 设置工作目录
 WORKDIR /app
 
@@ -112,6 +105,12 @@ RUN pip install --no-cache-dir \
 # 复制项目文件
 COPY . .
 
+# 提交元数据放在共享依赖层之后，避免每个 commit 都使 apt/uv 缓存失效。
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
+LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
+      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
+
 # 暴露端口
 EXPOSE 8001
 
@@ -142,6 +141,12 @@ RUN if [ -d /app/docker/test ]; then chmod +x /app/docker/test/*.sh; fi
 # 创建测试目录
 RUN mkdir -p /app/reports/coverage /app/reports/test
 
+# 本地构建允许空标签；CI 与验收入口负责传入并严格校验真实 revision/source manifest。
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
+LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
+      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
+
 # 暴露端口 (Locust Web UI)
 EXPOSE 8089
 
@@ -171,6 +176,12 @@ RUN if [ -d /app/docker/test ]; then chmod +x /app/docker/test/*.sh; fi
 # 创建日志目录
 RUN mkdir -p /app/logs && \
     chown -R wesuser:wesuser /app
+
+# 提交元数据放在最终运行层，保持共享依赖层可跨 commit 复用。
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
+LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
+      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
 
 # 切换到非 root 用户
 USER wesuser
