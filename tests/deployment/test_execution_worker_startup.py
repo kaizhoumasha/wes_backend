@@ -143,6 +143,10 @@ def test_device_command_startup_probe_returns_child_identity(monkeypatch) -> Non
     }
 
 
+def test_device_command_worker_readiness_budget_covers_a_cold_ci_container_start() -> None:
+    assert ecs_uniform_wire.WORKER_READY_TIMEOUT_SECONDS >= 60
+
+
 def test_device_command_worker_accepts_build_scoped_compose_redis_on_non_zero_database(tmp_path) -> None:
     worker = DeviceCommandBrokerWorker(
         "postgresql+asyncpg://user:password@db:5432/test_device_command",
