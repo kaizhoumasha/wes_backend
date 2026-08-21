@@ -209,6 +209,14 @@ def _fake_docker_source() -> str:
                 ;;
             run)
                 case "$args" in
+                    *"validate_wms_transport_configuration"*)
+                        trace wms-profile-preflight
+                        if fail_at wms-profile-preflight; then
+                            printf 'WMS_PROFILE_PREFLIGHT_ERROR=ValueError: injected invalid profile\n'
+                            exit 64
+                        fi
+                        printf 'WMS_PROFILE_PREFLIGHT=valid\n'
+                        ;;
                     *"api upgrade head"*)
                         trace migration
                         fail_at migration && exit 48
@@ -639,6 +647,26 @@ def test_test_deploy_failure_keeps_nginx_closed_and_never_repeats_database_mutat
         assert trace.count("manifest-extract-cleanup") == 2
 
 
+def test_wms_profile_preflight_failure_preserves_the_existing_entrypoint_and_stops_before_maintenance(
+    tmp_path: Path,
+) -> None:
+    completed, trace, nginx_state = _run_cutover(tmp_path, "wms-profile-preflight")
+
+    assert completed.returncode != 0, (completed.stdout, completed.stderr, trace)
+    assert nginx_state == "running"
+    assert trace == [
+        "backend-revision-inspect",
+        "frontend-revision-inspect",
+        "frontend-backend-provenance-inspect",
+        "openapi-provenance-inspect",
+        "permission-provenance-inspect",
+        "wms-profile-preflight",
+    ]
+    assert "WMS_PROFILE_PREFLIGHT_ERROR=ValueError: injected invalid profile" in completed.stdout
+    assert "nginx-stop" not in trace
+    assert "fresh-database" not in trace
+
+
 def test_test_deploy_postcommit_recovery_repairs_once_checks_again_and_continues(tmp_path: Path) -> None:
     completed, trace, nginx_state = _run_cutover(tmp_path, "postcommit-recovery")
 
@@ -708,6 +736,7 @@ def test_test_deploy_success_proves_complete_order_with_nginx_started_last(tmp_p
             "frontend-backend-provenance-inspect",
             "openapi-provenance-inspect",
             "permission-provenance-inspect",
+            "wms-profile-preflight",
             "nginx-stop",
             "listener-probe",
             "manifest-extract-create",
