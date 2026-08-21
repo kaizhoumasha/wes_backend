@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import scripts.run_runtime_inbox_postgresql_acceptance as acceptance_runner
+from scripts.classify_runtime_inbox_acceptance import classify_runtime_inbox_acceptance
 from scripts.run_runtime_inbox_postgresql_acceptance import (
     EXECUTOR_CLEANUP_TIMEOUT_SECONDS,
     EXECUTOR_ERROR_MAX_CHARS,
@@ -41,6 +42,9 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
     assert "stage('RuntimeInbox PostgreSQL Acceptance')" in jenkins
+    assert "stage('Classify Required HEAVY')" in jenkins
+    assert "CI_RUNTIME_INBOX_ACCEPTANCE_MODE" in jenkins
+    assert jenkins.count("scripts/select_heavy_tests.py --base") == 1
     assert "run_runtime_inbox_postgresql_acceptance_ci.sh run" in jenkins
     assert "run_runtime_inbox_postgresql_acceptance_ci.sh cleanup" in jenkins
     assert "reports/runtime-inbox-acceptance/junit/*.xml" in jenkins
@@ -85,6 +89,20 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "git status --porcelain" in lifecycle
     assert '-v "${WORKSPACE}/.git:/app/.git:ro"' not in lifecycle
     assert "RUN ln -s /opt/venv /app/.venv" in dockerfile
+
+
+def test_runtime_inbox_acceptance_classifier_uses_the_selected_heavy_manifest() -> None:
+    assert classify_runtime_inbox_acceptance([]) == "none"
+    assert classify_runtime_inbox_acceptance(["tests/integration/test_wms_deployment_attestation.py"]) == "none"
+    assert (
+        classify_runtime_inbox_acceptance(["tests/integration/test_runtime_inbox_processing_postgresql.py"])
+        == "correctness"
+    )
+    assert (
+        classify_runtime_inbox_acceptance(["tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"])
+        == "correctness"
+    )
+    assert classify_runtime_inbox_acceptance(["tests/integration/test_runtime_inbox_migration_postgresql.py"]) == "full"
 
 
 def test_template_migration_loads_the_same_required_settings_as_acceptance() -> None:
@@ -143,6 +161,30 @@ def test_acceptance_runner_runs_correctness_suites_concurrently_before_benchmark
     assert events[4:] == ["benchmark", "validator"]
     diagnostic = json.loads((tmp_path / "diagnostic.json").read_text(encoding="utf-8"))
     assert diagnostic["status"] == "passed"
+
+
+def test_acceptance_runner_correctness_mode_skips_only_the_migration_matrix(tmp_path: Path) -> None:
+    executed: list[str] = []
+
+    def execute(command, environment):
+        executed.append(command.name)
+        if command.name == "benchmark":
+            Path(environment["RUNTIME_INBOX_BENCHMARK_EVIDENCE"]).write_text("{}", encoding="utf-8")
+
+    run_acceptance(
+        tmp_path,
+        "a" * 40,
+        mode="correctness",
+        environment={"GIT_COMMIT": "a" * 40},
+        preflight_check=lambda _environment, _required_free_slots: None,
+        executor=execute,
+        evidence_validator=lambda _path, _expected_commit: None,
+    )
+
+    assert set(executed[:-1]) == {"processing_integration", "crash_recovery"}
+    assert executed[-1] == "benchmark"
+    diagnostic = json.loads((tmp_path / "diagnostic.json").read_text(encoding="utf-8"))
+    assert diagnostic["mode"] == "correctness"
 
 
 def test_acceptance_runner_named_pytest_targets_exist(tmp_path: Path) -> None:

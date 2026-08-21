@@ -80,6 +80,7 @@ docker exec "${POSTGRES_CONTAINER}" \
     printf 'POSTGRES_HOST=runtime-inbox-postgres\n'
     printf 'POSTGRES_PORT=5432\n'
     printf 'GIT_COMMIT=%s\n' "${CI_COMMIT_SHA}"
+    printf 'RUNTIME_INBOX_ACCEPTANCE_MODE=%s\n' "${CI_RUNTIME_INBOX_ACCEPTANCE_MODE:-full}"
     printf 'GIT_CONFIG_COUNT=1\n'
     printf 'GIT_CONFIG_KEY_0=safe.directory\n'
     printf 'GIT_CONFIG_VALUE_0=/workspace\n'
@@ -114,7 +115,8 @@ docker run --rm --name "${ACCEPTANCE_CONTAINER}" \
         fi
         exec uv run --no-sync python scripts/run_runtime_inbox_postgresql_acceptance.py \
             --output-dir /artifacts/reports/runtime-inbox-acceptance \
-            --expected-commit "${GIT_COMMIT}"
+            --expected-commit "${GIT_COMMIT}" \
+            --mode "${RUNTIME_INBOX_ACCEPTANCE_MODE}"
     '
 acceptance_status=$?
 set -e

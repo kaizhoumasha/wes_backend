@@ -149,6 +149,43 @@ pipeline {
             }
         }
 
+        stage('Classify Required HEAVY') {
+            steps {
+                script {
+                    sh 'mkdir -p reports'
+                    if (env.CI_DIFF_BASE?.trim()) {
+                        sh '''
+                            docker run --rm \
+                                -e CI_DIFF_BASE="${CI_DIFF_BASE}" \
+                                -v "$WORKSPACE/.git:/app/.git:ro" \
+                                "${CI_IMAGE}" \
+                                sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' \
+                                > reports/heavy-tests.selected.txt
+                        '''
+                        env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE = sh(
+                            returnStdout: true,
+                            script: '''
+                                docker run --rm \
+                                    -v "$WORKSPACE/reports/heavy-tests.selected.txt:/artifacts/heavy-tests.txt:ro" \
+                                    "${CI_IMAGE}" \
+                                    uv run --no-sync python scripts/classify_runtime_inbox_acceptance.py \
+                                        /artifacts/heavy-tests.txt
+                            '''
+                        ).trim()
+                    } else {
+                        sh ': > reports/heavy-tests.selected.txt'
+                        env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE = 'full'
+                    }
+                    echo "📋 RuntimeInbox PostgreSQL 验收模式: ${env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE}"
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/heavy-tests.selected.txt', allowEmptyArchive: true, fingerprint: true
+                }
+            }
+        }
+
         stage('Verification') {
             parallel {
                 stage('Quality Gate') {
@@ -197,6 +234,11 @@ pipeline {
                 }
 
                 stage('RuntimeInbox PostgreSQL Acceptance') {
+                    when {
+                        expression {
+                            env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE != 'none'
+                        }
+                    }
                     steps {
                         sh '''
                             set -e
@@ -254,13 +296,7 @@ pipeline {
                 sh '''
                     set -eu
                     mkdir -p reports
-
-                    docker run --rm \
-                        -e CI_DIFF_BASE="${CI_DIFF_BASE}" \
-                        -v "$WORKSPACE/.git:/app/.git:ro" \
-                        "${CI_IMAGE}" \
-                        sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' \
-                        > reports/heavy-tests.txt
+                    cp reports/heavy-tests.selected.txt reports/heavy-tests.txt
 
                     printf '%s\n' \
                         'tests/integration/test_runtime_inbox_migration_postgresql.py' \
@@ -310,7 +346,7 @@ pipeline {
             post {
                 always {
                     junit testResults: 'reports/heavy-required.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'reports/heavy-tests.txt,reports/heavy-required.xml,reports/runtime-inbox-acceptance-owned.txt', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'reports/heavy-tests.selected.txt,reports/heavy-tests.txt,reports/heavy-required.xml,reports/runtime-inbox-acceptance-owned.txt', allowEmptyArchive: true
                     sh '''
                         docker compose \
                             -f docker-compose.ci-heavy.yml \

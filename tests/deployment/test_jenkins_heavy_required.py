@@ -150,6 +150,7 @@ def test_heavy_required_uses_a_build_scoped_compose_project() -> None:
 def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
+    classification_body = _stage_body(jenkins_text, "Classify Required HEAVY", "Verification")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
     assert "String beforeCommit = (env.gitlabBefore ?: '').trim()" in checkout_body
@@ -170,9 +171,9 @@ def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None
     assert "env.CI_RELEASE_GATE_READY = 'true'" in checkout_body
 
     assert "env.CI_IS_MERGE_REQUEST == 'true' || env.CI_RELEASE_GATE_READY == 'true'" in heavy_body
-    assert '-e CI_DIFF_BASE="${CI_DIFF_BASE}"' in heavy_body
-    assert 'scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' in heavy_body
-    assert '--base "origin/${CI_TARGET_BRANCH}"' not in heavy_body
+    assert '-e CI_DIFF_BASE="${CI_DIFF_BASE}"' in classification_body
+    assert 'scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' in classification_body
+    assert '--base "origin/${CI_TARGET_BRANCH}"' not in classification_body
 
 
 def test_heavy_required_uses_non_zero_build_scoped_redis_database() -> None:
@@ -194,11 +195,12 @@ def test_heavy_compose_does_not_publish_or_reuse_deployment_resources() -> None:
 def test_ci_image_commands_never_resolve_dependencies_at_runtime() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     quality_gate_text = (REPO_ROOT / "scripts" / "git-quality-gate.sh").read_text(encoding="utf-8")
+    classification_body = _stage_body(jenkins_text, "Classify Required HEAVY", "Verification")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
     assert 'if [[ "$CI_MODE" == "true" ]]; then' in quality_gate_text
     assert 'uv run --no-sync "$@"' in quality_gate_text
-    assert "uv run --no-sync scripts/select_heavy_tests.py" in heavy_body
+    assert "uv run --no-sync scripts/select_heavy_tests.py" in classification_body
     assert "uv run --no-sync alembic upgrade head" in heavy_body
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in heavy_body
     assert "sh -c '\n                            set -eu" in heavy_body
