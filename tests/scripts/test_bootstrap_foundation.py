@@ -199,3 +199,34 @@ def test_bootstrap_foundation_shell_wrapper_only_forwards_to_python(tmp_path: Pa
         f"cwd={BACKEND_ROOT}",
         "args=run python scripts/data/bootstrap_foundation.py --unexpected",
     ]
+
+
+def test_bootstrap_foundation_shell_wrapper_uses_runtime_python_without_uv(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    call_log = tmp_path / "python-call.log"
+    python = bin_dir / "python"
+    python.write_text(
+        '#!/bin/sh\nprintf "cwd=%s\\n" "$PWD" >"$PYTHON_CALL_LOG"\nprintf "args=%s\\n" "$*" >>"$PYTHON_CALL_LOG"\n',
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+
+    completed = subprocess.run(
+        ["/bin/bash", str(BACKEND_ROOT / "scripts/data/bootstrap_foundation.sh"), "--unexpected"],
+        cwd=tmp_path,
+        env=os.environ
+        | {
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "PYTHON_CALL_LOG": str(call_log),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert call_log.read_text(encoding="utf-8").splitlines() == [
+        f"cwd={BACKEND_ROOT}",
+        "args=scripts/data/bootstrap_foundation.py --unexpected",
+    ]
