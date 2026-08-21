@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0.0] - 2026-08-21
+
+### Added
+- 新增代码所有的 canonical 权限目录与唯一 `AuthorizationBootstrapService`，统一完成权限同步、系统角色匹配、管理员初始化和精确缓存修复，并对重复或畸形权限码 fail closed。
+- TEST 配对切换新增前后端不可变 revision、OpenAPI 与权限摘要校验；新数据库使用独立 Redis cache namespace，避免复用旧数据库缓存数据。
+
+### Changed
+- 权限定义改为运行时只读：权限树保留查询导航，创建、更新、删除、恢复和运行时同步入口全部退役；初始化、同步、开发 seed 与 E2E provisioning 统一走同一授权服务。
+- 通用 CRUD 生成标志现在完整约束单条与批量写路由，并为批量删除、永久删除等不同操作保留独立权限码。
+- WMS Transport 回调继续走 Transport 专属合同与持久化 evidence；浏览器 RBAC 权限和厂商 API permission 保持分层，不再依赖通用外部回调入口。
+
+### Fixed
+- 修复树父节点与 Snowflake 主键类型不一致、授权预览产生副作用、缺失系统角色未纳入缓存失效用户，以及既有数据库授权恢复标记不完整的问题。
+- 修复部署切换在 provenance 校验、维护态菜单清单提取、数据库隔离和失败恢复上的窗口，使任何不匹配组合在暴露流量前终止。
+
+### Removed
+- 删除旧 `/callback/external` 路由及其 E2E provisioner、运行时权限写接口、过期 bootstrap 脚本和静态初始化 SQL，不保留 shim、别名或兼容双路径。
+
+### Verification
+- 最终候选 QUALITY 全门禁通过：3771 passed、4 个既有外部条件 skip；Ruff、Bandit、架构、测试拓扑和 FAST 预算检查均通过。
+- 相对原始分支基线选择的 10 个 HEAVY owner 在隔离 PostgreSQL、Redis 与迁移环境中 83 passed、0 skipped。
+- 跨仓计划审计为 48 DONE、2 项等价 CHANGED、0 PARTIAL；最终 frozen-head review 为 No issues found。状态边界为 `IMPLEMENTED — NOT DEPLOYED`。
+
 ## [0.26.10.0] - 2026-08-21
 
 ### Added
