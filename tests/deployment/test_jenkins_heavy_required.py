@@ -86,6 +86,7 @@ def test_host_compose_contracts_render_production_and_test_deploy_stacks() -> No
     compose_body = _stage_body(jenkins_text, "Compose Contracts", "RuntimeInbox PostgreSQL Acceptance")
 
     assert 'BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"' in compose_body
+    assert 'FRONTEND_IMAGE="example.invalid/wes/wes_frontend:compose-contract-${CI_SHORT_COMMIT}"' in compose_body
     assert 'WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"' in compose_body
     assert "--env-file .env.prod" in compose_body
     assert "-f docker-compose.yml" in compose_body

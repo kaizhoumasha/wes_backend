@@ -178,6 +178,7 @@ pipeline {
                 sh '''
                     set -eu
                     export BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"
+                    export FRONTEND_IMAGE="example.invalid/wes/wes_frontend:compose-contract-${CI_SHORT_COMMIT}"
                     export WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"
 
                     docker compose \
