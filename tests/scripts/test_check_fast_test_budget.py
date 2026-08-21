@@ -32,20 +32,20 @@ def _run_budget_check(report_path: Path, *args: str) -> subprocess.CompletedProc
 def test_report_only_prints_actual_values_and_keeps_exit_zero(tmp_path: Path) -> None:
     report_path = tmp_path / "fast.xml"
     testcases = [("tests.unit.test_fast", 0.2)] * 30
-    testcases.append(("tests.core.test_slow", 4.2))
-    _write_junit_report(report_path, testcases, suite_duration=90.1)
+    testcases.append(("tests.core.test_slow", 12.2))
+    _write_junit_report(report_path, testcases, suite_duration=180.1)
 
     result = _run_budget_check(report_path, "--report-only")
 
     assert result.returncode == 0
-    assert "套件总耗时 90.100s，预算 90.000s" in result.stdout
-    assert "tests.core.test_slow::case_30：4.200s，预算 4.000s" in result.stdout
+    assert "套件总耗时 180.100s，预算 180.000s" in result.stdout
+    assert "tests.core.test_slow::case_30：12.200s，预算 12.000s" in result.stdout
     assert "tests/unit/ p95：0.200s，预算 0.100s，N=30" in result.stdout
 
 
 def test_enforced_mode_exits_nonzero_when_a_budget_is_exceeded(tmp_path: Path) -> None:
     report_path = tmp_path / "fast.xml"
-    _write_junit_report(report_path, [("tests.core.test_slow", 4.2)])
+    _write_junit_report(report_path, [("tests.core.test_slow", 12.2)])
 
     result = _run_budget_check(report_path)
 
@@ -53,9 +53,9 @@ def test_enforced_mode_exits_nonzero_when_a_budget_is_exceeded(tmp_path: Path) -
     assert "超出 FAST 测试速度预算" in result.stdout
 
 
-def test_enforced_mode_accepts_a_case_below_four_seconds(tmp_path: Path) -> None:
+def test_enforced_mode_accepts_a_case_below_twelve_seconds(tmp_path: Path) -> None:
     report_path = tmp_path / "fast.xml"
-    _write_junit_report(report_path, [("tests.core.test_fast_enough", 3.9)])
+    _write_junit_report(report_path, [("tests.core.test_fast_enough", 11.9)])
 
     result = _run_budget_check(report_path)
 
