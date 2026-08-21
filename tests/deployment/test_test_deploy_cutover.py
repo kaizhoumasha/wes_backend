@@ -457,6 +457,12 @@ def test_test_deploy_compose_declares_the_complete_pre_exposure_application_set(
     assert "export POSTGRES_DB" in pipeline
 
 
+def test_test_deploy_redis_exposes_the_probe_password_inside_the_container() -> None:
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.test-deploy.yml").read_text(encoding="utf-8"))
+
+    assert compose["services"]["redis"]["environment"]["REDIS_PASSWORD"] == "${REDIS_PASSWORD}"
+
+
 def test_test_deploy_requires_and_compares_the_complete_paired_image_provenance() -> None:
     pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
 
