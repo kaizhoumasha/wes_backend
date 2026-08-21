@@ -16,6 +16,11 @@ ignore_globs = [
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
+# TEST 部署源码差异分类由部署合同测试承接，不启动业务服务或数据库。
+[[mapping]]
+source_glob = "scripts/validate_test_deploy_source_diff.sh"
+heavy_tests = []
+
 # Redis 降级演练由人工运维执行，不触发自动 HEAVY。
 [[mapping]]
 source_glob = "scripts/manual/redis_degradation_drill.py"
