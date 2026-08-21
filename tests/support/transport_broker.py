@@ -29,7 +29,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKER_READY_TIMEOUT_SECONDS = 30.0
+# 新鲜 CI 容器需冷导入完整 Celery 应用；业务任务超时仍由 TASK_TIMEOUT_SECONDS 单独约束。
+WORKER_READY_TIMEOUT_SECONDS = 60.0
 TASK_TIMEOUT_SECONDS = 30.0
 CONNECTION_DRAIN_TIMEOUT_SECONDS = 15.0
 FULFILLMENT_QUEUE = "wms-fulfillment"
