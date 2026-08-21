@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
     import asyncpg
 
-PENDING_INBOX_COUNT = 1_000
+PENDING_INBOX_COUNT = 4_000
 WORKER_CONCURRENCY = 4
 LOCK_MONITOR_CONNECTION_COUNT = 1
 CLAIM_BATCH_SIZE = 25
@@ -741,7 +741,7 @@ async def _run_benchmark() -> dict[str, object]:
                     "pending_inbox_count": PENDING_INBOX_COUNT,
                     "worker_concurrency": WORKER_CONCURRENCY,
                     "claim_batch_size": CLAIM_BATCH_SIZE,
-                    "mix": {"received": 700, "failed_due": 200, "stale_processing": 100},
+                    "mix": {"received": 2_800, "failed_due": 800, "stale_processing": 400},
                 },
                 "sample_count": len(state.claim_samples_ms),
                 "metrics": metrics,
