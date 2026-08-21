@@ -90,6 +90,12 @@ def test_deploy_source_accepts_a_descendant_with_only_delivery_and_verification_
     worktree, runtime_commit = repository
     _commit(worktree, "Jenkinsfile.test-deploy", "pipeline-v2\n")
     _commit(worktree, "tests/deployment/test_cutover.py", "test-v2\n")
+    _commit(worktree, "docs/architecture/heavy-test-impact.toml", "mapping-v2\n")
+    _commit(
+        worktree,
+        "tests/scripts/test_select_heavy_tests_regression_2.py",
+        "mapping-test-v2\n",
+    )
     deploy_commit = _commit(worktree, "docs/devops/test deploy.md", "runbook-v2\n")
 
     result = _validate(worktree, runtime_commit, deploy_commit)
