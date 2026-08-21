@@ -19,7 +19,14 @@ from pathlib import Path, PurePosixPath
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
 HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
 RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
-RETIRED_REMOVED_PATHS = frozenset({"Jenkinsfile"})
+RETIRED_REMOVED_PATHS = frozenset(
+    {
+        "Jenkinsfile",
+        "scripts/data/bootstrap_admin.py",
+        "scripts/data/bootstrap_admin.sh",
+        "scripts/data/init_production_base_data.sql",
+    }
+)
 CANDIDATE_GLOBS = (
     "src/**",
     "deployment/**",
@@ -520,7 +527,8 @@ def filter_deleted_retired_archive_paths(changed_files: Iterable[str], *, repo_r
         is_retired = normalized_path in RETIRED_REMOVED_PATHS or any(
             normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS
         )
-        if is_retired and not (repo_root / normalized_path).exists():
+        current_path = repo_root / normalized_path
+        if is_retired and not (current_path.exists() or current_path.is_symlink()):
             continue
         retained.append(normalized_path)
     return retained

@@ -511,133 +511,237 @@ stat -c '%a %n' backups/foundation-globals.sql
 
 显示 `OK` 且权限为 `600` 才通过。该文件可能包含数据库角色口令哈希，只用于验证命令，不是正式生产备份。
 
-## 14. 第十一步：初始化 schema 并启动 WES 应用
+## 14. 第十一步：使用重新签发的版本对完成维护态切换
 
-### 14.1 初始化空数据库 schema
+> **Fail closed：第 9.3 节记录的 2026-08-16 后端 `0.12.0.4` / 前端 `0.7.2.0` digest 与配置包只作为历史交付证据保留。该旧 bundle 不包含当前 `bootstrap_foundation` 入口，不得用于新的初始化或切换。以下步骤只适用于项目负责人重新签发、同时批准并记录新 digest、提交、OpenAPI SHA 和权限 SHA 的前后端镜像对；未取得新配置包时停止。**
 
-本次部署只允许使用空数据库。确认未遗留历史 WES 数据后执行：
+重新签发的配置包必须包含与新后端提交一致的 `docker-compose.yml`、`docker-compose.deploy.yml` 和 `.env.prod`，且生产前端只能来自批准的 immutable image。以下小节统一使用：
 
 ```bash
+set -euo pipefail
 cd /srv/wes/app
-sudo docker compose --env-file .env.prod -f docker-compose.yml run --rm --no-deps \
-    --entrypoint alembic api upgrade head
-sudo docker compose --env-file .env.prod -f docker-compose.yml run --rm --no-deps \
-    --entrypoint alembic api current
+BACKEND_IMAGE=$(sed -n 's/^BACKEND_IMAGE=//p' .env.prod | tail -n 1)
+FRONTEND_IMAGE=$(sed -n 's/^FRONTEND_IMAGE=//p' .env.prod | tail -n 1)
+case "$BACKEND_IMAGE" in *@sha256:*) ;; *) echo 'ERROR: 后端镜像未固定 digest' >&2; exit 1 ;; esac
+case "$FRONTEND_IMAGE" in *@sha256:*) ;; *) echo 'ERROR: 前端镜像未固定 digest' >&2; exit 1 ;; esac
+export BACKEND_IMAGE FRONTEND_IMAGE
+export EXPECTED_BACKEND_COMMIT_SHA=<approved-backend-commit>
+export DEPLOY_SOURCE_COMMIT_SHA=<approved-backend-commit>
+export EXPECTED_FRONTEND_COMMIT_SHA=<approved-frontend-commit>
+export EXPECTED_OPENAPI_SHA256=<approved-openapi-sha256>
+export EXPECTED_PERMISSIONS_SHA256=<approved-permissions-sha256>
+[ "$DEPLOY_SOURCE_COMMIT_SHA" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
+[ "$DEPLOY_ACTUAL_COMMIT" = "$DEPLOY_SOURCE_COMMIT_SHA" ] || exit 1
+
+BACKEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE")
+FRONTEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE")
+FRONTEND_BACKEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE")
+FRONTEND_OPENAPI_SHA256=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE")
+FRONTEND_PERMISSIONS_SHA256=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE")
+[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
+[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || exit 1
+[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] || exit 1
+compose() {
+  sudo docker compose --env-file .env.prod \
+    -f docker-compose.yml \
+    -f docker-compose.deploy.yml "$@"
+}
+
+MAINTENANCE_MODE=false
+CUTOVER_STAGE=pre-maintenance
+keep_external_entrypoint_closed() {
+  if [ "$MAINTENANCE_MODE" = true ]; then
+    echo "ERROR: 发布在阶段 ${CUTOVER_STAGE} 失败；外部入口保持关闭" >&2
+    compose stop nginx >/dev/null 2>&1 || true
+  fi
+}
+fail_cutover() {
+  CUTOVER_STAGE="$1"
+  keep_external_entrypoint_closed
+  exit 1
+}
+trap keep_external_entrypoint_closed EXIT
 ```
 
-符合要求的结果：升级命令成功，`current` 显示当前 `head`。失败时保持应用服务停止，不执行 downgrade，不导入历史数据库，也不切换
-旧镜像规避错误。
+### 14.1 进入维护态并停止旧应用
 
-### 14.2 开放唯一的 WES 现场访问端口
-
-先取得 IT 对 WES Web 入口端口的确认。本次交付将 `NGINX_HTTP_PORT` 固定为标准 HTTP `80/tcp`；只开放该端口，API、PostgreSQL
-和 Redis 不向局域网开放：
+先停止 Nginx 并确认批准的外部端口已经关闭，再按 Compose 标签识别旧应用。不得使用容器名判断服务身份：
 
 ```bash
-cd /srv/wes/app
+NGINX_HTTP_PORT=$(sed -n 's/^NGINX_HTTP_PORT=//p' .env.prod | tail -n 1)
+NGINX_HTTP_PORT=${NGINX_HTTP_PORT:-80}
+CUTOVER_STAGE=maintenance-stop
+MAINTENANCE_MODE=true
+compose stop nginx || fail_cutover maintenance-stop
+CLOSE_RETRY=0
+while curl -sS --connect-timeout 1 --max-time 2 \
+  "http://127.0.0.1:${NGINX_HTTP_PORT}/" >/dev/null 2>&1; do
+  CLOSE_RETRY=$((CLOSE_RETRY + 1))
+  [ "$CLOSE_RETRY" -lt 10 ] || fail_cutover listener-closure
+  sleep 1
+done
+
+compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env.prod | tail -n 1)
+compose_project_name=${compose_project_name:-$(basename "$PWD")}
+PROJECT_CONTAINER_IDS=$(sudo docker ps -q \
+  --filter "label=com.docker.compose.project=${compose_project_name}") \
+  || fail_cutover service-discovery
+for container_id in $PROJECT_CONTAINER_IDS; do
+  compose_service=$(sudo docker inspect --format \
+    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id") \
+    || fail_cutover service-discovery
+  case "$compose_service" in
+    db|redis) ;;
+    api|celery|celery-wms-fulfillment|celery_beat|flower|frontend|nginx)
+      sudo docker stop "$container_id" >/dev/null || fail_cutover application-stop
+      ;;
+    *)
+      echo "ERROR: 未知 Compose service: ${compose_service:-<empty>}" >&2
+      fail_cutover unknown-service
+      ;;
+  esac
+done
+
+compose up -d --wait db redis || fail_cutover infrastructure-readiness
+
+REMAINING_CONTAINER_IDS=$(sudo docker ps -q \
+  --filter "label=com.docker.compose.project=${compose_project_name}") \
+  || fail_cutover remaining-service-discovery
+for container_id in $REMAINING_CONTAINER_IDS; do
+  compose_service=$(sudo docker inspect --format \
+    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id") \
+    || fail_cutover remaining-service-discovery
+  case "$compose_service" in
+    db|redis) ;;
+    *) echo "ERROR: 迁移前仍有应用运行: ${compose_service:-<empty>}" >&2; fail_cutover remaining-application-service ;;
+  esac
+done
+```
+
+符合要求的结果：外部入口不可达，当前 Compose project 只有 `db` 和 `redis` 运行。发现未知 service 或任何检查失败时保持 Nginx 关闭并停止。
+
+### 14.2 使用新后端镜像初始化空数据库 schema
+
+```bash
+compose run --rm --no-deps \
+  -e DATABASE_RUNTIME_ROLE=cli \
+  -e DATABASE_POOL_SIZE=1 \
+  -e DATABASE_MAX_OVERFLOW=0 \
+  --entrypoint /opt/venv/bin/alembic \
+  api upgrade head
+```
+
+本现场步骤只允许 fresh DB。迁移失败时保持应用停止，不执行 downgrade、不导入历史数据库，也不切换旧镜像。
+
+### 14.3 初始化基础授权并检查零漂移
+
+确认 `BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD`、`BOOTSTRAP_ADMIN_FULL_NAME` 和 `BOOTSTRAP_ADMIN_EMAIL` 已通过受控 `.env.prod` 注入后执行：
+
+```bash
+if BOOTSTRAP_OUTPUT=$(compose run --rm --no-deps \
+  -e DATABASE_RUNTIME_ROLE=cli \
+  -e DATABASE_POOL_SIZE=1 \
+  -e DATABASE_MAX_OVERFLOW=0 \
+  --entrypoint /bin/bash \
+  api scripts/data/bootstrap_foundation.sh 2>&1); then
+  printf '%s\n' "$BOOTSTRAP_OUTPUT"
+else
+  BOOTSTRAP_STATUS=$?
+  printf '%s\n' "$BOOTSTRAP_OUTPUT"
+  echo "bootstrap exit status: ${BOOTSTRAP_STATUS}" >&2
+  printf '%s\n' "$BOOTSTRAP_OUTPUT" \
+    | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED' \
+    || fail_cutover authorization-bootstrap
+  compose run --rm --no-deps \
+    --entrypoint /opt/venv/bin/python \
+    api scripts/data/sync_permissions.py --repair-cache \
+    || fail_cutover authorization-cache-repair
+fi
+
+compose run --rm --no-deps \
+  -e DATABASE_RUNTIME_ROLE=cli \
+  -e DATABASE_POOL_SIZE=1 \
+  -e DATABASE_MAX_OVERFLOW=0 \
+  --entrypoint /opt/venv/bin/python \
+  api scripts/data/sync_permissions.py --check
+```
+
+`bootstrap_foundation` 统一收敛五个内置角色、路由权限目录、内置角色授权和首个管理员。真实 post-commit 失败输出包含独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，下一行以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 开头记录诊断；控制流只匹配前者并只执行一次 cache repair，不得重跑 bootstrap。`--check` 必须报告零漂移。没有专用整行标记的失败、repair 失败或新的检查有漂移时，EXIT trap 会再次停止 Nginx，不得继续启动应用。
+
+### 14.4 启动固定版本应用并完成内部门禁
+
+```bash
+compose up -d --force-recreate --wait \
+  api celery celery-wms-fulfillment celery_beat flower frontend \
+  || fail_cutover application-start
+compose exec -T api curl -fsS http://127.0.0.1:8001/ready >/dev/null \
+  || fail_cutover backend-readiness
+compose exec -T frontend wget --no-verbose --tries=1 --spider \
+  http://127.0.0.1:5173/ >/dev/null || fail_cutover frontend-asset
+
+BACKEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE") \
+  || fail_cutover backend-image-revision
+FRONTEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover frontend-image-revision
+FRONTEND_BACKEND_REVISION=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover frontend-backend-provenance
+FRONTEND_OPENAPI_SHA256=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover openapi-provenance
+FRONTEND_PERMISSIONS_SHA256=$(sudo docker image inspect --format \
+  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE") \
+  || fail_cutover permission-provenance
+[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || fail_cutover backend-image-revision
+[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || fail_cutover frontend-image-revision
+[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] \
+  || fail_cutover frontend-backend-provenance
+[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || fail_cutover openapi-provenance
+[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] \
+  || fail_cutover permission-provenance
+compose ps || fail_cutover internal-compose-status
+```
+
+从批准的前端镜像提取菜单清单并按 `docs/auth/menu-sync-guide.md` 执行当前保留的菜单同步。恢复外部入口前还必须确认实际容器 digest、OCI revision、frozen OpenAPI SHA 和权限 SHA 与重新签发记录一致。任一校验失败时保持 Nginx 关闭。
+
+## 15. 第十二步：恢复现场入口并配置 ECS 上位机
+
+### 15.1 最后恢复唯一的 WES 现场访问端口
+
+只有第 14 节所有门禁通过后，才取得 IT 对标准 HTTP `80/tcp` 的确认并执行：
+
+```bash
 NGINX_HTTP_PORT=$(sed -n 's/^NGINX_HTTP_PORT=//p' .env.prod | tail -n 1)
 NGINX_HTTP_PORT=${NGINX_HTTP_PORT:-80}
 sudo firewall-cmd --permanent --add-port="${NGINX_HTTP_PORT}/tcp"
 sudo firewall-cmd --reload
 sudo firewall-cmd --query-port="${NGINX_HTTP_PORT}/tcp"
+
+compose up -d --no-deps nginx || fail_cutover external-entrypoint
+curl --fail --show-error --connect-timeout 1 --max-time 10 \
+  "http://127.0.0.1:${NGINX_HTTP_PORT}/health" || fail_cutover external-health
+curl --fail --show-error --connect-timeout 1 --max-time 10 --output /dev/null \
+  "http://127.0.0.1:${NGINX_HTTP_PORT}/" || fail_cutover external-frontend
+compose ps || fail_cutover final-compose-status
+MAINTENANCE_MODE=false
+trap - EXIT
 ```
 
-符合要求的结果：`NGINX_HTTP_PORT` 为 `80`，最后显示 `yes`。未经 IT 确认不得执行；不要同时开放 API、PostgreSQL、Redis、
-Flower 或开发调试端口。
+未经 IT 确认不得执行；不要开放 API、PostgreSQL、Redis、Flower 或调试端口。外部检查失败时立即执行 `compose stop nginx`，记录失败阶段。
 
-### 14.3 启动应用服务
+### 15.2 记录基础授权与部署证据边界
 
-```bash
-cd /srv/wes/app
-sudo docker compose --env-file .env.prod -f docker-compose.yml up -d --wait \
-    --remove-orphans --no-build api celery_worker celery_beat frontend nginx
-sudo docker compose --env-file .env.prod -f docker-compose.yml ps
-sudo docker port wes_api_prod 8001
-sudo docker port wes_nginx_prod 80
-```
-
-符合要求的结果：`db`、`redis`、`api`、`celery_worker`、`celery_beat`、`frontend` 和 `nginx` 均为运行状态；定义健康检查的服务均为
-`healthy`；API 只绑定 `127.0.0.1`；Nginx 映射到已批准的 `NGINX_HTTP_PORT`。不要在本次联调部署中临时增加 Flower、Mock ECS、
-Mock WMS 或开发容器。
-
-### 14.4 检查关键日志
-
-```bash
-cd /srv/wes/app
-sudo docker compose --env-file .env.prod -f docker-compose.yml logs --tail=200 \
-    api celery_worker celery_beat frontend nginx
-```
-
-重点检查数据库迁移失败、容器反复重启、Redis 认证失败、前端资源 `404` 和 Nginx 上游连接失败。日志异常时先记录，不要通过删除
-数据库目录或重建容器掩盖问题。
-
-## 15. 第十二步：初始化系统数据并配置 ECS 上位机
-
-### 15.1 初始化内置角色并同步权限和菜单
-
-先初始化固定的 5 个内置角色，再从固定前端镜像提取菜单清单，最后由后端执行幂等同步：
-
-```bash
-cd /srv/wes/app
-sudo docker compose --env-file .env.prod -f docker-compose.yml exec -T api \
-    python scripts/data/bootstrap_roles.py
-manifest_container="wes_frontend_manifest_$(date +%s)"
-sudo docker create --name "$manifest_container" \
-    registry.happytable.cc/wes/wes_frontend@sha256:4afc9a4259f6989ea0f72158e8b2ad1e3ecdaced906239b1f5b228cc37281fec >/dev/null
-sudo docker cp "$manifest_container":/opt/wes/menu-manifest.json ./menu-manifest.json
-sudo docker rm "$manifest_container" >/dev/null
-sudo docker compose --env-file .env.prod -f docker-compose.yml exec -T api \
-    python scripts/data/sync_permissions.py
-sudo docker compose --env-file .env.prod -f docker-compose.yml exec -T api \
-    sh -c 'cat > /tmp/menu-manifest.json' < menu-manifest.json
-sudo docker compose --env-file .env.prod -f docker-compose.yml exec -T api \
-    python scripts/data/sync_menus.py --manifest-path /tmp/menu-manifest.json
-```
-
-任一同步失败时停止。生产现场不得执行开发数据 seed。
-
-### 15.2 创建首个管理员
-
-仅在系统中没有超级管理员时执行：
-
-```bash
-cd /srv/wes/app
-sudo docker compose --env-file .env.prod -f docker-compose.yml exec -T api \
-    python -c 'import os; from pydantic import EmailStr, TypeAdapter; TypeAdapter(EmailStr).validate_python(os.environ["BOOTSTRAP_ADMIN_EMAIL"]); print("BOOTSTRAP_ADMIN_EMAIL: OK")'
-sudo docker compose --env-file .env.prod -f docker-compose.yml exec -T api \
-    python scripts/data/bootstrap_admin.py
-```
-
-管理员初始化参数必须由项目负责人通过受控的 `.env.prod` 提供。不要把用户名、密码或密钥写入本手册、命令行参数或现场记录表。
-
-初始化后执行数据闭环检查：
-
-```bash
-sudo docker exec -i wes_postgres_prod sh -c \
-    'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -P pager=off' <<'SQL'
-SELECT count(*) AS builtin_role_count
-FROM wes_sys.roles
-WHERE name IN ('系统管理员', '管理员', '运营人员', '财务人员', '普通用户')
-  AND is_deleted = false;
-
-SELECT
-    (SELECT count(*) FROM wes_sys.permissions) AS permission_count,
-    (SELECT count(*) FROM wes_sys.menus) AS menu_count,
-    (SELECT count(*) FROM wes_sys.role_permissions) AS role_permission_count,
-    (SELECT count(*) FROM wes_sys.role_menus) AS role_menu_count;
-
-SELECT count(*) AS admin_role_link_count
-FROM wes_sys.user_roles ur
-JOIN wes_sys.users u ON u.id = ur.user_id
-JOIN wes_sys.roles r ON r.id = ur.role_id
-WHERE u.is_superuser = true
-  AND r.name = '系统管理员'
-  AND r.is_deleted = false;
-SQL
-```
-
-`builtin_role_count` 必须为 `5`；权限、菜单及两类角色关联计数必须大于 `0`；`admin_role_link_count` 必须大于等于 `1`。
-任一结果不符合时停止，不得绕过授权数据继续 ECS 联调。
+`bootstrap_foundation` 和权限零漂移只证明当前 WES 授权基础收敛；容器 readiness、前端资源和 Nginx 检查只证明部署技术入口。它们都不证明 ECS/WMS 供应商一致性、现场业务联调或最终业务验收。后续 ECS 步骤必须单独记录。
 
 ### 15.3 检查 ECS 网络可达性
 
@@ -662,6 +766,8 @@ SELinux 或客户网络策略，由 IT 和 ECS 供应商共同确认。
 本步骤只完成参数和网络准备。只有后续 ECS Command、ACK、Callback 和业务结果都按联调方案闭环后，才能单独记录“ECS 联调通过”。
 
 ## 16. 第十三步：执行现场部署技术验收
+
+> **历史记录边界：本节、第 17 节和附录 A 保留 2026-08-16 固定 bundle 的验收表、容器名和离线证据，不得作为重新签发版本对的操作指引。重新签发版本对只执行第 14–15 节当前门禁，并另行生成与新 digest 匹配的验收记录。**
 
 ### 16.1 健康检查和首页检查
 

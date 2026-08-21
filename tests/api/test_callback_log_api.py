@@ -68,9 +68,11 @@ class TestCallbackLogApi:
     def test_callback_log_routes_require_user_permissions(self) -> None:
         assert _permission_names("/logs/{id}", "GET") == ["callback:callback_log:detail"]
         assert _permission_names("/logs/query", "POST") == ["callback:callback_log:list"]
-        assert _permission_names("/logs/request/{request_id}", "GET") == ["callback:callback_log:detail"]
-        assert _permission_names("/logs/trace/{trace_id}", "GET") == ["callback:callback_log:list"]
-        assert _permission_names("/logs/subject/{subject_code}", "GET") == ["callback:callback_log:list"]
+        assert _permission_names("/logs/request/{request_id}", "GET") == ["callback:callback_log:detail-by-request-id"]
+        assert _permission_names("/logs/trace/{trace_id}", "GET") == ["callback:callback_log:list-by-trace-id"]
+        assert _permission_names("/logs/subject/{subject_code}", "GET") == [
+            "callback:callback_log:list-by-subject-code"
+        ]
 
     @pytest.mark.parametrize(
         ("path", "method", "response_model"),

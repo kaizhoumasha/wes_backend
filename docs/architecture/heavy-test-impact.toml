@@ -25,6 +25,28 @@ heavy_tests = []
 source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
 
+# BaseAPI/TreeAPI 生成的权限码进入完整应用目录，并由隔离 PostgreSQL dev-seed owner 验收。
+[[mapping]]
+source_glob = "src/core/base_api.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/core/tree_api.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+# TreeMixin 的共享 parent_id、Permission 的 FK 重声明与 schema migration 由真实 PostgreSQL 升降级承接。
+[[mapping]]
+source_glob = "src/core/mixins/tree.py"
+heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/models/perm.py"
+heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260820_1808_db0859fd3259_align_tree_parent_ids.py"
+heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+
 # 遗留缺席台账只承载审计证据；内容变化由质量门禁和当前指纹共同约束，不触发运行时 HEAVY。
 [[mapping]]
 source_glob = "docs/architecture/business-legacy-absence-ledger.csv"
@@ -126,7 +148,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
-reviewed_content_sha256 = "8de5d47269b1e1b50a23f4b0f64915d23649d550d2ecc3532ea321794fd72f90"
+reviewed_content_sha256 = "7ae69c35965e63bbb8a8b1a91631d551017f6b10420ab93383579e5e2fd68b1a"
 
 [[mapping]]
 source_glob = ".env.test"
@@ -134,7 +156,15 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
-reviewed_content_sha256 = "fc7b28ddca92ae0ec28ef7377891c1444e6f65a9129425c95df16de792a4d4fc"
+reviewed_content_sha256 = "077c7c281c4e40c9667e93bb2707103527348a74071eb1f31c355dd733e1cdd3"
+
+# E2E 环境生成与启动脚本共同决定当前 ECS/WMS callback 接线。
+[[mapping]]
+source_glob = "scripts/{init-env.sh,start_e2e_env.sh}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+]
 
 [[mapping]]
 source_glob = ".env.prod"
@@ -342,7 +372,6 @@ heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/test_base_repository_crud.py",
     "tests/integration/test_base_repository_hooks.py",
-    "tests/integration/test_callback_external_payload_limit.py",
     "tests/integration/test_optimistic_lock.py",
     "tests/integration/test_runtime_inbox_claim_repository.py",
     "tests/integration/test_runtime_inbox_consumer_service.py",
@@ -358,12 +387,16 @@ heavy_tests = [
 
 # Callback/Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；其余共享支撑与广泛依赖继续 fail closed。
 [[mapping]]
-source_glob = "src/app/callback/v1/callback.py"
-heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+source_glob = "src/app/callback/v1/{__init__.py,callback.py}"
+heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/callback/services/callback_ingress_service.py"
-heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+heavy_tests = ["tests/integration/test_runtime_inbox_consumer_service.py"]
+
+[[mapping]]
+source_glob = "tests/integration/test_callback_external_payload_limit.py"
+heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 
 # Phase 7 删除旧 callback DTO/编排分支，唯一 ECS callback 由真实生产闭环承接。
 [[mapping]]
@@ -440,7 +473,6 @@ reviewed_content_sha256 = "3db090574004395dda6de537bab8513f9a2a1e4874a19836cb8b8
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py"
 heavy_tests = [
-    "tests/integration/test_callback_external_payload_limit.py",
     "tests/integration/test_runtime_inbox_consumer_service.py",
 ]
 
@@ -755,7 +787,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "tests/api/callback_test_support.py"
-heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 [[mapping]]
 source_glob = "tests/support/sqlmodel_metadata.py"
@@ -1398,7 +1430,6 @@ heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 [[mapping]]
 source_glob = "src/app/workline/services/diagnostic_service.py"
 heavy_tests = [
-    "tests/integration/test_callback_external_payload_limit.py",
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
 ]
 
@@ -1427,12 +1458,21 @@ heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 source_glob = "src/app/workline/v1/operation.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/workline/v1/workline.py"
-heavy_tests = []
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/workline/v1/active_objects.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/callback/v1/callback_log.py"
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/trace_context.py"
@@ -1446,12 +1486,6 @@ heavy_tests = [
     "tests/integration/wms_integration/test_northbound_contract.py",
 ]
 
-# 生产初始化仅收敛退役业务 seed 与菜单路由，由部署 FAST 合同验证；内容变化后恢复 fail closed。
-[[mapping]]
-source_glob = "scripts/data/init_production_base_data.sql"
-heavy_tests = []
-reviewed_content_sha256 = "6dd684ed5ab2db1ec9ffbaa01c4d8f4eda3c03a367a75ec43ad3af4adb0c3b6b"
-
 [[mapping]]
 source_glob = "scripts/data/reset_runtime_data.py"
 heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
@@ -1464,7 +1498,7 @@ heavy_tests = ["tests/integration/workline_capabilities/test_wms_rack_supply_sch
 # WMS 入站认证 owner 移出 callback 后，保留 callback 的真实 payload 边界验收。
 [[mapping]]
 source_glob = "src/app/callback/services/{__init__.py,wms_inbound_auth.py}"
-heavy_tests = ["tests/integration/test_callback_external_payload_limit.py"]
+heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # E09 schema 退出由空库最终 schema 验收；不以 NONE 掩盖模型和约束变更。
 [[mapping]]
@@ -1487,10 +1521,7 @@ heavy_tests = [
 # 共享认证 owner 同时由 callback payload 边界和 Transport 生产接线 E2E 承接。
 [[mapping]]
 source_glob = "src/app/wms_adapter/inbound_auth.py"
-heavy_tests = [
-    "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/test_callback_external_payload_limit.py",
-]
+heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # 唯一 WMS event route 同时静态分派 Transport 与粗分对账；不建立第二入口。
 [[mapping]]
@@ -1561,11 +1592,105 @@ reviewed_content_sha256 = "a9e79638bc6043b61a762fd966d2f93691effae80d55087ebc70c
 
 [[mapping]]
 source_glob = "scripts/data/seed_initial_data.py"
-heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "scripts/data/bootstrap_foundation.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "scripts/data/bootstrap_foundation.sh"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "scripts/data/sync_permissions.py"
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "scripts/data/sync_permissions.sh"
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "scripts/data/provision_e2e_callback_application.py"
+heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/utils/permission_scanner.py"
-heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+# 代码权限目录的 Repository、Service 与公开导出由隔离 PostgreSQL 精确物化验收承接。
+[[mapping]]
+source_glob = "src/app/admin/repositories/perm_repository.py"
+heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/services/permission_catalog_service.py"
+heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
+
+# 权限目录管理 API 仅收敛公开读路由和通用缓存；目录物化仍由既有 PostgreSQL owner 承接，不新增 HEAVY 场景。
+[[mapping]]
+source_glob = "src/app/admin/{models/__init__.py,services/perm_service.py,v1/perm.py}"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "src/app/admin/services/__init__.py"
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+]
+
+# 内置角色、首个管理员与权限缓存门禁由同一个隔离 PostgreSQL/Redis owner 验收。
+[[mapping]]
+source_glob = "src/app/admin/services/authorization_bootstrap_service.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/core/authorization_cache.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/repositories/role_repository.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/admin/repositories/user_repository.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/core/rbac.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/api_auth/services/permission_service.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/database/redis_cache.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/database/redis_namespace.py"
+heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
+
+# 运行时目录重扫路由已删除；路由不存在性由 FAST 精确测试承接，无对应 HEAVY 行为。
+[[mapping]]
+source_glob = "src/app/api_auth/v1/api_application.py"
+heavy_tests = []
+reviewed_content_sha256 = "6c92c5d4e5fabb5daac2dff5bf19a9d5bf31605da6d6150e3ce93f0ed9832d4d"
 
 [[mapping]]
 source_glob = "src/app/admin/services/menu_sync_service.py"

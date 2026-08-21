@@ -155,6 +155,7 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
 
     env = os.environ.copy()
     env["BACKEND_IMAGE"] = "example.invalid/wes/wes_backend:test"
+    env["FRONTEND_IMAGE"] = "example.invalid/wes/wes_frontend:test"
     env["WMS_PROVIDER_PROFILE_HOST_FILE"] = str(REPO_ROOT / ".env.prod")
     docker_path = shutil.which("docker")
     if docker_path is None:

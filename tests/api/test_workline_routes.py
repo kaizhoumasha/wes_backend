@@ -33,6 +33,18 @@ def test_plane_routes_require_dedicated_permissions() -> None:
     ]
 
 
+def test_configuration_status_route_requires_dedicated_permission() -> None:
+    route = next(
+        route
+        for route in workline_api.router.routes
+        if route.path == "/work_lines/{id}/configuration-status" and "GET" in route.methods
+    )
+
+    assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == [
+        "biz:workline:configuration-status"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_plane_scene_route_records_read_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     """plane scene route 返回成功时必须记录读取审计。"""

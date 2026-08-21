@@ -147,10 +147,10 @@ def _enqueue_runtime_inbox_processing() -> None:
 
 @router.get(
     "/sandbox/pending",
-    summary="[biz:workline:list] 查询沙箱待处理 Outbox",
+    summary="[biz:workline:sandbox-pending] 查询沙箱待处理 Outbox",
     response_model=ResponseSchemaModel[list[dict[str, Any]]],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+    dependencies=[Depends(RequirePermission("biz:workline:sandbox-pending"))],
 )
 async def get_sandbox_pending(
     db: AsyncSessionDep,
@@ -168,10 +168,10 @@ async def get_sandbox_pending(
 
 @router.get(
     "/sandbox/completed",
-    summary="[biz:workline:list] 查询沙箱已完成 Outbox",
+    summary="[biz:workline:sandbox-completed] 查询沙箱已完成 Outbox",
     response_model=ResponseSchemaModel[list[dict[str, Any]]],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+    dependencies=[Depends(RequirePermission("biz:workline:sandbox-completed"))],
 )
 async def get_sandbox_completed(
     db: AsyncSessionDep,
@@ -187,7 +187,7 @@ async def get_sandbox_completed(
 
 @router.post(
     "/replay/inboxes/{inbox_id}",
-    summary="[biz:workline:update] Replay 历史 Inbox",
+    summary="[biz:workline:replay-inbox] Replay 历史 Inbox",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
     responses={
@@ -196,7 +196,7 @@ async def get_sandbox_completed(
         409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 幂等身份冲突"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 审计证据暂时无法持久化"},
     },
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+    dependencies=[Depends(RequirePermission("biz:workline:replay-inbox"))],
 )
 async def replay_inbox(
     inbox_id: int,
@@ -280,10 +280,10 @@ async def resolve_runtime_reconciliation(
 
 @router.post(
     "/reconciliations/effects/{dispatch_key}/resolve",
-    summary="[biz:workline:resolve-reconciliation] 提交 EFFECT reconciliation 人工决议",
+    summary="[biz:workline:resolve-effect-reconciliation] 提交 EFFECT reconciliation 人工决议",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:resolve-reconciliation"))],
+    dependencies=[Depends(RequirePermission("biz:workline:resolve-effect-reconciliation"))],
 )
 async def resolve_effect_reconciliation(
     dispatch_key: str,
@@ -324,10 +324,10 @@ async def resolve_effect_reconciliation(
 
 @router.post(
     "/sandbox/worklines/{workline_id}/simulate-estop",
-    summary="[biz:workline:update] 沙箱模拟 WorkLine 软件急停冻结",
+    summary="[biz:workline:simulate-estop] 沙箱模拟 WorkLine 软件急停冻结",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+    dependencies=[Depends(RequirePermission("biz:workline:simulate-estop"))],
 )
 async def simulate_workline_estop(
     workline_id: int,
@@ -490,10 +490,10 @@ async def clear_workline_estop(
 
 @router.post(
     "/sandbox/ack",
-    summary="[biz:workline:update] 沙箱模拟 Command ACK",
+    summary="[biz:workline:submit-sandbox-ack] 沙箱模拟 Command ACK",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+    dependencies=[Depends(RequirePermission("biz:workline:submit-sandbox-ack"))],
 )
 async def submit_sandbox_ack(
     payload: SandboxAckRequest,
@@ -512,10 +512,10 @@ async def submit_sandbox_ack(
 
 @router.post(
     "/sandbox/external-callbacks",
-    summary="[biz:workline:update] 沙箱模拟 External HTTP 回调",
+    summary="[biz:workline:submit-sandbox-external-callback] 沙箱模拟 External HTTP 回调",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:update"))],
+    dependencies=[Depends(RequirePermission("biz:workline:submit-sandbox-external-callback"))],
 )
 async def submit_sandbox_external_callback(
     payload: SandboxExternalCallbackRequest,

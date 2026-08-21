@@ -163,6 +163,58 @@ def test_canonical_development_runner_migrates_seeds_checks_and_preserves_data()
     assert "down --volumes" not in runner
 
 
+def test_test_deploy_converges_authorization_before_starting_application_services() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    stage_markers = [
+        "🔒 进入维护态并停止旧应用容器",
+        "🗄️ 执行数据库迁移",
+        "🔐 执行 fresh DB 基础授权初始化",
+        "🔎 校验权限目录零漂移",
+        "🐳 启动已固定版本的应用服务",
+        "🌐 恢复外部入口",
+    ]
+    positions = [pipeline.index(marker) for marker in stage_markers]
+
+    assert positions == sorted(positions)
+    assert "label=com.docker.compose.project=${compose_project_name}" in pipeline
+    assert '{{ index .Config.Labels "com.docker.compose.service" }}' in pipeline
+    assert "db|redis)" in pipeline
+    assert "未知 Compose application service" in pipeline
+    assert "--entrypoint /opt/venv/bin/alembic" in pipeline
+    assert "--entrypoint /bin/bash" in pipeline
+    assert "--entrypoint /opt/venv/bin/python" in pipeline
+    assert "api upgrade head" in pipeline
+    assert "api scripts/data/bootstrap_foundation.sh" in pipeline
+    assert "scripts/data/sync_permissions.py --check" in pipeline
+    assert "scripts/data/sync_permissions.py --apply" not in pipeline
+
+
+def test_test_deploy_repairs_postcommit_cache_failure_without_repeating_database_mutation() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    recovery = pipeline.split("DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED", maxsplit=1)[1]
+    recovery = recovery.split("🐳 启动已固定版本的应用服务", maxsplit=1)[0]
+
+    assert "scripts/data/sync_permissions.py --repair-cache" in recovery
+    assert "scripts/data/sync_permissions.py --check" in recovery
+    assert "bootstrap_foundation" not in recovery
+    assert "--apply" not in recovery
+
+
+def test_test_deploy_keeps_external_entrypoint_closed_until_every_gate_passes() -> None:
+    pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    assert "MAINTENANCE_MODE=true" in pipeline
+    assert "trap keep_external_entrypoint_closed EXIT" in pipeline
+    assert "compose stop nginx" in pipeline
+    assert "curl -sS --connect-timeout 1 --max-time 2" in pipeline
+    assert "compose up -d --no-deps nginx" in pipeline
+    assert "fail_cutover external-health" in pipeline
+    assert "fail_cutover external-frontend" in pipeline
+    assert pipeline.rindex("MAINTENANCE_MODE=false") > pipeline.index("🌐 恢复外部入口")
+
+
 @pytest.mark.parametrize(
     ("service_state", "expected_message"),
     [
@@ -300,6 +352,7 @@ def test_development_runner_can_stop_when_frontend_checkout_is_missing(tmp_path:
 
 def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() -> None:
     from scripts.data import seed_initial_data
+    from src.app.admin.services.authorization_bootstrap_service import BUILTIN_ROLE_SPECS
 
     with pytest.raises(RuntimeError, match="仅允许在 dev 环境运行"):
         seed_initial_data.require_development_environment({"ENV": "test"})
@@ -313,7 +366,7 @@ def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() 
 
     seed_initial_data.require_development_environment({"ENV": "dev", "DEV_SEED_ALLOWED": "true", "POSTGRES_HOST": "db"})
 
-    assert {seed.name for seed in seed_initial_data.ROLE_SEEDS} == {
+    assert {spec.name for spec in BUILTIN_ROLE_SPECS} == {
         "系统管理员",
         "管理员",
         "运营人员",

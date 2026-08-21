@@ -1,120 +1,179 @@
-"""
-从后端路由自动同步权限到数据库，并按内置规则补齐角色权限。
-
-使用方式：
-    uv run python scripts/data/sync_permissions.py
-    uv run python scripts/data/sync_permissions.py --dry-run
-    uv run python scripts/data/sync_permissions.py --preview
-    uv run python scripts/data/sync_permissions.py --permissions-only
-"""
-
-# ruff: noqa: E402
+"""显式检查、应用、预览或修复权限缓存。"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.database.db import get_db_context, init_db
-from src.register import create_app
-from src.utils.permission_scanner import (
-    build_permission_preview_rows,
-    scan_routes_for_permissions,
-    sync_builtin_role_permissions,
-    sync_permissions_to_db,
-)
+if TYPE_CHECKING:
+    from src.app.admin.services.authorization_bootstrap_service import AuthorizationSyncResult
+
+DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED = "DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED"
+POSTCOMMIT_CACHE_FAILURE_EXIT_CODE = 3
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="收敛代码权限目录与内置角色授权")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true", help="只读检查数据库是否存在授权差异")
+    mode.add_argument("--apply", action="store_true", help="应用授权差异并精确失效缓存")
+    mode.add_argument("--preview", action="store_true", help="仅预览代码权限目录，不连接 PostgreSQL")
+    mode.add_argument("--repair-cache", action="store_true", help="显式清理两个权限缓存命名空间")
+    return parser
+
+
+def _has_delta(result: AuthorizationSyncResult) -> bool:
+    return bool(
+        result.roles["created"]
+        or result.roles["updated"]
+        or result.permissions.created
+        or result.permissions.updated
+        or result.permissions.deleted
+        or result.role_permissions["added"]
+        or result.role_permissions["removed"]
+    )
+
+
+def _print_result(result: AuthorizationSyncResult) -> None:
+    print("📊 授权收敛结果:")
+    print(f"  roles={result.roles}")
+    print(
+        "  permissions="
+        f"created:{result.permissions.created},updated:{result.permissions.updated},"
+        f"deleted:{result.permissions.deleted},unchanged:{result.permissions.unchanged},"
+        f"total:{result.permissions.total}"
+    )
+    print(f"  role_permissions={result.role_permissions}")
+
+
+def _create_app() -> Any:
+    from src.register import create_app
+
+    return create_app()
+
+
+async def _initialize_database() -> None:
+    from src.database.db import init_db
+
+    await init_db()
+
+
+def _database_context() -> Any:
+    from src.database.db import get_db_context
+
+    return get_db_context()
+
+
+def _authorization_service() -> Any:
+    from src.app.admin.services.authorization_bootstrap_service import authorization_bootstrap_service
+
+    return authorization_bootstrap_service
+
+
+def _runtime_cache() -> Any:
+    from src.database.redis_cache import get_cache
+
+    return get_cache()
+
+
+def _build_catalog(app: Any) -> list[dict[str, Any]]:
+    from src.utils.permission_scanner import build_permission_catalog
+
+    return build_permission_catalog(app)
+
+
+def _build_preview_rows(catalog: list[dict[str, Any]]) -> list[str]:
+    from src.utils.permission_scanner import build_permission_preview_rows
+
+    return build_permission_preview_rows(catalog)
+
+
+async def _repair_permission_cache_from_environment() -> None:
+    from dotenv import load_dotenv
+
+    from src.core.authorization_cache import repair_permission_cache_namespaces_from_environment
+
+    load_dotenv(BACKEND_ROOT / ".env", override=False)
+    await repair_permission_cache_namespaces_from_environment(os.environ)
 
 
 def preview_permissions() -> None:
-    """预览从路由扫描到的权限数据"""
-    app = create_app()
-    permissions = scan_routes_for_permissions(app)
-
-    print("\n📋 权限数据预览:")
-    print("=" * 80)
-
-    if not permissions:
-        print("⚠️  未扫描到可同步的权限")
-    else:
-        for row in build_permission_preview_rows(permissions):
-            print(row)
-        print(f"📊 总计: {len(permissions)} 条权限")
-
-    print("=" * 80)
+    catalog = _build_catalog(_create_app())
+    print("📋 代码权限目录预览:")
+    for row in _build_preview_rows(catalog):
+        print(row)
+    print(f"📊 总计: {len(catalog)} 条权限目录节点")
 
 
-async def main_async(args: argparse.Namespace) -> None:
-    """异步主函数"""
-    print("🚀 权限同步工具")
-    print("=" * 80)
+async def _repair_cache() -> int:
+    try:
+        await _repair_permission_cache_from_environment()
+    except Exception as exc:
+        print(f"PERMISSION_CACHE_REPAIR_FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print("✅ 权限缓存命名空间修复完成")
+    return 0
 
+
+async def main_async(args: argparse.Namespace) -> int:
     if args.preview:
         preview_permissions()
-        return
+        return 0
+    if args.repair_cache:
+        return await _repair_cache()
 
-    app = create_app()
-    permissions = scan_routes_for_permissions(app)
-    print(f"🔍 已扫描后端路由权限 {len(permissions)} 条")
+    authorization_service = _authorization_service()
+    app = _create_app()
+    await _initialize_database()
+    async with _database_context() as session:
+        if args.check:
+            result = await authorization_service.converge_authorization(app, session, dry_run=True)
+            _print_result(result)
+            if _has_delta(result):
+                print("AUTHORIZATION_DELTA_DETECTED", file=sys.stderr)
+                return 1
+            print("✅ 数据库授权已收敛")
+            return 0
 
-    await init_db()
-    async with get_db_context() as session:
-        permission_result = await sync_permissions_to_db(app, session, dry_run=args.dry_run)
-        role_result: dict[str, int] | None = None
+        try:
+            result = await authorization_service.converge_authorization(app, session, dry_run=False)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
-        if not args.permissions_only:
-            role_result = await sync_builtin_role_permissions(session, dry_run=args.dry_run)
+        try:
+            await authorization_service.invalidate_caches(result, _runtime_cache())
+        except Exception as exc:
+            print(DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED, file=sys.stderr)
+            print(
+                f"CACHE_INVALIDATION_FAILURE_DETAIL: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return POSTCOMMIT_CACHE_FAILURE_EXIT_CODE
 
-    if args.dry_run:
-        print("🔍 Dry Run 模式：仅比较代码与数据库，不写入数据")
-
-    print("\n📊 同步结果:")
-    print("=" * 80)
-    print(
-        "权限同步: "
-        f"新增 {permission_result['created']} 条，"
-        f"更新 {permission_result['updated']} 条，"
-        f"跳过 {permission_result['skipped']} 条，"
-        f"扫描总数 {permission_result['total']} 条"
-    )
-
-    if role_result is not None:
-        print(
-            "角色权限回填: "
-            f"处理角色 {role_result['roles_processed']} 个，"
-            f"新增关联 {role_result['added']} 条，"
-            f"跳过 {role_result['skipped']} 条"
-        )
-
-    print("=" * 80)
-    print("✅ 同步完成!")
+    _print_result(result)
+    print("✅ 权限与内置角色授权同步完成")
+    return 0
 
 
 def main() -> None:
-    """命令行入口"""
-    parser = argparse.ArgumentParser(description="从后端路由自动同步权限到数据库")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="只比较不同步",
-    )
-    parser.add_argument(
-        "--preview",
-        action="store_true",
-        help="仅预览路由扫描结果，不连接数据库",
-    )
-    parser.add_argument(
-        "--permissions-only",
-        action="store_true",
-        help="只同步 permissions 表，不补内置角色权限",
-    )
-
-    asyncio.run(main_async(parser.parse_args()))
+    args = build_parser().parse_args()
+    try:
+        exit_code = asyncio.run(main_async(args))
+    except Exception as exc:
+        print(f"PERMISSION_SYNC_FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

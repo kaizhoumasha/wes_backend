@@ -1,6 +1,6 @@
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Body, Depends, Path, Request
+from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel
 
 from src.app.admin.services import permission_service
@@ -19,7 +19,6 @@ from src.core.response import BusinessErrorCode, ResourceErrorCode
 from src.core.response.response_schema import ResponseSchemaModel
 from src.core.response.response_util import response_builder
 from src.database.dependencies import AsyncSessionDep, CacheDep
-from src.utils.permission_scanner import sync_permissions_to_db
 
 response_builder_any = cast("Any", response_builder)
 api_app_service_any = cast("Any", api_app_service)
@@ -72,27 +71,6 @@ def register_custom_route(
         )
 
         return cast("ResponseSchemaModel[list[Any]]", response_builder_any.success(data=permissions))
-
-    @router.post(
-        "/available-permissions/sync",
-        summary="[api-auth:api_application:sync_permissions] 重新扫描并同步 API 权限",
-        dependencies=[Depends(RequirePermission("api-auth:api_application:sync_permissions"))],
-    )
-    async def sync_system_api_permissions(  # pyright: ignore[reportUnusedFunction]
-        request: Request,
-        db: AsyncSessionDep,
-    ) -> ResponseSchemaModel[list[Any]]:
-        """重新扫描代码中的权限并同步到数据库。"""
-        _ = await sync_permissions_to_db(request.app, db)
-        permissions = await permission_service.get_api_permissions(
-            db,
-            perm_type=APP_API_PERMISSION_TYPE,
-            exclude_deleted=True,
-        )
-        return cast(
-            "ResponseSchemaModel[list[Any]]",
-            response_builder_any.success(data=permissions, message="权限同步成功"),
-        )
 
     @router.post(
         "",

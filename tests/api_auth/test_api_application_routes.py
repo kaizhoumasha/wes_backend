@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -23,13 +22,14 @@ def _permission_names(path: str, method: str) -> list[str]:
     return [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies]
 
 
-def test_available_permissions_routes_split_read_and_sync_permissions() -> None:
+def test_available_permissions_route_has_no_runtime_sync_endpoint() -> None:
     assert _permission_names("/applications/available-permissions", "GET") == [
         "api-auth:api_application:list_permissions"
     ]
-    assert _permission_names("/applications/available-permissions/sync", "POST") == [
-        "api-auth:api_application:sync_permissions"
-    ]
+    assert not any(
+        "POST" in route.methods and route.path == "/applications/available-permissions/sync"
+        for route in api_application_module.router.routes
+    )
 
 
 def test_generated_crud_routes_use_api_application_permission_resource() -> None:
@@ -37,7 +37,9 @@ def test_generated_crud_routes_use_api_application_permission_resource() -> None
     assert _permission_names("/applications/{id}", "GET") == ["api-auth:api_application:detail"]
     assert _permission_names("/applications/{id}", "PUT") == ["api-auth:api_application:update"]
     assert _permission_names("/applications/{id}", "DELETE") == ["api-auth:api_application:delete"]
-    assert _permission_names("/applications/trash/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
+    assert _permission_names("/applications/trash/permanent", "DELETE") == [
+        "api-auth:api_application:batch_permanent_delete"
+    ]
     assert _permission_names("/applications/{id}/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
 
 
@@ -90,25 +92,6 @@ async def test_available_permissions_route_returns_only_app_api_permissions(monk
 
     response = await route.endpoint(db=db)
 
-    get_api_permissions.assert_awaited_once_with(db, perm_type="app_api", exclude_deleted=True)
-    assert response["data"] == []
-
-
-@pytest.mark.asyncio
-async def test_sync_available_permissions_route_returns_only_app_api_permissions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    route = _get_route("/applications/available-permissions/sync", "POST")
-    app = object()
-    db = object()
-    sync_permissions_to_db = AsyncMock(return_value={"created": 0, "updated": 0, "skipped": 0, "total": 0})
-    get_api_permissions = AsyncMock(return_value=[])
-    monkeypatch.setattr(api_application_module, "sync_permissions_to_db", sync_permissions_to_db)
-    monkeypatch.setattr(api_application_module.permission_service, "get_api_permissions", get_api_permissions)
-
-    response = await route.endpoint(request=SimpleNamespace(app=app), db=db)
-
-    sync_permissions_to_db.assert_awaited_once_with(app, db)
     get_api_permissions.assert_awaited_once_with(db, perm_type="app_api", exclude_deleted=True)
     assert response["data"] == []
 

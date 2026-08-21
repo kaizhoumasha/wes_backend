@@ -288,38 +288,37 @@ docker-compose --version
 
 部署行为约束：
 
-- `wes_test_deploy` 是独立部署任务，由部署人员手工触发并选择前后端镜像
-- 部署前会将 `/opt/wes_backend` 强制对齐到目标 commit，避免服务器本地漂移挡住发布
-- 使用 `docker-compose.test-deploy.yml` 重建 TEST 应用
-- API 容器会只读挂载同机的 `../wes_frontend`，供部署后菜单同步使用
-- 部署成功前会执行 `python scripts/data/sync_menus.py --frontend-path /opt/wes_frontend`
+- `wes_test_deploy` 是独立部署任务；前端 producer 传入无默认值的 immutable 前后端 tag、两端 commit、`DEPLOY_SOURCE_COMMIT_SHA`、OpenAPI SHA 与权限 SHA，缺少或不匹配即拒绝
+- `DEPLOY_SOURCE_COMMIT_SHA` 必须等于批准的后端镜像 revision；部署前会将 `/opt/wes_backend` 强制对齐到该 SHA 并再次核对 `HEAD`
+- 前后端镜像拉取并固定到 digest 后，先核对 backend revision 与 frontend revision/backend-contract/OpenAPI/permission labels；全部通过后才停止 Nginx 并按 Compose project/service 标签停止旧应用
+- 迁移前只允许 `db` 与 `redis` 运行；未知 service 使切换失败并保持 Nginx 关闭
+- 每次部署先在保留的 TEST PostgreSQL volume 中创建由 Jenkins build/commit 唯一命名的新数据库并证明无业务表；不删除或复用旧 TEST 数据库
+- 使用新后端镜像的一次性命令执行 Alembic、fresh-DB `bootstrap_foundation` 和权限 `--check`
+- 若 bootstrap 报告独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`（详情另以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 输出），只执行一次 `--repair-cache`，再执行新的 `--check`，不得重跑数据库 mutation
+- 零漂移后才使用 `docker-compose.test-deploy.yml` 重建 `api`、两个 Celery worker、Beat、Flower 与 frontend，并从固定前端镜像提取菜单清单
 - 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
-- 健康检查为 API 容器内 `http://127.0.0.1:8001/health`
-- 同时检查 nginx `/health` 和首页
+- 后端 `/ready`、前端资源、两端 revision、前端绑定的 backend revision、OpenAPI/permission labels 和菜单同步均通过后，才以 `compose up -d --no-deps nginx` 恢复入口；任一外部检查失败立即再次停止 Nginx
 
 PROD 边界说明：
 
 - `wes_backend-ci` 只负责后端 CI 与镜像发布，不自动部署 TEST 或生产环境
 - 生产环境按手动部署 runbook 执行，不复用 `seed_initial_data.py`
 - 生产发布说明文档：`prod-release-deploy.md`
-- 推荐顺序：
+- fresh DB 推荐顺序（完整维护态顺序以 `prod-release-deploy.md` 为准）：
   1. `./scripts/migrate.sh upgrade`
-  2. `bash scripts/data/sync_permissions.sh`
-  3. `bash scripts/data/sync_menus.sh --frontend-path /opt/wes_frontend`
-  4. `export BOOTSTRAP_ADMIN_USERNAME=admin`
-  5. `export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'`
-  6. `export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'`
-  7. `export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'`
-  8. `bash scripts/data/bootstrap_admin.sh`
+  2. 注入 `BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD`、`BOOTSTRAP_ADMIN_FULL_NAME`、`BOOTSTRAP_ADMIN_EMAIL`
+  3. `bash scripts/data/bootstrap_foundation.sh`
+  4. `uv run python scripts/data/sync_permissions.py --check`
 - 前后端分别维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法
 - 生产建议在 `.env.prod` 中启用 `USE_SNOWFLAKE_ID=true`
-- `bootstrap_admin.sh` 只会在系统中还没有超级管理员时创建首个管理员
+- 已有数据库按生产 Runbook 捕获 `sync_permissions.py --apply` 输出，普通非零立即 fail closed；只有精确裸 marker 行才按一次 `--repair-cache` → fresh `--check` 恢复，且不得重跑 `--apply`
+- 固定版本应用启动后，从批准的前端 digest 提取菜单 manifest；菜单同步通过后才恢复 Nginx
 
 建议核对项：
 
 ```bash
 rg -n "IMAGE_REPO|Push Runtime Image|CI_EVENT_TYPE" Jenkinsfile.backend-ci
-rg -n "DEPLOY_COMPOSE_FILE|HEALTH_CHECK_URL|IMAGE_PULL_RETRIES|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
+rg -n "DEPLOY_COMPOSE_FILE|IMAGE_PULL_RETRIES|bootstrap_foundation|--check|--repair-cache|sync_menus|MENU_COUNT" Jenkinsfile.test-deploy
 ```
 
 确认 Jenkins 中 Pipeline 配置：

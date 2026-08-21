@@ -22,7 +22,7 @@ from scripts.select_heavy_tests import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEAVY_TEST = "tests/integration/test_authoritative_runtime.py"
 BASE_REPOSITORY_HOOKS_HEAVY_TEST = "tests/integration/test_base_repository_hooks.py"
-CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST = "tests/integration/test_callback_external_payload_limit.py"
+PERMISSION_CATALOG_SYNC_HEAVY_TEST = "tests/integration/test_permission_catalog_sync_postgresql.py"
 CELERY_ASYNC_RUNTIME_HEAVY_TEST = "tests/integration/test_celery_async_runtime.py"
 CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST = "tests/integration/test_celery_async_runtime_postgresql.py"
 CELERY_PREFORK_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_celery_prefork_harness_cleanup.py"
@@ -85,7 +85,6 @@ SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
     "tests/integration/test_base_repository_crud.py",
     "tests/integration/test_base_repository_hooks.py",
-    "tests/integration/test_callback_external_payload_limit.py",
     "tests/integration/test_optimistic_lock.py",
     "tests/integration/test_runtime_inbox_claim_repository.py",
     "tests/integration/test_runtime_inbox_consumer_service.py",
@@ -958,9 +957,17 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py",
             [TRANSPORT_SCHEMA_HEAVY_TEST, TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST],
         ),
-        ("src/app/callback/services/__init__.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
-        ("src/app/callback/services/wms_inbound_auth.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
-        ("src/app/callback/v1/callback.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        ("src/app/callback/services/__init__.py", [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]),
+        ("src/app/callback/services/wms_inbound_auth.py", [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]),
+        ("src/app/callback/v1/callback.py", [PERMISSION_CATALOG_SYNC_HEAVY_TEST]),
+        (
+            "scripts/init-env.sh",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_PRODUCTION_WIRING_E2E_TEST],
+        ),
+        (
+            "scripts/start_e2e_env.sh",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_PRODUCTION_WIRING_E2E_TEST],
+        ),
         (
             "src/app/runtime/orchestration/material_flow_owner.py",
             [WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST],
@@ -1082,7 +1089,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
         ),
         (
             "src/app/wms_adapter/inbound_auth.py",
-            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST, CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
+            [TRANSPORT_PRODUCTION_WIRING_E2E_TEST],
         ),
         (
             "src/app/wms_adapter/__init__.py",
@@ -1347,10 +1354,7 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
         ),
         (
             "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py",
-            [
-                CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST,
-                RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST,
-            ],
+            [RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST],
         ),
         (
             "src/app/runtime/orchestration/repositories/device_runtime_projection_repository.py",
@@ -1435,7 +1439,7 @@ def test_repository_mapping_selects_new_core_heavy_tests(changed_path: str, expe
         ),
         (
             "tests/api/callback_test_support.py",
-            [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST],
         ),
         (
             "tests/support/sqlmodel_metadata.py",
@@ -1617,10 +1621,10 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
 @pytest.mark.parametrize(
     ("changed_path", "expected"),
     [
-        ("src/app/callback/v1/callback.py", [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST]),
+        ("src/app/callback/v1/callback.py", [PERMISSION_CATALOG_SYNC_HEAVY_TEST]),
         (
             "src/app/callback/services/callback_ingress_service.py",
-            [CALLBACK_EXTERNAL_PAYLOAD_LIMIT_HEAVY_TEST],
+            [RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST],
         ),
         ("src/app/contracts/__init__.py", []),
         (

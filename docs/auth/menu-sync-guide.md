@@ -118,31 +118,44 @@ uv run python scripts/data/sync_menus.py --frontend-path ~/SynologyDrive/works/w
 uv run python scripts/data/sync_menus.py
 ```
 
-如果前端目录不可用，则会回退到脚本内置的默认菜单数据。
+如果前端目录不可用，脚本内置数据只允许开发/测试初始化使用；生产必须消费批准前端镜像内的
+`/opt/wes/menu-manifest.json`，不得回退到默认菜单。
 
 ## 生产环境初始化顺序
 
 生产环境不要执行 `scripts/data/seed_initial_data.py`。该脚本用于开发、测试、演示初始化，包含默认账号口令，不适合作为生产部署步骤。
 
-推荐生产初始化顺序：
+生产权限初始化顺序由 `docs/devops/prod-release-deploy.md` 统一规定。权限零漂移且固定版本应用启动后、Nginx 恢复前，
+从批准的前端 digest 提取菜单清单并同步：
 
 ```bash
-./scripts/migrate.sh upgrade
-bash scripts/data/sync_permissions.sh
-bash scripts/data/sync_menus.sh --frontend-path /path/to/wes_frontend
+case "${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}" in
+  *@sha256:*) ;;
+  *) echo 'FRONTEND_IMAGE 必须是批准的 digest' >&2; exit 1 ;;
+esac
 
-export BOOTSTRAP_ADMIN_USERNAME=admin
-export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
-export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
-export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
-bash scripts/data/bootstrap_admin.sh
+manifest_container="wes_frontend_manifest_$$"
+docker create --name "$manifest_container" "$FRONTEND_IMAGE" >/dev/null
+docker cp "$manifest_container":/opt/wes/menu-manifest.json ./menu-manifest.json
+docker rm "$manifest_container" >/dev/null
+
+docker compose --env-file .env.prod \
+  -f docker-compose.yml \
+  -f docker-compose.deploy.yml \
+  cp ./menu-manifest.json api:/tmp/menu-manifest.json
+docker compose --env-file .env.prod \
+  -f docker-compose.yml \
+  -f docker-compose.deploy.yml \
+  exec -T api /opt/venv/bin/python \
+  scripts/data/sync_menus.py --manifest-path /tmp/menu-manifest.json
 ```
 
 说明：
 
-- 菜单同步依赖前端 `src/router/index.ts`，因此生产手动部署时仍需提供前端源码目录或等效构建上下文。
+- 生产服务器不提供前端源码目录、不构建前端，也不接受默认菜单回退；唯一输入是批准的 immutable 前端镜像。
 - 前后端分离维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法，互不冲突。
-- `bootstrap_admin` 只会在系统中还没有超级管理员时创建首个管理员，后续重复执行会安全跳过。
+- 本计划暂时保留菜单表和同步入口；后续 frontend-owned menu convergence 计划负责删除它们，不在这里增加双路径。
+- 菜单同步失败时保持 Nginx 关闭；成功只证明菜单物化，不证明 API 授权、现场联调或业务验收。
 
 ## 已修复的问题
 

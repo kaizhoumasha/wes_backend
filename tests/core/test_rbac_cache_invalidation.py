@@ -1,7 +1,9 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.core import rbac
-from src.core.rbac import get_user_permissions, invalidate_users_permissions
+from src.core.rbac import get_user_permissions, invalidate_user_permissions, invalidate_users_permissions
 
 
 class _FakeCache:
@@ -17,27 +19,39 @@ class _FakeCache:
         self.storage[key] = value
         self.set_calls.append((key, value, expire))
 
-    async def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> bool:
         self.deleted_keys.append(key)
         self.storage.pop(key, None)
+        return True
 
 
 @pytest.mark.asyncio()
 async def test_invalidate_users_permissions_deduplicates_user_ids() -> None:
     cache = _FakeCache()
 
-    await invalidate_users_permissions(cache, [101, 101, 202, -1, "x"])  # type: ignore[list-item]
+    result = await invalidate_users_permissions(cache, [101, 101, 202, -1, "x"])  # type: ignore[list-item]
 
     assert sorted(cache.deleted_keys) == ["perms:user:101", "perms:user:202"]
+    assert result == {101: True, 202: True}
 
 
 @pytest.mark.asyncio()
 async def test_invalidate_users_permissions_handles_empty_input() -> None:
     cache = _FakeCache()
 
-    await invalidate_users_permissions(cache, [])
+    result = await invalidate_users_permissions(cache, [])
 
     assert cache.deleted_keys == []
+    assert result == {}
+
+
+@pytest.mark.asyncio()
+async def test_invalidate_user_permissions_returns_redis_deletion_result() -> None:
+    cache = _FakeCache()
+    cache.delete = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    assert await invalidate_user_permissions(cache, 303) is False
+    cache.delete.assert_awaited_once_with("perms:user:303")
 
 
 @pytest.mark.asyncio()

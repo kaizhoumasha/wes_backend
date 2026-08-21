@@ -144,7 +144,6 @@ def test_dev_and_test_env_declare_the_provider_profile_entry() -> None:
         assert "WMS_PROVIDER_PROFILE_FILE=" in env_text
         for setting_name in STATUS_CONFIG_NAMES:
             assert f"{setting_name}=" in env_text
-        assert "CONTAINER_WES_EXTERNAL_CALLBACK_URL=http://api:8001/api/v1/callback/external" in env_text
         assert "API_APP_ID=app_local_mock" in env_text
         assert "API_APP_SECRET=local_mock_change_me" in env_text
         assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1=" not in env_text

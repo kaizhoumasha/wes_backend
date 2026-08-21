@@ -270,6 +270,30 @@ def test_base_api_assigns_stable_operation_ids() -> None:
     assert _get_route_operation_id(api, "/dummy-items/{id}/restore", "POST") == "dummy_items_restore"
 
 
+def test_soft_delete_routes_are_absent_when_delete_generation_is_disabled() -> None:
+    api = BaseAPI(
+        module_name="test",
+        model=DummySoftDeleteModel,
+        service=FakeBatchService(),
+        response_schema=DummyResponse,
+        prefix="/readonly-dummy",
+        gen_create=False,
+        gen_update=False,
+        gen_delete=False,
+        enable_permission=False,
+    )
+
+    routes = {(route.path, method) for route in api.router.routes for method in route.methods}
+
+    assert ("/readonly-dummy/{id}", "GET") in routes
+    assert ("/readonly-dummy/query", "POST") in routes
+    assert ("/readonly-dummy/trash", "GET") in routes
+    assert ("/readonly-dummy/trash/restore", "POST") not in routes
+    assert ("/readonly-dummy/trash/permanent", "DELETE") not in routes
+    assert ("/readonly-dummy/{id}/permanent", "DELETE") not in routes
+    assert ("/readonly-dummy/{id}/restore", "POST") not in routes
+
+
 def test_generate_route_operation_id_produces_compact_path_based_ids() -> None:
     app = FastAPI(generate_unique_id_function=generate_route_operation_id)
 
@@ -459,7 +483,7 @@ async def test_permanent_delete_endpoint_maps_value_error_to_standard_fail_respo
         prefix="/dummy",
         gen_create=False,
         gen_update=False,
-        gen_delete=False,
+        gen_delete=True,
         gen_bulk_delete=False,
         enable_permission=False,
     )
@@ -508,7 +532,7 @@ async def test_restore_endpoint_maps_not_found_to_standard_fail_response() -> No
         prefix="/dummy",
         gen_create=False,
         gen_update=False,
-        gen_delete=False,
+        gen_delete=True,
         enable_permission=False,
     )
 
@@ -531,7 +555,7 @@ async def test_tree_move_endpoint_maps_value_error_to_business_fail_response() -
         tree_response_schema=DummyResponse,
         prefix="/dummy-tree",
         gen_create=False,
-        gen_update=False,
+        gen_update=True,
         gen_delete=False,
         enable_permission=False,
     )
@@ -555,7 +579,7 @@ async def test_tree_batch_sort_endpoint_maps_value_error_to_business_fail_respon
         tree_response_schema=DummyResponse,
         prefix="/dummy-tree",
         gen_create=False,
-        gen_update=False,
+        gen_update=True,
         gen_delete=False,
         enable_permission=False,
     )
@@ -580,28 +604,35 @@ def test_base_api_summary_permission_codes_match_route_dependencies() -> None:
         prefix="/dummy-items",
         gen_create=False,
         gen_update=False,
-        gen_delete=False,
+        gen_delete=True,
         gen_bulk_delete=False,
         enable_permission=True,
     )
 
     detail_permission = "test:dummysoftdeletemodel:detail"
+    batch_restore_permission = "test:dummysoftdeletemodel:batch_restore"
+    batch_permanent_delete_permission = "test:dummysoftdeletemodel:batch_permanent_delete"
     restore_permission = "test:dummysoftdeletemodel:restore"
     permanent_delete_permission = "test:dummysoftdeletemodel:permanent_delete"
 
     assert _get_route_dependency_permissions(api, "/dummy-items/{id}", "GET") == [detail_permission]
     assert _get_route_summary(api, "/dummy-items/{id}", "GET") == f"[{detail_permission}] 获取DummySoftDeleteModel"
 
-    assert _get_route_dependency_permissions(api, "/dummy-items/trash/restore", "POST") == [restore_permission]
+    assert _get_route_dependency_permissions(api, "/dummy-items/trash/restore", "POST") == [batch_restore_permission]
     assert _get_route_summary(api, "/dummy-items/trash/restore", "POST") == (
-        f"[{restore_permission}] 批量恢复DummySoftDeleteModel"
+        f"[{batch_restore_permission}] 批量恢复DummySoftDeleteModel"
     )
 
     assert _get_route_dependency_permissions(api, "/dummy-items/trash/permanent", "DELETE") == [
-        permanent_delete_permission
+        batch_permanent_delete_permission
     ]
     assert _get_route_summary(api, "/dummy-items/trash/permanent", "DELETE") == (
-        f"[{permanent_delete_permission}] 批量永久删除DummySoftDeleteModel"
+        f"[{batch_permanent_delete_permission}] 批量永久删除DummySoftDeleteModel"
+    )
+
+    assert _get_route_dependency_permissions(api, "/dummy-items/{id}/restore", "POST") == [restore_permission]
+    assert _get_route_summary(api, "/dummy-items/{id}/restore", "POST") == (
+        f"[{restore_permission}] 恢复DummySoftDeleteModel"
     )
 
     assert _get_route_dependency_permissions(api, "/dummy-items/{id}/permanent", "DELETE") == [
@@ -612,7 +643,7 @@ def test_base_api_summary_permission_codes_match_route_dependencies() -> None:
     )
 
 
-def test_tree_api_uses_tree_permission_for_tree_read_routes() -> None:
+def test_tree_api_uses_one_permission_code_per_tree_route() -> None:
     api = TreeAPI(
         module_name="admin",
         model=DummySoftDeleteModel,
@@ -621,13 +652,23 @@ def test_tree_api_uses_tree_permission_for_tree_read_routes() -> None:
         tree_response_schema=DummyResponse,
         prefix="/dummy-tree",
         gen_create=False,
-        gen_update=False,
+        update_schema=DummyUpdate,
+        gen_update=True,
         gen_delete=False,
         enable_permission=True,
     )
 
-    expected_permission = "admin:dummysoftdeletemodel:tree"
-    assert _get_route_dependency_permissions(api, "/dummy-tree/tree", "GET") == [expected_permission]
-    assert _get_route_dependency_permissions(api, "/dummy-tree/siblings/{node_id}", "GET") == [expected_permission]
-    assert _get_route_dependency_permissions(api, "/dummy-tree/ancestors/{node_id}", "GET") == [expected_permission]
-    assert _get_route_dependency_permissions(api, "/dummy-tree/children/{node_id}", "GET") == [expected_permission]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/tree", "GET") == ["admin:dummysoftdeletemodel:tree"]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/siblings/{node_id}", "GET") == [
+        "admin:dummysoftdeletemodel:siblings"
+    ]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/ancestors/{node_id}", "GET") == [
+        "admin:dummysoftdeletemodel:ancestors"
+    ]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/children/{node_id}", "GET") == [
+        "admin:dummysoftdeletemodel:children"
+    ]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/move", "PUT") == ["admin:dummysoftdeletemodel:move"]
+    assert _get_route_dependency_permissions(api, "/dummy-tree/batch-sort", "PUT") == [
+        "admin:dummysoftdeletemodel:batch_sort"
+    ]

@@ -50,10 +50,10 @@ def _plane_read_principal(
 
 @router.get(
     "/work_lines/{id}/configuration-status",
-    summary="[biz:workline:detail] 查询作业线配置状态",
+    summary="[biz:workline:configuration-status] 查询作业线配置状态",
     response_model=ResponseSchemaModel[WorkLineConfigurationStatus],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:detail"))],
+    dependencies=[Depends(RequirePermission("biz:workline:configuration-status"))],
 )
 async def get_workline_configuration_status(
     db: AsyncSessionDep,

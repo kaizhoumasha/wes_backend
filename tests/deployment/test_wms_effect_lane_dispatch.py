@@ -130,9 +130,10 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
     assert '--queues="${CELERY_WORKER_QUEUES}"' in test_entrypoint
 
     pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
-    assert "pull api celery celery-wms-fulfillment frontend" in pipeline
-    assert "up -d --force-recreate api celery celery-wms-fulfillment frontend nginx" in pipeline
-    assert "logs --tail=150 api celery celery-wms-fulfillment frontend nginx" in pipeline
+    assert 'wait_for_image "${BACKEND_IMAGE}" "${IMAGE_PULL_RETRIES}"' in pipeline
+    assert 'wait_for_image "${FRONTEND_IMAGE}" "${IMAGE_PULL_RETRIES}"' in pipeline
+    assert "api celery celery-wms-fulfillment celery_beat flower frontend" in pipeline
+    assert "compose up -d --no-deps nginx" in pipeline
 
 
 def test_wms_effect_admission_switch_is_consistent_across_profiles_and_effect_creators() -> None:
@@ -157,7 +158,7 @@ def test_wms_effect_admission_switch_is_consistent_across_profiles_and_effect_cr
     for compose_name, roles in (
         ("docker-compose.yml", ("api", "celery", "celery_beat")),
         ("docker-compose.deploy.yml", ("api", "celery", "celery_beat")),
-        ("docker-compose.test-deploy.yml", ("api", "celery")),
+        ("docker-compose.test-deploy.yml", ("api", "celery", "celery_beat")),
     ):
         compose = yaml.load(
             (REPO_ROOT / compose_name).read_text(encoding="utf-8"),

@@ -24,23 +24,17 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from src.app.admin.models import Role, User, user_role
+from src.app.admin.services.authorization_bootstrap_service import (
+    BUILTIN_ROLE_SPECS,
+    authorization_bootstrap_service,
+)
 from src.app.admin.services.menu_sync_service import menu_sync_service
 from src.core.rbac import invalidate_users_permissions
 from src.core.security import get_password_hash, verify_password
 from src.database.db import get_db_context, init_db
 from src.database.redis_cache import get_cache
 from src.register import create_app
-from src.utils.permission_scanner import (
-    managed_permission_names_for_app,
-    sync_builtin_role_permissions,
-    sync_permissions_to_db,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class RoleSeed:
-    name: str
-    description: str
+from src.utils.permission_scanner import managed_permission_names_for_app
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,14 +46,6 @@ class UserSeed:
     is_superuser: bool = False
     is_multi_login: bool = False
 
-
-ROLE_SEEDS = (
-    RoleSeed("系统管理员", "系统最高权限，拥有所有操作权限"),
-    RoleSeed("管理员", "系统管理员，拥有大部分管理权限"),
-    RoleSeed("运营人员", "日常运营操作人员"),
-    RoleSeed("财务人员", "财务相关操作人员"),
-    RoleSeed("普通用户", "普通用户，基础查看权限"),
-)
 
 USER_SEEDS = (
     UserSeed(
@@ -104,27 +90,6 @@ async def _active_roles(db: AsyncSession) -> dict[str, Role]:
 async def _active_users(db: AsyncSession) -> dict[str, User]:
     result = await db.execute(select(User).where(User.is_deleted.is_(False)))
     return {user.username: user for user in result.scalars().all()}
-
-
-async def ensure_roles(db: AsyncSession) -> dict[str, int]:
-    roles = await _active_roles(db)
-    result = {"created": 0, "updated": 0, "skipped": 0}
-
-    for seed in ROLE_SEEDS:
-        role = roles.get(seed.name)
-        if role is None:
-            role = Role(name=seed.name, description=seed.description)
-            db.add(role)
-            roles[seed.name] = role
-            result["created"] += 1
-        elif role.description != seed.description:
-            role.description = seed.description
-            result["updated"] += 1
-        else:
-            result["skipped"] += 1
-
-    await db.flush()
-    return result
 
 
 async def ensure_users(db: AsyncSession, password: str) -> dict[str, int]:
@@ -205,7 +170,7 @@ async def _builtin_role_user_ids(db: AsyncSession) -> list[int]:
     result = await db.execute(
         select(user_role.c.user_id)
         .join(Role, Role.id == user_role.c.role_id)
-        .where(Role.name.in_([seed.name for seed in ROLE_SEEDS]), Role.is_deleted.is_(False))
+        .where(Role.name.in_([spec.name for spec in BUILTIN_ROLE_SPECS]), Role.is_deleted.is_(False))
         .distinct()
     )
     return [int(user_id) for user_id in result.scalars().all()]
@@ -226,16 +191,12 @@ async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: 
     managed_menu_names = {definition.name for definition in menu_definitions}
 
     try:
-        role_result = await ensure_roles(db)
+        authorization_result = await authorization_bootstrap_service.converge_authorization(app, db, dry_run=False)
+        role_result = authorization_result.roles
         user_result = await ensure_users(db, password)
         user_role_result = await ensure_user_roles(db)
-        permission_result = await sync_permissions_to_db(app, db, auto_commit=False)
-        role_permission_result = await sync_builtin_role_permissions(
-            db,
-            auto_commit=False,
-            exact=True,
-            managed_permission_names=managed_permission_names,
-        )
+        permission_result = authorization_result.permissions
+        role_permission_result = authorization_result.role_permissions
         menu_result = await menu_sync_service.sync_menus(db, menu_definitions, auto_commit=False)
         if menu_result.errors:
             raise RuntimeError(f"前端菜单同步失败: {menu_result.errors}")
@@ -269,12 +230,12 @@ async def _check_foundation_data(db: AsyncSession, frontend_path: str, password:
     roles = await _active_roles(db)
     users = await _active_users(db)
 
-    for seed in ROLE_SEEDS:
-        role = roles.get(seed.name)
+    for spec in BUILTIN_ROLE_SPECS:
+        role = roles.get(spec.name)
         if role is None:
-            errors.append(f"缺少角色 {seed.name}")
-        elif role.description != seed.description:
-            errors.append(f"角色字段漂移 {seed.name}")
+            errors.append(f"缺少角色 {spec.name}")
+        elif role.description != spec.description:
+            errors.append(f"角色字段漂移 {spec.name}")
 
     existing_links = {
         (int(user_id), int(role_id))
@@ -305,16 +266,11 @@ async def _check_foundation_data(db: AsyncSession, frontend_path: str, password:
     managed_permission_names = managed_permission_names_for_app(app)
     if not managed_permission_names:
         errors.append("权限定义为空")
-    permission_result = await sync_permissions_to_db(app, db, dry_run=True, auto_commit=False)
-    if permission_result["created"] or permission_result["updated"]:
+    authorization_result = await authorization_bootstrap_service.converge_authorization(app, db, dry_run=True)
+    permission_result = authorization_result.permissions
+    if permission_result.created or permission_result.updated or permission_result.deleted:
         errors.append(f"权限未收敛 {permission_result}")
-    role_permission_result = await sync_builtin_role_permissions(
-        db,
-        dry_run=True,
-        auto_commit=False,
-        exact=True,
-        managed_permission_names=managed_permission_names,
-    )
+    role_permission_result = authorization_result.role_permissions
     if role_permission_result["added"] or role_permission_result["removed"]:
         errors.append(f"角色权限未收敛 {role_permission_result}")
 

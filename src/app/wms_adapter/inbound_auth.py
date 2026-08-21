@@ -12,9 +12,6 @@ if TYPE_CHECKING:
     from src.app.wms_integration.endpoint_compiler import CompiledWmsProviderProfile
 
 
-_WMS_EFFECT_STATUS_HINT = "WMS_EFFECT_STATUS_HINT"
-
-
 @dataclass(frozen=True, slots=True)
 class WmsInboundAuthPolicy:
     """由已编译 Provider profile 派生的、进程生命周期内不变的认证策略。"""
@@ -45,17 +42,6 @@ class WmsInboundAuthPolicy:
             and source_system == "WMS"
             and isinstance(event_type, str)
             and event_type in WMS_BUSINESS_EVENT_TYPES
-        )
-
-    def permits_unsigned_external(self, payload: dict[str, Any]) -> bool:
-        source_system = payload.get("source_system")
-        callback_type = payload.get("callback_type")
-        return (
-            self.allows_unsigned_wms_callbacks
-            and isinstance(source_system, str)
-            and source_system == "WMS"
-            and isinstance(callback_type, str)
-            and callback_type == _WMS_EFFECT_STATUS_HINT
         )
 
 

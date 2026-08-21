@@ -56,12 +56,12 @@ start_env() {
         exit 1
     fi
 
-    # 构建运行镜像，确保迁移、凭据引导脚本和 Mock callback 使用当前工作树代码。
-    echo -e "${YELLOW}步骤 1/5: 构建 API 与 Mock 镜像${NC}"
+    # 构建运行镜像，确保迁移和 Mock callback 使用当前工作树代码。
+    echo -e "${YELLOW}步骤 1/4: 构建 API 与 Mock 镜像${NC}"
     docker-compose --env-file "$ENV_FILE" build api mock_ecs mock_wms
 
     # 启动基础设施和 Mock 服务
-    echo -e "${YELLOW}步骤 2/5: 启动基础设施 (PostgreSQL + Redis)${NC}"
+    echo -e "${YELLOW}步骤 2/4: 启动基础设施 (PostgreSQL + Redis)${NC}"
     docker-compose --env-file "$ENV_FILE" --profile infra up -d
 
     # 等待基础设施就绪
@@ -69,15 +69,11 @@ start_env() {
     sleep 5
 
     # 运行数据库迁移
-    echo -e "${YELLOW}步骤 3/5: 运行数据库迁移${NC}"
+    echo -e "${YELLOW}步骤 3/4: 运行数据库迁移${NC}"
     docker-compose --env-file "$ENV_FILE" run --rm api alembic upgrade head
 
-    # Fresh E2E 数据库必须具备与 Mock 签名配置一致的 callback API 应用和权限。
-    echo -e "${YELLOW}步骤 4/5: 初始化 E2E callback API 凭据${NC}"
-    docker-compose --env-file "$ENV_FILE" run --rm api python scripts/data/provision_e2e_callback_application.py
-
     # 启动 API 和 Mock 服务
-    echo -e "${YELLOW}步骤 5/5: 启动 API 和 Mock 服务${NC}"
+    echo -e "${YELLOW}步骤 4/4: 启动 API 和 Mock 服务${NC}"
     docker-compose --env-file "$ENV_FILE" --profile e2e up -d
 
     echo ""

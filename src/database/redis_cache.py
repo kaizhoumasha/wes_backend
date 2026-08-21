@@ -20,6 +20,7 @@ from typing import Any, cast
 from redis.asyncio import Redis
 
 from src.core.logger import logger
+from src.database.redis_namespace import database_redis_cache_prefix
 
 
 class CircuitState(Enum):
@@ -355,17 +356,17 @@ class RedisCache:
             self.circuit_breaker.record_failure()
             return False
 
-    async def delete_pattern(self, pattern: str) -> int:
+    async def delete_pattern(self, pattern: str) -> int | None:
         """
         批量删除缓存（通配符，支持自动降级）
 
         :param pattern: 匹配模式
-        :return: 删除数量
+        :return: 成功时返回删除数量（包括零）；Redis 不可用或异常返回 None
         """
         if not await self.is_available():
-            # Redis 不可用，降级返回 0（不影响主业务）
+            # 调用方需要区分无匹配键与 Redis 不可用。
             logger.debug(f"Redis 不可用，跳过批量删除: {pattern}")
-            return 0
+            return None
 
         redis_pattern = self._make_key(pattern)
         try:
@@ -374,11 +375,12 @@ class RedisCache:
                 result = await self.redis.delete(*keys)  # type: ignore[arg-type]
                 self.circuit_breaker.record_success()
                 return result
+            self.circuit_breaker.record_success()
             return 0
         except Exception as e:
             logger.error(f"批量删除缓存失败: {pattern}, error: {e}")
             self.circuit_breaker.record_failure()
-            return 0
+            return None
 
     async def exists(self, key: str) -> bool:
         """
@@ -549,18 +551,20 @@ def get_cache() -> RedisCache:
     """
     global _cache_instance
     if _cache_instance is None:
+        from src.core.conf import settings
         from src.database.redis_client import get_redis
 
         redis_client = get_redis()
+        prefix = database_redis_cache_prefix(settings.POSTGRES_DB)
 
         if redis_client is not None:
             # Redis 可用，创建正常缓存实例
-            _cache_instance = RedisCache(redis_client, prefix="app")
+            _cache_instance = RedisCache(redis_client, prefix=prefix)
         else:
             # Redis 不可用，创建一个标记为不可用的缓存实例
             # 这样可以避免在 get_cache() 时抛出异常
             # 所有缓存操作会自动降级
             logger.warning("Redis 不可用，缓存服务已降级（将自动检测恢复）")
-            _cache_instance = RedisCache(None, prefix="app")  # type: ignore[arg-type]
+            _cache_instance = RedisCache(None, prefix=prefix)  # type: ignore[arg-type]
 
     return _cache_instance

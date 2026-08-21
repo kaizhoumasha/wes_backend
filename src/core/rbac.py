@@ -87,7 +87,7 @@ async def _set_perms_to_cache(
     _ = await set_cached_value(cache, key, list(permissions), expire=expire)
 
 
-async def invalidate_user_permissions(cache: CacheDep, user_id: int) -> None:
+async def invalidate_user_permissions(cache: CacheDep, user_id: int) -> bool:
     """清除用户权限缓存
 
     在以下情况调用：
@@ -101,10 +101,10 @@ async def invalidate_user_permissions(cache: CacheDep, user_id: int) -> None:
         user_id: 用户 ID
     """
     key = _get_perm_cache_key(user_id)
-    _ = await cache.delete(key)
+    return await cache.delete(key)
 
 
-async def invalidate_users_permissions(cache: CacheDep, user_ids: Iterable[int]) -> None:
+async def invalidate_users_permissions(cache: CacheDep, user_ids: Iterable[int]) -> dict[int, bool]:
     """批量清除多个用户的权限缓存
 
     Args:
@@ -114,10 +114,12 @@ async def invalidate_users_permissions(cache: CacheDep, user_ids: Iterable[int])
     # 去重并过滤无效值，避免重复删除导致额外开销
     unique_user_ids = {uid for uid in user_ids if isinstance(uid, int) and uid > 0}
     if not unique_user_ids:
-        return
+        return {}
 
-    for user_id in unique_user_ids:
-        await invalidate_user_permissions(cache, user_id)
+    results: dict[int, bool] = {}
+    for user_id in sorted(unique_user_ids):
+        results[user_id] = await invalidate_user_permissions(cache, user_id)
+    return results
 
 
 # ==================== 核心函数 ====================
