@@ -1265,7 +1265,15 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
         ("src/app/wms_integration/deployment_attestation.py", [WMS_DEPLOYMENT_HEAVY_TEST]),
         ("scripts/check_runtime_production_e2e_gate.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
         ("scripts/run_runtime_benchmarks.py", [RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST]),
-        ("scripts/run_runtime_inbox_postgresql_acceptance_ci.sh", [RUNTIME_INBOX_PROCESSING_HEAVY_TEST]),
+        (
+            "scripts/run_runtime_inbox_postgresql_acceptance_ci.sh",
+            [
+                RUNTIME_INBOX_MIGRATION_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ],
+        ),
         (
             "scripts/run_runtime_inbox_postgresql_acceptance.py",
             [
@@ -1278,6 +1286,15 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
         (
             "tests/load/runtime_inbox_postgresql_benchmark.py",
             [RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST],
+        ),
+        (
+            "tests/support/runtime_inbox_postgresql.py",
+            [
+                RUNTIME_INBOX_MIGRATION_HEAVY_TEST,
+                RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+                RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST,
+                RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+            ],
         ),
         (
             "tests/load/runtime_benchmark_scenarios.py",
@@ -1767,17 +1784,22 @@ def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> Non
         select_heavy_tests(["Jenkinsfile"], config)
 
 
-@pytest.mark.parametrize(
-    "changed_path",
-    [
-        "docker-compose.ci-heavy.local.yml",
-        "scripts/run_selected_heavy_local.sh",
-    ],
-)
-def test_repository_mapping_selects_transport_e2e_for_local_heavy_entry(changed_path: str) -> None:
+def test_repository_mapping_selects_transport_e2e_for_local_heavy_compose() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests([changed_path], config) == [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]
+    assert select_heavy_tests(["docker-compose.ci-heavy.local.yml"], config) == [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]
+
+
+def test_repository_mapping_selects_template_consumers_for_local_heavy_entry() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(["scripts/run_selected_heavy_local.sh"], config) == [
+        TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
+        RUNTIME_INBOX_MIGRATION_HEAVY_TEST,
+        RUNTIME_INBOX_PROCESSING_HEAVY_TEST,
+        RUNTIME_INBOX_CLAIM_BENCHMARK_HEAVY_TEST,
+        RUNTIME_INBOX_CRASH_RECOVERY_HEAVY_TEST,
+    ]
 
 
 @pytest.mark.parametrize(

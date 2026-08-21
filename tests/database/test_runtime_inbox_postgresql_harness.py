@@ -20,6 +20,7 @@ from tests.support.runtime_inbox_postgresql import (
 
 SAFE_URL = "postgresql://runner:top-secret@localhost/test_runtime"
 TEMP_DATABASE = f"{SAFE_DATABASE_PREFIX}{'a' * 32}"
+SAFE_TEMPLATE_DATABASE_NAME = "wes_tmp_runtime_inbox_template"
 
 
 @dataclass(slots=True)
@@ -354,6 +355,34 @@ def test_temporary_database_success_uses_one_admin_connection_and_safe_lifecycle
         assert len(driver.urls) == 1
         assert driver.connection.statements[-1] == f'DROP DATABASE IF EXISTS "{TEMP_DATABASE}" WITH (FORCE)'
         assert driver.connection.closed
+
+    asyncio.run(scenario())
+
+
+def test_temporary_database_clones_only_the_fixed_runtime_inbox_template() -> None:
+    async def scenario() -> None:
+        driver = _FakeDriver()
+        async with temporary_database(
+            environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+            driver=driver,
+            database_name_factory=lambda: TEMP_DATABASE,
+            template_database=SAFE_TEMPLATE_DATABASE_NAME,
+        ):
+            assert driver.connection.statements == [
+                f'CREATE DATABASE "{TEMP_DATABASE}" TEMPLATE "{SAFE_TEMPLATE_DATABASE_NAME}"'
+            ]
+
+        unsafe_driver = _FakeDriver()
+        with pytest.raises(HeavyHarnessError) as exc_info:
+            async with temporary_database(
+                environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+                driver=unsafe_driver,
+                database_name_factory=lambda: TEMP_DATABASE,
+                template_database="template1",
+            ):
+                pytest.fail("unsafe template must not yield")
+        assert exc_info.value.code == "unsafe_target"
+        assert unsafe_driver.urls == []
 
     asyncio.run(scenario())
 

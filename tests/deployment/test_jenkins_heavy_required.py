@@ -54,6 +54,25 @@ def test_backend_images_embed_the_checked_out_revision_and_source_tree() -> None
         assert '--build-arg "WES_SOURCE_TREE=${CI_SOURCE_TREE}"' in build_body
 
 
+def test_backend_provenance_labels_do_not_invalidate_shared_dependency_layers() -> None:
+    dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    shared_layers = dockerfile_text.split("FROM base AS development", maxsplit=1)[0]
+
+    assert "WES_VCS_REVISION" not in shared_layers
+    assert "WES_SOURCE_TREE" not in shared_layers
+    for stage_name, next_stage_name in (
+        ("development", "testing"),
+        ("testing", "production"),
+        ("production", None),
+    ):
+        stage = dockerfile_text.split(f"FROM base AS {stage_name}", maxsplit=1)[1]
+        if next_stage_name is not None:
+            stage = stage.split(f"FROM base AS {next_stage_name}", maxsplit=1)[0]
+        assert stage.index("COPY . .") < stage.index("ARG WES_VCS_REVISION")
+        assert stage.index("ARG WES_VCS_REVISION") < stage.index("LABEL org.opencontainers.image.revision")
+        assert 'com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"' in stage
+
+
 def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs() -> None:
     required_paths = (
         "Dockerfile",

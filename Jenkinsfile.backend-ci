@@ -149,65 +149,73 @@ pipeline {
             }
         }
 
-        stage('Quality Gate') {
-            steps {
-                sh '''
-                    set -e
-                    mkdir -p reports
-                    docker run --rm \
-                        --cpus=2 \
-                        --memory=4g \
-                        --env-file "$WORKSPACE/.env.test" \
-                        -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
-                        -v "$WORKSPACE/.git:/app/.git:ro" \
-                        -v "$WORKSPACE/reports:/app/reports" \
-                        "${CI_IMAGE}" \
-                        sh -c 'git config --global --add safe.directory /app && ./scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci'
-                '''
-            }
-            post {
-                always {
-                    junit testResults: 'reports/fast-tests.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+        stage('Verification') {
+            parallel {
+                stage('Quality Gate') {
+                    steps {
+                        sh '''
+                            set -e
+                            mkdir -p reports
+                            docker run --rm \
+                                --cpus=2 \
+                                --memory=4g \
+                                --env-file "$WORKSPACE/.env.test" \
+                                -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
+                                -v "$WORKSPACE/.git:/app/.git:ro" \
+                                -v "$WORKSPACE/reports:/app/reports" \
+                                "${CI_IMAGE}" \
+                                sh -c 'git config --global --add safe.directory /app && ./scripts/git-quality-gate.sh --profile quality --bandit-json /app/reports/bandit-report.json --ci'
+                        '''
+                    }
+                    post {
+                        always {
+                            junit testResults: 'reports/fast-tests.xml', allowEmptyResults: true
+                        }
+                    }
+                }
+
+                stage('Compose Contracts') {
+                    steps {
+                        sh '''
+                            set -eu
+                            export BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"
+                            export FRONTEND_IMAGE="example.invalid/wes/wes_frontend:compose-contract-${CI_SHORT_COMMIT}"
+                            export WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"
+
+                            docker compose \
+                                --env-file .env.prod \
+                                -f docker-compose.yml \
+                                -f docker-compose.deploy.yml \
+                                --profile prod \
+                                config --no-env-resolution --quiet
+                            docker compose \
+                                --env-file .env.test \
+                                -f docker-compose.test-deploy.yml \
+                                config --no-env-resolution --quiet
+                        '''
+                    }
+                }
+
+                stage('RuntimeInbox PostgreSQL Acceptance') {
+                    steps {
+                        sh '''
+                            set -e
+                            chmod +x scripts/run_runtime_inbox_postgresql_acceptance_ci.sh
+                            scripts/run_runtime_inbox_postgresql_acceptance_ci.sh run
+                        '''
+                    }
+                    post {
+                        always {
+                            sh 'scripts/run_runtime_inbox_postgresql_acceptance_ci.sh cleanup'
+                            junit testResults: 'reports/runtime-inbox-acceptance/junit/*.xml', allowEmptyResults: true
+                            archiveArtifacts artifacts: 'reports/runtime-inbox-acceptance/**/*', allowEmptyArchive: true, fingerprint: true
+                        }
+                    }
                 }
             }
-        }
-
-        stage('Compose Contracts') {
-            steps {
-                sh '''
-                    set -eu
-                    export BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"
-                    export FRONTEND_IMAGE="example.invalid/wes/wes_frontend:compose-contract-${CI_SHORT_COMMIT}"
-                    export WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"
-
-                    docker compose \
-                        --env-file .env.prod \
-                        -f docker-compose.yml \
-                        -f docker-compose.deploy.yml \
-                        --profile prod \
-                        config --no-env-resolution --quiet
-                    docker compose \
-                        --env-file .env.test \
-                        -f docker-compose.test-deploy.yml \
-                        config --no-env-resolution --quiet
-                '''
-            }
-        }
-
-        stage('RuntimeInbox PostgreSQL Acceptance') {
-            steps {
-                sh '''
-                    set -e
-                    chmod +x scripts/run_runtime_inbox_postgresql_acceptance_ci.sh
-                    scripts/run_runtime_inbox_postgresql_acceptance_ci.sh run
-                '''
-            }
             post {
                 always {
-                    sh 'scripts/run_runtime_inbox_postgresql_acceptance_ci.sh cleanup'
-                    junit testResults: 'reports/runtime-inbox-acceptance/junit/*.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'reports/runtime-inbox-acceptance/**/*', allowEmptyArchive: true, fingerprint: true
+                    archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
                 }
             }
         }
@@ -254,8 +262,25 @@ pipeline {
                         sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' \
                         > reports/heavy-tests.txt
 
+                    printf '%s\n' \
+                        'tests/integration/test_runtime_inbox_migration_postgresql.py' \
+                        'tests/integration/test_runtime_inbox_processing_postgresql.py' \
+                        'tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py' \
+                        'tests/load/test_runtime_inbox_claim_benchmark.py' \
+                        > reports/runtime-inbox-acceptance-owned.txt
+                    if grep -Fvx -f reports/runtime-inbox-acceptance-owned.txt \
+                        reports/heavy-tests.txt > reports/heavy-tests.remaining.txt; then
+                        :
+                    else
+                        grep_status=$?
+                        if [ "${grep_status}" -ne 1 ]; then
+                            exit "${grep_status}"
+                        fi
+                    fi
+                    mv reports/heavy-tests.remaining.txt reports/heavy-tests.txt
+
                     if [ ! -s reports/heavy-tests.txt ]; then
-                        echo '本次差异未选择核心 HEAVY 测试。'
+                        echo '除已完成的 RuntimeInbox 专项验收外，本次差异未选择其它核心 HEAVY 测试。'
                         exit 0
                     fi
 
@@ -285,7 +310,7 @@ pipeline {
             post {
                 always {
                     junit testResults: 'reports/heavy-required.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'reports/heavy-tests.txt,reports/heavy-required.xml', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'reports/heavy-tests.txt,reports/heavy-required.xml,reports/runtime-inbox-acceptance-owned.txt', allowEmptyArchive: true
                     sh '''
                         docker compose \
                             -f docker-compose.ci-heavy.yml \

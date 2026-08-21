@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -650,11 +651,16 @@ async def _run_workers_with_monitor(
 
 
 async def _run_benchmark() -> dict[str, object]:
-    async with temporary_database(required_free_slots=WORKER_CONCURRENCY + LOCK_MONITOR_CONNECTION_COUNT) as (
+    template_database = os.environ.get("RUNTIME_INBOX_DATABASE_TEMPLATE") or None
+    async with temporary_database(
+        required_free_slots=WORKER_CONCURRENCY + LOCK_MONITOR_CONNECTION_COUNT,
+        template_database=template_database,
+    ) as (
         database,
         database_url,
     ):
-        run_alembic("upgrade", "head", database_url=database_url)
+        if template_database is None:
+            run_alembic("upgrade", "head", database_url=database_url)
         connection = await connect(database)
         try:
             database_metadata = await _database_metadata(connection)
