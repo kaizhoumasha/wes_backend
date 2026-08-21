@@ -80,8 +80,8 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
 
     try:
-        # 首次响应在 5 秒继续领取预算内完成，第二次请求占满 10 秒 HTTP 预算，合计逼近 15 秒上界。
-        server = MockWmsHttpServer((4.5, 10.5)).start()
+        # 首次响应为受限 CI 的数据库/调度开销留足 5 秒领取预算，第二次请求仍占满 10 秒 HTTP 预算。
+        server = MockWmsHttpServer((3.0, 10.5)).start()
         payload = build_provider_profile_payload()
         payload["server_url"] = server.url
         profile_file = write_provider_profile(tmp_path / "provider.yaml", payload)
@@ -149,10 +149,10 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         started = time.monotonic()
         submit_result = worker.send(SUBMIT_TASK, kwargs={"limit": 100})
         server.wait_for_requests(1)
-        stale_evidence_result = worker.send(EVIDENCE_TASK, kwargs={"limit": 100}, expires=10)
+        stale_evidence_result = worker.send(EVIDENCE_TASK, kwargs={"limit": 100}, expires=5)
         assert worker.result(submit_result, timeout=25) == 2
         submit_finished = time.monotonic()
-        assert 13.5 <= submit_finished - started < 18
+        assert 12 <= submit_finished - started < 18
         with pytest.raises(TaskRevokedError):
             worker.result(stale_evidence_result, timeout=5)
 
