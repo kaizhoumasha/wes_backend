@@ -236,7 +236,8 @@ def test_default_executor_streams_redacted_full_log_and_raises_with_bounded_tail
 
 def test_default_executor_streams_only_redacted_output_to_console(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     (tmp_path / "logs").mkdir()
-    secret_url = "postgresql://runtime_user:top-secret@runtime-inbox-postgres/postgres"
+    controlled_password = "top-secret"
+    secret_url = "postgresql://runtime_user:" + controlled_password + "@runtime-inbox-postgres/postgres"
     command = AcceptanceCommand(
         "console_stream",
         (sys.executable, "-c", f"print({secret_url!r})"),
