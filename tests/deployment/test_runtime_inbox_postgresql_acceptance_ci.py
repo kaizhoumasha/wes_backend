@@ -87,6 +87,14 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "RUN ln -s /opt/venv /app/.venv" in dockerfile
 
 
+def test_template_migration_loads_the_same_required_settings_as_acceptance() -> None:
+    lifecycle = LIFECYCLE_SCRIPT.read_text(encoding="utf-8")
+    template_migration = lifecycle.split('echo "Preparing migrated RuntimeInbox database template"', maxsplit=1)[1]
+    template_migration = template_migration.split("set +e", maxsplit=1)[0]
+
+    assert '--env-file "${WORKSPACE}/.env.test"' in template_migration
+
+
 def test_acceptance_runner_runs_correctness_suites_concurrently_before_benchmark_and_validates_evidence(
     tmp_path: Path,
 ):

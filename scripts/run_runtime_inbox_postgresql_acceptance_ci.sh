@@ -92,6 +92,7 @@ docker exec "${POSTGRES_CONTAINER}" \
     createdb -U runtime_acceptance -T template0 "${RUNTIME_INBOX_DATABASE_TEMPLATE}"
 docker run --rm \
     --network "${POSTGRES_NETWORK}" \
+    --env-file "${WORKSPACE}/.env.test" \
     --env-file "${ENV_FILE}" \
     --entrypoint /opt/venv/bin/alembic \
     "${CI_IMAGE}" upgrade head
