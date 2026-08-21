@@ -4,7 +4,7 @@
 
 适用对象位于 `wes_biz` schema：`device_commands`、`device_status_observations`、`device_evidences`、
 `device_evidence_conflicts`、`line_run_epochs` 和 `line_run_epoch_device_bindings`。供应商私有协议、PLC 互锁、现场机械安全和
-业务 Decision 不属于本 Runbook；发现这类问题应分别交给 ECS/PLC、供应商一致性或 Phase 8/9 插件 owner。
+业务 Decision 不属于本 Runbook；发现这类问题应分别交给 ECS/PLC、供应商一致性或 Phase 8/9/12 插件 owner。
 
 ## 启动配置与 worker
 

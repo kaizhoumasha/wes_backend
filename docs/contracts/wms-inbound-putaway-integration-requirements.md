@@ -4,7 +4,7 @@ status: ReviewRequired
 created_at: 2026-08-13
 updated_at: 2026-08-20
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
-scope: Phase 9 满箱交换、自动分拣线上架、目标 Bin 投退料、NG、事实确认和人工对账
+scope: Phase 12 满箱交换、自动分拣线上架、目标 Bin 投退料、NG、事实确认和人工对账
 related:
   - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/architecture/SRS.md

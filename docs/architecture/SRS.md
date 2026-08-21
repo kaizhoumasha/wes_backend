@@ -3,17 +3,19 @@
 > **项目名称**: 休斯顿P9 智能仓储执行系统 (Houston P9 Intelligent Warehouse Execution System - WES)
 > **系统定位**: 独立部署的集成化控制中台 (Independent Integration & Control Middleware)
 > **文档版本**: 3.0 (Architecture Convergence)
-> **日期**: 2026-08-20
+> **日期**: 2026-08-22
 > **状态**: Current Requirements Baseline
 >
 > **文档层级**: 本文是产品范围、参与方职责和功能/非功能需求的唯一依据；
 > `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
 > 负责把这些需求收敛为当前目标架构；
+> `docs/superpowers/specs/2026-08-21-phase9-continuous-business-delivery-resequence-design.md`
+> 负责冻结 Phase 9—13 的持续业务交付顺序；
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 只负责实施顺序。
 > `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口合同。
 > `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 是 Phase 8 粗分逐盘入库的 `Approved` 业务合同；
-> `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是后续满箱交换和自动上架的 `ReviewRequired` 合同，
-> 不构成 Phase 9 实施授权。
+> `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是 Phase 12 满箱交换和自动上架的 `ReviewRequired` 合同；
+> Phase 9 人工流程只冻结了业务所有权，严格 wire 同样尚未批准。两者均不构成对应阶段实施授权。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
 
 > WMS C# 开发人员不需要根据本文设计 DTO 或 Handler。自动出库只需先读 §3.3.3 了解职责，再以
@@ -26,7 +28,7 @@
 本文档定义 **休斯顿 P9 智能仓储执行系统 (WES)** 的产品范围、参与方职责以及功能与非功能需求。
 架构机制、内部对象和收敛路径由当前顶层 SPEC 定义，实施计划不得反向修改本文的业务需求。
 
-本项目不再定位为传统的 WMS，而是一个 **独立于现有企业级 WMS/SAP 的控制中台**。它旨在作为一个高可用、低延迟的智能化中间层，向上承接 ERP/WMS 的业务单据，向下协调自动化执行：当前交付只直接接入顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类作业设备；AGV/CTU/RCS 类搬运、交换、旋转任务统一提交现有 WMS 转发执行，WES 不直连 RCS。贴标、X-Ray、LCR 及机构件/SFC 协同属于本文保留的未来产品需求，不进入当前十二阶段实现与验收。
+本项目不再定位为传统的 WMS，而是一个 **独立于现有企业级 WMS/SAP 的控制中台**。它旨在作为一个高可用、低延迟的智能化中间层，向上承接 ERP/WMS 的业务单据，向下协调自动化执行：当前交付只直接接入顶层 SPEC §3.1 已确认工作线所需的 ECS/WCS/视觉类作业设备；AGV/CTU/RCS 类搬运、交换、旋转任务统一提交现有 WMS 转发执行，WES 不直连 RCS。贴标、X-Ray、LCR 及机构件/SFC 协同属于本文保留的未来产品需求，不进入当前十三阶段实现与验收。
 
 系统具备 **独立部署 (Standalone Deployment)**、**API 驱动 (API-Driven)** 和 **执行插件显式扩展 (Explicit Plugin Extension)** 的特性。外部网络或上层系统波动时，WES 必须保留已接收事实、限制影响范围并进入可诊断的等待或对账状态，不得推测外部结果后自动续行。
 
@@ -122,7 +124,7 @@
 
 ### 3.1 硬件清单与基础配置 (Hardware & Configuration)
 
-下表是整体产品需求涉及的硬件清单，不等于当前交付清单。当前只实现顶层 SPEC §3.1 与十二阶段总控明确批准的工作线；
+下表是整体产品需求涉及的硬件清单，不等于当前交付清单。当前只实现顶层 SPEC §3.1 与十三阶段总控明确批准的工作线；
 其余硬件只有在对应工作线获批后，才通过 WES 第三方设备统一接口、获批设备合同附录、明确的 endpoint/device 绑定和
 供应商一致性验收接入；仅在需要业务执行映射时交付工作线插件：
 
@@ -379,7 +381,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 粗分逐盘入库的 operation、严格 DTO、幂等、物理门禁与失败边界由已获批的
 `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 定义；后续满箱交换和自动上架由
 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义并保持 `ReviewRequired`。本节与 §3.3.2 只保留产品级
-场景和职责边界，不得复制或把 Phase 8 授权扩大到 Phase 9。
+场景和职责边界，不得复制或把 Phase 8 授权扩大到 Phase 9 人工业务或 Phase 12 自动业务。
 
 * **场景**: 工人把标准整盘物料放入粗分机入口，设备自动输送、扫码、测量并放入单层货架目标 Bin/Cell。
 * **入库完成点**: WES 校验 ECS 身份与测量证据后请求 WMS 准入；WMS 原子绑定 GRN 并返回稳定料盘身份，但不分配目标 Cell。
@@ -601,7 +603,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 本模块处理 **高值物料 (High-Value)**、**MSD 物料 (Moisture Sensitive)**、**PCB 物料** 和 **机构件 (Mechanical Parts)** 的特殊流程。
 
-> **交付范围：未来需求。** 本节保留产品需求，但不属于当前顶层 SPEC §3.1 和十二阶段架构收敛的实现或验收范围。
+> **交付范围：未来需求。** 本节保留产品需求，但不属于当前顶层 SPEC §3.1 和十三阶段架构收敛的实现或验收范围。
 > 当前不得预建空插件、SFC Adapter 或通用特殊物料平台；进入实施前必须基于真实工作线和供应商资料修订顶层
 > SPEC、总控计划，批准设备合同附录，并为对应执行插件单独批准实施计划。
 
@@ -685,7 +687,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 本模块处理产线退料的 **质量闭环 (Quality Loop)**，确保退料经过清点、测试后重新入库。
 
-> **交付范围：未来需求。** 本节不属于当前十二阶段计划的最终验收范围。LCR、X-Ray、贴标和退料工作线的真实
+> **交付范围：未来需求。** 本节不属于当前十三阶段计划的最终验收范围。LCR、X-Ray、贴标和退料工作线的真实
 > 设备合同明确后，必须先修订顶层 SPEC 和总控计划，再批准设备合同附录并由独立执行插件交付代码、fixture 和测试；
 > 供应商 ECS/网关独立通过统一接口一致性验收，核心平台不得用本节业务场景证明基础能力。
 

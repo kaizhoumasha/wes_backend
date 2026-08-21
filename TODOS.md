@@ -190,7 +190,7 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 
 ### 空库 Checksums 与最小数据库角色
 
-**What:** 在 Phase 10 退出门禁通过、Phase 11 冻结最终 schema 后，为新建 PostgreSQL 数据目录评审 data checksums，并拆分 bootstrap/migrator/runtime 的最小权限角色。
+**What:** 在 Phase 10 退出门禁通过、Phase 11 冻结首个干净产品 schema 后，为新建 PostgreSQL 数据目录评审 data checksums，并拆分 bootstrap/migrator/runtime 的最小权限角色。
 
 **Why:** 当前生产 Compose 仍使用同一 `POSTGRES_USER` 启动数据库、迁移和应用。直接在现场韧性计划中同时改角色、schema 和恢复流程会扩大故障面，并与 Phase 11 空库基线重置的所有权重叠。
 
@@ -199,10 +199,10 @@ WorkLineInbox、自动 replay、供应商私有路径或兼容 Payload。
 - 在独立空数据目录验证 checksums 初始化、检测和失败回滚，不转换旧数据目录
 - 定义 bootstrap、migrator、runtime 的 owner、连接变量和最小数据库/schema权限
 - 先建立空库角色与 Alembic successor 测试，再替换单一运行账号
-- 与 `docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` 的最终 schema manifest、空库迁移链和实施窗口联合评审
+- 与总控 Phase 11 启动时重新批准的 schema manifest、空库迁移链和实施窗口联合评审
 - 不提供旧角色别名、兼容 wrapper、双账号回退或旧数据迁移路径
 
-**Depends on:** Phase 10 零旧生产路径退出；Phase 11 Task 1 冻结最终 schema 与专有对象；独立数据库安全 wrapper 可用。
+**Depends on:** Phase 10 零旧生产路径退出；Phase 11 实施前冻结当时活动 schema 与专有对象；独立数据库安全 wrapper 可用。
 
 **Effort:** M
 

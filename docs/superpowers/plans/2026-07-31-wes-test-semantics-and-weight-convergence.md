@@ -24,7 +24,8 @@ HTTP/JSON 访问合同；Phase 4 公共 Adapter 合同测试只证明已批准 w
 > `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
 > 的 Phase 1 权威计划。Task 1、2、3、6 及 Task 4/7 的可独立治理部分已在
 > `develop@28eb99d9` 合入；Task 5 按 owner 分段由 Phase 5 插件退役、Phase 6 Transport 和 Phase 7 Device/ECS 承接；
-> Phase 6 Transport 测试 owner 已完成交接；插件同包验收归 Phase 8/9，旧 revision 与最终质量验收归 Phase 11/12。本计划在这些延后义务完成前
+> Phase 6 Transport 测试 owner 已完成交接；Phase 9 Bin 基础对象、公开端口和可靠性不变量归核心 `tests/`，插件同包验收归
+> Phase 8/9/12，旧 revision 与最终质量验收归 Phase 11/13。本计划在这些延后义务完成前
 > 仍保持未完成状态。
 
 ---
@@ -134,7 +135,9 @@ Phase 2 测试固定在 `tests/core/outbound_http/`，只使用 `httpx.MockTrans
 的公共合同测试，验证固定 method/path、公共信封/DTO 校验、错误映射和一次有界发送；Phase 4 核心可靠对象测试仍只使用
 本地 typed-port fake，不直接构造 Phase 2 Transport，Adapter 合同测试不得替代核心测试。具体 WMS 业务 method/DTO/result
 测试由对应获批业务实施计划拥有；Phase 7 核心测试拥有统一设备固定路径、公共包络、身份、幂等、ACK/CALLBACK 和可靠性；
-Phase 8/9 只拥有实际设备合同附录、endpoint/device 绑定、供应商一致性验收和插件业务测试，不复制 Phase 7 核心合同测试。
+Phase 8/12 只拥有实际设备合同附录、endpoint/device 绑定、供应商一致性验收和插件业务测试，不复制 Phase 7 核心合同测试；
+Phase 9 核心 `tests/` 承接 Bin 基础对象、公开端口和可靠性不变量，`manual_bin_processing` 包只承接人工 Bin 业务测试，
+WMS Adapter 与供应商一致性验收继续独立。
 
 最终预算：
 
@@ -373,7 +376,7 @@ rtk ./scripts/git-quality-gate.sh --profile quality
 - 实际验证命令和结果。
 
 WMS Phase 3 只新增 `wms_adapter` Client 访问测试，不处置旧 WMS 测试；旧 WMS 测试逐文件 successor/`NONE` 必须按 owner
-分别进入十二阶段总控的 Phase 5 插件退役、Phase 6 Transport 或对应真实 WMS 业务纵切片，禁止继续由一个“大 Phase 5”兜底。
+分别进入十三阶段总控的 Phase 5 插件退役、Phase 6 Transport 或对应真实 WMS 业务纵切片，禁止继续由一个“大 Phase 5”兜底。
 HEAVY 测试移动或删除时，
 同一变更必须更新 `docs/architecture/heavy-test-impact.toml`，不得留下失效路径或用臆造 NONE 掩盖风险。
 

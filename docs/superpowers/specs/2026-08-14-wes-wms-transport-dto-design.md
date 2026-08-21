@@ -165,7 +165,7 @@ moves[] {
 ## 6. 容器中间位置事件（可选）
 
 容器中间位置事件对应 `transport.task.member_position_changed@v1`。只有 `BIN_MOVE` 与 `BIN_EXCHANGE` 在上游确有权威中间事实时才可使用；它不是
-必经步骤，不能由搬运提交或最终结果倒推伪造。当前 Phase 9 CTU/RCS只返回 `transport.task.resulted@v1` 完整最终结果，因此目标
+必经步骤，不能由搬运提交或最终结果倒推伪造。当前 Phase 9/12 CTU/RCS只返回 `transport.task.resulted@v1` 完整最终结果，因此目标
 Bin供退和满箱交换不产生容器中间位置事件。上游能够提供权威中间位置事实时，`data`固定为：
 
 ```text

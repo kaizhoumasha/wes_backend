@@ -10,23 +10,23 @@
 | --- | --- | --- |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
+| `specs/2026-08-21-phase9-continuous-business-delivery-resequence-design.md` | Phase 9 人工纵向切片、单次初始基线、Phase 12 自动插件与 Phase 13 验收顺序 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、Epoch 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
-| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成；人工分拣仅登记业务设计 | ReviewRequired；Transport 与 Phase 8 粗分场景已批准，出库和 Phase 9 上架仍待联合批准，人工 wire 尚未冻结 |
+| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成；人工分拣仅登记业务设计 | ReviewRequired；Transport 与 Phase 8 粗分场景已批准，Phase 12 自动出库/上架仍待联合批准，Phase 9 人工 wire 尚未冻结 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、严格 DTO、幂等与 Epoch 级正常 Bin 回流；非预期 Bin 恢复和停线排空货架面决定 wire 均未冻结 | ReviewRequired |
 | `../contracts/wms-rough-sorter-inbound-integration-requirements.md` | WMS/WES Phase 8 粗分逐盘入库业务合同真源 | Approved |
-| `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES Phase 9 满箱交换、自动上架与执行级 Bin 回流业务合同评审真源；停线排空货架面决定 wire 未冻结 | ReviewRequired |
+| `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES Phase 12 满箱交换、自动上架与执行级 Bin 回流业务合同评审真源；停线排空货架面决定 wire 未冻结 | ReviewRequired |
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；前端与现场活动独立推进 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十三阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；Phase 9 至 13 尚未开始；前端与现场活动独立推进 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |
 | `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
-| `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 
@@ -42,6 +42,8 @@
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-20-transport-debug-task-api.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-18-rough-sorter-local-mock-acceptance-completion.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-19-rough-sorter-functional-rc-and-field-validation.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-22-phase9-continuous-business-delivery-document-convergence.md`
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`

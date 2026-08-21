@@ -2,7 +2,7 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-20
+updated_at: 2026-08-22
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
 implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 backend RC closed at f51677b62f5da906d4b60fa5a528d04692aff7a2 with immutable image 88-f51677b; current status in docs/integration/rough-sorter-joint-acceptance.md
 delivery_gate: backend and frontend close and publish their own RC independently; onsite deployment and validation are separate project activities
@@ -14,6 +14,7 @@ supersedes:
 related:
   - docs/architecture/SRS.md
   - docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md
+  - docs/superpowers/specs/2026-08-21-phase9-continuous-business-delivery-resequence-design.md
   - docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md
   - docs/architecture/device-command-contract.md
   - docs/integration/third_party_integration_whitepaper.md
@@ -52,7 +53,8 @@ related:
 - WES 核心仓库的 `tests/` 只验证最小执行内核、通用 WorkLine 能力、外部合同和可靠性不变量；
   具体 WorkLine 执行插件以仓库根目录下的独立二次开发包交付，并由插件包自带测试和 fixture。
 - 删除旧 Runtime、兼容 shim、re-export、双写、双读、旧路径 fallback 和仅服务迁移的配置。
-- 最终模型稳定后清空开发/测试数据库，并由 Alembic generator 创建单一干净基线，不实现旧数据转换。
+- Phase 10 清除旧生产路径后，清空开发/测试数据库，并由 Alembic generator 创建一次首个干净产品基线；
+  Phase 12 后续业务插件只增加真实向前 revision，不二次重置初始基线，也不实现旧数据转换。
 - 测试以本文为基线：通用 WES 行为改写到核心测试后保留；具体工作线/插件行为从核心 `tests/` 移出，
   随对应二次开发插件重新实现；只验证旧架构、旧迁移和兼容路径的测试直接删除。
 - 基础能力、设备统一接口、供应商一致性与业务能力必须有独立测试所有者：核心测试不得以具体供应商、工作线或业务成功路径证明
@@ -204,7 +206,7 @@ WES 只提交 WMS 已给出的搬运目标并跟踪任务级事实：
 
 WES 不关心该请求由 WMS、RCS、MCS 或其他系统最终承接。它们通过同一个 Transport Port 隔离。
 当前产品只实现 WMS 转发适配器。Transport 可以接纳上游已经具备的标准化成员位置事实，但当前 CTU/RCS 只能返回完整最终到位
-结果，Phase 9 业务不得依赖或伪造 `SOURCE_PICKED`、`TARGET_PLACED` 等中间事实。同步接纳 ACK 后只能确认搬运义务可能已经开始，
+结果，Phase 9/12 业务不得依赖或伪造 `SOURCE_PICKED`、`TARGET_PLACED` 等中间事实。同步接纳 ACK 后只能确认搬运义务可能已经开始，
 不能据此推断 Bin 仍在来源或已经离架；只有通过 Transport evidence 应用端口校验并持久化的可靠异步终态才能终结任务，普通 WMS
 业务事件不能终结任务。
 
@@ -437,11 +439,12 @@ WES 架构真源。每种实际设备通过获批合同附录明确允许的 `ta
 
 ### 7.5 不建设执行插件模板
 
-平台只提供最小 SDK、脚手架、合同测试工具和一个最小示例。粗分机、自动分拣、人工分拣和满箱交换都是
-真实执行插件，不作为“可复制执行模板”。
+平台只提供最小 SDK、脚手架、合同测试工具和一个最小示例。目标真实执行插件闭集为 `rough_sorter`、
+`manual_bin_processing`、`automatic_putaway` 和 `automatic_picking`，都不作为“可复制执行模板”。满箱交换保持明确的
+交换执行与 `TransportTask` 协作，除非未来合同证明它拥有独立激活条件和生命周期，否则不预建独立插件。
 
 最小示例只证明 SPI/SDK 可用，不承载任何真实工作线规则。核心 `tests/` 可以使用最小 fake 验证插件接口、
-依赖注入、封闭 Decision 和禁止数据库/HTTP 访问等边界，但不得包含粗分机、自动分拣、人工分拣、满箱交换
+依赖注入、封闭 Decision 和禁止数据库/HTTP 访问等边界，但不得包含粗分机、自动上架、自动拣货、人工 Bin 流转或满箱交换
 或其他具体客户流程的 handler、fixture、参数组合和期望结果。
 
 具体插件测试由对应 `workline_plugins/<plugin_key>/tests/` 唯一拥有，通过插件包自己的 CI 或显式命令执行；
@@ -573,7 +576,7 @@ Bin 到达 SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或
 
 Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 集中定义并已获批；满箱交换和自动
 上架由 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义，仍为 `ReviewRequired`。本节只保留顶层流程和
-基础对象边界；不得把 Phase 8 授权扩大为 Phase 9 授权。
+基础对象边界；不得把 Phase 8 授权扩大为 Phase 9 或 Phase 12 授权。
 
 ### 11.1 粗分机
 
@@ -914,23 +917,28 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
    ACK/CALLBACK、`LineRunEpoch` fencing、唯一生产装配和旧 Device owner 删除；不包含供应商私有 DTO 或插件业务。
 8. 粗分机参考插件优化：消费 Phase 6/7 基础能力，从真实业务合同重新实现首个独立插件，并以本机分层测试、Mock 验收和
    GitLab PUSH 生成可追溯后端镜像关闭后端 RC；前端在独立仓库关闭自己的 RC，不搬运 Phase 5 已删除的旧插件源码。
-9. 分拣执行插件优化：消费 Phase 6/7 基础能力和 Phase 8 后端 RC 已冻结的最小 SPI，按实际工作线交付插件；不等待前端进度或
-   现场验收才开始开发，也不得借此宣称粗分生产验收通过。
-10. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
-11. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
-12. 最终基线与系统验收：从空库分别验证核心、Adapter、供应商一致性、插件、质量、部署装配和旧架构缺席门禁。
+9. 最小 Bin 执行基础与人工业务闭环：先独立交付 `BinExecution`、活动执行期 `PositionProjection` 和资源围栏，再交付只依赖
+   公开基础端口的 `manual_bin_processing`；人工入库和人工出库均由 WMS/PDA 完成物料业务，WES 只负责 Bin 物理流转。
+10. 旧平台代码最终闭环清理：只扫描并删除 successor/`NONE` 已闭合的跨阶段残留，证明后续业务不会再依赖旧通用 Runtime；
+    不要求 Phase 12 自动插件提前实现，也不为它们预建能力。
+11. 首个干净产品 Schema 初始基线：删除未发布历史 schema/revision，为最小基础、`rough_sorter` 和
+    `manual_bin_processing` 生成一次干净 Alembic 基线。
+12. 自动业务插件持续交付：分别按获批合同交付 `automatic_putaway` 和 `automatic_picking`，通过正常向前 revision 增加真实模型；
+    不把 `BIN_EXCHANGE` 或复杂出库预设为独立插件。
+13. 当前交付范围系统验收：从空库依次应用 Phase 11 初始基线与 Phase 12 向前 revision，分别验证核心、Adapter、供应商一致性、
+    插件、质量、部署装配和旧架构缺席门禁。
 
 任何可靠性不变量都必须先在最终具体对象上有实现和测试，才能删除旧实现；这只是同一收敛分支内的
 依赖顺序，不允许通过兼容层、双路径或旧数据迁移完成过渡。
 
-测试治理贯穿阶段 1 到 9 和 12；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7 分别承接
-Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 只做跨阶段残留闭环；目标数据模型按最终对象建立，
-历史 migration 只在阶段 11 一次性重建。十二阶段的详细入口、交付物和退出门禁由
+测试治理贯穿阶段 1 到 13；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7 分别承接
+Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，Phase 9 核心测试承接 Bin 基础对象、公开端口和可靠性不变量，
+阶段 10 只做跨阶段残留闭环；Phase 11 一次性清理未发布历史 migration，Phase 12 只增加真实向前 revision。十三阶段的详细入口、交付物和退出门禁由
 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 统一控制。
 
 ### 14.3 实施范围分解
 
-本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十二个总控阶段分别形成经批准的详细实施
+本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十三个总控阶段分别形成经批准的详细实施
 计划和测试范围；同一阶段内仍可按最终对象、Adapter 或真实插件拆成可独立审查的任务，但不得改变 §14.2 的
 依赖顺序和退出门禁。
 
@@ -938,7 +946,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md`
 是阶段 1 的权威计划，
 其中直接绑定旧插件平台的测试在阶段 5 完成 successor/`NONE`，Transport 测试在阶段 6 收尾，DeviceCommand 及设备统一
-接口测试在阶段 7 收尾；Task 7 按所有权分段完成：阶段 6/7 承接核心基础能力测试，阶段 8/9 重建具体插件测试，阶段 11/12
+接口测试在阶段 7 收尾；Task 7 按所有权分段完成：阶段 6/7/9 承接各自核心基础能力测试，阶段 8/9/12 重建具体插件测试，阶段 11/13
 完成迁移链和最终收集验收。Phase 2 已完成，详细实施计划已归档到项目外
 `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`，不再是当前实施入口；其余阶段的计划路径、
 入口条件、交付物和
@@ -954,7 +962,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 测试以本文目标行为为唯一基线：
 
 - 当前测试若直接证明通用 WES 合同、执行对象或可靠性不变量，改写到最终对象后保留在核心 `tests/`。
-- 当前测试若证明粗分机、自动分拣、人工分拣、满箱交换、复杂出库或其他具体插件业务行为，从核心
+- 当前测试若证明粗分机、自动上架、自动拣货、人工 Bin 流转、满箱交换、复杂出库或其他具体业务行为，从核心
   `tests/` 移出；不把旧 Runtime/Manifest 测试原样搬入新插件包。对应插件二次开发时，按最终插件代码、
   业务验收和已验证的设备统一接口输入重新建立测试。
 - 当前测试若证明具体供应商内部 DTO、私有路径、原始码或转换逻辑，从核心 `tests/` 删除且标记 `NONE`；目标状态由
@@ -972,8 +980,9 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
   `REWRITE`、`DELETE → successor` 或 `DELETE → NONE + 理由`，且 successor 先通过、旧测试后删除。合同样例
   回放和可靠确认重试若属于最终行为，必须使用最终领域名称继续覆盖。
 
-数据库以最终 SQLModel metadata 为真源。所有目标模型稳定后，删除未发布 revision，使用 Alembic generator
-创建新的随机 revision ID，再验证空库建库、约束、索引、schema、TimescaleDB 扩展对象及 metadata 一致性。
+数据库以各阶段活动 SQLModel metadata 为真源。Phase 10 退出后冻结当时活动 metadata，删除未发布 revision，使用 Alembic generator
+创建唯一的 Phase 11 随机初始 revision，再验证空库建库、约束、索引、schema、TimescaleDB 扩展对象及 metadata 一致性；
+Phase 12 业务模型只通过真实向前 revision 增加。
 
 ## 15. 验收标准
 
@@ -1069,8 +1078,8 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 - 核心 `tests/` 中不存在具体工作线/插件行为测试；插件测试只存在于对应二次开发包。
 - 当前态文档和 active TODO 不再把 Runtime、Manifest、System Capability、Hold、Recovery 或 CellReservation
   作为未来目标依赖。
-- 收敛完成时 `migrations/versions/` 只包含最终模型的干净基线及其后真实新增的 revision。
-- 清空开发/测试数据库后，`alembic upgrade head` 可以从空库建立完整最终 schema。
+- 收敛完成时 `migrations/versions/` 只包含 Phase 11 初始基线及其后真实新增的 revision。
+- 清空开发/测试数据库后，`alembic upgrade head` 可以从空库建立当前完整 schema。
 - 全仓架构扫描、默认快速回归、受影响重测试和质量门禁全部通过。
 
 ## 16. 风险与控制
@@ -1078,7 +1087,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 | 风险 | 控制 |
 | --- | --- |
 | 删除通用 Runtime 时丢失可靠投递 | 在同一收敛分支先把可靠性落入三个具体执行记录并通过测试，再删除旧实现；不建立兼容层 |
-| 过早重建数据库基线导致反复漂移 | 最终模型和 metadata 稳定后只生成一次干净基线，并从空库验收 |
+| 过早重建数据库基线导致反复漂移 | Phase 10 后冻结当时活动 metadata，只生成一次 Phase 11 初始基线并从空库验收；Phase 12 只增加真实向前 revision |
 | 按关键词删除测试误伤目标合同 | 使用一次性逐文件处置矩阵：核心不变量改写保留，插件行为移交所有权，旧实现断言明确 successor 或 NONE 后删除 |
 | WMS evidence 失败导致重复写操作 | 发送前证据失败则不发送；发送后证据失败标记远端结果未知，并由可靠对象使用同一 `dispatch_key` 恢复 |
 | 旧通用实现把未经厂商合同证明的分页带入新 Adapter | 列表能力固定一次有界请求/响应且无 cursor；真实合同出现后再整体修订，不预留 seam |

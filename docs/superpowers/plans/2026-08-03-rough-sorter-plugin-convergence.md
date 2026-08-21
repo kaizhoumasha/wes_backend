@@ -909,7 +909,7 @@ Task 8 按获批 SPEC 固定为三个顺序提交；每个子任务都有独立 
 
   Run: `rg -n "RuntimeInbox|ExecutionSession|RuntimeIntent|RuntimeHold|SystemCapability" src packages workline_plugins tests --glob '*.py'`
 
-  Expected: 第一组本阶段直接旧路径在生产代码零命中，测试只允许明确的 absence 字面量；不得保留 dual path、shim、registry 或被新对象取代的旧状态 owner。`confirm_inbound`/`notify_pkg_binding` 是后续入库/上架合同仍使用的通用 WMS operation，记录其当前 owner 和 Phase 9/10 guardrail，不由粗分 Phase 8 删除。跨阶段 Runtime 命中必须逐项记录当前 owner、消费者和 successor，作为 Phase 10 输入，不要求 Phase 8 越权删除或全仓零命中。
+  Expected: 第一组本阶段直接旧路径在生产代码零命中，测试只允许明确的 absence 字面量；不得保留 dual path、shim、registry 或被新对象取代的旧状态 owner。`confirm_inbound`/`notify_pkg_binding` 是旧通用 WMS operation，Phase 8 只记录当前 owner 和消费者，不越权删除；Phase 10 在消费者闭合后按 `DELETE → NONE` 删除。Phase 12 必须使用届时获批的新 operation，不复用这两个旧 identity。跨阶段 Runtime 命中必须逐项记录当前 owner、消费者和 successor，作为 Phase 10 输入，不要求 Phase 8 越权删除或全仓零命中。
 
 - [x] **Step 2: 验证依赖方向和测试拓扑**
 
@@ -982,7 +982,7 @@ owner 修复并发布新镜像；不得覆盖原镜像或在 WES 核心加入供
 
 ## 明确延期到后续阶段
 
-- `BinExecution`、满箱交换、自动/人工分拣和复杂出库：Phase 9。
+- `BinExecution` 与人工 Bin 流转：Phase 9；满箱交换、自动上架、自动拣货和复杂出库：Phase 12。
 - 动态插件发现、热插拔、插件市场、数据库插件注册表：无已批准需求，YAGNI。
 - 第二个设备 HTTP Adapter、供应商私有 client/auth/DTO：供应商 ECS/网关边界，不进入 WES。
 - 多供应商并行矩阵、容量压测、HA/容灾平台、通用运维仪表盘：MVP 后按真实非功能需求单独立项，不阻塞 Phase 8 正确性与安全退出门禁。
