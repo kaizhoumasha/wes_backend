@@ -85,3 +85,20 @@ def test_test_deploy_pipeline_validates_and_exports_the_host_profile_before_comp
         < deploy_body.index(profile_path_export)
         < first_compose_index
     )
+
+
+def test_test_deploy_compiles_the_host_profile_before_maintenance_without_closing_the_existing_entrypoint() -> None:
+    pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+    deploy_body = pipeline.split("stage('Deploy Test Environment')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+
+    preflight_start = deploy_body.index('echo "🔎 在维护态前编译校验 WMS Provider profile"')
+    maintenance_start = deploy_body.index('echo "🔒 进入维护态并停止旧应用容器"')
+    preflight_block = deploy_body[preflight_start:maintenance_start]
+
+    assert "validate_wms_transport_configuration(settings_source=settings)" in preflight_block
+    assert "WMS_PROFILE_PREFLIGHT_ERROR=" in preflight_block
+    assert "WMS_PROFILE_PREFLIGHT=valid" in preflight_block
+    assert "CUTOVER_STAGE=wms-profile-preflight" in preflight_block
+    assert "fail_cutover" not in preflight_block
+    assert "exit 1" in preflight_block
+    assert preflight_start < maintenance_start

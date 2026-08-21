@@ -293,6 +293,27 @@ pipeline {
                         fi
                         export POSTGRES_DB
 
+                        echo "🔎 在维护态前编译校验 WMS Provider profile"
+                        if ! compose run --rm --no-deps \
+                            -e DATABASE_RUNTIME_ROLE=cli \
+                            -e DATABASE_POOL_SIZE=1 \
+                            -e DATABASE_MAX_OVERFLOW=0 \
+                            --entrypoint /opt/venv/bin/python api -c '
+from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+from src.core.conf import settings
+
+try:
+    validate_wms_transport_configuration(settings_source=settings)
+except Exception as exc:
+    print(f"WMS_PROFILE_PREFLIGHT_ERROR={type(exc).__name__}: {exc}", flush=True)
+    raise SystemExit(1) from exc
+print("WMS_PROFILE_PREFLIGHT=valid", flush=True)
+'; then
+                            CUTOVER_STAGE=wms-profile-preflight
+                            echo "❌ WMS Provider profile 编译校验失败；现有外部入口保持不变"
+                            exit 1
+                        fi
+
                         echo "🔒 进入维护态并停止旧应用容器"
                         CUTOVER_STAGE=maintenance
                         MAINTENANCE_MODE=true
