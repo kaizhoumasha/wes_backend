@@ -17,6 +17,10 @@ DATABASE_URL = "postgresql+asyncpg://user:password@127.0.0.1:5432/test_transport
 REDIS_URL = "redis://127.0.0.1:6379/15"
 
 
+def test_worker_readiness_budget_covers_a_cold_ci_container_start() -> None:
+    assert harness.WORKER_READY_TIMEOUT_SECONDS >= 60
+
+
 def _flatten_errors(error: BaseException) -> list[BaseException]:
     if isinstance(error, BaseExceptionGroup):
         return [nested for child in error.exceptions for nested in _flatten_errors(child)]
