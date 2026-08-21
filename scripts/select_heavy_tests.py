@@ -281,6 +281,7 @@ def _expanded_patterns_overlap(left: str, right: str) -> bool:
     return False
 
 
+@cache
 def _patterns_overlap(left: str, right: str) -> bool:
     return any(
         _expanded_patterns_overlap(expanded_left, expanded_right)

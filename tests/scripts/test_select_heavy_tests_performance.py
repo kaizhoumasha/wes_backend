@@ -3,7 +3,7 @@
 from pathlib import Path
 from time import perf_counter
 
-from scripts.select_heavy_tests import _segment_patterns_overlap, load_config
+from scripts.select_heavy_tests import _patterns_overlap, _segment_patterns_overlap, load_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,8 +20,21 @@ def test_segment_pattern_overlap_reuses_identical_calculation() -> None:
     assert second_call.hits == first_call.hits + 1
 
 
+def test_full_pattern_overlap_reuses_identical_calculation() -> None:
+    _patterns_overlap.cache_clear()
+
+    assert _patterns_overlap("src/app/**", "src/app/admin/**") is True
+    first_call = _patterns_overlap.cache_info()
+
+    assert _patterns_overlap("src/app/**", "src/app/admin/**") is True
+    second_call = _patterns_overlap.cache_info()
+
+    assert second_call.hits == first_call.hits + 1
+
+
 def test_repository_mapping_validation_stays_within_two_seconds() -> None:
     mapping_path = REPO_ROOT / "docs/architecture/heavy-test-impact.toml"
+    _patterns_overlap.cache_clear()
     _segment_patterns_overlap.cache_clear()
     started_at = perf_counter()
 
