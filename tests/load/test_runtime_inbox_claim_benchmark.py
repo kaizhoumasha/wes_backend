@@ -14,7 +14,7 @@ from tests.load.runtime_inbox_postgresql_benchmark import (
 
 
 def test_runtime_inbox_claim_benchmark_uses_ci_regression_budget() -> None:
-    assert PENDING_INBOX_COUNT == 4_000
+    assert PENDING_INBOX_COUNT == 20_000
     assert CLAIM_P95_THRESHOLD_MS == 600.0
     assert THROUGHPUT_THRESHOLD_PER_SECOND == 400.0
 
@@ -42,14 +42,14 @@ def test_runtime_inbox_claim_benchmark() -> None:
     assert result["verdict"] == {"passed": True, "failed_gates": []}
     assert result["sli_before"] == {
         "status_counts": {
-            "RECEIVED": 2_800,
-            "PROCESSING": 400,
+            "RECEIVED": 14_000,
+            "PROCESSING": 2_000,
             "PROCESSED": 0,
-            "FAILED": 800,
+            "FAILED": 4_000,
             "DEAD_LETTER": 0,
         },
         "oldest_claimable_age_ms": result["sli_before"]["oldest_claimable_age_ms"],
-        "stale_processing_count": 400,
+        "stale_processing_count": 2_000,
         "resource_wait_count": 0,
     }
     assert result["sli_before"]["oldest_claimable_age_ms"] >= 0
