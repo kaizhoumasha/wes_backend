@@ -102,6 +102,7 @@ git push gitlab "$release_sha:refs/heads/develop"
 在 Node (192.168.0.221) 上执行
     ├─ Checkout Source
     ├─ Build CI Image
+    ├─ Classify Required HEAVY（一次 selector，供专项验收与通用 HEAVY 复用）
     ├─ Quality Gate（唯一 QUALITY profile）
     ├─ Compose Contracts（主机端渲染生产与 TEST 部署配置）
     ├─ RuntimeInbox PostgreSQL Acceptance
@@ -113,6 +114,8 @@ git push gitlab "$release_sha:refs/heads/develop"
 
 `wes_backend-ci` 只构建和发布后端镜像，不自动选择前端版本或触发 `wes_test_deploy`。需要 TEST/现场部署时，由部署人员单独运行
 部署任务并明确选择前后端镜像；MR、其他分支 PUSH 和 Jenkins 手工构建只验证，不发布镜像。
+
+后端 CI 只运行 selector manifest 实际命中的 RuntimeInbox PostgreSQL 验收：命中 migration owner 时执行完整 migration matrix；仅命中 processing、crash recovery 或 benchmark owner 时跳过 migration matrix；未命中 RuntimeInbox owner 时跳过整个专项阶段。无可靠 diff base 的手工构建仍 fail-closed 执行完整验收，夜间与 RC 不复用普通提交的跳过结论。
 
 生产 fresh DB 的基础授权入口：
 

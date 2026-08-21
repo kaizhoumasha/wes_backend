@@ -1762,12 +1762,17 @@ def test_repository_ci_and_quality_gate_run_selector_contracts() -> None:
 
 def test_repository_selected_heavy_mounts_read_only_git_provenance() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
+    classify_stage = jenkinsfile.split("stage('Classify Required HEAVY')", maxsplit=1)[1].split(
+        "stage('Verification')", maxsplit=1
+    )[0]
     heavy_stage = jenkinsfile.split("stage('HEAVY Required')", maxsplit=1)[1].split(
         "stage('Build Runtime Image')", maxsplit=1
     )[0]
 
-    assert heavy_stage.count('-v "$WORKSPACE/.git:/app/.git:ro"') == 2
-    assert heavy_stage.count("git config --global --add safe.directory /app") == 2
+    assert classify_stage.count('-v "$WORKSPACE/.git:/app/.git:ro"') == 1
+    assert classify_stage.count("git config --global --add safe.directory /app") == 1
+    assert heavy_stage.count('-v "$WORKSPACE/.git:/app/.git:ro"') == 1
+    assert heavy_stage.count("git config --global --add safe.directory /app") == 1
 
 
 def test_repository_mapping_selects_minimal_heavy_for_active_backend_ci() -> None:

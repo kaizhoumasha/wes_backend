@@ -53,10 +53,10 @@ class AcceptanceCommand:
     extra_environment: Mapping[str, str] = field(default_factory=dict)
 
 
-def _commands(output_dir: Path) -> tuple[AcceptanceCommand, ...]:
+def _commands(output_dir: Path, mode: str = "full") -> tuple[AcceptanceCommand, ...]:
     junit = output_dir / "junit"
     evidence = output_dir / "runtime-inbox-claim-benchmark.json"
-    return (
+    commands = (
         AcceptanceCommand(
             "migration_matrix",
             (
@@ -108,6 +108,11 @@ def _commands(output_dir: Path) -> tuple[AcceptanceCommand, ...]:
             {"RUNTIME_INBOX_BENCHMARK_EVIDENCE": str(evidence)},
         ),
     )
+    if mode == "full":
+        return commands
+    if mode == "correctness":
+        return commands[1:]
+    raise ValueError(f"unsupported RuntimeInbox acceptance mode: {mode}")
 
 
 def _redact(value: object) -> str:
@@ -292,6 +297,7 @@ def run_acceptance(
     output_dir: Path,
     expected_commit: str,
     *,
+    mode: str = "full",
     environment: Mapping[str, str] | None = None,
     preflight_check: Callable[[Mapping[str, str], int], None] = _default_preflight,
     executor: Callable[[AcceptanceCommand, Mapping[str, str]], None] = _default_executor,
@@ -308,6 +314,7 @@ def run_acceptance(
         "schema_version": "runtime-inbox-postgresql-acceptance/v1",
         "generated_at": datetime.now(UTC).isoformat(),
         "expected_commit": expected_commit,
+        "mode": mode,
         "status": "failed",
         "completed_suites": [],
     }
@@ -319,7 +326,7 @@ def run_acceptance(
             raise RuntimeError("GIT_COMMIT does not match expected commit")
         current_step = "postgresql_preflight"
         preflight_check(source_environment, REQUIRED_FREE_CONNECTION_SLOTS)
-        commands = _commands(output_dir)
+        commands = _commands(output_dir, mode)
         correctness_commands = commands[:-1]
         benchmark_command = commands[-1]
         with ThreadPoolExecutor(
@@ -367,9 +374,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--mode", choices=("full", "correctness"), default="full")
     arguments = parser.parse_args(argv)
     try:
-        run_acceptance(arguments.output_dir, arguments.expected_commit)
+        run_acceptance(arguments.output_dir, arguments.expected_commit, mode=arguments.mode)
     except AcceptanceFailure as exc:
         print(f"RuntimeInbox PostgreSQL acceptance failed: {exc}")
         return 1
