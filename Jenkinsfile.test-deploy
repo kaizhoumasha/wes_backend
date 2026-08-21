@@ -7,7 +7,7 @@ pipeline {
         string(name: 'BACKEND_IMAGE_TAG', description: '已批准的后端不可变镜像标签（构建号-commit 前 7 位）')
         string(name: 'FRONTEND_IMAGE_TAG', description: '已批准的前端不可变镜像标签（构建号-commit 前 7 位）')
         string(name: 'BACKEND_COMMIT_SHA', description: '后端镜像必须携带的完整 revision')
-        string(name: 'DEPLOY_SOURCE_COMMIT_SHA', description: '部署 Compose/脚本必须固定到的后端完整 commit SHA')
+        string(name: 'DEPLOY_SOURCE_COMMIT_SHA', description: 'TEST 部署 Compose/脚本的完整 commit SHA；相对后端运行提交仅允许部署白名单差异')
         string(name: 'FRONTEND_COMMIT_SHA', description: '前端镜像必须携带的完整 revision')
         string(name: 'OPENAPI_SHA256', description: '前端镜像必须携带的冻结 OpenAPI SHA-256')
         string(name: 'PERMISSIONS_SHA256', description: '前端镜像必须携带的冻结权限 SHA-256')
@@ -76,9 +76,6 @@ pipeline {
                     if (!(deploySourceCommitSha ==~ /[0-9a-f]{40}/)) {
                         error('DEPLOY_SOURCE_COMMIT_SHA 必须是 40 位小写 commit SHA')
                     }
-                    if (deploySourceCommitSha != backendCommitSha) {
-                        error('DEPLOY_SOURCE_COMMIT_SHA 必须与批准的后端镜像 revision 完全一致')
-                    }
                     if (!(frontendCommitSha ==~ /[0-9a-f]{40}/)) {
                         error('FRONTEND_COMMIT_SHA 必须是 40 位小写 commit SHA')
                     }
@@ -94,6 +91,12 @@ pipeline {
                     if (!(frontendImageTag ==~ /[0-9]+-${frontendCommitSha.take(7)}/)) {
                         error('FRONTEND_IMAGE_TAG 与批准的前端 commit 不一致')
                     }
+
+                    String deploySourceClassification = sh(
+                        returnStdout: true,
+                        script: "/bin/bash scripts/validate_test_deploy_source_diff.sh '${backendCommitSha}' '${deploySourceCommitSha}'"
+                    ).trim()
+                    echo "🔎 部署源码差异: ${deploySourceClassification}"
 
                     sh "git reset --hard '${deploySourceCommitSha}'"
                     String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()

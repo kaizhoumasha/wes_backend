@@ -12,3 +12,13 @@ def test_test_deploy_pipeline_is_explicitly_ignored_by_core_heavy_selector() -> 
     """具体插件数据同步移出部署入口后，不应触发核心业务 HEAVY 测试。"""
 
     assert select_heavy_tests(["Jenkinsfile.test-deploy"], load_config(MAPPING_PATH)) == []
+
+
+def test_test_deploy_source_diff_validator_has_no_runtime_heavy_owner() -> None:
+    assert (
+        select_heavy_tests(
+            ["scripts/validate_test_deploy_source_diff.sh"],
+            load_config(MAPPING_PATH),
+        )
+        == []
+    )

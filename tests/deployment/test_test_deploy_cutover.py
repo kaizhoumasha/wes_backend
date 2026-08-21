@@ -485,7 +485,8 @@ def test_test_deploy_requires_and_compares_the_complete_paired_image_provenance(
     assert "name: 'SOURCE_COMMIT_SHA'" not in pipeline
     assert "params.SOURCE_COMMIT_SHA" not in pipeline
     assert "deploySourceCommitSha ==~ /[0-9a-f]{40}/" in pipeline
-    assert "deploySourceCommitSha != backendCommitSha" in pipeline
+    assert "deploySourceCommitSha != backendCommitSha" not in pipeline
+    assert "validate_test_deploy_source_diff.sh" in pipeline
     assert 'git reset --hard "${DEPLOY_SOURCE_COMMIT_SHA}"' in pipeline
     assert "DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)" in pipeline
     assert '"${DEPLOY_ACTUAL_COMMIT}" != "${DEPLOY_SOURCE_COMMIT_SHA}"' in pipeline
