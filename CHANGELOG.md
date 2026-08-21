@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1.0] - 2026-08-22
+
+### Changed
+
+- 将 RuntimeInbox PostgreSQL 验收改为按变更影响选择，并稳定采样窗口、预算基线、Git provenance 与 HEAVY 映射缓存；未触及相关路径的提交不再重复承担完整性能验收耗时。
+- 将 TEST 部署的源码验证与运行镜像解耦，CI 治理文件和 HEAVY 映射变更通过显式 allowlist 进入发布验证，避免无关源码差异阻断不可变镜像切换。
+- 保留跨提交的 Docker 依赖层缓存，并让授权初始化、数据库创建和部署检查统一使用镜像内可用的 Python/runtime 合同。
+
+### Fixed
+
+- 修复 WMS Provider 空 profile、WorkLine 冷导入、Compose 前端镜像占位、Transport worker 冷启动与时序测试裕量导致的 CI 偶发失败。
+- 修复构建隔离 Redis 接线与带密码 readiness、从 `template0` 创建全新测试数据库、SQL 转义、基础管理员凭据注入和授权 bootstrap 的发布阻断问题。
+- 在应用启动失败时输出诊断日志，并在 TEST 切换前 fail closed 校验 WMS profile，避免进入维护态后才发现配置缺失。
+
+### Verification
+
+- 本发布批次汇总 PR #126–#149；对应代码已逐项评审并合入 `develop`，发布汇总不重放或改写历史提交。
+- 精确代码快照 `4ca6045` 的 QUALITY 为 3791 passed、4 个既有外部条件 skip；本机完整编排的 11 个容器均通过健康检查。
+- 本条目仅完成 `0.27.1.0` 发布元数据汇总，状态边界为 `IMPLEMENTED — NOT DEPLOYED`。
+
 ## [0.27.0.0] - 2026-08-21
 
 ### Added
