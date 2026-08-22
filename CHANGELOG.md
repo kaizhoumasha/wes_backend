@@ -9,10 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.27.2.0] - 2026-08-22
 
+### Added
+
+- 新增 Phase 9 人工 Bin 处理的 WMS 集成要求、严格 OpenAPI、设备合同附录和详细实施计划，冻结可直接进入生产实现的业务与物理边界。
+
 ### Changed
 
 - 将 Phase 9—13 重排为人工 Bin 纵向闭环、旧平台清理、单次初始 Schema 基线、自动业务插件持续交付和当前范围系统验收，后续实施可按真实产品节奏线性推进。
 - 明确人工物料业务继续由 WMS/PDA 拥有，WES 只负责 Bin 物理执行；自动上架与自动拣货移至 Phase 12，并继续受独立合同和计划批准约束。
+- 明确人工流程复用 `InboundEvidence`、`WmsConfirmation` 和窄 `ManualPolicyPort`，业务状态归 `manual_bin_processing`，WorkLine 插件只负责 Fact 到 Decision，基础能力不反向依赖业务实现。
 - 同步 SRS、顶层架构 SPEC、总控计划、文档索引、运行手册和 TODO 的阶段归属，消除旧十二阶段及 Phase 9 自动上架表述。
 
 ### Removed
@@ -21,9 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verification
 
-- 本次仅修改人类可读文档与 Release 元数据；`git diff --check`、相对链接、归档目标哈希和原路径缺席检查均通过。
-- 未修改生产代码、测试、迁移、机器可读合同或部署配置；候选人工 Bin 严格合同仍保持独立评审状态，未包含在本发布中。
-- 状态边界为 `DOCUMENTED — NOT IMPLEMENTED — NOT DEPLOYED`。
+- 本次仅修改文档、OpenAPI 合同与 Release 元数据；`git diff --check`、Markdown 变更范围检查、JSON 解析、Redocly、归档目标和原路径缺席检查均通过。
+- 未修改生产代码、测试、迁移或部署配置；Phase 9 严格合同达到 `ApprovedForImplementation`，但生产实现、WMS/ECS/RCS 联调和现场验收均未开始。
+- 状态边界为 `CONTRACT_READY — NOT IMPLEMENTED — NOT DEPLOYED`。
 
 ## [0.27.1.0] - 2026-08-22
 

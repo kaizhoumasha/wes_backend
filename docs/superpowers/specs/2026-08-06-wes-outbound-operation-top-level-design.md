@@ -28,7 +28,9 @@ related:
 
 负责 WMS C# 接口开发时，具体 URL、字段、枚举和错误码请以
 [WMS / WES 自动出库 PickingTask 交互要求](../../contracts/wms-outbound-picking-task-integration-requirements.md)为准。
-该合同只定义自动出库 wire；人工分拣的字段和 operation 尚未冻结。本文用于理解流程，不是第二份字段定义。
+该合同只定义自动出库 wire；人工分拣的严格字段和 operation 已由
+[Phase 9 人工 Bin 处理集成合同](../../contracts/wms-manual-bin-processing-integration-requirements.md)、同级 OpenAPI 和设备附录冻结为
+`ApprovedForImplementation — NOT IMPLEMENTED`。本文用于理解共用业务背景，不是第二份字段定义。
 
 本文状态是 `ReviewRequired`，表示双方还需要共同确认，不表示功能已经完成。
 
