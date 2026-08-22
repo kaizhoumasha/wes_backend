@@ -46,6 +46,9 @@
 - 对应核心、WMS Adapter、插件、integration、E2E 测试 owner，以及 `docs/architecture/heavy-test-impact.toml` 当前映射；
 - 本计划的直接删除/交接矩阵：
 
+冻结结果是各 Task `Files` 与验证命令的实施下限。若当前基线出现本计划未列出的生产调用者、Alembic metadata 入口、fixture/helper、
+测试 owner 或 HEAVY 消费者，必须先把该传播面回写到对应 Task，再开始首个生产补丁；不得把整目录失败或最终门禁当成调用点清单。
+
 | 当前 owner | Phase 9 处置 |
 | --- | --- |
 | `TransportPositionProjection` | 直接改名和收敛为 `PositionProjection`；Transport 改为消费者 |
@@ -70,11 +73,25 @@
 - Modify: `src/app/transport/models.py`
 - Modify: `src/app/transport/repository.py`
 - Modify: `src/app/transport/service.py`
+- Modify: `migrations/env.py`
 - Create: Alembic revision generated with message `add bin execution and converge position projection`
 - Test: `tests/runtime/execution/test_bin_execution_service.py`
 - Test: `tests/runtime/execution/test_position_projection_service.py`
+- Modify: `tests/runtime/transport/conftest.py`
+- Modify: `tests/runtime/transport/test_transport_acceptance_edges.py`
+- Modify: `tests/runtime/transport/test_transport_observability.py`
+- Modify: `tests/runtime/transport/test_transport_outcome.py`
+- Modify: `tests/runtime/transport/test_transport_reconciling_facts.py`
+- Modify: `tests/runtime/transport/test_transport_service.py`
+- Modify: `tests/runtime/transport/test_transport_submit_fencing.py`
+- Modify: `tests/support/transport_projections.py`
 - Test: `tests/integration/execution/test_bin_execution_constraints.py`
 - Test: `tests/integration/execution/test_position_projection_constraints.py`
+- Modify: `tests/integration/transport/test_dark_transport_loop.py`
+- Modify: `tests/integration/transport/test_transport_evidence_transaction.py`
+- Modify: `tests/integration/transport/test_transport_schema.py`
+- Modify: `tests/integration/test_transport_fulfillment_queue.py`
+- Modify: `tests/e2e/transport/test_transport_production_wiring.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
 **Interfaces:**
@@ -101,7 +118,9 @@
 
 - [ ] **Step 4: 一次性迁移 Transport 消费者**
 
-  先列全 `TransportPositionProjection` 读写点，再将 Transport 改为使用 `PositionProjection`；删除旧类、旧 repository API、旧表和导出，执行全仓旧符号零残留扫描。
+  先列全 `TransportPositionProjection` 读写点，再将 Transport、测试 fixture/helper 和现有测试 owner 一次性改为使用
+  `PositionProjection`；同步把 `migrations/env.py` 的 metadata 注册切换到 `BinExecution`/`PositionProjection`。删除旧类、旧 repository API、
+  旧表和导出，不修改历史 migration。
 
 - [ ] **Step 5: 生成并编辑直接替换 migration**
 
@@ -113,9 +132,12 @@
   `uv run pytest tests/runtime/execution/test_bin_execution_service.py tests/runtime/execution/test_position_projection_service.py tests/runtime/transport -q`
 
   Run:
-  `uv run pytest tests/integration/execution/test_bin_execution_constraints.py tests/integration/execution/test_position_projection_constraints.py -q`
+  `uv run pytest tests/integration/execution/test_bin_execution_constraints.py tests/integration/execution/test_position_projection_constraints.py tests/integration/transport/test_transport_schema.py tests/integration/transport/test_transport_evidence_transaction.py tests/integration/transport/test_dark_transport_loop.py tests/integration/test_transport_fulfillment_queue.py -q`
 
-  Expected: PASS，且 `rg "TransportPositionProjection" src tests` 只允许迁移缺席断言命中。
+  Expected: PASS，且 `rg "TransportPositionProjection|transport_position_projection" src migrations/env.py` 零命中，
+  同一表达式在 `tests` 只允许新 migration/schema owner 的旧表缺席断言命中；
+  `migrations/versions/**` 历史 migration 保持不变且不纳入缺席范围；
+  `tests/e2e/transport/test_transport_production_wiring.py` 由更新后的 HEAVY mapping 选中，不由基础单元测试代证。
 
 - [ ] **Step 7: 更新 HEAVY mapping 并记录提交检查点**
 
@@ -127,6 +149,7 @@
 
 - Modify: `src/app/execution/models/wms_confirmation.py`
 - Modify: `src/app/execution/services/wms_confirmation_service.py`
+- Modify: `src/app/execution/services/decision_applier.py`
 - Modify: `src/app/execution/repositories/wms_confirmation_repository.py`
 - Modify: `src/app/execution/models/inbound_evidence.py`
 - Modify: `src/app/execution/services/inbound_evidence_service.py`
@@ -139,9 +162,19 @@
 - Create: Alembic revision generated with message `extend reliable wms evidence for bin execution`
 - Test: `tests/runtime/execution/test_wms_confirmation_service.py`
 - Test: `tests/runtime/execution/test_inbound_evidence_service.py`
+- Modify: `tests/runtime/execution/test_decision_applier.py`
+- Modify: `tests/runtime/execution/test_fact_processor.py`
+- Modify: `tests/contracts/wms_adapter/test_inbound_adapter.py`
 - Test: `tests/contracts/wms_adapter/test_manual_bin_wire.py`
 - Test: `tests/contracts/wms_adapter/test_manual_bin_openapi.py`
 - Test: `tests/api/test_wms_manual_bin_events.py`
+- Modify: `tests/contracts/wms_adapter/test_inbound_event_handler.py`
+- Modify: `tests/api/test_wms_transport_events.py`
+- Modify: `tests/api/test_qa_regression_transport_openapi.py`
+- Modify: `tests/deployment/test_rough_sorter_plugin_startup.py`
+- Modify: `tests/integration/execution/test_decision_processing_postgresql.py`
+- Modify: `tests/integration/execution/test_execution_constraints.py`
+- Modify: `tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py`
 - Test: `tests/integration/wms_adapter/test_manual_bin_evidence_postgresql.py`
 - Modify: `docs/architecture/heavy-test-impact.toml`
 
@@ -158,6 +191,8 @@
 - [ ] **Step 2: 最小放宽 WmsConfirmation**
 
   增加必填 `line_run_epoch_id`，将 `material_execution_id` 改为可空；派发不再为取得 Epoch 强制加载 MaterialExecution。禁止新建 `WmsExchange`、新状态或新 worker。
+  当前 `DecisionApplier` 路径必须显式传入 `execution.line_run_epoch_id + execution.id`，manual 路径传入当前 Epoch 与空
+  `material_execution_id`；business-wait follow-up 沿用原 confirmation 的两个关联，不能重新推导或丢失 Epoch。
 
 - [ ] **Step 3: 扩展 InboundEvidence 当前关联**
 
@@ -174,12 +209,13 @@
 - [ ] **Step 6: 执行 GREEN**
 
   Run:
-  `uv run pytest tests/runtime/execution/test_wms_confirmation_service.py tests/runtime/execution/test_inbound_evidence_service.py tests/contracts/wms_adapter/test_manual_bin_wire.py tests/contracts/wms_adapter/test_manual_bin_openapi.py tests/api/test_wms_manual_bin_events.py -q`
+  `uv run pytest tests/runtime/execution/test_wms_confirmation_service.py tests/runtime/execution/test_inbound_evidence_service.py tests/runtime/execution/test_decision_applier.py tests/runtime/execution/test_fact_processor.py tests/contracts/wms_adapter/test_inbound_adapter.py tests/contracts/wms_adapter/test_inbound_event_handler.py tests/contracts/wms_adapter/test_manual_bin_wire.py tests/contracts/wms_adapter/test_manual_bin_openapi.py tests/api/test_wms_transport_events.py tests/api/test_qa_regression_transport_openapi.py tests/api/test_wms_manual_bin_events.py tests/deployment/test_rough_sorter_plugin_startup.py -q`
 
   Run:
-  `uv run pytest tests/integration/wms_adapter/test_manual_bin_evidence_postgresql.py -q`
+  `uv run pytest tests/integration/execution/test_decision_processing_postgresql.py tests/integration/execution/test_execution_constraints.py tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py tests/integration/wms_adapter/test_manual_bin_evidence_postgresql.py -q`
 
-  Expected: PASS；`rg "WmsExchange|RuntimeInbox" src/app/wms_adapter src/app/execution` 无 Phase 9 新生产引用。
+  Expected: PASS；现有 rough sorter 的 confirmation 创建、派发和 business-wait 行为不变；
+  `rg "WmsExchange|RuntimeInbox" src/app/wms_adapter src/app/execution` 无 Phase 9 新生产引用。
 
 - [ ] **Step 7: 更新 HEAVY mapping 并记录提交检查点**
 
@@ -587,6 +623,9 @@
 - [ ] **Step 2: 执行旧概念缺席扫描**
 
   必须确认生产代码零命中：`WmsExchange`、`ManualBinFlow`、`ManualInboundBatch`、`ManualCtuActionClaim`、逐 Bin ingress entry、manual `member_position_changed` consumer、旧 manual operation 和 `TransportPositionProjection`。
+  位置投影直接替换还须确认 `rg "TransportPositionProjection|transport_position_projection" src migrations/env.py` 零命中，
+  同一表达式在 `tests` 只允许新 migration/schema owner 的旧表缺席断言命中；
+  `migrations/versions/**` 是不可改写的历史 migration，不属于缺席范围。
 
 - [ ] **Step 3: 运行聚焦与拓扑回归**
 
