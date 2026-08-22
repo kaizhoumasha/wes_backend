@@ -721,21 +721,22 @@ WMS 持久化的 Bin 释放决定是唯一分界事件。业务任务完成不�
 
 WMS 不可用时不新增 `PAUSED_WAITING_WMS` 或 WorkLine 停线状态：
 
-- `LineRunEpoch` 保持 `ACTIVE`，当前 Session 使用现有 `WAITING_EXTERNAL`，查询层可派生显示 `WAITING_WMS`。
-- 相关 Outbox 保留原 `operation_id` 和冻结请求重试。插件不选新 Bin、不创建依赖 WMS 新决定的 Transport，不自选空位。
+- `LineRunEpoch` 保持 `ACTIVE`；WMS 入站由 `InboundEvidence` 继续可靠接收，WES 出站由 `WmsConfirmation` 保留原
+  `operation_id` 和冻结请求重试。
+- 插件不选新 Bin、不创建依赖 WMS 新决定的 Transport，不自选空位；不为人工流新增 Session、Outbox 或第二套可靠状态机。
 - 已被设备或 Transport 接收的动作不取消、不替换；新到的确定事实继续持久化。WMS 恢复并明确确认后重新判断下一动作。
 
 WES 进程重启不等于 WMS 暂时不可用。进程重启仍遵循全局安全基线：不在原 `LineRunEpoch` 自动恢复物理编排，保留证据，现场清线后创建新 Epoch。
 
-### 20.6 实施前门禁
+### 20.6 已批准 wire 与剩余门禁
 
-本节只冻结人工分拣流程和所有权，不授权生产实施。实施前还必须单独冻结：
+人工任务、Bin 流转、设备角色和严格 DTO 已由以下当前真源直接替代本节早期候选描述，并授权生产实施：
 
-- 人工任务发布、准备、货架面计划、Bin 批次、工作位到位、Bin 释放、退料储位分配和任务完成的 operation 与严格 DTO。
-- 人工线设备角色、位置角色、缓存容量、两面货架与统一 NG 位置编码。
-- 四条工作线的静态类型和三个插件的 activation 配置；每个插件在激活时校验自己的闭集角色，不建设通用 capability registry。
-- WMS/WES 共享幂等、版本、身份不匹配、跨任务 FIFO、容量背压、WMS 不可用和 Epoch 保持 `ACTIVE` 的排空用例。
-- 共同排空货架面决定 operation 的字面量、严格 DTO、插件执行身份、旧架离场去向、新架可靠来源/工作位/到达面、目标 rack/face 原子绑定与非空 FIFO 前缀容量保留、`WAIT` 与幂等 fixture；获批前自动上架、自动出库和人工流的停线排空均为 `ReviewRequired/BLOCKED`。
+- `docs/contracts/wms-manual-bin-processing-integration-requirements.md`；
+- `docs/contracts/openapi/wes-wms-manual-bin-processing.openapi.json`；
+- `docs/contracts/device-annexes/manual-bin-processing-device-contract.md`；
+- `docs/superpowers/plans/2026-08-22-phase9-manual-bin-processing-implementation.md`。
 
-人工流的严格 wire 合同获批前，不得为了表达人工流而复用或扩展现有自动出库 operation，不以可空机械臂、Cell、料盘或目标货架字段
-表达人工流，也不创建兼容分支。
+实施仍须遵守直接替换、基础/业务测试分离和显式静态装配。共同排空货架面决定 operation 仍未获批；其字面量、严格 DTO、插件执行身份、
+旧架离场去向、新架可靠来源/工作位/到达面、目标 rack/face 原子绑定、非空 FIFO 前缀容量保留、`WAIT` 与幂等 fixture 均保持
+`ReviewRequired/BLOCKED`。不得用已批准的人工 wire 绕过该独立门禁。

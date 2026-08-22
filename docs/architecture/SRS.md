@@ -15,7 +15,10 @@
 > `docs/integration/third_party_integration_whitepaper.md` 是所有固定式设备供应商长期遵循的顶层统一接口合同。
 > `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 是 Phase 8 粗分逐盘入库的 `Approved` 业务合同；
 > `docs/contracts/wms-inbound-putaway-integration-requirements.md` 是 Phase 12 满箱交换和自动上架的 `ReviewRequired` 合同；
-> Phase 9 人工流程只冻结了业务所有权，严格 wire 同样尚未批准。两者均不构成对应阶段实施授权。
+> Phase 9 人工流程的严格 wire 与详细计划已经批准，可实施合同以
+> `docs/contracts/wms-manual-bin-processing-integration-requirements.md`、
+> `docs/contracts/openapi/wes-wms-manual-bin-processing.openapi.json` 和
+> `docs/contracts/device-annexes/manual-bin-processing-device-contract.md` 为准；生产代码、联调和现场验收尚未开始。Phase 12 合同仍不构成实施授权。
 > SRS 不规定旧 Runtime、旧插件框架或兼容迁移路径；出现实现机制冲突时，以当前顶层 SPEC 为准，并同步修订本文需求表述。
 
 > WMS C# 开发人员不需要根据本文设计 DTO 或 Handler。自动出库只需先读 §3.3.3 了解职责，再以
@@ -491,10 +494,14 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 5. 退料 Bin 不返回原货架面。WMS 根据当前工作位 `rack_id + rack_face` 为 FIFO 连续前缀原子预留精确 `slot_id`；WES 只执行 `BIN_MOVE`。退料 Bin 不为自己触发换面或换架。
 6. 物料正确放入 Bin 或从 Bin 拣出后，WMS 才确认对应子任务完成；全部应完成子任务完成且不再追加后，WMS 才确认业务任务完成。两者都不等待 Bin 回到货架，Bin 回库、未知 Transport 和 Epoch 清场由各自物理生命周期继续闭合。
 7. 实际 Bin 可识别但与本批预期 Bin 不同时，实际 Bin 不进入人工业务或 NG；WES 保存预期/实际身份和位置证据，将其冻结在当前安全位置，等待独立恢复 wire 获批。预期 Bin 仍未完成。
-8. WMS 不可用时停止新的 Task/Bin 推进，复用 Session `WAITING_EXTERNAL` 和 Outbox 可靠重试；不新增 WorkLine 状态，Epoch 保持 `ACTIVE`。WES 进程重启时仍现场清线并创建新 Epoch，不在原 Epoch 自动恢复物理编排。
+8. WMS 不可用时停止新的 Task/Bin 推进；WMS 入站继续由 `InboundEvidence` 可靠接收，WES 出站继续由
+   `WmsConfirmation` 保留冻结消息和原 `operation_id` 重试；不新增 WorkLine 状态，Epoch 保持 `ACTIVE`。WES 进程重启时仍现场清线并
+   创建新 Epoch，不在原 Epoch 自动恢复物理编排。
 
-人工分拣的完整流程、分段驱动、容量背压、跨任务退料和实施门禁以
-`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 第 20 节为准。具体 wire 合同尚未获批，不复用自动出库必填的机械臂、Cell、料盘或目标货架字段。
+人工分拣的业务流程和所有权说明以
+`docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 第 20 节为背景；可实施 wire 以
+`docs/contracts/wms-manual-bin-processing-integration-requirements.md`、同级 OpenAPI 和设备附录为唯一当前真源。该 wire 已批准，且直接使用
+人工流程字段，不复用自动出库必填的机械臂、Cell、料盘或目标货架字段。
 
 ---
 

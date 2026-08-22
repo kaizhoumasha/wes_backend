@@ -1,13 +1,13 @@
 ---
 title: WES - WMS 对接接口需求
 status: ReviewRequired
-contract_version: 0.2.0
+contract_version: 0.3.0
 published_at: pending
 wes_alignment: ALIGNED
 created_at: 2026-08-13
-updated_at: 2026-08-20
+updated_at: 2026-08-22
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
-scope: WES/WMS 公共通信、Transport 搬运、自动出库、自动入库与上架
+scope: WES/WMS 公共通信、Transport 搬运、人工 Bin、自动出库、自动入库与上架
 system_stage: pre_release
 migration_strategy: direct_replacement
 ---
@@ -18,7 +18,7 @@ migration_strategy: direct_replacement
 
 | 合同版本 | 日期 | 状态 | 主要变化 |
 | --- | --- | --- | --- |
-| `0.2.0` | 2026-08-20 | 待外发 | Transport 两族 DTO 保持不变；明确逐容器中间位置事件只在存在权威事实时可选发送；入线前由 TransportTask 负责，最终到位且实扫匹配后才创建 BinExecution |
+| `0.3.0` | 2026-08-22 | 待外发 | Transport 合同保持不变；放行 Phase 9 人工 Bin 的 13 个严格 operation，生产实现、联调和现场验收尚未开始 |
 
 `contract_version` 只用于双方确认拿到的是同一份外发合同，不进入任何 JSON 信封，也不产生旧版本兼容逻辑。正式外发时将
 `published_at` 改为实际日期；在此之前，本版本不得用于宣称现场联调已经就绪。
@@ -56,13 +56,14 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
 | 粗分自动入库 | `Approved` | `WES_IMPLEMENTED_LOCAL_MOCK_PASS` | WES 已实现且本机 Mock 通过；真实 WMS、供应商、现场联调与业务验收均为 `NOT RUN` |
 | 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
-| 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
+| 人工分拣 Bin 流转 | `ApprovedForImplementation` | `CONTRACT_READY` | 严格 operation/DTO 以人工 Bin 集成合同、同级 OpenAPI 和设备附录为准；实现与联调证据尚未产生 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`，但容器中间位置事件
+公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果、粗分入库场景和 Phase 9 人工 Bin wire 的合同生命周期已批准，但容器中间位置事件
 只在供应商能够提供权威逐容器中间事实时启用，当前 CTU/RCS 不实施；
 当前 Transport 两族 DTO 的 WES 本地实现状态为 `ALIGNED`，粗分入库场景
-已由 WES 实现并通过本机 Mock，但真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收通过，不能证明自动上架或自动出库已经通过；设备动作验收也不能替代
+已由 WES 实现并通过本机 Mock，但真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。Phase 9 仍只有实施授权，没有代码、联调或
+验收证据。基础通信或 Transport 验收通过，不能证明人工业务、自动上架或自动出库已经通过；设备动作验收也不能替代
 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
@@ -76,17 +77,20 @@ WMS 库存和业务验收。
 | 搬运提交 | Transport 业务能力 | `POST {{WMS_BASE_URL}}{{TRANSPORT_SUBMIT_PATH}}`<br>`operation=transport.task.submit@v1` | 无 | 接收并可靠接纳四种不可变搬运请求 | 第 3 节“搬运提交开发任务卡” |
 | 容器中间位置事件 | 条件 Transport 能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 当前 CTU/RCS 不实施；未来供应商能提供权威逐容器中间事实时才启用 | 第 3 节“容器中间位置事件条件任务卡” |
 | 搬运最终结果 | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.resulted@v1` | 按连续 `outcome_revision` 回调完整搬运结果和各对象最终位置 | 第 3 节“搬运最终结果开发任务卡” |
+| 人工 Bin | Phase 9 业务能力 | `POST {{WMS_BASE_URL}}/api/v1/wes/decisions`<br>`POST {{WMS_BASE_URL}}/api/v1/wes/facts` | `POST {{WES_BASE_URL}}/api/v1/wms/events` | 按人工 Bin 独立合同实现 6 个 Decision、2 个 Fact 和 5 个 Event operation；不得复用自动出库/上架 DTO | `docs/contracts/wms-manual-bin-processing-integration-requirements.md` |
 | 联调交付 | 联调交付 | 无新增运行时接口 | 无新增运行时接口 | 提供 Approved 范围的 OpenAPI、固定 JSON、归一化表和联调证据 | 第 5 节 |
 
-因此，当前 WMS 只需要**提供一个接口**：搬运提交的 `POST {{TRANSPORT_SUBMIT_PATH}}`；只需要**访问一个 WES 接口**：
-搬运最终结果使用的 `POST /api/v1/wms/events`。容器中间位置事件与搬运最终结果共用该端点，但当前 CTU/RCS 不产生容器中间位置事件；未来启用时才通过不同 `operation`
-区分中间位置事实和最终结果。WMS 如何调用 RCS 属于 WMS/RCS 内部接口，不在本文定义，也不需要向 WES 暴露。
+当前 WMS 必须提供搬运提交接口，以及 Phase 9 人工 Bin 的 `/api/v1/wes/decisions`、`/api/v1/wes/facts` 两个业务端点；必须访问 WES 的
+`/api/v1/wms/events`，分别发送搬运最终结果和 Phase 9 的 5 个 Event operation。容器中间位置事件与搬运最终结果共用 WES Event 端点，
+但当前 CTU/RCS 不产生容器中间位置事件；未来启用时才通过不同 `operation` 区分中间位置事实和最终结果。WMS 如何调用 RCS 属于
+WMS/RCS 内部接口，不在本文定义，也不需要向 WES 暴露。
 
 公共通信基础能力和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，搬运提交、搬运最终结果以及条件启用的容器中间位置事件单个业务
 样例通过，也不能证明所有公共幂等、冲突和重试规则正确。
 
-当前**不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts` 及自动出库、粗分入库、自动上架场景的 operation。它们保持
-`ReviewRequired`，只能参加联合评审，不能创建临时 DTO、空实现或兼容入口。
+Phase 9 的 `/api/v1/wes/decisions`、`/api/v1/wes/facts` 已放行开发，严格 operation、DTO 和响应以人工 Bin 独立合同及其 OpenAPI 为准。
+自动出库和自动上架仍为 `ReviewRequired`，批准前不能创建临时 DTO、空实现或兼容入口。粗分入库继续遵循其既有 `Approved` 合同和
+独立交付状态，不由 Phase 9 重复定义。
 
 ### 0.3 WMS C# 技术基线
 

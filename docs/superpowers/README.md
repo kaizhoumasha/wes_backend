@@ -11,10 +11,13 @@
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-21-phase9-continuous-business-delivery-resequence-design.md` | Phase 9 人工纵向切片、单次初始基线、Phase 12 自动插件与 Phase 13 验收顺序 | Approved |
-| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、Epoch 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
+| `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣业务背景；Task 入站、PDA/WMS 物料业务、Epoch 级跨任务 FIFO 和物理清场边界 | 自动出库仍为 ReviewRequired；人工 wire 由独立合同直接替代并已批准 |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
-| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成；人工分拣仅登记业务设计 | ReviewRequired；Transport 与 Phase 8 粗分场景已批准，Phase 12 自动出库/上架仍待联合批准，Phase 9 人工 wire 尚未冻结 |
+| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成 | ReviewRequired；Transport、Phase 8 粗分和 Phase 9 人工 wire 已批准，Phase 12 自动出库/上架仍待联合批准 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
+| `../contracts/wms-manual-bin-processing-integration-requirements.md` | Phase 9 人工 Bin 业务所有权、严格 operation 和可靠交互真源 | ApprovedForImplementation；代码、联调和验收尚未开始 |
+| `../contracts/openapi/wes-wms-manual-bin-processing.openapi.json` | Phase 9 人工 Bin 双向机器合同 | ApprovedForImplementation |
+| `../contracts/device-annexes/manual-bin-processing-device-contract.md` | Phase 9 人工工作线设备角色和统一接口附录 | ApprovedForImplementation |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、严格 DTO、幂等与 Epoch 级正常 Bin 回流；非预期 Bin 恢复和停线排空货架面决定 wire 均未冻结 | ReviewRequired |
 | `../contracts/wms-rough-sorter-inbound-integration-requirements.md` | WMS/WES Phase 8 粗分逐盘入库业务合同真源 | Approved |
@@ -22,7 +25,7 @@
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十三阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；Phase 9 至 13 尚未开始；前端与现场活动独立推进 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十三阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；Phase 9 合同和详细计划已批准、代码未开始；Phase 10 至 13 尚未开始 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |

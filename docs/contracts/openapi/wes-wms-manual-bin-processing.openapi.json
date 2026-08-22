@@ -1,0 +1,754 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "WES / WMS Phase 9 Manual Bin Processing",
+    "version": "1.0",
+    "description": "Phase 9 第一阶段人工入库与人工出库共用的严格 wire 合同。Transport 结果继续由 transport-fulfillment-contract 拥有。",
+    "license": {"name": "Proprietary", "identifier": "LicenseRef-Proprietary"}
+  },
+  "security": [],
+  "servers": [
+    {"url": "http://api.wes-wms.internal", "description": "工具回退值；每个 path 使用自己的 WES 或 WMS 部署入口覆盖"}
+  ],
+  "paths": {
+    "/api/v1/wms/events": {
+      "servers": [
+        {
+          "url": "{wesBaseUrl}",
+          "description": "部署提供的 WES 局域网入口",
+          "variables": {"wesBaseUrl": {"default": "http://wes.local"}}
+        }
+      ],
+      "post": {
+        "summary": "WMS 向 WES 发送人工任务与业务事件",
+        "operationId": "receiveManualBinProcessingEvent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {"$ref": "#/components/schemas/TaskIssuedEvent"},
+                  {"$ref": "#/components/schemas/TaskQueueChangedEvent"},
+                  {"$ref": "#/components/schemas/ManualTaskPlanDeltaEvent"},
+                  {"$ref": "#/components/schemas/ManualBinReleaseDecidedEvent"},
+                  {"$ref": "#/components/schemas/WorklineBinNgRemovedEvent"}
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同一 operation identity 的同消息重放",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EventDuplicateResponse"}}}
+          },
+          "202": {
+            "description": "事件已可靠持久化",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EventReceivedResponse"}}}
+          },
+          "400": {"description": "请求不是合法 JSON，或无法提取合法 operation_id；空响应体"},
+          "409": {
+            "description": "身份、revision 或状态冲突",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConflictResponse"}}}
+          },
+          "413": {"description": "请求体超过 256 KiB；空响应体"},
+          "422": {
+            "description": "严格 DTO 或 task_kind 不合法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InboundRejectedResponse"}}}
+          },
+          "503": {
+            "description": "WES 当前无法可靠持久化；WMS 使用首次冻结消息重试",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnavailableResponse"}}}
+          }
+        }
+      }
+    },
+    "/api/v1/wes/decisions": {
+      "servers": [
+        {
+          "url": "{wmsBaseUrl}",
+          "description": "部署提供的 WMS 局域网入口",
+          "variables": {"wmsBaseUrl": {"default": "http://wms.local"}}
+        }
+      ],
+      "post": {
+        "summary": "WES 向 WMS 请求人工工作线决定",
+        "description": "WMS 必须按请求 operation 返回对应的 data 联合；不得返回其它 operation 的结果结构。",
+        "operationId": "decideManualBinProcessing",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {"$ref": "#/components/schemas/TaskPrepareRequest"},
+                  {"$ref": "#/components/schemas/InboundBatchDecisionRequest"},
+                  {"$ref": "#/components/schemas/BinRouteDecisionRequest"},
+                  {"$ref": "#/components/schemas/ReturnBatchDecisionRequest"},
+                  {"$ref": "#/components/schemas/RackDepartureDecisionRequest"},
+                  {"$ref": "#/components/schemas/TaskCompletionConfirmRequest"}
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "首次或同完整请求重放的冻结决定",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DecisionResponse"}}}
+          },
+          "400": {"description": "请求不是合法 JSON，或无法提取合法 operation_id；空响应体"},
+          "409": {
+            "description": "业务引用或状态冲突",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConflictResponse"}}}
+          },
+          "413": {"description": "请求体超过 256 KiB；空响应体"},
+          "422": {
+            "description": "严格 DTO 不合法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BusinessRejectedResponse"}}}
+          },
+          "503": {
+            "description": "WMS 暂不可用；WES 重试首次冻结消息",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnavailableResponse"}}}
+          }
+        }
+      }
+    },
+    "/api/v1/wes/facts": {
+      "servers": [
+        {
+          "url": "{wmsBaseUrl}",
+          "description": "部署提供的 WMS 局域网入口",
+          "variables": {"wmsBaseUrl": {"default": "http://wms.local"}}
+        }
+      ],
+      "post": {
+        "summary": "WES 向 WMS 提交人工工作线事实",
+        "operationId": "recordManualBinProcessingFact",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {"$ref": "#/components/schemas/ManualBinWorkstationArrivedFact"},
+                  {"$ref": "#/components/schemas/WorklineBinReturnedFact"}
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "事实已记录或同消息重复",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FactResponse"}}}
+          },
+          "400": {"description": "请求不是合法 JSON，或无法提取合法 operation_id；空响应体"},
+          "409": {
+            "description": "业务引用冲突",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConflictResponse"}}}
+          },
+          "413": {"description": "请求体超过 256 KiB；空响应体"},
+          "422": {
+            "description": "严格 DTO 不合法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BusinessRejectedResponse"}}}
+          },
+          "503": {
+            "description": "WMS 暂不可用；WES 重试首次冻结消息",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnavailableResponse"}}}
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "OperationId": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "description": "canonical lowercase UUIDv7；技术重试保持不变"
+      },
+      "Timestamp": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 1,
+        "maximum": 9223372036854775807,
+        "description": "UTC Unix 毫秒"
+      },
+      "NonEmptyCode": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120,
+        "allOf": [
+          {"not": {"pattern": "^\\s*$"}},
+          {"not": {"pattern": "\\u0000"}}
+        ]
+      },
+      "EmptyData": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "TaskIssuedData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "task_kind", "queue_revision", "dispatch_sequence"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "task_kind": {"type": "string", "const": "MANUAL_BIN_PROCESSING"},
+          "queue_revision": {"type": "integer", "const": 1},
+          "dispatch_sequence": {"type": "integer", "minimum": 1},
+          "not_before": {"$ref": "#/components/schemas/Timestamp"}
+        }
+      },
+      "TaskQueueChangedData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "queue_revision", "dispatch_sequence"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "queue_revision": {"type": "integer", "minimum": 2},
+          "dispatch_sequence": {"type": "integer", "minimum": 1},
+          "not_before": {"$ref": "#/components/schemas/Timestamp"}
+        }
+      },
+      "RackFace": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rack_id", "rack_face"],
+        "properties": {
+          "rack_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "rack_face": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "ManualTaskPlanDeltaData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "plan_revision", "rack_faces"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "plan_revision": {"type": "integer", "minimum": 1},
+          "rack_faces": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"$ref": "#/components/schemas/RackFace"}
+          }
+        }
+      },
+      "ManualBinReleaseDecidedData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code", "bin_id", "decision"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "decision": {"type": "string", "enum": ["RETURN", "NG"]}
+        }
+      },
+      "WorklineBinNgRemovedData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bin_id", "ng_zone_code", "scan_evidence_id", "removed_at"],
+        "properties": {
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "ng_zone_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "scan_evidence_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "removed_at": {"$ref": "#/components/schemas/Timestamp"}
+        }
+      },
+      "TaskPrepareData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "InboundBatchDecisionData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code", "rack_id", "rack_face", "max_bin_count"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "rack_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "rack_face": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "max_bin_count": {"type": "integer", "minimum": 1, "maximum": 4}
+        }
+      },
+      "BinRouteDecisionData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code", "bin_id", "scan_evidence_id"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "scan_evidence_id": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "HandoffPosition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "location_code"],
+        "properties": {
+          "kind": {"type": "string", "const": "HANDOFF_POSITION"},
+          "location_code": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "ReturnCandidate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bin_id", "source"],
+        "properties": {
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "source": {"$ref": "#/components/schemas/HandoffPosition"}
+        }
+      },
+      "ReturnBatchDecisionData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workline_code", "return_candidates"],
+        "properties": {
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "return_candidates": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {"$ref": "#/components/schemas/ReturnCandidate"}
+          }
+        }
+      },
+      "RackPosition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "location_code"],
+        "properties": {
+          "kind": {"type": "string", "const": "RACK_POSITION"},
+          "location_code": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "RackDepartureDecisionData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code", "rack_id", "current_face", "current_location"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "rack_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "current_face": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "current_location": {"$ref": "#/components/schemas/RackPosition"}
+        }
+      },
+      "TaskCompletionConfirmData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code", "last_applied_plan_revision"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "last_applied_plan_revision": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ManualBinWorkstationArrivedData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["task_id", "workline_code", "bin_id", "scan_evidence_id"],
+        "properties": {
+          "task_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "scan_evidence_id": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "RackBinSlot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "rack_id", "rack_face", "slot_id"],
+        "properties": {
+          "kind": {"type": "string", "const": "RACK_BIN_SLOT"},
+          "rack_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "rack_face": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "slot_id": {"$ref": "#/components/schemas/NonEmptyCode"}
+        }
+      },
+      "WorklineBinReturnedData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workline_code", "bin_id", "target"],
+        "properties": {
+          "workline_code": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "target": {"$ref": "#/components/schemas/RackBinSlot"}
+        }
+      },
+      "InboundBin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bin_id", "source"],
+        "properties": {
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "source": {"$ref": "#/components/schemas/RackBinSlot"}
+        }
+      },
+      "ReturnTarget": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bin_id", "target"],
+        "properties": {
+          "bin_id": {"$ref": "#/components/schemas/NonEmptyCode"},
+          "target": {"$ref": "#/components/schemas/RackBinSlot"}
+        }
+      },
+      "InboundReadyResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "bins"],
+        "properties": {
+          "result": {"type": "string", "const": "READY"},
+          "bins": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {"$ref": "#/components/schemas/InboundBin"}
+          }
+        }
+      },
+      "NoBatchResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result"],
+        "properties": {"result": {"type": "string", "const": "NO_BATCH"}}
+      },
+      "InboundRackFaceDoneResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result"],
+        "properties": {"result": {"type": "string", "const": "RACK_FACE_DONE"}}
+      },
+      "RouteResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result"],
+        "properties": {"result": {"type": "string", "enum": ["MOVE_TOP", "MOVE_RIGHT"]}}
+      },
+      "ReturnReadyResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "returns"],
+        "properties": {
+          "result": {"type": "string", "const": "READY"},
+          "returns": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {"$ref": "#/components/schemas/ReturnTarget"}
+          }
+        }
+      },
+      "RackDepartureReadyResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "rack_destination"],
+        "properties": {
+          "result": {"type": "string", "const": "READY"},
+          "rack_destination": {"$ref": "#/components/schemas/RackPosition"}
+        }
+      },
+      "WaitResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "retry_after_ms"],
+        "properties": {
+          "result": {"type": "string", "const": "WAIT"},
+          "retry_after_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+        }
+      },
+      "TaskCompletedResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result"],
+        "properties": {"result": {"type": "string", "const": "COMPLETED"}}
+      },
+      "PlanRevisionStaleResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "latest_plan_revision"],
+        "properties": {
+          "result": {"type": "string", "const": "PLAN_REVISION_STALE"},
+          "latest_plan_revision": {"type": "integer", "minimum": 1}
+        }
+      },
+      "BusinessInProgressResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "retry_after_ms"],
+        "properties": {
+          "result": {"type": "string", "const": "BUSINESS_IN_PROGRESS"},
+          "retry_after_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+        }
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "DECIDED"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/EmptyData"},
+              {"$ref": "#/components/schemas/InboundReadyResult"},
+              {"$ref": "#/components/schemas/NoBatchResult"},
+              {"$ref": "#/components/schemas/InboundRackFaceDoneResult"},
+              {"$ref": "#/components/schemas/RouteResult"},
+              {"$ref": "#/components/schemas/ReturnReadyResult"},
+              {"$ref": "#/components/schemas/RackDepartureReadyResult"},
+              {"$ref": "#/components/schemas/WaitResult"},
+              {"$ref": "#/components/schemas/TaskCompletedResult"},
+              {"$ref": "#/components/schemas/PlanRevisionStaleResult"},
+              {"$ref": "#/components/schemas/BusinessInProgressResult"}
+            ]
+          }
+        }
+      },
+      "EventReceivedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "RECEIVED"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/EmptyData"}
+        }
+      },
+      "EventDuplicateResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "DUPLICATE"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/EmptyData"}
+        }
+      },
+      "FactResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "enum": ["RECORDED", "DUPLICATE"]},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/EmptyData"}
+        }
+      },
+      "InboundRejectedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "REJECTED"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason_code"],
+            "properties": {
+              "reason_code": {
+                "type": "string",
+                "enum": ["INVALID_ENVELOPE", "UNSUPPORTED_OPERATION", "INVALID_DATA"]
+              }
+            }
+          }
+        }
+      },
+      "BusinessRejectedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "REJECTED"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason_code"],
+            "properties": {"reason_code": {"type": "string", "const": "INVALID_REQUEST"}}
+          }
+        }
+      },
+      "ConflictResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "CONFLICT"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason_code"],
+            "properties": {
+              "reason_code": {
+                "type": "string",
+                "enum": ["IDEMPOTENCY_CONFLICT", "REFERENCE_CONFLICT", "REVISION_CONFLICT", "STATE_CONFLICT"]
+              }
+            }
+          }
+        }
+      },
+      "UnavailableResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation_id", "code", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "code": {"type": "string", "const": "UNAVAILABLE"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/EmptyData"}
+        }
+      },
+      "TaskIssuedEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.task.issued@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/TaskIssuedData"}
+        }
+      },
+      "TaskQueueChangedEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.task.queue_changed@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/TaskQueueChangedData"}
+        }
+      },
+      "ManualTaskPlanDeltaEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "manual.task.plan_delta@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/ManualTaskPlanDeltaData"}
+        }
+      },
+      "ManualBinReleaseDecidedEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "manual.bin.release_decided@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/ManualBinReleaseDecidedData"}
+        }
+      },
+      "WorklineBinNgRemovedEvent": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.bin.ng_removed@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/WorklineBinNgRemovedData"}
+        }
+      },
+      "TaskPrepareRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.task.prepare@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/TaskPrepareData"}
+        }
+      },
+      "InboundBatchDecisionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.bin.inbound_batch_decide@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/InboundBatchDecisionData"}
+        }
+      },
+      "BinRouteDecisionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.bin.route_decide@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/BinRouteDecisionData"}
+        }
+      },
+      "ReturnBatchDecisionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.bin.return_batch_decide@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/ReturnBatchDecisionData"}
+        }
+      },
+      "RackDepartureDecisionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.rack.departure_decide@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/RackDepartureDecisionData"}
+        }
+      },
+      "TaskCompletionConfirmRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.task.completion_confirm@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/TaskCompletionConfirmData"}
+        }
+      },
+      "ManualBinWorkstationArrivedFact": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "manual.bin.workstation_arrived@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/ManualBinWorkstationArrivedData"}
+        }
+      },
+      "WorklineBinReturnedFact": {
+        "type": "object", "additionalProperties": false,
+        "required": ["operation_id", "operation", "timestamp", "data"],
+        "properties": {
+          "operation_id": {"$ref": "#/components/schemas/OperationId"},
+          "operation": {"type": "string", "const": "workline.bin.returned@v1"},
+          "timestamp": {"$ref": "#/components/schemas/Timestamp"},
+          "data": {"$ref": "#/components/schemas/WorklineBinReturnedData"}
+        }
+      }
+    }
+  }
+}

@@ -21,7 +21,7 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 派发已完成；`backend_rc = CLOSED`。GitLab 发布提交 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成
 不可变后端 RC 镜像 `88-f51677b`。
 前端在独立仓库关闭自己的 RC；真实 WMS/RCS/ECS、设备、版本组合、现场部署和业务验收不属于开发阶段关闭门禁。
-Phase 9–13 尚未开始。
+Phase 9 合同和详细实施计划已批准，生产代码尚未开始；Phase 10–13 尚未开始。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -31,8 +31,9 @@ Phase 9–13 尚未开始。
 
 **Phase 8 rough-sorter contract baseline:** `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md`（`Approved`）
 
-**Phase 9 manual-flow design baseline:** `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` §20
-（`ReviewRequired`；只冻结人工流程与所有权，严格 wire 尚未批准）
+**Phase 9 manual-flow baselines:** `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` §20 提供业务背景；
+可实施合同以 `docs/contracts/wms-manual-bin-processing-integration-requirements.md`、同级 OpenAPI 和设备附录为准
+（`ApprovedForImplementation`；生产代码、联调与验收尚未开始）。
 
 **Phase 12 automatic-business contract baselines:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`、
 `docs/contracts/wms-outbound-picking-task-integration-requirements.md`（均为 `ReviewRequired`）
@@ -142,7 +143,7 @@ Transport/Adapter/核心所有权。
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
 Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 后端功能和本机 Mock 已完成，
-后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9–13 尚未开始。
+后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 合同和详细计划已批准、生产代码未开始；Phase 10–13 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -601,20 +602,22 @@ Phase 6 Transport、人工线真实拓扑与供应商原始资料。
 前端进度和 Phase 8 现场验收不阻塞本阶段后端开发。
 
 **Scope:** 基础能力先独立交付 `BinExecution`、活动执行期 `PositionProjection`、资源围栏、确定位置和 `RECONCILING`；随后交付
-只依赖公开基础端口的 `manual_bin_processing`，负责 Task 驱动入站、人工工作位等待、WMS Bin 级释放决定、Epoch 级
-`RETURN_BUFFER` FIFO、回库与 NG。基础能力在没有插件时仍可安装、启动和测试，不生成虚假业务任务。
+只依赖公开基础端口的 `src/app/manual_bin_processing/` 业务应用模块，以及只依赖 SDK 的独立
+`workline_plugins/manual_bin_processing/` 纯逻辑插件。业务应用拥有 Task、事务和可靠编排；插件只把类型化 Fact 映射为封闭 Decision。
+基础能力不反向导入二者，在未激活人工业务且未安装插件时仍可启动、迁移和测试，不生成虚假业务任务。
 
 **Explicit out-of-scope:** PDA、物料子任务、库存事务、来源/目标储位业务裁决、机械臂业务、自动上架、自动拣货、满箱交换、
 复杂出库、第二个 WES 设备 Adapter、公共 HTTP Client、动态 capability registry 和通用工作流 DSL。
 
-**Deliverables:** 可独立运行和测试的 Bin 执行基础；独立 `manual_bin_processing` 包、fixture、测试、构建产物和显式装配；
+**Deliverables:** 可独立运行和测试的 Bin 执行基础；独立人工业务应用模块、`manual_bin_processing` 插件包、fixture、分层测试、构建产物和显式装配；
 `task_id + bin_id` 唯一进站、最终 Transport 结果与实扫身份门禁、WMS Bin 级释放、跨任务 FIFO、位置未知围栏和独立物理清场证据。
 
 **旧所有者删除或交接清单:** 本阶段直接替代的旧 owner 与 successor 同批删除；其余 Runtime/Session/Intent/Effect/Capability/
 Outbox/Hold 残余逐消费者形成 Phase 10 的 `DELETE → successor`、`DELETE → NONE` 或合法 `RETAIN` 清单。
 
-**测试所有权与重量要求:** 核心只验证 Bin 对象、端口和可靠性不变量；插件包只验证人工 Bin 业务；WMS Adapter 验证严格业务结果合同；
-供应商一致性验收验证设备附录。四者不得互相代证，纯人工业务测试不进入核心默认 pytest 或核心 HEAVY。
+**测试所有权与重量要求:** 基础测试只验证 Bin 对象、端口和可靠性不变量；业务应用测试验证 ManualTask、计数、事务和可靠编排；
+插件包只验证类型化 Fact 到封闭 Decision 的纯逻辑；WMS Adapter 验证严格业务结果合同；供应商一致性验收验证设备附录。各层不得互相代证，
+插件测试不进入核心默认 pytest 或核心 HEAVY。
 
 **与前后阶段的 atomic handoff:** 消费 Phase 6/7 基础能力和 Phase 8 已冻结的最小 SPI；向 Phase 10 交付经过真实人工纵向切片验证的
 最终基础端口和精确旧 owner 清单。本阶段不得直接消费 Phase 2 HTTP Transport 或实现第二个 Adapter。
@@ -623,7 +626,7 @@ Outbox/Hold 残余逐消费者形成 Phase 10 的 `DELETE → successor`、`DELE
 送 NG；位置未知不释放资源；业务完成、Bin 物理闭合和 Epoch 清场分别拥有唯一完成条件；核心无具体插件 fixture 或业务场景。
 
 **需要单独编写的子计划:** 启动前编写并批准
-`docs/superpowers/plans/2026-08-22-manual-bin-processing-convergence.md`；共同排空货架面决定 wire 未获批时，对应路径继续保持
+`docs/superpowers/plans/2026-08-22-phase9-manual-bin-processing-implementation.md`；共同排空货架面决定 wire 未获批时，对应路径继续保持
 `ReviewRequired/BLOCKED`，不得由计划或实现自行补齐。
 
 **风险及防止阶段越权的约束:** 禁止把人工入库/出库业务搬进 WES、为自动插件预建基础能力、从粗分计划复制业务状态机，或把
@@ -822,7 +825,7 @@ RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
 | 3 | Phase 5 后退役插件活动残留收敛 | Completed | `5fe59968` 已合入；deletion tombstone 已清理，完成计划已移出项目归档 |
 | 4 | Phase 8 粗分机后端 RC | Closed | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；Jenkins #88 已发布不可变镜像 `88-f51677b` |
-| 5 | Phase 9 最小 Bin 执行基础与人工业务闭环 | Gated | 人工严格 wire、真实拓扑、activation 和详细计划尚待批准 |
+| 5 | Phase 9 最小 Bin 执行基础与人工业务闭环 | Ready for implementation | 严格 wire、设备附录和详细计划已批准；生产代码、迁移和行为测试尚未开始 |
 | 6 | Phase 10 旧平台代码最终闭环清理 | Not started | 等待 Phase 9 successor/`NONE` 清单与退出门禁 |
 | 7 | Phase 11 首个干净产品 Schema 初始基线 | Not started | 等待 Phase 10 零旧路径与实施时 schema manifest |
 | 8 | Phase 12 自动业务插件持续交付 | Gated | 自动上架、自动拣货合同与各自详细计划仍为批准门禁 |
