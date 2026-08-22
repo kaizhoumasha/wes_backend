@@ -34,11 +34,15 @@ class FakeEvidenceService:
         return DeviceEvidenceReceipt(2, "EVENT:derived", False, None)
 
 
-def _client(service: FakeEvidenceService | None = None) -> TestClient:
+def _client(
+    service: FakeEvidenceService | None = None,
+    *,
+    raise_server_exceptions: bool = True,
+) -> TestClient:
     app = FastAPI()
     app.state.device_evidence_service = service or FakeEvidenceService()
     app.include_router(router, prefix="/api/v1/callback")
-    return TestClient(app)
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 def _result_payload() -> dict[str, object]:
@@ -188,6 +192,104 @@ def test_callback_parses_valid_json_without_requiring_json_media_type(
 
     assert response.status_code == 200
     assert response.json() == {"code": 200, "message": "ACK"}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(json.dumps(_result_payload()).encode("utf-16"), id="utf-16"),
+        pytest.param(json.dumps(_result_payload()).encode("utf-32"), id="utf-32"),
+        pytest.param(b"\xff", id="invalid-utf-8"),
+        pytest.param(
+            json.dumps(_result_payload()).replace('"data": {}', '"data": {"value": NaN}').encode(),
+            id="nan",
+        ),
+        pytest.param(
+            json.dumps(_result_payload()).replace('"data": {}', '"data": {"value": Infinity}').encode(),
+            id="infinity",
+        ),
+        pytest.param(
+            json.dumps(_result_payload()).replace('"data": {}', '"data": {"value": -Infinity}').encode(),
+            id="negative-infinity",
+        ),
+        pytest.param(
+            json.dumps(_result_payload()).replace('"data": {}', '"data": {"value": 1e400}').encode(),
+            id="positive-exponent-overflow",
+        ),
+        pytest.param(
+            json.dumps(_result_payload()).replace('"data": {}', '"data": {"value": -1e400}').encode(),
+            id="negative-exponent-overflow",
+        ),
+    ],
+)
+def test_callback_requires_utf8_standard_json(content: bytes) -> None:
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", content=content)
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/callback/result", _result_payload()),
+        ("/api/v1/callback/event", _event_payload()),
+    ],
+)
+@pytest.mark.parametrize("location", ["top-level", "nested"])
+def test_callback_rejects_duplicate_json_keys(path: str, payload: dict[str, object], location: str) -> None:
+    content = json.dumps(payload)
+    if location == "top-level":
+        content = content.replace('"device_code": "ARM-01"', '"device_code": "ARM-01", "device_code": "OTHER"')
+    else:
+        content = content.replace('"data": {}', '"data": {"value": 1, "value": 2}')
+
+    with _client() as client:
+        response = client.post(path, content=content)
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/callback/result", _result_payload()),
+        ("/api/v1/callback/event", _event_payload()),
+    ],
+)
+@pytest.mark.parametrize("surrogate", [r"\ud800", r"\udc00"])
+def test_callback_rejects_unpaired_unicode_surrogates(
+    path: str,
+    payload: dict[str, object],
+    surrogate: str,
+) -> None:
+    content = json.dumps(payload).replace('"data": {}', f'"data": {{"value": "{surrogate}"}}')
+
+    with _client() as client:
+        response = client.post(path, content=content)
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/callback/result", _result_payload()),
+        ("/api/v1/callback/event", _event_payload()),
+    ],
+)
+def test_callback_rejects_excessive_json_nesting(path: str, payload: dict[str, object]) -> None:
+    nested_data = '{"value":' * 10_000 + "0" + "}" * 10_000
+    content = json.dumps(payload).replace('"data": {}', f'"data": {nested_data}')
+
+    with _client(raise_server_exceptions=False) as client:
+        response = client.post(path, content=content)
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
 
 
 def test_invalid_envelope_does_not_echo_internal_metadata() -> None:

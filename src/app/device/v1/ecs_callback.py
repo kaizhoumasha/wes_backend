@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Protocol
 
 from fastapi import APIRouter, Request
@@ -48,6 +49,26 @@ class EcsCallbackRejection(RuntimeError):
         self.message = message
 
 
+def _reject_non_standard_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number: {value}")
+    return parsed
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 async def _decode_closed_body(request: Request, model: type[BaseModel]) -> BaseModel:
     chunks: list[bytes] = []
     size = 0
@@ -58,12 +79,18 @@ async def _decode_closed_body(request: Request, model: type[BaseModel]) -> BaseM
         chunks.append(chunk)
     body = b"".join(chunks)
     try:
-        payload = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        payload = json.loads(
+            body.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_non_standard_json_constant,
+            parse_float=_parse_finite_json_float,
+        )
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
         raise EcsCallbackRejection(400, "INVALID_ENVELOPE") from error
     try:
         return model.model_validate(payload)
-    except ValidationError as error:
+    except (ValidationError, RecursionError) as error:
         raise EcsCallbackRejection(400, "INVALID_ENVELOPE") from error
 
 
