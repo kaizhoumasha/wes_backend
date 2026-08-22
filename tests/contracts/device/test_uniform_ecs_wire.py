@@ -43,20 +43,45 @@ def _response(
     )
 
 
+def _status_entry(
+    device_code: str = "ARM-01", *, state_device_code: str | None = None, **state_overrides: object
+) -> dict[str, object]:
+    state: dict[str, object] = {
+        "device_code": state_device_code or device_code,
+        "mode": "AUTO",
+        "status": "IDLE",
+        "is_online": True,
+        "current_command_code": None,
+        "scenario": "success",
+        "updated_at": 1_786_032_000_000,
+    }
+    state.update(state_overrides)
+    return {
+        "device": {
+            "device_code": device_code,
+            "device_name": "机械臂 1",
+            "device_type": "ROBOTIC_ARM",
+            "role": "PLACEMENT_DEVICE",
+            "supported_commands": ["PICK"],
+            "supported_events": [],
+        },
+        "state": state,
+    }
+
+
 @pytest.mark.asyncio
 async def test_submit_uses_fixed_path_closed_envelope_and_no_auth_header() -> None:
-    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "ACCEPTED", "trace_id": "T-1"})])
+    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "Accepted", "trace_id": "T-1"})])
     adapter = EcsAdapter(transport)
 
     result = await adapter.submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={"source_location": "STATION-A", "target_location": "STATION-B"},
-        trace_id="T-1",
     )
 
     assert result.disposition is EcsSubmitDisposition.ACKNOWLEDGED
@@ -68,12 +93,11 @@ async def test_submit_uses_fixed_path_closed_envelope_and_no_auth_header() -> No
     assert json.loads(request.body) == {
         "device_code": "ARM-01",
         "command_code": "CMD-001",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
         "task_type": "PICK",
+        "priority": 1,
+        "timeout": 30_000,
         "timestamp": 1_786_032_000_000,
         "params": {"source_location": "STATION-A", "target_location": "STATION-B"},
-        "trace_id": "T-1",
     }
     assert request.response_limits.max_wire_bytes == 256 * 1024
     assert request.response_limits.max_decoded_bytes == 256 * 1024
@@ -87,12 +111,11 @@ async def test_submit_fails_closed_at_transport_boundary_after_deadline() -> Non
     result = await adapter.submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
         deadline_at=datetime(2026, 8, 13, 0, 0, 1),
     )
 
@@ -102,24 +125,7 @@ async def test_submit_fails_closed_at_transport_boundary_after_deadline() -> Non
 
 @pytest.mark.asyncio
 async def test_status_uses_fixed_get_path_and_parses_closed_state() -> None:
-    transport = FakeOutboundHttpTransport(
-        [
-            _response(
-                200,
-                {
-                    "device_code": "ARM-01",
-                    "contract_key": "arm.pick",
-                    "contract_version": "2.0",
-                    "mode": "AUTO",
-                    "status": "IDLE",
-                    "current_command_code": None,
-                    "error_detail": None,
-                    "timestamp": 1_786_032_000_000,
-                },
-                headers=(("Cache-Control", "no-store"),),
-            )
-        ]
-    )
+    transport = FakeOutboundHttpTransport([_response(200, {"devices": [_status_entry()]})])
 
     status = await EcsAdapter(transport).fetch_status("ARM-01")
 
@@ -128,30 +134,52 @@ async def test_status_uses_fixed_get_path_and_parses_closed_state() -> None:
     assert request.path == "/api/v1/device/status"
     assert request.query == (("device_code", "ARM-01"),)
     assert request.headers == ()
-    assert status.mode.value == "AUTO"
-    assert status.status.value == "IDLE"
-    assert status.current_command_code is None
+    assert status.device.device_code == "ARM-01"
+    assert status.device.supported_commands == ("PICK",)
+    assert status.state.mode.value == "AUTO"
+    assert status.state.status.value == "IDLE"
+    assert status.state.is_online is True
+    assert status.state.current_command_code is None
 
 
 @pytest.mark.asyncio
-async def test_status_without_no_store_fails_closed() -> None:
-    transport = FakeOutboundHttpTransport(
-        [
-            _response(
-                200,
-                {
-                    "device_code": "ARM-01",
-                    "contract_key": "arm.pick",
-                    "contract_version": "2.0",
-                    "mode": "AUTO",
-                    "status": "IDLE",
-                    "current_command_code": None,
-                    "error_detail": None,
-                    "timestamp": 1_786_032_000_000,
-                },
-            )
-        ]
+async def test_status_allows_supplier_nullable_diagnostic_fields() -> None:
+    entry = _status_entry()
+    device = entry["device"]
+    state = entry["state"]
+    assert isinstance(device, dict)
+    assert isinstance(state, dict)
+    device.update(
+        {
+            "device_name": None,
+            "device_type": None,
+            "role": None,
+            "supported_commands": None,
+            "supported_events": None,
+        }
     )
+    state["scenario"] = None
+    transport = FakeOutboundHttpTransport([_response(200, {"devices": [entry]})])
+
+    status = await EcsAdapter(transport).fetch_status("ARM-01")
+
+    assert status.device.device_name is None
+    assert status.device.supported_commands is None
+    assert status.state.scenario is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "devices",
+    [
+        [],
+        [_status_entry("ARM-02")],
+        [_status_entry(state_device_code="ARM-02")],
+        [_status_entry(), _status_entry("ARM-02")],
+    ],
+)
+async def test_status_requires_exactly_one_matching_device(devices: list[dict[str, object]]) -> None:
+    transport = FakeOutboundHttpTransport([_response(200, {"devices": devices})])
     with pytest.raises(EcsStatusUnavailableError):
         await EcsAdapter(transport).fetch_status("ARM-01")
 
@@ -159,16 +187,15 @@ async def test_status_without_no_store_fails_closed() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trace_id", ["@", "T" * 121])
 async def test_invalid_response_trace_id_enters_reconciliation(trace_id: str) -> None:
-    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "ACCEPTED", "trace_id": trace_id})])
+    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "Accepted", "trace_id": trace_id})])
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
     assert result.disposition is EcsSubmitDisposition.RECONCILING
 
@@ -181,19 +208,18 @@ async def test_ack_without_json_media_type_enters_reconciliation() -> None:
                 OutboundHttpResult(
                     delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
                     status_code=200,
-                    decoded_body=b'{"code":200,"message":"ACCEPTED"}',
+                    decoded_body=b'{"code":200,"message":"Accepted"}',
                 )
             ]
         )
     ).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
     assert result.disposition is EcsSubmitDisposition.RECONCILING
 
@@ -210,12 +236,11 @@ async def test_explicit_not_accepted_status_can_retry_same_identity(status_code:
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
 
     assert result.disposition is EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED
@@ -237,12 +262,11 @@ async def test_unknown_status_message_combination_enters_reconciliation(status_c
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
 
     assert result.disposition is EcsSubmitDisposition.RECONCILING
@@ -258,12 +282,11 @@ async def test_capacity_response_requires_and_parses_retry_after() -> None:
     values = {
         "device_code": "ARM-01",
         "command_code": "CMD-001",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
         "task_type": "PICK",
-        "timestamp_ms": 1_786_032_000_000,
+        "priority": 1,
+        "timeout_ms": 30_000,
+        "timestamp": 1_786_032_000_000,
         "params": {},
-        "trace_id": None,
     }
     result = await EcsAdapter(accepted).submit_command(**values)
     malformed = await EcsAdapter(missing).submit_command(**values)
@@ -283,12 +306,11 @@ async def test_ambiguous_server_failure_enters_reconciliation(status_code: int) 
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
 
     assert result.disposition is EcsSubmitDisposition.RECONCILING
@@ -308,12 +330,11 @@ async def test_delivery_unknown_never_auto_retries() -> None:
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
-        contract_key="arm.pick",
-        contract_version="2.0",
         task_type="PICK",
-        timestamp_ms=1_786_032_000_000,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
 
     assert result.disposition is EcsSubmitDisposition.RECONCILING
@@ -321,19 +342,7 @@ async def test_delivery_unknown_never_auto_retries() -> None:
 
 @pytest.mark.asyncio
 async def test_malformed_or_unknown_status_fails_closed() -> None:
-    valid = {
-        "device_code": "ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
-        "mode": "AUTO",
-        "status": "IDLE",
-        "current_command_code": None,
-        "error_detail": None,
-        "timestamp": 1_786_032_000_000,
-    }
-    transport = FakeOutboundHttpTransport(
-        [_response(200, {**valid, "status": "PAUSED"}, headers=(("Cache-Control", "no-store"),))]
-    )
+    transport = FakeOutboundHttpTransport([_response(200, {"devices": [_status_entry(status="BROKEN")]})])
 
     with pytest.raises(EcsStatusUnavailableError):
         await EcsAdapter(transport).fetch_status("ARM-01")
@@ -344,25 +353,21 @@ async def test_malformed_or_unknown_status_fails_closed() -> None:
     "invalid",
     [
         {"current_command_code": "__MISSING__"},
-        {"timestamp": 2**63},
-        {"timestamp": "1786032000000"},
+        {"updated_at": 2**63},
+        {"updated_at": "1786032000000"},
+        {"is_online": 1},
+        {"mode": None},
+        {"status": None},
     ],
 )
 async def test_status_rejects_incomplete_or_non_int64_wire(invalid: dict) -> None:
-    payload = {
-        "device_code": "ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
-        "mode": "AUTO",
-        "status": "IDLE",
-        "current_command_code": None,
-        "error_detail": None,
-        "timestamp": 1_786_032_000_000,
-    }
+    entry = _status_entry()
+    state = entry["state"]
+    assert isinstance(state, dict)
     if invalid.get("current_command_code") == "__MISSING__":
-        payload.pop("current_command_code")
+        state.pop("current_command_code")
     else:
-        payload.update(invalid)
-    transport = FakeOutboundHttpTransport([_response(200, payload, headers=(("Cache-Control", "no-store"),))])
+        state.update(invalid)
+    transport = FakeOutboundHttpTransport([_response(200, {"devices": [entry]})])
     with pytest.raises(EcsStatusUnavailableError):
         await EcsAdapter(transport).fetch_status("ARM-01")

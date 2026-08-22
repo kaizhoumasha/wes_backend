@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -11,13 +12,16 @@ import pytest_asyncio
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
-from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEvent
+from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEventReport
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.device.services.device_command_service import DeviceCommandService
+from src.app.device.services.device_command_service import (
+    DeviceCommandCapacityError,
+    DeviceCommandIdentityConflictError,
+    DeviceCommandService,
+)
 from src.app.device.services.device_evidence_service import (
-    DeviceEvidenceConflictError,
     DeviceEvidenceService,
 )
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
@@ -92,17 +96,54 @@ def _command(binding: LineRunEpochDeviceBinding, code: str, status: CommandStatu
     )
 
 
-def _event(source_event_id: str, *, marker: str) -> EcsDeviceEvent:
-    return EcsDeviceEvent(
-        device_code=f"ARM-{uuid4().hex[:12]}",
-        contract_key="arm.pick",
-        contract_version="2.0",
-        event_type="DEVICE_CONTRACT_EVENT",
-        timestamp=1_786_579_204_000,
-        source_event_id=source_event_id,
-        data={"marker": marker},
-        trace_id=f"TRACE-{marker}",
+def _manual_command(identity: str, code: str, status: CommandStatus = CommandStatus.PENDING) -> DeviceCommand:
+    return DeviceCommand(
+        command_code=code,
+        device_code=f"RS-MOCK-PLACEMENT-{identity[-8:]}",
+        line_run_epoch_id=None,
+        device_binding_id=None,
+        execution_ref_type="MANUAL_DEBUG",
+        execution_ref_id=identity,
+        material_execution_id=None,
+        contract_key="rough_sorter.placement_device",
+        contract_version="1.0",
+        task_type="PICK_AND_PUT",
+        params={"target_code": "OUTLET-1"},
+        payload_digest=identity.ljust(64, "x")[:64],
+        deadline_at=datetime(2026, 8, 24),
+        endpoint_base_url="http://ecs-mock:8080",
+        command_timeout_ms=30_000,
+        status=status,
     )
+
+
+def _event(device_code: str, *, marker: str) -> EcsDeviceEventReport:
+    return EcsDeviceEventReport(
+        device_code=device_code,
+        event_type="SCAN_COMPLETED",
+        timestamp=1_786_579_204_000,
+        data={"location": f"STATION-{marker}", "barcode": f"BARCODE-{marker}"},
+    )
+
+
+class _StaticEventEpochRepository:
+    def __init__(self, binding: SimpleNamespace) -> None:
+        self._binding = binding
+
+    async def get_active_binding_for_device(self, _db: object, _device_code: str) -> SimpleNamespace:
+        return self._binding
+
+
+class _BlockingEventEpochRepository(_StaticEventEpochRepository):
+    def __init__(self, binding: SimpleNamespace, *, reached: asyncio.Event, release: asyncio.Event) -> None:
+        super().__init__(binding)
+        self._reached = reached
+        self._release = release
+
+    async def get_active_binding_for_device(self, _db: object, _device_code: str) -> SimpleNamespace:
+        self._reached.set()
+        await self._release.wait()
+        return self._binding
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -112,14 +153,18 @@ async def cleanup_device_command_constraint_rows(integration_session_factory):
     yield
 
     async with integration_session_factory.begin() as db:
-        evidence_ids = select(InboundEvidence.id).where(
-            InboundEvidence.source_identity.like("DEVICE-COMMAND-CONSTRAINT-EVENT-%")
-        )
+        evidence_ids = select(InboundEvidence.id).where(InboundEvidence.device_code.like("ARM-DEVICE-COMMAND-EVENT-%"))
         epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like("EPOCH-DEVICE-COMMAND-CONSTRAINT-%"))
         device_ids = select(Device.id).where(Device.device_code.like("ARM-DEVICE-COMMAND-CONSTRAINT-%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like("LINE-DEVICE-COMMAND-CONSTRAINT-%"))
         await db.execute(
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
+        )
+        await db.execute(
+            delete(DeviceCommand).where(
+                DeviceCommand.execution_ref_type == "MANUAL_DEBUG",
+                DeviceCommand.execution_ref_id.like("DEVICE-COMMAND-CONSTRAINT-MANUAL-%"),
+            )
         )
         await db.execute(delete(DeviceCommand).where(DeviceCommand.line_run_epoch_id.in_(epoch_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
@@ -149,11 +194,218 @@ async def test_postgresql_execution_identity_remains_unique_after_terminal_closu
 
 
 @pytest.mark.asyncio
+async def test_postgresql_accepts_complete_manual_debug_command_without_epoch_or_device_master(
+    integration_session_factory,
+) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        command = _manual_command(identity, f"CMD-{uuid4().hex}")
+        db.add(command)
+        await db.flush()
+
+        assert command.id is not None
+        assert command.line_run_epoch_id is None
+        assert command.device_binding_id is None
+
+
+@pytest.mark.asyncio
+async def test_postgresql_rejects_incomplete_manual_debug_context(integration_session_factory) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        command = _manual_command(identity, f"CMD-{uuid4().hex}")
+        command.endpoint_base_url = None
+        db.add(command)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_manual_debug_identity_remains_unique_without_epoch(integration_session_factory) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        first = _manual_command(identity, f"CMD-{uuid4().hex}-1", CommandStatus.SUCCEEDED)
+        second = _manual_command(identity, f"CMD-{uuid4().hex}-2", CommandStatus.PENDING)
+        second.device_code = f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}"
+        db.add(first)
+        await db.flush()
+        db.add(second)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_concurrent_manual_debug_same_identity_replays_original_handle(
+    integration_session_factory,
+) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    request = {
+        "client_request_id": identity,
+        "endpoint_base_url": "http://ecs-mock:8080",
+        "device_code": f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+        "contract_key": "rough_sorter.placement_device",
+        "contract_version": "1.0",
+        "command_timeout_ms": 30_000,
+        "task_type": "PICK_AND_PUT",
+        "params": {"target_code": "OUTLET-1"},
+        "trace_id": None,
+    }
+    first_service = DeviceCommandService(session_factory=integration_session_factory)
+    second_service = DeviceCommandService(session_factory=integration_session_factory)
+
+    results = await asyncio.gather(
+        first_service.create_manual_debug_command(**request),
+        second_service.create_manual_debug_command(**request),
+        return_exceptions=True,
+    )
+
+    assert all(not isinstance(result, Exception) for result in results)
+    assert len({result.command_code for result in results if not isinstance(result, Exception)}) == 1
+    async with integration_session_factory() as db:
+        commands = list(
+            (
+                await db.execute(
+                    select(DeviceCommand).where(
+                        DeviceCommand.execution_ref_type == "MANUAL_DEBUG",
+                        DeviceCommand.execution_ref_id == identity,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_postgresql_manual_debug_same_identity_rejects_different_device(
+    integration_session_factory,
+) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    request = {
+        "client_request_id": identity,
+        "endpoint_base_url": "http://ecs-mock:8080",
+        "contract_key": "rough_sorter.placement_device",
+        "contract_version": "1.0",
+        "command_timeout_ms": 30_000,
+        "task_type": "PICK_AND_PUT",
+        "params": {"target_code": "OUTLET-1"},
+        "trace_id": None,
+    }
+    service = DeviceCommandService(session_factory=integration_session_factory)
+
+    await service.create_manual_debug_command(
+        **request,
+        device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+    )
+    with pytest.raises(DeviceCommandIdentityConflictError):
+        await service.create_manual_debug_command(
+            **request,
+            device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+        )
+
+
+@pytest.mark.asyncio
+async def test_postgresql_concurrent_manual_debug_same_identity_different_devices_conflict(
+    integration_session_factory,
+) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    request = {
+        "client_request_id": identity,
+        "endpoint_base_url": "http://ecs-mock:8080",
+        "contract_key": "rough_sorter.placement_device",
+        "contract_version": "1.0",
+        "command_timeout_ms": 30_000,
+        "task_type": "PICK_AND_PUT",
+        "params": {"target_code": "OUTLET-1"},
+        "trace_id": None,
+    }
+    first_service = DeviceCommandService(session_factory=integration_session_factory)
+    second_service = DeviceCommandService(session_factory=integration_session_factory)
+
+    results = await asyncio.gather(
+        first_service.create_manual_debug_command(
+            **request,
+            device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+        ),
+        second_service.create_manual_debug_command(
+            **request,
+            device_code=f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}",
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert sum(isinstance(result, DeviceCommandIdentityConflictError) for result in results) == 1
+    async with integration_session_factory() as db:
+        commands = list(
+            (
+                await db.execute(
+                    select(DeviceCommand).where(
+                        DeviceCommand.execution_ref_type == "MANUAL_DEBUG",
+                        DeviceCommand.execution_ref_id == identity,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_postgresql_concurrent_manual_debug_different_identities_report_device_capacity(
+    integration_session_factory,
+) -> None:
+    device_code = f"RS-MOCK-PLACEMENT-{uuid4().hex[:8]}"
+    request = {
+        "endpoint_base_url": "http://ecs-mock:8080",
+        "device_code": device_code,
+        "contract_key": "rough_sorter.placement_device",
+        "contract_version": "1.0",
+        "command_timeout_ms": 30_000,
+        "task_type": "PICK_AND_PUT",
+        "params": {"target_code": "OUTLET-1"},
+        "trace_id": None,
+    }
+    first_service = DeviceCommandService(session_factory=integration_session_factory)
+    second_service = DeviceCommandService(session_factory=integration_session_factory)
+
+    results = await asyncio.gather(
+        first_service.create_manual_debug_command(
+            **request,
+            client_request_id=f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}",
+        ),
+        second_service.create_manual_debug_command(
+            **request,
+            client_request_id=f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}",
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    assert sum(isinstance(result, DeviceCommandCapacityError) for result in results) == 1
+    async with integration_session_factory() as db:
+        commands = list(
+            (
+                await db.execute(
+                    select(DeviceCommand).where(
+                        DeviceCommand.execution_ref_type == "MANUAL_DEBUG",
+                        DeviceCommand.device_code == device_code,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(commands) == 1
+
+
+@pytest.mark.asyncio
 async def test_postgresql_concurrent_same_event_returns_one_duplicate(
     integration_session_factory,
 ) -> None:
-    source_event_id = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
-    event = _event(source_event_id, marker="SAME")
+    device_code = f"ARM-DEVICE-COMMAND-EVENT-{uuid4().hex[:12]}"
+    event = _event(device_code, marker="SAME")
     first_service = DeviceEvidenceService(session_factory=integration_session_factory)
     second_service = DeviceEvidenceService(session_factory=integration_session_factory)
 
@@ -167,39 +419,106 @@ async def test_postgresql_concurrent_same_event_returns_one_duplicate(
 
 
 @pytest.mark.asyncio
-async def test_postgresql_concurrent_conflicting_event_persists_conflict(
+async def test_postgresql_same_event_remains_duplicate_when_binding_contract_switches_during_ingress(
     integration_session_factory,
 ) -> None:
-    source_event_id = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        _, _, first_epoch, _ = await _seed_topology(db)
+        _, _, second_epoch, _ = await _seed_topology(db)
+    assert first_epoch.id is not None
+    assert second_epoch.id is not None
+
+    device_code = f"ARM-DEVICE-COMMAND-EVENT-{uuid4().hex[:12]}"
+    event = _event(device_code, marker="EPOCH-SWITCH")
+    first_binding = SimpleNamespace(
+        line_run_epoch_id=first_epoch.id,
+        contract_key="arm.pick",
+        contract_version="2.0",
+    )
+    second_binding = SimpleNamespace(
+        line_run_epoch_id=second_epoch.id,
+        contract_key="arm.pick",
+        contract_version="3.0",
+    )
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    first_service = DeviceEvidenceService(
+        session_factory=integration_session_factory,
+        epoch_repository=_BlockingEventEpochRepository(first_binding, reached=reached, release=release),  # type: ignore[arg-type]
+    )
+    second_service = DeviceEvidenceService(
+        session_factory=integration_session_factory,
+        epoch_repository=_StaticEventEpochRepository(second_binding),  # type: ignore[arg-type]
+    )
+
+    first_task = asyncio.create_task(first_service.accept_event(event))
+    await asyncio.wait_for(reached.wait(), timeout=1)
+    try:
+        second_receipt = await second_service.accept_event(event)
+    finally:
+        release.set()
+    first_receipt = await first_task
+
+    assert {first_receipt.duplicate, second_receipt.duplicate} == {False, True}
+    assert first_receipt.evidence_id == second_receipt.evidence_id
+    async with integration_session_factory() as db:
+        evidence = (
+            await db.execute(
+                select(InboundEvidence).where(InboundEvidence.source_identity == first_receipt.source_event_id)
+            )
+        ).scalar_one()
+        conflicts = list(
+            (
+                await db.execute(
+                    select(InboundEvidenceConflict).where(
+                        InboundEvidenceConflict.source_identity == first_receipt.source_event_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert evidence.line_run_epoch_id == second_epoch.id
+    assert evidence.contract_version == "3.0"
+    assert conflicts == []
+
+
+@pytest.mark.asyncio
+async def test_postgresql_concurrent_distinct_event_payloads_persist_independently(
+    integration_session_factory,
+) -> None:
+    device_code = f"ARM-DEVICE-COMMAND-EVENT-{uuid4().hex[:12]}"
     first_service = DeviceEvidenceService(session_factory=integration_session_factory)
     second_service = DeviceEvidenceService(session_factory=integration_session_factory)
 
     results = await asyncio.gather(
-        first_service.accept_event(_event(source_event_id, marker="FIRST")),
-        second_service.accept_event(_event(source_event_id, marker="SECOND")),
+        first_service.accept_event(_event(device_code, marker="FIRST")),
+        second_service.accept_event(_event(device_code, marker="SECOND")),
         return_exceptions=True,
     )
 
-    assert sum(not isinstance(result, Exception) for result in results) == 1
-    assert sum(isinstance(result, DeviceEvidenceConflictError) for result in results) == 1
+    assert all(not isinstance(result, Exception) for result in results)
     async with integration_session_factory() as db:
         evidences = list(
-            (await db.execute(select(InboundEvidence).where(InboundEvidence.source_identity == source_event_id)))
+            (await db.execute(select(InboundEvidence).where(InboundEvidence.device_code == device_code)))
             .scalars()
             .all()
         )
         conflicts = list(
             (
                 await db.execute(
-                    select(InboundEvidenceConflict).where(InboundEvidenceConflict.source_identity == source_event_id)
+                    select(InboundEvidenceConflict).where(
+                        InboundEvidenceConflict.source_identity.in_(
+                            [result.source_event_id for result in results if not isinstance(result, Exception)]
+                        )
+                    )
                 )
             )
             .scalars()
             .all()
         )
-    assert len(evidences) == 1
-    assert len(conflicts) == 1
-    assert conflicts[0].first_evidence_id == evidences[0].id
+    assert len(evidences) == 2
+    assert conflicts == []
 
 
 @pytest.mark.asyncio

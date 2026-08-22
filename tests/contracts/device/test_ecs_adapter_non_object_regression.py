@@ -12,7 +12,7 @@ class StubTransport:
             delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
             status_code=200,
             decoded_body=b"[]",
-            response_headers=(("content-type", "application/json"), ("cache-control", "no-store")),
+            response_headers=(("content-type", "application/json"),),
         )
 
 
@@ -23,12 +23,11 @@ async def test_submit_non_object_json_enters_reconciling() -> None:
     result = await adapter.submit_command(
         device_code="ARM-01",
         command_code="CMD-1",
-        contract_key="ecs.uniform",
-        contract_version="1.0",
         task_type="MOVE",
-        timestamp_ms=1,
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
         params={},
-        trace_id=None,
     )
 
     assert result.disposition.value == "RECONCILING"

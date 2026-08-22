@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
@@ -64,6 +65,17 @@ class EndpointAdapterProviderPort(Protocol):
     async def get_adapter(self, endpoint_base_url: str) -> EcsAdapter: ...
 
 
+@dataclass(frozen=True, slots=True)
+class _FrozenDispatchContext:
+    device_code: str
+    line_run_epoch_id: int | None
+    device_binding_id: int | None
+    endpoint_base_url: str
+    contract_key: str
+    contract_version: str
+    status_max_age_ms: int | None
+
+
 class DeviceDispatchService:
     """HTTP 在事务外执行；每次写回都用 claim token 重新锁定。"""
 
@@ -84,7 +96,7 @@ class DeviceDispatchService:
         self._observations = observation_repository or device_status_observation_repository
         self._clock = clock
 
-    async def dispatch_one(self, *, now: datetime) -> bool:  # noqa: PLR0911
+    async def dispatch_one(self, *, now: datetime) -> bool:  # noqa: PLR0911, PLR0912
         claim_token = new_uuid7()
         async with self._sessions.begin() as db:
             command = await self._commands.claim_next_pending(
@@ -97,17 +109,41 @@ class DeviceDispatchService:
                 return False
             command_code = command.command_code
             device_code = command.device_code
-            binding = await self._epochs.get_binding_for_dispatch(
-                db,
-                line_run_epoch_id=command.line_run_epoch_id,
-                device_code=device_code,
-            )
-            if binding is None:
-                await self._commands.mark_reconciling(db, command, reason="EPOCH_BINDING_UNAVAILABLE")
-                return True
+            manual_debug = command.execution_ref_type == "MANUAL_DEBUG"
+            if manual_debug:
+                if command.endpoint_base_url is None or command.command_timeout_ms is None:
+                    await self._commands.mark_reconciling(db, command, reason="MANUAL_DEBUG_CONTEXT_INVALID")
+                    return True
+                dispatch_context = _FrozenDispatchContext(
+                    device_code=command.device_code,
+                    line_run_epoch_id=None,
+                    device_binding_id=None,
+                    endpoint_base_url=command.endpoint_base_url,
+                    contract_key=command.contract_key,
+                    contract_version=command.contract_version,
+                    status_max_age_ms=None,
+                )
+            else:
+                binding = await self._epochs.get_binding_for_dispatch(
+                    db,
+                    line_run_epoch_id=command.line_run_epoch_id,
+                    device_code=device_code,
+                )
+                if binding is None:
+                    await self._commands.mark_reconciling(db, command, reason="EPOCH_BINDING_UNAVAILABLE")
+                    return True
+                dispatch_context = _FrozenDispatchContext(
+                    device_code=binding.device_code,
+                    line_run_epoch_id=binding.line_run_epoch_id,
+                    device_binding_id=binding.id,
+                    endpoint_base_url=binding.endpoint_base_url,
+                    contract_key=binding.contract_key,
+                    contract_version=binding.contract_version,
+                    status_max_age_ms=binding.status_max_age_ms,
+                )
 
         try:
-            adapter = await self._adapter_provider.get_adapter(binding.endpoint_base_url)
+            adapter = await self._adapter_provider.get_adapter(dispatch_context.endpoint_base_url)
         except ValueError:
             await self._write_reconciling(command_code, claim_token, "EPOCH_BINDING_ENDPOINT_INVALID")
             return True
@@ -115,35 +151,49 @@ class DeviceDispatchService:
             await self._write_retryable(command_code, claim_token, now=now)
             return True
 
-        try:
-            status = await adapter.fetch_status(device_code)
-        except Exception:
-            # 状态探测发生在命令发送前，失败时可证明请求未离开 WES。
-            await self._write_retryable(command_code, claim_token, now=now)
-            return True
-
-        # 新鲜度必须以状态响应到达 WES 的时间为基准；领取时间早于 ECS 响应时间，
-        # 会把正常状态误判为未来数据。
-        observed_at = self._clock()
-        async with self._sessions.begin() as db:
-            command = await self._commands.get_claimed_for_update(
-                db, command_code=command_code, claim_token=claim_token
-            )
-            if command is None:
-                return True
-            await self._observations.add_status_observation(
-                db,
-                _status_observation(command, status, observed_at),
-            )
-            if command.deadline_at <= observed_at:
-                await self._commands.mark_timed_out(db, command)
-                return True
+        if manual_debug:
+            async with self._sessions.begin() as db:
+                command = await self._commands.get_claimed_for_update(
+                    db, command_code=command_code, claim_token=claim_token
+                )
+                if command is None:
+                    return True
+                if command.deadline_at <= self._clock():
+                    await self._commands.mark_timed_out(db, command)
+                    return True
+                submit_snapshot = _submit_snapshot(command)
+        else:
             try:
-                self.ensure_admissible(command=command, binding=binding, status=status, observed_at=observed_at)
-            except DeviceDispatchAdmissionError as error:
-                await self._commands.mark_failed(db, command, failure_code=error.code)
+                status = await adapter.fetch_status(device_code)
+            except Exception:
+                # 状态探测发生在命令发送前，失败时可证明请求未离开 WES。
+                await self._write_retryable(command_code, claim_token, now=now)
                 return True
-            submit_snapshot = _submit_snapshot(command)
+
+            # 新鲜度必须以状态响应到达 WES 的时间为基准；领取时间早于 ECS 响应时间，
+            # 会把正常状态误判为未来数据。
+            observed_at = self._clock()
+            async with self._sessions.begin() as db:
+                command = await self._commands.get_claimed_for_update(
+                    db, command_code=command_code, claim_token=claim_token
+                )
+                if command is None:
+                    return True
+                await self._observations.add_status_observation(
+                    db,
+                    _status_observation(command, status, observed_at),
+                )
+                if command.deadline_at <= observed_at:
+                    await self._commands.mark_timed_out(db, command)
+                    return True
+                try:
+                    self.ensure_admissible(
+                        command=command, binding=dispatch_context, status=status, observed_at=observed_at
+                    )
+                except DeviceDispatchAdmissionError as error:
+                    await self._commands.mark_failed(db, command, failure_code=error.code)
+                    return True
+                submit_snapshot = _submit_snapshot(command)
 
         if self._clock() >= command.deadline_at:
             async with self._sessions.begin() as db:
@@ -210,30 +260,44 @@ class DeviceDispatchService:
     def ensure_admissible(
         *,
         command: DeviceCommand,
-        binding: LineRunEpochDeviceBinding,
+        binding: LineRunEpochDeviceBinding | _FrozenDispatchContext,
         status: EcsDeviceStatus,
         observed_at: datetime,
     ) -> None:
-        if status.device_code != command.device_code or binding.device_code != command.device_code:
+        context = (
+            binding
+            if isinstance(binding, _FrozenDispatchContext)
+            else _FrozenDispatchContext(
+                device_code=binding.device_code,
+                line_run_epoch_id=binding.line_run_epoch_id,
+                device_binding_id=binding.id,
+                endpoint_base_url=binding.endpoint_base_url,
+                contract_key=binding.contract_key,
+                contract_version=binding.contract_version,
+                status_max_age_ms=binding.status_max_age_ms,
+            )
+        )
+        state = status.state
+        if status.device.device_code != command.device_code or context.device_code != command.device_code:
             raise DeviceDispatchAdmissionError("DEVICE_IDENTITY_MISMATCH")
         if (
-            command.device_binding_id != binding.id
-            or command.line_run_epoch_id != binding.line_run_epoch_id
-            or status.contract_key != binding.contract_key
-            or status.contract_version != binding.contract_version
-            or command.contract_key != binding.contract_key
-            or command.contract_version != binding.contract_version
+            command.device_binding_id != context.device_binding_id
+            or command.line_run_epoch_id != context.line_run_epoch_id
+            or command.contract_key != context.contract_key
+            or command.contract_version != context.contract_version
         ):
             raise DeviceDispatchAdmissionError("DEVICE_CONTRACT_MISMATCH")
         observed_at_ms = int(observed_at.replace(tzinfo=UTC).timestamp() * 1000)
-        age_ms = observed_at_ms - status.timestamp
-        if age_ms < 0 or age_ms > binding.status_max_age_ms:
+        age_ms = observed_at_ms - state.updated_at
+        if context.status_max_age_ms is None or age_ms < 0 or age_ms > context.status_max_age_ms:
             raise DeviceDispatchAdmissionError("DEVICE_STATUS_STALE")
-        if status.mode is not EcsDeviceMode.AUTO:
+        if not state.is_online:
+            raise DeviceDispatchAdmissionError("DEVICE_OFFLINE")
+        if state.mode is not EcsDeviceMode.AUTO:
             raise DeviceDispatchAdmissionError("DEVICE_MODE_NOT_AUTO")
-        if status.status is not EcsDeviceState.IDLE:
+        if state.status is not EcsDeviceState.IDLE:
             raise DeviceDispatchAdmissionError("DEVICE_NOT_IDLE")
-        if status.current_command_code is not None:
+        if state.current_command_code is not None:
             raise DeviceDispatchAdmissionError("DEVICE_HAS_ACTIVE_COMMAND")
 
 
@@ -245,14 +309,14 @@ def _status_observation(
     payload = status.model_dump(mode="json")
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return DeviceStatusObservation(
-        device_code=status.device_code,
+        device_code=status.device.device_code,
         command_code=command.command_code,
-        contract_key=status.contract_key,
-        contract_version=status.contract_version,
-        mode=status.mode,
-        status=status.status,
-        current_command_code=status.current_command_code,
-        device_timestamp=status.timestamp,
+        contract_key=command.contract_key,
+        contract_version=command.contract_version,
+        mode=status.state.mode,
+        status=status.state.status,
+        current_command_code=status.state.current_command_code,
+        device_timestamp=status.state.updated_at,
         received_at=received_at,
         payload_digest=hashlib.sha256(encoded).hexdigest(),
         raw_payload=payload,
@@ -261,15 +325,17 @@ def _status_observation(
 
 def _submit_snapshot(command: DeviceCommand) -> dict[str, object]:
     created_at = command.created_at.replace(tzinfo=UTC)
+    timeout_ms = command.command_timeout_ms
+    if timeout_ms is None:
+        timeout_ms = max(1, int((command.deadline_at - command.created_at).total_seconds() * 1000))
     return {
         "device_code": command.device_code,
         "command_code": command.command_code,
-        "contract_key": command.contract_key,
-        "contract_version": command.contract_version,
         "task_type": command.task_type,
-        "timestamp_ms": int(created_at.timestamp() * 1000),
+        "priority": 1,
+        "timeout_ms": timeout_ms,
+        "timestamp": int(created_at.timestamp() * 1000),
         "params": command.params,
-        "trace_id": command.trace_id,
     }
 
 

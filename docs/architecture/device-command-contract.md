@@ -1,11 +1,12 @@
 ---
 status: Approved
 created_at: 2026-06-25
-updated_at: 2026-08-13
+updated_at: 2026-08-23
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 wire_authority: docs/integration/third_party_integration_whitepaper.md
 scope: WES 核心设备命令基础能力边界
 related:
+  - docs/hardware/SMT流水线接口调用说明书20260320-v1.pdf
   - docs/contracts/wms-rough-sorter-inbound-integration-requirements.md
   - docs/contracts/wms-inbound-putaway-integration-requirements.md
 ---
@@ -14,9 +15,8 @@ related:
 
 ## 1. 文档定位
 
-本文只定义 WES 核心共享的设备命令可靠性边界。供应商接入的固定路径、公共包络（envelope）、身份和
-同步接纳应答/异步回调（ACK/CALLBACK）语义以
-[`third_party_integration_whitepaper.md`](../integration/third_party_integration_whitepaper.md) 为顶层真源。
+本文只定义 WES 核心共享的设备命令可靠性边界。本轮 SMT 联调冻结 Command、Status、Result、Event 四个 wire；
+`SMT流水线接口调用说明书20260320-v1.pdf` 只提供设备、动作和状态枚举输入，不改变已冻结 wire 字段。
 
 能力所有权严格分为四层：
 
@@ -34,14 +34,17 @@ related:
 
 核心只保证以下不变量：
 
-1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；下发前确认目标设备为 `mode=AUTO`、`status=IDLE`、无活动命令，
-   状态观察未超过附录允许年龄，且状态接口返回的合同身份与活动 `LineRunEpoch` 冻结值一致。
+1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令下发前确认目标状态条目身份一致、
+   `is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令，且 `updated_at` 未超过冻结的允许年龄。合同身份只由 WES
+   命令与活动 `LineRunEpoch` binding 冻结，不要求 Status 返回；
+   `MANUAL_DEBUG` 命令按第 3 节直接冻结联调值并跳过状态预检。
 2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和截止时间事实。
 3. 同步 ACK 只表示设备接纳，不表示物理动作完成。
-4. 只有匹配当前命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象。
-5. `command_code` 最多绑定一个已接纳终态结果；已接纳的重复 CALLBACK 必须复用首次 ACK 且不重复推进，同一命令出现不同
-   结果身份、矛盾终态，或同一幂等身份对应不同载荷时必须拒绝并保留冲突证据。
-6. 未知、乱序或无法关联的结果只保存证据（evidence）和诊断（diagnostic），不推进当前对象。
+4. 只有匹配当前业务命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG`
+   CALLBACK 只闭合命令与 evidence，不进入业务 Decision。
+5. `command_code` 最多绑定一个已接纳终态结果；WES 内部使用 `RESULT:{command_code}` 作为结果身份。重复 CALLBACK 不重复推进，
+   同一身份对应不同载荷时拒绝并保留冲突证据。
+6. 未知、乱序或无法关联的结果拒绝接纳且不推进当前对象。
 7. 稳定身份始终绑定同一规范化语义载荷，包括明确拒绝的尝试。只有请求可证明未离开 WES 或设备明确返回“未接纳”时才能
    安全重提：载荷不变沿用原身份，合同修正改变载荷摘要时使用新身份。结果可能已送达、已接纳、幂等冲突或 ACK 未知时禁止
    换身份或自动重放；等待匹配回调，状态查询只补充活动证据，仍无法闭合时进入人工对账。
@@ -52,24 +55,48 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 
 最终 `DeviceCommand` 只保存执行可靠性所需的内部事实：
 
-- 稳定命令身份、目标设备、冻结 `LineRunEpoch` 和当前具体执行对象关联；
+- 稳定命令身份、目标设备，以及业务命令冻结的 `LineRunEpoch` 和当前具体执行对象关联；
 - 已按统一接口和设备合同附录验证的命令载荷（payload）不可变快照，包含 `contract_key` 和 `contract_version`；
 - 载荷摘要（payload digest）、截止时间、下发尝试和最终结果证据；
-- `PENDING / DISPATCHED / ACKNOWLEDGED / SUCCEEDED / FAILED / TIMED_OUT` 等通用生命周期；
+- `PENDING / DISPATCHING / ACKNOWLEDGED / RECONCILING / SUCCEEDED / FAILED / TIMED_OUT` 通用生命周期；
 - 关联（correlation）、追踪（trace）和诊断信息。
 
 具体字段名以最终模型为准；不得为当前旧模型保留别名、转换层或兼容字段。
 
+### 3.1 无业务联调例外
+
+现场供应商联调可以通过受权限控制的 Swagger API 创建 `execution_ref_type="MANUAL_DEBUG"` 命令。该命令：
+
+- 必须以 `client_request_id` 作为幂等身份，并直接指定 `device_code`；
+- 不关联 `LineRunEpoch`、设备 binding 或 `MaterialExecution`；
+- Swagger 只接收 `client_request_id`、`endpoint_base_url`、`device_code`、`timeout`、`task_type` 和 `params`；
+  WES 在命令行记录中冻结规范化后的局域网 Endpoint、固定内部合同元数据和超时；
+- 仅将 `device_code`、`command_code`、`task_type`、固定 `priority=1`、`timeout`、Unix 毫秒 `timestamp`
+  和 `params` 发送给 ECS；WES 合同元数据和 trace 不进入 ECS 包络；
+- 复用相同的 Celery 扫描派发、统一 ECS wire、CALLBACK ingress、evidence 和 PostgreSQL 生命周期；
+- 只能通过查询接口观察命令与规范化 CALLBACK，不触发 WorkLine、插件或业务对象推进。
+
+这是一条受限的联调创建入口，不是供应商私有协议适配层。WES 仍只发送白皮书统一命令包络，供应商 ECS/网关负责内部协议转换。
+
 ## 4. 统一接口与设备附录边界
 
-顶层白皮书统一定义：
+本轮冻结的顶层白皮书 wire 定义：
 
 - `POST /api/v1/device/command`；
-- `GET /api/v1/device/status?device_code={device_code}`；
+- `GET /api/v1/device/status?device_code={device_code}`；不传 Query 时返回当前 ECS 的全部设备；
 - `POST /api/v1/callback/result`；
 - `POST /api/v1/callback/event`；
-- 公共包络、部署级唯一事件身份、命令/结果/事件/状态的附录版本证明、单设备单活动命令、明确拒绝/安全重提、命令唯一终态、
-  重复/冲突和 ACK/CALLBACK 语义。
+- Command 顶层只含 `device_code`、`command_code`、`task_type`、`priority`、`timeout`、`timestamp`、`params`；
+- Result 顶层只含 `command_code`、`device_code`、`result`、`finish_time`、`data`、`error_detail`；
+- Event 顶层只含 `device_code`、`event_type`、`timestamp`、`data`，设备专属业务字段由合同附录约束；
+- Status 顶层只含 `devices` 数组，每项严格包含 `device` 元数据和 `state`；正常派发只使用 `state` 的身份、在线、模式、
+  状态、活动命令和更新时间字段，元数据与 `scenario` 仅作诊断；
+- Command/Result/Event 外部时间统一使用 Unix 毫秒；事件内部身份为
+  `EVENT:{sha256(device_code + event_type + timestamp + canonical data)}`；
+- ECS 同步接纳应答为整数 `code=200`、`message="Accepted"`；WES CALLBACK 应答为整数 `code=200`、`message="ACK"`。
+
+`contract_key`、`contract_version` 和 `source_event_id` 是 WES 内部治理与幂等字段，不要求 ECS 传输。顶层协议不提供 Cancel，
+白皮书旧版自动重试策略不恢复。
 
 每个实际设备的获批合同附录只定义：
 

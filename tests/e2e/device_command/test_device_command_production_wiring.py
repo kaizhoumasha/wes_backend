@@ -17,6 +17,7 @@ from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
+from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.contracts.wms_integration.provider_profile_support import (
     build_provider_profile_payload,
@@ -38,6 +39,110 @@ pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
 DISPATCH_TASK = "src.celery_app.tasks.device_command.dispatch_device_commands_batch"
 EVIDENCE_TASK = "src.celery_app.tasks.device_command.process_device_evidence_batch"
+
+
+async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postgresql(
+    tmp_path,
+    integration_session_factory,
+) -> None:
+    database_url = os.environ["INTEGRATION_DATABASE_URL"]
+    redis_url = os.environ["INTEGRATION_REDIS_URL"]
+    suffix = uuid4().hex[:12]
+    command_code: str | None = None
+    callback_server: WesCallbackServer | None = None
+    ecs_server: UniformEcsServer | None = None
+    worker: DeviceCommandBrokerWorker | None = None
+    success = False
+
+    async def _cleanup_database() -> None:
+        if command_code is None:
+            return
+        async with integration_session_factory.begin() as db:
+            evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
+            await db.execute(
+                delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
+            )
+            await db.execute(
+                delete(DeviceStatusObservation).where(DeviceStatusObservation.command_code == command_code)
+            )
+            await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
+
+    try:
+        callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
+        ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
+        provider_payload = build_provider_profile_payload()
+        provider_payload["server_url"] = ecs_server.url
+        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
+        worker = DeviceCommandBrokerWorker(
+            database_url=database_url,
+            redis_url=redis_url,
+            provider_file=provider_file,
+        )
+        worker.start()
+
+        service = DeviceCommandService(session_factory=integration_session_factory)
+        handle = await service.create_manual_debug_command(
+            client_request_id=new_uuid7(),
+            endpoint_base_url=ecs_server.url,
+            device_code=f"ARM-E2E-MANUAL-{suffix}",
+            contract_key="arm.pick",
+            contract_version="2.0",
+            command_timeout_ms=30_000,
+            task_type="PICK",
+            params={"source_location": "STATION-A", "target_location": "STATION-B"},
+            trace_id=f"TRACE-MANUAL-{suffix}",
+        )
+        command_code = handle.command_code
+
+        assert worker.run_task(DISPATCH_TASK) == 1
+        assert worker.run_task(EVIDENCE_TASK) == 1
+
+        snapshot = await service.get_command_snapshot(command_code)
+        async with integration_session_factory() as db:
+            command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == command_code))
+            evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.command_code == command_code))
+
+        assert command is not None and command.status == CommandStatus.SUCCEEDED
+        assert command.line_run_epoch_id is None
+        assert command.device_binding_id is None
+        assert command.material_execution_id is None
+        assert evidence is not None and evidence.line_run_epoch_id is None
+        assert evidence.material_execution_id is None
+        assert snapshot.callback is not None and snapshot.callback.result == "SUCCESS"
+        assert ecs_server.status_requests == []
+        assert len(ecs_server.command_requests) == 1
+        assert set(ecs_server.command_requests[0]) == {
+            "device_code",
+            "command_code",
+            "task_type",
+            "priority",
+            "timeout",
+            "timestamp",
+            "params",
+        }
+        assert isinstance(ecs_server.command_requests[0]["timestamp"], int)
+        assert ecs_server.callback_errors == []
+        success = True
+    finally:
+        cleanup_errors: list[BaseException] = []
+        for cleanup in (
+            (lambda: worker.close(success=success)) if worker is not None else None,
+            ecs_server.close if ecs_server is not None else None,
+            callback_server.close if callback_server is not None else None,
+        ):
+            if cleanup is None:
+                continue
+            try:
+                cleanup()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        try:
+            await _cleanup_database()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        if cleanup_errors:
+            raise BaseExceptionGroup("MANUAL_DEBUG DeviceCommand E2E cleanup failed", cleanup_errors)
 
 
 async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
@@ -192,9 +297,7 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
         assert ecs_server.status_requests == [f"ARM-E2E-{suffix}"]
         assert len(ecs_server.command_requests) == 1
         assert ecs_server.callback_errors == []
-        assert ecs_server.callback_responses == [
-            {"status": 200, "body": {"code": 200, "message": "ACK", "trace_id": f"TRACE-{suffix}"}}
-        ]
+        assert ecs_server.callback_responses == [{"status": 200, "body": {"code": 200, "message": "ACK"}}]
         success = True
     finally:
         cleanup_errors: list[BaseException] = []

@@ -40,6 +40,25 @@ MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
         contract_version="2.0",
         supported_commands=("PICK_AND_PLACE", "MOVE"),
     ),
+    "RS-MOCK-PLACEMENT-01": MockEcsDevice(
+        device_code="RS-MOCK-PLACEMENT-01",
+        device_name="粗分拣放置设备",
+        device_type="ROUGH_SORTER_PLACEMENT",
+        role="PLACEMENT_DEVICE",
+        contract_key="rough_sorter.placement_device",
+        contract_version="1.0",
+        supported_commands=("PICK_AND_PUT",),
+    ),
+    "STATION_SCAN1": MockEcsDevice(
+        device_code="STATION_SCAN1",
+        device_name="SMT 流水线扫描工位 1",
+        device_type="SCAN_PLATFORM",
+        role="SCANNER_ROUTER",
+        contract_key="third_party_integration",
+        contract_version="1.1",
+        supported_commands=("MOVE_FORWARD", "MOVE_BACKWARD", "MOVE_LEFT", "MOVE_RIGHT"),
+        supported_events=("SCAN_COMPLETED",),
+    ),
 }
 
 

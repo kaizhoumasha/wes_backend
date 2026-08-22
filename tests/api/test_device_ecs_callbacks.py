@@ -13,7 +13,6 @@ from pydantic import BaseModel
 
 from src.app.device.contracts import DeviceEvidenceReceipt
 from src.app.device.services.device_evidence_service import (
-    DeviceEventContractMismatchError,
     DeviceEvidenceConflictError,
     UnknownDeviceCommandError,
 )
@@ -27,12 +26,12 @@ class FakeEvidenceService:
     async def accept_result(self, result):
         if self.failure is not None:
             raise self.failure
-        return DeviceEvidenceReceipt(1, result.source_event_id, False, result.trace_id)
+        return DeviceEvidenceReceipt(1, f"RESULT:{result.command_code}", False, None)
 
     async def accept_event(self, event):
         if self.failure is not None:
             raise self.failure
-        return DeviceEvidenceReceipt(2, event.source_event_id, False, event.trace_id)
+        return DeviceEvidenceReceipt(2, "EVENT:derived", False, None)
 
 
 def _client(service: FakeEvidenceService | None = None) -> TestClient:
@@ -46,27 +45,19 @@ def _result_payload() -> dict[str, object]:
     return {
         "command_code": "CMD-001",
         "device_code": "ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
         "result": "SUCCESS",
         "finish_time": 1_786_579_204_000,
-        "source_event_id": "RESULT-001",
         "data": {},
         "error_detail": None,
-        "trace_id": "TRACE-001",
     }
 
 
 def _event_payload() -> dict[str, object]:
     return {
         "device_code": "ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
-        "event_type": "DEVICE_CONTRACT_EVENT",
+        "event_type": "SCAN_COMPLETED",
         "timestamp": 1_786_579_204_000,
-        "source_event_id": "EVENT-001",
         "data": {},
-        "trace_id": "TRACE-002",
     }
 
 
@@ -76,9 +67,9 @@ def test_result_and_event_ack_only_after_service_returns() -> None:
         event = client.post("/api/v1/callback/event", json=_event_payload())
 
     assert result.status_code == 200
-    assert result.json() == {"code": 200, "message": "ACK", "trace_id": "TRACE-001"}
+    assert result.json() == {"code": 200, "message": "ACK"}
     assert event.status_code == 200
-    assert event.json() == {"code": 200, "message": "ACK", "trace_id": "TRACE-002"}
+    assert event.json() == {"code": 200, "message": "ACK"}
 
 
 def test_body_limit_is_checked_before_json_decode() -> None:
@@ -105,52 +96,109 @@ def test_unknown_command_and_identity_conflict_are_explicit() -> None:
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
 
 
-def test_parsed_callback_errors_use_closed_wire_and_preserve_trace_id() -> None:
-    with _client(FakeEvidenceService(DeviceEventContractMismatchError("ARM-01"))) as client:
-        mismatch = client.post("/api/v1/callback/event", json=_event_payload())
-
+def test_unavailable_callback_service_uses_closed_wire() -> None:
     app = FastAPI()
     app.include_router(router, prefix="/api/v1/callback")
     with TestClient(app) as client:
         unavailable = client.post("/api/v1/callback/result", json=_result_payload())
 
-    assert mismatch.status_code == 422
-    assert mismatch.json() == {"code": 422, "message": "ANNEX_VALIDATION_FAILED", "trace_id": "TRACE-002"}
     assert unavailable.status_code == 503
-    assert unavailable.json() == {"code": 503, "message": "TEMPORARILY_UNAVAILABLE", "trace_id": "TRACE-001"}
+    assert unavailable.json() == {"code": 503, "message": "TEMPORARILY_UNAVAILABLE"}
 
 
 def test_closed_envelope_rejects_legacy_or_flattened_fields() -> None:
-    payload = {**_result_payload(), "device_id": 7}
+    payload = {**_result_payload(), "contract_key": "arm.pick"}
     with _client() as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
     assert response.status_code == 400
     assert response.json()["message"] == "INVALID_ENVELOPE"
-    assert response.json()["trace_id"] == "TRACE-001"
 
 
-def test_callback_requires_json_media_type() -> None:
+@pytest.mark.parametrize(
+    ("path", "payload", "field"),
+    [
+        ("/api/v1/callback/result", _result_payload(), "actual_qty"),
+        ("/api/v1/callback/event", _event_payload(), "device_business_field"),
+    ],
+)
+def test_business_fields_must_remain_nested(path: str, payload: dict[str, object], field: str) -> None:
+    with _client() as client:
+        response = client.post(path, json={**payload, field: "flattened"})
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "field"),
+    [
+        ("/api/v1/callback/result", _result_payload(), "finish_time"),
+        ("/api/v1/callback/event", _event_payload(), "timestamp"),
+    ],
+)
+def test_callback_times_require_unix_milliseconds(path: str, payload: dict[str, object], field: str) -> None:
+    with _client() as client:
+        response = client.post(path, json={**payload, field: "2026-08-13T00:00:04Z"})
+
+    assert response.status_code == 400
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+
+
+def test_event_accepts_device_specific_business_data_inside_data() -> None:
+    payload = _event_payload()
+    payload["data"] = {"device_defined": {"value": "opaque"}}
+    with _client() as client:
+        response = client.post("/api/v1/callback/event", json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
+
+
+@pytest.mark.parametrize("path", ["/api/v1/callback/result", "/api/v1/callback/event"])
+def test_optional_business_data_may_be_omitted(path: str) -> None:
+    payload = _result_payload() if path.endswith("result") else _event_payload()
+    payload.pop("data")
+
+    with _client() as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "headers"),
+    [
+        ("/api/v1/callback/result", _result_payload(), {}),
+        ("/api/v1/callback/event", _event_payload(), {"content-type": "text/plain"}),
+    ],
+)
+def test_callback_parses_valid_json_without_requiring_json_media_type(
+    path: str,
+    payload: dict[str, object],
+    headers: dict[str, str],
+) -> None:
+    with _client() as client:
+        response = client.post(
+            path,
+            content=json.dumps(payload),
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
+
+
+def test_invalid_envelope_does_not_echo_internal_metadata() -> None:
     with _client() as client:
         response = client.post(
             "/api/v1/callback/result",
-            content=json.dumps(_result_payload()),
-            headers={"content-type": "text/plain"},
-        )
-    assert response.status_code == 400
-    assert response.json()["message"] == "INVALID_ENVELOPE"
-
-
-def test_invalid_envelope_preserves_max_length_valid_trace_id() -> None:
-    trace_id = "T" * 120
-    with _client() as client:
-        response = client.post(
-            "/api/v1/callback/result",
-            json={**_result_payload(), "trace_id": trace_id, "unexpected": True},
+            json={**_result_payload(), "trace_id": "TRACE-001"},
         )
 
     assert response.status_code == 400
-    assert response.json()["trace_id"] == trace_id
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
 
 
 def test_body_limit_stops_streaming_before_buffering_remaining_chunks() -> None:

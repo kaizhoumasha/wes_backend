@@ -83,7 +83,7 @@ class DeviceCommandRequestData(BaseMixin):
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     device_code: str = Field(min_length=1, max_length=100)
-    line_run_epoch_id: int
+    line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id")
     execution_ref_type: str = Field(min_length=1, max_length=50)
     execution_ref_id: str = Field(min_length=1, max_length=120)
     material_execution_id: int | None = Field(foreign_key="wes_biz.material_executions.id", index=True)
@@ -93,6 +93,8 @@ class DeviceCommandRequestData(BaseMixin):
     params: dict[str, DeviceCommandParamValue] = Field(default_factory=dict)
     deadline_at: datetime
     trace_id: str | None = Field(default=None, max_length=100)
+    endpoint_base_url: str | None = Field(default=None, max_length=255)
+    command_timeout_ms: int | None = Field(default=None, gt=0)
 
     @field_validator(
         "device_code",
@@ -160,6 +162,23 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
             name="device_command_status_valid",
         ),
         CheckConstraint("attempt_count >= 0", name="device_command_attempt_count_nonnegative"),
+        CheckConstraint(
+            "((execution_ref_type = 'MANUAL_DEBUG' AND line_run_epoch_id IS NULL "
+            "AND device_binding_id IS NULL AND endpoint_base_url IS NOT NULL "
+            "AND command_timeout_ms IS NOT NULL) OR "
+            "(execution_ref_type <> 'MANUAL_DEBUG' AND line_run_epoch_id IS NOT NULL "
+            "AND device_binding_id IS NOT NULL AND endpoint_base_url IS NULL "
+            "AND command_timeout_ms IS NULL))",
+            name="device_command_execution_context_complete",
+        ),
+        CheckConstraint(
+            "endpoint_base_url IS NULL OR length(endpoint_base_url) > 0",
+            name="device_command_endpoint_nonempty",
+        ),
+        CheckConstraint(
+            "command_timeout_ms IS NULL OR command_timeout_ms > 0",
+            name="device_command_timeout_positive",
+        ),
         UniqueConstraint("command_code", name="ux_device_commands_command_code"),
         Index(
             "ux_device_commands_unclosed_device",
@@ -176,11 +195,22 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
             "execution_ref_id",
             name="ux_device_commands_execution_identity",
         ),
+        Index(
+            "ux_device_commands_manual_debug_identity",
+            "execution_ref_id",
+            unique=True,
+            postgresql_where=text("execution_ref_type = 'MANUAL_DEBUG'"),
+            sqlite_where=text("execution_ref_type = 'MANUAL_DEBUG'"),
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 
     command_code: str = Field(min_length=1, max_length=100)
-    device_binding_id: int = Field(foreign_key="wes_biz.line_run_epoch_device_bindings.id", index=True)
+    device_binding_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.line_run_epoch_device_bindings.id",
+        index=True,
+    )
     payload_digest: str = Field(min_length=64, max_length=64)
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,

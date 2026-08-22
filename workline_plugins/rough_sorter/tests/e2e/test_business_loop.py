@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
@@ -78,12 +79,8 @@ def _recent_past_timestamp_ms(now_seconds: float) -> int:
 def _measurement_scan() -> dict[str, Any]:
     return {
         "device_code": "RS-E2E-MEASUREMENT",
-        "contract_key": "rough_sorter.measurement_device",
-        "contract_version": "1.0",
         "event_type": "SCAN_COMPLETED",
         "timestamp": int(time.time() * 1000),
-        "source_event_id": "RS-E2E-SCAN-001",
-        "trace_id": "RS-E2E-TRACE-001",
         "data": {
             "material_trace_id": TRACE_ID,
             "LotCode": "LOT-001",
@@ -254,10 +251,7 @@ class _EcsStubHandler(_JsonHandler):
         command = self._read_json()
         with self.state.lock:
             self.state.ecs_commands.append(command)
-        ack = {"code": 200, "message": "ACCEPTED"}
-        if isinstance(command.get("trace_id"), str):
-            ack["trace_id"] = command["trace_id"]
-        self._write_json(200, ack)
+        self._write_json(200, {"code": 200, "message": "Accepted"})
         threading.Thread(target=self._callback_success, args=(command,), daemon=True).start()
 
     def _callback_success(self, command: dict[str, Any]) -> None:
@@ -269,19 +263,14 @@ class _EcsStubHandler(_JsonHandler):
         callback = {
             "command_code": command["command_code"],
             "device_code": command["device_code"],
-            "contract_key": command["contract_key"],
-            "contract_version": command["contract_version"],
             "result": "SUCCESS",
-            "finish_time": int(time.time() * 1000),
-            "source_event_id": f"RESULT-{command['command_code']}",
+            "finish_time": int(datetime.now(UTC).timestamp() * 1000),
             "data": {
                 "material_trace_id": command["params"]["material_trace_id"],
                 "actual_position": command["params"]["target"],
             },
             "error_detail": None,
         }
-        if isinstance(command.get("trace_id"), str):
-            callback["trace_id"] = command["trace_id"]
         try:
             response = _json_request(f"{self.state.api_url}/api/v1/callback/result", callback, timeout=10)
             if response.get("code") != 200:

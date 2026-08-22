@@ -49,6 +49,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         # 先清空前一轮 lifecycle 可能遗留的策略；profile 编译失败时必须 fail closed。
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.rough_sorter_runtime = None
         _app.state.workline_start_service = None
@@ -91,6 +92,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             timeout_seconds=device_config.timeout_seconds,
             task_queue_gateway=task_queue_gateway,
         )
+        _app.state.device_command_runtime = device_command_runtime
         _app.state.device_evidence_service = device_command_runtime.evidence_service
         from deployment.rough_sorter_composition import build_rough_sorter_runtime, build_rough_sorter_start_service
 
@@ -151,6 +153,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
+        _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.rough_sorter_runtime = None
         _app.state.workline_start_service = None

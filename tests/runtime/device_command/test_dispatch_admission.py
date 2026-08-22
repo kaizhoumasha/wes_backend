@@ -52,18 +52,30 @@ def _command() -> DeviceCommand:
 
 
 def _status(**overrides: object) -> EcsDeviceStatus:
-    payload: dict[str, object] = {
-        "device_code": "ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
+    device_code = str(overrides.pop("device_code", "ARM-01"))
+    state: dict[str, object] = {
+        "device_code": device_code,
         "mode": "AUTO",
         "status": "IDLE",
+        "is_online": True,
         "current_command_code": None,
-        "error_detail": None,
-        "timestamp": 1_786_579_200_000,
+        "scenario": "success",
+        "updated_at": 1_786_579_200_000,
     }
-    payload.update(overrides)
-    return EcsDeviceStatus.model_validate(payload)
+    state.update(overrides)
+    return EcsDeviceStatus.model_validate(
+        {
+            "device": {
+                "device_code": device_code,
+                "device_name": "机械臂 1",
+                "device_type": "ROBOTIC_ARM",
+                "role": "PLACEMENT_DEVICE",
+                "supported_commands": ["PICK"],
+                "supported_events": [],
+            },
+            "state": state,
+        }
+    )
 
 
 def test_fresh_auto_idle_matching_status_is_admissible() -> None:
@@ -78,10 +90,10 @@ def test_fresh_auto_idle_matching_status_is_admissible() -> None:
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
+        ({"is_online": False}, "DEVICE_OFFLINE"),
         ({"mode": "MANUAL"}, "DEVICE_MODE_NOT_AUTO"),
         ({"status": "RUNNING", "current_command_code": "CMD-OTHER"}, "DEVICE_NOT_IDLE"),
         ({"current_command_code": "CMD-OTHER"}, "DEVICE_HAS_ACTIVE_COMMAND"),
-        ({"contract_version": "2.1"}, "DEVICE_CONTRACT_MISMATCH"),
         ({"device_code": "ARM-02"}, "DEVICE_IDENTITY_MISMATCH"),
     ],
 )
