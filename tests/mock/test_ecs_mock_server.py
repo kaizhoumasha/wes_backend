@@ -402,6 +402,16 @@ def test_ecs_mock_status_rejects_invalid_device_token() -> None:
     assert response.json()["message"] == "INVALID_ENVELOPE"
 
 
+def test_ecs_mock_scanner_status_metadata_matches_supplier_wire() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/api/v1/device/status", params={"device_code": "STATION_SCAN1"})
+
+    assert response.status_code == 200
+    device = response.json()["devices"][0]["device"]
+    assert device["device_type"] == "SCANNER"
+    assert device["role"] == "SCAN_STATION"
+
+
 def test_default_ecs_mock_implements_whitepaper_command_and_callback_wire(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)

@@ -52,8 +52,8 @@ MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
     "STATION_SCAN1": MockEcsDevice(
         device_code="STATION_SCAN1",
         device_name="SMT 流水线扫描工位 1",
-        device_type="SCAN_PLATFORM",
-        role="SCANNER_ROUTER",
+        device_type="SCANNER",
+        role="SCAN_STATION",
         contract_key="third_party_integration",
         contract_version="1.1",
         supported_commands=("MOVE_FORWARD", "MOVE_BACKWARD", "MOVE_LEFT", "MOVE_RIGHT"),
