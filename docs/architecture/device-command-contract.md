@@ -44,7 +44,8 @@ related:
    CALLBACK 只闭合命令与 evidence，不进入业务 Decision。
 5. `command_code` 最多绑定一个已接纳终态结果；WES 内部使用 `RESULT:{command_code}` 作为结果身份。重复 CALLBACK 不重复推进，
    同一身份对应不同载荷时拒绝并保留冲突证据。
-6. 未知、乱序或无法关联的结果拒绝接纳且不推进当前对象。
+6. 未知、乱序或无法关联的结果拒绝接纳且不推进当前对象；`PENDING` 命令收到 RESULT 时必须先进入
+   `RECONCILING` 并占住设备槽，确保 worker 不会继续下发物理动作。
 7. 稳定身份始终绑定同一规范化语义载荷，包括明确拒绝的尝试。只有请求可证明未离开 WES 或设备明确返回“未接纳”时才能
    安全重提：载荷不变沿用原身份，合同修正改变载荷摘要时使用新身份。结果可能已送达、已接纳、幂等冲突或 ACK 未知时禁止
    换身份或自动重放；等待匹配回调，状态查询只补充活动证据，仍无法闭合时进入人工对账。
@@ -98,7 +99,8 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 - ECS 同步接纳应答为整数 `code=200`、`message="Accepted"`；WES CALLBACK 应答为整数 `code=200`、`message="ACK"`。
 
 WES 另提供超级用户内部诊断接口 `GET /api/v1/device/evidences/stream`。它通过专用 Redis Pub/Sub 频道实时展示活动期间的
-Result/Event HTTP 尝试及 evidence `APPLIED/RECONCILING` 更新，不持久化、不重放，也不改变 callback ACK 或业务推进语义。
+Result/Event HTTP 尝试及 evidence `APPLIED/RECONCILING` 更新，不持久化、不重放；发布采用有界 best-effort，Redis 缓慢或
+不可用均不得改变 callback ACK 或业务推进语义。
 
 `contract_key`、`contract_version` 和 `source_event_id` 是 WES 内部治理与幂等字段，不要求 ECS 传输。顶层协议不提供 Cancel，
 白皮书旧版自动重试策略不恢复。

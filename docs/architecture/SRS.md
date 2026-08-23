@@ -3,7 +3,7 @@
 > **项目名称**: 休斯顿P9 智能仓储执行系统 (Houston P9 Intelligent Warehouse Execution System - WES)
 > **系统定位**: 独立部署的集成化控制中台 (Independent Integration & Control Middleware)
 > **文档版本**: 3.0 (Architecture Convergence)
-> **日期**: 2026-08-20
+> **日期**: 2026-08-24
 > **状态**: Current Requirements Baseline
 >
 > **文档层级**: 本文是产品范围、参与方职责和功能/非功能需求的唯一依据；
@@ -323,12 +323,15 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     `command_code` 和原载荷重新提交；合同错误修正后载荷摘要不变才沿用原身份，摘要改变则在明确未接纳前提下创建新身份。
     请求可能已送达、已 ACK、返回幂等冲突或结果未知时保持暂停并查询、等待回调或人工对账，禁止换身份绕过。设备命令出站
     HTTP 基础层每次调用只执行一次发送，不拥有自动重试配置。
-*   **未知结果处理**: 请求一旦可能被控制系统接收但未取得确定结果，命令进入 `TIMED_OUT`/远端结果未知状态，保留证据并暂停受影响对象，等待匹配的晚到 CALLBACK；无法闭合时进入人工对账，不自动重发。
+*   **未知结果处理**: 请求一旦可能被控制系统接收但未取得确定结果，命令进入 `TIMED_OUT`/远端结果未知状态，保留证据并暂停
+    受影响对象，等待匹配的晚到 CALLBACK；无法闭合时进入人工对账，不自动重发。命令仍为 `PENDING` 时收到 RESULT 属于乱序结果，
+    必须转入 `RECONCILING`、占住设备槽并拒绝继续下发。
 *   **状态监控**: 所有供应商实现统一设备状态查询，顶层返回 `devices` 数组，每项分为只用于诊断的 `device` 元数据和用于准入的
     `state`。运行模式映射为共享 `mode`，运行状态映射为共享 `status`；维护态属于 `mode=MAINTENANCE`，不得混入 `status`。
     业务命令只有条目身份一致、`is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令且 `updated_at` 未过期时才准入。
     `contract_key`、`contract_version` 由活动 `LineRunEpoch` 与命令在 WES 内部冻结，不要求 Status 返回；无业务
-    `MANUAL_DEBUG` 联调命令从受权限控制的 Swagger 请求冻结局域网 Endpoint，使用 WES 固定内部合同元数据并跳过状态预检。
+    `MANUAL_DEBUG` 联调命令从受权限控制的 Swagger 请求冻结局域网 Endpoint，使用 WES 固定内部合同元数据；它不使用业务
+    binding 或状态新鲜度合同，但必须在创建前和实际发送前校验实时 Status、活动命令与 `supported_commands`。
     `contract_key`、`contract_version` 和回调幂等身份不进入白皮书 1.1 外部 wire。
     核心据此维护通用 `DeviceRuntimeProjection`；业务命令状态查询只用于准入、诊断和对账，不替代最终 CALLBACK。
 
@@ -374,7 +377,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 *   **并发控制 (Concurrency Control)**:
     *   每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令只有 `mode=AUTO`、`status=IDLE`
-        且无活动命令时才能发送，`MANUAL_DEBUG` 按已批准的无业务联调边界跳过状态预检。
+        且无活动命令时才能发送。`MANUAL_DEBUG` 同样要求在线、`AUTO`、`IDLE`、无活动命令和 task type 能力匹配，
+        但不使用业务 binding 或状态新鲜度合同。
     *   ECS 以原子方式接纳命令；同一 `device_code` 竞争失败返回 `429 CAPACITY_EXCEEDED`。不同 `device_code` 可以并行执行。
     *   未通过设备准入的 Decision 保持等待，不直接发送；重新调度前必须再次读取当前投影并重新校验状态新鲜度。
     *   业务对象的总序及队列参数更新由 WMS 给出；设备空闲只触发执行准入，不代表核心或插件选择其他业务任务。

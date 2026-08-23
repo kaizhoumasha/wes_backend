@@ -54,7 +54,7 @@ COMMAND_EXECUTION_DELAY_SECONDS = (
 COMMAND_DELAY_MIN_SECONDS = 2.0
 COMMAND_DELAY_MAX_SECONDS = 8.0
 
-ScenarioName = Literal["success", "fail", "timeout"]
+ScenarioName = Literal["success", "fail", "timeout", "offline", "manual", "busy"]
 TOKEN_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
 
 
@@ -165,6 +165,7 @@ command_history: list[dict[str, Any]] = []
 command_identities: dict[str, str] = {}
 accepted_commands: dict[str, DeviceCommandAck] = {}
 event_history: list[dict[str, Any]] = []
+_SCENARIO_BUSY_COMMAND_CODE = "MOCK-SCENARIO-BUSY"
 
 
 def reset_mock_state() -> None:
@@ -183,6 +184,23 @@ def _get_state_or_400(device_code: str) -> DeviceRuntimeState:
     if state is None:
         raise HTTPException(status_code=400, detail=f"Unknown device_code: {device_code}")
     return state
+
+
+def _apply_scenario(state: DeviceRuntimeState, scenario: ScenarioName) -> None:
+    state.scenario = scenario
+    state.mode = "AUTO"
+    state.status = "IDLE"
+    state.is_online = True
+    state.current_command_code = None
+    state.command_delay_seconds = None
+    if scenario == "offline":
+        state.is_online = False
+    elif scenario == "manual":
+        state.mode = "MANUAL"
+    elif scenario == "busy":
+        state.status = "RUNNING"
+        state.current_command_code = _SCENARIO_BUSY_COMMAND_CODE
+    state.updated_at = _now_ms()
 
 
 def _command_delay_seconds_for_command() -> float:
@@ -474,8 +492,9 @@ async def set_device_scenario(device_code: str, payload: ScenarioRequest) -> dic
     """设置设备的最小故障注入场景。"""
 
     state = _get_state_or_400(device_code)
-    state.scenario = payload.scenario
-    state.updated_at = _now_ms()
+    if state.status == "RUNNING" and state.current_command_code != _SCENARIO_BUSY_COMMAND_CODE:
+        raise HTTPException(status_code=409, detail=f"Device has an active command: {state.current_command_code}")
+    _apply_scenario(state, payload.scenario)
     return {"code": 200, "message": "Scenario updated", "data": state.model_dump()}
 
 

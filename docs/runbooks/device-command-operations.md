@@ -35,6 +35,9 @@ Beat 只发送固定上限 100 的数据库扫描任务，不携带命令或 evi
 4. 查命令冻结的 `LineRunEpoch` 和设备合同绑定，确认当前证据没有跨 Epoch 或合同版本。
 5. 只有数据库事实与 ECS/现场事实一致时才关闭问题。不得根据“worker 已执行”推测设备已完成。
 
+`MANUAL_DEBUG` 不关联 `LineRunEpoch`、设备 binding 或业务执行对象；应改为核对命令冻结的 Endpoint、审计原因、创建人和两次
+实时 Status 准入。超级用户 SSE 只展示连接期间的 best-effort callback 尝试与 evidence 更新，不提供历史回放，也不能替代数据库事实。
+
 以下示例在只读 `psql` 会话执行：
 
 ```text
@@ -65,10 +68,12 @@ LIMIT 100;
 
 处理原则：
 
-- `PENDING`：核对活动 Epoch、设备绑定和下一次准入时间；不要直接触发 HTTP。
+- `PENDING`：业务命令核对活动 Epoch、设备绑定和下一次准入时间；`MANUAL_DEBUG` 核对冻结 Endpoint 与审计字段；
+  不要直接触发 HTTP。
 - `DISPATCHING` 且 claim 过期：delivery 可能未知，只能交给对账扫描，不能换 identity 重发。
 - `ACKNOWLEDGED` 且 deadline 过期：等待匹配 CALLBACK 或权威现场证据；ACK 不能当成功。
-- `RECONCILING`：保留设备槽位，核对 `reconciliation_reason`；不得直接改为失败或成功。
+- `RECONCILING`：保留设备槽位，核对 `reconciliation_reason`；`RESULT_BEFORE_DISPATCH` 表示命令尚未下发就收到 RESULT，
+  必须核对 ECS/WES 时序和现场事实，不得重报 callback、重新下发或直接改为失败/成功。
 
 ## 状态准入失败
 
@@ -91,8 +96,9 @@ WHERE command_code = :'command_code'
 ORDER BY received_at DESC, id DESC;
 ```
 
-只有新鲜的 `AUTO + IDLE`、无活动设备命令，且合同身份匹配活动 Epoch 时才可发送。供应商状态字段转换错误应在 ECS/网关修复，
-不得在 WES 增加供应商别名或 fallback。
+业务命令只有新鲜的 `AUTO + IDLE`、无活动设备命令，且合同身份匹配活动 Epoch 时才可发送。`MANUAL_DEBUG` 不使用业务
+binding 或状态新鲜度合同，但创建前和发送前都必须满足身份匹配、在线、`AUTO + IDLE`、无活动命令，且 `task_type` 位于非空
+`supported_commands`。供应商状态字段转换错误应在 ECS/网关修复，不得在 WES 增加供应商别名或 fallback。
 
 ## Evidence、重复与冲突
 

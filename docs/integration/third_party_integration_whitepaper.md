@@ -275,11 +275,13 @@ Result/Event 的错误应答顶层字段严格为整数 `code` 和字符串 `mes
 | `400` | `INVALID_ENVELOPE` | 字段、类型、枚举、条件必填或 JSON 不合规；修正载荷后使用正确身份重报 |
 | `404` | `COMMAND_NOT_FOUND` | 仅 Result；WES 不认识该 `command_code`，不推进业务 |
 | `409` | `IDEMPOTENCY_CONFLICT` | 同一幂等身份对应不同载荷；停止自动重报并人工对账 |
+| `409` | `RESULT_BEFORE_DISPATCH` | 仅 Result；命令尚未下发却收到结果，WES 封锁命令并进入人工对账，禁止自动重报或重新下发 |
 | `413` | `PAYLOAD_TOO_LARGE` | 超过 `256 KiB`；缩小载荷后按正确身份重报 |
 | `503` | `TEMPORARILY_UNAVAILABLE` | WES 尚未持久接收，ECS 可保留原载荷延后重报 |
 
-相同规范化 Result/Event 重报返回相同 `200 ACK` 且不重复推进。ECS 未收到确定 `200 ACK` 时可以重报完全相同的回调；
-收到 `409` 时不得换身份绕过冲突。
+首次已成功持久接收的相同规范化 Result/Event 重报返回相同 `200 ACK` 且不重复推进。ECS 未收到确定 `200 ACK` 时可以重报
+完全相同的回调；收到 `409` 时不得换身份绕过冲突。完全相同的提前 Result 重报仍返回 `RESULT_BEFORE_DISPATCH` 并复用首次拒绝证据；该响应
+不表示物理动作完成，ECS 和 WES 都不得自动重新下发，必须人工核对设备事实。
 
 ## 5. WES 内部边界
 
