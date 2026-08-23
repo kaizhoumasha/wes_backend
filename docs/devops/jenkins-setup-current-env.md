@@ -289,7 +289,7 @@ docker-compose --version
 部署行为约束：
 
 - `wes_test_deploy` 是独立部署任务；前端 producer 传入无默认值的 immutable 前后端 tag、两端 commit、`DEPLOY_SOURCE_COMMIT_SHA`、OpenAPI SHA 与权限 SHA，缺少或不匹配即拒绝
-- `wes_test_deploy` 必须配置 Username with password 类型的 Jenkins 凭据 `wes-test-bootstrap-admin`；用户名和密码仅作为 `BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD` 注入一次性基础授权容器，不写入构建参数、仓库或日志
+- `wes_test_deploy` 必须配置 Username with password 类型的 Jenkins 凭据 `wes-test-bootstrap-admin`；Jenkins 只将其绑定为 `BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD` 环境变量，一次性 bootstrap 和应用 readiness 后的 `check_bootstrap_admin_login.py` exec 仅传递变量名；凭据值不写入 Compose config、构建参数、仓库或日志
 - `DEPLOY_SOURCE_COMMIT_SHA` 可以晚于批准的后端镜像 revision，但差异只能落在 TEST 部署脚本、Compose、部署测试与对应运维文档白名单；任何运行时代码、migration 或未识别路径都会 fail-closed。部署前仍会将 `/opt/wes_backend` 强制对齐到该 SHA 并再次核对 `HEAD`
 - 前后端镜像拉取并固定到 digest 后，先核对 backend revision 与 frontend revision/backend-contract/OpenAPI/permission labels；全部通过后才停止 Nginx 并按 Compose project/service 标签停止旧应用
 - 迁移前只允许 `db` 与 `redis` 运行；未知 service 使切换失败并保持 Nginx 关闭
@@ -298,7 +298,8 @@ docker-compose --version
 - 若 bootstrap 报告独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`（详情另以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 输出），只执行一次 `--repair-cache`，再执行新的 `--check`，不得重跑数据库 mutation
 - 零漂移后才使用 `docker-compose.test-deploy.yml` 重建 `api`、两个 Celery worker、Beat、Flower 与 frontend，并从固定前端镜像提取菜单清单
 - 同步完成后会校验 `wes_sys.menus` 数量必须大于 0
-- 后端 `/ready`、前端资源、两端 revision、前端绑定的 backend revision、OpenAPI/permission labels 和菜单同步均通过后，才以 `compose up -d --no-deps nginx` 恢复入口；任一外部检查失败立即再次停止 Nginx
+- 后端 `/ready` 与前端资源通过后，必须使用配置的 bootstrap 管理员完成真实 login/logout gate；菜单同步后，`compose config --services` 与实际 running services（入口恢复前排除 Nginx）必须精确相等
+- 只有上述门禁通过后才以 `compose up -d --no-deps --wait --wait-timeout 60 nginx` 恢复入口，再调用版本化 `scripts/wait_for_http.py` 验证 `/health` 与首页，并要求最终 rendered/running service 集合精确相等；任一失败立即再次停止 Nginx
 
 PROD 边界说明：
 

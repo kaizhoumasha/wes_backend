@@ -687,6 +687,16 @@ compose exec -T api curl -fsS http://127.0.0.1:8001/ready >/dev/null \
 compose exec -T frontend wget --no-verbose --tries=1 --spider \
   http://127.0.0.1:5173/ >/dev/null || fail_cutover frontend-asset
 
+echo "验证超级管理员真实登录"
+CUTOVER_STAGE=admin-login-gate
+if ! compose exec -T \
+  -e BOOTSTRAP_ADMIN_USERNAME \
+  -e BOOTSTRAP_ADMIN_PASSWORD \
+  api /opt/venv/bin/python scripts/check_bootstrap_admin_login.py \
+  --base-url http://127.0.0.1:8001; then
+  fail_cutover admin-login-gate
+fi
+
 BACKEND_REVISION=$(sudo docker image inspect --format \
   '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE") \
   || fail_cutover backend-image-revision
@@ -727,17 +737,44 @@ sudo firewall-cmd --permanent --add-port="${NGINX_HTTP_PORT}/tcp"
 sudo firewall-cmd --reload
 sudo firewall-cmd --query-port="${NGINX_HTTP_PORT}/tcp"
 
-compose up -d --no-deps nginx || fail_cutover external-entrypoint
-curl --fail --show-error --connect-timeout 1 --max-time 10 \
-  "http://127.0.0.1:${NGINX_HTTP_PORT}/health" || fail_cutover external-health
-curl --fail --show-error --connect-timeout 1 --max-time 10 --output /dev/null \
-  "http://127.0.0.1:${NGINX_HTTP_PORT}/" || fail_cutover external-frontend
-compose ps || fail_cutover final-compose-status
+echo "校验入口恢复前服务拓扑"
+CUTOVER_STAGE=pre-entrypoint-topology
+EXPECTED_PRE_ENTRY_SERVICES="$(compose config --services | grep -v '^nginx$' | LC_ALL=C sort)"
+RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | grep -v '^nginx$' | LC_ALL=C sort)"
+if [ "$RUNNING_PRE_ENTRY_SERVICES" != "$EXPECTED_PRE_ENTRY_SERVICES" ]; then
+  printf '期望服务:\n%s\n' "$EXPECTED_PRE_ENTRY_SERVICES"
+  printf '运行服务:\n%s\n' "$RUNNING_PRE_ENTRY_SERVICES"
+  fail_cutover pre-entrypoint-topology
+fi
+
+CUTOVER_STAGE=external-entrypoint
+compose up -d --no-deps --wait --wait-timeout 60 nginx || fail_cutover external-entrypoint
+CUTOVER_STAGE=external-health
+python3 scripts/wait_for_http.py \
+  --url "http://127.0.0.1:${NGINX_HTTP_PORT}/health" \
+  --attempts 10 --timeout-seconds 2 --interval-seconds 1 \
+  || fail_cutover external-health
+CUTOVER_STAGE=external-frontend
+python3 scripts/wait_for_http.py \
+  --url "http://127.0.0.1:${NGINX_HTTP_PORT}/" \
+  --attempts 10 --timeout-seconds 2 --interval-seconds 1 \
+  || fail_cutover external-frontend
+
+echo "校验最终服务拓扑"
+CUTOVER_STAGE=final-topology
+EXPECTED_FINAL_SERVICES="$(compose config --services | LC_ALL=C sort)"
+RUNNING_FINAL_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
+if [ "$RUNNING_FINAL_SERVICES" != "$EXPECTED_FINAL_SERVICES" ]; then
+  printf '期望服务:\n%s\n' "$EXPECTED_FINAL_SERVICES"
+  printf '运行服务:\n%s\n' "$RUNNING_FINAL_SERVICES"
+  fail_cutover final-topology
+fi
 MAINTENANCE_MODE=false
 trap - EXIT
 ```
 
-未经 IT 确认不得执行；不要开放 API、PostgreSQL、Redis、Flower 或调试端口。外部检查失败时立即执行 `compose stop nginx`，记录失败阶段。
+未经 IT 确认不得执行；不要开放 API、PostgreSQL、Redis、Flower 或调试端口。登录、拓扑或外部检查失败时由现有 EXIT trap
+停止 Nginx，并记录失败阶段。
 
 ### 15.2 记录基础授权与部署证据边界
 

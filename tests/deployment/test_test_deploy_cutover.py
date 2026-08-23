@@ -603,7 +603,7 @@ def test_current_release_commands_use_the_same_fail_closed_cutover_contract(rela
         "com.zontec.wes.backend-contract-revision",
         "com.zontec.wes.openapi-sha256",
         "com.zontec.wes.permissions-sha256",
-        "compose up -d --no-deps nginx",
+        "compose up -d --no-deps --wait --wait-timeout 60 nginx",
         "fail_cutover external-health",
         "fail_cutover external-frontend",
     ):
