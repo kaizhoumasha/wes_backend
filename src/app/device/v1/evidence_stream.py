@@ -68,6 +68,16 @@ def _matches_filters(
     "/evidences/stream",
     summary="实时订阅 ECS callback 与 evidence 应用状态",
     dependencies=[Depends(require_superuser)],
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
 )
 async def evidence_stream(
     request: Request,
