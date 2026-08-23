@@ -1821,3 +1821,8 @@ heavy_tests = [
 [[mapping]]
 source_glob = "scripts/wait_for_http.py"
 heavy_tests = []
+
+# Bootstrap administrator login gate is owned by fake-HTTP FAST tests and fail-closed cutover simulation.
+[[mapping]]
+source_glob = "scripts/check_bootstrap_admin_login.py"
+heavy_tests = []
