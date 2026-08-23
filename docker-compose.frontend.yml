@@ -1,31 +1,48 @@
 services:
   api:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_api
     environment:
       WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
     volumes:
-      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
 
   celery:
     environment:
       WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
     volumes:
-      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
 
   celery-wms-fulfillment:
     environment:
       WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
     volumes:
-      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
 
   celery_beat:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery_beat
     environment:
       WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
     volumes:
-      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
+      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
+
+  db:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_postgres
+
+  redis:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_redis
+
+  mock_ecs:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_mock_ecs
+
+  mock_wms:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_mock_wms
+
+  mock_wms_provider:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_mock_wms_provider
 
   frontend:
     image: node:22-bookworm-slim
-    container_name: wes_frontend_${ENV:-dev}
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_frontend
     restart: ${RESTART_POLICY:-unless-stopped}
     working_dir: /app
     command: ["sh", "/usr/local/bin/frontend-dev-entrypoint.sh"]
@@ -71,6 +88,7 @@ services:
       - test
 
   nginx:
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_nginx
     depends_on:
       api:
         condition: service_healthy
@@ -82,6 +100,6 @@ services:
 
 volumes:
   frontend_node_modules:
-    name: wes_frontend_node_modules_${ENV:-dev}
+    name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_frontend_node_modules
   frontend_pnpm_store:
-    name: wes_frontend_pnpm_store_${ENV:-dev}
+    name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_frontend_pnpm_store

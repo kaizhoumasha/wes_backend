@@ -73,7 +73,7 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     service = AuthorizationBootstrapService()
                     fresh_preview = await service.converge_authorization(app, db, dry_run=True)
                     assert fresh_preview.roles == {"created": 5, "updated": 0, "skipped": 0}
-                    # Regression: 合并 Transport 调试契约后，授权快照必须包含新增目录与只读权限。
+                    # 设备联调入口仅由超级管理员依赖保护，不进入普通 RBAC 权限目录。
                     assert fresh_preview.permissions.created == 172
                     assert fresh_preview.role_permissions == {
                         "added": 444,
@@ -145,6 +145,9 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     }
                     assert current_read_permissions <= actual_role_permissions["运营人员"]
                     assert current_read_permissions <= actual_role_permissions["普通用户"]
+                    assert not any(name.startswith("ops:device:") for name in expected_permission_names)
+                    assert "ops:device:debug-create" not in actual_role_permissions["运营人员"]
+                    assert "ops:device:debug-create" not in actual_role_permissions["普通用户"]
                     assert "biz:workline:update" not in actual_role_permissions["运营人员"]
                     assert "biz:workline:update" not in actual_role_permissions["普通用户"]
 

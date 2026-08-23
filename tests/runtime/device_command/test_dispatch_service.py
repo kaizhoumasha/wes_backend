@@ -103,26 +103,35 @@ class FakeObservationRepository:
 class FakeAdapter:
     def __init__(self, result: EcsSubmitResult) -> None:
         self.result = result
-        self.submitted: list[str] = []
+        self.submitted: list[dict[str, object]] = []
         self.status_requests: list[str] = []
 
     async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
         self.status_requests.append(device_code)
         return EcsDeviceStatus.model_validate(
             {
-                "device_code": device_code,
-                "contract_key": "arm.pick",
-                "contract_version": "2.0",
-                "mode": "AUTO",
-                "status": "IDLE",
-                "current_command_code": None,
-                "error_detail": None,
-                "timestamp": 1_786_579_200_000,
+                "device": {
+                    "device_code": device_code,
+                    "device_name": "机械臂 1",
+                    "device_type": "ROBOTIC_ARM",
+                    "role": "PLACEMENT_DEVICE",
+                    "supported_commands": ["PICK"],
+                    "supported_events": [],
+                },
+                "state": {
+                    "device_code": device_code,
+                    "mode": "AUTO",
+                    "status": "IDLE",
+                    "is_online": True,
+                    "current_command_code": None,
+                    "scenario": "success",
+                    "updated_at": 1_786_579_200_000,
+                },
             }
         )
 
     async def submit_command(self, **values):
-        self.submitted.append(values["command_code"])
+        self.submitted.append(values)
         return self.result
 
 
@@ -218,10 +227,103 @@ async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expect
 
     assert processed is True
     assert command.status == expected
-    assert adapter.submitted == ["CMD-001"]
+    assert [item["command_code"] for item in adapter.submitted] == ["CMD-001"]
     assert len(observations.created) == 1
     assert provider.requested == ["http://ecs-dispatch:8080"]
     assert events[:2] == ["binding", "provider"]
+
+
+@pytest.mark.asyncio
+async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_lookup() -> None:
+    command = _command()
+    command.execution_ref_type = "MANUAL_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    provider = FakeAdapterProvider(adapter)
+    epoch_repository = FakeEpochRepository(None)
+    observations = FakeObservationRepository()
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=epoch_repository,  # type: ignore[arg-type]
+        observation_repository=observations,  # type: ignore[arg-type]
+        adapter_provider=provider,  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13, 0, 0, 0, 500_000)) is True
+    assert command.status == CommandStatus.ACKNOWLEDGED
+    assert provider.requested == ["http://ecs-mock:8080"]
+    assert adapter.status_requests == ["ARM-01"]
+    assert observations.created == []
+    assert adapter.submitted == [
+        {
+            "device_code": "ARM-01",
+            "command_code": "CMD-001",
+            "task_type": "PICK",
+            "priority": 1,
+            "timeout_ms": 30_000,
+            "timestamp": 1_786_579_200_000,
+            "params": {},
+            "deadline_at": datetime(2026, 8, 13, 0, 1),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
+    command = _command()
+    command.execution_ref_type = "MANUAL_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+
+    async def unsupported_status(device_code: str) -> EcsDeviceStatus:
+        status = await FakeAdapter.fetch_status(adapter, device_code)
+        return status.model_copy(update={"device": status.device.model_copy(update={"supported_commands": ("MOVE",)})})
+
+    adapter.fetch_status = unsupported_status  # type: ignore[method-assign]
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.FAILED
+    assert command.failure_code == "DEVICE_TASK_TYPE_UNSUPPORTED"
+    assert adapter.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_manual_debug_status_failure_is_retryable_without_submit() -> None:
+    command = _command()
+    command.execution_ref_type = "MANUAL_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = UnavailableStatusAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.PENDING
+    assert adapter.submitted == []
 
 
 @pytest.mark.asyncio

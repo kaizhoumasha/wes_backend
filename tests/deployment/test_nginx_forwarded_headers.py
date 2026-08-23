@@ -5,6 +5,7 @@ BACKEND_LOCATIONS = (
     "location /health",
     "location = /api",
     "location = /api/v1/sys/events/stream",
+    "location = /api/v1/device/evidences/stream",
     "location ^~ /api/",
     "location /docs",
     "location /redoc",
@@ -25,3 +26,18 @@ def test_backend_proxy_preserves_x_forwarded_for_chain() -> None:
         block = _location_block(config, marker)
         assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;" in block
         assert "proxy_set_header X-Forwarded-For $remote_addr;" not in block
+
+
+def test_device_evidence_stream_disables_buffering_and_keeps_connection_alive() -> None:
+    config = NGINX_DEFAULT_CONF.read_text()
+    block = _location_block(config, "location = /api/v1/device/evidences/stream")
+
+    for directive in (
+        "proxy_buffering off;",
+        "proxy_cache off;",
+        "gzip off;",
+        "proxy_read_timeout 1h;",
+        "proxy_send_timeout 1h;",
+        "add_header X-Accel-Buffering no;",
+    ):
+        assert directive in block

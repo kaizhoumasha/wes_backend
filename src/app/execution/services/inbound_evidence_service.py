@@ -71,7 +71,7 @@ def normalize_payload(
     if not isinstance(normalized, dict):
         raise TypeError("normalized payload 必须是 JSON object")
     semantic_payload = (
-        {key: value for key, value in normalized.items() if key != "trace_id"}
+        {key: value for key, value in normalized.items() if key not in {"trace_id", "contract_key", "contract_version"}}
         if digest_policy is InboundEvidenceDigestPolicy.UNIFORM_WIRE
         else normalized
     )

@@ -6,6 +6,7 @@ BACKEND_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND_ROOT="${WES_FRONTEND_ROOT:-$(dirname "$BACKEND_ROOT")/wes_frontend}"
 ENV_FILE="$BACKEND_ROOT/.env.dev"
 WAIT_TIMEOUT="${DEV_ENV_WAIT_TIMEOUT:-240}"
+DEV_COMPOSE_PROJECT="${WES_DEV_COMPOSE_PROJECT:-wes_backend_dev}"
 COMMAND="${1:-}"
 
 REQUIRED_SERVICES=(
@@ -33,11 +34,14 @@ usage() {
   down   停止并移除开发容器和网络，保留数据库、Redis 和前端依赖卷
 
 可通过 WES_FRONTEND_ROOT 指定前端仓库；默认使用 ../wes_frontend。
+长期本机环境固定使用 wes_backend_dev；临时 worktree 必须通过
+WES_DEV_COMPOSE_PROJECT 指定唯一项目名，并配置不冲突的宿主机端口。
 EOF
 }
 
 compose() {
-    FRONTEND_ROOT="$FRONTEND_ROOT" docker compose \
+    FRONTEND_ROOT="$FRONTEND_ROOT" COMPOSE_PROJECT_NAME="$DEV_COMPOSE_PROJECT" docker compose \
+        --project-name "$DEV_COMPOSE_PROJECT" \
         --env-file "$ENV_FILE" \
         -f "$BACKEND_ROOT/docker-compose.yml" \
         -f "$BACKEND_ROOT/docker-compose.frontend.yml" \

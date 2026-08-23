@@ -9,20 +9,18 @@ import json
 import logging
 import os
 import random
-import re
 import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
-from uuid import uuid4
 
 import httpx
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from uvicorn import Config, Server
 
@@ -67,18 +65,11 @@ class DeviceCommandPayload(BaseModel):
 
     device_code: str = Field(min_length=1, max_length=100, pattern=TOKEN_PATTERN)
     command_code: str = Field(min_length=1, max_length=160, pattern=TOKEN_PATTERN)
-    contract_key: str = Field(min_length=1, max_length=100, pattern=TOKEN_PATTERN)
-    contract_version: str = Field(min_length=1, max_length=40, pattern=TOKEN_PATTERN)
     task_type: str = Field(min_length=1, max_length=160, pattern=TOKEN_PATTERN)
+    priority: int = Field(ge=1, le=10)
+    timeout: int = Field(gt=0, le=2**31 - 1)
     params: dict[str, Any] = Field(default_factory=dict)
     timestamp: StrictInt = Field(gt=0, le=2**63 - 1)
-    trace_id: str | None = Field(default=None, min_length=1, max_length=120, pattern=TOKEN_PATTERN)
-
-    @model_validator(mode="after")
-    def reject_explicit_null_trace(self) -> DeviceCommandPayload:
-        if "trace_id" in self.model_fields_set and self.trace_id is None:
-            raise ValueError("trace_id 不可显式为 null")
-        return self
 
 
 class DeviceCommandAck(BaseModel):
@@ -86,7 +77,6 @@ class DeviceCommandAck(BaseModel):
 
     code: int
     message: str
-    trace_id: str | None = None
 
 
 class MockEventRequest(BaseModel):
@@ -96,12 +86,11 @@ class MockEventRequest(BaseModel):
 
     device_code: str = Field(min_length=1, description="设备编码")
     event_type: str = Field(min_length=1, description="事件类型")
-    timestamp: int | None = Field(
+    timestamp: StrictInt | None = Field(
         default=None,
-        description="事件时间戳（Unix 时间戳，毫秒）。Swagger 调试可不传，Mock 会按发送时刻自动补齐",
+        description="Unix Epoch 毫秒事件时间。Swagger 调试可不传，Mock 会按发送时刻自动补齐",
     )
     data: dict[str, Any] | None = Field(default=None, description="事件负载数据")
-    trace_id: str | None = Field(default=None, description="统一 Trace ID")
 
 
 MockEventRequestBody = Annotated[
@@ -109,12 +98,12 @@ MockEventRequestBody = Annotated[
     Body(
         openapi_examples={
             "scan_completed": {
-                "summary": "设备扫码完成",
-                "description": "触发通用设备扫码事件。",
+                "summary": "设备事件上报",
+                "description": "data 的具体业务字段由对应设备合同附录定义。",
                 "value": {
                     "device_code": "CAMERA-CONVEYOR-01",
                     "event_type": "SCAN_COMPLETED",
-                    "data": {"barcode": "PKG-001"},
+                    "data": {"barcode": "BIN_104"},
                 },
             },
         },
@@ -239,38 +228,27 @@ async def _finish_command(payload: DeviceCommandPayload, delay_seconds: float) -
             logger.info("ECS Mock 超时场景不回调: command_code=%s", payload.command_code)
             return
 
-        source_event_id = f"RESULT-{hashlib.sha256(payload.command_code.encode()).hexdigest()}"
         result_payload: dict[str, Any] = {
             "command_code": payload.command_code,
             "device_code": payload.device_code,
-            "contract_key": payload.contract_key,
-            "contract_version": payload.contract_version,
             "result": "SUCCESS",
             "finish_time": _now_ms(),
-            "source_event_id": source_event_id,
             "data": default_success_data(payload.device_code, payload.task_type, payload.params),
             "error_detail": None,
         }
-        if payload.trace_id is not None:
-            result_payload["trace_id"] = payload.trace_id
         if scenario == "fail":
             error_code = str(payload.params.get("error_code") or "ECS_MOCK_SCENARIO_FAILED")
             result_payload = {
                 "command_code": payload.command_code,
                 "device_code": payload.device_code,
-                "contract_key": payload.contract_key,
-                "contract_version": payload.contract_version,
                 "result": "FAILED",
                 "finish_time": _now_ms(),
-                "source_event_id": source_event_id,
                 "data": {},
                 "error_detail": {
                     "code": error_code,
-                    "message": "ECS Mock 故障注入失败",
+                    "msg": "ECS Mock 故障注入失败",
                 },
             }
-            if payload.trace_id is not None:
-                result_payload["trace_id"] = payload.trace_id
 
         await _post_callback(WES_RESULT_CALLBACK_URL, result_payload)
     finally:
@@ -330,11 +308,11 @@ class FixedWireBodyLimitMiddleware:
 app.add_middleware(FixedWireBodyLimitMiddleware)
 
 
-def _wire_error(status_code: int, message: str, trace_id: str | None = None) -> JSONResponse:
+def _wire_error(status_code: int, message: str) -> JSONResponse:
     headers = {"Retry-After": "5"} if status_code == 429 else None
     return JSONResponse(
         status_code=status_code,
-        content={"code": status_code, "message": message, **({"trace_id": trace_id} if trace_id is not None else {})},
+        content={"code": status_code, "message": message},
         headers=headers,
     )
 
@@ -342,11 +320,7 @@ def _wire_error(status_code: int, message: str, trace_id: str | None = None) -> 
 @app.exception_handler(RequestValidationError)
 async def _fixed_wire_validation_error(request: Request, _error: RequestValidationError) -> JSONResponse:
     if request.url.path in {"/api/v1/device/command", "/api/v1/device/status"}:
-        body = _error.body
-        trace_id = body.get("trace_id") if isinstance(body, dict) else None
-        if not isinstance(trace_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,119}", trace_id):
-            trace_id = None
-        return _wire_error(400, "INVALID_ENVELOPE", trace_id)
+        return _wire_error(400, "INVALID_ENVELOPE")
     return JSONResponse(status_code=422, content={"detail": _error.errors()})
 
 
@@ -363,27 +337,25 @@ async def receive_command(
 ) -> DeviceCommandAck | JSONResponse:
     """接收 WES 下发命令，立即 ACK 并后台回调执行结果。"""
 
-    semantic_payload = payload.model_dump(exclude={"trace_id"})
+    semantic_payload = payload.model_dump()
     digest = hashlib.sha256(
         json.dumps(semantic_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     fixed_digest = command_identities.setdefault(payload.command_code, digest)
     if fixed_digest != digest:
-        return _wire_error(409, "IDEMPOTENCY_CONFLICT", payload.trace_id)
+        return _wire_error(409, "IDEMPOTENCY_CONFLICT")
     accepted = accepted_commands.get(payload.command_code)
     if accepted is not None:
-        return DeviceCommandAck(code=accepted.code, message=accepted.message, trace_id=payload.trace_id)
+        return accepted
 
     device = MOCK_ECS_DEVICES.get(payload.device_code)
     if device is None:
-        return _wire_error(404, "DEVICE_NOT_FOUND", payload.trace_id)
+        return _wire_error(404, "DEVICE_NOT_FOUND")
     state = runtime_states[payload.device_code]
     if payload.task_type not in device.supported_commands:
-        return _wire_error(422, "ANNEX_VALIDATION_FAILED", payload.trace_id)
-    if payload.contract_key != device.contract_key or payload.contract_version != device.contract_version:
-        return _wire_error(422, "ANNEX_VALIDATION_FAILED", payload.trace_id)
+        return _wire_error(422, "ANNEX_VALIDATION_FAILED")
     if state.status == "RUNNING":
-        return _wire_error(429, "CAPACITY_EXCEEDED", payload.trace_id)
+        return _wire_error(429, "CAPACITY_EXCEEDED")
 
     state.status = "RUNNING"
     state.current_command_code = payload.command_code
@@ -395,34 +367,47 @@ async def receive_command(
     command_record["command_delay_seconds"] = delay_seconds
     command_history.append(command_record)
     background_tasks.add_task(_finish_command, payload, delay_seconds)
-    ack = DeviceCommandAck(code=200, message="ACCEPTED", trace_id=payload.trace_id)
+    ack = DeviceCommandAck(code=200, message="Accepted")
     accepted_commands[payload.command_code] = ack
     return ack
 
 
 @app.get("/api/v1/device/status", response_model=None)
 async def get_device_status(
-    device_code: Annotated[str, Query(min_length=1, max_length=100, pattern=TOKEN_PATTERN)],
+    device_code: Annotated[str | None, Query(min_length=1, max_length=100, pattern=TOKEN_PATTERN)] = None,
 ) -> JSONResponse:
-    """按 uniform wire 返回单设备扁平状态。"""
+    """按供应商现行 wire 返回一个或全部设备状态。"""
 
-    device = MOCK_ECS_DEVICES.get(device_code)
-    if device is None:
+    if device_code is not None and device_code not in MOCK_ECS_DEVICES:
         return _wire_error(404, "DEVICE_NOT_FOUND")
-    state = runtime_states[device_code]
-    return JSONResponse(
-        content={
-            "device_code": device_code,
-            "contract_key": device.contract_key,
-            "contract_version": device.contract_version,
-            "mode": state.mode,
-            "status": state.status,
-            "current_command_code": state.current_command_code,
-            "error_detail": None,
-            "timestamp": state.updated_at,
-        },
-        headers={"Cache-Control": "no-store"},
-    )
+    selected_codes = (device_code,) if device_code is not None else tuple(MOCK_ECS_DEVICES)
+    observed_at = _now_ms()
+    devices = []
+    for selected_code in selected_codes:
+        device = MOCK_ECS_DEVICES[selected_code]
+        state = runtime_states[selected_code]
+        devices.append(
+            {
+                "device": {
+                    "device_code": device.device_code,
+                    "device_name": device.device_name,
+                    "device_type": device.device_type,
+                    "role": device.role,
+                    "supported_commands": device.supported_commands,
+                    "supported_events": device.supported_events,
+                },
+                "state": {
+                    "device_code": state.device_code,
+                    "mode": state.mode,
+                    "status": state.status,
+                    "is_online": state.is_online,
+                    "current_command_code": state.current_command_code,
+                    "scenario": state.scenario,
+                    "updated_at": observed_at,
+                },
+            }
+        )
+    return JSONResponse(content={"devices": devices})
 
 
 @app.get("/api/v1/mock/commands")
@@ -460,9 +445,6 @@ async def report_mock_event(payload: MockEventRequestBody) -> dict[str, Any]:
     event_payload.setdefault("timestamp", _now_ms())
     _ = _get_state_or_400(event_payload["device_code"])
     device = MOCK_ECS_DEVICES[event_payload["device_code"]]
-    event_payload["contract_key"] = device.contract_key
-    event_payload["contract_version"] = device.contract_version
-    event_payload["source_event_id"] = f"EVENT-{uuid4()}"
     if (
         not is_platform_control_event(event_payload["event_type"])
         and event_payload["event_type"] not in device.supported_events

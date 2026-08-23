@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -25,6 +25,22 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
 
     def __init__(self) -> None:
         super().__init__(DeviceCommand)
+
+    async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None:
+        """串行化同一设备的命令创建，覆盖尚无可锁记录的首次创建。"""
+
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_identity, 0))"),
+            {"lock_identity": f"device-command:create:{device_code}"},
+        )
+
+    async def lock_manual_debug_identity(self, db: AsyncSession, client_request_id: str) -> None:
+        """串行化 MANUAL_DEBUG 幂等身份，覆盖跨设备的首次创建。"""
+
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_identity, 0))"),
+            {"lock_identity": f"device-command:manual-debug:{client_request_id}"},
+        )
 
     async def get_by_command_code(
         self,
@@ -72,7 +88,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         self,
         db: AsyncSession,
         *,
-        line_run_epoch_id: int,
+        line_run_epoch_id: int | None,
         device_code: str,
         execution_ref_type: str,
         execution_ref_id: str,
@@ -85,6 +101,22 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
                 columns.device_code == device_code,
                 columns.execution_ref_type == execution_ref_type,
                 columns.execution_ref_id == execution_ref_id,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def get_manual_debug_by_client_request_id_for_update(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+    ) -> DeviceCommand | None:
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(
+            select(DeviceCommand)
+            .where(
+                columns.execution_ref_type == "MANUAL_DEBUG",
+                columns.execution_ref_id == client_request_id,
             )
             .with_for_update()
         )

@@ -5,18 +5,14 @@ SSE 实时事件推送 API
 - GET /api/v1/sys/events/stream - SSE 事件流
 """
 
-import asyncio
 import json
-from typing import Any, cast
 
 from fastapi import APIRouter, Query, Request, status
 from starlette.responses import StreamingResponse
 
-from src.app.sys.services.event_stream_service import SSE_EVENT_CHANNEL
+from src.app.sys.services.event_stream_service import SSE_EVENT_CHANNEL, event_stream_service
 from src.core.exceptions import AuthException
-from src.core.logger import logger
 from src.core.security import _verify_token
-from src.database.redis_client import get_redis
 
 router = APIRouter(tags=["系统事件"])
 
@@ -84,64 +80,19 @@ async def event_stream(
 
     _ = await _verify_token(bearer_token, request)
 
-    redis_client = get_redis()
-    if not redis_client:
-        # Redis 不可用时返回空事件流（降级模式）
-        async def empty_generator():
-            yield ": heartbeat\n\n"
-            while True:
-                await asyncio.sleep(SSE_HEARTBEAT_INTERVAL_SECONDS)
-                yield ": heartbeat\n\n"
-
-        return StreamingResponse(empty_generator(), media_type="text/event-stream")
-
     async def event_generator():
         """事件生成器"""
-        pubsub = cast("Any", redis_client).pubsub()
-        await pubsub.subscribe(SSE_EVENT_CHANNEL)
-        _ = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-        try:
-            yield ": heartbeat\n\n"
-            while True:
-                try:
-                    # Pub/Sub 广播保证多个 SSE 客户端都能收到同一事件。
-                    event = await pubsub.get_message(
-                        ignore_subscribe_messages=True,
-                        timeout=SSE_HEARTBEAT_INTERVAL_SECONDS,
-                    )
-                    if event and event.get("type") == "message":
-                        data = event.get("data", "{}")
-                        if isinstance(data, bytes):
-                            data = data.decode("utf-8")
-                        event_dict = json.loads(data)
-                        event_type = event_dict.get("type", "message")
-                        payload_obj = event_dict.get("payload", {})
-                        payload = json.dumps(payload_obj, ensure_ascii=False)
-                        timestamp = str(event_dict.get("timestamp", 0))
-                        # SSE 格式: event: xxx\ndata: xxx\nid: xxx\n\n
-                        yield f"event: {event_type}\n"
-                        yield f"data: {payload}\n"
-                        yield f"id: {timestamp}\n\n"
-                    else:
-                        # 没有事件时发送心跳
-                        yield ": heartbeat\n\n"
-                except asyncio.CancelledError:
-                    # 客户端断开连接
-                    logger.debug("SSE 客户端断开连接")
-                    break
-                except Exception as e:
-                    # 出错时发送心跳
-                    logger.warning(f"SSE 事件流异常: {e}，发送心跳保持连接")
-                    yield ": heartbeat\n\n"
-                    await asyncio.sleep(SSE_HEARTBEAT_INTERVAL_SECONDS)
-        finally:
-            try:
-                await pubsub.unsubscribe(SSE_EVENT_CHANNEL)
-                close = getattr(pubsub, "aclose", pubsub.close)
-                close_result = close()
-                if asyncio.iscoroutine(close_result):
-                    await close_result
-            except Exception as exc:
-                logger.debug(f"SSE Pub/Sub 清理失败（可忽略）: {exc}")
+        yield ": heartbeat\n\n"
+        async for event in event_stream_service.subscribe(
+            SSE_EVENT_CHANNEL,
+            timeout_seconds=SSE_HEARTBEAT_INTERVAL_SECONDS,
+        ):
+            if event is None:
+                yield ": heartbeat\n\n"
+                continue
+            payload = json.dumps(event["payload"], ensure_ascii=False)
+            yield f"event: {event['type']}\n"
+            yield f"data: {payload}\n"
+            yield f"id: {event['timestamp']}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

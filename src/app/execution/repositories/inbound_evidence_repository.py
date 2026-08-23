@@ -72,6 +72,23 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         )
         return result.scalar_one_or_none()
 
+    async def get_device_result_for_command(
+        self,
+        db: AsyncSession,
+        command_code: str,
+    ) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(
+            select(InboundEvidence)
+            .where(
+                columns.command_code == command_code,
+                columns.kind == InboundEvidenceKind.DEVICE_RESULT,
+            )
+            .order_by(columns.id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def add(self, db: AsyncSession, evidence: InboundEvidence) -> InboundEvidence:
         db.add(evidence)
         await db.flush()

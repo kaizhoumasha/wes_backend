@@ -552,6 +552,10 @@ def test_machine_readable_text_and_config_assets_fail_closed(changed_path: str) 
         select_heavy_tests([changed_path], config)
 
 
+def test_nginx_runtime_config_is_a_heavy_candidate() -> None:
+    assert is_candidate("nginx/conf.d/default.conf") is True
+
+
 @pytest.mark.parametrize(
     "changed_path",
     [
@@ -938,7 +942,11 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     assert len(source_globs) == len(set(source_globs))
     assert "docs/architecture/heavy-test-impact.toml" in source_globs
     assert "tests/conftest.py" in source_globs
-    assert "src/app/device/services/{__init__.py,device_dispatch_service.py,device_evidence_service.py}" in source_globs
+    assert (
+        "src/app/device/services/"
+        "{__init__.py,device_command_admission.py,device_dispatch_service.py,device_evidence_service.py}"
+        in source_globs
+    )
     assert "src/app/device/services/device_command_service.py" in source_globs
 
 

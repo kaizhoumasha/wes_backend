@@ -30,6 +30,7 @@ RETIRED_REMOVED_PATHS = frozenset(
 CANDIDATE_GLOBS = (
     "src/**",
     "deployment/**",
+    "nginx/**",
     "packages/wes_plugin_sdk/**",
     "main.py",
     "migrations/**",

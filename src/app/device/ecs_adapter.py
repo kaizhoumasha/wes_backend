@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
-from src.app.device.contracts import EcsDeviceStatus, EcsSubmitDisposition, EcsSubmitResult
+from src.app.device.contracts import EcsDeviceStatus, EcsDeviceStatusResponse, EcsSubmitDisposition, EcsSubmitResult
 from src.core.outbound_http import (
     OutboundHttpDeliveryState,
     OutboundHttpMethod,
@@ -65,25 +65,22 @@ class EcsAdapter:
         *,
         device_code: str,
         command_code: str,
-        contract_key: str,
-        contract_version: str,
         task_type: str,
-        timestamp_ms: int,
+        priority: int,
+        timeout_ms: int,
+        timestamp: int,
         params: dict[str, Any],
-        trace_id: str | None,
         deadline_at: datetime | None = None,
     ) -> EcsSubmitResult:
         envelope: dict[str, Any] = {
             "device_code": device_code,
             "command_code": command_code,
-            "contract_key": contract_key,
-            "contract_version": contract_version,
             "task_type": task_type,
-            "timestamp": timestamp_ms,
+            "priority": priority,
+            "timeout": timeout_ms,
+            "timestamp": timestamp,
             "params": params,
         }
-        if trace_id is not None:
-            envelope["trace_id"] = trace_id
         if deadline_at is not None and self._clock() >= deadline_at:
             return EcsSubmitResult(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED)
         result = await self._transport.send(
@@ -97,12 +94,14 @@ class EcsAdapter:
         )
         return _classify_submit_result(result)
 
-    async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+    async def fetch_statuses(self, device_code: str | None = None) -> tuple[EcsDeviceStatus, ...]:
+        """读取一台或全部设备状态，并保持 ECS wire 顺序。"""
+
         result = await self._transport.send(
             OutboundHttpRequest(
                 method=OutboundHttpMethod.GET,
                 path=STATUS_PATH,
-                query=(("device_code", device_code),),
+                query=() if device_code is None else (("device_code", device_code),),
                 response_limits=_WIRE_RESPONSE_LIMITS,
             )
         )
@@ -110,15 +109,22 @@ class EcsAdapter:
             raise EcsStatusUnavailableError("ECS 状态端点未返回可信成功响应")
         if not _is_json_response(result.response_headers):
             raise EcsStatusUnavailableError("ECS 状态响应不是 application/json")
-        cache_control = [value.lower() for name, value in result.response_headers if name.lower() == "cache-control"]
-        if len(cache_control) != 1 or "no-store" not in {item.strip() for item in cache_control[0].split(",")}:
-            raise EcsStatusUnavailableError("ECS 状态响应未按合同禁止缓存")
         try:
             payload = _decode_json_object(result.decoded_body)
-            status = EcsDeviceStatus.model_validate(payload)
+            response = EcsDeviceStatusResponse.model_validate(payload)
         except (TypeError, ValueError, ValidationError) as error:
             raise EcsStatusUnavailableError("ECS 状态响应不符合统一合同") from error
-        if status.device_code != device_code:
+        identities = tuple(status.device.device_code for status in response.devices)
+        if len(set(identities)) != len(identities):
+            raise EcsStatusUnavailableError("ECS 状态响应包含重复 device_code")
+        return response.devices
+
+    async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+        statuses = await self.fetch_statuses(device_code)
+        if len(statuses) != 1:
+            raise EcsStatusUnavailableError("ECS 单设备状态查询必须返回一个设备")
+        status = statuses[0]
+        if status.device.device_code != device_code:
             raise EcsStatusUnavailableError("ECS 状态响应 device_code 与请求不一致")
         return status
 
@@ -135,7 +141,7 @@ def _classify_submit_result(result: OutboundHttpResult) -> EcsSubmitResult:  # n
         return EcsSubmitResult(EcsSubmitDisposition.RECONCILING, code=status_code)
     response = _try_common_response(result.decoded_body)
     if status_code == 200:
-        if response is None or response[0] != 200 or response[1] != "ACCEPTED":
+        if response is None or response[0] != 200 or response[1] != "Accepted":
             return EcsSubmitResult(EcsSubmitDisposition.RECONCILING)
         return EcsSubmitResult(
             EcsSubmitDisposition.ACKNOWLEDGED,

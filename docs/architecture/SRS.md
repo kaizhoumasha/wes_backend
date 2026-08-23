@@ -311,7 +311,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 **3. 逻辑端口要求 (Logical Port Requirements)**
 
 *   **下行能力**: 统一提供 `POST /api/v1/device/command` 与
-    `GET /api/v1/device/status?device_code={device_code}`；顶层协议不提供通用取消接口。
+    `GET /api/v1/device/status?device_code={device_code}`；Status 不传 `device_code` 时返回当前 ECS 的全部设备。顶层协议不提供通用取消接口。
 *   **上行能力**: 统一提供 `POST /api/v1/callback/result` 与 `POST /api/v1/callback/event`；供应商结果值不直接扩张核心状态枚举。
 *   **幂等性保障**: 核心为每条 `DeviceCommand` 保持稳定身份并阻止重复调度；供应商必须按 `command_code` 保证重复请求不
     重复执行物理动作。同一稳定身份始终绑定同一规范化语义载荷，即使首次请求被明确拒绝也不得改载荷复用。命令可能已到达
@@ -324,11 +324,13 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     请求可能已送达、已 ACK、返回幂等冲突或结果未知时保持暂停并查询、等待回调或人工对账，禁止换身份绕过。设备命令出站
     HTTP 基础层每次调用只执行一次发送，不拥有自动重试配置。
 *   **未知结果处理**: 请求一旦可能被控制系统接收但未取得确定结果，命令进入 `TIMED_OUT`/远端结果未知状态，保留证据并暂停受影响对象，等待匹配的晚到 CALLBACK；无法闭合时进入人工对账，不自动重发。
-*   **状态监控**: 所有供应商实现按 `device_code` 寻址的统一设备状态查询，并把运行模式映射为共享 `mode`、运行状态映射为
-    共享 `status`；维护态属于 `mode=MAINTENANCE`，不得混入 `status`。状态响应同时返回实际运行的 `contract_key` 和
-    `contract_version`，并禁止缓存；状态观察过期或与活动 `LineRunEpoch` 不匹配时新命令准入失败关闭。命令及两类回调也携带
-    对应合同身份，用于识别延迟旧版本消息。核心据此维护通用 `DeviceRuntimeProjection`；状态查询只用于准入、诊断和对账，
-    不替代最终 CALLBACK。
+*   **状态监控**: 所有供应商实现统一设备状态查询，顶层返回 `devices` 数组，每项分为只用于诊断的 `device` 元数据和用于准入的
+    `state`。运行模式映射为共享 `mode`，运行状态映射为共享 `status`；维护态属于 `mode=MAINTENANCE`，不得混入 `status`。
+    业务命令只有条目身份一致、`is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令且 `updated_at` 未过期时才准入。
+    `contract_key`、`contract_version` 由活动 `LineRunEpoch` 与命令在 WES 内部冻结，不要求 Status 返回；无业务
+    `MANUAL_DEBUG` 联调命令从受权限控制的 Swagger 请求冻结局域网 Endpoint，使用 WES 固定内部合同元数据并跳过状态预检。
+    `contract_key`、`contract_version` 和回调幂等身份不进入白皮书 1.1 外部 wire。
+    核心据此维护通用 `DeviceRuntimeProjection`；业务命令状态查询只用于准入、诊断和对账，不替代最终 CALLBACK。
 
 **5. 设备层次结构与基础数据 (Device Hierarchy & Master Data)**
 
@@ -358,9 +360,11 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     *   供应商 ECS/网关负责把内部协议收敛为统一接口；WES 统一接口层只校验公共包络和设备附录，不解释业务优先级或推进业务对象。
 
 *   **设备命令生命周期 (Device Command Lifecycle)**:
-    *   核心通用生命周期为 `PENDING / DISPATCHED / ACKNOWLEDGED / SUCCEEDED / FAILED / TIMED_OUT`。
+    *   核心通用生命周期为 `PENDING / DISPATCHING / ACKNOWLEDGED / RECONCILING / SUCCEEDED / FAILED / TIMED_OUT`。
     *   `ACKNOWLEDGED` 只代表请求被厂商接纳；只有匹配当前命令的最终 CALLBACK 才能进入 `SUCCEEDED`/`FAILED`。
     *   业务完成、失败、等待和取消语义来自 WMS 封闭结果；插件只维护本地执行状态，不与 `DeviceCommand` 状态合并。
+    *   `MANUAL_DEBUG` 只用于无业务现场联调，不关联 `LineRunEpoch`、设备主数据或执行对象；其 CALLBACK 只闭合命令与 evidence，
+        不触发 WorkLine 或插件业务推进。
     *   所有状态变化保留时间、来源、关联和诊断证据，支持查询与审计。
 
 *   **超时监控 (Timeout Monitoring)**:
@@ -369,7 +373,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     *   晚到结果必须幂等追加为证据；只有满足当前对象关联和安全准入条件时才能推进业务状态。
 
 *   **并发控制 (Concurrency Control)**:
-    *   每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；只有 `mode=AUTO`、`status=IDLE` 且无活动命令时才能发送。
+    *   每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令只有 `mode=AUTO`、`status=IDLE`
+        且无活动命令时才能发送，`MANUAL_DEBUG` 按已批准的无业务联调边界跳过状态预检。
     *   ECS 以原子方式接纳命令；同一 `device_code` 竞争失败返回 `429 CAPACITY_EXCEEDED`。不同 `device_code` 可以并行执行。
     *   未通过设备准入的 Decision 保持等待，不直接发送；重新调度前必须再次读取当前投影并重新校验状态新鲜度。
     *   业务对象的总序及队列参数更新由 WMS 给出；设备空闲只触发执行准入，不代表核心或插件选择其他业务任务。

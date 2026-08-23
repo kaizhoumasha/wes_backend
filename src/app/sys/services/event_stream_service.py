@@ -1,13 +1,20 @@
 """SSE 事件发布服务。"""
 
+from __future__ import annotations
+
+import asyncio
 import json
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.logger import logger
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 SSE_EVENT_CHANNEL = "events:stream"
+DEVICE_EVIDENCE_STREAM_CHANNEL = "device:evidence:stream"
 DEFERRED_SSE_EVENTS_KEY = "_deferred_sse_events_after_commit"
 
 DEVICE_STATUS_CHANGED_EVENT = "device.status.changed"
@@ -21,6 +28,11 @@ class EventStreamService:
     async def publish(self, event_type: str, payload: dict[str, Any]) -> bool:
         """发布一条 SSE 事件；Redis 不可用时静默降级。"""
 
+        return await self.publish_to(SSE_EVENT_CHANNEL, event_type, payload)
+
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, Any]) -> bool:
+        """向指定频道发布事件；用于复用同一套基础能力。"""
+
         redis_client = get_redis()
         if redis_client is None:
             logger.debug(f"SSE 事件跳过发布（Redis 不可用）: {event_type}")
@@ -32,14 +44,77 @@ class EventStreamService:
             "timestamp": int(timezone.now_utc().timestamp() * 1000),
         }
         try:
-            await cast("Any", redis_client).publish(SSE_EVENT_CHANNEL, json.dumps(event, ensure_ascii=False))
+            await cast("Any", redis_client).publish(channel, json.dumps(event, ensure_ascii=False))
             return True
         except Exception as exc:
             logger.warning(f"SSE 事件发布失败: {event_type}, error={exc}")
             return False
 
+    async def subscribe(
+        self,
+        channel: str,
+        *,
+        timeout_seconds: float,
+    ) -> AsyncIterator[dict[str, Any] | None]:
+        """订阅 live-only 频道；超时以 ``None`` 通知 route 发送 heartbeat。"""
+
+        redis_client = get_redis()
+        if redis_client is None:
+            while True:
+                await asyncio.sleep(timeout_seconds)
+                yield None
+
+        pubsub = cast("Any", redis_client).pubsub()
+        try:
+            await pubsub.subscribe(channel)
+            _ = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            while True:
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=timeout_seconds,
+                    )
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    logger.warning(f"SSE 订阅异常: channel={channel}, error={exc}")
+                    yield None
+                    continue
+                if not message or message.get("type") != "message":
+                    yield None
+                    continue
+                try:
+                    yield _decode_stream_event(message.get("data"))
+                except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    logger.warning(f"SSE 跳过非法消息: channel={channel}, error={exc}")
+        finally:
+            try:
+                await pubsub.unsubscribe(channel)
+                close = getattr(pubsub, "aclose", None) or pubsub.close
+                close_result = close()
+                if asyncio.iscoroutine(close_result):
+                    await close_result
+            except Exception as exc:
+                logger.debug(f"SSE Pub/Sub 清理失败（可忽略）: {exc}")
+
 
 event_stream_service = EventStreamService()
+
+
+def _decode_stream_event(raw: object) -> dict[str, Any]:
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if not isinstance(raw, str):
+        raise TypeError("SSE 消息必须是文本")
+    event = json.loads(raw)
+    if (
+        not isinstance(event, dict)
+        or not isinstance(event.get("type"), str)
+        or not isinstance(event.get("payload"), dict)
+        or not isinstance(event.get("timestamp"), int)
+    ):
+        raise TypeError("SSE event envelope 无效")
+    return event
 
 
 def _get_session_info(db: Any) -> dict[str, Any] | None:

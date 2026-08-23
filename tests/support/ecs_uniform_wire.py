@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -14,6 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -65,16 +65,28 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
         self._send_json(
             200,
             {
-                "device_code": device_code,
-                "contract_key": "arm.pick",
-                "contract_version": "2.0",
-                "mode": "AUTO",
-                "status": "IDLE",
-                "current_command_code": None,
-                "error_detail": None,
-                "timestamp": int(time.time() * 1000),
+                "devices": [
+                    {
+                        "device": {
+                            "device_code": device_code,
+                            "device_name": "测试机械臂",
+                            "device_type": "ROBOTIC_ARM",
+                            "role": "PLACEMENT_DEVICE",
+                            "supported_commands": ["PICK"],
+                            "supported_events": [],
+                        },
+                        "state": {
+                            "device_code": device_code,
+                            "mode": "AUTO",
+                            "status": "IDLE",
+                            "is_online": True,
+                            "current_command_code": None,
+                            "scenario": "success",
+                            "updated_at": int(time.time() * 1000),
+                        },
+                    }
+                ]
             },
-            no_store=True,
         )
 
     def do_POST(self) -> None:
@@ -87,16 +99,11 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
         callback_payload = {
             "command_code": command["command_code"],
             "device_code": command["device_code"],
-            "contract_key": command["contract_key"],
-            "contract_version": command["contract_version"],
             "result": "SUCCESS",
-            "finish_time": int(time.time() * 1000),
-            "source_event_id": f"RESULT-{hashlib.sha256(command['command_code'].encode()).hexdigest()}",
+            "finish_time": int(datetime.now(UTC).timestamp() * 1000),
             "data": {"physical_result": "DONE"},
             "error_detail": None,
         }
-        if command.get("trace_id") is not None:
-            callback_payload["trace_id"] = command["trace_id"]
         callback_request = urllib_request.Request(  # noqa: S310 - callback URL 由本地测试服务构造。
             self.server.callback_url,
             data=json.dumps(callback_payload, separators=(",", ":")).encode(),
@@ -110,18 +117,13 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
             self.server.callback_errors.append(error)
             self._send_json(500, {"code": 500, "message": "CALLBACK_FAILED"})
             return
-        ack = {"code": 200, "message": "ACCEPTED"}
-        if command.get("trace_id") is not None:
-            ack["trace_id"] = command["trace_id"]
-        self._send_json(200, ack)
+        self._send_json(200, {"code": 200, "message": "Accepted"})
 
-    def _send_json(self, status: int, payload: dict[str, Any], *, no_store: bool = False) -> None:
+    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
-        if no_store:
-            self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

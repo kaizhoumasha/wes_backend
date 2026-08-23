@@ -8,10 +8,8 @@ import pytest
 
 from src.app.device.contracts import EcsDeviceStatus
 from src.app.device.models.command import DeviceCommand
-from src.app.device.services.device_dispatch_service import (
-    DeviceDispatchAdmissionError,
-    DeviceDispatchService,
-)
+from src.app.device.services.device_command_admission import DeviceCommandAdmissionError
+from src.app.device.services.device_dispatch_service import DeviceDispatchService
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
 
 
@@ -52,18 +50,30 @@ def _command() -> DeviceCommand:
 
 
 def _status(**overrides: object) -> EcsDeviceStatus:
-    payload: dict[str, object] = {
-        "device_code": "ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
+    device_code = str(overrides.pop("device_code", "ARM-01"))
+    state: dict[str, object] = {
+        "device_code": device_code,
         "mode": "AUTO",
         "status": "IDLE",
+        "is_online": True,
         "current_command_code": None,
-        "error_detail": None,
-        "timestamp": 1_786_579_200_000,
+        "scenario": "success",
+        "updated_at": 1_786_579_200_000,
     }
-    payload.update(overrides)
-    return EcsDeviceStatus.model_validate(payload)
+    state.update(overrides)
+    return EcsDeviceStatus.model_validate(
+        {
+            "device": {
+                "device_code": device_code,
+                "device_name": "机械臂 1",
+                "device_type": "ROBOTIC_ARM",
+                "role": "PLACEMENT_DEVICE",
+                "supported_commands": ["PICK"],
+                "supported_events": [],
+            },
+            "state": state,
+        }
+    )
 
 
 def test_fresh_auto_idle_matching_status_is_admissible() -> None:
@@ -78,15 +88,15 @@ def test_fresh_auto_idle_matching_status_is_admissible() -> None:
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
+        ({"is_online": False}, "DEVICE_OFFLINE"),
         ({"mode": "MANUAL"}, "DEVICE_MODE_NOT_AUTO"),
         ({"status": "RUNNING", "current_command_code": "CMD-OTHER"}, "DEVICE_NOT_IDLE"),
         ({"current_command_code": "CMD-OTHER"}, "DEVICE_HAS_ACTIVE_COMMAND"),
-        ({"contract_version": "2.1"}, "DEVICE_CONTRACT_MISMATCH"),
         ({"device_code": "ARM-02"}, "DEVICE_IDENTITY_MISMATCH"),
     ],
 )
 def test_untrusted_status_fails_closed(overrides: dict[str, object], reason: str) -> None:
-    with pytest.raises(DeviceDispatchAdmissionError) as exc_info:
+    with pytest.raises(DeviceCommandAdmissionError) as exc_info:
         DeviceDispatchService.ensure_admissible(
             command=_command(),
             binding=_binding(),
@@ -98,7 +108,7 @@ def test_untrusted_status_fails_closed(overrides: dict[str, object], reason: str
 
 
 def test_stale_status_fails_closed() -> None:
-    with pytest.raises(DeviceDispatchAdmissionError) as exc_info:
+    with pytest.raises(DeviceCommandAdmissionError) as exc_info:
         DeviceDispatchService.ensure_admissible(
             command=_command(),
             binding=_binding(),

@@ -581,7 +581,7 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/services/{__init__.py,device_dispatch_service.py,device_evidence_service.py}"
+source_glob = "src/app/device/services/{__init__.py,device_command_admission.py,device_dispatch_service.py,device_evidence_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
@@ -596,8 +596,28 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/v1/{__init__.py,ecs_callback.py}"
+source_glob = "src/app/device/v1/{__init__.py,command.py,ecs_callback.py,evidence_stream.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/sys/{services/event_stream_service.py,v1/events.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260823_1616_11013119b97d_audit_manual_device_command.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+# Nginx 仅新增已有 SSE 配置的第二个精确路径；部署合同测试直接承接。
+[[mapping]]
+source_glob = "nginx/conf.d/default.conf"
+heavy_tests = []
+reviewed_content_sha256 = "db976cff7f90e678ce988538926b51dae2483f8fd8ce952598177fb1d5907999"
 
 [[mapping]]
 source_glob = "src/app/device/{models/device.py,repositories/device_repository.py,v1/device.py}"
@@ -1115,6 +1135,13 @@ heavy_tests = [
 [[mapping]]
 source_glob = "migrations/versions/20260813_1016_a08d72f135d2_rebuild_device_command_ecs_lifecycle.py"
 heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260823_0007_1000c501e52a_支持设备指令手动联调.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+]
 
 [[mapping]]
 source_glob = "src/app/workline/{epoch_activation.py,models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"

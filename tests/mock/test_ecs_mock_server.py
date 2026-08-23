@@ -49,12 +49,11 @@ def _command_payload(command_code: str, task_type: str = "PICK_AND_PLACE", **ove
     payload = {
         "device_code": "ROBOT-ARM-01",
         "command_code": command_code,
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
         "task_type": task_type,
+        "priority": 1,
+        "timeout": 30_000,
         "timestamp": 1_786_579_200_000,
         "params": {},
-        "trace_id": f"TRACE-{command_code}",
     }
     payload.update(overrides)
     return payload
@@ -109,7 +108,7 @@ def test_ecs_mock_acknowledges_known_device_and_callbacks_success(monkeypatch) -
         )
 
     assert response.status_code == 200
-    assert response.json() == {"code": 200, "message": "ACCEPTED", "trace_id": "TRACE-CMD-ECS-001"}
+    assert response.json() == {"code": 200, "message": "Accepted"}
     callback = CapturingAsyncClient.requests[0]
     assert callback["url"] == ecs_mock_server.WES_RESULT_CALLBACK_URL
     assert callback["json"]["result"] == "SUCCESS"
@@ -119,6 +118,55 @@ def test_ecs_mock_acknowledges_known_device_and_callbacks_success(monkeypatch) -
         "accepted_params": {"object_key": "PKG-001"},
     }
     assert callback["headers"]["X-App-ID"]
+
+
+def test_ecs_mock_supports_rough_sorter_placement_command(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json=_command_payload(
+                "CMD-RS-PLACEMENT-001",
+                task_type="PICK_AND_PUT",
+                device_code="RS-MOCK-PLACEMENT-01",
+                params={"target_code": "OUTLET-1"},
+            ),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Accepted"
+    callback = CapturingAsyncClient.requests[0]["json"]
+    assert callback["result"] == "SUCCESS"
+    assert callback["device_code"] == "RS-MOCK-PLACEMENT-01"
+    assert callback["data"]["accepted_params"] == {"target_code": "OUTLET-1"}
+
+
+def test_ecs_mock_supports_first_onsite_scanner_command(monkeypatch) -> None:
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/device/command",
+            json=_command_payload(
+                "CMD-STATION-SCAN1-001",
+                task_type="MOVE_FORWARD",
+                device_code="STATION_SCAN1",
+                params={
+                    "source": {
+                        "location_id": "STATION_SCAN1",
+                        "location_type": "SCAN_PLATFORM",
+                    }
+                },
+            ),
+        )
+
+    assert response.status_code == 200
+    callback = CapturingAsyncClient.requests[0]["json"]
+    assert callback["device_code"] == "STATION_SCAN1"
+    assert callback["result"] == "SUCCESS"
 
 
 def test_ecs_mock_rejects_unknown_or_unsupported_device_command(monkeypatch) -> None:
@@ -134,17 +182,15 @@ def test_ecs_mock_rejects_unknown_or_unsupported_device_command(monkeypatch) -> 
             json=_command_payload(
                 "CMD-UNSUPPORTED",
                 device_code="CAMERA-CONVEYOR-01",
-                contract_key="camera.scan",
             ),
         )
 
     assert unknown.status_code == 404
-    assert unknown.json() == {"code": 404, "message": "DEVICE_NOT_FOUND", "trace_id": "TRACE-CMD-404"}
+    assert unknown.json() == {"code": 404, "message": "DEVICE_NOT_FOUND"}
     assert unsupported.status_code == 422
     assert unsupported.json() == {
         "code": 422,
         "message": "ANNEX_VALIDATION_FAILED",
-        "trace_id": "TRACE-CMD-UNSUPPORTED",
     }
     assert CapturingAsyncClient.requests == []
 
@@ -154,7 +200,7 @@ def test_ecs_mock_fixed_endpoints_return_closed_error_envelopes() -> None:
         invalid = client.post("/api/v1/device/command", json={"device_code": "ROBOT-ARM-01", "extra": True})
         mismatch = client.post(
             "/api/v1/device/command",
-            json=_command_payload("CMD-MISMATCH", contract_version="3.0"),
+            json=_command_payload("CMD-MISMATCH", task_type="UNSUPPORTED"),
         )
         missing = client.get("/api/v1/device/status", params={"device_code": "UNKNOWN"})
         ecs_mock_server.runtime_states["ROBOT-ARM-01"].status = "RUNNING"
@@ -166,13 +212,12 @@ def test_ecs_mock_fixed_endpoints_return_closed_error_envelopes() -> None:
     assert mismatch.json() == {
         "code": 422,
         "message": "ANNEX_VALIDATION_FAILED",
-        "trace_id": "TRACE-CMD-MISMATCH",
     }
     assert missing.status_code == 404
     assert missing.json() == {"code": 404, "message": "DEVICE_NOT_FOUND"}
     assert busy.status_code == 429
     assert busy.headers["Retry-After"] == "5"
-    assert busy.json() == {"code": 429, "message": "CAPACITY_EXCEEDED", "trace_id": "TRACE-CMD-BUSY"}
+    assert busy.json() == {"code": 429, "message": "CAPACITY_EXCEEDED"}
 
 
 @pytest.mark.parametrize("invalid", [{"timestamp": "1"}, {"timestamp": 0}, {"device_code": "ARM 01"}])
@@ -188,8 +233,8 @@ def test_ecs_mock_rejects_non_strict_command_fields(invalid: dict) -> None:
     [
         {"command_code": "CMD@INVALID"},
         {"task_type": "TASK#INVALID"},
-        {"contract_version": "V" * 41},
-        {"trace_id": "T" * 121},
+        {"timestamp": 1.5},
+        {"priority": 11},
     ],
 )
 def test_ecs_mock_rejects_tokens_outside_frozen_wire(invalid: dict) -> None:
@@ -198,14 +243,14 @@ def test_ecs_mock_rejects_tokens_outside_frozen_wire(invalid: dict) -> None:
     assert response.status_code == 400
 
 
-def test_ecs_mock_invalid_envelope_preserves_valid_trace_id() -> None:
+def test_ecs_mock_invalid_envelope_does_not_echo_trace_id() -> None:
     with TestClient(ecs_mock_server.app) as client:
         response = client.post(
             "/api/v1/device/command",
-            json={**_command_payload("CMD-INVALID-TRACE"), "timestamp": 0, "trace_id": "TRACE-VALID"},
+            json={**_command_payload("CMD-INVALID-TRACE"), "trace_id": "TRACE-VALID"},
         )
     assert response.status_code == 400
-    assert response.json()["trace_id"] == "TRACE-VALID"
+    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
 
 
 def test_ecs_mock_accepts_frozen_wire_token_boundaries(monkeypatch) -> None:
@@ -217,27 +262,25 @@ def test_ecs_mock_accepts_frozen_wire_token_boundaries(monkeypatch) -> None:
             json={
                 **_command_payload("C" * 160),
                 "task_type": "P" * 160,
-                "contract_version": "2" * 40,
-                "trace_id": "T" * 120,
             },
         )
     assert response.status_code == 422
     assert response.json()["message"] == "ANNEX_VALIDATION_FAILED"
 
 
-def test_ecs_mock_max_command_code_generates_valid_stable_result_identity(monkeypatch) -> None:
+def test_ecs_mock_max_command_code_uses_result_wire_without_external_identity(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
     with TestClient(ecs_mock_server.app) as client:
         response = client.post(
             "/api/v1/device/command",
-            json={**_command_payload("C" * 160), "trace_id": "TRACE-MAX-COMMAND"},
+            json=_command_payload("C" * 160),
         )
 
     assert response.status_code == 200
-    source_event_id = CapturingAsyncClient.requests[0]["json"]["source_event_id"]
-    assert source_event_id.startswith("RESULT-")
-    assert len(source_event_id) <= 160
+    result = CapturingAsyncClient.requests[0]["json"]
+    assert result["command_code"] == "C" * 160
+    assert "source_event_id" not in result
 
 
 def test_ecs_mock_fixed_endpoints_close_405_and_413_envelopes() -> None:
@@ -292,21 +335,20 @@ def test_ecs_mock_command_identity_is_idempotent_and_conflicting_payload_is_reje
     payload = _command_payload("CMD-IDEMPOTENT")
     with TestClient(ecs_mock_server.app) as client:
         first = client.post("/api/v1/device/command", json=payload)
-        duplicate = client.post("/api/v1/device/command", json={**payload, "trace_id": "TRACE-RETRY"})
+        duplicate = client.post("/api/v1/device/command", json=payload)
         conflict = client.post("/api/v1/device/command", json={**payload, "params": {"changed": True}})
 
     assert first.status_code == duplicate.status_code == 200
-    assert duplicate.json() == {"code": 200, "message": "ACCEPTED", "trace_id": "TRACE-RETRY"}
+    assert duplicate.json() == {"code": 200, "message": "Accepted"}
     assert conflict.status_code == 409
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
     assert len(CapturingAsyncClient.requests) == 1
 
 
-def test_ecs_mock_omits_absent_trace_from_ack_and_result(monkeypatch) -> None:
+def test_ecs_mock_omits_internal_trace_from_ack_and_result(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
     payload = _command_payload("CMD-NO-TRACE")
-    payload.pop("trace_id")
     with TestClient(ecs_mock_server.app) as client:
         response = client.post("/api/v1/device/command", json=payload)
 
@@ -326,30 +368,31 @@ def test_ecs_mock_rejected_command_permanently_fixes_identity(monkeypatch) -> No
         rejected = client.post("/api/v1/device/command", json=payload)
         conflict = client.post("/api/v1/device/command", json={**payload, "params": {"changed": True}})
         ecs_mock_server.runtime_states["ROBOT-ARM-01"].status = "IDLE"
-        accepted = client.post("/api/v1/device/command", json={**payload, "trace_id": "TRACE-RETRY"})
+        accepted = client.post("/api/v1/device/command", json=payload)
 
     assert rejected.status_code == 429
     assert conflict.status_code == 409
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
     assert accepted.status_code == 200
-    assert accepted.json()["trace_id"] == "TRACE-RETRY"
+    assert accepted.json() == {"code": 200, "message": "Accepted"}
     assert len(CapturingAsyncClient.requests) == 1
 
 
-def test_ecs_mock_status_returns_generic_device_contracts() -> None:
+def test_ecs_mock_status_returns_fresh_generic_device_contracts(monkeypatch) -> None:
+    ecs_mock_server.runtime_states["ROBOT-ARM-01"].updated_at = 1
+    monkeypatch.setattr(ecs_mock_server, "_now_ms", lambda: 1_787_475_602_000)
     with TestClient(ecs_mock_server.app) as client:
         single = client.get("/api/v1/device/status", params={"device_code": "ROBOT-ARM-01"})
         missing = client.get("/api/v1/device/status")
         unknown = client.get("/api/v1/device/status", params={"device_code": "UNKNOWN"})
 
     assert single.status_code == 200
-    assert single.json()["status"] == "IDLE"
-    assert single.json()["contract_key"] == "arm.pick"
-    assert single.headers["Cache-Control"] == "no-store"
-    assert missing.status_code == 400
-    assert missing.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert single.json()["devices"][0]["state"]["status"] == "IDLE"
+    assert single.json()["devices"][0]["state"]["updated_at"] == 1_787_475_602_000
+    assert "cache-control" not in single.headers
+    assert missing.status_code == 200
+    assert len(missing.json()["devices"]) == len(ecs_mock_server.MOCK_ECS_DEVICES)
     assert unknown.status_code == 404
-    assert unknown.json() == {"code": 404, "message": "DEVICE_NOT_FOUND"}
 
 
 def test_ecs_mock_status_rejects_invalid_device_token() -> None:
@@ -359,18 +402,27 @@ def test_ecs_mock_status_rejects_invalid_device_token() -> None:
     assert response.json()["message"] == "INVALID_ENVELOPE"
 
 
-def test_default_ecs_mock_implements_uniform_command_status_and_callback_wire(monkeypatch) -> None:
+def test_ecs_mock_scanner_status_metadata_matches_supplier_wire() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/api/v1/device/status", params={"device_code": "STATION_SCAN1"})
+
+    assert response.status_code == 200
+    device = response.json()["devices"][0]["device"]
+    assert device["device_type"] == "SCANNER"
+    assert device["role"] == "SCAN_STATION"
+
+
+def test_default_ecs_mock_implements_whitepaper_command_and_callback_wire(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
     command = {
         "device_code": "ROBOT-ARM-01",
         "command_code": "CMD-UNIFORM-001",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
         "task_type": "PICK_AND_PLACE",
+        "priority": 1,
+        "timeout": 30_000,
         "timestamp": 1_786_579_200_000,
         "params": {"object_key": "PKG-001"},
-        "trace_id": "TRACE-UNIFORM-001",
     }
 
     with TestClient(ecs_mock_server.app) as client:
@@ -378,23 +430,40 @@ def test_default_ecs_mock_implements_uniform_command_status_and_callback_wire(mo
         ack = client.post("/api/v1/device/command", json=command)
 
     assert status.json() == {
-        "device_code": "ROBOT-ARM-01",
-        "contract_key": "arm.pick",
-        "contract_version": "2.0",
-        "mode": "AUTO",
-        "status": "IDLE",
-        "current_command_code": None,
-        "error_detail": None,
-        "timestamp": status.json()["timestamp"],
+        "devices": [
+            {
+                "device": {
+                    "device_code": "ROBOT-ARM-01",
+                    "device_name": "搬运机械臂",
+                    "device_type": "ROBOTIC_ARM",
+                    "role": "ROBOT_ARM",
+                    "supported_commands": ["PICK_AND_PLACE", "MOVE"],
+                    "supported_events": [],
+                },
+                "state": {
+                    "device_code": "ROBOT-ARM-01",
+                    "mode": "AUTO",
+                    "status": "IDLE",
+                    "is_online": True,
+                    "current_command_code": None,
+                    "scenario": "success",
+                    "updated_at": status.json()["devices"][0]["state"]["updated_at"],
+                },
+            }
+        ]
     }
-    assert ack.json() == {"code": 200, "message": "ACCEPTED", "trace_id": "TRACE-UNIFORM-001"}
+    assert ack.json() == {"code": 200, "message": "Accepted"}
     callback = CapturingAsyncClient.requests[0]["json"]
-    assert callback["contract_key"] == "arm.pick"
-    assert callback["contract_version"] == "2.0"
-    assert callback["source_event_id"].startswith("RESULT-")
-    assert len(callback["source_event_id"]) == 71
+    assert set(callback) == {
+        "command_code",
+        "device_code",
+        "result",
+        "finish_time",
+        "data",
+        "error_detail",
+    }
+    assert isinstance(callback["finish_time"], int)
     assert callback["error_detail"] is None
-    assert callback["trace_id"] == "TRACE-UNIFORM-001"
 
 
 def test_ecs_mock_lists_received_commands_latest_first(monkeypatch) -> None:
@@ -416,13 +485,15 @@ def test_ecs_mock_lists_received_commands_latest_first(monkeypatch) -> None:
     ]
 
 
-def test_ecs_mock_event_callbacks_generic_payload(monkeypatch) -> None:
+def test_ecs_mock_event_callbacks_preserve_device_defined_data(monkeypatch) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     payload = {
         "device_code": "CAMERA-CONVEYOR-01",
         "event_type": "SCAN_COMPLETED",
-        "timestamp": 1_780_296_263_000,
-        "data": {"barcode": "PKG-001"},
+        "timestamp": 1_780_183_463_000,
+        "data": {
+            "device_defined": {"value": "opaque"},
+        },
     }
 
     with TestClient(ecs_mock_server.app) as client:
@@ -431,16 +502,10 @@ def test_ecs_mock_event_callbacks_generic_payload(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["data"]["wes_http_status"] == 200
     callback = CapturingAsyncClient.requests[0]["json"]
-    assert callback == {
-        **payload,
-        "contract_key": "camera.scan",
-        "contract_version": "2.0",
-        "source_event_id": callback["source_event_id"],
-    }
-    assert callback["source_event_id"].startswith("EVENT-")
+    assert callback == payload
 
 
-def test_ecs_mock_event_openapi_exposes_generic_example() -> None:
+def test_ecs_mock_event_openapi_keeps_business_data_opaque() -> None:
     with TestClient(ecs_mock_server.app) as client:
         content = client.get("/openapi.json").json()["paths"]["/api/v1/mock/event"]["post"]["requestBody"]["content"][
             "application/json"
@@ -450,7 +515,7 @@ def test_ecs_mock_event_openapi_exposes_generic_example() -> None:
     assert content["examples"]["scan_completed"]["value"] == {
         "device_code": "CAMERA-CONVEYOR-01",
         "event_type": "SCAN_COMPLETED",
-        "data": {"barcode": "PKG-001"},
+        "data": {"barcode": "BIN_104"},
     }
 
 

@@ -27,6 +27,25 @@ def test_trace_id_does_not_change_evidence_digest() -> None:
     assert _device_digest(first) == _device_digest(second)
 
 
+def test_internal_contract_metadata_does_not_change_uniform_wire_digest() -> None:
+    first = {
+        "device_code": "ARM-01",
+        "contract_key": "arm.pick",
+        "contract_version": "2.0",
+        "event_type": "ARRIVED",
+        "timestamp": 1_786_032_000_000,
+        "source_event_id": "EVENT-001",
+        "data": {"location": "STATION-A"},
+    }
+    second = {
+        **first,
+        "contract_key": "third_party_integration",
+        "contract_version": "1.1",
+    }
+
+    assert _device_digest(first) == _device_digest(second)
+
+
 def test_object_order_does_not_change_evidence_digest_but_array_order_does() -> None:
     first = {
         "source_event_id": "EVENT-001",

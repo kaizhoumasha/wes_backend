@@ -83,7 +83,9 @@ def test_development_overlay_mounts_a_valid_mock_wms_profile_for_every_runtime_p
     from src.app.wms_integration.provider_profile import load_wms_provider_profile
 
     overlay = _compose("docker-compose.frontend.yml")
-    expected_mount = "./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro"
+    expected_mount = (
+        "${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro"
+    )
     for service_name in ("api", "celery", "celery-wms-fulfillment", "celery_beat"):
         service = overlay["services"][service_name]
         assert service["environment"]["WMS_PROVIDER_PROFILE_FILE"] == "/run/wes/wms-provider.yaml"
@@ -161,6 +163,37 @@ def test_canonical_development_runner_migrates_seeds_checks_and_preserves_data()
     assert "down --remove-orphans" in runner
     assert "down -v" not in runner
     assert "down --volumes" not in runner
+
+
+def test_development_runner_reserves_a_project_scoped_local_environment() -> None:
+    runner = (BACKEND_ROOT / "scripts/dev-env.sh").read_text(encoding="utf-8")
+    overlay = _compose("docker-compose.frontend.yml")
+
+    assert 'DEV_COMPOSE_PROJECT="${WES_DEV_COMPOSE_PROJECT:-wes_backend_dev}"' in runner
+    assert '--project-name "$DEV_COMPOSE_PROJECT"' in runner
+
+    expected_containers = {
+        "api": "api",
+        "celery_beat": "celery_beat",
+        "mock_ecs": "mock_ecs",
+        "mock_wms": "mock_wms",
+        "mock_wms_provider": "mock_wms_provider",
+        "frontend": "frontend",
+        "nginx": "nginx",
+        "db": "postgres",
+        "redis": "redis",
+    }
+    for service_name, suffix in expected_containers.items():
+        assert overlay["services"][service_name]["container_name"] == (
+            f"${{COMPOSE_PROJECT_NAME:-wes_backend_dev}}_{suffix}"
+        )
+
+    assert overlay["volumes"]["frontend_node_modules"]["name"] == (
+        "${COMPOSE_PROJECT_NAME:-wes_backend_dev}_frontend_node_modules"
+    )
+    assert overlay["volumes"]["frontend_pnpm_store"]["name"] == (
+        "${COMPOSE_PROJECT_NAME:-wes_backend_dev}_frontend_pnpm_store"
+    )
 
 
 def test_test_deploy_converges_authorization_before_starting_application_services() -> None:
