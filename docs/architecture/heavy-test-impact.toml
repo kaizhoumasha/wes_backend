@@ -1816,3 +1816,8 @@ heavy_tests = [
 
 # 其余尚无完成独立验收的权威业务 HEAVY 测试，因此不声明业务、迁移、运行时配置或共享资产 mapping，
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。
+
+# HTTP readiness helper is fully owned by injected-opener FAST tests and deployment cutover simulation.
+[[mapping]]
+source_glob = "scripts/wait_for_http.py"
+heavy_tests = []
