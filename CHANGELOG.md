@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.2.1] - 2026-08-23
+
+### Fixed
+
+- 设备接入实时诊断 SSE 现在在 OpenAPI 中正确声明为 `text/event-stream`，前端可据此生成并校验流式响应合同，不再误识别为 JSON。
+
+### Verification
+
+- 聚焦 API 合同测试 5 passed；QUALITY 全门禁 3874 passed、4 个既有外部条件 skip；selector 选中的 4 个 HEAVY 测试全部通过。
+- 行为路径覆盖审计为 100%，预落地 Review 无剩余问题；本次修复不包含部署、真实 ECS 联调、现场物理动作或业务验收。
+
 ## [0.27.1.0] - 2026-08-22
 
 ### Changed

@@ -68,6 +68,15 @@ def test_device_evidence_stream_route_is_superuser_only() -> None:
     assert route.dependencies[0].dependency is require_superuser
 
 
+def test_device_evidence_stream_openapi_declares_sse_media_type() -> None:
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1/device")
+
+    response_content = app.openapi()["paths"]["/api/v1/device/evidences/stream"]["get"]["responses"]["200"]["content"]
+
+    assert response_content == {"text/event-stream": {"schema": {"type": "string"}}}
+
+
 @pytest.mark.asyncio
 async def test_device_evidence_stream_rejects_missing_or_non_superuser_auth_and_ignores_query_token() -> None:
     app = FastAPI()
