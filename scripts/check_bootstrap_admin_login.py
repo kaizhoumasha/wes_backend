@@ -104,8 +104,8 @@ def check_bootstrap_admin_login(
 
 def _load_credentials(env: Mapping[str, str] | None = None) -> tuple[str, str]:
     values = env or os.environ
-    username = values.get("BOOTSTRAP_ADMIN_USERNAME", "").strip()
-    password = values.get("BOOTSTRAP_ADMIN_PASSWORD", "").strip()
+    username = values.get("BOOTSTRAP_ADMIN_USERNAME", "")
+    password = values.get("BOOTSTRAP_ADMIN_PASSWORD", "")
     if not username or not password or len(password) < 8:
         raise ValueError("bootstrap administrator credentials are invalid")
     return username, password

@@ -233,6 +233,20 @@ def test_cli_accepts_only_configured_password_and_never_prints_credentials_or_re
         assert prohibited not in captured.out + captured.err
 
 
+def test_load_credentials_preserves_configured_username_and_password_whitespace() -> None:
+    from scripts.check_bootstrap_admin_login import _load_credentials
+
+    username, password = _load_credentials(
+        {
+            "BOOTSTRAP_ADMIN_USERNAME": " admin ",
+            "BOOTSTRAP_ADMIN_PASSWORD": "  StrongPassw0rd!  ",
+        }
+    )
+
+    assert username == " admin "
+    assert password == "  StrongPassw0rd!  "
+
+
 @pytest.mark.parametrize("password", ["", "short"])
 def test_cli_rejects_missing_or_short_password_without_leaking_it(
     password: str,
