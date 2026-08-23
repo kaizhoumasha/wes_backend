@@ -42,7 +42,7 @@ DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
 [ "$DEPLOY_ACTUAL_COMMIT" = "$DEPLOY_SOURCE_COMMIT_SHA" ] || exit 1
 
 compose() {
-  docker compose --env-file .env.prod \
+  docker compose --profile prod --env-file .env.prod \
     -f docker-compose.yml \
     -f docker-compose.deploy.yml "$@"
 }

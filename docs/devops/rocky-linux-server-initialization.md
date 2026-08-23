@@ -550,7 +550,7 @@ FRONTEND_PERMISSIONS_SHA256=$(sudo docker image inspect --format \
 [ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || exit 1
 [ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] || exit 1
 compose() {
-  sudo docker compose --env-file .env.prod \
+  sudo docker compose --profile prod --env-file .env.prod \
     -f docker-compose.yml \
     -f docker-compose.deploy.yml "$@"
 }
