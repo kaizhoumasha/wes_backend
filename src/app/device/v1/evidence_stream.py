@@ -89,7 +89,6 @@ async def evidence_stream(
     ),
 ) -> StreamingResponse:
     async def event_generator():
-        yield ": heartbeat\n\n"
         async for envelope in _stream_service(request).subscribe(
             DEVICE_EVIDENCE_STREAM_CHANNEL,
             timeout_seconds=SSE_HEARTBEAT_INTERVAL_SECONDS,

@@ -259,6 +259,20 @@ async def test_postgresql_rejects_incomplete_manual_debug_context(integration_se
 
 
 @pytest.mark.asyncio
+async def test_postgresql_rejects_manual_debug_material_execution_binding(integration_session_factory) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        command = _manual_command(identity, f"CMD-{uuid4().hex}")
+        command.material_execution_id = 2**31 - 1
+        db.add(command)
+
+        with pytest.raises(IntegrityError) as error:
+            await db.flush()
+
+        assert "device_command_execution_context_complete" in str(error.value.orig)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("reason", "created_by"), [(None, 42), ("现场供应商联调", None)])
 async def test_postgresql_rejects_incomplete_manual_debug_audit(
     integration_session_factory,

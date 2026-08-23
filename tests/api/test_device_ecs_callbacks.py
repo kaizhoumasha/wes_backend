@@ -15,6 +15,7 @@ from src.app.device.contracts import DeviceEvidenceReceipt
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
+    DeviceResultOutOfOrderError,
     UnknownDeviceCommandError,
 )
 from src.app.device.v1.ecs_callback import router
@@ -180,12 +181,40 @@ def test_persisted_result_rejection_keeps_evidence_identity_in_attempt(error_typ
     )
 
 
+def test_result_before_dispatch_returns_specific_conflict_and_keeps_attempt_identity() -> None:
+    error = DeviceResultOutOfOrderError("RESULT:CMD-001")
+    error.receipt = DeviceEvidenceReceipt(9, "RESULT:CMD-001", False, None, "IGNORED")
+    publisher = FakePublisher()
+
+    with _client(FakeEvidenceService(error), publisher=publisher) as client:
+        response = client.post("/api/v1/callback/result", json=_result_payload())
+
+    assert response.status_code == 409
+    assert response.json() == {"code": 409, "message": "RESULT_BEFORE_DISPATCH"}
+    assert publisher.events[0][2]["evidence_id"] == 9
+
+
 @pytest.mark.parametrize("path", ["/api/v1/callback/result", "/api/v1/callback/event"])
 def test_diagnostic_attempt_redacts_nested_credentials_without_rejecting_payload(path: str) -> None:
     payload = _result_payload() if path.endswith("result") else _event_payload()
     payload["data"] = {
         "authorization": "Bearer secret",
-        "nested": [{"access_token": "token-value", "business_value": 7}],
+        "nested": [
+            {
+                "access_token": "token-value",
+                "accessToken": "camel-token-value",
+                "app_secret": "app-secret-value",
+                "clientSecret": "camel-secret-value",
+                "client-secret": "client-secret-value",
+                "client_password": "password-value",
+                "sessionCookie": "cookie-value",
+                "authorization_header": "Basic secret",
+                "apikey": "compact-api-key-value",
+                "APIKey": "acronym-api-key-value",
+                "x-api-key": "api-key-value",
+                "business_value": 7,
+            }
+        ],
     }
     publisher = FakePublisher()
 
@@ -196,7 +225,22 @@ def test_diagnostic_attempt_redacts_nested_credentials_without_rejecting_payload
     diagnostic_data = publisher.events[0][2]["raw_payload"]["data"]
     assert diagnostic_data == {
         "authorization": "[REDACTED]",
-        "nested": [{"access_token": "[REDACTED]", "business_value": 7}],
+        "nested": [
+            {
+                "access_token": "[REDACTED]",
+                "accessToken": "[REDACTED]",
+                "app_secret": "[REDACTED]",
+                "clientSecret": "[REDACTED]",
+                "client-secret": "[REDACTED]",
+                "client_password": "[REDACTED]",
+                "sessionCookie": "[REDACTED]",
+                "authorization_header": "[REDACTED]",
+                "apikey": "[REDACTED]",
+                "APIKey": "[REDACTED]",
+                "x-api-key": "[REDACTED]",
+                "business_value": 7,
+            }
+        ],
     }
 
 

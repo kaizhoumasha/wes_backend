@@ -548,6 +548,73 @@ def test_ecs_mock_fault_scenario_applies_to_one_command(
     assert results == ([expected_callback_result, "SUCCESS"] if expected_callback_result else ["SUCCESS"])
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    (
+        ("offline", {"mode": "AUTO", "status": "IDLE", "is_online": False, "current_command_code": None}),
+        ("manual", {"mode": "MANUAL", "status": "IDLE", "is_online": True, "current_command_code": None}),
+        (
+            "busy",
+            {
+                "mode": "AUTO",
+                "status": "RUNNING",
+                "is_online": True,
+                "current_command_code": "MOCK-SCENARIO-BUSY",
+            },
+        ),
+    ),
+)
+def test_ecs_mock_runtime_scenarios_are_deterministic_for_preflight(scenario: str, expected: dict) -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        configured = client.post(
+            "/api/v1/mock/devices/ROBOT-ARM-01/scenario",
+            json={"scenario": scenario},
+        )
+        status = client.get("/api/v1/device/status", params={"device_code": "ROBOT-ARM-01"})
+        reset = client.post(
+            "/api/v1/mock/devices/ROBOT-ARM-01/scenario",
+            json={"scenario": "success"},
+        )
+
+    assert configured.status_code == 200
+    assert status.json()["devices"][0]["state"] == {
+        "device_code": "ROBOT-ARM-01",
+        "scenario": scenario,
+        "updated_at": status.json()["devices"][0]["state"]["updated_at"],
+        **expected,
+    }
+    assert reset.json()["data"] == {
+        "device_code": "ROBOT-ARM-01",
+        "mode": "AUTO",
+        "status": "IDLE",
+        "is_online": True,
+        "current_command_code": None,
+        "scenario": "success",
+        "command_delay_seconds": None,
+        "updated_at": reset.json()["data"]["updated_at"],
+    }
+
+
+def test_ecs_mock_rejects_scenario_change_while_real_command_owns_device() -> None:
+    state = ecs_mock_server.runtime_states["ROBOT-ARM-01"]
+    state.status = "RUNNING"
+    state.current_command_code = "CMD-IN-FLIGHT"
+    state.command_delay_seconds = 5.0
+
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/devices/ROBOT-ARM-01/scenario",
+            json={"scenario": "offline"},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Device has an active command: CMD-IN-FLIGHT"}
+    assert state.status == "RUNNING"
+    assert state.current_command_code == "CMD-IN-FLIGHT"
+    assert state.scenario == "success"
+    assert state.command_delay_seconds == 5.0
+
+
 def test_ecs_mock_generates_new_random_command_delay_for_each_command(monkeypatch) -> None:
     sleep_calls: list[float] = []
     random_delays = iter([2.25, 7.75])

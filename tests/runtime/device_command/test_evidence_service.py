@@ -13,6 +13,7 @@ from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceEvidenceService,
     DeviceResultConflictError,
+    DeviceResultOutOfOrderError,
     UnknownDeviceCommandError,
 )
 from src.app.execution.models.inbound_evidence import (
@@ -324,6 +325,41 @@ async def test_result_identity_mismatch_is_frozen_before_rejection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_result_before_dispatch_fences_command_and_is_rejected() -> None:
+    command = _command()
+    command.status = CommandStatus.PENDING
+    service, repository = _service(command)
+
+    with pytest.raises(DeviceResultOutOfOrderError) as out_of_order:
+        await service.accept_result(_result())
+
+    rejected = repository.evidences["RESULT:CMD-001"]
+    assert command.status == CommandStatus.RECONCILING
+    assert command.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
+    assert rejected.apply_status == "IGNORED"
+    assert rejected.command_code is None
+    assert out_of_order.value.receipt == DeviceEvidenceReceipt(
+        evidence_id=rejected.id,
+        source_event_id="RESULT:CMD-001",
+        duplicate=False,
+        trace_id=None,
+        apply_status="IGNORED",
+    )
+
+    with pytest.raises(DeviceResultOutOfOrderError) as duplicate:
+        await service.accept_result(_result())
+
+    assert duplicate.value.receipt == DeviceEvidenceReceipt(
+        evidence_id=rejected.id,
+        source_event_id="RESULT:CMD-001",
+        duplicate=True,
+        trace_id=None,
+        apply_status="IGNORED",
+    )
+    assert len(repository.evidences) == 1
+
+
+@pytest.mark.asyncio
 async def test_event_freezes_nullable_epoch_on_first_observation() -> None:
     service, repository = _service(None)
 
@@ -543,6 +579,21 @@ async def test_result_for_untrusted_command_state_enters_reconciliation_without_
     assert await service.process_one() is True
     assert command.status == CommandStatus.SUCCEEDED
     assert repository.evidences[receipt.source_event_id].apply_status == "RECONCILING"
+
+
+@pytest.mark.asyncio
+async def test_reconciling_evidence_update_is_published_after_processing() -> None:
+    command = _command()
+    command.status = CommandStatus.SUCCEEDED
+    publisher = FakePublisher()
+    service, repository = _service(command, publisher=publisher)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+
+    assert repository.evidences[receipt.source_event_id].apply_status == "RECONCILING"
+    assert publisher.events[0][1] == "device_evidence.updated"
+    assert publisher.events[0][2]["apply_status"] == "RECONCILING"
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -22,6 +23,7 @@ from src.app.device.contracts import (
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
+    DeviceResultOutOfOrderError,
     UnknownDeviceCommandError,
 )
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL, event_stream_service
@@ -32,8 +34,9 @@ from src.utils.timezone import timezone
 _BODY_LIMIT_BYTES = 256 * 1024
 _ATTEMPT_EVENT_TYPE = "device_ingress.attempted"
 _SENSITIVE_PAYLOAD_KEYS = frozenset(
-    {"api_key", "authorization", "cookie", "password", "refresh_token", "secret", "set_cookie", "token"}
+    {"api_key", "apikey", "authorization", "cookie", "password", "refresh_token", "secret", "set_cookie", "token"}
 )
+_SENSITIVE_PAYLOAD_SEGMENTS = frozenset({"authorization", "cookie", "password", "secret", "token"})
 
 router = APIRouter()
 
@@ -143,6 +146,8 @@ def _as_ingress_rejection(error: Exception) -> EcsCallbackRejection | None:
         return error
     if isinstance(error, UnknownDeviceCommandError):
         return EcsCallbackRejection(404, "COMMAND_NOT_FOUND")
+    if isinstance(error, DeviceResultOutOfOrderError):
+        return EcsCallbackRejection(409, "RESULT_BEFORE_DISPATCH")
     if isinstance(error, (DeviceEvidenceConflictError, DeviceResultConflictError)):
         return EcsCallbackRejection(409, "IDEMPOTENCY_CONFLICT")
     return None
@@ -159,10 +164,14 @@ def _redact_diagnostic_payload(value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, item in value.items():
-            normalized_key = key.casefold().replace("-", "_")
+            snake_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+            normalized_key = re.sub(r"[^a-zA-Z0-9]+", "_", snake_key).casefold().strip("_")
+            key_segments = frozenset(normalized_key.split("_"))
             redacted[key] = (
                 "[REDACTED]"
-                if normalized_key in _SENSITIVE_PAYLOAD_KEYS or normalized_key.endswith("_token")
+                if normalized_key in _SENSITIVE_PAYLOAD_KEYS
+                or "api_key" in normalized_key
+                or bool(key_segments & _SENSITIVE_PAYLOAD_SEGMENTS)
                 else _redact_diagnostic_payload(item)
             )
         return redacted

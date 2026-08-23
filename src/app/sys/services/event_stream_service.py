@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 SSE_EVENT_CHANNEL = "events:stream"
 DEVICE_EVIDENCE_STREAM_CHANNEL = "device:evidence:stream"
 DEFERRED_SSE_EVENTS_KEY = "_deferred_sse_events_after_commit"
+SSE_PUBLISH_TIMEOUT_SECONDS = 1.0
+SSE_SUBSCRIBE_TIMEOUT_SECONDS = 5.0
+SSE_CLEANUP_TIMEOUT_SECONDS = 1.0
 
 DEVICE_STATUS_CHANGED_EVENT = "device.status.changed"
 WORKLINE_RUNTIME_CHANGED_EVENT = "workline.runtime.changed"
@@ -44,7 +47,8 @@ class EventStreamService:
             "timestamp": int(timezone.now_utc().timestamp() * 1000),
         }
         try:
-            await cast("Any", redis_client).publish(channel, json.dumps(event, ensure_ascii=False))
+            async with asyncio.timeout(SSE_PUBLISH_TIMEOUT_SECONDS):
+                await cast("Any", redis_client).publish(channel, json.dumps(event, ensure_ascii=False))
             return True
         except Exception as exc:
             logger.warning(f"SSE 事件发布失败: {event_type}, error={exc}")
@@ -60,20 +64,32 @@ class EventStreamService:
 
         redis_client = get_redis()
         if redis_client is None:
-            while True:
-                await asyncio.sleep(timeout_seconds)
-                yield None
+            return
 
         pubsub = cast("Any", redis_client).pubsub()
         try:
-            await pubsub.subscribe(channel)
-            _ = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            pending_message = None
+            async with asyncio.timeout(SSE_SUBSCRIBE_TIMEOUT_SECONDS):
+                await pubsub.subscribe(channel)
+                while True:
+                    startup_message = await pubsub.get_message(ignore_subscribe_messages=False, timeout=1.0)
+                    if startup_message is None:
+                        continue
+                    if startup_message.get("type") == "subscribe":
+                        break
+                    if startup_message.get("type") == "message" and pending_message is None:
+                        pending_message = startup_message
+            # readiness：只有 Redis 已完成订阅后，路由才能向客户端声明 SSE 已连接。
+            yield None
             while True:
                 try:
-                    message = await pubsub.get_message(
-                        ignore_subscribe_messages=True,
-                        timeout=timeout_seconds,
-                    )
+                    message = pending_message
+                    pending_message = None
+                    if message is None or message.get("type") != "message":
+                        message = await pubsub.get_message(
+                            ignore_subscribe_messages=True,
+                            timeout=timeout_seconds,
+                        )
                 except asyncio.CancelledError:
                     return
                 except Exception as exc:
@@ -89,13 +105,18 @@ class EventStreamService:
                     logger.warning(f"SSE 跳过非法消息: channel={channel}, error={exc}")
         finally:
             try:
-                await pubsub.unsubscribe(channel)
-                close = getattr(pubsub, "aclose", None) or pubsub.close
-                close_result = close()
-                if asyncio.iscoroutine(close_result):
-                    await close_result
+                async with asyncio.timeout(SSE_CLEANUP_TIMEOUT_SECONDS):
+                    await pubsub.unsubscribe(channel)
             except Exception as exc:
-                logger.debug(f"SSE Pub/Sub 清理失败（可忽略）: {exc}")
+                logger.debug(f"SSE Pub/Sub unsubscribe 失败（可忽略）: {exc}")
+            try:
+                async with asyncio.timeout(SSE_CLEANUP_TIMEOUT_SECONDS):
+                    close = getattr(pubsub, "aclose", None) or pubsub.close
+                    close_result = close()
+                    if asyncio.iscoroutine(close_result):
+                        await close_result
+            except Exception as exc:
+                logger.debug(f"SSE Pub/Sub close 失败（可忽略）: {exc}")
 
 
 event_stream_service = EventStreamService()

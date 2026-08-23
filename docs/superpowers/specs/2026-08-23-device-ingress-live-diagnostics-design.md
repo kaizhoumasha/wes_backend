@@ -1,6 +1,6 @@
 # Device Ingress Live Diagnostics Design
 
-**Status:** 工程评审通过，可进入实施
+**Status:** 当前实现合同
 
 **Date:** 2026-08-23
 
@@ -81,7 +81,8 @@ DeviceEvidenceService.process_one
 
 不新增 `ops:device:evidence-stream` 等权限，不修改 `AuthorizationBootstrapService`。
 
-前端路由复用既有 `SUPERUSER_PERMISSION = "*"`。通用菜单树按匹配路由的 `meta.permission` 调用既有 `hasPermission()` 过滤；父菜单无可见子项且自身不可导航时一并移除。该过滤不识别具体路径或角色名。
+前端路由复用既有 `SUPERUSER_PERMISSION = "*"`。权限目录加载失败时受保护路由 fail closed 到 403。通用菜单树按匹配路由的
+`meta.permission` 调用既有 `hasPermission()` 过滤；父菜单无可见子项且自身不可导航时一并移除。该过滤不识别具体路径或角色名。
 
 ## 6. 入站实时流
 
@@ -90,7 +91,7 @@ DeviceEvidenceService.process_one
 - ACCEPTED / DUPLICATE：`DeviceEvidenceService` 返回时事务已经提交，由 callback route 随后发布 attempt。
 - CONFLICT / REJECTED：HTTP 结果确定后发布 attempt；不存在需要等待的 evidence 事务。
 - evidence update：`process_one` 事务提交后发布最终 `APPLIED` 或 `RECONCILING` snapshot。
-- Redis 不可用、序列化失败或 publish 失败只记录诊断日志，不改变 evidence、callback HTTP 响应或 ECS 重试语义。
+- Redis 不可用、序列化失败、publish 失败或超过 1 秒只记录诊断日志，不改变 evidence、callback HTTP 响应或 ECS 重试语义。
 
 Redis Pub/Sub 只提供活动期间 at-most-once 通知，恰好符合 live-only 需求；不得在其上增加 replay 或持久化补偿。
 
@@ -108,6 +109,8 @@ Accept: text/event-stream
 - 不发送 SSE `id`，忽略 `Last-Event-ID`。
 - query token 无效；认证只走现有 Bearer middleware。
 - 单条坏消息被记录并跳过，不关闭整个订阅。
+- 订阅必须在有界启动超时内确认 Redis `subscribe` ACK 后才发送首 heartbeat；不得以
+  `ignore_subscribe_messages=True` 预读并丢弃首条 live message。
 - Nginx 为该精确路径关闭 buffering、cache 和 gzip，并设置大于 heartbeat 的读超时。
 
 ### 6.3 事件合同
@@ -172,7 +175,7 @@ MANUAL_DEBUG 运行态准入固定为：身份匹配、在线、`AUTO`、`IDLE`�
 
 数据库新增 nullable `execution_reason`，并使用条件约束保证：
 
-- `execution_ref_type='MANUAL_DEBUG'` 时 reason 为 trim 后非空且既有 `created_by` 非空；
+- `execution_ref_type='MANUAL_DEBUG'` 时不关联 `MaterialExecution`，reason 为 trim 后非空且既有 `created_by` 非空；
 - 非 MANUAL_DEBUG 时必须为 `NULL`。
 
 `created_by` 复用 `EnterpriseMixin` 既有字段，不重复建列。
@@ -195,6 +198,10 @@ HTTP `202` 只表示 WES 已持久化 `PENDING`。命令详情持久化快照是
 - 普通 API 使用生成的 `deviceApiMethods`；命令详情按固定 2 秒轮询，terminal 后停止。
 - 行内打开 debug dialog 时只把 `device_code` 作为候选；ECS preflight 返回后才真正选中。全局打开不预选。
 - ECS URL、rows、payload、draft 和 lifecycle 全部只在组件会话内存中。
+- SSE 请求显式发送 `Accept: text/event-stream`，2xx 响应必须验证 Content-Type，并在收到首个完整 SSE frame 后才能标记连接
+  成功；重试前释放未消费的响应体，EOF 未闭合尾帧不得派发。
+- 16 MiB 预算按 `raw_payload` 的 JSON UTF-8 序列化长度计算，不复用 HTTP 入站字节数；详情展示完整 attempt/update，
+  即使 REJECTED 没有 raw payload 也保留处置和错误元数据。
 
 ## 10. 验收边界
 
@@ -211,24 +218,3 @@ HTTP `202` 只表示 WES 已持久化 `PENDING`。命令详情持久化快照是
 - 生成合同、菜单 artifact、前后端 QUALITY、受影响 HEAVY、迁移链和本地 Mock 浏览器 QA。
 
 真实 ECS/设备联调只可在另行授权的现场窗口执行。
-
-## GSTACK REVIEW REPORT
-
-### 评审结论
-
-原方案功能方向正确，但存在重复建设和四个执行级缺陷：重复实现 Redis SSE 基础能力、重复手写前端 device API、授权改动范围过宽，以及 route/file map 与当前代码不一致。上述问题已折叠进本设计，当前架构可实施。
-
-### 已锁定决策
-
-1. 功能范围不缩水，但后端和前端都采用 reuse-first 的压缩实现面。
-2. 整套诊断能力仅允许 `is_superuser=True`，不新增权限、不改角色 bootstrap、不增加白名单。
-3. 菜单和直接 URL 统一复用 `SUPERUSER_PERMISSION='*'`；增加通用 route-meta 菜单过滤。
-
-### 自动收敛的工程修正
-
-- 专用 channel/route 保留，但 Redis publish/subscribe 复用既有 `EventStreamService`。
-- 修正 RESULT wire 示例、413 字节语义、重复 attempt 的 update 合并和真实 router 注册点。
-- preflight 保持 idempotency-first，reason 增加数据库条件约束。
-- 前端复用 generated API 和现有 UI 组件，删除 SSE RESULT 唤醒轮询及同义包装层。
-
-NO UNRESOLVED DECISIONS

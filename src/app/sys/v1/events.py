@@ -82,7 +82,6 @@ async def event_stream(
 
     async def event_generator():
         """事件生成器"""
-        yield ": heartbeat\n\n"
         async for event in event_stream_service.subscribe(
             SSE_EVENT_CHANNEL,
             timeout_seconds=SSE_HEARTBEAT_INTERVAL_SECONDS,

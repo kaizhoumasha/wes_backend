@@ -79,6 +79,16 @@ def test_matching_callback_can_close_reconciling_command() -> None:
     assert command.status == CommandStatus.SUCCEEDED
 
 
+def test_manual_debug_context_cannot_bind_material_execution() -> None:
+    constraint = next(
+        item
+        for item in DeviceCommand.__table__.constraints
+        if item.name and item.name.endswith("device_command_execution_context_complete")
+    )
+
+    assert "material_execution_id IS NULL" in str(constraint.sqltext)
+
+
 def test_final_model_has_no_legacy_priority_cancel_or_wire_override_fields() -> None:
     fields = DeviceCommand.model_fields
 

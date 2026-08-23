@@ -58,6 +58,7 @@ class FakeStreamService:
 
     async def subscribe(self, channel: str, *, timeout_seconds: float):
         self.subscriptions.append((channel, timeout_seconds))
+        yield None
         for event in self.events:
             yield event
 
@@ -119,6 +120,7 @@ async def test_device_evidence_stream_uses_dedicated_channel_filters_and_omits_s
     )
     body = response.body_iterator
     heartbeat = await anext(body)
+    assert stream.subscriptions == [(DEVICE_EVIDENCE_STREAM_CHANNEL, 25.0)]
     event = await anext(body)
     await body.aclose()
 
@@ -126,7 +128,6 @@ async def test_device_evidence_stream_uses_dedicated_channel_filters_and_omits_s
     assert "event: device_ingress.attempted\n" in event
     assert '"device_code": "ARM-02"' in event
     assert "id:" not in event
-    assert stream.subscriptions == [(DEVICE_EVIDENCE_STREAM_CHANNEL, 25.0)]
     assert response.headers["cache-control"] == "no-cache"
     assert response.headers["x-accel-buffering"] == "no"
 

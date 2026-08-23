@@ -70,6 +70,10 @@ class DeviceResultConflictError(_DeviceEvidenceRejectedError):
     """同一命令出现第二个终态结果身份。"""
 
 
+class DeviceResultOutOfOrderError(_DeviceEvidenceRejectedError):
+    """命令尚未下发就收到了 RESULT。"""
+
+
 class EvidenceProcessingRepositoryPort(Protocol):
     async def get_by_source_identity_for_update(
         self,
@@ -142,6 +146,17 @@ class DeviceEvidenceService:
                 _validate_result_identity(command, result)
             except DeviceResultConflictError as error:
                 rejection = error
+            if command.status == CommandStatus.PENDING:
+                command.transition_to(CommandStatus.RECONCILING)
+                command.reconciliation_reason = "RESULT_BEFORE_DISPATCH"
+                if rejection is None:
+                    rejection = DeviceResultOutOfOrderError(result.command_code)
+            elif (
+                rejection is None
+                and command.status == CommandStatus.RECONCILING
+                and command.reconciliation_reason == "RESULT_BEFORE_DISPATCH"
+            ):
+                rejection = DeviceResultOutOfOrderError(result.command_code)
 
             accepted = await self._ingress.accept(
                 db,
@@ -394,5 +409,6 @@ __all__ = [
     "DeviceEvidenceConflictError",
     "DeviceEvidenceService",
     "DeviceResultConflictError",
+    "DeviceResultOutOfOrderError",
     "UnknownDeviceCommandError",
 ]

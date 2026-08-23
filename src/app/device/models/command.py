@@ -142,7 +142,9 @@ _UNCLOSED_STATUSES = frozenset(
     }
 )
 _ALLOWED_TRANSITIONS: dict[CommandStatus, frozenset[CommandStatus]] = {
-    CommandStatus.PENDING: frozenset({CommandStatus.DISPATCHING, CommandStatus.FAILED, CommandStatus.TIMED_OUT}),
+    CommandStatus.PENDING: frozenset(
+        {CommandStatus.DISPATCHING, CommandStatus.FAILED, CommandStatus.RECONCILING, CommandStatus.TIMED_OUT}
+    ),
     CommandStatus.DISPATCHING: frozenset(
         {
             CommandStatus.PENDING,
@@ -174,7 +176,8 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         CheckConstraint("attempt_count >= 0", name="device_command_attempt_count_nonnegative"),
         CheckConstraint(
             "((execution_ref_type = 'MANUAL_DEBUG' AND line_run_epoch_id IS NULL "
-            "AND device_binding_id IS NULL AND endpoint_base_url IS NOT NULL "
+            "AND device_binding_id IS NULL AND material_execution_id IS NULL "
+            "AND endpoint_base_url IS NOT NULL "
             "AND command_timeout_ms IS NOT NULL) OR "
             "(execution_ref_type <> 'MANUAL_DEBUG' AND line_run_epoch_id IS NOT NULL "
             "AND device_binding_id IS NOT NULL AND endpoint_base_url IS NULL "
