@@ -611,6 +611,7 @@ source_glob = "migrations/versions/20260823_1616_11013119b97d_audit_manual_devic
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_device_command_migration_postgresql.py",
 ]
 
 # Nginx 仅新增已有 SSE 配置的第二个精确路径；部署合同测试直接承接。
@@ -1141,6 +1142,7 @@ source_glob = "migrations/versions/20260823_0007_1000c501e52a_支持设备指令
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_device_command_migration_postgresql.py",
 ]
 
 [[mapping]]

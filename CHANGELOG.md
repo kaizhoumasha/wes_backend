@@ -19,10 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RESULT 早于实际下发到达时不再误报物理完成：证据会标记为忽略，命令进入 `RECONCILING`，接口返回 `RESULT_BEFORE_DISPATCH`。
 - 诊断 payload 脱敏覆盖大小写、驼峰和连字符形式的 API key、token、Cookie、password 与 secret 字段，同时保留非敏感业务字段。
 - 修复首条 Redis 消息被订阅确认流程吞掉的问题；Redis 不可用时流会安全结束并由客户端重连，不伪造已连接 heartbeat。
+- `11013119b97d` 以零兼容 cutover 清空不兼容的 `DeviceCommand` 测试账本并重建目标约束；引用它的业务记录只解除命令关联，不随测试账本删除。
 
 ### Verification
 
-- 后端聚焦测试 140 项、QUALITY 3884 passed（4 个既有外部条件 skip）、selector 选中的 HEAVY 89 项全部通过；行为覆盖审计为 90%，最终 Review 无剩余问题。
+- 后端聚焦测试 140 项、QUALITY 3884 passed（4 个既有外部条件 skip）、selector 选中的 HEAVY 89 项全部通过；迁移切换追加 2 项真实 PostgreSQL 往返测试及 33 项受影响 HEAVY，最终 Review 无剩余问题。
 - 本次只证明代码合同与本地 Mock 链路，不包含部署、真实 ECS、现场物理动作、供应商一致性或业务验收。
 
 ## [0.27.2.1] - 2026-08-23
