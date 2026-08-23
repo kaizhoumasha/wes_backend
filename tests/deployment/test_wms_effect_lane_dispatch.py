@@ -133,7 +133,7 @@ def test_all_compose_profiles_and_test_deploy_pipeline_define_both_worker_roles(
     assert 'wait_for_image "${BACKEND_IMAGE}" "${IMAGE_PULL_RETRIES}"' in pipeline
     assert 'wait_for_image "${FRONTEND_IMAGE}" "${IMAGE_PULL_RETRIES}"' in pipeline
     assert "api celery celery-wms-fulfillment celery_beat flower frontend" in pipeline
-    assert "compose up -d --no-deps nginx" in pipeline
+    assert "compose up -d --no-deps --wait --wait-timeout 60 nginx" in pipeline
 
 
 def test_wms_effect_admission_switch_is_consistent_across_profiles_and_effect_creators() -> None:

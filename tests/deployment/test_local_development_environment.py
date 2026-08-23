@@ -376,7 +376,7 @@ def test_test_deploy_keeps_external_entrypoint_closed_until_every_gate_passes() 
     assert "trap keep_external_entrypoint_closed EXIT" in pipeline
     assert "compose stop nginx" in pipeline
     assert "curl -sS --connect-timeout 1 --max-time 2" in pipeline
-    assert "compose up -d --no-deps nginx" in pipeline
+    assert "compose up -d --no-deps --wait --wait-timeout 60 nginx" in pipeline
     assert "fail_cutover external-health" in pipeline
     assert "fail_cutover external-frontend" in pipeline
     assert pipeline.rindex("MAINTENANCE_MODE=false") > pipeline.index("🌐 恢复外部入口")

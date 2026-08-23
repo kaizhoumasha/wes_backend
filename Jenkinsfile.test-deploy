@@ -497,6 +497,16 @@ print("WMS_PROFILE_PREFLIGHT=valid", flush=True)
                             fail_cutover frontend-asset
                         fi
 
+                        echo "🔐 验证超级管理员真实登录"
+                        CUTOVER_STAGE=admin-login-gate
+                        if ! compose exec -T \
+                            -e BOOTSTRAP_ADMIN_USERNAME \
+                            -e BOOTSTRAP_ADMIN_PASSWORD \
+                            api /opt/venv/bin/python scripts/check_bootstrap_admin_login.py \
+                            --base-url http://127.0.0.1:8001; then
+                            fail_cutover admin-login-gate
+                        fi
+
                         echo "🧭 同步 TEST 环境菜单..."
                         CUTOVER_STAGE=menu-sync
                         if ! API_CONTAINER_ID=$(compose ps -q api); then
@@ -529,31 +539,44 @@ print("WMS_PROFILE_PREFLIGHT=valid", flush=True)
 
                         echo "✅ TEST 环境菜单数量: ${MENU_COUNT}"
 
+                        echo "🧭 校验入口恢复前服务拓扑"
+                        CUTOVER_STAGE=pre-entrypoint-topology
+                        EXPECTED_PRE_ENTRY_SERVICES="$(compose config --services | grep -v '^nginx$' | LC_ALL=C sort)"
+                        RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | grep -v '^nginx$' | LC_ALL=C sort)"
+                        if [ "${RUNNING_PRE_ENTRY_SERVICES}" != "${EXPECTED_PRE_ENTRY_SERVICES}" ]; then
+                            echo "❌ 入口恢复前 Compose 服务拓扑不一致"
+                            printf '期望服务:\n%s\n' "${EXPECTED_PRE_ENTRY_SERVICES}"
+                            printf '运行服务:\n%s\n' "${RUNNING_PRE_ENTRY_SERVICES}"
+                            fail_cutover pre-entrypoint-topology
+                        fi
+
                         echo "🌐 恢复外部入口"
                         CUTOVER_STAGE=external-entrypoint
-                        if ! compose up -d --no-deps nginx; then
+                        if ! compose up -d --no-deps --wait --wait-timeout 60 nginx; then
                             fail_cutover external-entrypoint
                         fi
-                        wait_for_http() {
-                            url="$1"
-                            attempt=1
-                            while [ "${attempt}" -le 10 ]; do
-                                if curl -fsS --connect-timeout 1 --max-time 2 "${url}" >/dev/null; then
-                                    return 0
-                                fi
-                                attempt=$((attempt + 1))
-                                sleep 1
-                            done
-                            return 1
-                        }
-                        if ! wait_for_http "http://127.0.0.1:${NGINX_PORT}/health"; then
+                        CUTOVER_STAGE=external-health
+                        if ! python3 scripts/wait_for_http.py \
+                            --url "http://127.0.0.1:${NGINX_PORT}/health" \
+                            --attempts 10 --timeout-seconds 2 --interval-seconds 1; then
                             fail_cutover external-health
                         fi
-                        if ! wait_for_http "http://127.0.0.1:${NGINX_PORT}/"; then
+                        CUTOVER_STAGE=external-frontend
+                        if ! python3 scripts/wait_for_http.py \
+                            --url "http://127.0.0.1:${NGINX_PORT}/" \
+                            --attempts 10 --timeout-seconds 2 --interval-seconds 1; then
                             fail_cutover external-frontend
                         fi
-                        if ! compose ps; then
-                            fail_cutover final-compose-status
+
+                        echo "🧭 校验最终服务拓扑"
+                        CUTOVER_STAGE=final-topology
+                        EXPECTED_FINAL_SERVICES="$(compose config --services | LC_ALL=C sort)"
+                        RUNNING_FINAL_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
+                        if [ "${RUNNING_FINAL_SERVICES}" != "${EXPECTED_FINAL_SERVICES}" ]; then
+                            echo "❌ 最终 Compose 服务拓扑不一致"
+                            printf '期望服务:\n%s\n' "${EXPECTED_FINAL_SERVICES}"
+                            printf '运行服务:\n%s\n' "${RUNNING_FINAL_SERVICES}"
+                            fail_cutover final-topology
                         fi
 
                         CUTOVER_STAGE=complete

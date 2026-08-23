@@ -21,7 +21,13 @@ def _cutover_shell() -> str:
     end_marker = "# TEST_DEPLOY_CUTOVER_END"
     start = pipeline.index(start_marker) + len(start_marker)
     end = pipeline.index(end_marker, start)
-    source = textwrap.dedent(pipeline[start:end]).replace(r"\$", "$")
+    source = pipeline[start:end].replace(
+        "                        CUTOVER_STAGE=complete\n                        MAINTENANCE_MODE=false",
+        "                        CUTOVER_STAGE=complete\n"
+        "                        printf 'cutover-complete\\n' >>\"$TRACE_FILE\"\n"
+        "                        MAINTENANCE_MODE=false",
+    )
+    source = textwrap.dedent(source).replace(r"\$", "$")
     return "set -e\nset -o pipefail\n" + source
 
 
@@ -189,9 +195,9 @@ def _fake_docker_source() -> str:
                 ;;
             up)
                 case "$args" in
-                    *"--no-deps nginx"*)
+                    *"--no-deps --wait --wait-timeout 60 nginx"*)
                         trace nginx-start
-                        fail_at nginx-start && exit 45
+                        fail_at external-entrypoint && exit 45
                         set_nginx_state running
                         ;;
                     *"api celery celery-wms-fulfillment celery_beat flower frontend"*)
@@ -277,6 +283,18 @@ def _fake_docker_source() -> str:
                         fail_at backend-readiness && exit 57
                         :
                         ;;
+                    *"scripts/check_bootstrap_admin_login.py"*)
+                        trace admin-login
+                        case " $args " in
+                            *" -e BOOTSTRAP_ADMIN_USERNAME -e BOOTSTRAP_ADMIN_PASSWORD api /opt/venv/bin/python scripts/check_bootstrap_admin_login.py --base-url http://127.0.0.1:8001 "*) ;;
+                            *) trace invalid-admin-login-command; exit 63 ;;
+                        esac
+                        case "$args" in
+                            *"BOOTSTRAP_ADMIN_PASSWORD="*) trace exposed-admin-password; exit 64 ;;
+                        esac
+                        fail_at admin-login-gate && exit 65
+                        :
+                        ;;
                     *"frontend wget"*)
                         trace frontend-asset
                         fail_at frontend-asset && exit 58
@@ -300,11 +318,36 @@ def _fake_docker_source() -> str:
                     trace api-container-lookup
                     fail_at api-container-lookup && exit 62
                     fail_at api-container-missing || printf 'api-container\n'
+                elif [ "$args" = "--status running --services" ]; then
+                    if [ "$(nginx_state)" = stopped ]; then
+                        trace pre-topology
+                        if fail_at pre-entrypoint-topology; then
+                            printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend redis \
+                                | grep -v '^flower$'
+                        else
+                            printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend redis
+                        fi
+                    else
+                        trace final-topology
+                        printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend nginx redis
+                        if fail_at final-topology; then
+                            printf 'unknown-running-service\n'
+                        fi
+                    fi
                 else
                     trace compose-ps
                     fail_at final-compose-status && exit 63
                     :
                 fi
+                ;;
+            config)
+                [ "$args" = "--services" ] || exit 66
+                if [ "$(nginx_state)" = stopped ]; then
+                    trace expected-pre-services
+                else
+                    trace expected-final-services
+                fi
+                printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend nginx redis
                 ;;
             *) exit 58 ;;
         esac
@@ -337,6 +380,25 @@ def _fake_curl_source() -> str:
     """
 
 
+def _fake_python3_source() -> str:
+    return r"""
+        #!/bin/bash
+        set -u
+        [ "$1" = "scripts/wait_for_http.py" ] || exit 70
+        args="$*"
+        case "$args" in
+            *"/health"*)
+                printf 'external-health\n' >>"$TRACE_FILE"
+                [ "${FAIL_STAGE:-}" != external-health ] || exit 71
+                ;;
+            *)
+                printf 'external-frontend\n' >>"$TRACE_FILE"
+                [ "${FAIL_STAGE:-}" != external-frontend ] || exit 72
+                ;;
+        esac
+    """
+
+
 def _run_cutover(tmp_path: Path, fail_stage: str = "") -> tuple[subprocess.CompletedProcess[str], list[str], str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -351,10 +413,13 @@ def _run_cutover(tmp_path: Path, fail_stage: str = "") -> tuple[subprocess.Compl
     manifest_path.write_text("{}\n", encoding="utf-8")
     _write_executable(bin_dir / "docker", _fake_docker_source())
     _write_executable(bin_dir / "curl", _fake_curl_source())
+    _write_executable(bin_dir / "python3", _fake_python3_source())
     _write_executable(bin_dir / "sleep", "#!/bin/sh\nexit 0\n")
 
     env = os.environ | {
         "BACKEND_IMAGE": "backend@sha256:" + "1" * 64,
+        "BOOTSTRAP_ADMIN_PASSWORD": "configured-secret",
+        "BOOTSTRAP_ADMIN_USERNAME": "admin",
         "BUILD_NUMBER": "bad-build" if fail_stage == "fresh-database-name" else "42",
         "CI_COMMIT_SHA": "e" * 40,
         "DEPLOY_SOURCE_COMMIT_SHA": BACKEND_REVISION,
@@ -564,6 +629,36 @@ def test_application_start_failure_prints_bounded_service_diagnostics_before_cut
     assert start_failure < status_diagnostics < log_diagnostics < fail_closed
 
 
+def test_test_deploy_orders_login_and_exact_topology_before_cutover_completion() -> None:
+    pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    application_start = pipeline.index("🐳 启动已固定版本的应用服务")
+    admin_login = pipeline.index("🔐 验证超级管理员真实登录")
+    pre_topology = pipeline.index("🧭 校验入口恢复前服务拓扑")
+    external_entry = pipeline.index("🌐 恢复外部入口")
+    final_topology = pipeline.index("🧭 校验最终服务拓扑")
+    complete = pipeline.rindex("MAINTENANCE_MODE=false")
+
+    assert application_start < admin_login < pre_topology < external_entry < final_topology < complete
+
+    login_stage = pipeline[admin_login:pre_topology]
+    assert "-e BOOTSTRAP_ADMIN_USERNAME" in login_stage
+    assert "-e BOOTSTRAP_ADMIN_PASSWORD" in login_stage
+    assert "BOOTSTRAP_ADMIN_PASSWORD=" not in login_stage
+    assert "scripts/check_bootstrap_admin_login.py" in login_stage
+    assert "scripts/data/bootstrap_foundation.sh" not in login_stage
+
+
+def test_test_deploy_uses_rendered_topology_and_versioned_http_readiness_helper() -> None:
+    pipeline = (REPO_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
+
+    assert "wait_for_http()" not in pipeline
+    assert "compose config --services" in pipeline
+    assert "compose ps --status running --services" in pipeline
+    assert "compose up -d --no-deps --wait --wait-timeout 60 nginx" in pipeline
+    assert pipeline.count("python3 scripts/wait_for_http.py") == 2
+
+
 @pytest.mark.parametrize(
     ("fail_stage", "forbidden_later_stage"),
     [
@@ -612,10 +707,12 @@ def test_application_start_failure_prints_bounded_service_diagnostics_before_cut
         ("menu-sync", "menu-count"),
         ("menu-count-query", "nginx-start"),
         ("menu-count-check", "nginx-start"),
-        ("nginx-start", "external-health"),
+        ("admin-login-gate", "pre-topology"),
+        ("pre-entrypoint-topology", "nginx-start"),
+        ("external-entrypoint", "external-health"),
         ("external-health", "external-frontend"),
-        ("external-frontend", "compose-ps"),
-        ("final-compose-status", None),
+        ("external-frontend", "final-topology"),
+        ("final-topology", "cutover-complete"),
     ],
 )
 def test_test_deploy_failure_keeps_nginx_closed_and_never_repeats_database_mutation(
@@ -626,6 +723,7 @@ def test_test_deploy_failure_keeps_nginx_closed_and_never_repeats_database_mutat
     assert completed.returncode != 0, (completed.stdout, completed.stderr, trace)
     assert nginx_state == "stopped"
     assert trace[-1] == "nginx-stop"
+    assert "cutover-complete" not in trace
     if forbidden_later_stage is not None:
         assert forbidden_later_stage not in trace
     for mutating_stage in ("fresh-database", "migration", "bootstrap", "repair", "menu-sync"):
@@ -645,6 +743,14 @@ def test_test_deploy_failure_keeps_nginx_closed_and_never_repeats_database_mutat
         ):
             assert later_stage not in trace
         assert trace.count("manifest-extract-cleanup") == 2
+    later_stages_by_new_gate = {
+        "admin-login-gate": {"pre-topology", "nginx-start", "external-health", "external-frontend", "final-topology"},
+        "pre-entrypoint-topology": {"nginx-start", "external-health", "external-frontend", "final-topology"},
+        "external-entrypoint": {"external-health", "external-frontend", "final-topology"},
+        "external-health": {"external-frontend", "final-topology"},
+        "final-topology": {"cutover-complete"},
+    }
+    assert later_stages_by_new_gate.get(fail_stage, set()).isdisjoint(trace)
 
 
 def test_wms_profile_preflight_failure_preserves_the_existing_entrypoint_and_stops_before_maintenance(
@@ -754,14 +860,21 @@ def test_test_deploy_success_proves_complete_order_with_nginx_started_last(tmp_p
             "application-start",
             "backend-ready",
             "frontend-asset",
+            "admin-login",
             "api-container-lookup",
             "menu-manifest-copy",
             "menu-sync",
             "menu-count",
+            "expected-pre-services",
+            "pre-topology",
             "nginx-start",
             "external-health",
             "external-frontend",
+            "expected-final-services",
+            "final-topology",
+            "cutover-complete",
         ],
     )
+    assert "configured-secret" not in completed.stdout + completed.stderr + "\n".join(trace)
     assert trace.index("backend-revision-inspect") < trace.index("nginx-stop")
     assert trace.index("nginx-start") > trace.index("menu-count")
