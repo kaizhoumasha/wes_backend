@@ -12,7 +12,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
-from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEventReport
+from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEventReport, EcsDeviceStatus
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.repositories.command_repository import device_command_repository
@@ -113,6 +113,8 @@ def _manual_command(identity: str, code: str, status: CommandStatus = CommandSta
         deadline_at=datetime(2026, 8, 24),
         endpoint_base_url="http://ecs-mock:8080",
         command_timeout_ms=30_000,
+        execution_reason="现场供应商联调",
+        created_by=42,
         status=status,
     )
 
@@ -144,6 +146,43 @@ class _BlockingEventEpochRepository(_StaticEventEpochRepository):
         self._reached.set()
         await self._release.wait()
         return self._binding
+
+
+class _ManualDebugAdapter:
+    async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+        return EcsDeviceStatus.model_validate(
+            {
+                "device": {
+                    "device_code": device_code,
+                    "device_name": device_code,
+                    "device_type": "ROBOTIC_ARM",
+                    "role": "PLACEMENT_DEVICE",
+                    "supported_commands": ["PICK_AND_PUT"],
+                    "supported_events": [],
+                },
+                "state": {
+                    "device_code": device_code,
+                    "mode": "AUTO",
+                    "status": "IDLE",
+                    "is_online": True,
+                    "current_command_code": None,
+                    "scenario": "success",
+                    "updated_at": 1_787_475_600_000,
+                },
+            }
+        )
+
+
+class _ManualDebugAdapterProvider:
+    async def get_adapter(self, _endpoint_base_url: str) -> _ManualDebugAdapter:
+        return _ManualDebugAdapter()
+
+
+def _manual_debug_service(session_factory) -> DeviceCommandService:
+    return DeviceCommandService(
+        session_factory=session_factory,
+        adapter_provider=_ManualDebugAdapterProvider(),  # type: ignore[arg-type]
+    )
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -220,6 +259,34 @@ async def test_postgresql_rejects_incomplete_manual_debug_context(integration_se
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("reason", "created_by"), [(None, 42), ("现场供应商联调", None)])
+async def test_postgresql_rejects_incomplete_manual_debug_audit(
+    integration_session_factory,
+    reason: str | None,
+    created_by: int | None,
+) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        command = _manual_command(identity, f"CMD-{uuid4().hex}")
+        command.execution_reason = reason
+        command.created_by = created_by
+        db.add(command)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_rejects_reason_on_non_manual_command(integration_session_factory) -> None:
+    async with integration_session_factory.begin() as db:
+        _, _, _, binding = await _seed_topology(db)
+        command = _command(binding, f"CMD-{uuid4().hex}", CommandStatus.PENDING)
+        command.execution_reason = "不允许"
+        db.add(command)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+
+@pytest.mark.asyncio
 async def test_postgresql_manual_debug_identity_remains_unique_without_epoch(integration_session_factory) -> None:
     identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
     async with integration_session_factory.begin() as db:
@@ -248,9 +315,11 @@ async def test_postgresql_concurrent_manual_debug_same_identity_replays_original
         "task_type": "PICK_AND_PUT",
         "params": {"target_code": "OUTLET-1"},
         "trace_id": None,
+        "execution_reason": "现场供应商联调",
+        "created_by": 42,
     }
-    first_service = DeviceCommandService(session_factory=integration_session_factory)
-    second_service = DeviceCommandService(session_factory=integration_session_factory)
+    first_service = _manual_debug_service(integration_session_factory)
+    second_service = _manual_debug_service(integration_session_factory)
 
     results = await asyncio.gather(
         first_service.create_manual_debug_command(**request),
@@ -290,8 +359,10 @@ async def test_postgresql_manual_debug_same_identity_rejects_different_device(
         "task_type": "PICK_AND_PUT",
         "params": {"target_code": "OUTLET-1"},
         "trace_id": None,
+        "execution_reason": "现场供应商联调",
+        "created_by": 42,
     }
-    service = DeviceCommandService(session_factory=integration_session_factory)
+    service = _manual_debug_service(integration_session_factory)
 
     await service.create_manual_debug_command(
         **request,
@@ -318,9 +389,11 @@ async def test_postgresql_concurrent_manual_debug_same_identity_different_device
         "task_type": "PICK_AND_PUT",
         "params": {"target_code": "OUTLET-1"},
         "trace_id": None,
+        "execution_reason": "现场供应商联调",
+        "created_by": 42,
     }
-    first_service = DeviceCommandService(session_factory=integration_session_factory)
-    second_service = DeviceCommandService(session_factory=integration_session_factory)
+    first_service = _manual_debug_service(integration_session_factory)
+    second_service = _manual_debug_service(integration_session_factory)
 
     results = await asyncio.gather(
         first_service.create_manual_debug_command(
@@ -366,9 +439,11 @@ async def test_postgresql_concurrent_manual_debug_different_identities_report_de
         "task_type": "PICK_AND_PUT",
         "params": {"target_code": "OUTLET-1"},
         "trace_id": None,
+        "execution_reason": "现场供应商联调",
+        "created_by": 42,
     }
-    first_service = DeviceCommandService(session_factory=integration_session_factory)
-    second_service = DeviceCommandService(session_factory=integration_session_factory)
+    first_service = _manual_debug_service(integration_session_factory)
+    second_service = _manual_debug_service(integration_session_factory)
 
     results = await asyncio.gather(
         first_service.create_manual_debug_command(

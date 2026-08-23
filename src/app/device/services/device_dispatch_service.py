@@ -8,12 +8,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
-from src.app.device.contracts import EcsDeviceMode, EcsDeviceState, EcsDeviceStatus, EcsSubmitDisposition
+from src.app.device.contracts import EcsDeviceStatus, EcsSubmitDisposition
 from src.app.device.ecs_adapter import EcsAdapter  # noqa: TC001
 from src.app.device.models.command import DeviceCommand  # noqa: TC001
 from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.repositories.status_observation_repository import device_status_observation_repository
+from src.app.device.services.device_command_admission import (
+    DeviceCommandAdmissionError,
+    ensure_runtime_admissible,
+)
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
@@ -23,14 +27,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-
-class DeviceDispatchAdmissionError(ValueError):
-    """设备状态不满足可靠派发条件。"""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 class DispatchCommandRepositoryPort(Protocol):
@@ -151,49 +147,54 @@ class DeviceDispatchService:
             await self._write_retryable(command_code, claim_token, now=now)
             return True
 
-        if manual_debug:
+        if manual_debug and self._clock() >= command.deadline_at:
             async with self._sessions.begin() as db:
                 command = await self._commands.get_claimed_for_update(
                     db, command_code=command_code, claim_token=claim_token
                 )
-                if command is None:
-                    return True
-                if command.deadline_at <= self._clock():
+                if command is not None:
                     await self._commands.mark_timed_out(db, command)
-                    return True
-                submit_snapshot = _submit_snapshot(command)
-        else:
-            try:
-                status = await adapter.fetch_status(device_code)
-            except Exception:
-                # 状态探测发生在命令发送前，失败时可证明请求未离开 WES。
-                await self._write_retryable(command_code, claim_token, now=now)
-                return True
+            return True
 
-            # 新鲜度必须以状态响应到达 WES 的时间为基准；领取时间早于 ECS 响应时间，
-            # 会把正常状态误判为未来数据。
-            observed_at = self._clock()
-            async with self._sessions.begin() as db:
-                command = await self._commands.get_claimed_for_update(
-                    db, command_code=command_code, claim_token=claim_token
-                )
-                if command is None:
-                    return True
+        try:
+            status = await adapter.fetch_status(device_code)
+        except Exception:
+            # 状态探测发生在命令发送前，失败时可证明请求未离开 WES。
+            await self._write_retryable(command_code, claim_token, now=now)
+            return True
+
+        # 新鲜度必须以状态响应到达 WES 的时间为基准；领取时间早于 ECS 响应时间，
+        # 会把正常状态误判为未来数据。
+        observed_at = self._clock()
+        async with self._sessions.begin() as db:
+            command = await self._commands.get_claimed_for_update(
+                db, command_code=command_code, claim_token=claim_token
+            )
+            if command is None:
+                return True
+            if not manual_debug:
                 await self._observations.add_status_observation(
                     db,
                     _status_observation(command, status, observed_at),
                 )
-                if command.deadline_at <= observed_at:
-                    await self._commands.mark_timed_out(db, command)
-                    return True
-                try:
+            if command.deadline_at <= observed_at:
+                await self._commands.mark_timed_out(db, command)
+                return True
+            try:
+                if manual_debug:
+                    ensure_runtime_admissible(
+                        status=status,
+                        expected_device_code=command.device_code,
+                        task_type=command.task_type,
+                    )
+                else:
                     self.ensure_admissible(
                         command=command, binding=dispatch_context, status=status, observed_at=observed_at
                     )
-                except DeviceDispatchAdmissionError as error:
-                    await self._commands.mark_failed(db, command, failure_code=error.code)
-                    return True
-                submit_snapshot = _submit_snapshot(command)
+            except DeviceCommandAdmissionError as error:
+                await self._commands.mark_failed(db, command, failure_code=error.code)
+                return True
+            submit_snapshot = _submit_snapshot(command)
 
         if self._clock() >= command.deadline_at:
             async with self._sessions.begin() as db:
@@ -279,26 +280,19 @@ class DeviceDispatchService:
         )
         state = status.state
         if status.device.device_code != command.device_code or context.device_code != command.device_code:
-            raise DeviceDispatchAdmissionError("DEVICE_IDENTITY_MISMATCH")
+            raise DeviceCommandAdmissionError("DEVICE_IDENTITY_MISMATCH")
         if (
             command.device_binding_id != context.device_binding_id
             or command.line_run_epoch_id != context.line_run_epoch_id
             or command.contract_key != context.contract_key
             or command.contract_version != context.contract_version
         ):
-            raise DeviceDispatchAdmissionError("DEVICE_CONTRACT_MISMATCH")
+            raise DeviceCommandAdmissionError("DEVICE_CONTRACT_MISMATCH")
         observed_at_ms = int(observed_at.replace(tzinfo=UTC).timestamp() * 1000)
         age_ms = observed_at_ms - state.updated_at
         if context.status_max_age_ms is None or age_ms < 0 or age_ms > context.status_max_age_ms:
-            raise DeviceDispatchAdmissionError("DEVICE_STATUS_STALE")
-        if not state.is_online:
-            raise DeviceDispatchAdmissionError("DEVICE_OFFLINE")
-        if state.mode is not EcsDeviceMode.AUTO:
-            raise DeviceDispatchAdmissionError("DEVICE_MODE_NOT_AUTO")
-        if state.status is not EcsDeviceState.IDLE:
-            raise DeviceDispatchAdmissionError("DEVICE_NOT_IDLE")
-        if state.current_command_code is not None:
-            raise DeviceDispatchAdmissionError("DEVICE_HAS_ACTIVE_COMMAND")
+            raise DeviceCommandAdmissionError("DEVICE_STATUS_STALE")
+        ensure_runtime_admissible(status=status, expected_device_code=command.device_code)
 
 
 def _status_observation(
@@ -339,4 +333,4 @@ def _submit_snapshot(command: DeviceCommand) -> dict[str, object]:
     }
 
 
-__all__ = ["DeviceDispatchAdmissionError", "DeviceDispatchService"]
+__all__ = ["DeviceDispatchService"]

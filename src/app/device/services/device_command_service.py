@@ -14,11 +14,18 @@ from src.app.device.contracts import (
     DeviceCommandOutcome,
     DeviceCommandRequest,
     EcsCommandResult,
+    EcsDeviceStatus,
     ManualDebugDeviceCommandSnapshot,
+    ManualDebugDevicePreflightItem,
+    ManualDebugDevicePreflightSnapshot,
 )
 from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.models.command import CommandStatus, DeviceCommand, DeviceCommandRequestData
 from src.app.device.repositories.command_repository import device_command_repository
+from src.app.device.services.device_command_admission import (
+    DeviceCommandAdmissionError,
+    ensure_runtime_admissible,
+)
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceApplyStatus
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
@@ -108,6 +115,16 @@ class EvidenceRepositoryPort(Protocol):
     async def get_device_result_for_command(self, db: object, command_code: str) -> InboundEvidence | None: ...
 
 
+class ManualDebugAdapterPort(Protocol):
+    async def fetch_statuses(self) -> tuple[EcsDeviceStatus, ...]: ...
+
+    async def fetch_status(self, device_code: str) -> EcsDeviceStatus: ...
+
+
+class ManualDebugAdapterProviderPort(Protocol):
+    async def get_adapter(self, endpoint_base_url: str) -> ManualDebugAdapterPort: ...
+
+
 _MANUAL_DEBUG_REF_TYPE = "MANUAL_DEBUG"
 
 
@@ -121,13 +138,34 @@ class DeviceCommandService:
         command_repository: CommandRepositoryPort | None = None,
         epoch_repository: EpochRepositoryPort | None = None,
         evidence_repository: EvidenceRepositoryPort | None = None,
+        adapter_provider: ManualDebugAdapterProviderPort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
         self._sessions = session_factory
         self._commands = command_repository or device_command_repository
         self._epochs = epoch_repository or line_run_epoch_repository
         self._evidences = evidence_repository or inbound_evidence_repository
+        self._adapter_provider = adapter_provider
         self._clock = clock
+
+    async def preflight_manual_debug(self, endpoint_base_url: str) -> ManualDebugDevicePreflightSnapshot:
+        """枚举 ECS 设备，并返回不含业务 binding 的运行态准入结果。"""
+
+        endpoint = validate_device_endpoint_base_url(endpoint_base_url)
+        adapter = await self._manual_debug_adapter(endpoint)
+        statuses = await adapter.fetch_statuses()
+        devices: list[ManualDebugDevicePreflightItem] = []
+        for status in statuses:
+            rejection_code = None
+            try:
+                ensure_runtime_admissible(
+                    status=status,
+                    expected_device_code=status.device.device_code,
+                )
+            except DeviceCommandAdmissionError as error:
+                rejection_code = error.code
+            devices.append(ManualDebugDevicePreflightItem(status=status, rejection_code=rejection_code))
+        return ManualDebugDevicePreflightSnapshot(endpoint_base_url=endpoint, devices=tuple(devices))
 
     async def create_command(self, request: DeviceCommandRequest) -> DeviceCommandHandle:
         async with self._sessions.begin() as db:
@@ -205,6 +243,8 @@ class DeviceCommandService:
         task_type: str,
         params: dict[str, object],
         trace_id: str | None,
+        execution_reason: str,
+        created_by: int,
     ) -> DeviceCommandHandle:
         """创建不依赖 WorkLine/Epoch 的供应商联调命令。"""
 
@@ -229,9 +269,36 @@ class DeviceCommandService:
                 "trace_id": trace_id,
                 "endpoint_base_url": endpoint,
                 "command_timeout_ms": command_timeout_ms,
+                "execution_reason": execution_reason,
             }
         )
         payload_digest = _command_payload_digest(validated)
+        async with self._sessions.begin() as db:
+            await self._commands.lock_manual_debug_identity(db, validated.execution_ref_id)
+            same_identity = await self._commands.get_manual_debug_by_client_request_id_for_update(
+                db, validated.execution_ref_id
+            )
+            if same_identity is not None:
+                if not _same_manual_debug_identity(
+                    same_identity,
+                    payload_digest=payload_digest,
+                    execution_reason=validated.execution_reason,
+                    created_by=created_by,
+                ):
+                    raise DeviceCommandIdentityConflictError(validated.execution_ref_id)
+                return DeviceCommandHandle(
+                    command_code=same_identity.command_code,
+                    status=CommandStatus(same_identity.status),
+                )
+
+        adapter = await self._manual_debug_adapter(endpoint)
+        status = await adapter.fetch_status(validated.device_code)
+        ensure_runtime_admissible(
+            status=status,
+            expected_device_code=validated.device_code,
+            task_type=validated.task_type,
+        )
+
         async with self._sessions.begin() as db:
             await self._commands.lock_manual_debug_identity(db, validated.execution_ref_id)
             await self._commands.lock_creation_for_device(db, validated.device_code)
@@ -239,7 +306,12 @@ class DeviceCommandService:
                 db, validated.execution_ref_id
             )
             if same_identity is not None:
-                if same_identity.payload_digest != payload_digest:
+                if not _same_manual_debug_identity(
+                    same_identity,
+                    payload_digest=payload_digest,
+                    execution_reason=validated.execution_reason,
+                    created_by=created_by,
+                ):
                     raise DeviceCommandIdentityConflictError(validated.execution_ref_id)
                 return DeviceCommandHandle(
                     command_code=same_identity.command_code,
@@ -265,8 +337,10 @@ class DeviceCommandService:
                 trace_id=validated.trace_id,
                 endpoint_base_url=validated.endpoint_base_url,
                 command_timeout_ms=validated.command_timeout_ms,
+                execution_reason=validated.execution_reason,
                 next_attempt_at=now,
                 created_at=now,
+                created_by=created_by,
             )
             persisted = await self._commands.add(db, command)
         return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
@@ -279,6 +353,8 @@ class DeviceCommandService:
             evidence = await self._evidences.get_device_result_for_command(db, command_code)
         if command.endpoint_base_url is None or command.command_timeout_ms is None:
             raise RuntimeError("MANUAL_DEBUG DeviceCommand 缺少冻结派发上下文")
+        if command.execution_reason is None or command.created_by is None:
+            raise RuntimeError("MANUAL_DEBUG DeviceCommand 缺少审计上下文")
         callback = None
         if evidence is not None:
             result = EcsCommandResult.model_validate(evidence.normalized_payload)
@@ -307,8 +383,15 @@ class DeviceCommandService:
             completed_at=command.completed_at,
             failure_code=command.failure_code,
             reconciliation_reason=command.reconciliation_reason,
+            execution_reason=command.execution_reason,
+            created_by=command.created_by,
             callback=callback,
         )
+
+    async def _manual_debug_adapter(self, endpoint_base_url: str) -> ManualDebugAdapterPort:
+        if self._adapter_provider is None:
+            raise RuntimeError("Device Endpoint provider 不可用")
+        return await self._adapter_provider.get_adapter(endpoint_base_url)
 
     async def get_outcome(self, command_code: str) -> DeviceCommandOutcome | None:
         async with self._sessions.begin() as db:
@@ -362,6 +445,20 @@ def _command_payload_digest(request: DeviceCommandRequestData) -> str:
         )
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _same_manual_debug_identity(
+    command: DeviceCommand,
+    *,
+    payload_digest: str,
+    execution_reason: str | None,
+    created_by: int,
+) -> bool:
+    return (
+        command.payload_digest == payload_digest
+        and command.execution_reason == execution_reason
+        and command.created_by == created_by
+    )
 
 
 __all__ = [

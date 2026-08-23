@@ -143,6 +143,33 @@ async def test_status_uses_fixed_get_path_and_parses_closed_state() -> None:
 
 
 @pytest.mark.asyncio
+async def test_statuses_without_device_filter_preserve_wire_order() -> None:
+    transport = FakeOutboundHttpTransport(
+        [_response(200, {"devices": [_status_entry("ARM-02"), _status_entry("ARM-01")]})]
+    )
+
+    statuses = await EcsAdapter(transport).fetch_statuses()
+
+    request = transport.requests[0]
+    assert request.method is OutboundHttpMethod.GET
+    assert request.path == "/api/v1/device/status"
+    assert request.query == ()
+    assert request.response_limits.max_wire_bytes == 256 * 1024
+    assert request.response_limits.max_decoded_bytes == 256 * 1024
+    assert tuple(status.device.device_code for status in statuses) == ("ARM-02", "ARM-01")
+
+
+@pytest.mark.asyncio
+async def test_statuses_reject_duplicate_device_identity() -> None:
+    transport = FakeOutboundHttpTransport(
+        [_response(200, {"devices": [_status_entry("ARM-01"), _status_entry("ARM-01")]})]
+    )
+
+    with pytest.raises(EcsStatusUnavailableError):
+        await EcsAdapter(transport).fetch_statuses()
+
+
+@pytest.mark.asyncio
 async def test_status_allows_supplier_nullable_diagnostic_fields() -> None:
     entry = _status_entry()
     device = entry["device"]

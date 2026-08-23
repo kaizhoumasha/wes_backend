@@ -11,6 +11,7 @@ from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.device.services.device_dispatch_service import DeviceDispatchService
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
+from src.app.sys.services.event_stream_service import event_stream_service
 from src.core.outbound_http import OutboundHttpTransport, build_outbound_http_transport
 
 if TYPE_CHECKING:
@@ -140,7 +141,7 @@ def build_device_command_runtime(
     )
     return DeviceCommandRuntime(
         provider=provider,
-        command_service=DeviceCommandService(session_factory=session_factory),
+        command_service=DeviceCommandService(session_factory=session_factory, adapter_provider=provider),
         dispatch_service=DeviceDispatchService(
             session_factory=session_factory,
             adapter_provider=provider,
@@ -148,6 +149,7 @@ def build_device_command_runtime(
         evidence_service=DeviceEvidenceService(
             session_factory=session_factory,
             task_queue_gateway=task_queue_gateway,
+            event_publisher=event_stream_service,
         ),
     )
 

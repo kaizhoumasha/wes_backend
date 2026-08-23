@@ -95,6 +95,7 @@ class DeviceCommandRequestData(BaseMixin):
     trace_id: str | None = Field(default=None, max_length=100)
     endpoint_base_url: str | None = Field(default=None, max_length=255)
     command_timeout_ms: int | None = Field(default=None, gt=0)
+    execution_reason: str | None = Field(default=None, max_length=500)
 
     @field_validator(
         "device_code",
@@ -121,6 +122,15 @@ class DeviceCommandRequestData(BaseMixin):
         if not isinstance(value, dict):
             raise TypeError("params 必须是对象")
         return cast("dict[str, DeviceCommandParamValue]", _normalize_param(value, path="params"))
+
+    @field_validator("execution_reason", mode="before")
+    @classmethod
+    def normalize_execution_reason(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and (normalized := value.strip()):
+            return normalized
+        raise ValueError("execution_reason 必须是非空字符串")
 
 
 _UNCLOSED_STATUSES = frozenset(
@@ -178,6 +188,13 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         CheckConstraint(
             "command_timeout_ms IS NULL OR command_timeout_ms > 0",
             name="device_command_timeout_positive",
+        ),
+        CheckConstraint(
+            "((execution_ref_type = 'MANUAL_DEBUG' AND execution_reason IS NOT NULL "
+            "AND length(trim(execution_reason)) > 0 "
+            "AND created_by IS NOT NULL) OR "
+            "(execution_ref_type <> 'MANUAL_DEBUG' AND execution_reason IS NULL))",
+            name="device_command_manual_debug_audit_complete",
         ),
         UniqueConstraint("command_code", name="ux_device_commands_command_code"),
         Index(

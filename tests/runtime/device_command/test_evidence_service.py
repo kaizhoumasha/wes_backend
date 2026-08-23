@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pytest
 
-from src.app.device.contracts import EcsCommandResultReport, EcsDeviceEventReport
+from src.app.device.contracts import DeviceEvidenceReceipt, EcsCommandResultReport, EcsDeviceEventReport
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
@@ -21,6 +21,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.execution.services.inbound_evidence_service import InboundEvidenceService
+from src.utils.timezone import timezone
 
 
 class FakeBegin(AbstractAsyncContextManager[object]):
@@ -135,6 +136,18 @@ class FakeTaskQueue:
             raise self.error
 
 
+class FakePublisher:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+        self.error = error
+
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool:
+        self.events.append((channel, event_type, payload))
+        if self.error is not None:
+            raise self.error
+        return True
+
+
 def _command() -> DeviceCommand:
     now = datetime(2026, 8, 13)
     return DeviceCommand(
@@ -187,6 +200,7 @@ def _service(
     *,
     event_epoch_id: int | None = None,
     task_queue: FakeTaskQueue | None = None,
+    publisher: FakePublisher | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
     return (
@@ -197,6 +211,7 @@ def _service(
             command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
             epoch_repository=FakeEpochRepository(event_epoch_id),  # type: ignore[arg-type]
             task_queue_gateway=task_queue,  # type: ignore[arg-type]
+            event_publisher=publisher,  # type: ignore[arg-type]
         ),
         evidences,
     )
@@ -288,14 +303,24 @@ async def test_unknown_command_can_be_retried_after_command_appears() -> None:
 async def test_result_identity_mismatch_is_frozen_before_rejection() -> None:
     service, repository = _service(_command())
 
-    with pytest.raises(DeviceResultConflictError):
+    with pytest.raises(DeviceResultConflictError) as mismatch:
         await service.accept_result(_result(device_code="ARM-OTHER"))
 
     rejected = repository.evidences["RESULT:CMD-001"]
     assert rejected.apply_status == "IGNORED"
     assert rejected.line_run_epoch_id == 11
-    with pytest.raises(DeviceEvidenceConflictError):
+    assert mismatch.value.receipt == DeviceEvidenceReceipt(
+        evidence_id=rejected.id,
+        source_event_id="RESULT:CMD-001",
+        duplicate=False,
+        trace_id=None,
+        apply_status="IGNORED",
+    )
+    with pytest.raises(DeviceEvidenceConflictError) as conflict:
         await service.accept_result(_result(device_code="ARM-THIRD"))
+    assert conflict.value.receipt.evidence_id == rejected.id
+    assert conflict.value.receipt.source_event_id == "RESULT:CMD-001"
+    assert conflict.value.receipt.apply_status == "IGNORED"
 
 
 @pytest.mark.asyncio
@@ -386,6 +411,42 @@ async def test_result_evidence_is_only_authority_that_closes_acknowledged_comman
     assert persisted_evidence.material_execution_id == command.material_execution_id
     assert persisted_evidence.apply_status == "APPLIED"
     assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
+async def test_applied_evidence_update_is_published_after_processing() -> None:
+    command = _command()
+    publisher = FakePublisher()
+    service, repository = _service(command, publisher=publisher)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+
+    assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
+    channel, event_type, payload = publisher.events[0]
+    assert (channel, event_type) == ("device:evidence:stream", "device_evidence.updated")
+    assert payload == {
+        "evidence_id": receipt.evidence_id,
+        "kind": "DEVICE_RESULT",
+        "source_event_id": receipt.source_event_id,
+        "device_code": "ARM-01",
+        "command_code": "CMD-001",
+        "event_type": None,
+        "apply_status": "APPLIED",
+        "processed_at": timezone.to_utc(repository.evidences[receipt.source_event_id].processed_at).isoformat(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_evidence_update_publish_failure_does_not_rollback_processing() -> None:
+    command = _command()
+    publisher = FakePublisher(error=RuntimeError("redis down"))
+    service, repository = _service(command, publisher=publisher)
+    receipt = await service.accept_result(_result())
+
+    assert await service.process_one() is True
+    assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
+    assert command.status == CommandStatus.SUCCEEDED
 
 
 @pytest.mark.asyncio

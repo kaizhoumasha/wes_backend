@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from src.app.device.contracts import DeviceEvidenceReceipt
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
+    DeviceResultConflictError,
     UnknownDeviceCommandError,
 )
 from src.app.device.v1.ecs_callback import router
@@ -22,25 +23,40 @@ from src.app.device.v1.ecs_callback import router
 @dataclass
 class FakeEvidenceService:
     failure: Exception | None = None
+    duplicate: bool = False
 
     async def accept_result(self, result):
         if self.failure is not None:
             raise self.failure
-        return DeviceEvidenceReceipt(1, f"RESULT:{result.command_code}", False, None)
+        return DeviceEvidenceReceipt(1, f"RESULT:{result.command_code}", self.duplicate, None, "PENDING")
 
     async def accept_event(self, event):
         if self.failure is not None:
             raise self.failure
-        return DeviceEvidenceReceipt(2, "EVENT:derived", False, None)
+        return DeviceEvidenceReceipt(2, "EVENT:derived", self.duplicate, None, "PENDING")
+
+
+class FakePublisher:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+        self.error = error
+
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool:
+        self.events.append((channel, event_type, payload))
+        if self.error is not None:
+            raise self.error
+        return True
 
 
 def _client(
     service: FakeEvidenceService | None = None,
     *,
+    publisher: FakePublisher | None = None,
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     app = FastAPI()
     app.state.device_evidence_service = service or FakeEvidenceService()
+    app.state.device_event_stream_service = publisher or FakePublisher()
     app.include_router(router, prefix="/api/v1/callback")
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
@@ -66,7 +82,8 @@ def _event_payload() -> dict[str, object]:
 
 
 def test_result_and_event_ack_only_after_service_returns() -> None:
-    with _client() as client:
+    publisher = FakePublisher()
+    with _client(publisher=publisher) as client:
         result = client.post("/api/v1/callback/result", json=_result_payload())
         event = client.post("/api/v1/callback/event", json=_event_payload())
 
@@ -74,10 +91,36 @@ def test_result_and_event_ack_only_after_service_returns() -> None:
     assert result.json() == {"code": 200, "message": "ACK"}
     assert event.status_code == 200
     assert event.json() == {"code": 200, "message": "ACK"}
+    result_attempt = publisher.events[0][2]
+    event_attempt = publisher.events[1][2]
+    assert publisher.events[0][:2] == ("device:evidence:stream", "device_ingress.attempted")
+    assert result_attempt["kind"] == "DEVICE_RESULT"
+    assert result_attempt["disposition"] == "ACCEPTED"
+    assert result_attempt["status_code"] == 200
+    assert result_attempt["raw_payload"] == _result_payload()
+    assert result_attempt["evidence_id"] == 1
+    assert result_attempt["apply_status"] == "PENDING"
+    assert event_attempt["kind"] == "DEVICE_EVENT"
+    assert event_attempt["raw_payload"] == _event_payload()
+    assert result_attempt["request_id"] != event_attempt["request_id"]
+
+
+def test_duplicate_callback_is_a_distinct_attempt_for_same_evidence() -> None:
+    publisher = FakePublisher()
+    with _client(FakeEvidenceService(duplicate=True), publisher=publisher) as client:
+        first = client.post("/api/v1/callback/result", json=_result_payload())
+        second = client.post("/api/v1/callback/result", json=_result_payload())
+
+    assert (first.status_code, second.status_code) == (200, 200)
+    attempts = [event[2] for event in publisher.events]
+    assert [attempt["disposition"] for attempt in attempts] == ["DUPLICATE", "DUPLICATE"]
+    assert {attempt["evidence_id"] for attempt in attempts} == {1}
+    assert attempts[0]["request_id"] != attempts[1]["request_id"]
 
 
 def test_body_limit_is_checked_before_json_decode() -> None:
-    with _client() as client:
+    publisher = FakePublisher()
+    with _client(publisher=publisher) as client:
         response = client.post(
             "/api/v1/callback/result",
             content=b"{" + b"x" * (256 * 1024),
@@ -86,18 +129,83 @@ def test_body_limit_is_checked_before_json_decode() -> None:
 
     assert response.status_code == 413
     assert response.json()["code"] == 413
+    attempt = publisher.events[0][2]
+    assert attempt["raw_payload"] is None
+    assert attempt["observed_body_bytes"] == 256 * 1024 + 1
 
 
 def test_unknown_command_and_identity_conflict_are_explicit() -> None:
-    with _client(FakeEvidenceService(UnknownDeviceCommandError("CMD-001"))) as client:
+    missing_publisher = FakePublisher()
+    conflict_publisher = FakePublisher()
+    with _client(
+        FakeEvidenceService(UnknownDeviceCommandError("CMD-001")),
+        publisher=missing_publisher,
+    ) as client:
         missing = client.post("/api/v1/callback/result", json=_result_payload())
-    with _client(FakeEvidenceService(DeviceEvidenceConflictError("RESULT-001"))) as client:
+    conflict_error = DeviceEvidenceConflictError("RESULT-001")
+    conflict_error.receipt = DeviceEvidenceReceipt(9, "RESULT:CMD-001", False, None, "IGNORED")
+    with _client(
+        FakeEvidenceService(conflict_error),
+        publisher=conflict_publisher,
+    ) as client:
         conflict = client.post("/api/v1/callback/result", json=_result_payload())
 
     assert missing.status_code == 404
     assert missing.json()["message"] == "COMMAND_NOT_FOUND"
     assert conflict.status_code == 409
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
+    assert missing_publisher.events[0][2]["disposition"] == "REJECTED"
+    assert conflict_publisher.events[0][2]["disposition"] == "CONFLICT"
+    assert conflict_publisher.events[0][2]["raw_payload"] == _result_payload()
+    assert conflict_publisher.events[0][2]["evidence_id"] == 9
+    assert conflict_publisher.events[0][2]["source_event_id"] == "RESULT:CMD-001"
+    assert conflict_publisher.events[0][2]["apply_status"] == "IGNORED"
+
+
+@pytest.mark.parametrize("error_type", [DeviceEvidenceConflictError, DeviceResultConflictError])
+def test_persisted_result_rejection_keeps_evidence_identity_in_attempt(error_type: type[ValueError]) -> None:
+    error = error_type("RESULT:CMD-001")
+    error.receipt = DeviceEvidenceReceipt(9, "RESULT:CMD-001", False, None, "IGNORED")
+    publisher = FakePublisher()
+
+    with _client(FakeEvidenceService(error), publisher=publisher) as client:
+        response = client.post("/api/v1/callback/result", json=_result_payload())
+
+    assert response.status_code == 409
+    attempt = publisher.events[0][2]
+    assert (attempt["evidence_id"], attempt["source_event_id"], attempt["apply_status"]) == (
+        9,
+        "RESULT:CMD-001",
+        "IGNORED",
+    )
+
+
+@pytest.mark.parametrize("path", ["/api/v1/callback/result", "/api/v1/callback/event"])
+def test_diagnostic_attempt_redacts_nested_credentials_without_rejecting_payload(path: str) -> None:
+    payload = _result_payload() if path.endswith("result") else _event_payload()
+    payload["data"] = {
+        "authorization": "Bearer secret",
+        "nested": [{"access_token": "token-value", "business_value": 7}],
+    }
+    publisher = FakePublisher()
+
+    with _client(publisher=publisher) as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 200
+    diagnostic_data = publisher.events[0][2]["raw_payload"]["data"]
+    assert diagnostic_data == {
+        "authorization": "[REDACTED]",
+        "nested": [{"access_token": "[REDACTED]", "business_value": 7}],
+    }
+
+
+def test_publish_failure_does_not_change_callback_response() -> None:
+    with _client(publisher=FakePublisher(error=RuntimeError("redis down"))) as client:
+        response = client.post("/api/v1/callback/event", json=_event_payload())
+
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
 
 
 def test_unavailable_callback_service_uses_closed_wire() -> None:
@@ -112,11 +220,15 @@ def test_unavailable_callback_service_uses_closed_wire() -> None:
 
 def test_closed_envelope_rejects_legacy_or_flattened_fields() -> None:
     payload = {**_result_payload(), "contract_key": "arm.pick"}
-    with _client() as client:
+    publisher = FakePublisher()
+    with _client(publisher=publisher) as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
     assert response.status_code == 400
     assert response.json()["message"] == "INVALID_ENVELOPE"
+    attempt = publisher.events[0][2]
+    assert attempt["raw_payload"] is None
+    assert attempt["observed_body_bytes"] > 0
 
 
 @pytest.mark.parametrize(

@@ -257,7 +257,7 @@ async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_
     assert await service.dispatch_one(now=datetime(2026, 8, 13, 0, 0, 0, 500_000)) is True
     assert command.status == CommandStatus.ACKNOWLEDGED
     assert provider.requested == ["http://ecs-mock:8080"]
-    assert adapter.status_requests == []
+    assert adapter.status_requests == ["ARM-01"]
     assert observations.created == []
     assert adapter.submitted == [
         {
@@ -271,6 +271,59 @@ async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_
             "deadline_at": datetime(2026, 8, 13, 0, 1),
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
+    command = _command()
+    command.execution_ref_type = "MANUAL_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+
+    async def unsupported_status(device_code: str) -> EcsDeviceStatus:
+        status = await FakeAdapter.fetch_status(adapter, device_code)
+        return status.model_copy(update={"device": status.device.model_copy(update={"supported_commands": ("MOVE",)})})
+
+    adapter.fetch_status = unsupported_status  # type: ignore[method-assign]
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.FAILED
+    assert command.failure_code == "DEVICE_TASK_TYPE_UNSUPPORTED"
+    assert adapter.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_manual_debug_status_failure_is_retryable_without_submit() -> None:
+    command = _command()
+    command.execution_ref_type = "MANUAL_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = UnavailableStatusAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.PENDING
+    assert adapter.submitted == []
 
 
 @pytest.mark.asyncio

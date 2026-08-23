@@ -8,10 +8,8 @@ import pytest
 
 from src.app.device.contracts import EcsDeviceStatus
 from src.app.device.models.command import DeviceCommand
-from src.app.device.services.device_dispatch_service import (
-    DeviceDispatchAdmissionError,
-    DeviceDispatchService,
-)
+from src.app.device.services.device_command_admission import DeviceCommandAdmissionError
+from src.app.device.services.device_dispatch_service import DeviceDispatchService
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
 
 
@@ -98,7 +96,7 @@ def test_fresh_auto_idle_matching_status_is_admissible() -> None:
     ],
 )
 def test_untrusted_status_fails_closed(overrides: dict[str, object], reason: str) -> None:
-    with pytest.raises(DeviceDispatchAdmissionError) as exc_info:
+    with pytest.raises(DeviceCommandAdmissionError) as exc_info:
         DeviceDispatchService.ensure_admissible(
             command=_command(),
             binding=_binding(),
@@ -110,7 +108,7 @@ def test_untrusted_status_fails_closed(overrides: dict[str, object], reason: str
 
 
 def test_stale_status_fails_closed() -> None:
-    with pytest.raises(DeviceDispatchAdmissionError) as exc_info:
+    with pytest.raises(DeviceCommandAdmissionError) as exc_info:
         DeviceDispatchService.ensure_admissible(
             command=_command(),
             binding=_binding(),

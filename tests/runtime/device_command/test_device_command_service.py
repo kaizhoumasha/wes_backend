@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from src.app.device.contracts import DeviceCommandRequest
+from src.app.device.contracts import DeviceCommandRequest, EcsDeviceStatus
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import (
     DeviceCommandCapacityError,
@@ -133,6 +133,63 @@ class FakeEvidenceRepository:
         return None
 
 
+def _ecs_status(
+    device_code: str,
+    *,
+    is_online: bool = True,
+    supported_commands: tuple[str, ...] = ("PICK_AND_PUT",),
+) -> EcsDeviceStatus:
+    return EcsDeviceStatus.model_validate(
+        {
+            "device": {
+                "device_code": device_code,
+                "device_name": device_code,
+                "device_type": "ROBOTIC_ARM",
+                "role": "PLACEMENT_DEVICE",
+                "supported_commands": supported_commands,
+                "supported_events": [],
+            },
+            "state": {
+                "device_code": device_code,
+                "mode": "AUTO",
+                "status": "IDLE",
+                "is_online": is_online,
+                "current_command_code": None,
+                "scenario": "success",
+                "updated_at": 1_787_475_600_000,
+            },
+        }
+    )
+
+
+class FakeAdapter:
+    def __init__(self, statuses: tuple[EcsDeviceStatus, ...] | None = None) -> None:
+        self.statuses = statuses
+        self.fetch_statuses_calls = 0
+        self.fetch_status_calls: list[str] = []
+
+    async def fetch_statuses(self) -> tuple[EcsDeviceStatus, ...]:
+        self.fetch_statuses_calls += 1
+        return self.statuses or (
+            _ecs_status("RS-MOCK-PLACEMENT-01"),
+            _ecs_status("RS-MOCK-OFFLINE-01", is_online=False),
+        )
+
+    async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+        self.fetch_status_calls.append(device_code)
+        return _ecs_status(device_code)
+
+
+class FakeAdapterProvider:
+    def __init__(self, adapter: FakeAdapter | None = None) -> None:
+        self.adapter = adapter or FakeAdapter()
+        self.requested: list[str] = []
+
+    async def get_adapter(self, endpoint_base_url: str) -> FakeAdapter:
+        self.requested.append(endpoint_base_url)
+        return self.adapter
+
+
 def _binding(device_code: str = "ARM-01") -> LineRunEpochDeviceBinding:
     return LineRunEpochDeviceBinding(
         id=21,
@@ -173,6 +230,7 @@ def _service(*bindings: LineRunEpochDeviceBinding) -> tuple[DeviceCommandService
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=command_repository,  # type: ignore[arg-type]
         epoch_repository=epoch_repository,  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
     )
     return service, command_repository
@@ -293,6 +351,8 @@ async def test_manual_debug_command_freezes_endpoint_without_epoch_or_device_mas
         task_type="PICK_AND_PUT",
         params={"target_code": "OUTLET-1"},
         trace_id="TRACE-MANUAL-DEBUG-001",
+        execution_reason="现场供应商联调",
+        created_by=42,
     )
 
     command = repository.created[0]
@@ -305,11 +365,23 @@ async def test_manual_debug_command_freezes_endpoint_without_epoch_or_device_mas
     assert command.endpoint_base_url == "http://ecs-mock:8080"
     assert command.command_timeout_ms == 30_000
     assert command.deadline_at == datetime(2026, 8, 13, 0, 0, 30)
+    assert command.execution_reason == "现场供应商联调"
+    assert command.created_by == 42
 
 
 @pytest.mark.asyncio
 async def test_manual_debug_idempotency_includes_endpoint_and_command_contract() -> None:
-    service, repository = _service()
+    repository = FakeCommandRepository()
+    adapter = FakeAdapter()
+    provider = FakeAdapterProvider(adapter)
+    service = DeviceCommandService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        command_repository=repository,  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        evidence_repository=FakeEvidenceRepository(None),  # type: ignore[arg-type]
+        adapter_provider=provider,  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13),
+    )
     request = {
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4471",
         "endpoint_base_url": "http://ecs-mock:8080",
@@ -320,6 +392,8 @@ async def test_manual_debug_idempotency_includes_endpoint_and_command_contract()
         "task_type": "PICK_AND_PUT",
         "params": {"target_code": "OUTLET-1"},
         "trace_id": None,
+        "execution_reason": "现场供应商联调",
+        "created_by": 42,
     }
 
     first = await service.create_manual_debug_command(**request)
@@ -327,8 +401,14 @@ async def test_manual_debug_idempotency_includes_endpoint_and_command_contract()
 
     assert duplicate == first
     assert len(repository.created) == 1
+    assert adapter.fetch_status_calls == ["RS-MOCK-PLACEMENT-01"]
+    assert provider.requested == ["http://ecs-mock:8080"]
     with pytest.raises(DeviceCommandIdentityConflictError):
         await service.create_manual_debug_command(**{**request, "endpoint_base_url": "http://ecs-other:8080"})
+    with pytest.raises(DeviceCommandIdentityConflictError):
+        await service.create_manual_debug_command(**{**request, "execution_reason": "另一次联调"})
+    with pytest.raises(DeviceCommandIdentityConflictError):
+        await service.create_manual_debug_command(**{**request, "created_by": 43})
 
 
 @pytest.mark.asyncio
@@ -346,6 +426,8 @@ async def test_manual_debug_rejects_non_lan_endpoint_before_persistence() -> Non
             task_type="PICK_AND_PUT",
             params={},
             trace_id=None,
+            execution_reason="现场供应商联调",
+            created_by=42,
         )
 
     assert repository.created == []
@@ -382,6 +464,7 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
         command_repository=command_repository,  # type: ignore[arg-type]
         epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
         evidence_repository=FakeEvidenceRepository(evidence),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
     )
     await service.create_manual_debug_command(
@@ -394,6 +477,8 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
         task_type="PICK_AND_PUT",
         params={"target_code": "OUTLET-1"},
         trace_id=None,
+        execution_reason="现场供应商联调",
+        created_by=42,
     )
     command = command_repository.created[0]
     command.command_code = "CMD-MANUAL-001"
@@ -408,3 +493,30 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
     assert snapshot.callback.data == {"outlet": "OUTLET-1"}
     assert snapshot.callback.source_event_id == "RESULT-CMD-MANUAL-001"
     assert snapshot.callback.apply_status == "APPLIED"
+
+
+@pytest.mark.asyncio
+async def test_manual_debug_preflight_returns_all_devices_with_runtime_rejection() -> None:
+    adapter = FakeAdapter(
+        (
+            _ecs_status("ARM-01", supported_commands=("PICK", "MOVE")),
+            _ecs_status("ARM-02", is_online=False, supported_commands=("PICK",)),
+        )
+    )
+    provider = FakeAdapterProvider(adapter)
+    service = DeviceCommandService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        evidence_repository=FakeEvidenceRepository(None),  # type: ignore[arg-type]
+        adapter_provider=provider,  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13),
+    )
+
+    snapshot = await service.preflight_manual_debug("http://ECS-MOCK:8080/")
+
+    assert snapshot.endpoint_base_url == "http://ecs-mock:8080"
+    assert tuple(item.status.device.device_code for item in snapshot.devices) == ("ARM-01", "ARM-02")
+    assert tuple(item.rejection_code for item in snapshot.devices) == (None, "DEVICE_OFFLINE")
+    assert provider.requested == ["http://ecs-mock:8080"]
+    assert adapter.fetch_statuses_calls == 1

@@ -74,6 +74,8 @@ class ManualDebugDeviceCommandSnapshot:
     completed_at: datetime | None
     failure_code: str | None
     reconciliation_reason: str | None
+    execution_reason: str
+    created_by: int
     callback: DeviceCommandCallbackSnapshot | None
 
 
@@ -158,6 +160,18 @@ class EcsDeviceStatusResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     devices: tuple[EcsDeviceStatus, ...] = Field(min_length=1)
+
+
+@dataclass(frozen=True, slots=True)
+class ManualDebugDevicePreflightItem:
+    status: EcsDeviceStatus
+    rejection_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ManualDebugDevicePreflightSnapshot:
+    endpoint_base_url: str
+    devices: tuple[ManualDebugDevicePreflightItem, ...]
 
 
 class EcsSubmitDisposition(str, Enum):
@@ -278,6 +292,56 @@ class DeviceEvidenceReceipt:
     source_event_id: str
     duplicate: bool
     trace_id: str | None
+    apply_status: str
+
+
+class DeviceIngressKind(str, Enum):
+    DEVICE_RESULT = "DEVICE_RESULT"
+    DEVICE_EVENT = "DEVICE_EVENT"
+
+
+class DeviceIngressDisposition(str, Enum):
+    ACCEPTED = "ACCEPTED"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    REJECTED = "REJECTED"
+
+
+class DeviceIngressAttempt(BaseModel):
+    """一次 ECS callback HTTP 尝试的安全诊断快照。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_id: str
+    kind: DeviceIngressKind
+    path: str
+    received_at: str
+    disposition: DeviceIngressDisposition
+    status_code: StrictInt
+    evidence_id: int | None = None
+    source_event_id: str | None = None
+    device_code: str | None = None
+    command_code: str | None = None
+    event_type: str | None = None
+    apply_status: str | None = None
+    error_code: str | None = None
+    observed_body_bytes: StrictInt = Field(ge=0)
+    raw_payload: dict[str, Any] | None = None
+
+
+class DeviceEvidenceUpdate(BaseModel):
+    """device evidence 异步应用后的最终诊断快照。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_id: int
+    kind: DeviceIngressKind
+    source_event_id: str
+    device_code: str
+    command_code: str | None = None
+    event_type: str | None = None
+    apply_status: str
+    processed_at: str
 
 
 __all__ = [
@@ -286,6 +350,10 @@ __all__ = [
     "DeviceCommandOutcome",
     "DeviceCommandRequest",
     "DeviceEvidenceReceipt",
+    "DeviceEvidenceUpdate",
+    "DeviceIngressAttempt",
+    "DeviceIngressDisposition",
+    "DeviceIngressKind",
     "EcsCallbackErrorDetail",
     "EcsCommandResult",
     "EcsCommandResultReport",
@@ -301,4 +369,6 @@ __all__ = [
     "EcsSubmitDisposition",
     "EcsSubmitResult",
     "ManualDebugDeviceCommandSnapshot",
+    "ManualDebugDevicePreflightItem",
+    "ManualDebugDevicePreflightSnapshot",
 ]

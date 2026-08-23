@@ -20,7 +20,7 @@ implementation_status: Implemented in WES core and local Mock; supplier conforma
 
 本文只定义 WES 与 ECS 之间的 wire。WES 内部 `DeviceCommand`、合同治理、幂等 evidence、Celery 派发和业务推进不进入
 ECS 包络；ECS 内部 PLC、运动控制、安全互锁和设备实现也不进入 WES。顶层协议不提供 Cancel；本轮也不增加供应商私有
-认证、自动重试或其他路径。`MANUAL_DEBUG` 联调命令按批准方案跳过状态预检。
+认证、自动重试或其他供应商私有路径。WES 的 `MANUAL_DEBUG` 在创建前和实际发送前都调用本白皮书 Status 接口执行准入。
 
 ### 1.1 双向职责
 
@@ -128,7 +128,7 @@ GET <ECS_BASE_URL>/api/v1/device/status[?device_code=<DEVICE_CODE>]
 | `device` | `device_name` | `string \| null` | 设备名称，仅诊断展示 |
 | `device` | `device_type` | `string \| null` | 设备类型，仅诊断展示 |
 | `device` | `role` | `string \| null` | 设备角色，仅诊断展示 |
-| `device` | `supported_commands` | `string[] \| null` | 当前 ECS 声明的命令能力，仅诊断展示 |
+| `device` | `supported_commands` | `string[] \| null` | 当前 ECS 声明的命令能力；`MANUAL_DEBUG` 创建和发送准入使用 |
 | `device` | `supported_events` | `string[] \| null` | 当前 ECS 声明的事件能力，仅诊断展示 |
 | `state` | `device_code` | `string`，非 null | 必须与同项 `device.device_code` 一致 |
 | `state` | `mode` | `AUTO \| MANUAL \| MAINTENANCE \| UNKNOWN`，非 null | 运行模式 |
@@ -169,6 +169,7 @@ GET <ECS_BASE_URL>/api/v1/device/status[?device_code=<DEVICE_CODE>]
 带 `device_code` 的查询必须恰好返回一个匹配条目；不带参数时返回全部条目。零条、重复条目、身份不一致、字段缺失/额外、
 类型或枚举错误均是不可信状态。正常业务派发只在 `is_online=true`、`mode=AUTO`、`status=IDLE`、
 `current_command_code=null` 且 `updated_at` 未过期时准入；否则失败关闭，不发送 Command。设备元数据和 `scenario` 只作诊断。
+`MANUAL_DEBUG` 同样要求上述实时状态，并要求选定 `task_type` 位于非空 `supported_commands`；它不使用业务 binding 或状态新鲜度合同。
 未知设备返回 HTTP `404`；Status 的非 2xx 响应体不属于公共 wire，WES 只依据 HTTP 状态判定查询失败。
 
 ## 4. WES 回调接口
@@ -294,17 +295,25 @@ Result/Event 的错误应答顶层字段严格为整数 `code` 和字符串 `mes
 
 ## 6. 手动联调
 
-Swagger `POST /api/v1/device/commands/debug` 只要求：
+这些 WES 诊断 API 仅允许超级用户访问，不属于供应商需要实现的 wire。页面先调用
+`POST /api/v1/device/commands/debug/preflight`，传入 `endpoint_base_url` 并通过既有 Status wire 枚举当前 ECS 的全部设备。
+
+`POST /api/v1/device/commands/debug` 要求：
 
 - `client_request_id`；
 - `endpoint_base_url`；
 - `device_code`；
 - `timeout`；
 - `task_type`；
-- `params`。
+- `params`；
+- `reason`（1–500 个非空字符）。
 
-WES 固定内部合同元数据和 `priority=1`，经 Celery 下发。操作者通过
+WES 记录 `reason` 和当前超级用户 `created_by`，固定内部合同元数据和 `priority=1`，仅在创建准入通过后持久化，并在 Celery
+实际发送前再次查询 Status。操作者通过
 `GET /api/v1/device/commands/{command_code}` 查看同步 ACK、最终 Result Callback、失败原因和 evidence 应用状态。
+
+`GET /api/v1/device/evidences/stream` 使用 Bearer token 提供活动会话内的 Result/Event callback 尝试和 evidence 应用更新。
+该 SSE 是 WES 内部、live-only、best-effort 的诊断旁路：不提供 replay，不改变 callback `200 ACK`、ECS 重报或业务验收语义。
 
 现场闭环要求 ECS 能反向访问 WES 的 Result/Event 地址。开发机默认仅绑定 `127.0.0.1` 时不能作为现场回调地址；联调运行配置
 必须显式绑定可达接口，并由 ECS 侧配置对应 WES 地址。

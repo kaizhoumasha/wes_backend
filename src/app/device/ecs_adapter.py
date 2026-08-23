@@ -94,12 +94,14 @@ class EcsAdapter:
         )
         return _classify_submit_result(result)
 
-    async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+    async def fetch_statuses(self, device_code: str | None = None) -> tuple[EcsDeviceStatus, ...]:
+        """读取一台或全部设备状态，并保持 ECS wire 顺序。"""
+
         result = await self._transport.send(
             OutboundHttpRequest(
                 method=OutboundHttpMethod.GET,
                 path=STATUS_PATH,
-                query=(("device_code", device_code),),
+                query=() if device_code is None else (("device_code", device_code),),
                 response_limits=_WIRE_RESPONSE_LIMITS,
             )
         )
@@ -112,9 +114,16 @@ class EcsAdapter:
             response = EcsDeviceStatusResponse.model_validate(payload)
         except (TypeError, ValueError, ValidationError) as error:
             raise EcsStatusUnavailableError("ECS 状态响应不符合统一合同") from error
-        if len(response.devices) != 1:
+        identities = tuple(status.device.device_code for status in response.devices)
+        if len(set(identities)) != len(identities):
+            raise EcsStatusUnavailableError("ECS 状态响应包含重复 device_code")
+        return response.devices
+
+    async def fetch_status(self, device_code: str) -> EcsDeviceStatus:
+        statuses = await self.fetch_statuses(device_code)
+        if len(statuses) != 1:
             raise EcsStatusUnavailableError("ECS 单设备状态查询必须返回一个设备")
-        status = response.devices[0]
+        status = statuses[0]
         if status.device.device_code != device_code:
             raise EcsStatusUnavailableError("ECS 状态响应 device_code 与请求不一致")
         return status

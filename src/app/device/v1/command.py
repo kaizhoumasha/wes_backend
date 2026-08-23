@@ -8,13 +8,15 @@ from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
 from fastapi import APIRouter, Body, Depends, Path, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints, field_serializer
 
+from src.app.device.contracts import EcsDeviceInfo, EcsDeviceRuntimeState  # noqa: TC001
+from src.app.device.ecs_adapter import EcsStatusUnavailableError
 from src.app.device.services.device_command_service import (
     DeviceCommandCapacityError,
     DeviceCommandIdentityConflictError,
     DeviceCommandNotFoundError,
 )
 from src.core.exceptions import ConflictException, NotFoundException, ServiceUnavailableException, ValidationException
-from src.core.rbac import RequirePermission
+from src.core.rbac import require_superuser
 from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
 
 if TYPE_CHECKING:
@@ -26,6 +28,7 @@ _UUID7_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a
 _TOKEN_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"  # noqa: S105  # nosec B105 - token regex
 _UUID7 = Annotated[str, StringConstraints(min_length=36, max_length=36, pattern=_UUID7_PATTERN)]
 _DEVICE_TOKEN = Annotated[str, StringConstraints(min_length=1, max_length=100, pattern=_TOKEN_PATTERN)]
+_REASON = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 _MANUAL_DEBUG_CONTRACT_KEY = "third_party_integration"
 _MANUAL_DEBUG_CONTRACT_VERSION = "1.1"
 
@@ -41,6 +44,23 @@ class ManualDebugDeviceCommandCreate(_StrictApiModel):
     timeout: StrictInt = Field(gt=0, le=2**31 - 1)
     task_type: _DEVICE_TOKEN
     params: dict[str, Any] = Field(default_factory=dict)
+    reason: _REASON
+
+
+class ManualDebugPreflightRequest(_StrictApiModel):
+    endpoint_base_url: str = Field(min_length=1, max_length=255)
+
+
+class ManualDebugPreflightDevice(_StrictApiModel):
+    device: EcsDeviceInfo
+    state: EcsDeviceRuntimeState
+    admissible: bool
+    rejection_code: str | None
+
+
+class ManualDebugPreflightResponse(_StrictApiModel):
+    endpoint_base_url: str
+    devices: tuple[ManualDebugPreflightDevice, ...]
 
 
 class ManualDebugDeviceCommandCreated(_StrictApiModel):
@@ -79,6 +99,8 @@ class ManualDebugDeviceCommandResponse(_StrictApiModel):
     completed_at: datetime | str | None
     failure_code: str | None
     reconciliation_reason: str | None
+    execution_reason: str
+    created_by: int
     callback: DeviceCommandCallbackResponse | None
 
     @field_serializer("ack_received_at", "completed_at")
@@ -87,6 +109,8 @@ class ManualDebugDeviceCommandResponse(_StrictApiModel):
 
 
 class ManualDebugCommandServicePort(Protocol):
+    async def preflight_manual_debug(self, endpoint_base_url: str): ...
+
     async def create_manual_debug_command(self, **values: Any) -> DeviceCommandHandle: ...
 
     async def get_command_snapshot(self, command_code: str) -> ManualDebugDeviceCommandSnapshot: ...
@@ -107,6 +131,7 @@ _OPENAPI_EXAMPLES = {
                     "location_type": "SCAN_PLATFORM",
                 }
             },
+            "reason": "现场供应商联调",
         },
     }
 }
@@ -126,8 +151,42 @@ def _command_service(request: Request) -> ManualDebugCommandServicePort:
 
 
 @router.post(
+    "/commands/debug/preflight",
+    summary="枚举 ECS 设备并检查 MANUAL_DEBUG 运行态",
+    response_model=ResponseSchemaModel[ManualDebugPreflightResponse],
+    dependencies=[Depends(require_superuser)],
+)
+async def preflight_manual_debug_command(
+    request: Request,
+    payload: ManualDebugPreflightRequest,
+) -> ResponseSchemaModel[ManualDebugPreflightResponse]:
+    try:
+        snapshot = await _command_service(request).preflight_manual_debug(payload.endpoint_base_url)
+    except EcsStatusUnavailableError as error:
+        raise ServiceUnavailableException(str(error)) from error
+    except ValueError as error:
+        raise ValidationException(str(error), code="2004", status_code=400) from error
+    data = ManualDebugPreflightResponse(
+        endpoint_base_url=snapshot.endpoint_base_url,
+        devices=tuple(
+            ManualDebugPreflightDevice(
+                device=item.status.device,
+                state=item.status.state,
+                admissible=item.rejection_code is None,
+                rejection_code=item.rejection_code,
+            )
+            for item in snapshot.devices
+        ),
+    )
+    return cast(
+        "ResponseSchemaModel[ManualDebugPreflightResponse]",
+        response_builder.success(data=data),
+    )
+
+
+@router.post(
     "/commands/debug",
-    summary="[ops:device:debug-create] 创建 DeviceCommand 联调命令",
+    summary="创建 DeviceCommand 联调命令",
     response_model=ResponseSchemaModel[ManualDebugDeviceCommandCreated],
     status_code=status.HTTP_202_ACCEPTED,
     responses={
@@ -135,7 +194,7 @@ def _command_service(request: Request) -> ManualDebugCommandServicePort:
         409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "幂等身份或设备占用冲突"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "DeviceCommand runtime 不可用"},
     },
-    dependencies=[Depends(RequirePermission("ops:device:debug-create"))],
+    dependencies=[Depends(require_superuser)],
 )
 async def create_manual_debug_command(
     request: Request,
@@ -152,9 +211,13 @@ async def create_manual_debug_command(
             contract_key=_MANUAL_DEBUG_CONTRACT_KEY,
             contract_version=_MANUAL_DEBUG_CONTRACT_VERSION,
             trace_id=None,
+            execution_reason=payload.reason,
+            created_by=request.state.user_id,
         )
     except (DeviceCommandIdentityConflictError, DeviceCommandCapacityError) as error:
         raise ConflictException(str(error)) from error
+    except EcsStatusUnavailableError as error:
+        raise ServiceUnavailableException(str(error)) from error
     except ValueError as error:
         raise ValidationException(str(error), code="2004", status_code=400) from error
     data = ManualDebugDeviceCommandCreated(
@@ -170,14 +233,14 @@ async def create_manual_debug_command(
 
 @router.get(
     "/commands/{command_code}",
-    summary="[ops:device:read] 查询 DeviceCommand 联调结果",
+    summary="查询 DeviceCommand 联调结果",
     response_model=ResponseSchemaModel[ManualDebugDeviceCommandResponse],
     status_code=status.HTTP_200_OK,
     responses={
         404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "MANUAL_DEBUG DeviceCommand 不存在"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "DeviceCommand runtime 不可用"},
     },
-    dependencies=[Depends(RequirePermission("ops:device:read"))],
+    dependencies=[Depends(require_superuser)],
 )
 async def get_manual_debug_command(
     request: Request,

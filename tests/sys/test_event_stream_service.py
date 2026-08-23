@@ -1,4 +1,5 @@
 import json
+from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +12,7 @@ async def test_event_stream_service_publishes_to_redis_pubsub_channel() -> None:
 
     redis_client = SimpleNamespace(publish=AsyncMock(return_value=1))
     service = EventStreamService()
+    assert tuple(signature(service.publish).parameters) == ("event_type", "payload")
 
     with patch("src.app.sys.services.event_stream_service.get_redis", return_value=redis_client):
         published = await service.publish("device.status.changed", {"device_code": "ARM01"})
@@ -24,6 +26,80 @@ async def test_event_stream_service_publishes_to_redis_pubsub_channel() -> None:
     assert event["type"] == "device.status.changed"
     assert event["payload"] == {"device_code": "ARM01"}
     assert isinstance(event["timestamp"], int)
+
+
+@pytest.mark.asyncio
+async def test_event_stream_publish_failures_degrade_without_raising() -> None:
+    from src.app.sys.services.event_stream_service import EventStreamService
+
+    service = EventStreamService()
+    with patch("src.app.sys.services.event_stream_service.get_redis", return_value=None):
+        assert await service.publish_to("device:evidence:stream", "event", {}) is False
+
+    redis_client = SimpleNamespace(publish=AsyncMock(side_effect=RuntimeError("redis down")))
+    with patch("src.app.sys.services.event_stream_service.get_redis", return_value=redis_client):
+        assert await service.publish_to("device:evidence:stream", "event", {}) is False
+
+
+@pytest.mark.asyncio
+async def test_event_stream_service_publishes_to_explicit_channel_without_changing_default_publish() -> None:
+    from src.app.sys.services.event_stream_service import EventStreamService
+
+    redis_client = SimpleNamespace(publish=AsyncMock(return_value=1))
+    service = EventStreamService()
+
+    with patch("src.app.sys.services.event_stream_service.get_redis", return_value=redis_client):
+        published = await service.publish_to(
+            "device:evidence:stream",
+            "device_ingress.attempted",
+            {"request_id": "REQ-1"},
+        )
+
+    assert published is True
+    channel, raw_event = redis_client.publish.await_args.args
+    assert channel == "device:evidence:stream"
+    assert json.loads(raw_event)["type"] == "device_ingress.attempted"
+
+
+@pytest.mark.asyncio
+async def test_event_stream_service_subscription_skips_malformed_message_and_cleans_up() -> None:
+    from src.app.sys.services.event_stream_service import EventStreamService
+
+    valid = json.dumps(
+        {
+            "type": "device_ingress.attempted",
+            "payload": {"request_id": "REQ-1"},
+            "timestamp": 1_787_475_600_000,
+        }
+    )
+    pubsub = SimpleNamespace(
+        subscribe=AsyncMock(),
+        get_message=AsyncMock(
+            side_effect=[
+                None,
+                {"type": "message", "data": b"not-json"},
+                {"type": "message", "data": valid.encode()},
+            ]
+        ),
+        unsubscribe=AsyncMock(),
+        aclose=AsyncMock(),
+    )
+    redis_client = SimpleNamespace(pubsub=lambda: pubsub)
+    service = EventStreamService()
+
+    with patch("src.app.sys.services.event_stream_service.get_redis", return_value=redis_client):
+        subscription = service.subscribe("device:evidence:stream", timeout_seconds=0.01)
+        event = await anext(subscription)
+        await subscription.aclose()
+
+    assert event == {
+        "type": "device_ingress.attempted",
+        "payload": {"request_id": "REQ-1"},
+        "timestamp": 1_787_475_600_000,
+    }
+    pubsub.subscribe.assert_awaited_once_with("device:evidence:stream")
+    pubsub.unsubscribe.assert_awaited_once_with("device:evidence:stream")
+    pubsub.aclose.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -36,8 +36,8 @@ related:
 
 1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令下发前确认目标状态条目身份一致、
    `is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令，且 `updated_at` 未超过冻结的允许年龄。合同身份只由 WES
-   命令与活动 `LineRunEpoch` binding 冻结，不要求 Status 返回；
-   `MANUAL_DEBUG` 命令按第 3 节直接冻结联调值并跳过状态预检。
+   命令与活动 `LineRunEpoch` binding 冻结，不要求 Status 返回。`MANUAL_DEBUG` 在创建前和实际发送前都查询同一 ECS Status，
+   并额外要求 `task_type` 位于非空 `supported_commands`；任一准入失败都不得发送 Command。
 2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和截止时间事实。
 3. 同步 ACK 只表示设备接纳，不表示物理动作完成。
 4. 只有匹配当前业务命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG`
@@ -65,15 +65,17 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 
 ### 3.1 无业务联调例外
 
-现场供应商联调可以通过受权限控制的 Swagger API 创建 `execution_ref_type="MANUAL_DEBUG"` 命令。该命令：
+现场供应商联调只能由超级用户通过诊断 API 创建 `execution_ref_type="MANUAL_DEBUG"` 命令。该命令：
 
 - 必须以 `client_request_id` 作为幂等身份，并直接指定 `device_code`；
 - 不关联 `LineRunEpoch`、设备 binding 或 `MaterialExecution`；
-- Swagger 只接收 `client_request_id`、`endpoint_base_url`、`device_code`、`timeout`、`task_type` 和 `params`；
-  WES 在命令行记录中冻结规范化后的局域网 Endpoint、固定内部合同元数据和超时；
+- `POST /api/v1/device/commands/debug/preflight` 复用统一 ECS Adapter 枚举全部状态；创建接口接收
+  `client_request_id`、`endpoint_base_url`、`device_code`、`timeout`、`task_type`、`params` 和审计 `reason`；
+  WES 在命令记录中冻结规范化后的局域网 Endpoint、固定内部合同元数据、超时、`reason` 和 `created_by`；
 - 仅将 `device_code`、`command_code`、`task_type`、固定 `priority=1`、`timeout`、Unix 毫秒 `timestamp`
   和 `params` 发送给 ECS；WES 合同元数据和 trace 不进入 ECS 包络；
-- 复用相同的 Celery 扫描派发、统一 ECS wire、CALLBACK ingress、evidence 和 PostgreSQL 生命周期；
+- 幂等重放先查询既有 `client_request_id`，相同载荷、`reason` 和 `created_by` 直接返回且不访问 ECS；
+- 复用相同的 Celery 扫描派发、统一 ECS wire、CALLBACK ingress、evidence 和 PostgreSQL 生命周期，并在发送前再次执行运行态准入；
 - 只能通过查询接口观察命令与规范化 CALLBACK，不触发 WorkLine、插件或业务对象推进。
 
 这是一条受限的联调创建入口，不是供应商私有协议适配层。WES 仍只发送白皮书统一命令包络，供应商 ECS/网关负责内部协议转换。
@@ -94,6 +96,9 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 - Command/Result/Event 外部时间统一使用 Unix 毫秒；事件内部身份为
   `EVENT:{sha256(device_code + event_type + timestamp + canonical data)}`；
 - ECS 同步接纳应答为整数 `code=200`、`message="Accepted"`；WES CALLBACK 应答为整数 `code=200`、`message="ACK"`。
+
+WES 另提供超级用户内部诊断接口 `GET /api/v1/device/evidences/stream`。它通过专用 Redis Pub/Sub 频道实时展示活动期间的
+Result/Event HTTP 尝试及 evidence `APPLIED/RECONCILING` 更新，不持久化、不重放，也不改变 callback ACK 或业务推进语义。
 
 `contract_key`、`contract_version` 和 `source_event_id` 是 WES 内部治理与幂等字段，不要求 ECS 传输。顶层协议不提供 Cancel，
 白皮书旧版自动重试策略不恢复。

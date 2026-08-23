@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select
 
+from src.app.device.composition import DeviceEndpointAdapterProvider
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
@@ -52,6 +53,7 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
     callback_server: WesCallbackServer | None = None
     ecs_server: UniformEcsServer | None = None
     worker: DeviceCommandBrokerWorker | None = None
+    provider: DeviceEndpointAdapterProvider | None = None
     success = False
 
     async def _cleanup_database() -> None:
@@ -81,7 +83,11 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         )
         worker.start()
 
-        service = DeviceCommandService(session_factory=integration_session_factory)
+        provider = DeviceEndpointAdapterProvider(timeout_seconds=5)
+        service = DeviceCommandService(
+            session_factory=integration_session_factory,
+            adapter_provider=provider,
+        )
         handle = await service.create_manual_debug_command(
             client_request_id=new_uuid7(),
             endpoint_base_url=ecs_server.url,
@@ -92,6 +98,8 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
             task_type="PICK",
             params={"source_location": "STATION-A", "target_location": "STATION-B"},
             trace_id=f"TRACE-MANUAL-{suffix}",
+            execution_reason="自动化生产接线验证",
+            created_by=42,
         )
         command_code = handle.command_code
 
@@ -110,7 +118,7 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         assert evidence is not None and evidence.line_run_epoch_id is None
         assert evidence.material_execution_id is None
         assert snapshot.callback is not None and snapshot.callback.result == "SUCCESS"
-        assert ecs_server.status_requests == []
+        assert ecs_server.status_requests == [f"ARM-E2E-MANUAL-{suffix}", f"ARM-E2E-MANUAL-{suffix}"]
         assert len(ecs_server.command_requests) == 1
         assert set(ecs_server.command_requests[0]) == {
             "device_code",
@@ -135,6 +143,11 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
                 continue
             try:
                 cleanup()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        if provider is not None:
+            try:
+                await provider.aclose()
             except BaseException as error:
                 cleanup_errors.append(error)
         try:

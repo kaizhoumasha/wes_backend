@@ -18,10 +18,12 @@ def __getattr__(name: str) -> Any:
     from .v1.command import router as command_router
     from .v1.device import router as device_router
     from .v1.ecs_callback import router as ecs_callback_router
+    from .v1.evidence_stream import router as evidence_stream_router
 
     router_v1 = APIRouter()
     router_v1.include_router(device_router, prefix="/v1/device")
     router_v1.include_router(command_router, prefix="/v1/device")
+    router_v1.include_router(evidence_stream_router, prefix="/v1/device")
     router_v1.include_router(ecs_callback_router, prefix="/v1/callback", tags=["Device ECS Callback"])
     globals()["router_v1"] = router_v1
     return router_v1
