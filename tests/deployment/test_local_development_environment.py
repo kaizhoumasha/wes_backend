@@ -13,6 +13,127 @@ def _compose(name: str) -> dict:
     return yaml.safe_load((BACKEND_ROOT / name).read_text(encoding="utf-8"))
 
 
+def _run_development_check(
+    tmp_path: Path,
+    *,
+    expected_root: Path,
+    mounted_root: str,
+    detached_frontend: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    bin_dir = tmp_path / "bin"
+    trace_file = tmp_path / "dev-env.trace"
+    bin_dir.mkdir()
+    (expected_root / "package.json").write_text("{}", encoding="utf-8")
+    (expected_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+
+    required_services = (
+        "db redis api celery celery-wms-fulfillment celery_beat mock_ecs mock_wms mock_wms_provider frontend nginx"
+    )
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >>"$DEV_ENV_TRACE"\n'
+        'if [ "$1" = info ]; then exit 0; fi\n'
+        'if [ "$1" = inspect ]; then\n'
+        '  case "$*" in *.Mounts*) printf "%s\\n" "$FRONTEND_MOUNT" ;; *) printf "running healthy\\n" ;; esac\n'
+        "  exit 0\n"
+        "fi\n"
+        f"case \"$*\" in *'ps --status running --services'*) printf '%s\\n' {required_services} ;;\n"
+        "  *'ps -q '*) service=; previous=; for value in \"$@\"; do "
+        'if [ "$previous" = -q ]; then service=$value; break; fi; previous=$value; done; '
+        "printf 'container-%s\\n' \"$service\" ;;\n"
+        "  *) exit 0 ;; esac\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    curl = bin_dir / "curl"
+    curl.write_text(
+        '#!/bin/sh\nprintf "curl %s\\n" "$*" >>"$DEV_ENV_TRACE"\nexit 0\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+
+    git = bin_dir / "git"
+    git.write_text(
+        "#!/bin/sh\n"
+        'if [ "$3" = symbolic-ref ]; then\n'
+        '  if [ "$2" = "$WES_FRONTEND_ROOT" ] && [ "$DETACHED_FRONTEND" = true ]; then exit 1; fi\n'
+        "  printf 'develop\\n'\n"
+        'elif [ "$3" = rev-parse ]; then\n'
+        "  printf '5d566bd92b15162c5acfcbe30bad6dde7da5c5f5\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+
+    completed = subprocess.run(
+        ["/bin/bash", str(BACKEND_ROOT / "scripts/dev-env.sh"), "check"],
+        cwd=BACKEND_ROOT,
+        env=os.environ
+        | {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "WES_FRONTEND_ROOT": str(expected_root),
+            "FRONTEND_MOUNT": mounted_root,
+            "DEV_ENV_TRACE": str(trace_file),
+            "DETACHED_FRONTEND": str(detached_frontend).lower(),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed, trace_file.read_text(encoding="utf-8").splitlines()
+
+
+def test_development_check_accepts_docker_desktop_frontend_mount(tmp_path: Path) -> None:
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+
+    completed, _ = _run_development_check(
+        tmp_path,
+        expected_root=frontend,
+        mounted_root=f"/host_mnt{frontend}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_development_check_rejects_a_different_running_frontend_before_http_or_seed(tmp_path: Path) -> None:
+    expected_frontend = tmp_path / "expected-frontend"
+    running_frontend = tmp_path / "running-frontend"
+    expected_frontend.mkdir()
+    running_frontend.mkdir()
+
+    completed, trace = _run_development_check(
+        tmp_path,
+        expected_root=expected_frontend,
+        mounted_root=f"/host_mnt{running_frontend}",
+    )
+
+    assert completed.returncode == 1
+    assert f"expected={expected_frontend}" in completed.stderr
+    assert f"actual={running_frontend}" in completed.stderr
+    assert not any("curl" in command for command in trace)
+    assert not any("seed_initial_data.py --check" in command for command in trace)
+
+
+def test_development_check_reports_a_detached_frontend_with_its_root(tmp_path: Path) -> None:
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+
+    completed, _ = _run_development_check(
+        tmp_path,
+        expected_root=frontend,
+        mounted_root=str(frontend),
+        detached_frontend=True,
+    )
+
+    commit = "5d566bd92b15162c5acfcbe30bad6dde7da5c5f5"
+    assert completed.returncode == 0, completed.stderr
+    assert f"后端: develop {commit}" in completed.stdout
+    assert f"前端: detached {commit} root={frontend}" in completed.stdout
+
+
 def test_backend_development_services_mount_all_runtime_source_roots() -> None:
     compose = _compose("docker-compose.yml")
     expected_mounts = {
