@@ -348,7 +348,74 @@ trap - EXIT
 
 本 Runbook 的命令结果最多证明指定镜像对、schema、授权目录和服务入口的部署技术门禁。它不证明 WMS/ECS 供应商一致性、现场联调或业务验收；这些证据必须单独取得。
 
-## 10. 检查清单
+## 10. 非秘密发布记录合同
+
+每次发布只生成一份非秘密 release record；它是本 Runbook 的记录合同，不是第二份 Compose manifest，也不替代镜像 OCI labels、Compose 输出、Alembic head 或备份产物。顶层字段固定为以下类别，不增加凭据或业务数据字段：
+
+```yaml
+release_id: <release-id>
+backend_revision: <backend-commit>
+backend_digest: <backend-image-digest>
+backend_source_tree: <backend-source-tree-sha256>
+frontend_revision: <frontend-commit>
+frontend_digest: <frontend-image-digest>
+frontend_source_tree: <frontend-source-tree-sha256>
+frontend_backend_contract_revision: <backend-contract-revision>
+openapi_sha256: <openapi-sha256>
+permissions_sha256: <permissions-sha256>
+alembic_head: <schema-version>
+compose_project: <compose-project>
+rendered_services: [<service>, ...]
+running_services: [<service>, ...]
+backup_artifact_path: <external-backup-path>
+backup_sha256: <backup-sha256>
+restore_evidence_id: <restore-evidence-id>
+authorization_check_result: <result-and-evidence-id>
+admin_login_gate_result: <result-and-evidence-id>
+health_result: <result-and-evidence-id>
+ready_result: <result-and-evidence-id>
+frontend_result: <result-and-evidence-id>
+verified_boundaries:
+  engineering_gates: <result-and-evidence-id>
+  deployment_technical_gates: <result-and-evidence-id>
+unverified_boundaries:
+  supplier_conformance: NOT VERIFIED
+  real_ecs_wms_callback_loop: NOT VERIFIED
+  physical_completion: NOT VERIFIED
+  business_acceptance: NOT VERIFIED
+started_at: <utc-timestamp>
+completed_at: <utc-timestamp>
+operator: <operator-id>
+```
+
+`verified_boundaries` 和 `unverified_boundaries` 合计且逐项覆盖六个 acceptance layer：`engineering gates`、`deployment technical gates`、`supplier conformance`、`real ECS/WMS callback loop`、`physical completion`、`business acceptance`。本部署计划只允许给前两层写入工程/部署门禁证据；任一外部层没有独立证据时必须明确写 `NOT VERIFIED`，不得留空、默认为 PASS，或由工程/部署门禁提升。
+
+记录禁止包含 password、token、Cookie、`.env.prod` 内容或业务 payload；只记录结果、摘要、路径和 evidence ID。尤其不要把登录输入或请求/回调正文复制进记录。
+
+### 10.1 位置、权限与归档
+
+记录保存在项目外的受保护主机目录 `/srv/wes/releases/${RELEASE_ID}/`。目录权限为 `0700`，记录文件权限为 `0600`；目录中只放本次 release record 及其必要的非秘密摘要，不提交 Git：
+
+```bash
+RELEASE_ID=<approved-release-id>
+RECORD_DIR="/srv/wes/releases/${RELEASE_ID}"
+install -d -m 0700 "$RECORD_DIR"
+umask 077
+# 将上面的非秘密字段写入唯一记录文件后：
+chmod 0600 "$RECORD_DIR/release-record.yaml"
+```
+
+完成发布后，将最终非秘密 record 复制到项目外的运维归档，并保留归档文件的校验值。禁止为每次 rollout 在 `docs/devops/upgrade-records/` 建档，禁止把服务器 dump、日志、凭据或业务 payload 存入 Git。
+
+`alembic_head` 只使用带 schema 限定的查询读取：
+
+```sql
+SELECT version_num FROM wes_sys.alembic_version;
+```
+
+运维命令中禁止使用未限定的 `alembic_version`。记录本节字段时，继续引用第 3、7、8 节现有的 digest、Compose、readiness、登录、拓扑和 `scripts/wait_for_http.py` 命令；不得复制 helper 实现或另造 manifest。
+
+## 11. 检查清单
 
 - 已记录批准的前后端提交、digest、OpenAPI SHA 和权限 SHA；
 - Nginx 在迁移/授权阶段关闭，外部端口实测不可达；

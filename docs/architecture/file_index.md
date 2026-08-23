@@ -122,6 +122,8 @@ API → Service → Repository → Database
 | `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
 | `docs/devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、TimescaleDB/PostgreSQL 与 Redis 基础支撑环境初始化手册；不代表业务系统已部署或验收 |
+| `scripts/wait_for_http.py` | 生产发布入口恢复后的 HTTP health/frontend 等待门禁；由 Runbook 直接调用 |
+| `scripts/check_bootstrap_admin_login.py` | 生产发布固定版本的超级管理员真实登录门禁；由 Runbook 直接调用 |
 | `scripts/check_business_legacy_absence_gate.py` | 旧业务平台缺席门禁 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |
 | `scripts/install-git-hooks.sh` | 安装仓库管理的提交门禁 |
