@@ -209,7 +209,7 @@ class EcsCallbackErrorDetail(BaseModel):
 class EcsCommandResultReport(BaseModel):
     """ECS → WES 的白皮书 1.1 结果回传包络。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     command_code: str = Field(min_length=1, max_length=160, pattern=_WIRE_TOKEN_PATTERN)
     device_code: str = Field(min_length=1, max_length=100, pattern=_WIRE_TOKEN_PATTERN)
@@ -230,7 +230,7 @@ class EcsCommandResultReport(BaseModel):
 class EcsDeviceEventReport(BaseModel):
     """ECS → WES 的白皮书 1.1 事件上报包络。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     device_code: str = Field(min_length=1, max_length=100, pattern=_WIRE_TOKEN_PATTERN)
     event_type: str = Field(min_length=1, max_length=160, pattern=_WIRE_TOKEN_PATTERN)
