@@ -4,6 +4,7 @@ import argparse
 import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from http.client import HTTPException
 from time import sleep
 from typing import Any
 from urllib.parse import urlsplit
@@ -39,7 +40,7 @@ def wait_for_http(
                 if 200 <= response.status < 400:
                     return
                 last_error = f"HTTP {response.status}"
-        except OSError as exc:
+        except (HTTPException, OSError) as exc:
             last_error = type(exc).__name__
         if attempt < attempts:
             sleeper(interval_seconds)

@@ -5,15 +5,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from http.client import HTTPConnection, HTTPResponse
+from http.client import HTTPConnection, HTTPException, HTTPResponse
 from urllib.parse import urlsplit
 
 ConnectionFactory = Callable[[str, int, float], HTTPConnection]
 _MAX_RESPONSE_BYTES = 256 * 1024
+
+
+class _LoginGateFailure(RuntimeError):
+    def __init__(self, stage: str, status: str) -> None:
+        super().__init__(f"{stage}:{status}")
+        self.stage = stage
+        self.status = status
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,16 +28,16 @@ class LoginGateResult:
     user_id: int
 
 
-def _read_json_response(response: HTTPResponse) -> dict[str, object]:
+def _read_json_response(response: HTTPResponse, *, stage: str) -> dict[str, object]:
     raw = response.read(_MAX_RESPONSE_BYTES + 1)
     if len(raw) > _MAX_RESPONSE_BYTES:
-        raise RuntimeError("response body exceeds 256 KiB")
+        raise _LoginGateFailure(stage, "CONTRACT_REJECTED")
     try:
         payload = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("response body is not valid JSON") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise _LoginGateFailure(stage, "CONTRACT_REJECTED") from None
     if not isinstance(payload, dict):
-        raise RuntimeError("response JSON must be an object")  # noqa: TRY004
+        raise _LoginGateFailure(stage, "CONTRACT_REJECTED")
     return payload
 
 
@@ -48,76 +54,81 @@ def check_bootstrap_admin_login(
     if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
         raise ValueError("base URL must not contain credentials, query, or fragment")
 
-    connection = connection_factory(parsed.hostname, parsed.port or 80, 10)
     try:
-        connection.request(
-            "POST",
-            "/api/v1/auth/login",
-            body=json.dumps({"username": username, "password": password}, separators=(",", ":")).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        response = connection.getresponse()
-        if response.status != 200:
-            response.read(_MAX_RESPONSE_BYTES + 1)
-            raise RuntimeError(f"login returned HTTP {response.status}")
-        envelope = _read_json_response(response)
-    finally:
-        connection.close()
+        connection = connection_factory(parsed.hostname, parsed.port or 80, 10)
+        try:
+            connection.request(
+                "POST",
+                "/api/v1/auth/login",
+                body=json.dumps({"username": username, "password": password}, separators=(",", ":")).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            if response.status != 200:
+                response.read(_MAX_RESPONSE_BYTES + 1)
+                raise _LoginGateFailure("login", f"HTTP_{response.status}")
+            envelope = _read_json_response(response, stage="login")
+        finally:
+            connection.close()
+    except _LoginGateFailure:
+        raise
+    except HTTPException:
+        raise _LoginGateFailure("login", "PROTOCOL_ERROR") from None
+    except OSError:
+        raise _LoginGateFailure("login", "CONNECTION_ERROR") from None
 
     data = envelope.get("data")
     if envelope.get("code") != "1000" or not isinstance(data, dict):
-        raise RuntimeError("login contract rejected")
+        raise _LoginGateFailure("login", "CONTRACT_REJECTED")
     user = data.get("user")
     token = data.get("access_token")
     if not isinstance(token, str) or not token:
-        raise RuntimeError("login response is missing an access token")
+        raise _LoginGateFailure("login", "CONTRACT_REJECTED")
 
-    logout_connection = connection_factory(parsed.hostname, parsed.port or 80, 10)
     try:
-        logout_connection.request(
-            "POST",
-            "/api/v1/auth/logout",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        logout_response = logout_connection.getresponse()
-        if logout_response.status != 200:
-            logout_response.read(_MAX_RESPONSE_BYTES + 1)
-            raise RuntimeError(f"logout returned HTTP {logout_response.status}")
-        logout_envelope = _read_json_response(logout_response)
-    finally:
-        logout_connection.close()
+        logout_connection = connection_factory(parsed.hostname, parsed.port or 80, 10)
+        try:
+            logout_connection.request(
+                "POST",
+                "/api/v1/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            logout_response = logout_connection.getresponse()
+            if logout_response.status != 200:
+                logout_response.read(_MAX_RESPONSE_BYTES + 1)
+                raise _LoginGateFailure("logout", f"HTTP_{logout_response.status}")
+            logout_envelope = _read_json_response(logout_response, stage="logout")
+        finally:
+            logout_connection.close()
+    except _LoginGateFailure:
+        raise
+    except HTTPException:
+        raise _LoginGateFailure("logout", "PROTOCOL_ERROR") from None
+    except OSError:
+        raise _LoginGateFailure("logout", "CONNECTION_ERROR") from None
     logout_data = logout_envelope.get("data")
     if (
         logout_envelope.get("code") != "1000"
         or not isinstance(logout_data, dict)
         or logout_data.get("revoked_count") != 1
     ):
-        raise RuntimeError("logout did not revoke the verification session")
+        raise _LoginGateFailure("logout", "CONTRACT_REJECTED")
 
     if not isinstance(user, dict) or user.get("username") != username or user.get("is_superuser") is not True:
-        raise RuntimeError("login user is not the configured superadministrator")
+        raise _LoginGateFailure("login", "CONTRACT_REJECTED")
     user_id = user.get("id")
     if not isinstance(user_id, int) or isinstance(user_id, bool):
-        raise RuntimeError("login response is missing a numeric user ID")  # noqa: TRY004
+        raise _LoginGateFailure("login", "CONTRACT_REJECTED")
     return LoginGateResult(username=username, user_id=user_id)
 
 
 def _load_credentials(env: Mapping[str, str] | None = None) -> tuple[str, str]:
-    values = env or os.environ
+    values = os.environ if env is None else env
     username = values.get("BOOTSTRAP_ADMIN_USERNAME", "")
     password = values.get("BOOTSTRAP_ADMIN_PASSWORD", "")
     if not username or not password or len(password) < 8:
         raise ValueError("bootstrap administrator credentials are invalid")
     return username, password
-
-
-def _classify_failure(error: RuntimeError) -> tuple[str, str]:
-    message = str(error)
-    for stage in ("login", "logout"):
-        match = re.fullmatch(rf"{stage} returned HTTP (\d{{3}})(?: .*)?", message)
-        if match:
-            return stage, f"HTTP_{match.group(1)}"
-    return ("logout" if message.startswith("logout") else "login"), "CONTRACT_REJECTED"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -134,12 +145,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError:
         print("ADMIN_LOGIN_GATE_FAILED stage=configuration status=INVALID", file=sys.stderr)
         return 1
-    except OSError:
-        print("ADMIN_LOGIN_GATE_FAILED stage=login status=CONNECTION_ERROR", file=sys.stderr)
-        return 1
-    except RuntimeError as exc:
-        stage, status = _classify_failure(exc)
-        print(f"ADMIN_LOGIN_GATE_FAILED stage={stage} status={status}", file=sys.stderr)
+    except _LoginGateFailure as exc:
+        print(f"ADMIN_LOGIN_GATE_FAILED stage={exc.stage} status={exc.status}", file=sys.stderr)
         return 1
 
     print(f"ADMIN_LOGIN_GATE_OK username={result.username} user_id={result.user_id}")

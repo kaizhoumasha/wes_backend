@@ -446,6 +446,7 @@ def test_development_runner_rejects_an_unhealthy_or_unprobed_service(
 def test_development_runner_rejects_provider_http_200_with_invalid_body(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     frontend = tmp_path / "frontend"
+    trace_file = tmp_path / "provider-invalid-body.trace"
     bin_dir.mkdir()
     frontend.mkdir()
     (frontend / "package.json").write_text("{}", encoding="utf-8")
@@ -457,8 +458,12 @@ def test_development_runner_rejects_provider_http_200_with_invalid_body(tmp_path
     docker = bin_dir / "docker"
     docker.write_text(
         "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >>"$DEV_ENV_TRACE"\n'
         'if [ "$1" = info ]; then exit 0; fi\n'
-        'if [ "$1" = inspect ]; then printf "running healthy\\n"; exit 0; fi\n'
+        'if [ "$1" = inspect ]; then\n'
+        '  case "$*" in *.Mounts*) printf "%s\\n" "$FRONTEND_MOUNT" ;; *) printf "running healthy\\n" ;; esac\n'
+        "  exit 0\n"
+        "fi\n"
         f"case \"$*\" in *'ps --status running --services'*) printf '%s\\n' {required_services} ;;\n"
         "  *'ps -q '*) service=; previous=; for value in \"$@\"; do "
         'if [ "$previous" = -q ]; then service=$value; break; fi; previous=$value; done; '
@@ -481,6 +486,8 @@ def test_development_runner_rejects_provider_http_200_with_invalid_body(tmp_path
         env=os.environ
         | {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "DEV_ENV_TRACE": str(trace_file),
+            "FRONTEND_MOUNT": str(frontend),
             "WES_FRONTEND_ROOT": str(frontend),
         },
         capture_output=True,
@@ -489,6 +496,8 @@ def test_development_runner_rejects_provider_http_200_with_invalid_body(tmp_path
     )
 
     assert completed.returncode == 1
+    trace = trace_file.read_text(encoding="utf-8").splitlines()
+    assert any("exec -T api python -c" in command for command in trace)
 
 
 def test_development_runner_can_stop_when_frontend_checkout_is_missing(tmp_path: Path) -> None:

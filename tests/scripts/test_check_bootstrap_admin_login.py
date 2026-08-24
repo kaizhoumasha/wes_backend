@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from http.client import BadStatusLine
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,18 +20,20 @@ class _Request:
 
 
 class _Response:
-    def __init__(self, status: int, body: bytes) -> None:
+    def __init__(self, status: int, body: bytes | BaseException) -> None:
         self.status = status
         self._body = body
         self.read_sizes: list[int] = []
 
     def read(self, size: int) -> bytes:
         self.read_sizes.append(size)
+        if isinstance(self._body, BaseException):
+            raise self._body
         return self._body
 
 
 class _QueuedConnection:
-    def __init__(self, response: _Response, requests: list[_Request]) -> None:
+    def __init__(self, response: _Response | BaseException, requests: list[_Request]) -> None:
         self._response = response
         self._requests = requests
         self.closed = False
@@ -45,6 +48,8 @@ class _QueuedConnection:
         self._requests.append(_Request(method, path, body, headers or {}))
 
     def getresponse(self) -> _Response:
+        if isinstance(self._response, BaseException):
+            raise self._response
         return self._response
 
     def close(self) -> None:
@@ -52,7 +57,7 @@ class _QueuedConnection:
 
 
 def _connection_factory(
-    responses: list[_Response], requests: list[_Request]
+    responses: list[_Response | BaseException], requests: list[_Request]
 ) -> Callable[[str, int, float], _QueuedConnection]:
     def factory(host: str, port: int, timeout: float) -> _QueuedConnection:
         assert (host, port, timeout) == ("api", 8080, 10)
@@ -79,6 +84,54 @@ def _logout_body(*, code: str = "1000", revoked_count: object = 1) -> dict[str, 
     return {"code": code, "data": {"message": "登出成功", "revoked_count": revoked_count}}
 
 
+def _responses_for_stage(stage: str, failure: _Response | BaseException) -> list[_Response | BaseException]:
+    if stage == "login":
+        return [failure]
+    return [_json_response(200, _login_body()), failure]
+
+
+def _assert_stage_status(error: BaseException, stage: str, status: str) -> None:
+    assert getattr(error, "stage", None) == stage
+    assert getattr(error, "status", None) == status
+    for prohibited in ("configured-secret", "server-secret", "response-secret", "access-token", "Set-Cookie"):
+        assert prohibited not in str(error)
+
+
+def _assert_cli_failure(
+    error: BaseException,
+    stage: str,
+    status: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts import check_bootstrap_admin_login
+
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "configured-secret")
+
+    def failed(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    monkeypatch.setattr(check_bootstrap_admin_login, "check_bootstrap_admin_login", failed)
+
+    assert check_bootstrap_admin_login.main(["--base-url", "http://api:8080"]) == 1
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert captured.err == f"ADMIN_LOGIN_GATE_FAILED stage={stage} status={status}\n"
+    assert len(captured.err) <= 96
+    for prohibited in (
+        "configured-secret",
+        "server-secret",
+        "response-secret",
+        "access-token",
+        "refresh_token",
+        "Set-Cookie",
+        '{"code"',
+    ):
+        assert prohibited not in captured.err
+
+
 def test_login_gate_uses_public_auth_contract_and_revokes_the_verification_session() -> None:
     from scripts.check_bootstrap_admin_login import LoginGateResult, check_bootstrap_admin_login
 
@@ -102,34 +155,40 @@ def test_login_gate_uses_public_auth_contract_and_revokes_the_verification_sessi
 
 
 @pytest.mark.parametrize(
-    ("response", "message", "expects_logout"),
+    ("response", "status", "expects_logout"),
     [
-        (_json_response(401, {"detail": "configured-secret"}), "login returned HTTP 401", False),
-        (_json_response(200, _login_body(code="2000")), "login contract rejected", False),
-        (_json_response(200, _login_body(token="")), "login response is missing an access token", False),
+        (_json_response(401, {"detail": "configured-secret"}), "HTTP_401", False),
+        (_json_response(200, _login_body(code="2000")), "CONTRACT_REJECTED", False),
+        (_json_response(200, _login_body(token="")), "CONTRACT_REJECTED", False),
         (
             _json_response(200, _login_body(user={"id": 42, "username": "admin", "is_superuser": False})),
-            "login user is not the configured superadministrator",
+            "CONTRACT_REJECTED",
             True,
         ),
         (
             _json_response(200, _login_body(user={"id": 42, "username": "other", "is_superuser": True})),
-            "login user is not the configured superadministrator",
+            "CONTRACT_REJECTED",
             True,
         ),
         (
             _json_response(200, _login_body(user={"id": True, "username": "admin", "is_superuser": True})),
-            "login response is missing a numeric user ID",
+            "CONTRACT_REJECTED",
             True,
         ),
     ],
 )
-def test_login_gate_rejects_invalid_login_contract(response: _Response, message: str, expects_logout: bool) -> None:
+def test_login_gate_rejects_invalid_login_contract(
+    response: _Response,
+    status: str,
+    expects_logout: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from scripts.check_bootstrap_admin_login import check_bootstrap_admin_login
 
     requests: list[_Request] = []
 
-    with pytest.raises(RuntimeError, match=message):
+    with pytest.raises(RuntimeError) as caught:
         check_bootstrap_admin_login(
             "http://api:8080/",
             "admin",
@@ -139,19 +198,24 @@ def test_login_gate_rejects_invalid_login_contract(response: _Response, message:
             ),
         )
 
+    _assert_stage_status(caught.value, "login", status)
+    _assert_cli_failure(caught.value, "login", status, monkeypatch, capsys)
     assert [request.path for request in requests] == [
         "/api/v1/auth/login",
         *(["/api/v1/auth/logout"] if expects_logout else []),
     ]
 
 
-def test_login_gate_rejects_a_login_body_over_256_kib_before_parsing() -> None:
+def test_login_gate_rejects_a_login_body_over_256_kib_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from scripts.check_bootstrap_admin_login import check_bootstrap_admin_login
 
     requests: list[_Request] = []
     response = _Response(200, b"{" + b"x" * (256 * 1024))
 
-    with pytest.raises(RuntimeError, match="response body exceeds 256 KiB"):
+    with pytest.raises(RuntimeError) as caught:
         check_bootstrap_admin_login(
             "http://api:8080",
             "admin",
@@ -159,13 +223,18 @@ def test_login_gate_rejects_a_login_body_over_256_kib_before_parsing() -> None:
             connection_factory=_connection_factory([response], requests),
         )
 
+    _assert_stage_status(caught.value, "login", "CONTRACT_REJECTED")
+    _assert_cli_failure(caught.value, "login", "CONTRACT_REJECTED", monkeypatch, capsys)
     assert response.read_sizes == [256 * 1024 + 1]
 
 
-def test_login_gate_rejects_malformed_login_json() -> None:
+def test_login_gate_rejects_malformed_login_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from scripts.check_bootstrap_admin_login import check_bootstrap_admin_login
 
-    with pytest.raises(RuntimeError, match="response body is not valid JSON"):
+    with pytest.raises(RuntimeError) as caught:
         check_bootstrap_admin_login(
             "http://api:8080",
             "admin",
@@ -173,24 +242,93 @@ def test_login_gate_rejects_malformed_login_json() -> None:
             connection_factory=_connection_factory([_Response(200, b"not-json")], []),
         )
 
+    _assert_stage_status(caught.value, "login", "CONTRACT_REJECTED")
+    _assert_cli_failure(caught.value, "login", "CONTRACT_REJECTED", monkeypatch, capsys)
+
 
 @pytest.mark.parametrize(
-    ("logout_response", "message"),
+    ("logout_response", "status"),
     [
-        (_json_response(500, {"detail": "refresh_token"}), "logout returned HTTP 500"),
-        (_json_response(200, _logout_body(revoked_count=0)), "logout did not revoke the verification session"),
+        (_json_response(500, {"detail": "refresh_token"}), "HTTP_500"),
+        (_json_response(200, _logout_body(revoked_count=0)), "CONTRACT_REJECTED"),
     ],
 )
-def test_login_gate_rejects_logout_failures(logout_response: _Response, message: str) -> None:
+def test_login_gate_rejects_logout_failures(
+    logout_response: _Response,
+    status: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     from scripts.check_bootstrap_admin_login import check_bootstrap_admin_login
 
-    with pytest.raises(RuntimeError, match=message):
+    with pytest.raises(RuntimeError) as caught:
         check_bootstrap_admin_login(
             "http://api:8080",
             "admin",
             "configured-secret",
             connection_factory=_connection_factory([_json_response(200, _login_body()), logout_response], []),
         )
+
+    _assert_stage_status(caught.value, "logout", status)
+    _assert_cli_failure(caught.value, "logout", status, monkeypatch, capsys)
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure", "status"),
+    [
+        ("login", OSError("configured-secret response-secret"), "CONNECTION_ERROR"),
+        ("logout", OSError("configured-secret response-secret"), "CONNECTION_ERROR"),
+        ("login", BadStatusLine("Set-Cookie: access-token=server-secret"), "PROTOCOL_ERROR"),
+        ("logout", BadStatusLine("Set-Cookie: access-token=server-secret"), "PROTOCOL_ERROR"),
+        ("login", _Response(200, OSError("response-secret")), "CONNECTION_ERROR"),
+        ("logout", _Response(200, OSError("response-secret")), "CONNECTION_ERROR"),
+    ],
+)
+def test_login_gate_classifies_transport_protocol_and_read_failures_by_stage(
+    stage: str,
+    failure: _Response | BaseException,
+    status: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts.check_bootstrap_admin_login import check_bootstrap_admin_login
+
+    with pytest.raises(RuntimeError) as caught:
+        check_bootstrap_admin_login(
+            "http://api:8080",
+            "admin",
+            "configured-secret",
+            connection_factory=_connection_factory(_responses_for_stage(stage, failure), []),
+        )
+
+    _assert_stage_status(caught.value, stage, status)
+    _assert_cli_failure(caught.value, stage, status, monkeypatch, capsys)
+
+
+@pytest.mark.parametrize(
+    "logout_response",
+    [
+        _Response(200, b"not-json"),
+        _Response(200, b"{" + b"x" * (256 * 1024)),
+    ],
+)
+def test_login_gate_classifies_malformed_and_oversize_logout_bodies_as_logout(
+    logout_response: _Response,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts.check_bootstrap_admin_login import check_bootstrap_admin_login
+
+    with pytest.raises(RuntimeError) as caught:
+        check_bootstrap_admin_login(
+            "http://api:8080",
+            "admin",
+            "configured-secret",
+            connection_factory=_connection_factory([_json_response(200, _login_body()), logout_response], []),
+        )
+
+    _assert_stage_status(caught.value, "logout", "CONTRACT_REJECTED")
+    _assert_cli_failure(caught.value, "logout", "CONTRACT_REJECTED", monkeypatch, capsys)
 
 
 @pytest.mark.parametrize(
@@ -247,6 +385,16 @@ def test_load_credentials_preserves_configured_username_and_password_whitespace(
     assert password == "  StrongPassw0rd!  "
 
 
+def test_load_credentials_treats_an_empty_mapping_as_explicit_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.check_bootstrap_admin_login import _load_credentials
+
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "environment-admin")
+    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "environment-secret")
+
+    with pytest.raises(ValueError, match="credentials are invalid"):
+        _load_credentials({})
+
+
 @pytest.mark.parametrize("password", ["", "short"])
 def test_cli_rejects_missing_or_short_password_without_leaking_it(
     password: str,
@@ -267,26 +415,3 @@ def test_cli_rejects_missing_or_short_password_without_leaking_it(
         assert prohibited not in captured.out + captured.err
     if password:
         assert password not in captured.out + captured.err
-
-
-def test_cli_reports_only_login_http_classification_on_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from scripts import check_bootstrap_admin_login
-
-    monkeypatch.setenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
-    monkeypatch.setenv("BOOTSTRAP_ADMIN_PASSWORD", "configured-secret")
-
-    def rejected(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeError("login returned HTTP 401 with configured-secret and access-token")
-
-    monkeypatch.setattr(check_bootstrap_admin_login, "check_bootstrap_admin_login", rejected)
-
-    assert check_bootstrap_admin_login.main(["--base-url", "http://api:8080"]) == 1
-    captured = capsys.readouterr()
-
-    assert captured.out == ""
-    assert captured.err == "ADMIN_LOGIN_GATE_FAILED stage=login status=HTTP_401\n"
-    for prohibited in ("configured-secret", "access-token", "refresh_token", "Set-Cookie", '{"code"'):
-        assert prohibited not in captured.out + captured.err

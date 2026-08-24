@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from http.client import BadStatusLine, HTTPException, IncompleteRead
 from urllib.error import URLError
 
 import pytest
@@ -85,6 +86,89 @@ def test_wait_for_http_reports_exhausted_url_error() -> None:
         )
 
     assert probes == ["http://127.0.0.1/health", "http://127.0.0.1/health"]
+
+
+def test_wait_for_http_retries_protocol_failures_until_success() -> None:
+    failures: list[HTTPException] = [
+        BadStatusLine("Set-Cookie: access-token=server-secret"),
+        IncompleteRead(b"response-secret", 64),
+    ]
+    probes: list[float] = []
+    sleeps: list[float] = []
+
+    def opener(_url: str, *, timeout: float) -> _Response:
+        probes.append(timeout)
+        if failures:
+            raise failures.pop(0)
+        return _Response(200)
+
+    wait_for_http(
+        "http://127.0.0.1/health",
+        attempts=3,
+        timeout_seconds=2,
+        interval_seconds=0.1,
+        opener=opener,
+        sleeper=sleeps.append,
+    )
+
+    assert probes == [2, 2, 2]
+    assert sleeps == [0.1, 0.1]
+
+
+@pytest.mark.parametrize(
+    ("protocol_error", "classification"),
+    [
+        (BadStatusLine("Set-Cookie: access-token=server-secret"), "BadStatusLine"),
+        (IncompleteRead(b"response-secret", 64), "IncompleteRead"),
+    ],
+)
+def test_cli_reports_one_bounded_sanitized_line_for_exhausted_protocol_failure(
+    protocol_error: HTTPException,
+    classification: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts import wait_for_http as wait_for_http_module
+
+    with pytest.raises(RuntimeError) as caught:
+        wait_for_http(
+            "http://127.0.0.1/health",
+            attempts=1,
+            timeout_seconds=1,
+            interval_seconds=0,
+            opener=lambda _url, *, timeout: (_ for _ in ()).throw(protocol_error),
+        )
+
+    def exhausted(*_args: object, **_kwargs: object) -> None:
+        raise caught.value
+
+    monkeypatch.setattr(wait_for_http_module, "wait_for_http", exhausted)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wait_for_http.py",
+            "--url",
+            "http://127.0.0.1/health",
+            "--attempts",
+            "1",
+            "--timeout-seconds",
+            "1",
+            "--interval-seconds",
+            "0",
+        ],
+    )
+
+    assert wait_for_http_module.main() == 1
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert captured.err == (
+        f"HTTP readiness failed: HTTP endpoint did not become ready after 1 attempts: {classification}\n"
+    )
+    assert len(captured.err) <= 128
+    for prohibited in ("server-secret", "response-secret", "access-token", "Set-Cookie"):
+        assert prohibited not in captured.err
 
 
 @pytest.mark.parametrize(

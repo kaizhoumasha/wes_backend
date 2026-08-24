@@ -740,7 +740,7 @@ sudo firewall-cmd --query-port="${NGINX_HTTP_PORT}/tcp"
 echo "校验入口恢复前服务拓扑"
 CUTOVER_STAGE=pre-entrypoint-topology
 EXPECTED_PRE_ENTRY_SERVICES="$(compose config --services | grep -v '^nginx$' | LC_ALL=C sort)"
-RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | grep -v '^nginx$' | LC_ALL=C sort)"
+RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
 if [ "$RUNNING_PRE_ENTRY_SERVICES" != "$EXPECTED_PRE_ENTRY_SERVICES" ]; then
   printf '期望服务:\n%s\n' "$EXPECTED_PRE_ENTRY_SERVICES"
   printf '运行服务:\n%s\n' "$RUNNING_PRE_ENTRY_SERVICES"
@@ -750,12 +750,16 @@ fi
 CUTOVER_STAGE=external-entrypoint
 compose up -d --no-deps --wait --wait-timeout 60 nginx || fail_cutover external-entrypoint
 CUTOVER_STAGE=external-health
-python3 scripts/wait_for_http.py \
+sudo docker run --rm --network host \
+  --entrypoint /opt/venv/bin/python \
+  "$BACKEND_IMAGE" scripts/wait_for_http.py \
   --url "http://127.0.0.1:${NGINX_HTTP_PORT}/health" \
   --attempts 10 --timeout-seconds 2 --interval-seconds 1 \
   || fail_cutover external-health
 CUTOVER_STAGE=external-frontend
-python3 scripts/wait_for_http.py \
+sudo docker run --rm --network host \
+  --entrypoint /opt/venv/bin/python \
+  "$BACKEND_IMAGE" scripts/wait_for_http.py \
   --url "http://127.0.0.1:${NGINX_HTTP_PORT}/" \
   --attempts 10 --timeout-seconds 2 --interval-seconds 1 \
   || fail_cutover external-frontend

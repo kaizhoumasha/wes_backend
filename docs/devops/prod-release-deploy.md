@@ -307,7 +307,7 @@ FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
 echo "校验入口恢复前服务拓扑"
 CUTOVER_STAGE=pre-entrypoint-topology
 EXPECTED_PRE_ENTRY_SERVICES="$(compose config --services | grep -v '^nginx$' | LC_ALL=C sort)"
-RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | grep -v '^nginx$' | LC_ALL=C sort)"
+RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
 if [ "$RUNNING_PRE_ENTRY_SERVICES" != "$EXPECTED_PRE_ENTRY_SERVICES" ]; then
   printf '期望服务:\n%s\n' "$EXPECTED_PRE_ENTRY_SERVICES"
   printf '运行服务:\n%s\n' "$RUNNING_PRE_ENTRY_SERVICES"

@@ -324,6 +324,9 @@ def _fake_docker_source() -> str:
                         if fail_at pre-entrypoint-topology; then
                             printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend redis \
                                 | grep -v '^flower$'
+                        elif fail_at pre-entrypoint-nginx-running; then
+                            set_nginx_state running
+                            printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend nginx redis
                         else
                             printf '%s\n' api celery celery-wms-fulfillment celery_beat db flower frontend redis
                         fi
@@ -709,6 +712,7 @@ def test_test_deploy_uses_rendered_topology_and_versioned_http_readiness_helper(
         ("menu-count-check", "nginx-start"),
         ("admin-login-gate", "pre-topology"),
         ("pre-entrypoint-topology", "nginx-start"),
+        ("pre-entrypoint-nginx-running", "nginx-start"),
         ("external-entrypoint", "external-health"),
         ("external-health", "external-frontend"),
         ("external-frontend", "final-topology"),
@@ -746,6 +750,7 @@ def test_test_deploy_failure_keeps_nginx_closed_and_never_repeats_database_mutat
     later_stages_by_new_gate = {
         "admin-login-gate": {"pre-topology", "nginx-start", "external-health", "external-frontend", "final-topology"},
         "pre-entrypoint-topology": {"nginx-start", "external-health", "external-frontend", "final-topology"},
+        "pre-entrypoint-nginx-running": {"nginx-start", "external-health", "external-frontend", "final-topology"},
         "external-entrypoint": {"external-health", "external-frontend", "final-topology"},
         "external-health": {"external-frontend", "final-topology"},
         "final-topology": {"cutover-complete"},
