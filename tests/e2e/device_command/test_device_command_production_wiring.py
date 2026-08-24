@@ -7,7 +7,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from src.app.device.composition import DeviceEndpointAdapterProvider
 from src.app.device.contracts import DeviceCommandRequest
@@ -88,6 +88,11 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
             session_factory=integration_session_factory,
             adapter_provider=provider,
         )
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                text("SELECT setval(pg_get_serial_sequence('wes_biz.inbound_evidences', 'id'), :int32_max, true)"),
+                {"int32_max": 2_147_483_647},
+            )
         handle = await service.create_manual_debug_command(
             client_request_id=new_uuid7(),
             endpoint_base_url=ecs_server.url,
@@ -104,6 +109,11 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         command_code = handle.command_code
 
         assert worker.run_task(DISPATCH_TASK) == 1
+        async with integration_session_factory() as db:
+            pending_evidence = await db.scalar(
+                select(InboundEvidence).where(InboundEvidence.command_code == command_code)
+            )
+        assert pending_evidence is not None and pending_evidence.id > 2_147_483_647
         assert worker.run_task(EVIDENCE_TASK) == 1
 
         snapshot = await service.get_command_snapshot(command_code)

@@ -11,6 +11,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 
@@ -158,7 +159,11 @@ class InboundEvidenceConflict(EnterpriseMixin, DataTableMixin, table=True):
     )
 
     source_identity: str = Field(min_length=1, max_length=300)
-    first_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", index=True)
+    first_evidence_id: int = Field(
+        foreign_key="wes_biz.inbound_evidences.id",
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
     conflicting_digest: str = Field(min_length=64, max_length=64)
     normalized_payload: dict[str, Any] = Field(sa_column=Column(JSON))
     reason_code: str = Field(min_length=1, max_length=120)

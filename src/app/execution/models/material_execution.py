@@ -11,6 +11,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 
@@ -95,7 +96,11 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
         index=True,
     )
     last_transition_reason: str = Field(min_length=1, max_length=120)
-    last_transition_evidence_id: int = Field(foreign_key="wes_biz.inbound_evidences.id", index=True)
+    last_transition_evidence_id: int = Field(
+        foreign_key="wes_biz.inbound_evidences.id",
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
     status_changed_at: datetime
     closed_at: datetime | None = Field(default=None)
 

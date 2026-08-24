@@ -237,7 +237,7 @@ uv run scripts/select_heavy_tests.py --scope staged
 
 PR 描述保持精炼，只包含行为变化、合同/配置/迁移影响、验证命令与结果、未验证边界。除非用户明确要求，不做全仓文档盘点，不为消灭零散 TODO 扩大变更范围。
 
-GitHub-only、无需部署或仓库没有部署能力时，Merge 后报告 `MERGED — NOT DEPLOYED`。`/health` 只证明存活，`/ready` 只证明就绪，均不等于业务验收。
+GitHub-only、无需部署或仓库没有部署能力时，Merge 后报告 `MERGED — NOT DEPLOYED`。DDL 后重建所有访问受影响关系的长期进程，清除连接池/prepared statement 缓存，以迁移后会话和真实查询验收；`/health`、`/ready` 不足以证明数据库路径可用。
 
 ## 9. Git、分支与 Worktree
 
