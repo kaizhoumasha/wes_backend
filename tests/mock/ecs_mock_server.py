@@ -385,7 +385,7 @@ async def receive_command(
     command_record["command_delay_seconds"] = delay_seconds
     command_history.append(command_record)
     background_tasks.add_task(_finish_command, payload, delay_seconds)
-    ack = DeviceCommandAck(code=200, message="Accepted")
+    ack = DeviceCommandAck(code=200, message="ACK")
     accepted_commands[payload.command_code] = ack
     return ack
 

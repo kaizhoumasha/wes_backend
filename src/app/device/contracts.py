@@ -235,6 +235,7 @@ class EcsDeviceEventReport(BaseModel):
     device_code: str = Field(min_length=1, max_length=100, pattern=_WIRE_TOKEN_PATTERN)
     event_type: str = Field(min_length=1, max_length=160, pattern=_WIRE_TOKEN_PATTERN)
     timestamp: StrictInt = Field(gt=0, le=2**63 - 1)
+    is_debug: StrictBool = False
     data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -276,6 +277,7 @@ class EcsDeviceEvent(BaseModel):
     event_type: str = Field(min_length=1, max_length=160, pattern=_WIRE_TOKEN_PATTERN)
     timestamp: StrictInt = Field(gt=0, le=2**63 - 1)
     source_event_id: str = Field(min_length=1, max_length=160, pattern=_WIRE_TOKEN_PATTERN)
+    is_debug: StrictBool
     data: dict[str, Any]
     trace_id: str | None = Field(default=None, min_length=1, max_length=120, pattern=_WIRE_TOKEN_PATTERN)
 

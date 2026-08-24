@@ -118,6 +118,26 @@ def test_result_and_event_ack_only_after_service_returns() -> None:
     assert result_attempt["request_id"] != event_attempt["request_id"]
 
 
+def test_debug_event_passes_strict_flag_to_service() -> None:
+    service = FakeEvidenceService()
+    payload = {**_event_payload(), "is_debug": True}
+
+    with _client(service) as client:
+        response = client.post("/api/v1/callback/event", json=payload)
+
+    assert response.status_code == 200
+    assert service.accepted[0].model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize("invalid_flag", [None, "true", 1])
+def test_debug_event_rejects_non_boolean_flag(invalid_flag: object) -> None:
+    with _client() as client:
+        response = client.post("/api/v1/callback/event", json={**_event_payload(), "is_debug": invalid_flag})
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "is_debug", "code": "INVALID_TYPE", "expected": "boolean"})
+
+
 def test_duplicate_callback_is_a_distinct_attempt_for_same_evidence() -> None:
     publisher = FakePublisher()
     with _client(FakeEvidenceService(duplicate=True), publisher=publisher) as client:
@@ -281,7 +301,7 @@ def test_unavailable_callback_service_uses_closed_wire() -> None:
         (
             "/api/v1/callback/event",
             {**_event_payload(), "supplier_extension": {"value": 1}},
-            _event_payload(),
+            {**_event_payload(), "is_debug": False},
         ),
     ],
 )

@@ -35,6 +35,11 @@ class InvalidCommandTransitionError(ValueError):
     """请求了不允许的命令状态迁移。"""
 
 
+MANUAL_DEBUG_REF_TYPE = "MANUAL_DEBUG"
+EVENT_DEBUG_REF_TYPE = "EVENT_DEBUG"
+DIAGNOSTIC_REF_TYPES = frozenset({MANUAL_DEBUG_REF_TYPE, EVENT_DEBUG_REF_TYPE})
+
+
 type DeviceCommandParamScalar = str | int | float | bool | None
 type DeviceCommandParamValue = (
     DeviceCommandParamScalar | list[DeviceCommandParamValue] | dict[str, DeviceCommandParamValue]
@@ -176,11 +181,11 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         ),
         CheckConstraint("attempt_count >= 0", name="device_command_attempt_count_nonnegative"),
         CheckConstraint(
-            "((execution_ref_type = 'MANUAL_DEBUG' AND line_run_epoch_id IS NULL "
+            "((execution_ref_type IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND line_run_epoch_id IS NULL "
             "AND device_binding_id IS NULL AND material_execution_id IS NULL "
             "AND endpoint_base_url IS NOT NULL "
             "AND command_timeout_ms IS NOT NULL) OR "
-            "(execution_ref_type <> 'MANUAL_DEBUG' AND line_run_epoch_id IS NOT NULL "
+            "(execution_ref_type NOT IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND line_run_epoch_id IS NOT NULL "
             "AND device_binding_id IS NOT NULL AND endpoint_base_url IS NULL "
             "AND command_timeout_ms IS NULL))",
             name="device_command_execution_context_complete",
@@ -197,7 +202,9 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
             "((execution_ref_type = 'MANUAL_DEBUG' AND execution_reason IS NOT NULL "
             "AND length(trim(execution_reason)) > 0 "
             "AND created_by IS NOT NULL) OR "
-            "(execution_ref_type <> 'MANUAL_DEBUG' AND execution_reason IS NULL))",
+            "(execution_ref_type = 'EVENT_DEBUG' AND execution_reason IS NOT NULL "
+            "AND length(trim(execution_reason)) > 0 AND created_by IS NULL) OR "
+            "(execution_ref_type NOT IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND execution_reason IS NULL))",
             name="device_command_manual_debug_audit_complete",
         ),
         UniqueConstraint("command_code", name="ux_device_commands_command_code"),
@@ -222,6 +229,13 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
             unique=True,
             postgresql_where=text("execution_ref_type = 'MANUAL_DEBUG'"),
             sqlite_where=text("execution_ref_type = 'MANUAL_DEBUG'"),
+        ),
+        Index(
+            "ux_device_commands_event_debug_identity",
+            "execution_ref_id",
+            unique=True,
+            postgresql_where=text("execution_ref_type = 'EVENT_DEBUG'"),
+            sqlite_where=text("execution_ref_type = 'EVENT_DEBUG'"),
         ),
         {"schema": SchemaType.BIZ.value},
     )
@@ -276,6 +290,9 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
 
 
 __all__ = [
+    "DIAGNOSTIC_REF_TYPES",
+    "EVENT_DEBUG_REF_TYPE",
+    "MANUAL_DEBUG_REF_TYPE",
     "CommandStatus",
     "DeviceCommand",
     "DeviceCommandParamValue",

@@ -621,6 +621,14 @@ heavy_tests = [
     "tests/integration/device_command/test_device_command_migration_postgresql.py",
 ]
 
+[[mapping]]
+source_glob = "migrations/versions/20260825_0350_d68e6be4006e_支持事件联调自动指令.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_device_command_migration_postgresql.py",
+]
+
 # Nginx 精确代理规则由部署合同测试和 nginx -t 直接承接。
 [[mapping]]
 source_glob = "nginx/conf.d/default.conf"
@@ -878,6 +886,10 @@ heavy_tests = [
     "tests/mock/test_ecs_mock_server.py",
     "tests/mock/test_mock_dockerfile.py",
 ]
+
+[[mapping]]
+source_glob = "tests/mock/robot_arm_mock_server.py"
+heavy_tests = ["tests/mock/test_robot_arm_mock_server.py"]
 
 # 旧 WMS document wire DTO 由其所属 WMS integration 合同承接，不再耦合 Transport Mock。
 [[mapping]]

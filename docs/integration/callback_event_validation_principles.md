@@ -75,7 +75,9 @@ TransportResult 不使用设备统一接口的 `command_code`、设备合同身�
 4. 根据获批设备附录校验具体事件字段，并检查结果回调的命令关联和唯一终态；
 5. 核心持久化 `InboundEvidence`；没有活动 Epoch 的设备事件作为 `line_run_epoch_id=null` 的诊断证据接纳；
 6. 同步返回 ACK；
-7. 仅当证据绑定的 Epoch 仍然活动时，异步调用已显式装配的 WorkLine 插件并允许其推进对象。
+7. `is_debug=true` 的 EVENT 不调用 WorkLine 插件，而是由异步 evidence worker 复用 DeviceCommand 基础能力创建一条
+   `EVENT_DEBUG/MOVE_FORWARD` 联调命令，并将 evidence 标记为不参与业务消费的 `IGNORED`；普通 EVENT 仅在证据绑定的 Epoch
+   仍然活动时调用已显式装配的 WorkLine 插件。
 
 无法建立证据、幂等身份冲突或合同校验失败时不得返回成功 ACK。ACK 成功不表示业务决定成功，更不表示设备动作完成。
 
@@ -94,6 +96,8 @@ TransportResult 不使用设备统一接口的 `command_code`、设备合同身�
 `source_event_id` 在整个 WES 部署范围内跨供应商、设备、结果和事件回调永久不复用。稳定身份一旦与规范化语义载荷绑定，
 即使请求被明确拒绝也不得改载荷复用；只有明确未接纳且修正导致摘要变化时，才能使用新的部署级唯一身份重新上报。
 设备事件首次观察时保存的可空 `line_run_epoch_id` 同样不可变；字段为 `null` 或原 Epoch 已关闭时，事件只保留为诊断证据。
+`is_debug` 是可选严格布尔值并参与规范化摘要；省略与 `false` 等价，`true` 与普通事件不是同一身份。重复调试 EVENT 复用同一
+命令身份，不能借重报绕过设备忙、准入失败或结果不明状态。
 
 ## 5. 测试所有权
 

@@ -8,6 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Protocol
 
 from src.app.device.contracts import (
+    DeviceCommandHandle,
     DeviceEvidenceReceipt,
     DeviceEvidenceUpdate,
     DeviceIngressKind,
@@ -90,6 +91,8 @@ class EvidenceProcessingRepositoryPort(Protocol):
 
     async def mark_applied(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
+    async def mark_ignored(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
+
     async def mark_reconciling(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
 
@@ -111,6 +114,15 @@ class EventPublisherPort(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool: ...
 
 
+class EventDebugCommandServicePort(Protocol):
+    async def create_event_debug_command_in_session(
+        self,
+        db: object,
+        *,
+        evidence: InboundEvidence,
+    ) -> DeviceCommandHandle: ...
+
+
 class DeviceEvidenceService:
     """把外部 callback 先固化为证据；不在 ingress 中推进业务对象。"""
 
@@ -124,6 +136,7 @@ class DeviceEvidenceService:
         epoch_repository: EvidenceEpochRepositoryPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         event_publisher: EventPublisherPort | None = None,
+        event_debug_command_service: EventDebugCommandServicePort | None = None,
     ) -> None:
         self._sessions = session_factory
         self._ingress = inbound_evidence_service or default_inbound_evidence_service
@@ -132,6 +145,7 @@ class DeviceEvidenceService:
         self._epochs = epoch_repository or line_run_epoch_repository
         self._task_queue = task_queue_gateway
         self._event_publisher = event_publisher
+        self._event_debug_commands = event_debug_command_service
 
     async def accept_result(self, report: EcsCommandResultReport) -> DeviceEvidenceReceipt:
         rejection: Exception | None = None
@@ -223,7 +237,13 @@ class DeviceEvidenceService:
                 source_identity=event.source_event_id,
                 normalized_payload=payload,
                 received_at=timezone.now_for_db(),
-                line_run_epoch_id=binding.line_run_epoch_id if binding is not None else None,
+                line_run_epoch_id=(
+                    existing.line_run_epoch_id
+                    if existing is not None
+                    else binding.line_run_epoch_id
+                    if binding is not None
+                    else None
+                ),
                 device_code=event.device_code,
                 contract_key=event.contract_key,
                 contract_version=event.contract_version,
@@ -248,6 +268,7 @@ class DeviceEvidenceService:
         now = timezone.now_for_db()
         wake_execution = False
         update: DeviceEvidenceUpdate | None = None
+        debug_command_code: str | None = None
         async with self._sessions.begin() as db:
             evidence = await self._processing.claim_next_pending(
                 db,
@@ -256,8 +277,25 @@ class DeviceEvidenceService:
             if evidence is None:
                 return False
             if evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
-                await self._processing.mark_applied(db, evidence, processed_at=now)
-                wake_execution = True
+                event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
+                if event.is_debug:
+                    if self._event_debug_commands is None:
+                        await self._processing.mark_reconciling(db, evidence, processed_at=now)
+                    else:
+                        try:
+                            handle = await self._event_debug_commands.create_event_debug_command_in_session(
+                                db,
+                                evidence=evidence,
+                            )
+                        except ValueError:
+                            logger.exception("device.event_debug.command_rejected")
+                            await self._processing.mark_reconciling(db, evidence, processed_at=now)
+                        else:
+                            debug_command_code = handle.command_code
+                            await self._processing.mark_ignored(db, evidence, processed_at=now)
+                else:
+                    await self._processing.mark_applied(db, evidence, processed_at=now)
+                    wake_execution = True
             elif evidence.command_code is None:
                 await self._processing.mark_reconciling(db, evidence, processed_at=now)
             else:
@@ -288,7 +326,7 @@ class DeviceEvidenceService:
                     command.claim_expires_at = None
                     await self._processing.mark_applied(db, evidence, processed_at=now)
                     wake_execution = evidence.material_execution_id is not None
-            update = _evidence_update(evidence, processed_at=now)
+            update = _evidence_update(evidence, processed_at=now, command_code=debug_command_code)
         await self._publish_update(update)
         if wake_execution:
             self._enqueue_execution_facts()
@@ -357,6 +395,7 @@ def _normalize_event(
             "event_type": report.event_type,
             "timestamp": report.timestamp,
             "source_event_id": source_identity,
+            "is_debug": report.is_debug,
             "data": report.data,
         }
     )
@@ -388,7 +427,12 @@ def _receipt(
     )
 
 
-def _evidence_update(evidence: InboundEvidence, *, processed_at: datetime) -> DeviceEvidenceUpdate:
+def _evidence_update(
+    evidence: InboundEvidence,
+    *,
+    processed_at: datetime,
+    command_code: str | None = None,
+) -> DeviceEvidenceUpdate:
     if evidence.id is None or evidence.device_code is None:
         raise RuntimeError("device evidence 缺少 update snapshot 字段")
     kind = DeviceIngressKind(getattr(evidence.kind, "value", evidence.kind))
@@ -398,7 +442,7 @@ def _evidence_update(evidence: InboundEvidence, *, processed_at: datetime) -> De
         kind=kind,
         source_event_id=evidence.source_identity,
         device_code=evidence.device_code,
-        command_code=evidence.command_code,
+        command_code=command_code or evidence.command_code,
         event_type=raw_event_type if isinstance(raw_event_type, str) else None,
         apply_status=InboundEvidenceApplyStatus(evidence.apply_status).value,
         processed_at=timezone.to_utc(processed_at).isoformat(),

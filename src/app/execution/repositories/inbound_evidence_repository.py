@@ -217,6 +217,17 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         evidence.processed_at = processed_at
         await db.flush()
 
+    async def mark_ignored(
+        self,
+        db: AsyncSession,
+        evidence: InboundEvidence,
+        *,
+        processed_at: datetime,
+    ) -> None:
+        evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
+        evidence.processed_at = processed_at
+        await db.flush()
+
     async def mark_reconciling(
         self,
         db: AsyncSession,

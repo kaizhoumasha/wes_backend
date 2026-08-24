@@ -1,4 +1,4 @@
-"""DeviceCommand 手动联调合同的 PostgreSQL 迁移切换验证。"""
+"""DeviceCommand 联调合同的 PostgreSQL 迁移切换验证。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from tests.support.runtime_inbox_postgresql import connect, run_alembic, tempora
 
 PREDECESSOR_REVISION = "1000c501e52a"
 HEAD_REVISION = "11013119b97d"
+EVENT_DEBUG_PREDECESSOR_REVISION = "f11b613771fa"
+EVENT_DEBUG_HEAD_REVISION = "d68e6be4006e"
 
 
 async def _insert_legacy_cutover_rows(connection) -> dict[str, int]:
@@ -189,6 +191,103 @@ def test_manual_debug_audit_downgrade_restores_predecessor_context_constraint() 
                     """
                 )
                 assert "material_execution_id IS NULL" not in definition
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_event_debug_upgrade_adds_context_audit_and_identity_constraints() -> None:
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", EVENT_DEBUG_HEAD_REVISION, database_url=database_url)
+
+            connection = await connect(database)
+            try:
+                constraints = {
+                    row["conname"]: row["definition"]
+                    for row in await connection.fetch(
+                        """
+                        SELECT constraint_row.conname,
+                               pg_get_constraintdef(constraint_row.oid) AS definition
+                        FROM pg_constraint AS constraint_row
+                        WHERE constraint_row.conrelid = 'wes_biz.device_commands'::regclass
+                          AND constraint_row.contype = 'c'
+                        """
+                    )
+                }
+                assert "EVENT_DEBUG" in constraints["ck_device_commands_device_command_execution_context_complete"]
+                assert "EVENT_DEBUG" in constraints["ck_device_commands_device_command_manual_debug_audit_complete"]
+                assert (
+                    await connection.fetchval(
+                        """
+                    SELECT count(*)
+                    FROM pg_indexes
+                    WHERE schemaname = 'wes_biz'
+                      AND tablename = 'device_commands'
+                      AND indexname = 'ux_device_commands_event_debug_identity'
+                    """
+                    )
+                    == 1
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO wes_biz.device_commands (
+                        created_at, device_code, execution_ref_type, execution_ref_id,
+                        contract_key, contract_version, task_type, params, deadline_at,
+                        command_code, payload_digest, status, attempt_count,
+                        endpoint_base_url, command_timeout_ms, execution_reason
+                    ) VALUES (
+                        CURRENT_TIMESTAMP, 'STATION-SCAN11', 'EVENT_DEBUG', 'EVENT:debug-migration',
+                        'third_party_integration', '1.1', 'MOVE_FORWARD', '{}'::json,
+                        CURRENT_TIMESTAMP + INTERVAL '30 seconds', 'CMD-EVENT-DEBUG-MIGRATION',
+                        repeat('a', 64), 'PENDING', 0, 'http://10.24.209.26:8080', 30000,
+                        'ECS_EVENT_DEBUG:EVENT:debug-migration'
+                    )
+                    """
+                )
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_event_debug_downgrade_removes_debug_rows_and_restores_predecessor_schema() -> None:
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", EVENT_DEBUG_HEAD_REVISION, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO wes_biz.device_commands (
+                        created_at, device_code, execution_ref_type, execution_ref_id,
+                        contract_key, contract_version, task_type, params, deadline_at,
+                        command_code, payload_digest, status, attempt_count,
+                        endpoint_base_url, command_timeout_ms, execution_reason
+                    ) VALUES (
+                        CURRENT_TIMESTAMP, 'STATION-SCAN11', 'EVENT_DEBUG', 'EVENT:debug-downgrade',
+                        'third_party_integration', '1.1', 'MOVE_FORWARD', '{}'::json,
+                        CURRENT_TIMESTAMP + INTERVAL '30 seconds', 'CMD-EVENT-DEBUG-DOWNGRADE',
+                        repeat('b', 64), 'PENDING', 0, 'http://10.24.209.26:8080', 30000,
+                        'ECS_EVENT_DEBUG:EVENT:debug-downgrade'
+                    )
+                    """
+                )
+            finally:
+                await connection.close()
+
+            run_alembic("downgrade", EVENT_DEBUG_PREDECESSOR_REVISION, database_url=database_url)
+            connection = await connect(database)
+            try:
+                assert (
+                    await connection.fetchval(
+                        "SELECT count(*) FROM wes_biz.device_commands WHERE execution_ref_type = 'EVENT_DEBUG'"
+                    )
+                    == 0
+                )
             finally:
                 await connection.close()
 

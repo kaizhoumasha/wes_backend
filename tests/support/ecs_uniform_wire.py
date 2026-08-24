@@ -117,7 +117,7 @@ class _UniformEcsHandler(BaseHTTPRequestHandler):
             self.server.callback_errors.append(error)
             self._send_json(500, {"code": 500, "message": "CALLBACK_FAILED"})
             return
-        self._send_json(200, {"code": 200, "message": "Accepted"})
+        self._send_json(200, {"code": 200, "message": "ACK"})
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()

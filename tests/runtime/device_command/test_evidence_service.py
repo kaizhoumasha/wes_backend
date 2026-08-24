@@ -7,7 +7,12 @@ from datetime import datetime
 
 import pytest
 
-from src.app.device.contracts import DeviceEvidenceReceipt, EcsCommandResultReport, EcsDeviceEventReport
+from src.app.device.contracts import (
+    DeviceCommandHandle,
+    DeviceEvidenceReceipt,
+    EcsCommandResultReport,
+    EcsDeviceEventReport,
+)
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_evidence_service import (
     DeviceEvidenceConflictError,
@@ -86,6 +91,10 @@ class FakeEvidenceRepository:
         evidence.apply_status = "APPLIED"
         evidence.processed_at = processed_at
 
+    async def mark_ignored(self, _db: object, evidence: InboundEvidence, *, processed_at: datetime) -> None:
+        evidence.apply_status = "IGNORED"
+        evidence.processed_at = processed_at
+
     async def mark_reconciling(self, _db: object, evidence: InboundEvidence, *, processed_at: datetime) -> None:
         evidence.apply_status = "RECONCILING"
         evidence.processed_at = processed_at
@@ -135,6 +144,20 @@ class FakeTaskQueue:
         self.execution_wakes += 1
         if self.error is not None:
             raise self.error
+
+
+class FakeEventDebugCommandService:
+    def __init__(self) -> None:
+        self.evidences: list[InboundEvidence] = []
+
+    async def create_event_debug_command_in_session(
+        self,
+        _db: object,
+        *,
+        evidence: InboundEvidence,
+    ) -> DeviceCommandHandle:
+        self.evidences.append(evidence)
+        return DeviceCommandHandle(command_code="EVENT-DEBUG-CMD-001", status=CommandStatus.PENDING)
 
 
 class FakePublisher:
@@ -202,6 +225,7 @@ def _service(
     event_epoch_id: int | None = None,
     task_queue: FakeTaskQueue | None = None,
     publisher: FakePublisher | None = None,
+    event_debug_commands: FakeEventDebugCommandService | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
     return (
@@ -213,6 +237,7 @@ def _service(
             epoch_repository=FakeEpochRepository(event_epoch_id),  # type: ignore[arg-type]
             task_queue_gateway=task_queue,  # type: ignore[arg-type]
             event_publisher=publisher,  # type: ignore[arg-type]
+            event_debug_command_service=event_debug_commands,  # type: ignore[arg-type]
         ),
         evidences,
     )
@@ -373,6 +398,58 @@ async def test_event_freezes_nullable_epoch_on_first_observation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_debug_flag_changes_event_identity() -> None:
+    service, repository = _service(None)
+
+    normal = await service.accept_event(_event())
+    explicit_false = await service.accept_event(_event(is_debug=False))
+    debug = await service.accept_event(_event(is_debug=True))
+
+    assert explicit_false.source_event_id == normal.source_event_id
+    assert explicit_false.duplicate is True
+    assert debug.source_event_id != normal.source_event_id
+    assert repository.evidences[debug.source_event_id].normalized_payload["is_debug"] is True
+
+
+@pytest.mark.asyncio
+async def test_debug_event_creates_command_without_waking_business_processing() -> None:
+    queue = FakeTaskQueue()
+    publisher = FakePublisher()
+    debug_commands = FakeEventDebugCommandService()
+    service, repository = _service(
+        None,
+        event_epoch_id=11,
+        task_queue=queue,
+        publisher=publisher,
+        event_debug_commands=debug_commands,
+    )
+    receipt = await service.accept_event(_event(is_debug=True))
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "IGNORED"
+    assert evidence.line_run_epoch_id == 11
+    assert debug_commands.evidences == [evidence]
+    assert queue.execution_wakes == 0
+    assert publisher.events[0][2]["command_code"] == "EVENT-DEBUG-CMD-001"
+
+
+@pytest.mark.asyncio
+async def test_normal_event_still_wakes_business_processing() -> None:
+    queue = FakeTaskQueue()
+    debug_commands = FakeEventDebugCommandService()
+    service, repository = _service(None, task_queue=queue, event_debug_commands=debug_commands)
+    receipt = await service.accept_event(_event())
+
+    assert await service.process_one() is True
+
+    assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
+    assert debug_commands.evidences == []
+    assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
 async def test_event_freezes_active_epoch_when_contract_matches() -> None:
     service, repository = _service(None, event_epoch_id=11)
 
@@ -393,6 +470,33 @@ async def test_accepted_event_retry_after_epoch_switch_reuses_frozen_evidence() 
     assert duplicate.duplicate is True
     assert repository.evidences[duplicate.source_event_id].line_run_epoch_id == 11
     assert repository.conflicts == []
+
+
+@pytest.mark.asyncio
+async def test_processed_debug_event_retry_after_epoch_switch_reuses_frozen_evidence() -> None:
+    epochs = FakeEpochRepository(event_epoch_id=11)
+    evidences = FakeEvidenceRepository()
+    debug_commands = FakeEventDebugCommandService()
+    service = DeviceEvidenceService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        inbound_evidence_service=InboundEvidenceService(repository=evidences),
+        processing_repository=evidences,  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(None),  # type: ignore[arg-type]
+        epoch_repository=epochs,  # type: ignore[arg-type]
+        event_debug_command_service=debug_commands,
+    )
+    event = _event(is_debug=True)
+    first = await service.accept_event(event)
+    assert await service.process_one() is True
+
+    epochs.event_epoch_id = 12
+    duplicate = await service.accept_event(event)
+
+    assert duplicate.evidence_id == first.evidence_id
+    assert duplicate.duplicate is True
+    assert evidences.evidences[first.source_event_id].line_run_epoch_id == 11
+    assert evidences.conflicts == []
+    assert len(debug_commands.evidences) == 1
 
 
 @pytest.mark.asyncio

@@ -520,3 +520,86 @@ async def test_manual_debug_preflight_returns_all_devices_with_runtime_rejection
     assert tuple(item.rejection_code for item in snapshot.devices) == (None, "DEVICE_OFFLINE")
     assert provider.requested == ["http://ecs-mock:8080"]
     assert adapter.fetch_statuses_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_business_binding() -> None:
+    repository = FakeCommandRepository()
+    service = DeviceCommandService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        command_repository=repository,  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 25),
+    )
+    source_identity = "EVENT:" + "a" * 64
+    evidence = InboundEvidence(
+        id=91,
+        kind=InboundEvidenceKind.DEVICE_EVENT,
+        source_identity=source_identity,
+        payload_digest="b" * 64,
+        normalized_payload={
+            "device_code": "STATION_SCAN11",
+            "contract_key": "third_party_integration",
+            "contract_version": "1.1",
+            "event_type": "SCAN_COMPLETED",
+            "timestamp": 1_787_589_900_163,
+            "source_event_id": source_identity,
+            "is_debug": True,
+            "data": {"event_id": "EVT-1", "location": "STATION_SCAN11", "barcode": "NHW002069-B"},
+        },
+        received_at=datetime(2026, 8, 25),
+        device_code="STATION_SCAN11",
+        contract_key="third_party_integration",
+        contract_version="1.1",
+    )
+
+    handle = await service.create_event_debug_command_in_session(object(), evidence=evidence)
+
+    command = repository.created[0]
+    assert handle.command_code == command.command_code
+    assert command.execution_ref_type == "EVENT_DEBUG"
+    assert command.execution_ref_id == evidence.source_identity
+    assert command.endpoint_base_url == "http://10.24.209.26:8080"
+    assert command.command_timeout_ms == 30_000
+    assert command.task_type == "MOVE_FORWARD"
+    assert command.params == evidence.normalized_payload["data"]
+    assert command.execution_reason == f"ECS_EVENT_DEBUG:{evidence.source_identity}"
+    assert command.created_by is None
+
+
+@pytest.mark.asyncio
+async def test_event_debug_command_is_terminal_when_device_has_active_command() -> None:
+    repository = FakeCommandRepository()
+    repository.unclosed["STATION_SCAN11"] = object()  # type: ignore[assignment]
+    service = DeviceCommandService(
+        session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
+        command_repository=repository,  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 25),
+    )
+    evidence = InboundEvidence(
+        kind=InboundEvidenceKind.DEVICE_EVENT,
+        source_identity="EVT-BUSY",
+        payload_digest="a" * 64,
+        normalized_payload={
+            "device_code": "STATION_SCAN11",
+            "contract_key": "third_party_integration",
+            "contract_version": "1.1",
+            "event_type": "SCAN_COMPLETED",
+            "timestamp": 1_787_589_900_163,
+            "source_event_id": "EVT-BUSY",
+            "is_debug": True,
+            "data": {},
+        },
+        received_at=datetime(2026, 8, 25),
+        device_code="STATION_SCAN11",
+        contract_key="third_party_integration",
+        contract_version="1.1",
+    )
+
+    handle = await service.create_event_debug_command_in_session(object(), evidence=evidence)
+
+    command = repository.created[0]
+    assert handle.status == CommandStatus.FAILED
+    assert command.failure_code == "DEVICE_HAS_ACTIVE_COMMAND"
+    assert command.completed_at == datetime(2026, 8, 25)
