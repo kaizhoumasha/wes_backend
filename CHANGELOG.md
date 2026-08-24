@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0.3] - 2026-08-24
+
+### Fixed
+
+- ECS Result/Event callback 继续严格校验必填字段、类型与枚举，同时忽略供应商额外顶层字段；扩展字段不进入规范化 evidence 或幂等摘要，`error_detail` 仍保持闭集。
+
+### Verification
+
+- Callback API 63 项、QUALITY、selector 选中的 HEAVY 47 项均通过；两轮 fresh Review 最终为 CLEAN。
+- 本次增量发布只替换联调环境 API，不包含前端、数据库迁移、Worker 重启、真实 ECS 重报或物理动作验收。
+
 ## [0.28.0.2] - 2026-08-24
 
 ### Fixed
