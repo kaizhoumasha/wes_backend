@@ -24,6 +24,7 @@
 - PostgreSQL `idle_in_transaction_session_timeout` 是保险丝，不替代应用正确关闭事务；不得全局添加 `statement_timeout` 或 `lock_timeout`。
 - 现有 `tests/integration/test_celery_async_runtime_postgresql.py` 已拥有真实 prefork 连接与 `idle in transaction` 断言。若它在 current develop 通过，不修改 `src/celery_app/tasks/core.py` 或 `src/celery_app/async_runtime.py`。
 - 数据备份/恢复由 `2026-08-18-wes-onsite-data-recovery.md` 拥有；数据库角色、checksums 和 Alembic 基线不在本计划。
+- **Rocky Linux 手册边界：** 本计划在 `docs/devops/rocky-linux-server-initialization.md` 只拥有 Beat、Redis/THP、Nginx nofile/logrotate 与 PostgreSQL timeout 的章节和符号；不得复制或改写 `wait_for_http`、管理员 login/logout gate、pre/final exact topology 或 fail-closed cutover 阶段。
 
 ## File Structure
 
@@ -124,7 +125,7 @@
 - Consumes: Tasks 1–3 最终机器合同。
 - Produces: 初级现场工程师可按切片安装、验收和回滚的当前步骤。
 
-- [ ] **Step 1:** 在初始化手册中增加 Beat目录权限/SELinux、sysctl/THP、Nginx nofile/logrotate、PostgreSQL timeout 的安装与读取验证；不要复制资产正文。
+- [ ] **Step 1:** 在初始化手册中增加 Beat目录权限/SELinux、sysctl/THP、Nginx nofile/logrotate、PostgreSQL timeout 的安装与读取验证；不要复制资产正文、shared readiness/login helper、exact topology 或 cutover 阶段。
 - [ ] **Step 2:** 明确顺序为 Beat、Redis/THP、Nginx、PostgreSQL；每步只重建一个受影响服务，失败停止，不使用 `down -v`。
 - [ ] **Step 3:** 更新文件索引和本计划状态，运行 `git diff --check`、引用扫描和路径存在性检查；纯文档部分不新增测试。
 - [ ] **Step 4:** 在最终 executable snapshot 上运行聚焦测试、QUALITY、staged selector/HEAVY、GitNexus staged detection 和一次完整只读 Review。

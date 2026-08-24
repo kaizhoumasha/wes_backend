@@ -51,11 +51,26 @@ class EventPublisherPort(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, Any]) -> bool: ...
 
 
+class EcsCallbackValidationIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str
+    code: str
+    expected: str | None = None
+
+
+class EcsCallbackRejectionDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    issues: tuple[EcsCallbackValidationIssue, ...]
+
+
 class EcsCallbackAck(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     code: int
     message: str
+    error_detail: EcsCallbackRejectionDetail | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,11 +81,19 @@ class _DecodedCallback:
 
 
 class EcsCallbackRejection(RuntimeError):
-    def __init__(self, status_code: int, message: str, *, observed_body_bytes: int = 0) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        observed_body_bytes: int = 0,
+        issues: tuple[EcsCallbackValidationIssue, ...] = (),
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.message = message
         self.observed_body_bytes = observed_body_bytes
+        self.issues = issues
 
 
 def _evidence_service(request: Request) -> EvidenceIngressPort:
@@ -105,6 +128,41 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
     return result
 
 
+def _invalid_json_issue() -> EcsCallbackValidationIssue:
+    return EcsCallbackValidationIssue(field="$", code="INVALID_JSON")
+
+
+def _log_invalid_envelope(model: type[BaseModel], issues: tuple[EcsCallbackValidationIssue, ...]) -> None:
+    summary = ",".join(f"{issue.field}:{issue.code}" for issue in issues)
+    logger.warning(f"device.ingress.invalid_envelope model={model.__name__} issues={summary}")
+
+
+def _validation_issue(issue: dict[str, Any], payload: dict[str, Any]) -> EcsCallbackValidationIssue:
+    issue_type = issue["type"]
+    location = issue["loc"]
+    if issue_type == "extra_forbidden":
+        parent = ".".join(str(part) for part in location[:-1])
+        field = f"{parent}.<extra>" if parent else "$.<extra>"
+        return EcsCallbackValidationIssue(field=field, code="EXTRA_FORBIDDEN")
+
+    field = ".".join(str(part) for part in location) or "$"
+    if issue_type == "missing":
+        return EcsCallbackValidationIssue(field=field, code="FIELD_REQUIRED")
+    expected = {"dict_type": "object", "model_type": "object", "int_type": "integer", "string_type": "string"}.get(
+        issue_type
+    )
+    if expected is not None:
+        return EcsCallbackValidationIssue(field=field, code="INVALID_TYPE", expected=expected)
+    if (
+        issue_type == "value_error"
+        and field == "$"
+        and payload.get("result") == "FAILED"
+        and payload.get("error_detail") is None
+    ):
+        return EcsCallbackValidationIssue(field="error_detail", code="FIELD_REQUIRED")
+    return EcsCallbackValidationIssue(field=field, code="INVALID_VALUE")
+
+
 async def _decode_closed_body(request: Request, model: type[BaseModel]) -> _DecodedCallback:
     chunks: list[bytes] = []
     size = 0
@@ -123,13 +181,44 @@ async def _decode_closed_body(request: Request, model: type[BaseModel]) -> _Deco
         )
         json.dumps(payload, ensure_ascii=False).encode("utf-8")
     except (UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
-        raise EcsCallbackRejection(400, "INVALID_ENVELOPE", observed_body_bytes=size) from error
+        issues = (_invalid_json_issue(),)
+        _log_invalid_envelope(model, issues)
+        raise EcsCallbackRejection(
+            400,
+            "INVALID_ENVELOPE",
+            observed_body_bytes=size,
+            issues=issues,
+        ) from error
     if not isinstance(payload, dict):
-        raise EcsCallbackRejection(400, "INVALID_ENVELOPE", observed_body_bytes=size)
+        issues = (EcsCallbackValidationIssue(field="$", code="INVALID_TYPE", expected="object"),)
+        _log_invalid_envelope(model, issues)
+        raise EcsCallbackRejection(
+            400,
+            "INVALID_ENVELOPE",
+            observed_body_bytes=size,
+            issues=issues,
+        )
     try:
         validated = model.model_validate(payload)
-    except (ValidationError, RecursionError) as error:
-        raise EcsCallbackRejection(400, "INVALID_ENVELOPE", observed_body_bytes=size) from error
+    except ValidationError as error:
+        validation_errors = error.errors(include_url=False, include_context=False, include_input=False)
+        mapped_issues = tuple(_validation_issue(issue, payload) for issue in validation_errors)
+        _log_invalid_envelope(model, mapped_issues)
+        raise EcsCallbackRejection(
+            400,
+            "INVALID_ENVELOPE",
+            observed_body_bytes=size,
+            issues=mapped_issues,
+        ) from error
+    except RecursionError as error:
+        issues = (_invalid_json_issue(),)
+        _log_invalid_envelope(model, issues)
+        raise EcsCallbackRejection(
+            400,
+            "INVALID_ENVELOPE",
+            observed_body_bytes=size,
+            issues=issues,
+        ) from error
     return _DecodedCallback(
         model=validated,
         raw_payload=cast("dict[str, Any]", payload),
@@ -154,9 +243,14 @@ def _as_ingress_rejection(error: Exception) -> EcsCallbackRejection | None:
 
 
 def _rejection_response(error: EcsCallbackRejection) -> JSONResponse:
+    error_detail = EcsCallbackRejectionDetail(issues=error.issues) if error.issues else None
     return JSONResponse(
         status_code=error.status_code,
-        content={"code": error.status_code, "message": error.message},
+        content=EcsCallbackAck(
+            code=error.status_code,
+            message=error.message,
+            error_detail=error_detail,
+        ).model_dump(mode="json", exclude_none=True),
     )
 
 

@@ -18,6 +18,7 @@ from src.app.device.services.device_evidence_service import (
     DeviceResultOutOfOrderError,
     UnknownDeviceCommandError,
 )
+from src.app.device.v1 import ecs_callback as ecs_callback_module
 from src.app.device.v1.ecs_callback import router
 
 
@@ -79,6 +80,14 @@ def _event_payload() -> dict[str, object]:
         "event_type": "SCAN_COMPLETED",
         "timestamp": 1_786_579_204_000,
         "data": {},
+    }
+
+
+def _invalid_envelope(*issues: dict[str, str]) -> dict[str, object]:
+    return {
+        "code": 400,
+        "message": "INVALID_ENVELOPE",
+        "error_detail": {"issues": list(issues)},
     }
 
 
@@ -262,32 +271,33 @@ def test_unavailable_callback_service_uses_closed_wire() -> None:
     assert unavailable.json() == {"code": 503, "message": "TEMPORARILY_UNAVAILABLE"}
 
 
-def test_closed_envelope_rejects_legacy_or_flattened_fields() -> None:
-    payload = {**_result_payload(), "contract_key": "arm.pick"}
-    publisher = FakePublisher()
-    with _client(publisher=publisher) as client:
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/callback/result", {**_result_payload(), "actual_qty": 1}),
+        ("/api/v1/callback/event", {**_event_payload(), "supplier_extension": {"value": 1}}),
+    ],
+)
+def test_callback_rejects_top_level_business_or_unknown_fields(path: str, payload: dict[str, object]) -> None:
+    with _client() as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "$.<extra>", "code": "EXTRA_FORBIDDEN"})
+
+
+def test_callback_error_detail_remains_closed() -> None:
+    payload = {
+        **_result_payload(),
+        "result": "FAILED",
+        "error_detail": {"code": "TARGET_BLOCKED", "msg": "Path blocked", "supplier_detail": "opaque"},
+    }
+
+    with _client() as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
     assert response.status_code == 400
-    assert response.json()["message"] == "INVALID_ENVELOPE"
-    attempt = publisher.events[0][2]
-    assert attempt["raw_payload"] is None
-    assert attempt["observed_body_bytes"] > 0
-
-
-@pytest.mark.parametrize(
-    ("path", "payload", "field"),
-    [
-        ("/api/v1/callback/result", _result_payload(), "actual_qty"),
-        ("/api/v1/callback/event", _event_payload(), "device_business_field"),
-    ],
-)
-def test_business_fields_must_remain_nested(path: str, payload: dict[str, object], field: str) -> None:
-    with _client() as client:
-        response = client.post(path, json={**payload, field: "flattened"})
-
-    assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert response.json() == _invalid_envelope({"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"})
 
 
 @pytest.mark.parametrize(
@@ -302,7 +312,155 @@ def test_callback_times_require_unix_milliseconds(path: str, payload: dict[str, 
         response = client.post(path, json={**payload, field: "2026-08-13T00:00:04Z"})
 
     assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert response.json() == _invalid_envelope({"field": field, "code": "INVALID_TYPE", "expected": "integer"})
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/v1/callback/result", _result_payload()),
+        ("/api/v1/callback/event", _event_payload()),
+    ],
+)
+def test_callback_rejection_explains_required_string_fields(path: str, payload: dict[str, object]) -> None:
+    with _client() as client:
+        response = client.post(path, json={**payload, "device_code": None})
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "device_code", "code": "INVALID_TYPE", "expected": "string"})
+
+
+def test_result_rejection_explains_nullable_data_mismatch() -> None:
+    with _client() as client:
+        response = client.post(
+            "/api/v1/callback/result",
+            json={**_result_payload(), "data": None},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "data", "code": "INVALID_TYPE", "expected": "object"})
+
+
+def test_result_rejection_explains_model_level_invalid_value() -> None:
+    with _client() as client:
+        response = client.post(
+            "/api/v1/callback/result",
+            json={
+                **_result_payload(),
+                "error_detail": {"code": "UNEXPECTED", "msg": "Successful result cannot include an error"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "$", "code": "INVALID_VALUE"})
+
+
+def test_result_rejection_explains_supplier_private_error_detail_fields() -> None:
+    payload = {
+        **_result_payload(),
+        "result": "FAILED",
+        "error_detail": {"error_code": "TARGET_BLOCKED", "error_message": "Path blocked"},
+    }
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope(
+        {"field": "error_detail.code", "code": "FIELD_REQUIRED"},
+        {"field": "error_detail.msg", "code": "FIELD_REQUIRED"},
+        {"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"},
+        {"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"},
+    )
+
+
+def test_failed_result_rejection_explains_required_error_detail() -> None:
+    payload = {**_result_payload(), "result": "FAILED", "error_detail": None}
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "error_detail", "code": "FIELD_REQUIRED"})
+
+
+@pytest.mark.parametrize("error_detail", ["not-an-object", []], ids=["string", "array"])
+def test_failed_result_rejection_explains_error_detail_type(error_detail: object) -> None:
+    payload = {**_result_payload(), "result": "FAILED", "error_detail": error_detail}
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "error_detail", "code": "INVALID_TYPE", "expected": "object"})
+
+
+def test_invalid_envelope_logs_only_field_and_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(ecs_callback_module.logger, "warning", messages.append)
+
+    with _client() as client:
+        response = client.post(
+            "/api/v1/callback/result",
+            json={**_result_payload(), "finish_time": "DO-NOT-LOG"},
+        )
+
+    assert response.status_code == 400
+    assert messages == ["device.ingress.invalid_envelope model=EcsCommandResultReport issues=finish_time:INVALID_TYPE"]
+
+
+@pytest.mark.parametrize(
+    ("content", "issue"),
+    [
+        (b'{"secret":"do-not-log"', "$:INVALID_JSON"),
+        (b'"do-not-log"', "$:INVALID_TYPE"),
+    ],
+    ids=["invalid-json", "non-object-root"],
+)
+def test_non_model_invalid_envelope_logs_only_sanitized_issue(
+    monkeypatch: pytest.MonkeyPatch, content: bytes, issue: str
+) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(ecs_callback_module.logger, "warning", messages.append)
+
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", content=content)
+
+    assert response.status_code == 400
+    assert messages == [f"device.ingress.invalid_envelope model=EcsCommandResultReport issues={issue}"]
+    assert all("do-not-log" not in message for message in messages)
+
+
+@pytest.mark.parametrize(
+    ("payload", "field"),
+    [
+        ({**_result_payload(), "supplier_extra\nforged=1 secret=do-not-log": "opaque"}, "$.<extra>"),
+        (
+            {
+                **_result_payload(),
+                "result": "FAILED",
+                "error_detail": {
+                    "code": "TARGET_BLOCKED",
+                    "msg": "Path blocked",
+                    "supplier_extra\nforged=1 secret=do-not-log": "opaque",
+                },
+            },
+            "error_detail.<extra>",
+        ),
+    ],
+)
+def test_callback_redacts_request_controlled_extra_field_names(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object], field: str
+) -> None:
+    messages: list[str] = []
+    malicious_key = "supplier_extra\nforged=1 secret=do-not-log"
+    monkeypatch.setattr(ecs_callback_module.logger, "warning", messages.append)
+
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": field, "code": "EXTRA_FORBIDDEN"})
+    assert messages == [f"device.ingress.invalid_envelope model=EcsCommandResultReport issues={field}:EXTRA_FORBIDDEN"]
+    assert malicious_key not in str(response.json())
+    assert all(malicious_key not in message for message in messages)
 
 
 def test_event_accepts_device_specific_business_data_inside_data() -> None:
@@ -350,6 +508,16 @@ def test_callback_parses_valid_json_without_requiring_json_media_type(
     assert response.json() == {"code": 200, "message": "ACK"}
 
 
+@pytest.mark.parametrize("path", ["/api/v1/callback/result", "/api/v1/callback/event"])
+@pytest.mark.parametrize("payload", [[], "not-an-envelope", 1, None], ids=["array", "string", "number", "null"])
+def test_callback_rejects_non_object_json_roots(path: str, payload: object) -> None:
+    with _client() as client:
+        response = client.post(path, content=json.dumps(payload))
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "$", "code": "INVALID_TYPE", "expected": "object"})
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -383,7 +551,7 @@ def test_callback_requires_utf8_standard_json(content: bytes) -> None:
         response = client.post("/api/v1/callback/result", content=content)
 
     assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert response.json() == _invalid_envelope({"field": "$", "code": "INVALID_JSON"})
 
 
 @pytest.mark.parametrize(
@@ -405,7 +573,7 @@ def test_callback_rejects_duplicate_json_keys(path: str, payload: dict[str, obje
         response = client.post(path, content=content)
 
     assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert response.json() == _invalid_envelope({"field": "$", "code": "INVALID_JSON"})
 
 
 @pytest.mark.parametrize(
@@ -427,7 +595,7 @@ def test_callback_rejects_unpaired_unicode_surrogates(
         response = client.post(path, content=content)
 
     assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert response.json() == _invalid_envelope({"field": "$", "code": "INVALID_JSON"})
 
 
 @pytest.mark.parametrize(
@@ -445,18 +613,7 @@ def test_callback_rejects_excessive_json_nesting(path: str, payload: dict[str, o
         response = client.post(path, content=content)
 
     assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
-
-
-def test_invalid_envelope_does_not_echo_internal_metadata() -> None:
-    with _client() as client:
-        response = client.post(
-            "/api/v1/callback/result",
-            json={**_result_payload(), "trace_id": "TRACE-001"},
-        )
-
-    assert response.status_code == 400
-    assert response.json() == {"code": 400, "message": "INVALID_ENVELOPE"}
+    assert response.json() == _invalid_envelope({"field": "$", "code": "INVALID_JSON"})
 
 
 def test_body_limit_stops_streaming_before_buffering_remaining_chunks() -> None:

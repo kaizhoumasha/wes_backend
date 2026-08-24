@@ -97,4 +97,4 @@ Celery/Beat按 Python 文件内容计算指纹，不依赖秒级修改时间；�
 ./scripts/dev-env.sh logs db redis mock_ecs mock_wms mock_wms_provider
 ```
 
-`check` 要求除 Nginx 外的关键容器都显式处于healthy；Nginx当前没有容器healthcheck，仅验证running和真实HTTP入口。脚本还验证带超时的HTTP入口、WMS Provider代表性query/effect及其typed响应、只读seed收敛结果，并输出当前前后端分支和完整HEAD。Celery Worker与Beat均检查真实子进程，不把热更新wrapper存活误判为业务进程健康。健康检查只证明技术环境可用；需要验证业务路径时，再运行该领域拥有的聚焦测试或显式E2E，不能用本环境绿灯替代高层验收。
+`check` 要求除 Nginx 外的关键容器都显式处于healthy；Nginx当前没有容器healthcheck，仅验证running和真实HTTP入口。它会先校验运行中 frontend 容器的 `/app` bind mount 与当前 `WES_FRONTEND_ROOT` 是否是同一规范化绝对路径；不一致时会在HTTP和只读seed检查前失败。修改 `WES_FRONTEND_ROOT` 后必须重新执行 `up` 重建 frontend 容器，不能只用 `check` 切换验证目标。随后脚本验证带超时的HTTP入口、WMS Provider代表性query/effect及其typed响应、只读seed收敛结果，并输出当前前后端分支、完整HEAD和前端源码根目录。Celery Worker与Beat均检查真实子进程，不把热更新wrapper存活误判为业务进程健康。健康检查只证明技术环境可用；需要验证业务路径时，再运行该领域拥有的聚焦测试或显式E2E，不能用本环境绿灯替代高层验收。

@@ -69,7 +69,7 @@ require_frontend_prerequisites() {
         echo "前端仓库路径无效: $FRONTEND_ROOT" >&2
         exit 1
     }
-    FRONTEND_ROOT="$(cd "$FRONTEND_ROOT" && pwd)"
+    FRONTEND_ROOT="$(cd "$FRONTEND_ROOT" && pwd -P)"
 }
 
 run_seed() {
@@ -84,8 +84,11 @@ run_seed() {
 }
 
 print_versions() {
-    echo "后端: $(git -C "$BACKEND_ROOT" branch --show-current) $(git -C "$BACKEND_ROOT" rev-parse HEAD)"
-    echo "前端: $(git -C "$FRONTEND_ROOT" branch --show-current) $(git -C "$FRONTEND_ROOT" rev-parse HEAD)"
+    local backend_branch frontend_branch
+    backend_branch="$(git -C "$BACKEND_ROOT" symbolic-ref --short -q HEAD || printf detached)"
+    frontend_branch="$(git -C "$FRONTEND_ROOT" symbolic-ref --short -q HEAD || printf detached)"
+    echo "后端: $backend_branch $(git -C "$BACKEND_ROOT" rev-parse HEAD)"
+    echo "前端: $frontend_branch $(git -C "$FRONTEND_ROOT" rev-parse HEAD) root=$FRONTEND_ROOT"
 }
 
 check_running_services() {
@@ -112,6 +115,34 @@ check_running_services() {
             return 1
         fi
     done
+}
+
+normalize_frontend_mount_path() {
+    local raw_path="$1"
+    case "$raw_path" in
+        /host_mnt/*) raw_path="/${raw_path#/host_mnt/}" ;;
+    esac
+    [ -d "$raw_path" ] || return 1
+    (cd "$raw_path" && pwd -P)
+}
+
+running_frontend_root() {
+    local container_id raw_path
+    container_id="$(compose ps -q frontend)"
+    raw_path="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app"}}{{println .Source}}{{end}}{{end}}' "$container_id")"
+    normalize_frontend_mount_path "$raw_path"
+}
+
+check_frontend_source_identity() {
+    local actual_root
+    actual_root="$(running_frontend_root)" || {
+        echo "无法解析运行中 frontend 的 /app bind mount" >&2
+        return 1
+    }
+    if [ "$actual_root" != "$FRONTEND_ROOT" ]; then
+        echo "frontend 源码不一致: expected=$FRONTEND_ROOT actual=$actual_root" >&2
+        return 1
+    fi
 }
 
 check_http() {
@@ -163,6 +194,7 @@ operation.result_model.model_validate(json.load(sys.stdin))
 
 check_environment() {
     check_running_services
+    check_frontend_source_identity
     check_http
     run_seed --check
     print_versions

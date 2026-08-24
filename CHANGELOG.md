@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0.0] - 2026-08-24
+
+### Added
+
+- 发布流程新增可复用的 HTTP readiness 与超级管理员真实登录/登出门禁；任一检查失败时保持维护态，不开放外部入口。
+- 发布记录可保存非秘密的前后端 Git tree、镜像来源、Compose 拓扑、schema head 与分层验收结果，便于联调环境追溯实际运行版本。
+
+### Changed
+
+- TEST/现场切换固定使用生产 Compose profile，在入口开放前后精确比对批准服务集合，并统一复用版本化 readiness、登录和 Nginx 恢复门禁。
+- 本机开发检查现在核对运行中 frontend 容器的 `/app` bind mount 与显式源码目录，避免后台与错误的前端 checkout 组合验收。
+- ECS RESULT/EVENT callback 采用严格闭集 envelope，并为非法 JSON、非 object、未知字段和类型错误返回稳定、脱敏的问题列表。
+
+### Fixed
+
+- RuntimeInbox 的 `next_retry_at` 与 `lease_until` 恢复为 BIGINT 毫秒列，迁移保留既有数值，避免较大时间戳溢出。
+- readiness 对完整 `200..399` 合同和标准库 `HTTPError` 路径采用一致判定；callback 拒绝日志不再记录原始请求正文或秘密值。
+- 已存在的管理员凭据不再被 bootstrap 轮换；发布流程仅验证一次真实会话并立即撤销，不新增重置或兼容路径。
+
+### Verification
+
+- 聚焦验证通过：callback 61 项、HTTP helper 21 项，以及发布门禁聚合集 429 项；本机完整编排与最终 `dev-env.sh check` 均通过。
+- QUALITY 为 3912 passed、4 个既有外部条件 skip；selector 选中的 5 个 HEAVY 文件共 53 项通过；修复后 fresh full Review 为 CLEAN。
+- 状态为 `IMPLEMENTED — NOT DEPLOYED`；供应商一致性、真实 ECS/WMS callback loop、现场物理完成和业务验收仍为 `NOT VERIFIED`。
+
 ## [0.27.3.0] - 2026-08-24
 
 ### Changed

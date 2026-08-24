@@ -1,7 +1,7 @@
 ---
 status: Approved
 version: 1.1
-effective_date: 2026-08-23
+effective_date: 2026-08-24
 audience: 设备供应商、ECS 集成商、WES 开发与现场联调人员
 authority: WES 与固定式设备 ECS 的四个冻结 wire 接口
 implementation_status: Implemented in WES core and local Mock; supplier conformance pending
@@ -180,7 +180,8 @@ GET <ECS_BASE_URL>/api/v1/device/status[?device_code=<DEVICE_CODE>]
 POST <WES_BASE_URL>/api/v1/callback/result
 ```
 
-请求顶层字段严格为：
+请求顶层字段严格为下表闭集，未知顶层字段返回 `400 INVALID_ENVELOPE`。`error_detail` 严格只接受 `code`、`msg`；设备业务
+结果必须放在 `data` 内，WES 不约定其中二级字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -233,7 +234,8 @@ WES 使用 `RESULT:{command_code}` 作为内部幂等身份。相同结果重复
 POST <WES_BASE_URL>/api/v1/callback/event
 ```
 
-请求顶层字段严格为：
+请求顶层字段严格为下表闭集，未知顶层字段返回 `400 INVALID_ENVELOPE`。设备业务事件字段必须放在 `data` 内，WES 不约定
+其中二级字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -268,7 +270,9 @@ Result 和 Event 成功持久接收后统一应答：
 
 ACK 不携带业务指令。WES 的下一步动作必须通过新的 DeviceCommand 下发。
 
-Result/Event 的错误应答顶层字段严格为整数 `code` 和字符串 `message`：
+Result/Event 的错误应答必须包含整数 `code` 和字符串 `message`。`400 INVALID_ENVELOPE` 还必须返回
+`error_detail.issues[]`，帮助 ECS 定位字段错误；每项只包含稳定的 `field`、`code` 和可选 `expected`，不得回显字段值、
+原始载荷或框架内部异常文本。其他错误码不返回 `error_detail`：
 
 | HTTP / `code` | `message` | 处理语义 |
 | --- | --- | --- |
@@ -278,6 +282,28 @@ Result/Event 的错误应答顶层字段严格为整数 `code` 和字符串 `mes
 | `409` | `RESULT_BEFORE_DISPATCH` | 仅 Result；命令尚未下发却收到结果，WES 封锁命令并进入人工对账，禁止自动重报或重新下发 |
 | `413` | `PAYLOAD_TOO_LARGE` | 超过 `256 KiB`；缩小载荷后按正确身份重报 |
 | `503` | `TEMPORARILY_UNAVAILABLE` | WES 尚未持久接收，ECS 可保留原载荷延后重报 |
+
+`INVALID_ENVELOPE` 示例：
+
+```json
+{
+  "code": 400,
+  "message": "INVALID_ENVELOPE",
+  "error_detail": {
+    "issues": [
+      {
+        "field": "data",
+        "code": "INVALID_TYPE",
+        "expected": "object"
+      }
+    ]
+  }
+}
+```
+
+稳定错误码为：`INVALID_JSON`、`FIELD_REQUIRED`、`INVALID_TYPE`、`EXTRA_FORBIDDEN`、`INVALID_VALUE`。JSON 根路径使用
+`$`；嵌套字段使用点分路径，例如 `error_detail.code`。未知字段的名称不回显，顶层统一标为 `$.<extra>`，嵌套字段统一标为
+`error_detail.<extra>`。单个请求可以同时返回多个 `issues`。
 
 首次已成功持久接收的相同规范化 Result/Event 重报返回相同 `200 ACK` 且不重复推进。ECS 未收到确定 `200 ACK` 时可以重报
 完全相同的回调；收到 `409` 时不得换身份绕过冲突。完全相同的提前 Result 重报仍返回 `RESULT_BEFORE_DISPATCH` 并复用首次拒绝证据；该响应
