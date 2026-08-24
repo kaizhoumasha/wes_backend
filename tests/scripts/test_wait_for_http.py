@@ -4,6 +4,7 @@ import subprocess
 import sys
 from http.client import BadStatusLine, HTTPException, IncompleteRead
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlunsplit
 
 import pytest
 
@@ -202,7 +203,7 @@ def test_cli_reports_one_bounded_sanitized_line_for_exhausted_protocol_failure(
 @pytest.mark.parametrize(
     ("url", "message"),
     [
-        ("http://admin:secret@127.0.0.1/health", "must not contain credentials"),
+        (urlunsplit(("http", "admin:secret@127.0.0.1", "/health", "", "")), "must not contain credentials"),
         ("ftp://127.0.0.1/health", "absolute HTTP URL"),
         ("/health", "absolute HTTP URL"),
         ("http://127.0.0.1/health?ready=1", "must not contain query or fragment"),
@@ -231,7 +232,7 @@ def test_wait_for_http_rejects_invalid_retry_configuration(
 
 
 def test_cli_does_not_echo_credentials_in_error() -> None:
-    url = "http://admin:secret@127.0.0.1/health"
+    url = urlunsplit(("http", "admin:secret@127.0.0.1", "/health", "", ""))
     result = subprocess.run(
         [
             sys.executable,

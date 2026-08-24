@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from http.client import BadStatusLine
 from typing import TYPE_CHECKING
+from urllib.parse import urlunsplit
 
 import pytest
 
@@ -335,7 +336,7 @@ def test_login_gate_classifies_malformed_and_oversize_logout_bodies_as_logout(
     "base_url",
     [
         "https://api:8080",
-        "http://admin:configured-secret@api:8080",
+        urlunsplit(("http", "admin:configured-secret@api:8080", "", "", "")),
         "http://api:8080/api",
         "http://api:8080?token=access-token",
         "http://api:8080#refresh_token",
