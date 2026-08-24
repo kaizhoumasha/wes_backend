@@ -25,6 +25,7 @@
 - 恢复测试只使用名称明确的隔离 PostgreSQL 数据库或独立实例，不连接共享开发库、TEST 或现场生产库。
 - 恢复后的 WMS/ECS 对账、人工清线和业务放行属于更高层验收；技术恢复成功不能替代供应商联调或业务验收。
 - 数据库角色拆分、data checksums、Alembic 单基线重置、Celery Beat、Redis、Nginx 和 Celery runtime 不属于本计划。
+- **Rocky Linux 手册边界：** 本计划在 `docs/devops/rocky-linux-server-initialization.md` 只拥有 backup/restore 安装、`0600`、SHA-256、off-host copy 与 restore drill 的章节和符号；不得复制或改写 `wait_for_http`、管理员 login/logout gate、pre/final exact topology 或 fail-closed cutover 阶段。
 
 ## File Structure
 
@@ -126,7 +127,7 @@
 - Produces: 初级现场工程师可执行的唯一备份与恢复真源。
 
 - [ ] **Step 1:** 写清备份安装、首次手工触发、timer/最近成功/容量/远端副本检查、同版本恢复、空 Redis、失败停止、RPO/RTO记录和恢复后 WMS/ECS 对账边界。
-- [ ] **Step 2:** 将初始化手册中“只验证命令、不是正式备份”的段落替换为首次成功备份门禁和新真源引用，不复制完整恢复流程。
+- [ ] **Step 2:** 将初始化手册中“只验证命令、不是正式备份”的段落替换为首次成功 backup/restore 门禁和新真源引用；仅更新本计划拥有的 `0600`、SHA-256、off-host copy 与 restore drill 内容，不复制完整恢复流程，也不改写 shared readiness/login/topology/cutover 内容。
 - [ ] **Step 3:** 更新文件索引与文档生命周期状态；只归档被新真源完整替代的过程文档，保持 `docs/hardware/` 不变。
 - [ ] **Step 4:** 运行 `git diff --check`、精确引用扫描和路径存在性检查；纯文档部分不新增 pytest。
 - [ ] **Step 5:** 获得授权后提交 `docs(ops): 发布 WES 备份与恢复真源`。
@@ -136,7 +137,7 @@
 **Files:**
 
 - Verify: Tasks 2–4 全部文件
-- Update only after authorized rollout: `docs/devops/upgrade-records/<date>-<host>-<version>.md`
+- 部署授权后提供：向既有 release record 合同提供 backup/restore 证据字段；不得新增逐次发布 Git 记录。
 
 **Interfaces:**
 
@@ -147,7 +148,7 @@
 - [ ] **Step 2:** 运行 `npx gitnexus detect-changes --scope staged --repo "$PWD"`、`git diff --cached --check` 和完整只读 Review，修复后只刷新被失效的证据。
 - [ ] **Step 3:** 生成不含私钥、真实环境、dump 或日志的交付包与 SHA-256；在空目录解压并验证脚本、systemd 资产和文档完整。
 - [ ] **Step 4:** 另行取得部署授权后，先在现场生成并异机校验回退备份，再安装 timer；不得在同一窗口顺带修改 Redis、Nginx、数据库角色或 schema。
-- [ ] **Step 5:** 在独立实例完成真实恢复演练并记录 RPO/RTO、dump/hash、镜像 digest、Alembic head、TimescaleDB版本和未验证业务边界。
+- [ ] **Step 5:** 在独立实例完成真实恢复演练，并向联调发布可靠性计划 Task 5 独占的项目外 release record 提供 RPO/RTO、dump/hash、镜像 digest、Alembic head、TimescaleDB版本和未验证业务边界；不在 Git 内新增逐次发布记录。
 
 ## Definition of Done
 
