@@ -32,3 +32,17 @@ def test_production_frontend_uses_required_image_and_is_a_healthy_nginx_dependen
     nginx_dependencies = compose["services"]["nginx"]["depends_on"]
     assert nginx_dependencies["api"]["condition"] == "service_healthy"
     assert nginx_dependencies["frontend"]["condition"] == "service_healthy"
+
+
+def test_production_flower_overrides_backend_api_healthcheck() -> None:
+    compose = yaml.load(
+        (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8"),
+        Loader=_ComposeSafeLoader,  # noqa: S506 - 仓库内受控 Compose，需解析 !override 标签
+    )
+
+    assert compose["services"]["flower"]["healthcheck"]["test"] == [
+        "CMD",
+        "curl",
+        "-f",
+        "http://localhost:5555/healthcheck",
+    ]

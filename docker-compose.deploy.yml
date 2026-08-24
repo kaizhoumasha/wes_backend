@@ -240,6 +240,12 @@ services:
     # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
     volumes: !override
       - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     networks:
       - wesp9-network
     logging:
