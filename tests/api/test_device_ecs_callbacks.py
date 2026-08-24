@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 from fastapi import FastAPI
@@ -26,15 +26,18 @@ from src.app.device.v1.ecs_callback import router
 class FakeEvidenceService:
     failure: Exception | None = None
     duplicate: bool = False
+    accepted: list[BaseModel] = field(default_factory=list)
 
     async def accept_result(self, result):
         if self.failure is not None:
             raise self.failure
+        self.accepted.append(result)
         return DeviceEvidenceReceipt(1, f"RESULT:{result.command_code}", self.duplicate, None, "PENDING")
 
     async def accept_event(self, event):
         if self.failure is not None:
             raise self.failure
+        self.accepted.append(event)
         return DeviceEvidenceReceipt(2, "EVENT:derived", self.duplicate, None, "PENDING")
 
 
@@ -272,18 +275,27 @@ def test_unavailable_callback_service_uses_closed_wire() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "payload"),
+    ("path", "payload", "expected_payload"),
     [
-        ("/api/v1/callback/result", {**_result_payload(), "actual_qty": 1}),
-        ("/api/v1/callback/event", {**_event_payload(), "supplier_extension": {"value": 1}}),
+        ("/api/v1/callback/result", {**_result_payload(), "actual_qty": 1}, _result_payload()),
+        (
+            "/api/v1/callback/event",
+            {**_event_payload(), "supplier_extension": {"value": 1}},
+            _event_payload(),
+        ),
     ],
 )
-def test_callback_rejects_top_level_business_or_unknown_fields(path: str, payload: dict[str, object]) -> None:
-    with _client() as client:
+def test_callback_accepts_and_ignores_top_level_supplier_extensions(
+    path: str, payload: dict[str, object], expected_payload: dict[str, object]
+) -> None:
+    service = FakeEvidenceService()
+    with _client(service) as client:
         response = client.post(path, json=payload)
 
-    assert response.status_code == 400
-    assert response.json() == _invalid_envelope({"field": "$.<extra>", "code": "EXTRA_FORBIDDEN"})
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
+    accepted_payload = service.accepted[0].model_dump(mode="json")
+    assert accepted_payload == expected_payload
 
 
 def test_callback_error_detail_remains_closed() -> None:
@@ -328,6 +340,32 @@ def test_callback_rejection_explains_required_string_fields(path: str, payload: 
 
     assert response.status_code == 400
     assert response.json() == _invalid_envelope({"field": "device_code", "code": "INVALID_TYPE", "expected": "string"})
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "required_field"),
+    [
+        ("/api/v1/callback/result", _result_payload(), "result"),
+        ("/api/v1/callback/event", _event_payload(), "event_type"),
+    ],
+)
+def test_callback_rejection_explains_missing_required_fields(
+    path: str, payload: dict[str, object], required_field: str
+) -> None:
+    del payload[required_field]
+    with _client() as client:
+        response = client.post(path, json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": required_field, "code": "FIELD_REQUIRED"})
+
+
+def test_result_rejection_explains_invalid_result_value() -> None:
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", json={**_result_payload(), "result": "UNKNOWN"})
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "result", "code": "INVALID_VALUE"})
 
 
 def test_result_rejection_explains_nullable_data_mismatch() -> None:
@@ -428,37 +466,28 @@ def test_non_model_invalid_envelope_logs_only_sanitized_issue(
     assert all("do-not-log" not in message for message in messages)
 
 
-@pytest.mark.parametrize(
-    ("payload", "field"),
-    [
-        ({**_result_payload(), "supplier_extra\nforged=1 secret=do-not-log": "opaque"}, "$.<extra>"),
-        (
-            {
-                **_result_payload(),
-                "result": "FAILED",
-                "error_detail": {
-                    "code": "TARGET_BLOCKED",
-                    "msg": "Path blocked",
-                    "supplier_extra\nforged=1 secret=do-not-log": "opaque",
-                },
-            },
-            "error_detail.<extra>",
-        ),
-    ],
-)
-def test_callback_redacts_request_controlled_extra_field_names(
-    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object], field: str
-) -> None:
+def test_callback_redacts_request_controlled_error_detail_field_names(monkeypatch: pytest.MonkeyPatch) -> None:
     messages: list[str] = []
     malicious_key = "supplier_extra\nforged=1 secret=do-not-log"
+    payload = {
+        **_result_payload(),
+        "result": "FAILED",
+        "error_detail": {
+            "code": "TARGET_BLOCKED",
+            "msg": "Path blocked",
+            malicious_key: "opaque",
+        },
+    }
     monkeypatch.setattr(ecs_callback_module.logger, "warning", messages.append)
 
     with _client() as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
     assert response.status_code == 400
-    assert response.json() == _invalid_envelope({"field": field, "code": "EXTRA_FORBIDDEN"})
-    assert messages == [f"device.ingress.invalid_envelope model=EcsCommandResultReport issues={field}:EXTRA_FORBIDDEN"]
+    assert response.json() == _invalid_envelope({"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"})
+    assert messages == [
+        "device.ingress.invalid_envelope model=EcsCommandResultReport issues=error_detail.<extra>:EXTRA_FORBIDDEN"
+    ]
     assert malicious_key not in str(response.json())
     assert all(malicious_key not in message for message in messages)
 
