@@ -17,8 +17,11 @@ from tests.support.runtime_inbox_postgresql import connect, run_alembic, tempora
 REVISION_A = "b8a28e1bfec8"
 REVISION_B = "ec426c628516"
 REVISION_C = "e0d58415afc9"
+REVISION_BEFORE_TYPE_REPAIR = "11013119b97d"
+REVISION_TYPE_REPAIR = "fe7280088174"
 REVISION_A_PARENT = "f0851c5bcfdb"
 MILLISECOND_VALUE = 1_783_699_200_123
+INTEGER_REPRESENTABLE_VALUE = 1_234_567_890
 AUDIT_ONLY_CODE = "PRE_CUTOVER_AUDIT_ONLY"
 RUNTIME_INBOX_CHECKS = {
     "ck_runtime_inbox_kind_valid",
@@ -154,7 +157,7 @@ async def _assert_runtime_inbox_numeric_types(
     assert {row["column_name"]: row["data_type"] for row in columns} == expected_types
 
 
-async def _insert_millisecond_row(connection: asyncpg.Connection) -> int:
+async def _insert_millisecond_row(connection: asyncpg.Connection, *, value: int = MILLISECOND_VALUE) -> int:
     return await connection.fetchval(
         """
         INSERT INTO wes_runtime.runtime_inbox (
@@ -168,11 +171,13 @@ async def _insert_millisecond_row(connection: asyncpg.Connection) -> int:
         )
         RETURNING id
         """,
-        MILLISECOND_VALUE,
+        value,
     )
 
 
-async def _assert_millisecond_row(connection: asyncpg.Connection, inbox_id: int) -> None:
+async def _assert_millisecond_row(
+    connection: asyncpg.Connection, inbox_id: int, *, value: int = MILLISECOND_VALUE
+) -> None:
     values = await connection.fetchrow(
         """
         SELECT next_retry_at, lease_until
@@ -181,7 +186,7 @@ async def _assert_millisecond_row(connection: asyncpg.Connection, inbox_id: int)
         """,
         inbox_id,
     )
-    assert tuple(values.values()) == (MILLISECOND_VALUE, MILLISECOND_VALUE)
+    assert tuple(values.values()) == (value, value)
 
 
 async def _assert_revision_b_schema(
@@ -354,6 +359,52 @@ def test_runtime_inbox_fresh_database_upgrades_to_head_with_named_contracts() ->
             connection = await connect(database)
             try:
                 await _assert_revision_b_schema(connection)
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_runtime_inbox_head_repairs_deployed_integer_millisecond_columns() -> None:
+    """已 stamp 到旧 head 的联调库若遗留 INTEGER，升级必须恢复为 BIGINT。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", REVISION_BEFORE_TYPE_REPAIR, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await connection.execute(
+                    """
+                    ALTER TABLE wes_runtime.runtime_inbox
+                        ALTER COLUMN next_retry_at TYPE INTEGER USING next_retry_at::INTEGER,
+                        ALTER COLUMN lease_until TYPE INTEGER USING lease_until::INTEGER
+                    """
+                )
+                inbox_id = await _insert_millisecond_row(connection, value=INTEGER_REPRESENTABLE_VALUE)
+            finally:
+                await connection.close()
+
+            run_alembic("upgrade", "head", database_url=database_url)
+            connection = await connect(database)
+            try:
+                assert (
+                    await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_TYPE_REPAIR
+                )
+                await _assert_runtime_inbox_numeric_types(connection)
+                await _assert_millisecond_row(connection, inbox_id, value=INTEGER_REPRESENTABLE_VALUE)
+            finally:
+                await connection.close()
+
+            run_alembic("downgrade", REVISION_BEFORE_TYPE_REPAIR, database_url=database_url)
+            connection = await connect(database)
+            try:
+                assert (
+                    await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version")
+                    == REVISION_BEFORE_TYPE_REPAIR
+                )
+                await _assert_runtime_inbox_numeric_types(connection)
+                await _assert_millisecond_row(connection, inbox_id, value=INTEGER_REPRESENTABLE_VALUE)
             finally:
                 await connection.close()
 

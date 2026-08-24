@@ -806,6 +806,10 @@ source_glob = "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runt
 heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
 
 [[mapping]]
+source_glob = "migrations/versions/20260824_1152_fe7280088174_修复_runtimeinbox_毫秒字段类型.py"
+heavy_tests = ["tests/integration/test_runtime_inbox_migration_postgresql.py"]
+
+[[mapping]]
 source_glob = "tests/support/runtime_binding.py"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
