@@ -7,6 +7,7 @@ from contextlib import AbstractContextManager
 from http.client import HTTPException
 from time import sleep
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
@@ -40,6 +41,12 @@ def wait_for_http(
                 if 200 <= response.status < 400:
                     return
                 last_error = f"HTTP {response.status}"
+        except HTTPError as exc:
+            if exc.fp is not None:
+                exc.close()
+            if 200 <= exc.code < 400:
+                return
+            last_error = f"HTTP {exc.code}"
         except (HTTPException, OSError) as exc:
             last_error = type(exc).__name__
         if attempt < attempts:

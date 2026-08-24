@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from http.client import BadStatusLine, HTTPException, IncompleteRead
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -53,6 +53,34 @@ def test_wait_for_http_accepts_success_status_range() -> None:
             interval_seconds=0,
             opener=lambda _url, *, timeout, status=status: _Response(status),
         )
+
+
+@pytest.mark.parametrize("status", [304, 399])
+def test_wait_for_http_accepts_stdlib_http_error_for_redirect_status(status: int) -> None:
+    error = HTTPError("http://127.0.0.1/health", status, "do-not-log", None, None)
+
+    wait_for_http(
+        "http://127.0.0.1/health",
+        attempts=1,
+        timeout_seconds=1,
+        interval_seconds=0,
+        opener=lambda _url, *, timeout: (_ for _ in ()).throw(error),
+    )
+
+
+def test_wait_for_http_classifies_stdlib_http_error_status_without_body() -> None:
+    error = HTTPError("http://127.0.0.1/health", 503, "response-secret", None, None)
+
+    with pytest.raises(RuntimeError, match="after 1 attempts: HTTP 503") as caught:
+        wait_for_http(
+            "http://127.0.0.1/health",
+            attempts=1,
+            timeout_seconds=1,
+            interval_seconds=0,
+            opener=lambda _url, *, timeout: (_ for _ in ()).throw(error),
+        )
+
+    assert "response-secret" not in str(caught.value)
 
 
 def test_wait_for_http_retries_persistent_failure_status() -> None:

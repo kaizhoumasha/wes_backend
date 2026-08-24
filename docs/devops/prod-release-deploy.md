@@ -356,10 +356,10 @@ trap - EXIT
 release_id: <release-id>
 backend_revision: <backend-commit>
 backend_digest: <backend-image-digest>
-backend_source_tree: <backend-source-tree-sha256>
+backend_source_tree: <backend-git-tree-oid>
 frontend_revision: <frontend-commit>
 frontend_digest: <frontend-image-digest>
-frontend_source_tree: <frontend-source-tree-sha256>
+frontend_source_tree: <frontend-git-tree-oid>
 frontend_backend_contract_revision: <backend-contract-revision>
 openapi_sha256: <openapi-sha256>
 permissions_sha256: <permissions-sha256>
@@ -387,6 +387,10 @@ started_at: <utc-timestamp>
 completed_at: <utc-timestamp>
 operator: <operator-id>
 ```
+
+`backend_source_tree` 与 `frontend_source_tree` 记录 Git tree OID，不另造 source-tree SHA-256。批准提交使用
+`git rev-parse '<approved-commit>^{tree}'` 读取；对应不可变镜像使用
+`docker image inspect --format '{{ index .Config.Labels "com.zontec.wes.source-manifest" }}' <image-digest>` 读取，二者必须精确一致。OID 长度和散列算法由仓库对象格式决定，不能把当前 40 位 OID 标记为 SHA-256。
 
 `verified_boundaries` 和 `unverified_boundaries` 合计且逐项覆盖六个 acceptance layer：`engineering gates`、`deployment technical gates`、`supplier conformance`、`real ECS/WMS callback loop`、`physical completion`、`business acceptance`。本部署计划只允许给前两层写入工程/部署门禁证据；任一外部层没有独立证据时必须明确写 `NOT VERIFIED`，不得留空、默认为 PASS，或由工程/部署门禁提升。
 

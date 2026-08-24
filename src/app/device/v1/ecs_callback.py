@@ -132,6 +132,11 @@ def _invalid_json_issue() -> EcsCallbackValidationIssue:
     return EcsCallbackValidationIssue(field="$", code="INVALID_JSON")
 
 
+def _log_invalid_envelope(model: type[BaseModel], issues: tuple[EcsCallbackValidationIssue, ...]) -> None:
+    summary = ",".join(f"{issue.field}:{issue.code}" for issue in issues)
+    logger.warning(f"device.ingress.invalid_envelope model={model.__name__} issues={summary}")
+
+
 def _validation_issue(issue: dict[str, Any], payload: dict[str, Any]) -> EcsCallbackValidationIssue:
     issue_type = issue["type"]
     location = issue["loc"]
@@ -143,7 +148,9 @@ def _validation_issue(issue: dict[str, Any], payload: dict[str, Any]) -> EcsCall
     field = ".".join(str(part) for part in location) or "$"
     if issue_type == "missing":
         return EcsCallbackValidationIssue(field=field, code="FIELD_REQUIRED")
-    expected = {"dict_type": "object", "int_type": "integer", "string_type": "string"}.get(issue_type)
+    expected = {"dict_type": "object", "model_type": "object", "int_type": "integer", "string_type": "string"}.get(
+        issue_type
+    )
     if expected is not None:
         return EcsCallbackValidationIssue(field=field, code="INVALID_TYPE", expected=expected)
     if (
@@ -174,26 +181,29 @@ async def _decode_closed_body(request: Request, model: type[BaseModel]) -> _Deco
         )
         json.dumps(payload, ensure_ascii=False).encode("utf-8")
     except (UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
+        issues = (_invalid_json_issue(),)
+        _log_invalid_envelope(model, issues)
         raise EcsCallbackRejection(
             400,
             "INVALID_ENVELOPE",
             observed_body_bytes=size,
-            issues=(_invalid_json_issue(),),
+            issues=issues,
         ) from error
     if not isinstance(payload, dict):
+        issues = (EcsCallbackValidationIssue(field="$", code="INVALID_TYPE", expected="object"),)
+        _log_invalid_envelope(model, issues)
         raise EcsCallbackRejection(
             400,
             "INVALID_ENVELOPE",
             observed_body_bytes=size,
-            issues=(EcsCallbackValidationIssue(field="$", code="INVALID_TYPE", expected="object"),),
+            issues=issues,
         )
     try:
         validated = model.model_validate(payload)
     except ValidationError as error:
         validation_errors = error.errors(include_url=False, include_context=False, include_input=False)
         mapped_issues = tuple(_validation_issue(issue, payload) for issue in validation_errors)
-        issues = ",".join(f"{issue.field}:{issue.code}" for issue in mapped_issues)
-        logger.warning(f"device.ingress.invalid_envelope model={model.__name__} issues={issues}")
+        _log_invalid_envelope(model, mapped_issues)
         raise EcsCallbackRejection(
             400,
             "INVALID_ENVELOPE",
@@ -201,11 +211,13 @@ async def _decode_closed_body(request: Request, model: type[BaseModel]) -> _Deco
             issues=mapped_issues,
         ) from error
     except RecursionError as error:
+        issues = (_invalid_json_issue(),)
+        _log_invalid_envelope(model, issues)
         raise EcsCallbackRejection(
             400,
             "INVALID_ENVELOPE",
             observed_body_bytes=size,
-            issues=(_invalid_json_issue(),),
+            issues=issues,
         ) from error
     return _DecodedCallback(
         model=validated,

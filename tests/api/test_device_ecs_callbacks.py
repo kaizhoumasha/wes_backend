@@ -382,6 +382,16 @@ def test_failed_result_rejection_explains_required_error_detail() -> None:
     assert response.json() == _invalid_envelope({"field": "error_detail", "code": "FIELD_REQUIRED"})
 
 
+@pytest.mark.parametrize("error_detail", ["not-an-object", []], ids=["string", "array"])
+def test_failed_result_rejection_explains_error_detail_type(error_detail: object) -> None:
+    payload = {**_result_payload(), "result": "FAILED", "error_detail": error_detail}
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", json=payload)
+
+    assert response.status_code == 400
+    assert response.json() == _invalid_envelope({"field": "error_detail", "code": "INVALID_TYPE", "expected": "object"})
+
+
 def test_invalid_envelope_logs_only_field_and_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
     messages: list[str] = []
     monkeypatch.setattr(ecs_callback_module.logger, "warning", messages.append)
@@ -394,6 +404,28 @@ def test_invalid_envelope_logs_only_field_and_error_type(monkeypatch: pytest.Mon
 
     assert response.status_code == 400
     assert messages == ["device.ingress.invalid_envelope model=EcsCommandResultReport issues=finish_time:INVALID_TYPE"]
+
+
+@pytest.mark.parametrize(
+    ("content", "issue"),
+    [
+        (b'{"secret":"do-not-log"', "$:INVALID_JSON"),
+        (b'"do-not-log"', "$:INVALID_TYPE"),
+    ],
+    ids=["invalid-json", "non-object-root"],
+)
+def test_non_model_invalid_envelope_logs_only_sanitized_issue(
+    monkeypatch: pytest.MonkeyPatch, content: bytes, issue: str
+) -> None:
+    messages: list[str] = []
+    monkeypatch.setattr(ecs_callback_module.logger, "warning", messages.append)
+
+    with _client() as client:
+        response = client.post("/api/v1/callback/result", content=content)
+
+    assert response.status_code == 400
+    assert messages == [f"device.ingress.invalid_envelope model=EcsCommandResultReport issues={issue}"]
+    assert all("do-not-log" not in message for message in messages)
 
 
 @pytest.mark.parametrize(
