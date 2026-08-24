@@ -16,3 +16,13 @@ def test_nginx_proxy_uses_runtime_docker_dns_resolution() -> None:
     assert "proxy_pass http://frontend_dev" not in site_conf
     assert "proxy_pass http://$fastapi_upstream" in site_conf
     assert "proxy_pass http://$frontend_upstream" in site_conf
+
+
+def test_nginx_proxies_swagger_assets_and_oauth_callback_to_backend() -> None:
+    site_conf = (BACKEND_ROOT / "nginx/conf.d/default.conf").read_text(encoding="utf-8")
+
+    assert "location ^~ /static/swagger-ui/ { proxy_pass http://$fastapi_upstream; }" in site_conf
+    assert (
+        "location = /docs/oauth2-redirect { proxy_pass http://$fastapi_upstream/api/docs/oauth2-redirect; }"
+        in site_conf
+    )
