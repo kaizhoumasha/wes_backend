@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0.2] - 2026-08-24
+
+### Fixed
+
+- 生产 Compose 为 Flower 使用自身的 `/healthcheck` 探针，避免继承后端 API 镜像的 8001 端口健康检查而阻断入口恢复。
+
+### Verification
+
+- 聚焦 Compose 合同测试 2 项、QUALITY 3914 passed/4 skipped、selector 选中的 HEAVY 26 项均通过；真实联调环境切换结果单独记录。
+- 本次验证不包含真实 ECS 指令、物理动作、供应商一致性或业务验收。
+
 ## [0.28.0.1] - 2026-08-24
 
 ### Fixed
