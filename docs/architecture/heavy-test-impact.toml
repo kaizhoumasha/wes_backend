@@ -614,11 +614,11 @@ heavy_tests = [
     "tests/integration/device_command/test_device_command_migration_postgresql.py",
 ]
 
-# Nginx 仅新增已有 SSE 配置的第二个精确路径；部署合同测试直接承接。
+# Nginx 精确代理规则由部署合同测试和 nginx -t 直接承接。
 [[mapping]]
 source_glob = "nginx/conf.d/default.conf"
 heavy_tests = []
-reviewed_content_sha256 = "db976cff7f90e678ce988538926b51dae2483f8fd8ce952598177fb1d5907999"
+reviewed_content_sha256 = "6fc9581bfd64092d380862dadadc2560da88b20cd44885301ac916cadf784d40"
 
 [[mapping]]
 source_glob = "src/app/device/{models/device.py,repositories/device_repository.py,v1/device.py}"
