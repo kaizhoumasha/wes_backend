@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0.1] - 2026-08-24
+
+### Fixed
+
+- 标准 Nginx 配置恢复 Swagger UI 静态资源与 OAuth callback 的精确后端代理，同时保留设备证据 SSE 的无缓冲长连接规则，避免联调部署覆盖现场配置后出现文档资源 404。
+
+### Verification
+
+- Nginx 聚焦合同测试 4 项与真实 `nginx -t` 通过；QUALITY 为 3913 passed、4 个既有外部条件 skip；HEAVY selector 返回 `NONE`；fresh Review 无意见。
+- 本次只证明配置、镜像与部署门禁，不包含真实 ECS/WMS 联调、物理完成、供应商一致性或业务验收。
+
 ## [0.28.0.0] - 2026-08-24
 
 ### Added
