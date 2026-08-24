@@ -1,0 +1,1060 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>WES 系统目标部署架构</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #102a43;
+      --ink-soft: #486581;
+      --paper: #f4f8fb;
+      --surface: #ffffff;
+      --line: #c8d7e6;
+      --blue: #155fa0;
+      --blue-deep: #0b3a66;
+      --cyan: #1d83b7;
+      --teal: #18866f;
+      --amber: #b76a12;
+      --violet: #6857a6;
+      --focus: #ffb703;
+      --shadow: 0 20px 50px rgba(27, 66, 99, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { background: var(--paper); }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background:
+        linear-gradient(90deg, rgba(21, 95, 160, 0.035) 1px, transparent 1px),
+        linear-gradient(rgba(21, 95, 160, 0.035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+
+    button { font: inherit; }
+
+    .page {
+      width: min(1680px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 38px 0 46px;
+    }
+
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: end;
+      margin-bottom: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 9px;
+      color: var(--blue);
+      font-family: "DIN Alternate", "Bahnschrift", "Avenir Next", sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 1050px;
+      font-family: "DIN Alternate", "Bahnschrift", "PingFang SC", sans-serif;
+      font-size: clamp(34px, 4.2vw, 64px);
+      line-height: 0.98;
+      letter-spacing: -0.035em;
+    }
+
+    .thesis {
+      max-width: 850px;
+      margin: 14px 0 0;
+      color: var(--ink-soft);
+      font-size: clamp(15px, 1.5vw, 19px);
+      line-height: 1.65;
+    }
+
+    .scope-mark {
+      width: 174px;
+      padding: 14px 16px;
+      border-left: 4px solid var(--teal);
+      background: rgba(255, 255, 255, 0.72);
+      box-shadow: 0 8px 26px rgba(27, 66, 99, 0.08);
+    }
+
+    .scope-mark strong,
+    .scope-mark span { display: block; }
+
+    .scope-mark strong {
+      color: var(--blue-deep);
+      font-family: "DIN Alternate", "Bahnschrift", sans-serif;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+    }
+
+    .scope-mark span {
+      margin-top: 5px;
+      color: var(--ink-soft);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .view-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 14px;
+    }
+
+    .view-nav button {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 15px;
+      color: var(--ink-soft);
+      background: rgba(255, 255, 255, 0.78);
+      cursor: pointer;
+      transition: transform 150ms ease, color 150ms ease, background 150ms ease, border-color 150ms ease;
+    }
+
+    .view-nav button:hover { transform: translateY(-1px); }
+
+    .view-nav button[aria-selected="true"] {
+      color: #fff;
+      border-color: var(--blue-deep);
+      background: var(--blue-deep);
+    }
+
+    .view-nav button:focus-visible,
+    .close-detail:focus-visible {
+      outline: 3px solid var(--focus);
+      outline-offset: 3px;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      min-height: 690px;
+      overflow: hidden;
+      border: 1px solid rgba(148, 176, 202, 0.65);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: var(--shadow);
+    }
+
+    .canvas-wrap {
+      position: relative;
+      min-width: 0;
+      overflow-x: auto;
+      background:
+        radial-gradient(circle at 52% 50%, rgba(29, 131, 183, 0.08), transparent 36%),
+        linear-gradient(180deg, rgba(244, 248, 251, 0.55), rgba(255, 255, 255, 0.9));
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      min-width: 1120px;
+      aspect-ratio: 1400 / 760;
+      cursor: default;
+    }
+
+    .canvas-caption {
+      position: absolute;
+      left: 22px;
+      bottom: 18px;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      color: var(--ink-soft);
+      font-size: 11px;
+      pointer-events: none;
+    }
+
+    .canvas-caption span { display: inline-flex; align-items: center; gap: 6px; }
+    .canvas-caption i { width: 20px; height: 2px; background: var(--blue); }
+    .canvas-caption i.async { background: repeating-linear-gradient(90deg, var(--amber) 0 5px, transparent 5px 8px); }
+
+    .tooltip {
+      position: absolute;
+      z-index: 3;
+      max-width: 240px;
+      padding: 8px 10px;
+      border-radius: 7px;
+      color: #fff;
+      background: rgba(11, 42, 67, 0.94);
+      box-shadow: 0 8px 22px rgba(15, 44, 70, 0.25);
+      font-size: 12px;
+      line-height: 1.4;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+
+    .tooltip.is-visible { opacity: 1; transform: translateY(0); }
+
+    .detail {
+      position: relative;
+      padding: 30px 26px;
+      border-left: 1px solid var(--line);
+      background: #f8fbfd;
+    }
+
+    .detail::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: linear-gradient(180deg, var(--blue), var(--teal));
+    }
+
+    .detail-kicker {
+      margin: 0 0 8px;
+      color: var(--blue);
+      font-family: "DIN Alternate", "Bahnschrift", sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .detail h2 {
+      margin: 0;
+      font-size: 25px;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+    }
+
+    .detail-summary {
+      margin: 14px 0 22px;
+      color: var(--ink-soft);
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    .detail h3 {
+      margin: 22px 0 10px;
+      color: var(--blue-deep);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    .detail ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .interface {
+      margin: 0;
+      padding: 12px 14px;
+      border-left: 3px solid var(--cyan);
+      background: #edf6fb;
+      color: #174f73;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.65;
+      word-break: break-word;
+    }
+
+    .close-detail { display: none; }
+
+    .footnote {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      margin-top: 14px;
+      color: var(--ink-soft);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1120px) {
+      .page { width: min(100% - 24px, 1680px); padding-top: 26px; }
+      .masthead { grid-template-columns: 1fr; }
+      .scope-mark { width: min(100%, 420px); }
+      .workspace { grid-template-columns: 1fr; }
+      .detail { border-top: 1px solid var(--line); border-left: 0; min-height: 350px; }
+      .detail::before { inset: 0 0 auto 0; width: auto; height: 3px; }
+      .footnote { flex-direction: column; gap: 2px; }
+    }
+
+    @media (max-width: 560px) {
+      .page { width: min(100% - 16px, 1680px); }
+      .masthead { margin-bottom: 18px; }
+      .view-nav { display: grid; grid-template-columns: 1fr; }
+      .view-nav button { text-align: left; }
+      .workspace { border-radius: 12px; }
+      .detail { padding: 25px 20px; }
+      .canvas-caption { position: static; padding: 10px 16px 16px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .page { width: 100%; padding: 0; }
+      .masthead { grid-template-columns: 1fr auto; }
+      .view-nav, .detail, .footnote { display: none; }
+      .workspace { display: block; min-height: 0; box-shadow: none; border: 0; }
+      .canvas-wrap { overflow: visible; }
+      canvas { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <div>
+        <p class="eyebrow">TARGET DEPLOYMENT ARCHITECTURE · WES</p>
+        <h1>把业务决策，稳定地转化为现场执行</h1>
+        <p class="thesis">WES 位于业务系统与物理设备之间，以编排、异步执行、证据留存和对账机制，建立可追溯、可恢复、可扩展的执行中枢。</p>
+      </div>
+      <div class="scope-mark" aria-label="架构范围">
+        <strong>最终目标态 · 分层部署</strong>
+        <span>面向管理层与系统用户<br>点击节点查看职责与接口</span>
+      </div>
+    </header>
+
+    <nav class="view-nav" aria-label="架构视图" role="tablist">
+      <button id="tab-business" type="button" role="tab" aria-selected="true" aria-controls="architecture-canvas" data-view="business">业务协同全景</button>
+      <button id="tab-deployment" type="button" role="tab" aria-selected="false" aria-controls="architecture-canvas" data-view="deployment">WES 部署架构</button>
+      <button id="tab-reliability" type="button" role="tab" aria-selected="false" aria-controls="architecture-canvas" data-view="reliability">可靠执行闭环</button>
+    </nav>
+
+    <section class="workspace" aria-label="WES 架构图">
+      <div class="canvas-wrap" id="canvas-wrap">
+        <canvas id="architecture-canvas" width="1400" height="760" role="img" aria-describedby="canvas-description"></canvas>
+        <div id="canvas-tooltip" class="tooltip" role="tooltip"></div>
+        <div class="canvas-caption" aria-hidden="true">
+          <span><i></i>同步协作</span>
+          <span><i class="async"></i>异步结果 / 证据</span>
+        </div>
+      </div>
+
+      <aside class="detail" id="detail" aria-live="polite">
+        <p class="detail-kicker" id="detail-kicker">Architecture view</p>
+        <h2 id="detail-title">业务协同全景</h2>
+        <p class="detail-summary" id="detail-summary">选择图中的系统、组件或链路，查看它在 WES 目标架构中的职责。</p>
+        <h3>核心职责</h3>
+        <ul id="detail-points">
+          <li>连接业务决策与现场物理执行</li>
+          <li>隔离 WMS、WES、ECS/RCS 的所有权边界</li>
+          <li>用证据、幂等和对账机制支撑可靠交付</li>
+        </ul>
+        <h3>关键接口 / 机制</h3>
+        <p class="interface" id="detail-interface">WMS ↔ WES ↔ ECS / RCS</p>
+      </aside>
+    </section>
+
+    <p id="canvas-description" class="footnote">
+      <span>架构口径：最终目标态，不表达项目进度或现场问题。</span>
+      <span>系统边界：WMS 管业务；WES 管可靠执行；RCS Gateway 管协议封装；ECS/RCS 管物理事实与安全控制。</span>
+    </p>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("architecture-canvas");
+      const wrap = document.getElementById("canvas-wrap");
+      const tooltip = document.getElementById("canvas-tooltip");
+      const ctx = canvas.getContext("2d");
+      const sceneSize = { width: 1400, height: 760 };
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      const colors = {
+        ink: "#102a43",
+        soft: "#486581",
+        line: "#bfd0df",
+        grid: "rgba(85, 130, 165, 0.075)",
+        blue: "#155fa0",
+        blueDeep: "#0b3a66",
+        cyan: "#1d83b7",
+        teal: "#18866f",
+        amber: "#b76a12",
+        violet: "#6857a6",
+        white: "#ffffff"
+      };
+
+      const nodeThemes = {
+        actor: { fill: "#fbf3f8", stroke: "#c9a6bf", accent: "#8f5b86", text: colors.ink },
+        external: { fill: "#eef5fb", stroke: "#77a4c8", accent: colors.blue, text: colors.blueDeep },
+        core: { fill: "#0b3a66", stroke: "#0b3a66", accent: "#69d5d0", text: "#ffffff" },
+        service: { fill: "#f2f8fc", stroke: "#8cb5d3", accent: colors.cyan, text: colors.ink },
+        data: { fill: "#eef8f5", stroke: "#75b4a6", accent: colors.teal, text: colors.ink },
+        control: { fill: "#fff8eb", stroke: "#d7a65a", accent: colors.amber, text: colors.ink },
+        gateway: { fill: "#f4f1fb", stroke: "#a79ad0", accent: colors.violet, text: colors.ink },
+        neutral: { fill: "#f7fafc", stroke: "#b9c9d7", accent: colors.soft, text: colors.ink }
+      };
+
+      const commonDetails = {
+        business: {
+          kicker: "Business collaboration",
+          title: "业务协同全景",
+          summary: "WMS 位于北向业务域，WES 居中承担可靠执行；南向分为固定设备 ECS 集群与独立 RCS Gateway 搬运通道。",
+          points: ["WMS、WES、RCS Gateway、ECS/RCS 保持独立所有权", "ECS 与 RCS 均支持多个节点或设备域", "命令下行与结果回流使用分离通道"],
+          interface: "北向业务决策 → WES 可靠执行 → 双南向执行域"
+        },
+        deployment: {
+          kicker: "Runtime topology",
+          title: "WES 部署架构",
+          summary: "WES 服务器将接入、业务编排、三条执行通道、配置平面和数据基础设施分层部署；RCS Gateway 使用独立服务边界。",
+          points: ["WMS Integration、Device、Transport 三类 Worker 职责分离", "WMS Profile 与 RCS Gateway Endpoint 位于部署配置平面", "PostgreSQL、Redis 与 Docker 平台不再和业务能力混排"],
+          interface: "Northbound WMS ↔ WES runtime ↔ ECS cluster / RCS Gateway"
+        },
+        reliability: {
+          kicker: "Reliable execution",
+          title: "可靠执行闭环",
+          summary: "DeviceCommand 直达 ECS 节点；TransportTask 经独立 RCS Gateway 到达 RCS 节点。两条链路共享身份、证据、幂等和对账原则。",
+          points: ["请求先建立身份并持久化，再进入专用 Worker", "Gateway ACK、RCS Result 与 WMS 业务确认分层处理", "未知交付状态保持原身份进入对账"],
+          interface: "Identity + Evidence + Idempotency + Reconciliation"
+        }
+      };
+
+      const scenes = {
+        business: {
+          title: "业务协同全景",
+          subtitle: "北向 WMS 提供业务决策，WES 居中执行，南向 ECS 集群与独立 RCS Gateway 分别承接固定设备和移动搬运",
+          bands: [
+            { x: 390, y: 82, w: 620, h: 138, title: "北向业务域 · NORTHBOUND", color: "rgba(21,95,160,0.055)" },
+            { x: 350, y: 238, w: 700, h: 228, title: "WES 可靠执行域 · ORCHESTRATION", color: "rgba(104,87,166,0.05)" },
+            { x: 40, y: 490, w: 690, h: 242, title: "南向固定设备域 · ECS CLUSTER", color: "rgba(24,134,111,0.055)" },
+            { x: 760, y: 490, w: 610, h: 242, title: "南向移动搬运域 · RCS INTEGRATION", color: "rgba(183,106,18,0.055)" }
+          ],
+          nodes: [
+            { id: "users", x: 55, y: 285, w: 240, h: 120, kind: "actor", kicker: "HUMAN INTERFACE", title: "管理者与系统用户", text: "统一访问 · 执行监控 · 异常处置", detail: { summary: "用户通过 WES 统一入口观察和管理执行，不直接访问设备私有接口或底层运行组件。", points: ["角色与权限控制", "执行状态和证据可视化", "受控人工操作"], interface: "Browser → HTTPS → WES" } },
+            { id: "wms", x: 540, y: 105, w: 320, h: 102, kind: "external", kicker: "NORTHBOUND BUSINESS AUTHORITY", title: "WMS 业务系统", text: "业务单据 · 库存 · 分配 · 源目标位置", chips: ["业务决策", "资源分配", "业务确认"], detail: { summary: "WMS 位于北向业务域，持有业务单据、库存、分配和源目标位置，不再封装或转发 RCS 私有协议。", points: ["向 WES 提供业务请求与决策", "接收 WES 的业务确认", "不承担 RCS 技术适配"], interface: "WMS business API ↔ WES Integration" } },
+            { id: "wes", x: 475, y: 270, w: 450, h: 178, kind: "core", kicker: "RELIABLE EXECUTION HUB", title: "WES 可靠执行中枢", text: "WorkLine 编排 · DeviceCommand · TransportTask · Evidence", chips: ["Identity", "Idempotency", "Reconciliation"], detail: { summary: "WES 把北向业务决策转换为两条南向可靠执行链：固定设备 DeviceCommand 与移动搬运 TransportTask。", points: ["WorkLine 与 Epoch 编排", "冻结执行身份和资源围栏", "证据驱动状态推进和对账"], interface: "WMS Integration + ECS Contract + RCS Gateway Contract" } },
+            { id: "ecs-contract", x: 220, y: 520, w: 330, h: 56, kind: "gateway", kicker: "UNIFIED DEVICE CONTRACT", title: "ECS 南向统一合同总线", text: "Command / Status ↓   Result / Event ↑", detail: { summary: "WES 使用统一设备合同连接多个 ECS 节点，每个节点拥有独立端点和设备域。", points: ["命令与状态查询下行", "Result 与 Event 回流", "供应商私有协议不进入 WES 核心"], interface: "1 WES contract → N ECS nodes" } },
+            { id: "ecs-a", x: 70, y: 615, w: 170, h: 100, kind: "external", kicker: "ECS NODE A", title: "ECS 节点 A", text: "固定设备域 / 产线 A", detail: { summary: "独立 ECS 节点，管理一组固定设备、PLC、输送或扫码能力。", points: ["独立 endpoint_base_url", "独立状态和命令", "统一 Result/Event 回调"], interface: "ECS node endpoint A" } },
+            { id: "ecs-b", x: 300, y: 615, w: 170, h: 100, kind: "external", kicker: "ECS NODE B", title: "ECS 节点 B", text: "固定设备域 / 产线 B", detail: { summary: "第二个独立 ECS 节点，证明 WES 南向接入不是单节点模型。", points: ["独立设备主数据", "独立能力集合", "共享统一合同"], interface: "ECS node endpoint B" } },
+            { id: "ecs-n", x: 530, y: 615, w: 170, h: 100, kind: "external", kicker: "ECS NODE N", title: "ECS 节点 N", text: "按设备域持续扩展", detail: { summary: "目标态允许按工作线和设备域继续接入更多 ECS 节点。", points: ["节点隔离", "统一合同", "独立故障域"], interface: "ECS node endpoint N" } },
+            { id: "rcs-gateway", x: 790, y: 535, w: 240, h: 150, kind: "gateway", kicker: "INDEPENDENT SERVICE", title: "RCS Gateway", text: "统一 Transport 合同与供应商协议封装", chips: ["Route by rcs_code", "Correlation", "Normalize"], detail: { summary: "RCS Gateway 独立部署于 WMS 和 WES 之外，封装多个 RCS 节点的私有协议与结果格式。", points: ["按明确 rcs_code 或设备域转发", "关联请求身份并标准化结果", "不拥有库存、业务决策或交通调度"], interface: "WES Transport contract ↔ vendor RCS APIs" } },
+            { id: "rcs-cluster", x: 1080, y: 550, w: 275, h: 118, kind: "external", kicker: "PHYSICAL CONTROL CLUSTER", title: "RCS 集群", text: "多厂商 · 多车队 · 多控制域", detail: { summary: "RCS 集群概括多个可独立扩展的 RCS 实例；每个实例仍负责自己的路径、交通、车辆与安全控制。", points: ["支持多厂商和多车队", "实例保持独立故障域", "物理搬运事实经 Gateway 标准化"], interface: "RCS Gateway ↔ selected RCS instance" } }
+          ],
+          edges: [
+            { id: "user-access", from: "users", to: "wes", fromSide: "right", toSide: "left", label: "操作 / 可视化", color: "violet", detail: { title: "统一用户入口", summary: "管理与业务用户通过 WES 前端和 API 观察执行并处理异常。", points: ["身份认证与权限控制", "实时状态与证据查看"], interface: "HTTPS / REST / SSE" } },
+            { id: "wms-request", from: "wms", to: "wes", fromSide: "bottom", toSide: "top", fromRatio: 0.35, toRatio: 0.35, label: "业务请求 / 决策", color: "blue", detail: { title: "WMS → WES", summary: "WMS 提供业务请求、库存分配和源目标位置，WES 负责现场可执行性。", points: ["业务身份稳定", "WES 不篡改业务权威"], interface: "WMS business contract" } },
+            { id: "wes-confirm", from: "wes", to: "wms", fromSide: "top", toSide: "bottom", fromRatio: 0.7, toRatio: 0.7, label: "业务确认 / 结果", color: "teal", dashed: true, detail: { title: "WES → WMS", summary: "WES 在取得充分执行事实后向 WMS 返回业务确认。", points: ["接纳与完成分层", "事实驱动业务闭环"], interface: "WMS confirmation" } },
+            { id: "device-down", from: "wes", to: "ecs-contract", fromSide: "bottom", toSide: "top", fromRatio: 0.28, toRatio: 0.28, label: "Command / Status", color: "blue", via: [{ x: 600, y: 485 }, { x: 312, y: 485 }], detail: { title: "设备命令下行", summary: "WES 将统一 Command/Status 合同路由到明确的 ECS 节点。", points: ["节点独立端点", "派发前状态预检"], interface: "WES → ECS node" } },
+            { id: "device-up", from: "ecs-contract", to: "wes", fromSide: "top", toSide: "bottom", fromRatio: 0.74, toRatio: 0.54, label: "Result / Event", color: "teal", dashed: true, via: [{ x: 464, y: 475 }, { x: 718, y: 475 }], detail: { title: "设备事实回流", summary: "多个 ECS 节点的 Result/Event 汇聚到 WES 统一入口。", points: ["先持久化证据", "按稳定身份关联"], interface: "ECS nodes → WES callback" } },
+            { id: "ecs-branch-a", from: "ecs-contract", to: "ecs-a", fromSide: "bottom", toSide: "top", fromRatio: 0.16, color: "blue", detail: { title: "ECS 节点 A 分支", summary: "统一合同连接 ECS 节点 A。", points: ["独立设备域"], interface: "ECS A" } },
+            { id: "ecs-branch-b", from: "ecs-contract", to: "ecs-b", fromSide: "bottom", toSide: "top", fromRatio: 0.5, color: "blue", detail: { title: "ECS 节点 B 分支", summary: "统一合同连接 ECS 节点 B。", points: ["独立设备域"], interface: "ECS B" } },
+            { id: "ecs-branch-n", from: "ecs-contract", to: "ecs-n", fromSide: "bottom", toSide: "top", fromRatio: 0.84, color: "blue", detail: { title: "ECS 节点 N 分支", summary: "统一合同支持继续扩展 ECS 节点。", points: ["多节点扩展"], interface: "ECS N" } },
+            { id: "transport-down", from: "wes", to: "rcs-gateway", fromSide: "bottom", toSide: "top", fromRatio: 0.78, toRatio: 0.34, label: "Transport", color: "amber", via: [{ x: 826, y: 480 }, { x: 872, y: 480 }], detail: { title: "Transport 下行", summary: "Transport Fulfillment Worker 将冻结的 TransportTask 发送到独立 RCS Gateway。", points: ["稳定 operation identity", "Gateway 合同接纳"], interface: "WES → RCS Gateway" } },
+            { id: "transport-up", from: "rcs-gateway", to: "wes", fromSide: "top", toSide: "bottom", fromRatio: 0.76, toRatio: 0.95, label: "Result / Event", color: "teal", dashed: true, via: [{ x: 972, y: 470 }, { x: 902, y: 470 }], detail: { title: "搬运结果回流", summary: "Gateway 标准化 RCS 结果并回传 WES，不经过 WMS 技术封装。", points: ["结果身份关联", "位置和终态标准化"], interface: "RCS Gateway → WES" } },
+            { id: "gateway-cluster", from: "rcs-gateway", to: "rcs-cluster", fromSide: "right", toSide: "left", fromRatio: 0.34, toRatio: 0.34, color: "amber", detail: { title: "RCS 协议路由", summary: "Gateway 按 rcs_code 或控制域将统一 Transport 路由到目标 RCS 实例。", points: ["多厂商协议止于 Gateway", "RCS 实例独立控制物理搬运"], interface: "Gateway → selected RCS instance" } },
+            { id: "cluster-result", from: "rcs-cluster", to: "rcs-gateway", fromSide: "left", toSide: "right", fromRatio: 0.72, toRatio: 0.72, color: "teal", dashed: true, detail: { title: "RCS 结果回流", summary: "目标 RCS 实例的私有结果由 Gateway 关联身份并标准化。", points: ["实例结果不直接进入 WES 核心", "终态和位置事实可追溯"], interface: "RCS instance → Gateway" } }
+          ]
+        },
+
+        deployment: {
+          title: "WES 部署架构",
+          subtitle: "北向业务接入、WES 分层运行时与双南向执行域独立部署，业务 Worker、配置平面和基础设施语义分离",
+          bands: [
+            { x: 40, y: 82, w: 1320, h: 112, title: "北向用户与业务系统 · NORTHBOUND", color: "rgba(21,95,160,0.055)" },
+            { x: 40, y: 210, w: 1320, h: 395, title: "WES 现场服务器 · APPLICATION / CONFIGURATION / DATA / PLATFORM", color: "rgba(104,87,166,0.05)" },
+            { x: 40, y: 620, w: 1320, h: 115, title: "南向执行系统 · MULTI-NODE ECS + INDEPENDENT RCS GATEWAY + RCS CLUSTER", color: "rgba(24,134,111,0.055)" }
+          ],
+          groups: [
+            { x: 60, y: 245, w: 410, h: 345, title: "接入与应用 · ACCESS & APPLICATION", fill: "rgba(29,131,183,0.035)", stroke: "rgba(29,131,183,0.18)" },
+            { x: 480, y: 245, w: 470, h: 345, title: "异步执行 · ASYNC EXECUTION", fill: "rgba(104,87,166,0.035)", stroke: "rgba(104,87,166,0.18)" },
+            { x: 960, y: 245, w: 380, h: 345, title: "配置、数据与平台 · FOUNDATION", fill: "rgba(72,101,129,0.035)", stroke: "rgba(72,101,129,0.18)" }
+          ],
+          rails: [
+            { id: "task-bus", x: 500, y: 408, w: 430, h: 18, kind: "service", title: "TASK BUS · REDIS / CELERY", detail: { summary: "任务总线将 API 与专用 Worker 解耦，Celery Beat 也通过同一事件织网触发扫描和恢复任务。", points: ["API 先持久化再投递", "Worker 按队列隔离职责", "任务身份跨重试保持稳定"], interface: "Redis broker → Celery queues" } },
+            { id: "evidence-bus", x: 948, y: 390, w: 18, h: 170, kind: "data", title: "STATE / EVIDENCE", vertical: true, detail: { summary: "状态与证据总线连接执行进程和持久化数据平面，避免把 Redis 实时事件误当作数据库事实。", points: ["PostgreSQL 保存任务和证据", "Redis 支撑队列与实时发布", "所有进程共享一致身份"], interface: "Runtime services ↔ PostgreSQL / Redis" } }
+          ],
+          nodes: [
+            { id: "browser", x: 80, y: 105, w: 190, h: 72, kind: "actor", kicker: "USERS", title: "管理者与系统用户", text: "浏览器统一访问", detail: { summary: "管理者与业务用户只访问 WES 统一入口，不接触内部容器、队列或设备私有接口。", points: ["同源访问前端与 API", "角色权限与审计", "执行状态和证据可视化"], interface: "Browser → HTTPS → Nginx" } },
+            { id: "wms-ext", x: 520, y: 105, w: 280, h: 72, kind: "external", kicker: "NORTHBOUND AUTHORITY", title: "WMS 业务系统", text: "单据 · 库存 · 分配 · 业务确认", detail: { summary: "WMS 是北向业务权威，通过独立的 WMS Integration Worker 与 WES 双向交换业务请求和确认。", points: ["不封装 RCS 私有协议", "业务身份和决策保持权威", "接入参数由 WMS Profile 管理"], interface: "WMS business contract ↔ WMS Integration Worker" } },
+            { id: "nginx", x: 80, y: 345, w: 150, h: 120, kind: "gateway", kicker: "EDGE GATEWAY", title: "Nginx", text: "现场唯一入口", chips: ["SPA", "API", "SSE"], detail: { summary: "Nginx 路由前端、API、实时流与受控运维入口，并隐藏内部容器网络。", points: ["统一 HTTPS 与访问策略", "流式响应单独配置", "内部端口不对外暴露"], interface: "/ → frontend · /api/** → api" } },
+            { id: "frontend", x: 255, y: 280, w: 195, h: 105, kind: "service", kicker: "PRESENTATION", title: "Frontend", text: "操作与执行可视化", detail: { summary: "Frontend 提供角色化操作和目标态执行视图，通过同源 API 与 SSE 取得数据。", points: ["不保存业务权威数据", "与后端合同成对发布"], interface: "frontend:5173" } },
+            { id: "api", x: 255, y: 430, w: 195, h: 130, kind: "service", kicker: "APPLICATION", title: "FastAPI API", text: "接纳 · 编排 · 查询 · 回调", chips: ["Auth", "WorkLine", "Evidence"], detail: { summary: "API 承担同步合同、权限、查询、任务创建与回调接纳，长时执行交由专用 Worker。", points: ["API → Service → Repository → Database", "接纳后持久化再投递任务", "统一 Result/Event 入口"], interface: "REST / SSE / OpenAPI" } },
+            { id: "wms-worker", x: 500, y: 280, w: 195, h: 115, kind: "service", kicker: "NORTHBOUND BUSINESS", title: "WMS Integration Worker", text: "业务请求与确认", detail: { summary: "北向业务集成 Worker 只处理 WMS 业务合同，不承担 RCS 技术适配或设备执行。", points: ["业务请求接入", "业务确认回传", "北向失败与重试隔离"], interface: "wms-integration ↔ WMS Profile" } },
+            { id: "device-worker", x: 500, y: 440, w: 195, h: 120, kind: "service", kicker: "SOUTHBOUND DEVICE", title: "Device Worker × N", text: "DeviceCommand · Evidence", detail: { summary: "Device Worker 将冻结的 DeviceCommand 路由到明确 ECS 节点，并处理回流证据。", points: ["按设备域水平扩展", "命令与回调分离", "超时保持原身份对账"], interface: "DeviceCommand ↔ ECS node A/B/N" } },
+            { id: "beat", x: 735, y: 280, w: 195, h: 105, kind: "control", kicker: "RECOVERY CONTROL", title: "Celery Beat", text: "扫描 · 对账 · 恢复", detail: { summary: "Beat 触发周期扫描、超时检查和恢复任务，为两条南向执行链提供兜底推进。", points: ["只负责调度", "不保存业务事实"], interface: "Beat → Redis broker" } },
+            { id: "transport-worker", x: 735, y: 435, w: 195, h: 145, kind: "service", kicker: "SOUTHBOUND TRANSPORT", title: "Transport Fulfillment Worker", text: "独占搬运执行通道", chips: ["transport-fulfillment", "concurrency = 1"], detail: { summary: "Transport Fulfillment Worker 串行调用独立 RCS Gateway，和北向 WMS Integration Worker 保持职责分离。", points: ["冻结 operation identity", "避免同一资源并发副作用", "Gateway ACK 与终态分层"], interface: "transport-fulfillment → RCS Gateway" } },
+            { id: "config-plane", x: 980, y: 280, w: 340, h: 100, kind: "neutral", kicker: "CONFIGURATION PLANE", title: "部署配置平面", text: "WMS Profile · RCS Gateway Endpoint", detail: { summary: "业务接入参数和南向 Gateway 端点属于部署配置，不是业务 Worker，也不是数据基础设施。", points: ["WMS Profile 注入北向集成", "Gateway Endpoint 注入搬运 Worker", "配置变更受部署控制"], interface: "Read-only mounted configuration" } },
+            { id: "data-plane", x: 980, y: 400, w: 340, h: 130, kind: "data", kicker: "DATA INFRASTRUCTURE", title: "共享数据与事件平面", text: "PostgreSQL · Redis · Evidence · Pub/Sub", chips: ["PostgreSQL", "Redis", "Evidence", "Broker / PubSub"], detail: { summary: "PostgreSQL 保存任务、业务投影和证据；Redis 连接 API、Worker、Beat 和实时发布，但不替代持久化真源。", points: ["事务状态与证据可审计", "队列和实时发布解耦", "所有运行进程共享一致事实"], interface: "Repository → PostgreSQL · Celery / SSE → Redis" } },
+            { id: "platform", x: 980, y: 535, w: 340, h: 55, kind: "neutral", kicker: "PLATFORM", title: "Docker Compose 平台", text: "", detail: { summary: "平台层负责容器编排、内部网络、持久卷和受控运维观测，不参与业务决策。", points: ["服务与故障域隔离", "持久化卷和备份", "Flower 仅用于队列观测"], interface: "Network · Volumes · Flower" } },
+            { id: "ecs-a", x: 70, y: 645, w: 130, h: 72, kind: "external", kicker: "ECS NODE A", title: "ECS A", text: "固定设备域 A", detail: { summary: "独立 ECS 节点 A，管理自己的固定设备与物理执行事实。", points: ["独立端点", "统一合同"], interface: "ECS endpoint A" } },
+            { id: "ecs-b", x: 220, y: 645, w: 130, h: 72, kind: "external", kicker: "ECS NODE B", title: "ECS B", text: "固定设备域 B", detail: { summary: "独立 ECS 节点 B，与节点 A 保持故障域和设备域隔离。", points: ["独立端点", "统一 Result/Event"], interface: "ECS endpoint B" } },
+            { id: "ecs-n", x: 370, y: 645, w: 130, h: 72, kind: "external", kicker: "ECS NODE N", title: "ECS N", text: "持续扩展", detail: { summary: "目标态允许按产线或设备域持续增加 ECS 节点。", points: ["多节点扩展", "统一南向合同"], interface: "ECS endpoint N" } },
+            { id: "rcs-gateway", x: 560, y: 640, w: 230, h: 82, kind: "gateway", kicker: "INDEPENDENT DEPLOYMENT", title: "RCS Gateway", text: "Transport 合同 · 协议封装 · 结果标准化", detail: { summary: "RCS Gateway 独立于 WMS 和 WES 部署，只承担协议封装、身份关联与结果标准化。", points: ["按 rcs_code 路由", "不做业务或交通调度", "供应商私有协议止于 Gateway"], interface: "WES Transport contract ↔ Vendor RCS APIs" } },
+            { id: "rcs-cluster", x: 850, y: 645, w: 430, h: 72, kind: "external", kicker: "RCS CLUSTER", title: "RCS 集群", text: "多厂商 · 多车队 · 多控制域 · 按需扩展", detail: { summary: "单一集群节点表达多个 RCS 实例的目标部署能力，避免把实例清单误解为固定数量。", points: ["每个实例保持独立端点和故障域", "各 RCS 自主管理路径、交通和车辆", "Gateway 提供统一技术边界"], interface: "RCS Gateway ↔ selected RCS instance" } }
+          ],
+          edges: [
+            { id: "browser-nginx", from: "browser", to: "nginx", fromSide: "bottom", toSide: "top", label: "HTTPS", color: "violet", detail: { title: "统一访问入口", summary: "所有用户访问先进入 Nginx，再由统一网关路由到 WES 表现层和应用层。", points: ["一个域名和证书", "内部服务不直接暴露"], interface: "Browser → Nginx" } },
+            { id: "nginx-frontend", from: "nginx", to: "frontend", fromSide: "right", toSide: "left", fromRatio: 0.25, toRatio: 0.5, color: "blue", detail: { title: "前端资源路由", summary: "Nginx 将页面与静态资源请求转发到 Frontend。", points: ["同源访问"], interface: "/ → frontend" } },
+            { id: "nginx-api", from: "nginx", to: "api", fromSide: "right", toSide: "left", fromRatio: 0.75, toRatio: 0.5, color: "blue", detail: { title: "应用接口路由", summary: "REST、回调和实时流进入 FastAPI 应用边界。", points: ["同步与流式代理策略分离"], interface: "/api/** → api" } },
+            { id: "wms-request", from: "wms-ext", to: "wms-worker", fromSide: "bottom", toSide: "top", fromRatio: 0.38, toRatio: 0.38, label: "业务请求", color: "blue", detail: { title: "北向业务请求", summary: "WMS 业务请求进入专用 Integration Worker，不进入南向 Transport 通道。", points: ["业务与技术适配解耦"], interface: "WMS → wms-integration" } },
+            { id: "wms-confirm", from: "wms-worker", to: "wms-ext", fromSide: "top", toSide: "bottom", fromRatio: 0.72, toRatio: 0.72, label: "业务确认", color: "teal", dashed: true, detail: { title: "北向业务确认", summary: "WES 取得充分执行事实后，由 WMS Integration Worker 回传业务确认。", points: ["确认与物理结果分层"], interface: "wms-integration → WMS" } },
+            { id: "api-task-bus", from: "api", to: "task-bus", fromSide: "right", toSide: "left", fromRatio: 0.12, toRatio: 0.5, color: "cyan", detail: { title: "异步任务入口", summary: "API 持久化执行身份后，将长时任务投递到共享任务总线。", points: ["HTTP 生命周期与执行生命周期解耦", "任务身份可追溯"], interface: "API → Redis / Celery task bus" } },
+            { id: "task-wms", from: "task-bus", to: "wms-worker", fromSide: "top", toSide: "bottom", fromRatio: 0.23, toRatio: 0.5, color: "cyan", detail: { title: "北向业务任务", summary: "任务总线将北向交互交给 WMS Integration Worker。", points: ["业务集成职责隔离"], interface: "wms-integration queue" } },
+            { id: "beat-task", from: "beat", to: "task-bus", fromSide: "bottom", toSide: "top", fromRatio: 0.5, toRatio: 0.77, color: "amber", dashed: true, detail: { title: "定时恢复任务", summary: "Celery Beat 通过任务总线触发扫描、对账与恢复。", points: ["Beat 只负责调度"], interface: "Beat → Redis broker" } },
+            { id: "task-device", from: "task-bus", to: "device-worker", fromSide: "bottom", toSide: "top", fromRatio: 0.23, toRatio: 0.5, color: "cyan", detail: { title: "设备执行任务", summary: "DeviceCommand 由任务总线路由到 Device Worker。", points: ["按队列和设备域扩展"], interface: "device-command queue" } },
+            { id: "task-transport", from: "task-bus", to: "transport-worker", fromSide: "bottom", toSide: "top", fromRatio: 0.77, toRatio: 0.5, color: "cyan", detail: { title: "搬运执行任务", summary: "TransportTask 进入独占 Transport Fulfillment Worker。", points: ["单并发外部副作用"], interface: "transport-fulfillment queue" } },
+            { id: "task-evidence", from: "task-bus", to: "evidence-bus", fromSide: "right", toSide: "left", fromRatio: 0.5, toRatio: 0.18, color: "teal", dashed: true, detail: { title: "运行状态织网", summary: "任务执行状态通过统一证据通道连接持久化数据平面。", points: ["队列不是事实真源"], interface: "Task runtime → state / evidence bus" } },
+            { id: "evidence-data", from: "evidence-bus", to: "data-plane", fromSide: "right", toSide: "left", fromRatio: 0.48, toRatio: 0.56, color: "teal", detail: { title: "持久化状态与证据", summary: "状态与证据总线将运行时事实写入 PostgreSQL，并通过 Redis 发布安全摘要。", points: ["事实先落库", "实时发布不替代持久化"], interface: "PostgreSQL + Redis" } },
+            { id: "config-wms", from: "config-plane", to: "wms-worker", fromSide: "top", toSide: "top", fromRatio: 0.25, toRatio: 0.75, color: "soft", dashed: true, via: [{ x: 1065, y: 238 }, { x: 646, y: 238 }], detail: { title: "北向配置注入", summary: "WMS Profile 以部署配置形式只读注入 WMS Integration Worker。", points: ["配置不是业务节点"], interface: "WMS Profile → wms-integration" } },
+            { id: "config-transport", from: "config-plane", to: "transport-worker", fromSide: "left", toSide: "right", fromRatio: 0.72, toRatio: 0.2, color: "soft", dashed: true, via: [{ x: 970, y: 352 }, { x: 970, y: 464 }], detail: { title: "南向端点注入", summary: "RCS Gateway Endpoint 只读注入 Transport Fulfillment Worker。", points: ["端点和凭据由部署控制"], interface: "Gateway config → transport-fulfillment" } },
+            { id: "device-ecs-a", from: "device-worker", to: "ecs-a", fromSide: "bottom", toSide: "top", fromRatio: 0.25, color: "blue", via: [{ x: 548, y: 612 }, { x: 135, y: 612 }], detail: { title: "ECS A 路由", summary: "Device Worker 将命令路由到 ECS 节点 A。", points: ["独立设备域"], interface: "Device Worker → ECS A" } },
+            { id: "device-ecs-b", from: "device-worker", to: "ecs-b", fromSide: "bottom", toSide: "top", fromRatio: 0.5, color: "blue", via: [{ x: 595, y: 615 }, { x: 285, y: 615 }], detail: { title: "ECS B 路由", summary: "同一 WES 运行时可连接第二个 ECS 节点。", points: ["多节点合同"], interface: "Device Worker → ECS B" } },
+            { id: "device-ecs-n", from: "device-worker", to: "ecs-n", fromSide: "bottom", toSide: "top", fromRatio: 0.75, color: "blue", via: [{ x: 643, y: 618 }, { x: 435, y: 618 }], detail: { title: "ECS N 扩展", summary: "目标态支持继续增加 ECS 节点。", points: ["按设备域扩展"], interface: "Device Worker → ECS N" } },
+            { id: "ecs-result", from: "ecs-b", to: "device-worker", fromSide: "top", toSide: "bottom", fromRatio: 0.72, toRatio: 0.92, label: "Result / Event", color: "teal", dashed: true, via: [{ x: 314, y: 608 }, { x: 675, y: 608 }], detail: { title: "ECS 事实回流", summary: "各 ECS 节点的 Result/Event 经统一入口回流 WES。", points: ["先持久化证据", "按 command_code 关联"], interface: "ECS nodes → WES callback" } },
+            { id: "transport-gateway", from: "transport-worker", to: "rcs-gateway", fromSide: "bottom", toSide: "top", fromRatio: 0.35, toRatio: 0.35, label: "Transport", color: "amber", via: [{ x: 800, y: 611 }, { x: 641, y: 611 }], detail: { title: "独立 Gateway 调用", summary: "Transport Fulfillment Worker 调用独立 RCS Gateway，而不是经 WMS 技术封装。", points: ["稳定 operation identity", "ACK 与结果分层"], interface: "WES → RCS Gateway" } },
+            { id: "gateway-result", from: "rcs-gateway", to: "transport-worker", fromSide: "top", toSide: "bottom", fromRatio: 0.72, toRatio: 0.78, label: "Result / Event", color: "teal", dashed: true, via: [{ x: 726, y: 606 }, { x: 886, y: 606 }], detail: { title: "搬运事实回流", summary: "Gateway 标准化 RCS 结果后回传 WES，WES 按原身份对账。", points: ["不经过 WMS 技术转发"], interface: "RCS Gateway → WES" } },
+            { id: "gateway-cluster", from: "rcs-gateway", to: "rcs-cluster", fromSide: "right", toSide: "left", fromRatio: 0.34, toRatio: 0.34, label: "任务", color: "amber", detail: { title: "RCS 集群路由", summary: "Gateway 将统一 Transport 转换并路由到选定 RCS 实例。", points: ["实例数量不固化在架构图中", "供应商协议保持隔离"], interface: "Gateway → selected RCS instance" } },
+            { id: "cluster-result", from: "rcs-cluster", to: "rcs-gateway", fromSide: "left", toSide: "right", fromRatio: 0.72, toRatio: 0.72, label: "结果", color: "teal", dashed: true, detail: { title: "RCS 集群结果", summary: "RCS 实例结果经 Gateway 标准化后返回 Transport Fulfillment Worker。", points: ["结果按原 operation identity 关联", "物理事实和业务确认分层"], interface: "RCS instance → Gateway → WES" } }
+          ]
+        },
+
+        reliability: {
+          title: "可靠执行闭环",
+          subtitle: "DeviceCommand 直达 ECS，TransportTask 经独立 RCS Gateway 到达多 RCS 节点；两条链路共享可靠性内核",
+          bands: [
+            { x: 32, y: 98, w: 1335, h: 226, title: "设备执行链 · WES ↔ ECS", color: "rgba(29,131,183,0.055)" },
+            { x: 32, y: 430, w: 1335, h: 226, title: "搬运执行链 · WES ↔ RCS GATEWAY ↔ RCS", color: "rgba(183,106,18,0.055)" }
+          ],
+          nodes: [
+            { id: "dev-request", x: 55, y: 155, w: 150, h: 105, kind: "service", kicker: "01 REQUEST", title: "执行请求", text: "动作与业务上下文", detail: { summary: "业务编排产生设备动作请求，但尚不代表设备已接纳或执行。", points: ["校验执行上下文", "保留业务关联", "进入安全前置检查"], interface: "WorkLine → DeviceCommandService" } },
+            { id: "dev-preflight", x: 245, y: 155, w: 160, h: 105, kind: "control", kicker: "02 PREFLIGHT", title: "状态预检", text: "在线 · 模式 · 忙闲 · 能力", detail: { summary: "派发前查询设备状态和支持能力，避免向离线、手动或忙碌设备发送普通命令。", points: ["online / AUTO / IDLE", "无活动命令", "动作受设备能力支持"], interface: "GET /api/v1/device/status" } },
+            { id: "dev-identity", x: 445, y: 155, w: 170, h: 105, kind: "core", kicker: "03 IDENTITY", title: "DeviceCommand", text: "冻结身份与载荷", detail: { summary: "WES 先创建持久化 DeviceCommand，冻结 command_code、设备、动作和载荷摘要。", points: ["一个物理动作一个稳定身份", "状态变更带证据与乐观锁", "重试不创建新命令"], interface: "command_code + payload digest" } },
+            { id: "dev-dispatch", x: 655, y: 155, w: 155, h: 105, kind: "service", kicker: "04 DISPATCH", title: "异步派发", text: "Worker 发送命令", detail: { summary: "异步 Worker 使用冻结载荷调用 ECS，HTTP 生命周期与设备执行生命周期彻底分离。", points: ["记录每次派发 attempt", "网络超时不推断失败", "Worker 可恢复重启"], interface: "Celery → EcsAdapter → ECS" } },
+            { id: "ecs-ack", x: 850, y: 155, w: 150, h: 105, kind: "external", kicker: "05 ACCEPT", title: "ECS ACK", text: "只证明合同接纳", detail: { summary: "ECS ACK 只表示命令被接口接纳，不等于设备动作完成，更不等于物理到位。", points: ["区分 accepted 与 completed", "持久化接纳证据", "异常响应进入分类处理"], interface: "HTTP ACK / acceptance proof" } },
+            { id: "dev-result", x: 1040, y: 155, w: 150, h: 105, kind: "data", kicker: "06 RESULT", title: "Result Callback", text: "命令执行结果", detail: { summary: "Result Callback 关联原 DeviceCommand，表达设备动作执行结果并形成持久化证据。", points: ["按 command_code 关联", "重复回调幂等", "先落库再推进状态"], interface: "POST /api/v1/callback/result" } },
+            { id: "dev-event", x: 1230, y: 155, w: 120, h: 105, kind: "data", kicker: "07 FACT", title: "Event", text: "现场独立事实", detail: { summary: "Event 是独立的现场事实流，可证明扫码、到位或其他物理事件，不能被命令 ACK 替代。", points: ["事件身份去重", "原始信封持久化", "驱动后续编排"], interface: "POST /api/v1/callback/event" } },
+            { id: "kernel", x: 455, y: 335, w: 490, h: 88, kind: "core", kicker: "SHARED RELIABILITY KERNEL", title: "Identity · Evidence · Idempotency · Reconciliation", text: "持久化真源连接两条执行链，未知状态按原身份对账", detail: { summary: "两类执行共享可靠性原则：身份先于发送、证据先于推进、重复请求幂等、未知交付状态进入对账。", points: ["数据库是任务和证据真源", "Redis 只承担队列与实时发布", "DELIVERY_UNKNOWN 不盲目重发"], interface: "PostgreSQL + Celery + evidence correlation" } },
+            { id: "biz-state", x: 1010, y: 335, w: 255, h: 88, kind: "control", kicker: "CONTROLLED ADVANCE", title: "业务状态推进", text: "只有充分事实才能释放资源或完成执行", detail: { summary: "WES 根据合同定义的结果和物理事实推进业务状态，不把网络成功、ACK 或容器健康误当成完成。", points: ["资源释放依赖明确事实", "失败与未知状态分开", "向 WMS 返回可追溯结果"], interface: "Evidence → Service decision → state transition" } },
+            { id: "tr-request", x: 55, y: 492, w: 150, h: 105, kind: "service", kicker: "01 REQUEST", title: "搬运请求", text: "源位 · 目标位 · 资源", detail: { summary: "业务编排产生搬运需求，WES 校验本地资源和站点执行约束。", points: ["关联 WorkLine / Bin / Rack", "冻结源位与目标位事实", "避免无依据创建搬运"], interface: "WorkLine → TransportService" } },
+            { id: "tr-identity", x: 245, y: 492, w: 160, h: 105, kind: "core", kicker: "02 IDENTITY", title: "TransportTask", text: "冻结 operation identity", detail: { summary: "TransportTask 使用稳定 operation_id 和 transport_task_id 表达一次搬运意图。", points: ["冻结请求体摘要", "资源围栏随任务保持", "失败重试保持原身份"], interface: "operation_id + transport_task_id" } },
+            { id: "tr-dispatch", x: 445, y: 492, w: 170, h: 105, kind: "service", kicker: "03 EFFECT LANE", title: "Transport Worker", text: "独占南向搬运通道", detail: { summary: "Transport Fulfillment Worker 串行调用独立 RCS Gateway，降低同一物理资源重复派发风险。", points: ["单并发 effect lane", "先持久化再发送", "与北向 WMS Integration 分离"], interface: "transport-fulfillment → RCS Gateway" } },
+            { id: "wms-ack", x: 655, y: 492, w: 155, h: 105, kind: "gateway", kicker: "04 ACCEPT", title: "Gateway ACK", text: "合同接纳或幂等重复", detail: { summary: "RCS Gateway ACK 只证明统一 Transport 合同被接纳，不代表 RCS 已完成搬运。", points: ["接纳与完成分层", "重复请求按原身份识别", "协议错误由 Gateway 标准化"], interface: "RCS Gateway acceptance" } },
+            { id: "rcs-work", x: 850, y: 492, w: 150, h: 105, kind: "external", kicker: "05 PHYSICAL", title: "RCS 集群", text: "路径 · 交通 · 车辆控制", detail: { summary: "Gateway 将请求路由到目标 RCS 实例；各实例管理自己的路径、交通、车辆和设备安全。", points: ["多个 RCS 实例独立扩展", "Gateway 不做交通调度", "RCS 产生物理搬运事实"], interface: "Gateway → selected RCS instance" } },
+            { id: "tr-result", x: 1040, y: 492, w: 150, h: 105, kind: "data", kicker: "06 CALLBACK", title: "Transport Result", text: "终态与位置事实", detail: { summary: "RCS Gateway 标准化节点结果并回传 WES，WES 按 operation identity 关联原 TransportTask。", points: ["终态和位置可验证", "重复回调幂等", "冲突证据保留"], interface: "RCS Gateway → WES result/event" } },
+            { id: "tr-close", x: 1230, y: 492, w: 120, h: 105, kind: "external", kicker: "07 CLOSE", title: "WMS 确认", text: "业务闭环与资源释放", detail: { summary: "Transport 物理结果形成后，WES 再按北向业务合同向 WMS 确认；物理完成与业务确认仍然分层。", points: ["Transport 完成不自动等于业务完成", "WMS 保持业务权威", "闭环结果可审计"], interface: "Transport result → WES → WMS confirmation" } }
+          ],
+          edges: [
+            { id: "d1", from: "dev-request", to: "dev-preflight", color: "blue", detail: { title: "建立安全上下文", summary: "执行请求先进入设备预检，不直接发送。", points: ["上下文完整", "设备可服务"], interface: "request → preflight" } },
+            { id: "d2", from: "dev-preflight", to: "dev-identity", color: "blue", detail: { title: "创建可靠身份", summary: "预检通过后创建持久化 DeviceCommand。", points: ["身份先于发送", "载荷冻结"], interface: "preflight → DeviceCommand" } },
+            { id: "d3", from: "dev-identity", to: "dev-dispatch", color: "blue", detail: { title: "异步派发", summary: "持久化命令进入 Worker 队列。", points: ["HTTP 与设备生命周期解耦", "attempt 可追溯"], interface: "DeviceCommand → Celery" } },
+            { id: "d4", from: "dev-dispatch", to: "ecs-ack", color: "blue", detail: { title: "设备合同接纳", summary: "ECS 返回接口接纳，不代表物理完成。", points: ["ACK 分层", "错误分类"], interface: "POST command → ACK" } },
+            { id: "d5", from: "ecs-ack", to: "dev-result", color: "teal", dashed: true, detail: { title: "命令结果回流", summary: "ECS 异步回传与原命令关联的结果。", points: ["独立于 ACK", "证据先落库"], interface: "callback/result" } },
+            { id: "d6", from: "dev-result", to: "dev-event", color: "teal", dashed: true, detail: { title: "物理事实补强", summary: "独立 Event 提供扫码、到位等现场事实。", points: ["Event 不等于 Result", "按业务需要组合事实"], interface: "callback/event" } },
+            { id: "d-kernel", from: "dev-dispatch", to: "kernel", fromSide: "bottom", toSide: "top", label: "超时 / 未知", color: "amber", dashed: true, detail: { title: "交付未知进入对账", summary: "请求超时或连接中断不能证明未执行，WES 保持原 command identity 并进入 RECONCILING。", points: ["不生成新 command_code", "查询状态和持久化证据", "等待可靠 Result/Event"], interface: "DELIVERY_UNKNOWN → RECONCILING" } },
+            { id: "result-kernel", from: "dev-result", to: "kernel", fromSide: "bottom", toSide: "top", label: "证据关联", color: "teal", dashed: true, detail: { title: "设备证据关联", summary: "Result/Event 按稳定身份关联到原命令和业务上下文。", points: ["重复幂等", "冲突可审计"], interface: "InboundEvidence → DeviceCommand" } },
+            { id: "t1", from: "tr-request", to: "tr-identity", color: "amber", detail: { title: "建立搬运身份", summary: "搬运请求先冻结 operation identity。", points: ["源目标事实冻结", "资源围栏建立"], interface: "request → TransportTask" } },
+            { id: "t2", from: "tr-identity", to: "tr-dispatch", color: "amber", detail: { title: "进入独占执行通道", summary: "TransportTask 进入单并发 transport-fulfillment effect lane。", points: ["串行外部副作用", "持久化先于发送"], interface: "TransportTask → Transport Worker" } },
+            { id: "t3", from: "tr-dispatch", to: "wms-ack", color: "amber", detail: { title: "Gateway 合同接纳", summary: "独立 RCS Gateway 接纳统一 Transport 请求或识别幂等重复。", points: ["ACK 不等于搬运完成", "供应商错误标准化"], interface: "Transport request → Gateway ACK" } },
+            { id: "t4", from: "wms-ack", to: "rcs-work", color: "amber", detail: { title: "路由到 RCS 集群", summary: "Gateway 按明确 rcs_code 或控制域选择目标 RCS 实例，RCS 自主管理交通和车辆。", points: ["多实例路由", "RCS 物理控制"], interface: "Gateway → selected RCS instance" } },
+            { id: "t5", from: "rcs-work", to: "tr-result", color: "teal", dashed: true, detail: { title: "Transport 结果回流", summary: "Gateway 将 RCS 私有结果标准化为 WES Transport Result/Event。", points: ["终态", "位置与到达面"], interface: "RCS → Gateway → WES" } },
+            { id: "t6", from: "tr-result", to: "tr-close", color: "teal", dashed: true, detail: { title: "北向业务闭环", summary: "充分的 Transport 事实驱动资源释放，并通过 WMS Integration 完成北向业务确认。", points: ["物理事实先于业务确认", "完成结果可追溯"], interface: "Transport result → WMS confirmation" } },
+            { id: "tr-kernel", from: "tr-result", to: "kernel", fromSide: "top", toSide: "bottom", label: "幂等回调", color: "teal", dashed: true, detail: { title: "Transport 证据关联", summary: "Gateway 回调按 operation identity 关联原 TransportTask。", points: ["重复请求幂等", "内容变化冲突"], interface: "operation_id + transport_task_id" } },
+            { id: "kernel-biz", from: "kernel", to: "biz-state", label: "充分事实", color: "violet", detail: { title: "证据驱动状态推进", summary: "只有合同要求的证据满足，Service 才推进状态、释放资源或结束执行。", points: ["状态机约束", "审计可追溯"], interface: "evidence → decision → transition" } }
+          ]
+        }
+      };
+
+      let currentView = "business";
+      let selected = null;
+      let hover = null;
+      let lastFrame = 0;
+      let canvasRect = null;
+
+      function roundRectPath(context, x, y, w, h, r) {
+        const radius = Math.min(r, w / 2, h / 2);
+        context.beginPath();
+        context.moveTo(x + radius, y);
+        context.arcTo(x + w, y, x + w, y + h, radius);
+        context.arcTo(x + w, y + h, x, y + h, radius);
+        context.arcTo(x, y + h, x, y, radius);
+        context.arcTo(x, y, x + w, y, radius);
+        context.closePath();
+      }
+
+      function resizeCanvas() {
+        canvasRect = canvas.getBoundingClientRect();
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.round(canvasRect.width * ratio);
+        canvas.height = Math.round(canvasRect.height * ratio);
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+
+      function wrapText(text, maxWidth, font) {
+        ctx.font = font;
+        const lines = [];
+        let line = "";
+        const tokens = text.match(/[A-Za-z0-9_./:+×-]+|\s+|[\u3400-\u9fff]|./gu) || [];
+        for (const token of tokens) {
+          const next = line + token;
+          if (line && ctx.measureText(next).width > maxWidth) {
+            lines.push(line.trimEnd());
+            line = token.trimStart();
+          } else {
+            line = next;
+          }
+        }
+        if (line) lines.push(line.trim());
+        return lines;
+      }
+
+      function drawBackground(scene) {
+        ctx.clearRect(0, 0, sceneSize.width, sceneSize.height);
+        ctx.save();
+        ctx.strokeStyle = colors.grid;
+        ctx.lineWidth = 1;
+        for (let x = 20; x < sceneSize.width; x += 40) {
+          ctx.beginPath();
+          ctx.moveTo(x, 22);
+          ctx.lineTo(x, sceneSize.height - 22);
+          ctx.stroke();
+        }
+        for (let y = 20; y < sceneSize.height; y += 40) {
+          ctx.beginPath();
+          ctx.moveTo(22, y);
+          ctx.lineTo(sceneSize.width - 22, y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.fillStyle = colors.blueDeep;
+        ctx.font = "700 25px 'Avenir Next', 'PingFang SC', sans-serif";
+        ctx.fillText(scene.title, 34, 43);
+        ctx.fillStyle = colors.soft;
+        ctx.font = "400 13px 'Avenir Next', 'PingFang SC', sans-serif";
+        ctx.fillText(scene.subtitle, 34, 67);
+
+        scene.bands.forEach((band) => {
+          ctx.save();
+          roundRectPath(ctx, band.x, band.y, band.w, band.h, 18);
+          ctx.fillStyle = band.color;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(107, 145, 176, 0.28)";
+          ctx.setLineDash([7, 7]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = colors.soft;
+          ctx.font = "700 11px 'DIN Alternate', 'Bahnschrift', sans-serif";
+          ctx.fillText(band.title.toUpperCase(), band.x + 18, band.y + 24);
+          ctx.restore();
+        });
+
+        (scene.groups || []).forEach((group) => {
+          ctx.save();
+          roundRectPath(ctx, group.x, group.y, group.w, group.h, 14);
+          ctx.fillStyle = group.fill;
+          ctx.fill();
+          ctx.strokeStyle = group.stroke;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = colors.soft;
+          ctx.font = "700 9px 'DIN Alternate', 'Bahnschrift', sans-serif";
+          ctx.fillText(group.title.toUpperCase(), group.x + 14, group.y + 19);
+          ctx.restore();
+        });
+      }
+
+      function getNode(scene, id) {
+        return scene.nodes.find((node) => node.id === id)
+          || (scene.rails || []).find((rail) => rail.id === id);
+      }
+
+      function anchor(node, side, ratio = 0.5) {
+        const s = side || "auto";
+        const safeRatio = Math.max(0.08, Math.min(0.92, ratio));
+        if (s === "left") return { x: node.x, y: node.y + node.h * safeRatio };
+        if (s === "right") return { x: node.x + node.w, y: node.y + node.h * safeRatio };
+        if (s === "top") return { x: node.x + node.w * safeRatio, y: node.y };
+        if (s === "bottom") return { x: node.x + node.w * safeRatio, y: node.y + node.h };
+        return { x: node.x + node.w / 2, y: node.y + node.h / 2 };
+      }
+
+      function edgePoints(edge, scene) {
+        const from = getNode(scene, edge.from);
+        const to = getNode(scene, edge.to);
+        let fromSide = edge.fromSide;
+        let toSide = edge.toSide;
+        if (!fromSide || !toSide) {
+          const dx = (to.x + to.w / 2) - (from.x + from.w / 2);
+          const dy = (to.y + to.h / 2) - (from.y + from.h / 2);
+          if (Math.abs(dx) >= Math.abs(dy)) {
+            fromSide = dx >= 0 ? "right" : "left";
+            toSide = dx >= 0 ? "left" : "right";
+          } else {
+            fromSide = dy >= 0 ? "bottom" : "top";
+            toSide = dy >= 0 ? "top" : "bottom";
+          }
+        }
+        const start = anchor(from, fromSide, edge.fromRatio ?? 0.5);
+        const end = anchor(to, toSide, edge.toRatio ?? 0.5);
+        const offset = edge.offset || 0;
+        let rawPoints;
+        if (edge.via?.length) {
+          rawPoints = [start, ...edge.via, end];
+        } else if (fromSide === "left" || fromSide === "right") {
+          const midX = (start.x + end.x) / 2 + offset;
+          rawPoints = [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+        } else {
+          const midY = (start.y + end.y) / 2 + offset;
+          rawPoints = [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
+        }
+        const points = [rawPoints[0]];
+        rawPoints.slice(1).forEach((point) => {
+          const previous = points[points.length - 1];
+          if (previous.x !== point.x && previous.y !== point.y) {
+            points.push({ x: previous.x, y: point.y });
+          }
+          points.push(point);
+        });
+        return points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
+      }
+
+      function pointOnPolyline(points, progress) {
+        const segments = points.slice(1).map((point, index) => {
+          const previous = points[index];
+          return { from: previous, to: point, length: Math.hypot(point.x - previous.x, point.y - previous.y) };
+        });
+        const total = segments.reduce((sum, segment) => sum + segment.length, 0);
+        if (!total) return points[0];
+        let remaining = Math.max(0, Math.min(1, progress)) * total;
+        for (const segment of segments) {
+          if (remaining <= segment.length) {
+            const ratio = segment.length ? remaining / segment.length : 0;
+            return {
+              x: segment.from.x + (segment.to.x - segment.from.x) * ratio,
+              y: segment.from.y + (segment.to.y - segment.from.y) * ratio
+            };
+          }
+          remaining -= segment.length;
+        }
+        return points[points.length - 1];
+      }
+
+      function edgeColor(name) {
+        return colors[name] || colors.blue;
+      }
+
+      function drawEdge(edge, scene, time) {
+        const points = edgePoints(edge, scene);
+        const color = edgeColor(edge.color);
+        const isActive = selected === edge || hover === edge;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = isActive ? 1 : 0.72;
+        ctx.lineWidth = isActive ? 3.3 : 2.1;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        if (edge.dashed) {
+          ctx.setLineDash([8, 7]);
+          ctx.lineDashOffset = reduceMotion ? 0 : -(time / 42) % 15;
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const end = points[points.length - 1];
+        const before = [...points].reverse().find((point) => point.x !== end.x || point.y !== end.y) || points[0];
+        const angle = Math.atan2(end.y - before.y, end.x - before.x);
+        ctx.translate(end.x, end.y);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(-10, -5);
+        ctx.lineTo(-10, 5);
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.restore();
+
+        if (!reduceMotion && !edge.dashed) {
+          const p = pointOnPolyline(points, ((time / 2700) + (edge.id.length % 7) / 7) % 1);
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, isActive ? 4.2 : 3.1, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 8;
+          ctx.fill();
+          ctx.restore();
+        }
+
+        if (edge.label) {
+          const mid = pointOnPolyline(points, edge.labelAt ?? 0.5);
+          ctx.save();
+          ctx.font = "700 10px 'Avenir Next', 'PingFang SC', sans-serif";
+          const labelWidth = ctx.measureText(edge.label).width + 16;
+          roundRectPath(ctx, mid.x - labelWidth / 2, mid.y - 10, labelWidth, 20, 6);
+          ctx.fillStyle = "rgba(255,255,255,0.94)";
+          ctx.fill();
+          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.8;
+          ctx.stroke();
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 1;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(edge.label, mid.x, mid.y + 0.5);
+          ctx.restore();
+        }
+      }
+
+      function drawNode(node) {
+        const theme = nodeThemes[node.kind] || nodeThemes.neutral;
+        const isActive = selected === node || hover === node;
+        ctx.save();
+        ctx.shadowColor = isActive ? "rgba(21, 95, 160, 0.25)" : "rgba(29, 70, 105, 0.11)";
+        ctx.shadowBlur = isActive ? 20 : 12;
+        ctx.shadowOffsetY = isActive ? 7 : 4;
+        roundRectPath(ctx, node.x, node.y, node.w, node.h, 14);
+        ctx.fillStyle = theme.fill;
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.lineWidth = isActive ? 3 : 1.4;
+        ctx.strokeStyle = isActive ? theme.accent : theme.stroke;
+        ctx.stroke();
+
+        roundRectPath(ctx, node.x, node.y, 5, node.h, 3);
+        ctx.fillStyle = theme.accent;
+        ctx.fill();
+
+        const pad = 17;
+        const textX = node.x + pad;
+        ctx.fillStyle = node.kind === "core" ? "#9ee9e3" : theme.accent;
+        ctx.font = "700 9px 'DIN Alternate', 'Bahnschrift', sans-serif";
+        ctx.fillText(node.kicker, textX, node.y + 24);
+
+        ctx.fillStyle = theme.text;
+        ctx.font = "700 17px 'Avenir Next', 'PingFang SC', sans-serif";
+        const titleLines = wrapText(node.title, node.w - pad * 2, ctx.font).slice(0, 2);
+        titleLines.forEach((line, index) => ctx.fillText(line, textX, node.y + 50 + index * 20));
+
+        const summaryY = node.y + 55 + titleLines.length * 18;
+        ctx.fillStyle = node.kind === "core" ? "rgba(255,255,255,0.78)" : colors.soft;
+        ctx.font = "400 11px 'Avenir Next', 'PingFang SC', sans-serif";
+        const summaryLines = wrapText(node.text, node.w - pad * 2, ctx.font).slice(0, 2);
+        summaryLines.forEach((line, index) => ctx.fillText(line, textX, summaryY + index * 16));
+
+        if (node.layers) {
+          const layerX = textX;
+          const layerW = node.w - pad * 2;
+          let layerY = node.y + 128;
+          node.layers.forEach((layer) => {
+            roundRectPath(ctx, layerX, layerY, layerW, 54, 8);
+            ctx.fillStyle = "rgba(255,255,255,0.085)";
+            ctx.fill();
+            ctx.strokeStyle = "rgba(158,233,227,0.24)";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.fillStyle = "#9ee9e3";
+            ctx.font = "700 10px 'Avenir Next', 'PingFang SC', sans-serif";
+            ctx.fillText(layer.title, layerX + 12, layerY + 20);
+            ctx.fillStyle = "rgba(255,255,255,0.9)";
+            ctx.font = "400 11px 'Avenir Next', 'PingFang SC', sans-serif";
+            ctx.fillText(layer.text, layerX + 12, layerY + 39);
+            layerY += 63;
+          });
+        }
+
+        if (node.chips && node.h >= 130 && !node.layers) {
+          let chipX = textX;
+          let chipY = node.y + node.h - 36;
+          ctx.font = "700 9px 'Avenir Next', 'PingFang SC', sans-serif";
+          node.chips.forEach((chip) => {
+            const width = ctx.measureText(chip).width + 16;
+            if (chipX + width > node.x + node.w - pad) {
+              chipX = textX;
+              chipY -= 26;
+            }
+            roundRectPath(ctx, chipX, chipY, width, 20, 5);
+            ctx.fillStyle = node.kind === "core" ? "rgba(255,255,255,0.12)" : "rgba(21,95,160,0.07)";
+            ctx.fill();
+            ctx.fillStyle = node.kind === "core" ? "rgba(255,255,255,0.88)" : theme.text;
+            ctx.fillText(chip, chipX + 8, chipY + 14);
+            chipX += width + 6;
+          });
+        }
+        ctx.restore();
+      }
+
+      function drawRail(rail) {
+        const theme = nodeThemes[rail.kind] || nodeThemes.neutral;
+        const isActive = selected === rail || hover === rail;
+        ctx.save();
+        ctx.shadowColor = isActive ? "rgba(21, 95, 160, 0.22)" : "rgba(29, 70, 105, 0.08)";
+        ctx.shadowBlur = isActive ? 12 : 6;
+        ctx.shadowOffsetY = 2;
+        roundRectPath(ctx, rail.x, rail.y, rail.w, rail.h, 6);
+        ctx.fillStyle = theme.fill;
+        ctx.fill();
+        ctx.shadowColor = "transparent";
+        ctx.lineWidth = isActive ? 2.4 : 1.2;
+        ctx.strokeStyle = isActive ? theme.accent : theme.stroke;
+        ctx.stroke();
+
+        ctx.fillStyle = theme.accent;
+        ctx.font = "700 8px 'DIN Alternate', 'Bahnschrift', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const centerX = rail.x + rail.w / 2;
+        const centerY = rail.y + rail.h / 2;
+        if (rail.vertical) {
+          ctx.translate(centerX, centerY);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillText(rail.title, 0, 0);
+        } else {
+          ctx.fillText(rail.title, centerX, centerY + 0.5);
+        }
+        ctx.restore();
+      }
+
+      function draw(time = 0) {
+        const scene = scenes[currentView];
+        if (!canvasRect) resizeCanvas();
+        const scaleX = canvasRect.width / sceneSize.width;
+        const scaleY = canvasRect.height / sceneSize.height;
+        ctx.save();
+        ctx.scale(scaleX, scaleY);
+        drawBackground(scene);
+        (scene.rails || []).forEach(drawRail);
+        scene.edges.forEach((edge) => drawEdge(edge, scene, time));
+        scene.nodes.forEach(drawNode);
+        ctx.restore();
+      }
+
+      function animate(time) {
+        if (time - lastFrame > 24 || reduceMotion) {
+          draw(time);
+          lastFrame = time;
+        }
+        if (!reduceMotion) requestAnimationFrame(animate);
+      }
+
+      function toScenePoint(event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: (event.clientX - rect.left) * sceneSize.width / rect.width,
+          y: (event.clientY - rect.top) * sceneSize.height / rect.height
+        };
+      }
+
+      function distanceToSegment(point, a, b) {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (!dx && !dy) return Math.hypot(point.x - a.x, point.y - a.y);
+        const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+      }
+
+      function hitTest(point) {
+        const scene = scenes[currentView];
+        const items = [...scene.nodes, ...(scene.rails || [])];
+        const node = items.reverse().find((item) => point.x >= item.x && point.x <= item.x + item.w && point.y >= item.y && point.y <= item.y + item.h);
+        if (node) return node;
+        return scene.edges.find((edge) => {
+          const points = edgePoints(edge, scene);
+          for (let i = 1; i < points.length; i += 1) {
+            if (distanceToSegment(point, points[i - 1], points[i]) < 9) return true;
+          }
+          return false;
+        }) || null;
+      }
+
+      function detailsFor(item) {
+        if (!item) return commonDetails[currentView];
+        const detail = item.detail || {};
+        return {
+          kicker: item.kicker || (item.from ? "Integration path" : "Architecture component"),
+          title: detail.title || item.title || item.label,
+          summary: detail.summary || "该组件属于 WES 目标架构。",
+          points: detail.points || [],
+          interface: detail.interface || "—"
+        };
+      }
+
+      function updateDetail(item) {
+        const detail = detailsFor(item);
+        document.getElementById("detail-kicker").textContent = detail.kicker;
+        document.getElementById("detail-title").textContent = detail.title;
+        document.getElementById("detail-summary").textContent = detail.summary;
+        const list = document.getElementById("detail-points");
+        list.replaceChildren(...detail.points.map((point) => {
+          const li = document.createElement("li");
+          li.textContent = point;
+          return li;
+        }));
+        document.getElementById("detail-interface").textContent = detail.interface;
+      }
+
+      canvas.addEventListener("pointermove", (event) => {
+        const found = hitTest(toScenePoint(event));
+        if (hover !== found) {
+          hover = found;
+          canvas.style.cursor = found ? "pointer" : "default";
+          if (reduceMotion) draw();
+        }
+        if (found) {
+          const detail = detailsFor(found);
+          tooltip.textContent = detail.title;
+          const wrapRect = wrap.getBoundingClientRect();
+          tooltip.style.left = `${Math.min(event.clientX - wrapRect.left + 14, wrap.clientWidth - 250)}px`;
+          tooltip.style.top = `${Math.max(event.clientY - wrapRect.top - 42, 10)}px`;
+          tooltip.classList.add("is-visible");
+        } else {
+          tooltip.classList.remove("is-visible");
+        }
+      });
+
+      canvas.addEventListener("pointerleave", () => {
+        hover = null;
+        tooltip.classList.remove("is-visible");
+        if (reduceMotion) draw();
+      });
+
+      canvas.addEventListener("click", (event) => {
+        selected = hitTest(toScenePoint(event));
+        updateDetail(selected);
+        if (reduceMotion) draw();
+      });
+
+      document.querySelectorAll("[data-view]").forEach((button) => {
+        button.addEventListener("click", () => {
+          currentView = button.dataset.view;
+          selected = null;
+          hover = null;
+          document.querySelectorAll("[data-view]").forEach((tab) => tab.setAttribute("aria-selected", String(tab === button)));
+          updateDetail(null);
+          tooltip.classList.remove("is-visible");
+          wrap.scrollTo({ left: 0, behavior: reduceMotion ? "auto" : "smooth" });
+          draw(performance.now());
+        });
+      });
+
+      const resizeObserver = new ResizeObserver(() => {
+        resizeCanvas();
+        draw(performance.now());
+      });
+      resizeObserver.observe(canvas);
+      updateDetail(null);
+      resizeCanvas();
+      requestAnimationFrame(animate);
+    })();
+  </script>
+</body>
+</html>
