@@ -165,12 +165,15 @@ async def _insert_millisecond_row(connection: asyncpg.Connection, *, value: int 
             attempt_count, max_retries, next_retry_at, lease_until,
             last_error_code, last_error_message
         ) VALUES (
-            'pg-roundtrip', 'MILLISECONDS', $1, $1, 'DEAD_LETTER',
-            1, 5, $1, $1, 'PRE_CUTOVER_AUDIT_ONLY',
+            'pg-roundtrip', 'MILLISECONDS', $1, $2, 'DEAD_LETTER',
+            1, 5, $3, $4, 'PRE_CUTOVER_AUDIT_ONLY',
             'Pre-cutover row retained for audit-only millisecond roundtrip'
         )
         RETURNING id
         """,
+        value,
+        value,
+        value,
         value,
     )
 
