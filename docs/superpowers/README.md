@@ -29,6 +29,8 @@
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
+| `specs/2026-08-24-integration-release-reliability-design.md` | 联调发布的源码身份、管理员登录、HTTP readiness、Compose 拓扑与非秘密发布记录设计 | Approved；作为当前发布门禁与后续成对发布演练的设计输入 |
+| `plans/2026-08-24-integration-release-reliability.md` | 联调发布可靠性门禁、文档与分层验收边界的实施记录 | Tasks 0—6 已完成；`IMPLEMENTED — NOT DEPLOYED`，外部验收层均为 `NOT VERIFIED` |
 
 ## 项目外历史归档
 

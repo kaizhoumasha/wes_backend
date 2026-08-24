@@ -1,7 +1,7 @@
 ---
 status: Approved
 version: 1.1
-effective_date: 2026-08-23
+effective_date: 2026-08-24
 audience: 设备供应商、ECS 集成商、WES 开发与现场联调人员
 authority: WES 与固定式设备 ECS 的四个冻结 wire 接口
 implementation_status: Implemented in WES core and local Mock; supplier conformance pending
