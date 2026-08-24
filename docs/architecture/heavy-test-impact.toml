@@ -565,6 +565,13 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "migrations/versions/20260825_0021_f11b613771fa_对齐设备结果证据外键类型.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/execution/test_evidence_foreign_key_migration_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,status_observation_repository.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",

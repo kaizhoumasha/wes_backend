@@ -14,6 +14,7 @@ from sqlmodel._compat import SQLModelConfig
 
 from src.app.execution.models.inbound_evidence import InboundEvidence  # noqa: F401
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 from src.utils.timezone import timezone
 
@@ -251,6 +252,7 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         default=None,
         foreign_key="wes_biz.inbound_evidences.id",
         index=True,
+        sa_type=SQL_COMPAT_BIGINT,
     )
     failure_code: str | None = Field(default=None, max_length=120)
     reconciliation_reason: str | None = Field(default=None, max_length=120)

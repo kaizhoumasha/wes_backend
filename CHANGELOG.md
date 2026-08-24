@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1.0] - 2026-08-25
+
+### Fixed
+
+- 将全部 `InboundEvidence` 引用列与 Snowflake 主键统一为 `BIGINT`，避免证据 ID 超出 PostgreSQL `INTEGER` 范围后，设备指令仍停留在 `PENDING` 或因外键写入失败中断。
+- 增加可升降级的数据库迁移及真实 PostgreSQL 合同测试，并要求 DDL 后重建访问受影响关系的长期进程，清除旧连接池与 prepared statement 缓存。
+
+### Verification
+
+- HEAVY selector 合同 293 项通过；selector 选中的 PostgreSQL、设备指令和迁移 HEAVY 64 项通过。
+- 本次交付只包含后端代码、迁移、测试与发布元数据；不包含架构 HTML、第三方集成白皮书、部署或真实 ECS 物理动作验收。
+
 ## [0.28.0.3] - 2026-08-24
 
 ### Fixed
