@@ -41,6 +41,7 @@ def test_production_checker_image_contains_only_checker_and_pinned_binary() -> N
 def test_checker_ci_is_scoped_to_checker_inputs_and_owns_its_tests() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
 
+    assert "currentBuild.previousBuild == null" in pipeline
     for path in (
         "tools/release_checker/**",
         "Jenkinsfile.release-checker-ci",
@@ -57,6 +58,12 @@ def test_checker_ci_is_scoped_to_checker_inputs_and_owns_its_tests() -> None:
 def test_checker_ci_pushes_immutable_and_channel_tags_and_records_digest() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
 
+    assert (
+        "git log -1 --format=%H -- tools/release_checker Jenkinsfile.release-checker-ci tests/deployment/test_release_checker_ci.py"
+        in pipeline
+    )
+    assert "env.CHECKER_SOURCE_COMMIT = checkerSourceCommit" in pipeline
+    assert 'env.CHECKER_IMAGE_IMMUTABLE = "${env.CHECKER_IMAGE_REPO}:${checkerSourceCommit}"' in pipeline
     assert "CHECKER_IMAGE_IMMUTABLE" in pipeline
     assert "CHECKER_IMAGE_CHANNEL" in pipeline
     assert 'docker push "${CHECKER_IMAGE_IMMUTABLE}"' in pipeline

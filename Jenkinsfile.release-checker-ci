@@ -24,12 +24,17 @@ pipeline {
                 script {
                     String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: env.BRANCH_NAME ?: 'develop'
                     String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    String checkerSourceCommit = sh(returnStdout: true, script: 'git log -1 --format=%H -- tools/release_checker Jenkinsfile.release-checker-ci tests/deployment/test_release_checker_ci.py').trim()
+                    if (!(checkerSourceCommit ==~ /[0-9a-f]{40}/)) {
+                        error('无法确定唯一 checker owner commit')
+                    }
                     String channelTag = sourceBranch == 'main' ? 'prod' : sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
                     env.CI_SOURCE_BRANCH = sourceBranch
                     env.CI_COMMIT_SHA = fullCommit
+                    env.CHECKER_SOURCE_COMMIT = checkerSourceCommit
                     env.CHECKER_TEST_IMAGE = "wes-release-checker-test:${env.BUILD_NUMBER}-${fullCommit.take(7)}"
                     env.CHECKER_IMAGE_LOCAL = "wes-release-checker:${env.BUILD_NUMBER}-${fullCommit.take(7)}"
-                    env.CHECKER_IMAGE_IMMUTABLE = "${env.CHECKER_IMAGE_REPO}:${fullCommit}"
+                    env.CHECKER_IMAGE_IMMUTABLE = "${env.CHECKER_IMAGE_REPO}:${checkerSourceCommit}"
                     env.CHECKER_IMAGE_CHANNEL = "${env.CHECKER_IMAGE_REPO}:${channelTag}"
                 }
             }
@@ -38,6 +43,7 @@ pipeline {
         stage('Checker Pipeline') {
             when {
                 anyOf {
+                    expression { currentBuild.previousBuild == null }
                     changeset "tools/release_checker/**"
                     changeset "Jenkinsfile.release-checker-ci"
                     changeset "tests/deployment/test_release_checker_ci.py"
