@@ -151,6 +151,14 @@ def test_release_label_extraction_executes_after_groovy_newline_rendering(tmp_pa
     assert selected_labels.read_bytes().endswith(b"\n")
 
 
+def test_database_head_queries_use_schema_qualified_alembic_version_table() -> None:
+    pipeline = _pipeline()
+
+    qualified_query = "select version_num from wes_sys.alembic_version order by version_num"
+    assert pipeline.count(qualified_query) == 2
+    assert 'from alembic_version order by version_num"' not in pipeline
+
+
 def test_scope_validation_requires_only_selected_candidates_and_rejects_peer_input() -> None:
     pipeline = _pipeline()
 
