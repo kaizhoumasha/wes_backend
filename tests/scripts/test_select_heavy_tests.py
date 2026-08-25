@@ -285,12 +285,13 @@ def test_admin_router_menu_removal_is_exact_reviewed_none() -> None:
     assert select_heavy_tests([admin_router], config, repo_root=REPO_ROOT) == []
 
 
-def test_role_menu_metadata_removal_selects_its_postgresql_owner() -> None:
+def test_relationship_metadata_selects_both_postgresql_owners() -> None:
     relationships = "src/app/admin/models/relationships.py"
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     assert select_heavy_tests([relationships], config, repo_root=REPO_ROOT) == [
-        "tests/integration/test_menu_persistence_removal_postgresql.py"
+        "tests/integration/test_authorization_bootstrap_postgresql.py",
+        "tests/integration/test_menu_persistence_removal_postgresql.py",
     ]
 
 

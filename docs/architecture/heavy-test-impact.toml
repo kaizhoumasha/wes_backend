@@ -1753,10 +1753,14 @@ heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 source_glob = "src/app/admin/{models/__init__.py,services/perm_service.py,v1/perm.py}"
 heavy_tests = []
 
-# role_menus metadata 删除与迁移后的授权表保留由菜单持久化 PostgreSQL owner 验收。
+# role_menus metadata 删除由菜单持久化 PostgreSQL owner 验收；保留的 user_roles/role_permissions
+# metadata 及授权收敛由 authorization bootstrap PostgreSQL owner 验收。
 [[mapping]]
 source_glob = "src/app/admin/models/relationships.py"
-heavy_tests = ["tests/integration/test_menu_persistence_removal_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_menu_persistence_removal_postgresql.py",
+]
 
 # Admin 包入口仅删除菜单 router 注册，缺席行为由 FAST OpenAPI/auth 合同承接；内容漂移后重新 fail closed。
 [[mapping]]
