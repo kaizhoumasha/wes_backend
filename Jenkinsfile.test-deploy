@@ -688,6 +688,18 @@ PY
                                 compose up -d --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower frontend || return 1
                             fi
                         }
+                        verify_exact_topology() {
+                            include_nginx="$1"
+                            expected=$(runtime_compose config --services | LC_ALL=C sort) || return 1
+                            running=$(runtime_compose ps --status running --services | LC_ALL=C sort) || return 1
+                            if [ "$include_nginx" = false ]; then
+                                expected=$(printf '%s\n' "$expected" | sed '/^nginx$/d') || return 1
+                                running=$(printf '%s\n' "$running" | sed '/^nginx$/d') || return 1
+                            else
+                                [ "$include_nginx" = true ] || return 1
+                            fi
+                            [ "$running" = "$expected" ]
+                        }
                         verify_readiness_and_topology() {
                             verify_service_digest() {
                                 service="$1"
@@ -711,9 +723,7 @@ PY
                             runtime_compose exec -T frontend wget --no-verbose --tries=1 --spider http://127.0.0.1:5173/ >/dev/null || return 1
                             runtime_compose exec -T -e BOOTSTRAP_ADMIN_USERNAME -e BOOTSTRAP_ADMIN_PASSWORD api \
                                 /opt/venv/bin/python scripts/check_bootstrap_admin_login.py --base-url http://127.0.0.1:8001 || return 1
-                            expected=$(runtime_compose config --services | sed '/^nginx$/d' | LC_ALL=C sort) || return 1
-                            running=$(runtime_compose ps --status running --services | sed '/^nginx$/d' | LC_ALL=C sort) || return 1
-                            [ "$running" = "$expected" ] || return 1
+                            verify_exact_topology false
                         }
                         persist_success_evidence() {
                             mkdir -p "${RELEASE_EVIDENCE_ROOT}" || return 1
@@ -765,6 +775,8 @@ PY
                         CUTOVER_STAGE=external-health
                         run_with_cutover_budget python3 scripts/wait_for_http.py --url "http://127.0.0.1:${NGINX_HTTP_PORT:-8080}/health" --attempts 10 --timeout-seconds 2 --interval-seconds 1 || fail_cutover external-health
                         run_with_cutover_budget python3 scripts/wait_for_http.py --url "http://127.0.0.1:${NGINX_HTTP_PORT:-8080}/" --attempts 10 --timeout-seconds 2 --interval-seconds 1 || fail_cutover external-frontend
+                        CUTOVER_STAGE=final-topology
+                        verify_exact_topology true || fail_cutover final-topology
                         CUTOVER_STAGE=evidence-persist
                         persist_success_evidence || fail_cutover evidence-persist
                         CUTOVER_STAGE=complete
