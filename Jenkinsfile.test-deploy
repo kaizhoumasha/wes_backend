@@ -18,7 +18,7 @@ pipeline {
         FRONTEND_IMAGE_REPO = '192.168.0.220:5050/wes/wes_frontend'
         CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend/release_checker'
         DEPLOY_PATH = '/opt/wes_backend'
-        DEPLOY_ENV_FILE = '.env.test'
+        DEPLOY_ENV_FILE = '.env'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
         WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'
         CURRENT_RELEASE_EVIDENCE_DIR = '/srv/wes/releases/current'
