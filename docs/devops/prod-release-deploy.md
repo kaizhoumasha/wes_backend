@@ -79,7 +79,7 @@ Checker 硬超时 60 秒：
 - Runtime：DB head、有效 `.env`、WMS provider profile 等批准配置 hash；
 - 首次基线、上一版证据缺失或任一事实读取异常。
 
-FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致。FULL 只允许数据库从已知祖先向前迁移；多 head、未知 revision、倒退或分叉均在维护前阻断。
+FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致。`BACKEND`/`BOTH` FULL 只允许数据库从已知祖先向前迁移；多 head、未知 revision、倒退或分叉均在维护前阻断。`FRONTEND` FULL 不执行任何数据库 mutation。
 
 ## 6. Cutover
 
@@ -108,7 +108,7 @@ FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致
 
 菜单收敛按两个独立候选顺序发布：先以 `DEPLOY_SCOPE=FRONTEND` 发布新 frontend，并由 checker 允许“新 frontend + 当前旧 backend”；再以 `DEPLOY_SCOPE=BACKEND` 发布新 backend。此时 checker 必须拒绝仍要求菜单 API 或 `/auth/my.menus` 的旧 frontend，不能用前后端 Commit 相等替代兼容判定。frontend 镜像内的静态路由与 `meta.menu` 是菜单唯一真源，backend FULL 不依赖 frontend 源码、menu manifest 或其它菜单产物。
 
-首次空站点初始化不是日常发布分支。只有明确确认数据库为空且执行现场初始化计划时，才可在 FULL 维护态执行 migration、注入 `BOOTSTRAP_ADMIN_*`、运行 `bootstrap_foundation.sh` 和新的权限 `--check`；后续发布不得新建或替换数据库来规避 migration。
+首次空站点初始化不是日常发布分支。只有明确确认数据库为空且执行现场初始化计划时，才可在 `BOTH` FULL 维护态执行 migration、注入 `BOOTSTRAP_ADMIN_*`、运行 `bootstrap_foundation.sh` 和新的权限 `--check`；后续发布不得新建或替换数据库来规避 migration。
 
 ## 7. 失败与恢复
 
@@ -140,7 +140,7 @@ FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致
 - [ ] 当前 peer、上一份成功报告、配置 hash 和 DB head 已被预检交叉验证；
 - [ ] checker 为 PASS，或 WARN 已提供绑定本次三个 digest 与 diff hash 的理由；
 - [ ] 自动/有效 FAST 或 FULL 原因可解释，不存在 force-FAST；
-- [ ] FULL 已完成备份和仅向前 migration，FAST 未执行数据库 mutation；
+- [ ] `BACKEND`/`BOTH` FULL 已完成备份和仅向前 migration，`FRONTEND` FULL 与全部 FAST 均未执行数据库 mutation；
 - [ ] 后端切换没有混合 backend service digest；
 - [ ] 管理员 login/logout、精确 topology、内部及外部 readiness 通过；
 - [ ] `compatibility-report.json` 与最终状态已落盘并归档；

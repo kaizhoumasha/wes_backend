@@ -311,7 +311,7 @@ PROD 边界说明：
 - 三个 producer 只负责自身 CI 与镜像发布，不自动部署 TEST 或生产环境
 - 生产环境使用 [生产发布 Runbook](prod-release-deploy.md) 描述的同一 orchestrator 合同，不复用 `seed_initial_data.py`
 - fresh DB 只允许首次空站点初始化：migration 后注入 `BOOTSTRAP_ADMIN_*`，执行 `bootstrap_foundation.sh` 和新的权限 `--check`
-- 日常 FULL 对当前数据库备份并仅向前迁移；权限 mutation 失败只接受精确 post-commit marker 的一次 repair，且不得重跑 mutation
+- 日常 `BACKEND`/`BOTH` FULL 对当前数据库备份并仅向前迁移；`FRONTEND` FULL 不执行任何数据库 mutation。权限 mutation 失败只接受精确 post-commit marker 的一次 repair，且不得重跑 mutation
 - 前后端环境文件分离维护；只归档有效配置 hash，不记录秘密
 - 菜单由前端静态路由拥有，不属于发布门禁
 

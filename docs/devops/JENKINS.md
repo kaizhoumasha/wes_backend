@@ -86,7 +86,7 @@ HEAVY selector 只负责测试选择，不能作为 FAST/FULL 发布模式真源
 
 ## 首次空站点与日常发布
 
-`bootstrap_foundation.sh` 只用于确认空数据库的首次站点初始化，并要求部署环境注入 `BOOTSTRAP_ADMIN_*`。日常 FULL 必须对当前数据库先备份再向前迁移，不得为每次发布创建 fresh DB，也不得使用 `seed_initial_data.py`。
+`bootstrap_foundation.sh` 只用于确认空数据库的首次站点初始化，并要求部署环境注入 `BOOTSTRAP_ADMIN_*`。日常 `BACKEND`/`BOTH` FULL 必须对当前数据库先备份再向前迁移；`FRONTEND` FULL 不执行任何数据库 mutation。不得为每次发布创建 fresh DB，也不得使用 `seed_initial_data.py`。
 
 权限 mutation 成功或一次精确 post-commit cache repair 后，都必须重新执行独立 `sync_permissions.py --check`。菜单由 frontend 镜像中的静态路由与 `meta.menu` 拥有；backend producer 和 orchestrator 不依赖 frontend 源码或菜单产物，不运行菜单同步，也不以菜单表数量作为部署门禁。
 
