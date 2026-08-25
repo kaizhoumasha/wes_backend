@@ -558,6 +558,34 @@ def test_nginx_runtime_config_is_a_heavy_candidate() -> None:
 
 @pytest.mark.parametrize(
     "changed_path",
+    ["tools/release_checker/release_checker.py", "tools/release_checker/Dockerfile", "Jenkinsfile.release-checker-ci"],
+)
+def test_independent_release_checker_inputs_are_heavy_candidates(changed_path: str) -> None:
+    assert is_candidate(changed_path) is True
+
+
+def test_release_checker_tests_and_fixtures_are_not_release_mode_candidates() -> None:
+    assert is_candidate("tools/release_checker/tests/test_release_checker.py") is False
+    assert is_candidate("tools/release_checker/tests/fixtures/consumer-used-operation.json") is False
+
+
+def test_release_checker_tests_and_fixtures_are_explicitly_ignored_by_heavy_selector() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert (
+        select_heavy_tests(
+            [
+                "tools/release_checker/tests/test_release_checker.py",
+                "tools/release_checker/tests/fixtures/consumer-used-operation.json",
+            ],
+            config,
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
     [
         "tests/fixtures/workline_contract/rough_sorter/new.json",
         "tests/fixtures/workline_contract/start_admission/new.json",

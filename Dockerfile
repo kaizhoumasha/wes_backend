@@ -153,6 +153,32 @@ EXPOSE 8089
 # 测试环境默认命令 (运行测试)
 CMD ["pytest", "-v", "--cov=src", "--cov-report=html:reports/coverage", "--cov-report=term-missing"]
 
+# 完整 exporter fingerprints 只在隔离 stage 中校验；final 仅消费校验后的两个 raw artifacts。
+FROM testing AS provider-artifact-validation
+
+COPY reports/release-provider /tmp/wes-release-provider
+
+ARG WES_PROVIDER_OPENAPI_SHA256
+ARG WES_PROVIDED_PERMISSIONS_SHA256
+ARG WES_MIGRATION_TREE_SHA256
+ARG WES_BACKEND_DEPENDENCIES_SHA256
+ARG WES_BACKEND_RECIPE_SHA256
+ARG WES_EXPECTED_SCHEMA_HEAD
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
+RUN python -c 'import os; from pathlib import Path; from scripts.export_release_provider import validate_release_provider_artifacts; validate_release_provider_artifacts(Path("/tmp/wes-release-provider"), expected={"kind": "wes.release.backend-fingerprints.v1", "provider_openapi_sha256": os.environ["WES_PROVIDER_OPENAPI_SHA256"], "provided_permissions_sha256": os.environ["WES_PROVIDED_PERMISSIONS_SHA256"], "migration_tree_sha256": os.environ["WES_MIGRATION_TREE_SHA256"], "dependencies_sha256": os.environ["WES_BACKEND_DEPENDENCIES_SHA256"], "recipe_sha256": os.environ["WES_BACKEND_RECIPE_SHA256"], "expected_schema_head": os.environ["WES_EXPECTED_SCHEMA_HEAD"]}, revision=os.environ["WES_VCS_REVISION"], source_tree=os.environ["WES_SOURCE_TREE"])' && \
+    install -d -m 0755 /validated && \
+    install -m 0644 /tmp/wes-release-provider/provider-openapi.json /validated/provider-openapi.json && \
+    install -m 0644 /tmp/wes-release-provider/provided-permissions.json /validated/provided-permissions.json
+
+# Production 只从清理后的源码快照复制，避免 CI-only checker/fingerprints 出现在任何 runtime layer。
+FROM base AS production-source
+
+COPY . /app
+RUN rm -rf /app/tools/release_checker && \
+    rm -rf /app/reports/release-provider && \
+    rm -rf /app/.agents
+
 # ============================================
 # Stage 5: Production - 生产环境
 # ============================================
@@ -167,8 +193,20 @@ COPY --from=builder /opt/venv /opt/venv
 # 激活虚拟环境
 ENV PATH="/opt/venv/bin:$PATH"
 
-# 复制项目文件
-COPY . .
+# 复制已清理的项目文件
+COPY --from=production-source /app /app
+
+# 后端 producer 唯一导出的 provider 合同；fingerprints 所在 validation stage 不进入运行镜像。
+COPY --from=provider-artifact-validation /validated /opt/wes/release
+
+ARG WES_PROVIDER_OPENAPI_SHA256
+ARG WES_PROVIDED_PERMISSIONS_SHA256
+ARG WES_MIGRATION_TREE_SHA256
+ARG WES_BACKEND_DEPENDENCIES_SHA256
+ARG WES_BACKEND_RECIPE_SHA256
+ARG WES_EXPECTED_SCHEMA_HEAD
+ARG WES_VCS_REVISION
+ARG WES_SOURCE_TREE
 
 # 镜像内入口脚本
 RUN if [ -d /app/docker/test ]; then chmod +x /app/docker/test/*.sh; fi
@@ -178,10 +216,14 @@ RUN mkdir -p /app/logs && \
     chown -R wesuser:wesuser /app
 
 # 提交元数据放在最终运行层，保持共享依赖层可跨 commit 复用。
-ARG WES_VCS_REVISION
-ARG WES_SOURCE_TREE
 LABEL org.opencontainers.image.revision="${WES_VCS_REVISION}" \
-      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"
+      com.zontec.wes.source-manifest="${WES_SOURCE_TREE}" \
+      org.wes.release.provider-openapi.sha256="${WES_PROVIDER_OPENAPI_SHA256}" \
+      org.wes.release.provided-permissions.sha256="${WES_PROVIDED_PERMISSIONS_SHA256}" \
+      org.wes.release.migration-tree.sha256="${WES_MIGRATION_TREE_SHA256}" \
+      org.wes.release.backend-dependencies.sha256="${WES_BACKEND_DEPENDENCIES_SHA256}" \
+      org.wes.release.backend-recipe.sha256="${WES_BACKEND_RECIPE_SHA256}" \
+      org.wes.release.expected-schema-head="${WES_EXPECTED_SCHEMA_HEAD}"
 
 # 切换到非 root 用户
 USER wesuser

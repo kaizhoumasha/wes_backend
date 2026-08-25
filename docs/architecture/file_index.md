@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-24
+**最后更新**：2026-08-25
 
 ## 1. 真源与入口
 
@@ -21,7 +21,8 @@
 | `docker-compose.ci-heavy.yml` | MR HEAVY 的隔离 PostgreSQL/Redis 编排 |
 | `docker-compose.wms-acceptance.yml` | 预构建 WMS Transport Mock 镜像的 provider-local 验收编排；不构建镜像、不挂载宿主源码 |
 | `Jenkinsfile.backend-ci` | 后端 QUALITY、验收、HEAVY、镜像构建与发布入口 |
-| `Jenkinsfile.test-deploy` | TEST 环境部署入口 |
+| `Jenkinsfile.release-checker-ci` | 独立 release checker 测试、最小镜像构建与不可变制品发布入口；不调用前后端 producer 或部署作业 |
+| `Jenkinsfile.test-deploy` | TEST 独立 release orchestrator；按 scope 选择候选、执行方向兼容与 FAST/FULL，不由 producer 自动触发 |
 | `TODOS.md` | 已有真实触发条件但尚未排期的独立工作 |
 
 ## 2. 架构文档
@@ -39,8 +40,10 @@
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
-| `docs/superpowers/specs/2026-08-24-integration-release-reliability-design.md` | 联调发布的源码身份、管理员登录、HTTP readiness、Compose 拓扑与非秘密发布记录设计真源 |
-| `docs/superpowers/plans/2026-08-24-integration-release-reliability.md` | 联调发布可靠性增量的实施与工程验收记录；当前为 `IMPLEMENTED — NOT DEPLOYED` |
+| `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
+| `docs/superpowers/plans/2026-08-25-frontend-backend-release-decoupling.md` | 发布解耦实施计划与当前工程验收入口 |
+| `docs/superpowers/specs/2026-08-24-integration-release-reliability-design.md` | 管理员登录、HTTP readiness、Compose 拓扑与 fail-closed cutover 的历史设计依据；paired-release 部分已被 2026-08-25 设计取代 |
+| `docs/superpowers/plans/2026-08-24-integration-release-reliability.md` | 联调发布可靠性增量的历史实施证据；已完成 checkbox 保持原样，paired-release 部分已被取代 |
 | `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；自动出库和 Phase 9 上架待评审，人工分拣目前仅登记业务设计、尚无 wire |
 | `docs/contracts/openapi/wes-wms-transport.openapi.json` | 面向 WMS 交付的 Transport OpenAPI 3.0.3 机器合同；覆盖容器中间位置事件和搬运最终结果的客户端生成，搬运提交服务端合同由 WMS 交付 |
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
@@ -119,16 +122,19 @@ API → Service → Repository → Database
 | `scripts/select_heavy_tests.py` | 根据 Git 差异和机器可读映射选择 HEAVY |
 | `scripts/run_selected_heavy_tests.py` | 执行选中 HEAVY 并拒绝零执行/跳过 |
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
+| `scripts/export_release_provider.py` | 从后端唯一真源确定性导出 provider OpenAPI、provided permissions 与生产输入指纹 |
 | `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport 搬运提交合同；不替代真实 WMS 或现场验收 |
 | `docs/runbooks/transport-operations.md` | Transport 本地状态 API、结构化日志与 PostgreSQL 事实的只读诊断入口 |
 | `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
 | `docs/devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、TimescaleDB/PostgreSQL 与 Redis 基础支撑环境初始化手册；不代表业务系统已部署或验收 |
+| `docs/devops/prod-release-deploy.md` | 生产独立 release orchestrator 的 scope、FAST/FULL、兼容报告、维护态和恢复 Runbook |
 | `scripts/wait_for_http.py` | 生产发布入口恢复后的 HTTP health/frontend 等待门禁；由 Runbook 直接调用 |
 | `scripts/check_bootstrap_admin_login.py` | 生产发布固定版本的超级管理员真实登录门禁；由 Runbook 直接调用 |
 | `scripts/check_business_legacy_absence_gate.py` | 旧业务平台缺席门禁 |
 | `scripts/workline_inbox_retirement_guardrail.py` | 退役 WorkLineInbox 缺席门禁 |
 | `scripts/install-git-hooks.sh` | 安装仓库管理的提交门禁 |
+| `tools/release_checker/` | 独立、stdlib-only 的前端 consumer → 后端 provider 方向兼容检查器；固定 oasdiff，运行时不导入 WES 应用或前端源码 |
 
 ## 6. 快速查找
 

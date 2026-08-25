@@ -1,7 +1,7 @@
 # API 权限目录模型
 
 > 状态：current implementation contract
-> 适用范围：后端 API 权限定义、物化目录、内置角色授权与初始化/修复入口。菜单仍由独立菜单模型和同步入口维护。
+> 适用范围：后端 API 权限定义、物化目录、内置角色授权与初始化/修复入口。菜单是 frontend-owned menu convergence 前的过渡运行时，不属于权限基础能力或发布门禁。
 
 ## 1. 唯一真源与边界
 
@@ -12,7 +12,7 @@ FastAPI 路由上的 `RequirePermission(...)` / `RequireAPIPermission(...)` 声�
 - `app_api`：外部 API Application 权限。
 - 权限码固定为 `module:resource:action` 三段非空格式。
 - `Permission` 只描述后端 API 权限，不承载菜单或按钮定义。
-- 菜单可见性不能替代后端权限检查；菜单同步仍由 `sync_menus.py` 独立负责。
+- 菜单可见性不能替代后端权限检查。旧菜单如需修复，只能作为另行授权的独立维护动作；release orchestrator 不读取或同步菜单，该入口由菜单收敛计划删除。
 
 角色和 API Application 可以继续维护其“关联了哪些权限”的关系；这不赋予它们创建、修改或删除权限定义的能力。
 
@@ -105,7 +105,7 @@ uv run python scripts/data/sync_permissions.py --check
 
 ## 7. 部署顺序
 
-生产和 TEST 切换都必须遵守以下顺序：固定前后端镜像 digest 并核对 backend/frontend revision、frontend 绑定的 backend revision 与 OpenAPI/permission labels → 关闭 Nginx 并用非 `-f` 监听探针确认外部端口关闭 → 通过已检查的 Compose 标签发现停止旧应用且拒绝未知 service → 新后端镜像执行 Alembic → fresh DB bootstrap 或已有 DB `--apply` → 独立 `--check` → 启动固定版本应用并完成内部校验 → 最后只启动 Nginx。Jenkins TEST 每次部署创建唯一新数据库并先证明为空，不清空持久 volume，也不把旧 TEST 数据库冒充 fresh DB。
+生产和 TEST 切换都必须遵守以下顺序：按 `DEPLOY_SCOPE` 选择并固定待发布候选镜像 digest；单侧发布自动发现另一侧当前运行 digest，只校验镜像自带契约产物的方向兼容性，不要求前后端绑定同一 revision → 关闭 Nginx 并用非 `-f` 监听探针确认外部端口关闭 → 通过已检查的 Compose 标签发现停止旧应用且拒绝未知 service → 备份已有数据库 → 新后端镜像执行仅向前 Alembic 迁移 → 已有数据库执行权限 `--apply`，仅首次空站点执行 bootstrap → 独立 `--check` → 启动固定版本应用并完成内部校验 → 最后只启动 Nginx。
 
 任何迁移、授权、缓存修复、内部 readiness 或来源校验失败，都必须保持外部入口关闭。完整命令见：
 

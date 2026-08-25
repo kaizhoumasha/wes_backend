@@ -1,5 +1,7 @@
 # 菜单同步指南
 
+> 过渡状态：本文仅描述 frontend-owned menu convergence 实施前的旧菜单运行时维护能力，不是发布 Runbook，也不是 release compatibility/deploy gate。普通前端、后端发布不得调用本文脚本、读取前端镜像菜单产物或以菜单数量作为门禁；菜单收敛完成后本文归档。
+
 ## 概述
 
 后端菜单数据现在直接以 `wes_frontend/src/router/index.ts` 为源头，不再依赖额外的 `menu_data.json` 生成步骤。
@@ -110,52 +112,22 @@ uv run python scripts/data/sync_menus.py --frontend-path ~/SynologyDrive/works/w
 - `parentName`: 父菜单 name
 - `hidden`: 是否隐藏
 
-## 种子初始化
+## 显式维护边界
 
-空库或已有库同步菜单时，统一使用数据同步脚本：
+菜单收敛实施前，如旧运行环境确实需要修复菜单数据库，必须单独取得维护授权，并从明确的前端源码 checkout 先执行 preview、dry-run，再显式同步：
 
 ```bash
 uv run python scripts/data/sync_menus.py
 ```
 
-如果前端目录不可用，脚本内置数据只允许开发/测试初始化使用；生产必须消费批准前端镜像内的
-`/opt/wes/menu-manifest.json`，不得回退到默认菜单。
+脚本内置数据只允许开发、测试或演示初始化。显式维护动作不得：
 
-## 生产环境初始化顺序
+- 从 frontend candidate digest 提取 `menu-manifest.json`；
+- 成为 frontend/backend producer 或 release orchestrator 的前置、后置步骤；
+- 绑定 candidate Commit/digest、Nginx 恢复或 compatibility report；
+- 创建第二条同步脚本、服务或菜单产物路径。
 
-生产环境不要执行 `scripts/data/seed_initial_data.py`。该脚本用于开发、测试、演示初始化，包含默认账号口令，不适合作为生产部署步骤。
-
-生产权限初始化顺序由 `docs/devops/prod-release-deploy.md` 统一规定。权限零漂移且固定版本应用启动后、Nginx 恢复前，
-从批准的前端 digest 提取菜单清单并同步：
-
-```bash
-case "${FRONTEND_IMAGE:?FRONTEND_IMAGE is required}" in
-  *@sha256:*) ;;
-  *) echo 'FRONTEND_IMAGE 必须是批准的 digest' >&2; exit 1 ;;
-esac
-
-manifest_container="wes_frontend_manifest_$$"
-docker create --name "$manifest_container" "$FRONTEND_IMAGE" >/dev/null
-docker cp "$manifest_container":/opt/wes/menu-manifest.json ./menu-manifest.json
-docker rm "$manifest_container" >/dev/null
-
-docker compose --env-file .env.prod \
-  -f docker-compose.yml \
-  -f docker-compose.deploy.yml \
-  cp ./menu-manifest.json api:/tmp/menu-manifest.json
-docker compose --env-file .env.prod \
-  -f docker-compose.yml \
-  -f docker-compose.deploy.yml \
-  exec -T api /opt/venv/bin/python \
-  scripts/data/sync_menus.py --manifest-path /tmp/menu-manifest.json
-```
-
-说明：
-
-- 生产服务器不提供前端源码目录、不构建前端，也不接受默认菜单回退；唯一输入是批准的 immutable 前端镜像。
-- 前后端分离维护 `.env.prod` 与 `.env.frontend.prod` 是正常做法，互不冲突。
-- 本计划暂时保留菜单表和同步入口；后续 frontend-owned menu convergence 计划负责删除它们，不在这里增加双路径。
-- 菜单同步失败时保持 Nginx 关闭；成功只证明菜单物化，不证明 API 授权、现场联调或业务验收。
+普通发布不改变菜单数据库。需要菜单结构变更时，进入 frontend-owned menu convergence 计划统一删除菜单持久化、API、同步脚本与本文，而不是把旧同步重新接回发布链。
 
 ## 已修复的问题
 

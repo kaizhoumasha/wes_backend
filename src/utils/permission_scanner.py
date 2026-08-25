@@ -8,7 +8,17 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-_REQUIRED_LEAF_FIELDS = ("type", "category", "resource", "action", "method", "path")
+_PERMISSION_LEAF_FIELDS = (
+    "name",
+    "type",
+    "category",
+    "description",
+    "resource",
+    "action",
+    "method",
+    "path",
+)
+_PERMISSION_LEAF_FIELD_SET = frozenset(_PERMISSION_LEAF_FIELDS)
 
 
 class PermissionCatalogError(RuntimeError):
@@ -181,19 +191,24 @@ def _build_group_payloads(scanned_perms: list[dict[str, Any]]) -> list[dict[str,
 
 
 def _validate_scanned_permission(permission: dict[str, Any]) -> None:
-    permission_name = permission.get("name")
-    parts = permission_name.split(":") if isinstance(permission_name, str) else []
+    if set(permission) != _PERMISSION_LEAF_FIELD_SET:
+        raise PermissionCatalogError(f"权限叶子字段集合无效: `{permission.get('name')}`")
+
+    permission_name = permission["name"]
+    if not isinstance(permission_name, str) or not permission_name:
+        raise PermissionCatalogError(f"权限叶子字段无效: `{permission_name}` 缺少 `name`")
+    parts = permission_name.split(":")
     if len(parts) != 3 or any(not part for part in parts):
         raise PermissionCatalogError(f"权限码格式无效: `{permission_name}`，必须为 `module:resource:action` 三个非空段")
 
-    for field in _REQUIRED_LEAF_FIELDS:
-        value = permission.get(field)
+    for field in _PERMISSION_LEAF_FIELDS[1:]:
+        value = permission[field]
         if not isinstance(value, str) or not value:
             raise PermissionCatalogError(f"权限叶子字段无效: `{permission_name}` 缺少 `{field}`")
 
 
-def build_permission_catalog(app: FastAPI) -> list[dict[str, Any]]:
-    """构建完整、确定且无名称歧义的权限目录。"""
+def build_validated_permission_leaves(app: FastAPI) -> list[dict[str, Any]]:
+    """构建经过校验、去重且顺序确定的权限叶子。"""
     scanned_permissions = scan_routes_for_permissions(app)
     if not scanned_permissions:
         raise PermissionCatalogError("未扫描到权限")
@@ -212,19 +227,36 @@ def build_permission_catalog(app: FastAPI) -> list[dict[str, Any]]:
             )
         leaves_by_name[permission["name"]] = permission
 
-    leaf_orders: dict[str, int] = {}
-    leaf_payloads: list[dict[str, Any]] = []
-    for permission in sorted(
+    return sorted(
         leaves_by_name.values(),
         key=lambda payload: (
-            payload["type"],
-            payload.get("category") or "",
-            payload.get("resource") or "",
             payload["name"],
-            payload.get("method") or "",
-            payload.get("path") or "",
+            payload["type"],
+            payload["method"],
+            payload["path"],
         ),
-    ):
+    )
+
+
+def build_permission_catalog(app: FastAPI) -> list[dict[str, Any]]:
+    """构建完整、确定且无名称歧义的权限目录。"""
+    permission_leaves = build_validated_permission_leaves(app)
+    leaves_by_name = {permission["name"]: permission for permission in permission_leaves}
+    # Catalog 保留既有管理端展示顺序；provider 机器合同顺序由 helper 独立定义。
+    catalog_permission_leaves = sorted(
+        permission_leaves,
+        key=lambda payload: (
+            payload["type"],
+            payload["category"],
+            payload["resource"],
+            payload["name"],
+            payload["method"],
+            payload["path"],
+        ),
+    )
+    leaf_orders: dict[str, int] = {}
+    leaf_payloads: list[dict[str, Any]] = []
+    for permission in catalog_permission_leaves:
         category = permission.get("category")
         resource = permission.get("resource")
         if not category or not resource:
@@ -244,7 +276,7 @@ def build_permission_catalog(app: FastAPI) -> list[dict[str, Any]]:
 
     catalog: list[dict[str, Any]] = []
     payloads_by_name: dict[str, dict[str, Any]] = {}
-    group_payloads = _build_group_payloads(list(leaves_by_name.values()))
+    group_payloads = _build_group_payloads(permission_leaves)
     colliding_names = sorted(leaves_by_name.keys() & {payload["name"] for payload in group_payloads})
     if colliding_names:
         raise PermissionCatalogError(f"权限目录名称冲突: 叶子权限与派生分组同名 `{colliding_names[0]}`")

@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "task": "frontend-backend-release-decoupling/task-0",
+  "repository_bases": {
+    "basis": "controller-approved local develop heads recorded in the SDD ledger",
+    "backend": "ed3436679a1d2dc318f665190a89b5128a6dde91",
+    "frontend": "49ea17b219366c4be682149a1e6b973fc9c1be26"
+  },
+  "oasdiff": {
+    "version": "1.28.0",
+    "release_asset": "https://github.com/oasdiff/oasdiff/releases/download/v1.28.0/oasdiff_1.28.0_darwin_all.tar.gz",
+    "release_asset_sha256": "ff76474bf47bfb806d1711aa3e962b8e55570badcd462fa487b80aa532a823db",
+    "extracted_binary_sha256": "1e3c6aacd8ae95f04beb904363be13b73b2c8c732f39d5a3db8b3e40aa936cc3",
+    "verification_source": "official GitHub v1.28.0 checksums.txt release asset",
+    "binary_input": "OASDIFF_BIN",
+    "task_4_handoff": "pin the same version and platform image digest in the checker container; the Task 0 temporary binary is not an installation"
+  },
+  "projection": {
+    "input": "one OpenAPI JSON document plus a set of lowercase method/path pairs",
+    "behavior": "deep-copy the document, reject any selected path item containing $ref, remove unselected HTTP operations and empty paths, preserve all other top-level metadata, path-item non-operation fields, and components",
+    "output_encoding": "UTF-8 compact JSON with sorted keys and one trailing LF",
+    "ref_behavior": "do not traverse or rewrite refs; reject selected path-item refs before projection and pass all projected documents to oasdiff with external refs disabled"
+  },
+  "oasdiff_invocation": [
+    "${OASDIFF_BIN}",
+    "breaking",
+    "consumer-baseline.json",
+    "selected-provider.json",
+    "--allow-external-refs=false",
+    "--format=json",
+    "--fail-on=WARN"
+  ],
+  "machine_contract": {
+    "compatible_stdout_utf8_hex": "5b5d0a",
+    "selected_path_item_ref_error_utf8_hex": "73656c65637465642050617468204974656d20272f6f72646572732f7b6f726465725f69647d2720636f6e7461696e7320756e737570706f727465642065787465726e616c206f7220696e7465726e616c2024726566202768747470733a2f2f6578616d706c652e696e76616c69642f706174682d6974656d2e6a736f6e27",
+    "fixture_golden_bytes": {
+      "consumer-used-operation.json": {
+        "bytes": 3131,
+        "sha256": "6a076b0b24f14913b56ad9fbeec3e8c7ef3ef63041b38e091349ae6b7c7238a6"
+      },
+      "menu-new-consumer-old-provider.json": {
+        "bytes": 1502,
+        "sha256": "dc58680646b140ef82172b2f1ec13b9725c90b76111863c5c9c84f971e991043"
+      },
+      "menu-old-consumer-new-provider.json": {
+        "bytes": 769,
+        "sha256": "b2b1e3bd826ea742b823b95ff6e6c0f6d6ec90371f5af86880185e4c8c91850b"
+      },
+      "provider-breaking-unused-method.json": {
+        "bytes": 1489,
+        "sha256": "15fe64a4b7153bc0addb771b25f2e8bda88245ba596c3808c5fbf2b6e2c7caf9"
+      },
+      "provider-breaking-used-schema.json": {
+        "bytes": 1287,
+        "sha256": "5cdff739640b17c21e77fe5c3cbe0be2603a73c7ee863dcd1d168c70929d56a3"
+      },
+      "provider-compatible-unused-change.json": {
+        "bytes": 3337,
+        "sha256": "3c549613787c3667b2f01a04a557897ebc07f7cb22b5c712fb746096d695a052"
+      }
+    },
+    "projection_golden_bytes": {
+      "consumer_get_order": {
+        "bytes": 940,
+        "sha256": "348c63456f3d12d50c2f3aa48d224c99e881f4b3422969e2c079d881518e98ee"
+      },
+      "provider_unused_change_get_order": {
+        "bytes": 952,
+        "sha256": "f13fc258e8b127c270738a82eb966641f1aa3177c79135f451c2944163aa211b"
+      },
+      "provider_unused_method_get_order": {
+        "bytes": 728,
+        "sha256": "9b23b96010f582a040037ec3bb93603b55b3e3d1f9ad1f08c660838520ab5a24"
+      },
+      "provider_used_schema_get_order": {
+        "bytes": 637,
+        "sha256": "a5e29c5453d6c4ec167a6b6791580348958bf22290377c1b606bc8f2244ae02f"
+      },
+      "consumer_replace_order": {
+        "bytes": 1050,
+        "sha256": "ace2b4d3ef86eee9ef7235bf1cfaaaed72c5afbdfd9c9c1f0b98253f91e36ea6"
+      },
+      "provider_missing_replace_order": {
+        "bytes": 451,
+        "sha256": "ace2cc17a4c26679b15f666fb0cf3260b7fbdcc61bcf1dbaa7f59ef3f26205c4"
+      },
+      "new_consumer_health": {
+        "bytes": 404,
+        "sha256": "2b1084af7b0da0a173b7ae28e4679bde86e595c39d3507916363ccf603b2d991"
+      },
+      "old_provider_health": {
+        "bytes": 556,
+        "sha256": "5bdba40d60c6d8c9c13ac092457544eb60c942c9b8666d20117cf0f9616086c5"
+      },
+      "old_consumer_menu": {
+        "bytes": 563,
+        "sha256": "7a6470e982c2e066464dbbc2425b1a05adf4888bcb586fee1ea44d9ef8aef304"
+      },
+      "new_provider_missing_menu": {
+        "bytes": 227,
+        "sha256": "c7c0522129760540afa8762e2a46d28e9c676f443f39c51a419f7bd2a4f2a84c"
+      }
+    }
+  },
+  "expected_changed_paths": [
+    "tools/release_checker/tests/fixtures/consumer-used-operation.json",
+    "tools/release_checker/tests/fixtures/provider-compatible-unused-change.json",
+    "tools/release_checker/tests/fixtures/provider-breaking-unused-method.json",
+    "tools/release_checker/tests/fixtures/provider-breaking-used-schema.json",
+    "tools/release_checker/tests/fixtures/menu-new-consumer-old-provider.json",
+    "tools/release_checker/tests/fixtures/menu-old-consumer-new-provider.json",
+    "tools/release_checker/tests/fixtures/task-0-manifest.json",
+    "tools/release_checker/tests/test_oasdiff_operation_filter.py",
+    ".superpowers/sdd/2026-08-25-frontend-backend-release-decoupling/task-0-report.md"
+  ],
+  "owners": {
+    "direct_tests": [
+      "tools/release_checker/tests/test_oasdiff_operation_filter.py"
+    ],
+    "heavy": [],
+    "heavy_reason": "Task 0 changes only isolated checker characterization fixtures/tests and no runtime or HEAVY candidate path"
+  },
+  "new_high_or_critical_shared_consumers": []
+}

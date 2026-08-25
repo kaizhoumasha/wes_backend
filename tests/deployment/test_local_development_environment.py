@@ -320,40 +320,40 @@ def test_development_runner_reserves_a_project_scoped_local_environment() -> Non
 def test_test_deploy_converges_authorization_before_starting_application_services() -> None:
     pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
 
-    stage_markers = [
-        "🔒 进入维护态并停止旧应用容器",
+    full_cutover = pipeline.split("run_full_cutover()", maxsplit=1)[1].split(
+        "verify_readiness_and_topology()", maxsplit=1
+    )[0]
+    full_stage_markers = [
+        "🗄️ 备份当前数据库",
         "🗄️ 执行数据库迁移",
-        "🔐 执行 fresh DB 基础授权初始化",
+        "🔐 收敛 existing DB 基础授权",
         "🔎 校验权限目录零漂移",
         "🐳 启动已固定版本的应用服务",
-        "🌐 恢复外部入口",
     ]
-    positions = [pipeline.index(marker) for marker in stage_markers]
+    positions = [full_cutover.index(marker) for marker in full_stage_markers]
 
     assert positions == sorted(positions)
-    assert "label=com.docker.compose.project=${compose_project_name}" in pipeline
-    assert '{{ index .Config.Labels "com.docker.compose.service" }}' in pipeline
-    assert "db|redis)" in pipeline
-    assert "未知 Compose application service" in pipeline
+    runtime_flow = pipeline[pipeline.index("🔒 进入维护态并停止旧应用容器") :]
+    assert runtime_flow.index("run_full_cutover") < runtime_flow.index("🌐 恢复外部入口")
+    assert "compose stop api celery celery-wms-fulfillment celery_beat flower frontend" in pipeline
+    assert "for service in api celery celery-wms-fulfillment celery_beat flower" in pipeline
+    assert "verify_service_digest frontend" in pipeline
     assert "--entrypoint /opt/venv/bin/alembic" in pipeline
-    assert "--entrypoint /bin/bash" in pipeline
     assert "--entrypoint /opt/venv/bin/python" in pipeline
     assert "api upgrade head" in pipeline
-    assert "api scripts/data/bootstrap_foundation.sh" in pipeline
+    assert "api scripts/data/sync_permissions.py --apply" in pipeline
     assert "scripts/data/sync_permissions.py --check" in pipeline
-    assert "scripts/data/sync_permissions.py --apply" not in pipeline
+    assert "bootstrap_foundation.sh" not in pipeline
 
 
-def test_test_deploy_injects_dedicated_bootstrap_admin_credentials() -> None:
+def test_test_deploy_injects_dedicated_admin_login_credentials() -> None:
     pipeline = (BACKEND_ROOT / "Jenkinsfile.test-deploy").read_text(encoding="utf-8")
-    bootstrap = pipeline.split("🔐 执行 fresh DB 基础授权初始化", maxsplit=1)[1]
-    bootstrap = bootstrap.split("🔎 校验权限目录零漂移", maxsplit=1)[0]
 
     assert "credentialsId: 'wes-test-bootstrap-admin'" in pipeline
     assert "usernameVariable: 'BOOTSTRAP_ADMIN_USERNAME'" in pipeline
     assert "passwordVariable: 'BOOTSTRAP_ADMIN_PASSWORD'" in pipeline
-    assert "-e BOOTSTRAP_ADMIN_USERNAME" in bootstrap
-    assert "-e BOOTSTRAP_ADMIN_PASSWORD" in bootstrap
+    assert "-e BOOTSTRAP_ADMIN_USERNAME -e BOOTSTRAP_ADMIN_PASSWORD api" in pipeline
+    assert "scripts/check_bootstrap_admin_login.py" in pipeline
     assert "BOOTSTRAP_ADMIN_PASSWORD=" not in pipeline
 
 
