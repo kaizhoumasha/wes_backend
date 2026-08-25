@@ -76,10 +76,8 @@ run_seed() {
     compose run --rm --no-deps \
         -e DEBUG=false \
         -e DEV_SEED_ALLOWED=true \
-        -v "$FRONTEND_ROOT:/workspace/frontend:ro" \
         api \
         python scripts/data/seed_initial_data.py \
-        --frontend-path /workspace/frontend \
         "$@"
 }
 

@@ -179,7 +179,7 @@ async def _invalidate_builtin_role_user_permission_cache(db: AsyncSession) -> No
     await invalidate_users_permissions(get_cache(), await _builtin_role_user_ids(db))
 
 
-async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: str) -> None:
+async def _seed_foundation_data(db: AsyncSession, password: str) -> None:
     app = create_app()
     managed_permission_names = managed_permission_names_for_app(app)
     if not managed_permission_names:
@@ -205,7 +205,7 @@ async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: 
     print(f"  role_permissions={role_permission_result}")
 
 
-async def _check_foundation_data(db: AsyncSession, frontend_path: str, password: str) -> None:
+async def _check_foundation_data(db: AsyncSession, password: str) -> None:
     errors: list[str] = []
     roles = await _active_roles(db)
     users = await _active_users(db)
@@ -266,21 +266,16 @@ async def main_async(args: argparse.Namespace) -> None:
     await init_db()
     async with get_db_context() as db:
         if args.check:
-            await _check_foundation_data(db, args.frontend_path, password)
+            await _check_foundation_data(db, password)
         else:
-            await _seed_foundation_data(db, args.frontend_path, password)
+            await _seed_foundation_data(db, password)
             await _invalidate_builtin_role_user_permission_cache(db)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="收敛本机 dev 环境的基础调试数据")
-    parser.add_argument("--frontend-path", required=True, help="当前前端源码根目录")
     parser.add_argument("--check", action="store_true", help="只读检查数据是否已经收敛")
     args = parser.parse_args()
-    frontend_path = Path(args.frontend_path).resolve()
-    if not Path(frontend_path, "src/router/index.ts").is_file():
-        raise FileNotFoundError(f"前端源码路径无效: {frontend_path}")
-    args.frontend_path = str(frontend_path)
     asyncio.run(main_async(args))
 
 

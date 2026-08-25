@@ -278,7 +278,8 @@ def test_canonical_development_runner_migrates_seeds_checks_and_preserves_data()
     assert "docker-compose.frontend.yml" in runner
     assert "alembic upgrade head" in runner
     assert "scripts/data/seed_initial_data.py" in runner
-    assert "--frontend-path /workspace/frontend" in runner
+    assert "--frontend-path" not in runner
+    assert "/workspace/frontend" not in runner
     assert "--check" in runner
     assert 'case "$COMMAND" in' in runner
     assert "down --remove-orphans" in runner
@@ -559,5 +560,13 @@ def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() 
     }
 
     seed_source = (BACKEND_ROOT / "scripts/data/seed_initial_data.py").read_text(encoding="utf-8")
-    for forbidden in ("WorkLine", "DeviceCommand", "TransportTask", "inventory", "库存"):
+    for forbidden in (
+        "WorkLine",
+        "DeviceCommand",
+        "TransportTask",
+        "frontend_path",
+        "--frontend-path",
+        "inventory",
+        "库存",
+    ):
         assert forbidden not in seed_source

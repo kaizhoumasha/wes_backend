@@ -25,6 +25,8 @@ RETIRED_REMOVED_PATHS = frozenset(
         "scripts/data/bootstrap_admin.py",
         "scripts/data/bootstrap_admin.sh",
         "scripts/data/init_production_base_data.sql",
+        "scripts/data/sync_menus.py",
+        "scripts/data/sync_menus.sh",
     }
 )
 CANDIDATE_GLOBS = (

@@ -11,6 +11,7 @@ from scripts.select_heavy_tests import (
     SelectorError,
     build_parser,
     expand_braces,
+    filter_deleted_retired_archive_paths,
     get_changed_files,
     is_candidate,
     load_config,
@@ -263,6 +264,29 @@ def test_manual_redis_drill_uses_repository_explicit_none_mapping() -> None:
     matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == manual_drill]
     assert len(matching_mappings) == 1
     assert matching_mappings[0].heavy_tests == ()
+
+
+def test_menu_persistence_migration_selects_its_postgresql_owner() -> None:
+    migration = "migrations/versions/20260826_0109_9624cc34fa93_drop_menu_persistence.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([migration], config) == ["tests/integration/test_menu_persistence_removal_postgresql.py"]
+
+
+@pytest.mark.parametrize(
+    "retired_path",
+    [
+        "scripts/data/sync_menus.py",
+        "scripts/data/sync_menus.sh",
+    ],
+)
+def test_deleted_menu_sync_scripts_are_retired_only_while_absent(tmp_path: Path, retired_path: str) -> None:
+    assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == []
+
+    restored = tmp_path / retired_path
+    restored.parent.mkdir(parents=True, exist_ok=True)
+    restored.touch()
+    assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == [retired_path]
 
 
 def test_moved_core_heavy_tests_select_themselves() -> None:
