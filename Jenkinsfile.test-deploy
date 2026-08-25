@@ -361,8 +361,38 @@ with open(sys.argv[4], "w", encoding="utf-8") as stream:
     json.dump(value, stream, sort_keys=True, separators=(",", ":")); print(file=stream)
 PY
                         }
+                        resolve_database_identity() {
+                            TARGET_POSTGRES_DB=$(compose config --format json | python3 -c '
+import json, sys
+value = json.load(sys.stdin)["services"]["api"]["environment"].get("POSTGRES_DB")
+if not isinstance(value, str) or not value:
+    raise SystemExit(1)
+print(value)
+') || return 1
+                            case "${TARGET_POSTGRES_DB}" in
+                                *[!a-z0-9_]*|'') return 1 ;;
+                            esac
+                            [ "${#TARGET_POSTGRES_DB}" -le 63 ] || return 1
+
+                            api_container_id=$(compose ps -a -q api) || return 1
+                            [ -n "${api_container_id}" ] || return 1
+                            CURRENT_POSTGRES_DB=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                                "${api_container_id}" | sed -n 's/^POSTGRES_DB=//p') || return 1
+                            case "${CURRENT_POSTGRES_DB}" in
+                                *[!a-z0-9_]*|'') return 1 ;;
+                            esac
+                            if [ "${TARGET_POSTGRES_DB}" != "${CURRENT_POSTGRES_DB}" ]; then
+                                echo "database identity drift: runtime=${TARGET_POSTGRES_DB} current=${CURRENT_POSTGRES_DB}" >&2
+                                return 1
+                            fi
+                            export TARGET_POSTGRES_DB
+                        }
+                        read_database_heads() {
+                            compose exec -T -e TARGET_POSTGRES_DB="${TARGET_POSTGRES_DB}" db sh -eu -c \
+                                'psql -U "$POSTGRES_USER" -d "$TARGET_POSTGRES_DB" -tAc "select version_num from wes_sys.alembic_version order by version_num"'
+                        }
                         query_database_state() {
-                            DATABASE_HEADS=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from wes_sys.alembic_version order by version_num"') || return 1
+                            DATABASE_HEADS=$(read_database_heads) || return 1
                             EXPECTED_SCHEMA_HEAD=$(python3 - "${PREFLIGHT_DIR}/backend-labels.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["org.wes.release.expected-schema-head"])
@@ -504,6 +534,7 @@ PY
                             *) abort_pre_cutover current-frontend-discovery ;;
                         esac
                         discover_current_backend_topology || abort_pre_cutover current-backend-discovery
+                        resolve_database_identity || abort_pre_cutover database-identity
                         export CURRENT_FRONTEND_IMAGE CURRENT_FRONTEND_DIGEST
                         [ -n "${FRONTEND_IMAGE}" ] || FRONTEND_IMAGE="${CURRENT_FRONTEND_IMAGE}"
                         [ -n "${BACKEND_IMAGE}" ] || BACKEND_IMAGE="${CURRENT_BACKEND_IMAGE}"
@@ -601,14 +632,18 @@ PY
                         run_full_cutover() {
                             backup_name="${RELEASE_ID}.sql"
                             compose stop api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            CUTOVER_STAGE=database-identity-reverification
+                            resolve_database_identity || return 1
+                            CUTOVER_STAGE=backup
                             echo "🗄️ 备份当前数据库"
-                            compose exec -T db sh -eu -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "/backups/'"${backup_name}"'"' || return 1
+                            compose exec -T -e TARGET_POSTGRES_DB="${TARGET_POSTGRES_DB}" db sh -eu -c \
+                                'pg_dump -U "$POSTGRES_USER" -d "$TARGET_POSTGRES_DB" -Fc -f "/backups/'"${backup_name}"'"' || return 1
                             compose exec -T db test -s "/backups/${backup_name}" || return 1
                             CUTOVER_STAGE=migration
                             echo "🗄️ 执行数据库迁移"
                             compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/alembic api upgrade head || return 1
                             CUTOVER_STAGE=migration-head
-                            migrated_heads=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from wes_sys.alembic_version order by version_num"') || return 1
+                            migrated_heads=$(read_database_heads) || return 1
                             migrated_head_count=$(printf '%s\n' "$migrated_heads" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
                             [ "$migrated_head_count" = 1 ] || return 1
                             [ "$migrated_heads" = "${EXPECTED_SCHEMA_HEAD}" ] || return 1
