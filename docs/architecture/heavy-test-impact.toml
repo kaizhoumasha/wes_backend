@@ -57,7 +57,7 @@ reviewed_content_sha256 = "c8960fcc0c2f89777315253b00801a4ea256d578a14950efd4207
 [[mapping]]
 source_glob = "Jenkinsfile.release-checker-ci"
 heavy_tests = []
-reviewed_content_sha256 = "571364f882079b6ee3f1b21ca9dd708dd1587c147f30ff5fbddc60ffd1327084"
+reviewed_content_sha256 = "51b0b5d71417590fb4598cbe48f9d44ab88a554f2a065303d9084f4e91de0642"
 
 # BaseAPI/TreeAPI 生成的权限码进入完整应用目录，并由隔离 PostgreSQL dev-seed owner 验收。
 [[mapping]]
