@@ -5,7 +5,7 @@ pipeline {
 
     environment {
         REGISTRY_URL = '192.168.0.220:5050'
-        CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_release_checker'
+        CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend/release_checker'
         DOCKER_BUILDKIT = '1'
     }
 

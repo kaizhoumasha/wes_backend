@@ -5,6 +5,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "tools/release_checker/Dockerfile"
 JENKINSFILE = REPO_ROOT / "Jenkinsfile.release-checker-ci"
+DEPLOY_JENKINSFILE = REPO_ROOT / "Jenkinsfile.test-deploy"
 
 
 def test_checker_image_pins_python_oasdiff_and_verified_linux_archives() -> None:
@@ -59,7 +60,11 @@ def test_checker_ci_is_scoped_to_checker_inputs_and_owns_its_tests() -> None:
 
 def test_checker_ci_pushes_immutable_and_channel_tags_and_records_digest() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
+    deploy_pipeline = DEPLOY_JENKINSFILE.read_text(encoding="utf-8")
+    image_repository = "192.168.0.220:5050/wes/wes_backend/release_checker"
 
+    assert f"CHECKER_IMAGE_REPO = '{image_repository}'" in pipeline
+    assert f"CHECKER_IMAGE_REPO = '{image_repository}'" in deploy_pipeline
     assert (
         "git log -1 --format=%H -- tools/release_checker Jenkinsfile.release-checker-ci tests/deployment/test_release_checker_ci.py"
         in pipeline
