@@ -343,7 +343,7 @@ labels = json.load(open(source, encoding="utf-8"))
 selected = {field: labels.get(field) for field in fields}
 with open(target, "w", encoding="utf-8") as stream:
     json.dump(selected, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    stream.write("\n")
+    print(file=stream)
 PY
                         }
                         write_effective_facts() {
@@ -358,7 +358,7 @@ deploy = [item(path, root / path) for path in deploy_paths]
 runtime = [item("runtime/.env", sys.argv[2]), item("runtime/wms-provider.yaml", sys.argv[3])]
 value = {"deploy": {"kind": "wes.release.input-set.v1", "files": sorted(deploy, key=lambda x: x["path"])}, "runtime": {"kind": "wes.release.input-set.v1", "files": sorted(runtime, key=lambda x: x["path"])}}
 with open(sys.argv[4], "w", encoding="utf-8") as stream:
-    json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n")
+    json.dump(value, stream, sort_keys=True, separators=(",", ":")); print(file=stream)
 PY
                         }
                         query_database_state() {
@@ -398,7 +398,7 @@ import json, sys
 root, scope, frontend, backend, current_frontend, current_backend, heads, relation = sys.argv[1:]
 def write(name, value):
     with open(f"{root}/{name}", "w", encoding="utf-8") as stream:
-        json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n")
+        json.dump(value, stream, sort_keys=True, separators=(",", ":")); print(file=stream)
 candidate = {}
 if scope in {"FRONTEND", "BOTH"}: candidate["frontend"] = frontend
 if scope in {"BACKEND", "BOTH"}: candidate["backend"] = backend
@@ -476,7 +476,7 @@ value = {
     "deploy": effective["deploy"], "runtime": effective["runtime"],
 }
 with open(f"{root}/next-current-fingerprints.json", "w", encoding="utf-8") as stream:
-    json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n")
+    json.dump(value, stream, sort_keys=True, separators=(",", ":")); print(file=stream)
 PY
                             NEXT_CURRENT_FINGERPRINTS="${PREFLIGHT_DIR}/next-current-fingerprints.json"
                             export NEXT_CURRENT_FINGERPRINTS
