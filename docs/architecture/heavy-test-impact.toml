@@ -10,6 +10,7 @@ ignore_globs = [
     ".github/**",
     ".gitlab-ci.yml",
     ".gitignore",
+    "diagrams/onsite-deployment-architecture.html",
 ]
 
 # selector 实现由 QUALITY 脚本合同承接，不触发运行时 HEAVY 测试。
