@@ -9,8 +9,8 @@ import sys
 from textwrap import dedent
 
 
-def test_permission_and_menu_parent_ids_match_snowflake_primary_key_type() -> None:
-    """A production Snowflake ID must fit both tree parent columns."""
+def test_permission_parent_id_matches_snowflake_primary_key_type() -> None:
+    """A production Snowflake ID must fit the permission tree parent column."""
 
     script = dedent(
         """
@@ -18,7 +18,6 @@ def test_permission_and_menu_parent_ids_match_snowflake_primary_key_type() -> No
 
         from sqlalchemy.dialects import postgresql
 
-        from src.app.admin.models.menu import Menu
         from src.app.admin.models.perm import Permission
         from src.core.conf import settings
         from src.utils.snowflake import generate_snowflake_id
@@ -29,8 +28,6 @@ def test_permission_and_menu_parent_ids_match_snowflake_primary_key_type() -> No
             "snowflake_id": generate_snowflake_id(),
             "permission_id_type": Permission.__table__.c.id.type.compile(dialect=dialect).upper(),
             "permission_parent_id_type": Permission.__table__.c.parent_id.type.compile(dialect=dialect).upper(),
-            "menu_id_type": Menu.__table__.c.id.type.compile(dialect=dialect).upper(),
-            "menu_parent_id_type": Menu.__table__.c.parent_id.type.compile(dialect=dialect).upper(),
         }))
         """
     )
@@ -50,5 +47,3 @@ def test_permission_and_menu_parent_ids_match_snowflake_primary_key_type() -> No
     assert contract["snowflake_id"] > 2_147_483_647
     assert contract["permission_id_type"] == "BIGINT"
     assert contract["permission_parent_id_type"] == "BIGINT"
-    assert contract["menu_id_type"] == "BIGINT"
-    assert contract["menu_parent_id_type"] == "BIGINT"

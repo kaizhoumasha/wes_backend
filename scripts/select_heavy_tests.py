@@ -25,6 +25,14 @@ RETIRED_REMOVED_PATHS = frozenset(
         "scripts/data/bootstrap_admin.py",
         "scripts/data/bootstrap_admin.sh",
         "scripts/data/init_production_base_data.sql",
+        "scripts/data/sync_menus.py",
+        "scripts/data/sync_menus.sh",
+        "src/app/admin/models/menu.py",
+        "src/app/admin/repositories/menu_repository.py",
+        "src/app/admin/services/menu_service.py",
+        "src/app/admin/services/menu_sync_service.py",
+        "src/app/admin/v1/menu.py",
+        "src/utils/frontend_menu_parser.py",
     }
 )
 CANDIDATE_GLOBS = (

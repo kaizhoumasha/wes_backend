@@ -278,7 +278,8 @@ def test_canonical_development_runner_migrates_seeds_checks_and_preserves_data()
     assert "docker-compose.frontend.yml" in runner
     assert "alembic upgrade head" in runner
     assert "scripts/data/seed_initial_data.py" in runner
-    assert "--frontend-path /workspace/frontend" in runner
+    assert "--frontend-path" not in runner
+    assert "/workspace/frontend" not in runner
     assert "--check" in runner
     assert 'case "$COMMAND" in' in runner
     assert "down --remove-orphans" in runner
@@ -323,14 +324,15 @@ def test_test_deploy_converges_authorization_before_starting_application_service
     full_cutover = pipeline.split("run_full_cutover()", maxsplit=1)[1].split(
         "verify_readiness_and_topology()", maxsplit=1
     )[0]
+    backend_full_cutover = full_cutover[full_cutover.index('backup_name="${RELEASE_ID}.sql"') :]
     full_stage_markers = [
         "🗄️ 备份当前数据库",
         "🗄️ 执行数据库迁移",
         "🔐 收敛 existing DB 基础授权",
-        "🔎 校验权限目录零漂移",
+        "check_authorization_drift || return 1",
         "🐳 启动已固定版本的应用服务",
     ]
-    positions = [full_cutover.index(marker) for marker in full_stage_markers]
+    positions = [backend_full_cutover.index(marker) for marker in full_stage_markers]
 
     assert positions == sorted(positions)
     runtime_flow = pipeline[pipeline.index("🔒 进入维护态并停止旧应用容器") :]
@@ -364,7 +366,8 @@ def test_test_deploy_repairs_postcommit_cache_failure_without_repeating_database
     recovery = recovery.split("🐳 启动已固定版本的应用服务", maxsplit=1)[0]
 
     assert "scripts/data/sync_permissions.py --repair-cache" in recovery
-    assert "scripts/data/sync_permissions.py --check" in recovery
+    assert "check_authorization_drift || return 1" in recovery
+    assert "scripts/data/sync_permissions.py --check" in pipeline
     assert "bootstrap_foundation" not in recovery
     assert "--apply" not in recovery
 
@@ -559,5 +562,13 @@ def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() 
     }
 
     seed_source = (BACKEND_ROOT / "scripts/data/seed_initial_data.py").read_text(encoding="utf-8")
-    for forbidden in ("WorkLine", "DeviceCommand", "TransportTask", "inventory", "库存"):
+    for forbidden in (
+        "WorkLine",
+        "DeviceCommand",
+        "TransportTask",
+        "frontend_path",
+        "--frontend-path",
+        "inventory",
+        "库存",
+    ):
         assert forbidden not in seed_source

@@ -195,12 +195,12 @@ def _current_permission_examples() -> list[object]:
         ),
         _permission(
             15,
-            "admin:menu:siblings",
+            "admin:permission:siblings",
             category="admin",
-            resource="menu",
+            resource="permission",
             action="siblings",
             method="GET",
-            path="/api/v1/admin/menus/siblings/{node_id}",
+            path="/api/v1/admin/permissions/siblings/{node_id}",
         ),
     ]
 

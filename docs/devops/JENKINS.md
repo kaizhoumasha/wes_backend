@@ -62,7 +62,7 @@ Orchestrator 在维护前完成 candidate digest 固定、当前 peer 交叉验�
 - 进入维护后失败为 `CUTOVER_FAILED_MAINTENANCE_HELD`，Nginx 保持关闭；
 - 成功归档 `/srv/wes/releases/${RELEASE_ID}/compatibility-report.json` 和 Jenkins artifact。
 
-FAST 只切选择的一侧；backend FAST 仍须同时重建 API、Celery、WMS fulfillment、Beat 和 Flower。FULL 保留数据库备份、仅向前 migration、权限零漂移、管理员真实登录、精确 topology 和共享 HTTP readiness。
+FAST 只切选择的一侧；backend FAST 仍须同时重建 API、Celery、WMS fulfillment、Beat 和 Flower。frontend FULL 只重建 frontend，不执行数据库 mutation；backend/BOTH FULL 才备份数据库、执行仅向前 migration 和权限收敛。所有 FULL 都在恢复 Nginx 前完成权限零漂移、管理员真实登录、精确 topology 和共享 HTTP readiness。
 
 ## 后端 Pipeline 流程
 
@@ -86,9 +86,11 @@ HEAVY selector 只负责测试选择，不能作为 FAST/FULL 发布模式真源
 
 ## 首次空站点与日常发布
 
-`bootstrap_foundation.sh` 只用于确认空数据库的首次站点初始化，并要求部署环境注入 `BOOTSTRAP_ADMIN_*`。日常 FULL 必须对当前数据库先备份再向前迁移，不得为每次发布创建 fresh DB，也不得使用 `seed_initial_data.py`。
+`bootstrap_foundation.sh` 只用于确认空数据库的首次站点初始化，并要求部署环境注入 `BOOTSTRAP_ADMIN_*`。日常 `BACKEND`/`BOTH` FULL 必须对当前数据库先备份再向前迁移；`FRONTEND` FULL 不执行任何数据库 mutation。不得为每次发布创建 fresh DB，也不得使用 `seed_initial_data.py`。
 
-权限 mutation 成功或一次精确 post-commit cache repair 后，都必须重新执行独立 `sync_permissions.py --check`。菜单不属于发布编排：不从 frontend 镜像提取 menu manifest，不运行菜单同步，不以菜单表数量作为部署门禁。
+权限 mutation 成功或一次精确 post-commit cache repair 后，都必须重新执行独立 `sync_permissions.py --check`。菜单由 frontend 镜像中的静态路由与 `meta.menu` 拥有；backend producer 和 orchestrator 不依赖 frontend 源码或菜单产物，不运行菜单同步，也不以菜单表数量作为部署门禁。
+
+菜单收敛必须顺序执行两个独立 FULL：先用 `DEPLOY_SCOPE=FRONTEND` 验证新 frontend 与当前 backend 兼容且不触发数据库 mutation，再用 `DEPLOY_SCOPE=BACKEND` 在维护态完成 migration 和授权收敛。兼容 checker 允许新 frontend 配旧 backend，但必须在维护前拒绝仍要求菜单 API 或 `/auth/my.menus` 的旧 frontend 配新 backend；禁止改用 Commit equality。
 
 ## 快速配置
 

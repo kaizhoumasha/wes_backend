@@ -727,7 +727,8 @@ def test_full_preserves_backup_forward_migration_authorization_and_readiness() -
     assert '[ "$migrated_heads" = "${EXPECTED_SCHEMA_HEAD}" ]' in full
     assert "alembic" in full and "upgrade head" in full
     assert "sync_permissions.py --apply" in full
-    assert "sync_permissions.py --check" in full
+    assert "check_authorization_drift" in full
+    assert "scripts/data/sync_permissions.py --check" in pipeline
     assert "scripts/check_bootstrap_admin_login.py" in full
     assert "for service in api celery celery-wms-fulfillment celery_beat flower" in full
     assert "verify_service_digest frontend" in full
@@ -807,6 +808,7 @@ def _fake_docker() -> str:
         esac
         case "$operation:$args" in
             "stop:nginx") trace nginx-stop; printf stopped >"$NGINX_STATE" ;;
+            "stop:frontend") trace frontend-stop; exit 0 ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*frontend*) trace application-stop; exit 0 ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*) trace backend-stop; exit 0 ;;
             up:*api*celery*celery-wms-fulfillment*celery_beat*flower*frontend*)
@@ -849,8 +851,13 @@ def _fake_docker() -> str:
             ps:*--status*running*--services*)
                 printf '%s\n' api celery celery-wms-fulfillment celery_beat flower frontend redis
                 fail topology-missing-db || printf '%s\n' db
-                [ "$(cat "$NGINX_STATE")" != running ] || printf '%s\n' nginx
-                trace topology-running
+                if [ "$(cat "$NGINX_STATE")" = running ]; then
+                    trace final-topology-running
+                    fail final-topology && exit 92
+                    printf '%s\n' nginx
+                else
+                    trace topology-running
+                fi
                 fail topology-running-query && exit 91
                 exit 0
                 ;;
@@ -1156,20 +1163,65 @@ def test_full_reverifies_database_identity_after_application_stop_and_before_bac
     assert "migration" not in trace
 
 
+def test_frontend_full_restarts_only_frontend_without_database_mutation(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(tmp_path, mode="FULL", scope="FRONTEND")
+
+    assert status == 0, (trace, output)
+    assert nginx == "running"
+    assert "frontend-stop" in trace
+    assert "frontend-start" in trace
+    assert "authorization-check" in trace
+    for forbidden in (
+        "application-stop",
+        "backend-stop",
+        "backend-start",
+        "database-identity-reverification",
+        "backup",
+        "migration",
+        "authorization-apply",
+    ):
+        assert forbidden not in trace
+    assert trace.index("frontend-stop") < trace.index("frontend-start") < trace.index("topology-running")
+    assert trace.index("topology-running") < trace.index("nginx-start")
+
+
+def test_backend_full_converges_database_before_backend_exposure_without_restarting_frontend(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(tmp_path, mode="FULL", scope="BACKEND")
+
+    assert status == 0, (trace, output)
+    assert nginx == "running"
+    assert "frontend-start" not in trace
+    expected = [
+        "backend-stop",
+        "database-identity-reverification",
+        "backup",
+        "migration",
+        "migration-head",
+        "authorization-apply",
+        "authorization-check",
+        "backend-start",
+        "topology-running",
+        "nginx-start",
+    ]
+    positions = [trace.index(stage) for stage in expected]
+    assert positions == sorted(positions)
+    assert (tmp_path / "live-state/frontend").read_text(encoding="utf-8").strip() == (
+        "repo/frontend@sha256:" + "1" * 64
+    )
+
+
 def test_internal_topology_excludes_stopped_nginx_but_requires_every_other_compose_service() -> None:
     pipeline = _pipeline()
+    topology = pipeline[pipeline.index("verify_exact_topology()") : pipeline.index("verify_readiness_and_topology()")]
     readiness = pipeline[
         pipeline.index("verify_readiness_and_topology()") : pipeline.index("persist_success_evidence()")
     ]
 
-    assert "runtime_compose config --services" in readiness
-    assert "runtime_compose ps --status running --services" in readiness
-    assert readiness.count("sed '/^nginx$/d'") == 2
-    assert "expected=$(runtime_compose config --services | sed '/^nginx$/d' | LC_ALL=C sort) || return 1" in readiness
-    assert (
-        "running=$(runtime_compose ps --status running --services | sed '/^nginx$/d' | LC_ALL=C sort) || return 1"
-        in readiness
-    )
+    assert topology.count("runtime_compose config --services") == 1
+    assert topology.count("runtime_compose ps --status running --services") == 1
+    assert topology.count("sed '/^nginx$/d'") == 2
+    assert "verify_exact_topology false" in readiness
+    assert "verify_exact_topology true" in pipeline
     assert "api celery celery-wms-fulfillment celery_beat flower frontend db redis" not in readiness
 
 
@@ -1205,6 +1257,20 @@ def test_evidence_persist_failure_keeps_the_previous_current_pair_atomic(tmp_pat
     assert (current / "current-fingerprints.json").read_text(encoding="utf-8") == '{"old":true}\n'
 
 
+def test_final_topology_failure_recloses_entrypoint_without_persisting_success(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(tmp_path, mode="FULL", scope="BOTH", fail_stage="final-topology")
+
+    assert status != 0, (trace, output)
+    assert nginx == "stopped"
+    assert trace.count("nginx-start") == 1
+    assert trace[-1] == "nginx-stop"
+    assert trace.index("http-ready") < trace.index("final-topology-running")
+    current = tmp_path / "evidence/current"
+    assert current.is_symlink()
+    assert os.readlink(current) == "old-release"
+    assert not (tmp_path / "evidence/release-test").exists()
+
+
 @pytest.mark.parametrize(
     ("mode", "scope", "expected", "forbidden"),
     [
@@ -1222,8 +1288,9 @@ def test_successful_fast_full_simulation_changes_only_the_required_scope(
     assert nginx == "running"
     assert expected in trace
     assert forbidden not in trace
-    assert trace[-1] == "http-ready"
+    assert trace[-1] == "final-topology-running"
     assert trace.index("topology-running") < trace.index("nginx-start")
+    assert trace.index("http-ready") < trace.index("final-topology-running")
     current = tmp_path / "evidence/current"
     assert current.is_symlink()
     assert os.readlink(current) == "release-test"

@@ -301,16 +301,17 @@ docker-compose --version
 - checker `ERR`、超时或非法报告以 `PRE_CUTOVER_ABORTED` 结束；`WARN` 只有提供绑定本次三个 digest 与 diff hash 的理由才继续
 - 模式由 candidate-vs-current 内容与运行输入决定；只允许用 `FORCE_FULL` 升级，不存在 force-FAST
 - FAST 只切选择的一侧；backend FAST 仍原子重建 API、两个 Celery worker、WMS fulfillment、Beat 和 Flower
-- FULL 才在维护态备份当前数据库、执行批准的 forward migration、权限零漂移、管理员登录、精确 topology 和共享 readiness；日常部署不得创建 fresh DB
+- frontend FULL 只重建 frontend，不执行数据库 mutation；backend/BOTH FULL 才在维护态备份当前数据库、执行批准的 forward migration 和权限收敛。所有 FULL 都必须通过独立权限 `--check`、管理员登录、精确 topology 和共享 readiness；日常部署不得创建 fresh DB
 - 全部门禁通过后才恢复 Nginx，再验证外部 `/health`、首页和最终 rendered/running service 集合；任一维护后失败以 `CUTOVER_FAILED_MAINTENANCE_HELD` 结束
-- 报告保存到 `/srv/wes/releases/${RELEASE_ID}/compatibility-report.json` 并归档为 Jenkins artifact；发布编排不提取菜单 manifest、不运行菜单同步
+- 报告保存到 `/srv/wes/releases/${RELEASE_ID}/compatibility-report.json` 并归档为 Jenkins artifact；frontend 镜像自行包含静态路由与 `meta.menu`，backend 部署不依赖 frontend 源码或菜单产物
+- 菜单收敛先执行 candidate-only `FRONTEND` FULL，再执行 candidate-only `BACKEND` FULL；checker 允许新 frontend 配当前旧 backend，并在维护前拒绝仍要求菜单 API 或 `/auth/my.menus` 的旧 frontend 配新 backend，不比较 Commit equality
 
 PROD 边界说明：
 
 - 三个 producer 只负责自身 CI 与镜像发布，不自动部署 TEST 或生产环境
 - 生产环境使用 [生产发布 Runbook](prod-release-deploy.md) 描述的同一 orchestrator 合同，不复用 `seed_initial_data.py`
 - fresh DB 只允许首次空站点初始化：migration 后注入 `BOOTSTRAP_ADMIN_*`，执行 `bootstrap_foundation.sh` 和新的权限 `--check`
-- 日常 FULL 对当前数据库备份并仅向前迁移；权限 mutation 失败只接受精确 post-commit marker 的一次 repair，且不得重跑 mutation
+- 日常 `BACKEND`/`BOTH` FULL 对当前数据库备份并仅向前迁移；`FRONTEND` FULL 不执行任何数据库 mutation。权限 mutation 失败只接受精确 post-commit marker 的一次 repair，且不得重跑 mutation
 - 前后端环境文件分离维护；只归档有效配置 hash，不记录秘密
 - 菜单由前端静态路由拥有，不属于发布门禁
 
