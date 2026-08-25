@@ -230,6 +230,7 @@ def test_single_side_discovers_and_reverifies_live_peer_without_operator_input()
 
     assert "discover_live_digest frontend" in pipeline
     assert "discover_current_backend_topology" in pipeline
+    assert 'container_id=$(compose ps -a -q "$service")' in pipeline
     assert "for service in api celery celery-wms-fulfillment celery_beat flower" in pipeline
     assert "verify_current_peer_evidence" in pipeline
     assert "reverify_unselected_peer" in pipeline
@@ -613,6 +614,7 @@ def _fake_docker() -> str:
                 fail topology-config-query && exit 90
                 exit 0
                 ;;
+            ps:-a\ -q*) printf 'svc-%s\n' "${args#-a -q }" ;;
             ps:-q*) printf 'svc-%s\n' "${args#-q }" ;;
             ps:*--status*running*--services*)
                 printf '%s\n' api celery celery-wms-fulfillment celery_beat flower frontend redis
@@ -833,7 +835,7 @@ compose() {
     docker compose --env-file "${COMPOSE_ENV_FILE}" --project-directory "${COMPOSE_PROJECT_DIR}" -f "${COMPOSE_FILE}" "$@"
 }
 discover_live_image() {
-    container_id=$(compose ps -q "$1")
+    container_id=$(compose ps -a -q "$1")
     [ -n "$container_id" ] || return 1
     docker inspect --format '{{ .Config.Image }}' "$container_id"
 }
