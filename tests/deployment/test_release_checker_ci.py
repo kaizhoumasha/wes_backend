@@ -51,6 +51,8 @@ def test_checker_ci_is_scoped_to_checker_inputs_and_owns_its_tests() -> None:
     assert "--target testing" in pipeline
     assert "/opt/tools/release_checker/tests" in pipeline
     assert "tests/deployment/test_release_checker_ci.py" in pipeline
+    assert "-c /dev/null -p no:cacheprovider" in pipeline
+    assert "--confcutdir=tests/deployment" in pipeline
     assert "--target production" in pipeline
     assert "tools/release_checker" in pipeline
 
