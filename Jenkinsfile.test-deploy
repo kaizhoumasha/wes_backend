@@ -16,7 +16,7 @@ pipeline {
         REGISTRY_URL = '192.168.0.220:5050'
         BACKEND_IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend'
         FRONTEND_IMAGE_REPO = '192.168.0.220:5050/wes/wes_frontend'
-        CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_release_checker'
+        CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend/release_checker'
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_ENV_FILE = '.env.test'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
