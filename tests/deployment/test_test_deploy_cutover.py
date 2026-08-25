@@ -469,6 +469,13 @@ def test_preflight_does_not_mutate_live_deploy_source_before_maintenance() -> No
     assert 'mv -f "${runtime_env_tmp}" "${DEPLOY_PATH}/.env"' in pipeline
 
 
+def test_runtime_env_source_survives_live_deploy_source_switch() -> None:
+    pipeline = _pipeline()
+
+    assert "DEPLOY_ENV_FILE = '.env'" in pipeline
+    assert "DEPLOY_ENV_FILE = '.env.test'" not in pipeline
+
+
 def test_all_identity_compatibility_and_business_preflight_precede_maintenance() -> None:
     pipeline = _pipeline()
     maintenance = pipeline.index("MAINTENANCE_MODE=true")
