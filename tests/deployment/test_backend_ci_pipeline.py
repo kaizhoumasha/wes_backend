@@ -135,6 +135,7 @@ def test_provider_image_boundary_rejects_missing_or_malformed_git_identity(
 
 def test_backend_docker_context_keeps_only_the_provider_export_for_runtime_build() -> None:
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
 
     assert "reports/" in dockerignore
     assert "!reports/release-provider/" in dockerignore
@@ -142,6 +143,7 @@ def test_backend_docker_context_keeps_only_the_provider_export_for_runtime_build
     assert "reports/release-provider/provider-fingerprints.json" not in dockerignore
     assert "tools/release_checker/" not in dockerignore
     assert ".superpowers/" in dockerignore
+    assert '-v "$WORKSPACE/.dockerignore:/app/.dockerignore:ro"' in jenkinsfile
 
 
 def test_backend_runtime_image_layers_exclude_ci_only_release_files(tmp_path: Path) -> None:

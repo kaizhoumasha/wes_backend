@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -775,7 +776,7 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
     )
     _write_executable(
         bin_dir / "python3",
-        '#!/bin/bash\nif [ "$1" = scripts/wait_for_http.py ]; then printf \'http-ready\\n\' >>"$TRACE_FILE"; [ "${FAIL_STAGE:-}" != external-readiness ]; else exec /usr/bin/python3 "$@"; fi\n',
+        '#!/bin/bash\nif [ "$1" = scripts/wait_for_http.py ]; then printf \'http-ready\\n\' >>"$TRACE_FILE"; [ "${FAIL_STAGE:-}" != external-readiness ]; else exec "$REAL_PYTHON" "$@"; fi\n',
     )
     current_frontend = "repo/frontend@sha256:" + "1" * 64
     current_backend = "repo/backend@sha256:" + "2" * 64
@@ -816,6 +817,7 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
         "RELEASE_EVIDENCE_ROOT": str(evidence_root),
         "CURRENT_RELEASE_EVIDENCE_DIR": str(evidence_root / "current"),
         "RELEASE_ID": "release-test",
+        "REAL_PYTHON": sys.executable,
         "REPORT_FILE": str(report_file),
         "STAGED_RUNTIME_ENV_FILE": str(staged_runtime_env),
         "TRACE_FILE": str(trace_file),

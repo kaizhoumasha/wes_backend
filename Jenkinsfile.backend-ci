@@ -185,6 +185,7 @@ pipeline {
                                 --memory=4g \
                                 --env-file "$WORKSPACE/.env.test" \
                                 -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
+                                -v "$WORKSPACE/.dockerignore:/app/.dockerignore:ro" \
                                 -v "$WORKSPACE/.git:/app/.git:ro" \
                                 -v "$WORKSPACE/reports:/app/reports" \
                                 "${CI_IMAGE}" \
