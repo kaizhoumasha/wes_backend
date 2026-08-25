@@ -77,7 +77,8 @@ pipeline {
                                 -v "$WORKSPACE:/workspace:ro" \
                                 -w /workspace \
                                 "${CHECKER_TEST_IMAGE}" \
-                                -m pytest tests/deployment/test_release_checker_ci.py -q
+                                -m pytest -c /dev/null -p no:cacheprovider \
+                                --confcutdir=tests/deployment tests/deployment/test_release_checker_ci.py -q
                         '''
                     }
                 }
