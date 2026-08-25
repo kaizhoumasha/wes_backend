@@ -1,432 +1,143 @@
 # 生产环境部署 Runbook
 
-> 状态：`implementation_baseline`
-> 系统尚未发布；本文只描述当前前后端固定版本对的直接替换，不提供旧镜像、旧 schema、旧数据或旧 Runtime 的兼容/滚动升级路径。
+> 本文只描述当前独立发布入口。前端、后端和 release checker 分别构建、测试和发布；生产环境只能由独立 release orchestrator 改变。Producer 发布成功仅表示 `PUBLISHED — NOT DEPLOYED`。
 
 ## 1. 发布边界
 
-- 前后端必须作为同一批准合同发布，禁止只部署其中一端。
-- 后端和前端都必须使用 Jenkins 产出的 immutable tag，并在切换前固定为 registry digest。
-- fresh DB 使用 `bootstrap_foundation`；已有部署数据库使用受控的权限 `--apply`。任一 mutation 如精确报告 post-commit cache marker，只 repair 一次且不重跑 mutation；两者之后都必须执行独立的 `--check`。
-- 维护态就是停止 Nginx 并确认外部端口关闭。任何后续门禁失败都保持 Nginx 关闭并报告失败阶段。
-- 不允许生产 seed、旧同步入口、静态权限 SQL、兼容 API、双 schema、双读写或旧镜像回退。
-
-本文命令不会自行部署。执行生产命令必须取得单独部署授权，并先记录发布 SHA、镜像 digest、OpenAPI SHA 和权限契约 SHA。
-
-## 2. 前置条件
-
-部署机必须具备 Docker、Docker Compose 2.24.4 或更高版本，以及与目标后端提交一致的 `docker-compose.yml`、`docker-compose.deploy.yml` 和 `.env.prod`。还必须确认：
-
-- `USE_SNOWFLAKE_ID=true` 且 datacenter/worker ID 唯一；
-- `WMS_PROVIDER_PROFILE_HOST_FILE` 指向当前工厂唯一、只读且可读的 Provider profile；
-- API、Celery 和 CLI 数据库连接预算已批准；
-- 生产 Compose 不挂载宿主机 `/app/src`；
-- `BOOTSTRAP_ADMIN_*` 通过受控部署环境注入，不写入仓库或现场记录；
-- 已明确目标是 fresh DB 还是已有部署数据库，不在运行中猜测。
-
-以下示例统一使用：
-
-```bash
-set -euo pipefail
-cd /srv/wes/app
-
-export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:<approved-tag>
-export FRONTEND_IMAGE=192.168.0.220:5050/wes/wes_frontend:<approved-tag>
-export EXPECTED_BACKEND_COMMIT_SHA=<approved-backend-commit>
-export DEPLOY_SOURCE_COMMIT_SHA=<approved-backend-commit>
-export EXPECTED_FRONTEND_COMMIT_SHA=<approved-frontend-commit>
-export EXPECTED_OPENAPI_SHA256=<approved-openapi-sha256>
-export EXPECTED_PERMISSIONS_SHA256=<approved-permissions-sha256>
-[ "$DEPLOY_SOURCE_COMMIT_SHA" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
-DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
-[ "$DEPLOY_ACTUAL_COMMIT" = "$DEPLOY_SOURCE_COMMIT_SHA" ] || exit 1
-
-compose() {
-  docker compose --profile prod --env-file .env.prod \
-    -f docker-compose.yml \
-    -f docker-compose.deploy.yml "$@"
-}
-
-MAINTENANCE_MODE=false
-CUTOVER_STAGE=pre-maintenance
-keep_external_entrypoint_closed() {
-  if [ "$MAINTENANCE_MODE" = true ]; then
-    echo "发布在阶段 ${CUTOVER_STAGE} 失败；外部入口保持关闭" >&2
-    compose stop nginx >/dev/null 2>&1 || true
-  fi
-}
-fail_cutover() {
-  CUTOVER_STAGE="$1"
-  keep_external_entrypoint_closed
-  exit 1
-}
-trap keep_external_entrypoint_closed EXIT
-```
-
-## 3. 拉取并固定前后端镜像
-
-这一步在进入维护态前完成：
-
-```bash
-docker login 192.168.0.220:5050
-compose pull api celery celery-wms-fulfillment celery_beat flower frontend nginx
-
-BACKEND_IMAGE=$(docker image inspect --format '{{ index .RepoDigests 0 }}' "$BACKEND_IMAGE")
-FRONTEND_IMAGE=$(docker image inspect --format '{{ index .RepoDigests 0 }}' "$FRONTEND_IMAGE")
-case "$BACKEND_IMAGE" in *@sha256:*) ;; *) echo '后端镜像没有固定 digest' >&2; exit 1 ;; esac
-case "$FRONTEND_IMAGE" in *@sha256:*) ;; *) echo '前端镜像没有固定 digest' >&2; exit 1 ;; esac
-export BACKEND_IMAGE FRONTEND_IMAGE
-
-BACKEND_REVISION=$(docker image inspect --format \
-  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE")
-FRONTEND_REVISION=$(docker image inspect --format \
-  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE")
-FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
-  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE")
-FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
-  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE")
-FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
-  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE")
-[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
-[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || exit 1
-[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || exit 1
-[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || exit 1
-[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] || exit 1
-
-compose config >/dev/null
-```
-
-固定后不得重新解析 channel tag。部署仓库、后端镜像、前端绑定的后端契约必须是同一个批准 revision；任一 digest、revision 或 SHA 与批准发布记录不一致，在进入维护态前停止发布。
-
-## 4. 进入维护态并清空旧应用进程
-
-先停止 Nginx，再确认外部端口已经关闭：
-
-```bash
-NGINX_HTTP_PORT=$(sed -n 's/^NGINX_HTTP_PORT=//p' .env.prod | tail -n 1)
-NGINX_HTTP_PORT=${NGINX_HTTP_PORT:-80}
-CUTOVER_STAGE=maintenance-stop
-MAINTENANCE_MODE=true
-compose stop nginx || fail_cutover maintenance-stop
-CLOSE_RETRY=0
-while curl -sS --connect-timeout 1 --max-time 2 \
-  "http://127.0.0.1:${NGINX_HTTP_PORT}/" >/dev/null 2>&1; do
-  CLOSE_RETRY=$((CLOSE_RETRY + 1))
-  [ "$CLOSE_RETRY" -lt 10 ] || fail_cutover listener-closure
-  sleep 1
-done
-```
-
-只按 Compose project/service 标签识别容器，禁止依赖 `container_name`：
-
-```bash
-compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' .env.prod | tail -n 1)
-compose_project_name=${compose_project_name:-$(basename "$PWD")}
-
-PROJECT_CONTAINER_IDS=$(docker ps -q \
-  --filter "label=com.docker.compose.project=${compose_project_name}") || fail_cutover service-discovery
-for container_id in $PROJECT_CONTAINER_IDS; do
-  compose_service=$(docker inspect --format \
-    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id") || fail_cutover service-discovery
-  case "$compose_service" in
-    db|redis) ;;
-    api|celery|celery-wms-fulfillment|celery_beat|flower|frontend|nginx)
-      docker stop "$container_id" >/dev/null || fail_cutover application-stop
-      ;;
-    *)
-      echo "未知 Compose service，保持维护态: ${compose_service:-<empty>}" >&2
-      fail_cutover unknown-service
-      ;;
-  esac
-done
-
-compose up -d --wait db redis || fail_cutover infrastructure-readiness
-
-REMAINING_CONTAINER_IDS=$(docker ps -q \
-  --filter "label=com.docker.compose.project=${compose_project_name}") \
-  || fail_cutover remaining-service-discovery
-for container_id in $REMAINING_CONTAINER_IDS; do
-  compose_service=$(docker inspect --format \
-    '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id") \
-    || fail_cutover remaining-service-discovery
-  case "$compose_service" in
-    db|redis) ;;
-    *) echo "迁移前仍有应用运行: ${compose_service:-<empty>}" >&2; fail_cutover remaining-application-service ;;
-  esac
-done
-```
-
-进入本节后所有错误都必须保留维护态。不得在授权零漂移前重建任何对外应用服务。
-
-## 5. 使用新后端镜像执行迁移
-
-```bash
-compose run --rm --no-deps \
-  -e DATABASE_RUNTIME_ROLE=cli \
-  -e DATABASE_POOL_SIZE=1 \
-  -e DATABASE_MAX_OVERFLOW=0 \
-  --entrypoint /opt/venv/bin/alembic \
-  api upgrade head
-```
-
-这是一条新后端镜像的一次性命令。失败时保持 Nginx 与全部应用停止；不得执行 downgrade、启动旧镜像或引入兼容 revision。
-
-## 6. 在维护态收敛基础授权
-
-二选一，不能同时执行。
-
-### 6.1 Fresh DB
-
-```bash
-if BOOTSTRAP_OUTPUT=$(compose run --rm --no-deps \
-  -e DATABASE_RUNTIME_ROLE=cli \
-  -e DATABASE_POOL_SIZE=1 \
-  -e DATABASE_MAX_OVERFLOW=0 \
-  --entrypoint /bin/bash \
-  api scripts/data/bootstrap_foundation.sh 2>&1); then
-  printf '%s\n' "$BOOTSTRAP_OUTPUT"
-else
-  BOOTSTRAP_STATUS=$?
-  printf '%s\n' "$BOOTSTRAP_OUTPUT"
-  echo "bootstrap exit status: ${BOOTSTRAP_STATUS}" >&2
-  printf '%s\n' "$BOOTSTRAP_OUTPUT" \
-    | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED' \
-    || fail_cutover authorization-bootstrap
-  compose run --rm --no-deps \
-    --entrypoint /opt/venv/bin/python \
-    api scripts/data/sync_permissions.py --repair-cache \
-    || fail_cutover authorization-cache-repair
-fi
-```
-
-### 6.2 已有部署数据库
-
-```bash
-# EXISTING_DATABASE_AUTHORIZATION_BEGIN
-if AUTHORIZATION_APPLY_OUTPUT=$(compose run --rm --no-deps \
-  -e DATABASE_RUNTIME_ROLE=cli \
-  -e DATABASE_POOL_SIZE=1 \
-  -e DATABASE_MAX_OVERFLOW=0 \
-  --entrypoint /opt/venv/bin/python \
-  api scripts/data/sync_permissions.py --apply 2>&1); then
-  printf '%s\n' "$AUTHORIZATION_APPLY_OUTPUT"
-else
-  AUTHORIZATION_APPLY_STATUS=$?
-  printf '%s\n' "$AUTHORIZATION_APPLY_OUTPUT"
-  echo "authorization apply exit status: ${AUTHORIZATION_APPLY_STATUS}" >&2
-  printf '%s\n' "$AUTHORIZATION_APPLY_OUTPUT" \
-    | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED' \
-    || fail_cutover authorization-apply
-  compose run --rm --no-deps \
-    --entrypoint /opt/venv/bin/python \
-    api scripts/data/sync_permissions.py --repair-cache \
-    || fail_cutover authorization-cache-repair
-fi
-# EXISTING_DATABASE_AUTHORIZATION_END
-```
-
-无论选择哪条路径，随后都必须运行新的只读检查：
-
-```bash
-# AUTHORIZATION_FRESH_CHECK_BEGIN
-compose run --rm --no-deps \
-  -e DATABASE_RUNTIME_ROLE=cli \
-  -e DATABASE_POOL_SIZE=1 \
-  -e DATABASE_MAX_OVERFLOW=0 \
-  --entrypoint /opt/venv/bin/python \
-  api scripts/data/sync_permissions.py --check \
-  || fail_cutover authorization-check
-# AUTHORIZATION_FRESH_CHECK_END
-```
-
-两个 mutation 的失败分支都只接受独占整行、且与详情行分离的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`，并在同一分支执行一次 `--repair-cache`；不得重跑 bootstrap、`--apply` 或再次 repair。没有该精确整行的普通失败立即 fail closed。`--repair-cache` 只清理当前数据库前缀下的两个权限缓存命名空间；repair 或随后独立的 fresh `--check` 失败时，EXIT trap 会再次停止 Nginx。
-
-## 7. 启动固定版本并执行内部门禁
-
-授权零漂移后才允许启动成对版本：
-
-```bash
-compose up -d --force-recreate --wait \
-  api celery celery-wms-fulfillment celery_beat flower frontend \
-  || fail_cutover application-start
-
-compose exec -T api curl -fsS http://127.0.0.1:8001/ready >/dev/null \
-  || fail_cutover backend-readiness
-compose exec -T frontend wget --no-verbose --tries=1 --spider \
-  http://127.0.0.1:5173/ >/dev/null || fail_cutover frontend-asset
-
-echo "验证超级管理员真实登录"
-CUTOVER_STAGE=admin-login-gate
-if ! compose exec -T \
-  -e BOOTSTRAP_ADMIN_USERNAME \
-  -e BOOTSTRAP_ADMIN_PASSWORD \
-  api /opt/venv/bin/python scripts/check_bootstrap_admin_login.py \
-  --base-url http://127.0.0.1:8001; then
-  fail_cutover admin-login-gate
-fi
-
-BACKEND_REVISION=$(docker image inspect --format \
-  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$BACKEND_IMAGE") \
-  || fail_cutover backend-image-revision
-FRONTEND_REVISION=$(docker image inspect --format \
-  '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$FRONTEND_IMAGE") \
-  || fail_cutover frontend-image-revision
-FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
-  '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "$FRONTEND_IMAGE") \
-  || fail_cutover frontend-backend-provenance
-FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
-  '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "$FRONTEND_IMAGE") \
-  || fail_cutover openapi-provenance
-FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
-  '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "$FRONTEND_IMAGE") \
-  || fail_cutover permission-provenance
-[ "$BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] || fail_cutover backend-image-revision
-[ "$FRONTEND_REVISION" = "$EXPECTED_FRONTEND_COMMIT_SHA" ] || fail_cutover frontend-image-revision
-[ "$FRONTEND_BACKEND_REVISION" = "$EXPECTED_BACKEND_COMMIT_SHA" ] \
-  || fail_cutover frontend-backend-provenance
-[ "$FRONTEND_OPENAPI_SHA256" = "$EXPECTED_OPENAPI_SHA256" ] || fail_cutover openapi-provenance
-[ "$FRONTEND_PERMISSIONS_SHA256" = "$EXPECTED_PERMISSIONS_SHA256" ] \
-  || fail_cutover permission-provenance
-```
-
-上述可执行来源门禁通过后，在恢复 Nginx 前还必须完成并记录：
-
-- 后端和前端实际容器镜像 digest 与第 3 节固定值一致；
-- 镜像 OCI revision 与批准的前后端提交一致；
-- 发布记录中的 frozen OpenAPI SHA、权限契约 SHA 与该镜像对的评审产物一致；
-- 当前保留的菜单同步按 `docs/auth/menu-sync-guide.md` 完成；
-- `api`、`celery`、`celery-wms-fulfillment`、`celery_beat`、`flower`、`frontend` 状态符合当前拓扑。
-
-任一来源、readiness、前端资源或菜单门禁失败，都停止在本节并保持 Nginx 关闭。
-
-## 8. 最后恢复外部入口
-
-只有前述全部门禁通过后执行：
-
-```bash
-echo "校验入口恢复前服务拓扑"
-CUTOVER_STAGE=pre-entrypoint-topology
-EXPECTED_PRE_ENTRY_SERVICES="$(compose config --services | grep -v '^nginx$' | LC_ALL=C sort)"
-RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
-if [ "$RUNNING_PRE_ENTRY_SERVICES" != "$EXPECTED_PRE_ENTRY_SERVICES" ]; then
-  printf '期望服务:\n%s\n' "$EXPECTED_PRE_ENTRY_SERVICES"
-  printf '运行服务:\n%s\n' "$RUNNING_PRE_ENTRY_SERVICES"
-  fail_cutover pre-entrypoint-topology
-fi
-
-CUTOVER_STAGE=external-entrypoint
-compose up -d --no-deps --wait --wait-timeout 60 nginx || fail_cutover external-entrypoint
-CUTOVER_STAGE=external-health
-python3 scripts/wait_for_http.py \
-  --url "http://127.0.0.1:${NGINX_HTTP_PORT}/health" \
-  --attempts 10 --timeout-seconds 2 --interval-seconds 1 \
-  || fail_cutover external-health
-CUTOVER_STAGE=external-frontend
-python3 scripts/wait_for_http.py \
-  --url "http://127.0.0.1:${NGINX_HTTP_PORT}/" \
-  --attempts 10 --timeout-seconds 2 --interval-seconds 1 \
-  || fail_cutover external-frontend
-
-echo "校验最终服务拓扑"
-CUTOVER_STAGE=final-topology
-EXPECTED_FINAL_SERVICES="$(compose config --services | LC_ALL=C sort)"
-RUNNING_FINAL_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
-if [ "$RUNNING_FINAL_SERVICES" != "$EXPECTED_FINAL_SERVICES" ]; then
-  printf '期望服务:\n%s\n' "$EXPECTED_FINAL_SERVICES"
-  printf '运行服务:\n%s\n' "$RUNNING_FINAL_SERVICES"
-  fail_cutover final-topology
-fi
-MAINTENANCE_MODE=false
-trap - EXIT
-```
-
-任何登录、拓扑或外部检查失败都由现有 EXIT trap 再次停止 Nginx；记录失败阶段，不把内部健康或首页单项成功提升为部署完成。
-
-## 9. 失败处理与证据边界
-
-失败处理只有一条路径：保持/恢复维护态，保留 PostgreSQL 与 Redis 供取证，修复当前版本并重新走批准流程。禁止临时启用旧应用、兼容端点、双 schema 或不成对前后端。
-
-本 Runbook 的命令结果最多证明指定镜像对、schema、授权目录和服务入口的部署技术门禁。它不证明 WMS/ECS 供应商一致性、现场联调或业务验收；这些证据必须单独取得。
-
-## 10. 非秘密发布记录合同
-
-每次发布只生成一份非秘密 release record；它是本 Runbook 的记录合同，不是第二份 Compose manifest，也不替代镜像 OCI labels、Compose 输出、Alembic head 或备份产物。顶层字段固定为以下类别，不增加凭据或业务数据字段：
-
-```yaml
-release_id: <release-id>
-backend_revision: <backend-commit>
-backend_digest: <backend-image-digest>
-backend_source_tree: <backend-git-tree-oid>
-frontend_revision: <frontend-commit>
-frontend_digest: <frontend-image-digest>
-frontend_source_tree: <frontend-git-tree-oid>
-frontend_backend_contract_revision: <backend-contract-revision>
-openapi_sha256: <openapi-sha256>
-permissions_sha256: <permissions-sha256>
-alembic_head: <schema-version>
-compose_project: <compose-project>
-rendered_services: [<service>, ...]
-running_services: [<service>, ...]
-backup_artifact_path: <external-backup-path>
-backup_sha256: <backup-sha256>
-restore_evidence_id: <restore-evidence-id>
-authorization_check_result: <result-and-evidence-id>
-admin_login_gate_result: <result-and-evidence-id>
-health_result: <result-and-evidence-id>
-ready_result: <result-and-evidence-id>
-frontend_result: <result-and-evidence-id>
-verified_boundaries:
-  engineering_gates: <result-and-evidence-id>
-  deployment_technical_gates: <result-and-evidence-id>
-unverified_boundaries:
-  supplier_conformance: NOT VERIFIED
-  real_ecs_wms_callback_loop: NOT VERIFIED
-  physical_completion: NOT VERIFIED
-  business_acceptance: NOT VERIFIED
-started_at: <utc-timestamp>
-completed_at: <utc-timestamp>
-operator: <operator-id>
-```
-
-`backend_source_tree` 与 `frontend_source_tree` 记录 Git tree OID，不另造 source-tree SHA-256。批准提交使用
-`git rev-parse '<approved-commit>^{tree}'` 读取；对应不可变镜像使用
-`docker image inspect --format '{{ index .Config.Labels "com.zontec.wes.source-manifest" }}' <image-digest>` 读取，二者必须精确一致。OID 长度和散列算法由仓库对象格式决定，不能把当前 40 位 OID 标记为 SHA-256。
-
-`verified_boundaries` 和 `unverified_boundaries` 合计且逐项覆盖六个 acceptance layer：`engineering gates`、`deployment technical gates`、`supplier conformance`、`real ECS/WMS callback loop`、`physical completion`、`business acceptance`。本部署计划只允许给前两层写入工程/部署门禁证据；任一外部层没有独立证据时必须明确写 `NOT VERIFIED`，不得留空、默认为 PASS，或由工程/部署门禁提升。
-
-记录禁止包含 password、token、Cookie、`.env.prod` 内容或业务 payload；只记录结果、摘要、路径和 evidence ID。尤其不要把登录输入或请求/回调正文复制进记录。
-
-### 10.1 位置、权限与归档
-
-记录保存在项目外的受保护主机目录 `/srv/wes/releases/${RELEASE_ID}/`。目录权限为 `0700`，记录文件权限为 `0600`；目录中只放本次 release record 及其必要的非秘密摘要，不提交 Git：
-
-```bash
-RELEASE_ID=<approved-release-id>
-RECORD_DIR="/srv/wes/releases/${RELEASE_ID}"
-install -d -m 0700 "$RECORD_DIR"
-umask 077
-# 将上面的非秘密字段写入唯一记录文件后：
-chmod 0600 "$RECORD_DIR/release-record.yaml"
-```
-
-完成发布后，将最终非秘密 record 复制到项目外的运维归档，并保留归档文件的校验值。禁止为每次 rollout 在 `docs/devops/upgrade-records/` 建档，禁止把服务器 dump、日志、凭据或业务 payload 存入 Git。
-
-`alembic_head` 只使用带 schema 限定的查询读取：
-
-```sql
-SELECT version_num FROM wes_sys.alembic_version;
-```
-
-运维命令中禁止使用未限定的 `alembic_version`。记录本节字段时，继续引用第 3、7、8 节现有的 digest、Compose、readiness、登录、拓扑和 `scripts/wait_for_http.py` 命令；不得复制 helper 实现或另造 manifest。
-
-## 11. 检查清单
-
-- 已记录批准的前后端提交、digest、OpenAPI SHA 和权限 SHA；
-- Nginx 在迁移/授权阶段关闭，外部端口实测不可达；
-- Compose 标签发现无未知 service，迁移前只有 PostgreSQL/Redis 运行；
-- 新后端镜像一次性 Alembic 成功；
-- fresh DB bootstrap 或已有 DB `--apply` 成功；若出现精确 post-commit marker 则只 repair 一次且不重跑 mutation；随后 fresh `--check` 零漂移；
-- post-commit cache failure 如发生，只执行 repair 后新的 check；
-- 六个固定版本应用服务完成内部门禁；
-- Nginx 最后恢复，外部健康与首页通过；
-- 状态仍明确区分“已部署”与供应商/现场/业务验收。
+- 发布范围只有 `FRONTEND`、`BACKEND`、`BOTH`。
+- `FRONTEND` 只提供 frontend candidate digest；`BACKEND` 只提供 backend candidate digest；`BOTH` 必须同时提供两侧 candidate digest。
+- 单侧发布的当前对端由 orchestrator 从 live container 和最近成功的 `compatibility-report.json` 自动发现并交叉验证，操作员不得重新指定对端。
+- 跨镜像兼容只判断“前端实际需求是否被后端实际能力满足”。前后端 Commit、tree 和 digest 仅作制品身份与审计，不要求相等。
+- 镜像内原始发布制品及其 `org.wes.release.*` OCI label 是兼容与模式分类输入；外部参数不得覆盖或伪造这些事实。
+- 发布基础能力不读取菜单 manifest，不同步菜单数据库。菜单由前端静态路由拥有。
+- WMS/ECS 联通、Callback 闭环、设备物理完成和业务验收不属于本 Runbook 的成功证据。
+
+## 2. 唯一操作入口
+
+生产部署使用与 `Jenkinsfile.test-deploy` 同合同的独立 release orchestrator。本文解释输入、门禁和失败处理，不复制 Jenkins shell；实际命令与顺序以批准的 deploy-source 中 orchestrator 为准。
+
+必填输入：
+
+| 参数 | 规则 |
+| --- | --- |
+| `DEPLOY_SCOPE` | 只能是 `FRONTEND`、`BACKEND`、`BOTH` |
+| `FRONTEND_CANDIDATE_DIGEST` | `FRONTEND`、`BOTH` 必填；`BACKEND` 必须为空 |
+| `BACKEND_CANDIDATE_DIGEST` | `BACKEND`、`BOTH` 必填；`FRONTEND` 必须为空 |
+| `DEPLOY_SOURCE_COMMIT_SHA` | 固定 Compose、orchestrator、运行配置清单和 checker digest 的部署源码完整 Commit |
+
+可选输入：
+
+| 参数 | 规则 |
+| --- | --- |
+| `FORCE_FULL` | 只允许把自动判定的 FAST 升级为 FULL；不存在 force-FAST |
+| `WARN_APPROVAL_REASON` | checker 返回 WARN 时由获授权操作员填写的非空理由；PASS 时留空 |
+
+禁止接受旧参数或等价替代，包括 paired image tag、目标 backend Commit、frontend backend-contract revision、操作员提供的 OpenAPI/permission SHA 或 checker digest。
+
+## 3. 发布前准备
+
+操作员在运行 orchestrator 前确认：
+
+- deploy-source 是已批准的干净 Commit，且其中固定的 checker digest 可从受控 Registry 拉取；
+- 所选 candidate 使用不可变 digest，而不是 channel tag；
+- `.env.prod`、WMS provider profile 和 Compose 所需秘密已在现场受控配置中提供，日志只记录批准配置文件的 SHA-256，不记录值；
+- `/srv/wes/releases/` 可写，发布目录及报告只允许授权运维账号访问；
+- PostgreSQL 备份目标、恢复命令和维护窗口已确认；
+- 外部入口、管理员凭据、Registry、磁盘空间和 Docker/Compose 满足既有现场要求；
+- WMS Provider profile 可读且能通过当前后端配置校验。该预检不探测真实 WMS/ECS，也不证明物理或业务验收完成。
+
+首次使用新门禁时没有上一份有效新格式报告，自动进入 FULL，并以 `DEPLOY_SCOPE=BOTH` 建立基线。
+
+## 4. 维护前门禁
+
+Orchestrator 必须在关闭外部入口之前完成以下工作；任一失败都以 `PRE_CUTOVER_ABORTED` 结束，现场运行环境不得改变：
+
+1. 校验 scope 与 candidate 输入矩阵，并把候选引用固定到 digest。
+2. 从 deploy-source 固定 checker digest。
+3. 单侧发布时同时读取 live peer digest 与最近成功报告；缺失、不一致或无法证明时阻断。
+4. 校验两侧镜像各自的 OCI revision、原始发布制品和 `org.wes.release.*` SHA-256 label。revision 只与镜像自身核对，不做跨镜像相等比较。
+5. 读取当前 DB head，计算有效配置、Compose 和 cutover 输入的 SHA-256；不得输出秘密内容。
+6. 由 checker 验证 required permissions 是 provided permissions 的子集，并只针对 required operations 检查 OpenAPI。
+7. 使用所选后端镜像编译校验 WMS Provider profile。
+8. 生成并归档确定性的 `compatibility-report.json`。
+
+Checker 硬超时 60 秒：
+
+- `PASS`：继续。
+- `WARN`：暂停；只有提供 `WARN_APPROVAL_REASON` 才能继续。批准必须绑定本次 frontend、backend、checker digest 和 diff hash，任一变化即失效。
+- `ERR`、超时、异常或报告不合法：阻断，不进入维护态。
+
+## 5. FAST 与 FULL
+
+模式由当前成功发布证据、现场事实和候选镜像内容决定，不使用候选 Commit changed paths 代替内容指纹。
+
+以下任一变化或证据缺失自动进入 FULL：
+
+- Backend：migration tree、依赖输入、provider OpenAPI、provided permissions、生产 recipe/entrypoint；
+- Frontend：依赖/lockfile、consumer OpenAPI、required operations、required permissions、生产 Dockerfile/Nginx 配置；
+- Deploy：实际 Compose、cutover 脚本或其声明的运行配置；
+- Runtime：DB head、有效 `.env`、WMS provider profile 等批准配置 hash；
+- 首次基线、上一版证据缺失或任一事实读取异常。
+
+FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致。FULL 只允许数据库从已知祖先向前迁移；多 head、未知 revision、倒退或分叉均在维护前阻断。
+
+## 6. Cutover
+
+进入维护态前，单侧发布必须再次读取当前 peer digest；若与报告不一致，立即以 `PRE_CUTOVER_ABORTED` 结束并重新预检。
+
+### 6.1 FAST
+
+- 只切换 scope 选中的一侧。
+- `FRONTEND` 不重建后端服务。
+- `BACKEND` 必须让 API、Celery、WMS fulfillment、Beat 和 Flower 一次使用同一 backend digest，禁止混合版本。
+- 完成后执行内部 readiness、管理员真实 login/logout、精确 Compose topology 和最终外部 HTTP 检查。
+
+### 6.2 FULL
+
+关闭 Nginx 后按 orchestrator 顺序完成：
+
+1. 停止应用服务并保持 PostgreSQL、Redis 可用于备份和取证；
+2. 创建可验证的数据库备份；
+3. 仅执行已批准的 forward migration；
+4. 对已有数据库执行权限收敛并重新运行独立 `--check`；精确 post-commit cache marker 仍只允许 repair 一次，禁止重跑 mutation；
+5. 按 scope 重建服务；backend 变更必须原子重建全部 backend services；
+6. 执行真实数据库查询、管理员 login/logout、精确 topology 和共享 HTTP readiness；
+7. 全部门禁通过后才恢复 Nginx，并再次验证外部 `/health` 与首页。
+
+首次空站点初始化不是日常发布分支。只有明确确认数据库为空且执行现场初始化计划时，才可在 FULL 维护态执行 migration、注入 `BOOTSTRAP_ADMIN_*`、运行 `bootstrap_foundation.sh` 和新的权限 `--check`；后续发布不得新建或替换数据库来规避 migration。
+
+## 7. 失败与恢复
+
+- 维护前失败：`PRE_CUTOVER_ABORTED`，当前环境保持不变。
+- 进入维护态后失败：`CUTOVER_FAILED_MAINTENANCE_HELD`，Nginx 保持关闭，PostgreSQL 与 Redis 保留用于诊断。
+- 未发生 migration 时，可在确认上一份成功报告、先前 digest 和配置仍有效后，由同一 orchestrator 选择恢复。
+- migration 后禁止无条件自动切回旧镜像。只能 forward-fix，或在单独授权后恢复已验证的数据库备份和与其匹配的先前镜像。
+- 禁止临时恢复 exact-commit 门禁、旧标签、旧 schema、双路径或 force-FAST。
+
+## 8. 发布证据
+
+每次运行在 `/srv/wes/releases/${RELEASE_ID}/` 保存并由 Jenkins 归档：
+
+- `compatibility-report.json`；
+- candidate、current 与 checker digest；
+- 两侧原始发布制品 hash；
+- deploy-source Commit、两侧 OCI revision 和 source identity；
+- 自动/有效模式、排序后的 mode reasons；
+- 不含秘密内容的配置 hash、部署 Compose/cutover 输入 hash、DB head；
+- WARN 批准绑定与理由（如有）；
+- 最终状态和各门禁结果。
+
+成功状态只能说明本次 FAST 或 FULL 已由 orchestrator 完成。它不证明供应商协议一致、真实 WMS/ECS callback loop、设备物理完成或生产业务验收。
+
+## 9. 操作检查清单
+
+- [ ] scope 与 candidate digest 输入矩阵正确，未填写任何旧 paired/hash 参数；
+- [ ] deploy-source 和其固定的 checker digest 已批准；
+- [ ] 当前 peer、上一份成功报告、配置 hash 和 DB head 已被预检交叉验证；
+- [ ] checker 为 PASS，或 WARN 已提供绑定本次三个 digest 与 diff hash 的理由；
+- [ ] 自动/有效 FAST 或 FULL 原因可解释，不存在 force-FAST；
+- [ ] FULL 已完成备份和仅向前 migration，FAST 未执行数据库 mutation；
+- [ ] 后端切换没有混合 backend service digest；
+- [ ] 管理员 login/logout、精确 topology、内部及外部 readiness 通过；
+- [ ] `compatibility-report.json` 与最终状态已落盘并归档；
+- [ ] 外部联调、物理完成和业务验收仍明确标为未验证，除非另有对应证据。

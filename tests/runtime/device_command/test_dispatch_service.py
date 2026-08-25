@@ -327,6 +327,53 @@ async def test_manual_debug_status_failure_is_retryable_without_submit() -> None
 
 
 @pytest.mark.asyncio
+async def test_event_debug_status_failure_is_terminal_without_delayed_retry() -> None:
+    command = _command()
+    command.execution_ref_type = "EVENT_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://10.24.209.26:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = UnavailableStatusAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.FAILED
+    assert command.failure_code == "DEVICE_STATUS_UNAVAILABLE"
+    assert adapter.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_event_debug_retryable_rejection_is_terminal_without_delayed_retry() -> None:
+    command = _command()
+    command.execution_ref_type = "EVENT_DEBUG"
+    command.line_run_epoch_id = None
+    command.device_binding_id = None
+    object.__setattr__(command, "endpoint_base_url", "http://10.24.209.26:8080")
+    object.__setattr__(command, "command_timeout_ms", 30_000)
+    adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED))
+    service = DeviceDispatchService(
+        session_factory=FakeSessions(),  # type: ignore[arg-type]
+        command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
+        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
+        observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
+        adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
+        clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
+    )
+
+    assert await service.dispatch_one(now=datetime(2026, 8, 13)) is True
+    assert command.status == CommandStatus.FAILED
+    assert command.failure_code == "ECS_RETRYABLE_NOT_ACCEPTED"
+
+
+@pytest.mark.asyncio
 async def test_missing_or_invalid_binding_endpoint_never_reaches_http() -> None:
     for binding, provider_error in (
         (None, None),

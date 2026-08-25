@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from src.app.device.contracts import EcsDeviceStatus, EcsSubmitDisposition
 from src.app.device.ecs_adapter import EcsAdapter  # noqa: TC001
-from src.app.device.models.command import DeviceCommand  # noqa: TC001
+from src.app.device.models.command import DIAGNOSTIC_REF_TYPES, EVENT_DEBUG_REF_TYPE, DeviceCommand
 from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.repositories.status_observation_repository import device_status_observation_repository
@@ -105,10 +105,14 @@ class DeviceDispatchService:
                 return False
             command_code = command.command_code
             device_code = command.device_code
-            manual_debug = command.execution_ref_type == "MANUAL_DEBUG"
-            if manual_debug:
+            diagnostic = command.execution_ref_type in DIAGNOSTIC_REF_TYPES
+            event_debug = command.execution_ref_type == EVENT_DEBUG_REF_TYPE
+            if diagnostic:
                 if command.endpoint_base_url is None or command.command_timeout_ms is None:
-                    await self._commands.mark_reconciling(db, command, reason="MANUAL_DEBUG_CONTEXT_INVALID")
+                    if event_debug:
+                        await self._commands.mark_failed(db, command, failure_code="EVENT_DEBUG_CONTEXT_INVALID")
+                    else:
+                        await self._commands.mark_reconciling(db, command, reason="MANUAL_DEBUG_CONTEXT_INVALID")
                     return True
                 dispatch_context = _FrozenDispatchContext(
                     device_code=command.device_code,
@@ -141,13 +145,19 @@ class DeviceDispatchService:
         try:
             adapter = await self._adapter_provider.get_adapter(dispatch_context.endpoint_base_url)
         except ValueError:
-            await self._write_reconciling(command_code, claim_token, "EPOCH_BINDING_ENDPOINT_INVALID")
+            if event_debug:
+                await self._write_failed(command_code, claim_token, "EVENT_DEBUG_ENDPOINT_INVALID")
+            else:
+                await self._write_reconciling(command_code, claim_token, "EPOCH_BINDING_ENDPOINT_INVALID")
             return True
         except Exception:
-            await self._write_retryable(command_code, claim_token, now=now)
+            if event_debug:
+                await self._write_failed(command_code, claim_token, "EVENT_DEBUG_ENDPOINT_UNAVAILABLE")
+            else:
+                await self._write_retryable(command_code, claim_token, now=now)
             return True
 
-        if manual_debug and self._clock() >= command.deadline_at:
+        if diagnostic and self._clock() >= command.deadline_at:
             async with self._sessions.begin() as db:
                 command = await self._commands.get_claimed_for_update(
                     db, command_code=command_code, claim_token=claim_token
@@ -160,7 +170,10 @@ class DeviceDispatchService:
             status = await adapter.fetch_status(device_code)
         except Exception:
             # 状态探测发生在命令发送前，失败时可证明请求未离开 WES。
-            await self._write_retryable(command_code, claim_token, now=now)
+            if event_debug:
+                await self._write_failed(command_code, claim_token, "DEVICE_STATUS_UNAVAILABLE")
+            else:
+                await self._write_retryable(command_code, claim_token, now=now)
             return True
 
         # 新鲜度必须以状态响应到达 WES 的时间为基准；领取时间早于 ECS 响应时间，
@@ -172,7 +185,7 @@ class DeviceDispatchService:
             )
             if command is None:
                 return True
-            if not manual_debug:
+            if not diagnostic:
                 await self._observations.add_status_observation(
                     db,
                     _status_observation(command, status, observed_at),
@@ -181,7 +194,7 @@ class DeviceDispatchService:
                 await self._commands.mark_timed_out(db, command)
                 return True
             try:
-                if manual_debug:
+                if diagnostic:
                     ensure_runtime_admissible(
                         status=status,
                         expected_device_code=command.device_code,
@@ -218,19 +231,22 @@ class DeviceDispatchService:
                 else:
                     await self._commands.mark_acknowledged(db, command, acknowledged_at=response_at)
             elif submit_result.disposition is EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED:
-                retry_after_seconds = submit_result.retry_after_seconds
-                retry_base = self._clock()
-                try:
-                    candidate = retry_base + timedelta(
-                        seconds=5 if retry_after_seconds is None else retry_after_seconds
+                if event_debug:
+                    await self._commands.mark_failed(db, command, failure_code="ECS_RETRYABLE_NOT_ACCEPTED")
+                else:
+                    retry_after_seconds = submit_result.retry_after_seconds
+                    retry_base = self._clock()
+                    try:
+                        candidate = retry_base + timedelta(
+                            seconds=5 if retry_after_seconds is None else retry_after_seconds
+                        )
+                    except (OverflowError, ValueError):
+                        candidate = command.deadline_at
+                    await self._commands.release_retryable(
+                        db,
+                        command,
+                        next_attempt_at=min(candidate, command.deadline_at),
                     )
-                except (OverflowError, ValueError):
-                    candidate = command.deadline_at
-                await self._commands.release_retryable(
-                    db,
-                    command,
-                    next_attempt_at=min(candidate, command.deadline_at),
-                )
             elif submit_result.disposition is EcsSubmitDisposition.CONTRACT_REJECTED:
                 await self._commands.mark_failed(db, command, failure_code="ECS_CONTRACT_REJECTED")
             else:
@@ -244,6 +260,14 @@ class DeviceDispatchService:
             )
             if command is not None:
                 await self._commands.mark_reconciling(db, command, reason=reason)
+
+    async def _write_failed(self, command_code: str, claim_token: str, failure_code: str) -> None:
+        async with self._sessions.begin() as db:
+            command = await self._commands.get_claimed_for_update(
+                db, command_code=command_code, claim_token=claim_token
+            )
+            if command is not None:
+                await self._commands.mark_failed(db, command, failure_code=failure_code)
 
     async def _write_retryable(self, command_code: str, claim_token: str, *, now: datetime) -> None:
         async with self._sessions.begin() as db:

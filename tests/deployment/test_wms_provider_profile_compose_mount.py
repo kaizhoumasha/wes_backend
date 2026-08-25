@@ -93,12 +93,11 @@ def test_test_deploy_compiles_the_host_profile_before_maintenance_without_closin
 
     preflight_start = deploy_body.index('echo "🔎 在维护态前编译校验 WMS Provider profile"')
     maintenance_start = deploy_body.index('echo "🔒 进入维护态并停止旧应用容器"')
-    preflight_block = deploy_body[preflight_start:maintenance_start]
+    business_preflight = deploy_body.index("business_preflight || abort_pre_cutover wms-profile-preflight")
 
-    assert "validate_wms_transport_configuration(settings_source=settings)" in preflight_block
-    assert "WMS_PROFILE_PREFLIGHT_ERROR=" in preflight_block
-    assert "WMS_PROFILE_PREFLIGHT=valid" in preflight_block
-    assert "CUTOVER_STAGE=wms-profile-preflight" in preflight_block
-    assert "fail_cutover" not in preflight_block
-    assert "exit 1" in preflight_block
+    assert "validate_wms_transport_configuration(settings_source=settings)" in deploy_body
+    assert "WMS_PROFILE_PREFLIGHT_ERROR=" in deploy_body
+    assert "WMS_PROFILE_PREFLIGHT=valid" in deploy_body
+    assert preflight_start < business_preflight < maintenance_start
+    assert "MAINTENANCE_MODE=true" not in deploy_body[preflight_start:business_preflight]
     assert preflight_start < maintenance_start

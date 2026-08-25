@@ -71,7 +71,7 @@ def _status_entry(
 
 @pytest.mark.asyncio
 async def test_submit_uses_fixed_path_closed_envelope_and_no_auth_header() -> None:
-    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "Accepted", "trace_id": "T-1"})])
+    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "ACK", "trace_id": "T-1"})])
     adapter = EcsAdapter(transport)
 
     result = await adapter.submit_command(
@@ -101,6 +101,23 @@ async def test_submit_uses_fixed_path_closed_envelope_and_no_auth_header() -> No
     }
     assert request.response_limits.max_wire_bytes == 256 * 1024
     assert request.response_limits.max_decoded_bytes == 256 * 1024
+
+
+@pytest.mark.asyncio
+async def test_submit_rejects_accepted_success_message() -> None:
+    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "Accepted"})])
+
+    result = await EcsAdapter(transport).submit_command(
+        device_code="ARM-01",
+        command_code="CMD-001",
+        task_type="PICK",
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
+        params={},
+    )
+
+    assert result.disposition is EcsSubmitDisposition.RECONCILING
 
 
 @pytest.mark.asyncio
@@ -214,7 +231,7 @@ async def test_status_requires_exactly_one_matching_device(devices: list[dict[st
 @pytest.mark.asyncio
 @pytest.mark.parametrize("trace_id", ["@", "T" * 121])
 async def test_invalid_response_trace_id_enters_reconciliation(trace_id: str) -> None:
-    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "Accepted", "trace_id": trace_id})])
+    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "ACK", "trace_id": trace_id})])
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
         command_code="CMD-001",
@@ -235,7 +252,7 @@ async def test_ack_without_json_media_type_enters_reconciliation() -> None:
                 OutboundHttpResult(
                     delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
                     status_code=200,
-                    decoded_body=b'{"code":200,"message":"Accepted"}',
+                    decoded_body=b'{"code":200,"message":"ACK"}',
                 )
             ]
         )

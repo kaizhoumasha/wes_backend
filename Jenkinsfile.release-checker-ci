@@ -1,0 +1,137 @@
+pipeline {
+    agent {
+        label 'WES'
+    }
+
+    environment {
+        REGISTRY_URL = '192.168.0.220:5050'
+        CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_release_checker'
+        DOCKER_BUILDKIT = '1'
+    }
+
+    options {
+        buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds(abortPrevious: true)
+        timestamps()
+    }
+
+    stages {
+        stage('Checkout Checker Source') {
+            steps {
+                checkout scm
+                script {
+                    String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: env.BRANCH_NAME ?: 'develop'
+                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    String channelTag = sourceBranch == 'main' ? 'prod' : sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
+                    env.CI_SOURCE_BRANCH = sourceBranch
+                    env.CI_COMMIT_SHA = fullCommit
+                    env.CHECKER_TEST_IMAGE = "wes-release-checker-test:${env.BUILD_NUMBER}-${fullCommit.take(7)}"
+                    env.CHECKER_IMAGE_LOCAL = "wes-release-checker:${env.BUILD_NUMBER}-${fullCommit.take(7)}"
+                    env.CHECKER_IMAGE_IMMUTABLE = "${env.CHECKER_IMAGE_REPO}:${fullCommit}"
+                    env.CHECKER_IMAGE_CHANNEL = "${env.CHECKER_IMAGE_REPO}:${channelTag}"
+                }
+            }
+        }
+
+        stage('Checker Pipeline') {
+            when {
+                anyOf {
+                    changeset "tools/release_checker/**"
+                    changeset "Jenkinsfile.release-checker-ci"
+                    changeset "tests/deployment/test_release_checker_ci.py"
+                }
+            }
+            stages {
+                stage('Build Checker Test Image') {
+                    steps {
+                        sh '''
+                            set -eu
+                            docker build \
+                                --provenance=false \
+                                --sbom=false \
+                                --target testing \
+                                -t "${CHECKER_TEST_IMAGE}" \
+                                tools/release_checker
+                        '''
+                    }
+                }
+
+                stage('Checker Tests and Fixtures') {
+                    steps {
+                        sh '''
+                            set -eu
+                            docker run --rm \
+                                -e OASDIFF_BIN=/usr/local/bin/oasdiff \
+                                "${CHECKER_TEST_IMAGE}" \
+                                /opt/tools/release_checker/tests -q
+                            docker run --rm \
+                                --entrypoint python \
+                                -v "$WORKSPACE:/workspace:ro" \
+                                -w /workspace \
+                                "${CHECKER_TEST_IMAGE}" \
+                                -m pytest tests/deployment/test_release_checker_ci.py -q
+                        '''
+                    }
+                }
+
+                stage('Build Checker Production Image') {
+                    steps {
+                        sh '''
+                            set -eu
+                            docker build \
+                                --provenance=false \
+                                --sbom=false \
+                                --target production \
+                                -t "${CHECKER_IMAGE_LOCAL}" \
+                                tools/release_checker
+                            docker run --rm "${CHECKER_IMAGE_LOCAL}" --help >/dev/null
+                        '''
+                    }
+                }
+
+                stage('Push Checker Image') {
+                    when {
+                        expression {
+                            env.CI_SOURCE_BRANCH == 'develop' || env.CI_SOURCE_BRANCH == 'main'
+                        }
+                    }
+                    steps {
+                        withCredentials([usernamePassword(credentialsId: 'gitlab-http-creds', usernameVariable: 'GITLAB_USER', passwordVariable: 'GITLAB_TOKEN')]) {
+                            sh '''
+                                set -eu
+                                export REGISTRY_URL="${REGISTRY_URL}"
+                                sh ./docker/test/registry-login.sh
+                                mkdir -p reports
+                                docker tag "${CHECKER_IMAGE_LOCAL}" "${CHECKER_IMAGE_IMMUTABLE}"
+                                docker tag "${CHECKER_IMAGE_LOCAL}" "${CHECKER_IMAGE_CHANNEL}"
+                                docker push "${CHECKER_IMAGE_IMMUTABLE}"
+                                docker push "${CHECKER_IMAGE_CHANNEL}"
+                                docker inspect --format='{{index .RepoDigests 0}}' "${CHECKER_IMAGE_IMMUTABLE}" \
+                                    > reports/release-checker-image-digest.txt
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/release-checker-image-digest.txt', allowEmptyArchive: true, fingerprint: true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+                docker image rm -f "${CHECKER_TEST_IMAGE}" >/dev/null 2>&1 || true
+                docker image rm -f "${CHECKER_IMAGE_LOCAL}" >/dev/null 2>&1 || true
+                docker image rm -f "${CHECKER_IMAGE_IMMUTABLE}" >/dev/null 2>&1 || true
+                docker image rm -f "${CHECKER_IMAGE_CHANNEL}" >/dev/null 2>&1 || true
+            '''
+            cleanWs()
+        }
+    }
+}

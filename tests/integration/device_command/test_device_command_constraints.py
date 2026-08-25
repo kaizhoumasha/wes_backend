@@ -119,6 +119,29 @@ def _manual_command(identity: str, code: str, status: CommandStatus = CommandSta
     )
 
 
+def _event_debug_command(identity: str, code: str, status: CommandStatus = CommandStatus.PENDING) -> DeviceCommand:
+    return DeviceCommand(
+        command_code=code,
+        device_code=f"STATION-SCAN-{identity[-8:]}",
+        line_run_epoch_id=None,
+        device_binding_id=None,
+        execution_ref_type="EVENT_DEBUG",
+        execution_ref_id=identity,
+        material_execution_id=None,
+        contract_key="third_party_integration",
+        contract_version="1.1",
+        task_type="MOVE_FORWARD",
+        params={"barcode": "NHW002069-B"},
+        payload_digest=identity.ljust(64, "x")[:64],
+        deadline_at=datetime(2026, 8, 25),
+        endpoint_base_url="http://10.24.209.26:8080",
+        command_timeout_ms=30_000,
+        execution_reason=f"ECS_EVENT_DEBUG:{identity}",
+        created_by=None,
+        status=status,
+    )
+
+
 def _event(device_code: str, *, marker: str) -> EcsDeviceEventReport:
     return EcsDeviceEventReport(
         device_code=device_code,
@@ -201,8 +224,8 @@ async def cleanup_device_command_constraint_rows(integration_session_factory):
         )
         await db.execute(
             delete(DeviceCommand).where(
-                DeviceCommand.execution_ref_type == "MANUAL_DEBUG",
-                DeviceCommand.execution_ref_id.like("DEVICE-COMMAND-CONSTRAINT-MANUAL-%"),
+                DeviceCommand.execution_ref_type.in_(["MANUAL_DEBUG", "EVENT_DEBUG"]),
+                DeviceCommand.execution_ref_id.like("DEVICE-COMMAND-CONSTRAINT-%"),
             )
         )
         await db.execute(delete(DeviceCommand).where(DeviceCommand.line_run_epoch_id.in_(epoch_ids)))
@@ -296,6 +319,50 @@ async def test_postgresql_rejects_reason_on_non_manual_command(integration_sessi
         command = _command(binding, f"CMD-{uuid4().hex}", CommandStatus.PENDING)
         command.execution_reason = "不允许"
         db.add(command)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_accepts_event_debug_command_without_epoch_or_creator(integration_session_factory) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        command = _event_debug_command(identity, f"CMD-{uuid4().hex}")
+        db.add(command)
+        await db.flush()
+
+        assert command.id is not None
+        assert command.line_run_epoch_id is None
+        assert command.created_by is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reason", "created_by"), [(None, None), ("ECS_EVENT_DEBUG:EVT-1", 42)])
+async def test_postgresql_rejects_incomplete_event_debug_audit(
+    integration_session_factory,
+    reason: str | None,
+    created_by: int | None,
+) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        command = _event_debug_command(identity, f"CMD-{uuid4().hex}")
+        command.execution_reason = reason
+        command.created_by = created_by
+        db.add(command)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_postgresql_event_debug_identity_remains_unique_without_epoch(integration_session_factory) -> None:
+    identity = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        first = _event_debug_command(identity, f"CMD-{uuid4().hex}-1", CommandStatus.SUCCEEDED)
+        second = _event_debug_command(identity, f"CMD-{uuid4().hex}-2", CommandStatus.PENDING)
+        second.device_code = f"STATION-SCAN-{uuid4().hex[:8]}"
+        db.add(first)
+        await db.flush()
+        db.add(second)
         with pytest.raises(IntegrityError):
             await db.flush()
 

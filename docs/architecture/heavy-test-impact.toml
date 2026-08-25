@@ -4,6 +4,7 @@ ignore_globs = [
     "workline_plugins/**",
     "VERSION",
     "tests/**",
+    "tools/release_checker/tests/**",
     "Jenkinsfile.test-deploy",
     ".githooks/**",
     ".github/**",
@@ -34,6 +35,28 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
+
+# 发布 provider exporter 是离线机器合同；migration/input-set/原子替换由聚焦 FAST 脚本测试承接。
+[[mapping]]
+source_glob = "scripts/export_release_provider.py"
+heavy_tests = []
+reviewed_content_sha256 = "81956eca4b54a7b62709ca47686b2ad578dbfb6a1913dac1a52a5f5fa41a15c3"
+
+# 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
+[[mapping]]
+source_glob = "tools/release_checker/release_checker.py"
+heavy_tests = []
+reviewed_content_sha256 = "18aaa856b92b280ed7c708c7ef8a10de205fcb0949d9c4dd8c9f747747737863"
+
+[[mapping]]
+source_glob = "tools/release_checker/Dockerfile"
+heavy_tests = []
+reviewed_content_sha256 = "c8960fcc0c2f89777315253b00801a4ea256d578a14950efd420768b02816334"
+
+[[mapping]]
+source_glob = "Jenkinsfile.release-checker-ci"
+heavy_tests = []
+reviewed_content_sha256 = "571364f882079b6ee3f1b21ca9dd708dd1587c147f30ff5fbddc60ffd1327084"
 
 # BaseAPI/TreeAPI 生成的权限码进入完整应用目录，并由隔离 PostgreSQL dev-seed owner 验收。
 [[mapping]]
@@ -621,6 +644,14 @@ heavy_tests = [
     "tests/integration/device_command/test_device_command_migration_postgresql.py",
 ]
 
+[[mapping]]
+source_glob = "migrations/versions/20260825_0350_d68e6be4006e_支持事件联调自动指令.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_device_command_migration_postgresql.py",
+]
+
 # Nginx 精确代理规则由部署合同测试和 nginx -t 直接承接。
 [[mapping]]
 source_glob = "nginx/conf.d/default.conf"
@@ -878,6 +909,10 @@ heavy_tests = [
     "tests/mock/test_ecs_mock_server.py",
     "tests/mock/test_mock_dockerfile.py",
 ]
+
+[[mapping]]
+source_glob = "tests/mock/robot_arm_mock_server.py"
+heavy_tests = ["tests/mock/test_robot_arm_mock_server.py"]
 
 # 旧 WMS document wire DTO 由其所属 WMS integration 合同承接，不再耦合 Transport Mock。
 [[mapping]]

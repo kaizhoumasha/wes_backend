@@ -148,9 +148,13 @@ def _validation_issue(issue: dict[str, Any], payload: dict[str, Any]) -> EcsCall
     field = ".".join(str(part) for part in location) or "$"
     if issue_type == "missing":
         return EcsCallbackValidationIssue(field=field, code="FIELD_REQUIRED")
-    expected = {"dict_type": "object", "model_type": "object", "int_type": "integer", "string_type": "string"}.get(
-        issue_type
-    )
+    expected = {
+        "bool_type": "boolean",
+        "dict_type": "object",
+        "model_type": "object",
+        "int_type": "integer",
+        "string_type": "string",
+    }.get(issue_type)
     if expected is not None:
         return EcsCallbackValidationIssue(field=field, code="INVALID_TYPE", expected=expected)
     if (

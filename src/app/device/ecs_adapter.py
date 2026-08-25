@@ -141,7 +141,7 @@ def _classify_submit_result(result: OutboundHttpResult) -> EcsSubmitResult:  # n
         return EcsSubmitResult(EcsSubmitDisposition.RECONCILING, code=status_code)
     response = _try_common_response(result.decoded_body)
     if status_code == 200:
-        if response is None or response[0] != 200 or response[1] != "Accepted":
+        if response is None or response[0] != 200 or response[1] != "ACK":
             return EcsSubmitResult(EcsSubmitDisposition.RECONCILING)
         return EcsSubmitResult(
             EcsSubmitDisposition.ACKNOWLEDGED,

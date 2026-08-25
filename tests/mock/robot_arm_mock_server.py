@@ -685,7 +685,7 @@ async def receive_command(payload: DeviceCommandPayload) -> DeviceCommandAck:
     trace_id = f"ROBOT-LOG-{payload.command_code.split('-')[-1]}"
 
     # 立即返回 ACK
-    ack = DeviceCommandAck(code=200, message="Accepted", trace_id=trace_id)
+    ack = DeviceCommandAck(code=200, message="ACK", trace_id=trace_id)
     logger.info(f"指令已接受: {payload.command_code}, trace_id={trace_id}")
 
     # 异步执行指令（使用 RobotSimulator，以便记录执行历史）

@@ -1,177 +1,114 @@
 # Jenkins CI/CD 配置
 
-## 📋 环境信息
+## 环境信息
 
 - **GitLab**：192.168.0.220:9080
 - **Jenkins**：192.168.0.220（Docker）
 - **Jenkins Node**：192.168.0.221（构建和部署）
 - **GitHub 开发真源**：https://github.com/kaizhoumasha/wes_backend.git
 - **GitLab 仓库**：http://192.168.0.220:9080/wes/wes_backend.git
-- **LDAP 账号**：zhoukai / Ctt123456
 
-## 📁 配置文件
+## 配置文件与现役 Job
 
-| 文件 | 说明 |
-|------|------|
-| `Jenkinsfile.backend-ci` | 后端 CI 与镜像发布 |
-| `Jenkinsfile.test-deploy` | TEST 环境独立部署入口 |
-| `prod-release-deploy.md` | 生产环境手动发布 Runbook |
-| `jenkins-setup-current-env.md` | 详细配置指南 |
-| `jenkins-checklist.md` | 快速配置清单 |
+| Pipeline 文件 | Job 职责 |
+| --- | --- |
+| `Jenkinsfile.backend-ci` | 后端质量门禁、provider 制品导出、runtime 镜像构建与发布 |
+| 前端仓库 `Jenkinsfile` | 前端质量门禁、consumer 制品导出、frontend 镜像构建与发布 |
+| `Jenkinsfile.release-checker-ci` | release checker 独立测试、构建与不可变镜像发布 |
+| `Jenkinsfile.test-deploy` | TEST 独立 release orchestrator；唯一环境变更入口 |
+
+生产环境不由 Jenkins 直接连接；使用与 `Jenkinsfile.test-deploy` 相同合同的受控 orchestrator，详见 [生产发布 Runbook](prod-release-deploy.md)。
 
 ## 仓库与发布权威
 
-- GitHub `origin/develop` 是唯一代码评审与合入真源；功能、修复、CI 和文档变更都先通过 GitHub PR 合入。
-- GitLab `gitlab/develop` 是 Jenkins 发布镜像，只允许接收 GitHub `origin/develop` 的精确 Commit，不接受 GitLab-only 修复。
-- GitLab 推送前必须确认其当前 HEAD 是目标 GitHub Commit 的祖先；不满足时停止并治理分叉，禁止 force push、聚合 cherry-pick 或
-  用时间顺序猜测真源。
-- GitHub Merge 与 GitLab Push 是两次独立授权。只有 GitLab `PUSH` 触发镜像发布；GitHub PR、GitLab MR 和 Jenkins 手工构建均不发布。
-- GitLab `develop` PUSH 必须从 webhook 的 `gitlabBefore` fast-forward 到 `gitlabAfter`；Jenkins 以前一 SHA 为差异基线执行 Mock
-  合同与 selector 选中的 HEAVY，字段缺失、HEAD 不匹配或 ancestry 不成立时均 fail closed。
-- `wes_backend-ci` 必须保持普通 Pipeline Job 并由 GitLab webhook 触发；GitLab Plugin 不向 Multibranch Pipeline 提供
-  `gitlabBefore` / `gitlabAfter`，Poll SCM 和手工构建也不能替代发布触发。
-- GitLab webhook 必须使用 Jenkins Job `Advanced → Secret Token → Generate` 生成的 per-project token；GitLab 与 Jenkins 两端取值
-  必须一致，token 不得写入仓库、文档或日志，未认证的 `/project/wes_backend-ci` 请求不得触发发布 Job。
-- RC 与现场选版只记录 immutable tag、manifest digest 和 OCI revision。`develop` channel 只用于定位最新候选，不能作为验收证据。
+- GitHub `origin/develop` 是唯一代码评审与合入真源。
+- GitLab `gitlab/develop` 只接收 GitHub `origin/develop` 的精确 Commit；推送前必须证明 fast-forward，禁止 GitLab-only 修复或 force push。
+- GitHub Merge 与 GitLab Push 是两次独立授权。只有已验证的 GitLab `develop` PUSH 可以发布 immutable producer 镜像。
+- `wes_backend-ci` 必须是由 GitLab webhook 触发的普通 Pipeline Job，以获得 `gitlabBefore` / `gitlabAfter`；Poll SCM 和手工构建只验证、不发布。
+- RC 与现场选版记录 immutable digest 和 OCI revision。Commit、tree 和 digest 用于身份审计，不要求前后端 Commit 相等。
 
-## 🚀 快速开始
+## 独立 producer 边界
 
-### 1. 查看 Jenkins Node 标签
+三个 producer 互不调用，也不触发 `wes_test_deploy`：
 
-```bash
-# 访问 Jenkins
-http://192.168.0.220:9081
+- backend producer 导出 `/opt/wes/release/provider-openapi.json` 和 `/opt/wes/release/provided-permissions.json`，校验对应 `org.wes.release.*` label 后发布 backend digest；
+- frontend producer 从冻结快照导出 consumer OpenAPI、required operations 和 required permissions，校验自身 label 后发布 frontend digest；
+- checker producer 从 `tools/release_checker/` 构建固定 `oasdiff` 版本的独立 checker 镜像，不导入后端应用或前端代码；
+- producer 成功状态只能是 `BUILD_VERIFIED` 或 `PUBLISHED`，不能写成 `DEPLOYED`。
 
-# 进入 Manage Jenkins → Manage Nodes and Clouds
-# 记录 192.168.0.221 节点的 Labels
-```
+前后端镜像仍保留自身 OCI revision/source identity，但不得记录或要求“目标对端 Commit”。任何 producer 发布都不能因对端仓库、对端镜像或部署作业不可用而失败。
 
-### 2. 核对现役 Jenkins Job
+## Release orchestrator
 
-当前保留的 Jenkins Job：
+`wes_test_deploy` 必须禁用并发构建，并接受以下接口：
 
-- `wes_backend-ci`：后端 CI、镜像发布
-- `wes_frontend-ci`：前端 CI、镜像推送
-- `wes_test_deploy`：拉取 immutable 镜像并部署 TEST
+- `DEPLOY_SCOPE=FRONTEND|BACKEND|BOTH`；
+- `FRONTEND_CANDIDATE_DIGEST`：只在 `FRONTEND`、`BOTH` 提供；
+- `BACKEND_CANDIDATE_DIGEST`：只在 `BACKEND`、`BOTH` 提供；
+- `DEPLOY_SOURCE_COMMIT_SHA`；
+- 可选 `FORCE_FULL`；
+- 可选 `WARN_APPROVAL_REASON`。
 
-已退役并删除：
+Checker digest 由 deploy-source 固定，不是 Jenkins 参数。单侧发布的未选 peer 从 live container 和最近成功报告自动发现；不接受人工 peer 输入。
 
-- `wes_backend`：旧单体 Pipeline，已从 Jenkins 清理，不再维护
+Orchestrator 在维护前完成 candidate digest 固定、当前 peer 交叉验证、镜像制品/label 校验、配置 hash、DB head、checker 和 WMS Provider profile 配置校验。兼容检查比较 required operations/permissions 与 backend provider 能力，不比较前后端 Commit；该配置校验不探测真实 WMS/ECS。
 
-部署边界：
+模式与终态：
 
-- TEST：由部署人员单独运行 `wes_test_deploy`，并明确选择 immutable 前后端镜像
-- PROD：不依赖 Jenkins 直连生产环境，按手动部署 runbook 在维护态执行迁移、基础授权收敛、菜单同步和入口恢复
+- 内容、部署输入或运行配置变化，证据缺失，或首次基线时自动 FULL；只有普通代码变化且所有相关指纹稳定时才允许 FAST；
+- `FORCE_FULL` 只能升级模式，不存在 force-FAST；
+- `WARN` 必须由获授权操作员提供理由，并绑定本次 frontend/backend/checker digest 与 diff hash；
+- 维护前失败为 `PRE_CUTOVER_ABORTED`，不改变环境；
+- 进入维护后失败为 `CUTOVER_FAILED_MAINTENANCE_HELD`，Nginx 保持关闭；
+- 成功归档 `/srv/wes/releases/${RELEASE_ID}/compatibility-report.json` 和 Jenkins artifact。
 
-### 3. 修改现役 Pipeline 脚本
+FAST 只切选择的一侧；backend FAST 仍须同时重建 API、Celery、WMS fulfillment、Beat 和 Flower。FULL 保留数据库备份、仅向前 migration、权限零漂移、管理员真实登录、精确 topology 和共享 HTTP readiness。
 
-```bash
-# 编辑后端 CI Pipeline
-vim Jenkinsfile.backend-ci
-
-# 修改 agent label 为实际的 Node 标签
-agent {
-    label 'your-actual-label'  // 改为实际标签
-}
-```
-
-### 4. 从 GitHub 真源发布到 GitLab
-
-```bash
-# 先在功能分支提交并通过 GitHub PR 合入 origin/develop，然后刷新两个远端。
-git fetch origin
-git fetch gitlab
-release_sha="$(git rev-parse origin/develop)"
-
-# 只允许 fast-forward 发布；失败时停止，不得强推。
-git merge-base --is-ancestor gitlab/develop "$release_sha"
-git push gitlab "$release_sha:refs/heads/develop"
-```
-
-推送前应再次核对 `release_sha` 是已经批准的 GitHub merge SHA；不得直接从本地功能分支或仅存在于 GitLab 的提交发布。
-
-### 5. 配置 Jenkins Pipeline
-
-参考 [快速配置清单](jenkins-checklist.md) 完成配置。
-
-## 🎯 Pipeline 流程
+## 后端 Pipeline 流程
 
 ```text
-代码推送 → GitLab Webhook → `wes_backend-ci`
-    ↓
-在 Node (192.168.0.221) 上执行
+GitLab webhook → wes_backend-ci
     ├─ Checkout Source
     ├─ Build CI Image
-    ├─ Classify Required HEAVY（一次 selector，供专项验收与通用 HEAVY 复用）
-    ├─ Quality Gate（唯一 QUALITY profile）
-    ├─ Compose Contracts（主机端渲染生产与 TEST 部署配置）
+    ├─ Classify Required HEAVY
+    ├─ Quality Gate
+    ├─ Compose Contracts
     ├─ RuntimeInbox PostgreSQL Acceptance
-    ├─ Mock Image Contracts（MR 与已验证的 develop PUSH）
-    ├─ HEAVY Required（MR 按目标分支、develop PUSH 按 gitlabBefore 差异选择）
+    ├─ Mock Image Contracts
+    ├─ HEAVY Required
+    ├─ Export Provider Release Artifacts
     ├─ Build Runtime Image
-    └─ Push Runtime Image（仅门禁通过的 GitLab develop PUSH，推送 immutable + channel tag）
+    ├─ Verify Embedded Artifacts And OCI Labels
+    └─ Push Runtime Image（仅已验证的 develop PUSH）
 ```
 
-`wes_backend-ci` 只构建和发布后端镜像，不自动选择前端版本或触发 `wes_test_deploy`。需要 TEST/现场部署时，由部署人员单独运行
-部署任务并明确选择前后端镜像；MR、其他分支 PUSH 和 Jenkins 手工构建只验证，不发布镜像。
+HEAVY selector 只负责测试选择，不能作为 FAST/FULL 发布模式真源。
 
-后端 CI 只运行 selector manifest 实际命中的 RuntimeInbox PostgreSQL 验收：命中 migration owner 时执行完整 migration matrix；仅命中 processing、crash recovery 或 benchmark owner 时跳过 migration matrix；未命中 RuntimeInbox owner 时跳过整个专项阶段。无可靠 diff base 的手工构建仍 fail-closed 执行完整验收，夜间与 RC 不复用普通提交的跳过结论。
+## 首次空站点与日常发布
 
-生产 fresh DB 的基础授权入口：
+`bootstrap_foundation.sh` 只用于确认空数据库的首次站点初始化，并要求部署环境注入 `BOOTSTRAP_ADMIN_*`。日常 FULL 必须对当前数据库先备份再向前迁移，不得为每次发布创建 fresh DB，也不得使用 `seed_initial_data.py`。
 
-```bash
-./scripts/migrate.sh upgrade
-export BOOTSTRAP_ADMIN_USERNAME=admin
-export BOOTSTRAP_ADMIN_PASSWORD='StrongPassw0rd!'
-export BOOTSTRAP_ADMIN_FULL_NAME='系统管理员'
-export BOOTSTRAP_ADMIN_EMAIL='admin@example.com'
-bash scripts/data/bootstrap_foundation.sh
-uv run python scripts/data/sync_permissions.py --check
-```
+权限 mutation 成功或一次精确 post-commit cache repair 后，都必须重新执行独立 `sync_permissions.py --check`。菜单不属于发布编排：不从 frontend 镜像提取 menu manifest，不运行菜单同步，不以菜单表数量作为部署门禁。
 
-其中：
+## 快速配置
 
-- `scripts/data/seed_initial_data.py` 仅用于 dev/test/demo，不用于生产
-- `.env.prod` 与 `.env.frontend.prod` 分离维护即可，不要求合并
-- 生产建议开启 `USE_SNOWFLAKE_ID=true`
-- 已有数据库按生产 Runbook 捕获 `sync_permissions.py --apply` 输出，成功或一次 post-commit repair 后都必须执行新的 `--check`；入口在检查零漂移前保持关闭
-- `--repair-cache` 只处理独占整行的 `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED`；详情另以 `CACHE_INVALIDATION_FAILURE_DETAIL:` 输出，repair 只执行一次且不得重跑 `--apply`
-- `bootstrap_foundation.sh` 依赖上述 `BOOTSTRAP_ADMIN_*` 环境变量，必须由部署环境注入真实值
-- 固定版本应用启动后，从批准的前端 digest 提取菜单 manifest；同步通过后才恢复入口，详见 `../auth/menu-sync-guide.md`
+1. 核对 Jenkins Node 标签和 Docker 权限。
+2. 为三个 backend-owned Pipeline 分别建立 Job，并把 Script Path 指向上表对应文件。
+3. 为 producer 配置 GitLab webhook、per-project secret token 和 Registry 凭据；token 不得写入仓库或日志。
+4. 为 `wes_test_deploy` 配置部署 SSH、Registry 和 bootstrap 管理员凭据；秘密只能通过 Jenkins credentials 注入。
+5. 使用 [当前环境配置指南](jenkins-setup-current-env.md) 和 [快速配置清单](jenkins-checklist.md) 验证参数、阶段与发布边界。
 
-## 📖 详细文档
+## 注意事项
 
-- **配置指南**：[jenkins-setup-current-env.md](jenkins-setup-current-env.md)
-- **配置清单**：[jenkins-checklist.md](jenkins-checklist.md)
-- **生产发布 Runbook**：[prod-release-deploy.md](prod-release-deploy.md)
+1. `Jenkinsfile.backend-ci`、`Jenkinsfile.release-checker-ci` 和 `Jenkinsfile.test-deploy` 的 agent label 必须匹配实际 Node。
+2. `/opt/wes_backend` 只对齐到 `DEPLOY_SOURCE_COMMIT_SHA`，用于固定 orchestrator、Compose 和 checker；它不代表候选 backend revision。
+3. 部署机无需 `/opt/wes_frontend` 源码目录，也不执行菜单同步。
+4. `.env.test`、`.env.prod` 与 frontend 环境文件继续分离维护；只归档 hash，不记录秘密。
+5. producer PUBLISHED、Cloudflare preview、容器 healthy 或 HTTP readiness 均不能替代真实联调、设备或业务验收。
 
-## ⚠️ 注意事项
+## 相关文档
 
-1. **Node 标签**：确保 `Jenkinsfile.backend-ci` 和 `Jenkinsfile.test-deploy` 中的 `label` 与实际的 Node 标签一致
-2. **部署目录**：确保 `/opt/wes_backend` 已初始化；`wes_test_deploy` 会在部署前强制对齐到目标 commit
-3. **前端源码目录**：确保部署机存在 `/opt/wes_frontend`，供 `wes_test_deploy` 在部署后自动同步菜单
-4. **环境文件**：确保 `.env.test` 已配置；CI 测试会显式覆盖为非调试日志级别
-5. **Docker 权限**：确保 Jenkins 用户有 Docker 权限
-
-## 🔧 常用命令
-
-```bash
-# 查看后端 CI 日志
-Jenkins → wes_backend-ci → 构建号 → Console Output
-
-# 查看测试报告
-Jenkins → wes_backend-ci → Test Result
-
-# 查看归档产物（Bandit、FAST JUnit、HEAVY manifest/JUnit）
-Jenkins → wes_backend-ci → Artifacts
-
-# 查看 TEST 部署日志
-Jenkins → wes_test_deploy → 构建号 → Console Output
-
-# 测试健康检查
-curl http://192.168.0.221:8001/health
-```
-
-## 📞 需要帮助？
-
-查看详细文档或联系技术支持。
+- [当前环境配置指南](jenkins-setup-current-env.md)
+- [快速配置清单](jenkins-checklist.md)
+- [生产发布 Runbook](prod-release-deploy.md)
+- [发布解耦当前设计](../superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md)

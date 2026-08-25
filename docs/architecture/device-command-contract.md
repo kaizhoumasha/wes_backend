@@ -1,7 +1,7 @@
 ---
 status: Approved
 created_at: 2026-06-25
-updated_at: 2026-08-23
+updated_at: 2026-08-25
 spec: docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md
 wire_authority: docs/integration/third_party_integration_whitepaper.md
 scope: WES 核心设备命令基础能力边界
@@ -36,12 +36,12 @@ related:
 
 1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令下发前确认目标状态条目身份一致、
    `is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令，且 `updated_at` 未超过冻结的允许年龄。合同身份只由 WES
-   命令与活动 `LineRunEpoch` binding 冻结，不要求 Status 返回。`MANUAL_DEBUG` 在创建前和实际发送前都查询同一 ECS Status，
-   并额外要求 `task_type` 位于非空 `supported_commands`；任一准入失败都不得发送 Command。
+   命令与活动 `LineRunEpoch` binding 冻结，不要求 Status 返回。诊断命令在实际发送前查询目标 ECS Status，并额外要求
+   `task_type` 位于非空 `supported_commands`；`MANUAL_DEBUG` 创建前还执行同样的预检，任一准入失败都不得发送 Command。
 2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和截止时间事实。
 3. 同步 ACK 只表示设备接纳，不表示物理动作完成。
-4. 只有匹配当前业务命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG`
-   CALLBACK 只闭合命令与 evidence，不进入业务 Decision。
+4. 只有匹配当前业务命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG` 和
+   `EVENT_DEBUG` CALLBACK 只闭合命令与 evidence，不进入业务 Decision。
 5. `command_code` 最多绑定一个已接纳终态结果；WES 内部使用 `RESULT:{command_code}` 作为结果身份。重复 CALLBACK 不重复推进，
    同一身份对应不同载荷时拒绝并保留冲突证据。
 6. 未知、乱序或无法关联的结果拒绝接纳且不推进当前对象；`PENDING` 命令收到 RESULT 时必须先进入
@@ -81,6 +81,19 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 
 这是一条受限的联调创建入口，不是供应商私有协议适配层。WES 仍只发送白皮书统一命令包络，供应商 ECS/网关负责内部协议转换。
 
+ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_ref_type="EVENT_DEBUG"` 的一次性联调命令。该路径：
+
+- 先按普通 EVENT 持久化并独立返回 ACK，再由 evidence worker 异步创建命令；创建成功后 evidence 以 `IGNORED` 明确表示不进入
+  WorkLine/业务 Decision，不表示联调命令失败；
+- 使用 EVENT 内部稳定身份作为命令幂等身份，重复 EVENT 最多创建一条命令；
+- 联调期间目标固定为 `http://10.24.209.26:8080/`，固定超时 `30000ms`，固定任务类型 `MOVE_FORWARD`，并将 EVENT `data`
+  原样作为 `params`；
+- 复用既有 DeviceCommand、统一 ECS Adapter、worker、运行态准入、CALLBACK 和 evidence；Status 未声明支持
+  `MOVE_FORWARD`、设备忙或当前准入失败时直接闭合为失败，不排队等待设备后续可用；
+- 以 `ECS_EVENT_DEBUG:<event-identity>` 记录系统触发原因，`created_by=null`，不伪装为人工联调。
+
+ACK 与命令创建属于两个异步执行路径，WES 不承诺 ECS 在 worker 启动前已经读取到 ACK 字节。
+
 ## 4. 统一接口与设备附录边界
 
 本轮冻结的顶层白皮书 wire 定义：
@@ -91,12 +104,13 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 - `POST /api/v1/callback/event`；
 - Command 顶层只含 `device_code`、`command_code`、`task_type`、`priority`、`timeout`、`timestamp`、`params`；
 - Result 顶层只含 `command_code`、`device_code`、`result`、`finish_time`、`data`、`error_detail`；
-- Event 顶层只含 `device_code`、`event_type`、`timestamp`、`data`，设备专属业务字段由合同附录约束；
+- Event 顶层公共字段为 `device_code`、`event_type`、`timestamp`、可选严格布尔值 `is_debug` 和 `data`，设备专属业务字段由合同
+  附录约束；
 - Status 顶层只含 `devices` 数组，每项严格包含 `device` 元数据和 `state`；正常派发只使用 `state` 的身份、在线、模式、
   状态、活动命令和更新时间字段，元数据与 `scenario` 仅作诊断；
 - Command/Result/Event 外部时间统一使用 Unix 毫秒；事件内部身份为
-  `EVENT:{sha256(device_code + event_type + timestamp + canonical data)}`；
-- ECS 同步接纳应答为整数 `code=200`、`message="Accepted"`；WES CALLBACK 应答为整数 `code=200`、`message="ACK"`。
+  `EVENT:{sha256(device_code + event_type + timestamp + is_debug + canonical data)}`，省略 `is_debug` 等同于 `false`；
+- ECS 同步接纳应答与 WES CALLBACK 应答统一为整数 `code=200`、`message="ACK"`。
 
 WES 另提供超级用户内部诊断接口 `GET /api/v1/device/evidences/stream`。它通过专用 Redis Pub/Sub 频道实时展示活动期间的
 Result/Event HTTP 尝试及 evidence `APPLIED/RECONCILING` 更新，不持久化、不重放；发布采用有界 best-effort，Redis 缓慢或

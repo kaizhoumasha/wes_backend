@@ -4,30 +4,31 @@ pipeline {
     }
 
     parameters {
-        string(name: 'BACKEND_IMAGE_TAG', description: '已批准的后端不可变镜像标签（构建号-commit 前 7 位）')
-        string(name: 'FRONTEND_IMAGE_TAG', description: '已批准的前端不可变镜像标签（构建号-commit 前 7 位）')
-        string(name: 'BACKEND_COMMIT_SHA', description: '后端镜像必须携带的完整 revision')
-        string(name: 'DEPLOY_SOURCE_COMMIT_SHA', description: 'TEST 部署 Compose/脚本的完整 commit SHA；相对后端运行提交仅允许部署白名单差异')
-        string(name: 'FRONTEND_COMMIT_SHA', description: '前端镜像必须携带的完整 revision')
-        string(name: 'OPENAPI_SHA256', description: '前端镜像必须携带的冻结 OpenAPI SHA-256')
-        string(name: 'PERMISSIONS_SHA256', description: '前端镜像必须携带的冻结权限 SHA-256')
-        string(name: 'SOURCE_BRANCH', defaultValue: 'develop', description: '用于同步部署仓库的源码分支')
+        choice(name: 'DEPLOY_SCOPE', choices: ['FRONTEND', 'BACKEND', 'BOTH'], description: '本次候选范围')
+        string(name: 'FRONTEND_CANDIDATE_DIGEST', defaultValue: '', description: 'FRONTEND/BOTH 必填：sha256:<64 hex>')
+        string(name: 'BACKEND_CANDIDATE_DIGEST', defaultValue: '', description: 'BACKEND/BOTH 必填：sha256:<64 hex>')
+        string(name: 'DEPLOY_SOURCE_COMMIT_SHA', description: '部署编排源码的完整 commit SHA')
+        booleanParam(name: 'FORCE_FULL', defaultValue: false, description: '只允许把自动 FAST 升级为 FULL')
+        text(name: 'WARN_APPROVAL_REASON', defaultValue: '', description: 'WARN 时绑定精确 digest/diff 的单次批准理由')
     }
 
     environment {
         REGISTRY_URL = '192.168.0.220:5050'
         BACKEND_IMAGE_REPO = '192.168.0.220:5050/wes/wes_backend'
         FRONTEND_IMAGE_REPO = '192.168.0.220:5050/wes/wes_frontend'
+        CHECKER_IMAGE_REPO = '192.168.0.220:5050/wes/wes_release_checker'
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_ENV_FILE = '.env.test'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
         WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'
+        CURRENT_RELEASE_EVIDENCE_DIR = '/srv/wes/releases/current'
+        RELEASE_EVIDENCE_ROOT = '/srv/wes/releases'
         HEALTH_CHECK_URL = 'http://127.0.0.1:8001/ready'
         IMAGE_PULL_RETRIES = '24'
     }
 
     options {
-        buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '20', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '5'))
+        buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '20', artifactDaysToKeepStr: '14', artifactNumToKeepStr: '20'))
         timeout(time: 45, unit: 'MINUTES')
         skipDefaultCheckout(true)
         disableConcurrentBuilds(abortPrevious: false)
@@ -35,25 +36,39 @@ pipeline {
     }
 
     stages {
-        stage('Checkout Source') {
+        stage('Checkout Deploy Source') {
             steps {
                 script {
-                    String sourceBranch = env.gitlabSourceBranch ?: env.gitlabBranch ?: params.SOURCE_BRANCH ?: 'develop'
-                    String targetBranch = env.gitlabTargetBranch ?: ''
-                    String gitlabActionType = (env.gitlabActionType ?: env.GITLAB_OBJECT_KIND ?: '').trim().toUpperCase()
-                    boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
-                    boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
+                    String deployScope = params.DEPLOY_SCOPE?.trim()?.toUpperCase()
+                    String frontendDigest = params.FRONTEND_CANDIDATE_DIGEST?.trim()
+                    String backendDigest = params.BACKEND_CANDIDATE_DIGEST?.trim()
+                    String deploySourceCommit = params.DEPLOY_SOURCE_COMMIT_SHA?.trim()
 
-                    env.CI_SOURCE_BRANCH = sourceBranch
-                    env.CI_TARGET_BRANCH = targetBranch
-                    env.CI_EVENT_TYPE = gitlabActionType ?: 'MANUAL'
-                    env.CI_IS_MERGE_REQUEST = isMergeRequest ? 'true' : 'false'
-
-                    echo "📥 检出部署配置: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.CI_EVENT_TYPE}"
+                    if (!(deployScope in ['FRONTEND', 'BACKEND', 'BOTH'])) {
+                        error('DEPLOY_SCOPE 必须是 FRONTEND、BACKEND 或 BOTH')
+                    }
+                    if (!(deploySourceCommit ==~ /[0-9a-f]{40}/)) {
+                        error('DEPLOY_SOURCE_COMMIT_SHA 必须是 40 位小写 commit SHA')
+                    }
+                    if (frontendDigest && !(frontendDigest ==~ /sha256:[0-9a-f]{64}/)) {
+                        error('FRONTEND_CANDIDATE_DIGEST 必须是 immutable sha256 digest')
+                    }
+                    if (backendDigest && !(backendDigest ==~ /sha256:[0-9a-f]{64}/)) {
+                        error('BACKEND_CANDIDATE_DIGEST 必须是 immutable sha256 digest')
+                    }
+                    if (deployScope == 'FRONTEND' && (!frontendDigest || backendDigest)) {
+                        error('FRONTEND scope 只接受 frontend candidate digest')
+                    }
+                    if (deployScope == 'BACKEND' && (!backendDigest || frontendDigest)) {
+                        error('BACKEND scope 只接受 backend candidate digest')
+                    }
+                    if (deployScope == 'BOTH' && (!frontendDigest || !backendDigest)) {
+                        error('BOTH scope 必须同时提供两个 candidate digest')
+                    }
 
                     checkout([
                         $class: 'GitSCM',
-                        branches: [[name: "origin/${sourceBranch}"]],
+                        branches: [[name: deploySourceCommit]],
                         userRemoteConfigs: [[
                             name: 'origin',
                             url: 'http://192.168.0.220:9080/wes/wes_backend.git',
@@ -62,64 +77,28 @@ pipeline {
                         ]],
                         extensions: [[$class: 'CleanBeforeCheckout']]
                     ])
-
-                    String backendCommitSha = params.BACKEND_COMMIT_SHA?.trim()
-                    String deploySourceCommitSha = params.DEPLOY_SOURCE_COMMIT_SHA?.trim()
-                    String frontendCommitSha = params.FRONTEND_COMMIT_SHA?.trim()
-                    String openApiSha256 = params.OPENAPI_SHA256?.trim()
-                    String permissionsSha256 = params.PERMISSIONS_SHA256?.trim()
-                    String backendImageTag = params.BACKEND_IMAGE_TAG?.trim()
-                    String frontendImageTag = params.FRONTEND_IMAGE_TAG?.trim()
-                    if (!(backendCommitSha ==~ /[0-9a-f]{40}/)) {
-                        error('BACKEND_COMMIT_SHA 必须是 40 位小写 commit SHA')
+                    sh "git reset --hard '${deploySourceCommit}'"
+                    String actualCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    if (actualCommit != deploySourceCommit) {
+                        error('部署仓库未固定到 DEPLOY_SOURCE_COMMIT_SHA')
                     }
-                    if (!(deploySourceCommitSha ==~ /[0-9a-f]{40}/)) {
-                        error('DEPLOY_SOURCE_COMMIT_SHA 必须是 40 位小写 commit SHA')
-                    }
-                    if (!(frontendCommitSha ==~ /[0-9a-f]{40}/)) {
-                        error('FRONTEND_COMMIT_SHA 必须是 40 位小写 commit SHA')
-                    }
-                    if (!(openApiSha256 ==~ /[0-9a-f]{64}/)) {
-                        error('OPENAPI_SHA256 必须是 64 位小写 SHA-256')
-                    }
-                    if (!(permissionsSha256 ==~ /[0-9a-f]{64}/)) {
-                        error('PERMISSIONS_SHA256 必须是 64 位小写 SHA-256')
-                    }
-                    if (!(backendImageTag ==~ /[0-9]+-${backendCommitSha.take(7)}/)) {
-                        error('BACKEND_IMAGE_TAG 与批准的后端 commit 不一致')
-                    }
-                    if (!(frontendImageTag ==~ /[0-9]+-${frontendCommitSha.take(7)}/)) {
-                        error('FRONTEND_IMAGE_TAG 与批准的前端 commit 不一致')
-                    }
-
-                    String deploySourceClassification = sh(
+                    String checkerSourceCommit = sh(
                         returnStdout: true,
-                        script: "/bin/bash scripts/validate_test_deploy_source_diff.sh '${backendCommitSha}' '${deploySourceCommitSha}'"
+                        script: 'git log -1 --format=%H -- tools/release_checker Jenkinsfile.release-checker-ci tests/deployment/test_release_checker_ci.py'
                     ).trim()
-                    echo "🔎 部署源码差异: ${deploySourceClassification}"
-
-                    sh "git reset --hard '${deploySourceCommitSha}'"
-                    String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
-                    if (fullCommit != deploySourceCommitSha) {
-                        error('部署仓库未能固定到 DEPLOY_SOURCE_COMMIT_SHA')
+                    if (!(checkerSourceCommit ==~ /[0-9a-f]{40}/)) {
+                        error('部署源码无法确定唯一 checker owner commit')
                     }
-                    String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
 
-                    env.CI_COMMIT_SHA = fullCommit
-                    env.DEPLOY_SOURCE_COMMIT_SHA = deploySourceCommitSha
-                    env.EXPECTED_BACKEND_COMMIT_SHA = backendCommitSha
-                    env.EXPECTED_FRONTEND_COMMIT_SHA = frontendCommitSha
-                    env.EXPECTED_OPENAPI_SHA256 = openApiSha256
-                    env.EXPECTED_PERMISSIONS_SHA256 = permissionsSha256
-                    env.CI_BRANCH_TAG = branchTag
-                    env.DEPLOY_BACKEND_TAG = backendImageTag
-                    env.DEPLOY_FRONTEND_TAG = frontendImageTag
-                    env.DEPLOY_BACKEND_IMAGE = "${env.BACKEND_IMAGE_REPO}:${env.DEPLOY_BACKEND_TAG}"
-                    env.DEPLOY_FRONTEND_IMAGE = "${env.FRONTEND_IMAGE_REPO}:${env.DEPLOY_FRONTEND_TAG}"
-
-                    echo "🚀 后端镜像: ${env.DEPLOY_BACKEND_IMAGE}"
-                    echo "🚀 前端镜像: ${env.DEPLOY_FRONTEND_IMAGE}"
-                    echo "🔒 部署源码提交: ${env.CI_COMMIT_SHA}"
+                    env.DEPLOY_SCOPE = deployScope
+                    env.DEPLOY_SOURCE_COMMIT_SHA = deploySourceCommit
+                    env.CHECKER_SOURCE_COMMIT = checkerSourceCommit
+                    env.FRONTEND_CANDIDATE_DIGEST = frontendDigest
+                    env.BACKEND_CANDIDATE_DIGEST = backendDigest
+                    env.FORCE_FULL_VALUE = params.FORCE_FULL ? 'true' : 'false'
+                    env.WARN_APPROVAL_REASON_VALUE = params.WARN_APPROVAL_REASON ?: ''
+                    env.RELEASE_ID = "test-${env.BUILD_NUMBER}-${deploySourceCommit.take(12)}"
+                    env.CHECKER_CONTAINER_NAME = "wes-release-checker-${env.BUILD_NUMBER}-${deploySourceCommit.take(12)}"
                 }
             }
         }
@@ -131,458 +110,622 @@ pipeline {
                     usernamePassword(credentialsId: 'wes-test-bootstrap-admin', usernameVariable: 'BOOTSTRAP_ADMIN_USERNAME', passwordVariable: 'BOOTSTRAP_ADMIN_PASSWORD')
                 ]) {
                     sh '''
-                        set -e
+                        set -eu
                         set -o pipefail
+                        umask 077
 
-                        cd "${DEPLOY_PATH}"
-
-                        echo "📥 强制同步部署仓库到提交 ${DEPLOY_SOURCE_COMMIT_SHA}"
-                        git fetch origin
-                        git reset --hard "${DEPLOY_SOURCE_COMMIT_SHA}"
-                        DEPLOY_ACTUAL_COMMIT=$(git rev-parse HEAD)
-                        if [ "${DEPLOY_ACTUAL_COMMIT}" != "${DEPLOY_SOURCE_COMMIT_SHA}" ]; then
-                            echo "❌ 部署仓库 revision 未固定到批准提交: ${DEPLOY_ACTUAL_COMMIT}"
-                            exit 1
-                        fi
-                        git clean -fd
-                        cp -f "${DEPLOY_ENV_FILE}" .env
+                        cd "${WORKSPACE}"
+                        [ "$(git rev-parse HEAD)" = "${DEPLOY_SOURCE_COMMIT_SHA}" ] || exit 1
 
                         if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]; then
-                            echo "❌ 未配置 WMS Provider profile 宿主机路径"
+                            echo "PRE-CUTOVER_ABORTED: 未配置 WMS Provider profile 路径"
                             exit 1
                         fi
                         if [ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
-                            echo "❌ WMS Provider profile 不是普通文件: ${WMS_PROVIDER_PROFILE_HOST_FILE}"
+                            echo "PRE-CUTOVER_ABORTED: WMS Provider profile 不是普通文件"
                             exit 1
                         fi
                         if [ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
-                            echo "❌ WMS Provider profile 当前用户不可读: ${WMS_PROVIDER_PROFILE_HOST_FILE}"
+                            echo "PRE-CUTOVER_ABORTED: WMS Provider profile 不可读"
                             exit 1
                         fi
-
+                        if [ ! -r "${DEPLOY_PATH}/${DEPLOY_ENV_FILE}" ]; then
+                            echo "PRE-CUTOVER_ABORTED: TEST runtime env 不可读"
+                            exit 1
+                        fi
                         export REGISTRY_URL="${REGISTRY_URL}"
                         export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"
                         sh ./docker/test/registry-login.sh
 
-                        export BACKEND_IMAGE="${DEPLOY_BACKEND_IMAGE}"
-                        export FRONTEND_IMAGE="${DEPLOY_FRONTEND_IMAGE}"
+                        PREFLIGHT_DIR=$(mktemp -d "${WORKSPACE}/.release-preflight.XXXXXX")
+                        STAGED_DEPLOY_PATH="${PREFLIGHT_DIR}/deploy-source"
+                        STAGED_RUNTIME_ENV_FILE="${PREFLIGHT_DIR}/runtime.env"
+                        mkdir "${STAGED_DEPLOY_PATH}"
+                        git archive "${DEPLOY_SOURCE_COMMIT_SHA}" | tar -x -C "${STAGED_DEPLOY_PATH}"
+                        cp "${DEPLOY_PATH}/${DEPLOY_ENV_FILE}" "${STAGED_RUNTIME_ENV_FILE}"
+                        cp "${STAGED_RUNTIME_ENV_FILE}" "${STAGED_DEPLOY_PATH}/.env"
+                        COMPOSE_PROJECT_DIR="${STAGED_DEPLOY_PATH}"
+                        COMPOSE_ENV_FILE="${STAGED_RUNTIME_ENV_FILE}"
+                        COMPOSE_FILE="${STAGED_DEPLOY_PATH}/${DEPLOY_COMPOSE_FILE}"
+                        REPORT_DIR="${WORKSPACE}/reports/${RELEASE_ID}"
+                        REPORT_FILE="${REPORT_DIR}/compatibility-report.json"
+                        RELEASE_DIR="${RELEASE_EVIDENCE_ROOT}/${RELEASE_ID}"
+                        mkdir -p "${REPORT_DIR}"
+                        FRONTEND_EXTRACT_CONTAINER=""
+                        BACKEND_EXTRACT_CONTAINER=""
+                        MAINTENANCE_MODE=false
+                        CUTOVER_STAGE=preflight
 
+                        compose() {
+                            docker compose --env-file "${COMPOSE_ENV_FILE}" --project-directory "${COMPOSE_PROJECT_DIR}" -f "${COMPOSE_FILE}" "$@"
+                        }
+                        cleanup_private_inputs() {
+                            [ -z "${FRONTEND_EXTRACT_CONTAINER}" ] || docker rm -f "${FRONTEND_EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
+                            [ -z "${BACKEND_EXTRACT_CONTAINER}" ] || docker rm -f "${BACKEND_EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
+                            docker rm -f "${CHECKER_CONTAINER_NAME}" >/dev/null 2>&1 || true
+                            rm -rf "${PREFLIGHT_DIR}"
+                        }
+                        hold_entrypoint_on_failure() {
+                            status=$?
+                            cleanup_private_inputs
+                            if [ "$status" -ne 0 ]; then
+                                if [ "${MAINTENANCE_MODE}" = true ]; then
+                                    echo "CUTOVER_FAILED_MAINTENANCE_HELD: ${CUTOVER_STAGE}"
+                                    compose stop nginx >/dev/null 2>&1 || true
+                                else
+                                    echo "PRE-CUTOVER_ABORTED: ${CUTOVER_STAGE}"
+                                fi
+                            fi
+                            exit "$status"
+                        }
+                        trap hold_entrypoint_on_failure EXIT
+                        abort_pre_cutover() {
+                            CUTOVER_STAGE="$1"
+                            return 1
+                        }
                         wait_for_image() {
                             image_ref="$1"
                             retries="$2"
                             attempt=1
-
                             while [ "$attempt" -le "$retries" ]; do
-                                if docker pull "$image_ref" >/dev/null 2>&1; then
-                                    echo "✅ 镜像已就绪: $image_ref"
-                                    return 0
-                                fi
-
-                                echo "⏳ 等待镜像入库: $image_ref (${attempt}/${retries})"
+                                docker pull "$image_ref" >/dev/null 2>&1 && return 0
                                 attempt=$((attempt + 1))
                                 sleep 5
                             done
-
-                            echo "❌ 镜像未就绪: $image_ref"
                             return 1
                         }
-
-                        wait_for_image "${BACKEND_IMAGE}" "${IMAGE_PULL_RETRIES}"
-                        wait_for_image "${FRONTEND_IMAGE}" "${IMAGE_PULL_RETRIES}"
-
-                        BACKEND_IMAGE=$(docker image inspect \
-                            --format '{{ index .RepoDigests 0 }}' "${BACKEND_IMAGE}")
-                        FRONTEND_IMAGE=$(docker image inspect \
-                            --format '{{ index .RepoDigests 0 }}' "${FRONTEND_IMAGE}")
-                        case "${BACKEND_IMAGE}" in
-                            *@sha256:*) ;;
-                            *)
-                                echo "❌ 无法将后端镜像固定到不可变 digest"
-                                exit 1
-                                ;;
-                        esac
-                        case "${FRONTEND_IMAGE}" in
-                            *@sha256:*) ;;
-                            *)
-                                echo "❌ 无法将前端镜像固定到不可变 digest"
-                                exit 1
-                                ;;
-                        esac
-                        export BACKEND_IMAGE FRONTEND_IMAGE
-                        echo "🔒 已固定后端镜像: ${BACKEND_IMAGE}"
-                        echo "🔒 已固定前端镜像: ${FRONTEND_IMAGE}"
-
-                        # TEST_DEPLOY_CUTOVER_BEGIN
-                        compose() {
-                            docker compose \
-                                --env-file "${DEPLOY_ENV_FILE}" \
-                                -f "${DEPLOY_COMPOSE_FILE}" \
-                                "$@"
+                        # TEST_CHECKER_CONTAINER_RUNNER_BEGIN
+                        remove_checker_container() {
+                            docker rm -f "${CHECKER_CONTAINER_NAME}" >/dev/null 2>&1 || true
                         }
-
-                        MAINTENANCE_MODE=false
-                        CUTOVER_STAGE=image-provenance
-                        keep_external_entrypoint_closed() {
-                            if [ "${MAINTENANCE_MODE}" = "true" ]; then
-                                echo "❌ 发布在阶段 ${CUTOVER_STAGE} 失败；外部入口保持关闭"
-                                compose stop nginx >/dev/null 2>&1 || true
+                        run_checker_container() {
+                            checker_timeout_seconds="$1"
+                            shift
+                            remove_checker_container
+                            set +e
+                            timeout --signal=KILL "${checker_timeout_seconds}s" docker run \
+                                --name "${CHECKER_CONTAINER_NAME}" "$@"
+                            checker_container_status=$?
+                            set -e
+                            remove_checker_container
+                            return "$checker_container_status"
+                        }
+                        # TEST_CHECKER_CONTAINER_RUNNER_END
+                        discover_live_image() {
+                            service="$1"
+                            container_id=$(compose ps -q "$service")
+                            [ -n "$container_id" ] || return 1
+                            docker inspect --format '{{ .Config.Image }}' "$container_id"
+                        }
+                        discover_live_digest() {
+                            service="$1"
+                            image_ref=$(discover_live_image "$service") || return 1
+                            case "$image_ref" in
+                                *@sha256:[0-9a-f]*) printf '%s\n' "${image_ref##*@}" ;;
+                                *) return 1 ;;
+                            esac
+                        }
+                        discover_current_backend_topology() {
+                            CURRENT_BACKEND_IMAGE=""
+                            CURRENT_BACKEND_DIGEST=""
+                            for service in api celery celery-wms-fulfillment celery_beat flower; do
+                                service_image=$(discover_live_image "$service") || return 1
+                                case "$service_image" in
+                                    *@sha256:[0-9a-f]*) service_digest="${service_image##*@}" ;;
+                                    *) return 1 ;;
+                                esac
+                                if [ -z "${CURRENT_BACKEND_DIGEST}" ]; then
+                                    CURRENT_BACKEND_IMAGE="$service_image"
+                                    CURRENT_BACKEND_DIGEST="$service_digest"
+                                else
+                                    [ "$service_digest" = "${CURRENT_BACKEND_DIGEST}" ] || return 1
+                                fi
+                            done
+                            export CURRENT_BACKEND_IMAGE CURRENT_BACKEND_DIGEST
+                        }
+                        validate_selected_image_revision() {
+                            image_ref="$1"
+                            revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref") || return 1
+                            case "$revision" in
+                                [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+                                *) echo "image revision 必须是 40 位小写 commit SHA"; return 1 ;;
+                            esac
+                        }
+                        pin_checker_image() {
+                            CHECKER_IMAGE_TAG="${CHECKER_IMAGE_REPO}:${CHECKER_SOURCE_COMMIT}"
+                            wait_for_image "${CHECKER_IMAGE_TAG}" "${IMAGE_PULL_RETRIES}" || return 1
+                            docker image inspect --format '{{ json .RepoDigests }}' "${CHECKER_IMAGE_TAG}" \
+                                >"${PREFLIGHT_DIR}/checker-repo-digests.json" || return 1
+                            CHECKER_IMAGE=$(python3 - "${PREFLIGHT_DIR}/checker-repo-digests.json" "${CHECKER_IMAGE_REPO}" <<'PY'
+# TEST_CHECKER_REPODIGEST_SELECTOR_BEGIN
+import json, re, sys
+source, repository = sys.argv[1:]
+with open(source, encoding="utf-8") as stream:
+    values = json.load(stream)
+if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+    raise SystemExit(1)
+matches = [value for value in values if re.fullmatch(re.escape(repository) + r"@sha256:[0-9a-f]{64}", value)]
+if len(matches) != 1:
+    raise SystemExit(1)
+print(matches[0])
+# TEST_CHECKER_REPODIGEST_SELECTOR_END
+PY
+                            ) || return 1
+                            CHECKER_DIGEST_VALUE="${CHECKER_IMAGE##*@}"
+                            export CHECKER_IMAGE CHECKER_DIGEST_VALUE
+                        }
+                        validate_current_report() {
+                            run_checker_container 60 \
+                                --entrypoint python \
+                                -v "${CURRENT_REPORT}:/current/compatibility-report.json:ro" \
+                                "${CHECKER_IMAGE}" -c '
+# TEST_CURRENT_REPORT_VALIDATOR_BEGIN
+import sys
+from pathlib import Path
+from tools.release_checker.release_checker import _read_json_object, validate_compatibility_report
+report = _read_json_object(Path(sys.argv[1]))
+validate_compatibility_report(report)
+if report["pre_cutover_state"] != "READY":
+    raise SystemExit(1)
+candidate = report["candidate_digests"]
+current = report["current_digests"]
+print(candidate.get("frontend", current.get("frontend")), candidate.get("backend", current.get("backend")))
+# TEST_CURRENT_REPORT_VALIDATOR_END
+' /current/compatibility-report.json
+                        }
+                        verify_current_peer_evidence() {
+                            CURRENT_EVIDENCE_VALID=false
+                            CURRENT_REPORT="${CURRENT_RELEASE_EVIDENCE_DIR}/compatibility-report.json"
+                            if [ ! -r "${CURRENT_REPORT}" ]; then
+                                [ "${DEPLOY_SCOPE}" = BOTH ] && return 0
+                                return 1
                             fi
+                            evidence_pair=$(validate_current_report) || {
+                                [ "${DEPLOY_SCOPE}" = BOTH ] && return 0
+                                return 1
+                            }
+                            set -- ${evidence_pair}
+                            EVIDENCE_FRONTEND_DIGEST="$1"
+                            EVIDENCE_BACKEND_DIGEST="$2"
+                            if [ "${CURRENT_FRONTEND_DIGEST}" = "${EVIDENCE_FRONTEND_DIGEST}" ] \
+                                && [ "${CURRENT_BACKEND_DIGEST}" = "${EVIDENCE_BACKEND_DIGEST}" ] \
+                                && [ -r "${CURRENT_RELEASE_EVIDENCE_DIR}/current-fingerprints.json" ]; then
+                                CURRENT_EVIDENCE_VALID=true
+                            fi
+                            export CURRENT_EVIDENCE_VALID
+                            [ "${DEPLOY_SCOPE}" != BOTH ] || return 0
+                            if [ "${DEPLOY_SCOPE}" = FRONTEND ]; then
+                                [ "${CURRENT_BACKEND_DIGEST}" = "${EVIDENCE_BACKEND_DIGEST}" ] || return 1
+                                UNSELECTED_PEER_DIGEST="${CURRENT_BACKEND_DIGEST}"
+                            else
+                                [ "${CURRENT_FRONTEND_DIGEST}" = "${EVIDENCE_FRONTEND_DIGEST}" ] || return 1
+                                UNSELECTED_PEER_DIGEST="${CURRENT_FRONTEND_DIGEST}"
+                            fi
+                            export UNSELECTED_PEER_DIGEST
                         }
-                        fail_cutover() {
-                            CUTOVER_STAGE="$1"
-                            echo "❌ 发布在阶段 ${CUTOVER_STAGE} 失败；立即关闭外部入口"
-                            compose stop nginx >/dev/null 2>&1 || true
-                            exit 1
+                        extract_release_artifacts() {
+                            side="$1"
+                            image_ref="$2"
+                            side_dir="${PREFLIGHT_DIR}/${side}"
+                            mkdir -p "$side_dir"
+                            container_id=$(docker create "$image_ref") || return 1
+                            if [ "$side" = frontend ]; then FRONTEND_EXTRACT_CONTAINER="$container_id"; else BACKEND_EXTRACT_CONTAINER="$container_id"; fi
+                            docker cp "${container_id}:/opt/wes/release/." "$side_dir/" || return 1
+                            docker image inspect --format '{{ json .Config.Labels }}' "$image_ref" >"${PREFLIGHT_DIR}/${side}-all-labels.json" || return 1
+                            python3 - "$side" "${PREFLIGHT_DIR}/${side}-all-labels.json" "${PREFLIGHT_DIR}/${side}-labels.json" <<'PY'
+import json, sys
+side, source, target = sys.argv[1:]
+fields = {
+    "frontend": ["org.wes.release.consumer-openapi.sha256", "org.wes.release.required-operations.sha256", "org.wes.release.required-permissions.sha256", "org.wes.release.frontend-dependencies.sha256", "org.wes.release.frontend-recipe.sha256"],
+    "backend": ["org.wes.release.provider-openapi.sha256", "org.wes.release.provided-permissions.sha256", "org.wes.release.migration-tree.sha256", "org.wes.release.backend-dependencies.sha256", "org.wes.release.backend-recipe.sha256", "org.wes.release.expected-schema-head"],
+}[side]
+labels = json.load(open(source, encoding="utf-8"))
+selected = {field: labels.get(field) for field in fields}
+with open(target, "w", encoding="utf-8") as stream:
+    json.dump(selected, stream, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
                         }
-                        trap keep_external_entrypoint_closed EXIT
-
-                        if ! BACKEND_REVISION=$(docker image inspect --format \
-                            '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${BACKEND_IMAGE}"); then
-                            fail_cutover backend-image-revision
-                        fi
-                        if [ "${BACKEND_REVISION}" != "${EXPECTED_BACKEND_COMMIT_SHA}" ]; then
-                            echo "❌ 后端镜像 revision 与批准提交不一致: ${BACKEND_REVISION:-<empty>}"
-                            fail_cutover backend-image-revision
-                        fi
-                        if ! FRONTEND_REVISION=$(docker image inspect --format \
-                            '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover frontend-image-revision
-                        fi
-                        if [ "${FRONTEND_REVISION}" != "${EXPECTED_FRONTEND_COMMIT_SHA}" ]; then
-                            echo "❌ 前端镜像 revision 与批准提交不一致: ${FRONTEND_REVISION:-<empty>}"
-                            fail_cutover frontend-image-revision
-                        fi
-                        if ! FRONTEND_BACKEND_REVISION=$(docker image inspect --format \
-                            '{{ index .Config.Labels "com.zontec.wes.backend-contract-revision" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover frontend-backend-provenance
-                        fi
-                        if [ "${FRONTEND_BACKEND_REVISION}" != "${EXPECTED_BACKEND_COMMIT_SHA}" ]; then
-                            echo "❌ 前端契约绑定的后端 revision 不一致: ${FRONTEND_BACKEND_REVISION:-<empty>}"
-                            fail_cutover frontend-backend-provenance
-                        fi
-                        if ! FRONTEND_OPENAPI_SHA256=$(docker image inspect --format \
-                            '{{ index .Config.Labels "com.zontec.wes.openapi-sha256" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover openapi-provenance
-                        fi
-                        if [ "${FRONTEND_OPENAPI_SHA256}" != "${EXPECTED_OPENAPI_SHA256}" ]; then
-                            echo "❌ 前端镜像 OpenAPI provenance 不一致: ${FRONTEND_OPENAPI_SHA256:-<empty>}"
-                            fail_cutover openapi-provenance
-                        fi
-                        if ! FRONTEND_PERMISSIONS_SHA256=$(docker image inspect --format \
-                            '{{ index .Config.Labels "com.zontec.wes.permissions-sha256" }}' "${FRONTEND_IMAGE}"); then
-                            fail_cutover permission-provenance
-                        fi
-                        if [ "${FRONTEND_PERMISSIONS_SHA256}" != "${EXPECTED_PERMISSIONS_SHA256}" ]; then
-                            echo "❌ 前端镜像 permission provenance 不一致: ${FRONTEND_PERMISSIONS_SHA256:-<empty>}"
-                            fail_cutover permission-provenance
-                        fi
-
-                        NGINX_PORT=$(grep -E '^NGINX_HTTP_PORT=' "${DEPLOY_ENV_FILE}" | tail -n 1 | cut -d= -f2)
-                        NGINX_PORT=${NGINX_PORT:-8080}
-
-                        case "${BUILD_NUMBER:-}" in
-                            ''|*[!0-9]*) fail_cutover fresh-database-name ;;
-                        esac
-                        SHORT_COMMIT=$(printf '%.12s' "${DEPLOY_SOURCE_COMMIT_SHA}")
-                        POSTGRES_DB="wes_test_${BUILD_NUMBER}_${SHORT_COMMIT}"
-                        case "${POSTGRES_DB}" in
-                            *[!a-z0-9_]*) fail_cutover fresh-database-name ;;
-                        esac
-                        if [ "${#POSTGRES_DB}" -gt 63 ]; then
-                            fail_cutover fresh-database-name
-                        fi
-                        export POSTGRES_DB
-
-                        echo "🔎 在维护态前编译校验 WMS Provider profile"
-                        if ! compose run --rm --no-deps \
-                            -e DATABASE_RUNTIME_ROLE=cli \
-                            -e DATABASE_POOL_SIZE=1 \
-                            -e DATABASE_MAX_OVERFLOW=0 \
-                            --entrypoint /opt/venv/bin/python api -c '
+                        write_effective_facts() {
+                            python3 - "${STAGED_DEPLOY_PATH}" "${STAGED_RUNTIME_ENV_FILE}" "${WMS_PROVIDER_PROFILE_HOST_FILE}" "${PREFLIGHT_DIR}/effective-facts-base.json" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+def item(logical, physical):
+    return {"path": logical, "sha256": hashlib.sha256(Path(physical).read_bytes()).hexdigest()}
+root = Path(sys.argv[1])
+deploy_paths = ["Jenkinsfile.test-deploy", "docker-compose.test-deploy.yml", "scripts/wait_for_http.py", "nginx/nginx.conf", "nginx/conf.d/default.conf", "postgresql/base.conf", "postgresql/test.conf", "redis/base.conf", "redis/test.conf"]
+deploy = [item(path, root / path) for path in deploy_paths]
+runtime = [item("runtime/.env", sys.argv[2]), item("runtime/wms-provider.yaml", sys.argv[3])]
+value = {"deploy": {"kind": "wes.release.input-set.v1", "files": sorted(deploy, key=lambda x: x["path"])}, "runtime": {"kind": "wes.release.input-set.v1", "files": sorted(runtime, key=lambda x: x["path"])}}
+with open(sys.argv[4], "w", encoding="utf-8") as stream:
+    json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n")
+PY
+                        }
+                        query_database_state() {
+                            DATABASE_HEADS=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from alembic_version order by version_num"') || return 1
+                            EXPECTED_SCHEMA_HEAD=$(python3 - "${PREFLIGHT_DIR}/backend-labels.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["org.wes.release.expected-schema-head"])
+PY
+                            ) || return 1
+                            head_count=$(printf '%s\n' "${DATABASE_HEADS}" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+                            if [ "$head_count" = 1 ] && [ "${DATABASE_HEADS}" = "${EXPECTED_SCHEMA_HEAD}" ]; then
+                                DATABASE_RELATION=equal
+                            elif [ "$head_count" = 1 ]; then
+                                DATABASE_RELATION=$(docker run --rm -i --entrypoint /opt/venv/bin/python "${BACKEND_IMAGE}" - "${DATABASE_HEADS}" "${EXPECTED_SCHEMA_HEAD}" <<'PY'
+import sys
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+current, candidate = sys.argv[1:]
+try:
+    script = ScriptDirectory.from_config(Config("/app/alembic.ini"))
+    script.get_revision(current)
+    script.get_revision(candidate)
+    list(script.iterate_revisions(candidate, current))
+    print("ancestor")
+except Exception:
+    print("unknown")
+PY
+                                ) || DATABASE_RELATION=unknown
+                            else
+                                DATABASE_RELATION=unknown
+                            fi
+                            export DATABASE_HEADS EXPECTED_SCHEMA_HEAD DATABASE_RELATION
+                        }
+                        write_checker_inputs() {
+                            python3 - "${PREFLIGHT_DIR}" "${DEPLOY_SCOPE}" "${FRONTEND_CANDIDATE_DIGEST}" "${BACKEND_CANDIDATE_DIGEST}" "${CURRENT_FRONTEND_DIGEST}" "${CURRENT_BACKEND_DIGEST}" "${DATABASE_HEADS}" "${DATABASE_RELATION}" <<'PY'
+import json, sys
+root, scope, frontend, backend, current_frontend, current_backend, heads, relation = sys.argv[1:]
+def write(name, value):
+    with open(f"{root}/{name}", "w", encoding="utf-8") as stream:
+        json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n")
+candidate = {}
+if scope in {"FRONTEND", "BOTH"}: candidate["frontend"] = frontend
+if scope in {"BACKEND", "BOTH"}: candidate["backend"] = backend
+write("candidate-digests.json", candidate)
+write("current-digests.json", {"frontend": current_frontend, "backend": current_backend})
+base = json.load(open(f"{root}/effective-facts-base.json", encoding="utf-8"))
+write("effective-facts.json", {"kind": "wes.release.effective-facts.v1", "deploy": base["deploy"], "runtime": base["runtime"], "database": {"current_heads": [line for line in heads.splitlines() if line.strip()], "relation_to_candidate": relation}})
+PY
+                        }
+                        run_release_checker() {
+                            set --
+                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || set -- "$@" --current-fingerprints /inputs/current-fingerprints.json
+                            [ "${FORCE_FULL_VALUE}" != true ] || set -- "$@" --force-full
+                            [ -z "${WARN_APPROVAL_REASON_VALUE}" ] || set -- "$@" --warn-approval-reason "${WARN_APPROVAL_REASON_VALUE}"
+                            current_mount="${PREFLIGHT_DIR}/missing-current-fingerprints.json"
+                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || current_mount="${CURRENT_RELEASE_EVIDENCE_DIR}/current-fingerprints.json"
+                            if run_checker_container 60 \
+                                -v "${PREFLIGHT_DIR}/frontend:/frontend:ro" \
+                                -v "${PREFLIGHT_DIR}/backend:/backend:ro" \
+                                -v "${PREFLIGHT_DIR}:/inputs:ro" \
+                                -v "${current_mount}:/inputs/current-fingerprints.json:ro" \
+                                -v "${REPORT_DIR}:/report" \
+                                "${CHECKER_IMAGE}" \
+                                --frontend-dir /frontend \
+                                --backend-dir /backend \
+                                --frontend-labels /inputs/frontend-labels.json \
+                                --backend-labels /inputs/backend-labels.json \
+                                --effective-facts /inputs/effective-facts.json \
+                                --release-id "${RELEASE_ID}" \
+                                --deploy-scope "${DEPLOY_SCOPE}" \
+                                --candidate-digests /inputs/candidate-digests.json \
+                                --current-digests /inputs/current-digests.json \
+                                --checker-digest "${CHECKER_DIGEST_VALUE}" \
+                                --output /report/compatibility-report.json "$@"; then
+                                checker_status=0
+                            else
+                                checker_status=$?
+                            fi
+                            [ "$checker_status" -eq 0 ] || return 1
+                            EFFECTIVE_MODE=$(python3 - "${REPORT_FILE}" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if value.get("pre_cutover_state") != "READY" or value.get("effective_mode") not in {"FAST", "FULL"}:
+    raise SystemExit(1)
+print(value["effective_mode"])
+PY
+                            ) || return 1
+                            export EFFECTIVE_MODE
+                        }
+                        business_preflight() {
+                            compose run --rm --no-deps \
+                                -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 \
+                                --entrypoint /opt/venv/bin/python api -c '
 from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 from src.core.conf import settings
-
 try:
     validate_wms_transport_configuration(settings_source=settings)
 except Exception as exc:
     print(f"WMS_PROFILE_PREFLIGHT_ERROR={type(exc).__name__}: {exc}", flush=True)
     raise SystemExit(1) from exc
 print("WMS_PROFILE_PREFLIGHT=valid", flush=True)
-'; then
-                            CUTOVER_STAGE=wms-profile-preflight
-                            echo "❌ WMS Provider profile 编译校验失败；现有外部入口保持不变"
-                            exit 1
-                        fi
-
-                        echo "🔒 进入维护态并停止旧应用容器"
-                        CUTOVER_STAGE=maintenance
-                        MAINTENANCE_MODE=true
-                        if ! compose stop nginx; then
-                            fail_cutover maintenance-stop
-                        fi
-
-                        CLOSE_RETRY=0
-                        while curl -sS --connect-timeout 1 --max-time 2 \
-                            "http://127.0.0.1:${NGINX_PORT}/" >/dev/null 2>&1; do
-                            CLOSE_RETRY=$((CLOSE_RETRY + 1))
-                            if [ "${CLOSE_RETRY}" -ge 10 ]; then
-                                fail_cutover listener-closure
-                            fi
-                            sleep 1
-                        done
-
-                        echo "📄 在维护态从前端镜像提取菜单清单..."
-                        MANIFEST_DIR="${WORKSPACE}/.ci-artifacts/frontend"
-                        MANIFEST_FILE="${MANIFEST_DIR}/menu-manifest.json"
-                        mkdir -p "${MANIFEST_DIR}"
-                        cleanup_manifest_extract_container() {
-                            docker rm -f frontend-manifest-extract >/dev/null 2>&1 || true
+' || return 1
                         }
-                        cleanup_manifest_extract_container
-                        if ! docker create --name frontend-manifest-extract "${FRONTEND_IMAGE}" >/dev/null; then
-                            cleanup_manifest_extract_container
-                            fail_cutover manifest-extract-create
-                        fi
-                        if ! docker cp \
-                            frontend-manifest-extract:/opt/wes/menu-manifest.json "${MANIFEST_FILE}"; then
-                            cleanup_manifest_extract_container
-                            fail_cutover manifest-extract-copy
-                        fi
-                        cleanup_manifest_extract_container
-                        if [ ! -s "${MANIFEST_FILE}" ]; then
-                            fail_cutover manifest-extract-empty
-                        fi
+                        write_next_current_fingerprints() {
+                            python3 - "${PREFLIGHT_DIR}" <<'PY'
+import json, sys
+root = sys.argv[1]
+frontend = json.load(open(f"{root}/frontend-labels.json", encoding="utf-8"))
+backend = json.load(open(f"{root}/backend-labels.json", encoding="utf-8"))
+effective = json.load(open(f"{root}/effective-facts.json", encoding="utf-8"))
+value = {
+    "kind": "wes.release.current-fingerprints.v1",
+    "frontend": {"consumer_openapi_sha256": frontend["org.wes.release.consumer-openapi.sha256"], "required_operations_sha256": frontend["org.wes.release.required-operations.sha256"], "required_permissions_sha256": frontend["org.wes.release.required-permissions.sha256"], "dependencies_sha256": frontend["org.wes.release.frontend-dependencies.sha256"], "recipe_sha256": frontend["org.wes.release.frontend-recipe.sha256"]},
+    "backend": {"provider_openapi_sha256": backend["org.wes.release.provider-openapi.sha256"], "provided_permissions_sha256": backend["org.wes.release.provided-permissions.sha256"], "migration_tree_sha256": backend["org.wes.release.migration-tree.sha256"], "dependencies_sha256": backend["org.wes.release.backend-dependencies.sha256"], "recipe_sha256": backend["org.wes.release.backend-recipe.sha256"], "expected_schema_head": backend["org.wes.release.expected-schema-head"]},
+    "deploy": effective["deploy"], "runtime": effective["runtime"],
+}
+with open(f"{root}/next-current-fingerprints.json", "w", encoding="utf-8") as stream:
+    json.dump(value, stream, sort_keys=True, separators=(",", ":")); stream.write("\n")
+PY
+                            NEXT_CURRENT_FINGERPRINTS="${PREFLIGHT_DIR}/next-current-fingerprints.json"
+                            export NEXT_CURRENT_FINGERPRINTS
+                        }
 
-                        compose_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "${DEPLOY_ENV_FILE}" | tail -n 1)
-                        compose_project_name=${compose_project_name:-wes_backend_test}
-                        if ! PROJECT_CONTAINER_IDS=$(docker ps -q \
-                            --filter "label=com.docker.compose.project=${compose_project_name}"); then
-                            fail_cutover service-discovery
+                        # TEST_DEPLOY_PREFLIGHT_ORDER_BEGIN
+                        FRONTEND_IMAGE=""
+                        BACKEND_IMAGE=""
+                        if [ "${DEPLOY_SCOPE}" = FRONTEND ] || [ "${DEPLOY_SCOPE}" = BOTH ]; then
+                            FRONTEND_IMAGE="${FRONTEND_IMAGE_REPO}@${FRONTEND_CANDIDATE_DIGEST}"
+                            wait_for_image "${FRONTEND_IMAGE}" "${IMAGE_PULL_RETRIES}" || abort_pre_cutover frontend-candidate-pull
+                            validate_selected_image_revision "${FRONTEND_IMAGE}" || abort_pre_cutover frontend-image-revision
                         fi
-                        for container_id in ${PROJECT_CONTAINER_IDS}; do
-                            if ! compose_service=$(docker inspect --format \
-                                '{{ index .Config.Labels "com.docker.compose.service" }}' "${container_id}"); then
-                                fail_cutover service-discovery
+                        if [ "${DEPLOY_SCOPE}" = BACKEND ] || [ "${DEPLOY_SCOPE}" = BOTH ]; then
+                            BACKEND_IMAGE="${BACKEND_IMAGE_REPO}@${BACKEND_CANDIDATE_DIGEST}"
+                            wait_for_image "${BACKEND_IMAGE}" "${IMAGE_PULL_RETRIES}" || abort_pre_cutover backend-candidate-pull
+                            validate_selected_image_revision "${BACKEND_IMAGE}" || abort_pre_cutover backend-image-revision
+                        fi
+                        pin_checker_image || abort_pre_cutover checker-image-pin
+
+                        CURRENT_FRONTEND_IMAGE=$(discover_live_image frontend) || abort_pre_cutover current-frontend-discovery
+                        case "${CURRENT_FRONTEND_IMAGE}" in
+                            *@sha256:[0-9a-f]*) CURRENT_FRONTEND_DIGEST="${CURRENT_FRONTEND_IMAGE##*@}" ;;
+                            *) abort_pre_cutover current-frontend-discovery ;;
+                        esac
+                        discover_current_backend_topology || abort_pre_cutover current-backend-discovery
+                        export CURRENT_FRONTEND_IMAGE CURRENT_FRONTEND_DIGEST
+                        [ -n "${FRONTEND_IMAGE}" ] || FRONTEND_IMAGE="${CURRENT_FRONTEND_IMAGE}"
+                        [ -n "${BACKEND_IMAGE}" ] || BACKEND_IMAGE="${CURRENT_BACKEND_IMAGE}"
+                        export FRONTEND_IMAGE BACKEND_IMAGE
+                        validate_selected_image_revision "${FRONTEND_IMAGE}" || abort_pre_cutover frontend-image-revision
+                        validate_selected_image_revision "${BACKEND_IMAGE}" || abort_pre_cutover backend-image-revision
+                        verify_current_peer_evidence || abort_pre_cutover current-peer-evidence
+                        extract_release_artifacts frontend "${FRONTEND_IMAGE}" || abort_pre_cutover frontend-artifact-extraction
+                        extract_release_artifacts backend "${BACKEND_IMAGE}" || abort_pre_cutover backend-artifact-extraction
+                        write_effective_facts || abort_pre_cutover effective-input-hash
+                        query_database_state || abort_pre_cutover database-state
+                        write_checker_inputs || abort_pre_cutover checker-inputs
+                        run_release_checker || abort_pre_cutover compatibility-check
+                        echo "🔎 在维护态前编译校验 WMS Provider profile"
+                        business_preflight || abort_pre_cutover wms-profile-preflight
+                        write_next_current_fingerprints || abort_pre_cutover current-evidence-build
+                        # TEST_DEPLOY_PREFLIGHT_ORDER_END
+
+                        # TEST_DEPLOY_CUTOVER_BEGIN
+                        FAST_CUTOVER_DEADLINE=""
+                        fast_remaining_seconds() {
+                            now=$(date +%s) || return 1
+                            remaining=$(( FAST_CUTOVER_DEADLINE - now ))
+                            [ "$remaining" -gt 0 ] || return 1
+                            printf '%s\n' "$remaining"
+                        }
+                        run_with_cutover_budget() {
+                            if [ "${EFFECTIVE_MODE}" != FAST ]; then
+                                "$@"
+                                return
                             fi
-                            case "${compose_service}" in
-                                db|redis) ;;
-                                api|celery|celery-wms-fulfillment|celery_beat|flower|frontend|nginx)
-                                    if ! docker stop "${container_id}"; then
-                                        fail_cutover application-stop
-                                    fi
-                                    ;;
-                                *)
-                                    echo "❌ 未知 Compose application service: ${compose_service:-<empty>}"
-                                    fail_cutover unknown-service
-                                    ;;
-                            esac
-                        done
-
-                        if ! REMAINING_CONTAINER_IDS=$(docker ps -q \
-                            --filter "label=com.docker.compose.project=${compose_project_name}"); then
-                            fail_cutover remaining-service-discovery
-                        fi
-                        for container_id in ${REMAINING_CONTAINER_IDS}; do
-                            if ! compose_service=$(docker inspect --format \
-                                '{{ index .Config.Labels "com.docker.compose.service" }}' "${container_id}"); then
-                                fail_cutover remaining-service-discovery
+                            remaining=$(fast_remaining_seconds) || return 124
+                            timeout --signal=KILL "${remaining}s" "$@"
+                        }
+                        cutover_compose() {
+                            run_with_cutover_budget docker compose --env-file "${COMPOSE_ENV_FILE}" \
+                                --project-directory "${COMPOSE_PROJECT_DIR}" -f "${COMPOSE_FILE}" "$@"
+                        }
+                        runtime_compose() {
+                            if [ "${EFFECTIVE_MODE}" = FAST ]; then cutover_compose "$@"; else compose "$@"; fi
+                        }
+                        switch_live_deploy_source() {
+                            run_with_cutover_budget git -C "${DEPLOY_PATH}" fetch "${WORKSPACE}" "${DEPLOY_SOURCE_COMMIT_SHA}" || return 1
+                            run_with_cutover_budget git -C "${DEPLOY_PATH}" reset --hard "${DEPLOY_SOURCE_COMMIT_SHA}" || return 1
+                            actual_commit=$(run_with_cutover_budget git -C "${DEPLOY_PATH}" rev-parse HEAD) || return 1
+                            [ "$actual_commit" = "${DEPLOY_SOURCE_COMMIT_SHA}" ] || return 1
+                            run_with_cutover_budget git -C "${DEPLOY_PATH}" clean -fd || return 1
+                            runtime_env_tmp="${DEPLOY_PATH}/.env.${RELEASE_ID}.tmp"
+                            run_with_cutover_budget cp "${STAGED_RUNTIME_ENV_FILE}" "${runtime_env_tmp}" || return 1
+                            run_with_cutover_budget mv -f "${runtime_env_tmp}" "${DEPLOY_PATH}/.env" || return 1
+                            COMPOSE_PROJECT_DIR="${DEPLOY_PATH}"
+                            COMPOSE_ENV_FILE="${DEPLOY_PATH}/.env"
+                            COMPOSE_FILE="${DEPLOY_PATH}/${DEPLOY_COMPOSE_FILE}"
+                        }
+                        MAINTENANCE_MODE=false
+                        CUTOVER_STAGE=peer-reverification
+                        keep_external_entrypoint_closed() {
+                            status=$?
+                            cleanup_private_inputs >/dev/null 2>&1 || true
+                            if [ "$status" -ne 0 ] && [ "${MAINTENANCE_MODE}" = true ]; then
+                                compose stop nginx >/dev/null 2>&1 || true
                             fi
-                            case "${compose_service}" in
-                                db|redis) ;;
-                                *)
-                                    echo "❌ 迁移前仍有未知 Compose application service: ${compose_service:-<empty>}"
-                                    fail_cutover remaining-application-service
-                                    ;;
-                            esac
-                        done
-
-                        CUTOVER_STAGE=infrastructure-start
-                        if ! compose up -d db redis; then
-                            fail_cutover infrastructure-start
-                        fi
-                        INFRA_RETRY=0
-                        until compose exec -T db sh -eu -c \
-                            'pg_isready -U "$POSTGRES_USER" -d postgres' >/dev/null 2>&1 \
-                            && compose exec -T redis sh -eu -c \
-                                'redis-cli -a "$REDIS_PASSWORD" ping | grep -qx PONG' >/dev/null 2>&1; do
-                            INFRA_RETRY=$((INFRA_RETRY + 1))
-                            if [ "${INFRA_RETRY}" -ge 30 ]; then
-                                fail_cutover infrastructure-readiness
+                            exit "$status"
+                        }
+                        trap keep_external_entrypoint_closed EXIT
+                        fail_cutover() {
+                            CUTOVER_STAGE="$1"
+                            echo "CUTOVER_FAILED_MAINTENANCE_HELD: ${CUTOVER_STAGE}"
+                            compose stop nginx >/dev/null 2>&1 || true
+                            exit 1
+                        }
+                        reverify_unselected_peer() {
+                            [ "${DEPLOY_SCOPE}" != BOTH ] || return 0
+                            if [ "${DEPLOY_SCOPE}" = FRONTEND ]; then
+                                for service in api celery celery-wms-fulfillment celery_beat flower; do
+                                    live_digest=$(discover_live_digest "$service") || return 1
+                                    [ "$live_digest" = "${CURRENT_BACKEND_DIGEST}" ] || return 1
+                                done
+                            else
+                                live_digest=$(discover_live_digest frontend) || return 1
+                                [ "$live_digest" = "${CURRENT_FRONTEND_DIGEST}" ] || return 1
                             fi
-                            sleep 1
+                        }
+                        run_fast_cutover() {
+                            if [ "${DEPLOY_SCOPE}" = "FRONTEND" ]; then
+                                cutover_compose up -d --no-deps --force-recreate --wait frontend || return 1
+                            elif [ "${DEPLOY_SCOPE}" = "BACKEND" ]; then
+                                cutover_compose stop api celery celery-wms-fulfillment celery_beat flower || return 1
+                                cutover_compose up -d --no-deps --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower || return 1
+                            else
+                                cutover_compose stop api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                                cutover_compose up -d --no-deps --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            fi
+                        }
+                        run_full_cutover() {
+                            backup_name="${RELEASE_ID}.sql"
+                            compose stop api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            echo "🗄️ 备份当前数据库"
+                            compose exec -T db sh -eu -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "/backups/'"${backup_name}"'"' || return 1
+                            compose exec -T db test -s "/backups/${backup_name}" || return 1
+                            CUTOVER_STAGE=migration
+                            echo "🗄️ 执行数据库迁移"
+                            compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/alembic api upgrade head || return 1
+                            CUTOVER_STAGE=migration-head
+                            migrated_heads=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from alembic_version order by version_num"') || return 1
+                            migrated_head_count=$(printf '%s\n' "$migrated_heads" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+                            [ "$migrated_head_count" = 1 ] || return 1
+                            [ "$migrated_heads" = "${EXPECTED_SCHEMA_HEAD}" ] || return 1
+                            CUTOVER_STAGE=authorization-apply
+                            echo "🔐 收敛 existing DB 基础授权"
+                            if AUTHORIZATION_OUTPUT=$(compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli \
+                                --entrypoint /opt/venv/bin/python api scripts/data/sync_permissions.py --apply 2>&1); then
+                                printf '%s\n' "${AUTHORIZATION_OUTPUT}"
+                            else
+                                authorization_status=$?
+                                printf '%s\n' "${AUTHORIZATION_OUTPUT}"
+                                if ! printf '%s\n' "${AUTHORIZATION_OUTPUT}" | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED'; then
+                                    echo "authorization apply exit status: ${authorization_status}" >&2
+                                    return 1
+                                fi
+                                CUTOVER_STAGE=authorization-cache-repair
+                                compose run --rm --no-deps --entrypoint /opt/venv/bin/python \
+                                    api scripts/data/sync_permissions.py --repair-cache || return 1
+                            fi
+                            CUTOVER_STAGE=authorization-check
+                            echo "🔎 校验权限目录零漂移"
+                            compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/python api scripts/data/sync_permissions.py --check || return 1
+                            CUTOVER_STAGE=application-start
+                            echo "🐳 启动已固定版本的应用服务"
+                            compose up -d --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                        }
+                        verify_readiness_and_topology() {
+                            verify_service_digest() {
+                                service="$1"
+                                expected_digest="$2"
+                                container_id=$(runtime_compose ps -q "$service") || return 1
+                                [ -n "$container_id" ] || return 1
+                                image_ref=$(run_with_cutover_budget docker inspect --format '{{ .Config.Image }}' "$container_id") || return 1
+                                case "$image_ref" in
+                                    *@sha256:[0-9a-f]*) actual_digest="${image_ref##*@}" ;;
+                                    *) return 1 ;;
+                                esac
+                                [ "$actual_digest" = "$expected_digest" ]
+                            }
+                            backend_digest="${BACKEND_IMAGE##*@}"
+                            frontend_digest="${FRONTEND_IMAGE##*@}"
+                            for service in api celery celery-wms-fulfillment celery_beat flower; do
+                                verify_service_digest "$service" "$backend_digest" || return 1
+                            done
+                            verify_service_digest frontend "$frontend_digest" || return 1
+                            runtime_compose exec -T api curl -fsS "${HEALTH_CHECK_URL}" >/dev/null || return 1
+                            runtime_compose exec -T frontend wget --no-verbose --tries=1 --spider http://127.0.0.1:5173/ >/dev/null || return 1
+                            runtime_compose exec -T -e BOOTSTRAP_ADMIN_USERNAME -e BOOTSTRAP_ADMIN_PASSWORD api \
+                                /opt/venv/bin/python scripts/check_bootstrap_admin_login.py --base-url http://127.0.0.1:8001 || return 1
+                            expected=$(runtime_compose config --services | sed '/^nginx$/d' | LC_ALL=C sort) || return 1
+                            running=$(runtime_compose ps --status running --services | sed '/^nginx$/d' | LC_ALL=C sort) || return 1
+                            [ "$running" = "$expected" ] || return 1
+                        }
+                        persist_success_evidence() {
+                            mkdir -p "${RELEASE_EVIDENCE_ROOT}" || return 1
+                            mkdir "${RELEASE_DIR}" || return 1
+                            cp "${REPORT_FILE}" "${RELEASE_DIR}/.compatibility-report.json.tmp" || return 1
+                            mv "${RELEASE_DIR}/.compatibility-report.json.tmp" "${RELEASE_DIR}/compatibility-report.json" || return 1
+                            cp "${NEXT_CURRENT_FINGERPRINTS}" "${RELEASE_DIR}/.current-fingerprints.json.tmp" || return 1
+                            mv "${RELEASE_DIR}/.current-fingerprints.json.tmp" "${RELEASE_DIR}/current-fingerprints.json" || return 1
+                            current_link="${RELEASE_EVIDENCE_ROOT}/.current.${RELEASE_ID}.tmp"
+                            ln -s "${RELEASE_ID}" "$current_link" || return 1
+                            python3 - "$current_link" "${CURRENT_RELEASE_EVIDENCE_DIR}" <<'PY'
+import os, sys
+os.replace(sys.argv[1], sys.argv[2])
+PY
+                        }
+
+                        reverify_unselected_peer || {
+                            echo "PRE-CUTOVER_ABORTED: current peer drift"
+                            exit 1
+                        }
+                        if [ "${EFFECTIVE_MODE}" = FAST ]; then
+                            FAST_CUTOVER_DEADLINE=$(( $(date +%s) + 120 ))
+                        fi
+                        echo "🔒 进入维护态并停止旧应用容器"
+                        CUTOVER_STAGE=maintenance-stop
+                        MAINTENANCE_MODE=true
+                        cutover_compose stop nginx || fail_cutover maintenance-stop
+                        close_retry=0
+                        while run_with_cutover_budget curl -sS --connect-timeout 1 --max-time 2 \
+                            "http://127.0.0.1:${NGINX_HTTP_PORT:-8080}/" >/dev/null 2>&1; do
+                            close_retry=$((close_retry + 1))
+                            [ "$close_retry" -lt 10 ] || fail_cutover listener-closure
+                            run_with_cutover_budget sleep 1 || fail_cutover listener-closure
                         done
-
-                        CUTOVER_STAGE=fresh-database
-                        if ! compose exec -T db sh -eu -c \
-                            'createdb -U "$POSTGRES_USER" -T template0 "$POSTGRES_DB"'; then
-                            fail_cutover fresh-database
-                        fi
-                        if ! FRESH_TABLE_COUNT=$(compose exec -T db sh -eu -c \
-                            'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from pg_catalog.pg_tables where schemaname not in (\\$\\$pg_catalog\\$\\$,\\$\\$information_schema\\$\\$)"'); then
-                            fail_cutover fresh-database-proof
-                        fi
-                        FRESH_TABLE_COUNT=$(printf '%s' "${FRESH_TABLE_COUNT}" | tr -d '[:space:]')
-                        if [ "${FRESH_TABLE_COUNT}" != "0" ]; then
-                            fail_cutover fresh-database-proof
-                        fi
-
-                        echo "🗄️ 执行数据库迁移"
-                        CUTOVER_STAGE=migration
-                        if ! compose run --rm --no-deps \
-                            -e DATABASE_RUNTIME_ROLE=cli \
-                            -e DATABASE_POOL_SIZE=1 \
-                            -e DATABASE_MAX_OVERFLOW=0 \
-                            --entrypoint /opt/venv/bin/alembic \
-                            api upgrade head; then
-                            fail_cutover migration
-                        fi
-
-                        echo "🔐 执行 fresh DB 基础授权初始化"
-                        CUTOVER_STAGE=authorization-bootstrap
-                        if BOOTSTRAP_OUTPUT=$(compose run --rm --no-deps \
-                            -e DATABASE_RUNTIME_ROLE=cli \
-                            -e DATABASE_POOL_SIZE=1 \
-                            -e DATABASE_MAX_OVERFLOW=0 \
-                            -e BOOTSTRAP_ADMIN_USERNAME \
-                            -e BOOTSTRAP_ADMIN_PASSWORD \
-                            --entrypoint /bin/bash \
-                            api scripts/data/bootstrap_foundation.sh 2>&1); then
-                            printf '%s\n' "${BOOTSTRAP_OUTPUT}"
+                        CUTOVER_STAGE=deploy-source-switch
+                        switch_live_deploy_source || fail_cutover deploy-source-switch
+                        if [ "${EFFECTIVE_MODE}" = FAST ]; then
+                            CUTOVER_STAGE=fast-application-start
+                            run_fast_cutover || fail_cutover fast-application-start
                         else
-                            BOOTSTRAP_STATUS=$?
-                            printf '%s\n' "${BOOTSTRAP_OUTPUT}"
-                            if ! printf '%s\n' "${BOOTSTRAP_OUTPUT}" \
-                                | grep -Fxq 'DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED'; then
-                                echo "❌ bootstrap 失败且未返回精确 postcommit marker（status=${BOOTSTRAP_STATUS}）"
-                                fail_cutover authorization-bootstrap
-                            fi
-
-                            echo "🧹 数据库已提交但精确缓存失效失败；仅修复权限缓存命名空间"
-                            CUTOVER_STAGE=authorization-cache-repair
-                            if ! compose run --rm --no-deps \
-                                --entrypoint /opt/venv/bin/python \
-                                api scripts/data/sync_permissions.py --repair-cache; then
-                                fail_cutover authorization-cache-repair
-                            fi
+                            CUTOVER_STAGE=backup
+                            run_full_cutover || fail_cutover "${CUTOVER_STAGE}"
                         fi
-
-                        echo "🔎 校验权限目录零漂移"
-                        CUTOVER_STAGE=authorization-check
-                        if ! compose run --rm --no-deps \
-                            -e DATABASE_RUNTIME_ROLE=cli \
-                            -e DATABASE_POOL_SIZE=1 \
-                            -e DATABASE_MAX_OVERFLOW=0 \
-                            --entrypoint /opt/venv/bin/python \
-                            api scripts/data/sync_permissions.py --check; then
-                            fail_cutover authorization-check
-                        fi
-
-                        echo "🐳 启动已固定版本的应用服务"
-                        CUTOVER_STAGE=application-start
-                        if ! compose up -d --force-recreate --wait \
-                            api celery celery-wms-fulfillment celery_beat flower frontend; then
-                            echo "❌ 应用服务启动失败；输出服务状态与最近日志"
-                            compose ps -a || true
-                            compose logs --no-color --tail=200 \
-                                api celery celery-wms-fulfillment celery_beat flower frontend || true
-                            fail_cutover application-start
-                        fi
-
                         CUTOVER_STAGE=internal-readiness
-                        if ! compose exec -T api curl -fsS "${HEALTH_CHECK_URL}" >/dev/null; then
-                            fail_cutover backend-readiness
-                        fi
-                        if ! compose exec -T frontend wget --no-verbose --tries=1 --spider \
-                            http://127.0.0.1:5173/ >/dev/null; then
-                            fail_cutover frontend-asset
-                        fi
-
-                        echo "🔐 验证超级管理员真实登录"
-                        CUTOVER_STAGE=admin-login-gate
-                        if ! compose exec -T \
-                            -e BOOTSTRAP_ADMIN_USERNAME \
-                            -e BOOTSTRAP_ADMIN_PASSWORD \
-                            api /opt/venv/bin/python scripts/check_bootstrap_admin_login.py \
-                            --base-url http://127.0.0.1:8001; then
-                            fail_cutover admin-login-gate
-                        fi
-
-                        echo "🧭 同步 TEST 环境菜单..."
-                        CUTOVER_STAGE=menu-sync
-                        if ! API_CONTAINER_ID=$(compose ps -q api); then
-                            fail_cutover menu-sync
-                        fi
-
-                        if [ -z "${API_CONTAINER_ID}" ]; then
-                            echo "❌ 未找到 API 容器，无法同步菜单"
-                            fail_cutover menu-sync
-                        fi
-
-                        if ! docker cp "${MANIFEST_FILE}" "${API_CONTAINER_ID}:/tmp/menu-manifest.json"; then
-                            fail_cutover menu-sync
-                        fi
-                        if ! compose exec -T api \
-                            /opt/venv/bin/python scripts/data/sync_menus.py --manifest-path /tmp/menu-manifest.json; then
-                            fail_cutover menu-sync
-                        fi
-
-                        if ! MENU_COUNT=$(compose exec -T db \
-                            sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select count(*) from wes_sys.menus"'); then
-                            fail_cutover menu-check
-                        fi
-                        MENU_COUNT=$(echo "${MENU_COUNT}" | tr -d '[:space:]')
-
-                        if [ -z "${MENU_COUNT}" ] || [ "${MENU_COUNT}" -le 0 ]; then
-                            echo "❌ TEST 环境菜单同步后数量异常: ${MENU_COUNT:-<empty>}"
-                            fail_cutover menu-check
-                        fi
-
-                        echo "✅ TEST 环境菜单数量: ${MENU_COUNT}"
-
-                        echo "🧭 校验入口恢复前服务拓扑"
-                        CUTOVER_STAGE=pre-entrypoint-topology
-                        EXPECTED_PRE_ENTRY_SERVICES="$(compose config --services | grep -v '^nginx$' | LC_ALL=C sort)"
-                        RUNNING_PRE_ENTRY_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
-                        if [ "${RUNNING_PRE_ENTRY_SERVICES}" != "${EXPECTED_PRE_ENTRY_SERVICES}" ]; then
-                            echo "❌ 入口恢复前 Compose 服务拓扑不一致"
-                            printf '期望服务:\n%s\n' "${EXPECTED_PRE_ENTRY_SERVICES}"
-                            printf '运行服务:\n%s\n' "${RUNNING_PRE_ENTRY_SERVICES}"
-                            fail_cutover pre-entrypoint-topology
-                        fi
-
-                        echo "🌐 恢复外部入口"
+                        verify_readiness_and_topology || fail_cutover internal-readiness
                         CUTOVER_STAGE=external-entrypoint
-                        if ! compose up -d --no-deps --wait --wait-timeout 60 nginx; then
-                            fail_cutover external-entrypoint
-                        fi
+                        echo "🌐 恢复外部入口"
+                        runtime_compose up -d --no-deps --wait --wait-timeout 60 nginx || fail_cutover external-entrypoint
                         CUTOVER_STAGE=external-health
-                        if ! python3 scripts/wait_for_http.py \
-                            --url "http://127.0.0.1:${NGINX_PORT}/health" \
-                            --attempts 10 --timeout-seconds 2 --interval-seconds 1; then
-                            fail_cutover external-health
-                        fi
-                        CUTOVER_STAGE=external-frontend
-                        if ! python3 scripts/wait_for_http.py \
-                            --url "http://127.0.0.1:${NGINX_PORT}/" \
-                            --attempts 10 --timeout-seconds 2 --interval-seconds 1; then
-                            fail_cutover external-frontend
-                        fi
-
-                        echo "🧭 校验最终服务拓扑"
-                        CUTOVER_STAGE=final-topology
-                        EXPECTED_FINAL_SERVICES="$(compose config --services | LC_ALL=C sort)"
-                        RUNNING_FINAL_SERVICES="$(compose ps --status running --services | LC_ALL=C sort)"
-                        if [ "${RUNNING_FINAL_SERVICES}" != "${EXPECTED_FINAL_SERVICES}" ]; then
-                            echo "❌ 最终 Compose 服务拓扑不一致"
-                            printf '期望服务:\n%s\n' "${EXPECTED_FINAL_SERVICES}"
-                            printf '运行服务:\n%s\n' "${RUNNING_FINAL_SERVICES}"
-                            fail_cutover final-topology
-                        fi
-
+                        run_with_cutover_budget python3 scripts/wait_for_http.py --url "http://127.0.0.1:${NGINX_HTTP_PORT:-8080}/health" --attempts 10 --timeout-seconds 2 --interval-seconds 1 || fail_cutover external-health
+                        run_with_cutover_budget python3 scripts/wait_for_http.py --url "http://127.0.0.1:${NGINX_HTTP_PORT:-8080}/" --attempts 10 --timeout-seconds 2 --interval-seconds 1 || fail_cutover external-frontend
+                        CUTOVER_STAGE=evidence-persist
+                        persist_success_evidence || fail_cutover evidence-persist
                         CUTOVER_STAGE=complete
                         MAINTENANCE_MODE=false
+                        echo "DEPLOYED: ${DEPLOY_SCOPE} ${EFFECTIVE_MODE}"
                         # TEST_DEPLOY_CUTOVER_END
+
+                        cleanup_private_inputs
+                        trap - EXIT
                     '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/*/compatibility-report.json', allowEmptyArchive: true, fingerprint: true
                 }
             }
         }
@@ -590,10 +733,11 @@ print("WMS_PROFILE_PREFLIGHT=valid", flush=True)
 
     post {
         always {
+            sh 'docker rm -f "${CHECKER_CONTAINER_NAME}" >/dev/null 2>&1 || true'
             cleanWs()
         }
         success {
-            echo '✅ Test Deploy Pipeline 执行成功'
+            echo '✅ Test Deploy Pipeline 执行成功；此证据不等于供应商、Callback、设备物理或业务验收'
         }
         failure {
             echo '❌ Test Deploy Pipeline 执行失败'

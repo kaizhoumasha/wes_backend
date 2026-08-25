@@ -40,8 +40,8 @@
 ### 4. 创建 Pipeline 项目
 
 - [ ] Jenkins 首页 → **New Item**
-- [ ] 项目名称：`wes_backend-ci`
-- [ ] 类型：**Pipeline**
+- [ ] 分别创建 backend producer、release checker producer 和 `wes_test_deploy`
+- [ ] 三者类型均为 **Pipeline**
 - [ ] 未使用 **Multibranch Pipeline**；发布门禁依赖 GitLab webhook 的 `gitlabBefore` / `gitlabAfter`
 - [ ] 点击 **OK**
 
@@ -64,7 +64,7 @@
 - [ ] **Repository URL**: `http://192.168.0.220:9080/wes/wes_backend.git`
 - [ ] **Credentials**: `gitlab-credentials`
 - [ ] **Branch**: `*/develop`
-- [ ] **Script Path**: `Jenkinsfile.backend-ci`
+- [ ] **Script Path**: 按 Job 选择 `Jenkinsfile.backend-ci`、`Jenkinsfile.release-checker-ci` 或 `Jenkinsfile.test-deploy`
 
 ### 6. 配置 GitLab Webhook
 
@@ -147,10 +147,11 @@ cd /Users/kaizhou/codeDev/wes_backend
 
 # 如有需要，按实际 Node 标签调整 Pipeline 中的 agent label
 vim Jenkinsfile.backend-ci
+vim Jenkinsfile.release-checker-ci
 vim Jenkinsfile.test-deploy
 
 # 提交到 GitHub 并通过 PR 合入
-git add Jenkinsfile.backend-ci Jenkinsfile.test-deploy
+git add Jenkinsfile.backend-ci Jenkinsfile.release-checker-ci Jenkinsfile.test-deploy
 git commit -m "chore(ci): 更新现役 Jenkins Pipeline 配置"
 git push origin <feature-branch>
 
@@ -163,6 +164,7 @@ git push gitlab "$release_sha:refs/heads/develop"
 ```
 
 - [ ] Jenkinsfile.backend-ci 已核对
+- [ ] Jenkinsfile.release-checker-ci 已核对
 - [ ] Jenkinsfile.test-deploy 已核对
 - [ ] agent 标签已修改
 - [ ] 已通过 GitHub PR 合入 `origin/develop`
@@ -181,15 +183,23 @@ git push gitlab "$release_sha:refs/heads/develop"
   - [ ] RuntimeInbox PostgreSQL Acceptance
   - [ ] Mock Image Contracts（MR 与已验证的 `develop` PUSH）
   - [ ] HEAVY Required（MR 按目标分支、`develop` PUSH 按 `gitlabBefore` 差异选择）
+  - [ ] Export Provider Release Artifacts
   - [ ] Build Runtime Image
+  - [ ] Verify Release Artifacts And OCI Labels
   - [ ] Push Runtime Image（仅门禁通过的 GitLab `develop` PUSH；MR、其他分支 PUSH 和手工构建不发布）
 
-### 10. 测试 TEST 部署 Pipeline
+### 10. 测试 checker 与 TEST 部署 Pipeline
 
-- [ ] Jenkins → **wes_test_deploy** → 由部署人员手工触发并明确选择前后端镜像版本
-- [ ] 查看部署日志
-- [ ] 验证 TEST 环境健康检查
-- [ ] 验证日志中出现“同步 TEST 环境菜单”且 `TEST 环境菜单数量` 大于 0
+- [ ] release checker Job 独立完成测试、镜像构建、自身制品校验和不可变发布，且不触发部署
+- [ ] Jenkins → **wes_test_deploy** → 由部署人员手工触发
+- [ ] `FRONTEND` 只填写 `FRONTEND_CANDIDATE_DIGEST`，`BACKEND` 只填写 `BACKEND_CANDIDATE_DIGEST`，`BOTH` 同时填写两侧
+- [ ] `DEPLOY_SOURCE_COMMIT_SHA` 已批准；checker digest 由它固定，不由操作员填写
+- [ ] `FORCE_FULL` 只能升级 FAST；不存在 force-FAST
+- [ ] WARN 时填写 `WARN_APPROVAL_REASON`，并确认批准绑定 frontend/backend/checker digest 与 diff hash
+- [ ] 单侧当前 peer 已从 live container 与最近成功报告自动发现且一致
+- [ ] FAST/FULL 原因、配置 hash、DB head 与 `compatibility-report.json` 已归档
+- [ ] 维护前失败为 `PRE_CUTOVER_ABORTED`；维护后失败为 `CUTOVER_FAILED_MAINTENANCE_HELD`
+- [ ] Producer 日志没有触发 `wes_test_deploy`，部署日志没有菜单提取或菜单同步
 
 ### 11. 验证部署
 
@@ -200,20 +210,18 @@ curl http://192.168.0.221:8001/health
 # 预期响应
 {"status": "healthy"}
 
-# 可选：确认 TEST 数据库菜单已同步
-ssh root@192.168.0.221 \
-  "docker exec wes_postgres_test psql -U wes_user -d wes_db_test -tAc 'select count(*) from wes_sys.menus'"
 ```
 
 - [ ] 健康检查通过
 - [ ] 应用正常运行
-- [ ] TEST 环境菜单数量大于 0
+- [ ] backend scope 下全部 backend services 使用同一 digest
+- [ ] 成功报告已保存到 `/srv/wes/releases/${RELEASE_ID}/compatibility-report.json`
 
 ## 🔧 关键配置点
 
 ### Jenkins Node 标签
 
-在 `Jenkinsfile.backend-ci` 或 `Jenkinsfile.test-deploy` 中修改对应 Job 的节点标签：
+在 `Jenkinsfile.backend-ci`、`Jenkinsfile.release-checker-ci` 或 `Jenkinsfile.test-deploy` 中修改对应 Job 的节点标签：
 
 ```groovy
 agent {
@@ -300,9 +308,11 @@ sudo usermod -aG docker jenkins
 - [ ] Pipeline 项目已创建
 - [ ] GitLab Webhook 已配置并测试通过
 - [ ] 部署服务器已初始化
-- [ ] `Jenkinsfile.backend-ci` 与 `Jenkinsfile.test-deploy` 已提交
+- [ ] 三个现役 Pipeline 文件均已提交
 - [ ] 手动构建测试通过
 - [ ] 所有阶段执行成功
+- [ ] 三个 producer 互不触发，且均不触发部署
+- [ ] scope 参数矩阵、FAST/FULL 和兼容报告验证通过
 - [ ] 部署成功并健康检查通过
 
 ## 🎯 完成后
@@ -317,7 +327,7 @@ sudo usermod -aG docker jenkins
    - 代码检查（并行）
    - 单元测试（并行）
    - 仅门禁通过的 GitLab `develop` PUSH 推送 backend immutable tag 和 channel tag
-5. **部署人员只用 immutable tag/digest 按需运行 TEST/现场部署**
+5. **部署人员只用所选侧 immutable digest 按 scope 运行独立 TEST/现场 orchestrator**
 6. **通知结果**（可选配置）
 
 ## 📞 需要帮助？

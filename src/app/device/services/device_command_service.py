@@ -14,13 +14,21 @@ from src.app.device.contracts import (
     DeviceCommandOutcome,
     DeviceCommandRequest,
     EcsCommandResult,
+    EcsDeviceEvent,
     EcsDeviceStatus,
     ManualDebugDeviceCommandSnapshot,
     ManualDebugDevicePreflightItem,
     ManualDebugDevicePreflightSnapshot,
 )
 from src.app.device.endpoint import validate_device_endpoint_base_url
-from src.app.device.models.command import CommandStatus, DeviceCommand, DeviceCommandRequestData
+from src.app.device.models.command import (
+    DIAGNOSTIC_REF_TYPES,
+    EVENT_DEBUG_REF_TYPE,
+    MANUAL_DEBUG_REF_TYPE,
+    CommandStatus,
+    DeviceCommand,
+    DeviceCommandRequestData,
+)
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.services.device_command_admission import (
     DeviceCommandAdmissionError,
@@ -125,7 +133,8 @@ class ManualDebugAdapterProviderPort(Protocol):
     async def get_adapter(self, endpoint_base_url: str) -> ManualDebugAdapterPort: ...
 
 
-_MANUAL_DEBUG_REF_TYPE = "MANUAL_DEBUG"
+_EVENT_DEBUG_COMMAND_TIMEOUT_MS = 30_000
+_EVENT_DEBUG_ENDPOINT = "http://10.24.209.26:8080"
 
 
 class DeviceCommandService:
@@ -258,7 +267,7 @@ class DeviceCommandService:
             {
                 "device_code": device_code,
                 "line_run_epoch_id": None,
-                "execution_ref_type": _MANUAL_DEBUG_REF_TYPE,
+                "execution_ref_type": MANUAL_DEBUG_REF_TYPE,
                 "execution_ref_id": client_request_id,
                 "material_execution_id": None,
                 "contract_key": contract_key,
@@ -325,7 +334,7 @@ class DeviceCommandService:
                 device_code=validated.device_code,
                 line_run_epoch_id=None,
                 device_binding_id=None,
-                execution_ref_type=_MANUAL_DEBUG_REF_TYPE,
+                execution_ref_type=MANUAL_DEBUG_REF_TYPE,
                 execution_ref_id=validated.execution_ref_id,
                 material_execution_id=None,
                 contract_key=validated.contract_key,
@@ -345,10 +354,86 @@ class DeviceCommandService:
             persisted = await self._commands.add(db, command)
         return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
 
+    async def create_event_debug_command_in_session(
+        self,
+        db: object,
+        *,
+        evidence: InboundEvidence,
+    ) -> DeviceCommandHandle:
+        """从已持久化的调试 EVENT 创建不进入业务 Decision 的可靠命令。"""
+
+        event = EcsDeviceEvent.model_validate(evidence.normalized_payload)
+        if not event.is_debug:
+            raise ValueError("EVENT_DEBUG evidence 缺少调试标记")
+        now = self._clock()
+        validated = DeviceCommandRequestData.model_validate(
+            {
+                "device_code": event.device_code,
+                "line_run_epoch_id": None,
+                "execution_ref_type": EVENT_DEBUG_REF_TYPE,
+                "execution_ref_id": evidence.source_identity,
+                "material_execution_id": None,
+                "contract_key": event.contract_key,
+                "contract_version": event.contract_version,
+                "task_type": "MOVE_FORWARD",
+                "params": event.data,
+                "deadline_at": now + timedelta(milliseconds=_EVENT_DEBUG_COMMAND_TIMEOUT_MS),
+                "trace_id": event.trace_id,
+                "endpoint_base_url": _EVENT_DEBUG_ENDPOINT,
+                "command_timeout_ms": _EVENT_DEBUG_COMMAND_TIMEOUT_MS,
+                "execution_reason": f"ECS_EVENT_DEBUG:{evidence.source_identity}",
+            }
+        )
+        payload_digest = _command_payload_digest(validated)
+        await self._commands.lock_creation_for_device(db, validated.device_code)
+        same_identity = await self._commands.get_by_execution_ref_for_update(
+            db,
+            line_run_epoch_id=None,
+            device_code=validated.device_code,
+            execution_ref_type=EVENT_DEBUG_REF_TYPE,
+            execution_ref_id=validated.execution_ref_id,
+        )
+        if same_identity is not None:
+            if same_identity.payload_digest != payload_digest:
+                raise DeviceCommandIdentityConflictError(validated.execution_ref_id)
+            return DeviceCommandHandle(
+                command_code=same_identity.command_code,
+                status=CommandStatus(same_identity.status),
+            )
+        existing = await self._commands.get_unclosed_for_device_for_update(db, validated.device_code)
+        status = CommandStatus.FAILED if existing is not None else CommandStatus.PENDING
+        command = DeviceCommand(
+            command_code=new_uuid7(),
+            device_code=validated.device_code,
+            line_run_epoch_id=None,
+            device_binding_id=None,
+            execution_ref_type=EVENT_DEBUG_REF_TYPE,
+            execution_ref_id=validated.execution_ref_id,
+            material_execution_id=None,
+            contract_key=validated.contract_key,
+            contract_version=validated.contract_version,
+            task_type=validated.task_type,
+            params=validated.params,
+            payload_digest=payload_digest,
+            deadline_at=validated.deadline_at,
+            trace_id=validated.trace_id,
+            endpoint_base_url=validated.endpoint_base_url,
+            command_timeout_ms=validated.command_timeout_ms,
+            execution_reason=validated.execution_reason,
+            status=status,
+            failure_code="DEVICE_HAS_ACTIVE_COMMAND" if existing is not None else None,
+            completed_at=now if existing is not None else None,
+            next_attempt_at=now if existing is None else None,
+            created_at=now,
+            created_by=None,
+        )
+        persisted = await self._commands.add(db, command)
+        return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
+
     async def get_command_snapshot(self, command_code: str) -> ManualDebugDeviceCommandSnapshot:
         async with self._sessions.begin() as db:
             command = await self._commands.get_by_command_code(db, command_code)
-            if command is None or command.execution_ref_type != _MANUAL_DEBUG_REF_TYPE:
+            if command is None or command.execution_ref_type != MANUAL_DEBUG_REF_TYPE:
                 raise DeviceCommandNotFoundError(command_code)
             evidence = await self._evidences.get_device_result_for_command(db, command_code)
         if command.endpoint_base_url is None or command.command_timeout_ms is None:
@@ -436,7 +521,7 @@ def _command_payload_digest(request: DeviceCommandRequestData) -> str:
         "task_type": request.task_type,
         "params": request.params,
     }
-    if request.execution_ref_type == _MANUAL_DEBUG_REF_TYPE:
+    if request.execution_ref_type in DIAGNOSTIC_REF_TYPES:
         payload.update(
             {
                 "endpoint_base_url": request.endpoint_base_url,

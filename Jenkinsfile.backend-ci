@@ -73,8 +73,6 @@ pipeline {
                     String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                     String sourceTree = sh(returnStdout: true, script: 'git rev-parse HEAD^{tree}').trim()
                     String shortCommit = fullCommit.take(7)
-                    String branchTag = sourceBranch.replaceAll(/[^A-Za-z0-9_.-]+/, '-')
-                    String channelTag = branchTag
 
                     if (isDevelopPush) {
                         if (!(beforeCommit ==~ /^[0-9a-fA-F]{40}$/) || beforeCommit ==~ /^0{40}$/) {
@@ -94,27 +92,16 @@ pipeline {
                         env.CI_RELEASE_GATE_READY = 'true'
                     }
 
-                    switch (sourceBranch) {
-                        case 'develop':
-                            channelTag = 'develop'
-                            break
-                        case 'main':
-                            channelTag = 'prod'
-                            break
-                    }
-
                     env.CI_COMMIT_SHA = fullCommit
                     env.CI_SOURCE_TREE = sourceTree
                     env.CI_SHORT_COMMIT = shortCommit
-                    env.CI_BRANCH_TAG = branchTag
-                    env.CI_CHANNEL_TAG = channelTag
                     env.CI_IMAGE = "wes-backend-ci:${env.BUILD_NUMBER}-${shortCommit}"
                     env.MOCK_ECS_IMAGE = "wes-mock:${env.BUILD_NUMBER}-${shortCommit}-ecs"
                     env.MOCK_WMS_IMAGE = "wes-mock:${env.BUILD_NUMBER}-${shortCommit}-wms"
                     env.HEAVY_COMPOSE_PROJECT = "wes-backend-heavy-${env.EXECUTOR_NUMBER}-${env.BUILD_NUMBER}-${shortCommit}"
                     env.RUNTIME_IMAGE_LOCAL = "wes-backend-runtime:${env.BUILD_NUMBER}-${shortCommit}"
-                    env.RUNTIME_IMAGE_COMMIT = "${env.IMAGE_REPO}:${env.BUILD_NUMBER}-${shortCommit}"
-                    env.RUNTIME_IMAGE_CHANNEL = "${env.IMAGE_REPO}:${channelTag}"
+                    env.RUNTIME_IMAGE_COMMIT = "${env.IMAGE_REPO}:${fullCommit}"
+                    env.RUNTIME_IMAGE_CHANNEL = "${env.IMAGE_REPO}:develop"
 
                     echo "🐳 CI 测试镜像: ${env.CI_IMAGE}"
                     echo "🐳 Runtime 镜像: ${env.RUNTIME_IMAGE_COMMIT}"
@@ -358,10 +345,57 @@ pipeline {
             }
         }
 
+        stage('Export Release Provider') {
+            steps {
+                script {
+                    sh '''
+                        set -eu
+                        rm -rf reports/release-provider
+                        mkdir -p reports
+                        docker run --rm \
+                            --env-file "$WORKSPACE/.env.test" \
+                            -v "$WORKSPACE/reports:/app/reports" \
+                            "${CI_IMAGE}" \
+                            uv run --no-sync python scripts/export_release_provider.py --out-dir reports/release-provider
+                    '''
+                    String rawFacts = sh(
+                        returnStdout: true,
+                        script: '''
+                            docker run --rm \
+                                -v "$WORKSPACE/reports:/app/reports" \
+                                "${CI_IMAGE}" \
+                                python -c 'from pathlib import Path; from scripts.export_release_provider import validate_release_provider_artifacts; f=validate_release_provider_artifacts(Path("/app/reports/release-provider")); names=("provider_openapi_sha256","provided_permissions_sha256","migration_tree_sha256","dependencies_sha256","recipe_sha256","expected_schema_head"); print("\\n".join(f[name] for name in names))'
+                        '''
+                    )
+                    List<String> values = rawFacts.split('\n', -1) as List<String>
+                    if (values.size() != 7 || values[-1] != '') {
+                        error('Backend release facts must contain exactly six newline-terminated values')
+                    }
+                    if (!values[0..4].every { it ==~ /^[0-9a-f]{64}$/ }) {
+                        error('Backend release SHA-256 facts must be lowercase hex')
+                    }
+                    if (!(values[5] ==~ /^[0-9a-f]{12}$/)) {
+                        error('Backend expected schema head must be 12 lowercase hex characters')
+                    }
+                    env.WES_PROVIDER_OPENAPI_SHA256 = values[0]
+                    env.WES_PROVIDED_PERMISSIONS_SHA256 = values[1]
+                    env.WES_MIGRATION_TREE_SHA256 = values[2]
+                    env.WES_BACKEND_DEPENDENCIES_SHA256 = values[3]
+                    env.WES_BACKEND_RECIPE_SHA256 = values[4]
+                    env.WES_EXPECTED_SCHEMA_HEAD = values[5]
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/release-provider/*', allowEmptyArchive: true, fingerprint: true
+                }
+            }
+        }
+
         stage('Build Runtime Image') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
                     PROXY_BUILD_ARGS=""
 
                     if curl -sSI -m 5 -x "${BUILD_PROXY}" https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
@@ -377,6 +411,12 @@ pipeline {
                         ${PROXY_BUILD_ARGS} \
                         --build-arg "WES_VCS_REVISION=${CI_COMMIT_SHA}" \
                         --build-arg "WES_SOURCE_TREE=${CI_SOURCE_TREE}" \
+                        --build-arg "WES_PROVIDER_OPENAPI_SHA256=${WES_PROVIDER_OPENAPI_SHA256}" \
+                        --build-arg "WES_PROVIDED_PERMISSIONS_SHA256=${WES_PROVIDED_PERMISSIONS_SHA256}" \
+                        --build-arg "WES_MIGRATION_TREE_SHA256=${WES_MIGRATION_TREE_SHA256}" \
+                        --build-arg "WES_BACKEND_DEPENDENCIES_SHA256=${WES_BACKEND_DEPENDENCIES_SHA256}" \
+                        --build-arg "WES_BACKEND_RECIPE_SHA256=${WES_BACKEND_RECIPE_SHA256}" \
+                        --build-arg "WES_EXPECTED_SCHEMA_HEAD=${WES_EXPECTED_SCHEMA_HEAD}" \
                         --target "${RUNTIME_BUILD_TARGET}" \
                         -t "${RUNTIME_IMAGE_LOCAL}" \
                         .

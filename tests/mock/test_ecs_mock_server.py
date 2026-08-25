@@ -108,7 +108,7 @@ def test_ecs_mock_acknowledges_known_device_and_callbacks_success(monkeypatch) -
         )
 
     assert response.status_code == 200
-    assert response.json() == {"code": 200, "message": "Accepted"}
+    assert response.json() == {"code": 200, "message": "ACK"}
     callback = CapturingAsyncClient.requests[0]
     assert callback["url"] == ecs_mock_server.WES_RESULT_CALLBACK_URL
     assert callback["json"]["result"] == "SUCCESS"
@@ -136,7 +136,7 @@ def test_ecs_mock_supports_rough_sorter_placement_command(monkeypatch) -> None:
         )
 
     assert response.status_code == 200
-    assert response.json()["message"] == "Accepted"
+    assert response.json()["message"] == "ACK"
     callback = CapturingAsyncClient.requests[0]["json"]
     assert callback["result"] == "SUCCESS"
     assert callback["device_code"] == "RS-MOCK-PLACEMENT-01"
@@ -339,7 +339,7 @@ def test_ecs_mock_command_identity_is_idempotent_and_conflicting_payload_is_reje
         conflict = client.post("/api/v1/device/command", json={**payload, "params": {"changed": True}})
 
     assert first.status_code == duplicate.status_code == 200
-    assert duplicate.json() == {"code": 200, "message": "Accepted"}
+    assert duplicate.json() == {"code": 200, "message": "ACK"}
     assert conflict.status_code == 409
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
     assert len(CapturingAsyncClient.requests) == 1
@@ -374,7 +374,7 @@ def test_ecs_mock_rejected_command_permanently_fixes_identity(monkeypatch) -> No
     assert conflict.status_code == 409
     assert conflict.json()["message"] == "IDEMPOTENCY_CONFLICT"
     assert accepted.status_code == 200
-    assert accepted.json() == {"code": 200, "message": "Accepted"}
+    assert accepted.json() == {"code": 200, "message": "ACK"}
     assert len(CapturingAsyncClient.requests) == 1
 
 
@@ -452,7 +452,7 @@ def test_default_ecs_mock_implements_whitepaper_command_and_callback_wire(monkey
             }
         ]
     }
-    assert ack.json() == {"code": 200, "message": "Accepted"}
+    assert ack.json() == {"code": 200, "message": "ACK"}
     callback = CapturingAsyncClient.requests[0]["json"]
     assert set(callback) == {
         "command_code",

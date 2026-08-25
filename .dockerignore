@@ -35,6 +35,7 @@ env/
 virtualenv/
 
 # IDE 和编辑器
+.superpowers/
 .vscode/
 .idea/
 *.swp
@@ -58,6 +59,8 @@ coverage.xml
 *.cover
 *.log
 reports/
+!reports/release-provider/
+!reports/release-provider/**
 .cache
 .mypy_cache/
 .dmypy.json
