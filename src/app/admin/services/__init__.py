@@ -15,8 +15,6 @@ from .authorization_bootstrap_service import (
     FoundationBootstrapResult,
     authorization_bootstrap_service,
 )
-from .menu_service import MenuService, menu_service
-from .menu_sync_service import MenuSyncResult, MenuSyncService, menu_sync_service
 from .perm_service import PermissionService, permission_service
 from .permission_catalog_service import (
     PermissionCatalogService,
@@ -33,17 +31,12 @@ __all__ = [
     "AuthorizationSyncResult",
     "BootstrapFoundationConfig",
     "FoundationBootstrapResult",
-    "MenuService",
-    "MenuSyncResult",
-    "MenuSyncService",
     "PermissionCatalogService",
     "PermissionCatalogSyncResult",
     "PermissionService",
     "RoleService",
     "UserService",
     "authorization_bootstrap_service",
-    "menu_service",
-    "menu_sync_service",
     "permission_catalog_service",
     "permission_service",
     "role_service",

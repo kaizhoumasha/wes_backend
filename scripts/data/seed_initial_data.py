@@ -28,7 +28,6 @@ from src.app.admin.services.authorization_bootstrap_service import (
     BUILTIN_ROLE_SPECS,
     authorization_bootstrap_service,
 )
-from src.app.admin.services.menu_sync_service import menu_sync_service
 from src.core.rbac import invalidate_users_permissions
 from src.core.security import get_password_hash, verify_password
 from src.database.db import get_db_context, init_db
@@ -182,13 +181,9 @@ async def _invalidate_builtin_role_user_permission_cache(db: AsyncSession) -> No
 
 async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: str) -> None:
     app = create_app()
-    menu_definitions = menu_sync_service.load_frontend_menu_definitions(frontend_path)
-    if not menu_definitions:
-        raise RuntimeError("前端菜单定义为空，拒绝生成不可调试的开发数据")
     managed_permission_names = managed_permission_names_for_app(app)
     if not managed_permission_names:
         raise RuntimeError("权限定义为空，拒绝生成不可调试的开发数据")
-    managed_menu_names = {definition.name for definition in menu_definitions}
 
     try:
         authorization_result = await authorization_bootstrap_service.converge_authorization(app, db, dry_run=False)
@@ -197,15 +192,6 @@ async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: 
         user_role_result = await ensure_user_roles(db)
         permission_result = authorization_result.permissions
         role_permission_result = authorization_result.role_permissions
-        menu_result = await menu_sync_service.sync_menus(db, menu_definitions, auto_commit=False)
-        if menu_result.errors:
-            raise RuntimeError(f"前端菜单同步失败: {menu_result.errors}")
-        role_menu_result = await menu_sync_service.sync_builtin_role_menus(
-            db,
-            auto_commit=False,
-            exact=True,
-            managed_menu_names=managed_menu_names,
-        )
         await db.commit()
     except Exception:
         await db.rollback()
@@ -217,12 +203,6 @@ async def _seed_foundation_data(db: AsyncSession, frontend_path: str, password: 
     print(f"  user_roles={user_role_result}")
     print(f"  permissions={permission_result}")
     print(f"  role_permissions={role_permission_result}")
-    print(f"  menus=created:{menu_result.created},updated:{menu_result.updated},skipped:{menu_result.skipped}")
-    print(
-        "  role_menus="
-        f"processed:{role_menu_result.roles_processed},added:{role_menu_result.added},"
-        f"removed:{role_menu_result.removed},skipped:{role_menu_result.skipped}"
-    )
 
 
 async def _check_foundation_data(db: AsyncSession, frontend_path: str, password: str) -> None:
@@ -273,22 +253,6 @@ async def _check_foundation_data(db: AsyncSession, frontend_path: str, password:
     role_permission_result = authorization_result.role_permissions
     if role_permission_result["added"] or role_permission_result["removed"]:
         errors.append(f"角色权限未收敛 {role_permission_result}")
-
-    menu_definitions = menu_sync_service.load_frontend_menu_definitions(frontend_path)
-    if not menu_definitions:
-        errors.append("前端菜单定义为空")
-    menu_result = await menu_sync_service.sync_menus(db, menu_definitions, dry_run=True, auto_commit=False)
-    if menu_result.created or menu_result.updated or menu_result.errors:
-        errors.append(f"菜单未收敛 {menu_result.summary()}")
-    role_menu_result = await menu_sync_service.sync_builtin_role_menus(
-        db,
-        dry_run=True,
-        auto_commit=False,
-        exact=True,
-        managed_menu_names={definition.name for definition in menu_definitions},
-    )
-    if role_menu_result.added or role_menu_result.removed:
-        errors.append(f"角色菜单未收敛 added={role_menu_result.added},removed={role_menu_result.removed}")
 
     if errors:
         raise RuntimeError("开发基础数据检查失败: " + "; ".join(errors))

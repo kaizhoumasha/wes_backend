@@ -7,15 +7,6 @@ Admin 模型模块
 from sqlalchemy.orm import relationship
 
 # 导入所有模型
-from .menu import (
-    Menu,
-    MenuBase,
-    MenuCreate,
-    MenuResponse,
-    MenuTreeResponse,
-    MenuTreeResponseSimple,
-    MenuUpdate,
-)
 from .perm import (
     Permission,
     PermissionBase,
@@ -23,7 +14,7 @@ from .perm import (
     PermissionResponseSimple,
     PermissionTree,
 )
-from .relationships import role_menu, role_permission, user_role
+from .relationships import role_permission, user_role
 from .role import (
     Role,
     RoleBase,
@@ -67,33 +58,8 @@ Permission.roles = relationship(
     back_populates="permissions",
 )
 
-# Menu-Role 多对多关系
-Menu.roles = relationship(
-    Role,
-    secondary=role_menu,
-    back_populates="menus",
-)
-Role.menus = relationship(
-    Menu,
-    secondary=role_menu,
-    back_populates="roles",
-)
-
 # ==================== 重建 Pydantic 响应模型 ====================
 
-_ = MenuResponse.model_rebuild(_types_namespace={"RoleResponse": RoleResponse})
-_ = MenuTreeResponse.model_rebuild(
-    _types_namespace={
-        "MenuTreeResponse": MenuTreeResponse,
-        "RoleResponse": RoleResponse,
-    }
-)
-_ = MenuTreeResponseSimple.model_rebuild(
-    _types_namespace={
-        "MenuTreeResponseSimple": MenuTreeResponseSimple,
-        "RoleResponse": RoleResponse,
-    }
-)
 _ = RoleResponse.model_rebuild()
 _ = UserResponse.model_rebuild()
 
@@ -102,14 +68,6 @@ _ = UserResponse.model_rebuild()
 __all__ = [
     # User 模型
     "AssignRolesRequest",
-    # Menu 模型
-    "Menu",
-    "MenuBase",
-    "MenuCreate",
-    "MenuResponse",
-    "MenuTreeResponse",
-    "MenuTreeResponseSimple",
-    "MenuUpdate",
     # Permission 模型
     "Permission",
     "PermissionBase",
@@ -131,7 +89,6 @@ __all__ = [
     "UserSimpleResponse",
     "UserUpdate",
     # 关联表
-    "role_menu",
     "role_permission",
     "user_role",
 ]

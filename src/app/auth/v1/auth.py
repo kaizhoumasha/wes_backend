@@ -8,7 +8,7 @@
 - POST /api/v1/auth/refresh - 刷新访问令牌
 - GET /api/v1/auth/sessions - 获取当前用户的所有活跃会话
 - DELETE /api/v1/auth/sessions/{session_uuid} - 撤销指定会话
-- GET /api/v1/auth/my - 获取当前用户初始化上下文（用户信息 + 权限 + 菜单）
+- GET /api/v1/auth/my - 获取当前用户初始化上下文（用户信息 + 权限）
 - GET /api/v1/auth/permissions - 获取当前用户的 API 权限列表
 """
 
@@ -17,7 +17,6 @@ from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from src.app.admin.services.menu_service import menu_service
 from src.app.admin.services.perm_service import permission_service
 from src.app.auth.models import (
     ActiveSessionsResponse,
@@ -254,7 +253,7 @@ async def revoke_session(
 @router.get(
     "/my",
     summary="获取当前用户初始化上下文",
-    description="一次性返回用户信息、API 权限列表和菜单树，用于前端登录后初始化",
+    description="一次性返回用户信息和 API 权限列表，用于前端登录后初始化",
 )
 async def get_my_context(
     db: AsyncSessionDep,
@@ -266,16 +265,12 @@ async def get_my_context(
     返回内容：
     - user: 当前用户信息
     - permissions: 当前用户可访问的 user_api 权限列表
-    - menus: 当前用户可访问菜单树
     """
     user = await auth_service.get_user_profile(db, current_user)
     permissions = await permission_service.get_user_api_permissions(db, current_user)
-    menus = await menu_service.get_user_menu_tree(db, current_user)
-
     result = AuthMyResponse(
         user=user,
         permissions=_to_permission_infos(permissions),
-        menus=menus,
     )
     return cast("ResponseSchemaModel[AuthMyResponse]", response_builder_any.success(data=result))
 
