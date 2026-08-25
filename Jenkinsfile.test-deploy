@@ -213,7 +213,7 @@ pipeline {
                         # TEST_CHECKER_CONTAINER_RUNNER_END
                         discover_live_image() {
                             service="$1"
-                            container_id=$(compose ps -q "$service")
+                            container_id=$(compose ps -a -q "$service")
                             [ -n "$container_id" ] || return 1
                             docker inspect --format '{{ .Config.Image }}' "$container_id"
                         }
