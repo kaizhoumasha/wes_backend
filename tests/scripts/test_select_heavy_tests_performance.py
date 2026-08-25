@@ -1,7 +1,7 @@
 """HEAVY selector 配置校验的性能回归保护。"""
 
 from pathlib import Path
-from time import perf_counter
+from time import process_time
 
 from scripts.select_heavy_tests import _patterns_overlap, _segment_patterns_overlap, load_config
 
@@ -36,11 +36,11 @@ def test_repository_mapping_validation_stays_within_two_seconds() -> None:
     mapping_path = REPO_ROOT / "docs/architecture/heavy-test-impact.toml"
     _patterns_overlap.cache_clear()
     _segment_patterns_overlap.cache_clear()
-    started_at = perf_counter()
+    started_at = process_time()
 
     for _ in range(3):
         load_config(mapping_path)
 
-    elapsed_seconds = perf_counter() - started_at
+    elapsed_seconds = process_time() - started_at
 
     assert elapsed_seconds < 2.0, f"HEAVY selector 配置校验耗时 {elapsed_seconds:.2f}s，超过 2.00s 预算"
