@@ -180,14 +180,16 @@ def test_optional_empty_jenkins_parameters_are_safe_under_nounset(
     (tmp_path / "effective-facts-base.json").write_text(json.dumps({"deploy": {}, "runtime": {}}), encoding="utf-8")
     report = tmp_path / "compatibility-report.json"
     report.write_text(json.dumps({"pre_cutover_state": "READY", "effective_mode": "FAST"}), encoding="utf-8")
+    checker_trace = tmp_path / "checker-arguments.txt"
     shell = """
         set -eu
-        run_checker_container() { return 0; }
+        run_checker_container() { printf '%s\n' "$*" >"$CHECKER_TRACE"; }
     """ + _checker_preflight_functions()
     shell += "\nwrite_checker_inputs\nrun_release_checker\nprintf '%s\\n' \"$EFFECTIVE_MODE\"\n"
     env = os.environ | {
         "CHECKER_DIGEST_VALUE": digest,
         "CHECKER_IMAGE": "checker-image",
+        "CHECKER_TRACE": str(checker_trace),
         "CURRENT_BACKEND_DIGEST": digest,
         "CURRENT_EVIDENCE_VALID": "false",
         "CURRENT_FRONTEND_DIGEST": digest,
@@ -214,6 +216,7 @@ def test_optional_empty_jenkins_parameters_are_safe_under_nounset(
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "FAST\n"
+    assert "current-fingerprints" not in checker_trace.read_text(encoding="utf-8")
     assert json.loads((tmp_path / "candidate-digests.json").read_text(encoding="utf-8")) == {selected_side: digest}
 
 
