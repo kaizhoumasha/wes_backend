@@ -1,7 +1,7 @@
 # API 权限目录模型
 
 > 状态：current implementation contract
-> 适用范围：后端 API 权限定义、物化目录、内置角色授权与初始化/修复入口。菜单是 frontend-owned menu convergence 前的过渡运行时，不属于权限基础能力或发布门禁。
+> 适用范围：后端 API 权限定义、物化目录、内置角色授权与初始化/修复入口。菜单由 frontend 静态路由投影生成，不属于后端 RBAC 或发布门禁。
 
 ## 1. 唯一真源与边界
 
@@ -12,7 +12,7 @@ FastAPI 路由上的 `RequirePermission(...)` / `RequireAPIPermission(...)` 声�
 - `app_api`：外部 API Application 权限。
 - 权限码固定为 `module:resource:action` 三段非空格式。
 - `Permission` 只描述后端 API 权限，不承载菜单或按钮定义。
-- 菜单可见性不能替代后端权限检查。旧菜单如需修复，只能作为另行授权的独立维护动作；release orchestrator 不读取或同步菜单，该入口由菜单收敛计划删除。
+- 菜单可见性不能替代后端权限检查。后端不保存菜单、角色菜单关系或菜单 API；release orchestrator 不读取或同步菜单。
 
 角色和 API Application 可以继续维护其“关联了哪些权限”的关系；这不赋予它们创建、修改或删除权限定义的能力。
 
@@ -105,7 +105,7 @@ uv run python scripts/data/sync_permissions.py --check
 
 ## 7. 部署顺序
 
-生产和 TEST 切换都必须遵守以下顺序：按 `DEPLOY_SCOPE` 选择并固定待发布候选镜像 digest；单侧发布自动发现另一侧当前运行 digest，只校验镜像自带契约产物的方向兼容性，不要求前后端绑定同一 revision → 关闭 Nginx 并用非 `-f` 监听探针确认外部端口关闭 → 通过已检查的 Compose 标签发现停止旧应用且拒绝未知 service → 备份已有数据库 → 新后端镜像执行仅向前 Alembic 迁移 → 已有数据库执行权限 `--apply`，仅首次空站点执行 bootstrap → 独立 `--check` → 启动固定版本应用并完成内部校验 → 最后只启动 Nginx。
+生产和 TEST 切换都先按 `DEPLOY_SCOPE` 固定待发布候选 digest，自动发现单侧发布的当前 peer，并用镜像内契约做方向兼容检查，不要求前后端绑定同一 revision。进入维护态后，frontend FULL 只重建 frontend 且不执行数据库 mutation；backend/BOTH FULL 才停止旧 backend services、备份已有数据库、用新 backend 镜像执行仅向前 Alembic migration，并对已有数据库运行权限 `--apply`（仅首次空站点执行 bootstrap）。所有 FULL 都在启动所选服务前执行独立 `--check`，随后完成内部 readiness、管理员 login/logout 和精确 topology，最后才恢复 Nginx。
 
 任何迁移、授权、缓存修复、内部 readiness 或来源校验失败，都必须保持外部入口关闭。完整命令见：
 
@@ -118,4 +118,4 @@ uv run python scripts/data/sync_permissions.py --check
 - `--preview`：证明代码目录可以构建，不证明数据库状态。
 - `--check`：证明目标数据库与当前代码权限及内置角色授权零漂移，不证明菜单、服务 readiness 或部署完成。
 - 本地/CI 测试：证明 WES 自有实现和部署契约，不证明已部署、供应商一致、现场联调或业务验收。
-- 菜单同步成功：只证明菜单物化，不提升为 API 授权或业务验收证据。
+- 前端菜单投影：只证明当前静态路由在已加载权限集合下的可见性，不提升为后端授权、部署或业务验收证据。

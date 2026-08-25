@@ -32,7 +32,7 @@ P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框�
 ./scripts/dev-env.sh down
 ```
 
-`up` 会构建开发镜像、启动持久化 PostgreSQL/Redis、执行 migration、幂等初始化权限/菜单/角色/固定开发账号，并启动
+`up` 会构建开发镜像、启动持久化 PostgreSQL/Redis、执行 migration、幂等初始化权限/角色/固定开发账号，并启动
 API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代码均支持热更新；`down` 保留数据库、Redis 和前端依赖卷。
 
 - 前端：http://localhost:5173
@@ -107,8 +107,7 @@ Notes:
   `--check`; `--preview` does not connect to the database.
 - `--repair-cache` is only for one exact bare `DATABASE_COMMITTED_CACHE_INVALIDATION_FAILED` line; diagnostics are emitted separately with
   `CACHE_INVALIDATION_FAILURE_DETAIL:`. Keep Nginx closed, repair once, never rerun `--apply`, then run the fresh `--check`.
-- After the pinned application pair starts, sync menus from the approved frontend image manifest before restoring Nginx; see
-  `docs/auth/menu-sync-guide.md`.
+- 前端镜像自行包含静态路由与 `meta.menu` 元数据；后端部署不读取 frontend 源码或菜单产物，也不维护菜单表、菜单 API 或菜单同步步骤。
 - Production should enable snowflake IDs in `.env.prod` with `USE_SNOWFLAKE_ID=true`.
 - Keep real bootstrap credentials outside git-managed files and inject them from the deployment environment.
 - These commands and local tests prove authorization-foundation convergence only; they do not prove deployment, supplier consistency, onsite

@@ -519,6 +519,8 @@ stat -c '%a %n' backups/foundation-globals.sql
 
 本手册到此只负责主机、Docker、PostgreSQL、Redis、目录和首次空站点条件。所有前端、后端或双侧环境变更统一执行 [生产环境部署 Runbook](prod-release-deploy.md)，由独立 release orchestrator 完成候选 digest 固定、checker、FAST/FULL、维护态、cutover、readiness 和报告归档；本手册不复制其 Jenkins shell。
 
+已有站点的菜单收敛不走首次初始化分支：先执行 candidate-only `FRONTEND` FULL，让新 frontend 使用镜像内静态路由与 `meta.menu`，且不执行数据库 mutation；验证后再执行 candidate-only `BACKEND` FULL，在维护态完成菜单表 migration 与授权收敛。backend 部署不读取 frontend 源码或菜单产物；checker 允许新 frontend 配当前旧 backend，并在维护前拒绝旧 frontend 配新 backend，不以 Commit 相等作为门禁。两个阶段都复用生产 Runbook 的管理员 login/logout、版本化 `wait_for_http`、入口恢复前/最终 exact topology 与 fail-closed cutover。
+
 首次空站点建立基线时还必须满足：
 
 1. 数据库已经明确证明为空，不存在历史业务 schema、业务表或需要保留的数据；不能通过新建数据库规避已有库 migration。
