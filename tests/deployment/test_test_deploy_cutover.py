@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,31 @@ def _marked_python(begin: str, end: str) -> str:
     start = pipeline.index(begin) + len(begin)
     stop = pipeline.index(end, start)
     return textwrap.dedent(pipeline[start:stop])
+
+
+def _embedded_python_blocks() -> list[str]:
+    pipeline = _pipeline()
+    return [
+        textwrap.dedent(match.group("source"))
+        for pattern in (r"<<'PY'\n(?P<source>.*?)\nPY", r"-c '\n(?P<source>.*?)\n\s*'")
+        for match in re.finditer(pattern, pipeline, flags=re.DOTALL)
+    ]
+
+
+def _render_groovy_newline_escapes(source: str) -> str:
+    rendered: list[str] = []
+    index = 0
+    while index < len(source):
+        if source[index : index + 2] == r"\n":
+            rendered.append("\n")
+            index += 2
+        elif source[index : index + 2] == r"\\":
+            rendered.append("\\")
+            index += 2
+        else:
+            rendered.append(source[index])
+            index += 1
+    return "".join(rendered)
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -86,6 +112,43 @@ def test_deploy_interface_accepts_only_independent_candidate_digests() -> None:
     assert "name: 'CURRENT_FRONTEND'" not in pipeline
     assert "name: 'CURRENT_BACKEND'" not in pipeline
     assert "name: 'CHECKER_DIGEST'" not in pipeline
+
+
+def test_embedded_python_compiles_after_groovy_newline_rendering() -> None:
+    blocks = _embedded_python_blocks()
+
+    assert len(blocks) == 11
+    for index, source in enumerate(blocks):
+        compile(_render_groovy_newline_escapes(source), f"Jenkinsfile.test-deploy:{index}", "exec")
+
+
+def test_release_label_extraction_executes_after_groovy_newline_rendering(tmp_path: Path) -> None:
+    source = next(block for block in _embedded_python_blocks() if "consumer-openapi.sha256" in block)
+    all_labels = tmp_path / "all-labels.json"
+    selected_labels = tmp_path / "selected-labels.json"
+    labels = {
+        "org.wes.release.consumer-openapi.sha256": "openapi",
+        "org.wes.release.required-operations.sha256": "operations",
+        "org.wes.release.required-permissions.sha256": "permissions",
+        "org.wes.release.frontend-dependencies.sha256": "dependencies",
+        "org.wes.release.frontend-recipe.sha256": "recipe",
+        "unrelated": "ignored",
+    }
+    all_labels.write_text(json.dumps(labels), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-", "frontend", str(all_labels), str(selected_labels)],
+        input=_render_groovy_newline_escapes(source),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(selected_labels.read_text(encoding="utf-8")) == {
+        key: value for key, value in labels.items() if key != "unrelated"
+    }
+    assert selected_labels.read_bytes().endswith(b"\n")
 
 
 def test_scope_validation_requires_only_selected_candidates_and_rejects_peer_input() -> None:
@@ -338,7 +401,9 @@ def test_current_report_validator_rejects_malformed_or_tampered_report(tmp_path:
         [
             os.environ.get("PYTHON", "python3"),
             "-c",
-            _marked_python("# TEST_CURRENT_REPORT_VALIDATOR_BEGIN", "# TEST_CURRENT_REPORT_VALIDATOR_END"),
+            _render_groovy_newline_escapes(
+                _marked_python("# TEST_CURRENT_REPORT_VALIDATOR_BEGIN", "# TEST_CURRENT_REPORT_VALIDATOR_END")
+            ),
             str(report_path),
         ],
         cwd=REPO_ROOT,
