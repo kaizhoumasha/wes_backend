@@ -42,8 +42,15 @@ def _marked_python(begin: str, end: str) -> str:
 
 def _checker_preflight_functions() -> str:
     pipeline = _pipeline()
-    start = pipeline.index("write_checker_inputs() {")
+    start = pipeline.index("resolve_database_identity() {")
     stop = pipeline.index("business_preflight() {", start)
+    return textwrap.dedent(pipeline[start:stop]).replace(r"\$", "$")
+
+
+def _database_head_reader() -> str:
+    pipeline = _pipeline()
+    start = pipeline.index("read_database_heads() {")
+    stop = pipeline.index("query_database_state() {", start)
     return textwrap.dedent(pipeline[start:stop]).replace(r"\$", "$")
 
 
@@ -124,7 +131,7 @@ def test_deploy_interface_accepts_only_independent_candidate_digests() -> None:
 def test_embedded_python_compiles_after_groovy_newline_rendering() -> None:
     blocks = _embedded_python_blocks()
 
-    assert len(blocks) == 11
+    assert len(blocks) == 12
     for index, source in enumerate(blocks):
         compile(_render_groovy_newline_escapes(source), f"Jenkinsfile.test-deploy:{index}", "exec")
 
@@ -162,8 +169,82 @@ def test_database_head_queries_use_schema_qualified_alembic_version_table() -> N
     pipeline = _pipeline()
 
     qualified_query = "select version_num from wes_sys.alembic_version order by version_num"
-    assert pipeline.count(qualified_query) == 2
+    assert pipeline.count(qualified_query) == 1
     assert 'from alembic_version order by version_num"' not in pipeline
+
+
+def test_database_identity_drift_is_rejected_before_database_query(tmp_path: Path) -> None:
+    trace = tmp_path / "trace"
+    shell = """
+        set -eu
+        compose() {
+            case "$*" in
+                "config --format json")
+                    printf '%s\n' '{"services":{"api":{"environment":{"POSTGRES_DB":"wes_db_test"}}}}' ;;
+                "ps -a -q api") printf '%s\n' api-container ;;
+                exec*) printf '%s\n' database-query >>"$TRACE" ;;
+                *) return 2 ;;
+            esac
+        }
+        docker() {
+            [ "$1" = inspect ] || return 2
+            printf '%s\n' POSTGRES_DB=wes_test_65_174f0f33a35d
+        }
+    """ + _checker_preflight_functions()
+    shell += "\nresolve_database_identity\n"
+
+    completed = subprocess.run(
+        ["/bin/bash", "-c", shell],
+        cwd=REPO_ROOT,
+        env=os.environ | {"TRACE": str(trace)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "database identity drift: runtime=wes_db_test current=wes_test_65_174f0f33a35d" in completed.stderr
+    assert not trace.exists()
+
+
+def test_database_head_query_uses_the_verified_runtime_database(tmp_path: Path) -> None:
+    trace = tmp_path / "trace"
+    (tmp_path / "backend-labels.json").write_text(
+        json.dumps({"org.wes.release.expected-schema-head": "db-head"}),
+        encoding="utf-8",
+    )
+    shell = """
+        set -eu
+        compose() {
+            case "$*" in
+                "config --format json")
+                    printf '%s\n' '{"services":{"api":{"environment":{"POSTGRES_DB":"wes_current"}}}}' ;;
+                "ps -a -q api") printf '%s\n' api-container ;;
+                exec*) printf '%s\n' "$*" >>"$TRACE"; printf '%s\n' db-head ;;
+                *) return 2 ;;
+            esac
+        }
+        docker() {
+            [ "$1" = inspect ] || return 2
+            printf '%s\n' POSTGRES_DB=wes_current
+        }
+    """ + _checker_preflight_functions()
+    shell += "\nresolve_database_identity\nquery_database_state\n"
+
+    completed = subprocess.run(
+        ["/bin/bash", "-c", shell],
+        cwd=REPO_ROOT,
+        env=os.environ | {"PREFLIGHT_DIR": str(tmp_path), "TRACE": str(trace)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert '-e TARGET_POSTGRES_DB=wes_current db sh -eu -c psql -U "$POSTGRES_USER"' in trace.read_text(
+        encoding="utf-8"
+    )
+    assert '-d "$TARGET_POSTGRES_DB"' in trace.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -656,6 +737,17 @@ def test_full_preserves_backup_forward_migration_authorization_and_readiness() -
     assert "menu-manifest.json" not in pipeline
 
 
+def test_full_backup_and_postmigration_query_use_the_verified_runtime_database(tmp_path: Path) -> None:
+    status, _trace, _nginx, output = _run_cutover(tmp_path, mode="FULL", scope="BOTH")
+
+    assert status == 0, output
+    database_commands = (tmp_path / "database-arguments").read_text(encoding="utf-8").splitlines()
+    assert len(database_commands) == 2
+    for command in database_commands:
+        assert "-e TARGET_POSTGRES_DB=wes_current db" in command
+        assert '-d "$TARGET_POSTGRES_DB"' in command
+
+
 def test_compose_files_remain_the_complete_backend_digest_topology() -> None:
     for name in ("docker-compose.test-deploy.yml", "docker-compose.deploy.yml"):
         compose = yaml.safe_load((REPO_ROOT / name).read_text(encoding="utf-8").replace("!override", ""))
@@ -709,6 +801,10 @@ def _fake_docker() -> str:
         while [ "$1" = --env-file ] || [ "$1" = --project-directory ] || [ "$1" = -f ]; do shift 2; done
         operation="$1"; shift
         args="$*"
+        case "$operation:$args" in
+            exec:*pg_dump*|exec:*psql*alembic_version*)
+                printf '%s\n' "$operation $args" >>"$DATABASE_ARGUMENT_TRACE" ;;
+        esac
         case "$operation:$args" in
             "stop:nginx") trace nginx-stop; printf stopped >"$NGINX_STATE" ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*frontend*) trace application-stop; exit 0 ;;
@@ -782,6 +878,7 @@ def _run_preflight_order(tmp_path: Path, fail_stage: str = "") -> tuple[int, lis
         discover_live_image() { trace "live-image:$1"; printf 'repo/%s@sha256:%064d\n' "$1" 1; }
         discover_live_digest() { trace "live-digest:$1"; printf 'sha256:%064d\n' 1; }
         discover_current_backend_topology() { step current-backend-topology; }
+        resolve_database_identity() { step database-identity; }
         verify_current_peer_evidence() { step current-peer-evidence; }
         extract_release_artifacts() { step "artifact:$1"; }
         write_effective_facts() { step effective-input-hash; }
@@ -830,6 +927,7 @@ def test_preflight_simulation_runs_each_gate_once_in_order(tmp_path: Path) -> No
         "checker-image-pin",
         "live-image:frontend",
         "current-backend-topology",
+        "database-identity",
         "revision:repo/frontend",
         "revision:repo/backend",
         "current-peer-evidence",
@@ -852,6 +950,7 @@ def test_preflight_simulation_runs_each_gate_once_in_order(tmp_path: Path) -> No
         "frontend-candidate-pull",
         "checker-image-pin",
         "current-backend-topology",
+        "database-identity",
         "current-peer-evidence",
         "artifact:frontend",
         "effective-input-hash",
@@ -956,6 +1055,8 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
         "REAL_PYTHON": sys.executable,
         "REPORT_FILE": str(report_file),
         "STAGED_RUNTIME_ENV_FILE": str(staged_runtime_env),
+        "TARGET_POSTGRES_DB": "wes_current",
+        "DATABASE_ARGUMENT_TRACE": str(tmp_path / "database-arguments"),
         "TRACE_FILE": str(trace_file),
         "UNSELECTED_PEER_DIGEST": ("sha256:" + "2" * 64) if scope == "FRONTEND" else ("sha256:" + "1" * 64),
         "WORKSPACE": str(tmp_path),
@@ -979,6 +1080,13 @@ discover_live_digest() {
         *@sha256:[0-9a-f]*) printf '%s\n' "${image_ref##*@}" ;;
         *) return 1 ;;
     esac
+}
+"""
+            + _database_head_reader()
+            + """
+resolve_database_identity() {
+    printf '%s\n' database-identity-reverification >>"$TRACE_FILE"
+    [ "${FAIL_STAGE:-}" != database-identity-reverification ]
 }
 """
             + _marked_shell("# TEST_DEPLOY_CUTOVER_BEGIN", "# TEST_DEPLOY_CUTOVER_END"),
@@ -1012,7 +1120,16 @@ def test_initial_mixed_backend_peer_aborts_before_cutover(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    "fail_stage", ["backup", "migration", "migration-head", "authorization", "application-start", "readiness"]
+    "fail_stage",
+    [
+        "database-identity-reverification",
+        "backup",
+        "migration",
+        "migration-head",
+        "authorization",
+        "application-start",
+        "readiness",
+    ],
 )
 def test_postmaintenance_failure_holds_nginx_closed_and_does_not_repeat_mutation(
     tmp_path: Path, fail_stage: str
@@ -1025,6 +1142,18 @@ def test_postmaintenance_failure_holds_nginx_closed_and_does_not_repeat_mutation
     for stage in ("backup", "migration", "authorization-apply"):
         assert trace.count(stage) <= 1
     assert "nginx-start" not in trace
+
+
+def test_full_reverifies_database_identity_after_application_stop_and_before_backup(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(
+        tmp_path, mode="FULL", scope="BOTH", fail_stage="database-identity-reverification"
+    )
+
+    assert status != 0, output
+    assert nginx == "stopped"
+    assert trace.index("application-stop") < trace.index("database-identity-reverification")
+    assert "backup" not in trace
+    assert "migration" not in trace
 
 
 def test_internal_topology_excludes_stopped_nginx_but_requires_every_other_compose_service() -> None:
