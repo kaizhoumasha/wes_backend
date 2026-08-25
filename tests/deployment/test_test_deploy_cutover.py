@@ -40,6 +40,13 @@ def _marked_python(begin: str, end: str) -> str:
     return textwrap.dedent(pipeline[start:stop])
 
 
+def _checker_preflight_functions() -> str:
+    pipeline = _pipeline()
+    start = pipeline.index("write_checker_inputs() {")
+    stop = pipeline.index("business_preflight() {", start)
+    return textwrap.dedent(pipeline[start:stop]).replace(r"\$", "$")
+
+
 def _embedded_python_blocks() -> list[str]:
     pipeline = _pipeline()
     return [
@@ -157,6 +164,57 @@ def test_database_head_queries_use_schema_qualified_alembic_version_table() -> N
     qualified_query = "select version_num from wes_sys.alembic_version order by version_num"
     assert pipeline.count(qualified_query) == 2
     assert 'from alembic_version order by version_num"' not in pipeline
+
+
+@pytest.mark.parametrize(
+    ("scope", "selected_name", "selected_side"),
+    [
+        ("FRONTEND", "FRONTEND_CANDIDATE_DIGEST", "frontend"),
+        ("BACKEND", "BACKEND_CANDIDATE_DIGEST", "backend"),
+    ],
+)
+def test_optional_empty_jenkins_parameters_are_safe_under_nounset(
+    tmp_path: Path, scope: str, selected_name: str, selected_side: str
+) -> None:
+    digest = "sha256:" + "1" * 64
+    (tmp_path / "effective-facts-base.json").write_text(json.dumps({"deploy": {}, "runtime": {}}), encoding="utf-8")
+    report = tmp_path / "compatibility-report.json"
+    report.write_text(json.dumps({"pre_cutover_state": "READY", "effective_mode": "FAST"}), encoding="utf-8")
+    shell = """
+        set -eu
+        run_checker_container() { return 0; }
+    """ + _checker_preflight_functions()
+    shell += "\nwrite_checker_inputs\nrun_release_checker\nprintf '%s\\n' \"$EFFECTIVE_MODE\"\n"
+    env = os.environ | {
+        "CHECKER_DIGEST_VALUE": digest,
+        "CHECKER_IMAGE": "checker-image",
+        "CURRENT_BACKEND_DIGEST": digest,
+        "CURRENT_EVIDENCE_VALID": "false",
+        "CURRENT_FRONTEND_DIGEST": digest,
+        "CURRENT_RELEASE_EVIDENCE_DIR": str(tmp_path / "current"),
+        "DATABASE_HEADS": "db-head",
+        "DATABASE_RELATION": "ancestor",
+        "DEPLOY_SCOPE": scope,
+        "FORCE_FULL_VALUE": "false",
+        "PREFLIGHT_DIR": str(tmp_path),
+        "RELEASE_ID": "test-release",
+        "REPORT_DIR": str(tmp_path),
+        "REPORT_FILE": str(report),
+        selected_name: digest,
+    }
+
+    completed = subprocess.run(
+        ["/bin/bash", "-c", shell],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "FAST\n"
+    assert json.loads((tmp_path / "candidate-digests.json").read_text(encoding="utf-8")) == {selected_side: digest}
 
 
 def test_scope_validation_requires_only_selected_candidates_and_rejects_peer_input() -> None:
