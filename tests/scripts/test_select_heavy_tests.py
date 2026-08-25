@@ -273,14 +273,70 @@ def test_menu_persistence_migration_selects_its_postgresql_owner() -> None:
     assert select_heavy_tests([migration], config) == ["tests/integration/test_menu_persistence_removal_postgresql.py"]
 
 
+def test_admin_router_menu_removal_is_exact_reviewed_none() -> None:
+    admin_router = "src/app/admin/__init__.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == admin_router]
+    assert len(matching_mappings) == 1
+    mapping = matching_mappings[0]
+    assert mapping.heavy_tests == ()
+    assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / admin_router).read_bytes()).hexdigest()
+    assert select_heavy_tests([admin_router], config, repo_root=REPO_ROOT) == []
+
+
+def test_role_menu_metadata_removal_selects_its_postgresql_owner() -> None:
+    relationships = "src/app/admin/models/relationships.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests([relationships], config, repo_root=REPO_ROOT) == [
+        "tests/integration/test_menu_persistence_removal_postgresql.py"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("changed_path", "expected_sha256"),
+    [
+        (
+            "src/app/admin/repositories/__init__.py",
+            "c3c4cbc8c92ac34018ad509b05fbd3f107a212fc0367d01a6b7058b0966b9e25",
+        ),
+        (
+            "src/app/auth/models/auth.py",
+            "b10d2f7ea5c21d8a7994f1ea8b9d73a98da056c4b0f9cf8ec6662d6971693fea",
+        ),
+        (
+            "src/app/auth/v1/auth.py",
+            "1e84e15cb9b031cdcfc76d3f1560cdfc8b86a995ed7f42590cedd5a2a3403fa4",
+        ),
+    ],
+)
+def test_menu_runtime_removal_paths_are_exact_reviewed_none(changed_path: str, expected_sha256: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
+    assert len(matching_mappings) == 1
+    mapping = matching_mappings[0]
+    assert mapping.heavy_tests == ()
+    assert mapping.reviewed_content_sha256 == expected_sha256
+    assert expected_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+    assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
+
+
 @pytest.mark.parametrize(
     "retired_path",
     [
         "scripts/data/sync_menus.py",
         "scripts/data/sync_menus.sh",
+        "src/app/admin/models/menu.py",
+        "src/app/admin/repositories/menu_repository.py",
+        "src/app/admin/services/menu_service.py",
+        "src/app/admin/services/menu_sync_service.py",
+        "src/app/admin/v1/menu.py",
+        "src/utils/frontend_menu_parser.py",
     ],
 )
-def test_deleted_menu_sync_scripts_are_retired_only_while_absent(tmp_path: Path, retired_path: str) -> None:
+def test_deleted_menu_runtime_assets_are_retired_only_while_absent(tmp_path: Path, retired_path: str) -> None:
     assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == []
 
     restored = tmp_path / retired_path
