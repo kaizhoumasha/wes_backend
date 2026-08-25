@@ -187,7 +187,6 @@ pytest
 # 2) 改动集中在某个模块：跑对应文件/目录
 pytest tests/auth/
 pytest tests/api/
-pytest tests/admin/test_menu_service_tree.py
 
 # 3) 改动涉及系统稳定性或多服务联调：显式补跑重测试
 pytest tests/integration/
