@@ -409,17 +409,14 @@ write("effective-facts.json", {"kind": "wes.release.effective-facts.v1", "deploy
 PY
                         }
                         run_release_checker() {
-                            set --
-                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || set -- "$@" --current-fingerprints /inputs/current-fingerprints.json
-                            [ "${FORCE_FULL_VALUE}" != true ] || set -- "$@" --force-full
-                            [ -z "${WARN_APPROVAL_REASON_VALUE:-}" ] || set -- "$@" --warn-approval-reason "${WARN_APPROVAL_REASON_VALUE:-}"
-                            current_mount="${PREFLIGHT_DIR}/missing-current-fingerprints.json"
-                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || current_mount="${CURRENT_RELEASE_EVIDENCE_DIR}/current-fingerprints.json"
-                            if run_checker_container 60 \
+                            set -- \
                                 -v "${PREFLIGHT_DIR}/frontend:/frontend:ro" \
                                 -v "${PREFLIGHT_DIR}/backend:/backend:ro" \
-                                -v "${PREFLIGHT_DIR}:/inputs:ro" \
-                                -v "${current_mount}:/inputs/current-fingerprints.json:ro" \
+                                -v "${PREFLIGHT_DIR}:/inputs:ro"
+                            if [ "${CURRENT_EVIDENCE_VALID:-false}" = true ]; then
+                                set -- "$@" -v "${CURRENT_RELEASE_EVIDENCE_DIR}/current-fingerprints.json:/inputs/current-fingerprints.json:ro"
+                            fi
+                            set -- "$@" \
                                 -v "${REPORT_DIR}:/report" \
                                 "${CHECKER_IMAGE}" \
                                 --frontend-dir /frontend \
@@ -432,7 +429,11 @@ PY
                                 --candidate-digests /inputs/candidate-digests.json \
                                 --current-digests /inputs/current-digests.json \
                                 --checker-digest "${CHECKER_DIGEST_VALUE}" \
-                                --output /report/compatibility-report.json "$@"; then
+                                --output /report/compatibility-report.json
+                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || set -- "$@" --current-fingerprints /inputs/current-fingerprints.json
+                            [ "${FORCE_FULL_VALUE}" != true ] || set -- "$@" --force-full
+                            [ -z "${WARN_APPROVAL_REASON_VALUE:-}" ] || set -- "$@" --warn-approval-reason "${WARN_APPROVAL_REASON_VALUE:-}"
+                            if run_checker_container 60 "$@"; then
                                 checker_status=0
                             else
                                 checker_status=$?
