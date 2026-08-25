@@ -362,7 +362,7 @@ with open(sys.argv[4], "w", encoding="utf-8") as stream:
 PY
                         }
                         query_database_state() {
-                            DATABASE_HEADS=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from alembic_version order by version_num"') || return 1
+                            DATABASE_HEADS=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from wes_sys.alembic_version order by version_num"') || return 1
                             EXPECTED_SCHEMA_HEAD=$(python3 - "${PREFLIGHT_DIR}/backend-labels.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1], encoding="utf-8"))["org.wes.release.expected-schema-head"])
@@ -607,7 +607,7 @@ PY
                             echo "🗄️ 执行数据库迁移"
                             compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/alembic api upgrade head || return 1
                             CUTOVER_STAGE=migration-head
-                            migrated_heads=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from alembic_version order by version_num"') || return 1
+                            migrated_heads=$(compose exec -T db sh -eu -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from wes_sys.alembic_version order by version_num"') || return 1
                             migrated_head_count=$(printf '%s\n' "$migrated_heads" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
                             [ "$migrated_head_count" = 1 ] || return 1
                             [ "$migrated_heads" = "${EXPECTED_SCHEMA_HEAD}" ] || return 1
