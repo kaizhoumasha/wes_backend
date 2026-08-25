@@ -678,6 +678,15 @@ def test_effective_inputs_and_database_rules_are_owned_by_checker_inputs() -> No
     assert "current-evidence.missing" not in pipeline
 
 
+def test_current_fingerprints_mount_does_not_overlap_read_only_inputs_mount() -> None:
+    pipeline = _pipeline()
+    checker = pipeline[pipeline.index("run_release_checker()") : pipeline.index("business_preflight()")]
+
+    assert '-v "${CURRENT_RELEASE_EVIDENCE_DIR}:/current:ro"' in checker
+    assert "--current-fingerprints /current/current-fingerprints.json" in checker
+    assert ":/inputs/current-fingerprints.json:ro" not in checker
+
+
 def test_fast_is_side_specific_and_backend_is_an_atomic_service_set() -> None:
     pipeline = _pipeline()
     fast = pipeline[pipeline.index("run_fast_cutover()") : pipeline.index("run_full_cutover()")]

@@ -444,7 +444,7 @@ PY
                                 -v "${PREFLIGHT_DIR}/backend:/backend:ro" \
                                 -v "${PREFLIGHT_DIR}:/inputs:ro"
                             if [ "${CURRENT_EVIDENCE_VALID:-false}" = true ]; then
-                                set -- "$@" -v "${CURRENT_RELEASE_EVIDENCE_DIR}/current-fingerprints.json:/inputs/current-fingerprints.json:ro"
+                                set -- "$@" -v "${CURRENT_RELEASE_EVIDENCE_DIR}:/current:ro"
                             fi
                             set -- "$@" \
                                 -v "${REPORT_DIR}:/report" \
@@ -460,7 +460,7 @@ PY
                                 --current-digests /inputs/current-digests.json \
                                 --checker-digest "${CHECKER_DIGEST_VALUE}" \
                                 --output /report/compatibility-report.json
-                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || set -- "$@" --current-fingerprints /inputs/current-fingerprints.json
+                            [ "${CURRENT_EVIDENCE_VALID:-false}" != true ] || set -- "$@" --current-fingerprints /current/current-fingerprints.json
                             [ "${FORCE_FULL_VALUE}" != true ] || set -- "$@" --force-full
                             [ -z "${WARN_APPROVAL_REASON_VALUE:-}" ] || set -- "$@" --warn-approval-reason "${WARN_APPROVAL_REASON_VALUE:-}"
                             if run_checker_container 60 "$@"; then
