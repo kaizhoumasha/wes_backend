@@ -41,7 +41,6 @@
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
-| `docs/superpowers/plans/2026-08-25-frontend-backend-release-decoupling.md` | 发布解耦实施计划与当前工程验收入口 |
 | `docs/superpowers/specs/2026-08-24-integration-release-reliability-design.md` | 管理员登录、HTTP readiness、Compose 拓扑与 fail-closed cutover 的历史设计依据；paired-release 部分已被 2026-08-25 设计取代 |
 | `docs/superpowers/plans/2026-08-24-integration-release-reliability.md` | 联调发布可靠性增量的历史实施证据；已完成 checkbox 保持原样，paired-release 部分已被取代 |
 | `docs/integration/wes-wms-interface-requirements.md` | 面向 WMS/WES 初级开发人员的场景化对接入口；自动出库和 Phase 9 上架待评审，人工分拣目前仅登记业务设计、尚无 wire |
