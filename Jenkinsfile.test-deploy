@@ -629,9 +629,25 @@ PY
                                 cutover_compose up -d --no-deps --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower frontend || return 1
                             fi
                         }
+                        check_authorization_drift() {
+                            CUTOVER_STAGE=authorization-check
+                            echo "🔎 校验权限目录零漂移"
+                            compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/python api scripts/data/sync_permissions.py --check || return 1
+                        }
                         run_full_cutover() {
+                            if [ "${DEPLOY_SCOPE}" = FRONTEND ]; then
+                                compose stop frontend || return 1
+                                check_authorization_drift || return 1
+                                CUTOVER_STAGE=application-start
+                                compose up -d --no-deps --force-recreate --wait frontend || return 1
+                                return 0
+                            fi
                             backup_name="${RELEASE_ID}.sql"
-                            compose stop api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            if [ "${DEPLOY_SCOPE}" = BACKEND ]; then
+                                compose stop api celery celery-wms-fulfillment celery_beat flower || return 1
+                            else
+                                compose stop api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            fi
                             CUTOVER_STAGE=database-identity-reverification
                             resolve_database_identity || return 1
                             CUTOVER_STAGE=backup
@@ -663,12 +679,14 @@ PY
                                 compose run --rm --no-deps --entrypoint /opt/venv/bin/python \
                                     api scripts/data/sync_permissions.py --repair-cache || return 1
                             fi
-                            CUTOVER_STAGE=authorization-check
-                            echo "🔎 校验权限目录零漂移"
-                            compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/python api scripts/data/sync_permissions.py --check || return 1
+                            check_authorization_drift || return 1
                             CUTOVER_STAGE=application-start
                             echo "🐳 启动已固定版本的应用服务"
-                            compose up -d --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            if [ "${DEPLOY_SCOPE}" = BACKEND ]; then
+                                compose up -d --no-deps --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower || return 1
+                            else
+                                compose up -d --force-recreate --wait api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                            fi
                         }
                         verify_readiness_and_topology() {
                             verify_service_digest() {

@@ -727,7 +727,8 @@ def test_full_preserves_backup_forward_migration_authorization_and_readiness() -
     assert '[ "$migrated_heads" = "${EXPECTED_SCHEMA_HEAD}" ]' in full
     assert "alembic" in full and "upgrade head" in full
     assert "sync_permissions.py --apply" in full
-    assert "sync_permissions.py --check" in full
+    assert "check_authorization_drift" in full
+    assert "scripts/data/sync_permissions.py --check" in pipeline
     assert "scripts/check_bootstrap_admin_login.py" in full
     assert "for service in api celery celery-wms-fulfillment celery_beat flower" in full
     assert "verify_service_digest frontend" in full
@@ -807,6 +808,7 @@ def _fake_docker() -> str:
         esac
         case "$operation:$args" in
             "stop:nginx") trace nginx-stop; printf stopped >"$NGINX_STATE" ;;
+            "stop:frontend") trace frontend-stop; exit 0 ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*frontend*) trace application-stop; exit 0 ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*) trace backend-stop; exit 0 ;;
             up:*api*celery*celery-wms-fulfillment*celery_beat*flower*frontend*)
@@ -1154,6 +1156,53 @@ def test_full_reverifies_database_identity_after_application_stop_and_before_bac
     assert trace.index("application-stop") < trace.index("database-identity-reverification")
     assert "backup" not in trace
     assert "migration" not in trace
+
+
+def test_frontend_full_restarts_only_frontend_without_database_mutation(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(tmp_path, mode="FULL", scope="FRONTEND")
+
+    assert status == 0, (trace, output)
+    assert nginx == "running"
+    assert "frontend-stop" in trace
+    assert "frontend-start" in trace
+    assert "authorization-check" in trace
+    for forbidden in (
+        "application-stop",
+        "backend-stop",
+        "backend-start",
+        "database-identity-reverification",
+        "backup",
+        "migration",
+        "authorization-apply",
+    ):
+        assert forbidden not in trace
+    assert trace.index("frontend-stop") < trace.index("frontend-start") < trace.index("topology-running")
+    assert trace.index("topology-running") < trace.index("nginx-start")
+
+
+def test_backend_full_converges_database_before_backend_exposure_without_restarting_frontend(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(tmp_path, mode="FULL", scope="BACKEND")
+
+    assert status == 0, (trace, output)
+    assert nginx == "running"
+    assert "frontend-start" not in trace
+    expected = [
+        "backend-stop",
+        "database-identity-reverification",
+        "backup",
+        "migration",
+        "migration-head",
+        "authorization-apply",
+        "authorization-check",
+        "backend-start",
+        "topology-running",
+        "nginx-start",
+    ]
+    positions = [trace.index(stage) for stage in expected]
+    assert positions == sorted(positions)
+    assert (tmp_path / "live-state/frontend").read_text(encoding="utf-8").strip() == (
+        "repo/frontend@sha256:" + "1" * 64
+    )
 
 
 def test_internal_topology_excludes_stopped_nginx_but_requires_every_other_compose_service() -> None:
