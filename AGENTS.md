@@ -52,7 +52,7 @@ DO NOT send optional commentary
 | 任务 | 首选能力 | 项目约束 |
 | --- | --- | --- |
 | 需求含糊、需要设计功能 | `superpowers:brainstorming`，必要时 `writing-plans` | 已批准计划、纯文档、规则或元数据调整不重复设计 |
-| 已批准的 WES 实施 | `wes-implementation` | 仅功能性代码或 Bug 修复要求 TDD |
+| 已批准的 WES 实施 | `wes-implementation` | Agent 自主判定大型/高风险或小型/低风险；最终快照取最高风险 |
 | Bug / 异常 | `systematic-debugging` 或 GStack `investigate` | 先定位根因，再决定是否实施 |
 | 代码 Review | GStack `review` 或 `requesting-code-review` | 二选一作为主 Review，不双重完整审查 |
 | 接收 Review 意见 | `receiving-code-review` | 先验证意见，再实施；不因意见来源而盲从 |
@@ -83,7 +83,7 @@ HIGH / CRITICAL 影响链作出范围授权后，清单内相同风险不再次�
 
 实施按完整行为切片推进：
 
-- 同一不变量的反馈视为一个切片；Skill 的“逐项”不等于逐文件/逐 hunk。功能切片只做一次 RED、内聚 GREEN、必要传播和聚焦验证。
+- 同一内聚切片可含多个共享路径、风险和测试 owner 的验收点。大型/高风险按 TDD；小型/低风险复用现有测试或替代验证。
 - 公共签名、字段或测试夹具发生机械传播时，先列全调用点，再做一次受控迁移、一次旧符号残留扫描和一次领域回归；禁止依靠整目录失败逐个发现调用点。
 - 可独立的读取、影响分析和 FAST 测试应批量或并行执行；已知签名传播尚未完成时，不反复运行整目录测试。
 - 修改测试期望前先把失败归类为合同变化、机械传播遗漏、环境/fixture 缺失或真实回归。只有合同证据支持时才能改变可观察语义；不得用放宽断言掩盖后三类问题。
@@ -122,21 +122,20 @@ API → Service → Repository → Database
 
 ## 5. 变更分类与 TDD 边界
 
-开始实施前把变更归入以下一类；混合变更按各自部分分别处理。
+修改前检查实现、现有测试和影响；按 `wes-implementation` 判定风险，未知按高风险，最终快照取最高风险。
 
 | 类型 | 是否强制 TDD | 最小验证 |
 | --- | --- | --- |
-| 新增或改变可观察功能 | 是 | 先失败测试，再最小实现，再聚焦回归 |
-| Bug 修复 | 是 | 先建立可复现失败，再修复 |
-| 不改变行为的重构 | 否 | 变更前后聚焦回归，必要时补缺失覆盖 |
+| 大型/高风险功能或 Bug | 是 | RED → DEV → GREEN，必要时小范围重构 |
+| 小型/低风险功能、Bug 或重构 | 否 | 复用现有测试；无合适测试时用可靠替代验证 |
 | 测试治理、脚本、配置、合同自身 | 否；若改变运行时可观察行为，其实现部分按功能变更 | 聚焦验证可执行行为或解析结果 |
 | 纯文档、注释、规则、Release 元数据 | 否，且不得硬套 TDD | 文档或元数据相称检查 |
 
-严禁为了满足流程，为非功能性变更制造无价值的红灯测试、修改 pytest，或把人类文档内容写成自动化断言。
+纯人类可读文档、规则和 Skill 永远不走代码式 RED/DEV/GREEN，也不得为正文、标题、路径或状态措辞创建/修改 pytest。
 
-纯文档指 `.md`、`.mdx`、`.rst`、`.txt`、`.docx`、`.pdf` 等人类阅读材料，且不改变生产代码、测试工具、机器可读配置或可执行合同。位于 `docs/` 下但被程序/CI 读取的 `.toml`、`.csv`、`.yaml`、`.yml`、`.json` 仍属于配置或合同。
+纯文档是人类阅读材料且不改变生产、测试工具、机器配置或可执行合同；`docs/` 下被程序/CI 读取的 TOML/CSV/YAML/JSON 仍是配置或合同。
 
-纯文档只做 `git diff --check`、引用/链接、归档目标和原路径缺席等相称验证。不得新增文档正文、标题、路径清单或状态措辞测试，也不得为旧文档测试保留占位文件、转发文档或重复真源。
+纯文档只做审阅、格式、引用/链接、路径、大小、结构 validator 和 diff 检查；规则场景演练不要求先失败且不算 TDD。
 
 ## 6. 测试所有权与 HEAVY
 
@@ -192,14 +191,15 @@ uv run scripts/select_heavy_tests.py --scope staged
 | 仅 `VERSION` / `CHANGELOG` 等 Release 元数据 | release-metadata 门禁 | QUALITY、HEAVY、迁移 |
 | 测试、selector、测试资产 | 聚焦测试、selector 合同；按 manifest 决定 HEAVY | 无关迁移 |
 | 工具脚本、机器可读配置或可执行合同 | 对应聚焦验证、按影响刷新 QUALITY/HEAVY | 无关门禁 |
-| 生产代码 | 聚焦测试、QUALITY、受影响 HEAVY | 无关 HEAVY |
+| 生产代码 | 小型/低风险做定向验证；大型/高风险加必要 QUALITY/HEAVY | 无关 HEAVY |
 | Migration / schema | 迁移链、新鲜临时库或等价验证、受影响 HEAVY | 无关浏览器 QA |
 | 前端交互 | 聚焦测试和浏览器 QA | 后端无关 HEAVY |
 
 执行规则：
 
-- 同一有效快照上，已通过的完整 QUALITY、同组 HEAVY 和同一迁移链各运行一次并复用；失败门禁不产生有效证据，聚焦诊断通过也不能替代最终完整绿灯。
-- 已授权 Commit 且 pre-commit 将执行完整 QUALITY 时，先做聚焦验证，交给 hook 产生提交快照证据。hook 失败后必须在相同 Git 环境中单独复现失败阶段，修复并确认 staged fingerprint 与 Git 元数据未漂移后再重试；禁止把反复 `git commit` 当作诊断循环。
+- 完整 QUALITY、同组 HEAVY 和同一迁移链在同一有效快照各运行一次；失败无证据，聚焦通过不替代最终必选门禁。
+- 小型/低风险未授权 Commit/PR/Merge 时可止于 `IMPLEMENTED - FOCUSED VERIFIED`；出现意外影响须先重新分类，不得自行扩面。
+- 已授权 Commit 时先做聚焦验证，由 hook 产生完整 QUALITY。hook 失败后单独复现失败阶段，修复并确认 staged fingerprint 和 Git 元数据未漂移再重试；不得用反复 Commit 诊断。
 - 可执行树（生产、测试、脚本、配置、迁移）或验证环境变化会使相关证据失效；仅创建 Commit 不会自动失效。纯文档或 Release 元数据变化不会使 QUALITY、HEAVY、迁移证据失效。
 - HEAVY 只执行 selector 输出的 manifest；`NONE` 是有效结果。不得把全量 HEAVY 当作默认安心检查。
 - 失败后先重跑失败项或受修复影响集合做诊断；生产、测试、脚本、配置或环境修复完成后，最终快照必须重新完整通过被失效的必选门禁。未变化的绿色快照不重复全量。
@@ -296,7 +296,7 @@ uv run bandit -r src/
 
 ## 13. 完成标准
 
-只有同时满足以下条件才能声称任务完成：
+小型/低风险可报告 `IMPLEMENTED - FOCUSED VERIFIED`，但不是 `MERGE READY` 或现场验收。各层级完成还须：
 
 - diff 只包含授权范围，用户原有变更未被覆盖；
 - 架构、合同、测试所有权和注释规则得到满足；
