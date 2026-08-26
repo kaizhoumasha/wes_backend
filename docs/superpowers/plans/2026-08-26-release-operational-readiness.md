@@ -109,7 +109,7 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 - `DeviceCommand` 仅 `PENDING/DISPATCHING/ACKNOWLEDGED` 为 `WAIT_DRAIN`，`RECONCILING` 为 `BLOCK`。
 - `TransportTask` 的 `PENDING/ACCEPTED` 或 `outcome_version > published_outcome_version` 为 `WAIT_DRAIN`，`RECONCILING` 为优先级更高的 `BLOCK`；`published_outcome_version > outcome_version` 或版本差存在但 `outcome_json IS NULL` 为 invalid。
 - `InboundEvidence.PENDING` 或可 claim 的 `APPLIED + published_at IS NULL` 为 `WAIT_DRAIN`，`RECONCILING` 为 `BLOCK`；未绑定 `material_execution_id` 的 `DEVICE_RESULT` 保持真实 claim 排除，`IGNORED` 和已发布 `APPLIED` 是本门禁终态。
-- Device result 交接必须保持连续谓词：事务前由 `DeviceCommand` 或 `InboundEvidence` 命中 `WAIT_DRAIN/BLOCK`；设备结果处理的同一事务中，命令进入确定终态时必须已有并保持可 claim 的 `InboundEvidence.APPLIED + published_at IS NULL`；事务后继续由该 unpublished evidence 命中 `WAIT_DRAIN`，不得出现 cleared-before-evidence snapshot。
+- 仅对 `material_execution_id IS NOT NULL` 且可能驱动 FactProcessor 的绑定业务执行结果，Device result 交接必须保持连续谓词：设备结果事务前，命令本身在进入确定终态前必须命中 `WAIT_DRAIN/BLOCK`；同一事务内，命令进入确定终态时必须已有并保持可 claim 的 `InboundEvidence.APPLIED + published_at IS NULL`；事务后继续由该 unpublished evidence 命中 `WAIT_DRAIN`，不得出现 cleared-before-evidence snapshot。`MANUAL_DEBUG` / `EVENT_DEBUG` 等 `material_execution_id IS NULL` 的未绑定诊断结果按既有例外终态化，不要求 claimable evidence、不唤醒 FactProcessor，也不制造虚假 `WAIT_DRAIN`。
 - `WmsConfirmation.PENDING/DISPATCHING` 为 `WAIT_DRAIN`，`RECONCILING` 为 `BLOCK`，`COMPLETED` 为终态。
 - 任一表出现生命周期之外状态或其它不可能字段组合时退出码为 `1`，不得因已知分类计数为零而返回 `READY`。
 - `FRONTEND` 和 FAST 不调用门禁；`BACKEND FULL`、`BOTH FULL` 先在线预检，再在优雅停止 Nginx/API/Beat admission 后权威复核。
@@ -118,7 +118,7 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 
 - [ ] **Step 1: 一次性编写四个现有所有权测试**
 
-Service 测试覆盖优先级、非负计数、四表未知状态和不可能字段组合；PostgreSQL 测试覆盖上述四表谓词、真实 `DEVICE_RESULT` claim 排除、Transport 未发布 outcome、终态排除、同一 statement snapshot 和查询只读；CLI 测试覆盖四个退出码、canonical JSON、`generated_at`、10 秒查询取消和异常脱敏；部署测试覆盖三种 scope、FAST/FULL、Nginx/API/Beat 关闭与 listener 验证顺序、连续 READY、超时和失败短路。测试还必须以外部可观察 snapshot 断言锁定以下交易边：Device result 处理前由 command 或 evidence 命中、同一事务内命令转确定终态时 claimable unpublished evidence 已存在并保持、事务后由该 evidence 继续命中以证明无 cleared-before-evidence snapshot；execution fact 的下游对象与 `published_at` 原子交接；Transport outcome 在 evidence 可见后才回写 published version；WMS result evidence 与 confirmation 终态原子交接。
+Service 测试覆盖优先级、非负计数、四表未知状态和不可能字段组合；PostgreSQL 测试覆盖上述四表谓词、真实 `DEVICE_RESULT` claim 排除、Transport 未发布 outcome、终态排除、同一 statement snapshot 和查询只读；CLI 测试覆盖四个退出码、canonical JSON、`generated_at`、10 秒查询取消和异常脱敏；部署测试覆盖三种 scope、FAST/FULL、Nginx/API/Beat 关闭与 listener 验证顺序、连续 READY、超时和失败短路。测试还必须以外部可观察 snapshot 断言锁定以下交易边：对 `material_execution_id IS NOT NULL` 的绑定业务执行结果，Device result 处理前由未终态 command 命中、同一事务内命令转确定终态时 claimable unpublished evidence 已存在并保持、事务后由该 evidence 继续命中以证明无 cleared-before-evidence snapshot；对 `MANUAL_DEBUG` / `EVENT_DEBUG` 等 `material_execution_id IS NULL` 的未绑定诊断结果，断言其按例外终态化、不要求 claimable evidence、不唤醒 FactProcessor 且不产生虚假 `WAIT_DRAIN`；execution fact 的下游对象与 `published_at` 原子交接；Transport outcome 在 evidence 可见后才回写 published version；WMS result evidence 与 confirmation 终态原子交接。
 
 测试断言必须使用外部可观察结果，不能从生产常量导入期望状态形成同源断言。
 
