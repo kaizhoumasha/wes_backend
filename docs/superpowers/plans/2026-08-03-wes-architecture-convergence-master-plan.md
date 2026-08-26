@@ -29,9 +29,10 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Planning closure base:** `develop@2c0d4a87ce7790018c5f57f1d89a1a739fad501c`（PR #178 已合入阶段重排、Phase 10/11 和流程规则）；
-最终 planning baseline 是本次旧 Phase 9 承接与归档闭环 PR 的 merge SHA。Phase 8 RC 发布证据仍为
-`f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`；Phase 9 尚未开始。
+**Backend planning baseline:** `develop@50bd9ac2098005b346d48b10ad9d78ac0ae5d982`（PR #179 已闭合旧 Phase 9 承接与归档）；
+**Frontend planning baseline:** `develop@63489e7c89aa0fb758e7a08ea97a8000a3b843fc`（PR #82 已合入开发流程优化）。
+Gate A 已完成；Phase 9 仍须等待 Gate B 完成及自身计划批准。Phase 8 RC 发布证据仍为
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`。
 
 ---
 
