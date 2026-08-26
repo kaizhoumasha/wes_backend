@@ -1,6 +1,6 @@
 # Phase 9—14 基础收敛与教学式插件开发重排设计
 
-status: ApprovedForPlanning
+status: Approved
 decision_date: 2026-08-26
 scope: 开发流程、运输接入诊断、Phase 9—14 阶段边界、教学式插件开发和规划 worktree 收敛
 
@@ -68,12 +68,14 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 | --- | --- | --- |
 | 开发流程优化 | 所有后续阶段的执行规则基线 | 风险匹配测试、文档不走代码式 TDD、单一 Review/QUALITY/HEAVY owner、证据按变更失效 |
 | 运输接入诊断 | 独立的前后端现场诊断能力 | 建议在 Phase 9 前交付；Phase 10 必须把已交付的 Transport 查询、SSE、Nginx、前端页面和测试 owner 标记为 `RETAIN` |
-| 旧 Phase 9 人工 Bin 计划 | 待拆分的规划输入，不再直接执行 | 基础任务进入新 Phase 9；人工业务任务进入 Phase 12；旧过程计划在当前引用更新后归档 |
+| 旧 Phase 9 人工 Bin 计划 | 已拆分并归档，不再直接执行 | 基础任务由 Phase 9 Foundation 计划承接；人工业务任务由 Phase 12 教学计划承接；旧合同重新评审后才可成为当前真源 |
 | Phase 10 旧路径清理 | 继续作为 target-only 原子切换计划 | 入口从“全部业务插件完成”改为“最小基础 successor、运输诊断 RETAIN、四表门禁和 `UNRESOLVED=0`” |
 | Phase 11 Schema 基线 | 当前产品首个干净基线 | 不包含 manual/automatic 预留；Phase 12/13 使用正常向前 migration |
 
-运输接入诊断计划、阶段重排设计和旧 Phase 9 中仍有效的内容已经集中整理到当前 backend feature branch。该分支合入 `develop` 前仍
-不是当前发布基线；其中运输诊断与 Phase 9–14 仍是获批计划，不得描述为已经实施。
+运输接入诊断计划和阶段重排设计已进入 `develop`。旧 Phase 9 中仍有效的内容已分别由
+`plans/2026-08-27-phase9-minimum-execution-foundation.md` 和
+`plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` 承接，旧过程文档与未重新评审的合同已移至项目外归档。
+运输诊断与 Phase 9–14 仍是获批计划，不得描述为已经实施。
 
 ## 5. 阶段设计
 
