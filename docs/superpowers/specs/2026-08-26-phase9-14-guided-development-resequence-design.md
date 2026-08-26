@@ -72,8 +72,8 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 | Phase 10 旧路径清理 | 继续作为 target-only 原子切换计划 | 入口从“全部业务插件完成”改为“最小基础 successor、运输诊断 RETAIN、四表门禁和 `UNRESOLVED=0`” |
 | Phase 11 Schema 基线 | 当前产品首个干净基线 | 不包含 manual/automatic 预留；Phase 12/13 使用正常向前 migration |
 
-运输接入诊断的当前计划制品仍位于主工作区 staged 现场，旧 Phase 9 文档位于独立且落后 `develop` 的规划分支。二者在规划收敛前
-只是输入，不得被描述为已合入当前真源或已经实施。
+运输接入诊断计划、阶段重排设计和旧 Phase 9 中仍有效的内容已经集中整理到当前 backend feature branch。该分支合入 `develop` 前仍
+不是当前发布基线；其中运输诊断与 Phase 9–14 仍是获批计划，不得描述为已经实施。
 
 ## 5. 阶段设计
 
@@ -195,11 +195,10 @@ Phase 13 按真实合同分别交付 `automatic_putaway` 和 `automatic_picking`
 
 ### 7.1 当前现场原则
 
-- backend 主工作区的运输诊断 staged 文档先固定 index tree 和文件 hash，再迁入独立规划分支；不得在 dirty `develop` 上混合合并。
-- backend 开发流程优化分支在同步、审查后合入。
+- backend 主工作区原有运输诊断 staged 文档已固定文件 hash、迁入当前规划分支并清理主工作区现场。
+- backend 开发流程优化、运输诊断计划和阶段重排成果已在当前分支集中整理，完成审查后通过一个 PR 合入。
 - frontend 开发流程优化分支独立同步、审查和合入。
-- 旧 Phase 9 规划分支明显落后且阶段语义已变化，不直接 rebase/cherry-pick 整体合入；从最新 backend `develop` 创建新的规划收敛分支，
-  只提取仍有效内容。
+- 旧 Phase 9 规划分支没有整体 rebase/cherry-pick；仍有效内容已经按新阶段语义提取到当前规划分支。
 
 ### 7.2 规划基线顺序
 
