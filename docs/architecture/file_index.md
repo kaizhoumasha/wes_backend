@@ -44,6 +44,8 @@
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 用户主导插件开发的阶段重排设计 |
+| `docs/superpowers/plans/2026-08-27-phase9-minimum-execution-foundation.md` | Phase 9 最小执行基础、七项 successor、测试所有权与 Phase 10 handoff 的实施计划 |
+| `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、Nginx/API/Beat admission closure 与维护态稳定静默门禁实施计划 |
 | `docs/superpowers/specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、按需详情、共享 SSE 与四类现场调试的前后端设计真源 |

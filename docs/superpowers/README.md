@@ -31,7 +31,9 @@
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化已在 feature branches 提交，发布运行静默仍为计划 |
-| `specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 教学式插件开发重排 | Approved for planning；规划 worktree 已收敛，Phase 9–14 尚未实施 |
+| `specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 教学式插件开发重排 | Approved；旧 Phase 9 规划输入已完成拆分和归档，Phase 9–14 尚未实施 |
+| `plans/2026-08-27-phase9-minimum-execution-foundation.md` | Phase 9 最小执行内核、七项 successor、测试 owner 和 Phase 10 handoff | ReviewRequired；批准前不得开始生产实施 |
+| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Planned；Phase 11 后启动，旧合同必须重新联合评审 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend/frontend feature branches 待合入，最终 CI/HEAVY 与轻量 Commit profile 未完成 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Planned；稳定静默前只停止 Nginx/API/Beat admission，不停止执行 worker |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Approved for implementation；未实施 |
@@ -47,6 +49,11 @@
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-16-wes-transport-dto-contract-alignment.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-20-transport-debug-task-api.md`
+- `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-22-phase9-manual-bin-processing-implementation.md`
+- `../archive_docs/wes_backend/docs/superpowers/specs/2026-08-21-phase9-continuous-business-delivery-resequence-design.md`
+- `../archive_docs/wes_backend/docs/contracts/wms-manual-bin-processing-integration-requirements.md`
+- `../archive_docs/wes_backend/docs/contracts/device-annexes/manual-bin-processing-device-contract.md`
+- `../archive_docs/wes_backend/docs/contracts/openapi/wes-wms-manual-bin-processing.openapi.json`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-18-rough-sorter-local-mock-acceptance-completion.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-19-rough-sorter-functional-rc-and-field-validation.md`
 

@@ -29,8 +29,9 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Implementation baseline:** `develop@bda2079d523984f25265c113b2fb213429da40f0`（Phase 8 后端功能与 Epoch 激活已合入）；
-RC 发布证据为 `f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`；Phase 9 尚未开始
+**Planning closure base:** `develop@2c0d4a87ce7790018c5f57f1d89a1a739fad501c`（PR #178 已合入阶段重排、Phase 10/11 和流程规则）；
+最终 planning baseline 是本次旧 Phase 9 承接与归档闭环 PR 的 merge SHA。Phase 8 RC 发布证据仍为
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`；Phase 9 尚未开始。
 
 ---
 
@@ -606,8 +607,8 @@ HEAVY owner。`rough_sorter` 只验证现有插件机制，不替代 `BinExecuti
 **Exit gate:** 所有基础对象和 successor 有唯一生产 owner；后置业务插件没有遗留 Provider 路径；`UNRESOLVED=0`；
 不存在为 Phase 12/13 预建的业务表、operation、空包或 Composition。
 
-**需要单独编写的子计划:** 从最新 `develop` 编写并批准 Phase 9 Minimum Execution Foundation 计划；旧 Phase 9 人工/自动插件过程计划
-只作为拆分输入，引用闭合后移至项目外归档。
+**实施子计划:** `docs/superpowers/plans/2026-08-27-phase9-minimum-execution-foundation.md`。旧 Phase 9 人工业务计划已拆分：
+基础 successor 由该计划承接，人工业务由 Phase 12 教学计划承接，旧过程文档与未重新评审的合同已移至项目外归档。
 
 **风险及防止阶段越权的约束:** 禁止用 `MaterialExecution` 顶替 `BinExecution`，也禁止用核心对象名义提前实现人工或自动业务。
 
@@ -683,6 +684,9 @@ Adapter、设备统一接口和明确插件。
 
 **Scope:** 用户实现生产代码、测试、migration、静态 Composition、命令和验证；Agent 只提供现有调用链说明、任务拆解、只读影响分析、
 Review 与根因诊断。只有用户对具体切片另行授权时，Agent 才直接修改生产代码。
+
+**实施子计划:** `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md`。旧 Phase 9 人工合同、设备附录和
+OpenAPI 仅作为归档输入；Phase 12 开始前必须按真实教学范围重新联合评审，不能沿用旧批准状态。
 
 **Exit gate:** 用户能说明 owner、数据流、失败语义、事务边界和测试归属；人工 Bin 业务合同、插件独立测试和部署激活通过，
 不把 `rough_sorter` 结果当作人工业务验收。
