@@ -18,7 +18,7 @@ has_staged_version="false"
 while IFS= read -r -d '' staged_path; do
     has_staged_paths="true"
     case "$staged_path" in
-        *.md|*.mdx|*.rst|*.txt|*.docx|*.pdf)
+        *.md|*.mdx|*.rst|*.docx|*.pdf|docs/*.txt)
             ;;
         *)
             docs_only="false"
@@ -29,7 +29,7 @@ while IFS= read -r -d '' staged_path; do
         VERSION)
             has_staged_version="true"
             ;;
-        *.md|*.mdx|*.rst|*.txt|*.docx|*.pdf)
+        *.md|*.mdx|*.rst|*.docx|*.pdf|docs/*.txt)
             ;;
         *)
             release_metadata_only="false"
