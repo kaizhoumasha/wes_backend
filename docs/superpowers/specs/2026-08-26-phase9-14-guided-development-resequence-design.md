@@ -28,7 +28,7 @@ RETURN_BUFFER、WMS 人工业务 wire 或未来插件的业务验收。
 
 ## 2. 为什么不能把完整 Phase 9 推迟
 
-Phase 10 删除旧 Runtime、Intent、Outbox、Hold 和 Provider 路径前，必须已经存在能承接当前生产消费者的最小 successor。至少包括：
+Phase 10 删除旧 Runtime、Intent、Outbox、Hold 和 Provider 路径前，必须已经存在目标内核和能承接当前生产消费者的最小 successor。至少包括：
 
 - `BinExecution` 和唯一 `PositionProjection`；
 - WorkLine unfinished-work target aggregate；
@@ -37,8 +37,12 @@ Phase 10 删除旧 Runtime、Intent、Outbox、Hold 和 Provider 路径前，必
 - 最小 WMS target configuration；
 - OpenTelemetry HTTP lifecycle owner 的明确处置。
 
-如果把这些基础能力也推迟到 Phase 11 之后，Phase 10 只能在 successor 缺失时删除旧路径；Phase 11 也只能基于仍含 legacy owner 的
-metadata 生成错误基线。因此可推迟的是业务插件，不是 Phase 10 必需的基础 successor。
+`BinExecution` 与 `PositionProjection` 已由 SRS 和最小执行架构批准为核心对象，不是因人工/自动插件提前建设的预留 schema。Phase 9
+必须交付其领域不变量、Repository/Service、测试 owner 和 HEAVY mapping；只有表或空模型不算完成。它们不要求
+`manual_bin_processing`、`automatic_putaway` 或 `automatic_picking` 已有生产消费者。
+
+如果把这些基础能力也推迟到 Phase 11 之后，Phase 10 会在目标内核不完整时删除旧路径；Phase 11 也会固化缺少已批准核心对象的
+metadata。因此可推迟的是业务插件，不是已批准的最小执行内核。
 
 ## 3. 目标与非目标
 
@@ -46,7 +50,7 @@ metadata 生成错误基线。因此可推迟的是业务插件，不是 Phase 1
 
 - 让 Phase 9 只承担 Phase 10 真正需要的最小基础闭合，不夹带人工或自动业务。
 - 在 Phase 10 前完成运输诊断和四目标账本静默门禁，保护已有现场诊断与物理执行。
-- 让 Phase 11 基线只包含当时真实运行的模型，不为未来插件预留表、字段或 operation。
+- 让 Phase 11 基线只包含已批准且已实现的最小执行内核和当时真实运行的业务模型，不为未来插件预留表、字段或 operation。
 - 把 `manual_bin_processing` 变成用户可完整参与的二次开发教学样板。
 - 形成唯一 backend/frontend `develop` 规划基线，避免不同 worktree 继续维护冲突真源。
 
@@ -127,7 +131,7 @@ target-only candidate、重开 admission。Phase 10 不删除 schema/revision，
 
 ### 5.6 Phase 11：当前产品首个干净 Schema 基线
 
-Phase 11 基线只包含当时真实运行的：
+Phase 11 基线只包含 Phase 9 已实现并验收的最小执行内核，以及当时真实运行的：
 
 ```text
 最小执行基础

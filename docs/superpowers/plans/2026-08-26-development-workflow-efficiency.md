@@ -1,5 +1,7 @@
 # 前后端开发流程效率优化 Implementation Plan
 
+**Status:** Implemented - focused verified。后端与前端成果已分别提交到 feature branch，尚未合入各自 `develop`；最终 CI/HEAVY 和 Deferred 的轻量 Commit profile 未完成。
+
 > **For agentic workers:** 按独立切片执行。不得因为计划包含多个 Task 就自动创建 Subagent 或 worktree；不得重复运行仍然有效的验证证据。
 
 **Goal:** 在不降低最终质量门槛的前提下，删除重复验证、纠正 worktree 和纯文档路由，并清理失效 HEAVY 所有权。
@@ -35,7 +37,7 @@
 
 **Success:** `check -> lint -> lint:all`，整条命令链只调用一次 `type:check`。
 
-- [ ] **Step 1: 冻结目标路径和现有命令链**
+- [x] **Step 1: 冻结目标路径和现有命令链**
 
 ```bash
 git -C /Users/kaizhou/codeDev/wes_frontend status --short
@@ -44,13 +46,13 @@ node -e 'const p=require("/Users/kaizhou/codeDev/wes_frontend/package.json"); co
 
 目标路径与现有修改重叠时先按 Global Constraints 确认 owner；属于本 Task 时继续手术式修改，属于其它活动任务时协调或隔离，owner 不明时才停止。不得只因其它 dirty 文件创建 worktree。
 
-- [ ] **Step 2: 调整现有断言和命令别名**
+- [x] **Step 2: 调整现有断言和命令别名**
 
 在既有 `quality-gates.test.ts` 中断言 `check` 等于 `pnpm run lint`、`lint` 等于 `pnpm run lint:all`，且只有 `lint:all` 包含 `type:check`。随后只修改 `package.json` 的 `check`。
 
 只有前端 `AGENTS.md` 尚未包含风险匹配、纯文档免 TDD、最小 Skill、按冲突隔离和独立授权规则时，才补充缺失措辞；不得复制后端专项规则。
 
-- [ ] **Step 3: 运行一次聚焦验证**
+- [x] **Step 3: 运行一次聚焦验证**
 
 ```bash
 cd /Users/kaizhou/codeDev/wes_frontend
@@ -61,7 +63,7 @@ git diff --check -- package.json tests/unit/scripts/quality-gates.test.ts AGENTS
 
 如果无关前端可执行差异导致 `pnpm run check` 无法归因，只保留聚焦测试结果并把完整检查交给候选 Commit 的 CI；不得为获得一份干净本地日志而迁移无关现场。
 
-- [ ] **Step 4: 精确暂存和提交（仅已授权时）**
+- [x] **Step 4: 精确暂存和提交（仅已授权时）**
 
 ```bash
 git add -- package.json tests/unit/scripts/quality-gates.test.ts
@@ -81,7 +83,7 @@ git commit -m "perf(dev): 删除前端重复类型检查"
 
 **Success:** 保留现有 24 KiB 目标和全部架构红线，只纠正与本次流程审计直接相关的措辞。
 
-- [ ] **Step 1: 核对现有规则而不全文重写**
+- [x] **Step 1: 核对现有规则而不全文重写**
 
 ```bash
 git status --short
@@ -89,13 +91,13 @@ wc -c AGENTS.md
 rg -n "24 KiB|普通单任务不创建 worktree|纯人类可读|只有后续变化触及|计划文档表达" AGENTS.md
 ```
 
-- [ ] **Step 2: 只修改必要规则**
+- [x] **Step 2: 只修改必要规则**
 
 规则必须明确：默认直接工作；只有路径重叠、共享生成物、写入范围不可控、独立运行环境或长线现场才使用 worktree；流程以当前内聚切片判定；纯文档不继承后续 Review、Commit 或 Deploy 的流程成本；有效证据不重复运行。
 
 不得把 `AGENTS.md` 重写到任意 16 KiB，也不得顺手调整无关章节和命令。
 
-- [ ] **Step 3: 文档相称检查**
+- [x] **Step 3: 文档相称检查**
 
 ```bash
 uv run pymarkdown -d md013 scan AGENTS.md
@@ -106,7 +108,7 @@ wc -c AGENTS.md
 
 Expected: 文件仍不超过 24 KiB，diff 只包含上述规则。
 
-- [ ] **Step 4: 精确暂存和提交（仅已授权时）**
+- [x] **Step 4: 精确暂存和提交（仅已授权时）**
 
 ```bash
 git add -- AGENTS.md
@@ -126,11 +128,11 @@ git commit -m "docs(agent): 收敛任务隔离与证据复用规则"
 
 **Success:** `docs/**/*.txt` 可以走文档门禁；`src/`、`scripts/`、`tests/` 和依赖清单中的 `.txt` 必须进入完整质量 fallback。
 
-- [ ] **Step 1: RED——扩展既有 pre-commit 路由测试**
+- [x] **Step 1: RED——扩展既有 pre-commit 路由测试**
 
 复用 `_run_pre_commit_hook` 和现有 `test_pre_commit_uses_docs_gate_for_human_readable_document`、`test_pre_commit_keeps_quality_gate_for_machine_readable_contract` 所有权增加路径分类场景，不新建测试文件。至少覆盖 `docs/note.txt`、`src/runtime/contract.txt`、`scripts/input.txt`、`tests/integration/fixture.txt` 和 `requirements.txt`。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 ```bash
 uv run pytest tests/scripts/test_git_quality_gate.py -q
@@ -138,11 +140,11 @@ uv run pytest tests/scripts/test_git_quality_gate.py -q
 
 Expected: 仅执行目录或依赖清单 `.txt` 被错误归入 docs-only 的场景失败。
 
-- [ ] **Step 3: DEV——收紧 hook 的 `.txt` 路径规则**
+- [x] **Step 3: DEV——收紧 hook 的 `.txt` 路径规则**
 
 保留现有人类文档后缀；`.txt` 只有位于 `docs/` 时进入 docs-only 和 release-metadata 文档分支。其它 `.txt` 默认进入完整质量 fallback，不新增共享分类框架。
 
-- [ ] **Step 4: GREEN——只刷新失效证据**
+- [x] **Step 4: GREEN——只刷新失效证据**
 
 ```bash
 uv run pytest tests/scripts/test_git_quality_gate.py -q
@@ -162,7 +164,7 @@ Commit 已授权时精确暂存这两个文件，由 hook 按当前规则产生�
 
 **Success:** 已退役 `tests/integration/test_callback_external_payload_limit.py` 不再出现在 mapping，未知候选仍 fail closed。
 
-- [ ] **Step 1: 冻结事实和验证范围**
+- [x] **Step 1: 冻结事实和验证范围**
 
 ```bash
 test ! -e tests/integration/test_callback_external_payload_limit.py
@@ -172,11 +174,11 @@ git status --short
 
 如果 checkout 还存在无关机器配置或生产代码差异，`--scope unstaged` 不能作为本 Task 的证据。只有 selector 验证是当前交付必选、无法隔离且 index 也无法安全精确暂存时，才为本 Task 使用 worktree；CI 将对候选 Commit 权威执行时，不为本地宽验证日志隔离。
 
-- [ ] **Step 2: 删除 mapping 和对应旧断言**
+- [x] **Step 2: 删除 mapping 和对应旧断言**
 
 删除完整失效条目。只有现有测试明确要求该条目存在时才修改相应断言；不得新增同义 fail-closed 测试。
 
-- [ ] **Step 3: 运行一次 selector 测试所有者**
+- [x] **Step 3: 运行一次 selector 测试所有者**
 
 ```bash
 uv run pytest tests/scripts/test_select_heavy_tests.py -q
@@ -185,7 +187,7 @@ git diff --check -- docs/architecture/heavy-test-impact.toml tests/scripts/test_
 
 不得在运行完整文件后再次单独运行其中两个同义用例。
 
-- [ ] **Step 4: 由唯一 owner 执行 HEAVY**
+- [ ] **Step 4: 由唯一 owner 执行 HEAVY（待候选分支最终 CI/HEAVY）**
 
 Commit 已授权且 index 可安全隔离时，精确暂存目标路径并运行 `select_heavy_tests.py --scope staged`。manifest 为 `NONE` 时结束；选出 HEAVY 时由 CI 运行一次，除非 CI 不可用且当前交付明确要求本地 Merge-ready 证据。
 

@@ -2,19 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 Phase 9 全部 successor 已真实交付后，通过一次 target-only 原子切换删除旧 Runtime/Intent/Outbox/Hold/Provider 生产路径，并只把零生产消费者的 schema identity 交给 Phase 11。
+**Goal:** 在 Phase 9 最小执行基础和当前生产 successor 已真实交付后，通过一次 target-only 原子切换删除旧 Runtime/Intent/Outbox/Hold/Provider 生产路径，并只把零生产消费者的 schema identity 交给 Phase 11。
 
 **Architecture:** Phase 10 不建设新的通用平台。先用现有清理矩阵和架构门禁冻结生产 owner、消费者、测试与部署闭包，完成 target-only 代码、发布四表静默门禁、Review 和不可变 candidate；首次切换时再关闭旧 admission/Beat，由仍运行的旧 worker 排空 legacy owner，取得 legacy stable zero 与四表连续 `READY` 后才停止旧 worker并激活 candidate。数据库表、字段、约束、索引与 revision chain 留给 Phase 11；Phase 10 只证明它们已经没有生产消费者。
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Celery、PostgreSQL、Redis、Docker Compose、Pytest、GitNexus、HEAVY selector。
 
-**Spec:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`
+**Specs:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`、`docs/superpowers/specs/2026-08-26-phase9-14-guided-development-resequence-design.md`
 
 ## Global Constraints
 
 - 当前状态是 `GATED — PHASE 9 AND SUCCESSOR CLOSURE REQUIRED`。Task 0、Task 1 通过前不得修改 Phase 10 生产代码、删除旧 owner 或停用旧 consumer。
-- Phase 9 必须先真实交付 `BinExecution`、活动管辖期位置投影、全部获批插件和逐 operation WMS consumer；不得用 `MaterialExecution`、旧 29-operation registry 或空模型顶替。
-- Task 0 必须证明 WorkLine unfinished-work target aggregate、`ESTOP_PRESSED` final router、E03/E07 `WmsConfirmation` barrier、OpenTelemetry 同步 exporter 处置和逐 operation WMS consumer 已存在且有唯一 owner；任一 `UNRESOLVED` 非零即 `STOP`。
+- Phase 9 必须先真实交付 SRS 已批准的 `BinExecution`、活动管辖期 `PositionProjection` 和本计划需要的最小 successor；不得用 `MaterialExecution`、旧 29-operation registry 或只有 schema、没有领域不变量与测试 owner 的空模型顶替。`BinExecution` 是核心执行对象，不代表人工或自动插件已经交付。
+- Task 0 必须证明 WorkLine unfinished-work target aggregate、`ESTOP_PRESSED` final router、E03/E07 `WmsConfirmation` barrier、OpenTelemetry 同步 exporter 处置和当前仍需保留的 WMS consumer 已存在且有唯一 owner；任一 `UNRESOLVED` 非零即 `STOP`。
+- `manual_bin_processing`、RETURN_BUFFER、人工 Task、自动上架、自动拣货及其 WMS 业务 wire 不属于 Phase 10 入口条件；尚无当前生产消费者的旧 operation 必须裁决为 `DELETE → NONE`，不得为 Phase 12/13 保留旧 Provider 路径。
 - 最终目标对象包括 `LineRunEpoch`、`MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask`、`InboundEvidence`、`WmsConfirmation`、`WorklineSafetyIncident`、具体插件 Decision/Fact 和 typed WMS Adapter/Service；这不是排他清单，不得据此删除其它仍有独立业务语义的 owner。
 - `DeviceCommand.RECONCILING`、`TransportTask.RECONCILING`、`InboundEvidence.RECONCILING`、`WmsConfirmation.RECONCILING`、`MaterialExecution.HOLD/RECONCILING`、插件 `RecoveryDecidedFact`、具体 claim/lease 与 `TransportResourceBinding` 都是目标能力，不得按词误删。
 - 复用 `scripts/generate_legacy_matrix.py`、`docs/architecture/legacy-cleanup-matrix.csv`、现有 business absence gate、`tests/architecture/test_legacy_absence_guardrail.py`、`tests/architecture/test_outbound_http_boundary_guardrail.py` 和 `scripts/architecture-guardrails.sh`；不创建第二份 registry、ledger、scanner 或 phase-number absence gate。
@@ -52,7 +53,7 @@
 **Inspect:**
 
 - `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md`
-- Phase 9 的四份已批准插件子计划和实际交付包
+- Phase 9 Minimum Execution Foundation 计划、实际交付包和退出证据
 - `src/app/execution/`、`src/app/workline/`、`src/app/device/`、`src/app/transport/`、`src/app/wms_adapter/`
 - `src/app/runtime/`、`src/app/sys/`、`src/app/wms_integration/`
 - `src/register.py`、`src/celery_app/`、`docker-compose*.yml`、`Jenkinsfile*`
@@ -75,9 +76,9 @@
 
   Run: `rg -n "class BinExecution|BinExecutionRepository|BinExecutionService" src workline_plugins tests`
 
-  Run: `rg -n "automatic|manual|full.bin|complex.outbound|putaway|inventory.reservation" workline_plugins src/app/wms_adapter tests --glob '*.py'`
+  Run: `rg -n "manual_bin_processing|automatic_putaway|automatic_picking|RETURN_BUFFER" src workline_plugins tests --glob '*.py'`
 
-  Expected: `BinExecution` 有 model、Repository、Service、生产 consumer、活动管辖期位置投影、测试 owner 和精确 HEAVY mapping；每个获批插件和 WMS operation 有真实 consumer。只有计划文字、migration 残留、fixture 或空包时立即 `STOP`。
+  Expected: `BinExecution` 有 model、Repository、Service、活动管辖期位置投影、领域不变量、测试 owner 和精确 HEAVY mapping；它不依赖 Phase 12/13 插件才能成立。后置业务插件可以不存在；若旧 Provider/operation 仍为它们保留生产路径，则必须进入 `DELETE → NONE`。只有计划文字、migration 残留、fixture 或无领域行为的空包时立即 `STOP`。
 
 - [ ] **Step 3: 逐项关闭五个 successor 阻断**
 
@@ -87,7 +88,7 @@
   2. `ESTOP_PRESSED` 已由最终 device-event router 调用保留的 `WorkLineSafetyService.handle_estop()`，而不是只持久化 `InboundEvidence`；
   3. E03/E07 的 `confirm_inbound` 与 `notify_pkg_binding` 已由 `WmsConfirmation`/typed service 覆盖双义务、互斥、hold release、reconciliation 和锁序；
   4. `RuntimeOpenTelemetryHttpExporter` 已按获批决定移除同步 raw Client、切到唯一生命周期 owner，或明确删除该 exporter backend；
-  5. Phase 9 逐 operation consumer 表已经把 Transport submit、粗分确认、自动上架、人工分拣、满箱交换、复杂出库、库存预约和 reconciliation query 分别裁决为具体 typed owner 或 `DELETE → NONE`。
+  5. 当前 operation consumer 表已经把 Transport submit、粗分确认和其它真实消费者裁决为具体 typed owner；人工分拣、自动上架、自动拣货等后置业务没有当前消费者时统一裁决为 `DELETE → NONE`。
 
   Expected: 五项均有唯一生产 owner、直接/间接测试 owner 和必要 HEAVY；不得以设计方向、旧测试绿灯或 29-operation registry 代替。
 
@@ -156,7 +157,7 @@
 
   Run: `uv run scripts/select_heavy_tests.py --scope unstaged`
 
-  Expected: target successor 缺口或旧生产引用使测试准确失败；matrix/business ledger 合同继续通过。环境未启用导致的 HEAVY skip 不是 RED。Phase 9 插件新增测试由其已批准子计划和 exit evidence 拥有，本任务只通过当前 HEAVY selector 补跑受 Phase 10 diff 实际影响的 owner。
+  Expected: target successor 缺口或旧生产引用使测试准确失败；matrix/business ledger 合同继续通过。环境未启用导致的 HEAVY skip 不是 RED。Phase 9 基础对象测试由其计划和 exit evidence 拥有，本任务只通过当前 HEAVY selector 补跑受 Phase 10 diff 实际影响的 owner。
 
 ### Task 2: 先切换仍在使用旧 owner 的具体消费者
 
@@ -357,7 +358,7 @@
 
   Run: `./scripts/architecture-guardrails.sh`
 
-  Expected: 全部 PASS；Phase 9 插件新增 owner 只在 Task 0 impact 证明其受当前 diff 影响时由 selector 追加，不得以整目录失败代替影响分析。
+  Expected: 全部 PASS；Phase 9 基础对象新增 owner 只在 Task 0 impact 证明其受当前 diff 影响时由 selector 追加，不得以整目录失败代替影响分析。
 
 - [ ] **Step 3: 运行测试拓扑、QUALITY 与 staged HEAVY**
 

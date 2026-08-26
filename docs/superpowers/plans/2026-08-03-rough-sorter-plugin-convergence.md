@@ -982,7 +982,7 @@ owner 修复并发布新镜像；不得覆盖原镜像或在 WES 核心加入供
 
 ## 明确延期到后续阶段
 
-- `BinExecution`、满箱交换、自动/人工分拣和复杂出库：Phase 9。
+- `BinExecution` 与活动管辖期投影：Phase 9；人工 Bin：Phase 12；自动上架与自动拣货：Phase 13。
 - 动态插件发现、热插拔、插件市场、数据库插件注册表：无已批准需求，YAGNI。
 - 第二个设备 HTTP Adapter、供应商私有 client/auth/DTO：供应商 ECS/网关边界，不进入 WES。
 - 多供应商并行矩阵、容量压测、HA/容灾平台、通用运维仪表盘：MVP 后按真实非功能需求单独立项，不阻塞 Phase 8 正确性与安全退出门禁。

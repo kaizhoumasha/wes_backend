@@ -12,16 +12,16 @@
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、Epoch 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
-| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成；人工分拣仅登记业务设计 | ReviewRequired；Transport 与 Phase 8 粗分场景已批准，出库和 Phase 9 上架仍待联合批准，人工 wire 尚未冻结 |
+| `../integration/wes-wms-interface-requirements.md` | 按 Transport、出库、入库和上架场景说明参数来源、WMS 处理和回调生成；人工分拣仅登记业务设计 | ReviewRequired；Transport 与 Phase 8 粗分场景已批准，Phase 13 出库/上架仍待联合批准，Phase 12 人工 wire 尚未冻结 |
 | `../contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后 ACK；不定义业务 DTO | Approved |
 | `../contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、提交 ACK、成员位置事实、异步最终结果与对账基线 | Approved |
 | `../contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库端点、严格 DTO、幂等与 Epoch 级正常 Bin 回流；非预期 Bin 恢复和停线排空货架面决定 wire 均未冻结 | ReviewRequired |
 | `../contracts/wms-rough-sorter-inbound-integration-requirements.md` | WMS/WES Phase 8 粗分逐盘入库业务合同真源 | Approved |
-| `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES Phase 9 满箱交换、自动上架与执行级 Bin 回流业务合同评审真源；停线排空货架面决定 wire 未冻结 | ReviewRequired |
+| `../contracts/wms-inbound-putaway-integration-requirements.md` | WMS/WES Phase 13 自动上架、满箱交换与执行级 Bin 回流业务合同评审真源；停线排空货架面决定 wire 未冻结 | ReviewRequired |
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十二阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；前端与现场活动独立推进 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1 至 7 已完成；Phase 8 后端 RC 已关闭；Phase 9–14 尚未开始 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |
@@ -30,10 +30,12 @@
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
-| `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Approved for planning；未实施 |
+| `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化已在 feature branches 提交，发布运行静默仍为计划 |
 | `specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 教学式插件开发重排 | Approved for planning；尚未执行规划 worktree 收敛 |
-| `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Planned；轻量 Commit profile 因权威合并门禁不足而暂缓 |
+| `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend/frontend feature branches 待合入，最终 CI/HEAVY 与轻量 Commit profile 未完成 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Planned；稳定静默前只停止 Nginx/API/Beat admission，不停止执行 worker |
+| `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Approved for implementation；未实施 |
+| `plans/2026-08-26-transport-integration-diagnostics.md` | 运输接入诊断的风险匹配实施切片、验证和现场交接入口 | Approved for implementation；未实施 |
 
 ## 项目外历史归档
 

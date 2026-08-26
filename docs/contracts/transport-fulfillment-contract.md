@@ -404,7 +404,7 @@ final_position?   # TARGET_PLACED 时必填，且必须等于冻结目标；只�
 重复事实幂等；倒序事实不得让位置回退。导航、升降、到达区域和机械状态等 CTU 内部阶段不进入 WES Transport 合同。
 
 `transport.task.member_position_changed@v1` 是有权威中间事实时才发送的可选证据，不是 TransportTask 或业务流程的必经步骤。
-当前 Phase 9 使用的 CTU/RCS 只能返回 `transport.task.resulted@v1` 完整最终结果，因此目标 Bin供给、退回和满箱交换不发送也不
+当前自动上架业务使用的 CTU/RCS 只能返回 `transport.task.resulted@v1` 完整最终结果，因此目标 Bin供给、退回和满箱交换不发送也不
 伪造逐容器中间位置事件。搬运任务 `RECEIVED` 后到最终结果到达之前是否已经离开来源无法判断；调用方必须保持对象和资源围栏，
 不能把既有来源投影当作当前确定位置。
 
