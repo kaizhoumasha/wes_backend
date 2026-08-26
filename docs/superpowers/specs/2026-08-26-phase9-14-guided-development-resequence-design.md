@@ -3,6 +3,7 @@
 status: Approved
 decision_date: 2026-08-26
 scope: 开发流程、运输接入诊断、Phase 9—14 阶段边界、教学式插件开发和规划 worktree 收敛
+implementation_status: backend planning baseline 已闭合于 `50bd9ac2098005b346d48b10ad9d78ac0ae5d982`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`，Gate A 已完成
 
 ## 1. 决策摘要
 

@@ -1,6 +1,6 @@
 # 前后端开发流程效率优化 Implementation Plan
 
-**Status:** Implemented - focused verified。后端与前端成果已分别提交到 feature branch，尚未合入各自 `develop`；最终 CI/HEAVY 和 Deferred 的轻量 Commit profile 未完成。
+**Status:** Implemented - focused verified。后端成果已通过 PR #178、前端成果已通过 PR #82 分别合入各自 `develop`，Gate A 已完成；Deferred 的轻量 Commit profile 未实施。
 
 > **For agentic workers:** 按独立切片执行。不得因为计划包含多个 Task 就自动创建 Subagent 或 worktree；不得重复运行仍然有效的验证证据。
 

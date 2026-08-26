@@ -1,6 +1,6 @@
 # Phase 9 Minimum Execution Foundation 实施计划
 
-status: ReviewRequired
+status: ReviewRequired — Gate A completed; blocked until Gate B and plan approval
 owner: WES 基础执行能力
 depends_on: Gate A 开发流程基线、Gate B 运输接入诊断、Phase 8 backend RC
 blocks: Phase 10 Execution Lock、Phase 11 Schema 基线
@@ -81,12 +81,14 @@ GREEN：运行 execution/transport 聚焦 FAST、PostgreSQL 唯一约束和受�
 ### Task 2：切换 WorkLine unfinished-work target aggregate
 
 RED 锁定 START、STOP、deactivate 和查询在下列状态下不会漏报未完成工作：活动 `LineRunEpoch`、`MaterialExecution`、`BinExecution`、
-`DeviceCommand`、`TransportTask` 和 `WmsConfirmation`。
+`DeviceCommand`、`TransportTask`、`InboundEvidence` 和 `WmsConfirmation`。`InboundEvidence` 按 `line_run_epoch_id` 归属，复用发布静默
+门禁的状态谓词：`PENDING`、可 claim 的 `APPLIED + published_at IS NULL` 属于未完成，`RECONCILING` 阻断，`IGNORED` 和已发布
+`APPLIED` 不阻断；未绑定诊断结果继续遵守现有 claim 排除。
 
 DEV：在现有 WorkLine Repository/Service 边界内替换 RuntimeInbox 查询；不得创建新的通用 workload 表、缓存或兼容 fallback。
 
-GREEN：运行 WorkLine START/状态投影、Execution、Device、Transport 和 WMS confirmation 的聚焦测试，并证明旧 RuntimeInbox 不再是
-新 admission 的生产 owner。
+GREEN：运行 WorkLine START/状态投影、Execution、Device、Transport、InboundEvidence 和 WMS confirmation 的聚焦测试，证明命令、
+Transport/WMS 结果与 evidence 接管之间不存在 cleared-before-evidence 窗口，并证明旧 RuntimeInbox 不再是新 admission 的生产 owner。
 
 ### Task 3：闭合 `ESTOP_PRESSED` final router
 
@@ -127,7 +129,7 @@ GREEN：运行 `WmsConfirmationService`、execution decision、WMS Adapter、dis
 最终快照必须同时满足：
 
 1. `BinExecution` 和 `PositionProjection` 有 Model、Repository、Service、领域测试、PostgreSQL 约束和精确 HEAVY owner；
-2. unfinished-work、ESTOP、E03/E07、WMS target config 和 OpenTelemetry 均有唯一生产 owner；
+2. unfinished-work（含 `InboundEvidence` 交接连续性）、ESTOP、E03/E07、WMS target config 和 OpenTelemetry 均有唯一生产 owner；
 3. `manual_bin_processing`、RETURN_BUFFER、人工/自动业务表和 operation 未提前进入生产代码或 migration；
 4. 旧 projection、RuntimeInbox admission、双 ESTOP route 和旧 Provider consumer 不再承接新业务；
 5. 聚焦 FAST、migration、QUALITY、staged selector 与必选 HEAVY 全部有效；
