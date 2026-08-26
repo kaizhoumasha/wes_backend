@@ -654,8 +654,9 @@ Phase 11 固化最终 metadata。
 **Exit gate:** 机器门禁证明旧架构、裸 Client、重复传输和无依据认证零引用；应用/Celery/部署只装配最终对象、WMS/RCS
 Adapter、设备统一接口和明确插件。
 
-**需要单独编写的子计划:** 启动前编写并批准
-`docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`，同步其阶段号为 Phase 10。
+**需要单独编写的子计划:** Phase 10 详细计划已建立为
+`docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`；当前状态为 `GATED`。只有 Phase 9 退出、五项
+successor 闭合且详细计划的 `UNRESOLVED=0` 后，才能开启 Phase 10 Execution Lock。
 
 **风险及防止阶段越权的约束:** 缺席扫描按语义和所有者判断，不按 `replay`/`reconciliation` 等词批量删除，避免误伤最终可靠行为。
 

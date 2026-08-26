@@ -27,7 +27,7 @@
 - `generated_at` 使用 `timezone.now_utc().isoformat()`；不得使用 naive datetime 或 Jenkins 主机时间生成业务结果。
 - 不默认新增索引或 migration；只有实际 `EXPLAIN` 和代表性数据证明 10 秒目标无法满足时，才暂停并另行确认索引变更。
 - `RuntimeInbox`、`RuntimeIntentLog` / Effect、`SystemOutbox`、`RuntimeHold` 和 `ExecutionSession` 是 Phase 10 legacy owner；不得成为新 DTO、registry、查询、兼容路径或空 schema 依赖。Phase 11 只删除 Phase 10 证明零生产消费者的无 owner schema。
-- Phase 10 详细计划尚未建立，本门禁当前不得启用。Task 2–4 只能在 Phase 10 退出已证明后执行，或由已批准的 Phase 10 计划将它们明确纳入同一原子 cutover；不使用 feature flag、legacy adapter、双查询或兼容 facade。
+- Phase 10 详细计划已建立但仍处 `GATED`，本门禁当前不得启用。该计划明确选择在 Phase 10 exit 后独立执行本计划 Task 2–4；不使用 feature flag、legacy adapter、双查询或兼容 facade。
 
 ## FULL 发布时序
 

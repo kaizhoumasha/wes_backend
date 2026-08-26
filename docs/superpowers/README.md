@@ -26,6 +26,7 @@
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |
 | `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
+| `plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役与 Phase 11 零消费者 schema 交接 | Gated；Phase 9、五项 successor 和 `UNRESOLVED=0` 未证明前只允许执行只读入口审计 |
 | `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
