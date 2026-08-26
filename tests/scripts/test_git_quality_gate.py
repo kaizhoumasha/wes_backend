@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -198,6 +200,27 @@ def test_pre_commit_uses_docs_gate_for_human_readable_document(tmp_path: Path) -
     assert gate_log == []
 
 
+@pytest.mark.parametrize(
+    ("staged_path", "uses_docs_gate"),
+    [
+        ("docs/note.txt", True),
+        ("src/runtime/contract.txt", False),
+        ("scripts/input.txt", False),
+        ("tests/integration/fixture.txt", False),
+        ("requirements.txt", False),
+    ],
+)
+def test_pre_commit_routes_txt_by_path(tmp_path: Path, staged_path: str, *, uses_docs_gate: bool) -> None:
+    result, gate_log = _run_pre_commit_hook(tmp_path, staged_path)
+
+    assert result.returncode == 0, result.stderr
+    if uses_docs_gate:
+        assert "Running documentation-only gate" in result.stdout
+        assert gate_log == []
+    else:
+        assert gate_log == ["quality --profile quality"]
+
+
 def test_pre_commit_keeps_quality_gate_for_machine_readable_contract(tmp_path: Path) -> None:
     result, gate_log = _run_pre_commit_hook(tmp_path, "docs/architecture/contract.toml")
 
@@ -213,6 +236,7 @@ def test_pre_commit_uses_release_metadata_gate_for_version_and_human_documents(t
             "README.md": "**Version**: 1.2.3.4\n",
             "CHANGELOG.md": "## [1.2.3.4] - 2026-08-16\n",
             "TODOS.md": "# TODO\n",
+            "docs/note.txt": "release note\n",
         },
     )
 

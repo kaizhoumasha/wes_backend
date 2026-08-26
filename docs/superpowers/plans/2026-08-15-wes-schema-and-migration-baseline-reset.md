@@ -11,10 +11,10 @@
 ## Global Constraints
 
 - 本计划属于 Phase 11；Phase 10 零旧生产路径退出门禁未通过前，任何人不得删除现有 revision chain。
-- 当前只冻结 Phase 11 的入口门禁与实施方法；最终 metadata、已批准插件模型、PostgreSQL/TimescaleDB 专有对象清单、安全数据库 wrapper 和待归档文档清单必须在 Phase 10 完成后重新生成并通过独立实施前评审，Task 1 未通过前不得进入 Task 2。
+- 当前只冻结 Phase 11 的入口门禁与实施方法；最终 metadata、Phase 9 已实现的最小执行内核、当前 `rough_sorter` 模型、PostgreSQL/TimescaleDB 专有对象清单、安全数据库 wrapper 和待归档文档清单必须在 Phase 10 完成后重新生成并通过独立实施前评审，Task 1 未通过前不得进入 Task 2。
 - 退役插件活动残留收敛必须完成，活动模型和当前 head 不得再包含退役插件字段；Phase 11 启动时以项目外归档
   `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md` 为完成证据，不得要求已归档的过程计划继续留在项目内。
-- 最终核心、WMS/RCS Adapter、设备统一接口及已批准插件所需持久模型必须稳定；否则停止，不生成临时基线。
+- Phase 9 已实现的最小执行内核、当前 WMS/RCS Adapter、设备统一接口及 `rough_sorter` 所需持久模型必须稳定；不得为 Phase 12/13 插件预建表、字段或 operation，否则停止，不生成临时基线。
 - 不迁移旧数据，不保留兼容 schema、回填脚本、桥接表或 downgrade；开发/测试数据库统一清理后重建。
 - 新初始 revision 必须由 Alembic generator 生成随机 revision ID，`down_revision = None`，不得手写 revision ID。
 - 只在名称明确的隔离数据库中执行创建/删除；禁止对默认库、生产库或无法确认的连接执行 destructive SQL。
@@ -261,7 +261,7 @@
 **Interfaces:**
 
 - Consumes: Tasks 1–5 的完整 diff。
-- Produces: Phase 11 退出证据和 Phase 12 唯一空库基线。
+- Produces: Phase 11 退出证据和 Phase 12 教学式插件开发使用的唯一空库基线。
 
 - [ ] **Step 1: 精确暂存完整数据库基线差异**
 
@@ -293,7 +293,7 @@
 
   Run: `rg -n "smt_classifier|smt_sorting_inbound" migrations/versions --glob '*.py'`
 
-  Expected: 单 revision；Phase 5 明确退役的业务 schema 词汇零命中；`test_initial_schema_baseline_postgresql.py` 按 Task 1 冻结的表/列/索引/约束矩阵证明全部退役对象不存在。不得把 `plugin_key`、`plugin_contract_version` 或目标插件名称作为全库禁词，因为 Phase 8/9 批准的 `LineRunEpoch`、SPI 或插件独立包可能合法拥有目标身份；其合法位置必须逐条来自 Task 1 冻结清单。
+  Expected: 单 revision；Phase 5 明确退役的业务 schema 词汇零命中；`test_initial_schema_baseline_postgresql.py` 按 Task 1 冻结的表/列/索引/约束矩阵证明全部退役对象不存在。不得把 `plugin_key`、`plugin_contract_version` 或 `rough_sorter` 目标身份作为全库禁词；其合法位置必须逐条来自 Task 1 冻结清单。Phase 12/13 插件名称和预留 schema 必须不存在。
 
 - [ ] **Step 5: 提交前运行 GitNexus 变更检测**
 
@@ -319,6 +319,6 @@
 
 - [ ] **Step 9: 更新阶段状态并归档过程文档**
 
-  只有全部门禁和 tombstone cleanup 通过后，才把 Phase 11 标记为完成并进入 Phase 12。先更新 master plan、README 和项目内所有当前态引用；确认活动残余计划已位于上述精确外部路径，否则停止。
+  只有全部门禁和 tombstone cleanup 通过后，才把 Phase 11 标记为完成并进入 Phase 12 教学式开发。先更新 master plan、README 和项目内所有当前态引用；确认活动残余计划已位于上述精确外部路径，否则停止。
 
   对本计划及 Task 1 写回的每个其它精确源路径分别计算 SHA-256，确认目标不存在；发生重名时先确定唯一目标名并回写清单，不得覆盖。逐项移动后验证项目内原路径缺席、外部归档存在且 SHA-256 相等；项目内不得保留副本、占位、软链接或转发文档。最后只精确暂存 master plan、README 和这些源文件删除，核对 `git diff --cached --name-status`，运行 `git diff --check`、引用扫描及 `gitnexus_detect_changes({scope: "staged"})`；全部通过后提交 `docs(database): 归档迁移基线重置计划`。

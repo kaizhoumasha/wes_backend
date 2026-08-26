@@ -204,7 +204,7 @@ WES 只提交 WMS 已给出的搬运目标并跟踪任务级事实：
 
 WES 不关心该请求由 WMS、RCS、MCS 或其他系统最终承接。它们通过同一个 Transport Port 隔离。
 当前产品只实现 WMS 转发适配器。Transport 可以接纳上游已经具备的标准化成员位置事实，但当前 CTU/RCS 只能返回完整最终到位
-结果，Phase 9 业务不得依赖或伪造 `SOURCE_PICKED`、`TARGET_PLACED` 等中间事实。同步接纳 ACK 后只能确认搬运义务可能已经开始，
+结果，Phase 13 自动上架业务不得依赖或伪造 `SOURCE_PICKED`、`TARGET_PLACED` 等中间事实。同步接纳 ACK 后只能确认搬运义务可能已经开始，
 不能据此推断 Bin 仍在来源或已经离架；只有通过 Transport evidence 应用端口校验并持久化的可靠异步终态才能终结任务，普通 WMS
 业务事件不能终结任务。
 
@@ -573,7 +573,7 @@ Bin 到达 SCAN2 后由工作计划创建，不提前绑定逐盘六合一码或
 
 Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` 集中定义并已获批；满箱交换和自动
 上架由 `docs/contracts/wms-inbound-putaway-integration-requirements.md` 定义，仍为 `ReviewRequired`。本节只保留顶层流程和
-基础对象边界；不得把 Phase 8 授权扩大为 Phase 9 授权。
+基础对象边界；不得把 Phase 8 授权扩大为 Phase 12/13 业务插件授权。
 
 ### 11.1 粗分机
 
@@ -914,23 +914,25 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
    ACK/CALLBACK、`LineRunEpoch` fencing、唯一生产装配和旧 Device owner 删除；不包含供应商私有 DTO 或插件业务。
 8. 粗分机参考插件优化：消费 Phase 6/7 基础能力，从真实业务合同重新实现首个独立插件，并以本机分层测试、Mock 验收和
    GitLab PUSH 生成可追溯后端镜像关闭后端 RC；前端在独立仓库关闭自己的 RC，不搬运 Phase 5 已删除的旧插件源码。
-9. 分拣执行插件优化：消费 Phase 6/7 基础能力和 Phase 8 后端 RC 已冻结的最小 SPI，按实际工作线交付插件；不等待前端进度或
-   现场验收才开始开发，也不得借此宣称粗分生产验收通过。
+9. 最小执行基础闭合：交付 SRS 已批准的 `BinExecution`、活动管辖期 `PositionProjection` 和 Phase 10 必需 successor；
+   不交付人工或自动业务插件，也不为其预建 operation、空包或兼容路径。
 10. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 11. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
-12. 最终基线与系统验收：从空库分别验证核心、Adapter、供应商一致性、插件、质量、部署装配和旧架构缺席门禁。
+12. `manual_bin_processing` 教学式开发：用户亲自完成生产代码、测试、migration 和 Composition，Agent 负责指导、Review 与诊断。
+13. 自动插件开发：按真实合同分别交付 `automatic_putaway` 与 `automatic_picking`，不建设通用工作流。
+14. 当前交付范围系统验收：从空库分别验证核心、Adapter、设备统一接口、实际交付插件、质量、部署装配和旧架构缺席门禁。
 
 任何可靠性不变量都必须先在最终具体对象上有实现和测试，才能删除旧实现；这只是同一收敛分支内的
 依赖顺序，不允许通过兼容层、双路径或旧数据迁移完成过渡。
 
-测试治理贯穿阶段 1 到 9 和 12；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7 分别承接
+测试治理贯穿阶段 1 到 14；阶段 3/4 只建立新测试 owner，阶段 5 处置旧插件执行闭包，阶段 6/7/9 分别承接
 Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 只做跨阶段残留闭环；目标数据模型按最终对象建立，
-历史 migration 只在阶段 11 一次性重建。十二阶段的详细入口、交付物和退出门禁由
+历史 migration 只在阶段 11 一次性重建。十四阶段的详细入口、交付物和退出门禁由
 `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` 统一控制。
 
 ### 14.3 实施范围分解
 
-本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十二个总控阶段分别形成经批准的详细实施
+本文是全局架构约束，不把多个独立子系统展开成一个巨型实施脚本。十四个总控阶段分别形成经批准的详细实施
 计划和测试范围；同一阶段内仍可按最终对象、Adapter 或真实插件拆成可独立审查的任务，但不得改变 §14.2 的
 依赖顺序和退出门禁。
 

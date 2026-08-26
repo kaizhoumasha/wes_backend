@@ -81,7 +81,7 @@ Subagent 仅用于用户、Skill 或批准计划明确要求的独立、边界�
 HEAVY mapping、migration/生成物/索引归档、验证和无关 dirty 指纹。随后批量完成影响分析和必要确认；同一 base、符号和意图不重复查询。用户对本任务的
 HIGH / CRITICAL 影响链作出范围授权后，清单内相同风险不再次暂停；出现清单外的新高风险影响时仍须报告。
 
-实施按完整行为切片推进：
+流程按当前内聚切片推进：
 
 - 同一内聚切片可含多个共享路径、风险和测试 owner 的验收点。大型/高风险按 TDD；小型/低风险复用现有测试或替代验证。
 - 公共签名、字段或测试夹具发生机械传播时，先列全调用点，再做一次受控迁移、一次旧符号残留扫描和一次领域回归；禁止依靠整目录失败逐个发现调用点。
@@ -131,11 +131,11 @@ API → Service → Repository → Database
 | 测试治理、脚本、配置、合同自身 | 否；若改变运行时可观察行为，其实现部分按功能变更 | 聚焦验证可执行行为或解析结果 |
 | 纯文档、注释、规则、Release 元数据 | 否，且不得硬套 TDD | 文档或元数据相称检查 |
 
-纯人类可读文档、规则和 Skill 永远不走代码式 RED/DEV/GREEN，也不得为正文、标题、路径或状态措辞创建/修改 pytest。
+纯人类可读文档、规则和 Skill 不走代码式 RED/DEV/GREEN；不得为正文、标题、路径或状态措辞创建/修改 pytest。
 
 纯文档是人类阅读材料且不改变生产、测试工具、机器配置或可执行合同；`docs/` 下被程序/CI 读取的 TOML/CSV/YAML/JSON 仍是配置或合同。
 
-纯文档只做审阅、格式、引用/链接、路径、大小、结构 validator 和 diff 检查；规则场景演练不要求先失败且不算 TDD。
+纯文档只做审阅、格式、引用/链接、路径、大小、结构 validator 和 diff 检查；不预支后续 Review、Commit 或 Deploy 成本。规则场景演练不要求先失败且不算 TDD。
 
 ## 6. 测试所有权与 HEAVY
 
@@ -183,7 +183,7 @@ uv run scripts/select_heavy_tests.py --scope staged
 
 ## 7. 验证证据与失效规则
 
-验证强度由变更面决定，不由流程名称决定。证据至少记录：命令、结果、对应 diff/HEAD 或工作树快照；只有后续变化触及该证据覆盖面时才失效。
+验证强度由变更面决定，不由流程名称决定。有效证据不重复运行；仅在后续变化触及其覆盖面时失效。证据记录命令、结果及对应 diff/HEAD 或工作树快照。
 
 | 后续变化 | 需要刷新 | 不需要刷新 |
 | --- | --- | --- |
@@ -242,7 +242,7 @@ GitHub-only、无需部署或仓库没有部署能力时，Merge 后报告 `MERG
 ## 9. Git、分支与 Worktree
 
 - 日常 base 为 `develop`；feature/fix/chore 分支默认从更新后的 `develop` 创建，PR 默认指向 `develop`。
-- 普通单任务不创建 worktree。只在并行隔离、长线重构、保留现场处理紧急修复或明确的多 Agent 计划中使用。
+- 默认直接工作；仅当路径重叠、共享生成物、写入范围不可控、需独立运行环境或保留长线现场时使用 worktree。
 - 后端主仓库：`/Users/kaizhou/codeDev/wes_backend`；worktree 根目录：`/Users/kaizhou/codeDev/wes_backend-worktrees`。
 - worktree 名使用 branch slug（`/` 替换为 `-`），并独立维护 `.env`、`.venv`、`.pytest_cache` 和 hooks；不得复用其它 worktree 的本地状态。
 - 主工作区未提交的 `AGENTS.md` 不会自动进入既有 worktree。新任务在创建/同步后确认版本；任务中途不追随普通规则变化，新增安全/质量红线则暂停、报告并重新确认基线。
