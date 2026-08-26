@@ -236,6 +236,7 @@ def test_pre_commit_uses_release_metadata_gate_for_version_and_human_documents(t
             "README.md": "**Version**: 1.2.3.4\n",
             "CHANGELOG.md": "## [1.2.3.4] - 2026-08-16\n",
             "TODOS.md": "# TODO\n",
+            "docs/note.txt": "release note\n",
         },
     )
 
