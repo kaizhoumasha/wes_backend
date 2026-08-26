@@ -1,0 +1,219 @@
+# 发布运行静默门禁 Implementation Plan
+
+> **For agentic workers:** 这是一个高风险完整行为切片。先完成复用审计，再批量建立一次 RED，集中实现后运行一次 GREEN；不得按文件重复启动 PostgreSQL、HEAVY 或 Review。
+
+**Goal:** 在 `BACKEND FULL` 和 `BOTH FULL` 停止执行进程前，以两阶段只读门禁阻止未决、歧义或仍在途物理执行被发布切断。
+
+**Architecture:** 发布 CLI 通过业务 Service 调用一个发布专用只读 Repository，在同一 PostgreSQL statement snapshot 中聚合五张权威表；Jenkinsfile 不拼接业务 SQL。FULL 发布先在线预检，再停止 Nginx、API 和 Beat admission，保留 worker 收敛已落账内部工作并取得稳定 `READY`，之后才能停止执行 worker。复用现有 candidate-container runner、状态枚举、失败路径和测试 owner，不创建独立合同模块或通用编排框架。
+
+**Tech Stack:** Python 3.13、SQLModel/SQLAlchemy、PostgreSQL、pytest、Jenkins Pipeline、Docker Compose。
+
+**Spec:** `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md`
+
+## Global Constraints
+
+- 本计划改变 FULL 发布时序和物理执行保护，按大型/高风险处理，采用一次 RED → DEV → GREEN。
+- 严格遵守 CLI → Service → Repository → Database；Jenkinsfile 只调用 CLI。
+- 门禁只读，不执行取消、重试、修复、claim、lease、ACK、对账或状态迁移。
+- `UNKNOWN`、`RECONCILING` 和查询失败 fail closed；不得提供 `force`、`ignore` 或自动重发入口。
+- `FRONTEND` scope 不连接数据库，也不运行本门禁。
+- 输出只包含状态、分类计数、汇总和生成时间，不输出 payload、endpoint、credential、设备参数或逐行业务明细。
+- 本项目未发布，不增加 `v1`、兼容字段、双路径或未来扩展接口。
+- Commit、Push、PR、Merge 和 Deploy 分别授权；TEST 验收不得人工制造真实未决物理任务。
+- RED/GREEN 需要 selector 覆盖完整行为切片；若 checkout 存在无关机器配置或生产代码差异，优先使用精确暂存快照，只有当前必选验证仍无法隔离时才使用 worktree，不能把混合 manifest 当作本 Task 证据。
+- 复用 `CommandStatus`、`TransportTaskStatus`、`RuntimeIntentStatus` 和 `SystemOutboxStatus`；RuntimeInbox 尚无共享枚举时只在发布 Service 中保留一份释放判定，不复制领域状态机。
+- 五张表的所有分类计数和未知状态计数必须来自同一 SQL statement；Service 用 `asyncio.timeout(10)` 取消超时查询，候选容器单次探测硬超时 15 秒。
+- `generated_at` 使用 `timezone.now_utc().isoformat()`；不得使用 naive datetime 或 Jenkins 主机时间生成业务结果。
+- 不默认新增索引或 migration；只有实际 `EXPLAIN` 和代表性数据证明 10 秒目标无法满足时，才暂停并另行确认索引变更。
+
+## FULL 发布时序
+
+```text
+ONLINE
+  │
+  ├─ online preflight 非 READY ───────────────> 在线终止，无停机
+  │
+  └─ READY ─> stop nginx ─> graceful stop api ─> stop celery_beat ─> workers drain
+                                                                     │
+                                                                     ├─ 连续两次 READY（间隔 2s，最多 60s）
+                                                                     │      └─ stop workers -> switch -> backup/migrate
+                                                                     └─ BLOCK / query error / timeout
+                                                                            └─ 维护态保持，禁止自动修复或重发
+```
+
+当前 Compose 同时发布 Nginx、API `8002` 和 Redis `6380` 宿主端口，只停 Nginx 不能关闭 admission。FULL 门禁必须停止 Nginx、优雅停止 API、停止 `celery_beat`，但保留 Redis 与 worker 用于排空。Task 1 还必须证明 Redis 宿主端口没有合同内外部任务生产者，且所有 worker 消费的工作在入队前已落入五张权威表；证明失败则停止实施并更新合同，不能靠延长等待掩盖盲区。
+
+API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒窗口只允许 worker 收敛不依赖新 callback 的已落账内部工作。窗口结束仍为 `WAIT_DRAIN` 时按 cutover 失败处理，不自动重开入口或声称排空成功。
+
+---
+
+### Task 1: 冻结复用边界和当前合同
+
+**Classification:** 只读架构审计；不修改文件、不运行测试。
+
+**Inspect:**
+
+- `src/app/device/repositories/command_repository.py`
+- `src/app/transport/repository.py`
+- `src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py`
+- `src/app/runtime/orchestration/repositories/runtime_inbox_repository.py`
+- `src/app/runtime/orchestration/repositories/northbound_operations_repository.py`
+- `src/app/runtime/orchestration/services/query/runtime_query_service.py`
+- `Jenkinsfile.test-deploy`
+- `docker-compose.test-deploy.yml`
+- `tests/deployment/test_test_deploy_cutover.py`
+
+**Success:** 证明哪些现有读取能力可直接复用，确认不存在等价的跨账本发布静默门禁，并冻结真实状态字段和部署插入点。
+
+- [ ] **Step 1: 核对目标符号、索引和当前调用链**
+
+按项目规则对计划修改的生产符号批量运行 GitNexus upstream impact；GitNexus 不可用时使用精确 `rg`、调用点和现有测试降级。记录 DeviceCommand、TransportTask、RuntimeIntentLog、SystemOutbox、RuntimeInbox 的权威状态定义和可用索引，不能以计划中的字符串代替当前模型事实。用代表性数据或 `EXPLAIN` 确认单 statement 聚合可在 10 秒内完成；没有证据不新增索引。
+
+- [ ] **Step 2: 完成复用清单**
+
+逐项记录现有 count/query 方法是否只读、是否接受状态集合、是否会 lock/claim/commit、是否已经覆盖所需账本。复用领域枚举和查询表达式经验；现有分表 count 不能提供同一 statement snapshot，因此统一读取由一个发布专用只读聚合 Repository 承担，不把它扩成通用监控 Repository。
+
+- [ ] **Step 3: 证明 admission closure 完整**
+
+枚举 Nginx、API `8002` 直连、Redis `6380`、`celery_beat`、三个 worker 队列和可能产生下游工作的任务。必须证明：Nginx 与 API listener 都关闭后不存在仍可写入执行账本的 HTTP 入口；停止 `celery_beat` 后不再产生周期工作；Redis 宿主端口没有合同内外部 producer；所有已入队工作在入队前已经持久化到五张权威表。若存在 broker-only work 或其它生产者，把它加入关闭和验收边界后再继续。
+
+- [ ] **Step 4: 冻结部署插入点和复用点**
+
+复用现有 `business_preflight()` 使用的 candidate `api` 容器调用边界，提取一个最小 `candidate_backend_python` helper 供 WMS profile 和本门禁共用，不创建第二套 runner。在线预检位于兼容/WMS profile 检查后、任何 live runtime、maintenance 或数据库 mutation 前；权威复核位于 Nginx、API 和 Beat admission 关闭后、执行 worker 停止和 `switch_live_deploy_source` 前。当前 API entrypoint 使用 `exec uvicorn` 直接接收停止信号；实施固定使用 `compose stop -t 30 api` 并验证 listener 关闭，不得省略为无等待硬停止。
+
+出现状态不一致、admission closure 无法证明、候选镜像不能只读连接当前数据库或插入点无法满足上述顺序时，停止实施并更新设计，不进入 RED。
+
+### Task 2: 建立一次完整 RED
+
+**Classification:** 高风险回归测试；复用现有测试目录，不拆成多轮 RED。
+
+**Files:**
+
+- Create: `tests/runtime/orchestration/test_release_operational_readiness_service.py`
+- Create: `tests/integration/test_release_operational_readiness_postgresql.py`
+- Create: `tests/scripts/test_check_release_operational_readiness.py`
+- Modify: `tests/deployment/test_test_deploy_cutover.py`
+- Modify: `docs/architecture/heavy-test-impact.toml`
+
+**Required behavior:**
+
+- `BLOCK` 优先于 `WAIT_DRAIN`，两者都为空才是 `READY`。
+- `READY/BLOCK/WAIT_DRAIN/查询失败` 分别返回退出码 `0/2/3/1`。
+- PostgreSQL 用一个 statement snapshot 聚合五张表，只统计冻结状态集合，终态不计入；结果不包含业务行和 payload。
+- RuntimeInbox 中仅 `next_retry_at IS NOT NULL AND attempt_count < max_retries` 的 `FAILED` 属于 `WAIT_DRAIN`；其余 `FAILED` 属于 `BLOCK`；`DEAD_LETTER` 只报告证据。
+- 任一表出现完整生命周期集合之外的状态时退出码为 `1`，不得因已知分类计数为零而返回 `READY`。
+- `FRONTEND` 和 FAST 不调用门禁；`BACKEND FULL`、`BOTH FULL` 先在线预检，再在优雅停止 Nginx/API/Beat admission 后权威复核。
+- 在线 `BLOCK`、`WAIT_DRAIN` 和查询失败保持服务在线并终止；维护态权威复核必须连续两次 `READY`，`BLOCK`、查询失败或 60 秒超时保持入口关闭并终止。
+- 权威复核稳定前不得停止 worker、切换部署源、备份或 migration。
+
+- [ ] **Step 1: 一次性编写四个现有所有权测试**
+
+Service 测试覆盖优先级、非负计数、未知状态和 RuntimeInbox retryable/stuck `FAILED`；PostgreSQL 测试覆盖五张表的目标状态、终态排除、同一 statement snapshot 和查询只读；CLI 测试覆盖四个退出码、canonical JSON、`generated_at`、10 秒查询取消和异常脱敏；部署测试覆盖三种 scope、FAST/FULL、Nginx/API/Beat 关闭与 listener 验证顺序、连续 READY、超时和失败短路。
+
+测试断言必须使用外部可观察结果，不能从生产常量导入期望状态形成同源断言。
+
+- [ ] **Step 2: 同步精确 HEAVY mapping**
+
+为新增 PostgreSQL owner、计划新增的生产查询路径和 CLI 增加精确 mapping。未知路径继续 fail closed，不创建宽泛 glob 或 `heavy_tests = []`。
+
+- [ ] **Step 3: 运行一次 RED 批次**
+
+```bash
+uv run pytest tests/runtime/orchestration/test_release_operational_readiness_service.py tests/scripts/test_check_release_operational_readiness.py tests/deployment/test_test_deploy_cutover.py -q
+./scripts/run_selected_heavy_local.sh --scope unstaged
+```
+
+Expected: FAST 因 Service、CLI 和 pipeline 行为尚不存在而失败；HEAVY 在 mapping 已闭合后因只读聚合尚未实现而失败。环境未启用导致的 skip 不算 RED。
+
+### Task 3: 实现最小只读门禁
+
+**Classification:** DEV；只实现 Task 2 已冻结的行为。
+
+**Files:**
+
+- Create: `src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py`
+- Create: `src/app/runtime/orchestration/services/query/release_operational_readiness_service.py`
+- Modify: corresponding repository/service `__init__.py` exports
+- Create: `scripts/check_release_operational_readiness.py`
+- Modify: `Jenkinsfile.test-deploy`
+- Modify: `docs/devops/prod-release-deploy.md`
+
+**Interfaces:**
+
+- Service input: 当前数据库会话。
+- Service output: `state`、分类 `counts`、`wait_drain_total`、`block_total` 和 `generated_at`。
+- CLI output: stdout 单行 JSON；stderr 只包含脱敏错误；退出码 `0/1/2/3`。
+
+- [ ] **Step 1: 实现单一判定所有者**
+
+状态分组、输出 DTO、退出状态和优先级放在同一个 Service 模块；复用四个领域已有枚举，RuntimeInbox 条件只保留一份。不要增加独立合同模块、`schema_version`、Protocol、兼容 alias、singleton 或通用状态注册中心。Service 只聚合计数并判定，不承担部署编排。
+
+- [ ] **Step 2: 实现最小只读查询**
+
+Repository 使用 SQLAlchemy scalar subquery/conditional aggregate 在一个 SQL statement 中返回全部分类计数和各表未知状态计数，不加载业务行、不锁表、不写审计、不 commit。Service 使用 `asyncio.timeout(10)` 包裹该唯一查询并将取消/超时映射为查询失败。它是发布读模型，不替代各领域业务 Repository。若 `EXPLAIN` 或代表性数据不满足 10 秒目标，停止并提交索引证据，不在本切片静默追加 migration。
+
+- [ ] **Step 3: 实现薄 CLI**
+
+CLI 只负责配置、数据库会话、调用 Service、JSON 序列化和退出码映射。异常统一映射为退出码 `1`，不得打印数据库 URL、SQL 参数或 payload；生成时间只调用 `timezone.now_utc().isoformat()`。
+
+- [ ] **Step 4: 接入 FULL 部署**
+
+提取并复用 `candidate_backend_python`，保留现有 `business_preflight()` 行为。只对 `BACKEND/BOTH FULL` 执行：
+
+1. 在 maintenance 前运行一次在线探测，非 `READY` 调用 `abort_pre_cutover`；
+2. 在线 `READY` 后进入维护态，关闭并验证 Nginx listener，再执行 `compose stop -t 30 api`、验证 `APP_HOST_PORT` listener 关闭，随后停止 `celery_beat`；
+3. 保持 worker 运行，每 2 秒运行探测，连续两次 `READY` 才继续，整体最多 60 秒；仍为 `WAIT_DRAIN` 只表示未静默，不保证能在 API 关闭后排空；
+4. 稳定 `READY` 后才允许 `switch_live_deploy_source` 和 `run_full_cutover` 停止 worker；
+5. 维护态内 `BLOCK`、查询失败或超时调用既有 `fail_cutover`，保持外部入口关闭。
+
+`FRONTEND` 和 FAST 路径保持原样；不增加 force/ignore，不在 pipeline 内修改业务记录。
+
+- [ ] **Step 5: 更新当前 Runbook**
+
+只更新现有生产发布文档，说明在线预检、维护态稳定复核、四种结果、60 秒超时、重新触发方式和明确禁止的自动修复行为；不新建同义流程文档。
+
+### Task 4: 运行一次 GREEN 和最终门禁
+
+**Classification:** GREEN；只刷新 Task 2 RED 覆盖的证据。
+
+- [ ] **Step 1: 运行一次 FAST GREEN**
+
+```bash
+uv run pytest tests/runtime/orchestration/test_release_operational_readiness_service.py tests/scripts/test_check_release_operational_readiness.py tests/deployment/test_test_deploy_cutover.py -q
+```
+
+- [ ] **Step 2: 运行一次 PostgreSQL GREEN**
+
+```bash
+./scripts/run_selected_heavy_local.sh --scope unstaged
+```
+
+Expected: selector manifest 精确包含新增 PostgreSQL owner，真实 PostgreSQL 测试执行且零 skip；聚合在同一 statement 中完成，超时查询可被取消。不得在 GREEN 后为统计耗时再次运行相同 HEAVY。
+
+- [ ] **Step 3: 完成静态和差异检查**
+
+```bash
+git diff --check -- src/app/runtime/orchestration scripts/check_release_operational_readiness.py tests/runtime/orchestration/test_release_operational_readiness_service.py tests/integration/test_release_operational_readiness_postgresql.py tests/scripts/test_check_release_operational_readiness.py tests/deployment/test_test_deploy_cutover.py Jenkinsfile.test-deploy docs/devops/prod-release-deploy.md docs/architecture/heavy-test-impact.toml
+```
+
+QUALITY 由已授权 Commit 的 hook 产生，CI 再对候选 Commit 运行权威 QUALITY 和 selector HEAVY；这是不同环境的交付门禁，不是本地重复测量。
+
+- [ ] **Step 4: 精确暂存和提交（仅已授权时）**
+
+只暂存本 Task 文件清单，核对 `git diff --cached --name-only`、cached diff 和 `git diff --cached --check` 后提交。不得使用 `git add .` 或把无关计划、联调资料带入 Commit。
+
+### Task 5: TEST 环境验收
+
+**Classification:** 部署验收；只有获得 Deploy 授权后执行。
+
+- [ ] **Step 1: 验证 READY 路径**
+
+使用不可变 backend candidate digest 触发 `DEPLOY_SCOPE=BACKEND` 且 `EFFECTIVE_MODE=FULL`。日志必须依次出现在线 `READY`、maintenance-stop、Nginx/API listener 关闭、Beat 停止、两次稳定 `READY`，随后才允许 worker stop 和 migration；健康检查不能替代此顺序证据。
+
+- [ ] **Step 2: 复用隔离测试证明失败路径**
+
+`BLOCK`、`WAIT_DRAIN`、stuck `FAILED`、查询失败和静默超时由 Task 4 的隔离 PostgreSQL 及 pipeline 测试证明。不得在共享 TEST 或现场数据库人工插入、修改或滞留物理执行记录。
+
+- [ ] **Step 3: 报告验收边界**
+
+报告候选 digest、门禁结果、cutover 顺序、CI 状态和未验证边界。READY 部署只证明门禁与部署路径可用，不等于设备动作、供应商一致性或现场业务验收。
