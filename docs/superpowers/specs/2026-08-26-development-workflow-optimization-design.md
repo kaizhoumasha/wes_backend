@@ -21,7 +21,7 @@
 - 不改变 GitNexus 的风险语义，不允许仅凭 `LOW` 自动免除验证。
 - 不删除 CI 完整 QUALITY，不放松 HEAVY selector 的 fail-closed。
 - 不把本地 Commit 当作发布证书，也不允许绕过受保护分支。
-- 不对 DeviceCommand、TransportTask、RuntimeInbox 或 callback 使用双版本 worker 蓝绿切换。
+- 不对 DeviceCommand、TransportTask、InboundEvidence、WmsConfirmation 或 callback 使用双版本 worker 蓝绿切换。
 - 不把供应商一致性、HTTP ACK、设备结果、物理动作和业务验收合并成一个状态。
 - 不新增中央 Agent 平台、测试注册中心或长期运行的流程数据库。
 
@@ -108,22 +108,29 @@ Subagent。只有独立子任务和隔离条件同时成立时才使用相应能
 
 仅 `BACKEND FULL` 和 `BOTH FULL` 执行两阶段运行静默检查；`FRONTEND` 不查询或改变业务执行状态。
 
-检查只读取四个执行域的五张既有权威表：
+长期检查只读取四张目标权威表。`RuntimeInbox`、`RuntimeIntentLog` / Effect、`SystemOutbox`、
+`RuntimeHold` 和 `ExecutionSession` 都属于 Phase 10 需原子删除的 legacy owner，不得作为发布 DTO 字段、状态注册表、
+查询依赖、兼容路径或空 schema 依赖进入长期门禁：
 
 | 权威表 | `WAIT_DRAIN` | `BLOCK` |
 | --- | --- | --- |
 | DeviceCommand | `PENDING`、`DISPATCHING`、`ACKNOWLEDGED` | `RECONCILING` |
-| TransportTask | `PENDING`、`ACCEPTED` | `RECONCILING` |
-| RuntimeIntentLog | `PROPOSED`、`ACCEPTED` | `UNKNOWN`、`RECONCILING` |
-| SystemOutbox | `NEW`、`DISPATCHING`、`RETRY_WAIT` | `UNKNOWN` |
-| RuntimeInbox | `RECEIVED`、`PROCESSING`；仅 `next_retry_at IS NOT NULL AND attempt_count < max_retries` 的 `FAILED` | `next_retry_at IS NULL OR attempt_count >= max_retries` 的 `FAILED`；`DEAD_LETTER` 仅作为证据报告 |
+| TransportTask | `PENDING`、`ACCEPTED`，或 `outcome_version > published_outcome_version` | `RECONCILING` |
+| InboundEvidence | `PENDING`，或可 claim 的 `APPLIED + published_at IS NULL` | `RECONCILING` |
+| WmsConfirmation | `PENDING`、`DISPATCHING` | `RECONCILING` |
+
+`InboundEvidence` 保留真实 claim 例外：未绑定 `material_execution_id` 的 `DEVICE_RESULT` 在 `APPLIED` 后不进入
+FactProcessor，因此不属于可 claim 的 `WAIT_DRAIN`。`IGNORED` 和已发布的 `APPLIED` 对本门禁是终态；
+`WmsConfirmation.COMPLETED` 也是终态。`TransportTask` 的 `BLOCK` 优先于未发布 outcome 的 `WAIT_DRAIN`。
 
 判定规则：
 
 - 任一 `BLOCK` 计数大于零：退出码 `2`，状态 `BLOCK`；不存在绕过参数。
 - 无 `BLOCK` 但任一 `WAIT_DRAIN` 计数大于零：退出码 `3`，状态 `WAIT_DRAIN`。
 - 两类计数均为零：退出码 `0`，状态 `READY`。
-- 查询失败、表缺失或任一表出现完整生命周期集合之外的状态：退出码 `1`，fail closed，不得解释为 `READY`。
+- 查询失败、表缺失、任一表出现完整生命周期集合之外的状态，或出现不可能字段组合（包括
+  `published_outcome_version > outcome_version` 以及版本差存在但缺少 outcome payload）：退出码 `1`，fail closed，
+  不得解释为 `READY`。
 - 输出只包含状态、分类计数、汇总和生成时间，不输出版本兼容字段、payload、密钥或业务明细。
 
 一次在线查询不能授权停机，因为查询后仍可能有新 EVENT、命令或定时任务进入。FULL 发布必须执行两阶段门禁：
@@ -137,11 +144,19 @@ ONLINE ──在线预检──> READY ──关闭 Nginx/API/Beat admission─�
 
 - 在线预检发生在任何 live runtime、maintenance 或数据库 mutation 之前；非 `READY` 保持服务在线并终止发布。
 - 进入维护态后先停止 Nginx，再给 API 最多 30 秒优雅结束在途请求并停止 API，随后停止 `celery_beat`；必须验证 Nginx 与 API 宿主 listener 均已关闭。Redis 和执行 worker 继续运行用于自然排空。
-- 当前 Compose 还发布 Redis 宿主端口。复用审计必须证明它没有合同内外部任务生产者；只有证明所有合法入队路径均已关闭且入队前先写入上述五张表，才能把五表快照作为完整静默依据。
+- 当前 Compose 还发布 Redis 宿主端口。复用审计必须产出实际 listener/bind、防火墙、ACL/credential owner 和
+  producer 连接清单；源码零命中不能代替合同外 producer 证据。
 - API 关闭后，worker 只能收敛不依赖新 HTTP callback 的已落账内部工作；门禁不得承诺所有 `WAIT_DRAIN` 都能在维护态自然排空。60 秒后仍非 `READY` 必须失败并保持入口关闭。
 - 权威复核使用同一 PostgreSQL statement snapshot 返回全部分类计数和未知状态计数；Service 以 10 秒取消边界约束单次查询，连续两次 `READY` 且间隔 2 秒才算稳定静默，整体等待最多 60 秒。
+- 从任一可在未来创建 `DeviceCommand`、`TransportTask` 或 `WmsConfirmation` 的上游持久记录第一次提交可见开始，
+  直到对应下游可靠对象提交可见，期间每一个数据库 snapshot 都必须至少命中一个四表 `WAIT_DRAIN` 或
+  `BLOCK` 谓词。Celery 消息只是扫描提示，不得是唯一业务真相。
 - 稳定静默前不得停止执行 worker、切换部署源、备份或迁移。维护态内出现 `BLOCK`、查询失败或等待超时，沿用既有失败路径保持外部入口关闭，不自动恢复、重试业务或重发物理指令。
-- 若复用审计发现仍有未被五张表覆盖的 broker-only 工作、API 之外的内部直连入口或其它生产者，必须先更新静默合同，不得带着已知盲区实施门禁。
+- Phase 10 一次性 legacy drain 是原子 cutover 前置条件，不是长期四表查询。旧 Inbox/Intent/Outbox producer 或
+  consumer 仍活动时不得启用新门禁；Phase 10 详细计划和退出证据尚未完成，因此本门禁保持 gated。
+  Phase 10 必须在旧 consumer 尚可用时排空并封住 legacy producer，再停旧 API/Beat/worker，原子切换到只装配四个目标
+  owner 的 candidate，并在重开 admission 前通过四表复核和旧 import/task/Compose/schema owner 缺席门禁。不使用
+  feature flag、legacy adapter、双查询或兼容 facade。Phase 11 只删除由此产生的无 owner schema，不为门禁保留空表。
 
 该门禁只判断是否适合停止执行进程，不自动取消、重试、修复或对账任何业务记录。
 
@@ -164,6 +179,6 @@ ONLINE ──在线预检──> READY ──关闭 Nginx/API/Beat admission─�
 - `docs/**/*.txt` 可以走文档门禁，执行目录和依赖清单中的 `.txt` 必须进入完整质量门禁。
 - HEAVY 失效精确 mapping 被删除，selector 回归保持绿色和 fail-closed。
 - `BACKEND/BOTH FULL` 先在线预检，再优雅停止 Nginx、API 和 Beat admission 并取得连续两个稳定 `READY`；稳定静默前不得停止执行 worker 或开始 migration。
-- `RuntimeInbox.FAILED` 按是否仍可自然重试区分 `WAIT_DRAIN` 与 `BLOCK`，不得把永久卡死记录当作可排空负载。
-- 五张表的分类计数和未知状态计数来自同一 PostgreSQL statement snapshot，单次查询和整体静默等待均有硬超时。
+- 四张表的完整谓词、未知状态和不可能字段组合来自同一 PostgreSQL statement snapshot，单次查询和整体静默等待均有硬超时。
+- Phase 10 旧 owner 原子排空/切换证据先于长期四表门禁启用；Phase 11 删除无 owner schema 后，门禁仍不依赖空 legacy 表。
 - 发布静默门禁不修改数据库，不重试命令，不改变业务状态。

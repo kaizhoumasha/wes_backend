@@ -1,10 +1,10 @@
 # 发布运行静默门禁 Implementation Plan
 
-> **For agentic workers:** 这是一个高风险完整行为切片。先完成复用审计，再批量建立一次 RED，集中实现后运行一次 GREEN；不得按文件重复启动 PostgreSQL、HEAVY 或 Review。
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan. 这是一个高风险完整行为切片；先完成复用审计，再批量建立一次 RED，集中实现后运行一次 GREEN，不得按文件重复启动 PostgreSQL、HEAVY 或 Review。
 
 **Goal:** 在 `BACKEND FULL` 和 `BOTH FULL` 停止执行进程前，以两阶段只读门禁阻止未决、歧义或仍在途物理执行被发布切断。
 
-**Architecture:** 发布 CLI 通过业务 Service 调用一个发布专用只读 Repository，在同一 PostgreSQL statement snapshot 中聚合五张权威表；Jenkinsfile 不拼接业务 SQL。FULL 发布先在线预检，再停止 Nginx、API 和 Beat admission，保留 worker 收敛已落账内部工作并取得稳定 `READY`，之后才能停止执行 worker。复用现有 candidate-container runner、状态枚举、失败路径和测试 owner，不创建独立合同模块或通用编排框架。
+**Architecture:** 发布 CLI 通过业务 Service 调用一个发布专用只读 Repository，在同一 PostgreSQL statement snapshot 中聚合 `DeviceCommand`、`TransportTask`、`InboundEvidence` 和 `WmsConfirmation` 四张目标权威表；Jenkinsfile 不拼接业务 SQL。Phase 10 一次性 legacy drain 只是原子 cutover 前置条件，不进入长期查询。FULL 发布先在线预检，再停止 Nginx、API 和 Beat admission，保留 worker 收敛已落账内部工作并取得稳定 `READY`，之后才能停止执行 worker。复用现有 candidate-container runner、目标领域状态枚举、失败路径和测试 owner，不创建独立合同模块或通用编排框架。
 
 **Tech Stack:** Python 3.13、SQLModel/SQLAlchemy、PostgreSQL、pytest、Jenkins Pipeline、Docker Compose。
 
@@ -13,18 +13,21 @@
 ## Global Constraints
 
 - 本计划改变 FULL 发布时序和物理执行保护，按大型/高风险处理，采用一次 RED → DEV → GREEN。
+- Task 2–4 共同组成该内聚切片：Task 2 的 RED、Task 3 的实现和 Task 4 的 GREEN 不得分别提交，也不得在中间快照声称可发布。
 - 严格遵守 CLI → Service → Repository → Database；Jenkinsfile 只调用 CLI。
 - 门禁只读，不执行取消、重试、修复、claim、lease、ACK、对账或状态迁移。
-- `UNKNOWN`、`RECONCILING` 和查询失败 fail closed；不得提供 `force`、`ignore` 或自动重发入口。
+- 生命周期外状态、`RECONCILING`、不可能字段组合和查询失败 fail closed；不得提供 `force`、`ignore` 或自动重发入口。
 - `FRONTEND` scope 不连接数据库，也不运行本门禁。
 - 输出只包含状态、分类计数、汇总和生成时间，不输出 payload、endpoint、credential、设备参数或逐行业务明细。
 - 本项目未发布，不增加 `v1`、兼容字段、双路径或未来扩展接口。
 - Commit、Push、PR、Merge 和 Deploy 分别授权；TEST 验收不得人工制造真实未决物理任务。
 - RED/GREEN 需要 selector 覆盖完整行为切片；若 checkout 存在无关机器配置或生产代码差异，优先使用精确暂存快照，只有当前必选验证仍无法隔离时才使用 worktree，不能把混合 manifest 当作本 Task 证据。
-- 复用 `CommandStatus`、`TransportTaskStatus`、`RuntimeIntentStatus` 和 `SystemOutboxStatus`；RuntimeInbox 尚无共享枚举时只在发布 Service 中保留一份释放判定，不复制领域状态机。
-- 五张表的所有分类计数和未知状态计数必须来自同一 SQL statement；Service 用 `asyncio.timeout(10)` 取消超时查询，候选容器单次探测硬超时 15 秒。
+- 长期门禁只复用 `CommandStatus`、`TransportTaskStatus`、`InboundEvidenceApplyStatus` 和 `WmsConfirmationStatus`；不引用 `RuntimeIntentStatus`、`SystemOutboxStatus` 或 `RuntimeInbox` 状态机。
+- 四张表的所有分类计数、未知状态和不可能字段组合必须来自同一 SQL statement；Service 用 `asyncio.timeout(10)` 取消超时查询，候选容器单次探测硬超时 15 秒。
 - `generated_at` 使用 `timezone.now_utc().isoformat()`；不得使用 naive datetime 或 Jenkins 主机时间生成业务结果。
 - 不默认新增索引或 migration；只有实际 `EXPLAIN` 和代表性数据证明 10 秒目标无法满足时，才暂停并另行确认索引变更。
+- `RuntimeInbox`、`RuntimeIntentLog` / Effect、`SystemOutbox`、`RuntimeHold` 和 `ExecutionSession` 是 Phase 10 legacy owner；不得成为新 DTO、registry、查询、兼容路径或空 schema 依赖。Phase 11 只删除 Phase 10 证明零生产消费者的无 owner schema。
+- Phase 10 详细计划尚未建立，本门禁当前不得启用。Task 2–4 只能在 Phase 10 退出已证明后执行，或由已批准的 Phase 10 计划将它们明确纳入同一原子 cutover；不使用 feature flag、legacy adapter、双查询或兼容 facade。
 
 ## FULL 发布时序
 
@@ -41,7 +44,7 @@ ONLINE
                                                                             └─ 维护态保持，禁止自动修复或重发
 ```
 
-当前 Compose 同时发布 Nginx、API `8002` 和 Redis `6380` 宿主端口，只停 Nginx 不能关闭 admission。FULL 门禁必须停止 Nginx、优雅停止 API、停止 `celery_beat`，但保留 Redis 与 worker 用于排空。Task 1 还必须证明 Redis 宿主端口没有合同内外部任务生产者，且所有 worker 消费的工作在入队前已落入五张权威表；证明失败则停止实施并更新合同，不能靠延长等待掩盖盲区。
+当前 Compose 同时发布 Nginx、API `8002` 和 Redis `6380` 宿主端口，只停 Nginx 不能关闭 admission。FULL 门禁必须停止 Nginx、优雅停止 API、停止 `celery_beat`，但保留 Redis 与 worker 用于排空。Task 1 还必须产出 Redis 宿主端口的 listener/bind、防火墙、ACL/credential owner 和 producer 连接清单，并证明任一可产生下游可靠对象的工作均持久落入四表谓词；证明失败则停止实施并更新合同，不能靠延长等待掩盖盲区。Phase 10 首次发布另有一次性 legacy drain 和零旧 owner 原子切换前置；后续普通 FULL 发布不再读取 legacy 表。
 
 API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒窗口只允许 worker 收敛不依赖新 callback 的已落账内部工作。窗口结束仍为 `WAIT_DRAIN` 时按 cutover 失败处理，不自动重开入口或声称排空成功。
 
@@ -55,10 +58,11 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 
 - `src/app/device/repositories/command_repository.py`
 - `src/app/transport/repository.py`
-- `src/app/runtime/orchestration/repositories/runtime_intent_log_repository.py`
-- `src/app/runtime/orchestration/repositories/runtime_inbox_repository.py`
-- `src/app/runtime/orchestration/repositories/northbound_operations_repository.py`
-- `src/app/runtime/orchestration/services/query/runtime_query_service.py`
+- `src/app/execution/repositories/inbound_evidence_repository.py`
+- `src/app/execution/repositories/wms_confirmation_repository.py`
+- `src/app/execution/models/inbound_evidence.py`
+- `src/app/execution/models/wms_confirmation.py`
+- Phase 10 已批准详细计划、退出证据和 legacy owner absence manifest
 - `Jenkinsfile.test-deploy`
 - `docker-compose.test-deploy.yml`
 - `tests/deployment/test_test_deploy_cutover.py`
@@ -67,15 +71,17 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 
 - [ ] **Step 1: 核对目标符号、索引和当前调用链**
 
-按项目规则对计划修改的生产符号批量运行 GitNexus upstream impact；GitNexus 不可用时使用精确 `rg`、调用点和现有测试降级。记录 DeviceCommand、TransportTask、RuntimeIntentLog、SystemOutbox、RuntimeInbox 的权威状态定义和可用索引，不能以计划中的字符串代替当前模型事实。用代表性数据或 `EXPLAIN` 确认单 statement 聚合可在 10 秒内完成；没有证据不新增索引。
+按项目规则对计划修改的生产符号批量运行 GitNexus upstream impact；GitNexus 不可用时使用精确 `rg`、调用点和现有测试降级。记录 DeviceCommand、TransportTask、InboundEvidence、WmsConfirmation 的权威状态定义、字段不变量和可用索引，不能以计划中的字符串代替当前模型事实。冻结 Task 4 性能验证要使用的代表性数据规模、分布、建数据程序和现有索引清单；此时最终 statement 尚未实现，不执行或伪造 `EXPLAIN`，也不新增索引。
 
 - [ ] **Step 2: 完成复用清单**
 
-逐项记录现有 count/query 方法是否只读、是否接受状态集合、是否会 lock/claim/commit、是否已经覆盖所需账本。复用领域枚举和查询表达式经验；现有分表 count 不能提供同一 statement snapshot，因此统一读取由一个发布专用只读聚合 Repository 承担，不把它扩成通用监控 Repository。
+逐项记录四个目标领域现有 count/query 方法是否只读、是否接受状态集合、是否会 lock/claim/commit、是否已经覆盖所需账本。复用领域枚举和查询表达式经验；现有分表 count 不能提供同一 statement snapshot，因此统一读取由一个发布专用只读聚合 Repository 承担，不把它扩成通用监控 Repository。旧 Inbox/Intent/Outbox/Hold/Session 读取能力只能作为 Phase 10 一次性 drain 证据，不进入本 Repository。
 
 - [ ] **Step 3: 证明 admission closure 完整**
 
-枚举 Nginx、API `8002` 直连、Redis `6380`、`celery_beat`、三个 worker 队列和可能产生下游工作的任务。必须证明：Nginx 与 API listener 都关闭后不存在仍可写入执行账本的 HTTP 入口；停止 `celery_beat` 后不再产生周期工作；Redis 宿主端口没有合同内外部 producer；所有已入队工作在入队前已经持久化到五张权威表。若存在 broker-only work 或其它生产者，把它加入关闭和验收边界后再继续。
+枚举 Nginx、API `8002` 直连、Redis `6380`、`celery_beat`、三个 worker 队列和可能产生下游工作的任务。必须证明：Nginx 与 API listener 都关闭后不存在仍可写入执行账本的 HTTP 入口；停止 `celery_beat` 后不再产生周期工作；Redis 宿主端口有实测 listener/bind、防火墙、ACL/credential owner 和 producer 连接清单；Celery 消息只是扫描提示。从任一可产生下游可靠对象的上游持久记录首次提交可见，到对应下游对象提交可见，每个 snapshot 都至少命中四表中一个 `WAIT_DRAIN` 或 `BLOCK` 谓词。
+
+额外核对 Phase 10 详细计划和退出证据。一次性 cutover 必须在旧 consumer 尚可用时排空 legacy owner 并封住旧 producer，再停旧 API/Beat/worker，原子切换到只装配四个目标 owner 的 candidate，并在重开 admission 前运行四表复核和旧 import/task/Compose/schema owner absence gate。Phase 10 详细计划未获批且退出未证明时，本 Task 仅能更新审计证据，不得进入 Task 2。
 
 - [ ] **Step 4: 冻结部署插入点和复用点**
 
@@ -99,16 +105,19 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 
 - `BLOCK` 优先于 `WAIT_DRAIN`，两者都为空才是 `READY`。
 - `READY/BLOCK/WAIT_DRAIN/查询失败` 分别返回退出码 `0/2/3/1`。
-- PostgreSQL 用一个 statement snapshot 聚合五张表，只统计冻结状态集合，终态不计入；结果不包含业务行和 payload。
-- RuntimeInbox 中仅 `next_retry_at IS NOT NULL AND attempt_count < max_retries` 的 `FAILED` 属于 `WAIT_DRAIN`；其余 `FAILED` 属于 `BLOCK`；`DEAD_LETTER` 只报告证据。
-- 任一表出现完整生命周期集合之外的状态时退出码为 `1`，不得因已知分类计数为零而返回 `READY`。
+- PostgreSQL 用一个 statement snapshot 聚合四张表的全部分类、未知状态和不可能字段组合；结果不包含业务行和 payload。
+- `DeviceCommand` 仅 `PENDING/DISPATCHING/ACKNOWLEDGED` 为 `WAIT_DRAIN`，`RECONCILING` 为 `BLOCK`。
+- `TransportTask` 的 `PENDING/ACCEPTED` 或 `outcome_version > published_outcome_version` 为 `WAIT_DRAIN`，`RECONCILING` 为优先级更高的 `BLOCK`；`published_outcome_version > outcome_version` 或版本差存在但 `outcome_json IS NULL` 为 invalid。
+- `InboundEvidence.PENDING` 或可 claim 的 `APPLIED + published_at IS NULL` 为 `WAIT_DRAIN`，`RECONCILING` 为 `BLOCK`；未绑定 `material_execution_id` 的 `DEVICE_RESULT` 保持真实 claim 排除，`IGNORED` 和已发布 `APPLIED` 是本门禁终态。
+- `WmsConfirmation.PENDING/DISPATCHING` 为 `WAIT_DRAIN`，`RECONCILING` 为 `BLOCK`，`COMPLETED` 为终态。
+- 任一表出现生命周期之外状态或其它不可能字段组合时退出码为 `1`，不得因已知分类计数为零而返回 `READY`。
 - `FRONTEND` 和 FAST 不调用门禁；`BACKEND FULL`、`BOTH FULL` 先在线预检，再在优雅停止 Nginx/API/Beat admission 后权威复核。
 - 在线 `BLOCK`、`WAIT_DRAIN` 和查询失败保持服务在线并终止；维护态权威复核必须连续两次 `READY`，`BLOCK`、查询失败或 60 秒超时保持入口关闭并终止。
 - 权威复核稳定前不得停止 worker、切换部署源、备份或 migration。
 
 - [ ] **Step 1: 一次性编写四个现有所有权测试**
 
-Service 测试覆盖优先级、非负计数、未知状态和 RuntimeInbox retryable/stuck `FAILED`；PostgreSQL 测试覆盖五张表的目标状态、终态排除、同一 statement snapshot 和查询只读；CLI 测试覆盖四个退出码、canonical JSON、`generated_at`、10 秒查询取消和异常脱敏；部署测试覆盖三种 scope、FAST/FULL、Nginx/API/Beat 关闭与 listener 验证顺序、连续 READY、超时和失败短路。
+Service 测试覆盖优先级、非负计数、四表未知状态和不可能字段组合；PostgreSQL 测试覆盖上述四表谓词、真实 `DEVICE_RESULT` claim 排除、Transport 未发布 outcome、终态排除、同一 statement snapshot 和查询只读；CLI 测试覆盖四个退出码、canonical JSON、`generated_at`、10 秒查询取消和异常脱敏；部署测试覆盖三种 scope、FAST/FULL、Nginx/API/Beat 关闭与 listener 验证顺序、连续 READY、超时和失败短路。测试还必须锁定四条交易边：execution fact 发布前保持 unpublished evidence、下游对象与 `published_at` 原子交接、Transport outcome 在 evidence 可见后才回写 published version、WMS result evidence 与 confirmation 终态原子交接。
 
 测试断言必须使用外部可观察结果，不能从生产常量导入期望状态形成同源断言。
 
@@ -146,11 +155,11 @@ Expected: FAST 因 Service、CLI 和 pipeline 行为尚不存在而失败；HEAV
 
 - [ ] **Step 1: 实现单一判定所有者**
 
-状态分组、输出 DTO、退出状态和优先级放在同一个 Service 模块；复用四个领域已有枚举，RuntimeInbox 条件只保留一份。不要增加独立合同模块、`schema_version`、Protocol、兼容 alias、singleton 或通用状态注册中心。Service 只聚合计数并判定，不承担部署编排。
+状态分组、输出 DTO、退出状态和优先级放在同一个 Service 模块；复用 `CommandStatus`、`TransportTaskStatus`、`InboundEvidenceApplyStatus` 和 `WmsConfirmationStatus`。不引用 legacy 状态枚举，不增加独立合同模块、`schema_version`、Protocol、兼容 alias、singleton 或通用状态注册中心。Service 只聚合计数并判定，不承担部署编排。
 
 - [ ] **Step 2: 实现最小只读查询**
 
-Repository 使用 SQLAlchemy scalar subquery/conditional aggregate 在一个 SQL statement 中返回全部分类计数和各表未知状态计数，不加载业务行、不锁表、不写审计、不 commit。Service 使用 `asyncio.timeout(10)` 包裹该唯一查询并将取消/超时映射为查询失败。它是发布读模型，不替代各领域业务 Repository。若 `EXPLAIN` 或代表性数据不满足 10 秒目标，停止并提交索引证据，不在本切片静默追加 migration。
+Repository 使用 SQLAlchemy scalar subquery/conditional aggregate 在一个 SQL statement 中返回四表全部分类计数、未知状态和不可能组合计数，不加载业务行、不锁表、不写审计、不 commit。Service 使用 `asyncio.timeout(10)` 包裹该唯一查询并将取消/超时映射为查询失败。它是发布读模型，不替代各领域业务 Repository。本 Step 不新增索引或 migration；最终查询的性能证明在 Task 4 GREEN 执行。
 
 - [ ] **Step 3: 实现薄 CLI**
 
@@ -190,7 +199,11 @@ uv run pytest tests/runtime/orchestration/test_release_operational_readiness_ser
 
 Expected: selector manifest 精确包含新增 PostgreSQL owner，真实 PostgreSQL 测试执行且零 skip；聚合在同一 statement 中完成，超时查询可被取消。不得在 GREEN 后为统计耗时再次运行相同 HEAVY。
 
-- [ ] **Step 3: 完成静态和差异检查**
+- [ ] **Step 3: 验证最终单 statement 的代表性性能**
+
+使用 Task 1 冻结的代表性数据集和生成程序，对实现后的唯一查询执行 `EXPLAIN (ANALYZE, BUFFERS)`，并通过实际 Service 路径证明 10 秒硬超时边界。记录数据规模/分布、执行计划、实际耗时、buffer 和当前索引，并与当前可执行树指纹绑定。只有测量证据证明 10 秒目标无法满足时，才停止本切片并单独申请索引/migration 变更；不在本计划内静默追加。
+
+- [ ] **Step 4: 完成静态和差异检查**
 
 ```bash
 git diff --check -- src/app/runtime/orchestration scripts/check_release_operational_readiness.py tests/runtime/orchestration/test_release_operational_readiness_service.py tests/integration/test_release_operational_readiness_postgresql.py tests/scripts/test_check_release_operational_readiness.py tests/deployment/test_test_deploy_cutover.py Jenkinsfile.test-deploy docs/devops/prod-release-deploy.md docs/architecture/heavy-test-impact.toml
@@ -198,9 +211,9 @@ git diff --check -- src/app/runtime/orchestration scripts/check_release_operatio
 
 QUALITY 由已授权 Commit 的 hook 产生，CI 再对候选 Commit 运行权威 QUALITY 和 selector HEAVY；这是不同环境的交付门禁，不是本地重复测量。
 
-- [ ] **Step 4: 精确暂存和提交（仅已授权时）**
+- [ ] **Step 5: 精确暂存和提交（仅已授权时）**
 
-只暂存本 Task 文件清单，核对 `git diff --cached --name-only`、cached diff 和 `git diff --cached --check` 后提交。不得使用 `git add .` 或把无关计划、联调资料带入 Commit。
+只暂存 Tasks 2–4 整个行为切片的文件清单，核对 `git diff --cached --name-only`、cached diff 和 `git diff --cached --check` 后提交。不得使用 `git add .` 或把无关计划、联调资料带入 Commit。
 
 ### Task 5: TEST 环境验收
 
@@ -208,12 +221,12 @@ QUALITY 由已授权 Commit 的 hook 产生，CI 再对候选 Commit 运行权�
 
 - [ ] **Step 1: 验证 READY 路径**
 
-使用不可变 backend candidate digest 触发 `DEPLOY_SCOPE=BACKEND` 且 `EFFECTIVE_MODE=FULL`。日志必须依次出现在线 `READY`、maintenance-stop、Nginx/API listener 关闭、Beat 停止、两次稳定 `READY`，随后才允许 worker stop 和 migration；健康检查不能替代此顺序证据。
+在 Phase 10 退出证据已完成，或已批准 Phase 10 计划将本切片纳入同一原子 cutover 的前提下，使用不可变 backend candidate digest 触发 `DEPLOY_SCOPE=BACKEND` 且 `EFFECTIVE_MODE=FULL`。Phase 10 首次切换还必须展示 legacy drain、producer 封闭、旧 API/Beat/worker 停止和旧 import/task/Compose/schema owner 缺席证据；这些是一次性 cutover 前置，不得改造为长期查询。普通 FULL 日志必须依次出现在线 `READY`、maintenance-stop、Nginx/API listener 关闭、Beat 停止、两次稳定 `READY`，随后才允许 worker stop 和 migration；健康检查不能替代此顺序证据。
 
 - [ ] **Step 2: 复用隔离测试证明失败路径**
 
-`BLOCK`、`WAIT_DRAIN`、stuck `FAILED`、查询失败和静默超时由 Task 4 的隔离 PostgreSQL 及 pipeline 测试证明。不得在共享 TEST 或现场数据库人工插入、修改或滞留物理执行记录。
+`BLOCK`、`WAIT_DRAIN`、四表未知状态、不可能字段组合、查询失败和静默超时由 Task 4 的隔离 PostgreSQL 及 pipeline 测试证明。不得在共享 TEST 或现场数据库人工插入、修改或滞留物理执行记录。
 
 - [ ] **Step 3: 报告验收边界**
 
-报告候选 digest、门禁结果、cutover 顺序、CI 状态和未验证边界。READY 部署只证明门禁与部署路径可用，不等于设备动作、供应商一致性或现场业务验收。
+报告候选 digest、四表门禁结果、Phase 10 一次性 cutover/absence 证据（首次切换时）、部署顺序、CI 状态和未验证边界。READY 部署只证明门禁与部署路径可用，不等于设备动作、供应商一致性或现场业务验收。
