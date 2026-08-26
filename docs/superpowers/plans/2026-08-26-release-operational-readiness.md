@@ -27,7 +27,7 @@
 - `generated_at` 使用 `timezone.now_utc().isoformat()`；不得使用 naive datetime 或 Jenkins 主机时间生成业务结果。
 - 不默认新增索引或 migration；只有实际 `EXPLAIN` 和代表性数据证明 10 秒目标无法满足时，才暂停并另行确认索引变更。
 - `RuntimeInbox`、`RuntimeIntentLog` / Effect、`SystemOutbox`、`RuntimeHold` 和 `ExecutionSession` 是 Phase 10 legacy owner；不得成为新 DTO、registry、查询、兼容路径或空 schema 依赖。Phase 11 只删除 Phase 10 证明零生产消费者的无 owner schema。
-- Phase 10 详细计划已建立但仍处 `GATED`，本门禁当前不得启用。该计划明确选择在 Phase 10 exit 后独立执行本计划 Task 2–4；不使用 feature flag、legacy adapter、双查询或兼容 facade。
+- Phase 10 详细计划已建立但仍处 `GATED`。本计划 Task 2–4 必须作为独立高风险行为切片，在首次 Phase 10 cutover 前完成 RED/DEV/GREEN、Review 和 Commit，并进入同一不可变 target-only candidate；不使用 feature flag、legacy adapter、双查询或兼容 facade。
 
 ## FULL 发布时序
 
@@ -62,7 +62,7 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 - `src/app/execution/repositories/wms_confirmation_repository.py`
 - `src/app/execution/models/inbound_evidence.py`
 - `src/app/execution/models/wms_confirmation.py`
-- Phase 10 已批准详细计划、退出证据和 legacy owner absence manifest
+- Phase 10 已批准详细计划、冻结的 cutover manifest 和 target-only candidate 变更面
 - `Jenkinsfile.test-deploy`
 - `docker-compose.test-deploy.yml`
 - `tests/deployment/test_test_deploy_cutover.py`
@@ -81,7 +81,7 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 
 枚举 Nginx、API `8002` 直连、Redis `6380`、`celery_beat`、三个 worker 队列和可能产生下游工作的任务。必须证明：Nginx 与 API listener 都关闭后不存在仍可写入执行账本的 HTTP 入口；停止 `celery_beat` 后不再产生周期工作；Redis 宿主端口有实测 listener/bind、防火墙、ACL/credential owner 和 producer 连接清单；Celery 消息只是扫描提示。从任一可产生下游可靠对象的上游持久记录首次提交可见，到对应下游对象提交可见，每个 snapshot 都至少命中四表中一个 `WAIT_DRAIN` 或 `BLOCK` 谓词。
 
-额外核对 Phase 10 详细计划和退出证据。一次性 cutover 必须在旧 consumer 尚可用时排空 legacy owner 并封住旧 producer，再停旧 API/Beat/worker，原子切换到只装配四个目标 owner 的 candidate，并在重开 admission 前运行四表复核和旧 import/task/Compose/schema owner absence gate。Phase 10 详细计划未获批且退出未证明时，本 Task 仅能更新审计证据，不得进入 Task 2。
+额外核对 Phase 10 详细计划和冻结的 cutover manifest。一次性 cutover 必须先由 candidate-container 在线预检，再关闭旧 admission/Beat，保留旧 worker 排空 legacy owner；legacy 连续稳定为零且四表连续 `READY` 后才停旧 worker、激活只装配四个目标 owner 的 candidate，并在重开 admission 前复核四表和旧 import/task/Compose/schema owner absence。Phase 10 详细计划未获批、successor 未闭合或 cutover 顺序未冻结时，本 Task 仅能更新审计证据，不得进入 Task 2；不要求 Phase 10 已退出。
 
 - [ ] **Step 4: 冻结部署插入点和复用点**
 
@@ -222,7 +222,7 @@ QUALITY 由已授权 Commit 的 hook 产生，CI 再对候选 Commit 运行权�
 
 - [ ] **Step 1: 验证 READY 路径**
 
-在 Phase 10 退出证据已完成，或已批准 Phase 10 计划将本切片纳入同一原子 cutover 的前提下，使用不可变 backend candidate digest 触发 `DEPLOY_SCOPE=BACKEND` 且 `EFFECTIVE_MODE=FULL`。Phase 10 首次切换还必须展示 legacy drain、producer 封闭、旧 API/Beat/worker 停止和旧 import/task/Compose/schema owner 缺席证据；这些是一次性 cutover 前置，不得改造为长期查询。普通 FULL 日志必须依次出现在线 `READY`、maintenance-stop、Nginx/API listener 关闭、Beat 停止、两次稳定 `READY`，随后才允许 worker stop 和 migration；健康检查不能替代此顺序证据。
+Tasks 2–4 已在首次 Phase 10 cutover 前独立完成并进入不可变 backend candidate。首次切换由 Phase 10 Task 7 使用 candidate-container 读取现场四表，并展示 legacy drain、producer 封闭、旧 API/Beat/worker 停止和旧 import/task/Compose/schema owner 缺席证据；这些是一次性 cutover 前置，不得改造为长期查询。Phase 10 完成后的普通 TEST FULL 验收使用同一门禁，日志必须依次出现在线 `READY`、maintenance-stop、Nginx/API listener 关闭、Beat 停止、两次稳定 `READY`，随后才允许 worker stop 和 migration；健康检查不能替代此顺序证据。
 
 - [ ] **Step 2: 复用隔离测试证明失败路径**
 

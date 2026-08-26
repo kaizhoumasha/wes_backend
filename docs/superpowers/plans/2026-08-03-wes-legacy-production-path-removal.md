@@ -4,7 +4,7 @@
 
 **Goal:** 在 Phase 9 全部 successor 已真实交付后，通过一次 target-only 原子切换删除旧 Runtime/Intent/Outbox/Hold/Provider 生产路径，并只把零生产消费者的 schema identity 交给 Phase 11。
 
-**Architecture:** Phase 10 不建设新的通用平台。先用现有清理矩阵和架构门禁冻结生产 owner、消费者、测试与部署闭包；全部 successor 和一次性只读 drain 前置满足后，封住旧 producer、排空旧 worker，再以同一 candidate 删除旧代码、任务、配置和行为测试。数据库表、字段、约束、索引与 revision chain 留给 Phase 11；Phase 10 只证明它们已经没有生产消费者。
+**Architecture:** Phase 10 不建设新的通用平台。先用现有清理矩阵和架构门禁冻结生产 owner、消费者、测试与部署闭包，完成 target-only 代码、发布四表静默门禁、Review 和不可变 candidate；首次切换时再关闭旧 admission/Beat，由仍运行的旧 worker 排空 legacy owner，取得 legacy stable zero 与四表连续 `READY` 后才停止旧 worker并激活 candidate。数据库表、字段、约束、索引与 revision chain 留给 Phase 11；Phase 10 只证明它们已经没有生产消费者。
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、Celery、PostgreSQL、Redis、Docker Compose、Pytest、GitNexus、HEAVY selector。
 
@@ -15,17 +15,18 @@
 - 当前状态是 `GATED — PHASE 9 AND SUCCESSOR CLOSURE REQUIRED`。Task 0、Task 1 通过前不得修改 Phase 10 生产代码、删除旧 owner 或停用旧 consumer。
 - Phase 9 必须先真实交付 `BinExecution`、活动管辖期位置投影、全部获批插件和逐 operation WMS consumer；不得用 `MaterialExecution`、旧 29-operation registry 或空模型顶替。
 - Task 0 必须证明 WorkLine unfinished-work target aggregate、`ESTOP_PRESSED` final router、E03/E07 `WmsConfirmation` barrier、OpenTelemetry 同步 exporter 处置和逐 operation WMS consumer 已存在且有唯一 owner；任一 `UNRESOLVED` 非零即 `STOP`。
-- 最终只保留 `LineRunEpoch`、`MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask`、`InboundEvidence`、`WmsConfirmation`、`WorklineSafetyIncident`、具体插件 Decision/Fact 和 typed WMS Adapter/Service；不建设第二套通用 Runtime、Manifest、Capability、Intent、Effect、Hold、Recovery、Reconciliation 或 Reservation。
+- 最终目标对象包括 `LineRunEpoch`、`MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask`、`InboundEvidence`、`WmsConfirmation`、`WorklineSafetyIncident`、具体插件 Decision/Fact 和 typed WMS Adapter/Service；这不是排他清单，不得据此删除其它仍有独立业务语义的 owner。
 - `DeviceCommand.RECONCILING`、`TransportTask.RECONCILING`、`InboundEvidence.RECONCILING`、`WmsConfirmation.RECONCILING`、`MaterialExecution.HOLD/RECONCILING`、插件 `RecoveryDecidedFact`、具体 claim/lease 与 `TransportResourceBinding` 都是目标能力，不得按词误删。
 - 复用 `scripts/generate_legacy_matrix.py`、`docs/architecture/legacy-cleanup-matrix.csv`、现有 business absence gate、`tests/architecture/test_legacy_absence_guardrail.py`、`tests/architecture/test_outbound_http_boundary_guardrail.py` 和 `scripts/architecture-guardrails.sh`；不创建第二份 registry、ledger、scanner 或 phase-number absence gate。
 - `business-legacy-absence-ledger.csv` 继续只拥有既有 `phase4_carrier=True` 语义。Phase 10 新条目写入现有 cleanup matrix 且 `phase4_carrier=False`，不得把 Phase 5 ledger 扩成另一份 Phase 10 owner 清单。
-- 旧 `WorklineInbox` 缺席保障必须继续有效；最终 legacy absence owner 扩展精确模块、符号、task、route、env key 和 mount，不扫描通用 `replay`、`reconciliation`、`reservation`、`correlation_id` 或 `provider` 词。
+- `scripts/workline_inbox_retirement_guardrail.py` 和 `tests/architecture/test_workline_inbox_retirement_guardrail.py` 继续作为已退役 `WorklineInbox` predecessor 的唯一缺席 owner；`tests/architecture/test_legacy_absence_guardrail.py` 只承接本阶段待删 owner，不复制 predecessor 规则。两者均由现有 `scripts/architecture-guardrails.sh`/QUALITY 路由，不新增 scanner。
 - Phase 10 是大型/高风险变更，代码行为采用内聚 RED → DEV → GREEN；计划、清单说明和当前态文档不走代码式 TDD。旧行为测试只能在 target successor 测试先通过后删除。
 - 生产切换不双写、不双读、不保留 feature flag、fallback、alias、v2、shim、tombstone、空 facade 或旧 Provider Profile。生产代码可以按内聚切片实现和评审，但首次激活只允许一个 target-only candidate。
 - 一次性 legacy drain 只读，不 resolve、release、cancel、claim、retry、resend、purge 或清理数据；歧义必须在原 `dispatch_key`、`operation_id`、`command_code`、`transport_task_id` 或 execution identity 上人工收敛。
 - Phase 10 不删除或重写 table、column、constraint、index、revision 和 migration test。只允许 schema-deferred model 被 `migrations/env.py`、已有 revision 与 schema-only tests 精确引用；应用、API、Celery、Compose、脚本和行为测试引用必须为零。
-- `docs/hardware/`、callback log、WMS inbound route、`WmsClient`、Phase 2 outbound HTTP、共享 Celery/Redis、`wms-fulfillment` queue、目标 Mock endpoint 和发布 artifact provider 不得因名称命中而删除。
-- FULL 发布静默门禁不反向依赖旧表。`docs/superpowers/plans/2026-08-26-release-operational-readiness.md` 的 Tasks 2–4 统一在 Phase 10 exit 后实施，不塞入本次大切换，不形成 legacy adapter 或双查询。
+- `src/app/runtime/orchestration/models/session.py:WorklineSession`、`src/app/runtime/orchestration/models/timeline.py:WorklineTimeline`、`src/app/runtime/orchestration/models/runtime_location_event.py:RuntimeLocationEvent`、`src/app/runtime/orchestration/services/inbox/object_transition_event_service.py:ObjectTransitionEventService`、`src/app/callback/models/callback_log.py`、`src/app/callback/repositories/callback_log_repository.py`、`src/app/callback/services/callback_log_service.py` 和 `src/app/callback/v1/callback_log.py` 明确 `RETAIN`；它们分别不同于 `src/app/runtime/orchestration/execution_session.py:ExecutionSession`、`src/app/runtime/orchestration/runtime_timeline.py:RuntimeTimeline`、generic RuntimeInbox 和已失去 route 的 external callback ingress。只有 Task 0 提供新的直接消费者证据并取得批准，才能改变这些分类。
+- `docs/hardware/`、WMS inbound route、`WmsClient`、Phase 2 outbound HTTP、共享 Celery/Redis、`wms-fulfillment` queue、目标 Mock endpoint 和发布 artifact provider 不得因名称命中而删除。
+- FULL 发布静默门禁不反向依赖旧表。`docs/superpowers/plans/2026-08-26-release-operational-readiness.md` 的 Tasks 2–4 必须作为独立高风险行为切片，在首次 Phase 10 cutover 前实现、验证并进入不可变 target-only candidate；不形成 legacy adapter 或双查询。
 - Commit、Push、PR、Merge、Deploy 分别授权。本计划默认只实施和验证；没有 Deploy 授权时不得执行 Task 7 的现场切换。
 
 ---
@@ -34,9 +35,9 @@
 
 | 类别 | 处理范围 | 最终原则 |
 | --- | --- | --- |
-| `DELETE` | RuntimeInbox/ExecutionSession 通用运行时；RuntimeIntent/Effect/SystemCapability/SystemOutbox；generic Hold/Recovery/Reconciliation/Reservation；29-operation WMS Provider/Profile/Manifest/Catalog/query/effect/status lane；旧 task、配置、脚本和仅验证旧行为的测试 | successor、producer seal 和 drain 全部闭合后，在同一 target-only candidate 删除，不保留兼容层 |
+| `DELETE` | RuntimeInbox/ExecutionSession 通用运行时；RuntimeIntent/Effect/SystemCapability/SystemOutbox；generic Hold/Recovery/Reconciliation/Reservation；29-operation WMS Provider/Profile/Manifest/Catalog/query/effect/status lane；旧 task、配置、脚本和仅验证旧行为的测试 | successor 闭合后在 target-only candidate 中删除；candidate 只有在旧部署 producer seal、legacy drain 和四表 readiness 均通过后才激活，不保留兼容层 |
 | `SWITCH` | WorkLine START/Safety/unfinished-work/query/trace/resource；ESTOP route；E03/E07 barrier；Transport/WmsConfirmation WMS client；Composition Root、Celery、Compose、Jenkins、当前态文档 | 只切到 Task 0 已证明存在的具体目标 owner，不在 Phase 10 发明 successor |
-| `RETAIN` | 目标可靠对象、typed Adapter/Service、Phase 2 HTTP、bounded response、共享基础设施、明确插件、厂商原始资料 | 继续由原领域测试 owner 验收，不用旧测试替代 |
+| `RETAIN` | 目标可靠对象、`WorklineSession`、`WorklineTimeline`、`RuntimeLocationEvent`、`ObjectTransitionEventService`、callback log、typed Adapter/Service、Phase 2 HTTP、bounded response、共享基础设施、明确插件、厂商原始资料 | 继续由原领域测试 owner 验收，不用旧测试替代；与 `ExecutionSession` / `RuntimeTimeline` 按完整路径区分 |
 | `schema-deferred` | 旧表对应的 Python metadata identity、`migrations/env.py`、已有 revision 和 schema-only tests | 生产消费者归零后交给 Phase 11；Phase 10 不做 DDL |
 | `UNRESOLVED` | 任一无法证明唯一 successor、真实 consumer、目标事务或存量 disposition 的条目 | 数量必须为 `0`；否则停在 Task 0/1 |
 
@@ -114,6 +115,8 @@
 - Verify unchanged scope: `docs/architecture/business-legacy-absence-ledger.csv`
 - Verify: `scripts/check_business_legacy_absence_gate.py`
 - Modify: `tests/architecture/test_legacy_absence_guardrail.py`
+- Verify retained predecessor owner: `scripts/workline_inbox_retirement_guardrail.py`
+- Verify retained predecessor test: `tests/architecture/test_workline_inbox_retirement_guardrail.py`
 - Modify: `tests/architecture/test_outbound_http_boundary_guardrail.py`
 - Modify only for routing/remediation text required by the same owners: `scripts/architecture-guardrails.sh`
 - Modify: `docs/architecture/heavy-test-impact.toml`
@@ -135,9 +138,9 @@
 
   Expected: CSV 与 generator 完全一致；既有 `phase4_carrier=True` entry set 不变，business final gate 继续通过；`bin_cell_reservation`/`station_lease` 的 Phase 10 当前 owner 以新条目裁决，不篡改旧路径已迁移的历史事实。
 
-- [ ] **Step 3: 扩展唯一 production absence owner**
+- [ ] **Step 3: 扩展 Phase 10 production absence owner**
 
-  在 `test_legacy_absence_guardrail.py` 按 Task 0 manifest 分组加入旧 module/import/path/task/route/env/mount 精确断言；保留旧插件和 WorklineInbox predecessor 保护。schema-deferred allowlist 只允许 `migrations/env.py`、已有 revisions、冻结的 schema-only tests 和模型定义本身，不允许 package export 或应用 import。
+  在 `test_legacy_absence_guardrail.py` 按 Task 0 manifest 分组加入本阶段旧 module/import/path/task/route/env/mount 精确断言；不复制 `WorklineInbox` predecessor token、allowlist 或 remediation。继续运行 `workline_inbox_retirement_guardrail.py` 及其测试，证明 predecessor owner 未漂移。schema-deferred allowlist 只允许 `migrations/env.py`、已有 revisions、冻结的 schema-only tests 和模型定义本身，不允许 package export 或应用 import。
 
 - [ ] **Step 4: 收紧唯一 HTTP boundary owner**
 
@@ -251,11 +254,11 @@
 
   运行 target WMS client/adapter、Transport/WmsConfirmation、worker startup、Compose/Jenkins contract 和 outbound HTTP boundary 测试。Expected: target candidate 不依赖 Provider Profile；旧 generic runtime 尚待 Task 5 删除，最终 absence 仍未宣称通过。
 
-### Task 4: 封住旧 producer 并取得一次性只读 drain 证据
+### Task 4: 冻结只读 drain 谓词与 cutover manifest
 
-**Classification:** 受控运维前置；不创建长期 legacy Repository/DTO/CLI，不自动清理数据。
+**Classification:** 只读演练与运行准备；不进入真实维护窗，不修改现场数据或进程。
 
-**Inspect/Operate:**
+**Inspect/Rehearse:**
 
 - RuntimeInbox、RuntimeIntentLog、SystemOutbox、两套 RuntimeHold、NgReturnItem、ReconciliationCase、WorklineBinCellReservation 表
 - Celery active/reserved/scheduled task 与 Beat schedule
@@ -265,31 +268,31 @@
 **Interfaces:**
 
 - Consumes: Task 0 冻结的 producer manifest 和原身份人工处置规则。
-- Produces: 同一数据库 snapshot 的旧对象计数、broker 快照和连续两次稳定零新增证据；不进入长期 release readiness。
+- Produces: 经演练的同一 snapshot 查询、broker inspection 命令、零值判定、人工 disposition 和 cutover manifest；不声称现场已 drain，也不进入长期 release readiness。
 
-- [ ] **Step 1: 在代码 candidate 中封住所有 generic producer**
+- [ ] **Step 1: 冻结 producer seal manifest**
 
-  删除旧 sandbox external callback、RuntimeInbox replay、generic reconciliation resolve、SystemCapability/RuntimeIntent create、station lease outbox writer 和 generic TaskQueueGateway wake；保留旧 RuntimeInbox/Outbox worker 与 Beat consumer 供已落账对象排空。精确扫描直接 Redis/Celery producer 和 task name。
+  精确列出旧 sandbox external callback、RuntimeInbox replay、generic reconciliation resolve、SystemCapability/RuntimeIntent create、station lease outbox writer、generic TaskQueueGateway wake、直接 Redis/Celery producer 和 task name。这里只冻结 Task 5 candidate 要删除的 producer，不部署、不关闭 route、不停止 Beat。
 
-- [ ] **Step 2: 进入维护窗并关闭 admission producer**
+- [ ] **Step 2: 冻结数据库同快照谓词**
 
-  只有取得 Deploy/Cutover 授权后才停止 Nginx、优雅停止 API 和 old Beat producer；保留数据库、Redis、旧 consumer worker。不得先停 worker，也不得 purge 共享 `celery` 或 `wms-fulfillment` queue。
+  只读查询必须同时返回：RuntimeInbox 的可处理、lease、dead-letter；RuntimeIntentLog 的 active/ambiguous；SystemOutbox 的 active/ambiguous、unmatched pair、identity/digest conflict 和 `SENT + ACCEPTED`；两套 RuntimeHold active blocker；NgReturnItem active；ReconciliationCase open；BinCellReservation active。查询不 lock、不 claim、不写审计、不 commit。
 
-- [ ] **Step 3: 取得数据库同快照只读结果**
+- [ ] **Step 3: 冻结 broker 与连续稳定规则**
 
-  必须证明：RuntimeInbox 无 `RECEIVED/PROCESSING`、可重试 lease 和未裁决 dead-letter；RuntimeIntentLog 无 `PROPOSED/ACCEPTED/UNKNOWN/RECONCILING`；SystemOutbox 无 `NEW/DISPATCHING/RETRY_WAIT/UNKNOWN`，且无 unmatched/corrupt dispatch pair 或 `SENT + ACCEPTED`；两套 RuntimeHold 无 active blocker；NgReturnItem 无 `WAITING_REWORK/REWORKING`；ReconciliationCase 无 `OPEN`；BinCellReservation 无 `PLANNED/RECONCILING`。
+  记录 Celery active/reserved/scheduled legacy task inspection、producer freeze 时间点、两次复核间隔和“期间无新增旧 row”规则。不得设计 queue purge；共享 `celery`、`device-command`、`wms-fulfillment` 消息按 task identity 观察。
 
-- [ ] **Step 4: 取得 broker 与 producer freeze 证据**
+- [ ] **Step 4: 演练查询和失败路径**
 
-  旧 task 在 active/reserved/scheduled 中为零；连续两次复核期间没有新增旧 row。任一歧义在原 identity 上人工调查；无法证明未发送时禁止重发。
+  在隔离测试数据库或批准的只读副本演练查询输出、查询失败、非零、identity conflict 和 broker inspection 失败。任一歧义只生成原 identity 人工调查项；不自动 resolve、cancel、retry、resend 或清理。
 
-- [ ] **Step 5: 判定是否允许停止旧 worker**
+- [ ] **Step 5: 冻结 Task 7 cutover manifest**
 
-  Expected: database、broker、producer 三类证据均连续稳定为零。任一非零、查询失败或身份冲突均保持维护态并 `STOP`；不得自动 resolve、cancel、retry、resend 或清空开发/测试数据冒充 drain。
+  manifest 必须写明旧 deployment 的 Nginx/API/Beat/worker 精确 service、candidate-container 的四表 readiness 命令、legacy 查询、broker inspection、连续 READY/zero 次数、不可变 candidate digest 输入和每个失败点的维护态处理。Expected: 只形成可执行清单；真实 admission stop、drain 和 worker stop 全部留给 Task 7。
 
 ### Task 5: 在同一 target-only candidate 删除旧生产 owner
 
-**Classification:** DEV；与 Tasks 2–4 同一 candidate，按 FK 叶到根移除应用 owner，不做 DDL。
+**Classification:** DEV；与 Tasks 2/3 同一 target-only candidate，按 FK 叶到根移除应用 owner，不做 DDL。
 
 **Files:**
 
@@ -304,16 +307,20 @@
 
 **Interfaces:**
 
-- Consumes: target consumer GREEN、旧 producer seal、legacy drain zero。
+- Consumes: target consumer GREEN、Task 4 producer seal/drain/cutover manifest；不消费尚未发生的现场 drain 结果。
 - Produces: 生产/API/Celery/Compose/script/current-doc 只装配 target owners；旧 schema 仅有精确 schema-deferred 引用。
 
 - [ ] **Step 1: 删除 RuntimeInbox/ExecutionSession 应用闭包**
 
-  删除 repository/service/processor/contracts、orphan callback writer/service、旧 WMS inbox handler、sandbox/replay/query/timeline/snapshot、task/include/Beat/gateway/config/CI acceptance。去除 ExecutionSession/Correlation/WorkItem/Timeline 的应用 export、Repository 和 FK consumer；schema identity 不从 metadata 删除。
+  删除 repository/service/processor/contracts、orphan external callback RuntimeInbox writer/service、旧 WMS inbox handler、sandbox/replay/query/snapshot、task/include/Beat/gateway/config/CI acceptance。去除 `src/app/runtime/orchestration/execution_session.py:ExecutionSession`、`execution_correlation.py:ExecutionCorrelation`、`execution_work_item.py:ExecutionWorkItem` 和 `runtime_timeline.py:RuntimeTimeline` 的应用 export、Repository 与 FK consumer；schema identity 不从 metadata 删除。
+
+  明确保留 `src/app/runtime/orchestration/models/session.py:WorklineSession`、`src/app/runtime/orchestration/models/timeline.py:WorklineTimeline`、`src/app/runtime/orchestration/models/runtime_location_event.py:RuntimeLocationEvent`、其 repository/service/query owner，以及 `src/app/runtime/orchestration/services/inbox/object_transition_event_service.py:ObjectTransitionEventService`；它们不属于 `execution_session.py:ExecutionSession` 或 `runtime_timeline.py:RuntimeTimeline` 删除集。
 
 - [ ] **Step 2: 删除 Intent/Effect/SystemCapability/SystemOutbox 应用闭包**
 
   删除 generic intent/effect/reducer/reconciliation、29-operation capability registry/generated index、outbox repository/engine/dispatch attempts/binding/credentials、三个 generic dispatcher、status scanner/callback 和 WorkLine generic projection。目标 Device/Transport/WmsConfirmation 自有状态机不受影响。
+
+  保留 `src/app/callback/models/callback_log.py`、`src/app/callback/repositories/callback_log_repository.py`、`src/app/callback/services/callback_log_service.py` 和 `src/app/callback/v1/callback_log.py`；删除的是已失去 route 的 external callback ingress/RuntimeInbox writer，不是 callback log 查询能力。
 
 - [ ] **Step 3: 删除 generic Hold/Recovery/Reconciliation/Reservation 应用闭包**
 
@@ -331,14 +338,14 @@
 
   更新 SRS/authority/current contracts、observability、WMS caller checklist、prod release runbook、file index、master 和 release-readiness prerequisite。完成或被取代的过程文档按项目规则移出项目；`docs/hardware/` 不动。
 
-### Task 6: 运行最终 GREEN、唯一 Review 与候选门禁
+### Task 6: 完成 GREEN、Review、发布静默切片与不可变候选
 
-**Classification:** GREEN；同一最终 source/config snapshot 只运行一次完整必选门禁。
+**Classification:** 两个独立高风险行为切片。先闭合 Phase 10 target-only 代码，再独立实施发布静默门禁 Tasks 2–4；最终只构建一次包含二者的不可变 candidate。
 
 **Interfaces:**
 
-- Consumes: Tasks 1–5 的完整 target-only diff。
-- Produces: `READY FOR ATOMIC CUTOVER` 或精确阻塞报告；没有 Deploy 授权时停在 `IMPLEMENTED — VERIFIED — NOT DEPLOYED`。
+- Consumes: Tasks 1–5 的完整 target-only diff，以及 `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` Task 1 的当前审计结论。
+- Produces: 含四表只读 readiness CLI 的不可变 target-only candidate digest，或精确阻塞报告；没有 Deploy 授权时停在 `IMPLEMENTED — VERIFIED — NOT DEPLOYED`。
 
 - [ ] **Step 1: 闭合测试所有权和残留扫描**
 
@@ -364,17 +371,23 @@
 
   Expected: selector manifest 闭合，所有必选 PostgreSQL/worker/deployment HEAVY 实际执行且零 skip；不运行全量 HEAVY 求安心。
 
-- [ ] **Step 4: 验证 candidate 装配**
-
-  渲染全部 Compose；启动 candidate 后验证 registered task、Beat schedule、queue、OpenAPI、env/mount、Client uniqueness、SQLModel production export 和 target readiness。旧 task/profile/API/schema owner 不可达；`wms-fulfillment` 和共享 worker/Redis 未误删。
-
-- [ ] **Step 5: 完成唯一主 Review**
+- [ ] **Step 4: 完成 Phase 10 主 Review**
 
   固定 base/head/staged manifest 和证据，使用一个只读 Reviewer做完整 diff review；修复运行时问题后由同一 Reviewer 一轮完成旧意见闭环和 fresh full review。Reviewer 不重复 QUALITY、HEAVY、迁移或部署。
 
-- [ ] **Step 6: 精确暂存并提交候选（仅已授权时）**
+- [ ] **Step 5: 精确提交 Phase 10 代码切片（仅已授权时）**
 
-  核对 `git diff --cached --name-status`、cached diff、`git diff --cached --check` 和 `npx gitnexus detect-changes --scope staged --repo "$PWD"`；只暂存 Execution Lock 清单，提交一个可回退的原子 candidate。不得使用 `git add .` 或 `--no-verify`。
+  核对 `git diff --cached --name-status`、cached diff、`git diff --cached --check` 和 `npx gitnexus detect-changes --scope staged --repo "$PWD"`；只暂存 Execution Lock 清单，提交可回退的 target-only 代码切片。不得使用 `git add .` 或 `--no-verify`。
+
+- [ ] **Step 6: 独立实施发布静默门禁 Tasks 2–4**
+
+  严格按 `2026-08-26-release-operational-readiness.md` 一次执行 Task 2 RED、Task 3 DEV 和 Task 4 GREEN，形成独立 Review/Commit。该切片只读四个目标表，不读取 legacy owner，不复制 Task 4 drain predicate，不用 feature flag、legacy adapter 或双查询。任一 RED/GREEN、单 statement、超时、部署顺序测试或 Review 未闭合，Task 7 禁止开始。
+
+- [ ] **Step 7: 构建并验证最终不可变 candidate**
+
+  在两个切片各自绿灯和 Review 后，构建唯一 candidate image，记录 source/image/config digest。渲染全部 Compose；以 candidate-container 连接当前数据库运行四表 readiness CLI，并验证 registered task、Beat schedule、queue、OpenAPI、env/mount、Client uniqueness、SQLModel production export 和旧 owner absence。此时只读预检，不停止现场 admission、Beat 或 worker。
+
+  Expected: candidate 不注册旧 task、不加载旧 profile、不暴露旧 route，四表 CLI 可从 candidate-container 读取当前现场数据库；`wms-fulfillment`、共享 worker和 Redis 未误删。candidate digest 冻结后不得再修改生产、测试、脚本、配置或部署输入；任何变化都必须重新构建并刷新受影响证据。
 
 ### Task 7: 执行首次原子 cutover 与 Phase 11 handoff
 
@@ -382,53 +395,40 @@
 
 **Interfaces:**
 
-- Consumes: 不可变 candidate digest、Task 4 稳定 drain、Task 6 绿灯与 Review。
+- Consumes: Task 6 不可变 candidate digest、已验证的四表 readiness CLI、Task 4 drain/cutover manifest 和 Deploy/Cutover 授权。
 - Produces: Phase 10 exit evidence；只包含零消费者 schema identities 的 Phase 11 handoff。
 
-- [ ] **Step 1: 停止旧执行装配**
+- [ ] **Step 1: 复核 candidate ready 后关闭旧 admission 与 Beat**
 
-  在 admission 已关闭且 drain 稳定后，有序停止旧共享 worker，确认无旧 task 正在执行。不得无差别 purge Redis queue。
+  先用 candidate-container 对当前现场数据库执行在线四表预检，并核对 candidate digest/config。只有结果为 `READY` 才停止旧 deployment 的 Nginx、优雅停止 API、验证 listener 关闭，再停止旧 Beat；旧 worker、数据库和 Redis 继续运行。在线 `BLOCK`、`WAIT_DRAIN` 或查询失败在不进入维护态时终止；listener 或 Beat 停止失败则保持维护态。两类失败都不得激活 candidate。
 
-- [ ] **Step 2: 启动 target-only candidate**
+- [ ] **Step 2: 由旧 worker 排空 legacy owner**
 
-  candidate 不注册旧 task、不加载旧 profile、不读取旧表、不暴露旧 route；API/worker/Beat 只装配 target objects。禁止 old/new worker、Beat、API 或 profile 并行。
+  旧部署的 consumer worker 继续处理已经落账的 RuntimeInbox/Intent/Outbox 等工作；执行 Task 4 的数据库同快照查询、broker inspection 和 producer freeze 复核。任一 active、ambiguous、identity conflict、查询失败或期间新增旧 row 都保持维护态，按原 identity 人工调查，不自动重发或清理。
 
-- [ ] **Step 3: 重开 admission 前验收**
+- [ ] **Step 3: 证明 legacy 连续稳定为零**
 
-  复核 legacy database/broker 零活动、旧 import/task/Compose/production schema owner absence，以及 DeviceCommand、TransportTask、InboundEvidence、WmsConfirmation 四目标表 readiness。任何失败保持维护态，不 fallback 到旧路径。
+  按 cutover manifest 的间隔取得连续两次 database/broker/producer stable zero。只有两次都满足且无新旧 identity 冲突，才允许继续；旧 worker 此时仍运行。
 
-- [ ] **Step 4: 形成 Phase 10 exit 证据**
+- [ ] **Step 4: 在旧 worker 仍运行时取得四表连续 READY**
 
-  记录 source/image/config digest、drain snapshot、task/queue/route/config absence、target readiness、QUALITY/HEAVY 和未验证现场边界。健康检查、Mock、部署成功不等于设备、供应商或业务验收。
+  由同一不可变 candidate-container 读取现场 `DeviceCommand`、`TransportTask`、`InboundEvidence`、`WmsConfirmation`，按发布静默门禁取得连续两次 `READY`。`WAIT_DRAIN` 继续等待至批准的超时，`BLOCK`、查询失败或超时保持维护态；不得先停旧 worker 逼出静默。
 
-- [ ] **Step 5: 只交接零消费者 schema identities**
+- [ ] **Step 5: 停止旧 worker 并激活 target-only candidate**
+
+  只有 legacy stable zero 与四表连续 READY 同时成立后，才有序停止旧共享 worker并确认无 task 正在执行；随后激活不可变 candidate。禁止 old/new worker、Beat、API 或 profile 并行，不 purge 共享 Redis queue。
+
+- [ ] **Step 6: 重开 admission 前复核 absence 与 readiness**
+
+  在 candidate 运行态复核旧 import/task/Beat/route/env/mount/production schema owner absence、registered tasks/queues 和四表 readiness。任何失败保持 admission 关闭，不自动 fallback 到旧路径；成功后才启动 target Beat/API/Nginx 并验证 listener。
+
+- [ ] **Step 7: 形成 Phase 10 exit 证据**
+
+  记录 source/image/config digest、legacy drain snapshots、四表连续 READY、task/queue/route/config absence、QUALITY/HEAVY 和未验证现场边界。健康检查、Mock、部署成功不等于设备、供应商或业务验收。
+
+- [ ] **Step 8: 只交接零消费者 schema identities**
 
   对 Task 0 的每个 schema-deferred identity证明只有 model definition、`migrations/env.py`、已有 revisions 和 schema-only tests可引用，再将 schema/name/FK/index identity交给 `2026-08-15-wes-schema-and-migration-baseline-reset.md` Task 1 重新冻结。Phase 10 不传递 DDL、revision ID 或基线生成方案。
-
-### Task 8: Phase 10 exit 后实施长期发布静默门禁
-
-**Classification:** 独立高风险行为切片；不与 Phase 10 candidate 合并。
-
-**Files/Owner:**
-
-- Execute: `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` Tasks 2–4
-
-**Interfaces:**
-
-- Consumes: Phase 10 exit evidence和四个目标可靠对象。
-- Produces: FULL 发布长期在线预检、admission closure 后稳定静默复核和对应 GREEN；不读取任何 legacy table。
-
-- [ ] **Step 1: 重新验证 release-readiness Task 1 前置**
-
-  以 Phase 10 target-only source 和部署拓扑重新冻结 admission closure、四表状态与 candidate runner 复用点。Phase 10 exit 未证明时不得继续。
-
-- [ ] **Step 2: 按原计划一次执行 Tasks 2–4**
-
-  在一个行为切片中完成 RED、最小只读四表 Repository/Service/CLI、Jenkins 接入和 GREEN；不复制本计划的一次性 drain，不增加 legacy adapter、feature flag 或双查询。
-
-- [ ] **Step 3: 报告独立完成边界**
-
-  Phase 10 完成不等于长期发布门禁已完成；Tasks 2–4 绿灯前状态为 `PHASE 10 EXITED — RELEASE READINESS NOT IMPLEMENTED`。TEST 验收仍需 release-readiness Task 5 的单独 Deploy 授权。
 
 ---
 
@@ -445,4 +445,4 @@
 7. QUALITY、staged selector、必选 HEAVY、candidate composition 和唯一 Review 全部有效；
 8. Phase 11 handoff 只含已证明零生产消费者的 schema/model identity，revision chain 未修改；
 9. 首次 cutover 只运行 target candidate，未使用双写、兼容、fallback、feature flag 或自动清理；
-10. 长期发布静默门禁按 Task 8 独立追踪，未把 Phase 10 exit 夸大为其完成证据。
+10. 发布静默门禁 Tasks 2–4 已在首次 cutover 前作为独立行为切片完成并进入同一不可变 candidate，普通 FULL 发布继续长期复用。
