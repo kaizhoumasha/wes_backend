@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1.1] - 2026-08-26
+
+### Added
+
+- 增加 Phase 9–14 的重排设计、Phase 10 遗留路径清理计划和发布运行就绪计划，明确先清理、再重建基线、最后由用户主导完成插件开发。
+- 增加运输接入诊断设计与实施计划，复用现有 Transport 调试接口验证四种运输指令及任务证据链。
+
+### Changed
+
+- 开发与提交门禁按风险选择最小充分验证：纯人类文档和 Release 元数据使用轻量检查，机器配置、可执行合同和生产代码继续执行完整 QUALITY。
+- 收敛 Agent、测试所有权、HEAVY selector 和 Worktree 规则，复用同一变更快照的有效证据，避免重复 Review、重复测试和机械化 TDD。
+- 将最小执行基础、遗留清理、Schema 基线、人工插件教学、自动插件和系统验收依次安排为 Phase 9–14，并同步当前架构、合同和运行手册引用。
+
+### Verification
+
+- Git 门禁聚焦测试 18 项通过；QUALITY 通过，其中默认 FAST 测试 3955 项通过、5 项按既有条件跳过。
+- HEAVY selector 未选中本地重测试；文档通过差异、引用、结构和 Markdown 相称检查。
+
 ## [0.28.1.0] - 2026-08-25
 
 ### Fixed
