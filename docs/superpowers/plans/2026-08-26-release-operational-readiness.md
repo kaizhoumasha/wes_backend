@@ -85,7 +85,7 @@ API 关闭后，依赖新 HTTP callback 的状态不保证自然排空；60 秒�
 
 - [ ] **Step 4: 冻结部署插入点和复用点**
 
-复用现有 `business_preflight()` 使用的 candidate `api` 容器调用边界，提取一个最小 `candidate_backend_python` helper 供 WMS profile 和本门禁共用，不创建第二套 runner。在线预检位于兼容/WMS profile 检查后、任何 live runtime、maintenance 或数据库 mutation 前；权威复核位于 Nginx、API 和 Beat admission 关闭后、执行 worker 停止和 `switch_live_deploy_source` 前。当前 API entrypoint 使用 `exec uvicorn` 直接接收停止信号；实施固定使用 `compose stop -t 30 api` 并验证 listener 关闭，不得省略为无等待硬停止。
+只复用现有 `business_preflight()` 的 candidate `api` 容器 Python 调用边界，提取一个最小 `candidate_backend_python` helper 供最小 WMS target config/readiness 与本门禁共用，不创建第二套 runner；不得复用旧 Provider Profile 的加载、校验、digest 或语义。在线预检位于方向兼容与最小 WMS target config/readiness 检查后、任何 live runtime、maintenance 或数据库 mutation 前；权威复核位于 Nginx、API 和 Beat admission 关闭后、执行 worker 停止和 `switch_live_deploy_source` 前。当前 API entrypoint 使用 `exec uvicorn` 直接接收停止信号；实施固定使用 `compose stop -t 30 api` 并验证 listener 关闭，不得省略为无等待硬停止。
 
 出现状态不一致、admission closure 无法证明、候选镜像不能只读连接当前数据库或插入点无法满足上述顺序时，停止实施并更新设计，不进入 RED。
 
