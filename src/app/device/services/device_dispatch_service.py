@@ -17,6 +17,7 @@ from src.app.device.repositories.status_observation_repository import device_sta
 from src.app.device.services.device_command_admission import (
     DeviceCommandAdmissionError,
     ensure_runtime_admissible,
+    ensure_status_fresh,
 )
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
@@ -302,7 +303,6 @@ class DeviceDispatchService:
                 status_max_age_ms=binding.status_max_age_ms,
             )
         )
-        state = status.state
         if status.device.device_code != command.device_code or context.device_code != command.device_code:
             raise DeviceCommandAdmissionError("DEVICE_IDENTITY_MISMATCH")
         if (
@@ -312,10 +312,11 @@ class DeviceDispatchService:
             or command.contract_version != context.contract_version
         ):
             raise DeviceCommandAdmissionError("DEVICE_CONTRACT_MISMATCH")
-        observed_at_ms = int(observed_at.replace(tzinfo=UTC).timestamp() * 1000)
-        age_ms = observed_at_ms - state.updated_at
-        if context.status_max_age_ms is None or age_ms < 0 or age_ms > context.status_max_age_ms:
-            raise DeviceCommandAdmissionError("DEVICE_STATUS_STALE")
+        ensure_status_fresh(
+            status=status,
+            observed_at=observed_at,
+            status_max_age_ms=context.status_max_age_ms,
+        )
         ensure_runtime_admissible(status=status, expected_device_code=command.device_code)
 
 

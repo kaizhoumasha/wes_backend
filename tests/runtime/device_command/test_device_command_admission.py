@@ -1,4 +1,6 @@
-"""业务派发与 MANUAL_DEBUG 共用的设备运行态准入。"""
+"""业务派发、MANUAL_DEBUG 与人工对账共用的设备运行态准入。"""
+
+from datetime import UTC, datetime
 
 import pytest
 
@@ -6,6 +8,7 @@ from src.app.device.contracts import EcsDeviceStatus
 from src.app.device.services.device_command_admission import (
     DeviceCommandAdmissionError,
     ensure_runtime_admissible,
+    ensure_status_fresh,
 )
 
 
@@ -70,3 +73,24 @@ def test_runtime_status_rejection_has_stable_code(
         )
 
     assert exc_info.value.code == code
+
+
+@pytest.mark.parametrize("updated_at", [1_786_579_189_999, 1_786_579_200_001])
+def test_status_outside_frozen_freshness_window_is_rejected(updated_at: int) -> None:
+    with pytest.raises(DeviceCommandAdmissionError) as exc_info:
+        ensure_status_fresh(
+            status=_status(updated_at=updated_at),
+            observed_at=datetime(2026, 8, 13, tzinfo=UTC),
+            status_max_age_ms=10_000,
+        )
+
+    assert exc_info.value.code == "DEVICE_STATUS_STALE"
+
+
+@pytest.mark.parametrize("updated_at", [1_786_579_190_000, 1_786_579_200_000])
+def test_status_at_frozen_freshness_boundaries_is_accepted(updated_at: int) -> None:
+    ensure_status_fresh(
+        status=_status(updated_at=updated_at),
+        observed_at=datetime(2026, 8, 13, tzinfo=UTC),
+        status_max_age_ms=10_000,
+    )

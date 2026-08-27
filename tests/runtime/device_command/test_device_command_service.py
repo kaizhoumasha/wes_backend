@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from src.app.device.contracts import DeviceCommandRequest, EcsDeviceStatus
+from src.app.device.event_block_contracts import EventDebugCommandBlocked, EventDebugCommandReady
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_command_service import (
     DeviceCommandCapacityError,
@@ -554,8 +555,20 @@ async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_bu
     )
 
     handle = await service.create_event_debug_command_in_session(object(), evidence=evidence)
+    duplicate = await service.create_event_debug_command_in_session(object(), evidence=evidence)
 
     command = repository.created[0]
+    assert handle == EventDebugCommandReady(
+        command_code=command.command_code,
+        status=CommandStatus.PENDING,
+        created=True,
+    )
+    assert duplicate == EventDebugCommandReady(
+        command_code=command.command_code,
+        status=CommandStatus.PENDING,
+        created=False,
+    )
+    assert len(repository.created) == 1
     assert handle.command_code == command.command_code
     assert command.execution_ref_type == "EVENT_DEBUG"
     assert command.execution_ref_id == evidence.source_identity
@@ -568,9 +581,27 @@ async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_bu
 
 
 @pytest.mark.asyncio
-async def test_event_debug_command_is_terminal_when_device_has_active_command() -> None:
+async def test_event_debug_command_records_existing_command_without_creating_placeholder() -> None:
     repository = FakeCommandRepository()
-    repository.unclosed["STATION_SCAN11"] = object()  # type: ignore[assignment]
+    blocking_command = DeviceCommand(
+        id=41,
+        command_code="CMD-OLD-001",
+        device_code="STATION_SCAN11",
+        line_run_epoch_id=11,
+        device_binding_id=21,
+        execution_ref_type="MATERIAL_EXECUTION",
+        execution_ref_id="EXEC-OLD-001",
+        material_execution_id=31,
+        contract_key="third_party_integration",
+        contract_version="1.1",
+        task_type="MOVE_FORWARD",
+        params={},
+        payload_digest="c" * 64,
+        deadline_at=datetime(2026, 8, 25, 0, 0, 30),
+        status=CommandStatus.RECONCILING,
+        reconciliation_reason="DELIVERY_UNKNOWN",
+    )
+    repository.unclosed["STATION_SCAN11"] = blocking_command
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=repository,  # type: ignore[arg-type]
@@ -597,9 +628,12 @@ async def test_event_debug_command_is_terminal_when_device_has_active_command() 
         contract_version="1.1",
     )
 
-    handle = await service.create_event_debug_command_in_session(object(), evidence=evidence)
+    result = await service.create_event_debug_command_in_session(object(), evidence=evidence)
 
-    command = repository.created[0]
-    assert handle.status == CommandStatus.FAILED
-    assert command.failure_code == "DEVICE_HAS_ACTIVE_COMMAND"
-    assert command.completed_at == datetime(2026, 8, 25)
+    assert result == EventDebugCommandBlocked(
+        blocking_command_id=41,
+        blocking_command_code="CMD-OLD-001",
+        blocking_command_status=CommandStatus.RECONCILING,
+        blocking_reconciliation_reason="DELIVERY_UNKNOWN",
+    )
+    assert repository.created == []

@@ -75,9 +75,10 @@ TransportResult 不使用设备统一接口的 `command_code`、设备合同身�
 4. 根据获批设备附录校验具体事件字段，并检查结果回调的命令关联和唯一终态；
 5. 核心持久化 `InboundEvidence`；没有活动 Epoch 的设备事件作为 `line_run_epoch_id=null` 的诊断证据接纳；
 6. 同步返回 ACK；
-7. `is_debug=true` 的 EVENT 不调用 WorkLine 插件，而是由异步 evidence worker 复用 DeviceCommand 基础能力创建一条
-   `EVENT_DEBUG/MOVE_FORWARD` 联调命令，并将 evidence 标记为不参与业务消费的 `IGNORED`；普通 EVENT 仅在证据绑定的 Epoch
-   仍然活动时调用已显式装配的 WorkLine 插件。
+7. `is_debug=true` 的 EVENT 不调用 WorkLine 插件，而是由异步 evidence worker 复用 DeviceCommand 基础能力尝试创建一条
+   `EVENT_DEBUG/MOVE_FORWARD` 联调命令。同设备没有未终态命令时，创建唯一 `PENDING` 命令、将 evidence 标记为不参与业务消费的 `IGNORED`，事务提交后唤醒现有派发扫描；唤醒失败由 Beat 补偿，不回滚 evidence 或命令。同设备已有未终态命令时，不创建失败占位命令、不访问 ECS，evidence 进入 `RECONCILING` 并与指向旧命令的 blocker 同事务持久化。普通 EVENT 仅在证据绑定的 Epoch 仍然活动时调用已显式装配的 WorkLine 插件。
+
+blocker 是持久化因果事实，不是新的 EVENT 身份。旧命令只能由匹配 Result Callback 或受限的超级用户对账闭合，两者都不自动重放 EVENT。显式重处理必须携带当前 `block_id`，复用原 EVENT 身份和载荷，并再次经过设备执行槽门禁。
 
 无法建立证据、幂等身份冲突或合同校验失败时不得返回成功 ACK。ACK 成功不表示业务决定成功，更不表示设备动作完成。
 

@@ -69,6 +69,15 @@ def test_gateway_enqueues_transport_evidence_with_its_fixed_batch_limit() -> Non
     assert gateway.sent == [("src.celery_app.tasks.transport.process_transport_evidence_batch", {"limit": 100})]
 
 
+def test_gateway_enqueues_device_command_dispatch_with_fixed_batch_limit() -> None:
+    gateway = _CapturingGateway()
+
+    assert tuple(inspect.signature(gateway_module.TaskQueueGateway.enqueue_device_commands).parameters) == ("self",)
+    gateway.enqueue_device_commands()
+
+    assert gateway.sent == [("src.celery_app.tasks.device_command.dispatch_device_commands_batch", {"limit": 100})]
+
+
 def test_gateway_execution_and_wms_wakes_are_exactly_two_no_payload_methods() -> None:
     gateway = _CapturingGateway()
 

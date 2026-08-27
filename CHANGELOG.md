@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.2.0] - 2026-08-27
+
+### Added
+
+- 增加持久化的 Device EVENT 命令阻塞因果、超级用户 blocker 查询、受限 `DELIVERY_UNKNOWN` 人工闭合及原 EVENT 身份显式重处理能力。
+- 为 blocker 表、索引、约束和 BIGINT 外键增加可升降级 Alembic migration，并补齐真实 PostgreSQL 因果与并发验证。
+
+### Changed
+
+- 新建 `PENDING EVENT_DEBUG` 命令在 evidence 事务提交后立即复用现有 dispatch batch 唤醒，保留周期性 Beat 作为失败兜底。
+- EVENT 遇到未闭合命令时不再创建失败占位命令，而是原子记录 blocker 并保持 evidence 为 `RECONCILING`。
+
+### Fixed
+
+- blocker API 的 UTC 时间统一输出带 `Z` 的 ISO 8601，避免数据库 naive UTC 被误解为本地时间。
+
+### Verification
+
+- 聚焦 FAST 163 项、HEAVY selector 合同 322 项、QUALITY 默认 FAST 4015 项通过；5 项按既有外部条件跳过。
+- PostgreSQL 因果闭环 7 项通过；计划审计 20/20、覆盖审计 90%，fresh Review 无意见。
+- 本次交付不包含 Merge、Deploy、真实 ECS 物理动作、供应商一致性或现场业务验收。
+
 ## [0.28.1.1] - 2026-08-26
 
 ### Added

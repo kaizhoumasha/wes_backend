@@ -74,6 +74,12 @@ TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastap
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfillment_queue.py"
 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_device_command_constraints.py"
+EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST = (
+    "tests/integration/device_command/test_event_command_block_migration_postgresql.py"
+)
+EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST = (
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
+)
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST = "tests/integration/execution/test_decision_processing_postgresql.py"
@@ -499,6 +505,31 @@ def test_device_endpoint_paths_select_exact_runtime_and_schema_owners(changed_pa
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
         LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
     ]
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/device/models/event_command_block.py",
+        "src/app/device/repositories/event_command_block_repository.py",
+        "src/app/device/models/__init__.py",
+        "src/app/device/repositories/__init__.py",
+        "migrations/env.py",
+    ],
+)
+def test_event_command_block_schema_paths_select_postgresql_owner(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST in select_heavy_tests([changed_path], config)
+
+
+def test_event_command_block_migration_selects_postgresql_owner() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert select_heavy_tests(
+        ["migrations/versions/20260827_0433_71eeea05c864_记录_event_命令阻塞因果.py"],
+        config,
+    ) == [EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST]
 
 
 @pytest.mark.parametrize(
@@ -1052,10 +1083,9 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
     assert "docs/architecture/heavy-test-impact.toml" in source_globs
     assert "tests/conftest.py" in source_globs
     assert (
-        "src/app/device/services/"
-        "{__init__.py,device_command_admission.py,device_dispatch_service.py,device_evidence_service.py}"
-        in source_globs
+        "src/app/device/services/{__init__.py,device_command_admission.py,device_dispatch_service.py}" in source_globs
     )
+    assert "src/app/device/services/device_evidence_service.py" in source_globs
     assert "src/app/device/services/device_command_service.py" in source_globs
 
 
@@ -1298,7 +1328,10 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST,
             ],
         ),
-        ("src/core/task_queue_gateway.py", [TRANSPORT_PRODUCTION_WIRING_E2E_TEST]),
+        (
+            "src/core/task_queue_gateway.py",
+            [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST, TRANSPORT_PRODUCTION_WIRING_E2E_TEST],
+        ),
         (
             "src/core/uuid7.py",
             [TRANSPORT_DARK_LOOP_HEAVY_TEST, TRANSPORT_EVIDENCE_HEAVY_TEST, WMS_MOCK_SERVER_HEAVY_TEST],
@@ -1782,6 +1815,7 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
             [
                 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
                 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST,
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
             ],
         ),
@@ -1802,6 +1836,7 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
             [
                 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
                 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
+                EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST,
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 EXECUTION_CONSTRAINTS_HEAVY_TEST,
             ],
@@ -1824,6 +1859,21 @@ def test_repository_mapping_keeps_core_sources_owned_by_core_heavy_tests(
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     assert select_heavy_tests([changed_path], config) == expected
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/device/event_block_contracts.py",
+        "src/app/device/repositories/event_command_block_repository.py",
+        "src/app/device/services/device_evidence_service.py",
+        "src/app/device/v1/reconciliation.py",
+    ],
+)
+def test_event_command_block_reconciliation_paths_select_causal_owner(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST in select_heavy_tests([changed_path], config)
 
 
 def test_repository_mapping_classifies_selector_implementation_as_quality_only() -> None:

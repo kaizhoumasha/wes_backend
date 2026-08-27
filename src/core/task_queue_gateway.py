@@ -15,6 +15,7 @@ CHECK_WMS_EFFECT_STATUS_TASK = "src.celery_app.tasks.workline.check_wms_effect_s
 PROCESS_TRANSPORT_EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
 PROCESS_EXECUTION_FACTS_TASK = "src.celery_app.tasks.execution.process_execution_facts_batch"
 DISPATCH_WMS_CONFIRMATIONS_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
+DISPATCH_DEVICE_COMMANDS_TASK = "src.celery_app.tasks.device_command.dispatch_device_commands_batch"
 
 
 class OutboxDispatchTarget(StrEnum):
@@ -48,6 +49,8 @@ class TaskQueueGateway(Protocol):
     def enqueue_execution_facts(self) -> None: ...
 
     def enqueue_wms_confirmations(self) -> None: ...
+
+    def enqueue_device_commands(self) -> None: ...
 
 
 class CeleryTaskQueueGateway:
@@ -84,11 +87,15 @@ class CeleryTaskQueueGateway:
     def enqueue_wms_confirmations(self) -> None:
         self._send_task(DISPATCH_WMS_CONFIRMATIONS_TASK, kwargs={})
 
+    def enqueue_device_commands(self) -> None:
+        self._send_task(DISPATCH_DEVICE_COMMANDS_TASK, kwargs={"limit": 100})
+
 
 task_queue_gateway = CeleryTaskQueueGateway()
 
 __all__ = [
     "CHECK_WMS_EFFECT_STATUS_TASK",
+    "DISPATCH_DEVICE_COMMANDS_TASK",
     "DISPATCH_SYSTEM_OUTBOX_TASK",
     "DISPATCH_WMS_CONFIRMATIONS_TASK",
     "DISPATCH_WMS_DATA_OUTBOX_TASK",
