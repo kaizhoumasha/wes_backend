@@ -393,7 +393,7 @@ POST <WES_BASE_URL>/api/v1/callback/event
 当 `is_debug=true` 时，该事件只用于现场联调，不进入 WorkLine 或业务处理。仓库执行系统持久化事件并独立返回 ACK，异步可靠
 命令链路随后尝试下发 `MOVE_FORWARD`：联调期间目标固定为 `http://10.24.209.26:8080/`，EVENT 的 `data` 原样作为
 `MOVE_FORWARD.params`。仅当 ECS Status 声明支持 `MOVE_FORWARD` 且设备通过现有在线、AUTO、IDLE、无活动命令等准入检查时才
-发送；当前不满足准入即以失败终结本次联调命令，不等待后续自动补发。重复 EVENT 最多创建一条命令。
+发送。WES 中同设备已有未终态命令时，新 EVENT 仍被持久化和 ACK，但不会创建或发送新 Command；现场应使用返回的旧 `command_code` 按原身份对账，不得换新命令重发。没有 WES 未终态命令但当前 ECS Status 不满足准入时，已创建的联调命令以失败终结，不等待后续自动补发。重复 EVENT 最多创建一条命令。
 
 仓库执行系统成功接收并保存结果回调或事件回调后，统一返回：
 

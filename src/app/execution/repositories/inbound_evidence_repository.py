@@ -39,6 +39,15 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_source_identity(
+        self,
+        db: AsyncSession,
+        source_identity: str,
+    ) -> InboundEvidence | None:
+        columns = cast("Any", InboundEvidence).__table__.c
+        result = await db.execute(select(InboundEvidence).where(columns.source_identity == source_identity))
+        return result.scalar_one_or_none()
+
     async def get_by_id_for_update(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None:
         columns = cast("Any", InboundEvidence).__table__.c
         result = await db.execute(
@@ -237,6 +246,13 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
     ) -> None:
         evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
         evidence.processed_at = processed_at
+        await db.flush()
+
+    async def requeue_reconciling(self, db: AsyncSession, evidence: InboundEvidence) -> None:
+        if InboundEvidenceApplyStatus(evidence.apply_status) is not InboundEvidenceApplyStatus.RECONCILING:
+            raise ValueError("只有 RECONCILING evidence 可以显式重处理")
+        evidence.apply_status = InboundEvidenceApplyStatus.PENDING
+        evidence.processed_at = None
         await db.flush()
 
 

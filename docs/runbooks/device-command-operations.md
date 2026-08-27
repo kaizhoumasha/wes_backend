@@ -1,9 +1,9 @@
 # DeviceCommand 运维诊断 Runbook
 
-> 当前状态：Phase 7 核心基础能力诊断入口。本 Runbook 只读取配置、日志和 PostgreSQL 事实；不直接改表、伪造 CALLBACK、释放设备槽位或换 `command_code` 重放。
+> 本 Runbook 以配置、日志、受限对账 API 和 PostgreSQL 持久事实为准；不得直接改表、伪造 CALLBACK、释放设备槽位或换 `command_code` 重放。
 
-适用对象位于 `wes_biz` schema：`device_commands`、`device_status_observations`、`device_evidences`、
-`device_evidence_conflicts`、`line_run_epochs` 和 `line_run_epoch_device_bindings`。供应商私有协议、PLC 互锁、现场机械安全和
+适用对象位于 `wes_biz` schema：`device_commands`、`device_status_observations`、`inbound_evidences`、
+`inbound_evidence_conflicts`、`device_event_command_blocks`、`line_run_epochs` 和 `line_run_epoch_device_bindings`。供应商私有协议、PLC 互锁、现场机械安全和
 业务 Decision 不属于本 Runbook；发现这类问题应分别交给 ECS/PLC、供应商一致性、Phase 8 `rough_sorter` 或 Phase 12/13 插件 owner。
 
 ## 启动配置与 worker
@@ -29,7 +29,7 @@ Beat 只发送固定上限 100 的数据库扫描任务，不携带命令或 evi
 
 ## 诊断顺序
 
-1. 记录 `command_code`、`device_code`、`source_event_id`、`trace_id` 和时间窗口；不得记录完整 Payload、凭据或 claim token。
+1. 记录 `command_code`、`device_code`、`source_identity`、`trace_id` 和时间窗口；不得记录完整 Payload、凭据或 claim token。
 2. 查 `device_commands`，确认命令状态、deadline、claim、失败码和对账原因。
 3. 查同一命令的状态观察与 evidence；ACK 只表示接纳，只有匹配的 RESULT evidence 可以形成物理终态。
 4. 查命令冻结的 `LineRunEpoch` 和设备合同绑定，确认当前证据没有跨 Epoch 或合同版本。
@@ -104,7 +104,7 @@ binding 或状态新鲜度合同，但创建前和发送前都必须满足身份
 
 ```sql
 SELECT
-    source_event_id,
+    source_identity,
     kind,
     command_code,
     device_code,
@@ -114,26 +114,46 @@ SELECT
     apply_status,
     received_at,
     processed_at
-FROM wes_biz.device_evidences
+FROM wes_biz.inbound_evidences
 WHERE command_code = :'command_code'
 ORDER BY received_at ASC, id ASC;
 ```
 
 `PENDING` 表示已持久化待应用；`APPLIED` 表示已按当前权威边界处理；`IGNORED` 表示不推进对象；`RECONCILING` 表示证据存在但
-无法安全闭合。重复 `source_event_id` 应复用首次接收结果；同一 identity 对应不同摘要会写入冲突表：
+无法安全闭合。重复 `source_identity` 应复用首次接收结果；同一 identity 对应不同摘要会写入冲突表：
 
 ```sql
 SELECT
-    source_event_id,
+    source_identity,
     first_evidence_id,
     reason_code,
     received_at
-FROM wes_biz.device_evidence_conflicts
-WHERE source_event_id = :'source_event_id'
+FROM wes_biz.inbound_evidence_conflicts
+WHERE source_identity = :'source_identity'
 ORDER BY received_at ASC, id ASC;
 ```
 
 冲突 evidence 只用于审计和人工判定，不得覆盖首次证据，也不得推进业务对象。
+
+## EVENT 命令阻塞与恢复
+
+`is_debug=true` 的 `DEVICE_EVENT` 创建新的 `PENDING EVENT_DEBUG` 命令并提交后，会立即唤醒既有 dispatch batch；唤醒失败只影响时延，Beat 每
+10 秒扫描仍是补偿路径。重复事件、已存在命令、非 `PENDING` 结果、事务回滚或被旧命令占槽的事件均不得唤醒下发。
+
+若设备已有 `PENDING`、`DISPATCHING`、`ACKNOWLEDGED` 或 `RECONCILING` 命令，该调试 EVENT 保持
+`RECONCILING`，且不创建失败占位命令；阻塞因果记录在 `device_event_command_blocks`。超级用户应先调用：
+
+```text
+GET /api/v1/device/evidences/{source_event_id}/blocker
+```
+
+响应中的 `block_id` 和两个固定操作路径是不可变因果令牌。只有原命令为 `RECONCILING / DELIVERY_UNKNOWN`、冻结 binding 可提供
+Endpoint 与状态新鲜度合同、实时 ECS Status 证明同一设备 `AUTO + IDLE`，且没有已持久化 Result 时，才可按响应路径调用
+`reconcile-device-idle`。该操作将原命令闭合为 `FAILED / MANUAL_RECONCILIATION_DEVICE_IDLE`，不伪造 Result 或物理成功。
+
+原命令终态且设备没有其它未闭合命令后，可按响应路径调用 `reprocess`。`202` 只表示原 evidence 以相同
+`source_event_id`、payload、digest、Epoch 与合同身份重新进入 `PENDING`；它不表示新命令已创建、ECS 已接纳或物理动作完成。
+不得手工改写 blocker/evidence，也不得绕过 `block_id` 重放。
 
 ## Epoch fencing
 

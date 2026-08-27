@@ -86,11 +86,17 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 - 先按普通 EVENT 持久化并独立返回 ACK，再由 evidence worker 异步创建命令；创建成功后 evidence 以 `IGNORED` 明确表示不进入
   WorkLine/业务 Decision，不表示联调命令失败；
 - 使用 EVENT 内部稳定身份作为命令幂等身份，重复 EVENT 最多创建一条命令；
+- 同设备已有未终态 `DeviceCommand` 时，不创建失败占位命令，不访问 ECS；evidence 进入 `RECONCILING`，并持久化指向旧命令的 blocker 因果事实；
 - 联调期间目标固定为 `http://10.24.209.26:8080/`，固定超时 `30000ms`，固定任务类型 `MOVE_FORWARD`，并将 EVENT `data`
   原样作为 `params`；
 - 复用既有 DeviceCommand、统一 ECS Adapter、worker、运行态准入、CALLBACK 和 evidence；Status 未声明支持
-  `MOVE_FORWARD`、设备忙或当前准入失败时直接闭合为失败，不排队等待设备后续可用；
+  `MOVE_FORWARD`、设备不在线、非 `AUTO / IDLE`、存在 `current_command_code` 或其它当前准入失败时，已创建的联调命令直接闭合为失败，不排队等待设备后续可用；
+- 本次新建 `PENDING` 命令在事务提交后唤醒既有 DeviceCommand 派发扫描；唤醒失败不改写命令或 evidence，Beat 仍负责补偿扫描；
 - 以 `ECS_EVENT_DEBUG:<event-identity>` 记录系统触发原因，`created_by=null`，不伪装为人工联调。
+
+blocker 查询返回检测时的旧命令状态与对账原因、当前命令状态和不可变 `block_id`。匹配原 `command_code` 的 Result Callback 仍是闭合旧命令的首选路径。只有 blocker 指向、仍为 `RECONCILING / DELIVERY_UNKNOWN`、且冻结 binding 能提供状态新鲜度合同的业务命令，才允许超级用户在实时证明设备在线、`AUTO / IDLE`、无当前命令且状态未过期后，将旧命令闭合为 `FAILED / MANUAL_RECONCILIATION_DEVICE_IDLE`。该操作不伪造 Result 或成功终态；已接纳但尚未应用的 Result 优先，必须拒绝人工闭合。未冻结状态新鲜度合同的诊断命令只能由 Result Callback 闭合。
+
+旧命令终态不会自动重放 EVENT。超级用户只能携带 GET blocker 返回的当前 `block_id` 显式重处理；锁内确认该 blocker 仍是 latest `BLOCKED`、旧命令已终态且设备没有其它未终态命令后，才可将原 evidence 重置为 `PENDING`。重处理不改写 EVENT 身份、载荷、摘要或 Epoch 绑定；旧 `block_id` 不得作用于后续新 blocker。人工闭合和重处理的状态变化与审计必须同事务成功或回滚。
 
 ACK 与命令创建属于两个异步执行路径，WES 不承诺 ECS 在 worker 启动前已经读取到 ACK 字节。
 

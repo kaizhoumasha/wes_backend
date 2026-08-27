@@ -1,5 +1,7 @@
 """DeviceCommand 共用的设备运行态准入。"""
 
+from datetime import UTC, datetime
+
 from src.app.device.contracts import EcsDeviceMode, EcsDeviceState, EcsDeviceStatus
 
 
@@ -34,4 +36,18 @@ def ensure_runtime_admissible(
         raise DeviceCommandAdmissionError("DEVICE_TASK_TYPE_UNSUPPORTED")
 
 
-__all__ = ["DeviceCommandAdmissionError", "ensure_runtime_admissible"]
+def ensure_status_fresh(
+    *,
+    status: EcsDeviceStatus,
+    observed_at: datetime,
+    status_max_age_ms: int | None,
+) -> None:
+    """按冻结的 binding 有效期验证 ECS 状态快照。"""
+
+    observed_at_ms = int(observed_at.replace(tzinfo=UTC).timestamp() * 1000)
+    age_ms = observed_at_ms - status.state.updated_at
+    if status_max_age_ms is None or age_ms < 0 or age_ms > status_max_age_ms:
+        raise DeviceCommandAdmissionError("DEVICE_STATUS_STALE")
+
+
+__all__ = ["DeviceCommandAdmissionError", "ensure_runtime_admissible", "ensure_status_fresh"]

@@ -570,10 +570,29 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/models/{__init__.py,evidence.py}"
+source_glob = "src/app/device/models/evidence.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/models/__init__.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/models/event_command_block.py"
+heavy_tests = ["tests/integration/device_command/test_event_command_block_migration_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/device/event_block_contracts.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 [[mapping]]
@@ -592,11 +611,27 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/repositories/{__init__.py,command_repository.py,status_observation_repository.py}"
+source_glob = "src/app/device/repositories/{command_repository.py,status_observation_repository.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/repositories/__init__.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/repositories/event_command_block_repository.py"
+heavy_tests = [
+    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 # 被 InboundEvidenceRepository 直接接管的旧路径 tombstone，删除 diff 仍必须选中 DeviceCommand 闭环。
@@ -608,10 +643,18 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/device/services/{__init__.py,device_command_admission.py,device_dispatch_service.py,device_evidence_service.py}"
+source_glob = "src/app/device/services/{__init__.py,device_command_admission.py,device_dispatch_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/services/device_evidence_service.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 [[mapping]]
@@ -619,6 +662,7 @@ source_glob = "src/app/device/services/device_command_service.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
@@ -627,6 +671,14 @@ source_glob = "src/app/device/v1/{__init__.py,command.py,ecs_callback.py,evidenc
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_authorization_bootstrap_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/device/v1/reconciliation.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 [[mapping]]
@@ -653,6 +705,10 @@ heavy_tests = [
 [[mapping]]
 source_glob = "migrations/versions/20260826_0109_9624cc34fa93_drop_menu_persistence.py"
 heavy_tests = ["tests/integration/test_menu_persistence_removal_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260827_0433_71eeea05c864_记录_event_命令阻塞因果.py"
+heavy_tests = ["tests/integration/device_command/test_event_command_block_migration_postgresql.py"]
 
 # Nginx 精确代理规则由部署合同测试和 nginx -t 直接承接。
 [[mapping]]
@@ -1177,6 +1233,7 @@ heavy_tests = [
 source_glob = "migrations/env.py"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/execution/test_execution_constraints.py",
 ]
@@ -1241,12 +1298,22 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/execution/{models/inbound_evidence.py,repositories/inbound_evidence_repository.py,services/inbound_evidence_service.py}"
+source_glob = "src/app/execution/{models/inbound_evidence.py,services/inbound_evidence_service.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/execution/repositories/inbound_evidence_repository.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 [[mapping]]
@@ -1834,7 +1901,10 @@ heavy_tests = ["tests/mock/test_wms_provider_mock_server.py"]
 # evidence 即时唤醒必须真实经过生产接线 E2E。
 [[mapping]]
 source_glob = "src/core/task_queue_gateway.py"
-heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+]
 
 # UUIDv7 同时参与 submit 快照和 evidence 身份，由两个 PostgreSQL Transport 闭环承接。
 [[mapping]]

@@ -30,6 +30,7 @@ from src.app.callback.models.callback_log import CallbackLog  # noqa: F401
 from src.app.device.models import (  # noqa: F401
     Device,
     DeviceCommand,
+    DeviceEventCommandBlock,
     DeviceStatusObservation,
 )
 from src.app.execution.models import (  # noqa: F401
