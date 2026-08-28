@@ -69,6 +69,8 @@ TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evid
 TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST = "tests/integration/wms_adapter/test_transport_callback_receipts.py"
 TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
+TRANSPORT_DEBUG_RESET_HEAVY_TEST = "tests/integration/transport/test_transport_debug_reset.py"
+RESET_RUNTIME_DATA_HEAVY_TEST = "tests/integration/test_reset_runtime_data_postgresql.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
 TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
@@ -1195,9 +1197,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ],
         ),
         (
+            "src/app/transport/debug_reset.py",
+            [RESET_RUNTIME_DATA_HEAVY_TEST, TRANSPORT_DEBUG_RESET_HEAVY_TEST],
+        ),
+        (
             "src/app/transport/models.py",
             [
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_DEBUG_RESET_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
@@ -1208,6 +1215,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/transport/repository.py",
             [
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_DEBUG_RESET_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
@@ -1220,6 +1228,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_DEBUG_RESET_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,

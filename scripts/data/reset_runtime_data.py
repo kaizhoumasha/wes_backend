@@ -8,10 +8,12 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 - 固定 schema-qualified 运行时表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
 - 默认 ``--dry-run``:只打印将清空的表 + 当前行数,不写库。
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
+- ``--transport-task-id`` 只清理一个无 Evidence、无 outcome 的 ``RECONCILING``
+  联调任务及其成员和资源绑定，不重置其它运行数据或 Mock。
 - 清空后将 ``wes_runtime.workline_runtime_status_projections`` 重置为 ``STOPPED``，
   以便干净地重跑 START；Device 主数据不承载运行态，不做改写。
-- 仅在 ``APP_DEBUG=True`` 时允许执行,生产环境直接拒绝(可用 ``--force`` 覆盖,
-  仅限确有需要的人工运维场景)。
+- 全量 reset 仅在 ``APP_DEBUG=True`` 时允许执行；生产型配置可用 ``--force``
+  显式覆盖，供数据可丢弃的联调服务器人工运维。
 
 不在本脚本范围内:wes_sys.audit_logs(审计域,默认保留)、alembic_version、
 用户/角色/权限主数据。如需一并清审计日志,传 ``--include-audit-logs``。
@@ -20,6 +22,7 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 
     uv run python scripts/data/reset_runtime_data.py            # dry-run 预览
     uv run python scripts/data/reset_runtime_data.py --yes      # 真正清空
+    uv run python scripts/data/reset_runtime_data.py --transport-task-id transport-... --yes
     bash scripts/data/reset_runtime_data.sh --yes               # wrapper 等价
 """
 
@@ -44,6 +47,13 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from src.app.transport.debug_reset import (
+    STATUS_NOT_RECONCILING,
+    TRANSPORT_EVIDENCE_EXISTS,
+    TRANSPORT_OUTCOME_EXISTS,
+    build_transport_debug_reset_preview,
+    normalize_transport_task_id,
+)
 from src.core.conf import settings
 from src.database.db import close_db, get_db_context, init_db
 
@@ -136,6 +146,20 @@ class ResetSummary:
         return asdict(self)
 
 
+@dataclass
+class TransportTaskResetSummary:
+    """单个 Transport 联调任务的定向清理摘要。"""
+
+    mode: str
+    transport_task_id: str
+    status: str
+    rows_before: dict[str, int]
+    deleted: dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 def _qualified(target: TableTarget) -> str:
     """返回只由代码内常量构造的 schema-qualified identity。"""
     return target.identity
@@ -210,6 +234,110 @@ async def _validate_targets_exist(db: AsyncSession, targets: tuple[TableTarget, 
 async def _row_count(db: AsyncSession, qualified_name: str) -> int:
     result = await db.execute(text(f"SELECT count(*) FROM {qualified_name}"))  # noqa: S608
     return int(result.scalar_one())
+
+
+def _transport_task_reset_allowed(app_env: str, *, force: bool) -> bool:
+    """生产型配置默认拒绝，数据可丢弃的联调服务器需显式 force。"""
+    return app_env != "prod" or force
+
+
+def _parse_transport_task_id(value: str) -> str:
+    try:
+        return normalize_transport_task_id(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("transport_task_id 必须是 1..80 个非空且不含 NUL 的字符") from exc
+
+
+async def _transport_task_row_count(db: AsyncSession, table: str, transport_task_id: str) -> int:
+    result = await db.execute(
+        text(f"SELECT count(*) FROM wes_runtime.{table} WHERE transport_task_id = :transport_task_id"),  # noqa: S608
+        {"transport_task_id": transport_task_id},
+    )
+    return int(result.scalar_one())
+
+
+async def reset_transport_task_data(
+    db: AsyncSession,
+    *,
+    transport_task_id: str,
+    apply: bool,
+) -> TransportTaskResetSummary:
+    """定向清理一个尚未形成物理 Evidence/outcome 的 RECONCILING 联调任务。"""
+    task_id = normalize_transport_task_id(transport_task_id)
+
+    task_query = (
+        "SELECT transport_task_id, status, outcome_version, outcome_json "
+        "FROM wes_runtime.transport_tasks "
+        "WHERE transport_task_id = :transport_task_id FOR UPDATE"
+        if apply
+        else "SELECT transport_task_id, status, outcome_version, outcome_json "
+        "FROM wes_runtime.transport_tasks "
+        "WHERE transport_task_id = :transport_task_id"
+    )
+    result = await db.execute(
+        text(task_query),
+        {"transport_task_id": task_id},
+    )
+    row = result.one_or_none()
+    if row is None:
+        raise RuntimeError(f"TransportTask 不存在: {task_id}")
+
+    _, status, outcome_version, outcome_json = row
+    evidence_count = await _transport_task_row_count(db, "transport_evidence", task_id)
+    target_tables = (
+        "transport_resource_bindings",
+        "transport_members",
+        "transport_tasks",
+    )
+    rows_before = {
+        f"wes_runtime.{table}": (
+            1 if table == "transport_tasks" else await _transport_task_row_count(db, table, task_id)
+        )
+        for table in target_tables
+    }
+    preview = build_transport_debug_reset_preview(
+        transport_task_id=task_id,
+        status=str(status),
+        outcome_version=int(outcome_version),
+        outcome_json=outcome_json,
+        evidence_count=evidence_count,
+        member_count=rows_before["wes_runtime.transport_members"],
+        binding_count=rows_before["wes_runtime.transport_resource_bindings"],
+        active_binding_count=0,
+    )
+    if preview.blockers:
+        blocker = preview.blockers[0]
+        if blocker == STATUS_NOT_RECONCILING:
+            raise RuntimeError(f"拒绝清理:TransportTask 状态不是 RECONCILING: {status}")
+        if blocker == TRANSPORT_EVIDENCE_EXISTS:
+            raise RuntimeError(f"拒绝清理:TransportTask 已有 Transport Evidence: {evidence_count}")
+        if blocker == TRANSPORT_OUTCOME_EXISTS:
+            raise RuntimeError("拒绝清理:TransportTask 已有 outcome")
+        raise RuntimeError(f"拒绝清理:未知条件: {blocker}")
+    summary = TransportTaskResetSummary(
+        mode="apply" if apply else "dry-run",
+        transport_task_id=task_id,
+        status=str(status),
+        rows_before=rows_before,
+    )
+    if not apply:
+        return summary
+
+    try:
+        for table in target_tables:
+            delete_result = await db.execute(
+                text(f"DELETE FROM wes_runtime.{table} WHERE transport_task_id = :transport_task_id"),  # noqa: S608
+                {"transport_task_id": task_id},
+            )
+            summary.deleted[f"wes_runtime.{table}"] = int(delete_result.rowcount or 0)
+        if summary.deleted["wes_runtime.transport_tasks"] != 1:
+            raise RuntimeError(f"TransportTask 删除数量异常: {summary.deleted['wes_runtime.transport_tasks']}")
+        await db.commit()
+    except Exception:
+        with suppress(Exception):
+            await db.rollback()
+        raise
+    return summary
 
 
 async def reset_runtime_data(
@@ -313,6 +441,17 @@ def _format_summary(summary: ResetSummary) -> str:
     return "\n".join(lines)
 
 
+def _format_transport_task_summary(summary: TransportTaskResetSummary) -> str:
+    verb = "已清理" if summary.mode == "apply" else "将清理(dry-run)"
+    lines = [
+        f"\n=== Transport 联调任务 {verb} ===",
+        f"  transport_task_id: {summary.transport_task_id}",
+        f"  status: {summary.status}",
+    ]
+    lines.extend(f"  {table:<48} {count:>8}" for table, count in summary.rows_before.items())
+    return "\n".join(lines)
+
+
 async def _amain() -> int:
     _validate_table_sets()
 
@@ -331,16 +470,21 @@ async def _amain() -> int:
         help="一并清空 wes_sys.audit_logs(默认保留审计日志)",
     )
     parser.add_argument(
+        "--transport-task-id",
+        type=_parse_transport_task_id,
+        help="只清理指定的无 Evidence/无 outcome RECONCILING 联调任务",
+    )
+    parser.add_argument(
         "--reset-mocks",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="同时重置 Mock WMS 到初始状态(默认开,--no-reset-mocks 关闭)。"
+        help="全量模式同时重置 Mock WMS 到初始状态(默认开,--no-reset-mocks 关闭；定向模式忽略)。"
         "Mock WMS 有状态,不重置则连续重跑会撞 TARGET_POSITION_OCCUPIED。",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="在非 APP_DEBUG 环境强制执行(慎用)",
+        help="强制越过环境闸(全量:APP_DEBUG=False；定向:APP_ENV=prod，慎用)",
     )
     parser.add_argument(
         "--json",
@@ -349,7 +493,14 @@ async def _amain() -> int:
     )
     args = parser.parse_args()
 
-    if not settings.APP_DEBUG and not args.force:
+    transport_task_reset_requested = args.transport_task_id is not None
+    if transport_task_reset_requested and args.include_audit_logs:
+        parser.error("--transport-task-id 不能与 --include-audit-logs 同时使用")
+
+    if transport_task_reset_requested and not _transport_task_reset_allowed(settings.APP_ENV, force=args.force):
+        print("拒绝执行:生产型配置定向删除 TransportTask 必须显式加 --force。", file=sys.stderr)
+        return 2
+    if not transport_task_reset_requested and not settings.APP_DEBUG and not args.force:
         print(
             "拒绝执行:当前环境 APP_DEBUG=False。本脚本仅用于开发/联调,如确需在生产环境清理请加 --force。",
             file=sys.stderr,
@@ -365,12 +516,19 @@ async def _amain() -> int:
     await init_db()
     try:
         async with get_db_context() as db:
-            summary = await reset_runtime_data(
-                db,
-                apply=args.yes,
-                include_audit_logs=args.include_audit_logs,
-                reset_mocks=args.reset_mocks,
-            )
+            if transport_task_reset_requested:
+                summary = await reset_transport_task_data(
+                    db,
+                    transport_task_id=args.transport_task_id,
+                    apply=args.yes,
+                )
+            else:
+                summary = await reset_runtime_data(
+                    db,
+                    apply=args.yes,
+                    include_audit_logs=args.include_audit_logs,
+                    reset_mocks=args.reset_mocks,
+                )
             if not args.yes:
                 await db.rollback()
     finally:
@@ -378,6 +536,8 @@ async def _amain() -> int:
 
     if args.json:
         print(json.dumps(summary.to_dict(), ensure_ascii=False, sort_keys=True))
+    elif isinstance(summary, TransportTaskResetSummary):
+        print(_format_transport_task_summary(summary))
     else:
         print(_format_summary(summary))
     return 0

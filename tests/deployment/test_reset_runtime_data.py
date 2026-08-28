@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -24,6 +25,9 @@ class _Rows:
 
     def scalar_one(self) -> int:
         return self._scalar
+
+    def one_or_none(self):
+        return self._rows[0] if self._rows else None
 
 
 class _FakeSession:
@@ -61,6 +65,39 @@ class _FakeSession:
 
     async def rollback(self) -> None:
         self.rollbacks += 1
+
+
+class _TransportResetSession(_FakeSession):
+    def __init__(
+        self,
+        *,
+        task_row: tuple[str, str, int, object | None] | None = (
+            "transport-test",
+            "RECONCILING",
+            0,
+            None,
+        ),
+        evidence_count: int = 0,
+        fail_on_sql: str | None = None,
+    ) -> None:
+        super().__init__(fail_on_sql=fail_on_sql)
+        self.task_row = task_row
+        self.evidence_count = evidence_count
+
+    async def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append(sql)
+        if self.fail_on_sql is not None and self.fail_on_sql in sql:
+            raise RuntimeError(f"simulated failure: {self.fail_on_sql}")
+        if sql.startswith("SELECT transport_task_id, status, outcome_version, outcome_json"):
+            return _Rows([self.task_row] if self.task_row is not None else [])
+        if sql.startswith("SELECT count(*) FROM wes_runtime.transport_evidence"):
+            return _Rows(scalar=self.evidence_count)
+        if sql.startswith("SELECT count(*) FROM wes_runtime.transport_"):
+            return _Rows(scalar=1)
+        if sql.startswith("DELETE FROM wes_runtime.transport_tasks"):
+            return _Rows(rowcount=1 if self.task_row is not None else 0)
+        return _Rows(rowcount=1)
 
 
 def _is_mutation(statement: str) -> bool:
@@ -250,10 +287,137 @@ async def test_apply_rolls_back_each_database_or_commit_failure(
     assert session.rollbacks == 1
 
 
+def test_transport_task_reset_requires_force_for_production_profile() -> None:
+    assert reset_module._transport_task_reset_allowed("dev", force=False) is True
+    assert reset_module._transport_task_reset_allowed("test", force=False) is True
+    assert reset_module._transport_task_reset_allowed("prod", force=False) is False
+    assert reset_module._transport_task_reset_allowed("prod", force=True) is True
+
+
+def test_transport_task_id_parser_rejects_blank_before_database_routing() -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match=r"1\.\.80"):
+        reset_module._parse_transport_task_id("   ")
+    with pytest.raises(argparse.ArgumentTypeError, match=r"1\.\.80"):
+        reset_module._parse_transport_task_id("invalid\x00id")
+    assert reset_module._parse_transport_task_id(" transport-test ") == "transport-test"
+
+
+@pytest.mark.asyncio
+async def test_transport_task_reset_function_rejects_nul_before_database_routing() -> None:
+    session = _TransportResetSession()
+
+    with pytest.raises(ValueError, match="non-NUL"):
+        await reset_module.reset_transport_task_data(
+            session,
+            transport_task_id="invalid\x00id",
+            apply=False,
+        )
+
+    assert session.statements == []
+
+
+@pytest.mark.asyncio
+async def test_transport_task_reset_dry_run_reports_exact_aggregate_without_mutation() -> None:
+    session = _TransportResetSession()
+
+    summary = await reset_module.reset_transport_task_data(
+        session,
+        transport_task_id="transport-test",
+        apply=False,
+    )
+
+    assert summary.mode == "dry-run"
+    assert summary.transport_task_id == "transport-test"
+    assert summary.status == "RECONCILING"
+    assert summary.rows_before == {
+        "wes_runtime.transport_resource_bindings": 1,
+        "wes_runtime.transport_members": 1,
+        "wes_runtime.transport_tasks": 1,
+    }
+    assert not any(_is_mutation(statement) for statement in session.statements)
+    assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_transport_task_reset_apply_deletes_children_then_task_in_one_commit() -> None:
+    session = _TransportResetSession()
+
+    summary = await reset_module.reset_transport_task_data(
+        session,
+        transport_task_id="transport-test",
+        apply=True,
+    )
+
+    deletes = [statement for statement in session.statements if statement.startswith("DELETE FROM")]
+    assert deletes == [
+        "DELETE FROM wes_runtime.transport_resource_bindings WHERE transport_task_id = :transport_task_id",
+        "DELETE FROM wes_runtime.transport_members WHERE transport_task_id = :transport_task_id",
+        "DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :transport_task_id",
+    ]
+    assert summary.mode == "apply"
+    assert summary.deleted == {
+        "wes_runtime.transport_resource_bindings": 1,
+        "wes_runtime.transport_members": 1,
+        "wes_runtime.transport_tasks": 1,
+    }
+    assert session.commits == 1
+    assert session.rollbacks == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_row", "evidence_count", "reason"),
+    (
+        (("transport-test", "ACCEPTED", 0, None), 0, "状态不是 RECONCILING"),
+        (("transport-test", "RECONCILING", 1, None), 1, "已有 Transport Evidence"),
+        (("transport-test", "RECONCILING", 1, None), 0, "已有 outcome"),
+        (("transport-test", "RECONCILING", 0, {"status": "FAILED"}), 0, "已有 outcome"),
+    ),
+)
+async def test_transport_task_reset_rejects_tasks_that_may_have_physical_facts(
+    task_row: tuple[str, str, int, object | None],
+    evidence_count: int,
+    reason: str,
+) -> None:
+    session = _TransportResetSession(task_row=task_row, evidence_count=evidence_count)
+
+    with pytest.raises(RuntimeError, match=reason):
+        await reset_module.reset_transport_task_data(
+            session,
+            transport_task_id="transport-test",
+            apply=True,
+        )
+
+    assert not any(_is_mutation(statement) for statement in session.statements)
+    assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_transport_task_reset_rolls_back_delete_failure() -> None:
+    session = _TransportResetSession(fail_on_sql="DELETE FROM wes_runtime.transport_members")
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        await reset_module.reset_transport_task_data(
+            session,
+            transport_task_id="transport-test",
+            apply=True,
+        )
+
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
 def test_wrapper_preserves_current_flags_and_does_not_restore_retired_entrypoint() -> None:
     source = Path("scripts/data/reset_runtime_data.sh").read_text(encoding="utf-8")
 
-    for flag in ("--yes", "--include-audit-logs", "--no-reset-mocks", "--force", "--json"):
+    for flag in (
+        "--yes",
+        "--include-audit-logs",
+        "--no-reset-mocks",
+        "--force",
+        "--json",
+        "--transport-task-id",
+    ):
         assert flag in source
     assert "workline_inbox" not in source
     assert "reset_runtime_data.py" in source
@@ -279,3 +443,26 @@ def test_wrapper_json_mode_keeps_stdout_machine_readable(tmp_path: Path) -> None
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"mode": "apply"}
     assert "WES 运行时数据清理工具" in result.stderr
+
+
+def test_wrapper_rejects_blank_transport_task_id_before_invoking_python(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "uv-invoked"
+    uv_stub = bin_dir / "uv"
+    uv_stub.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
+    uv_stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        ["/bin/bash", "scripts/data/reset_runtime_data.sh", "--transport-task-id", "   ", "--yes"],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "缺少任务 ID" in result.stderr
+    assert not marker.exists()

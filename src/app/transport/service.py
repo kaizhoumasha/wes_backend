@@ -46,6 +46,12 @@ from src.app.transport.contracts import (
     TransportTaskKind,
     TransportTaskStatus,
 )
+from src.app.transport.debug_reset import (
+    TransportDebugResetPreview,
+    TransportDebugResetResult,
+    build_transport_debug_reset_preview,
+    normalize_transport_task_id,
+)
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -73,6 +79,13 @@ _RETRY_DELAY = timedelta(seconds=2)
 _SUBMIT_CONTINUE_BUDGET_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
+
+
+def _validated_transport_task_id(value: str) -> str:
+    try:
+        return normalize_transport_task_id(value)
+    except ValueError as exc:
+        raise TransportContractError("transport_task_id must contain 1..80 non-NUL characters") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +229,57 @@ class TransportService:
             request=_json_value(task.request_json),
             result=_normalized_result(task.outcome_json),
             latest_evidence=latest_evidence,
+        )
+
+    async def preview_debug_task_reset(self, transport_task_id: str) -> TransportDebugResetPreview:
+        """预检一个联调任务能否从本地 Transport 聚合中移除。"""
+
+        task_id = _validated_transport_task_id(transport_task_id)
+        async with self._sessions() as db:
+            return await self._build_debug_reset_preview(db, task_id, for_update=False)
+
+    async def reset_debug_task(self, transport_task_id: str) -> TransportDebugResetResult:
+        """重新预检并原子删除一个尚未形成物理事实的联调任务。"""
+
+        task_id = _validated_transport_task_id(transport_task_id)
+        async with self._sessions.begin() as db:
+            preview = await self._build_debug_reset_preview(db, task_id, for_update=True)
+            if not preview.eligible:
+                raise TransportContractError(",".join(preview.blockers))
+            member_count, binding_count, task_count = await self._repository.delete_debug_task_aggregate(db, task_id)
+            if task_count != 1:
+                raise RuntimeError(f"TransportTask delete count is invalid: {task_count}")
+        return TransportDebugResetResult(
+            transport_task_id=task_id,
+            deleted_member_count=member_count,
+            deleted_binding_count=binding_count,
+        )
+
+    async def _build_debug_reset_preview(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+        *,
+        for_update: bool,
+    ) -> TransportDebugResetPreview:
+        task = await self._repository.get_task(db, transport_task_id, for_update=for_update)
+        if task is None:
+            raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
+        (
+            evidence_count,
+            member_count,
+            binding_count,
+            active_binding_count,
+        ) = await self._repository.get_debug_reset_counts(db, transport_task_id)
+        return build_transport_debug_reset_preview(
+            transport_task_id=task.transport_task_id,
+            status=task.status,
+            outcome_version=task.outcome_version,
+            outcome_json=task.outcome_json,
+            evidence_count=evidence_count,
+            member_count=member_count,
+            binding_count=binding_count,
+            active_binding_count=active_binding_count,
         )
 
     async def list_task_snapshots(

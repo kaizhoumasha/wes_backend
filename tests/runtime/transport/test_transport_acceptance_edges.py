@@ -351,6 +351,102 @@ async def test_timeout_is_unknown_and_never_retried(db_engine: object) -> None:
 
 
 @pytest.mark.asyncio
+async def test_debug_reset_previews_and_deletes_only_the_selected_reconciling_task(db_engine: object) -> None:
+    service = _service(db_engine)
+    target = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-reset-target",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == target.transport_task_id)
+            .values(status="RECONCILING", reason_code="TRANSPORT_DELIVERY_UNKNOWN")
+        )
+    keep = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-reset-keep",
+        RackPosition("C"),
+        RackPosition("D"),
+        RackFace.A,
+    )
+
+    preview = await service.preview_debug_task_reset(target.transport_task_id)
+
+    assert preview.transport_task_id == target.transport_task_id
+    assert preview.status == "RECONCILING"
+    assert preview.eligible is True
+    assert preview.blockers == ()
+    assert preview.evidence_count == 0
+    assert preview.outcome_version == 0
+    assert preview.member_count == 1
+    assert preview.binding_count == 1
+    assert preview.active_binding_count == 1
+
+    result = await service.reset_debug_task(target.transport_task_id)
+
+    assert result.transport_task_id == target.transport_task_id
+    assert result.deleted_member_count == 1
+    assert result.deleted_binding_count == 1
+    async with sessions() as db:
+        task_ids = set((await db.scalars(select(TransportTask.transport_task_id))).all())
+        target_members = (
+            await db.scalars(
+                select(TransportMember).where(TransportMember.transport_task_id == target.transport_task_id)
+            )
+        ).all()
+        target_bindings = (
+            await db.scalars(
+                select(TransportResourceBinding).where(
+                    TransportResourceBinding.transport_task_id == target.transport_task_id
+                )
+            )
+        ).all()
+    assert task_ids == {keep.transport_task_id}
+    assert target_members == []
+    assert target_bindings == []
+
+
+@pytest.mark.asyncio
+async def test_debug_reset_reports_blockers_and_preserves_ineligible_task(db_engine: object) -> None:
+    service = _service(db_engine)
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-reset-pending",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+
+    preview = await service.preview_debug_task_reset(handle.transport_task_id)
+
+    assert preview.eligible is False
+    assert preview.blockers == ("STATUS_NOT_RECONCILING",)
+    with pytest.raises(TransportContractError, match="STATUS_NOT_RECONCILING"):
+        await service.reset_debug_task(handle.transport_task_id)
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport_task_id", ["   ", "invalid\x00id"])
+async def test_debug_reset_rejects_invalid_task_id_before_database(
+    db_engine: object,
+    transport_task_id: str,
+) -> None:
+    service = _service(db_engine)
+
+    with pytest.raises(TransportContractError, match=r"1\.\.80"):
+        await service.preview_debug_task_reset(transport_task_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("task_id", "operation"),
     [("missing-task", RESULT_OPERATION), ("existing", "transport.task.unsupported@v1")],

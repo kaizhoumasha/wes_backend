@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 from src.app.transport.contracts import (
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
@@ -23,6 +23,7 @@ from src.app.transport.contracts import (
     TransportTaskKind,
     TransportTaskStatus,
 )
+from src.app.transport.debug_reset import normalize_transport_task_id
 from src.core.exceptions import ConflictException, ServiceUnavailableException, ValidationException
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
@@ -32,6 +33,11 @@ router = APIRouter(tags=["Transport 调试"])
 _UUID7_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _UUID7 = Annotated[str, StringConstraints(min_length=36, max_length=36, pattern=_UUID7_PATTERN)]
 _TEXT = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100, pattern=r".*\S.*")]
+_TRANSPORT_TASK_ID = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=80),
+    AfterValidator(normalize_transport_task_id),
+]
 
 
 class _StrictApiModel(BaseModel):
@@ -126,6 +132,24 @@ type _DebugTransportTaskRequest = Annotated[
 class DebugTransportTaskCreated(_StrictApiModel):
     transport_task_id: str
     client_request_id: str
+
+
+class DebugTransportTaskResetPreview(_StrictApiModel):
+    transport_task_id: str
+    status: Literal["PENDING", "ACCEPTED", "REJECTED", "SUCCEEDED", "FAILED", "RECONCILING"]
+    eligible: bool
+    blockers: list[Literal["STATUS_NOT_RECONCILING", "TRANSPORT_EVIDENCE_EXISTS", "TRANSPORT_OUTCOME_EXISTS"]]
+    evidence_count: int
+    outcome_version: int
+    member_count: int
+    binding_count: int
+    active_binding_count: int
+
+
+class DebugTransportTaskResetResult(_StrictApiModel):
+    transport_task_id: str
+    deleted_member_count: int
+    deleted_binding_count: int
 
 
 class TransportEvidenceResponse(_StrictApiModel):
@@ -353,6 +377,52 @@ async def create_debug_transport_task(
         "ResponseSchemaModel[DebugTransportTaskCreated]",
         response_builder.success(data=data, code=SuccessCode.ACCEPTED),
     )
+
+
+@router.get(
+    "/debug-tasks/{transport_task_id}/reset-preview",
+    summary="[ops:transport:debug-preview] 预检 Transport 联调任务清理",
+    response_model=ResponseSchemaModel[DebugTransportTaskResetPreview],
+    status_code=status.HTTP_200_OK,
+    responses={
+        404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "TransportTask 不存在"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
+    },
+    dependencies=[Depends(RequirePermission("ops:transport:debug-preview"))],
+)
+async def preview_debug_transport_task_reset(
+    request: Request,
+    transport_task_id: Annotated[_TRANSPORT_TASK_ID, Path()],
+) -> ResponseSchemaModel[DebugTransportTaskResetPreview]:
+    runtime = _transport_runtime(request)
+    preview = await runtime.service.preview_debug_task_reset(transport_task_id)
+    data = DebugTransportTaskResetPreview.model_validate(preview, from_attributes=True)
+    return cast("ResponseSchemaModel[DebugTransportTaskResetPreview]", response_builder.success(data=data))
+
+
+@router.post(
+    "/debug-tasks/{transport_task_id}/reset",
+    summary="[ops:transport:debug-reset] 清理 Transport 联调任务",
+    response_model=ResponseSchemaModel[DebugTransportTaskResetResult],
+    status_code=status.HTTP_200_OK,
+    responses={
+        404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "TransportTask 不存在"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "任务已形成事实或状态不允许清理"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
+    },
+    dependencies=[Depends(RequirePermission("ops:transport:debug-reset"))],
+)
+async def reset_debug_transport_task(
+    request: Request,
+    transport_task_id: Annotated[_TRANSPORT_TASK_ID, Path()],
+) -> ResponseSchemaModel[DebugTransportTaskResetResult]:
+    runtime = _transport_runtime(request)
+    try:
+        result = await runtime.service.reset_debug_task(transport_task_id)
+    except TransportContractError as exc:
+        raise ConflictException(str(exc)) from exc
+    data = DebugTransportTaskResetResult.model_validate(result, from_attributes=True)
+    return cast("ResponseSchemaModel[DebugTransportTaskResetResult]", response_builder.success(data=data))
 
 
 @router.get(

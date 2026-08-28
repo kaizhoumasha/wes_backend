@@ -38,6 +38,8 @@ def _runtime() -> SimpleNamespace:
         service=SimpleNamespace(
             get_task_snapshot=AsyncMock(),
             list_task_snapshots=AsyncMock(),
+            preview_debug_task_reset=AsyncMock(),
+            reset_debug_task=AsyncMock(),
         ),
     )
 
@@ -202,13 +204,23 @@ def test_transport_routes_are_registered_with_separate_permissions() -> None:
     app = _app(_runtime())
 
     create_route = _route(app, "/api/v1/transport/debug-tasks", "POST")
+    preview_reset_route = _route(
+        app,
+        "/api/v1/transport/debug-tasks/{transport_task_id}/reset-preview",
+        "GET",
+    )
+    reset_route = _route(app, "/api/v1/transport/debug-tasks/{transport_task_id}/reset", "POST")
     list_route = _route(app, "/api/v1/transport/tasks", "GET")
     read_route = _route(app, "/api/v1/transport/tasks/{transport_task_id}", "GET")
 
     assert create_route is not None
+    assert preview_reset_route is not None
+    assert reset_route is not None
     assert list_route is not None
     assert read_route is not None
     assert _permission(create_route) == ["ops:transport:debug-create"]
+    assert _permission(preview_reset_route) == ["ops:transport:debug-preview"]
+    assert _permission(reset_route) == ["ops:transport:debug-reset"]
     assert _permission(list_route) == ["ops:transport-task:list"]
     assert _permission(read_route) == ["ops:transport-task:read"]
 
@@ -221,6 +233,15 @@ def test_debug_task_openapi_exposes_exactly_four_named_examples_and_union_branch
     union_schema = schema["components"]["schemas"]["_DebugTransportTaskRequest"]
     assert len(union_schema["oneOf"]) == 4
     assert union_schema["discriminator"]["propertyName"] == "kind"
+
+
+def test_debug_reset_openapi_exposes_transport_task_id_length_contract() -> None:
+    schema = _app(_runtime()).openapi()
+    parameters = schema["paths"]["/api/v1/transport/debug-tasks/{transport_task_id}/reset-preview"]["get"]["parameters"]
+    task_id = next(parameter for parameter in parameters if parameter["name"] == "transport_task_id")
+
+    assert task_id["schema"]["minLength"] == 1
+    assert task_id["schema"]["maxLength"] == 80
 
 
 @pytest.mark.asyncio
@@ -253,6 +274,82 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     called_args = getattr(runtime.port, expected_method).await_args.args
     assert called_args[1].workline_id == "TRANSPORT_DEBUG"
     assert called_args[1].station_id == "STATION-DEBUG"
+
+
+@pytest.mark.asyncio
+async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result() -> None:
+    runtime = _runtime()
+    runtime.service.preview_debug_task_reset.return_value = SimpleNamespace(
+        transport_task_id="transport-reset-test",
+        status="RECONCILING",
+        eligible=True,
+        blockers=(),
+        evidence_count=0,
+        outcome_version=0,
+        member_count=1,
+        binding_count=1,
+        active_binding_count=1,
+    )
+    runtime.service.reset_debug_task.return_value = SimpleNamespace(
+        transport_task_id="transport-reset-test",
+        deleted_member_count=1,
+        deleted_binding_count=1,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        preview = await client.get("/api/v1/transport/debug-tasks/transport-reset-test/reset-preview")
+        applied = await client.post("/api/v1/transport/debug-tasks/transport-reset-test/reset")
+
+    assert preview.status_code == 200
+    assert preview.json()["data"] == {
+        "transport_task_id": "transport-reset-test",
+        "status": "RECONCILING",
+        "eligible": True,
+        "blockers": [],
+        "evidence_count": 0,
+        "outcome_version": 0,
+        "member_count": 1,
+        "binding_count": 1,
+        "active_binding_count": 1,
+    }
+    assert applied.status_code == 200
+    assert applied.json()["data"] == {
+        "transport_task_id": "transport-reset-test",
+        "deleted_member_count": 1,
+        "deleted_binding_count": 1,
+    }
+    runtime.service.preview_debug_task_reset.assert_awaited_once_with("transport-reset-test")
+    runtime.service.reset_debug_task.assert_awaited_once_with("transport-reset-test")
+
+
+@pytest.mark.asyncio
+async def test_debug_task_reset_maps_ineligible_task_to_conflict() -> None:
+    runtime = _runtime()
+    runtime.service.reset_debug_task.side_effect = TransportContractError("STATUS_NOT_RECONCILING")
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post("/api/v1/transport/debug-tasks/transport-reset-test/reset")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "3012"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("encoded_task_id", ["%20%20%20", "%00invalid"])
+async def test_debug_task_reset_rejects_blank_or_nul_task_id_before_service(
+    method: str,
+    encoded_task_id: str,
+) -> None:
+    runtime = _runtime()
+    path = f"/api/v1/transport/debug-tasks/{encoded_task_id}/{'reset-preview' if method == 'GET' else 'reset'}"
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.request(method, path)
+
+    assert response.status_code == 422
+    runtime.service.preview_debug_task_reset.assert_not_awaited()
+    runtime.service.reset_debug_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio
