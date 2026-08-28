@@ -35,7 +35,10 @@ def _runtime() -> SimpleNamespace:
     return SimpleNamespace(
         closed=False,
         port=FakeTransportPort(),
-        service=SimpleNamespace(get_task_snapshot=AsyncMock()),
+        service=SimpleNamespace(
+            get_task_snapshot=AsyncMock(),
+            list_task_snapshots=AsyncMock(),
+        ),
     )
 
 
@@ -199,12 +202,15 @@ def test_transport_routes_are_registered_with_separate_permissions() -> None:
     app = _app(_runtime())
 
     create_route = _route(app, "/api/v1/transport/debug-tasks", "POST")
+    list_route = _route(app, "/api/v1/transport/tasks", "GET")
     read_route = _route(app, "/api/v1/transport/tasks/{transport_task_id}", "GET")
 
     assert create_route is not None
+    assert list_route is not None
     assert read_route is not None
     assert _permission(create_route) == ["ops:transport:debug-create"]
-    assert _permission(read_route) == ["ops:transport:read"]
+    assert _permission(list_route) == ["ops:transport-task:list"]
+    assert _permission(read_route) == ["ops:transport-task:read"]
 
 
 def test_debug_task_openapi_exposes_exactly_four_named_examples_and_union_branches() -> None:
@@ -250,6 +256,55 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
 
 
 @pytest.mark.asyncio
+async def test_list_transport_tasks_returns_summary_page_without_raw_request_or_result() -> None:
+    runtime = _runtime()
+    runtime.service.list_task_snapshots.return_value = SimpleNamespace(
+        items=(
+            SimpleNamespace(
+                transport_task_id="transport-api-test",
+                client_request_id=new_uuid7(),
+                submit_operation_id=new_uuid7(),
+                kind="BIN_MOVE",
+                status="FAILED",
+                reason_code="TARGET_BLOCKED",
+                created_at="2026-08-20T10:00:00Z",
+                updated_at="2026-08-20T10:01:00Z",
+                latest_evidence=SimpleNamespace(
+                    operation="transport.task.resulted@v1",
+                    operation_id=new_uuid7(),
+                    outcome_revision=1,
+                    status="APPLIED",
+                    conflict_code=None,
+                    received_at="2026-08-20T10:00:30Z",
+                    processed_at="2026-08-20T10:00:31Z",
+                ),
+            ),
+        ),
+        next_cursor="next-page",
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/transport/tasks",
+            params={"limit": 1, "cursor": "current-page", "kind": "BIN_MOVE", "status": "FAILED"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["next_cursor"] == "next-page"
+    item = response.json()["data"]["items"][0]
+    assert item["transport_task_id"] == "transport-api-test"
+    assert item["latest_evidence"]["status"] == "APPLIED"
+    assert "request" not in item
+    assert "result" not in item
+    runtime.service.list_task_snapshots.assert_awaited_once_with(
+        limit=1,
+        cursor="current-page",
+        kind="BIN_MOVE",
+        status="FAILED",
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_transport_task_returns_local_snapshot_without_raw_callback() -> None:
     runtime = _runtime()
     runtime.service.get_task_snapshot.return_value = SimpleNamespace(
@@ -261,6 +316,33 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
         reason_code=None,
         created_at="2026-08-20T10:00:00Z",
         updated_at="2026-08-20T10:01:00Z",
+        request={
+            "client_request_id": new_uuid7(),
+            "caller": {"workline_id": "TRANSPORT_DEBUG", "station_id": "STATION-DEBUG"},
+            "kind": "BIN_MOVE",
+            "moves": [
+                {
+                    "bin_id": "BIN-01",
+                    "source": _rack_slot("RACK-01", "SLOT-01"),
+                    "target": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-01"},
+                }
+            ],
+        },
+        result={
+            "outcome_version": 1,
+            "status": "FAILED",
+            "reason_code": "TARGET_BLOCKED",
+            "members": [
+                {
+                    "object_id": "BIN-01",
+                    "status": "FAILED",
+                    "final_position": None,
+                    "position_unknown": False,
+                    "failure_code": "TARGET_BLOCKED",
+                    "arrival_face": None,
+                }
+            ],
+        },
         latest_evidence=SimpleNamespace(
             operation="transport.task.resulted@v1",
             operation_id=new_uuid7(),
@@ -280,6 +362,8 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
     data = response.json()["data"]
     assert data["status"] == "SUCCEEDED"
     assert data["latest_evidence"]["status"] == "APPLIED"
+    assert data["request"]["kind"] == "BIN_MOVE"
+    assert data["result"]["members"][0]["status"] == "FAILED"
     assert data["created_at"].endswith("Z")
     assert data["latest_evidence"]["processed_at"].endswith("Z")
     assert "payload_json" not in response.text
@@ -384,9 +468,11 @@ async def test_transport_routes_reject_closed_runtime() -> None:
 
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
         create = await client.post("/api/v1/transport/debug-tasks", json=_valid_payload("RACK_MOVE"))
+        list_response = await client.get("/api/v1/transport/tasks")
         read = await client.get("/api/v1/transport/tasks/anything")
 
     assert (create.status_code, create.json()["code"]) == (503, "5030")
+    assert (list_response.status_code, list_response.json()["code"]) == (503, "5030")
     assert (read.status_code, read.json()["code"]) == (503, "5030")
 
 

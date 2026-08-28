@@ -12,7 +12,7 @@ psql "$READ_ONLY_DATABASE_URL"
 
 ## 先用本地只读 API 定位
 
-具备 `ops:transport:read` 权限时，优先在 Swagger 调用：
+具备 `ops:transport-task:read` 权限时，优先在 Swagger 调用：
 
 ```text
 GET /api/v1/transport/tasks/{transport_task_id}

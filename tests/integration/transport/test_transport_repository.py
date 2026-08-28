@@ -219,3 +219,78 @@ async def test_task_with_latest_evidence_uses_one_coherent_postgres_snapshot(
             task = await repository.get_task(cleanup_db, task_id, for_update=True)
             if task is not None:
                 await cleanup_db.delete(task)
+
+
+async def test_recent_task_query_uses_stable_keyset_and_projects_latest_evidence(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    base = timezone.now_for_db()
+    repository = TransportRepository()
+    task_ids = [f"transport-list-{ordinal}-{suffix}" for ordinal in range(3)]
+    evidence_ids = [new_uuid7(), new_uuid7()]
+    async with integration_session_factory.begin() as setup_db:
+        for ordinal, task_id in enumerate(task_ids):
+            setup_db.add(
+                _task(
+                    task_id,
+                    f"request-list-{ordinal}-{suffix}",
+                    f"{ordinal + 1}" * 64,
+                    base + timedelta(seconds=ordinal),
+                )
+            )
+        for operation_id in evidence_ids:
+            setup_db.add(
+                TransportEvidence(
+                    operation_id=operation_id,
+                    transport_task_id=task_ids[2],
+                    operation="transport.task.member_position_changed@v1",
+                    outcome_revision=None,
+                    event_timestamp_ms=1_723_456_789_011,
+                    message_digest=uuid.uuid4().hex * 2,
+                    payload_json={"transport_task_id": task_ids[2]},
+                    ack_timestamp_ms=1_723_456_789_012,
+                    ack_data_json={"transport_task_id": task_ids[2]},
+                    received_at=base,
+                )
+            )
+            await setup_db.flush()
+
+    try:
+        async with integration_session_factory() as db:
+            first = await repository.list_tasks_with_latest_evidence(
+                db,
+                limit=3,
+                cursor_created_at=None,
+                cursor_id=None,
+                kind="RACK_MOVE",
+                status=None,
+            )
+            second = await repository.list_tasks_with_latest_evidence(
+                db,
+                limit=3,
+                cursor_created_at=first[1][0].created_at,
+                cursor_id=first[1][0].id,
+                kind="RACK_MOVE",
+                status=None,
+            )
+
+        assert [row[0].transport_task_id for row in first] == [task_ids[2], task_ids[1], task_ids[0]]
+        assert first[0][1] is not None
+        assert first[0][1].operation_id == evidence_ids[1]
+        assert [row[0].transport_task_id for row in second] == [task_ids[0]]
+    finally:
+        async with integration_session_factory.begin() as cleanup_db:
+            for operation_id in evidence_ids:
+                evidence = await repository.get_evidence_by_operation_id(
+                    cleanup_db,
+                    "transport.task.member_position_changed@v1",
+                    operation_id,
+                    for_update=True,
+                )
+                if evidence is not None:
+                    await cleanup_db.delete(evidence)
+            for task_id in task_ids:
+                task = await repository.get_task(cleanup_db, task_id, for_update=True)
+                if task is not None:
+                    await cleanup_db.delete(task)

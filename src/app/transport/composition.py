@@ -6,6 +6,7 @@ import asyncio
 import os
 from typing import TYPE_CHECKING
 
+from src.app.sys.services.event_stream_service import event_stream_service
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
 from src.app.wms_integration.provider_profile import WmsProviderAuthScheme
@@ -101,7 +102,12 @@ async def build_transport_runtime(
             client,
             submit_path=startup.compiled_profile.transport_submit_path,
         )
-        service = TransportService(session_factory, repository, adapter)
+        service = TransportService(
+            session_factory,
+            repository,
+            adapter,
+            event_publisher=event_stream_service,
+        )
         handler = TransportEventHandler(service)
         return TransportRuntime(
             client=client,

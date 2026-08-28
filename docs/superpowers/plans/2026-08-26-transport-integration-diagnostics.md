@@ -39,6 +39,7 @@
 **Contract:**
 
 - `GET /api/v1/transport/tasks` 返回最近任务摘要，默认 `limit=20`、范围 `1..100`，支持 cursor、kind、status；
+- 列表与详情分别使用 `ops:transport-task:list`、`ops:transport-task:read`，保持权限叶子与 HTTP 定义一一对应；
 - 使用 `(created_at DESC, id DESC)` 的稳定 keyset 分页，一次查询带出最新 evidence，不产生逐任务查询；
 - 列表不返回 `request`、`result`、原始报文或虚构的 `source`；
 - 单条详情增加规范化 `request` 和可空 `result`，覆盖四种现有 Transport 请求；
@@ -70,7 +71,7 @@
 
 **Contract:**
 
-- 权限为 `ops:transport:read`，仅转发 Task 2 的两种合法事件；未知或非法 payload 跳过；
+- 权限为 `ops:transport-evidence:stream`，仅转发 Task 2 的两种合法事件；未知或非法 payload 跳过；
 - live-only、无 replay、无 `Last-Event-ID`，空闲时发送 heartbeat；
 - 设置 `Cache-Control: no-cache`、`X-Accel-Buffering: no`；Nginx 对精确路径关闭 buffering/cache/gzip 并使用长读取超时；
 - OpenAPI 同时冻结 collection、detail、stream 和原四种 debug request；
@@ -130,7 +131,8 @@
 
 **Contract:**
 
-- 新页面、路由和菜单使用 `ops:transport:read`，不增加角色或权限体系；
+- 新页面按列表、详情和 SSE 分别使用 `ops:transport-task:list`、`ops:transport-task:read`、
+  `ops:transport-evidence:stream`，不增加角色或权限体系；
 - SSE 更新只触发相关任务摘要/详情查询，断线明确显示“实时通知不可用”，历史证据仍可查询；
 - 页面区分提交接纳、持久证据、Transport 终态、物理事实和现场验收；
 - 复用现有布局、状态组件、确认对话框和断线提示。

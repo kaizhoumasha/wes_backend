@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -10,10 +12,11 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
 
+from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
 from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import (
     MAX_SUBMIT_ATTEMPTS,
@@ -31,6 +34,7 @@ from src.app.transport.contracts import (
     RotateRackRequest,
     TransportCaller,
     TransportContractError,
+    TransportEvidenceUpdate,
     TransportHandle,
     TransportIdempotencyConflict,
     TransportMemberOutcome,
@@ -92,7 +96,32 @@ class TransportTaskSnapshot:
     reason_code: str | None
     created_at: str
     updated_at: str
+    request: dict[str, Any]
+    result: dict[str, Any] | None
     latest_evidence: TransportEvidenceSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class TransportTaskSummary:
+    transport_task_id: str
+    client_request_id: str
+    submit_operation_id: str
+    kind: str
+    status: str
+    reason_code: str | None
+    created_at: str
+    updated_at: str
+    latest_evidence: TransportEvidenceSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class TransportTaskPage:
+    items: tuple[TransportTaskSummary, ...]
+    next_cursor: str | None
+
+
+class TransportEventPublisher(Protocol):
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, Any]) -> bool: ...
 
 
 class TransportService:
@@ -103,10 +132,13 @@ class TransportService:
         session_factory: async_sessionmaker[AsyncSession],
         repository: TransportRepository,
         provider: TransportProviderPort,
+        *,
+        event_publisher: TransportEventPublisher = event_stream_service,
     ) -> None:
         self._sessions = session_factory
         self._repository = repository
         self.provider = provider
+        self._event_publisher = event_publisher
 
     async def move_rack(
         self,
@@ -171,17 +203,7 @@ class TransportService:
                 raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
             task, evidence = task_with_evidence
 
-        latest_evidence = None
-        if evidence is not None:
-            latest_evidence = TransportEvidenceSnapshot(
-                operation=evidence.operation,
-                operation_id=evidence.operation_id,
-                outcome_revision=evidence.outcome_revision,
-                status=evidence.status,
-                conflict_code=evidence.conflict_code,
-                received_at=_utc_z(evidence.received_at),
-                processed_at=_utc_z(evidence.processed_at) if evidence.processed_at is not None else None,
-            )
+        latest_evidence = _evidence_snapshot(evidence)
         return TransportTaskSnapshot(
             transport_task_id=task.transport_task_id,
             client_request_id=task.client_request_id,
@@ -191,8 +213,57 @@ class TransportService:
             reason_code=task.reason_code,
             created_at=_utc_z(task.created_at),
             updated_at=_utc_z(task.updated_at),
+            request=_json_value(task.request_json),
+            result=_normalized_result(task.outcome_json),
             latest_evidence=latest_evidence,
         )
+
+    async def list_task_snapshots(
+        self,
+        *,
+        limit: int,
+        cursor: str | None,
+        kind: str | None,
+        status: str | None,
+    ) -> TransportTaskPage:
+        if not 1 <= limit <= 100:
+            raise TransportContractError("limit must be between 1 and 100")
+        if kind is not None:
+            kind = TransportTaskKind(kind).value
+        if status is not None:
+            status = TransportTaskStatus(status).value
+        cursor_created_at, cursor_id = _decode_task_cursor(cursor)
+        async with self._sessions() as db:
+            rows = await self._repository.list_tasks_with_latest_evidence(
+                db,
+                limit=limit + 1,
+                cursor_created_at=cursor_created_at,
+                cursor_id=cursor_id,
+                kind=kind,
+                status=status,
+            )
+        page_rows = rows[:limit]
+        items = tuple(
+            TransportTaskSummary(
+                transport_task_id=task.transport_task_id,
+                client_request_id=task.client_request_id,
+                submit_operation_id=task.submit_operation_id,
+                kind=task.kind,
+                status=task.status,
+                reason_code=task.reason_code,
+                created_at=_utc_z(task.created_at),
+                updated_at=_utc_z(task.updated_at),
+                latest_evidence=_evidence_snapshot(evidence),
+            )
+            for task, evidence in page_rows
+        )
+        next_cursor = None
+        if len(rows) > limit and page_rows:
+            last_task = page_rows[-1][0]
+            if last_task.id is None:
+                raise RuntimeError("persisted TransportTask is missing id")
+            next_cursor = _encode_task_cursor(last_task.created_at, last_task.id)
+        return TransportTaskPage(items=items, next_cursor=next_cursor)
 
     async def submit_pending_tasks(self, limit: int) -> int:
         _validate_limit(limit)
@@ -300,6 +371,7 @@ class TransportService:
 
         processed = 0
         for evidence_id in evidence_ids:
+            update_event: TransportEvidenceUpdate | None = None
             async with self._sessions.begin() as db:
                 candidate = await self._repository.get_evidence(db, evidence_id)
                 if candidate is None or candidate.status != "PENDING" or candidate.claim_token != token:
@@ -310,37 +382,58 @@ class TransportService:
                     continue
                 if task is None:
                     _mark_evidence_conflict(evidence, "TRANSPORT_TASK_NOT_FOUND", timezone.now_for_db())
+                    update_event = _evidence_update_event(evidence, task_status=None, reason_code=None)
                     processed += 1
-                    continue
-                try:
-                    if evidence.operation == TRANSPORT_POSITION_OPERATION:
-                        await self._apply_position_evidence(db, task, evidence)
-                    elif evidence.operation == TRANSPORT_RESULT_OPERATION:
-                        await self._apply_result_evidence(db, task, evidence)
-                    else:
-                        raise TransportContractError("unsupported evidence operation")
-                except TransportContractError:
-                    _mark_evidence_conflict(evidence, "TRANSPORT_EVIDENCE_CONFLICT", timezone.now_for_db())
-                    if task.status not in {
-                        TransportTaskStatus.REJECTED.value,
-                        TransportTaskStatus.SUCCEEDED.value,
-                        TransportTaskStatus.FAILED.value,
-                    } and not (
-                        task.status == TransportTaskStatus.RECONCILING.value
-                        and task.reason_code == "TRANSPORT_EVIDENCE_CONFLICT"
-                    ):
-                        self._set_outcome(
-                            task,
-                            TransportTaskStatus.RECONCILING,
-                            "TRANSPORT_EVIDENCE_CONFLICT",
-                            timezone.now_for_db(),
-                        )
                 else:
-                    evidence.status = "APPLIED"
-                    evidence.processed_at = timezone.now_for_db()
-                    evidence.claim_token = None
-                    evidence.claim_until = None
-                processed += 1
+                    try:
+                        if evidence.operation == TRANSPORT_POSITION_OPERATION:
+                            await self._apply_position_evidence(db, task, evidence)
+                        elif evidence.operation == TRANSPORT_RESULT_OPERATION:
+                            await self._apply_result_evidence(db, task, evidence)
+                        else:
+                            raise TransportContractError("unsupported evidence operation")
+                    except TransportContractError:
+                        _mark_evidence_conflict(evidence, "TRANSPORT_EVIDENCE_CONFLICT", timezone.now_for_db())
+                        if task.status not in {
+                            TransportTaskStatus.REJECTED.value,
+                            TransportTaskStatus.SUCCEEDED.value,
+                            TransportTaskStatus.FAILED.value,
+                        } and not (
+                            task.status == TransportTaskStatus.RECONCILING.value
+                            and task.reason_code == "TRANSPORT_EVIDENCE_CONFLICT"
+                        ):
+                            self._set_outcome(
+                                task,
+                                TransportTaskStatus.RECONCILING,
+                                "TRANSPORT_EVIDENCE_CONFLICT",
+                                timezone.now_for_db(),
+                            )
+                    else:
+                        evidence.status = "APPLIED"
+                        evidence.processed_at = timezone.now_for_db()
+                        evidence.claim_token = None
+                        evidence.claim_until = None
+                    update_event = _evidence_update_event(
+                        evidence,
+                        task_status=task.status,
+                        reason_code=task.reason_code,
+                    )
+                    processed += 1
+            if update_event is not None:
+                try:
+                    await self._event_publisher.publish_to(
+                        TRANSPORT_EVIDENCE_STREAM_CHANNEL,
+                        "transport_evidence.updated",
+                        update_event.model_dump(mode="json"),
+                    )
+                except Exception:
+                    logger.exception(
+                        "transport.evidence.event_publish_failed",
+                        extra={
+                            "event": "transport.evidence.event_publish_failed",
+                            "evidence_id": update_event.evidence_id,
+                        },
+                    )
         return processed
 
     async def record_callback(
@@ -1063,6 +1156,97 @@ def _json_value(value: object) -> Any:
     return json.loads(json.dumps(raw, ensure_ascii=False, separators=(",", ":")))
 
 
+def _evidence_snapshot(evidence: TransportEvidence | None) -> TransportEvidenceSnapshot | None:
+    if evidence is None:
+        return None
+    return TransportEvidenceSnapshot(
+        operation=evidence.operation,
+        operation_id=evidence.operation_id,
+        outcome_revision=evidence.outcome_revision,
+        status=evidence.status,
+        conflict_code=evidence.conflict_code,
+        received_at=_utc_z(evidence.received_at),
+        processed_at=_utc_z(evidence.processed_at) if evidence.processed_at is not None else None,
+    )
+
+
+def _normalized_result(outcome: dict[str, Any] | None) -> dict[str, Any] | None:
+    if outcome is None:
+        return None
+    members = []
+    for raw_member in outcome.get("members", []):
+        member = {
+            "object_id": raw_member.get("object_id"),
+            "status": (
+                "UNKNOWN"
+                if raw_member.get("position_unknown") is True
+                else "FAILED"
+                if raw_member.get("failure_code") is not None
+                else "SUCCEEDED"
+            ),
+            "final_position": raw_member.get("final_position"),
+            "position_unknown": raw_member.get("position_unknown", False),
+            "failure_code": raw_member.get("failure_code"),
+            "arrival_face": raw_member.get("arrival_face"),
+        }
+        members.append(member)
+    return {
+        "outcome_version": outcome.get("outcome_version"),
+        "status": outcome.get("status"),
+        "reason_code": outcome.get("reason_code"),
+        "members": members,
+    }
+
+
+def _encode_task_cursor(created_at: datetime, task_id: int) -> str:
+    raw = json.dumps(
+        {"created_at": _utc_z(created_at), "id": task_id},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_task_cursor(cursor: str | None) -> tuple[datetime | None, int | None]:
+    if cursor is None:
+        return None, None
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+        created_at = datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00"))
+        task_id = payload["id"]
+        if not isinstance(task_id, int) or isinstance(task_id, bool) or task_id <= 0:
+            raise ValueError
+        db_created_at = timezone.to_db_datetime(created_at)
+        if db_created_at is None:
+            raise ValueError
+        return db_created_at, task_id
+    except (binascii.Error, KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise TransportContractError("cursor is invalid") from error
+
+
+def _evidence_update_event(
+    evidence: TransportEvidence,
+    *,
+    task_status: str | None,
+    reason_code: str | None,
+) -> TransportEvidenceUpdate:
+    if evidence.id is None or evidence.processed_at is None:
+        raise RuntimeError("processed TransportEvidence is missing identity or timestamp")
+    return TransportEvidenceUpdate(
+        evidence_id=evidence.id,
+        operation_id=evidence.operation_id,
+        operation=evidence.operation,
+        transport_task_id=evidence.transport_task_id,
+        outcome_revision=evidence.outcome_revision,
+        status=evidence.status,
+        conflict_code=evidence.conflict_code,
+        task_status=task_status,
+        reason_code=reason_code,
+        processed_at=_utc_z(evidence.processed_at),
+    )
+
+
 def _contract_position(payload: dict[str, Any]) -> RackPosition | RackBinSlot | HandoffPosition:
     kind = payload.get("kind")
     if kind == "RACK_POSITION":
@@ -1268,4 +1452,10 @@ def _applicable_outcome_revision(evidence: TransportEvidence, task: TransportTas
     return value if value > task.last_applied_wms_outcome_revision else None
 
 
-__all__ = ["TransportEvidenceSnapshot", "TransportService", "TransportTaskSnapshot"]
+__all__ = [
+    "TransportEvidenceSnapshot",
+    "TransportService",
+    "TransportTaskPage",
+    "TransportTaskSnapshot",
+    "TransportTaskSummary",
+]
