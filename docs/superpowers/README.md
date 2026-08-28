@@ -48,6 +48,7 @@
 - `../archive_docs/wes_backend/2026-08-24-integration-release-reliability.md`
 - `../archive_docs/wes_backend/2026-08-24-integration-release-reliability-design.md`
 - `../archive_docs/wes_backend/2026-08-25-frontend-backend-release-decoupling.md`
+- `../archive_docs/wes_backend/2026-08-27-event-command-blocking-reconciliation.md`
 - `../archive_docs/wes_backend/local-development/2026-08-18-fresh-db-migration-history/2026-08-17-onsite-data-resilience-and-runtime-stability.original.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-retired-plugin-residual-convergence.md`

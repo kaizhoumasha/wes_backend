@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.28.2.0
+**Version**: 0.28.3.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
