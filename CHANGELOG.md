@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.3.0] - 2026-08-28
+
+### Removed
+
+- 将已完成的 EVENT 命令阻塞因果实施计划移出当前项目目录归档，避免历史执行步骤继续被检索为现行设计真源。
+
 ## [0.28.2.0] - 2026-08-27
 
 ### Added
