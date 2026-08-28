@@ -37,9 +37,16 @@ def _none_policy(module: Any) -> Any:
     )
 
 
-def _route_app(module: Any, handler: AsyncMock, policy: object | None) -> FastAPI:
+def _route_app(
+    module: Any,
+    handler: AsyncMock,
+    policy: object | None,
+    *,
+    publisher: object | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.state.transport_runtime = SimpleNamespace(handler=SimpleNamespace(handle=handler))
+    app.state.transport_event_stream_service = publisher or SimpleNamespace(publish_to=AsyncMock(return_value=True))
     app.state.wms_inbound_auth_policy = policy
     app.include_router(module.router, prefix="/api/v1/wms")
     return app
@@ -130,6 +137,136 @@ def test_none_profile_forwards_exact_bytes_and_wakes_evidence_worker_after_persi
     assert response.json() == response_body
     handler.assert_awaited_once_with(raw_body)
     enqueue.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("ack_code", "http_status", "expected_disposition"),
+    (
+        ("RECEIVED", 202, "RECEIVED"),
+        ("DUPLICATE", 200, "DUPLICATE"),
+        ("CONFLICT", 409, "CONFLICT"),
+        ("REJECTED", 422, "REJECTED"),
+        ("UNAVAILABLE", 503, "UNAVAILABLE"),
+    ),
+)
+def test_transport_ingress_attempt_publishes_safe_disposition_without_changing_response(
+    monkeypatch: pytest.MonkeyPatch,
+    ack_code: str,
+    http_status: int,
+    expected_disposition: str,
+) -> None:
+    module = _events_module()
+    operation_id = "01988ef1-4d2a-7000-8000-000000000001"
+    raw_body = json.dumps(
+        {
+            "operation_id": operation_id,
+            "operation": "transport.task.resulted@v1",
+            "timestamp": 1,
+            "data": {
+                "transport_task_id": "transport-1",
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": "RACK-01",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "LINE-01"},
+                "arrival_face": "A",
+            },
+        },
+        separators=(",", ":"),
+    ).encode()
+    response_data = {"transport_task_id": "transport-1"} if ack_code in {"RECEIVED", "DUPLICATE"} else {}
+    response_body = {
+        "operation_id": operation_id,
+        "code": ack_code,
+        "timestamp": 1786435200000,
+        "data": response_data,
+    }
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=http_status, body=response_body))
+    publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", MagicMock())
+    app = _route_app(module, handler, _none_policy(module), publisher=publisher)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == http_status
+    assert response.json() == response_body
+    publisher.publish_to.assert_awaited_once()
+    channel, event_type, payload = publisher.publish_to.await_args.args
+    assert (channel, event_type) == ("transport:evidence:stream", "transport_ingress.attempted")
+    assert payload["operation_id"] == operation_id
+    assert payload["transport_task_id"] == "transport-1"
+    assert payload["kind"] == "RACK_MOVE"
+    assert payload["outcome_revision"] == 1
+    assert payload["disposition"] == expected_disposition
+    assert payload["status_code"] == http_status
+    assert payload["observed_body_bytes"] == len(raw_body)
+    assert "data" not in payload
+    assert "raw_body" not in payload
+
+
+def test_transport_ingress_publisher_failure_does_not_change_persisted_ack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _events_module()
+    response_body = {
+        "operation_id": "01988ef1-4d2a-7000-8000-000000000001",
+        "code": "RECEIVED",
+        "timestamp": 1786435200000,
+        "data": {"transport_task_id": "transport-1"},
+    }
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=202, body=response_body))
+    publisher = SimpleNamespace(publish_to=AsyncMock(side_effect=ConnectionError("redis unavailable")))
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", MagicMock())
+    app = _route_app(module, handler, _none_policy(module), publisher=publisher)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 202
+    assert response.json() == response_body
+
+
+def test_transport_ingress_validation_rejection_is_published_without_reading_body() -> None:
+    module = _events_module()
+    handler = AsyncMock()
+    publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app = _route_app(module, handler, _none_policy(module), publisher=publisher)
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=b"secret", headers={"Content-Type": "text/plain"})
+
+    assert response.status_code == 400
+    publisher.publish_to.assert_awaited_once()
+    payload = publisher.publish_to.await_args.args[2]
+    assert payload["disposition"] == "REJECTED"
+    assert payload["error_code"] == "INVALID_CONTENT_TYPE"
+    assert payload["observed_body_bytes"] == 0
+    assert payload["operation_id"] is None
+    assert "secret" not in str(payload)
+
+
+def test_transport_ingress_diagnostics_sanitize_overlong_identity_without_changing_ack() -> None:
+    module = _events_module()
+    handler = AsyncMock(return_value=TransportEventResponse(http_status=422, body={"code": "REJECTED"}))
+    publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app = _route_app(module, handler, _none_policy(module), publisher=publisher)
+    raw_body = json.dumps(
+        {
+            "operation_id": "o" * 37,
+            "operation": "x" * 81,
+            "data": {"transport_task_id": "t" * 81},
+        }
+    ).encode()
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 422
+    payload = publisher.publish_to.await_args.args[2]
+    assert payload["operation_id"] is None
+    assert payload["operation"] is None
+    assert payload["transport_task_id"] is None
 
 
 @pytest.mark.asyncio
@@ -483,7 +620,8 @@ def test_shared_wms_event_route_dispatches_recovery_to_the_single_inbound_handle
     )
     enqueue = MagicMock()
     monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", enqueue)
-    app = _route_app(module, transport_handler, _none_policy(module))
+    publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app = _route_app(module, transport_handler, _none_policy(module), publisher=publisher)
     app.state.wms_inbound_event_handler = SimpleNamespace(handle=inbound_handler)
     raw_body = json.dumps(
         {
@@ -500,4 +638,5 @@ def test_shared_wms_event_route_dispatches_recovery_to_the_single_inbound_handle
     assert response.status_code == 202
     inbound_handler.assert_awaited_once_with(raw_body)
     transport_handler.assert_not_awaited()
+    publisher.publish_to.assert_not_awaited()
     enqueue.assert_not_called()

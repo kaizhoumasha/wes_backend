@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Body, Depends, Path, Request, status
+from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from src.app.transport.contracts import (
@@ -20,6 +20,8 @@ from src.app.transport.contracts import (
     TransportHandle,
     TransportIdempotencyConflict,
     TransportResourceConflict,
+    TransportTaskKind,
+    TransportTaskStatus,
 )
 from src.core.exceptions import ConflictException, ServiceUnavailableException, ValidationException
 from src.core.rbac import RequirePermission
@@ -136,7 +138,7 @@ class TransportEvidenceResponse(_StrictApiModel):
     processed_at: str | None
 
 
-class TransportTaskResponse(_StrictApiModel):
+class TransportTaskSummaryResponse(_StrictApiModel):
     transport_task_id: str
     client_request_id: str
     submit_operation_id: str
@@ -146,6 +148,32 @@ class TransportTaskResponse(_StrictApiModel):
     created_at: str
     updated_at: str
     latest_evidence: TransportEvidenceResponse | None
+
+
+class TransportResultMemberResponse(_StrictApiModel):
+    object_id: str
+    status: Literal["UNKNOWN", "FAILED", "SUCCEEDED"]
+    final_position: dict[str, Any] | None
+    position_unknown: bool
+    failure_code: str | None
+    arrival_face: Literal["A", "B"] | None
+
+
+class TransportResultResponse(_StrictApiModel):
+    outcome_version: int
+    status: Literal["SUCCEEDED", "FAILED", "REJECTED", "UNKNOWN"]
+    reason_code: str | None
+    members: list[TransportResultMemberResponse]
+
+
+class TransportTaskResponse(TransportTaskSummaryResponse):
+    request: dict[str, Any]
+    result: TransportResultResponse | None
+
+
+class TransportTaskPageResponse(_StrictApiModel):
+    items: list[TransportTaskSummaryResponse]
+    next_cursor: str | None
 
 
 _OPENAPI_EXAMPLES = {
@@ -328,15 +356,47 @@ async def create_debug_transport_task(
 
 
 @router.get(
+    "/tasks",
+    summary="[ops:transport-task:list] 查询本地 Transport 任务列表",
+    response_model=ResponseSchemaModel[TransportTaskPageResponse],
+    status_code=status.HTTP_200_OK,
+    responses={
+        400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "游标或筛选条件无效"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
+    },
+    dependencies=[Depends(RequirePermission("ops:transport-task:list"))],
+)
+async def list_transport_tasks(
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
+    kind: TransportTaskKind | None = None,
+    status_filter: Annotated[TransportTaskStatus | None, Query(alias="status")] = None,
+) -> ResponseSchemaModel[TransportTaskPageResponse]:
+    runtime = _transport_runtime(request)
+    try:
+        page = await runtime.service.list_task_snapshots(
+            limit=limit,
+            cursor=cursor,
+            kind=kind.value if kind is not None else None,
+            status=status_filter.value if status_filter is not None else None,
+        )
+    except (TransportContractError, ValueError) as exc:
+        raise ValidationException(str(exc), code="2004", status_code=400) from exc
+    data = TransportTaskPageResponse.model_validate(page, from_attributes=True)
+    return cast("ResponseSchemaModel[TransportTaskPageResponse]", response_builder.success(data=data))
+
+
+@router.get(
     "/tasks/{transport_task_id}",
-    summary="[ops:transport:read] 查询本地 Transport 任务",
+    summary="[ops:transport-task:read] 查询本地 Transport 任务",
     response_model=ResponseSchemaModel[TransportTaskResponse],
     status_code=status.HTTP_200_OK,
     responses={
         404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "TransportTask 不存在"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
     },
-    dependencies=[Depends(RequirePermission("ops:transport:read"))],
+    dependencies=[Depends(RequirePermission("ops:transport-task:read"))],
 )
 async def get_transport_task(
     request: Request,

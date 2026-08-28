@@ -682,8 +682,11 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/sys/{services/event_stream_service.py,v1/events.py}"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+source_glob = "src/app/sys/{services/__init__.py,services/event_stream_service.py,v1/events.py}"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+]
 
 [[mapping]]
 source_glob = "migrations/versions/20260823_1616_11013119b97d_audit_manual_device_command.py"
@@ -714,7 +717,7 @@ heavy_tests = ["tests/integration/device_command/test_event_command_block_migrat
 [[mapping]]
 source_glob = "nginx/conf.d/default.conf"
 heavy_tests = []
-reviewed_content_sha256 = "6fc9581bfd64092d380862dadadc2560da88b20cd44885301ac916cadf784d40"
+reviewed_content_sha256 = "3541109d4e3d40bb41391979674083c1d60edaf2e3450b4affcbac005e854f6a"
 
 [[mapping]]
 source_glob = "src/app/device/{models/device.py,repositories/device_repository.py,v1/device.py}"
@@ -1091,7 +1094,7 @@ source_glob = "src/app/transport/{__init__.py,composition.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 [[mapping]]
-source_glob = "src/app/transport/v1/{__init__.py,tasks.py}"
+source_glob = "src/app/transport/v1/{__init__.py,tasks.py,evidence_stream.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Transport wire 合同还被 WMS Transport Mock 镜像直接导入。

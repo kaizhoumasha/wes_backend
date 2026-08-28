@@ -18,6 +18,7 @@ from src.app.transport.contracts import (
     RackFace,
     RackPosition,
     TransportCaller,
+    TransportContractError,
     TransportIdempotencyConflict,
     TransportOutcome,
     TransportResourceConflict,
@@ -78,6 +79,26 @@ class FakeProvider:
             code=self.code,
             transport_task_id=self.transport_task_id_override or transport_task_id,
         )
+
+
+class RecordingEventPublisher:
+    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+        self._sessions = sessions
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+        self.visible_statuses: list[str | None] = []
+
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool:
+        async with self._sessions() as db:
+            evidence = await db.get(TransportEvidence, payload["evidence_id"])
+        self.visible_statuses.append(None if evidence is None else evidence.status)
+        self.events.append((channel, event_type, payload))
+        return True
+
+
+class FailingEventPublisher:
+    async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool:
+        del channel, event_type, payload
+        raise ConnectionError("redis unavailable")
 
 
 class ResultBeforeAckProvider:
@@ -181,6 +202,9 @@ async def test_task_snapshot_without_callback_returns_local_task_identity(
     assert snapshot.client_request_id == handle.client_request_id
     assert snapshot.kind == "RACK_MOVE"
     assert snapshot.status == "PENDING"
+    assert snapshot.request["kind"] == "RACK_MOVE"
+    assert snapshot.request["rack_id"] == "rack-snapshot-empty"
+    assert snapshot.result is None
     assert snapshot.latest_evidence is None
     assert snapshot.created_at.endswith("Z")
     assert snapshot.updated_at.endswith("Z")
@@ -275,6 +299,224 @@ async def test_task_snapshot_returns_latest_callback_evidence_status(
 async def test_task_snapshot_raises_not_found_for_unknown_task(service: TransportService) -> None:
     with pytest.raises(NotFoundException):
         await service.get_task_snapshot("transport-missing")
+
+
+@pytest.mark.asyncio
+async def test_task_snapshot_normalizes_member_result_status_without_raw_outcome(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    await confirm_rack_faces(db_engine, {"rack-detail-result": RackFace.A})
+    handle = await service.move_bins(
+        new_uuid7(),
+        _caller(),
+        (
+            BinMove(
+                "bin-unknown",
+                RackBinSlot("rack-detail-result", RackFace.A, "1"),
+                HandoffPosition("HANDOFF-1"),
+            ),
+        ),
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        assert task is not None
+        task.status = "FAILED"
+        task.reason_code = "PARTIAL_FAILURE"
+        task.outcome_version = 1
+        task.outcome_json = {
+            "transport_task_id": handle.transport_task_id,
+            "client_request_id": handle.client_request_id,
+            "outcome_version": 1,
+            "caller": {"workline_id": "SORTER", "station_id": "STATION_A"},
+            "status": "FAILED",
+            "reason_code": "PARTIAL_FAILURE",
+            "members": [
+                {
+                    "object_id": "bin-unknown",
+                    "final_position": None,
+                    "position_unknown": True,
+                    "failure_code": None,
+                    "arrival_face": None,
+                },
+                {
+                    "object_id": "bin-failed",
+                    "final_position": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-2"},
+                    "position_unknown": False,
+                    "failure_code": "TARGET_BLOCKED",
+                    "arrival_face": None,
+                },
+                {
+                    "object_id": "bin-succeeded",
+                    "final_position": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-3"},
+                    "position_unknown": False,
+                    "failure_code": None,
+                    "arrival_face": None,
+                },
+            ],
+        }
+
+    snapshot = await service.get_task_snapshot(handle.transport_task_id)
+
+    assert snapshot.result is not None
+    assert [member["status"] for member in snapshot.result["members"]] == ["UNKNOWN", "FAILED", "SUCCEEDED"]
+    assert set(snapshot.result) == {"outcome_version", "status", "reason_code", "members"}
+
+
+@pytest.mark.asyncio
+async def test_task_list_uses_stable_keyset_cursor_and_one_query_per_page(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    handles = [
+        await service.move_rack(
+            new_uuid7(),
+            _caller(),
+            f"rack-list-{ordinal}",
+            RackPosition(f"SOURCE-{ordinal}"),
+            RackPosition(f"TARGET-{ordinal}"),
+            RackFace.A,
+        )
+        for ordinal in range(3)
+    ]
+    base = timezone.now_for_db()
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        for ordinal, handle in enumerate(handles):
+            await db.execute(
+                update(TransportTask)
+                .where(TransportTask.transport_task_id == handle.transport_task_id)
+                .values(created_at=base + timedelta(seconds=ordinal), updated_at=base + timedelta(seconds=ordinal))
+            )
+
+    statements: list[str] = []
+
+    def _capture_statement(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del connection, cursor, parameters, context, executemany
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", _capture_statement)  # type: ignore[attr-defined]
+    try:
+        first = await service.list_task_snapshots(limit=2, cursor=None, kind="RACK_MOVE", status=None)
+        first_query_count = len(statements)
+        second = await service.list_task_snapshots(
+            limit=2,
+            cursor=first.next_cursor,
+            kind="RACK_MOVE",
+            status=None,
+        )
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", _capture_statement)  # type: ignore[attr-defined]
+
+    assert [item.transport_task_id for item in first.items] == [
+        handles[2].transport_task_id,
+        handles[1].transport_task_id,
+    ]
+    assert first.next_cursor is not None
+    assert [item.transport_task_id for item in second.items] == [handles[0].transport_task_id]
+    assert second.next_cursor is None
+    assert first_query_count == 1
+    assert len(statements) == 2
+
+
+@pytest.mark.asyncio
+async def test_task_list_rejects_invalid_opaque_cursor(service: TransportService) -> None:
+    with pytest.raises(TransportContractError, match="cursor is invalid"):
+        await service.list_task_snapshots(
+            limit=20,
+            cursor="not-base64!",
+            kind=None,
+            status=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_evidence_update_is_published_only_after_commit_and_failure_is_isolated(
+    db_engine: object,
+) -> None:
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    publisher = RecordingEventPublisher(sessions)
+    service = TransportService(
+        sessions,
+        TransportRepository(),
+        FakeProvider(),
+        event_publisher=publisher,
+    )
+    await confirm_rack_faces(db_engine, {"rack-event-publish": RackFace.A})
+    handle = await service.move_bins(
+        new_uuid7(),
+        _caller(),
+        (
+            BinMove(
+                "bin-event-publish",
+                RackBinSlot("rack-event-publish", RackFace.A, "1"),
+                HandoffPosition("HANDOFF-EVENT"),
+            ),
+        ),
+    )
+    message = {
+        "operation_id": new_uuid7(),
+        "operation": "transport.task.member_position_changed@v1",
+        "timestamp": 1,
+        "data": {
+            "transport_task_id": handle.transport_task_id,
+            "container_id": "bin-event-publish",
+            "milestone": "SOURCE_PICKED",
+        },
+    }
+    await service.record_callback(
+        operation_id=message["operation_id"],
+        operation=message["operation"],
+        message=message,
+        payload=message["data"],
+        rejection_reason_code=None,
+    )
+
+    assert await service.process_pending_evidence(1) == 1
+
+    assert publisher.visible_statuses == ["APPLIED"]
+    channel, event_type, payload = publisher.events[0]
+    assert (channel, event_type) == ("transport:evidence:stream", "transport_evidence.updated")
+    assert payload["transport_task_id"] == handle.transport_task_id
+    assert payload["status"] == "APPLIED"
+    assert payload["task_status"] == "ACCEPTED"
+    assert "payload_json" not in payload
+
+    failing_service = TransportService(
+        sessions,
+        TransportRepository(),
+        FakeProvider(),
+        event_publisher=FailingEventPublisher(),
+    )
+    missing_evidence = TransportEvidence(
+        operation_id=new_uuid7(),
+        transport_task_id="missing-task-for-publisher",
+        operation="transport.task.resulted@v1",
+        outcome_revision=1,
+        event_timestamp_ms=1,
+        message_digest="f" * 64,
+        payload_json={"transport_task_id": "missing-task-for-publisher"},
+        ack_timestamp_ms=2,
+        ack_data_json={"transport_task_id": "missing-task-for-publisher"},
+        received_at=timezone.now_for_db(),
+    )
+    async with sessions.begin() as db:
+        db.add(missing_evidence)
+
+    assert await failing_service.process_pending_evidence(1) == 1
+    async with sessions() as db:
+        persisted = await db.get(TransportEvidence, missing_evidence.id)
+    assert persisted is not None
+    assert persisted.status == "CONFLICT"
 
 
 @pytest.mark.asyncio

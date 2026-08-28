@@ -45,7 +45,8 @@
 
 - “设备接入诊断”的页面、确认对话框、SSE 状态和断线提示模式；
 - Transport 调试创建和单条查询的生成 API；
-- `ops:transport:debug-create`、`ops:transport:read` 权限常量。
+- `ops:transport:debug-create`、`ops:transport-task:list`、`ops:transport-task:read`、
+  `ops:transport-evidence:stream` 权限常量。
 
 因此本功能只补齐 Transport 列表、详情投影、Transport 专用 SSE 事件和前端页面，不复制 Redis/SSE 基础设施，不改变 WMS Provider profile。
 
@@ -86,7 +87,7 @@ WMS 回调
 GET /api/v1/transport/tasks?limit=20&cursor=...&kind=RACK_MOVE&status=FAILED
 ```
 
-权限：`ops:transport:read`。
+权限：`ops:transport-task:list`。
 
 查询参数：
 
@@ -143,6 +144,8 @@ GET /api/v1/transport/tasks?limit=20&cursor=...&kind=RACK_MOVE&status=FAILED
 GET /api/v1/transport/tasks/{transport_task_id}
 ```
 
+权限：`ops:transport-task:read`。
+
 在现有任务标识、状态、原因、时间和最新 evidence 之外，新增：
 
 ```json
@@ -197,7 +200,8 @@ GET /api/v1/transport/evidences/stream
 Accept: text/event-stream
 ```
 
-权限：`ops:transport:read`。复用 `EventStreamService`，使用独立 Redis channel `transport:evidence:stream`。
+权限：`ops:transport-evidence:stream`。复用 `EventStreamService`，使用独立 Redis channel
+`transport:evidence:stream`。
 
 流语义：
 
@@ -305,7 +309,8 @@ data: {
 
 ## 8. 权限、安全与隐私
 
-- 页面延续 `/ops` 现有超级用户菜单可见性；后端接口仍分别校验 `ops:transport:read` 和 `ops:transport:debug-create`；
+- 页面延续 `/ops` 现有超级用户菜单可见性；后端接口按用途分别校验 `ops:transport-task:list`、
+  `ops:transport-task:read`、`ops:transport-evidence:stream` 和 `ops:transport:debug-create`；
 - SSE 的 `401`、`403` 不降级为普通断线：`401` 仅刷新一次，`403` 进入 `FORBIDDEN` 并停止自动重连；
 - 前端不在 URL、日志、通知或错误详情中输出 access token；
 - SSE 和详情 API 都不返回 WMS 原始报文、鉴权材料或 Provider profile；

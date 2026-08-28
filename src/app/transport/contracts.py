@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.uuid7 import is_uuid7
 
@@ -57,6 +59,45 @@ class TransportSubmitCode(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
     NOT_SENT = "NOT_SENT"
     DELIVERY_UNKNOWN = "DELIVERY_UNKNOWN"
+
+
+class TransportIngressDisposition(StrEnum):
+    RECEIVED = "RECEIVED"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    REJECTED = "REJECTED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class _TransportDiagnosticEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TransportIngressAttempt(_TransportDiagnosticEvent):
+    request_id: str = Field(min_length=1, max_length=120)
+    operation_id: str | None = Field(default=None, max_length=36)
+    operation: str | None = Field(default=None, max_length=80)
+    transport_task_id: str | None = Field(default=None, max_length=80)
+    kind: TransportTaskKind | None = None
+    outcome_revision: int | None = Field(default=None, ge=1)
+    received_at: str
+    disposition: TransportIngressDisposition
+    status_code: int = Field(ge=100, le=599)
+    error_code: str | None = Field(default=None, max_length=120)
+    observed_body_bytes: int = Field(ge=0)
+
+
+class TransportEvidenceUpdate(_TransportDiagnosticEvent):
+    evidence_id: int = Field(ge=1)
+    operation_id: str = Field(min_length=1, max_length=36)
+    operation: str = Field(min_length=1, max_length=80)
+    transport_task_id: str = Field(min_length=1, max_length=80)
+    outcome_revision: int | None = Field(default=None, ge=1)
+    status: Literal["APPLIED", "CONFLICT"]
+    conflict_code: str | None = Field(default=None, max_length=120)
+    task_status: TransportTaskStatus | None = None
+    reason_code: str | None = Field(default=None, max_length=120)
+    processed_at: str
 
 
 MAX_SUBMIT_ATTEMPTS = 3
@@ -403,8 +444,11 @@ __all__ = [
     "RotateRackRequest",
     "TransportCaller",
     "TransportContractError",
+    "TransportEvidenceUpdate",
     "TransportHandle",
     "TransportIdempotencyConflict",
+    "TransportIngressAttempt",
+    "TransportIngressDisposition",
     "TransportMemberOutcome",
     "TransportOutcome",
     "TransportOutcomePublisher",

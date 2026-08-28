@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.app.transport.models import (
@@ -275,6 +275,44 @@ class TransportRepository:
         )
         row = result.one_or_none()
         return None if row is None else (row[0], row[1])
+
+    async def list_tasks_with_latest_evidence(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        cursor_created_at: datetime | None,
+        cursor_id: int | None,
+        kind: str | None,
+        status: str | None,
+    ) -> list[tuple[TransportTask, TransportEvidence | None]]:
+        latest_evidence_id = (
+            select(TransportEvidence.id)
+            .where(TransportEvidence.transport_task_id == TransportTask.transport_task_id)
+            .order_by(TransportEvidence.received_at.desc(), TransportEvidence.id.desc())
+            .limit(1)
+            .correlate(TransportTask)
+            .scalar_subquery()
+        )
+        statement = select(TransportTask, TransportEvidence).outerjoin(
+            TransportEvidence,
+            TransportEvidence.id == latest_evidence_id,
+        )
+        if cursor_created_at is not None and cursor_id is not None:
+            statement = statement.where(
+                or_(
+                    TransportTask.created_at < cursor_created_at,
+                    and_(TransportTask.created_at == cursor_created_at, TransportTask.id < cursor_id),
+                )
+            )
+        if kind is not None:
+            statement = statement.where(TransportTask.kind == kind)
+        if status is not None:
+            statement = statement.where(TransportTask.status == status)
+        result = await db.execute(
+            statement.order_by(TransportTask.created_at.desc(), TransportTask.id.desc()).limit(limit)
+        )
+        return [(row[0], row[1]) for row in result.all()]
 
     async def has_evidence(self, db: AsyncSession, transport_task_id: str) -> bool:
         evidence_id = await db.scalar(
