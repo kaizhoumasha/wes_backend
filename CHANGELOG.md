@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0.0] - 2026-08-28
+
+### Added
+
+- 增加 Transport 最近任务列表、规范化详情和 live-only evidence SSE，支持联调期间查询持久任务状态并观察 WMS ingress/evidence 更新。
+- 增加安全的 Transport ingress 诊断事件、事务提交后的 evidence 更新通知，以及对应 Nginx 无缓冲长连接配置。
+
+### Changed
+
+- Transport 列表、详情和 SSE 分别使用 `ops:transport-task:list`、`ops:transport-task:read` 和
+  `ops:transport-evidence:stream`，保持权限叶子与 HTTP 定义一一对应。
+
+### Verification
+
+- 权限修复按 RED → GREEN 验证，相关 API/provider 测试 62 项、HEAVY selector 选中的 PostgreSQL/生产 wiring 测试 109 项通过。
+- Commit hook QUALITY 与 fresh Review 通过；本次交付不包含 Deploy、真实 WMS/RCS/ECS 物理动作、供应商一致性或现场业务验收。
+
 ## [0.28.3.0] - 2026-08-28
 
 ### Removed
