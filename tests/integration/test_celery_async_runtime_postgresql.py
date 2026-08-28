@@ -547,6 +547,7 @@ class PreforkWorker:
         command = [
             "uv",
             "run",
+            "--no-sync",
             "celery",
             "-A",
             "src.celery_app.app",
@@ -585,6 +586,14 @@ class PreforkWorker:
                 start_new_session=True,
             )
             _wait_until(self._is_ready, WORKER_READY_TIMEOUT, f"worker {self.hostname} readiness")
+            _wait_until(
+                lambda: (
+                    len({int(marker["pid"]) for marker in _probe_markers(self.log_text(), "child_init_complete")})
+                    >= self.concurrency
+                ),
+                WORKER_READY_TIMEOUT,
+                f"worker {self.hostname} child initialization",
+            )
             ready_probe = cast("dict[str, object]", self.result(self.submit(PROBE_TASK, "worker-ready")))
             expected_database = make_url(self.services["database_url"])
             expected_target = {

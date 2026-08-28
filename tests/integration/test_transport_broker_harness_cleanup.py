@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -60,6 +61,28 @@ def test_worker_applies_one_run_prefix_to_broker_and_result_backend() -> None:
     assert dict(worker.producer.conf.broker_transport_options)["global_keyprefix"] == worker.key_prefix
     assert dict(worker.producer.conf.result_backend_transport_options)["global_keyprefix"] == worker.key_prefix
     worker.producer.close()
+
+
+def test_worker_start_reuses_the_locked_test_environment_without_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, Path("provider.yaml"))
+    captured_command: list[str] = []
+    fake_process = type("FakeProcess", (), {"pid": 43220, "poll": lambda self: 1})()
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        captured_command.extend(command)
+        return fake_process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(AssertionError, match="worker exited early"):
+        worker.start()
+
+    assert captured_command[1:4] == ["run", "--no-sync", "celery"]
+    worker.producer.close()
+    if worker._log_file is not None:
+        worker._log_file.close()
+    if worker.log_path is not None:
+        worker.log_path.unlink(missing_ok=True)
 
 
 def test_worker_close_kills_surviving_process_group_and_attempts_every_cleanup(
