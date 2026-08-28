@@ -219,6 +219,7 @@ class TransportBrokerWorker:
         command = [
             "uv",
             "run",
+            "--no-sync",
             "celery",
             "-A",
             "src.celery_app.app",

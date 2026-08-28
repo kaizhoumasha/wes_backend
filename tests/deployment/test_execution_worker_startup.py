@@ -147,6 +147,34 @@ def test_device_command_worker_readiness_budget_covers_a_cold_ci_container_start
     assert ecs_uniform_wire.WORKER_READY_TIMEOUT_SECONDS >= 60
 
 
+def test_device_command_worker_reuses_the_locked_test_environment_without_sync(monkeypatch, tmp_path) -> None:
+    worker = DeviceCommandBrokerWorker(
+        "postgresql+asyncpg://user:password@db:5432/test_device_command",
+        "redis://redis:6379/15",
+        tmp_path / "provider.yaml",
+        run_id="no-sync-proof",
+    )
+    captured_command: list[str] = []
+    fake_process = SimpleNamespace(pid=43210)
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        captured_command.extend(command)
+        return fake_process
+
+    monkeypatch.setattr(ecs_uniform_wire.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(worker, "_wait_for_startup_probe", lambda deadline: None)
+
+    try:
+        worker.start()
+        assert captured_command[1:4] == ["run", "--no-sync", "celery"]
+    finally:
+        worker.producer.close()
+        if worker._log_file is not None:
+            worker._log_file.close()
+        if worker.log_path is not None:
+            worker.log_path.unlink(missing_ok=True)
+
+
 def test_device_command_worker_accepts_build_scoped_compose_redis_on_non_zero_database(tmp_path) -> None:
     worker = DeviceCommandBrokerWorker(
         "postgresql+asyncpg://user:password@db:5432/test_device_command",

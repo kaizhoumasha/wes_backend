@@ -94,6 +94,80 @@ def test_worker_start_declares_the_dynamic_cli_queue_in_its_environment(monkeypa
     worker.project_log_dir.rmdir()
 
 
+def test_worker_start_reuses_the_locked_test_environment_without_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = harness.PreforkWorker(SERVICES)
+    captured_command: list[str] = []
+    fake_process = type("FakeProcess", (), {"pid": 43210})()
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        captured_command.extend(command)
+        return fake_process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        harness,
+        "_wait_until",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("injected readiness failure")),
+    )
+    monkeypatch.setattr(worker, "stop", lambda **kwargs: None)
+
+    with pytest.raises(AssertionError, match="injected readiness failure"):
+        worker.start()
+
+    assert captured_command[1:4] == ["run", "--no-sync", "celery"]
+    worker._log_file.close()
+    worker.log_path.unlink(missing_ok=True)
+    worker.project_log_dir.rmdir()
+
+
+def test_worker_start_waits_for_every_prefork_child_to_initialize(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker = harness.PreforkWorker(SERVICES, concurrency=2, run_id="child-readiness-proof")
+    fake_process = type("FakeProcess", (), {"pid": 43210})()
+    wait_descriptions: list[str] = []
+
+    def fake_wait_until(predicate: Any, timeout: float, description: str) -> bool:
+        del timeout
+        wait_descriptions.append(description)
+        if not description.endswith("child initialization"):
+            return True
+        assert worker._log_file is not None
+        worker._log_file.write('PREFORK_MARKER {"kind": "child_init_complete", "pid": 101}\n')
+        worker._log_file.flush()
+        assert not predicate()
+        worker._log_file.write('PREFORK_MARKER {"kind": "child_init_complete", "pid": 102}\n')
+        worker._log_file.flush()
+        assert predicate()
+        return True
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake_process)
+    monkeypatch.setattr(harness, "_wait_until", fake_wait_until)
+    monkeypatch.setattr(worker, "submit", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        worker,
+        "result",
+        lambda *args, **kwargs: {
+            "database": "test_prefork",
+            "configured_host": "127.0.0.1",
+            "configured_port": 5432,
+            "role": "integration",
+            "server_host": "127.0.0.1/32",
+            "server_port": 5432,
+            "application_name": "child-readiness-proof",
+        },
+    )
+    monkeypatch.setattr(worker, "_capture_descendants", lambda: None)
+
+    worker.start()
+
+    assert wait_descriptions == [
+        "worker it-child-readiness-proof@localhost readiness",
+        "worker it-child-readiness-proof@localhost child initialization",
+    ]
+    worker._log_file.close()
+    worker.log_path.unlink(missing_ok=True)
+    worker.project_log_dir.rmdir()
+
+
 def test_worker_log_preserves_probe_markers_across_subprocess_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     worker = harness.PreforkWorker(SERVICES)
     fake_process = type("FakeProcess", (), {"pid": 43210})()

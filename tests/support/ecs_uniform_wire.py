@@ -289,6 +289,7 @@ class DeviceCommandBrokerWorker:
             [
                 shutil.which("uv") or "uv",
                 "run",
+                "--no-sync",
                 "celery",
                 "-A",
                 "src.celery_app.app",
