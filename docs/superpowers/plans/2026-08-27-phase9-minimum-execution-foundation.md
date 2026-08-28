@@ -85,9 +85,11 @@ BinExecution 关闭使用相同前缀锁序后删除 BIN projection；Epoch 关�
 结果回写只能读取任务已冻结的 authority，禁止事后查询“当前 Epoch”。debug Transport 始终没有 execution authority：它可以执行设备联调
 并保留 TransportTask、member 和 Evidence，但不能写核心 `PositionProjection`。
 
-### 3.3 物理 FIFO 与 unfinished-work snapshot
+### 3.3 Phase 9 admission/return FIFO 与 unfinished-work snapshot
 
-正常物料/料箱严格按 `(workline_id, line_run_epoch_id)` FIFO，不允许后到对象跳过被 retry、unknown、reconciling 或人工对账阻塞的队头：
+Phase 9 范围内的 WorkLine 入站 admission 与 Bin RETURN 分别按 `(workline_id, line_run_epoch_id)` 严格 FIFO，不允许后到对象跳过
+被 retry、unknown、reconciling 或人工对账阻塞的队头。该规则不把全部物料运动定义为 FIFO；顶端可达的 `BIN_CELL` 堆叠按出库
+PickingTask 合同执行 LIFO，不属于本阶段的业务实现范围：
 
 ```text
 InboundEvidence (received_at, id)

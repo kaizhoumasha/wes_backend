@@ -362,6 +362,22 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     *   核心负责 `DeviceCommand` 的持久化、设备准入、幂等、关联、deadline、ACK/CALLBACK 证据和通用诊断。
     *   供应商 ECS/网关负责把内部协议收敛为统一接口；WES 统一接口层只校验公共包络和设备附录，不解释业务优先级或推进业务对象。
 
+*   **物理事实安全边界 (Physical Fact Safety Boundary)**:
+    *   物理请求一旦可能被 ECS/RCS 接纳，结果或位置未知就表示事实尚未闭合，而不是动作未发生。WES 必须保留原执行身份、冻结载荷、
+        evidence 和资源围栏，等待匹配的晚到结果或人工对账。
+    *   ACK、HTTP 成功、超时、业务 Task 完成、数据库状态、Mock 或诊断查询都不能证明物理完成。未取得匹配的权威终态与必要位置前，
+        禁止换身份重发等价动作、释放资源、改址、跳过对象或覆盖原事实。
+    *   WMS 计划与现场 evidence 冲突时，以 ECS/PLC/RCS 的权威物理事实冻结最小影响范围并进入对账；不得修改历史事实迎合计划。
+
+*   **物理顺序纪律 (Physical Ordering Discipline)**:
+    *   每条物理队列的业务合同必须声明顺序作用域、纪律、顺序来源与冻结点、稳定顺序键、阻塞状态、权威退出证据和允许并行的边界；
+        不建立脱离具体物理结构的通用调度器。
+    *   WMS 决定业务准入、优先级和来源，WES 在耐久接纳边界冻结并执行可靠顺序，ECS/PLC/RCS 提供实际运动、位置和完成事实。
+        发起方未提供可验证顺序时，具体合同才允许 WES 以首次耐久接收事实形成规范顺序；网络到达、重试和数组顺序不得被隐式当作业务顺序。
+    *   单向输送、入料缓存和 `RETURN_BUFFER` 等声明为 FIFO 的队列不得越过未闭合队头；顶端可达的 `BIN_CELL` 堆叠按 LIFO，
+        不得越过未闭合栈顶。`UNKNOWN`、`RECONCILING`、ESTOP、retry 或人工处理不会自动解除阻塞。
+    *   NG 分流、人工移除、翻垛或其它越序行为只有在对应合同显式授权，并取得足以证明当前队头或栈顶已经可靠退出的物理 evidence 后才成立。
+
 *   **设备命令生命周期 (Device Command Lifecycle)**:
     *   核心通用生命周期为 `PENDING / DISPATCHING / ACKNOWLEDGED / RECONCILING / SUCCEEDED / FAILED / TIMED_OUT`。
     *   `ACKNOWLEDGED` 只代表请求被厂商接纳；只有匹配当前命令的最终 CALLBACK 才能进入 `SUCCEEDED`/`FAILED`。

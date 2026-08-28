@@ -905,6 +905,13 @@ Bin 到达工作位并完成 SCAN2 后，WES 保存 Bin 编号和到位记录，
 不能撤销、删减或改写，数组顺序不表达业务优先级或依赖。此后只能通过现有的逐 Cell、空取、NG 和结果确认流程处理，不能中途撤销
 整个 Bin 或已经开始的料盘动作。
 
+`BIN_CELL` 是顶端可达的物理堆叠，固定按 LIFO 逐盘抓取。`READY.cell_ids[]` 只授权处理这些 Cell，不指定或授权越过 Cell 内的任意料盘；
+WMS 根据库存主账、堆叠参数和 PickingTask 选择 Cell，WES 只为当前物理栈顶创建来源 DeviceCommand，ECS/PLC 负责确保吸盘不会越过
+上层料盘。当前栈顶取得可靠取出结果且 WMS 对该盘返回 `ACCEPT.next_source_action=CONTINUE` 或
+`REJECT.source_disposition=CONTINUE` 后，下一盘才成为可执行栈顶；`SOURCE_DONE` 或 `CLOSE` 关闭当前来源。抓取结果或位置为
+`UNKNOWN/RECONCILING`、身份冲突或正在人工核验时，整个 Cell 保持阻塞，禁止通过
+新的 PickingTask、计划增量或命令身份跳过栈顶。不同 Cell 只有在 WorkLine 拓扑和设备安全合同允许时才能并行。
+
 CTU 投箱顺序也不构成业务顺序；`WORK_BUFFER` 是单向 FIFO，队首没有明确
 `READY | NO_WORK | NG` 结果时，后续 Bin 不能绕行。同一 `task_id + bin_id` 只能形成一个最终 `READY | NO_WORK`；`WAIT`
 后使用新 `operation_id`，并携带同一 `task_id + bin_id` 重新判断。
@@ -1739,6 +1746,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | WMS 内部资源计算仍在继续 | 不向 WES 暴露计算完成字段；已接收明细继续执行，状态确认返回 `BUSINESS_IN_PROGRESS` |
 | 执行中补充正常计划 | 更高 `plan_revision` 可以增加当前任务尚未发布的直接取料来源或五层来源货架面；不能用来替换空取、NG 或 Transport 确定失败的明细 |
 | 扫码后才确认尺寸 | WMS 返回精确 SLOT 和可选换面/换架方案；当前盘允许在扫码台有界等待 |
+| `BIN_CELL` 逐盘抓取 | WMS 的 `cell_ids[]` 只授权来源 Cell；WES/ECS 只抓当前物理栈顶。当前盘可靠取出且 WMS 明确授权 `CONTINUE` 后才能抓下一盘；未知或对账状态阻塞整个 Cell，不得越过栈顶 |
 | 当前盘 PUT 与下一盘准备重叠 | 两个 `device_code` 可各有一条命令；无安全暂存位时，ECS/PLC 在下一盘离开来源前取得扫码台交接许可 |
 | 审查扫码台协调实现 | 不存在扫码台释放事件、WES 资源锁、租约或跨机械臂软件互锁 |
 | 目标架不满足当前盘 | 同一 `ACCEPT` 返回完整 `target_preparation`；Transport 到位后直接 PUT，不重新验证物料 |
