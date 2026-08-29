@@ -74,10 +74,13 @@ class _TransportResetSession(_FakeSession):
         task_row: tuple[str, str] | None = ("transport-test", "RECONCILING"),
         evidence_count: int = 0,
         fail_on_sql: str | None = None,
+        fail_commit: bool = False,
+        task_delete_rowcount: int | None = None,
     ) -> None:
-        super().__init__(fail_on_sql=fail_on_sql)
+        super().__init__(fail_on_sql=fail_on_sql, fail_commit=fail_commit)
         self.task_row = task_row
         self.evidence_count = evidence_count
+        self.task_delete_rowcount = task_delete_rowcount
 
     async def execute(self, statement, parameters=None):
         sql = str(statement)
@@ -91,7 +94,10 @@ class _TransportResetSession(_FakeSession):
         if sql.startswith("SELECT count(*) FROM wes_runtime.transport_"):
             return _Rows(scalar=1)
         if sql.startswith("DELETE FROM wes_runtime.transport_tasks"):
-            return _Rows(rowcount=1 if self.task_row is not None else 0)
+            rowcount = self.task_delete_rowcount
+            if rowcount is None:
+                rowcount = 1 if self.task_row is not None else 0
+            return _Rows(rowcount=rowcount)
         return _Rows(rowcount=1)
 
 
@@ -294,6 +300,8 @@ def test_transport_task_id_parser_rejects_blank_before_database_routing() -> Non
         reset_module._parse_transport_task_id("   ")
     with pytest.raises(argparse.ArgumentTypeError, match=r"1\.\.80"):
         reset_module._parse_transport_task_id("invalid\x00id")
+    with pytest.raises(argparse.ArgumentTypeError, match=r"1\.\.80"):
+        reset_module._parse_transport_task_id("x" * 81)
     assert reset_module._parse_transport_task_id(" transport-test ") == "transport-test"
 
 
@@ -309,6 +317,23 @@ async def test_transport_task_reset_function_rejects_nul_before_database_routing
         )
 
     assert session.statements == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("apply", [False, True])
+async def test_transport_task_reset_rejects_missing_task_without_mutation(apply: bool) -> None:
+    session = _TransportResetSession(task_row=None)
+
+    with pytest.raises(RuntimeError, match="TransportTask 不存在"):
+        await reset_module.reset_transport_task_data(
+            session,
+            transport_task_id="missing-transport-task",
+            apply=apply,
+        )
+
+    assert not any(_is_mutation(statement) for statement in session.statements)
+    assert session.commits == 0
+    assert session.rollbacks == 0
 
 
 @pytest.mark.asyncio
@@ -396,6 +421,59 @@ async def test_transport_task_reset_rolls_back_delete_failure() -> None:
 
     assert session.commits == 0
     assert session.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_transport_task_reset_rolls_back_invalid_task_delete_count() -> None:
+    session = _TransportResetSession(task_delete_rowcount=0)
+
+    with pytest.raises(RuntimeError, match="删除数量异常"):
+        await reset_module.reset_transport_task_data(
+            session,
+            transport_task_id="transport-test",
+            apply=True,
+        )
+
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_transport_task_reset_rolls_back_commit_failure() -> None:
+    session = _TransportResetSession(fail_commit=True)
+
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        await reset_module.reset_transport_task_data(
+            session,
+            transport_task_id="transport-test",
+            apply=True,
+        )
+
+    assert session.commits == 1
+    assert session.rollbacks == 1
+
+
+@pytest.mark.asyncio
+async def test_targeted_cli_rejects_audit_log_flag_before_database_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    init_db = AsyncMock()
+    monkeypatch.setattr(reset_module, "init_db", init_db)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "reset_runtime_data.py",
+            "--transport-task-id",
+            "transport-test",
+            "--include-audit-logs",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        await reset_module._amain()
+
+    assert exc_info.value.code == 2
+    init_db.assert_not_awaited()
 
 
 def test_wrapper_preserves_current_flags_and_does_not_restore_retired_entrypoint() -> None:

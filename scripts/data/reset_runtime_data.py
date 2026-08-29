@@ -487,7 +487,7 @@ async def _amain() -> int:
     parser.add_argument(
         "--transport-task-id",
         type=_parse_transport_task_id,
-        help="只清理指定的无 Evidence/无 outcome RECONCILING 联调任务",
+        help="按 ID 清理指定 TransportTask 的完整本地 Transport 链路",
     )
     parser.add_argument(
         "--reset-mocks",
