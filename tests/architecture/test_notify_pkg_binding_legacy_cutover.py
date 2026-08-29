@@ -50,9 +50,12 @@ def test_notify_pkg_binding_legacy_port_and_target_have_no_active_reference() ->
     assert findings == []
 
 
-def test_notify_pkg_binding_t10_inventory_rows_are_zero() -> None:
+def test_notify_pkg_binding_inventory_switches_to_typed_adapter() -> None:
     inventory_path = REPO_ROOT / "docs/architecture/northbound-wms-operation-inventory.csv"
     with inventory_path.open(encoding="utf-8", newline="") as file:
         rows = tuple(csv.DictReader(file))
 
-    assert [row["entry_id"] for row in rows if row["target_operation_identity"] == CONTRACT_IDENTITY] == []
+    matching = [row for row in rows if row["target_operation_identity"] == CONTRACT_IDENTITY]
+    assert [(row["disposition"], row["owner"]) for row in matching] == [
+        ("SWITCH", "src/app/wms_adapter/execution_confirmation_adapter.py:WmsExecutionConfirmationAdapter")
+    ]

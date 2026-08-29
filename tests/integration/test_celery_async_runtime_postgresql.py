@@ -7,6 +7,7 @@ run-id 与 Redis global key prefix，并且只连接临时 PostgreSQL 数据库�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -42,7 +45,10 @@ from src.celery_app.async_runtime import celery_async_runtime, run_async
 from src.core.logger import logger
 from src.database.db import get_db_context
 from src.database.redis_client import is_redis_available
-from tests.contracts.wms_integration.provider_profile_support import write_provider_profile
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_provider_profile_payload,
+    write_provider_profile,
+)
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
 if TYPE_CHECKING:
@@ -68,6 +74,7 @@ FAMILY_TASKS = (
     "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
     "src.celery_app.tasks.handling.process_signal",
 )
+WMS_CONFIRMATION_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 
 
 def _write_probe_marker(kind: str, **payload: object) -> None:
@@ -504,6 +511,202 @@ def _hanging_redis_url() -> Iterator[tuple[str, _HangingRedisServer]]:
         thread.join(timeout=2)
 
 
+class _WmsConfirmationHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        server = cast("_WmsConfirmationServer", self.server)
+        content_length = int(self.headers.get("content-length", "0"))
+        payload = cast("dict[str, object]", json.loads(self.rfile.read(content_length)))
+        server.requests.append((self.path, payload))
+        dispatch_key = str(payload["dispatch_key"])
+        if self.path == "/inventory/confirm-inbound" and server.e03_attempts == 0:
+            server.e03_attempts += 1
+            self._respond(503, {"reason": "temporary-unavailable"})
+            return
+        if self.path == "/inventory/confirm-inbound":
+            server.e03_attempts += 1
+            self._respond(
+                200,
+                {
+                    "dispatch_key": dispatch_key,
+                    "provider_reference": "provider-e03",
+                    "source_version": "source-e03",
+                    "inbound_key": payload["inbound_key"],
+                    "wms_document_no": "WMS-DOC-1",
+                    "inventory_source_version": "inventory-v1",
+                },
+            )
+            return
+        if self.path == "/fulfillment/pkg-bindings":
+            self._respond(
+                200,
+                {
+                    "dispatch_key": dispatch_key,
+                    "provider_reference": "provider-e07",
+                    "source_version": "source-e07",
+                    "pkg_id": payload["pkg_id"],
+                    "binding_reference": "binding-v1",
+                },
+            )
+            return
+        self._respond(404, {"reason": "unexpected-path"})
+
+    def _respond(self, status_code: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(status_code)
+        self.send_header("content-type", "application/json; charset=utf-8")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+class _WmsConfirmationServer(ThreadingHTTPServer):
+    requests: list[tuple[str, dict[str, object]]]
+    e03_attempts: int
+
+
+@contextmanager
+def _wms_confirmation_endpoint() -> Iterator[tuple[str, _WmsConfirmationServer]]:
+    server = _WmsConfirmationServer(("127.0.0.1", 0), _WmsConfirmationHandler)
+    server.requests = []
+    server.e03_attempts = 0
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _confirmation_digest(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def _seed_wms_confirmation_chain(database_url: str, run_id: str) -> tuple[str, str]:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.execution.models import (
+        InboundEvidence,
+        InboundEvidenceKind,
+        MaterialExecution,
+        MaterialExecutionStatus,
+        WmsConfirmation,
+    )
+    from src.app.execution.services.wms_confirmation_service import E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING
+    from src.app.workline.models.line_run_epoch import LineRunEpoch
+    from src.app.workline.models.workline import LineType, WorkLine
+
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    occurred_at = datetime(2026, 8, 29, 12, 0, 0)
+    e03_operation_id = f"{run_id}-e03"
+    e07_operation_id = f"{run_id}-e07"
+    try:
+        async with sessions.begin() as db:
+            workline = WorkLine(
+                line_code=f"CELERY-{run_id}",
+                line_name="Celery E03 E07",
+                line_type=LineType.AUTO,
+            )
+            db.add(workline)
+            await db.flush()
+            epoch = LineRunEpoch(
+                epoch_code=f"CELERY-EPOCH-{run_id}",
+                workline_id=workline.id,
+                plugin_key="rough_sorter",
+                plugin_version="1.0.0",
+                flow_mode="ROUGH_SORT_INBOUND",
+                topology_digest="a" * 64,
+                configuration_digest="b" * 64,
+                configuration_snapshot_json={},
+                started_at=occurred_at,
+            )
+            db.add(epoch)
+            await db.flush()
+            evidence = InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=f"CELERY-SCAN-{run_id}",
+                payload_digest="c" * 64,
+                normalized_payload={"data": {}},
+                received_at=occurred_at,
+                line_run_epoch_id=epoch.id,
+                device_code=f"CELERY-DEVICE-{run_id}",
+            )
+            db.add(evidence)
+            await db.flush()
+            execution = MaterialExecution(
+                execution_code=f"CELERY-EXEC-{run_id}",
+                material_trace_id=f"CELERY-TRACE-{run_id}",
+                workline_id=workline.id,
+                line_run_epoch_id=epoch.id,
+                admission_received_at=occurred_at,
+                admission_evidence_id=evidence.id,
+                status=MaterialExecutionStatus.CREATED,
+                last_transition_reason="SCAN_ACCEPTED",
+                last_transition_evidence_id=evidence.id,
+                status_changed_at=occurred_at,
+            )
+            db.add(execution)
+            await db.flush()
+            evidence.material_execution_id = execution.id
+            e03_payload = {
+                "dispatch_key": e03_operation_id,
+                "inbound_key": execution.execution_code,
+                "material_code": "MATERIAL-1",
+                "quantity": "1",
+                "pkg_id": "PKG-1",
+                "location_code": "INBOUND-1",
+            }
+            e07_payload = {
+                "dispatch_key": e07_operation_id,
+                "pkg_id": "PKG-1",
+                "bin_id": "BIN-1",
+                "slot_id": "SLOT-1",
+                "rack_id": "RACK-1",
+                "station_code": "STATION-1",
+            }
+            for operation, operation_id, payload in (
+                (E03_CONFIRM_INBOUND, e03_operation_id, e03_payload),
+                (E07_NOTIFY_PKG_BINDING, e07_operation_id, e07_payload),
+            ):
+                db.add(
+                    WmsConfirmation(
+                        operation=operation,
+                        operation_id=operation_id,
+                        material_execution_id=execution.id,
+                        request_digest=_confirmation_digest(payload),
+                        request_payload=payload,
+                        deadline_at=occurred_at + timedelta(days=1),
+                    )
+                )
+    finally:
+        await engine.dispose()
+    return e03_operation_id, e07_operation_id
+
+
+def _wms_confirmation_states(database_url: str, operation_ids: tuple[str, str]) -> dict[str, tuple[str, int | None]]:
+    url = make_url(database_url).set(drivername="postgresql")
+
+    async def _query() -> dict[str, tuple[str, int | None]]:
+        connection = await asyncpg.connect(url.render_as_string(hide_password=False))
+        try:
+            rows = await connection.fetch(
+                "SELECT operation_id, status, response_evidence_id FROM wes_biz.wms_confirmations "
+                "WHERE operation_id = ANY($1::varchar[]) ORDER BY operation_id",
+                list(operation_ids),
+            )
+            return {str(row["operation_id"]): (str(row["status"]), row["response_evidence_id"]) for row in rows}
+        finally:
+            await connection.close()
+
+    return asyncio.run(_query())
+
+
 @dataclass
 class PreforkWorker:
     services: Mapping[str, str]
@@ -924,6 +1127,51 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         success = True
     finally:
         worker.stop(success=success)
+
+
+def test_real_worker_keeps_e07_behind_retrying_e03(
+    prefork_services: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    with _wms_confirmation_endpoint() as (server_url, server):
+        profile_payload = build_provider_profile_payload()
+        profile_payload["server_url"] = server_url
+        profile_path = write_provider_profile(tmp_path / "wms-provider.yaml", profile_payload)
+        services = {**prefork_services, "wms_provider_profile_file": str(profile_path)}
+        worker = PreforkWorker(services, concurrency=1).start()
+        success = False
+        try:
+            operation_ids = asyncio.run(_seed_wms_confirmation_chain(prefork_services["database_url"], worker.run_id))
+
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 1
+            assert [path for path, _payload in server.requests] == ["/inventory/confirm-inbound"]
+            states = _wms_confirmation_states(prefork_services["database_url"], operation_ids)
+            assert states[operation_ids[0]][0] == "PENDING"
+            assert states[operation_ids[1]][0] == "PENDING"
+
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 0
+            assert [path for path, _payload in server.requests] == ["/inventory/confirm-inbound"]
+
+            time.sleep(1.1)
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 1
+            assert [path for path, _payload in server.requests] == [
+                "/inventory/confirm-inbound",
+                "/inventory/confirm-inbound",
+            ]
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 1
+            assert [path for path, _payload in server.requests] == [
+                "/inventory/confirm-inbound",
+                "/inventory/confirm-inbound",
+                "/fulfillment/pkg-bindings",
+            ]
+            states = _wms_confirmation_states(prefork_services["database_url"], operation_ids)
+            assert states[operation_ids[0]][0] == states[operation_ids[1]][0] == "COMPLETED"
+            assert states[operation_ids[0]][1] is not None
+            assert states[operation_ids[1]][1] is not None
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 0
+            success = True
+        finally:
+            worker.stop(success=success)
 
 
 def test_prefork_endpoint_provider_is_child_local_and_closes_each_transport_once(

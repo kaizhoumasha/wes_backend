@@ -220,7 +220,7 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
 
 
 @pytest.mark.integration
-def test_targeted_transport_reset_deletes_persisted_evidence_receipt_projection_and_outcome() -> None:
+def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
@@ -254,17 +254,6 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_projection_
                         ),
                         {"digest": "1" * 64},
                     )
-                    await session.execute(
-                        text(
-                            "INSERT INTO wes_runtime.transport_position_projections ("
-                            "object_type, object_id, position_json, position_unknown, arrival_face, "
-                            "source_operation_id, source_transport_task_id, updated_at"
-                            ") VALUES ("
-                            "'RACK', 'RACK-EVIDENCE', '{}'::json, false, 'A', "
-                            "'00000000-0000-0000-0000-000000000001', 'transport-evidence', CURRENT_TIMESTAMP"
-                            ")"
-                        )
-                    )
                     await _seed_transport_task(session, "transport-outcome", "RACK-OUTCOME")
                     await session.execute(
                         text(
@@ -291,15 +280,6 @@ def test_targeted_transport_reset_deletes_persisted_evidence_receipt_projection_
                             text(
                                 "SELECT count(*) FROM wes_runtime.transport_callback_receipts "
                                 "WHERE response_data_json ->> 'transport_task_id' = 'transport-evidence'"
-                            )
-                        )
-                        == 0
-                    )
-                    assert (
-                        await session.scalar(
-                            text(
-                                "SELECT count(*) FROM wes_runtime.transport_position_projections "
-                                "WHERE source_operation_id = '00000000-0000-0000-0000-000000000001'"
                             )
                         )
                         == 0

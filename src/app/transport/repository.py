@@ -11,7 +11,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -69,11 +68,6 @@ class TransportRepository:
             .select_from(TransportEvidence)
             .where(TransportEvidence.transport_task_id == transport_task_id)
         )
-        position_projection_count = await db.scalar(
-            select(func.count())
-            .select_from(TransportPositionProjection)
-            .where(TransportPositionProjection.source_transport_task_id == transport_task_id)
-        )
         member_count = await db.scalar(
             select(func.count())
             .select_from(TransportMember)
@@ -95,7 +89,7 @@ class TransportRepository:
         return (
             int(callback_receipt_count or 0),
             int(evidence_count or 0),
-            int(position_projection_count or 0),
+            0,
             int(member_count or 0),
             int(binding_count or 0),
             int(active_binding_count or 0),
@@ -113,11 +107,6 @@ class TransportRepository:
                 TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id
             )
         )
-        projections = await db.execute(
-            delete(TransportPositionProjection).where(
-                TransportPositionProjection.source_transport_task_id == transport_task_id
-            )
-        )
         evidence = await db.execute(
             delete(TransportEvidence).where(TransportEvidence.transport_task_id == transport_task_id)
         )
@@ -131,27 +120,11 @@ class TransportRepository:
         return (
             int(receipts.rowcount or 0),
             int(evidence.rowcount or 0),
-            int(projections.rowcount or 0),
+            0,
             int(members.rowcount or 0),
             int(bindings.rowcount or 0),
             int(tasks.rowcount or 0),
         )
-
-    async def get_projection(
-        self,
-        db: AsyncSession,
-        object_type: str,
-        object_id: str,
-        *,
-        for_update: bool = False,
-    ) -> TransportPositionProjection | None:
-        statement = select(TransportPositionProjection).where(
-            TransportPositionProjection.object_type == object_type,
-            TransportPositionProjection.object_id == object_id,
-        )
-        if for_update:
-            statement = statement.with_for_update()
-        return await db.scalar(statement)
 
     async def add_aggregate(
         self,

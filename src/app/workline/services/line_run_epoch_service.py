@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
+from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.workline.epoch_digest import canonical_configuration_snapshot, configuration_digest, topology_digest
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.repositories.line_run_epoch_repository import (
@@ -28,6 +29,8 @@ class ActiveLineRunEpochExistsError(ValueError):
 class LineRunEpochRepositoryPort(Protocol):
     """Service 所需的最小持久化端口。"""
 
+    async def get_active_for_workline(self, db: Any, workline_id: int) -> LineRunEpoch | None: ...
+
     async def get_active_for_workline_for_update(self, db: Any, workline_id: int) -> LineRunEpoch | None: ...
 
     async def has_active_epoch(self, db: Any) -> bool: ...
@@ -47,13 +50,25 @@ class UnclosedCommandRepositoryPort(Protocol):
     async def has_unclosed_for_epoch_for_update(self, db: Any, line_run_epoch_id: int) -> bool: ...
 
 
+class PositionProjectionCleanupPort(Protocol):
+    async def lock_epoch_lifecycle(self, db: Any, line_run_epoch_id: int) -> None: ...
+
+    async def delete_for_epoch(self, db: Any, line_run_epoch_id: int) -> None: ...
+
+
 class LineRunEpochService:
     """维护 Epoch 单活动和 binding 不可改写不变量。"""
 
-    def __init__(self, repository: LineRunEpochRepositoryPort | None = None) -> None:
+    def __init__(
+        self,
+        repository: LineRunEpochRepositoryPort | None = None,
+        *,
+        projection_repository: PositionProjectionCleanupPort = position_projection_repository,
+    ) -> None:
         self._repository: LineRunEpochRepositoryPort = repository or cast(
             "LineRunEpochRepositoryPort", line_run_epoch_repository
         )
+        self._projections = projection_repository
 
     async def assert_execution_worker_startable(self, db: AsyncSession | object) -> None:
         repository = cast("LineRunEpochRepositoryPort", self._repository)
@@ -99,13 +114,20 @@ class LineRunEpochService:
         closed_at: datetime,
         command_repository: UnclosedCommandRepositoryPort,
     ) -> LineRunEpoch | None:
+        candidate = await self._repository.get_active_for_workline(db, workline_id)
+        if candidate is None:
+            return None
+        if candidate.id is None:
+            raise RuntimeError("活动 Epoch 缺少持久化主键")
+        await self._projections.lock_epoch_lifecycle(db, candidate.id)
         active = await self._repository.get_active_for_workline_for_update(db, workline_id)
         if active is None:
             return None
-        if active.id is None:
-            raise RuntimeError("活动 Epoch 缺少持久化主键")
+        if active.id != candidate.id:
+            raise ActiveLineRunEpochExistsError("活动 Epoch 在 lifecycle fence 前发生变化")
         if await command_repository.has_unclosed_for_epoch_for_update(db, active.id):
             raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在 unclosed DeviceCommand")
+        await self._projections.delete_for_epoch(db, active.id)
         return await self._repository.close_epoch(db, active, closed_at=closed_at)
 
 

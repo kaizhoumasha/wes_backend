@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, cast
 
-from sqlalchemy import CheckConstraint, Index, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, UniqueConstraint, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -71,6 +71,22 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
             "status IN ('CREATED', 'RUNNING', 'HOLD', 'CLOSED', 'RECONCILING')",
             name="material_execution_status_valid",
         ),
+        CheckConstraint(
+            "status = 'CLOSED' OR (admission_received_at IS NOT NULL AND admission_evidence_id IS NOT NULL)",
+            name="material_execution_active_admission_required",
+        ),
+        ForeignKeyConstraint(
+            ["admission_evidence_id"],
+            ["wes_biz.inbound_evidences.id"],
+            name="fk_material_executions_admission_evidence_id_inbound_evidences",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["last_transition_evidence_id"],
+            ["wes_biz.inbound_evidences.id"],
+            name="fk_material_executions_last_transition_evidence_id",
+            use_alter=True,
+        ),
         UniqueConstraint("execution_code", name="ux_material_executions_execution_code"),
         Index(
             "ux_material_executions_active_trace",
@@ -80,6 +96,16 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
             sqlite_where=text("status <> 'CLOSED'"),
         ),
         Index("ix_material_executions_epoch_status", "line_run_epoch_id", "status", "id"),
+        Index(
+            "ix_material_executions_active_fifo",
+            "workline_id",
+            "line_run_epoch_id",
+            "admission_received_at",
+            "admission_evidence_id",
+            "id",
+            postgresql_where=text("status <> 'CLOSED'"),
+            sqlite_where=text("status <> 'CLOSED'"),
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -87,6 +113,11 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
     material_trace_id: str = Field(min_length=1, max_length=160, index=True)
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True)
     line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
+    admission_received_at: datetime | None = Field(default=None)
+    admission_evidence_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
     status: MaterialExecutionStatus = Field(
         default=MaterialExecutionStatus.CREATED,
         sa_type=cast(
@@ -97,7 +128,6 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
     )
     last_transition_reason: str = Field(min_length=1, max_length=120)
     last_transition_evidence_id: int = Field(
-        foreign_key="wes_biz.inbound_evidences.id",
         index=True,
         sa_type=SQL_COMPAT_BIGINT,
     )

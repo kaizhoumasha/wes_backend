@@ -9,6 +9,7 @@ import pytest_asyncio
 from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
     RackFace,
     RackPosition,
@@ -21,7 +22,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -85,7 +85,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
             TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
-            TransportPositionProjection,
+            PositionProjection,
             TransportTask,
         ):
             await db.execute(delete(model))

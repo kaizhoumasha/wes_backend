@@ -306,6 +306,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         *,
         workline_id: int,
         failure_code: str,
+        limit: int = 100,
     ) -> int:
         """急停只关闭尚未发送的命令；已可能触发物理动作的命令继续占槽。"""
 
@@ -318,7 +319,9 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
                 epoch_columns.workline_id == workline_id,
                 command_columns.status == CommandStatus.PENDING,
             )
-            .with_for_update()
+            .order_by(command_columns.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
         )
         commands = list(result.scalars().all())
         for command in commands:

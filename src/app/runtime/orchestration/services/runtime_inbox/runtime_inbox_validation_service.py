@@ -192,22 +192,6 @@ class RuntimeInboxValidationService:
         # SCAN gate 全部通过 -> 继续走 orchestrator.
         return ValidationOutcome.continue_orchestrator()
 
-    def classify_estop(
-        self,
-        *,
-        resolved_event_type: str,
-    ) -> ValidationOutcome:
-        """识别 ESTOP_PRESSED 专用路由。
-
-        Args:
-            resolved_event_type: canonical_event_type(payload).
-        Returns:
-            ValidationOutcome.estop_routing() / continue_orchestrator().
-        """
-        if resolved_event_type == "ESTOP_PRESSED":
-            return ValidationOutcome.estop_routing()
-        return ValidationOutcome.continue_orchestrator()
-
 
 __all__ = [
     "RuntimeInboxValidationService",

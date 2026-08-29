@@ -35,7 +35,6 @@ from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.value_normalization import (
     optional_int,
     optional_str,
-    resolve_entity_id,
     resolve_required_pk,
 )
 
@@ -136,61 +135,6 @@ async def _load_related_entities(
         loaded.get("services"),
         loaded.get("safety_checked", True),
     )
-
-
-async def _handle_estop(
-    db: Any,
-    *,
-    inbox: Any,
-    inbox_pk: int,
-    payload: dict[str, Any],
-    session: Any,
-    workline: Any,
-    device: Any,
-    processor_token: str,
-    inbox_service: RuntimeInboxService,
-) -> bool:
-    workline_pk = resolve_entity_id(workline)
-    if workline_pk is None:
-        message = "ESTOP_PRESSED missing workline context"
-        await _record_diagnostic(
-            db,
-            inbox=inbox,
-            error_code=ErrorCode.SESSION_CONTEXT_MISSING,
-            message=message,
-            session=session,
-            workline=workline,
-            device=device,
-        )
-        _require_fenced_update(
-            await inbox_service.mark_failed(
-                db,
-                inbox_id=inbox_pk,
-                lease_token=processor_token,
-                error_code=ErrorCode.SESSION_CONTEXT_MISSING.value,
-                error_message=message,
-                retryable=False,
-            ),
-            action="mark_failed",
-            inbox_id=inbox_pk,
-        )
-        return False
-    from src.app.workline.services.safety_service import workline_safety_service
-
-    _ = await workline_safety_service.handle_estop(
-        db,
-        workline_id=workline_pk,
-        source_inbox_id=inbox_pk,
-        source_device_id=resolve_entity_id(device) or getattr(inbox, "device_id", None),
-        source_command_id=None,
-        trigger_payload=payload,
-    )
-    _require_fenced_update(
-        await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token),
-        action="mark_processed",
-        inbox_id=inbox_pk,
-    )
-    return True
 
 
 class RuntimeInboxProcessorBridge:
@@ -308,27 +252,19 @@ class RuntimeInboxProcessorBridge:
                 message=outcome.error_message or "validation failed",
                 retryable=False,
             )
-        routed = self._validation_service.classify_estop(resolved_event_type=event_type)
-        session, workline, device, _devices, _services, _safety_checked = await _load_related_entities(
-            db, inbox, resolved_event_type=event_type
-        )
-        if routed.estop_event:
-            ok = await _handle_estop(
+        if event_type == "ESTOP_PRESSED":
+            return await self._mark_failure(
                 db,
                 inbox=inbox,
-                inbox_pk=inbox_id,
-                payload=payload,
-                session=session,
-                workline=workline,
-                device=device,
-                processor_token=token,
-                inbox_service=self.inbox_service,
+                inbox_id=inbox_id,
+                token=token,
+                error_code=ErrorCode.CONTRACT_MISMATCH.value,
+                message="ESTOP_PRESSED 仅允许经 Device InboundEvidence 最终应用边界处理",
+                retryable=False,
             )
-            await db.commit()
-            result = _empty_result()
-            result["processed"] = 1
-            result["success" if ok else "failed"] = 1
-            return result
+        session, workline, _device, _devices, _services, _safety_checked = await _load_related_entities(
+            db, inbox, resolved_event_type=event_type
+        )
         if session is None or workline is None:
             return await self._mark_failure(
                 db,

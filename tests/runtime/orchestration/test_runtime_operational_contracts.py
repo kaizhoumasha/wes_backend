@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-import threading
+import inspect
 from datetime import date
+
+
+def test_synchronous_open_telemetry_http_backend_is_absent() -> None:
+    from src import register
+    from src.app.runtime.orchestration import observability
+
+    assert not hasattr(observability, "RuntimeOpenTelemetryHttpExporter")
+    assert not hasattr(observability, "configure_runtime_open_telemetry_backend")
+    assert "WES_RUNTIME_OTEL" not in inspect.getsource(observability)
+    assert "configure_runtime_open_telemetry_backend" not in inspect.getsource(register)
 
 
 def test_runtime_inbox_sli_signals_require_stable_attributes() -> None:
@@ -159,207 +169,6 @@ def test_runtime_observability_open_telemetry_bridge_exports_signal_kinds() -> N
         "policy_version": "northbound-observability.v1",
         "sample_count": 1,
     }
-
-
-def test_runtime_open_telemetry_http_exporter_posts_stable_backend_payloads() -> None:
-    from src.app.runtime.orchestration.observability import RuntimeOpenTelemetryHttpExporter
-
-    posts = []
-
-    def post_json(endpoint, payload, headers, timeout_seconds) -> None:
-        posts.append((endpoint, dict(payload), dict(headers), timeout_seconds))
-
-    exporter = RuntimeOpenTelemetryHttpExporter(
-        endpoint="https://otel-collector.example/runtime",
-        service_name="wes-backend",
-        environment="prod",
-        headers={"x-tenant": "wes"},
-        timeout_seconds=0.25,
-        post_json=post_json,
-    )
-
-    exporter.emit_span("callback.normalize", {"trace_id": "trace-1", "provider_code": "ECS"})
-
-    assert posts == [
-        (
-            "https://otel-collector.example/runtime",
-            {
-                "service_name": "wes-backend",
-                "environment": "prod",
-                "signal_kind": "span",
-                "name": "callback.normalize",
-                "attributes": {"trace_id": "trace-1", "provider_code": "ECS"},
-            },
-            {"content-type": "application/json", "x-tenant": "wes"},
-            0.25,
-        )
-    ]
-
-
-def test_runtime_open_telemetry_http_exporter_reuses_one_http_client(monkeypatch) -> None:
-    import httpx
-
-    from src.app.runtime.orchestration.observability import RuntimeOpenTelemetryHttpExporter
-
-    clients = []
-
-    class _Response:
-        def raise_for_status(self) -> None:
-            return None
-
-    class _Client:
-        def __init__(self, **kwargs) -> None:
-            self.init_kwargs = kwargs
-            self.posts = []
-            self.closed = False
-            clients.append(self)
-
-        def post(self, endpoint, **kwargs):
-            self.posts.append((endpoint, kwargs))
-            return _Response()
-
-        def close(self) -> None:
-            self.closed = True
-
-    monkeypatch.setattr(httpx, "Client", _Client)
-    exporter = RuntimeOpenTelemetryHttpExporter(
-        endpoint="https://otel-collector.example/runtime",
-        service_name="wes-backend",
-        environment="prod",
-    )
-
-    exporter.emit_span("callback.normalize", {"trace_id": "trace-1"})
-    exporter.emit_metric("callback.normalize", {"sample_count": 1})
-    exporter.close()
-
-    assert len(clients) == 1
-    assert clients[0].init_kwargs == {"trust_env": False}
-    assert len(clients[0].posts) == 2
-    assert clients[0].closed is True
-
-
-def test_runtime_observability_queue_is_bounded_and_records_drops() -> None:
-    from src.app.runtime.orchestration.observability import (
-        RuntimeObservabilityEvent,
-        RuntimeQueuedObservabilityObserver,
-    )
-
-    entered = threading.Event()
-    release = threading.Event()
-
-    def blocked_observer(_event) -> None:
-        entered.set()
-        assert release.wait(timeout=1)
-
-    observer = RuntimeQueuedObservabilityObserver(blocked_observer, max_queue_size=1)
-    event = RuntimeObservabilityEvent(
-        name="callback.normalize",
-        signal_type="log",
-        attributes={},
-        metric_attributes={},
-    )
-    observer(event)
-    assert entered.wait(timeout=1)
-    observer(event)
-    observer(event)
-
-    assert observer.pending_count == 1
-    assert observer.dropped_count == 1
-    release.set()
-    observer.close()
-
-
-def test_runtime_observability_queue_close_drains_joins_and_rejects_late_events() -> None:
-    from src.app.runtime.orchestration.observability import (
-        RuntimeObservabilityEvent,
-        RuntimeQueuedObservabilityObserver,
-    )
-
-    exported = []
-
-    class _Observer:
-        def __init__(self) -> None:
-            self.closed = False
-
-        def __call__(self, event) -> None:
-            exported.append(event)
-
-        def close(self) -> None:
-            self.closed = True
-
-    target = _Observer()
-    observer = RuntimeQueuedObservabilityObserver(target, max_queue_size=1)
-    event = RuntimeObservabilityEvent(
-        name="callback.normalize",
-        signal_type="log",
-        attributes={},
-        metric_attributes={},
-    )
-    observer(event)
-
-    observer.close()
-    observer(event)
-
-    assert exported == [event]
-    assert target.closed is True
-    assert observer.pending_count == 0
-    assert observer.dropped_count == 1
-
-
-def test_configure_runtime_open_telemetry_backend_registers_named_observer_once() -> None:
-    from src.app.runtime.orchestration.observability import (
-        RuntimeObservabilityRegistry,
-        configure_runtime_open_telemetry_backend,
-    )
-
-    posts = []
-    posted = threading.Event()
-    caller_thread_id = threading.get_ident()
-
-    def post_json(endpoint, payload, headers, timeout_seconds) -> None:
-        posts.append((endpoint, payload["signal_kind"], payload["name"], threading.get_ident()))
-        if len(posts) == 3:
-            posted.set()
-
-    registry = RuntimeObservabilityRegistry()
-
-    configured = configure_runtime_open_telemetry_backend(
-        registry=registry,
-        enabled=True,
-        endpoint="https://otel-collector.example/runtime",
-        service_name="wes-backend",
-        environment="prod",
-        post_json=post_json,
-    )
-    configured_again = configure_runtime_open_telemetry_backend(
-        registry=registry,
-        enabled=True,
-        endpoint="https://otel-collector.example/runtime",
-        service_name="wes-backend",
-        environment="prod",
-        post_json=post_json,
-    )
-
-    registry.emit(
-        "callback.normalize",
-        {
-            "trace_id": "trace-1",
-            "correlation_id": "corr-1",
-            "provider_code": "ECS",
-            "source_event_id": "evt-1",
-        },
-    )
-
-    assert configured is True
-    assert configured_again is True
-    assert posted.wait(timeout=1)
-    assert posts == [
-        ("https://otel-collector.example/runtime", "span", "callback.normalize", posts[0][3]),
-        ("https://otel-collector.example/runtime", "metric", "callback.normalize", posts[0][3]),
-        ("https://otel-collector.example/runtime", "log", "callback.normalize", posts[0][3]),
-    ]
-    assert posts[0][3] != caller_thread_id
-    registry.close()
 
 
 def test_runtime_toggle_registry_blocks_expired_and_security_bypass_toggles() -> None:

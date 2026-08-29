@@ -115,7 +115,13 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     build_preparation = MagicMock(return_value=preparation_runtime)
     bind_preparation = MagicMock()
     close_preparation = AsyncMock()
-    transport_runtime = SimpleNamespace(service=object(), repository=object(), client=object(), aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(
+        service=object(),
+        repository=object(),
+        client=object(),
+        position_projection_service=object(),
+        aclose=AsyncMock(),
+    )
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
@@ -138,7 +144,6 @@ async def test_fastapi_startup_binds_effect_preparation_runtime_from_validated_c
     monkeypatch.setattr(effect_preparation_runtime, "build_wms_effect_preparation_runtime", build_preparation)
     monkeypatch.setattr(effect_preparation_runtime, "bind_wms_effect_preparation_runtime", bind_preparation)
     monkeypatch.setattr(effect_preparation_runtime, "close_wms_effect_preparation_runtime", close_preparation)
-    monkeypatch.setattr(observability, "configure_runtime_open_telemetry_backend", MagicMock(return_value=False))
     monkeypatch.setattr(observability.runtime_observability_registry, "close", MagicMock())
 
     app = FastAPI()
@@ -187,7 +192,13 @@ async def test_fastapi_preparation_bind_failure_does_not_close_existing_owner(
 
     candidate = object()
     unbind_candidate = AsyncMock()
-    transport_runtime = SimpleNamespace(service=object(), repository=object(), client=object(), aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(
+        service=object(),
+        repository=object(),
+        client=object(),
+        position_projection_service=object(),
+        aclose=AsyncMock(),
+    )
     monkeypatch.setattr(
         provider_catalog,
         "validate_wms_transport_configuration",
@@ -247,6 +258,7 @@ async def test_fastapi_cleanup_contains_each_failure_and_preserves_primary_error
         service=object(),
         repository=object(),
         client=object(),
+        position_projection_service=object(),
         aclose=AsyncMock(side_effect=RuntimeError("transport cleanup failed")),
     )
     close_data = AsyncMock(side_effect=RuntimeError("data cleanup failed"))
@@ -277,7 +289,6 @@ async def test_fastapi_cleanup_contains_each_failure_and_preserves_primary_error
     )
     monkeypatch.setattr(effect_preparation_runtime, "bind_wms_effect_preparation_runtime", MagicMock())
     monkeypatch.setattr(effect_preparation_runtime, "close_wms_effect_preparation_runtime", close_preparation)
-    monkeypatch.setattr(observability, "configure_runtime_open_telemetry_backend", MagicMock(return_value=False))
     monkeypatch.setattr(observability.runtime_observability_registry, "close", close_observability)
 
     expected_error = "serving failed" if body_fails else "observability cleanup failed"

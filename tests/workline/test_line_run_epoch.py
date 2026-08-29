@@ -18,8 +18,16 @@ class FakeLineRunEpochRepository:
     def __init__(self) -> None:
         self.active_epoch: LineRunEpoch | None = None
         self.has_unclosed = False
+        self.calls: list[str] = []
+
+    async def get_active_for_workline(self, _db: object, workline_id: int) -> LineRunEpoch | None:
+        self.calls.append(f"epoch-snapshot:{workline_id}")
+        if self.active_epoch is not None and self.active_epoch.workline_id == workline_id:
+            return self.active_epoch
+        return None
 
     async def get_active_for_workline_for_update(self, _db: object, workline_id: int) -> LineRunEpoch | None:
+        self.calls.append(f"epoch-row:{workline_id}")
         if self.active_epoch is not None and self.active_epoch.workline_id == workline_id:
             return self.active_epoch
         return None
@@ -39,6 +47,7 @@ class FakeLineRunEpochRepository:
         return epoch
 
     async def close_epoch(self, _db: object, epoch: LineRunEpoch, *, closed_at: datetime) -> LineRunEpoch:
+        self.calls.append(f"epoch-close:{epoch.id}")
         epoch.status = LineRunEpochStatus.CLOSED
         epoch.closed_at = closed_at
         self.active_epoch = None
@@ -48,9 +57,26 @@ class FakeLineRunEpochRepository:
         return self.has_unclosed
 
 
+class FakePositionProjectionRepository:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def lock_epoch_lifecycle(self, _db: object, line_run_epoch_id: int) -> None:
+        self.calls.append(f"epoch-lock:{line_run_epoch_id}")
+
+    async def delete_for_epoch(self, _db: object, line_run_epoch_id: int) -> None:
+        self.calls.append(f"projection-delete:{line_run_epoch_id}")
+
+
 def _service() -> tuple[LineRunEpochService, FakeLineRunEpochRepository]:
     repository = FakeLineRunEpochRepository()
-    return LineRunEpochService(repository=repository), repository  # type: ignore[arg-type]
+    return (
+        LineRunEpochService(
+            repository=repository,
+            projection_repository=FakePositionProjectionRepository(repository.calls),
+        ),
+        repository,
+    )  # type: ignore[arg-type]
 
 
 async def _activate(
@@ -80,7 +106,6 @@ async def test_same_workline_rejects_second_active_epoch() -> None:
     service, _ = _service()
 
     first = await _activate(service, epoch_code="EPOCH-LINE-01-0001")
-
     assert first.status == LineRunEpochStatus.ACTIVE
     with pytest.raises(ActiveLineRunEpochExistsError):
         await _activate(service, epoch_code="EPOCH-LINE-01-0002")
@@ -90,6 +115,7 @@ async def test_same_workline_rejects_second_active_epoch() -> None:
 async def test_close_active_epoch_allows_next_generation() -> None:
     service, repository = _service()
     first = await _activate(service, epoch_code="EPOCH-LINE-01-0001")
+    repository.calls.clear()
 
     closed = await service.close_active_epoch(
         object(), workline_id=1, closed_at=datetime(2026, 8, 13, 0, 1), command_repository=repository
@@ -105,6 +131,13 @@ async def test_close_active_epoch_allows_next_generation() -> None:
     assert closed.status == LineRunEpochStatus.CLOSED
     assert closed.closed_at == datetime(2026, 8, 13, 0, 1)
     assert second.status == LineRunEpochStatus.ACTIVE
+    assert repository.calls[:5] == [
+        "epoch-snapshot:1",
+        "epoch-lock:11",
+        "epoch-row:1",
+        "projection-delete:11",
+        "epoch-close:11",
+    ]
 
 
 @pytest.mark.asyncio

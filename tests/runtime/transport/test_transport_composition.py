@@ -71,6 +71,7 @@ async def test_supported_profile_builds_one_closed_transport_runtime_without_pub
     assert runtime.adapter._client is client
     assert runtime.adapter._submit_path == "/api/WES/TransportRequests"
     assert runtime.port is runtime.service
+    assert runtime.service._position_projections is runtime.position_projection_service
     assert runtime.service.provider is runtime.adapter
     assert runtime.handler._recorder is runtime.service
     assert not hasattr(runtime.service, "_outcome_publisher")

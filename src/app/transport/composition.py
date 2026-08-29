@@ -15,6 +15,7 @@ from src.core.logger import logger
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.execution.services.position_projection_service import PositionProjectionService
     from src.app.transport.contracts import TransportPort
     from src.app.wms_adapter.client import WmsClient
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
@@ -33,6 +34,7 @@ class TransportRuntime:
         adapter: WmsTransportAdapter,
         service: TransportService,
         handler: TransportEventHandler,
+        position_projection_service: PositionProjectionService,
     ) -> None:
         self.client = client
         self.repository = repository
@@ -40,6 +42,7 @@ class TransportRuntime:
         self.service = service
         self.port: TransportPort = service
         self.handler = handler
+        self.position_projection_service = position_projection_service
         self._owner_pid = os.getpid()
         self._owner_loop = asyncio.get_running_loop()
         self._close_lock = asyncio.Lock()
@@ -97,7 +100,11 @@ async def build_transport_runtime(
         timeout_seconds=10.0,
     )
     try:
+        from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
+        from src.app.execution.services.position_projection_service import PositionProjectionService
+
         repository = TransportRepository()
+        position_projection_service = PositionProjectionService(repository=PositionProjectionRepository())
         adapter = WmsTransportAdapter(
             client,
             submit_path=startup.compiled_profile.transport_submit_path,
@@ -106,6 +113,7 @@ async def build_transport_runtime(
             session_factory,
             repository,
             adapter,
+            position_projections=position_projection_service,
             event_publisher=event_stream_service,
         )
         handler = TransportEventHandler(service)
@@ -115,6 +123,7 @@ async def build_transport_runtime(
             adapter=adapter,
             service=service,
             handler=handler,
+            position_projection_service=position_projection_service,
         )
     except BaseException:
         try:

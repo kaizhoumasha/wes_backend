@@ -35,9 +35,9 @@ GET /api/v1/transport/tasks/{transport_task_id}
    查找最近的待处理 evidence，不从请求 Payload 猜测 owner。
 3. 再查 `transport_tasks`，核对当前状态、`reason_code`、submit 身份、发送开始时间、
    deadline、claim 到期时间和 outcome 版本。
-4. 按同一 `transport_task_id` 查 `transport_evidence`、`transport_members`、
-   `transport_position_projections` 和 `transport_resource_bindings`，先确认权威 evidence，再判断
-   claim、投影、outcome 和绑定是否与之一致。
+4. 按同一 `transport_task_id` 查 `transport_evidence`、`transport_members` 和
+   `transport_resource_bindings`，先确认权威 evidence，再判断 claim、outcome 和绑定是否与之一致。核心
+   `wes_biz.position_projections` 只由带冻结 execution authority 的终态 Evidence 更新，debug 任务不会创建或清理它。
 5. 只有日志和数据库事实能相互解释时才关闭诊断。日志丢失不代表数据库事实丢失；
    Beat 消息过期也不代表任务、evidence 或 outcome 被删除。
 
@@ -208,7 +208,7 @@ LIMIT 100;
 `GET /api/v1/transport/debug-tasks/{transport_task_id}/reset-preview`，核对目标 ID、Evidence、Callback Receipt、位置投影、outcome 版本、
 成员和绑定数量；
 确认后以 `ops:transport:debug-reset` 权限调用
-`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定任务，随后按 Callback Receipt、位置投影、
+`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定任务，随后按 Callback Receipt、
 Evidence、绑定、成员、任务的顺序删除；任一步失败都会回滚。若 callback 在删除后迟到，既有入口仍会持久化 missing-task Evidence，
 并收敛为 `CONFLICT`。
 
@@ -218,14 +218,14 @@ Evidence、绑定、成员、任务的顺序删除；任一步失败都会回滚
 bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --force
 ```
 
-核对输出只包含目标任务及其 `transport_callback_receipts`、`transport_position_projections`、`transport_evidence`、
+核对输出只包含目标任务及其 `transport_callback_receipts`、`transport_evidence`、
 `transport_resource_bindings` 和 `transport_members` 后，再执行：
 
 ```text
 bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --yes --force
 ```
 
-脚本与 API 使用同一删除范围，并在一个事务内先锁定任务，再按 Callback Receipt、位置投影、Evidence、绑定、成员、任务的顺序
+脚本与 API 使用同一删除范围，并在一个事务内先锁定任务，再按 Callback Receipt、Evidence、绑定、成员、任务的顺序
 删除。`--force` 仅用于联调服务器采用生产型运行配置时显式确认数据可丢弃；它不扩大删除范围。生产环境不得使用这些入口。
 
 ## 禁止的运维捷径

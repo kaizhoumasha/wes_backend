@@ -10,6 +10,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
@@ -27,7 +28,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -38,7 +38,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 from tests.support.transport_callbacks import record_valid_callback
-from tests.support.transport_projections import confirm_rack_faces
+from tests.support.transport_projections import confirm_rack_faces, ensure_projection_authority
 
 register_required_sqlmodel_metadata()
 
@@ -138,7 +138,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
             TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
-            TransportPositionProjection,
+            PositionProjection,
             TransportTask,
         ):
             await db.execute(delete(model))
@@ -191,13 +191,17 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add(
-            TransportPositionProjection(
+            PositionProjection(
                 object_type="RACK",
                 object_id="rack-rotate",
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="A",
                 source_operation_id="seed",
+                source_transport_task_id="seed",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -218,13 +222,17 @@ async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: objec
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add(
-            TransportPositionProjection(
+            PositionProjection(
                 object_type="RACK",
                 object_id="rack-face",
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "STORAGE"},
                 arrival_face="B",
                 source_operation_id="seed",
+                source_transport_task_id="seed",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -234,9 +242,7 @@ async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: objec
 
     async with sessions.begin() as db:
         await db.execute(
-            update(TransportPositionProjection)
-            .where(TransportPositionProjection.object_id == "rack-face")
-            .values(arrival_face="A")
+            update(PositionProjection).where(PositionProjection.object_id == "rack-face").values(arrival_face="A")
         )
 
     handle = await service.move_bins(new_uuid7(), _caller(), move_on_face_a)
@@ -463,6 +469,7 @@ async def test_debug_reset_preserves_another_task_projection_when_operation_id_i
     now = timezone.now_for_db()
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add_all(
             [
                 TransportEvidence(
@@ -488,9 +495,11 @@ async def test_debug_reset_preserves_another_task_projection_when_operation_id_i
                     ack_data_json={"transport_task_id": keep.transport_task_id},
                     received_at=now,
                 ),
-                TransportPositionProjection(
+                PositionProjection(
                     object_type="RACK",
                     object_id="rack-reset-collision-keep",
+                    workline_id=workline_id,
+                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "B"},
                     source_operation_id=operation_id,
                     source_transport_task_id=keep.transport_task_id,
@@ -503,9 +512,7 @@ async def test_debug_reset_preserves_another_task_projection_when_operation_id_i
 
     async with sessions() as db:
         projection = await db.scalar(
-            select(TransportPositionProjection).where(
-                TransportPositionProjection.object_id == "rack-reset-collision-keep"
-            )
+            select(PositionProjection).where(PositionProjection.object_id == "rack-reset-collision-keep")
         )
     assert projection is not None
 

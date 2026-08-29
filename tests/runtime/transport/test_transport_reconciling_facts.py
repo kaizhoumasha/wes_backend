@@ -5,6 +5,7 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
@@ -19,7 +20,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -55,7 +55,7 @@ async def reconciling_service(db_engine: object) -> TransportService:
             TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
-            TransportPositionProjection,
+            PositionProjection,
             TransportTask,
         ):
             await db.execute(delete(model))
@@ -131,13 +131,13 @@ async def test_late_target_placed_cannot_rewrite_a_confirmed_member_position_whi
             )
         )
         projection = await db.scalar(
-            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-confirmed-source")
+            select(PositionProjection).where(PositionProjection.object_id == "bin-confirmed-source")
         )
 
     assert evidence is not None and evidence.status == "CONFLICT"
     assert member is not None and member.final_position_json == source
     assert member.status == "FAILED" and member.failure_code == "RCS_EXECUTION_FAILED"
-    assert projection is not None and projection.position_json == source
+    assert projection is None
 
 
 @pytest.mark.asyncio

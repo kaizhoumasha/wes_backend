@@ -170,6 +170,12 @@ class EvidenceAuditServicePort(Protocol):
 class EvidenceEpochRepositoryPort(Protocol):
     async def get_active_binding_for_device(self, db: object, device_code: str) -> LineRunEpochDeviceBinding | None: ...
 
+    async def get_by_id(self, db: object, id: int) -> object | None: ...
+
+
+class SafetyServicePort(Protocol):
+    async def handle_estop(self, db: object, **values: object) -> object: ...
+
 
 class EventPublisherPort(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool: ...
@@ -200,6 +206,7 @@ class DeviceEvidenceService:
         event_debug_command_service: EventDebugCommandServicePort | None = None,
         event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
         audit_service: EvidenceAuditServicePort | None = None,
+        safety_service: SafetyServicePort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
         self._sessions = session_factory
@@ -212,6 +219,11 @@ class DeviceEvidenceService:
         self._event_debug_commands = event_debug_command_service
         self._event_command_blocks = event_command_block_repository or device_event_command_block_repository
         self._audit = audit_service or audit_log_service
+        if safety_service is None:
+            from src.app.workline.services.safety_service import workline_safety_service
+
+            safety_service = workline_safety_service
+        self._safety = safety_service
         self._clock = clock
 
     async def accept_result(self, report: EcsCommandResultReport) -> DeviceEvidenceReceipt:
@@ -430,6 +442,7 @@ class DeviceEvidenceService:
         now = timezone.now_for_db()
         wake_execution = False
         wake_device_commands = False
+        wake_safety_drain = False
         update: DeviceEvidenceUpdate | None = None
         debug_command_code: str | None = None
         async with self._sessions.begin() as db:
@@ -475,6 +488,8 @@ class DeviceEvidenceService:
                                 debug_command_code = outcome.command_code
                                 wake_device_commands = outcome.created and outcome.status is CommandStatus.PENDING
                                 await self._processing.mark_ignored(db, evidence, processed_at=now)
+                elif event.event_type == "ESTOP_PRESSED":
+                    wake_safety_drain = await self._apply_estop_event(db, evidence=evidence, processed_at=now)
                 else:
                     await self._processing.mark_applied(db, evidence, processed_at=now)
                     wake_execution = True
@@ -511,9 +526,36 @@ class DeviceEvidenceService:
             update = _evidence_update(evidence, processed_at=now, command_code=debug_command_code)
         if wake_device_commands:
             self._enqueue_device_commands()
+        if wake_safety_drain:
+            self._enqueue_safety_drain()
         await self._publish_update(update)
         if wake_execution:
             self._enqueue_execution_facts()
+        return True
+
+    async def _apply_estop_event(
+        self,
+        db: object,
+        *,
+        evidence: InboundEvidence,
+        processed_at: datetime,
+    ) -> bool:
+        epoch = (
+            await self._epochs.get_by_id(db, evidence.line_run_epoch_id)
+            if evidence.line_run_epoch_id is not None
+            else None
+        )
+        workline_id = getattr(epoch, "workline_id", None)
+        if not isinstance(workline_id, int) or evidence.id is None:
+            await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
+            return False
+        await self._safety.handle_estop(
+            db,
+            workline_id=workline_id,
+            source_evidence_id=evidence.id,
+            trigger_payload=evidence.normalized_payload,
+        )
+        await self._processing.mark_applied(db, evidence, processed_at=processed_at)
         return True
 
     async def _publish_update(self, update: DeviceEvidenceUpdate) -> None:
@@ -543,6 +585,14 @@ class DeviceEvidenceService:
             self._task_queue.enqueue_device_commands()
         except Exception:
             logger.exception("device.evidence.command_dispatch_wake_failed")
+
+    def _enqueue_safety_drain(self) -> None:
+        if self._task_queue is None:
+            return
+        try:
+            self._task_queue.enqueue_safety_drain()
+        except Exception:
+            logger.exception("device.evidence.safety_drain_wake_failed")
 
 
 def _normalize_result(command: DeviceCommand, report: EcsCommandResultReport) -> EcsCommandResult:

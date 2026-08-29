@@ -104,6 +104,12 @@ beat_schedule: dict[str, dict[str, Any]] = {
         "kwargs": {"limit": 100},
         "options": {"expires": 10.0},
     },
+    "drain-safety-incidents-batch": {
+        "task": "src.celery_app.tasks.workline.drain_safety_incidents_batch",
+        "schedule": 10.0,
+        "kwargs": {"limit": 10, "command_limit": 100},
+        "options": {"expires": 10.0},
+    },
 }
 
 # ============================================
@@ -111,6 +117,7 @@ beat_schedule: dict[str, dict[str, Any]] = {
 # ============================================
 
 task_routes = {
+    "src.celery_app.tasks.workline.drain_safety_incidents_batch": {"queue": "celery"},
     "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch": {"queue": "wms-fulfillment"},
     "src.celery_app.tasks.execution.process_execution_facts_batch": {"queue": "device-command"},
     "src.celery_app.tasks.device_command.dispatch_device_commands_batch": {"queue": "device-command"},

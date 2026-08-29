@@ -17,6 +17,10 @@ class InitialExecutionCorrelationConflictError(ValueError):
     """初始 evidence 指向与活动执行不一致的稳定身份。"""
 
 
+class MaterialExecutionFifoBlockedError(ValueError):
+    """请求物料不是当前 WorkLine/Epoch 不可越过的 FIFO 队头。"""
+
+
 class MaterialExecutionRepositoryPort(Protocol):
     async def lock_material_trace(self, db: object, material_trace_id: str) -> None: ...
 
@@ -27,6 +31,14 @@ class MaterialExecutionRepositoryPort(Protocol):
     ) -> MaterialExecution | None: ...
 
     async def add(self, db: object, execution: MaterialExecution) -> MaterialExecution: ...
+
+    async def get_admission_head_for_update(
+        self,
+        db: object,
+        *,
+        workline_id: int,
+        line_run_epoch_id: int,
+    ) -> MaterialExecution | None: ...
 
     async def flush(self, db: object) -> None: ...
 
@@ -70,6 +82,8 @@ class MaterialExecutionService:
                 material_trace_id=material_trace_id,
                 workline_id=workline_id,
                 line_run_epoch_id=line_run_epoch_id,
+                admission_received_at=changed_at,
+                admission_evidence_id=evidence_id,
                 last_transition_reason=reason,
                 last_transition_evidence_id=evidence_id,
                 status_changed_at=changed_at,
@@ -104,11 +118,31 @@ class MaterialExecutionService:
                 material_trace_id=material_trace_id,
                 workline_id=workline_id,
                 line_run_epoch_id=line_run_epoch_id,
+                admission_received_at=changed_at,
+                admission_evidence_id=evidence_id,
                 last_transition_reason="INITIAL_EVIDENCE",
                 last_transition_evidence_id=evidence_id,
                 status_changed_at=changed_at,
             ),
         )
+
+    async def assert_fifo_head(self, db: object, execution: MaterialExecution) -> MaterialExecution:
+        """在推进物料前锁定并验证发起方 admission 顺序。"""
+
+        if execution.id is None:
+            raise ValueError("MaterialExecution 必须先持久化")
+        head = await self._repository.get_admission_head_for_update(
+            db,
+            workline_id=execution.workline_id,
+            line_run_epoch_id=execution.line_run_epoch_id,
+        )
+        if head is None:
+            raise MaterialExecutionFifoBlockedError("当前 WorkLine/Epoch 不存在可推进的 FIFO 队头")
+        if head.id != execution.id:
+            raise MaterialExecutionFifoBlockedError(
+                f"MaterialExecution {execution.execution_code} 不得越过 FIFO 队头 {head.execution_code}"
+            )
+        return execution
 
     async def transition(
         self,
@@ -147,6 +181,7 @@ material_execution_service = MaterialExecutionService()
 __all__ = [
     "ActiveMaterialExecutionExistsError",
     "InitialExecutionCorrelationConflictError",
+    "MaterialExecutionFifoBlockedError",
     "MaterialExecutionService",
     "material_execution_service",
 ]
