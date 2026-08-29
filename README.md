@@ -60,7 +60,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [WORKLINE 业务插件二次开发指南](docs/plugin_development_guide.md)：最小插件 SPI、封闭 Decision 与独立插件包交付约定。
 - [WMS 北向交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义共享 Client 与后续新增具体 WMS API 的开发标准；业务结果由 WMS 给出，搬运与 RCS 状态归 Phase 4。
 - [AGV/CTU 通用搬运能力合同](docs/contracts/transport-fulfillment-contract.md)：定义四类搬运请求、同步接纳 ACK、成员位置事实、异步最终结果、幂等和对账边界；Phase 6 已接入唯一生产路由、API/Celery 生命周期和可靠队列，但尚无业务 producer。
-- [Transport 运维诊断 Runbook](docs/runbooks/transport-operations.md)：优先通过本地只读 API 观察任务与 callback evidence，再按结构化日志和 PostgreSQL 事实定位过期 claim、未发布 outcome 与未释放绑定。
+- [Transport 运维诊断 Runbook](docs/runbooks/transport-operations.md)：优先通过本地 API、结构化日志和 PostgreSQL 事实诊断任务；数据可丢弃的联调环境可按 `transport_task_id` 预检并清理单个任务的完整本地链路。
 - [WES 第三方设备统一接口白皮书](docs/integration/third_party_integration_whitepaper.md)：所有固定式设备供应商长期遵循的顶层统一接口（wire）真源。
 - [DeviceCommand 核心边界合同](docs/architecture/device-command-contract.md)：设备可靠性、统一接口、设备合同附录与插件的所有权边界。
 - [DeviceCommand 运维诊断 Runbook](docs/runbooks/device-command-operations.md)：按数据库事实排查派发、证据、对账和 Epoch fencing，不直接改表或换身份重放。
