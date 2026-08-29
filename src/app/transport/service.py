@@ -35,6 +35,7 @@ from src.app.transport.contracts import (
     TransportCaller,
     TransportContractError,
     TransportEvidenceUpdate,
+    TransportExecutionAuthority,
     TransportHandle,
     TransportIdempotencyConflict,
     TransportMemberOutcome,
@@ -55,7 +56,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -136,6 +136,19 @@ class TransportEventPublisher(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, Any]) -> bool: ...
 
 
+class PositionProjectionPort(Protocol):
+    async def get_current(
+        self,
+        db: object,
+        object_type: str,
+        object_id: str,
+        *,
+        for_update: bool = False,
+    ) -> object | None: ...
+
+    async def apply_transport_result(self, db: object, **kwargs: object) -> object | None: ...
+
+
 class TransportService:
     """提供四个搬运方法，并封装内部可靠收敛入口。"""
 
@@ -145,11 +158,17 @@ class TransportService:
         repository: TransportRepository,
         provider: TransportProviderPort,
         *,
+        position_projections: PositionProjectionPort | None = None,
         event_publisher: TransportEventPublisher = event_stream_service,
     ) -> None:
+        if position_projections is None:
+            from src.app.execution.services.position_projection_service import position_projection_service
+
+            position_projections = position_projection_service
         self._sessions = session_factory
         self._repository = repository
         self.provider = provider
+        self._position_projections = position_projections
         self._event_publisher = event_publisher
 
     async def move_rack(
@@ -160,8 +179,13 @@ class TransportService:
         source: RackPosition,
         target: RackPosition,
         target_face: RackFace,
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
-        return await self._create_task(MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face))
+        return await self._create_task(
+            MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face),
+            execution_authority,
+        )
 
     async def move_rack_in_session(
         self,
@@ -172,12 +196,15 @@ class TransportService:
         source: RackPosition,
         target: RackPosition,
         target_face: RackFace,
+        *,
+        execution_authority: TransportExecutionAuthority,
     ) -> TransportHandle:
         """在调用方事务中持久化 RACK_MOVE；不会提交或派发。"""
 
         return await self._create_task_in_session(
             db,
             MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face),
+            execution_authority,
         )
 
     async def rotate_rack(
@@ -187,24 +214,35 @@ class TransportService:
         rack_id: str,
         position: RackPosition,
         target_face: RackFace,
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
-        return await self._create_task(RotateRackRequest(client_request_id, caller, rack_id, position, target_face))
+        return await self._create_task(
+            RotateRackRequest(client_request_id, caller, rack_id, position, target_face),
+            execution_authority,
+        )
 
     async def move_bins(
         self,
         client_request_id: str,
         caller: TransportCaller,
         moves: tuple[BinMove, ...],
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
-        return await self._create_task(MoveBinsRequest(client_request_id, caller, moves))
+        return await self._create_task(MoveBinsRequest(client_request_id, caller, moves), execution_authority)
 
     async def exchange_bins(
         self,
         client_request_id: str,
         caller: TransportCaller,
         exchange_pairs: tuple[BinExchangePair, ...],
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
-        return await self._create_task(ExchangeBinsRequest(client_request_id, caller, exchange_pairs))
+        return await self._create_task(
+            ExchangeBinsRequest(client_request_id, caller, exchange_pairs), execution_authority
+        )
 
     async def get_task_snapshot(self, transport_task_id: str) -> TransportTaskSnapshot:
         """返回 WES 已持久化的任务与最新 callback evidence，不查询 WMS/RCS。"""
@@ -708,11 +746,15 @@ class TransportService:
             published += 1
         return published
 
-    async def _create_task(self, request: TransportRequest) -> TransportHandle:
-        request_digest = _request_digest(request)
+    async def _create_task(
+        self,
+        request: TransportRequest,
+        execution_authority: TransportExecutionAuthority | None,
+    ) -> TransportHandle:
+        request_digest = _request_digest(request, execution_authority)
         try:
             async with self._sessions.begin() as db:
-                return await self._create_task_in_session(db, request)
+                return await self._create_task_in_session(db, request, execution_authority)
         except IntegrityError as error:
             async with self._sessions() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
@@ -720,8 +762,13 @@ class TransportService:
                     return _idempotent_handle(existing, request_digest)
             raise TransportResourceConflict("transport resource is already active") from error
 
-    async def _create_task_in_session(self, db: AsyncSession, request: TransportRequest) -> TransportHandle:
-        request_digest = _request_digest(request)
+    async def _create_task_in_session(
+        self,
+        db: AsyncSession,
+        request: TransportRequest,
+        execution_authority: TransportExecutionAuthority | None,
+    ) -> TransportHandle:
+        request_digest = _request_digest(request, execution_authority)
         task_id = f"transport-{uuid.uuid4()}"
         now = timezone.now_for_db()
         submit_operation_id = new_uuid7()
@@ -743,6 +790,13 @@ class TransportService:
             submit_timestamp_ms=submit_timestamp_ms,
             submit_request_body=frozen_request_body.decode("utf-8"),
             submit_request_body_digest=request_body_digest(frozen_request_body),
+            authority_workline_id=(execution_authority.workline_id if execution_authority is not None else None),
+            authority_line_run_epoch_id=(
+                execution_authority.line_run_epoch_id if execution_authority is not None else None
+            ),
+            authority_bin_execution_id=(
+                execution_authority.bin_execution_id if execution_authority is not None else None
+            ),
             created_at=now,
             updated_at=now,
         )
@@ -760,7 +814,7 @@ class TransportService:
         if existing is not None:
             return _idempotent_handle(existing, request_digest)
         if isinstance(request, RotateRackRequest):
-            projection = await self._repository.get_projection(
+            projection = await self._position_projections.get_current(
                 db,
                 "RACK",
                 request.rack_id,
@@ -774,7 +828,7 @@ class TransportService:
                 raise TransportContractError("target face equals current face")
         elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
             for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
-                projection = await self._repository.get_projection(db, "RACK", rack_id, for_update=True)
+                projection = await self._position_projections.get_current(db, "RACK", rack_id, for_update=True)
                 if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
                     raise TransportContractError("rack current face is unknown")
                 if projection.arrival_face != requested_face.value:
@@ -941,14 +995,12 @@ class TransportService:
                 raise TransportContractError("position unknown cannot overwrite confirmed member position")
             member.position_unknown = True
             member.final_position_json = None
-            await self._upsert_projection(db, member, None, True, None, evidence.operation_id, now)
             self._set_outcome(task, TransportTaskStatus.RECONCILING, "TRANSPORT_POSITION_UNKNOWN", now)
         elif milestone == "SOURCE_PICKED":
             if member.position_unknown:
                 raise TransportContractError("source picked cannot overwrite unknown position")
             if member.final_position_json is not None:
                 return
-            await self._upsert_projection(db, member, {"kind": "ON_CARRIER"}, False, None, evidence.operation_id, now)
             _accept_position_fact(task, now)
         elif milestone == "TARGET_PLACED":
             final_position = payload.get("final_position")
@@ -960,7 +1012,6 @@ class TransportService:
                 raise TransportContractError("placed position contradicts confirmed member position")
             member.final_position_json = final_position
             member.position_unknown = False
-            await self._upsert_projection(db, member, final_position, False, None, evidence.operation_id, now)
             _accept_position_fact(task, now)
         member.last_operation_id = evidence.operation_id
         member.updated_at = now
@@ -1067,14 +1118,17 @@ class TransportService:
             member.arrival_face = arrival_face
             member.last_operation_id = evidence.operation_id
             member.updated_at = now
-            await self._upsert_projection(
+            await self._position_projections.apply_transport_result(
                 db,
-                member,
-                final_position,
-                position_unknown,
-                arrival_face,
-                evidence.operation_id,
-                now,
+                authority=_execution_authority_from_task(task),
+                object_type=member.object_type,
+                object_id=member.object_id,
+                position=final_position,
+                position_unknown=position_unknown,
+                arrival_face=arrival_face,
+                operation_id=evidence.operation_id,
+                transport_task_id=task.transport_task_id,
+                updated_at=now,
             )
             outcomes.append(outcome)
 
@@ -1108,33 +1162,6 @@ class TransportService:
         )
         if task_status in {TransportTaskStatus.SUCCEEDED, TransportTaskStatus.FAILED}:
             await self._repository.release_bindings(db, task.transport_task_id, now=now)
-
-    async def _upsert_projection(
-        self,
-        db: AsyncSession,
-        member: TransportMember,
-        position: dict[str, Any] | None,
-        position_unknown: bool,
-        arrival_face: str | None,
-        operation_id: str,
-        now: Any,
-    ) -> None:
-        projection = await self._repository.get_projection(db, member.object_type, member.object_id, for_update=True)
-        if projection is None:
-            projection = TransportPositionProjection(
-                object_type=member.object_type,
-                object_id=member.object_id,
-                source_operation_id=operation_id,
-                source_transport_task_id=member.transport_task_id,
-                updated_at=now,
-            )
-            db.add(projection)
-        projection.position_json = position
-        projection.position_unknown = position_unknown
-        projection.arrival_face = arrival_face
-        projection.source_operation_id = operation_id
-        projection.source_transport_task_id = member.transport_task_id
-        projection.updated_at = now
 
 
 def _members_for(request: TransportRequest, task_id: str, now: Any) -> list[TransportMember]:
@@ -1202,12 +1229,31 @@ def _rack_faces_for_bin_request(request: MoveBinsRequest | ExchangeBinsRequest) 
     return {position.rack_id: position.rack_face for position in positions if isinstance(position, RackBinSlot)}
 
 
-def _request_digest(request: TransportRequest) -> str:
+def _request_digest(
+    request: TransportRequest,
+    execution_authority: TransportExecutionAuthority | None,
+) -> str:
     submit_data = build_submit_data(request, "")
     submit_data.pop("transport_task_id")
-    request_semantics = {"caller": _json_value(request.caller), "data": submit_data}
+    request_semantics = {
+        "caller": _json_value(request.caller),
+        "data": submit_data,
+        "execution_authority": _json_value(execution_authority) if execution_authority is not None else None,
+    }
     encoded = json.dumps(request_semantics, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _execution_authority_from_task(task: TransportTask) -> TransportExecutionAuthority | None:
+    if task.authority_workline_id is None:
+        return None
+    if task.authority_line_run_epoch_id is None:
+        raise RuntimeError("persisted TransportTask has incomplete execution authority")
+    return TransportExecutionAuthority(
+        workline_id=task.authority_workline_id,
+        line_run_epoch_id=task.authority_line_run_epoch_id,
+        bin_execution_id=task.authority_bin_execution_id,
+    )
 
 
 def _matches_submit_snapshot(

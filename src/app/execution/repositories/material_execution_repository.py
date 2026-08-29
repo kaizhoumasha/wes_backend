@@ -42,6 +42,35 @@ class MaterialExecutionRepository(BaseRepository[MaterialExecution]):
         await db.flush()
         return execution
 
+    async def get_admission_head_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        line_run_epoch_id: int,
+    ) -> MaterialExecution | None:
+        """锁定同一 WorkLine/Epoch 中不可越过的最早活动物料。"""
+
+        columns = cast("Any", MaterialExecution).__table__.c
+        result = await db.execute(
+            select(MaterialExecution)
+            .where(
+                columns.workline_id == workline_id,
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.status != MaterialExecutionStatus.CLOSED,
+                columns.admission_received_at.is_not(None),
+                columns.admission_evidence_id.is_not(None),
+            )
+            .order_by(
+                columns.admission_received_at,
+                columns.admission_evidence_id,
+                columns.id,
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_id_for_update(self, db: AsyncSession, execution_id: int) -> MaterialExecution | None:
         columns = cast("Any", MaterialExecution).__table__.c
         result = await db.execute(select(MaterialExecution).where(columns.id == execution_id).with_for_update())

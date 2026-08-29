@@ -80,6 +80,12 @@ class WorklineSafetyIncident(
         description="安全事件原因",
     )
     source_inbox_id: int | None = Field(default=None, index=True, description="来源 Inbox ID")
+    source_evidence_id: int | None = Field(
+        default=None,
+        index=True,
+        foreign_key="wes_biz.inbound_evidences.id",
+        description="最终 Device InboundEvidence 应用边界来源",
+    )
     source_device_id: int | None = Field(default=None, index=True, description="来源设备 ID")
     source_command_id: int | None = Field(default=None, index=True, description="来源指令 ID")
     trigger_payload_json: dict[str, Any] = Field(

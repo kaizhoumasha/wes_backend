@@ -36,6 +36,19 @@ class WorklineSafetyIncidentRepository(BaseRepository[WorklineSafetyIncident]):
         )
         return result.scalar_one_or_none()
 
+    async def claim_next_drain(self, db: AsyncSession) -> WorklineSafetyIncident | None:
+        """锁定一条待排空或上次失败的 incident；调用方按事务边界重试。"""
+
+        columns = cast("Any", WorklineSafetyIncident).__table__.c
+        result = await db.execute(
+            select(WorklineSafetyIncident)
+            .where(columns.drain_status.in_(("PENDING", "FAILED")))
+            .order_by(columns.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        return result.scalar_one_or_none()
+
 
 workline_safety_incident_repository = WorklineSafetyIncidentRepository()
 

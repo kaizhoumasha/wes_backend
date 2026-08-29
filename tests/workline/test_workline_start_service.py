@@ -24,6 +24,7 @@ class EpochRepository:
     def __init__(self, existing: LineRunEpoch | None = None) -> None:
         self.existing = existing
         self.locked: list[str] = []
+        self.lifecycle_locked: list[int] = []
 
     async def lock_start_request(self, _db: object, request_id: str) -> None:
         self.locked.append(request_id)
@@ -32,16 +33,43 @@ class EpochRepository:
         assert self.locked == [epoch_code]
         return self.existing if self.existing is not None and self.existing.epoch_code == epoch_code else None
 
+    async def get_active_for_workline(self, _db: object, workline_id: int) -> LineRunEpoch | None:
+        if (
+            self.existing is not None
+            and self.existing.workline_id == workline_id
+            and self.existing.status == LineRunEpochStatus.ACTIVE
+        ):
+            return self.existing
+        return None
+
+    async def lock_epoch_lifecycle(self, _db: object, line_run_epoch_id: int) -> None:
+        self.lifecycle_locked.append(line_run_epoch_id)
+
+    async def get_active_for_workline_for_update(self, _db: object, workline_id: int) -> LineRunEpoch | None:
+        return await self.get_active_for_workline(_db, workline_id)
+
 
 class WorkLineRepository:
-    def __init__(self, workline: object | None) -> None:
+    def __init__(self, workline: object | None, *, unfinished_by_type: dict[str, bool] | None = None) -> None:
         self.workline = workline
         self.calls = 0
+        self.unfinished_by_type = unfinished_by_type or {}
 
     async def get_for_update(self, _db: object, workline_id: int) -> object | None:
         self.calls += 1
         assert getattr(self.workline, "id", workline_id) == workline_id
         return self.workline
+
+    async def get_unfinished_workload_summary(self, _db: object, workline_id: int) -> dict[str, object]:
+        assert getattr(self.workline, "id", workline_id) == workline_id
+        by_type = {"line_run_epochs": False, **self.unfinished_by_type}
+        return {
+            "count": sum(by_type.values()),
+            "by_type": by_type,
+            "sample": {"type": "material_execution", "identity": "EXEC-BLOCKING", "status": "HOLD"}
+            if any(self.unfinished_by_type.values())
+            else None,
+        }
 
 
 class ProjectionService:
@@ -189,9 +217,13 @@ def _service(
     pending_reconciliations: int = 0,
     events: list[str] | None = None,
     close_error: Exception | None = None,
+    unfinished_by_type: dict[str, bool] | None = None,
 ):
     epochs = EpochRepository(existing)
-    worklines = WorkLineRepository(SimpleNamespace(id=7, is_active=True))
+    worklines = WorkLineRepository(
+        SimpleNamespace(id=7, is_active=True),
+        unfinished_by_type=unfinished_by_type,
+    )
     projection = ProjectionService(runtime_status)
     safety = EmptyGateRepository()
     holds = EmptyGateRepository(active_holds)
@@ -204,7 +236,6 @@ def _service(
         workline_repository=worklines,
         projection_service=projection,
         safety_repository=safety,
-        runtime_hold_repository=holds,
         reconciliation_repository=reconciliations,
         plan_builder=builder,
         epoch_service=epoch_service,
@@ -262,7 +293,8 @@ async def test_first_start_builds_complete_epoch_projects_ready_and_releases_onl
     assert result.current_workline_runtime_status == "READY"
     assert result.released_outbox_count == 2
     assert worklines.calls == projection.ready_calls == builder.calls == outboxes.calls == 1
-    assert safety.calls == holds.calls == reconciliations.calls == 1
+    assert safety.calls == reconciliations.calls == 1
+    assert holds.calls == 0
     assert epoch_service.calls[0]["configuration_snapshot"] == {"mode": "GENERIC"}
 
 
@@ -309,28 +341,34 @@ async def test_first_start_rejects_current_non_stopped_state_before_builder() ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("active_holds", "pending_reconciliations", "error"),
-    [
-        (1, 0, "runtime hold"),
-        (0, 1, "runtime reconciliation"),
-    ],
-)
-async def test_first_start_rejects_active_runtime_blockers_before_builder_or_release(
-    active_holds: int,
-    pending_reconciliations: int,
-    error: str,
-) -> None:
+async def test_first_start_rejects_pending_runtime_reconciliation_before_builder_or_release() -> None:
     service, _epochs, _worklines, projection, _safety, _holds, _reconciliations, builder, epoch_service, outboxes = (
         _service(
-            active_holds=active_holds,
-            pending_reconciliations=pending_reconciliations,
+            active_holds=1,
+            pending_reconciliations=1,
             released=3,
         )
     )
 
-    with pytest.raises(WorkLineStartInvalidStateError, match=error):
+    with pytest.raises(WorkLineStartInvalidStateError, match="runtime reconciliation"):
         await service.start(object(), workline_id=7, request_id="REQUEST-BLOCKED")
 
     assert projection.ready_calls == builder.calls == outboxes.calls == 0
     assert epoch_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_first_start_rejects_unfinished_execution_owner_before_epoch_replacement() -> None:
+    events: list[str] = []
+    service, *_prefix, builder, epoch_service, outboxes = _service(
+        events=events,
+        unfinished_by_type={"material_executions": True},
+    )
+
+    with pytest.raises(WorkLineStartInvalidStateError, match="EXEC-BLOCKING"):
+        await service.start(object(), workline_id=7, request_id="REQUEST-BLOCKED")
+
+    assert events == []
+    assert builder.calls == 0
+    assert epoch_service.calls == []
+    assert outboxes.calls == 0

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.2.0] - 2026-08-29
+
+### Added
+
+- 增加最小 `BinExecution`、RACK/BIN 共用 `PositionProjection`、Transport execution authority 与七类 unfinished owner 单快照，为 Phase 10 退役旧执行路径建立可靠 successor。
+- 增加严格 admission FIFO、E03/E07 typed `WmsConfirmation` barrier、ESTOP final router 与 incident-owned bounded drain，并生成 `UNRESOLVED=0` 的北向 operation inventory。
+
+### Changed
+
+- WorkLine START 在同一 Epoch fence 下拒绝任何未闭合执行义务；未知、对账和重试状态均不能绕过队头或旧 Epoch。
+- WMS Transport 与 execution confirmation 共用单一长期 client、显式连接池和并发 limiter；删除无消费者的同步 OpenTelemetry HTTP exporter，保留内部观测 registry、signal 与 bridge。
+
+### Fixed
+
+- 修复 ESTOP Celery drain 返回已处理但未提交事务的问题，确保每个 incident 批次独立持久化并可在 PostgreSQL 行锁下安全重试。
+
+### Verification
+
+- 最终 Commit hook QUALITY 通过：4105 项默认 FAST 测试通过，5 项按既有外部条件跳过；Ruff、Bandit、架构和测试所有权门禁通过。
+- 主体实现 HEAVY 267 项通过；最终修复 selector 选择的 PostgreSQL、unfinished owner 矩阵与真实 prefork worker 11 项通过，无 skip；空库 migration 到单一 head `dd35f04b258f`。
+- fresh Review 无剩余意见；隔离本机栈完成 API、前端、Nginx、Mock 与浏览器登录/Swagger QA。本次交付不包含 Merge、Deploy、真实 WMS/RCS/ECS 物理动作、供应商一致性或业务验收。
+
 ## [0.29.1.0] - 2026-08-28
 
 ### Added

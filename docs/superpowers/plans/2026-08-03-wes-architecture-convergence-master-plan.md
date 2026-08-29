@@ -31,7 +31,7 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Backend planning baseline:** `develop@50bd9ac2098005b346d48b10ad9d78ac0ae5d982`（PR #179 已闭合旧 Phase 9 承接与归档）；
 **Frontend planning baseline:** `develop@63489e7c89aa0fb758e7a08ea97a8000a3b843fc`（PR #82 已合入开发流程优化）。
-Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 计划已于 2026-08-28 批准，生产实施未开始。Phase 8 RC 发布证据仍为
+Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 分支完成性验收已于 2026-08-29 通过，`develop` 集成待完成。Phase 8 RC 发布证据仍为
 `f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`。
 
 ---
@@ -136,7 +136,7 @@ Transport/Adapter/核心所有权。
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
 Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 后端功能和本机 Mock 已完成，
-后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 计划已批准、生产实施未开始；Phase 10–14 尚未开始。
+后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 分支完成性验收已通过但尚未合入 `develop`；Phase 10–14 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -738,7 +738,7 @@ OpenAPI 仅作为归档输入；Phase 12 开始前必须按真实教学范围重
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 后端 RC 已关闭，当前证据以 `docs/integration/rough-sorter-joint-acceptance.md` 为准；前端和现场活动独立推进；Phase 9 计划已批准、生产实施未开始；Phase 10 至 14 未开始 |
+| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 后端 RC 已关闭，当前证据以 `docs/integration/rough-sorter-joint-acceptance.md` 为准；前端和现场活动独立推进；Phase 9 分支完成性验收已通过但尚未合入 `develop`；Phase 10 至 14 未开始 |
 
 ## 22. 总体完成定义
 

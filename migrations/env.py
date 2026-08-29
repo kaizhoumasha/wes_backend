@@ -34,9 +34,11 @@ from src.app.device.models import (  # noqa: F401
     DeviceStatusObservation,
 )
 from src.app.execution.models import (  # noqa: F401
+    BinExecution,
     InboundEvidence,
     InboundEvidenceConflict,
     MaterialExecution,
+    PositionProjection,
     RackReplacementTransportBinding,
     WmsConfirmation,
 )
@@ -81,7 +83,6 @@ from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.transport.models import (  # noqa: F401
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )

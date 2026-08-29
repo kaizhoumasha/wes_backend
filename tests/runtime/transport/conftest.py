@@ -5,6 +5,7 @@ import pytest_asyncio
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
@@ -20,7 +21,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -98,7 +98,7 @@ async def outcome_service(db_engine: object) -> TransportService:
             TransportCallbackReceipt,
             TransportResourceBinding,
             TransportMember,
-            TransportPositionProjection,
+            PositionProjection,
             TransportTask,
         ):
             await db.execute(delete(model))

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from sqlalchemy import delete
 
+from src.app.execution.models import PositionProjection
 from src.app.transport import composition as transport_composition
 from src.app.transport.contracts import (
     BinExchangePair,
@@ -23,7 +24,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -32,6 +32,7 @@ from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import ensure_projection_authority
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -114,25 +115,32 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     callback_operation_ids: list[str] = []
 
     async with integration_session_factory.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add_all(
             [
-                TransportPositionProjection(
+                PositionProjection(
                     object_type="RACK",
                     object_id=position_rack_id,
+                    workline_id=workline_id,
+                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "RACK_WAIT"},
                     arrival_face="A",
                     source_operation_id=new_uuid7(),
+                    source_transport_task_id="dark-loop-rack-face",
                     updated_at=timezone.now_for_db(),
                 )
                 for position_rack_id in (move_source_rack, exchange_left_rack, exchange_right_rack)
             ]
             + [
-                TransportPositionProjection(
+                PositionProjection(
                     object_type="RACK",
                     object_id=rotate_rack_id,
+                    workline_id=workline_id,
+                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                     arrival_face="A",
                     source_operation_id=new_uuid7(),
+                    source_transport_task_id="dark-loop-rack-face",
                     updated_at=timezone.now_for_db(),
                 )
             ]
@@ -292,8 +300,8 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
                 await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
             await db.execute(
-                delete(TransportPositionProjection).where(
-                    TransportPositionProjection.object_id.in_(
+                delete(PositionProjection).where(
+                    PositionProjection.object_id.in_(
                         [
                             rotate_rack_id,
                             rack_id,

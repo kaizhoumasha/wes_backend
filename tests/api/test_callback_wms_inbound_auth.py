@@ -39,7 +39,13 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_compiled_wms_policy
 
     compiled_profile = build_compiled_provider_profile()
     startup = SimpleNamespace(compiled_profile=compiled_profile, catalog=SimpleNamespace())
-    transport_runtime = SimpleNamespace(service=object(), repository=object(), client=object(), aclose=AsyncMock())
+    transport_runtime = SimpleNamespace(
+        service=object(),
+        repository=object(),
+        client=object(),
+        position_projection_service=object(),
+        aclose=AsyncMock(),
+    )
     build_transport_runtime = AsyncMock(return_value=transport_runtime)
     app = FastAPI()
     with (
@@ -70,9 +76,6 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_compiled_wms_policy
         patch("src.app.wms_integration.effect_preparation_runtime.bind_wms_effect_preparation_runtime"),
         patch(
             "src.app.wms_integration.effect_preparation_runtime.close_wms_effect_preparation_runtime", new=AsyncMock()
-        ),
-        patch(
-            "src.app.runtime.orchestration.observability.configure_runtime_open_telemetry_backend", return_value=False
         ),
         patch("src.app.runtime.orchestration.observability.runtime_observability_registry.close", MagicMock()),
     ):

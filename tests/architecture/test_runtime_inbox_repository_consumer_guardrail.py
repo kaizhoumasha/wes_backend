@@ -39,17 +39,28 @@ def test_runtime_inbox_has_one_repository_owner() -> None:
         assert claim_import not in path.read_text(encoding="utf-8"), f"{path} 仍 import 第二个 claim repository"
 
 
-def test_business_repositories_require_query_port_without_concrete_persistence_import() -> None:
+def test_business_repositories_do_not_depend_on_runtime_inbox_persistence() -> None:
     concrete_module = "src.app.runtime.orchestration.repositories.runtime_inbox_repository"
     for relative_path in MIGRATED_FILES[:1]:
         source = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
         assert concrete_module not in source, f"{relative_path} 直接依赖 RuntimeInbox persistence implementation"
 
-    assert inspect.signature(WorkLineRepository).parameters["runtime_inbox_query"].default is inspect.Parameter.empty
+    assert "runtime_inbox_query" not in inspect.signature(WorkLineRepository).parameters
 
 
 def test_runtime_repository_wiring_is_the_only_business_repository_composition_root() -> None:
     wiring = REPOSITORY_ROOT / "src/app/runtime/orchestration/repository_wiring.py"
-    assert wiring.is_file(), "缺 RuntimeInbox query port 的 composition root"
+    assert wiring.is_file(), "缺 Runtime repository composition root"
     source = wiring.read_text(encoding="utf-8")
-    assert "WorkLineRepository(runtime_inbox_query=runtime_inbox_repository)" in source
+    assert "WorkLineRepository()" in source
+
+
+def test_runtime_inbox_does_not_route_estop_to_safety_owner() -> None:
+    bridge = REPOSITORY_ROOT / (
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py"
+    )
+    source = bridge.read_text(encoding="utf-8")
+
+    assert "workline_safety_service" not in source
+    assert "handle_estop(" not in source
+    assert "Device InboundEvidence 最终应用边界" in source

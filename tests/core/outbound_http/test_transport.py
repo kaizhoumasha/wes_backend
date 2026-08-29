@@ -77,6 +77,7 @@ def _transport(
         client=client,
         system_id="wms",
         timeout_seconds=timeout_seconds,
+        max_concurrency=20,
     )
 
 

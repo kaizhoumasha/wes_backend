@@ -7,12 +7,12 @@ from typing import TYPE_CHECKING
 import pytest
 from sqlalchemy import delete, func, select, update
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import RackFace, RackPosition, TransportCaller, TransportContractError
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -22,6 +22,7 @@ from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import ensure_projection_authority
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -111,9 +112,7 @@ async def _cleanup(
                 delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id.in_(operation_ids))
             )
             await db.execute(
-                delete(TransportPositionProjection).where(
-                    TransportPositionProjection.source_operation_id.in_(operation_ids)
-                )
+                delete(PositionProjection).where(PositionProjection.source_operation_id.in_(operation_ids))
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.operation_id.in_(operation_ids)))
         await db.execute(
@@ -177,7 +176,7 @@ async def test_debug_reset_deletes_only_selected_postgresql_aggregate(
         await _cleanup(integration_session_factory, task_ids=(target_id, keep_id))
 
 
-async def test_debug_reset_deletes_postgresql_task_with_evidence_outcome_receipt_and_projection(
+async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_projection(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     suffix = uuid.uuid4().hex
@@ -188,6 +187,7 @@ async def test_debug_reset_deletes_postgresql_task_with_evidence_outcome_receipt
     operation_id = new_uuid7()
     now = timezone.now_for_db()
     async with integration_session_factory.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         task = await db.scalar(
             select(TransportTask).where(TransportTask.transport_task_id == task_id).with_for_update()
         )
@@ -222,9 +222,11 @@ async def test_debug_reset_deletes_postgresql_task_with_evidence_outcome_receipt
             )
         )
         db.add(
-            TransportPositionProjection(
+            PositionProjection(
                 object_type="RACK",
                 object_id=f"rack-reset-ineligible-{suffix}",
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
                 position_unknown=False,
                 arrival_face="A",
@@ -241,7 +243,7 @@ async def test_debug_reset_deletes_postgresql_task_with_evidence_outcome_receipt
         assert preview.outcome_version == 1
         assert preview.evidence_count == 1
         assert preview.callback_receipt_count == 1
-        assert preview.position_projection_count == 1
+        assert preview.position_projection_count == 0
 
         result = await service.reset_debug_task(task_id)
 
@@ -251,7 +253,7 @@ async def test_debug_reset_deletes_postgresql_task_with_evidence_outcome_receipt
             result.deleted_position_projection_count,
             result.deleted_member_count,
             result.deleted_binding_count,
-        ) == (1, 1, 1, 1, 1)
+        ) == (1, 1, 0, 1, 1)
         assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
         async with integration_session_factory() as db:
             receipt_count = await db.scalar(
@@ -266,10 +268,10 @@ async def test_debug_reset_deletes_postgresql_task_with_evidence_outcome_receipt
             )
             projection_count = await db.scalar(
                 select(func.count())
-                .select_from(TransportPositionProjection)
-                .where(TransportPositionProjection.source_operation_id == operation_id)
+                .select_from(PositionProjection)
+                .where(PositionProjection.source_operation_id == operation_id)
             )
-        assert (receipt_count, evidence_count, projection_count) == (0, 0, 0)
+        assert (receipt_count, evidence_count, projection_count) == (0, 0, 1)
     finally:
         await _cleanup(integration_session_factory, task_ids=(task_id,), operation_ids=(operation_id,))
 
@@ -289,6 +291,7 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
     operation_id = str(new_uuid7())
     now = timezone.now_for_db()
     async with integration_session_factory.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add_all(
             [
                 TransportEvidence(
@@ -314,9 +317,11 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
                     ack_data_json={"transport_task_id": keep_id},
                     received_at=now,
                 ),
-                TransportPositionProjection(
+                PositionProjection(
                     object_type="RACK",
                     object_id=f"rack-reset-collision-keep-{suffix}",
+                    workline_id=workline_id,
+                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
                     position_unknown=False,
                     arrival_face="A",
@@ -334,8 +339,8 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
         async with integration_session_factory() as db:
             projection_count = await db.scalar(
                 select(func.count())
-                .select_from(TransportPositionProjection)
-                .where(TransportPositionProjection.source_operation_id == operation_id)
+                .select_from(PositionProjection)
+                .where(PositionProjection.source_operation_id == operation_id)
             )
         assert projection_count == 1
     finally:

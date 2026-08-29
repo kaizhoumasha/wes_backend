@@ -29,6 +29,7 @@ from src.app.transport.contracts import (
 from src.app.transport.contracts import (
     RackPosition,
     TransportCaller,
+    TransportExecutionAuthority,
 )
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
@@ -322,6 +323,10 @@ class DecisionApplier:
             source=RackPosition(decision.source.location_code),
             target=RackPosition(decision.target.location_code),
             target_face=CoreRackFace(decision.target_face.value),
+            execution_authority=TransportExecutionAuthority(
+                workline_id=execution.workline_id,
+                line_run_epoch_id=execution.line_run_epoch_id,
+            ),
         )
 
     async def _transition(

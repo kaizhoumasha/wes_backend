@@ -226,8 +226,9 @@ class FakeAuditService:
 
 
 class FakeEpochRepository:
-    def __init__(self, event_epoch_id: int | None = None) -> None:
+    def __init__(self, event_epoch_id: int | None = None, *, workline_id: int = 7) -> None:
         self.event_epoch_id = event_epoch_id
+        self.workline_id = workline_id
 
     async def get_active_binding_for_device(self, _db: object, device_code: str):
         if self.event_epoch_id is None:
@@ -243,6 +244,11 @@ class FakeEpochRepository:
             },
         )()
 
+    async def get_by_id(self, _db: object, id: int):
+        if self.event_epoch_id != id:
+            return None
+        return type("Epoch", (), {"id": id, "workline_id": self.workline_id})()
+
 
 class FakeTaskQueue:
     def __init__(
@@ -254,6 +260,7 @@ class FakeTaskQueue:
     ) -> None:
         self.execution_wakes = 0
         self.device_command_wakes = 0
+        self.safety_drain_wakes = 0
         self.error = error
         self.dispatch_error = dispatch_error
         self.calls = calls
@@ -269,6 +276,18 @@ class FakeTaskQueue:
             self.calls.append("wake_device_commands")
         if self.dispatch_error is not None:
             raise self.dispatch_error
+
+    def enqueue_safety_drain(self) -> None:
+        self.safety_drain_wakes += 1
+
+
+class FakeSafetyService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def handle_estop(self, _db: object, **values: object) -> object:
+        self.calls.append(values)
+        return object()
 
 
 class FakeEventDebugCommandService:
@@ -365,6 +384,7 @@ def _service(
     audit_service: FakeAuditService | None = None,
     command_repository: FakeCommandRepository | None = None,
     session_factory: FakeSessionFactory | None = None,
+    safety_service: FakeSafetyService | None = None,
 ) -> tuple[DeviceEvidenceService, FakeEvidenceRepository]:
     evidences = FakeEvidenceRepository()
     return (
@@ -379,6 +399,7 @@ def _service(
             event_debug_command_service=event_debug_commands,  # type: ignore[arg-type]
             event_command_block_repository=block_repository,  # type: ignore[arg-type]
             audit_service=audit_service,  # type: ignore[arg-type]
+            safety_service=safety_service,  # type: ignore[arg-type]
         ),
         evidences,
     )
@@ -726,6 +747,33 @@ async def test_normal_event_still_wakes_business_processing() -> None:
     assert repository.evidences[receipt.source_event_id].apply_status == "APPLIED"
     assert debug_commands.evidences == []
     assert queue.execution_wakes == 1
+
+
+@pytest.mark.asyncio
+async def test_estop_event_routes_once_to_safety_after_durable_evidence() -> None:
+    queue = FakeTaskQueue()
+    safety = FakeSafetyService()
+    service, repository = _service(
+        None,
+        event_epoch_id=11,
+        task_queue=queue,
+        safety_service=safety,
+    )
+    receipt = await service.accept_event(_event(event_type="ESTOP_PRESSED"))
+
+    assert await service.process_one() is True
+
+    evidence = repository.evidences[receipt.source_event_id]
+    assert evidence.apply_status == "APPLIED"
+    assert safety.calls == [
+        {
+            "workline_id": 7,
+            "source_evidence_id": evidence.id,
+            "trigger_payload": evidence.normalized_payload,
+        }
+    ]
+    assert queue.safety_drain_wakes == 1
+    assert queue.execution_wakes == 0
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import pytest
 from sqlalchemy import delete, func, select
 
+from src.app.execution.models import PositionProjection
+from src.app.execution.services.position_projection_service import PositionProjectionService
 from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
@@ -16,6 +18,7 @@ from src.app.transport.contracts import (
     RackPosition,
     TransportCaller,
     TransportContractError,
+    TransportExecutionAuthority,
     TransportResourceConflict,
     TransportSubmitCode,
     TransportSubmitResult,
@@ -24,7 +27,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -34,7 +36,11 @@ from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
-from tests.support.transport_projections import confirm_rack_faces_with_sessions
+from tests.support.transport_projections import (
+    confirm_rack_faces_with_sessions,
+    ensure_projection_authority,
+    ensure_projection_authority_with_sessions,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -83,8 +89,11 @@ class _BlockingEvidenceInsertRepository(TransportRepository):
         await self.release.wait()
 
 
-class _FailingProjectionRepository(TransportRepository):
-    async def get_projection(self, *args: object, **kwargs: object) -> object:
+class _FailingProjectionPort:
+    async def get_current(self, *args: object, **kwargs: object) -> object:
+        raise RuntimeError("forced projection failure")
+
+    async def apply_transport_result(self, *args: object, **kwargs: object) -> object:
         raise RuntimeError("forced projection failure")
 
 
@@ -109,20 +118,21 @@ class _EvidenceReadRepository(TransportRepository):
         return evidence
 
 
-class _RotationReadRepository(TransportRepository):
+class _RotationProjectionPort:
     def __init__(self) -> None:
         self.read = asyncio.Event()
         self.release = asyncio.Event()
+        self._delegate = PositionProjectionService()
 
-    async def get_projection(
+    async def get_current(
         self,
         db: AsyncSession,
         object_type: str,
         object_id: str,
         *,
         for_update: bool = False,
-    ) -> TransportPositionProjection | None:
-        projection = await super().get_projection(
+    ) -> PositionProjection | None:
+        projection = await self._delegate.get_current(
             db,
             object_type,
             object_id,
@@ -132,6 +142,9 @@ class _RotationReadRepository(TransportRepository):
             self.read.set()
             await self.release.wait()
         return projection
+
+    async def apply_transport_result(self, db: object, **kwargs: object) -> object | None:
+        return await self._delegate.apply_transport_result(db, **kwargs)
 
 
 class _BlockedEvidenceReadRepository(TransportRepository):
@@ -368,24 +381,25 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         TransportRepository(),
         _UnusedProvider(),
     )
-    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-rollback": RackFace.A})
-    handle = await service.move_bins(
+    authority = await ensure_projection_authority_with_sessions(integration_session_factory)
+    handle = await service.move_rack(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-rollback", RackBinSlot("rack-rollback", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        "rack-rollback",
+        RackPosition("SOURCE"),
+        RackPosition("TARGET"),
+        RackFace.A,
+        execution_authority=authority,
     )
     operation_id = new_uuid7()
     payload = {
         "transport_task_id": handle.transport_task_id,
-        "kind": "BIN_MOVE",
+        "kind": "RACK_MOVE",
         "outcome_revision": 1,
-        "results": [
-            {
-                "container_id": "bin-rollback",
-                "status": "SUCCEEDED",
-                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-            }
-        ],
+        "rack_id": "rack-rollback",
+        "status": "SUCCEEDED",
+        "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+        "arrival_face": "A",
     }
     await record_valid_callback(
         service,
@@ -397,8 +411,9 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
     )
     failing_service = TransportService(
         integration_session_factory,
-        _FailingProjectionRepository(),
+        TransportRepository(),
         _UnusedProvider(),
+        position_projections=_FailingProjectionPort(),
     )
 
     try:
@@ -693,6 +708,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         _UnusedProvider(),
     )
     rack_id = f"rack-callback-before-reject-{uuid.uuid4().hex}"
+    authority = await ensure_projection_authority_with_sessions(integration_session_factory)
     handle = await setup_service.move_rack(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
@@ -700,6 +716,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
         RackFace.A,
+        execution_authority=authority,
     )
     blocking_repository = _BlockingEvidenceInsertRepository()
     callback_service = TransportService(
@@ -761,9 +778,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     async with integration_session_factory() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
-        projection = await db.scalar(
-            select(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
-        )
+        projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == rack_id))
     post_process = (
         task.status if task is not None else None,
         evidence.status if evidence is not None else None,
@@ -775,7 +790,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         await db.execute(
             delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
         )
-        await db.execute(delete(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id))
+        await db.execute(delete(PositionProjection).where(PositionProjection.object_id == rack_id))
         await db.execute(
             delete(TransportResourceBinding).where(
                 TransportResourceBinding.transport_task_id == handle.transport_task_id
@@ -802,14 +817,18 @@ async def test_result_updates_existing_projection_source_transport_task_id(
     )
     rack_id = f"rack-projection-source-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add(
-            TransportPositionProjection(
+            PositionProjection(
                 object_type="RACK",
                 object_id=rack_id,
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
                 position_unknown=False,
                 arrival_face="A",
                 source_operation_id="projection-source-initial",
+                source_transport_task_id="projection-source-initial",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -820,6 +839,10 @@ async def test_result_updates_existing_projection_source_transport_task_id(
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
         RackFace.A,
+        execution_authority=TransportExecutionAuthority(
+            workline_id=workline_id,
+            line_run_epoch_id=line_run_epoch_id,
+        ),
     )
     operation_id = new_uuid7()
 
@@ -843,9 +866,7 @@ async def test_result_updates_existing_projection_source_transport_task_id(
         assert await service.process_pending_evidence(1) == 1
 
         async with integration_session_factory() as db:
-            projection = await db.scalar(
-                select(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
-            )
+            projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == rack_id))
         assert projection is not None
         assert projection.source_transport_task_id == handle.transport_task_id
     finally:
@@ -854,9 +875,7 @@ async def test_result_updates_existing_projection_source_transport_task_id(
                 delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
-            await db.execute(
-                delete(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
-            )
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id == rack_id))
             await db.execute(
                 delete(TransportResourceBinding).where(
                     TransportResourceBinding.transport_task_id == handle.transport_task_id
@@ -980,17 +999,22 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
     )
     rack_id = f"rack-rotate-race-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add(
-            TransportPositionProjection(
+            PositionProjection(
                 object_type="RACK",
                 object_id=rack_id,
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
                 position_unknown=False,
                 arrival_face="A",
                 source_operation_id="rotate-race-initial",
+                source_transport_task_id="rotate-race-initial",
                 updated_at=timezone.now_for_db(),
             )
         )
+    authority = TransportExecutionAuthority(workline_id=workline_id, line_run_epoch_id=line_run_epoch_id)
     move_handle = await service.move_rack(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
@@ -998,12 +1022,14 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
         RackFace.A,
+        execution_authority=authority,
     )
-    race_repository = _RotationReadRepository()
+    race_projection_port = _RotationProjectionPort()
     rotate_service = TransportService(
         integration_session_factory,
-        race_repository,
+        TransportRepository(),
         _UnusedProvider(),
+        position_projections=race_projection_port,
     )
     rotate_task = asyncio.create_task(
         rotate_service.rotate_rack(
@@ -1012,6 +1038,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             rack_id,
             RackPosition("SOURCE"),
             RackFace.B,
+            execution_authority=authority,
         )
     )
     move_operation_id = new_uuid7()
@@ -1026,7 +1053,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
     }
     try:
         try:
-            await asyncio.wait_for(race_repository.read.wait(), timeout=0.1)
+            await asyncio.wait_for(race_projection_port.read.wait(), timeout=0.1)
         except TimeoutError:
             pass
         await record_valid_callback(
@@ -1038,11 +1065,11 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             payload=move_payload,
         )
         await service.process_pending_evidence(1)
-        race_repository.release.set()
+        race_projection_port.release.set()
         with pytest.raises(TransportContractError):
             await rotate_task
     finally:
-        race_repository.release.set()
+        race_projection_port.release.set()
         await asyncio.gather(rotate_task, return_exceptions=True)
         async with integration_session_factory.begin() as db:
             await db.execute(
@@ -1060,6 +1087,4 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             )
             await db.execute(delete(TransportMember).where(TransportMember.transport_task_id.in_(task_ids)))
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
-            await db.execute(
-                delete(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
-            )
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id == rack_id))

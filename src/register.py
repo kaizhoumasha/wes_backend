@@ -132,11 +132,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
         system_health.update(db_ok=True, redis_ok=True, celery_ok=True)
 
-        from src.app.runtime.orchestration.observability import configure_runtime_open_telemetry_backend
-
-        if configure_runtime_open_telemetry_backend(service_name=settings.PROJECT_NAME, environment=settings.APP_ENV):
-            logger.info("Runtime OpenTelemetry backend configured")
-
         logger.info(f"Swagger DOCS: http://{settings.APP_HOST}:{settings.APP_PORT}{settings.DOCS_URL}")
         yield
     except BaseException as exc:

@@ -1,5 +1,6 @@
 """Execution 核心模型导出。"""
 
+from .bin_execution import BinExecution, BinExecutionStatus
 from .inbound_evidence import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
@@ -11,10 +12,13 @@ from .material_execution import (
     MaterialExecution,
     MaterialExecutionStatus,
 )
+from .position_projection import PositionProjection
 from .rack_replacement_transport_binding import RackReplacementTransportBinding
 from .wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 
 __all__ = [
+    "BinExecution",
+    "BinExecutionStatus",
     "InboundEvidence",
     "InboundEvidenceApplyStatus",
     "InboundEvidenceConflict",
@@ -22,6 +26,7 @@ __all__ = [
     "InvalidMaterialExecutionTransitionError",
     "MaterialExecution",
     "MaterialExecutionStatus",
+    "PositionProjection",
     "RackReplacementTransportBinding",
     "WmsConfirmation",
     "WmsConfirmationStatus",

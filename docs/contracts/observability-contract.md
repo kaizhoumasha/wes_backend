@@ -118,7 +118,7 @@ callback hint 边界真实发射。沿用既有 `RuntimeOpenTelemetryBridge` 和
 
 - `RuntimeObservabilityRegistry.emit()` 是当前 Python 运行时的稳定事件发射入口；所有 adapter 必须先通过 required attributes 校验，再转成实际 metric/log/span。
 - `RuntimeOpenTelemetryBridge` 是 registry observer 到 OpenTelemetry-style exporter 的无依赖桥接层；span/log 使用完整已验证属性，metric 只使用低基数投影，不允许 exporter 绕过 registry 直接消费临时字段。
-- `RuntimeOpenTelemetryHttpExporter` 是生产 backend adapter 接线；FastAPI lifespan 通过 `configure_runtime_open_telemetry_backend()` 按 `WES_RUNTIME_OTEL_ENABLED=true` + `WES_RUNTIME_OTEL_ENDPOINT` 注册命名 observer，重复初始化必须幂等，默认关闭。
+- 当前项目不提供同步 OpenTelemetry HTTP backend；registry、稳定 signal 与 `RuntimeOpenTelemetryBridge` 仅定义内部观测边界，具体 exporter 必须另行评审后在桥接层之后接入。
 - Callback ingress 在 external normalize allow-list 校验、device result 命令锚点解析、device event 入库 trace 解析完成后发出 `callback.normalize`；观测发射失败不得影响 callback ACK、落库或业务编排。
 - RuntimeInbox Celery worker 聚合本批次 claim 调用，在 claim/reclaim 事务提交后发出 `runtime_inbox.claim_batch` 与 `runtime_inbox.lease_reclaim`；不得从 repository 热路径逐条同步发射。
 - RuntimeInbox processor 为每条已 claim 消息发出 `runtime_inbox.processing`；fenced terminal 未命中、RESOURCE_WAIT 与 DEAD_LETTER 分别发出对应稳定 signal。观测发射失败不得回滚 Inbox 事务或改变 worker 结果。
@@ -135,7 +135,7 @@ callback hint 边界真实发射。沿用既有 `RuntimeOpenTelemetryBridge` 和
 - Callback best-effort enqueue 失败发射
   `wms_effect.callback_hint{outcome=ENQUEUE_DEGRADED}`；持久化到期调度和 scanner 仍是恢复真源，指标不得替代恢复机制。
 - 凭据 Provider 统一由审计 wrapper 包裹，只允许发射闭集 `provider_kind/outcome`；凭据 ref、secret material、header 与异常文本不得进入日志或指标。
-- 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
+- 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方挂载，不能从业务热路径同步发送，也不能新增临时字段替代稳定 attributes。
 
 ## Acceptance Evidence
 

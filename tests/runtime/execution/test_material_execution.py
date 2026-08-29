@@ -14,6 +14,7 @@ from src.app.execution.models.material_execution import (
 from src.app.execution.services.material_execution_service import (
     ActiveMaterialExecutionExistsError,
     InitialExecutionCorrelationConflictError,
+    MaterialExecutionFifoBlockedError,
     MaterialExecutionService,
 )
 
@@ -44,6 +45,30 @@ class FakeMaterialExecutionRepository:
         execution.id = len(self.executions) + 1
         self.executions.append(execution)
         return execution
+
+    async def get_admission_head_for_update(
+        self,
+        _db: object,
+        *,
+        workline_id: int,
+        line_run_epoch_id: int,
+    ) -> MaterialExecution | None:
+        candidates = [
+            execution
+            for execution in self.executions
+            if execution.workline_id == workline_id
+            and execution.line_run_epoch_id == line_run_epoch_id
+            and execution.status != MaterialExecutionStatus.CLOSED
+        ]
+        return min(
+            candidates,
+            key=lambda execution: (
+                execution.admission_received_at,
+                execution.admission_evidence_id,
+                execution.id,
+            ),
+            default=None,
+        )
 
     async def flush(self, _db: object) -> None:
         return None
@@ -77,6 +102,8 @@ async def test_create_freezes_common_identity_without_plugin_state() -> None:
     assert execution.version == 0
     assert execution.last_transition_reason == "SCAN_ACCEPTED"
     assert execution.last_transition_evidence_id == 101
+    assert execution.admission_received_at == datetime(2026, 8, 16)
+    assert execution.admission_evidence_id == 101
     assert "plugin_state" not in MaterialExecution.model_fields
     assert {status.value for status in MaterialExecutionStatus} == {
         "CREATED",
@@ -85,6 +112,27 @@ async def test_create_freezes_common_identity_without_plugin_state() -> None:
         "CLOSED",
         "RECONCILING",
     }
+
+
+@pytest.mark.asyncio
+async def test_fifo_head_cannot_be_skipped_by_later_active_material() -> None:
+    service, _ = _service()
+    head = await _create(service, execution_code="EXEC-HEAD")
+    later = await service.create(
+        object(),
+        execution_code="EXEC-LATER",
+        material_trace_id="TRACE-MATERIAL-002",
+        workline_id=1,
+        line_run_epoch_id=11,
+        changed_at=datetime(2026, 8, 16, 0, 1),
+        reason_code="SCAN_ACCEPTED",
+        evidence_id=102,
+    )
+
+    with pytest.raises(MaterialExecutionFifoBlockedError, match="EXEC-HEAD"):
+        await service.assert_fifo_head(object(), later)
+
+    assert await service.assert_fifo_head(object(), head) is head
 
 
 @pytest.mark.asyncio

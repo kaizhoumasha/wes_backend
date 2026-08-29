@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
+from src.app.execution.locks import epoch_lifecycle_lock_identity
 from src.app.workline.models.line_run_epoch import (
     LineRunEpoch,
     LineRunEpochDeviceBinding,
@@ -37,6 +38,14 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
             {"request_id": request_id},
         )
 
+    async def lock_epoch_lifecycle(self, db: AsyncSession, line_run_epoch_id: int) -> None:
+        """与 projection/owner 写入方共享 Epoch 关闭围栏。"""
+
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_identity, 0))"),
+            {"lock_identity": epoch_lifecycle_lock_identity(line_run_epoch_id)},
+        )
+
     async def get_by_epoch_code_for_update(self, db: AsyncSession, epoch_code: str) -> LineRunEpoch | None:
         columns = cast("Any", LineRunEpoch).__table__.c
         result = await db.execute(select(LineRunEpoch).where(columns.epoch_code == epoch_code).with_for_update())
@@ -52,6 +61,16 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
             select(LineRunEpoch)
             .where(columns.workline_id == workline_id, columns.status == LineRunEpochStatus.ACTIVE)
             .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def get_active_for_workline(self, db: AsyncSession, workline_id: int) -> LineRunEpoch | None:
+        columns = cast("Any", LineRunEpoch).__table__.c
+        result = await db.execute(
+            select(LineRunEpoch).where(
+                columns.workline_id == workline_id,
+                columns.status == LineRunEpochStatus.ACTIVE,
+            )
         )
         return result.scalar_one_or_none()
 

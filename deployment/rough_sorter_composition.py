@@ -50,6 +50,19 @@ from deployment._rough_sorter_wms_resolver import RoughSorterWmsConfirmationRequ
 from src.app.device.repositories.device_repository import device_repository
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
+from src.app.execution.repositories import (
+    inbound_evidence_repository,
+    material_execution_repository,
+    wms_confirmation_repository,
+)
+from src.app.wms_adapter.execution_confirmation_adapter import (
+    WmsConfirmationTypedRouter,
+    WmsExecutionConfirmationAdapter,
+)
+from src.app.wms_adapter.execution_confirmation_resolver import (
+    ExecutionConfirmationRequestResolver,
+    WmsConfirmationRequestTypedRouter,
+)
 from src.app.wms_adapter.inbound_adapter import WmsInboundAdapter, WmsInboundBusinessWaitPlanner
 from src.app.workline.epoch_activation import (
     LineRunEpochDeviceBindingInput,
@@ -210,13 +223,28 @@ def build_rough_sorter_runtime(
             ),
         )
     )
+    rough_sorter_resolver = RoughSorterWmsConfirmationRequestResolver(fact_factory=factory)
     execution = build_execution_runtime(
         session_factory=session_factory,
         plugin_binding=plugin_binding,
-        wms_request_resolver=RoughSorterWmsConfirmationRequestResolver(fact_factory=factory),
+        wms_request_resolver=WmsConfirmationRequestTypedRouter(
+            execution_resolver=ExecutionConfirmationRequestResolver(
+                execution_repository=material_execution_repository,
+                evidence_repository=inbound_evidence_repository,
+                confirmation_repository=wms_confirmation_repository,
+            ),
+            rough_sorter_resolver=rough_sorter_resolver,
+        ),
         device_command_service=device_command_service,
         transport_service=transport_runtime.service,
-        wms_confirmation_adapter=cast("WmsConfirmationAdapterPort", WmsInboundAdapter(transport_runtime.client)),
+        position_projection_service=transport_runtime.position_projection_service,
+        wms_confirmation_adapter=cast(
+            "WmsConfirmationAdapterPort",
+            WmsConfirmationTypedRouter(
+                execution_adapter=WmsExecutionConfirmationAdapter(transport_runtime.client),
+                rough_sorter_adapter=WmsInboundAdapter(transport_runtime.client),
+            ),
+        ),
         wms_business_wait_planner=WmsInboundBusinessWaitPlanner(),
         task_queue_gateway=task_queue_gateway,
     )

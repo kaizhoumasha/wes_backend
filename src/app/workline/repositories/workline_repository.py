@@ -2,25 +2,31 @@
 
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import String, and_, exists, literal, or_, select, true, union_all
+from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.contracts.runtime_inbox_query import RuntimeInboxQueryPort
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.runtime.orchestration.models import SessionStatus, WorklineSession
-from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
-from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
+from src.app.execution.models.bin_execution import BinExecution, BinExecutionStatus
+from src.app.execution.models.inbound_evidence import (
+    InboundEvidence,
+    InboundEvidenceApplyStatus,
+    InboundEvidenceKind,
+)
+from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
+from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
+from src.app.transport.contracts import TransportTaskStatus
+from src.app.transport.models import TransportTask
 from src.app.workline.models import WorkLine
+from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
 from src.database.base_repository import BaseRepository
 
 
 class WorkLineRepository(BaseRepository[WorkLine]):
     """作业线数据访问层"""
 
-    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort) -> None:
-        """初始化作业线仓库"""
+    def __init__(self) -> None:
         super().__init__(WorkLine)
-        self.runtime_inbox_query = runtime_inbox_query
 
     async def get_by_line_code(
         self,
@@ -65,121 +71,199 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         db: AsyncSession,
         workline_id: int,
     ) -> dict[str, Any]:
-        """返回 WorkLine 未完成运行负载摘要，避免停用前全量加载对象。"""
+        """以单条 SQL 返回七类 execution owner 的精确阻塞布尔值与诊断样本。"""
 
-        session_columns = cast("Any", WorklineSession).__table__.c
-        session_terminal_statuses = [
-            SessionStatus.COMPLETED.value,
-            SessionStatus.FAILED.value,
-            SessionStatus.CANCELLED.value,
-        ]
-        session_where = (
-            session_columns.workline_id == workline_id,
-            session_columns.status.not_in(session_terminal_statuses),
-        )
-        command_columns = cast("Any", DeviceCommand).__table__.c
-        command_where = (
-            command_columns.workline_id == workline_id,
-            command_columns.status.in_(
-                [
-                    CommandStatus.PENDING.value,
-                    CommandStatus.SENT.value,
-                    CommandStatus.ACK_RECEIVED.value,
-                ]
-            ),
-        )
-        outbox_columns = cast("Any", SystemOutbox).__table__.c
-        outbox_where = (
-            outbox_columns.workline_id == workline_id,
-            outbox_columns.status.in_(
-                [
-                    SystemOutboxStatus.NEW.value,
-                    SystemOutboxStatus.DISPATCHING.value,
-                    SystemOutboxStatus.RETRY_WAIT.value,
-                ]
-            ),
-        )
-        session_count = await self._count(db, WorklineSession, session_where)
-        command_count = await self._count(db, DeviceCommand, command_where)
-        outbox_count = await self._count(db, SystemOutbox, outbox_where)
-        # FAILED 即使尚未到 next_retry_at 仍是未完成负载；仅 PROCESSED/DEAD_LETTER 为终态。
-        inbox_count = await self.runtime_inbox_query.count_unfinished_by_workline(db, workline_id)
-        runtime_hold_count = await runtime_hold_repository.count_active_by_workline(db, workline_id)
+        epoch = cast("Any", LineRunEpoch).__table__.c
+        material = cast("Any", MaterialExecution).__table__.c
+        bin_execution = cast("Any", BinExecution).__table__.c
+        command = cast("Any", DeviceCommand).__table__.c
+        transport = cast("Any", TransportTask).__table__.c
+        evidence = cast("Any", InboundEvidence).__table__.c
+        confirmation = cast("Any", WmsConfirmation).__table__.c
 
-        sample = await self._first_workload_sample(
-            db,
-            session_columns,
-            command_columns,
-            outbox_columns,
-            session_where,
-            command_where,
-            outbox_where,
-            workline_id,
-            runtime_hold_count,
-        )
-        by_type = {
-            "sessions": session_count,
-            "commands": command_count,
-            "outboxes": outbox_count,
-            "inboxes": inbox_count,
-            "runtime_holds": runtime_hold_count,
+        predicates = {
+            "line_run_epochs": and_(
+                epoch.workline_id == workline_id,
+                epoch.status == LineRunEpochStatus.ACTIVE,
+            ),
+            "material_executions": and_(
+                material.workline_id == workline_id,
+                material.status != MaterialExecutionStatus.CLOSED,
+            ),
+            "bin_executions": and_(
+                bin_execution.workline_id == workline_id,
+                bin_execution.status == BinExecutionStatus.ACTIVE,
+            ),
+            "transport_tasks": and_(
+                transport.authority_workline_id == workline_id,
+                transport.status.in_(
+                    (
+                        TransportTaskStatus.PENDING,
+                        TransportTaskStatus.ACCEPTED,
+                        TransportTaskStatus.RECONCILING,
+                    )
+                ),
+            ),
         }
+        unclosed_command = and_(
+            epoch.workline_id == workline_id,
+            command.line_run_epoch_id == epoch.id,
+            command.status.in_(
+                (
+                    CommandStatus.PENDING,
+                    CommandStatus.DISPATCHING,
+                    CommandStatus.ACKNOWLEDGED,
+                    CommandStatus.RECONCILING,
+                )
+            ),
+        )
+        blocking_evidence = and_(
+            epoch.workline_id == workline_id,
+            evidence.line_run_epoch_id == epoch.id,
+            or_(
+                evidence.apply_status == InboundEvidenceApplyStatus.PENDING,
+                evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING,
+                and_(
+                    evidence.apply_status == InboundEvidenceApplyStatus.APPLIED,
+                    evidence.published_at.is_(None),
+                    ~and_(
+                        evidence.kind == InboundEvidenceKind.DEVICE_RESULT,
+                        evidence.material_execution_id.is_(None),
+                    ),
+                ),
+            ),
+        )
+        unfinished_confirmation = and_(
+            material.workline_id == workline_id,
+            confirmation.material_execution_id == material.id,
+            confirmation.status != WmsConfirmationStatus.COMPLETED,
+        )
+
+        owner_queries = (
+            ("line_run_epochs", select(epoch.id).where(predicates["line_run_epochs"])),
+            ("material_executions", select(material.id).where(predicates["material_executions"])),
+            ("bin_executions", select(bin_execution.id).where(predicates["bin_executions"])),
+            ("device_commands", select(command.id).select_from(DeviceCommand, LineRunEpoch).where(unclosed_command)),
+            ("transport_tasks", select(transport.id).where(predicates["transport_tasks"])),
+            (
+                "inbound_evidences",
+                select(evidence.id).select_from(InboundEvidence, LineRunEpoch).where(blocking_evidence),
+            ),
+            (
+                "wms_confirmations",
+                select(confirmation.id).select_from(WmsConfirmation, MaterialExecution).where(unfinished_confirmation),
+            ),
+        )
+
+        sample_union = union_all(
+            self._sample_query(
+                1, "line_run_epoch", epoch.id, epoch.status, epoch.epoch_code, predicates["line_run_epochs"]
+            ),
+            self._sample_query(
+                2,
+                "material_execution",
+                material.id,
+                material.status,
+                material.execution_code,
+                predicates["material_executions"],
+            ),
+            self._sample_query(
+                3,
+                "bin_execution",
+                bin_execution.id,
+                bin_execution.status,
+                bin_execution.execution_code,
+                predicates["bin_executions"],
+            ),
+            self._sample_query(
+                4,
+                "device_command",
+                command.id,
+                command.status,
+                command.command_code,
+                unclosed_command,
+                from_models=(DeviceCommand, LineRunEpoch),
+            ),
+            self._sample_query(
+                5,
+                "transport_task",
+                transport.id,
+                transport.status,
+                transport.transport_task_id,
+                predicates["transport_tasks"],
+            ),
+            self._sample_query(
+                6,
+                "inbound_evidence",
+                evidence.id,
+                evidence.apply_status,
+                evidence.source_identity,
+                blocking_evidence,
+                from_models=(InboundEvidence, LineRunEpoch),
+            ),
+            self._sample_query(
+                7,
+                "wms_confirmation",
+                confirmation.id,
+                confirmation.status,
+                confirmation.operation_id,
+                unfinished_confirmation,
+                from_models=(WmsConfirmation, MaterialExecution),
+            ),
+        ).subquery("unfinished_owner_candidates")
+        sample = (
+            select(
+                sample_union.c.owner_type,
+                sample_union.c.owner_id,
+                sample_union.c.status,
+                sample_union.c.identity,
+            )
+            .order_by(sample_union.c.owner_order, sample_union.c.owner_id)
+            .limit(1)
+            .subquery("unfinished_owner_sample")
+        )
+        anchor = select(literal(1).label("value")).subquery("unfinished_owner_anchor")
+        statement = select(
+            *(exists(query.limit(1)).label(name) for name, query in owner_queries),
+            sample.c.owner_type,
+            sample.c.owner_id,
+            sample.c.status,
+            sample.c.identity,
+        ).select_from(anchor.outerjoin(sample, true()))
+        row = (await db.execute(statement)).one()
+        by_type = {name: bool(getattr(row, name)) for name, _query in owner_queries}
+        diagnostic_sample = None
+        if row.owner_type is not None:
+            diagnostic_sample = {
+                "type": row.owner_type,
+                "id": row.owner_id,
+                "status": row.status,
+                "identity": row.identity,
+            }
         return {
             "count": sum(by_type.values()),
-            "sample": sample,
+            "sample": diagnostic_sample,
             "by_type": by_type,
         }
 
     @staticmethod
-    async def _count(db: AsyncSession, model: type[Any], where_conditions: tuple[Any, ...]) -> int:
-        result = await db.execute(select(func.count()).select_from(model).where(*where_conditions))
-        return int(result.scalar_one() or 0)
-
-    async def _first_workload_sample(
-        self,
-        db: AsyncSession,
-        session_columns: Any,
-        command_columns: Any,
-        outbox_columns: Any,
-        session_where: tuple[Any, ...],
-        command_where: tuple[Any, ...],
-        outbox_where: tuple[Any, ...],
-        workline_id: int,
-        runtime_hold_count: int,
-    ) -> dict[str, Any] | None:
-        session_sample = await db.execute(
-            select(session_columns.session_code, session_columns.status)
-            .where(*session_where)
-            .order_by(session_columns.id.asc())
-            .limit(1)
+    def _sample_query(
+        owner_order: int,
+        owner_type: str,
+        owner_id: Any,
+        status: Any,
+        identity: Any,
+        predicate: Any,
+        *,
+        from_models: tuple[type[Any], ...] = (),
+    ) -> Any:
+        query = select(
+            literal(owner_order).label("owner_order"),
+            literal(owner_type).label("owner_type"),
+            sa_cast(owner_id, String).label("owner_id"),
+            sa_cast(status, String).label("status"),
+            sa_cast(identity, String).label("identity"),
         )
-        session_row = session_sample.first()
-        if session_row:
-            return {"type": "session", "session_code": session_row[0], "status": session_row[1]}
-
-        command_sample = await db.execute(
-            select(command_columns.command_code, command_columns.status)
-            .where(*command_where)
-            .order_by(command_columns.id.asc())
-            .limit(1)
-        )
-        command_row = command_sample.first()
-        if command_row:
-            return {"type": "command", "command_code": command_row[0], "status": command_row[1]}
-
-        outbox_sample = await db.execute(
-            select(outbox_columns.dispatch_key, outbox_columns.status)
-            .where(*outbox_where)
-            .order_by(outbox_columns.id.asc())
-            .limit(1)
-        )
-        outbox_row = outbox_sample.first()
-        if outbox_row:
-            return {"type": "outbox", "dispatch_key": outbox_row[0], "status": outbox_row[1]}
-
-        inbox_sample = await self.runtime_inbox_query.first_unfinished_by_workline(db, workline_id)
-        if inbox_sample is not None:
-            return {"type": "inbox", "inbox_id": inbox_sample.id, "status": inbox_sample.status}
-        if runtime_hold_count:
-            return {"type": "runtime_hold", "count": runtime_hold_count, "status": "ACTIVE_BLOCKING"}
-        return None
+        if from_models:
+            query = query.select_from(*from_models)
+        return query.where(predicate)

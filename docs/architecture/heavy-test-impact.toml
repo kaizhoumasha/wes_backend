@@ -655,6 +655,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
 ]
 
 [[mapping]]
@@ -1289,6 +1290,25 @@ heavy_tests = [
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
+# 活动料箱 owner、统一 current projection 与稳定 advisory identity 由 PostgreSQL 约束/并发和真实 Transport worker 承接。
+[[mapping]]
+source_glob = "src/app/execution/{locks.py,models/bin_execution.py,models/position_projection.py,repositories/bin_execution_repository.py,repositories/position_projection_repository.py,services/bin_execution_service.py,services/position_projection_service.py}"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_1129_baf328359533_add_execution_authority_projections.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+    "tests/integration/transport/test_transport_schema.py",
+]
+
 [[mapping]]
 source_glob = "src/app/execution/plugin_binding.py"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
@@ -1307,12 +1327,30 @@ heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.
 
 [[mapping]]
 source_glob = "src/app/execution/{models/material_execution.py,repositories/material_execution_repository.py,services/material_execution_service.py}"
-heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+heavy_tests = [
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_1159_273898a3f09b_add_material_admission_fifo.py"
+heavy_tests = [
+    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_confirmation_repository.py,services/wms_confirmation_service.py}"
 heavy_tests = [
     "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/{execution_confirmation_adapter.py,execution_confirmation_resolver.py}"
+heavy_tests = [
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
@@ -1523,7 +1561,13 @@ reviewed_content_sha256 = "5f49270d7ec440dfcea30c887bbb8873c4748ee7a58420793cfa6
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/observability.py"
 heavy_tests = []
-reviewed_content_sha256 = "141284030d44a2a2b5ac9ba73f48a518d2ba5a023f6a5e1c867315ea72ef61b2"
+reviewed_content_sha256 = "5c8bb1bb3f0a5e95a06d0cbd019a4111dce78554df081e80026537d00718c6b0"
+
+# Phase 9 operation handoff 是机器可读合同；其闭集与 owner 路径由 architecture FAST 测试承接。
+[[mapping]]
+source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
+heavy_tests = []
+reviewed_content_sha256 = "abb408790de7994eabc2ee2277db677481c08ed198b09c61ba730719223f8dd1"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 [[mapping]]
@@ -1593,7 +1637,11 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_post
 
 [[mapping]]
 source_glob = "src/app/workline/repositories/{__init__.py,plugin_binding_repository.py,workline_repository.py}"
-heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/workline/runtime_services.py"
@@ -1605,7 +1653,10 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/workline/services/{__init__.py,workline_start_service.py}"
-heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = [
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
 
 # 旧 START admission 路径已删除；删除 diff 仍由唯一 WorkLine START PostgreSQL owner 承接。
 [[mapping]]
@@ -1619,7 +1670,21 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/workline/services/{safety_service.py,workline_service.py,write_back_service.py}"
-heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/workline/{models/safety.py,repositories/safety_incident_repository.py}"
+heavy_tests = [
+    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_1217_dd35f04b258f_add_safety_evidence_authority.py"
+heavy_tests = ["tests/integration/execution/test_execution_authority_projection_migration_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/services/diagnostic_service.py"

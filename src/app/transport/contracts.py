@@ -132,6 +132,24 @@ class TransportCaller:
 
 
 @dataclass(frozen=True, slots=True)
+class TransportExecutionAuthority:
+    """只在 WES 内部冻结的执行 authority，不进入北向 Transport wire。"""
+
+    workline_id: int
+    line_run_epoch_id: int
+    bin_execution_id: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("workline_id", self.workline_id),
+            ("line_run_epoch_id", self.line_run_epoch_id),
+            ("bin_execution_id", self.bin_execution_id),
+        ):
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ValueError(f"{field_name} must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
 class RackPosition:
     location_code: str
     kind: str = field(default="RACK_POSITION", init=False)
@@ -322,6 +340,8 @@ class TransportPort(Protocol):
         source: RackPosition,
         target: RackPosition,
         target_face: RackFace,
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle: ...
 
     async def rotate_rack(
@@ -331,6 +351,8 @@ class TransportPort(Protocol):
         rack_id: str,
         position: RackPosition,
         target_face: RackFace,
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle: ...
 
     async def move_bins(
@@ -338,6 +360,8 @@ class TransportPort(Protocol):
         client_request_id: str,
         caller: TransportCaller,
         moves: tuple[BinMove, ...],
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle: ...
 
     async def exchange_bins(
@@ -345,6 +369,8 @@ class TransportPort(Protocol):
         client_request_id: str,
         caller: TransportCaller,
         exchange_pairs: tuple[BinExchangePair, ...],
+        *,
+        execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle: ...
 
 
@@ -445,6 +471,7 @@ __all__ = [
     "TransportCaller",
     "TransportContractError",
     "TransportEvidenceUpdate",
+    "TransportExecutionAuthority",
     "TransportHandle",
     "TransportIdempotencyConflict",
     "TransportIngressAttempt",

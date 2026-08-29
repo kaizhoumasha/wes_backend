@@ -48,6 +48,7 @@ class _RuntimeStatusProjectionSpy:
         self.estop_calls = []
         self.reconciling_calls = []
         self.accepting_calls = []
+        self.stopped_calls = []
 
     async def runtime_status_snapshot(self, _db, *, workline_id):
         return SimpleNamespace(
@@ -74,6 +75,9 @@ class _RuntimeStatusProjectionSpy:
     async def project_reconciling(self, _db, *, workline_id, occurred_at, reason):
         self.reconciling_calls.append((workline_id, occurred_at, reason))
         return True
+
+    async def project_stopped_waiting_start(self, _db, *, workline_id, evidence_json=None):
+        self.stopped_calls.append((workline_id, evidence_json))
 
 
 class _ProjectionRepository:
@@ -444,12 +448,7 @@ async def test_safety_estop_uses_runtime_projection_service():
     service = WorkLineSafetyService(
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
         incident_repository=SimpleNamespace(get_active_for_workline=AsyncMock(return_value=None)),
-        session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
-        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
         command_repository=SimpleNamespace(fail_pending_by_workline=AsyncMock(return_value=0)),
-        runtime_hold_creation_service=SimpleNamespace(
-            create_for_safety_estop=AsyncMock(return_value=SimpleNamespace())
-        ),
         workline_status_projection_service=projection,
     )
 
@@ -480,17 +479,18 @@ async def test_repeated_safety_estop_reuses_active_incident():
         async def commit(self):
             pass
 
-    incident = SimpleNamespace(id=9901, drain_status="PENDING", drain_error_json={}, evidence_json={})
+    incident = SimpleNamespace(
+        id=9901,
+        source_evidence_id=None,
+        drain_status="PENDING",
+        drain_error_json={},
+        evidence_json={},
+    )
     incident_repository = SimpleNamespace(get_active_for_workline=AsyncMock(return_value=incident))
     service = WorkLineSafetyService(
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=45))),
         incident_repository=incident_repository,
-        session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
-        system_outbox_cancellation_service=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
         command_repository=SimpleNamespace(fail_pending_by_workline=AsyncMock(return_value=0)),
-        runtime_hold_creation_service=SimpleNamespace(
-            create_for_safety_estop=AsyncMock(return_value=SimpleNamespace())
-        ),
         workline_status_projection_service=_RuntimeStatusProjectionSpy(),
     )
     db = _Db()
@@ -502,6 +502,81 @@ async def test_repeated_safety_estop_reuses_active_incident():
     assert second is incident
     assert db.add_count == 0
     assert incident_repository.get_active_for_workline.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_safety_drain_is_bounded_and_preserves_possibly_dispatched_commands():
+    from src.app.workline.services.safety_service import WorkLineSafetyService
+
+    incident = SimpleNamespace(
+        workline_id=45,
+        drain_status="PENDING",
+        drain_error_json={"old": True},
+        evidence_json={"pending_commands_failed": 3},
+    )
+    incidents = SimpleNamespace(claim_next_drain=AsyncMock(return_value=incident))
+    commands = SimpleNamespace(fail_pending_by_workline=AsyncMock(return_value=100))
+    service = WorkLineSafetyService(
+        incident_repository=incidents,
+        command_repository=commands,
+        workline_status_projection_service=_RuntimeStatusProjectionSpy(),
+    )
+    db = AsyncMock()
+
+    result = await service.drain_one(db, command_limit=100)
+
+    assert result is incident
+    assert incident.drain_status == "PENDING"
+    assert incident.drain_error_json == {}
+    assert incident.evidence_json == {
+        "pending_commands_failed": 103,
+        "dispatched_acknowledged_or_reconciling_commands_preserved": True,
+    }
+    commands.fail_pending_by_workline.assert_awaited_once_with(
+        db,
+        workline_id=45,
+        failure_code="WORKLINE_ESTOPPED_BEFORE_SEND",
+        limit=100,
+    )
+    db.flush.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_clear_estop_closes_incident_and_waits_for_new_start_without_runtime_hold() -> None:
+    from src.app.workline.models.safety import WorklineSafetyIncidentStatus
+    from src.app.workline.services.safety_service import WorkLineSafetyService
+
+    incident = SimpleNamespace(
+        id=9901,
+        status=WorklineSafetyIncidentStatus.ACTIVE,
+        recovery_check_json={},
+        clear_reason=None,
+        cleared_by=None,
+        cleared_at=None,
+        release_evidence_json={},
+    )
+    projection = _RuntimeStatusProjectionSpy()
+    projection.runtime_status_snapshot = AsyncMock(
+        return_value=SimpleNamespace(runtime_status=WorkLineRuntimeStatus.ESTOPPED.value)
+    )
+    service = WorkLineSafetyService(
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=45))),
+        incident_repository=SimpleNamespace(get_active_for_workline=AsyncMock(return_value=incident)),
+        workline_status_projection_service=projection,
+    )
+    db = AsyncMock()
+
+    result = await service.clear_estop(
+        db,
+        workline_id=45,
+        checks={"device_reset": True, "area_clear": True},
+        reason="现场复位完成",
+        operator_id=8,
+    )
+
+    assert result.status is WorklineSafetyIncidentStatus.CLEARED
+    assert result.release_evidence_json["workline_runtime_status"] == "STOPPED"
+    assert projection.stopped_calls == [(45, {"safety_incident_id": 9901, "cleared_by": 8})]
 
 
 @pytest.mark.asyncio

@@ -284,16 +284,8 @@ async def reset_transport_task_data(
         ),
         {"transport_task_id": task_id},
     )
-    projection_result = await db.execute(
-        text(
-            "SELECT count(*) FROM wes_runtime.transport_position_projections "
-            "WHERE source_transport_task_id = :transport_task_id"
-        ),
-        {"transport_task_id": task_id},
-    )
     rows_before = {
         "wes_runtime.transport_callback_receipts": int(receipt_result.scalar_one()),
-        "wes_runtime.transport_position_projections": int(projection_result.scalar_one()),
         "wes_runtime.transport_evidence": await _transport_task_row_count(db, "transport_evidence", task_id),
         "wes_runtime.transport_resource_bindings": await _transport_task_row_count(
             db, "transport_resource_bindings", task_id
@@ -316,11 +308,6 @@ async def reset_transport_task_data(
                 "transport_callback_receipts",
                 "DELETE FROM wes_runtime.transport_callback_receipts "
                 "WHERE response_data_json ->> 'transport_task_id' = :transport_task_id",
-            ),
-            (
-                "transport_position_projections",
-                "DELETE FROM wes_runtime.transport_position_projections "
-                "WHERE source_transport_task_id = :transport_task_id",
             ),
             (
                 "transport_evidence",

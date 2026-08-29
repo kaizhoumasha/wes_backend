@@ -7,6 +7,7 @@ run-id 与 Redis global key prefix，并且只连接临时 PostgreSQL 数据库�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -19,6 +20,8 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -42,7 +45,10 @@ from src.celery_app.async_runtime import celery_async_runtime, run_async
 from src.core.logger import logger
 from src.database.db import get_db_context
 from src.database.redis_client import is_redis_available
-from tests.contracts.wms_integration.provider_profile_support import write_provider_profile
+from tests.contracts.wms_integration.provider_profile_support import (
+    build_provider_profile_payload,
+    write_provider_profile,
+)
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
 if TYPE_CHECKING:
@@ -68,6 +74,8 @@ FAMILY_TASKS = (
     "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
     "src.celery_app.tasks.handling.process_signal",
 )
+WMS_CONFIRMATION_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
+SAFETY_DRAIN_TASK = "src.celery_app.tasks.workline.drain_safety_incidents_batch"
 
 
 def _write_probe_marker(kind: str, **payload: object) -> None:
@@ -504,6 +512,321 @@ def _hanging_redis_url() -> Iterator[tuple[str, _HangingRedisServer]]:
         thread.join(timeout=2)
 
 
+class _WmsConfirmationHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        server = cast("_WmsConfirmationServer", self.server)
+        content_length = int(self.headers.get("content-length", "0"))
+        payload = cast("dict[str, object]", json.loads(self.rfile.read(content_length)))
+        server.requests.append((self.path, payload))
+        dispatch_key = str(payload["dispatch_key"])
+        if self.path == "/inventory/confirm-inbound" and server.e03_attempts == 0:
+            server.e03_attempts += 1
+            self._respond(503, {"reason": "temporary-unavailable"})
+            return
+        if self.path == "/inventory/confirm-inbound":
+            server.e03_attempts += 1
+            self._respond(
+                200,
+                {
+                    "dispatch_key": dispatch_key,
+                    "provider_reference": "provider-e03",
+                    "source_version": "source-e03",
+                    "inbound_key": payload["inbound_key"],
+                    "wms_document_no": "WMS-DOC-1",
+                    "inventory_source_version": "inventory-v1",
+                },
+            )
+            return
+        if self.path == "/fulfillment/pkg-bindings":
+            self._respond(
+                200,
+                {
+                    "dispatch_key": dispatch_key,
+                    "provider_reference": "provider-e07",
+                    "source_version": "source-e07",
+                    "pkg_id": payload["pkg_id"],
+                    "binding_reference": "binding-v1",
+                },
+            )
+            return
+        self._respond(404, {"reason": "unexpected-path"})
+
+    def _respond(self, status_code: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(status_code)
+        self.send_header("content-type", "application/json; charset=utf-8")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+class _WmsConfirmationServer(ThreadingHTTPServer):
+    requests: list[tuple[str, dict[str, object]]]
+    e03_attempts: int
+
+
+@contextmanager
+def _wms_confirmation_endpoint() -> Iterator[tuple[str, _WmsConfirmationServer]]:
+    server = _WmsConfirmationServer(("127.0.0.1", 0), _WmsConfirmationHandler)
+    server.requests = []
+    server.e03_attempts = 0
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _confirmation_digest(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+async def _seed_wms_confirmation_chain(database_url: str, run_id: str) -> tuple[str, str]:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.execution.models import (
+        InboundEvidence,
+        InboundEvidenceKind,
+        MaterialExecution,
+        MaterialExecutionStatus,
+        WmsConfirmation,
+    )
+    from src.app.execution.services.wms_confirmation_service import E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING
+    from src.app.workline.models.line_run_epoch import LineRunEpoch
+    from src.app.workline.models.workline import LineType, WorkLine
+
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    occurred_at = datetime(2026, 8, 29, 12, 0, 0)
+    e03_operation_id = f"{run_id}-e03"
+    e07_operation_id = f"{run_id}-e07"
+    try:
+        async with sessions.begin() as db:
+            workline = WorkLine(
+                line_code=f"CELERY-{run_id}",
+                line_name="Celery E03 E07",
+                line_type=LineType.AUTO,
+            )
+            db.add(workline)
+            await db.flush()
+            epoch = LineRunEpoch(
+                epoch_code=f"CELERY-EPOCH-{run_id}",
+                workline_id=workline.id,
+                plugin_key="rough_sorter",
+                plugin_version="1.0.0",
+                flow_mode="ROUGH_SORT_INBOUND",
+                topology_digest="a" * 64,
+                configuration_digest="b" * 64,
+                configuration_snapshot_json={},
+                started_at=occurred_at,
+            )
+            db.add(epoch)
+            await db.flush()
+            evidence = InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_EVENT,
+                source_identity=f"CELERY-SCAN-{run_id}",
+                payload_digest="c" * 64,
+                normalized_payload={"data": {}},
+                received_at=occurred_at,
+                line_run_epoch_id=epoch.id,
+                device_code=f"CELERY-DEVICE-{run_id}",
+            )
+            db.add(evidence)
+            await db.flush()
+            execution = MaterialExecution(
+                execution_code=f"CELERY-EXEC-{run_id}",
+                material_trace_id=f"CELERY-TRACE-{run_id}",
+                workline_id=workline.id,
+                line_run_epoch_id=epoch.id,
+                admission_received_at=occurred_at,
+                admission_evidence_id=evidence.id,
+                status=MaterialExecutionStatus.CREATED,
+                last_transition_reason="SCAN_ACCEPTED",
+                last_transition_evidence_id=evidence.id,
+                status_changed_at=occurred_at,
+            )
+            db.add(execution)
+            await db.flush()
+            evidence.material_execution_id = execution.id
+            e03_payload = {
+                "dispatch_key": e03_operation_id,
+                "inbound_key": execution.execution_code,
+                "material_code": "MATERIAL-1",
+                "quantity": "1",
+                "pkg_id": "PKG-1",
+                "location_code": "INBOUND-1",
+            }
+            e07_payload = {
+                "dispatch_key": e07_operation_id,
+                "pkg_id": "PKG-1",
+                "bin_id": "BIN-1",
+                "slot_id": "SLOT-1",
+                "rack_id": "RACK-1",
+                "station_code": "STATION-1",
+            }
+            for operation, operation_id, payload in (
+                (E03_CONFIRM_INBOUND, e03_operation_id, e03_payload),
+                (E07_NOTIFY_PKG_BINDING, e07_operation_id, e07_payload),
+            ):
+                db.add(
+                    WmsConfirmation(
+                        operation=operation,
+                        operation_id=operation_id,
+                        material_execution_id=execution.id,
+                        request_digest=_confirmation_digest(payload),
+                        request_payload=payload,
+                        deadline_at=occurred_at + timedelta(days=1),
+                    )
+                )
+    finally:
+        await engine.dispose()
+    return e03_operation_id, e07_operation_id
+
+
+def _wms_confirmation_states(database_url: str, operation_ids: tuple[str, str]) -> dict[str, tuple[str, int | None]]:
+    url = make_url(database_url).set(drivername="postgresql")
+
+    async def _query() -> dict[str, tuple[str, int | None]]:
+        connection = await asyncpg.connect(url.render_as_string(hide_password=False))
+        try:
+            rows = await connection.fetch(
+                "SELECT operation_id, status, response_evidence_id FROM wes_biz.wms_confirmations "
+                "WHERE operation_id = ANY($1::varchar[]) ORDER BY operation_id",
+                list(operation_ids),
+            )
+            return {str(row["operation_id"]): (str(row["status"]), row["response_evidence_id"]) for row in rows}
+        finally:
+            await connection.close()
+
+    return asyncio.run(_query())
+
+
+async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending_count: int = 3) -> int:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.device.models.command import CommandStatus, DeviceCommand
+    from src.app.device.models.device import Device
+    from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
+    from src.app.workline.models.safety import WorklineSafetyIncident
+    from src.app.workline.models.workline import LineType, WorkLine
+
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    occurred_at = datetime(2026, 8, 29, 13, 0, 0)
+    statuses = [
+        *([CommandStatus.PENDING] * pending_count),
+        CommandStatus.DISPATCHING,
+        CommandStatus.ACKNOWLEDGED,
+        CommandStatus.RECONCILING,
+    ]
+    try:
+        async with sessions.begin() as db:
+            workline = WorkLine(
+                line_code=f"SAFETY-{run_id}",
+                line_name="Celery safety drain",
+                line_type=LineType.AUTO,
+            )
+            db.add(workline)
+            await db.flush()
+            epoch = LineRunEpoch(
+                epoch_code=f"SAFETY-EPOCH-{run_id}",
+                workline_id=workline.id,
+                plugin_key="rough_sorter",
+                plugin_version="1.0.0",
+                flow_mode="ROUGH_SORT_INBOUND",
+                topology_digest="d" * 64,
+                configuration_digest="e" * 64,
+                configuration_snapshot_json={},
+                started_at=occurred_at,
+            )
+            db.add(epoch)
+            await db.flush()
+            incident = WorklineSafetyIncident(workline_id=workline.id)
+            db.add(incident)
+            await db.flush()
+            for index, status in enumerate(statuses):
+                device = Device(
+                    device_code=f"SAFETY-DEVICE-{run_id}-{index}",
+                    device_name=f"Safety device {index}",
+                    work_line_id=workline.id,
+                    device_role=f"SAFETY_ROLE_{index}",
+                )
+                db.add(device)
+                await db.flush()
+                binding = LineRunEpochDeviceBinding(
+                    line_run_epoch_id=epoch.id,
+                    device_id=device.id,
+                    device_code=device.device_code,
+                    device_role=device.device_role,
+                    endpoint_base_url="http://ecs-safety:8080",
+                    contract_key="safety.contract",
+                    contract_version="1.0",
+                    status_max_age_ms=1_000,
+                    command_timeout_ms=5_000,
+                )
+                db.add(binding)
+                await db.flush()
+                db.add(
+                    DeviceCommand(
+                        command_code=f"SAFETY-COMMAND-{run_id}-{index}",
+                        device_code=device.device_code,
+                        device_binding_id=binding.id,
+                        line_run_epoch_id=epoch.id,
+                        execution_ref_type="SAFETY_TEST",
+                        execution_ref_id=f"{run_id}-{index}",
+                        contract_key="safety.contract",
+                        contract_version="1.0",
+                        task_type="SAFE_STOP",
+                        params={},
+                        deadline_at=occurred_at + timedelta(minutes=1),
+                        payload_digest=f"{index:x}" * 64,
+                        status=status,
+                    )
+                )
+            await db.flush()
+            assert incident.id is not None
+            return incident.id
+    finally:
+        await engine.dispose()
+
+
+def _safety_drain_state(database_url: str, incident_id: int) -> tuple[str, int, dict[str, tuple[str, str | None]]]:
+    url = make_url(database_url).set(drivername="postgresql")
+
+    async def _query() -> tuple[str, int, dict[str, tuple[str, str | None]]]:
+        connection = await asyncpg.connect(url.render_as_string(hide_password=False))
+        try:
+            incident = await connection.fetchrow(
+                "SELECT workline_id, drain_status, evidence_json FROM wes_biz.workline_safety_incidents WHERE id = $1",
+                incident_id,
+            )
+            assert incident is not None
+            commands = await connection.fetch(
+                "SELECT command.command_code, command.status, command.failure_code "
+                "FROM wes_biz.device_commands AS command "
+                "JOIN wes_biz.line_run_epochs AS epoch ON epoch.id = command.line_run_epoch_id "
+                "WHERE epoch.workline_id = $1 ORDER BY command.command_code",
+                incident["workline_id"],
+            )
+            evidence = cast("dict[str, object]", json.loads(incident["evidence_json"]))
+            return (
+                str(incident["drain_status"]),
+                int(evidence.get("pending_commands_failed", 0)),
+                {str(row["command_code"]): (str(row["status"]), row["failure_code"]) for row in commands},
+            )
+        finally:
+            await connection.close()
+
+    return asyncio.run(_query())
+
+
 @dataclass
 class PreforkWorker:
     services: Mapping[str, str]
@@ -924,6 +1247,124 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         success = True
     finally:
         worker.stop(success=success)
+
+
+def test_safety_drain_uses_postgresql_claim_lock_and_retries_bounded_batches(
+    prefork_services: dict[str, str],
+) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.workline.services.safety_service import workline_safety_service
+
+    run_id = f"claim-{uuid.uuid4().hex[:10]}"
+    incident_id = asyncio.run(_seed_safety_drain_scenario(prefork_services["database_url"], run_id))
+
+    async def scenario() -> None:
+        engine = create_async_engine(prefork_services["database_url"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with sessions() as first_db:
+                first_transaction = await first_db.begin()
+                first = await workline_safety_service.drain_one(first_db, command_limit=2)
+                assert first is not None
+                assert first.id == incident_id
+                assert first.drain_status == "PENDING"
+                assert first.evidence_json["pending_commands_failed"] == 2
+
+                async with sessions.begin() as second_db:
+                    assert await workline_safety_service.drain_one(second_db, command_limit=2) is None
+
+                await first_transaction.rollback()
+
+            async with sessions.begin() as retry_db:
+                retried = await workline_safety_service.drain_one(retry_db, command_limit=2)
+                assert retried is not None
+                assert retried.id == incident_id
+                assert retried.drain_status == "PENDING"
+
+            async with sessions.begin() as completion_db:
+                completed = await workline_safety_service.drain_one(completion_db, command_limit=2)
+                assert completed is not None
+                assert completed.id == incident_id
+                assert completed.drain_status == "COMPLETED"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+    drain_status, failed_count, commands = _safety_drain_state(prefork_services["database_url"], incident_id)
+    assert drain_status == "COMPLETED"
+    assert failed_count == 3
+    assert [state for state, _failure in commands.values()].count("FAILED") == 3
+    assert {state for state, _failure in commands.values()} >= {"DISPATCHING", "ACKNOWLEDGED", "RECONCILING"}
+    assert {failure for state, failure in commands.values() if state == "FAILED"} == {"WORKLINE_ESTOPPED_BEFORE_SEND"}
+
+
+def test_real_worker_retries_safety_drain_until_completed(prefork_services: dict[str, str]) -> None:
+    worker = PreforkWorker(prefork_services, concurrency=1).start()
+    success = False
+    try:
+        incident_id = asyncio.run(
+            _seed_safety_drain_scenario(prefork_services["database_url"], f"worker-{worker.run_id}")
+        )
+
+        assert worker.result(worker.submit(SAFETY_DRAIN_TASK, 1, 2)) == {"processed": 1, "completed": 0}
+        assert _safety_drain_state(prefork_services["database_url"], incident_id)[:2] == ("PENDING", 2)
+
+        assert worker.result(worker.submit(SAFETY_DRAIN_TASK, 1, 2)) == {"processed": 1, "completed": 1}
+        drain_status, failed_count, commands = _safety_drain_state(prefork_services["database_url"], incident_id)
+        assert drain_status == "COMPLETED"
+        assert failed_count == 3
+        assert [state for state, _failure in commands.values()].count("FAILED") == 3
+        assert {state for state, _failure in commands.values()} >= {"DISPATCHING", "ACKNOWLEDGED", "RECONCILING"}
+        success = True
+    finally:
+        worker.stop(success=success)
+
+
+def test_real_worker_keeps_e07_behind_retrying_e03(
+    prefork_services: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    with _wms_confirmation_endpoint() as (server_url, server):
+        profile_payload = build_provider_profile_payload()
+        profile_payload["server_url"] = server_url
+        profile_path = write_provider_profile(tmp_path / "wms-provider.yaml", profile_payload)
+        services = {**prefork_services, "wms_provider_profile_file": str(profile_path)}
+        worker = PreforkWorker(services, concurrency=1).start()
+        success = False
+        try:
+            operation_ids = asyncio.run(_seed_wms_confirmation_chain(prefork_services["database_url"], worker.run_id))
+
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 1
+            assert [path for path, _payload in server.requests] == ["/inventory/confirm-inbound"]
+            states = _wms_confirmation_states(prefork_services["database_url"], operation_ids)
+            assert states[operation_ids[0]][0] == "PENDING"
+            assert states[operation_ids[1]][0] == "PENDING"
+
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 0
+            assert [path for path, _payload in server.requests] == ["/inventory/confirm-inbound"]
+
+            time.sleep(1.1)
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 1
+            assert [path for path, _payload in server.requests] == [
+                "/inventory/confirm-inbound",
+                "/inventory/confirm-inbound",
+            ]
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 1
+            assert [path for path, _payload in server.requests] == [
+                "/inventory/confirm-inbound",
+                "/inventory/confirm-inbound",
+                "/fulfillment/pkg-bindings",
+            ]
+            states = _wms_confirmation_states(prefork_services["database_url"], operation_ids)
+            assert states[operation_ids[0]][0] == states[operation_ids[1]][0] == "COMPLETED"
+            assert states[operation_ids[0]][1] is not None
+            assert states[operation_ids[1]][1] is not None
+            assert worker.result(worker.submit(WMS_CONFIRMATION_TASK, 100)) == 0
+            success = True
+        finally:
+            worker.stop(success=success)
 
 
 def test_prefork_endpoint_provider_is_child_local_and_closes_each_transport_once(

@@ -106,7 +106,6 @@ async def test_transport_schema_contains_required_claim_indexes(integration_db_s
         "ix_transport_tasks_ambiguous_claim",
         "ix_transport_evidence_pending_claim",
         "ix_transport_tasks_outcome_claim",
-        "ix_transport_position_projection_source_task",
         "ux_transport_resource_bindings_active",
     } <= definitions.keys()
     assert "(next_submit_at IS NOT NULL)" in definitions["ix_transport_tasks_submit_claim"]
@@ -115,43 +114,50 @@ async def test_transport_schema_contains_required_claim_indexes(integration_db_s
     assert "(updated_at, id)" in definitions["ix_transport_tasks_outcome_claim"]
 
 
-async def test_transport_schema_contains_only_final_wire_identity_columns(
+async def test_transport_schema_contains_final_wire_identity_and_execution_authority_columns(
     integration_db_session: AsyncSession,
 ) -> None:
     result = await integration_db_session.execute(
         text(
-            "SELECT table_name, column_name, column_default FROM information_schema.columns "
-            "WHERE table_schema = 'wes_runtime' AND table_name IN "
-            "('transport_tasks', 'transport_callback_receipts', 'transport_evidence', "
-            "'transport_members', 'transport_position_projections')"
+            "SELECT table_schema, table_name, column_name, column_default FROM information_schema.columns "
+            "WHERE (table_schema = 'wes_runtime' AND table_name IN "
+            "('transport_tasks', 'transport_callback_receipts', 'transport_evidence', 'transport_members')) "
+            "OR (table_schema = 'wes_biz' AND table_name = 'position_projections')"
         )
     )
-    columns = {(row[0], row[1]): row[2] for row in result}
+    columns = {(row[0], row[1], row[2]): row[3] for row in result}
     assert {
-        ("transport_tasks", "submit_operation_id"),
-        ("transport_tasks", "submit_timestamp_ms"),
-        ("transport_tasks", "submit_request_body"),
-        ("transport_tasks", "submit_request_body_digest"),
-        ("transport_tasks", "request_digest"),
-        ("transport_callback_receipts", "message_digest"),
-        ("transport_evidence", "operation_id"),
-        ("transport_evidence", "event_timestamp_ms"),
-        ("transport_evidence", "ack_timestamp_ms"),
-        ("transport_evidence", "ack_data_json"),
-        ("transport_members", "last_operation_id"),
-        ("transport_position_projections", "source_operation_id"),
-        ("transport_position_projections", "source_transport_task_id"),
+        ("wes_runtime", "transport_tasks", "submit_operation_id"),
+        ("wes_runtime", "transport_tasks", "submit_timestamp_ms"),
+        ("wes_runtime", "transport_tasks", "submit_request_body"),
+        ("wes_runtime", "transport_tasks", "submit_request_body_digest"),
+        ("wes_runtime", "transport_tasks", "request_digest"),
+        ("wes_runtime", "transport_tasks", "authority_workline_id"),
+        ("wes_runtime", "transport_tasks", "authority_line_run_epoch_id"),
+        ("wes_runtime", "transport_tasks", "authority_bin_execution_id"),
+        ("wes_runtime", "transport_callback_receipts", "message_digest"),
+        ("wes_runtime", "transport_evidence", "operation_id"),
+        ("wes_runtime", "transport_evidence", "event_timestamp_ms"),
+        ("wes_runtime", "transport_evidence", "ack_timestamp_ms"),
+        ("wes_runtime", "transport_evidence", "ack_data_json"),
+        ("wes_runtime", "transport_members", "last_operation_id"),
+        ("wes_biz", "position_projections", "source_operation_id"),
+        ("wes_biz", "position_projections", "source_transport_task_id"),
     } <= columns.keys()
     assert {
-        ("transport_evidence", "event_id"),
-        ("transport_evidence", "payload_digest"),
-        ("transport_tasks", "payload_digest"),
-        ("transport_tasks", "submit_payload_json"),
-        ("transport_tasks", "submit_payload_digest"),
-        ("transport_members", "last_event_id"),
-        ("transport_position_projections", "source_event_id"),
+        ("wes_runtime", "transport_evidence", "event_id"),
+        ("wes_runtime", "transport_evidence", "payload_digest"),
+        ("wes_runtime", "transport_tasks", "payload_digest"),
+        ("wes_runtime", "transport_tasks", "submit_payload_json"),
+        ("wes_runtime", "transport_tasks", "submit_payload_digest"),
+        ("wes_runtime", "transport_members", "last_event_id"),
+        ("wes_biz", "position_projections", "source_event_id"),
     }.isdisjoint(columns)
-    assert columns[("transport_tasks", "last_applied_wms_outcome_revision")] is None
+    assert columns[("wes_runtime", "transport_tasks", "last_applied_wms_outcome_revision")] is None
+    old_projection = await integration_db_session.execute(
+        text("SELECT to_regclass('wes_runtime.transport_position_projections')")
+    )
+    assert old_projection.scalar_one() is None
 
 
 async def test_transport_evidence_identity_is_operation_and_operation_id(integration_db_session: AsyncSession) -> None:

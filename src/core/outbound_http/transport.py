@@ -67,10 +67,18 @@ class _ResponseHeaderLimitExceeded(ValueError):
 class _HttpxOutboundHttpTransport:
     """持有一个 HTTPX Client 的最小出站传输实现。"""
 
-    def __init__(self, *, client: httpx.AsyncClient, system_id: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        system_id: str,
+        timeout_seconds: float,
+        max_concurrency: int,
+    ) -> None:
         self._client = client
         self._system_id = system_id
         self._timeout_seconds = timeout_seconds
+        self._concurrency_limiter = asyncio.BoundedSemaphore(max_concurrency)
         self._cleanup_timeout_seconds = min(timeout_seconds, 1.0)
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
@@ -86,12 +94,15 @@ class _HttpxOutboundHttpTransport:
         status_code: int | None = None
         result: OutboundHttpResult | None = None
         cleanup_failed = False
+        permit_acquired = False
         started_at = asyncio.get_running_loop().time()
         deadline = started_at + self._timeout_seconds
         suppression_token = _suppress_transport_library_logs.set(True)
 
         try:
             async with asyncio.timeout_at(deadline):
+                await self._concurrency_limiter.acquire()
+                permit_acquired = True
                 outbound_request = self._client.build_request(
                     request.method.value,
                     request.path,
@@ -153,11 +164,15 @@ class _HttpxOutboundHttpTransport:
                 failure_kind=OutboundHttpFailureKind.REMOTE_PROTOCOL_ERROR,
             )
         except TimeoutError:
-            result = _read_failure(
-                response=response,
-                status_code=status_code,
-                response_headers=response_headers,
-                failure_kind=OutboundHttpFailureKind.TOTAL_TIMEOUT,
+            result = (
+                _read_failure(
+                    response=response,
+                    status_code=status_code,
+                    response_headers=response_headers,
+                    failure_kind=OutboundHttpFailureKind.TOTAL_TIMEOUT,
+                )
+                if permit_acquired
+                else _not_sent(OutboundHttpFailureKind.POOL_TIMEOUT)
             )
         except _ResponseHeaderLimitExceeded:
             result = _response_failure(
@@ -218,6 +233,8 @@ class _HttpxOutboundHttpTransport:
                             response_headers=response_headers,
                         )
             finally:
+                if permit_acquired:
+                    self._concurrency_limiter.release()
                 _suppress_transport_library_logs.reset(suppression_token)
 
         if result is None:

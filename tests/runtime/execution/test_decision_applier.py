@@ -343,6 +343,9 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
     assert transport.calls[0]["client_request_id"] == binding.client_request_id
     assert transport.calls[0]["rack_id"] == "RACK-CURRENT"
     assert transport.calls[0]["caller"].workline_id == "7"
+    assert transport.calls[0]["execution_authority"].workline_id == 7
+    assert transport.calls[0]["execution_authority"].line_run_epoch_id == 11
+    assert transport.calls[0]["execution_authority"].bin_execution_id is None
 
 
 @pytest.mark.asyncio

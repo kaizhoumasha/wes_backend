@@ -1,5 +1,11 @@
 """Execution 应用服务导出。"""
 
+from .bin_execution_service import (
+    ActiveBinExecutionExistsError,
+    BinExecutionNotActiveError,
+    BinExecutionService,
+    bin_execution_service,
+)
 from .decision_applier import (
     DecisionApplier,
     WmsConfirmationRequest,
@@ -22,6 +28,11 @@ from .material_execution_service import (
     MaterialExecutionService,
     material_execution_service,
 )
+from .position_projection_service import (
+    PositionProjectionAuthorityError,
+    PositionProjectionService,
+    position_projection_service,
+)
 from .wms_confirmation_service import (
     WmsBusinessWaitFollowUp,
     WmsBusinessWaitPlanner,
@@ -36,7 +47,10 @@ from .wms_confirmation_service import (
 )
 
 __all__ = [
+    "ActiveBinExecutionExistsError",
     "ActiveMaterialExecutionExistsError",
+    "BinExecutionNotActiveError",
+    "BinExecutionService",
     "DecisionApplier",
     "FactBuilder",
     "FactProcessor",
@@ -47,6 +61,8 @@ __all__ = [
     "InboundEvidenceService",
     "InitialExecutionCorrelationConflictError",
     "MaterialExecutionService",
+    "PositionProjectionAuthorityError",
+    "PositionProjectionService",
     "WmsBusinessWaitFollowUp",
     "WmsBusinessWaitPlanner",
     "WmsConfirmationAcceptance",
@@ -58,8 +74,10 @@ __all__ = [
     "WmsConfirmationResponseConflictError",
     "WmsConfirmationResponseConflictResult",
     "WmsConfirmationService",
+    "bin_execution_service",
     "decision_digest",
     "inbound_evidence_service",
     "material_execution_service",
+    "position_projection_service",
     "wms_confirmation_service",
 ]

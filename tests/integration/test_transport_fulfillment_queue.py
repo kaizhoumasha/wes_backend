@@ -10,13 +10,13 @@ import pytest
 from celery.exceptions import TaskRevokedError
 from sqlalchemy import delete, select
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.composition import build_transport_runtime
 from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -68,11 +68,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 )
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
-            await db.execute(
-                delete(TransportPositionProjection).where(
-                    TransportPositionProjection.object_id.in_(projection_object_ids)
-                )
-            )
+            await db.execute(delete(PositionProjection).where(PositionProjection.object_id.in_(projection_object_ids)))
             await db.execute(
                 delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
             )

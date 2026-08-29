@@ -49,6 +49,9 @@ RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_
 RUNTIME_PLANE_SNAPSHOT_BENCHMARK_HEAVY_TEST = "tests/load/test_plane_snapshot_benchmark.py"
 RUNTIME_SCENARIO_REPLAY_HEAVY_TEST = "tests/resilience/test_runtime_scenario_replay.py"
 WORKLINE_START_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_workline_start_postgresql.py"
+UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST = (
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py"
+)
 SYSTEM_OUTBOX_CANONICAL_PAYLOAD_HEAVY_TEST = "tests/integration/test_system_outbox_canonical_payload_postgresql.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_CORE_HEAVY_TEST = "tests/integration/test_system_outbox_dispatch_concurrency.py"
 SYSTEM_OUTBOX_DISPATCH_CONCURRENCY_HEAVY_TEST = (
@@ -599,7 +602,10 @@ def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
 def test_workline_start_paths_select_postgresql_owner(changed_path: str) -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests([changed_path], config) == [WORKLINE_START_POSTGRESQL_HEAVY_TEST]
+    expected = [WORKLINE_START_POSTGRESQL_HEAVY_TEST]
+    if changed_path == "src/app/workline/services/workline_start_service.py":
+        expected.insert(0, UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST)
+    assert select_heavy_tests([changed_path], config) == expected
 
 
 def test_execution_celery_task_exports_select_postgresql_runtime_owner() -> None:
@@ -1492,7 +1498,10 @@ def test_repository_mapping_selects_transport_production_heavy_owners(
                 EFFECT_REDUCER_POSTGRESQL_HEAVY_TEST,
             ],
         ),
-        ("src/app/workline/services/workline_start_service.py", [WORKLINE_START_POSTGRESQL_HEAVY_TEST]),
+        (
+            "src/app/workline/services/workline_start_service.py",
+            [UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST, WORKLINE_START_POSTGRESQL_HEAVY_TEST],
+        ),
         ("tests/support/workline_contracts.py", []),
         ("src/app/callback/contracts/trace_context.py", []),
         ("src/app/resource/services/projection_service.py", []),
@@ -1840,7 +1849,7 @@ def test_retired_plugin_model_mappings_pin_schema_retirement_review_to_current_c
         ),
         (
             "src/app/execution/models/material_execution.py",
-            [EXECUTION_CONSTRAINTS_HEAVY_TEST],
+            [EXECUTION_CONSTRAINTS_HEAVY_TEST, UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST],
         ),
         (
             "src/app/resource/models/__init__.py",

@@ -28,6 +28,7 @@ from src.app.execution.services import (
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
+from src.app.execution.services.wms_confirmation_service import E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING
 from src.app.wms_adapter.inbound_adapter import (
     InboundDispatchCode,
     WmsInboundBusinessWaitPlanner,
@@ -80,10 +81,44 @@ async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-d
         material_trace_id=f"{PREFIX}TRACE-{identity}",
         workline_id=line.id,
         line_run_epoch_id=epoch.id,
+        admission_received_at=evidence.received_at,
+        admission_evidence_id=evidence.id,
         status=MaterialExecutionStatus.CREATED,
         last_transition_reason="SCAN_ACCEPTED",
         last_transition_evidence_id=evidence.id,
         status_changed_at=datetime(2026, 8, 16),
+    )
+    db.add(execution)
+    await db.flush()
+    evidence.material_execution_id = execution.id
+    await db.flush()
+    return execution
+
+
+async def _seed_following_execution(db, head: MaterialExecution) -> MaterialExecution:  # type: ignore[no-untyped-def]
+    identity = uuid4().hex
+    evidence = InboundEvidence(
+        kind=InboundEvidenceKind.DEVICE_EVENT,
+        source_identity=f"{PREFIX}SCAN-{identity}",
+        payload_digest="d" * 64,
+        normalized_payload={"source_event_id": f"{PREFIX}SCAN-{identity}"},
+        received_at=head.admission_received_at + timedelta(seconds=1),
+        line_run_epoch_id=head.line_run_epoch_id,
+        device_code=f"{PREFIX}DEVICE-{identity}",
+    )
+    db.add(evidence)
+    await db.flush()
+    execution = MaterialExecution(
+        execution_code=f"{PREFIX}EXEC-{identity}",
+        material_trace_id=f"{PREFIX}TRACE-{identity}",
+        workline_id=head.workline_id,
+        line_run_epoch_id=head.line_run_epoch_id,
+        admission_received_at=evidence.received_at,
+        admission_evidence_id=evidence.id,
+        status=MaterialExecutionStatus.CREATED,
+        last_transition_reason="SCAN_ACCEPTED",
+        last_transition_evidence_id=evidence.id,
+        status_changed_at=evidence.received_at,
     )
     db.add(execution)
     await db.flush()
@@ -237,6 +272,82 @@ async def test_claim_fifo_uses_creation_order_across_due_retry_and_new_pending(i
         )
 
     assert [item.operation_id for item in claimed] == operation_ids
+
+
+@pytest.mark.asyncio
+async def test_e03_e07_claims_obey_predecessor_and_material_fifo_barriers(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
+    repository = WmsConfirmationRepository()
+    now = datetime(2026, 8, 16)
+    async with integration_session_factory.begin() as setup:
+        head = await _seed_execution(setup)
+        following = await _seed_following_execution(setup, head)
+        for execution in (head, following):
+            for operation in (E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING):
+                operation_id = f"{operation}:{execution.execution_code}"
+                payload = {"dispatch_key": operation_id, "pkg_id": execution.material_trace_id}
+                setup.add(
+                    WmsConfirmation(
+                        operation=operation,
+                        operation_id=operation_id,
+                        material_execution_id=execution.id,
+                        request_digest=_digest(payload),
+                        request_payload=payload,
+                        deadline_at=now + timedelta(minutes=5),
+                        created_at=now,
+                    )
+                )
+
+    async with integration_session_factory.begin() as db:
+        first_claim = await repository.claim_eligible(
+            db,
+            now=now,
+            claim_token="claim-e03-head",
+            claim_expires_at=now + timedelta(minutes=1),
+            limit=10,
+        )
+        assert [(item.material_execution_id, item.operation) for item in first_claim] == [
+            (head.id, E03_CONFIRM_INBOUND)
+        ]
+        first_claim[0].status = WmsConfirmationStatus.COMPLETED
+        first_claim[0].completed_at = now
+
+    async with integration_session_factory.begin() as db:
+        second_claim = await repository.claim_eligible(
+            db,
+            now=now,
+            claim_token="claim-e07-head",
+            claim_expires_at=now + timedelta(minutes=1),
+            limit=10,
+        )
+        assert [(item.material_execution_id, item.operation) for item in second_claim] == [
+            (head.id, E07_NOTIFY_PKG_BINDING)
+        ]
+        second_claim[0].status = WmsConfirmationStatus.COMPLETED
+        second_claim[0].completed_at = now
+
+    async with integration_session_factory.begin() as db:
+        assert not await repository.claim_eligible(
+            db,
+            now=now,
+            claim_token="claim-following-blocked",
+            claim_expires_at=now + timedelta(minutes=1),
+            limit=10,
+        )
+        persisted_head = await db.get(MaterialExecution, head.id, with_for_update=True)
+        assert persisted_head is not None
+        persisted_head.status = MaterialExecutionStatus.CLOSED
+
+    async with integration_session_factory.begin() as db:
+        following_claim = await repository.claim_eligible(
+            db,
+            now=now,
+            claim_token="claim-e03-following",
+            claim_expires_at=now + timedelta(minutes=1),
+            limit=10,
+        )
+        assert [(item.material_execution_id, item.operation) for item in following_claim] == [
+            (following.id, E03_CONFIRM_INBOUND)
+        ]
 
 
 class _DispatchAdapter:

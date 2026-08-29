@@ -14,6 +14,7 @@ from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime
 from src.celery_app.config import beat_schedule, task_routes
 from src.celery_app.tasks import execution
+from src.celery_app.tasks import workline as workline_tasks
 from tests.support import ecs_uniform_wire
 from tests.support.ecs_uniform_wire import (
     DEVICE_COMMAND_QUEUE,
@@ -64,6 +65,29 @@ def test_execution_fact_task_is_registered_and_routed_to_wes_worker() -> None:
         "kwargs": {"limit": 100},
         "options": {"expires": 10.0},
     }
+
+
+def test_safety_drain_task_is_registered_with_bounded_beat_fallback() -> None:
+    task_name = "src.celery_app.tasks.workline.drain_safety_incidents_batch"
+    celery_app.loader.import_default_modules()
+
+    assert task_name in celery_app.tasks
+    assert task_routes[task_name] == {"queue": "celery"}
+    assert beat_schedule["drain-safety-incidents-batch"] == {
+        "task": task_name,
+        "schedule": 10.0,
+        "kwargs": {"limit": 10, "command_limit": 100},
+        "options": {"expires": 10.0},
+    }
+
+
+@pytest.mark.parametrize(
+    ("limit", "command_limit"),
+    ((0, 100), (11, 100), (True, 100), (10, 0), (10, 101), (10, True)),
+)
+def test_safety_drain_task_rejects_unbounded_or_empty_batches(limit: object, command_limit: object) -> None:
+    with pytest.raises(ValueError, match="batch limit"):
+        workline_tasks.drain_safety_incidents_batch.run(limit=limit, command_limit=command_limit)
 
 
 @pytest.mark.parametrize("drift", ("missing-schedule", "missing-route", "wrong-route"))

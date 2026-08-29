@@ -41,6 +41,15 @@ class WmsConfirmationResponseConflictError(ValueError):
     """已完成确认收到冲突响应。"""
 
 
+class WmsConfirmationBarrierBlockedError(ValueError):
+    """E03/E07 尚未满足 execution mutex、FIFO 或前序闭合条件。"""
+
+
+E03_CONFIRM_INBOUND = "wms.inventory.confirm_inbound@v1"
+E07_NOTIFY_PKG_BINDING = "wms.fulfillment.notify_pkg_binding@v1"
+_EXECUTION_BARRIER_OPERATIONS = (E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING)
+
+
 class WmsConfirmationRepositoryPort(Protocol):
     async def lock_identity(self, db: object, operation: str, operation_id: str) -> None: ...
 
@@ -72,9 +81,27 @@ class WmsConfirmationRepositoryPort(Protocol):
 
     async def flush(self, db: object) -> None: ...
 
+    async def list_for_execution_operations_for_update(
+        self,
+        db: object,
+        *,
+        material_execution_id: int,
+        operations: tuple[str, ...],
+    ) -> list[WmsConfirmation]: ...
+
 
 class MaterialExecutionEpochRepositoryPort(Protocol):
     async def get_by_id(self, db: object, execution_id: int) -> MaterialExecution | None: ...
+
+    async def get_by_id_for_update(self, db: object, execution_id: int) -> MaterialExecution | None: ...
+
+    async def get_admission_head_for_update(
+        self,
+        db: object,
+        *,
+        workline_id: int,
+        line_run_epoch_id: int,
+    ) -> MaterialExecution | None: ...
 
 
 class WmsConfirmationDispatchResultPort(Protocol):
@@ -149,28 +176,20 @@ def _immutable_request(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return cast("dict[str, Any]", normalized), hashlib.sha256(encoded).hexdigest()
 
 
-class WmsConfirmationService:
+class WmsConfirmationLifecycleService:
+    """持有 WMS 确认身份、状态迁移和 MaterialExecution barrier。"""
+
     def __init__(
         self,
         repository: WmsConfirmationRepositoryPort | None = None,
         *,
-        session_factory: async_sessionmaker[AsyncSession] | None = None,
-        adapter: WmsConfirmationAdapterPort | None = None,
-        evidence_service: InboundEvidenceService | None = None,
         execution_repository: MaterialExecutionEpochRepositoryPort | None = None,
-        business_wait_planner: WmsBusinessWaitPlanner | None = None,
-        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._repository: WmsConfirmationRepositoryPort = repository or wms_confirmation_repository
-        self._sessions = session_factory
-        self._adapter = adapter
-        self._evidence = evidence_service or InboundEvidenceService()
         self._executions = execution_repository or cast(
             "MaterialExecutionEpochRepositoryPort",
             material_execution_repository,
         )
-        self._business_wait_planner = business_wait_planner
-        self._task_queue = task_queue_gateway
 
     async def create_or_get(
         self,
@@ -184,6 +203,12 @@ class WmsConfirmationService:
         created_at: datetime,
     ) -> WmsConfirmationAcceptance | WmsConfirmationIdentityConflictResult:
         payload, digest = _immutable_request(request_payload)
+        barrier = None
+        if operation in _EXECUTION_BARRIER_OPERATIONS:
+            barrier = await self._lock_execution_barrier(
+                db,
+                material_execution_id=material_execution_id,
+            )
         await self._repository.lock_identity(db, operation, operation_id)
         existing = await self._repository.get_by_identity_for_update(db, operation, operation_id)
         if existing is not None:
@@ -195,6 +220,13 @@ class WmsConfirmationService:
                 _ = await self.mark_reconciling(db, existing, changed_at=created_at)
                 return WmsConfirmationIdentityConflictResult(existing, f"{operation}:{operation_id}")
             return WmsConfirmationAcceptance(existing, duplicate=True)
+        if barrier is not None:
+            await self._assert_new_execution_barrier(
+                db,
+                operation=operation,
+                execution=barrier[0],
+                confirmations=barrier[1],
+            )
         confirmation = await self._repository.add(
             db,
             WmsConfirmation(
@@ -208,6 +240,43 @@ class WmsConfirmationService:
             ),
         )
         return WmsConfirmationAcceptance(confirmation, duplicate=False)
+
+    async def _lock_execution_barrier(
+        self,
+        db: object,
+        *,
+        material_execution_id: int,
+    ) -> tuple[MaterialExecution, list[WmsConfirmation]]:
+        execution = await self._executions.get_by_id_for_update(db, material_execution_id)
+        if execution is None:
+            raise LookupError("MaterialExecution 不存在")
+        confirmations = await self._repository.list_for_execution_operations_for_update(
+            db,
+            material_execution_id=material_execution_id,
+            operations=_EXECUTION_BARRIER_OPERATIONS,
+        )
+        return execution, confirmations
+
+    async def _assert_new_execution_barrier(
+        self,
+        db: object,
+        *,
+        operation: str,
+        execution: MaterialExecution,
+        confirmations: list[WmsConfirmation],
+    ) -> None:
+        head = await self._executions.get_admission_head_for_update(
+            db,
+            workline_id=execution.workline_id,
+            line_run_epoch_id=execution.line_run_epoch_id,
+        )
+        if head is None or head.id != execution.id:
+            raise WmsConfirmationBarrierBlockedError("E03/E07 不得越过 MaterialExecution FIFO 队头")
+        if operation == E07_NOTIFY_PKG_BINDING and not any(
+            item.operation == E03_CONFIRM_INBOUND and item.status == WmsConfirmationStatus.COMPLETED
+            for item in confirmations
+        ):
+            raise WmsConfirmationBarrierBlockedError("E07 必须等待同一 MaterialExecution 的 E03 确定闭合")
 
     async def mark_dispatching(
         self,
@@ -308,6 +377,28 @@ class WmsConfirmationService:
         await self._repository.flush(db)
         return confirmation
 
+
+class WmsConfirmationService(WmsConfirmationLifecycleService):
+    """短事务 claim、无锁 HTTP 和独立短事务结果回写 dispatcher。"""
+
+    def __init__(
+        self,
+        repository: WmsConfirmationRepositoryPort | None = None,
+        *,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        adapter: WmsConfirmationAdapterPort | None = None,
+        evidence_service: InboundEvidenceService | None = None,
+        execution_repository: MaterialExecutionEpochRepositoryPort | None = None,
+        business_wait_planner: WmsBusinessWaitPlanner | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
+    ) -> None:
+        super().__init__(repository, execution_repository=execution_repository)
+        self._sessions = session_factory
+        self._adapter = adapter
+        self._evidence = evidence_service or InboundEvidenceService()
+        self._business_wait_planner = business_wait_planner
+        self._task_queue = task_queue_gateway
+
     async def dispatch_batch(self, *, limit: int = 100, now: datetime | None = None) -> int:
         """短事务 claim 后逐条派发；单次最多处理 100 个可靠确认。"""
 
@@ -366,6 +457,7 @@ class WmsConfirmationService:
             operation_id = confirmation.operation_id
             request_payload = dict(confirmation.request_payload)
             request_digest = confirmation.request_digest
+            material_execution_id = confirmation.material_execution_id
 
         result = await adapter.dispatch(
             operation=operation,
@@ -375,6 +467,15 @@ class WmsConfirmationService:
         )
         changed_at = now if now is not None else timezone.now_for_db()
         async with self._execution_wake_transaction(sessions) as (db, wake_execution):
+            if operation in _EXECUTION_BARRIER_OPERATIONS:
+                execution = await self._executions.get_by_id_for_update(db, material_execution_id)
+                if execution is None:
+                    raise LookupError("MaterialExecution 不存在")
+                await self._repository.list_for_execution_operations_for_update(
+                    db,
+                    material_execution_id=material_execution_id,
+                    operations=_EXECUTION_BARRIER_OPERATIONS,
+                )
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
             if confirmation is None:
                 return
@@ -398,7 +499,11 @@ class WmsConfirmationService:
                     received_at=changed_at,
                     line_run_epoch_id=line_run_epoch_id,
                     material_execution_id=confirmation.material_execution_id,
-                    contract_key="rough_sorter_inbound",
+                    contract_key=(
+                        "wms_execution_confirmation"
+                        if operation in _EXECUTION_BARRIER_OPERATIONS
+                        else "rough_sorter_inbound"
+                    ),
                     contract_version="1.0",
                     operation=operation,
                     operation_id=operation_id,
@@ -565,12 +670,16 @@ def _required_id(confirmation: WmsConfirmation) -> int:
 wms_confirmation_service = WmsConfirmationService()
 
 __all__ = [
+    "E03_CONFIRM_INBOUND",
+    "E07_NOTIFY_PKG_BINDING",
     "WmsBusinessWaitFollowUp",
     "WmsBusinessWaitPlanner",
     "WmsConfirmationAcceptance",
+    "WmsConfirmationBarrierBlockedError",
     "WmsConfirmationFollowUpPlan",
     "WmsConfirmationIdentityConflictError",
     "WmsConfirmationIdentityConflictResult",
+    "WmsConfirmationLifecycleService",
     "WmsConfirmationResponseConflictError",
     "WmsConfirmationResponseConflictResult",
     "WmsConfirmationService",

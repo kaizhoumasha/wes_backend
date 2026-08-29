@@ -3,7 +3,7 @@
 status: Approved
 decision_date: 2026-08-26
 scope: 开发流程、运输接入诊断、Phase 9—14 阶段边界、教学式插件开发和规划 worktree 收敛
-implementation_status: backend planning baseline 已闭合于 `50bd9ac2098005b346d48b10ad9d78ac0ae5d982`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 计划已于 2026-08-28 批准，生产实施未开始
+implementation_status: backend planning baseline 已闭合于 `50bd9ac2098005b346d48b10ad9d78ac0ae5d982`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 分支完成性验收已于 2026-08-29 通过，`develop` 集成待完成
 
 ## 1. 决策摘要
 
@@ -76,7 +76,7 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 运输接入诊断计划和阶段重排设计已进入 `develop`。旧 Phase 9 中仍有效的内容已分别由
 `plans/2026-08-27-phase9-minimum-execution-foundation.md` 和
 `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` 承接，旧过程文档与未重新评审的合同已移至项目外归档。
-运输诊断已完成仓内实现、验证与合入，但未部署、未执行现场物理动作或业务验收；Phase 9 计划已批准但尚未实施，
+运输诊断已完成仓内实现、验证与合入，但未部署、未执行现场物理动作或业务验收；Phase 9 分支完成性验收已通过但尚未合入 `develop`，
 Phase 10–14 仍是后续计划，不得描述为已经实施。
 
 ## 5. 阶段设计

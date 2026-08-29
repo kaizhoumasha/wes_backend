@@ -1,6 +1,6 @@
 # Phase 9 Minimum Execution Foundation 实施计划
 
-status: Approved — implementation may start under Execution Lock; production implementation has not started
+status: Implementation accepted on feature branch; develop integration pending
 decision_date: 2026-08-28
 owner: WES 基础执行能力
 depends_on: Gate A 开发流程基线、Gate B 运输接入诊断、Phase 8 backend RC
@@ -296,31 +296,31 @@ Lane A：Task 0 → Slice A → Slice B → Slice C（顺序执行，共享 sche
 
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Claude Code or Codex; checkbox as you ship.
 
-- [ ] **T1 (P1, human: ~2d / CC: ~3h)** — execution schema — 建立 BinExecution、PositionProjection、锁序与迁移
+- [x] **T1 (P1, human: ~2d / CC: ~3h)** — execution schema — 建立 BinExecution、PositionProjection、锁序与迁移
   - Surfaced by: Architecture/Code Quality/Outside Voice — 单一 current projection、活动 bin 唯一性和 close race
   - Files: `src/app/execution/`、models/migrations、execution/integration tests
   - Verify: execution FAST、PostgreSQL concurrency、干净 base→head migration、旧 projection absence
-- [ ] **T2 (P1, human: ~1.5d / CC: ~2h)** — Transport — 接入 execution authority 与事务内 projection port
+- [x] **T2 (P1, human: ~1.5d / CC: ~2h)** — Transport — 接入 execution authority 与事务内 projection port
   - Surfaced by: Architecture/Test/Outside Voice — 禁止 late current-Epoch lookup 与 debug 投影污染
   - Files: `src/app/transport/`、execution/transport Composition、Transport tests/HEAVY
   - Verify: Transport FAST、debug absence、terminal Evidence/projection transaction、真实 worker E2E
-- [ ] **T3 (P1, human: ~2d / CC: ~3h)** — WorkLine admission — 切换 exact unfinished snapshot、FIFO 与 START gate
+- [x] **T3 (P1, human: ~2d / CC: ~3h)** — WorkLine admission — 切换 exact unfinished snapshot、FIFO 与 START gate
   - Surfaced by: Architecture/Performance/Outside Voice — 一次 SQL、严格 FIFO、旧 Epoch 不可跳过
   - Files: `src/app/workline/`、`src/app/execution/`、WorkLine/integration tests
   - Verify: owner 状态矩阵、FIFO queue、并发 START、索引查询和旧 Runtime owner absence
-- [ ] **T4 (P1, human: ~2d / CC: ~3h)** — Safety — 建立 ESTOP final router 与 incident-owned drain
+- [x] **T4 (P1, human: ~2d / CC: ~3h)** — Safety — 建立 ESTOP final router 与 incident-owned drain
   - Surfaced by: Architecture/Code Quality/Test — barrier-first safety transaction 与 bounded retry drain
   - Files: `src/app/device/`、`src/app/workline/`、Device/Safety/Celery tests
   - Verify: Device/Safety FAST、PostgreSQL incident tests、真实 worker E2E、旧 side-effect absence
-- [ ] **T5 (P1, human: ~2d / CC: ~3h)** — WMS confirmation — 闭合 E03/E07 lifecycle、FIFO 和 dispatcher
+- [x] **T5 (P1, human: ~2d / CC: ~3h)** — WMS confirmation — 闭合 E03/E07 lifecycle、FIFO 和 dispatcher
   - Surfaced by: Architecture/Code Quality/Test/Performance — execution mutex、固定锁序、lease-safe HTTP
   - Files: `src/app/execution/`、`src/app/wms_adapter/`、confirmation/worker tests
   - Verify: lifecycle/dispatcher FAST、PostgreSQL race、两个静态 endpoint/DTO/Composition、旧 registry absence、真实 Celery E03→E07
-- [ ] **T6 (P1, human: ~1d / CC: ~90min)** — runtime/deployment — 收敛 WMS target runtime 并删除同步 OTel backend
+- [x] **T6 (P1, human: ~1d / CC: ~90min)** — runtime/deployment — 收敛 WMS target runtime 并删除同步 OTel backend
   - Surfaced by: Architecture/Test/Performance/Outside Voice — shared client owner、配置一致性和无人使用 exporter
   - Files: WMS integration/Transport Composition、Celery/deployment config/tests
   - Verify: shared-client lifecycle、runtime config/readiness、deployment attestation、OTel absence/retained signals
-- [ ] **T7 (P2, human: ~4h / CC: ~45min)** — Phase 10 handoff — 生成 operation inventory 与 successor 清单
+- [x] **T7 (P2, human: ~4h / CC: ~45min)** — Phase 10 handoff — 生成 operation inventory 与 successor 清单
   - Surfaced by: Architecture/Test — 当前 consumer 必须 typed，`UNRESOLVED=0`
   - Files: operation catalog/Composition tests、Phase 10 cleanup matrix
   - Verify: machine inventory、stable absence contract、typed composition、旧 operation residual scan
@@ -339,6 +339,22 @@ Synthesized from this review's findings. Each task derives from a specific findi
 8. 未把代码、Mock、镜像、部署 readiness、callback receipt 或历史绿灯描述成物理/供应商/业务验收。
 
 满足以上条件后，才能把 Phase 9 标记为完成并开启 Phase 10 Execution Lock。
+
+### 11.1 2026-08-29 分支完成性验收证据
+
+- 基线：`develop@a78e8d66eb36c7fdc361a71b310706cdd3fc3fb7`；实施分支
+  `codex/phase9-minimum-execution-foundation`；主体实现提交为 `b68fb4ca`，最终门禁修复提交为 `a776af12`，尚未合入 `develop`。
+- 最终可执行树通过 Commit hook QUALITY：`4105 passed, 5 skipped`；skip 为既有
+  FAST 套件边界，不作为 PostgreSQL/worker 证据。
+- 主体实现 selector 选择的 PostgreSQL、Redis、migration 与真实 Celery worker owner 共 `267 passed`，无 skip；最终修复
+  selector 选择 ESTOP PostgreSQL/真实 prefork worker 与 unfinished owner 矩阵共 `11 passed`，无 skip。
+- migration chain 从空库升级到单一 head `dd35f04b258f`；operation inventory 共 36 项，
+  `RETAIN=7 / SWITCH=2 / DELETE → NONE=27 / UNRESOLVED=0`。
+- staged GitNexus scope、唯一主 Review 与修复闭环均已完成，fresh Review 在 `a776af12` 无剩余意见；T1–T7 和本计划
+  八项最终验证要求在 feature branch 上全部闭合，Phase 9 分支完成性验收通过。
+- 在该分支合入 `develop` 前，不得把 Phase 9 描述为 `develop` 基线，也不得开启 Phase 10 Execution Lock；Phase 10 继续保持
+  `GATED`。
+- 未执行部署、供应商联调、现场物理运动或业务验收；仓内绿灯不能替代这些证据。
 
 ## 12. Review completion summary
 

@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-28
+**最后更新**：2026-08-29
 
 ## 1. 真源与入口
 
@@ -37,7 +37,7 @@
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
 | `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能实现、本机 Mock 验收和 RC 关闭门禁的实施历史 |
 | `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
-| `docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役计划；当前受 Phase 9、successor closure 和 `UNRESOLVED=0` 门禁约束 |
+| `docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役计划；Phase 9 分支已证明 successor closure 与 `UNRESOLVED=0`，待合入 `develop` 后重新冻结 Phase 10 基线 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
@@ -88,8 +88,9 @@ API → Service → Repository → Database
 | `src/app/*/services/` | 业务协调和事务边界 |
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
+| `src/app/execution/` | Phase 9 最小执行对象、RACK/BIN 当前位置投影、可靠 WMS 确认与静态插件事实处理 |
 | `src/app/runtime/` | Phase 5 后的零插件 implementation baseline；保留通用入站、投影、可靠性和诊断能力，具体业务插件执行闭包已退役 |
-| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合、位置投影与 Phase 6 生产运行时；不包含业务 producer |
+| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影，仍不包含业务 producer |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
 | `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |

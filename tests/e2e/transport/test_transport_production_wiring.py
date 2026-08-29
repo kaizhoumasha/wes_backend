@@ -13,12 +13,12 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from sqlalchemy import delete, func, select
 
+from src.app.execution.models import PositionProjection
 from src.app.transport import RackFace, build_transport_runtime
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportResourceBinding,
     TransportTask,
 )
@@ -71,7 +71,7 @@ async def _transport_counts(session_factory) -> tuple[int, int, int, int]:
             int(await db.scalar(select(func.count()).select_from(TransportTask)) or 0),
             int(await db.scalar(select(func.count()).select_from(TransportMember)) or 0),
             int(await db.scalar(select(func.count()).select_from(TransportEvidence)) or 0),
-            int(await db.scalar(select(func.count()).select_from(TransportPositionProjection)) or 0),
+            int(await db.scalar(select(func.count()).select_from(PositionProjection)) or 0),
         )
 
 
@@ -106,9 +106,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
                 await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
             projection_ids = [value for value in (object_id, rack_id) if value is not None]
             if projection_ids:
-                await db.execute(
-                    delete(TransportPositionProjection).where(TransportPositionProjection.object_id.in_(projection_ids))
-                )
+                await db.execute(delete(PositionProjection).where(PositionProjection.object_id.in_(projection_ids)))
             if task_id is not None:
                 await db.execute(
                     delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == task_id)

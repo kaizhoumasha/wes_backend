@@ -16,6 +16,7 @@ PROCESS_TRANSPORT_EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transp
 PROCESS_EXECUTION_FACTS_TASK = "src.celery_app.tasks.execution.process_execution_facts_batch"
 DISPATCH_WMS_CONFIRMATIONS_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 DISPATCH_DEVICE_COMMANDS_TASK = "src.celery_app.tasks.device_command.dispatch_device_commands_batch"
+DRAIN_SAFETY_INCIDENTS_TASK = "src.celery_app.tasks.workline.drain_safety_incidents_batch"
 
 
 class OutboxDispatchTarget(StrEnum):
@@ -51,6 +52,8 @@ class TaskQueueGateway(Protocol):
     def enqueue_wms_confirmations(self) -> None: ...
 
     def enqueue_device_commands(self) -> None: ...
+
+    def enqueue_safety_drain(self) -> None: ...
 
 
 class CeleryTaskQueueGateway:
@@ -90,6 +93,9 @@ class CeleryTaskQueueGateway:
     def enqueue_device_commands(self) -> None:
         self._send_task(DISPATCH_DEVICE_COMMANDS_TASK, kwargs={"limit": 100})
 
+    def enqueue_safety_drain(self) -> None:
+        self._send_task(DRAIN_SAFETY_INCIDENTS_TASK, kwargs={"limit": 10, "command_limit": 100})
+
 
 task_queue_gateway = CeleryTaskQueueGateway()
 
@@ -100,6 +106,7 @@ __all__ = [
     "DISPATCH_WMS_CONFIRMATIONS_TASK",
     "DISPATCH_WMS_DATA_OUTBOX_TASK",
     "DISPATCH_WMS_FULFILLMENT_OUTBOX_TASK",
+    "DRAIN_SAFETY_INCIDENTS_TASK",
     "PROCESS_EXECUTION_FACTS_TASK",
     "PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE",
     "PROCESS_RUNTIME_INBOX_TASK",

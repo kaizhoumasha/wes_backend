@@ -10,6 +10,7 @@ from sqlmodel import Field
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.core.mixins.base import BaseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 RUNTIME_SCHEMA = SchemaType.RUNTIME.value
@@ -29,6 +30,12 @@ class TransportTask(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_TASK_STATUS_CHECK, name="transport_task_status_valid"),
+        CheckConstraint(
+            "(authority_workline_id IS NULL AND authority_line_run_epoch_id IS NULL "
+            "AND authority_bin_execution_id IS NULL) OR "
+            "(authority_workline_id IS NOT NULL AND authority_line_run_epoch_id IS NOT NULL)",
+            name="transport_execution_authority_all_or_none",
+        ),
         CheckConstraint(
             f"submit_attempt_count BETWEEN 0 AND {MAX_SUBMIT_ATTEMPTS}",
             name="transport_submit_attempt_count_valid",
@@ -84,6 +91,13 @@ class TransportTask(BaseMixin, table=True):
     submit_request_body_digest: str = Field(max_length=64)
     status: str = Field(default="PENDING", max_length=20)
     reason_code: str | None = Field(default=None, max_length=120)
+    authority_workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
+    authority_line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id")
+    authority_bin_execution_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.bin_executions.id",
+        sa_type=SQL_COMPAT_BIGINT,
+    )
 
     submit_attempt_count: int = Field(default=0)
     next_submit_at: datetime | None = Field(default=None)
@@ -200,26 +214,6 @@ class TransportCallbackReceipt(BaseMixin, table=True):
     received_at: datetime
 
 
-class TransportPositionProjection(BaseMixin, table=True):
-    __tablename__ = "transport_position_projections"  # pyright: ignore[reportAssignmentType]
-    __schema__ = RUNTIME_SCHEMA
-    __table_args__ = (
-        UniqueConstraint("object_type", "object_id", name="ux_transport_position_projection_object"),
-        Index("ix_transport_position_projection_source_task", "source_transport_task_id"),
-        {"schema": RUNTIME_SCHEMA},
-    )
-
-    id: int | None = Field(default=None, primary_key=True)
-    object_type: str = Field(max_length=10)
-    object_id: str = Field(max_length=100)
-    position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
-    position_unknown: bool = Field(default=False)
-    arrival_face: str | None = Field(default=None, max_length=1)
-    source_operation_id: str = Field(max_length=36)
-    source_transport_task_id: str | None = Field(default=None, max_length=80)
-    updated_at: datetime
-
-
 class TransportResourceBinding(BaseMixin, table=True):
     __tablename__ = "transport_resource_bindings"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
@@ -251,7 +245,6 @@ __all__ = [
     "TransportCallbackReceipt",
     "TransportEvidence",
     "TransportMember",
-    "TransportPositionProjection",
     "TransportResourceBinding",
     "TransportTask",
 ]

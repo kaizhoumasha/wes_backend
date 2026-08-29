@@ -8,15 +8,10 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
-from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
-from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
-from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
-from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
-from src.core.logger import logger
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -119,35 +114,14 @@ class WorkLineSafetyService:
         *,
         workline_repository: WorkLineRepository | None = None,
         incident_repository: WorklineSafetyIncidentRepository | None = None,
-        session_repository: WorklineSessionRepository | None = None,
-        system_outbox_cancellation_service: Any | None = None,
         command_repository: DeviceCommandRepository | None = None,
-        runtime_hold_creation_service: Any | None = None,
-        runtime_hold_repository: RuntimeHoldRepository | None = None,
-        runtime_hold_release_service: Any | None = None,
         workline_status_projection_service: Any | None = None,
     ) -> None:
         """初始化安全服务依赖。"""
 
         self.workline_repository = workline_repository or default_workline_repository
         self.incident_repository = incident_repository or WorklineSafetyIncidentRepository()
-        self.session_repository = session_repository or WorklineSessionRepository()
-        if system_outbox_cancellation_service is None:
-            from src.app.runtime.orchestration.services.system_outbox_cancellation_service import (
-                system_outbox_cancellation_service as default_outbox_cancellation_service,
-            )
-
-            system_outbox_cancellation_service = default_outbox_cancellation_service
-        self.system_outbox_cancellation_service = system_outbox_cancellation_service
         self.command_repository = command_repository or DeviceCommandRepository()
-        if runtime_hold_creation_service is None:
-            from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
-                runtime_hold_creation_service as default_runtime_hold_creation_service,
-            )
-
-            runtime_hold_creation_service = default_runtime_hold_creation_service
-        self.runtime_hold_creation_service = runtime_hold_creation_service
-        self.runtime_hold_repository = runtime_hold_repository or RuntimeHoldRepository()
         if workline_status_projection_service is None:
             from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
                 workline_runtime_status_projection_service,
@@ -155,7 +129,6 @@ class WorkLineSafetyService:
 
             workline_status_projection_service = workline_runtime_status_projection_service
         self.workline_status_projection_service = workline_status_projection_service
-        self.runtime_hold_release_service = runtime_hold_release_service
 
     async def assert_accepting_work(self, db: AsyncSession, *, workline_id: int) -> None:
         """校验 WorkLine 当前可接收新事件/新任务。"""
@@ -176,11 +149,12 @@ class WorkLineSafetyService:
         *,
         workline_id: int,
         source_inbox_id: int | None = None,
+        source_evidence_id: int | None = None,
         source_device_id: int | None = None,
         source_command_id: int | None = None,
         trigger_payload: dict[str, Any] | None = None,
     ) -> WorklineSafetyIncident:
-        """处理 WorkLine 级急停上报：冻结主表投影并排空未完成工作。"""
+        """在调用方事务内建立/复用 incident 并冻结运行态；排空由 incident worker 承担。"""
 
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
@@ -191,6 +165,7 @@ class WorkLineSafetyService:
             incident = WorklineSafetyIncident(
                 workline_id=workline_id,
                 source_inbox_id=source_inbox_id,
+                source_evidence_id=source_evidence_id,
                 source_device_id=source_device_id,
                 source_command_id=source_command_id,
                 trigger_payload_json=_bounded_safety_json(
@@ -200,8 +175,11 @@ class WorkLineSafetyService:
             )
             db.add(incident)
             await db.flush()
+        elif source_evidence_id is not None and incident.source_evidence_id is None:
+            incident.source_evidence_id = source_evidence_id
 
-        _ = await self.runtime_hold_creation_service.create_for_safety_estop(db, incident=incident)
+        incident.drain_status = "PENDING"
+        incident.drain_error_json = {}
 
         now = timezone.now_for_db()
         await self.workline_status_projection_service.project_estopped_active_hold(
@@ -212,51 +190,37 @@ class WorkLineSafetyService:
             occurred_at=now,
         )
         await db.flush()
-        await db.commit()
+        return incident
 
-        try:
-            session_count = await self.session_repository.fail_open_by_workline(
-                db,
-                workline_id,
-                incident_id=cast("int", incident.id),
-            )
-            outbox_count = await self.system_outbox_cancellation_service.cancel_active_by_workline(
-                db,
-                workline_id,
-                incident_id=cast("int", incident.id),
-            )
-            command_count = await self.command_repository.fail_pending_by_workline(
-                db,
-                workline_id=workline_id,
-                failure_code="WORKLINE_ESTOPPED_BEFORE_SEND",
-            )
-        except Exception as exc:
-            logger.error(f"WorkLine 急停冻结已提交，但排空失败: workline_id={workline_id}, error={exc}")
+    async def drain_one(self, db: AsyncSession, *, command_limit: int = 100) -> WorklineSafetyIncident | None:
+        """有界关闭尚未发送的命令；已发送或结果不确定的身份保持不变。"""
+
+        incident = await self.incident_repository.claim_next_drain(db)
+        if incident is None:
+            return None
+        if incident.workline_id is None:
             incident.drain_status = "FAILED"
-            incident.drain_error_json = _bounded_safety_json(
-                {
-                    "type": exc.__class__.__name__,
-                    "message": str(exc),
-                },
-                max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
-            )
+            incident.drain_error_json = {"reason": "MISSING_WORKLINE_ID"}
             await db.flush()
-            await db.commit()
             return incident
 
-        incident.drain_status = "COMPLETED"
-        incident.drain_error_json = {}
+        command_count = await self.command_repository.fail_pending_by_workline(
+            db,
+            workline_id=incident.workline_id,
+            failure_code="WORKLINE_ESTOPPED_BEFORE_SEND",
+            limit=command_limit,
+        )
+        previous_count = int((incident.evidence_json or {}).get("pending_commands_failed", 0))
         incident.evidence_json = _bounded_safety_json(
             {
-                "sessions_failed": session_count,
-                "outboxes_cancelled": outbox_count,
-                "pending_commands_failed": command_count,
-                "dispatched_commands_preserved": True,
+                "pending_commands_failed": previous_count + command_count,
+                "dispatched_acknowledged_or_reconciling_commands_preserved": True,
             },
             max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
         )
+        incident.drain_status = "PENDING" if command_count == command_limit else "COMPLETED"
+        incident.drain_error_json = {}
         await db.flush()
-        await db.commit()
         return incident
 
     async def simulate_estop(
@@ -327,46 +291,15 @@ class WorkLineSafetyService:
             {
                 "device_runtime_authority": "ECS_STATUS_OBSERVATION",
                 "released_device_rows": 0,
+                "workline_runtime_status": WorkLineRuntimeStatus.STOPPED.value,
             },
             max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
         )
 
-        if self.runtime_hold_release_service is None:
-            from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
-                runtime_hold_release_service,
-            )
-
-            self.runtime_hold_release_service = runtime_hold_release_service
-        active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, workline_id)
-        hold = next(
-            (item for item in active_holds if item.hold_type == RuntimeHoldType.SAFETY_ESTOP),
-            None,
-        )
-        if hold is None:
-            raise ValueError("未找到 active SAFETY_ESTOP RuntimeHold")
-
-        release_request = ResolveRuntimeHoldRequest(
-            resolution="COMPLETED",
-            checks=checks,
-            operator_note=reason or "ESTOP cleared by operator",
-            material_disposition="CONTINUE",
-            result_payload={"safety_incident_id": incident.id},
-            hold_version=hold.version,
-            latest_evidence_hash=self.runtime_hold_release_service.build_latest_evidence_hash(hold),
-        )
-        release_result = await self.runtime_hold_release_service.resolve_hold(
+        await self.workline_status_projection_service.project_stopped_waiting_start(
             db,
-            cast("int", hold.id),
-            release_request,
-            operator_id or 0,
-            allow_safety_estop=True,
-        )
-        release_evidence = dict(incident.release_evidence_json or {})
-        release_evidence["workline_runtime_status"] = release_result.get("workline_runtime_status")
-        release_evidence["released_outbox_count"] = release_result.get("released_outbox_count")
-        incident.release_evidence_json = _bounded_safety_json(
-            release_evidence,
-            max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
+            workline_id=workline_id,
+            evidence_json={"safety_incident_id": incident.id, "cleared_by": operator_id},
         )
         await db.flush()
         return incident

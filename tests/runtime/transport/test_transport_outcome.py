@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
@@ -20,7 +21,6 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
-    TransportPositionProjection,
     TransportTask,
 )
 from src.app.wms_adapter.transport_event_handler import TransportEventHandler
@@ -28,6 +28,7 @@ from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERAT
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
+from tests.support.transport_projections import ensure_projection_authority
 
 if TYPE_CHECKING:
     from src.app.transport.service import TransportService
@@ -442,9 +443,7 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
         )
         projections = list(
             await db.scalars(
-                select(TransportPositionProjection).where(
-                    TransportPositionProjection.object_id.in_({"bin-atomic-1", "bin-atomic-2"})
-                )
+                select(PositionProjection).where(PositionProjection.object_id.in_({"bin-atomic-1", "bin-atomic-2"}))
             )
         )
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
@@ -587,14 +586,18 @@ async def test_rotate_success_requires_the_frozen_target_face(
 ) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
         db.add(
-            TransportPositionProjection(
+            PositionProjection(
                 object_type="RACK",
                 object_id="rack-face",
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                 position_unknown=False,
                 arrival_face="A",
                 source_operation_id="initial-face",
+                source_transport_task_id="initial-face",
                 updated_at=timezone.now_for_db(),
             )
         )
@@ -687,11 +690,8 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        projection = await db.scalar(
-            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-order")
-        )
-    assert projection is not None
-    assert projection.position_json == target["final_position"]
+        projection = await db.scalar(select(PositionProjection).where(PositionProjection.object_id == "bin-order"))
+    assert projection is None
 
 
 @pytest.mark.asyncio
@@ -735,14 +735,13 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
         )
         projection = await db.scalar(
-            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-late-unknown")
+            select(PositionProjection).where(PositionProjection.object_id == "bin-late-unknown")
         )
 
     assert evidence is not None and evidence.status == "CONFLICT"
     assert member is not None and member.final_position_json == target
     assert member.position_unknown is False
-    assert projection is not None and projection.position_json == target
-    assert projection.position_unknown is False
+    assert projection is None
 
 
 @pytest.mark.asyncio
@@ -806,11 +805,11 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
         )
         projection = await db.scalar(
-            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-confirmed-target")
+            select(PositionProjection).where(PositionProjection.object_id == "bin-confirmed-target")
         )
     assert evidence is not None and evidence.status == "CONFLICT"
     assert member is not None and member.final_position_json == target
-    assert projection is not None and projection.position_json == target
+    assert projection is None
 
 
 @pytest.mark.asyncio
@@ -851,20 +850,18 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
             select(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
         )
         projection = await db.scalar(
-            select(TransportPositionProjection).where(TransportPositionProjection.object_id == "bin-unknown-order")
+            select(PositionProjection).where(PositionProjection.object_id == "bin-unknown-order")
         )
         evidence = await db.scalar(
             select(TransportEvidence).where(TransportEvidence.operation_id == "operation-picked-too-late")
         )
 
     assert member is not None
-    assert projection is not None
+    assert projection is None
     assert evidence is not None
     assert evidence.status == "CONFLICT"
     assert member.position_unknown is True
     assert member.final_position_json is None
-    assert projection.position_unknown is True
-    assert projection.position_json is None
 
 
 @pytest.mark.asyncio
