@@ -65,8 +65,8 @@
 - Consumes: Phase 9 exit evidence、当前 branch/HEAD/dirty、当前代码/配置/测试/部署装配。
 - Produces: `READY FOR PHASE 10 EXECUTION LOCK` 或带精确缺口的 `STOP`；冻结的 DELETE/SWITCH/RETAIN/schema-deferred manifest 和无关 dirty 指纹。
 
-2026-08-29 的 Phase 9 独立 worktree 已生成 `UNRESOLVED=0` 的 operation inventory 与仓内验证证据，但尚未提交或合入
-`develop`，也未完成 staged exit gate。因此这些材料只是 Task 0 的候选输入，不构成 `READY FOR PHASE 10 EXECUTION LOCK`。
+2026-08-29 的 Phase 9 独立 worktree 已生成 `UNRESOLVED=0` 的 operation inventory 并通过分支完成性验收，但尚未合入
+`develop`。因此这些材料只是 Task 0 的候选输入，不构成 `READY FOR PHASE 10 EXECUTION LOCK`。
 
 - [ ] **Step 1: 固定当前 Git 与索引快照**
 

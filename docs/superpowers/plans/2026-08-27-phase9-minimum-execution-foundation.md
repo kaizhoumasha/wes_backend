@@ -1,6 +1,6 @@
 # Phase 9 Minimum Execution Foundation 实施计划
 
-status: Implementation candidate verified in worktree; final staged exit gate and develop integration pending
+status: Implementation accepted on feature branch; develop integration pending
 decision_date: 2026-08-28
 owner: WES 基础执行能力
 depends_on: Gate A 开发流程基线、Gate B 运输接入诊断、Phase 8 backend RC
@@ -340,18 +340,20 @@ Synthesized from this review's findings. Each task derives from a specific findi
 
 满足以上条件后，才能把 Phase 9 标记为完成并开启 Phase 10 Execution Lock。
 
-### 11.1 2026-08-29 实施候选证据
+### 11.1 2026-08-29 分支完成性验收证据
 
 - 基线：`develop@a78e8d66eb36c7fdc361a71b310706cdd3fc3fb7`；实施分支
-  `codex/phase9-minimum-execution-foundation`，当前变更未暂存、未提交、未合入 `develop`。
-- 当前未暂存可执行树通过 `./scripts/git-quality-gate.sh --profile quality`：`4077 passed, 5 skipped`；skip 为既有
+  `codex/phase9-minimum-execution-foundation`；主体实现提交为 `b68fb4ca`，最终门禁修复提交为 `a776af12`，尚未合入 `develop`。
+- 最终可执行树通过 Commit hook QUALITY：`4105 passed, 5 skipped`；skip 为既有
   FAST 套件边界，不作为 PostgreSQL/worker 证据。
-- 当前未暂存可执行树通过 `./scripts/run_selected_heavy_local.sh --scope unstaged`：selector 选择的 PostgreSQL、Redis、
-  migration 与真实 Celery worker owner 共 `267 passed`，无 skip。
+- 主体实现 selector 选择的 PostgreSQL、Redis、migration 与真实 Celery worker owner 共 `267 passed`，无 skip；最终修复
+  selector 选择 ESTOP PostgreSQL/真实 prefork worker 与 unfinished owner 矩阵共 `11 passed`，无 skip。
 - migration chain 从空库升级到单一 head `dd35f04b258f`；operation inventory 共 36 项，
   `RETAIN=7 / SWITCH=2 / DELETE → NONE=27 / UNRESOLVED=0`。
-- T1–T7 的实现候选和测试 owner 已闭合；但第 6、7 条要求的 staged snapshot、GitNexus staged scope，以及 Commit/Review
-  后的最终快照尚未形成。因此本节不是 Phase 9 完成声明，Phase 10 仍保持 `GATED`。
+- staged GitNexus scope、唯一主 Review 与修复闭环均已完成，fresh Review 在 `a776af12` 无剩余意见；T1–T7 和本计划
+  八项最终验证要求在 feature branch 上全部闭合，Phase 9 分支完成性验收通过。
+- 在该分支合入 `develop` 前，不得把 Phase 9 描述为 `develop` 基线，也不得开启 Phase 10 Execution Lock；Phase 10 继续保持
+  `GATED`。
 - 未执行部署、供应商联调、现场物理运动或业务验收；仓内绿灯不能替代这些证据。
 
 ## 12. Review completion summary
