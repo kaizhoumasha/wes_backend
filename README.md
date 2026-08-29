@@ -55,7 +55,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [WES - WMS 对接接口需求](docs/integration/wes-wms-interface-requirements.md)：WES/WMS 公共接口外发真源；当前公共协议和 Transport 为 `Approved`，WES 实现为 `ALIGNED`；Phase 8 粗分业务合同已批准并完成仓内交付，其余业务附录按各自状态评审。
 - [WES 出库操作顶层设计](docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md)：评审中的 `PickingTask` 分批计划、不可逆执行和安全取消业务设计；当前不构成实施授权。
 - [WMS / WES 自动入库与上架交互要求](docs/contracts/wms-inbound-putaway-integration-requirements.md)：Phase 13 满箱交换和自动上架的业务合同评审真源；当前为 `ReviewRequired`，不代表已实施。
-- [WES 架构收敛十四阶段总控](docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md)：Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 backend RC 已 `CLOSED`，供应商一致性、现场联调和业务验收仍为 `NOT RUN`，分层证据见[粗分机后端开发验收与现场边界状态](docs/integration/rough-sorter-joint-acceptance.md)。
+- [WES 架构收敛十四阶段总控](docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md)：Phase 6 Transport 与 Phase 7 DeviceCommand/ECS 核心生产基线已完成；Phase 8 backend RC 已 `CLOSED`，供应商一致性、现场联调和业务验收仍为 `NOT RUN`；Phase 9 分支完成性验收已通过，待合入 `develop`。分层证据见[粗分机后端开发验收与现场边界状态](docs/integration/rough-sorter-joint-acceptance.md)。
 - [粗分机 WorkLine Epoch 激活与多 Endpoint 派发计划](docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md)：后端工程包 1–4 已完成并提交；前端 Device、WorkLine 配置与 START 操作按独立合同冻结门禁待实施。
 - [WORKLINE 业务插件二次开发指南](docs/plugin_development_guide.md)：最小插件 SPI、封闭 Decision 与独立插件包交付约定。
 - [WMS 北向交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义共享 Client 与后续新增具体 WMS API 的开发标准；业务结果由 WMS 给出，搬运与 RCS 状态归 Phase 4。
