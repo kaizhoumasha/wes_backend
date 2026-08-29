@@ -75,6 +75,7 @@ FAMILY_TASKS = (
     "src.celery_app.tasks.handling.process_signal",
 )
 WMS_CONFIRMATION_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
+SAFETY_DRAIN_TASK = "src.celery_app.tasks.workline.drain_safety_incidents_batch"
 
 
 def _write_probe_marker(kind: str, **payload: object) -> None:
@@ -707,6 +708,125 @@ def _wms_confirmation_states(database_url: str, operation_ids: tuple[str, str]) 
     return asyncio.run(_query())
 
 
+async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending_count: int = 3) -> int:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.device.models.command import CommandStatus, DeviceCommand
+    from src.app.device.models.device import Device
+    from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
+    from src.app.workline.models.safety import WorklineSafetyIncident
+    from src.app.workline.models.workline import LineType, WorkLine
+
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    occurred_at = datetime(2026, 8, 29, 13, 0, 0)
+    statuses = [
+        *([CommandStatus.PENDING] * pending_count),
+        CommandStatus.DISPATCHING,
+        CommandStatus.ACKNOWLEDGED,
+        CommandStatus.RECONCILING,
+    ]
+    try:
+        async with sessions.begin() as db:
+            workline = WorkLine(
+                line_code=f"SAFETY-{run_id}",
+                line_name="Celery safety drain",
+                line_type=LineType.AUTO,
+            )
+            db.add(workline)
+            await db.flush()
+            epoch = LineRunEpoch(
+                epoch_code=f"SAFETY-EPOCH-{run_id}",
+                workline_id=workline.id,
+                plugin_key="rough_sorter",
+                plugin_version="1.0.0",
+                flow_mode="ROUGH_SORT_INBOUND",
+                topology_digest="d" * 64,
+                configuration_digest="e" * 64,
+                configuration_snapshot_json={},
+                started_at=occurred_at,
+            )
+            db.add(epoch)
+            await db.flush()
+            incident = WorklineSafetyIncident(workline_id=workline.id)
+            db.add(incident)
+            await db.flush()
+            for index, status in enumerate(statuses):
+                device = Device(
+                    device_code=f"SAFETY-DEVICE-{run_id}-{index}",
+                    device_name=f"Safety device {index}",
+                    work_line_id=workline.id,
+                    device_role=f"SAFETY_ROLE_{index}",
+                )
+                db.add(device)
+                await db.flush()
+                binding = LineRunEpochDeviceBinding(
+                    line_run_epoch_id=epoch.id,
+                    device_id=device.id,
+                    device_code=device.device_code,
+                    device_role=device.device_role,
+                    endpoint_base_url="http://ecs-safety:8080",
+                    contract_key="safety.contract",
+                    contract_version="1.0",
+                    status_max_age_ms=1_000,
+                    command_timeout_ms=5_000,
+                )
+                db.add(binding)
+                await db.flush()
+                db.add(
+                    DeviceCommand(
+                        command_code=f"SAFETY-COMMAND-{run_id}-{index}",
+                        device_code=device.device_code,
+                        device_binding_id=binding.id,
+                        line_run_epoch_id=epoch.id,
+                        execution_ref_type="SAFETY_TEST",
+                        execution_ref_id=f"{run_id}-{index}",
+                        contract_key="safety.contract",
+                        contract_version="1.0",
+                        task_type="SAFE_STOP",
+                        params={},
+                        deadline_at=occurred_at + timedelta(minutes=1),
+                        payload_digest=f"{index:x}" * 64,
+                        status=status,
+                    )
+                )
+            await db.flush()
+            assert incident.id is not None
+            return incident.id
+    finally:
+        await engine.dispose()
+
+
+def _safety_drain_state(database_url: str, incident_id: int) -> tuple[str, int, dict[str, tuple[str, str | None]]]:
+    url = make_url(database_url).set(drivername="postgresql")
+
+    async def _query() -> tuple[str, int, dict[str, tuple[str, str | None]]]:
+        connection = await asyncpg.connect(url.render_as_string(hide_password=False))
+        try:
+            incident = await connection.fetchrow(
+                "SELECT workline_id, drain_status, evidence_json FROM wes_biz.workline_safety_incidents WHERE id = $1",
+                incident_id,
+            )
+            assert incident is not None
+            commands = await connection.fetch(
+                "SELECT command.command_code, command.status, command.failure_code "
+                "FROM wes_biz.device_commands AS command "
+                "JOIN wes_biz.line_run_epochs AS epoch ON epoch.id = command.line_run_epoch_id "
+                "WHERE epoch.workline_id = $1 ORDER BY command.command_code",
+                incident["workline_id"],
+            )
+            evidence = cast("dict[str, object]", json.loads(incident["evidence_json"]))
+            return (
+                str(incident["drain_status"]),
+                int(evidence.get("pending_commands_failed", 0)),
+                {str(row["command_code"]): (str(row["status"]), row["failure_code"]) for row in commands},
+            )
+        finally:
+            await connection.close()
+
+    return asyncio.run(_query())
+
+
 @dataclass
 class PreforkWorker:
     services: Mapping[str, str]
@@ -1124,6 +1244,79 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         assert {str(marker_by_id[str(result.id)]["task_name"]) for result in family_results} == set(FAMILY_TASKS)
         _assert_clean_activity(worker, application_names)
         assert len(_probe_markers(worker.log_text(), "runtime_probe")) >= len(probe_rows)
+        success = True
+    finally:
+        worker.stop(success=success)
+
+
+def test_safety_drain_uses_postgresql_claim_lock_and_retries_bounded_batches(
+    prefork_services: dict[str, str],
+) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.workline.services.safety_service import workline_safety_service
+
+    run_id = f"claim-{uuid.uuid4().hex[:10]}"
+    incident_id = asyncio.run(_seed_safety_drain_scenario(prefork_services["database_url"], run_id))
+
+    async def scenario() -> None:
+        engine = create_async_engine(prefork_services["database_url"])
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with sessions() as first_db:
+                first_transaction = await first_db.begin()
+                first = await workline_safety_service.drain_one(first_db, command_limit=2)
+                assert first is not None
+                assert first.id == incident_id
+                assert first.drain_status == "PENDING"
+                assert first.evidence_json["pending_commands_failed"] == 2
+
+                async with sessions.begin() as second_db:
+                    assert await workline_safety_service.drain_one(second_db, command_limit=2) is None
+
+                await first_transaction.rollback()
+
+            async with sessions.begin() as retry_db:
+                retried = await workline_safety_service.drain_one(retry_db, command_limit=2)
+                assert retried is not None
+                assert retried.id == incident_id
+                assert retried.drain_status == "PENDING"
+
+            async with sessions.begin() as completion_db:
+                completed = await workline_safety_service.drain_one(completion_db, command_limit=2)
+                assert completed is not None
+                assert completed.id == incident_id
+                assert completed.drain_status == "COMPLETED"
+        finally:
+            await engine.dispose()
+
+    asyncio.run(scenario())
+
+    drain_status, failed_count, commands = _safety_drain_state(prefork_services["database_url"], incident_id)
+    assert drain_status == "COMPLETED"
+    assert failed_count == 3
+    assert [state for state, _failure in commands.values()].count("FAILED") == 3
+    assert {state for state, _failure in commands.values()} >= {"DISPATCHING", "ACKNOWLEDGED", "RECONCILING"}
+    assert {failure for state, failure in commands.values() if state == "FAILED"} == {"WORKLINE_ESTOPPED_BEFORE_SEND"}
+
+
+def test_real_worker_retries_safety_drain_until_completed(prefork_services: dict[str, str]) -> None:
+    worker = PreforkWorker(prefork_services, concurrency=1).start()
+    success = False
+    try:
+        incident_id = asyncio.run(
+            _seed_safety_drain_scenario(prefork_services["database_url"], f"worker-{worker.run_id}")
+        )
+
+        assert worker.result(worker.submit(SAFETY_DRAIN_TASK, 1, 2)) == {"processed": 1, "completed": 0}
+        assert _safety_drain_state(prefork_services["database_url"], incident_id)[:2] == ("PENDING", 2)
+
+        assert worker.result(worker.submit(SAFETY_DRAIN_TASK, 1, 2)) == {"processed": 1, "completed": 1}
+        drain_status, failed_count, commands = _safety_drain_state(prefork_services["database_url"], incident_id)
+        assert drain_status == "COMPLETED"
+        assert failed_count == 3
+        assert [state for state, _failure in commands.values()].count("FAILED") == 3
+        assert {state for state, _failure in commands.values()} >= {"DISPATCHING", "ACKNOWLEDGED", "RECONCILING"}
         success = True
     finally:
         worker.stop(success=success)

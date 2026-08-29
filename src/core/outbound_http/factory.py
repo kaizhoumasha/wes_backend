@@ -13,6 +13,9 @@ from src.core.outbound_http.contracts import OutboundHttpRequestError, OutboundH
 from src.core.outbound_http.transport import _ACCEPT_ENCODING_HEADER_VALUE, _HttpxOutboundHttpTransport
 
 _SYSTEM_ID_PATTERN = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+_MAX_CONNECTIONS = 20
+_MAX_KEEPALIVE_CONNECTIONS = 20
+_MAX_CONCURRENCY = 20
 
 
 def build_outbound_http_transport(
@@ -30,6 +33,10 @@ def build_outbound_http_transport(
         base_url=base_url,
         cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=())),
         headers={"accept-encoding": _ACCEPT_ENCODING_HEADER_VALUE},
+        limits=httpx.Limits(
+            max_connections=_MAX_CONNECTIONS,
+            max_keepalive_connections=_MAX_KEEPALIVE_CONNECTIONS,
+        ),
         timeout=httpx.Timeout(timeout_seconds),
         trust_env=False,
         follow_redirects=False,
@@ -38,6 +45,7 @@ def build_outbound_http_transport(
         client=client,
         system_id=system_id,
         timeout_seconds=timeout_seconds,
+        max_concurrency=_MAX_CONCURRENCY,
     )
 
 

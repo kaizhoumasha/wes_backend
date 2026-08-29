@@ -11,6 +11,8 @@ import pytest
 from src.core.outbound_http import build_outbound_http_transport
 from src.core.outbound_http.contracts import (
     OutboundHttpClosedError,
+    OutboundHttpDeliveryState,
+    OutboundHttpFailureKind,
     OutboundHttpMethod,
     OutboundHttpRequest,
     OutboundHttpRequestError,
@@ -58,6 +60,10 @@ async def test_builder_creates_a_configured_transport_for_a_stable_system_id(mon
         timeout = captured_kwargs[0]["timeout"]
         assert isinstance(timeout, httpx.Timeout)
         assert timeout.connect == timeout.read == timeout.write == timeout.pool == 3.5
+        limits = captured_kwargs[0].get("limits")
+        assert isinstance(limits, httpx.Limits)
+        assert limits.max_connections == 20
+        assert limits.max_keepalive_connections == 20
     finally:
         await transport.aclose()
 
@@ -148,6 +154,83 @@ async def test_builder_does_not_inject_response_cookies_into_concurrent_requests
         await transport.aclose()
 
     assert "cookie" not in received_requests[1].headers
+
+
+@pytest.mark.asyncio
+async def test_transport_bounds_concurrent_requests_across_the_shared_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered_requests: list[httpx.Request] = []
+    twenty_requests_entered = asyncio.Event()
+    release_requests = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        entered_requests.append(request)
+        if len(entered_requests) == 20:
+            twenty_requests_entered.set()
+        await release_requests.wait()
+        return httpx.Response(204, request=request)
+
+    _capture_client(monkeypatch, handler)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=1,
+    )
+    requests = [
+        asyncio.create_task(
+            transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path=f"/request/{index}"))
+        )
+        for index in range(21)
+    ]
+    try:
+        await asyncio.wait_for(twenty_requests_entered.wait(), timeout=1)
+        await asyncio.sleep(0.01)
+        assert len(entered_requests) == 20
+    finally:
+        release_requests.set()
+        await asyncio.gather(*requests)
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transport_reports_not_sent_when_the_shared_permit_wait_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered_requests: list[httpx.Request] = []
+    twenty_requests_entered = asyncio.Event()
+    release_requests = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        entered_requests.append(request)
+        if len(entered_requests) == 20:
+            twenty_requests_entered.set()
+        await release_requests.wait()
+        return httpx.Response(204, request=request)
+
+    _capture_client(monkeypatch, handler)
+    transport = build_outbound_http_transport(
+        system_id="wms",
+        base_url="https://provider.test/",
+        timeout_seconds=0.2,
+    )
+    occupying_requests = [
+        asyncio.create_task(
+            transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path=f"/occupied/{index}"))
+        )
+        for index in range(20)
+    ]
+    try:
+        await asyncio.wait_for(twenty_requests_entered.wait(), timeout=1)
+        result = await transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/waiting"))
+
+        assert result.delivery_state is OutboundHttpDeliveryState.NOT_SENT
+        assert result.failure_kind is OutboundHttpFailureKind.POOL_TIMEOUT
+        assert len(entered_requests) == 20
+    finally:
+        release_requests.set()
+        await asyncio.gather(*occupying_requests)
+        await transport.aclose()
 
 
 @pytest.mark.asyncio

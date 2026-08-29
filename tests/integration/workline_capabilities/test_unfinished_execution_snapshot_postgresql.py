@@ -192,6 +192,80 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             assert terminal_summary["count"] == 0
             assert not any(terminal_summary["by_type"].values())
             assert terminal_summary["sample"] is None
+
+            async def assert_only(owner: str) -> None:
+                current = await repository.get_unfinished_workload_summary(db, line.id)
+                assert current["count"] == 1
+                assert current["by_type"][owner] is True
+                assert not any(value for name, value in current["by_type"].items() if name != owner)
+
+            epoch.status = LineRunEpochStatus.ACTIVE
+            epoch.closed_at = None
+            await db.flush()
+            await assert_only("line_run_epochs")
+            epoch.status = LineRunEpochStatus.CLOSED
+            epoch.closed_at = now
+
+            for state in (value for value in MaterialExecutionStatus if value is not MaterialExecutionStatus.CLOSED):
+                material.status = state
+                material.closed_at = None
+                await db.flush()
+                await assert_only("material_executions")
+            material.status = MaterialExecutionStatus.CLOSED
+            material.closed_at = now
+
+            bin_execution.status = BinExecutionStatus.ACTIVE
+            bin_execution.closed_at = None
+            await db.flush()
+            await assert_only("bin_executions")
+            bin_execution.status = BinExecutionStatus.CLOSED
+            bin_execution.closed_at = now
+
+            for state in (
+                CommandStatus.PENDING,
+                CommandStatus.DISPATCHING,
+                CommandStatus.ACKNOWLEDGED,
+                CommandStatus.RECONCILING,
+            ):
+                command.status = state
+                command.completed_at = None
+                await db.flush()
+                await assert_only("device_commands")
+            command.status = CommandStatus.SUCCEEDED
+            command.completed_at = now
+
+            for state in (
+                TransportTaskStatus.PENDING,
+                TransportTaskStatus.ACCEPTED,
+                TransportTaskStatus.RECONCILING,
+            ):
+                transport.status = state
+                await db.flush()
+                await assert_only("transport_tasks")
+            transport.status = TransportTaskStatus.SUCCEEDED
+
+            for state in (InboundEvidenceApplyStatus.PENDING, InboundEvidenceApplyStatus.RECONCILING):
+                evidence.apply_status = state
+                await db.flush()
+                await assert_only("inbound_evidences")
+            evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
+            evidence.kind = InboundEvidenceKind.DEVICE_EVENT
+            evidence.published_at = None
+            await db.flush()
+            await assert_only("inbound_evidences")
+            evidence.kind = InboundEvidenceKind.DEVICE_RESULT
+            evidence.material_execution_id = material.id
+            await db.flush()
+            await assert_only("inbound_evidences")
+            evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
+
+            for state in (value for value in WmsConfirmationStatus if value is not WmsConfirmationStatus.COMPLETED):
+                confirmation.status = state
+                confirmation.completed_at = None
+                await db.flush()
+                await assert_only("wms_confirmations")
+            confirmation.status = WmsConfirmationStatus.COMPLETED
+            confirmation.completed_at = now
         finally:
             await transaction.rollback()
 

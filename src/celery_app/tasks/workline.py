@@ -84,6 +84,7 @@ def drain_safety_incidents_batch(limit: int = 10, command_limit: int = 100) -> d
                 incident = await workline_safety_service.drain_one(db, command_limit=command_limit)
                 if incident is None:
                     break
+                await db.commit()
                 processed += 1
                 completed += int(incident.drain_status == "COMPLETED")
         return {"processed": processed, "completed": completed}

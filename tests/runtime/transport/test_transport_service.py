@@ -632,6 +632,47 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
 
     assert persisted is not None
     assert persisted.transport_task_id == handle.transport_task_id
+    assert persisted.authority_workline_id == workline_id
+    assert persisted.authority_line_run_epoch_id == line_run_epoch_id
+    assert persisted.authority_bin_execution_id is None
+
+
+@pytest.mark.asyncio
+async def test_same_client_request_with_changed_execution_authority_conflicts(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    request_id = new_uuid7()
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with sessions.begin() as db:
+        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        await service.move_rack_in_session(
+            db,
+            request_id,
+            _caller(),
+            "rack-authority-identity",
+            RackPosition("A"),
+            RackPosition("B"),
+            RackFace.A,
+            execution_authority=TransportExecutionAuthority(
+                workline_id=workline_id,
+                line_run_epoch_id=line_run_epoch_id,
+            ),
+        )
+
+    async with sessions.begin() as db:
+        with pytest.raises(TransportIdempotencyConflict):
+            await service.move_rack_in_session(
+                db,
+                request_id,
+                _caller(),
+                "rack-authority-identity",
+                RackPosition("A"),
+                RackPosition("B"),
+                RackFace.A,
+                execution_authority=None,
+            )
 
 
 @pytest.mark.asyncio
