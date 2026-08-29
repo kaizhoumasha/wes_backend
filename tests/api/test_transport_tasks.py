@@ -282,9 +282,9 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
     runtime.service.preview_debug_task_reset.return_value = SimpleNamespace(
         transport_task_id="transport-reset-test",
         status="RECONCILING",
-        eligible=True,
-        blockers=(),
         evidence_count=0,
+        callback_receipt_count=0,
+        position_projection_count=0,
         outcome_version=0,
         member_count=1,
         binding_count=1,
@@ -292,6 +292,9 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
     )
     runtime.service.reset_debug_task.return_value = SimpleNamespace(
         transport_task_id="transport-reset-test",
+        deleted_callback_receipt_count=0,
+        deleted_evidence_count=0,
+        deleted_position_projection_count=0,
         deleted_member_count=1,
         deleted_binding_count=1,
     )
@@ -304,9 +307,9 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
     assert preview.json()["data"] == {
         "transport_task_id": "transport-reset-test",
         "status": "RECONCILING",
-        "eligible": True,
-        "blockers": [],
         "evidence_count": 0,
+        "callback_receipt_count": 0,
+        "position_projection_count": 0,
         "outcome_version": 0,
         "member_count": 1,
         "binding_count": 1,
@@ -315,23 +318,14 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
     assert applied.status_code == 200
     assert applied.json()["data"] == {
         "transport_task_id": "transport-reset-test",
+        "deleted_callback_receipt_count": 0,
+        "deleted_evidence_count": 0,
+        "deleted_position_projection_count": 0,
         "deleted_member_count": 1,
         "deleted_binding_count": 1,
     }
     runtime.service.preview_debug_task_reset.assert_awaited_once_with("transport-reset-test")
     runtime.service.reset_debug_task.assert_awaited_once_with("transport-reset-test")
-
-
-@pytest.mark.asyncio
-async def test_debug_task_reset_maps_ineligible_task_to_conflict() -> None:
-    runtime = _runtime()
-    runtime.service.reset_debug_task.side_effect = TransportContractError("STATUS_NOT_RECONCILING")
-
-    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
-        response = await client.post("/api/v1/transport/debug-tasks/transport-reset-test/reset")
-
-    assert response.status_code == 409
-    assert response.json()["code"] == "3012"
 
 
 @pytest.mark.asyncio

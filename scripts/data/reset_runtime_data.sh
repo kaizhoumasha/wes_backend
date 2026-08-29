@@ -79,7 +79,7 @@ fi
 if [[ " ${ARGS[*]} " != *" --yes "* ]]; then
     echo -e "${YELLOW}⚠️  Dry-run 模式:仅预览,不写库。加 --yes 真正执行。${NC}" >&3
 elif [[ -n "$TRANSPORT_TASK_ID" ]]; then
-    echo -e "${RED}⚠️  将定向清理一个符合安全条件的 TransportTask。${NC}" >&3
+    echo -e "${RED}⚠️  将按 ID 定向清理一个 TransportTask 的完整本地链路。${NC}" >&3
 else
     echo -e "${RED}⚠️  将真正清空运行时数据(保留主数据)。${NC}" >&3
 fi

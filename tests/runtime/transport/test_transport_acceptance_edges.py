@@ -351,7 +351,7 @@ async def test_timeout_is_unknown_and_never_retried(db_engine: object) -> None:
 
 
 @pytest.mark.asyncio
-async def test_debug_reset_previews_and_deletes_only_the_selected_reconciling_task(db_engine: object) -> None:
+async def test_debug_reset_previews_and_deletes_only_the_selected_task(db_engine: object) -> None:
     service = _service(db_engine)
     target = await service.move_rack(
         new_uuid7(),
@@ -381,8 +381,8 @@ async def test_debug_reset_previews_and_deletes_only_the_selected_reconciling_ta
 
     assert preview.transport_task_id == target.transport_task_id
     assert preview.status == "RECONCILING"
-    assert preview.eligible is True
-    assert preview.blockers == ()
+    assert preview.callback_receipt_count == 0
+    assert preview.position_projection_count == 0
     assert preview.evidence_count == 0
     assert preview.outcome_version == 0
     assert preview.member_count == 1
@@ -392,6 +392,9 @@ async def test_debug_reset_previews_and_deletes_only_the_selected_reconciling_ta
     result = await service.reset_debug_task(target.transport_task_id)
 
     assert result.transport_task_id == target.transport_task_id
+    assert result.deleted_callback_receipt_count == 0
+    assert result.deleted_evidence_count == 0
+    assert result.deleted_position_projection_count == 0
     assert result.deleted_member_count == 1
     assert result.deleted_binding_count == 1
     async with sessions() as db:
@@ -414,7 +417,7 @@ async def test_debug_reset_previews_and_deletes_only_the_selected_reconciling_ta
 
 
 @pytest.mark.asyncio
-async def test_debug_reset_reports_blockers_and_preserves_ineligible_task(db_engine: object) -> None:
+async def test_debug_reset_allows_pending_task_without_extra_eligibility_rules(db_engine: object) -> None:
     service = _service(db_engine)
     handle = await service.move_rack(
         new_uuid7(),
@@ -427,11 +430,84 @@ async def test_debug_reset_reports_blockers_and_preserves_ineligible_task(db_eng
 
     preview = await service.preview_debug_task_reset(handle.transport_task_id)
 
-    assert preview.eligible is False
-    assert preview.blockers == ("STATUS_NOT_RECONCILING",)
-    with pytest.raises(TransportContractError, match="STATUS_NOT_RECONCILING"):
-        await service.reset_debug_task(handle.transport_task_id)
-    assert (await _load_task(db_engine, handle.transport_task_id)).status == "PENDING"
+    assert preview.status == "PENDING"
+    result = await service.reset_debug_task(handle.transport_task_id)
+
+    assert result.transport_task_id == handle.transport_task_id
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+    assert task is None
+
+
+@pytest.mark.asyncio
+async def test_debug_reset_preserves_another_task_projection_when_operation_id_is_reused(db_engine: object) -> None:
+    service = _service(db_engine)
+    target = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-reset-collision-target",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+    keep = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-reset-collision-keep",
+        RackPosition("A"),
+        RackPosition("B"),
+        RackFace.A,
+    )
+    operation_id = str(new_uuid7())
+    now = timezone.now_for_db()
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add_all(
+            [
+                TransportEvidence(
+                    operation_id=operation_id,
+                    transport_task_id=target.transport_task_id,
+                    operation="transport.task.member_position_changed@v1",
+                    event_timestamp_ms=1,
+                    message_digest="a" * 64,
+                    payload_json={"transport_task_id": target.transport_task_id},
+                    ack_timestamp_ms=2,
+                    ack_data_json={"transport_task_id": target.transport_task_id},
+                    received_at=now,
+                ),
+                TransportEvidence(
+                    operation_id=operation_id,
+                    transport_task_id=keep.transport_task_id,
+                    operation=RESULT_OPERATION,
+                    outcome_revision=1,
+                    event_timestamp_ms=1,
+                    message_digest="b" * 64,
+                    payload_json={"transport_task_id": keep.transport_task_id},
+                    ack_timestamp_ms=2,
+                    ack_data_json={"transport_task_id": keep.transport_task_id},
+                    received_at=now,
+                ),
+                TransportPositionProjection(
+                    object_type="RACK",
+                    object_id="rack-reset-collision-keep",
+                    position_json={"kind": "RACK_POSITION", "location_code": "B"},
+                    source_operation_id=operation_id,
+                    source_transport_task_id=keep.transport_task_id,
+                    updated_at=now,
+                ),
+            ]
+        )
+
+    await service.reset_debug_task(target.transport_task_id)
+
+    async with sessions() as db:
+        projection = await db.scalar(
+            select(TransportPositionProjection).where(
+                TransportPositionProjection.object_id == "rack-reset-collision-keep"
+            )
+        )
+    assert projection is not None
 
 
 @pytest.mark.asyncio

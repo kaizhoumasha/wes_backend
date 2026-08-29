@@ -1,7 +1,7 @@
 # Transport 运维诊断 Runbook
 
 > 当前状态：Phase 6 基础能力诊断入口。生产运维只读取 WES 本地 API、日志和 PostgreSQL 事实，不执行状态修改、资源释放或重提；
-> 数据可丢弃的联调环境只有在满足本文“联调任务定向清理”条件时，才使用诊断页面/API 或项目脚本删除单个错误任务。
+> 数据可丢弃的联调环境可以使用诊断页面/API 或项目脚本，按 `transport_task_id` 清理单个任务的完整本地 Transport 链路。
 
 适用对象是 `wes_runtime` schema 中的 Transport 基础对象。查询应使用只读数据库账号，
 时间统一按数据库 UTC 解释；不应为了让结果“消失”而直接改表。以下命令在 `psql` 中执行，
@@ -201,15 +201,16 @@ LIMIT 100;
 
 ## 联调任务定向清理
 
-仅当联调数据可丢弃、已确认 WMS/RCS 没有创建真实任务、触发物理动作或保留在途 callback，并且目标 TransportTask 处于
-`RECONCILING`、没有 Transport Evidence、没有 outcome 时，才允许定向清理。该动作只删除 WES 本地联调残留，不会取消或
-重试 WMS/RCS 任务。
+该入口只用于数据可丢弃的联调环境。操作员指定 `transport_task_id` 后即可清理，不检查任务状态，也不因已有 Transport Evidence
+或 outcome 阻断。该动作只删除 WES 本地 Transport 链路，不会取消或重试 WMS/RCS 任务，也不能撤销已经发生的物理动作。
 
 诊断页面先以 `ops:transport:debug-preview` 权限调用
-`GET /api/v1/transport/debug-tasks/{transport_task_id}/reset-preview`，核对资格、blocker、Evidence/outcome 版本及成员、绑定数量；
+`GET /api/v1/transport/debug-tasks/{transport_task_id}/reset-preview`，核对目标 ID、Evidence、Callback Receipt、位置投影、outcome 版本、
+成员和绑定数量；
 确认后以 `ops:transport:debug-reset` 权限调用
-`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定并预检任务，随后按绑定、成员、任务的
-顺序删除；任一步失败都会回滚。若 callback 在删除后迟到，既有入口仍会持久化 missing-task Evidence，并收敛为 `CONFLICT`。
+`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定任务，随后按 Callback Receipt、位置投影、
+Evidence、绑定、成员、任务的顺序删除；任一步失败都会回滚。若 callback 在删除后迟到，既有入口仍会持久化 missing-task Evidence，
+并收敛为 `CONFLICT`。
 
 无法使用页面/API 时，可以使用项目脚本。先 dry-run：
 
@@ -217,16 +218,15 @@ LIMIT 100;
 bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --force
 ```
 
-核对输出只包含目标任务的一条 `transport_tasks`、对应 `transport_members` 和
-`transport_resource_bindings` 后，再执行：
+核对输出只包含目标任务及其 `transport_callback_receipts`、`transport_position_projections`、`transport_evidence`、
+`transport_resource_bindings` 和 `transport_members` 后，再执行：
 
 ```text
 bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --yes --force
 ```
 
-脚本与 API 使用同一资格判定，并在一个事务内先锁定任务，再按绑定、成员、任务的顺序删除。`--force` 用于联调服务器采用
-生产型运行配置的情况，不会绕过状态、Evidence 或 outcome 检查。生产业务数据、已有物理 Evidence、已有 outcome 或非
-`RECONCILING` 任务必须继续按权威回调对账，不能使用这些入口。
+脚本与 API 使用同一删除范围，并在一个事务内先锁定任务，再按 Callback Receipt、位置投影、Evidence、绑定、成员、任务的顺序
+删除。`--force` 仅用于联调服务器采用生产型运行配置时显式确认数据可丢弃；它不扩大删除范围。生产环境不得使用这些入口。
 
 ## 禁止的运维捷径
 

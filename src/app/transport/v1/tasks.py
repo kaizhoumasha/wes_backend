@@ -137,9 +137,9 @@ class DebugTransportTaskCreated(_StrictApiModel):
 class DebugTransportTaskResetPreview(_StrictApiModel):
     transport_task_id: str
     status: Literal["PENDING", "ACCEPTED", "REJECTED", "SUCCEEDED", "FAILED", "RECONCILING"]
-    eligible: bool
-    blockers: list[Literal["STATUS_NOT_RECONCILING", "TRANSPORT_EVIDENCE_EXISTS", "TRANSPORT_OUTCOME_EXISTS"]]
     evidence_count: int
+    callback_receipt_count: int
+    position_projection_count: int
     outcome_version: int
     member_count: int
     binding_count: int
@@ -148,6 +148,9 @@ class DebugTransportTaskResetPreview(_StrictApiModel):
 
 class DebugTransportTaskResetResult(_StrictApiModel):
     transport_task_id: str
+    deleted_callback_receipt_count: int
+    deleted_evidence_count: int
+    deleted_position_projection_count: int
     deleted_member_count: int
     deleted_binding_count: int
 
@@ -407,7 +410,6 @@ async def preview_debug_transport_task_reset(
     status_code=status.HTTP_200_OK,
     responses={
         404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "TransportTask 不存在"},
-        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "任务已形成事实或状态不允许清理"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
     },
     dependencies=[Depends(RequirePermission("ops:transport:debug-reset"))],
@@ -417,10 +419,7 @@ async def reset_debug_transport_task(
     transport_task_id: Annotated[_TRANSPORT_TASK_ID, Path()],
 ) -> ResponseSchemaModel[DebugTransportTaskResetResult]:
     runtime = _transport_runtime(request)
-    try:
-        result = await runtime.service.reset_debug_task(transport_task_id)
-    except TransportContractError as exc:
-        raise ConflictException(str(exc)) from exc
+    result = await runtime.service.reset_debug_task(transport_task_id)
     data = DebugTransportTaskResetResult.model_validate(result, from_attributes=True)
     return cast("ResponseSchemaModel[DebugTransportTaskResetResult]", response_builder.success(data=data))
 

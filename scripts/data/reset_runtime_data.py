@@ -8,8 +8,8 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 - 固定 schema-qualified 运行时表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
 - 默认 ``--dry-run``:只打印将清空的表 + 当前行数,不写库。
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
-- ``--transport-task-id`` 只清理一个无 Evidence、无 outcome 的 ``RECONCILING``
-  联调任务及其成员和资源绑定，不重置其它运行数据或 Mock。
+- ``--transport-task-id`` 按 ID 清理一个 TransportTask 的完整本地 Transport 链路，
+  不重置其它运行数据或 Mock。
 - 清空后将 ``wes_runtime.workline_runtime_status_projections`` 重置为 ``STOPPED``，
   以便干净地重跑 START；Device 主数据不承载运行态，不做改写。
 - 全量 reset 仅在 ``APP_DEBUG=True`` 时允许执行；生产型配置可用 ``--force``
@@ -47,13 +47,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.app.transport.debug_reset import (
-    STATUS_NOT_RECONCILING,
-    TRANSPORT_EVIDENCE_EXISTS,
-    TRANSPORT_OUTCOME_EXISTS,
-    build_transport_debug_reset_preview,
-    normalize_transport_task_id,
-)
+from src.app.transport.debug_reset import normalize_transport_task_id
 from src.core.conf import settings
 from src.database.db import close_db, get_db_context, init_db
 
@@ -262,15 +256,15 @@ async def reset_transport_task_data(
     transport_task_id: str,
     apply: bool,
 ) -> TransportTaskResetSummary:
-    """定向清理一个尚未形成物理 Evidence/outcome 的 RECONCILING 联调任务。"""
+    """按 ID 定向清理一个 TransportTask 的完整本地 Transport 链路。"""
     task_id = normalize_transport_task_id(transport_task_id)
 
     task_query = (
-        "SELECT transport_task_id, status, outcome_version, outcome_json "
+        "SELECT transport_task_id, status "
         "FROM wes_runtime.transport_tasks "
         "WHERE transport_task_id = :transport_task_id FOR UPDATE"
         if apply
-        else "SELECT transport_task_id, status, outcome_version, outcome_json "
+        else "SELECT transport_task_id, status "
         "FROM wes_runtime.transport_tasks "
         "WHERE transport_task_id = :transport_task_id"
     )
@@ -282,38 +276,31 @@ async def reset_transport_task_data(
     if row is None:
         raise RuntimeError(f"TransportTask 不存在: {task_id}")
 
-    _, status, outcome_version, outcome_json = row
-    evidence_count = await _transport_task_row_count(db, "transport_evidence", task_id)
-    target_tables = (
-        "transport_resource_bindings",
-        "transport_members",
-        "transport_tasks",
+    _, status = row
+    receipt_result = await db.execute(
+        text(
+            "SELECT count(*) FROM wes_runtime.transport_callback_receipts "
+            "WHERE response_data_json ->> 'transport_task_id' = :transport_task_id"
+        ),
+        {"transport_task_id": task_id},
+    )
+    projection_result = await db.execute(
+        text(
+            "SELECT count(*) FROM wes_runtime.transport_position_projections "
+            "WHERE source_transport_task_id = :transport_task_id"
+        ),
+        {"transport_task_id": task_id},
     )
     rows_before = {
-        f"wes_runtime.{table}": (
-            1 if table == "transport_tasks" else await _transport_task_row_count(db, table, task_id)
-        )
-        for table in target_tables
+        "wes_runtime.transport_callback_receipts": int(receipt_result.scalar_one()),
+        "wes_runtime.transport_position_projections": int(projection_result.scalar_one()),
+        "wes_runtime.transport_evidence": await _transport_task_row_count(db, "transport_evidence", task_id),
+        "wes_runtime.transport_resource_bindings": await _transport_task_row_count(
+            db, "transport_resource_bindings", task_id
+        ),
+        "wes_runtime.transport_members": await _transport_task_row_count(db, "transport_members", task_id),
+        "wes_runtime.transport_tasks": 1,
     }
-    preview = build_transport_debug_reset_preview(
-        transport_task_id=task_id,
-        status=str(status),
-        outcome_version=int(outcome_version),
-        outcome_json=outcome_json,
-        evidence_count=evidence_count,
-        member_count=rows_before["wes_runtime.transport_members"],
-        binding_count=rows_before["wes_runtime.transport_resource_bindings"],
-        active_binding_count=0,
-    )
-    if preview.blockers:
-        blocker = preview.blockers[0]
-        if blocker == STATUS_NOT_RECONCILING:
-            raise RuntimeError(f"拒绝清理:TransportTask 状态不是 RECONCILING: {status}")
-        if blocker == TRANSPORT_EVIDENCE_EXISTS:
-            raise RuntimeError(f"拒绝清理:TransportTask 已有 Transport Evidence: {evidence_count}")
-        if blocker == TRANSPORT_OUTCOME_EXISTS:
-            raise RuntimeError("拒绝清理:TransportTask 已有 outcome")
-        raise RuntimeError(f"拒绝清理:未知条件: {blocker}")
     summary = TransportTaskResetSummary(
         mode="apply" if apply else "dry-run",
         transport_task_id=task_id,
@@ -324,9 +311,37 @@ async def reset_transport_task_data(
         return summary
 
     try:
-        for table in target_tables:
+        delete_statements = (
+            (
+                "transport_callback_receipts",
+                "DELETE FROM wes_runtime.transport_callback_receipts "
+                "WHERE response_data_json ->> 'transport_task_id' = :transport_task_id",
+            ),
+            (
+                "transport_position_projections",
+                "DELETE FROM wes_runtime.transport_position_projections "
+                "WHERE source_transport_task_id = :transport_task_id",
+            ),
+            (
+                "transport_evidence",
+                "DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :transport_task_id",
+            ),
+            (
+                "transport_resource_bindings",
+                "DELETE FROM wes_runtime.transport_resource_bindings WHERE transport_task_id = :transport_task_id",
+            ),
+            (
+                "transport_members",
+                "DELETE FROM wes_runtime.transport_members WHERE transport_task_id = :transport_task_id",
+            ),
+            (
+                "transport_tasks",
+                "DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :transport_task_id",
+            ),
+        )
+        for table, statement in delete_statements:
             delete_result = await db.execute(
-                text(f"DELETE FROM wes_runtime.{table} WHERE transport_task_id = :transport_task_id"),  # noqa: S608
+                text(statement),
                 {"transport_task_id": task_id},
             )
             summary.deleted[f"wes_runtime.{table}"] = int(delete_result.rowcount or 0)

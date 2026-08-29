@@ -49,7 +49,6 @@ from src.app.transport.contracts import (
 from src.app.transport.debug_reset import (
     TransportDebugResetPreview,
     TransportDebugResetResult,
-    build_transport_debug_reset_preview,
     normalize_transport_task_id,
 )
 from src.app.transport.models import (
@@ -232,25 +231,33 @@ class TransportService:
         )
 
     async def preview_debug_task_reset(self, transport_task_id: str) -> TransportDebugResetPreview:
-        """预检一个联调任务能否从本地 Transport 聚合中移除。"""
+        """预览指定 TransportTask 的本地 Transport 链路。"""
 
         task_id = _validated_transport_task_id(transport_task_id)
         async with self._sessions() as db:
             return await self._build_debug_reset_preview(db, task_id, for_update=False)
 
     async def reset_debug_task(self, transport_task_id: str) -> TransportDebugResetResult:
-        """重新预检并原子删除一个尚未形成物理事实的联调任务。"""
+        """锁定并原子删除指定 TransportTask 的完整本地 Transport 链路。"""
 
         task_id = _validated_transport_task_id(transport_task_id)
         async with self._sessions.begin() as db:
-            preview = await self._build_debug_reset_preview(db, task_id, for_update=True)
-            if not preview.eligible:
-                raise TransportContractError(",".join(preview.blockers))
-            member_count, binding_count, task_count = await self._repository.delete_debug_task_aggregate(db, task_id)
+            await self._build_debug_reset_preview(db, task_id, for_update=True)
+            (
+                callback_receipt_count,
+                evidence_count,
+                position_projection_count,
+                member_count,
+                binding_count,
+                task_count,
+            ) = await self._repository.delete_debug_task_aggregate(db, task_id)
             if task_count != 1:
                 raise RuntimeError(f"TransportTask delete count is invalid: {task_count}")
         return TransportDebugResetResult(
             transport_task_id=task_id,
+            deleted_callback_receipt_count=callback_receipt_count,
+            deleted_evidence_count=evidence_count,
+            deleted_position_projection_count=position_projection_count,
             deleted_member_count=member_count,
             deleted_binding_count=binding_count,
         )
@@ -266,17 +273,20 @@ class TransportService:
         if task is None:
             raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
         (
+            callback_receipt_count,
             evidence_count,
+            position_projection_count,
             member_count,
             binding_count,
             active_binding_count,
         ) = await self._repository.get_debug_reset_counts(db, transport_task_id)
-        return build_transport_debug_reset_preview(
+        return TransportDebugResetPreview(
             transport_task_id=task.transport_task_id,
             status=task.status,
             outcome_version=task.outcome_version,
-            outcome_json=task.outcome_json,
             evidence_count=evidence_count,
+            callback_receipt_count=callback_receipt_count,
+            position_projection_count=position_projection_count,
             member_count=member_count,
             binding_count=binding_count,
             active_binding_count=active_binding_count,
@@ -1115,6 +1125,7 @@ class TransportService:
                 object_type=member.object_type,
                 object_id=member.object_id,
                 source_operation_id=operation_id,
+                source_transport_task_id=member.transport_task_id,
                 updated_at=now,
             )
             db.add(projection)
@@ -1122,6 +1133,7 @@ class TransportService:
         projection.position_unknown = position_unknown
         projection.arrival_face = arrival_face
         projection.source_operation_id = operation_id
+        projection.source_transport_task_id = member.transport_task_id
         projection.updated_at = now
 
 

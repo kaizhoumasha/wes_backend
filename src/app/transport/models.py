@@ -205,6 +205,7 @@ class TransportPositionProjection(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         UniqueConstraint("object_type", "object_id", name="ux_transport_position_projection_object"),
+        Index("ix_transport_position_projection_source_task", "source_transport_task_id"),
         {"schema": RUNTIME_SCHEMA},
     )
 
@@ -215,6 +216,7 @@ class TransportPositionProjection(BaseMixin, table=True):
     position_unknown: bool = Field(default=False)
     arrival_face: str | None = Field(default=None, max_length=1)
     source_operation_id: str = Field(max_length=36)
+    source_transport_task_id: str | None = Field(default=None, max_length=80)
     updated_at: datetime
 
 

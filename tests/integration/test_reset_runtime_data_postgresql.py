@@ -220,7 +220,7 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
 
 
 @pytest.mark.integration
-def test_targeted_transport_reset_rejects_persisted_evidence_and_outcome() -> None:
+def test_targeted_transport_reset_deletes_persisted_evidence_receipt_projection_and_outcome() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
@@ -241,6 +241,30 @@ def test_targeted_transport_reset_rejects_persisted_evidence_and_outcome() -> No
                         ),
                         {"digest": "1" * 64},
                     )
+                    await session.execute(
+                        text(
+                            "INSERT INTO wes_runtime.transport_callback_receipts ("
+                            "operation_id, operation, message_digest, message_json, response_http_status, "
+                            "response_code, response_timestamp_ms, response_data_json, received_at"
+                            ") VALUES ("
+                            "'00000000-0000-0000-0000-000000000001', 'transport.task.resulted@v1', "
+                            ":digest, '{}'::json, 202, 'RECEIVED', 1787942960964, "
+                            '\'{"transport_task_id": "transport-evidence"}\'::json, CURRENT_TIMESTAMP'
+                            ")"
+                        ),
+                        {"digest": "1" * 64},
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO wes_runtime.transport_position_projections ("
+                            "object_type, object_id, position_json, position_unknown, arrival_face, "
+                            "source_operation_id, source_transport_task_id, updated_at"
+                            ") VALUES ("
+                            "'RACK', 'RACK-EVIDENCE', '{}'::json, false, 'A', "
+                            "'00000000-0000-0000-0000-000000000001', 'transport-evidence', CURRENT_TIMESTAMP"
+                            ")"
+                        )
+                    )
                     await _seed_transport_task(session, "transport-outcome", "RACK-OUTCOME")
                     await session.execute(
                         text(
@@ -250,13 +274,8 @@ def test_targeted_transport_reset_rejects_persisted_evidence_and_outcome() -> No
                     )
                     await session.commit()
 
-                    for task_id, reason in (
-                        ("transport-evidence", "已有 Transport Evidence"),
-                        ("transport-outcome", "已有 outcome"),
-                    ):
-                        with pytest.raises(RuntimeError, match=reason):
-                            await reset_transport_task_data(session, transport_task_id=task_id, apply=True)
-                        await session.rollback()
+                    for task_id in ("transport-evidence", "transport-outcome"):
+                        await reset_transport_task_data(session, transport_task_id=task_id, apply=True)
                         assert (
                             await session.scalar(
                                 text(
@@ -265,8 +284,26 @@ def test_targeted_transport_reset_rejects_persisted_evidence_and_outcome() -> No
                                 ),
                                 {"task_id": task_id},
                             )
-                            == 1
+                            == 0
                         )
+                    assert (
+                        await session.scalar(
+                            text(
+                                "SELECT count(*) FROM wes_runtime.transport_callback_receipts "
+                                "WHERE response_data_json ->> 'transport_task_id' = 'transport-evidence'"
+                            )
+                        )
+                        == 0
+                    )
+                    assert (
+                        await session.scalar(
+                            text(
+                                "SELECT count(*) FROM wes_runtime.transport_position_projections "
+                                "WHERE source_operation_id = '00000000-0000-0000-0000-000000000001'"
+                            )
+                        )
+                        == 0
+                    )
             finally:
                 await engine.dispose()
 
