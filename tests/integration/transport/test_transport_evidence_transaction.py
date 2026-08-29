@@ -692,10 +692,11 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         TransportRepository(),
         _UnusedProvider(),
     )
+    rack_id = f"rack-callback-before-reject-{uuid.uuid4().hex}"
     handle = await setup_service.move_rack(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        "rack-callback-before-reject",
+        rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
         RackFace.A,
@@ -723,7 +724,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
                 "transport_task_id": handle.transport_task_id,
                 "kind": "RACK_MOVE",
                 "outcome_revision": 1,
-                "rack_id": "rack-callback-before-reject",
+                "rack_id": rack_id,
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
                 "arrival_face": "A",
@@ -760,6 +761,9 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     async with integration_session_factory() as db:
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+        projection = await db.scalar(
+            select(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
+        )
     post_process = (
         task.status if task is not None else None,
         evidence.status if evidence is not None else None,
@@ -771,6 +775,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         await db.execute(
             delete(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
         )
+        await db.execute(delete(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id))
         await db.execute(
             delete(TransportResourceBinding).where(
                 TransportResourceBinding.transport_task_id == handle.transport_task_id
@@ -783,6 +788,84 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
     assert pre_process == ("PENDING", "PENDING", None, True, None)
     assert processed == 1
     assert post_process == ("SUCCEEDED", "APPLIED", None)
+    assert projection is not None
+    assert projection.source_transport_task_id == handle.transport_task_id
+
+
+async def test_result_updates_existing_projection_source_transport_task_id(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    service = TransportService(
+        integration_session_factory,
+        TransportRepository(),
+        _UnusedProvider(),
+    )
+    rack_id = f"rack-projection-source-{uuid.uuid4().hex}"
+    async with integration_session_factory.begin() as db:
+        db.add(
+            TransportPositionProjection(
+                object_type="RACK",
+                object_id=rack_id,
+                position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
+                position_unknown=False,
+                arrival_face="A",
+                source_operation_id="projection-source-initial",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+    handle = await service.move_rack(
+        new_uuid7(),
+        TransportCaller("INTEGRATION"),
+        rack_id,
+        RackPosition("SOURCE"),
+        RackPosition("TARGET"),
+        RackFace.A,
+    )
+    operation_id = new_uuid7()
+
+    try:
+        await record_valid_callback(
+            service,
+            operation_id=operation_id,
+            transport_task_id=handle.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "transport_task_id": handle.transport_task_id,
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": rack_id,
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+                "arrival_face": "A",
+            },
+        )
+        assert await service.process_pending_evidence(1) == 1
+
+        async with integration_session_factory() as db:
+            projection = await db.scalar(
+                select(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
+            )
+        assert projection is not None
+        assert projection.source_transport_task_id == handle.transport_task_id
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+            )
+            await db.execute(delete(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+            await db.execute(
+                delete(TransportPositionProjection).where(TransportPositionProjection.object_id == rack_id)
+            )
+            await db.execute(
+                delete(TransportResourceBinding).where(
+                    TransportResourceBinding.transport_task_id == handle.transport_task_id
+                )
+            )
+            await db.execute(
+                delete(TransportMember).where(TransportMember.transport_task_id == handle.transport_task_id)
+            )
+            await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
 
 
 async def test_conflicting_callback_cannot_overwrite_concurrently_applied_evidence(

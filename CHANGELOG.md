@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1.0] - 2026-08-28
+
+### Added
+
+- 增加按 `transport_task_id` 预检和清理单个联调任务完整本地 Transport 链路的 API 与 CLI，覆盖任务、成员、资源绑定、Evidence、Callback Receipt、Outcome 和来源位置投影。
+- 位置投影记录来源 TransportTask，并通过数据库 migration 和索引支持精确定向清理，避免仅凭可能复用的 `operation_id` 误删其它任务数据。
+
+### Changed
+
+- 联调清理不再按任务状态、Evidence 或 Outcome 设置资格阻断；只要指定 TransportTask 存在，即可在事务锁内删除其完整本地链路。
+- 更新 Transport 合同、架构说明、运维手册和 Phase 9 实施基线，明确清理不会向 WMS/RCS 发送取消请求，也不代表撤销现场物理动作。
+
+### Verification
+
+- 最终 QUALITY 通过：4057 项默认 FAST 测试通过，5 项按既有外部条件跳过；Bandit、Ruff、架构与测试所有权门禁通过。
+- HEAVY selector 选中的 PostgreSQL、Transport 并发、schema、reset CLI 和生产 wiring 测试通过；覆盖审计 87%，fresh Review 无剩余意见。
+- 本次发布不包含再次 Deploy、真实 WMS/RCS/ECS 动作、现场物理完成、供应商一致性或业务验收。
+
 ## [0.29.0.0] - 2026-08-28
 
 ### Added

@@ -45,8 +45,11 @@ Phase 4。
 （outcome）是异步通知插件的统一结果；适配器（Adapter）只负责内部对象与跨系统线上接口契约（wire contract）的转换。
 
 系统尚未发布，首版直接实现本文目标合同，不保留旧 Effect、WMS/RCS 状态查询、回调提示、别名、兼容路径或数据迁移。
-WES 可以提供只读的本地 TransportTask 运维观察接口；该接口不进入 WMS/RCS 对接合同，也不能驱动轮询、取消、重试、
-状态修改或业务完成判定。
+WES 可以提供本地 TransportTask 运维观察接口；该接口不进入 WMS/RCS 对接合同，也不能驱动轮询、取消、重试、状态修改或
+业务完成判定。唯一写入例外是数据可丢弃联调环境中的定向清理：操作员仅需指定 `transport_task_id`，即可删除该任务的完整本地
+Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。删除范围包括 Callback Receipt、Evidence、由该任务
+Evidence 产生的位置投影、资源绑定、成员和任务；不扩展到库存、业务单据或其它 TransportTask。该动作不是远端取消或重试，
+不得向 WMS/RCS 发送请求，也不能撤销已经发生的物理动作。
 
 ## 2. 权威与职责
 
@@ -565,7 +568,9 @@ WES 本地运维观察接口可以按 `transport_task_id` 返回任务当前状�
 同时绑定被搬运的每个内部 `bin_id`；Adapter 接收的接口契约`container_id` 必须先解析为该冻结成员身份。这样可以防止 AGV 搬架与
 CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一个事务中取得；
 只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态事务释放绑定；`RECONCILING` 即使已向插件发布 `UNKNOWN` 也必须继续保持绑定，
-直到匹配的权威确定结果完成消歧。资源冲突在创建阶段失败关闭，不等待 RCS 再拒绝。
+直到匹配的权威确定结果完成消歧。唯一例外是第 1 节定义的联调定向清理：事务锁定任务后，按 `transport_task_id` 删除完整本地链路，
+包括随任务聚合删除其绑定；晚到 callback 仍按既有 missing-task Evidence 合同保留为 `CONFLICT`，不得静默丢弃。资源冲突在创建
+阶段失败关闭，不等待 RCS 再拒绝。
 
 精确储位身份使用 `RACK_BIN_SLOT(rack_id + rack_face + slot_id)`，只承担请求内位置唯一性、成员目标校验和结果匹配；活动任务通过
 其所在 `rack_id` 整体互斥，不重复建立精确储位资源绑定。`HANDOFF_POSITION` 可以由多个任务引用，其瞬时容量属于 WMS/RCS 或

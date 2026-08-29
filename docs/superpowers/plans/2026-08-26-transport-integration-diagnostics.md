@@ -1,6 +1,6 @@
 # 运输接入诊断实施计划
 
-**Status:** Approved for implementation；当前仅完成设计与计划，生产代码尚未实施。
+**Status:** Implemented and merged；backend `41ab69bf`、frontend `e103b692` 已完成仓内实现、验证与合入；Deploy、现场物理动作、供应商一致性和业务验收均未执行。
 
 **Goal:** 复用现有 Transport、WMS callback、共享 SSE 和设备诊断交互基础，交付最近任务查询、按需详情、在线诊断通知与四类调试下发，不新增 Preflight、周期轮询或第二套 callback-result 接口。
 

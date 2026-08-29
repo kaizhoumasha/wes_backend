@@ -1,6 +1,7 @@
 # Transport 运维诊断 Runbook
 
-> 当前状态：Phase 6 基础能力诊断入口。本 Runbook 只读取 WES 本地 API、日志和 PostgreSQL 事实，不执行状态修改、资源释放或重提。
+> 当前状态：Phase 6 基础能力诊断入口。生产运维只读取 WES 本地 API、日志和 PostgreSQL 事实，不执行状态修改、资源释放或重提；
+> 数据可丢弃的联调环境可以使用诊断页面/API 或项目脚本，按 `transport_task_id` 清理单个任务的完整本地 Transport 链路。
 
 适用对象是 `wes_runtime` schema 中的 Transport 基础对象。查询应使用只读数据库账号，
 时间统一按数据库 UTC 解释；不应为了让结果“消失”而直接改表。以下命令在 `psql` 中执行，
@@ -198,9 +199,38 @@ LIMIT 100;
 对终态不一致应保留任务、evidence、outcome 和绑定证据并升级。绑定只能由 Transport Service 在权威状态收敛时释放；
 不得直接设置 `released_at`。
 
+## 联调任务定向清理
+
+该入口只用于数据可丢弃的联调环境。操作员指定 `transport_task_id` 后即可清理，不检查任务状态，也不因已有 Transport Evidence
+或 outcome 阻断。该动作只删除 WES 本地 Transport 链路，不会取消或重试 WMS/RCS 任务，也不能撤销已经发生的物理动作。
+
+诊断页面先以 `ops:transport:debug-preview` 权限调用
+`GET /api/v1/transport/debug-tasks/{transport_task_id}/reset-preview`，核对目标 ID、Evidence、Callback Receipt、位置投影、outcome 版本、
+成员和绑定数量；
+确认后以 `ops:transport:debug-reset` 权限调用
+`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定任务，随后按 Callback Receipt、位置投影、
+Evidence、绑定、成员、任务的顺序删除；任一步失败都会回滚。若 callback 在删除后迟到，既有入口仍会持久化 missing-task Evidence，
+并收敛为 `CONFLICT`。
+
+无法使用页面/API 时，可以使用项目脚本。先 dry-run：
+
+```text
+bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --force
+```
+
+核对输出只包含目标任务及其 `transport_callback_receipts`、`transport_position_projections`、`transport_evidence`、
+`transport_resource_bindings` 和 `transport_members` 后，再执行：
+
+```text
+bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --yes --force
+```
+
+脚本与 API 使用同一删除范围，并在一个事务内先锁定任务，再按 Callback Receipt、位置投影、Evidence、绑定、成员、任务的顺序
+删除。`--force` 仅用于联调服务器采用生产型运行配置时显式确认数据可丢弃；它不扩大删除范围。生产环境不得使用这些入口。
+
 ## 禁止的运维捷径
 
-- 禁止对 Transport 表执行 `UPDATE`、`DELETE`、`TRUNCATE` 或手工修改 claim/outcome 版本。
+- 除上述诊断页面/API/脚本的窄入口外，禁止对 Transport 表执行 `UPDATE`、`DELETE`、`TRUNCATE` 或手工修改 claim/outcome 版本。
 - 禁止清空 claim token、直接改任务/evidence 状态或为了重试而删除冲突事实。
 - 禁止直接修改 `released_at`、删除 active 绑定或把资源指向另一任务。
 - 禁止为 delivery unknown、冲突或超时任务生成新 `operation_id` 或新 `client_request_id` 重提。

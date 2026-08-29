@@ -69,6 +69,8 @@ TRANSPORT_EVIDENCE_HEAVY_TEST = "tests/integration/transport/test_transport_evid
 TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST = "tests/integration/wms_adapter/test_transport_callback_receipts.py"
 TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_repository.py"
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
+TRANSPORT_DEBUG_RESET_HEAVY_TEST = "tests/integration/transport/test_transport_debug_reset.py"
+RESET_RUNTIME_DATA_HEAVY_TEST = "tests/integration/test_reset_runtime_data_postgresql.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
 TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
@@ -1104,6 +1106,12 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py",
             [TRANSPORT_SCHEMA_HEAVY_TEST, TRANSPORT_CALLBACK_RECEIPT_HEAVY_TEST],
         ),
+        (
+            "migrations/versions/20260829_0800_7bdca6f754ee_记录_transport_位置投影来源任务.py",
+            [TRANSPORT_DEBUG_RESET_HEAVY_TEST, TRANSPORT_SCHEMA_HEAVY_TEST],
+        ),
+        ("scripts/data/reset_runtime_data.py", [RESET_RUNTIME_DATA_HEAVY_TEST]),
+        ("scripts/data/reset_runtime_data.sh", [RESET_RUNTIME_DATA_HEAVY_TEST]),
         ("src/app/callback/services/__init__.py", [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]),
         ("src/app/callback/services/wms_inbound_auth.py", [DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST]),
         ("src/app/callback/v1/callback.py", [PERMISSION_CATALOG_SYNC_HEAVY_TEST]),
@@ -1195,9 +1203,14 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             ],
         ),
         (
+            "src/app/transport/debug_reset.py",
+            [RESET_RUNTIME_DATA_HEAVY_TEST, TRANSPORT_DEBUG_RESET_HEAVY_TEST],
+        ),
+        (
             "src/app/transport/models.py",
             [
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_DEBUG_RESET_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
@@ -1208,6 +1221,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
             "src/app/transport/repository.py",
             [
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_DEBUG_RESET_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,
@@ -1220,6 +1234,7 @@ def test_repository_mapping_declares_required_ignore_globs() -> None:
                 TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 TRANSPORT_DARK_LOOP_HEAVY_TEST,
+                TRANSPORT_DEBUG_RESET_HEAVY_TEST,
                 TRANSPORT_EVIDENCE_HEAVY_TEST,
                 TRANSPORT_REPOSITORY_HEAVY_TEST,
                 TRANSPORT_SCHEMA_HEAVY_TEST,

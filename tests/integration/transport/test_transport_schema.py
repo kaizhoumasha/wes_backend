@@ -106,6 +106,7 @@ async def test_transport_schema_contains_required_claim_indexes(integration_db_s
         "ix_transport_tasks_ambiguous_claim",
         "ix_transport_evidence_pending_claim",
         "ix_transport_tasks_outcome_claim",
+        "ix_transport_position_projection_source_task",
         "ux_transport_resource_bindings_active",
     } <= definitions.keys()
     assert "(next_submit_at IS NOT NULL)" in definitions["ix_transport_tasks_submit_claim"]
@@ -139,6 +140,7 @@ async def test_transport_schema_contains_only_final_wire_identity_columns(
         ("transport_evidence", "ack_data_json"),
         ("transport_members", "last_operation_id"),
         ("transport_position_projections", "source_operation_id"),
+        ("transport_position_projections", "source_transport_task_id"),
     } <= columns.keys()
     assert {
         ("transport_evidence", "event_id"),

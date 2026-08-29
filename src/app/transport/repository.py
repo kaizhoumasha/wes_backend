@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.app.transport.models import (
@@ -51,6 +51,91 @@ class TransportRepository:
             .order_by(TransportMember.ordinal.asc(), TransportMember.id.asc())
         )
         return list(result)
+
+    async def get_debug_reset_counts(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+    ) -> tuple[int, int, int, int, int, int]:
+        """返回回执、Evidence、位置投影、成员、绑定和活跃绑定数量。"""
+
+        callback_receipt_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportCallbackReceipt)
+            .where(TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id)
+        )
+        evidence_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportEvidence)
+            .where(TransportEvidence.transport_task_id == transport_task_id)
+        )
+        position_projection_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportPositionProjection)
+            .where(TransportPositionProjection.source_transport_task_id == transport_task_id)
+        )
+        member_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportMember)
+            .where(TransportMember.transport_task_id == transport_task_id)
+        )
+        binding_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportResourceBinding)
+            .where(TransportResourceBinding.transport_task_id == transport_task_id)
+        )
+        active_binding_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportResourceBinding)
+            .where(
+                TransportResourceBinding.transport_task_id == transport_task_id,
+                TransportResourceBinding.released_at.is_(None),
+            )
+        )
+        return (
+            int(callback_receipt_count or 0),
+            int(evidence_count or 0),
+            int(position_projection_count or 0),
+            int(member_count or 0),
+            int(binding_count or 0),
+            int(active_binding_count or 0),
+        )
+
+    async def delete_debug_task_aggregate(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+    ) -> tuple[int, int, int, int, int, int]:
+        """按依赖顺序删除指定 TransportTask 的完整本地 Transport 链路。"""
+
+        receipts = await db.execute(
+            delete(TransportCallbackReceipt).where(
+                TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id
+            )
+        )
+        projections = await db.execute(
+            delete(TransportPositionProjection).where(
+                TransportPositionProjection.source_transport_task_id == transport_task_id
+            )
+        )
+        evidence = await db.execute(
+            delete(TransportEvidence).where(TransportEvidence.transport_task_id == transport_task_id)
+        )
+        bindings = await db.execute(
+            delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == transport_task_id)
+        )
+        members = await db.execute(
+            delete(TransportMember).where(TransportMember.transport_task_id == transport_task_id)
+        )
+        tasks = await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == transport_task_id))
+        return (
+            int(receipts.rowcount or 0),
+            int(evidence.rowcount or 0),
+            int(projections.rowcount or 0),
+            int(members.rowcount or 0),
+            int(bindings.rowcount or 0),
+            int(tasks.rowcount or 0),
+        )
 
     async def get_projection(
         self,

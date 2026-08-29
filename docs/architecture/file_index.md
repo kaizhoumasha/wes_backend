@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-08-26
+**最后更新**：2026-08-28
 
 ## 1. 真源与入口
 
@@ -130,7 +130,7 @@ API → Service → Repository → Database
 | `docs/architecture/heavy-test-impact.toml` | HEAVY selector 机器可读映射真源 |
 | `scripts/export_release_provider.py` | 从后端唯一真源确定性导出 provider OpenAPI、provided permissions 与生产输入指纹 |
 | `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport 搬运提交合同；不替代真实 WMS 或现场验收 |
-| `docs/runbooks/transport-operations.md` | Transport 本地状态 API、结构化日志与 PostgreSQL 事实的只读诊断入口 |
+| `docs/runbooks/transport-operations.md` | Transport 本地 API、结构化日志与 PostgreSQL 事实的诊断入口；联调环境支持按 `transport_task_id` 定向清理完整本地链路 |
 | `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
 | `docs/devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、TimescaleDB/PostgreSQL 与 Redis 基础支撑环境初始化手册；不代表业务系统已部署或验收 |

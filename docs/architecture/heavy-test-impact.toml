@@ -1114,6 +1114,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/transport/{models.py,repository.py}"
 heavy_tests = [
+    "tests/integration/transport/test_transport_debug_reset.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
@@ -1126,11 +1127,20 @@ source_glob = "src/app/transport/service.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/transport/test_transport_debug_reset.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+# 联调任务完整链路清理由 API Service/Repository 与 CLI raw-SQL 两条 PostgreSQL owner 共同承接。
+[[mapping]]
+source_glob = "src/app/transport/debug_reset.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_debug_reset.py",
+    "tests/integration/test_reset_runtime_data_postgresql.py",
 ]
 
 [[mapping]]
@@ -1230,6 +1240,13 @@ source_glob = "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_�
 heavy_tests = [
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_0800_7bdca6f754ee_记录_transport_位置投影来源任务.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_debug_reset.py",
+    "tests/integration/transport/test_transport_schema.py",
 ]
 
 [[mapping]]
@@ -1664,7 +1681,7 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "scripts/data/reset_runtime_data.py"
+source_glob = "scripts/data/reset_runtime_data.{py,sh}"
 heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
 
 # Phase 6 直接改写原 WMS 履约 revision；最终 rack supply schema 由独立 PostgreSQL owner 验证。
