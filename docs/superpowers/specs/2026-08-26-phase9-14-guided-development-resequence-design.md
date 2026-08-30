@@ -3,7 +3,7 @@
 status: Approved
 decision_date: 2026-08-26
 scope: 开发流程、运输接入诊断、Phase 9—14 阶段边界、教学式插件开发和规划 worktree 收敛
-implementation_status: backend current baseline 为 `develop@c5a93872f6c5fb0d7ee29ecefd817e54681de0a6`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A/B 与 Phase 9 已完成；Phase 10 Tasks 0–6 已于 2026-08-29 在 `codex/phase10-implementation@834fe59e` 完成仓内实施和准入，尚未 Push/PR/Merge/Deploy，Task 7 未执行；Phase 11–14 尚未实施
+implementation_status: backend current baseline 为 `develop@c5a93872f6c5fb0d7ee29ecefd817e54681de0a6`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A/B 与 Phase 9 已完成；Phase 10 Tasks 0–6 已于 2026-08-29 在 `codex/phase10-implementation@834fe59e` 完成仓内实施和准入，Task 7 已于 2026-08-30 完成联调环境 cutover 与 Phase 11 handoff；分支尚未 Push/PR/Merge，Phase 11–14 尚未实施
 
 ## 1. 决策摘要
 
@@ -80,7 +80,7 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` 承接，旧过程文档与未重新评审的合同已移至项目外归档。
 运输诊断已完成仓内实现、验证与合入，但未部署、未执行现场物理动作或业务验收；Phase 9 已合入
 `develop@c5a93872`。发布四目标账本静默门禁与 Phase 10 Tasks 0–6 已在 `codex/phase10-implementation@834fe59e`
-完成仓内实施和准入；Task 7 未部署，Phase 11–14 仍是后续计划。仓内候选不得描述为现场 cutover、供应商或业务验收完成。
+完成仓内实施和准入；Task 7 已完成联调环境 cutover 与 Phase 11 handoff，分支尚未 Push/PR/Merge，Phase 11–14 仍是后续计划。该证据不得描述为供应商、物理或业务验收完成。
 
 ## 5. 阶段设计
 

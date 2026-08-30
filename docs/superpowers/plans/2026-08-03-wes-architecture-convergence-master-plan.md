@@ -173,7 +173,7 @@ Phase 10 Task 0 final admission / Execution Lock（已取得）
    ↓
 Phase 10 Tasks 1–6 target-only 实施与候选验证（已完成）
    ↓
-Phase 10 Task 7 Deploy/Cutover（未授权、未执行）
+Phase 10 Task 7 联调环境 Deploy/Cutover（已完成；不代表供应商、物理或业务验收）
    ↓
 Phase 11 旧数据模型与迁移链
    ↓
