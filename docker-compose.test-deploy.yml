@@ -261,7 +261,7 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
     ports:
-      - "${REDIS_HOST_PORT:-6380}:6379"
+      - "127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"
     volumes:
       - ./docker_data/redis_${ENV:-test}:/data
       - ${REDIS_CONFIG_FILE:-./redis/redis.conf}:/usr/local/etc/redis/redis.conf:ro

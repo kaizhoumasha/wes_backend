@@ -49,21 +49,20 @@ def _ledger_rows() -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def test_workline_start_transaction_ports_remain_current_contracts() -> None:
+def test_workline_start_outbox_port_remains_a_current_contract() -> None:
     rows_by_symbol = {
         row["symbol_or_route"]: row
         for row in _matrix_rows()
         if row["relative_path"] == "src/app/workline/services/workline_start_service.py"
     }
 
-    for symbol in ("RuntimeHoldRepositoryPort", "OutboxRepositoryPort"):
-        row = rows_by_symbol[symbol]
-        assert row["business_semantics"] == "none"
-        assert row["strategy"] == "keep-contract"
-        assert row["drop_phase"] == "phase5-tech"
-        assert row["risk"] == "LOW"
-        assert row["target_path"] == ""
-        assert row["target_capability"] == ""
+    row = rows_by_symbol["OutboxRepositoryPort"]
+    assert row["business_semantics"] == "none"
+    assert row["strategy"] == "keep-contract"
+    assert row["drop_phase"] == "phase5-tech"
+    assert row["risk"] == "LOW"
+    assert row["target_path"] == ""
+    assert row["target_capability"] == ""
 
 
 def test_business_legacy_matrix_has_no_dedicated_drop_items() -> None:

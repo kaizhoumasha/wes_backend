@@ -90,7 +90,7 @@ reviewed_content_sha256 = "a8070cd02c3bcc345b478ac839a993dc36130e3aca867252ad2a5
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "802f2735246ff5e932a09c5031bbcfe1610d67bd9fa383903ce3c699f0def7cc"
+reviewed_content_sha256 = "71f311df19e25b5e1aed28dffb2a23b369d115f5497f244a76ff58b11b3b5036"
 
 [[mapping]]
 source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
@@ -1579,7 +1579,7 @@ source_glob = "src/app/runtime/orchestration/models/{__init__.py,smt_inbound_han
 heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/repositories/{__init__.py,full_box_exchange_repository.py,plugin_attempt_repository.py,rough_sorter_q19_admission_repository.py,runtime_domain_capability_authority_repository.py,runtime_intent_log_repository.py,session_execution_anchor_repository.py,smt_inbound_handoff_repository.py,wms_conveyor_batch_repository.py,wms_conveyor_return_batch_repository.py}"
+source_glob = "src/app/runtime/orchestration/repositories/{full_box_exchange_repository.py,plugin_attempt_repository.py,rough_sorter_q19_admission_repository.py,runtime_domain_capability_authority_repository.py,runtime_intent_log_repository.py,session_execution_anchor_repository.py,smt_inbound_handoff_repository.py,wms_conveyor_batch_repository.py,wms_conveyor_return_batch_repository.py}"
 heavy_tests = ["tests/integration/test_runtime_inbox_processing_postgresql.py"]
 
 [[mapping]]
@@ -1590,13 +1590,52 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/services/{__init__.py,full_box_exchange_service.py,hold/**,intent/**,query/**,session/**,wms_conveyor_batch_service.py,wms_conveyor_return_batch_service.py,wms_effect_status_service.py,wms_fulfillment_domain_projector.py}"
+source_glob = "src/app/runtime/orchestration/services/{__init__.py,full_box_exchange_service.py,hold/**,intent/**,session/**,wms_conveyor_batch_service.py,wms_conveyor_return_batch_service.py,wms_effect_status_service.py,wms_fulfillment_domain_projector.py}"
 heavy_tests = [
     "tests/integration/test_runtime_inbox_processing_postgresql.py",
     "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
     "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
 ]
+
+# 发布静默门禁是独立的四账本只读查询；Repository、Service 与 CLI 由同一 PostgreSQL owner 验收。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py"
+heavy_tests = ["tests/integration/test_release_operational_readiness_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/__init__.py"
+heavy_tests = [
+    "tests/integration/test_release_operational_readiness_postgresql.py",
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/query/release_operational_readiness_service.py"
+heavy_tests = ["tests/integration/test_release_operational_readiness_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/query/{active_object_fact_provider.py,material_location_query_service.py,northbound_operations_query_service.py,runtime_query_service.py,workline_active_objects_service.py}"
+heavy_tests = [
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+    "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/query/__init__.py"
+heavy_tests = [
+    "tests/integration/test_release_operational_readiness_postgresql.py",
+    "tests/integration/test_runtime_inbox_processing_postgresql.py",
+    "tests/integration/workline_capabilities/test_effect_reducer_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_wms_effect_status_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "scripts/check_release_operational_readiness.py"
+heavy_tests = ["tests/integration/test_release_operational_readiness_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/wms/{conformance_manifest.py,conformance_matrix.py,contracts.py,effect_runtime.py,generated_operation_index.py,document/validate_rough_sorter_admission/**,fulfillment/full_box_exchange/**,fulfillment/move_bins_from_conveyor_exit/**,fulfillment/move_bins_to_conveyor_entry/**}"

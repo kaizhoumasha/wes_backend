@@ -97,8 +97,14 @@ pipeline {
                     env.BACKEND_CANDIDATE_DIGEST = backendDigest
                     env.FORCE_FULL_VALUE = params.FORCE_FULL ? 'true' : 'false'
                     env.WARN_APPROVAL_REASON_VALUE = params.WARN_APPROVAL_REASON ?: ''
+                    String releaseContainerOwner = "${env.BUILD_TAG ?: ''}-${deploySourceCommit.take(12)}"
+                        .toLowerCase().replaceAll(/[^a-z0-9-]/, '-').replaceAll(/-+/, '-')
+                    if (!(releaseContainerOwner ==~ /[a-z0-9][a-z0-9-]{0,180}-[0-9a-f]{12}/)) {
+                        error('无法生成安全的 release-readiness container owner')
+                    }
                     env.RELEASE_ID = "test-${env.BUILD_NUMBER}-${deploySourceCommit.take(12)}"
                     env.CHECKER_CONTAINER_NAME = "wes-release-checker-${env.BUILD_NUMBER}-${deploySourceCommit.take(12)}"
+                    env.RELEASE_READINESS_CONTAINER_NAME = "wes-release-readiness-${releaseContainerOwner}"
                 }
             }
         }
@@ -163,6 +169,7 @@ pipeline {
                             [ -z "${FRONTEND_EXTRACT_CONTAINER}" ] || docker rm -f "${FRONTEND_EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
                             [ -z "${BACKEND_EXTRACT_CONTAINER}" ] || docker rm -f "${BACKEND_EXTRACT_CONTAINER}" >/dev/null 2>&1 || true
                             docker rm -f "${CHECKER_CONTAINER_NAME}" >/dev/null 2>&1 || true
+                            docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}" >/dev/null 2>&1 || true
                             rm -rf "${PREFLIGHT_DIR}"
                         }
                         hold_entrypoint_on_failure() {
@@ -479,10 +486,27 @@ PY
                             ) || return 1
                             export EFFECTIVE_MODE
                         }
+                        candidate_backend_python() {
+                            candidate_timeout_seconds=""
+                            if [ "${1:-}" = --timeout-seconds ]; then
+                                candidate_timeout_seconds="$2"
+                                shift 2
+                            fi
+                            if [ -n "$candidate_timeout_seconds" ]; then
+                                timeout --signal=KILL "${candidate_timeout_seconds}s" \
+                                    docker compose --env-file "${COMPOSE_ENV_FILE}" \
+                                    --project-directory "${COMPOSE_PROJECT_DIR}" -f "${COMPOSE_FILE}" \
+                                    run --rm --no-deps --name "${RELEASE_READINESS_CONTAINER_NAME}" \
+                                    -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 \
+                                    --entrypoint /opt/venv/bin/python api "$@"
+                            else
+                                compose run --rm --no-deps \
+                                    -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 \
+                                    --entrypoint /opt/venv/bin/python api "$@"
+                            fi
+                        }
                         business_preflight() {
-                            compose run --rm --no-deps \
-                                -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 \
-                                --entrypoint /opt/venv/bin/python api -c '
+                            candidate_backend_python -c '
 from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
 from src.core.conf import settings
 try:
@@ -596,6 +620,8 @@ PY
                             cleanup_private_inputs >/dev/null 2>&1 || true
                             if [ "$status" -ne 0 ] && [ "${MAINTENANCE_MODE}" = true ]; then
                                 compose stop nginx >/dev/null 2>&1 || true
+                            elif [ "$status" -ne 0 ]; then
+                                echo "PRE-CUTOVER_ABORTED: ${CUTOVER_STAGE}"
                             fi
                             exit "$status"
                         }
@@ -634,6 +660,13 @@ PY
                             echo "🔎 校验权限目录零漂移"
                             compose run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli --entrypoint /opt/venv/bin/python api scripts/data/sync_permissions.py --check || return 1
                         }
+                        release_operational_readiness() {
+                            readiness_status=0
+                            candidate_backend_python --timeout-seconds "${1:-15}" \
+                                scripts/check_release_operational_readiness.py || readiness_status=$?
+                            docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}" >/dev/null 2>&1 || true
+                            return "$readiness_status"
+                        }
                         run_full_cutover() {
                             if [ "${DEPLOY_SCOPE}" = FRONTEND ]; then
                                 compose stop frontend || return 1
@@ -644,9 +677,9 @@ PY
                             fi
                             backup_name="${RELEASE_ID}.sql"
                             if [ "${DEPLOY_SCOPE}" = BACKEND ]; then
-                                compose stop api celery celery-wms-fulfillment celery_beat flower || return 1
+                                :
                             else
-                                compose stop api celery celery-wms-fulfillment celery_beat flower frontend || return 1
+                                compose stop frontend || return 1
                             fi
                             CUTOVER_STAGE=database-identity-reverification
                             resolve_database_identity || return 1
@@ -740,10 +773,14 @@ os.replace(sys.argv[1], sys.argv[2])
 PY
                         }
 
-                        reverify_unselected_peer || {
-                            echo "PRE-CUTOVER_ABORTED: current peer drift"
-                            exit 1
-                        }
+                        reverify_unselected_peer || abort_pre_cutover current-peer-drift
+                        RELEASE_READINESS_REQUIRED=false
+                        if [ "${EFFECTIVE_MODE}" = FULL ] \
+                            && { [ "${DEPLOY_SCOPE}" = BACKEND ] || [ "${DEPLOY_SCOPE}" = BOTH ]; }; then
+                            RELEASE_READINESS_REQUIRED=true
+                            CUTOVER_STAGE=release-readiness-online
+                            release_operational_readiness || abort_pre_cutover release-readiness-online
+                        fi
                         if [ "${EFFECTIVE_MODE}" = FAST ]; then
                             FAST_CUTOVER_DEADLINE=$(( $(date +%s) + 120 ))
                         fi
@@ -758,6 +795,52 @@ PY
                             [ "$close_retry" -lt 10 ] || fail_cutover listener-closure
                             run_with_cutover_budget sleep 1 || fail_cutover listener-closure
                         done
+                        if [ "${RELEASE_READINESS_REQUIRED}" = true ]; then
+                            CUTOVER_STAGE=api-stop
+                            compose stop -t 30 api || fail_cutover api-stop
+                            close_retry=0
+                            while curl -sS --connect-timeout 1 --max-time 2 \
+                                "http://127.0.0.1:${APP_HOST_PORT:-8002}/" >/dev/null 2>&1; do
+                                close_retry=$((close_retry + 1))
+                                [ "$close_retry" -lt 10 ] || fail_cutover api-listener-closure
+                                sleep 1 || fail_cutover api-listener-closure
+                            done
+                            CUTOVER_STAGE=beat-stop
+                            compose stop celery_beat || fail_cutover beat-stop
+                            CUTOVER_STAGE=release-readiness-maintenance
+                            readiness_deadline=$(( $(date +%s) + 60 ))
+                            readiness_stable=0
+                            while [ "$readiness_stable" -lt 2 ]; do
+                                readiness_now=$(date +%s) || fail_cutover release-readiness-maintenance
+                                readiness_remaining=$((readiness_deadline - readiness_now))
+                                [ "$readiness_remaining" -gt 0 ] \
+                                    || fail_cutover release-readiness-timeout
+                                readiness_probe_timeout=15
+                                if [ "$readiness_remaining" -lt "$readiness_probe_timeout" ]; then
+                                    readiness_probe_timeout="$readiness_remaining"
+                                fi
+                                if release_operational_readiness "$readiness_probe_timeout"; then
+                                    readiness_stable=$((readiness_stable + 1))
+                                else
+                                    readiness_status=$?
+                                    if [ "$readiness_status" -eq 3 ]; then
+                                        readiness_stable=0
+                                    else
+                                        fail_cutover release-readiness-maintenance
+                                    fi
+                                fi
+                                readiness_now=$(date +%s) || fail_cutover release-readiness-maintenance
+                                readiness_remaining=$((readiness_deadline - readiness_now))
+                                [ "$readiness_remaining" -gt 0 ] \
+                                    || fail_cutover release-readiness-timeout
+                                [ "$readiness_stable" -ge 2 ] && break
+                                [ "$readiness_remaining" -ge 2 ] \
+                                    || fail_cutover release-readiness-timeout
+                                sleep 2 || fail_cutover release-readiness-maintenance
+                            done
+                            CUTOVER_STAGE=worker-stop
+                            compose stop celery celery-wms-fulfillment flower || fail_cutover worker-stop
+                        fi
                         CUTOVER_STAGE=deploy-source-switch
                         switch_live_deploy_source || fail_cutover deploy-source-switch
                         if [ "${EFFECTIVE_MODE}" = FAST ]; then
@@ -800,6 +883,7 @@ PY
     post {
         always {
             sh 'docker rm -f "${CHECKER_CONTAINER_NAME}" >/dev/null 2>&1 || true'
+            sh 'docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}" >/dev/null 2>&1 || true'
             cleanWs()
         }
         success {
