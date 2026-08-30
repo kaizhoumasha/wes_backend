@@ -2,68 +2,64 @@
 
 from __future__ import annotations
 
+import importlib
 from datetime import timedelta
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
 from src.app.active_objects.registry import ActiveObjectFact
-from src.app.runtime.orchestration.services.query.active_object_fact_provider import RuntimeActiveObjectFactProvider
-from src.app.runtime.orchestration.services.query.material_location_query_service import (
-    MaterialLocationConflictState,
-    MaterialLocationResult,
-)
 from src.app.runtime.orchestration.services.query.workline_active_objects_service import (
     WorklineActiveObjectConflictState,
     WorklineActiveObjectsService,
+    workline_active_objects_service,
 )
+from src.app.workline.repositories.workline_repository import workline_repository
 from src.utils.timezone import timezone
 
 
-class _Facts:
-    def __init__(self, facts: list[ActiveObjectFact]) -> None:
+class _TargetRows:
+    def __init__(
+        self,
+        facts: list[ActiveObjectFact],
+        *,
+        location_scope: str | None = None,
+        location_code: str | None = None,
+        location_conflict: bool = False,
+    ) -> None:
         self.facts = facts
+        self.location_scope = location_scope
+        self.location_code = location_code
+        self.location_conflict = location_conflict
 
-    async def list_active_object_facts(self, _db, *, workline_id: int):
-        return self.facts
-
-
-class _LocationQuery:
-    async def query_by_workline_active_object(self, _db, *, workline_id: int, object_type: str, object_key: str):
-        return MaterialLocationResult(
-            query_entry="by workline active object",
-            location_scope="CONVEYOR_QUEUE",
-            location_code="Q-IN",
-            conflict_state=MaterialLocationConflictState.OK,
-            evidence=[],
-        )
-
-
-class _ReconcilingLocationQuery:
-    async def query_by_workline_active_object(self, _db, *, workline_id: int, object_type: str, object_key: str):
-        return MaterialLocationResult(
-            query_entry="by workline active object",
-            conflict_state=MaterialLocationConflictState.RECONCILING,
-            object_type=object_type,
-            object_key=object_key,
-            evidence=[],
-        )
+    async def list_target_active_object_facts(self, _db, *, workline_id: int, limit: int):
+        return [
+            {
+                "object_type": fact.object_type,
+                "object_key": fact.object_code,
+                "owner_kind": fact.owner_kind,
+                "owner_code": fact.owner_code,
+                "evidence_ref": fact.evidence_ref,
+                "location_scope": self.location_scope,
+                "location_code": self.location_code,
+                "location_conflict": self.location_conflict,
+                "presence_type": fact.presence_type,
+                "transient_until": fact.transient_until,
+            }
+            for fact in self.facts[:limit]
+        ]
 
 
-class _RuntimeHolds:
-    def __init__(self, holds=None) -> None:
-        self.holds = holds or []
+def test_default_active_objects_composition_uses_only_target_repository() -> None:
+    """API 默认实例只能消费 target aggregate repository，不得回接 Task 5 DELETE owner。"""
 
-    async def get_active_blocking_by_workline(self, _db, workline_id: int):
-        return self.holds
-
-
-class _Memberships:
-    def __init__(self, memberships) -> None:
-        self.memberships = memberships
-
-    async def list_active_by_workline(self, _db, *, workline_id: int, limit: int = 200):
-        return self.memberships[:limit]
+    assert workline_active_objects_service.target_repository is workline_repository
+    assert not hasattr(workline_active_objects_service, "active_fact_provider")
+    assert not hasattr(workline_active_objects_service, "material_location_query_service")
+    module = importlib.import_module("src.app.runtime.orchestration.services.query.workline_active_objects_service")
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    assert "active_object_fact_provider" not in source
+    assert "material_location_query_service" not in source
 
 
 @pytest.mark.asyncio
@@ -71,7 +67,7 @@ async def test_workline_active_objects_returns_ok_for_single_source() -> None:
     """单来源 active object 返回 OK。"""
 
     service = WorklineActiveObjectsService(
-        active_fact_provider=_Facts(
+        target_repository=_TargetRows(
             [
                 ActiveObjectFact(
                     object_code="BIN-OK",
@@ -80,10 +76,10 @@ async def test_workline_active_objects_returns_ok_for_single_source() -> None:
                     owner_code="Q-IN",
                     evidence_ref="queue:BIN-OK",
                 )
-            ]
+            ],
+            location_scope="CONVEYOR_QUEUE",
+            location_code="Q-IN",
         ),
-        material_location_query_service=_LocationQuery(),
-        runtime_hold_repository=_RuntimeHolds(),
     )
 
     response = await service.get_active_objects(None, workline_id=1)
@@ -92,6 +88,7 @@ async def test_workline_active_objects_returns_ok_for_single_source() -> None:
     assert response.truncated is False
     assert response.objects[0].conflict_state == WorklineActiveObjectConflictState.OK
     assert response.objects[0].primary_source == "ON_CONVEYOR:Q-IN"
+    assert "runtime_hold" not in type(response.objects[0]).model_fields
 
 
 @pytest.mark.asyncio
@@ -99,7 +96,7 @@ async def test_workline_active_objects_marks_multi_owner_reconciling() -> None:
     """ON_CONVEYOR + AT_WORK_POSITION 同时出现时进入 RECONCILING。"""
 
     service = WorklineActiveObjectsService(
-        active_fact_provider=_Facts(
+        target_repository=_TargetRows(
             [
                 ActiveObjectFact("BIN-CONFLICT", "ON_CONVEYOR", "Q-IN", "queue:BIN-CONFLICT", object_type="BIN"),
                 ActiveObjectFact(
@@ -109,10 +106,10 @@ async def test_workline_active_objects_marks_multi_owner_reconciling() -> None:
                     "position:BIN-CONFLICT",
                     object_type="BIN",
                 ),
-            ]
+            ],
+            location_scope="CONVEYOR_QUEUE",
+            location_code="Q-IN",
         ),
-        material_location_query_service=_LocationQuery(),
-        runtime_hold_repository=_RuntimeHolds(),
     )
 
     response = await service.get_active_objects(None, workline_id=1)
@@ -127,7 +124,7 @@ async def test_workline_active_objects_promotes_location_reconciling_to_object_s
     """单 owner 本身 OK 时，位置查询 RECONCILING 也必须展示在对象顶层。"""
 
     service = WorklineActiveObjectsService(
-        active_fact_provider=_Facts(
+        target_repository=_TargetRows(
             [
                 ActiveObjectFact(
                     object_code="BIN-LOCATION-CONFLICT",
@@ -136,10 +133,11 @@ async def test_workline_active_objects_promotes_location_reconciling_to_object_s
                     owner_code="Q-IN",
                     evidence_ref="queue:BIN-LOCATION-CONFLICT",
                 )
-            ]
+            ],
+            location_scope="CONVEYOR_QUEUE",
+            location_code="Q-IN",
+            location_conflict=True,
         ),
-        material_location_query_service=_ReconcilingLocationQuery(),
-        runtime_hold_repository=_RuntimeHolds(),
     )
 
     response = await service.get_active_objects(None, workline_id=1)
@@ -147,7 +145,7 @@ async def test_workline_active_objects_promotes_location_reconciling_to_object_s
     assert response.objects[0].conflict_state == WorklineActiveObjectConflictState.RECONCILING
     assert response.objects[0].operator_hint == "RECONCILIATION_REQUIRED"
     assert response.objects[0].location_summary is not None
-    assert response.objects[0].location_summary.conflict_state == MaterialLocationConflictState.RECONCILING
+    assert response.objects[0].location_summary.conflict_state == WorklineActiveObjectConflictState.RECONCILING
 
 
 @pytest.mark.asyncio
@@ -176,9 +174,7 @@ async def test_workline_active_objects_transient_window_expires_to_reconciling()
         ),
     ]
     service = WorklineActiveObjectsService(
-        active_fact_provider=_Facts(facts),
-        material_location_query_service=_LocationQuery(),
-        runtime_hold_repository=_RuntimeHolds(),
+        target_repository=_TargetRows(facts, location_scope="CONVEYOR_QUEUE", location_code="Q-IN"),
     )
 
     transient = await service.get_active_objects(None, workline_id=1, now=now)
@@ -186,105 +182,3 @@ async def test_workline_active_objects_transient_window_expires_to_reconciling()
 
     assert transient.objects[0].conflict_state == WorklineActiveObjectConflictState.TRANSIENT
     assert expired.objects[0].conflict_state == WorklineActiveObjectConflictState.RECONCILING
-
-
-@pytest.mark.asyncio
-async def test_workline_active_objects_includes_runtime_hold_freeze_scope() -> None:
-    """RuntimeHold open 时视图展示 freeze scope 和 allowed_next_effect_scope。"""
-
-    service = WorklineActiveObjectsService(
-        active_fact_provider=_Facts(
-            [
-                ActiveObjectFact(
-                    object_code="BIN-HOLD",
-                    object_type="BIN",
-                    owner_kind="ON_CONVEYOR",
-                    owner_code="Q-IN",
-                    evidence_ref="queue:BIN-HOLD",
-                )
-            ]
-        ),
-        material_location_query_service=_LocationQuery(),
-        runtime_hold_repository=_RuntimeHolds(
-            [
-                SimpleNamespace(
-                    source_reason="BIN_CELL_RESERVATION_OWNER_MISMATCH",
-                    evidence_snapshot_json={
-                        "object_key": "BIN-HOLD",
-                        "freeze_scope": "BIN_CELL",
-                        "allowed_next_effect_scope": "RECONCILIATION_ONLY",
-                    },
-                )
-            ]
-        ),
-    )
-
-    response = await service.get_active_objects(None, workline_id=1)
-
-    assert response.objects[0].runtime_hold is not None
-    assert response.objects[0].runtime_hold.freeze_scope == "BIN_CELL"
-    assert response.objects[0].runtime_hold.allowed_next_effect_scope == "RECONCILIATION_ONLY"
-
-
-@pytest.mark.asyncio
-async def test_active_object_fact_provider_uses_membership_entered_at_for_transient_deadline() -> None:
-    """transient_until 必须基于事实进入时间，不能随每次读取向后滑动。"""
-
-    entered_at = timezone.now_utc() - timedelta(minutes=5)
-    entered_at_ms = int(entered_at.timestamp() * 1000)
-    provider = RuntimeActiveObjectFactProvider(
-        membership_repository=_Memberships(
-            [
-                SimpleNamespace(
-                    id=99,
-                    bin_code="BIN-MOVE",
-                    placeholder_key=None,
-                    queue_code="Q-IN",
-                    entered_at=entered_at_ms,
-                )
-            ]
-        ),
-        transient_seconds=30,
-    )
-
-    facts = await provider.list_active_object_facts(None, workline_id=1)
-
-    assert len(facts) == 1
-    assert facts[0].transient_until == timezone.to_utc(entered_at_ms / 1000) + timedelta(seconds=30)
-
-
-@pytest.mark.asyncio
-async def test_active_object_fact_provider_material_location_facts_are_bin_only() -> None:
-    """当前 ConveyorQueueMembership 来源只能产出 BIN active projection，不能按调用方伪装成 PKG。"""
-
-    provider = RuntimeActiveObjectFactProvider(
-        membership_repository=_Memberships(
-            [
-                SimpleNamespace(
-                    id=100,
-                    bin_code="BIN-ACTIVE",
-                    placeholder_key=None,
-                    queue_code="Q-IN",
-                    entered_at=None,
-                    evidence_json={"source": "queue"},
-                )
-            ]
-        )
-    )
-
-    pkg_facts = await provider.list_material_location_facts(
-        None,
-        workline_id=1,
-        object_type="PKG",
-        object_key="BIN-ACTIVE",
-    )
-    bin_facts = await provider.list_material_location_facts(
-        None,
-        workline_id=1,
-        object_type="BIN",
-        object_key="BIN-ACTIVE",
-    )
-
-    assert pkg_facts == []
-    assert bin_facts[0]["object_type"] == "BIN"
-    assert bin_facts[0]["object_key"] == "BIN-ACTIVE"

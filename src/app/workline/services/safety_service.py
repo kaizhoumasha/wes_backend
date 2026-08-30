@@ -8,10 +8,9 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
-from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
-from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
+from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -115,20 +114,12 @@ class WorkLineSafetyService:
         workline_repository: WorkLineRepository | None = None,
         incident_repository: WorklineSafetyIncidentRepository | None = None,
         command_repository: DeviceCommandRepository | None = None,
-        workline_status_projection_service: Any | None = None,
     ) -> None:
         """初始化安全服务依赖。"""
 
         self.workline_repository = workline_repository or default_workline_repository
         self.incident_repository = incident_repository or WorklineSafetyIncidentRepository()
         self.command_repository = command_repository or DeviceCommandRepository()
-        if workline_status_projection_service is None:
-            from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
-                workline_runtime_status_projection_service,
-            )
-
-            workline_status_projection_service = workline_runtime_status_projection_service
-        self.workline_status_projection_service = workline_status_projection_service
 
     async def assert_accepting_work(self, db: AsyncSession, *, workline_id: int) -> None:
         """校验 WorkLine 当前可接收新事件/新任务。"""
@@ -136,19 +127,16 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id, populate_existing=True)
         if workline is None:
             raise WorkLineSafetyBlocked(f"WORKLINE_NOT_FOUND: workline_id={workline_id}")
-        await self.workline_status_projection_service.assert_accepting_runtime_work(
-            db,
-            workline_id=workline_id,
-            blocked_error=WorkLineSafetyBlocked,
-            populate_existing=True,
-        )
+        if not bool(getattr(workline, "is_active", False)):
+            raise WorkLineSafetyBlocked(f"WORKLINE_INACTIVE: workline_id={workline_id}")
+        if await self.incident_repository.get_active_for_workline(db, workline_id) is not None:
+            raise WorkLineSafetyBlocked(f"WORKLINE_ESTOPPED: workline_id={workline_id}")
 
     async def handle_estop(
         self,
         db: AsyncSession,
         *,
         workline_id: int,
-        source_inbox_id: int | None = None,
         source_evidence_id: int | None = None,
         source_device_id: int | None = None,
         source_command_id: int | None = None,
@@ -164,7 +152,6 @@ class WorkLineSafetyService:
         if incident is None:
             incident = WorklineSafetyIncident(
                 workline_id=workline_id,
-                source_inbox_id=source_inbox_id,
                 source_evidence_id=source_evidence_id,
                 source_device_id=source_device_id,
                 source_command_id=source_command_id,
@@ -181,14 +168,6 @@ class WorkLineSafetyService:
         incident.drain_status = "PENDING"
         incident.drain_error_json = {}
 
-        now = timezone.now_for_db()
-        await self.workline_status_projection_service.project_estopped_active_hold(
-            db,
-            workline_id=workline_id,
-            reason="ESTOP_PRESSED",
-            active_safety_incident_id=cast("int | None", incident.id),
-            occurred_at=now,
-        )
         await db.flush()
         return incident
 
@@ -223,36 +202,6 @@ class WorkLineSafetyService:
         await db.flush()
         return incident
 
-    async def simulate_estop(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int,
-        reason: str | None = None,
-        source_device_id: int | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> WorklineSafetyIncident:
-        """沙箱/开发环境模拟 WorkLine 软件急停。"""
-
-        trigger_payload = {
-            "event_type": "ESTOP_PRESSED",
-            "source": "sandbox",
-            **dict(payload or {}),
-        }
-        if reason:
-            trigger_payload["reason"] = reason
-
-        incident = await self.handle_estop(
-            db,
-            workline_id=workline_id,
-            source_device_id=source_device_id,
-            trigger_payload=trigger_payload,
-        )
-        if reason:
-            incident.reason = reason
-        await db.flush()
-        return incident
-
     async def clear_estop(
         self,
         db: AsyncSession,
@@ -270,13 +219,6 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {workline_id}")
-        runtime_snapshot = await self.workline_status_projection_service.runtime_status_snapshot(
-            db,
-            workline_id=workline_id,
-        )
-        if runtime_snapshot.runtime_status != WorkLineRuntimeStatus.ESTOPPED.value:
-            raise ValueError("工作线当前不处于急停状态")
-
         incident = await self.incident_repository.get_active_for_workline(db, workline_id)
         if incident is None:
             raise ValueError("未找到生效中的急停事件")
@@ -291,15 +233,9 @@ class WorkLineSafetyService:
             {
                 "device_runtime_authority": "ECS_STATUS_OBSERVATION",
                 "released_device_rows": 0,
-                "workline_runtime_status": WorkLineRuntimeStatus.STOPPED.value,
+                "workline_runtime_status": "STOPPED",
             },
             max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
-        )
-
-        await self.workline_status_projection_service.project_stopped_waiting_start(
-            db,
-            workline_id=workline_id,
-            evidence_json={"safety_incident_id": incident.id, "cleared_by": operator_id},
         )
         await db.flush()
         return incident

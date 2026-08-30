@@ -9,19 +9,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.app.active_objects.registry import ActiveObjectFact, ActiveObjectRegistry
-from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
-    RuntimeHoldRepository,
-    runtime_hold_repository,
-)
-from src.app.runtime.orchestration.services.query.active_object_fact_provider import (
-    runtime_active_object_fact_provider,
-)
-from src.app.runtime.orchestration.services.query.material_location_query_service import (
-    MaterialLocationConflictState,
-    MaterialLocationQueryService,
-    MaterialLocationResult,
-    material_location_query_service,
-)
+from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -38,12 +26,13 @@ class WorklineActiveObjectConflictState(str, Enum):
     RECONCILING = "RECONCILING"
 
 
-class RuntimeHoldView(BaseModel):
-    """Active object 关联 RuntimeHold 展示字段。"""
+class WorklineActiveObjectLocationView(BaseModel):
+    """来自具体 Resource projection 的当前位置证据。"""
 
-    reason_code: str | None = None
-    freeze_scope: str | None = None
-    allowed_next_effect_scope: str | None = None
+    location_scope: str
+    location_code: str
+    conflict_state: WorklineActiveObjectConflictState
+    evidence_refs: list[str] = Field(default_factory=list)
 
 
 class WorklineActiveObjectView(BaseModel):
@@ -57,8 +46,7 @@ class WorklineActiveObjectView(BaseModel):
     primary_source: str | None = None
     all_sources: list[str] = Field(default_factory=list)
     operator_hint: str | None = None
-    location_summary: MaterialLocationResult | None = None
-    runtime_hold: RuntimeHoldView | None = None
+    location_summary: WorklineActiveObjectLocationView | None = None
     evidence_refs: list[str] = Field(default_factory=list)
 
 
@@ -77,15 +65,11 @@ class WorklineActiveObjectsService:
     def __init__(
         self,
         *,
-        active_fact_provider: Any = runtime_active_object_fact_provider,
-        material_location_query_service: MaterialLocationQueryService | Any = material_location_query_service,
-        runtime_hold_repository: RuntimeHoldRepository | Any = runtime_hold_repository,
+        target_repository: WorkLineRepository | Any = workline_repository,
         active_object_registry: ActiveObjectRegistry | None = None,
         max_objects: int = 200,
     ) -> None:
-        self.active_fact_provider = active_fact_provider
-        self.material_location_query_service = material_location_query_service
-        self.runtime_hold_repository = runtime_hold_repository
+        self.target_repository = target_repository
         self.active_object_registry = active_object_registry or ActiveObjectRegistry()
         self.max_objects = max_objects
 
@@ -99,27 +83,39 @@ class WorklineActiveObjectsService:
         """读取 WorkLine active/current 对象视图。"""
 
         resolved_now = now or timezone.now_utc()
-        facts = await self.active_fact_provider.list_active_object_facts(db, workline_id=workline_id)
-        holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, workline_id)
-        holds_by_object = _index_holds_by_object(holds)
-
-        grouped: dict[tuple[str, str], list[ActiveObjectFact]] = defaultdict(list)
-        for fact in facts:
-            grouped[(fact.object_type.upper(), fact.object_code)].append(fact)
+        rows = await self.target_repository.list_target_active_object_facts(
+            db,
+            workline_id=workline_id,
+            limit=max(self.max_objects * 3, self.max_objects + 1),
+        )
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[(str(row["object_type"]).upper(), str(row["object_key"]))].append(row)
 
         views: list[WorklineActiveObjectView] = []
-        for (object_type, object_key), object_facts in grouped.items():
-            if not object_facts:
+        for (object_type, object_key), object_rows in grouped.items():
+            if not object_rows:
                 continue
+            object_facts = [
+                ActiveObjectFact(
+                    object_code=object_key,
+                    object_type=object_type,
+                    owner_kind=str(row["owner_kind"]),
+                    owner_code=str(row["owner_code"]),
+                    evidence_ref=str(row["evidence_ref"]),
+                    presence_type=str(row["presence_type"]) if row.get("presence_type") else None,
+                    transient_until=row.get("transient_until"),
+                )
+                for row in object_rows
+            ]
             resolution = self.active_object_registry.resolve(object_facts, now=resolved_now)
             conflict_state = _map_conflict_state(resolution.status)
-            location_summary = await self.material_location_query_service.query_by_workline_active_object(
-                db,
-                workline_id=workline_id,
-                object_type=object_type,
-                object_key=object_key,
-            )
-            conflict_state = _merge_location_conflict_state(conflict_state, location_summary)
+            location_summary = _location_summary(object_rows)
+            if (
+                location_summary is not None
+                and location_summary.conflict_state == WorklineActiveObjectConflictState.RECONCILING
+            ):
+                conflict_state = WorklineActiveObjectConflictState.RECONCILING
             views.append(
                 WorklineActiveObjectView(
                     object_type=object_type,
@@ -129,7 +125,6 @@ class WorklineActiveObjectsService:
                     all_sources=[_source_label(fact.owner_kind, fact.owner_code) for fact in object_facts],
                     operator_hint=_operator_hint(conflict_state),
                     location_summary=location_summary,
-                    runtime_hold=holds_by_object.get(object_key),
                     evidence_refs=resolution.evidence_refs,
                 )
             )
@@ -152,14 +147,23 @@ def _map_conflict_state(status: str) -> WorklineActiveObjectConflictState:
     return WorklineActiveObjectConflictState.OK
 
 
-def _merge_location_conflict_state(
-    conflict_state: WorklineActiveObjectConflictState,
-    location_summary: MaterialLocationResult,
-) -> WorklineActiveObjectConflictState:
-    location_state = getattr(location_summary.conflict_state, "value", location_summary.conflict_state)
-    if location_state == MaterialLocationConflictState.RECONCILING.value:
-        return WorklineActiveObjectConflictState.RECONCILING
-    return conflict_state
+def _location_summary(object_rows: list[dict[str, Any]]) -> WorklineActiveObjectLocationView | None:
+    location_rows = [row for row in object_rows if row.get("location_scope") and row.get("location_code")]
+    if not location_rows:
+        return None
+    locations = {(str(row["location_scope"]), str(row["location_code"])) for row in location_rows}
+    conflict_state = (
+        WorklineActiveObjectConflictState.RECONCILING
+        if len(locations) > 1 or any(bool(row.get("location_conflict")) for row in location_rows)
+        else WorklineActiveObjectConflictState.OK
+    )
+    location_scope, location_code = sorted(locations)[0]
+    return WorklineActiveObjectLocationView(
+        location_scope=location_scope,
+        location_code=location_code,
+        conflict_state=conflict_state,
+        evidence_refs=[str(row["evidence_ref"]) for row in location_rows],
+    )
 
 
 def _primary_source(owner_kind: str | None, owner_code: str | None) -> str | None:
@@ -180,27 +184,12 @@ def _operator_hint(conflict_state: WorklineActiveObjectConflictState) -> str | N
     return None
 
 
-def _index_holds_by_object(holds: list[Any]) -> dict[str, RuntimeHoldView]:
-    indexed: dict[str, RuntimeHoldView] = {}
-    for hold in holds:
-        evidence = dict(getattr(hold, "evidence_snapshot_json", None) or {})
-        object_key = evidence.get("object_key") or evidence.get("bin_code") or evidence.get("pkg_code")
-        if not object_key:
-            continue
-        indexed[str(object_key)] = RuntimeHoldView(
-            reason_code=getattr(hold, "source_reason", None),
-            freeze_scope=evidence.get("freeze_scope"),
-            allowed_next_effect_scope=evidence.get("allowed_next_effect_scope"),
-        )
-    return indexed
-
-
 workline_active_objects_service = WorklineActiveObjectsService()
 
 
 __all__ = [
-    "RuntimeHoldView",
     "WorklineActiveObjectConflictState",
+    "WorklineActiveObjectLocationView",
     "WorklineActiveObjectView",
     "WorklineActiveObjectsResponse",
     "WorklineActiveObjectsService",

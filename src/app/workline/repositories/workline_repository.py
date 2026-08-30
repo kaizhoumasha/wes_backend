@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import String, and_, exists, literal, or_, select, true, union_all
+from sqlalchemy import String, and_, case, exists, func, literal, or_, select, true, union_all
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,10 +15,12 @@ from src.app.execution.models.inbound_evidence import (
 )
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
+from src.app.resource.models.resource import BinPlacement, BinPlacementStatus, RackPlacement, RackPlacementStatus
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.workline.models import WorkLine
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
+from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.database.base_repository import BaseRepository
 
 
@@ -246,6 +248,180 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             "by_type": by_type,
         }
 
+    async def list_target_active_object_facts(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """聚合 target owners，供 WorkLine active-object API 只读投影。"""
+
+        epoch = cast("Any", LineRunEpoch).__table__.c
+        material = cast("Any", MaterialExecution).__table__.c
+        bin_execution = cast("Any", BinExecution).__table__.c
+        command = cast("Any", DeviceCommand).__table__.c
+        transport = cast("Any", TransportTask).__table__.c
+        confirmation = cast("Any", WmsConfirmation).__table__.c
+        incident = cast("Any", WorklineSafetyIncident).__table__.c
+        bin_placement = cast("Any", BinPlacement).__table__.c
+        rack_placement = cast("Any", RackPlacement).__table__.c
+
+        target_rows = union_all(
+            self._active_object_query(
+                "LINE_RUN_EPOCH",
+                epoch.epoch_code,
+                "LINE_RUN_EPOCH",
+                epoch.status,
+                literal("line_run_epoch:") + sa_cast(epoch.id, String),
+                epoch.workline_id == workline_id,
+                epoch.status == LineRunEpochStatus.ACTIVE,
+            ),
+            self._active_object_query(
+                "MATERIAL_EXECUTION",
+                material.material_trace_id,
+                "MATERIAL_EXECUTION",
+                material.execution_code,
+                literal("material_execution:") + sa_cast(material.id, String),
+                material.workline_id == workline_id,
+                material.status != MaterialExecutionStatus.CLOSED,
+            ),
+            self._active_object_query(
+                "BIN_EXECUTION",
+                bin_execution.bin_id,
+                "BIN_EXECUTION",
+                bin_execution.execution_code,
+                literal("bin_execution:") + sa_cast(bin_execution.id, String),
+                bin_execution.workline_id == workline_id,
+                bin_execution.status == BinExecutionStatus.ACTIVE,
+            ),
+            self._active_object_query(
+                "DEVICE_COMMAND",
+                command.command_code,
+                "DEVICE_COMMAND",
+                command.device_code,
+                literal("device_command:") + sa_cast(command.id, String),
+                epoch.workline_id == workline_id,
+                command.line_run_epoch_id == epoch.id,
+                command.status.in_(
+                    (
+                        CommandStatus.PENDING,
+                        CommandStatus.DISPATCHING,
+                        CommandStatus.ACKNOWLEDGED,
+                        CommandStatus.RECONCILING,
+                    )
+                ),
+                from_models=(DeviceCommand, LineRunEpoch),
+            ),
+            self._active_object_query(
+                "TRANSPORT_TASK",
+                transport.transport_task_id,
+                "TRANSPORT_TASK",
+                transport.status,
+                literal("transport_task:") + sa_cast(transport.id, String),
+                transport.authority_workline_id == workline_id,
+                transport.status.in_(
+                    (
+                        TransportTaskStatus.PENDING,
+                        TransportTaskStatus.ACCEPTED,
+                        TransportTaskStatus.RECONCILING,
+                    )
+                ),
+            ),
+            self._active_object_query(
+                "WMS_CONFIRMATION",
+                confirmation.operation_id,
+                "WMS_CONFIRMATION",
+                confirmation.operation,
+                literal("wms_confirmation:") + sa_cast(confirmation.id, String),
+                material.workline_id == workline_id,
+                confirmation.material_execution_id == material.id,
+                confirmation.status != WmsConfirmationStatus.COMPLETED,
+                from_models=(WmsConfirmation, MaterialExecution),
+            ),
+            self._active_object_query(
+                "SAFETY_INCIDENT",
+                sa_cast(incident.id, String),
+                "SAFETY_INCIDENT",
+                incident.event_type,
+                literal("safety_incident:") + sa_cast(incident.id, String),
+                incident.workline_id == workline_id,
+                incident.status == WorklineSafetyIncidentStatus.ACTIVE,
+            ),
+            self._active_object_query(
+                "BIN_RESOURCE",
+                func.coalesce(bin_placement.bin_code, bin_placement.placeholder_key),
+                "BIN_PLACEMENT",
+                bin_placement.position_code,
+                literal("resource_bin_placement:") + sa_cast(bin_placement.id, String),
+                bin_placement.workline_id == workline_id,
+                bin_placement.ended_at.is_(None),
+                location_scope=bin_placement.position_type,
+                location_code=bin_placement.position_code,
+                location_conflict=case(
+                    (bin_placement.placement_status == BinPlacementStatus.UNKNOWN, True),
+                    else_=False,
+                ),
+            ),
+            self._active_object_query(
+                "RACK_RESOURCE",
+                rack_placement.rack_code,
+                "RACK_PLACEMENT",
+                func.coalesce(rack_placement.position_code, rack_placement.location_code),
+                literal("resource_rack_placement:") + sa_cast(rack_placement.id, String),
+                rack_placement.workline_id == workline_id,
+                rack_placement.ended_at.is_(None),
+                location_scope=literal("WORKLINE_POSITION"),
+                location_code=func.coalesce(rack_placement.position_code, rack_placement.location_code),
+                location_conflict=case(
+                    (rack_placement.placement_status == RackPlacementStatus.UNKNOWN, True),
+                    else_=False,
+                ),
+            ),
+        ).subquery("target_active_object_facts")
+        result = await db.execute(
+            select(target_rows)
+            .where(target_rows.c.object_key.is_not(None), target_rows.c.object_key != "")
+            .order_by(target_rows.c.object_type, target_rows.c.object_key, target_rows.c.owner_kind)
+            .limit(limit)
+        )
+        return [dict(row._mapping) for row in result]
+
+    @staticmethod
+    def _active_object_query(
+        object_type: str,
+        object_key: Any,
+        owner_kind: str,
+        owner_code: Any,
+        evidence_ref: Any,
+        *predicates: Any,
+        from_models: tuple[type[Any], ...] = (),
+        location_scope: Any = None,
+        location_code: Any = None,
+        location_conflict: Any = False,
+        presence_type: Any = None,
+        transient_until: Any = None,
+    ) -> Any:
+        query = select(
+            literal(object_type).label("object_type"),
+            sa_cast(object_key, String).label("object_key"),
+            literal(owner_kind).label("owner_kind"),
+            sa_cast(owner_code, String).label("owner_code"),
+            sa_cast(evidence_ref, String).label("evidence_ref"),
+            sa_cast(location_scope, String).label("location_scope"),
+            sa_cast(location_code, String).label("location_code"),
+            location_conflict.label("location_conflict")
+            if hasattr(location_conflict, "label")
+            else literal(bool(location_conflict)).label("location_conflict"),
+            sa_cast(presence_type, String).label("presence_type"),
+            transient_until.label("transient_until")
+            if hasattr(transient_until, "label")
+            else literal(transient_until).label("transient_until"),
+        )
+        if from_models:
+            query = query.select_from(*from_models)
+        return query.where(*predicates)
+
     @staticmethod
     def _sample_query(
         owner_order: int,
@@ -267,3 +443,9 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         if from_models:
             query = query.select_from(*from_models)
         return query.where(predicate)
+
+
+workline_repository = WorkLineRepository()
+
+
+__all__ = ["WorkLineRepository", "workline_repository"]

@@ -1,41 +1,15 @@
-"""工作线诊断操作 API。"""
+"""WorkLine START 与 Safety target-only API。"""
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
-from src.app.runtime.orchestration.models.operation import (  # noqa: TC001 - FastAPI resolves runtime annotations
-    ReplayInboxRequest,
-    ResolveEffectReconciliationRequest,
-    ResolveRuntimeReconciliationRequest,
-    SandboxAckRequest,
-    SandboxExternalCallbackRequest,
-)
-from src.app.runtime.orchestration.services.effect_reconciliation_resolution_service import (
-    effect_reconciliation_resolution_service,
-)
-from src.app.runtime.orchestration.services.effect_reducer_service import (
-    EffectIntentNotFound,
-    InvalidReconciliationEvent,
-    ReconciliationResolutionConflict,
-)
-from src.app.runtime.orchestration.services.intent import operation_service
-from src.app.runtime.orchestration.services.runtime_inbox import (
-    RuntimeInboxAuditPersistenceFailed,
-    RuntimeInboxConflict,
-    RuntimeInboxNotFound,
-    RuntimeInboxReplayNotAllowed,
-)
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
-from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runtime annotation
-    ClearWorkLineEstopRequest,
-    SimulateWorkLineEstopRequest,
-)
+from src.app.workline.models.safety import ClearWorkLineEstopRequest  # noqa: TC001 - FastAPI runtime annotation
 from src.app.workline.models.start import WorkLineStartErrorResponse, WorkLineStartRequest, WorkLineStartResponse
-from src.app.workline.services import WorkLineSafetyBlocked, workline_safety_service
+from src.app.workline.services import workline_safety_service
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
     WorkLineStartIdempotencyConflictError,
@@ -48,50 +22,10 @@ from src.core.rbac import RequirePermission
 from src.core.response import ResponseCode, ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode, ServerErrorCode
 from src.core.security import require_auth
-from src.core.task_queue_gateway import OutboxDispatchTarget, TaskQueueGateway, task_queue_gateway
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 from src.utils.value_normalization import enum_value
 
-workline_operation_service = operation_service.workline_operation_service
-logger = logging.getLogger(__name__)
-
 router = APIRouter(tags=["工作线诊断操作"])
-
-
-def _inbox_response(inbox: Any) -> dict[str, Any]:
-    return {
-        "id": inbox.id,
-        "kind": enum_value(inbox.kind),
-        "source_message_id": getattr(inbox, "source_message_id", None) or getattr(inbox, "source_event_id", None),
-        "trace_id": inbox.trace_id,
-        "session_id": inbox.workline_session_id,
-        "workline_id": inbox.workline_id,
-        "status": enum_value(inbox.status),
-    }
-
-
-def _outbox_response(outbox: Any) -> dict[str, Any]:
-    raw_payload = outbox.payload_json
-    payload = cast("dict[str, Any]", raw_payload) if isinstance(raw_payload, dict) else {}
-    return {
-        "id": outbox.id,
-        "session_id": outbox.session_id,
-        "workline_id": outbox.workline_id,
-        "dispatch_key": outbox.dispatch_key,
-        "dispatch_type": enum_value(outbox.dispatch_type),
-        "target_type": enum_value(outbox.target_type),
-        "target_code": outbox.target_code,
-        "status": enum_value(outbox.status),
-        "payload_json": payload,
-        "source_device": None,
-        "last_error": getattr(outbox, "last_error", None),
-        "command_status": getattr(outbox, "command_status", None),
-        "is_current_action": getattr(outbox, "is_current_action", None),
-        "is_actionable": getattr(outbox, "is_actionable", None),
-        "runtime_hold_id": getattr(outbox, "runtime_hold_id", None),
-        "failure_summary": getattr(outbox, "failure_summary", None),
-        "history_group_key": getattr(outbox, "history_group_key", None),
-    }
 
 
 def _safety_incident_response(incident: Any) -> dict[str, Any]:
@@ -139,222 +73,6 @@ def _workline_start_error_response(
     )
 
 
-def _enqueue_runtime_inbox_processing() -> None:
-    """触发 Runtime Inbox 异步处理。"""
-
-    task_queue_gateway.enqueue_runtime_inbox(limit=10)
-
-
-@router.get(
-    "/sandbox/pending",
-    summary="[biz:workline:sandbox-pending] 查询沙箱待处理 Outbox",
-    response_model=ResponseSchemaModel[list[dict[str, Any]]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:sandbox-pending"))],
-)
-async def get_sandbox_pending(
-    db: AsyncSessionDep,
-    limit: int = Query(default=50, ge=1, le=500, description="最多返回条数"),
-    workline_id: int | None = Query(default=None, ge=1, description="按工作线过滤"),
-    device_id: int | None = Query(default=None, ge=1, description="按设备过滤"),
-) -> ResponseSchemaModel[list[dict[str, Any]]]:
-    items = await workline_operation_service.get_sandbox_pending(
-        db, limit=limit, workline_id=workline_id, device_id=device_id
-    )
-    return cast(
-        "ResponseSchemaModel[list[dict[str, Any]]]", response_builder.success(data=[_outbox_response(i) for i in items])
-    )
-
-
-@router.get(
-    "/sandbox/completed",
-    summary="[biz:workline:sandbox-completed] 查询沙箱已完成 Outbox",
-    response_model=ResponseSchemaModel[list[dict[str, Any]]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:sandbox-completed"))],
-)
-async def get_sandbox_completed(
-    db: AsyncSessionDep,
-    limit: int = Query(default=50, ge=1, le=500, description="最多返回条数"),
-    workline_id: int | None = Query(default=None, ge=1, description="按工作线过滤"),
-    device_id: int | None = Query(default=None, ge=1, description="按设备过滤"),
-) -> ResponseSchemaModel[list[dict[str, Any]]]:
-    items = await workline_operation_service.get_sandbox_completed(
-        db, limit=limit, workline_id=workline_id, device_id=device_id
-    )
-    return cast("ResponseSchemaModel[list[dict[str, Any]]]", response_builder.success(data=items))
-
-
-@router.post(
-    "/replay/inboxes/{inbox_id}",
-    summary="[biz:workline:replay-inbox] Replay 历史 Inbox",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    responses={
-        400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "源 Inbox 当前状态不允许 Replay"},
-        404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "源 Inbox 或所属工作线不存在"},
-        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 幂等身份冲突"},
-        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 审计证据暂时无法持久化"},
-    },
-    dependencies=[Depends(RequirePermission("biz:workline:replay-inbox"))],
-)
-async def replay_inbox(
-    inbox_id: int,
-    payload: ReplayInboxRequest,
-    response: Response,
-    db: AsyncSessionDep,
-    current_user_id: Annotated[int, Depends(require_auth)],
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        replay = await workline_operation_service.replay_inbox(
-            db,
-            inbox_id=inbox_id,
-            request_id=payload.request_id,
-            actor=str(current_user_id),
-            reason=payload.reason,
-        )
-    except RuntimeInboxNotFound as exc:
-        response.status_code = ResourceErrorCode.NOT_FOUND.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
-        )
-    except RuntimeInboxReplayNotAllowed as exc:
-        error_code = (
-            ResourceErrorCode.NOT_FOUND
-            if exc.reason_code == "SOURCE_WORKLINE_NOT_FOUND"
-            else BusinessErrorCode.INVALID_STATE
-        )
-        response.status_code = error_code.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=error_code, message=str(exc)),
-        )
-    except RuntimeInboxAuditPersistenceFailed as exc:
-        response.status_code = ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED, message=str(exc)),
-        )
-    except RuntimeInboxConflict as exc:
-        response.status_code = ResourceErrorCode.CONFLICT.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),
-        )
-    except WorkLineSafetyBlocked as exc:
-        response.status_code = BusinessErrorCode.INVALID_STATE.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
-        )
-    _enqueue_runtime_inbox_processing()
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
-
-
-@router.post(
-    "/reconciliations/sessions/{session_id}/resolve",
-    summary="[biz:workline:resolve-reconciliation] 解除 runtime reconciliation 隔离，不重发设备命令、不重复执行超时处理、释放安全停靠队列",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:resolve-reconciliation"))],
-)
-async def resolve_runtime_reconciliation(
-    session_id: int,
-    payload: ResolveRuntimeReconciliationRequest,
-    db: AsyncSessionDep,
-    current_user_id: Annotated[int, Depends(require_auth)],
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        result = await workline_operation_service.resolve_runtime_reconciliation(
-            db,
-            session_id=session_id,
-            request=payload,
-            operator_id=current_user_id,
-        )
-        await publish_deferred_sse_events(db)
-    except ValueError as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=result))
-
-
-@router.post(
-    "/reconciliations/effects/{dispatch_key}/resolve",
-    summary="[biz:workline:resolve-effect-reconciliation] 提交 EFFECT reconciliation 人工决议",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:resolve-effect-reconciliation"))],
-)
-async def resolve_effect_reconciliation(
-    dispatch_key: str,
-    payload: ResolveEffectReconciliationRequest,
-    db: AsyncSessionDep,
-    current_user_id: Annotated[int, Depends(require_auth)],
-    request: Request,
-    response: Response,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        result = await effect_reconciliation_resolution_service.resolve(
-            db,
-            dispatch_key=dispatch_key,
-            request_id=payload.request_id,
-            resolution=payload.resolution,
-            obligation_resolution=payload.obligation_resolution,
-            operator_note=payload.operator_note,
-            operator_id=current_user_id,
-            is_superuser=bool(getattr(request.state, "is_superuser", False)),
-        )
-    except ReconciliationResolutionConflict as exc:
-        response.status_code = ResourceErrorCode.CONFLICT.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),
-        )
-    except EffectIntentNotFound as exc:
-        response.status_code = ResourceErrorCode.NOT_FOUND.http_status
-        return cast(
-            "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
-        )
-    except (InvalidReconciliationEvent, ValueError) as exc:
-        response.status_code = BusinessErrorCode.INVALID_STATE.http_status
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=result))
-
-
-@router.post(
-    "/sandbox/worklines/{workline_id}/simulate-estop",
-    summary="[biz:workline:simulate-estop] 沙箱模拟 WorkLine 软件急停冻结",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:simulate-estop"))],
-)
-async def simulate_workline_estop(
-    workline_id: int,
-    payload: SimulateWorkLineEstopRequest,
-    db: AsyncSessionDep,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    """沙箱专用安全模拟入口；不通过普通 sandbox event 流。"""
-
-    try:
-        incident = await workline_safety_service.simulate_estop(
-            db,
-            workline_id=workline_id,
-            reason=payload.reason,
-            source_device_id=payload.source_device_id,
-            payload=payload.payload,
-        )
-        async with WorklineUnitOfWork(db=db) as uow:
-            await uow.commit()
-        await publish_deferred_sse_events(db)
-    except (ValueError, WorkLineSafetyBlocked) as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    return cast(
-        "ResponseSchemaModel[dict[str, Any]]",
-        response_builder.success(data=_safety_incident_response(incident)),
-    )
-
-
 @router.post(
     "/worklines/{workline_id}/start",
     summary="[biz:workline:start] 启动 WorkLine 并激活运行代际",
@@ -375,7 +93,7 @@ async def start_workline(
     response: Response,
     db: AsyncSessionDep,
 ) -> ResponseSchemaModel[WorkLineStartResponse | WorkLineStartErrorResponse]:
-    """In one transaction replay or create the complete Epoch, then wake SYSTEM outbox."""
+    """在一个事务内 replay 或创建完整 LineRunEpoch。"""
 
     service_candidate = getattr(request.app.state, "workline_start_service", None)
     if service_candidate is None:
@@ -425,35 +143,25 @@ async def start_workline(
             code=ResourceErrorCode.CONFLICT,
             reason="CONFIGURATION_INVALID",
         )
-    else:
-        if result.released_outbox_count:
-            queue_candidate = getattr(request.app.state, "task_queue_gateway", None)
-            if queue_candidate is None:
-                logger.warning("WorkLine START 已提交，但 queue app-state port 未安装；依赖 Beat 扫描 SYSTEM Outbox")
-            else:
-                queue_gateway = cast("TaskQueueGateway", queue_candidate)
-                try:
-                    queue_gateway.enqueue_outbox(targets=(OutboxDispatchTarget.SYSTEM,), limit=50)
-                except Exception:
-                    logger.warning("WorkLine START 已提交，但 SYSTEM Outbox 唤醒失败", exc_info=True)
-        epoch = result.epoch
-        data = WorkLineStartResponse(
-            line_run_epoch_id=epoch.id,
-            epoch_code=epoch.epoch_code,
-            workline_id=epoch.workline_id,
-            plugin_key=epoch.plugin_key,
-            plugin_version=epoch.plugin_version,
-            flow_mode=epoch.flow_mode,
-            epoch_status=enum_value(epoch.status),
-            epoch_started_at=epoch.started_at,
-            epoch_closed_at=epoch.closed_at,
-            current_workline_runtime_status=result.current_workline_runtime_status,
-            created=result.created,
-        )
-        return cast(
-            "ResponseSchemaModel[WorkLineStartResponse]",
-            response_builder.success(data=data.model_dump(mode="json")),
-        )
+
+    epoch = result.epoch
+    data = WorkLineStartResponse(
+        line_run_epoch_id=epoch.id,
+        epoch_code=epoch.epoch_code,
+        workline_id=epoch.workline_id,
+        plugin_key=epoch.plugin_key,
+        plugin_version=epoch.plugin_version,
+        flow_mode=epoch.flow_mode,
+        epoch_status=enum_value(epoch.status),
+        epoch_started_at=epoch.started_at,
+        epoch_closed_at=epoch.closed_at,
+        current_workline_runtime_status=result.current_workline_runtime_status,
+        created=result.created,
+    )
+    return cast(
+        "ResponseSchemaModel[WorkLineStartResponse]",
+        response_builder.success(data=data.model_dump(mode="json")),
+    )
 
 
 @router.post(
@@ -486,59 +194,6 @@ async def clear_workline_estop(
         "ResponseSchemaModel[dict[str, Any]]",
         response_builder.success(data=_clear_estop_response(incident)),
     )
-
-
-@router.post(
-    "/sandbox/ack",
-    summary="[biz:workline:submit-sandbox-ack] 沙箱模拟 Command ACK",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:submit-sandbox-ack"))],
-)
-async def submit_sandbox_ack(
-    payload: SandboxAckRequest,
-    db: AsyncSessionDep,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        outbox = await workline_operation_service.submit_sandbox_ack(
-            db,
-            dispatch_key=payload.dispatch_key,
-        )
-    except ValueError as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    await publish_deferred_sse_events(db)
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_outbox_response(outbox)))
-
-
-@router.post(
-    "/sandbox/external-callbacks",
-    summary="[biz:workline:submit-sandbox-external-callback] 沙箱模拟 External HTTP 回调",
-    response_model=ResponseSchemaModel[dict[str, Any]],
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:submit-sandbox-external-callback"))],
-)
-async def submit_sandbox_external_callback(
-    payload: SandboxExternalCallbackRequest,
-    db: AsyncSessionDep,
-) -> ResponseSchemaModel[dict[str, Any]]:
-    try:
-        inbox = await workline_operation_service.submit_sandbox_external_callback(
-            db,
-            dispatch_key=payload.dispatch_key,
-            callback_type=payload.callback_type,
-            payload=payload.payload,
-            source_system=payload.source_system,
-            source_event_id=payload.source_event_id,
-            source_version=payload.source_version,
-            request_id=payload.request_id,
-            occurred_at=payload.occurred_at,
-            timestamp=payload.timestamp,
-            signature=payload.signature,
-        )
-    except ValueError as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_runtime_inbox_processing()
-    return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
 __all__ = ["router"]

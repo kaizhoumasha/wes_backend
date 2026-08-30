@@ -20,9 +20,11 @@ from src.app.execution.models import (
     WmsConfirmation,
 )
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
+from src.app.resource.models import BinPlacement, RackPlacement, ResourceSourceSystem
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding, LineRunEpochStatus
+from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 
@@ -151,7 +153,27 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 request_payload={},
                 deadline_at=now + timedelta(minutes=1),
             )
-            db.add_all([command, transport, confirmation])
+            incident = WorklineSafetyIncident(workline_id=line.id)
+            bin_placement = BinPlacement(
+                bin_code=bin_execution.bin_id,
+                position_type="WORKLINE_POSITION",
+                position_code="TARGET-BIN-POSITION",
+                workline_id=line.id,
+                placement_status="ARRIVED",
+                source_system=ResourceSourceSystem.WES_RUNTIME,
+                source_event_id=f"TARGET-BIN-EVIDENCE-{identity}",
+                started_at=now,
+            )
+            rack_placement = RackPlacement(
+                rack_code=f"TARGET-RACK-{identity}",
+                workline_id=line.id,
+                position_code="TARGET-RACK-POSITION",
+                placement_status="ARRIVED",
+                source_system=ResourceSourceSystem.WES_RUNTIME,
+                source_event_id=f"TARGET-RACK-EVIDENCE-{identity}",
+                started_at=now,
+            )
+            db.add_all([command, transport, confirmation, incident, bin_placement, rack_placement])
             await db.flush()
 
             repository = WorkLineRepository()
@@ -172,6 +194,29 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 "id": str(epoch.id),
                 "status": "ACTIVE",
                 "identity": epoch.epoch_code,
+            }
+            active_objects = await repository.list_target_active_object_facts(db, workline_id=line.id)
+            assert {(row["object_type"], row["object_key"]) for row in active_objects} == {
+                ("LINE_RUN_EPOCH", epoch.epoch_code),
+                ("MATERIAL_EXECUTION", material.material_trace_id),
+                ("BIN_EXECUTION", bin_execution.bin_id),
+                ("DEVICE_COMMAND", command.command_code),
+                ("TRANSPORT_TASK", transport.transport_task_id),
+                ("WMS_CONFIRMATION", confirmation.operation_id),
+                ("SAFETY_INCIDENT", str(incident.id)),
+                ("BIN_RESOURCE", bin_placement.bin_code),
+                ("RACK_RESOURCE", rack_placement.rack_code),
+            }
+            assert {row["owner_kind"] for row in active_objects} == {
+                "LINE_RUN_EPOCH",
+                "MATERIAL_EXECUTION",
+                "BIN_EXECUTION",
+                "DEVICE_COMMAND",
+                "TRANSPORT_TASK",
+                "WMS_CONFIRMATION",
+                "SAFETY_INCIDENT",
+                "BIN_PLACEMENT",
+                "RACK_PLACEMENT",
             }
 
             epoch.status = LineRunEpochStatus.CLOSED
