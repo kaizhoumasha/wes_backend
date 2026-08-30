@@ -22,7 +22,8 @@ SERVICES = {
     "database": "test_prefork",
     "database_url": "postgresql+asyncpg://user:password@127.0.0.1:5432/test_prefork",
     "redis_url": "redis://127.0.0.1:6379/15",
-    "wms_provider_profile_file": "test-wms-provider.yaml",
+    "wms_base_url": "http://127.0.0.1:8011",
+    "transport_submit_path": "/api/v1/wes/transport-requests",
 }
 
 
@@ -89,6 +90,8 @@ def test_worker_start_declares_the_dynamic_cli_queue_in_its_environment(monkeypa
         worker.start()
 
     assert captured_environment["CELERY_WORKER_QUEUES"] == worker.queue
+    assert captured_environment["WMS_BASE_URL"] == "http://127.0.0.1:8011"
+    assert captured_environment["TRANSPORT_SUBMIT_PATH"] == "/api/v1/wes/transport-requests"
     worker._log_file.close()
     worker.log_path.unlink(missing_ok=True)
     worker.project_log_dir.rmdir()

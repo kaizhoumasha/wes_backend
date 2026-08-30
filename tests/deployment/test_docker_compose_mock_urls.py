@@ -7,53 +7,20 @@ import yaml
 from src.core.conf import Settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HMAC_SECRET_NAMES = (
-    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
-    "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1",
-    "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",
-    "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
-    "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2",
-    "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2",
-)
-REVOKED_CREDENTIAL_REFERENCES_NAME = "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES"
-STATUS_CONFIG_NAMES = (
-    "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
-    "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
-    "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
-    "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
-    "WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS",
-    "WES_EFFECT_NOT_FOUND_GRACE_SECONDS",
-    "WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS",
-    "WES_EFFECT_STATUS_SCAN_BATCH_SIZE",
-    "WES_EFFECT_STATUS_MAX_IN_FLIGHT",
-    "WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS",
-    "WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS",
-    "WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS",
-    "WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS",
-)
 
 
-def test_docker_compose_uses_one_provider_profile_path_for_wms_processes() -> None:
+def test_docker_compose_uses_one_target_endpoint_for_outbound_processes() -> None:
     compose = yaml.safe_load((BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
 
     api_env = services["api"]["environment"]
     celery_env = services["celery"]["environment"]
     celery_beat_env = services["celery_beat"]["environment"]
-    assert api_env["WMS_PROVIDER_PROFILE_FILE"] == "${WMS_PROVIDER_PROFILE_FILE:-}"
-    assert celery_env["WMS_PROVIDER_PROFILE_FILE"] == api_env["WMS_PROVIDER_PROFILE_FILE"]
-    assert celery_beat_env["WMS_PROVIDER_PROFILE_FILE"] == api_env["WMS_PROVIDER_PROFILE_FILE"]
-    for setting_name in STATUS_CONFIG_NAMES:
-        assert api_env[setting_name] == f"${{{setting_name}}}"
-        assert celery_env[setting_name] == api_env[setting_name]
-        assert celery_beat_env[setting_name] == api_env[setting_name]
-    for secret_name in HMAC_SECRET_NAMES:
-        assert api_env[secret_name] == f"${{{secret_name}:-}}"
-        assert celery_env[secret_name] == api_env[secret_name]
-        assert celery_beat_env[secret_name] == api_env[secret_name]
-    assert api_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == f"${{{REVOKED_CREDENTIAL_REFERENCES_NAME}:-}}"
-    assert celery_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == api_env[REVOKED_CREDENTIAL_REFERENCES_NAME]
-    assert celery_beat_env[REVOKED_CREDENTIAL_REFERENCES_NAME] == api_env[REVOKED_CREDENTIAL_REFERENCES_NAME]
+    assert api_env["WMS_BASE_URL"] == "${WMS_BASE_URL}"
+    assert api_env["TRANSPORT_SUBMIT_PATH"] == "${TRANSPORT_SUBMIT_PATH}"
+    assert celery_env["WMS_BASE_URL"] == api_env["WMS_BASE_URL"]
+    assert celery_env["TRANSPORT_SUBMIT_PATH"] == api_env["TRANSPORT_SUBMIT_PATH"]
+    assert "WMS_BASE_URL" not in celery_beat_env
 
 
 def test_wms_transport_acceptance_uses_current_callback_and_health_contract() -> None:
@@ -137,42 +104,26 @@ def test_mock_package_does_not_eagerly_import_peer_servers() -> None:
     assert "from tests.mock.wms_mock_server import" not in package_text
 
 
-def test_dev_and_test_env_declare_the_provider_profile_entry() -> None:
+def test_dev_and_test_env_declare_the_target_wms_endpoint() -> None:
     for env_file in (".env.dev", ".env.test"):
         env_text = (BACKEND_ROOT / env_file).read_text(encoding="utf-8")
 
-        assert "WMS_PROVIDER_PROFILE_FILE=" in env_text
-        for setting_name in STATUS_CONFIG_NAMES:
-            assert f"{setting_name}=" in env_text
+        assert "WMS_BASE_URL=http://mock_wms:8011" in env_text
+        assert "TRANSPORT_SUBMIT_PATH=/api/v1/wes/transport-requests" in env_text
         assert "API_APP_ID=app_local_mock" in env_text
         assert "API_APP_SECRET=local_mock_change_me" in env_text
         assert "MOCK_WMS_NORTHBOUND_HMAC_SECRET_V1=" not in env_text
-        assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=true" in env_text
-        assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1=" in env_text
-        assert "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2=" in env_text
-        assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text
 
 
-def test_local_settings_load_wms_budgets_and_credentials_from_generated_dotenv() -> None:
+def test_local_settings_load_target_wms_endpoint_from_generated_dotenv() -> None:
     local_settings = Settings(_env_file=BACKEND_ROOT / ".env.dev")  # pyright: ignore[reportCallIssue]
 
-    assert local_settings.WMS_PROVIDER_PROFILE_FILE is None
-    assert local_settings.WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS >= (
-        local_settings.WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS + local_settings.WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS
-    )
-    assert local_settings.WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED is True
-    assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1
-    assert local_settings.WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2
+    assert local_settings.WMS_BASE_URL == "http://mock_wms:8011"
+    assert local_settings.TRANSPORT_SUBMIT_PATH == "/api/v1/wes/transport-requests"
 
 
-def test_prod_env_requires_an_explicit_provider_profile_and_keeps_secret_slots() -> None:
+def test_prod_env_requires_an_explicit_target_wms_origin() -> None:
     env_text = (BACKEND_ROOT / ".env.prod").read_text(encoding="utf-8")
 
-    assert "WMS_PROVIDER_PROFILE_HOST_FILE=" in env_text
-    assert "\nWMS_PROVIDER_PROFILE_FILE=" not in env_text
-    for setting_name in STATUS_CONFIG_NAMES:
-        assert f"{setting_name}=" in env_text
-    assert "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false" in env_text
-    assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1=" in env_text
-    assert "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2=" in env_text
-    assert f"{REVOKED_CREDENTIAL_REFERENCES_NAME}=" in env_text
+    assert "\nWMS_BASE_URL=\n" in env_text
+    assert "TRANSPORT_SUBMIT_PATH=/api/v1/wes/transport-requests" in env_text

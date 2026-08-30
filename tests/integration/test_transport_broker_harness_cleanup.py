@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import psutil
 import pytest
 
 from tests.support import transport_broker as harness
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 pytestmark = pytest.mark.integration
 
 DATABASE_URL = "postgresql+asyncpg://user:password@127.0.0.1:5432/test_transport"
 REDIS_URL = "redis://127.0.0.1:6379/15"
+WMS_BASE_URL = "http://127.0.0.1:8011"
 
 
 def test_worker_readiness_budget_covers_a_cold_ci_container_start() -> None:
@@ -37,14 +40,14 @@ def _flatten_errors(error: BaseException) -> list[BaseException]:
 )
 def test_worker_rejects_non_isolated_or_non_local_redis(redis_url: str) -> None:
     with pytest.raises(AssertionError, match="local/build-scoped non-zero test database"):
-        harness.TransportBrokerWorker(DATABASE_URL, redis_url, Path("provider.yaml"))
+        harness.TransportBrokerWorker(DATABASE_URL, redis_url, WMS_BASE_URL)
 
 
 def test_worker_accepts_build_scoped_compose_redis_on_non_zero_database() -> None:
     worker = harness.TransportBrokerWorker(
         DATABASE_URL,
         "redis://redis:6379/15",
-        Path("provider.yaml"),
+        WMS_BASE_URL,
         run_id="compose-network-proof",
     )
 
@@ -55,7 +58,7 @@ def test_worker_accepts_build_scoped_compose_redis_on_non_zero_database() -> Non
 
 
 def test_worker_applies_one_run_prefix_to_broker_and_result_backend() -> None:
-    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, Path("provider.yaml"), run_id="prefix-proof")
+    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, WMS_BASE_URL, run_id="prefix-proof")
 
     assert getattr(worker, "key_prefix", None) == "it:transport:prefix-proof:"
     assert dict(worker.producer.conf.broker_transport_options)["global_keyprefix"] == worker.key_prefix
@@ -64,7 +67,7 @@ def test_worker_applies_one_run_prefix_to_broker_and_result_backend() -> None:
 
 
 def test_worker_start_reuses_the_locked_test_environment_without_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, Path("provider.yaml"))
+    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, WMS_BASE_URL)
     captured_command: list[str] = []
     fake_process = type("FakeProcess", (), {"pid": 43220, "poll": lambda self: 1})()
 
@@ -89,7 +92,7 @@ def test_worker_close_kills_surviving_process_group_and_attempts_every_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, Path("provider.yaml"))
+    worker = harness.TransportBrokerWorker(DATABASE_URL, REDIS_URL, WMS_BASE_URL)
 
     class FakeProcess:
         pid = 43221

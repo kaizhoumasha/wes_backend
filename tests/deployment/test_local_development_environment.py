@@ -26,9 +26,7 @@ def _run_development_check(
     (expected_root / "package.json").write_text("{}", encoding="utf-8")
     (expected_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
 
-    required_services = (
-        "db redis api celery celery-wms-fulfillment celery_beat mock_ecs mock_wms mock_wms_provider frontend nginx"
-    )
+    required_services = "db redis api celery celery-wms-fulfillment celery_beat mock_ecs mock_wms frontend nginx"
     docker = bin_dir / "docker"
     docker.write_text(
         "#!/bin/sh\n"
@@ -199,34 +197,18 @@ def test_frontend_development_overlay_enables_reliable_hmr_without_mutating_lock
     assert "if pnpm install; then" not in entrypoint
 
 
-def test_development_overlay_mounts_a_valid_mock_wms_profile_for_every_runtime_process() -> None:
-    from src.app.wms_integration.endpoint_compiler import compile_wms_provider_profile
-    from src.app.wms_integration.provider_profile import load_wms_provider_profile
-
+def test_development_compose_uses_target_wms_mock_without_profile_mounts() -> None:
     overlay = _compose("docker-compose.frontend.yml")
-    expected_mount = (
-        "${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro"
-    )
     for service_name in ("api", "celery", "celery-wms-fulfillment", "celery_beat"):
         service = overlay["services"][service_name]
-        assert service["environment"]["WMS_PROVIDER_PROFILE_FILE"] == "/run/wes/wms-provider.yaml"
-        assert expected_mount in service["volumes"]
-
-    profile = load_wms_provider_profile(BACKEND_ROOT / "deployment/dev/wms-provider.yaml")
-    assert profile.server_url == "http://mock-wms-provider:8012"
-    compiled_profile = compile_wms_provider_profile(profile)
-    assert compiled_profile.transport_submit_path == "/api/v1/wes/transport-requests"
+        assert "environment" not in service or "WMS_PROVIDER_PROFILE_FILE" not in service["environment"]
     compose = _compose("docker-compose.yml")
-    provider = compose["services"]["mock_wms_provider"]
-    assert provider["environment"]["WMS_PROVIDER_PROFILE_FILE"] == "/run/wes/wms-provider.yaml"
-    assert "./tests:/app/tests:rw" in provider["volumes"]
-    assert "./src:/app/src:rw" in provider["volumes"]
-    assert provider["healthcheck"]["test"] == [
-        "CMD",
-        "curl",
-        "-f",
-        "http://localhost:8012/",
-    ]
+    assert compose["x-wms-target-config"] == {
+        "WMS_BASE_URL": "${WMS_BASE_URL}",
+        "TRANSPORT_SUBMIT_PATH": "${TRANSPORT_SUBMIT_PATH}",
+    }
+    assert "mock_wms_provider" not in compose["services"]
+    assert compose["services"]["mock_wms"]["healthcheck"]["test"] == ["CMD", "curl", "-f", "http://localhost:8011/"]
 
 
 def test_frontend_entrypoint_reinstalls_native_dependencies_when_container_platform_changes(
@@ -299,7 +281,6 @@ def test_development_runner_reserves_a_project_scoped_local_environment() -> Non
         "celery_beat": "celery_beat",
         "mock_ecs": "mock_ecs",
         "mock_wms": "mock_wms",
-        "mock_wms_provider": "mock_wms_provider",
         "frontend": "frontend",
         "nginx": "nginx",
         "db": "postgres",
@@ -404,9 +385,7 @@ def test_development_runner_rejects_an_unhealthy_or_unprobed_service(
     (frontend / "package.json").write_text("{}", encoding="utf-8")
     (frontend / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
 
-    required_services = (
-        "db redis api celery celery-wms-fulfillment celery_beat mock_ecs mock_wms mock_wms_provider frontend nginx"
-    )
+    required_services = "db redis api celery celery-wms-fulfillment celery_beat mock_ecs mock_wms frontend nginx"
     docker = bin_dir / "docker"
     docker.write_text(
         "#!/bin/sh\n"
@@ -446,61 +425,13 @@ def test_development_runner_rejects_an_unhealthy_or_unprobed_service(
     assert expected_message in completed.stderr
 
 
-def test_development_runner_rejects_provider_http_200_with_invalid_body(tmp_path: Path) -> None:
-    bin_dir = tmp_path / "bin"
-    frontend = tmp_path / "frontend"
-    trace_file = tmp_path / "provider-invalid-body.trace"
-    bin_dir.mkdir()
-    frontend.mkdir()
-    (frontend / "package.json").write_text("{}", encoding="utf-8")
-    (frontend / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+def test_development_runner_checks_target_wms_health_without_generic_provider_registry() -> None:
+    runner = (BACKEND_ROOT / "scripts/dev-env.sh").read_text(encoding="utf-8")
 
-    required_services = (
-        "db redis api celery celery-wms-fulfillment celery_beat mock_ecs mock_wms mock_wms_provider frontend nginx"
-    )
-    docker = bin_dir / "docker"
-    docker.write_text(
-        "#!/bin/sh\n"
-        'printf "%s\\n" "$*" >>"$DEV_ENV_TRACE"\n'
-        'if [ "$1" = info ]; then exit 0; fi\n'
-        'if [ "$1" = inspect ]; then\n'
-        '  case "$*" in *.Mounts*) printf "%s\\n" "$FRONTEND_MOUNT" ;; *) printf "running healthy\\n" ;; esac\n'
-        "  exit 0\n"
-        "fi\n"
-        f"case \"$*\" in *'ps --status running --services'*) printf '%s\\n' {required_services} ;;\n"
-        "  *'ps -q '*) service=; previous=; for value in \"$@\"; do "
-        'if [ "$previous" = -q ]; then service=$value; break; fi; previous=$value; done; '
-        "printf 'container-%s\\n' \"$service\" ;;\n"
-        "  *'exec -T api python'*) exit 1 ;;\n"
-        "  *) exit 0 ;; esac\n",
-        encoding="utf-8",
-    )
-    docker.chmod(0o755)
-    curl = bin_dir / "curl"
-    curl.write_text("#!/bin/sh\nprintf '{}\\n'\n", encoding="utf-8")
-    curl.chmod(0o755)
-    git = bin_dir / "git"
-    git.write_text("#!/bin/sh\nprintf 'test\\n'\n", encoding="utf-8")
-    git.chmod(0o755)
-
-    completed = subprocess.run(
-        ["/bin/bash", str(BACKEND_ROOT / "scripts/dev-env.sh"), "check"],
-        cwd=BACKEND_ROOT,
-        env=os.environ
-        | {
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "DEV_ENV_TRACE": str(trace_file),
-            "FRONTEND_MOUNT": str(frontend),
-            "WES_FRONTEND_ROOT": str(frontend),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 1
-    trace = trace_file.read_text(encoding="utf-8").splitlines()
-    assert any("exec -T api python -c" in command for command in trace)
+    assert '"http://127.0.0.1:8011/"' in runner
+    assert "mock_wms_provider" not in runner
+    assert "WMS_OPERATION_BY_IDENTITY" not in runner
+    assert "127.0.0.1:8012" not in runner
 
 
 def test_development_runner_can_stop_when_frontend_checkout_is_missing(tmp_path: Path) -> None:

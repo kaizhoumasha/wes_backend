@@ -19,7 +19,6 @@ from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
     TransportEventResponse,
 )
-from src.app.wms_integration.provider_profile import WmsProviderAuthScheme
 
 
 def _events_module() -> Any:
@@ -30,11 +29,7 @@ def _events_module() -> Any:
 
 
 def _none_policy(module: Any) -> Any:
-    return module.WmsInboundAuthPolicy(
-        profile_digest="1" * 64,
-        network_trust_mode="isolated_lan",
-        inbound_auth_scheme=WmsProviderAuthScheme.NONE,
-    )
+    return module.WmsInboundAuthPolicy()
 
 
 def _route_app(
@@ -424,16 +419,8 @@ def test_enqueue_failure_keeps_persisted_ack_and_emits_stable_event(
     "policy",
     (
         None,
-        SimpleNamespace(
-            profile_digest="2" * 64,
-            network_trust_mode="public_network",
-            inbound_auth_scheme=WmsProviderAuthScheme.NONE,
-        ),
-        SimpleNamespace(
-            profile_digest="3" * 64,
-            network_trust_mode="isolated_lan",
-            inbound_auth_scheme=WmsProviderAuthScheme.HMAC_SHA256,
-        ),
+        SimpleNamespace(network_trust_mode="public_network"),
+        SimpleNamespace(inbound_auth_scheme="HMAC_SHA256"),
     ),
 )
 def test_missing_or_unsupported_frozen_policy_fails_closed_before_handler(policy: object | None) -> None:

@@ -40,7 +40,7 @@ def test_backend_images_embed_the_checked_out_revision_and_source_tree() -> None
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
-    ci_build_body = _stage_body(jenkins_text, "Build CI Image", "Quality Gate")
+    ci_build_body = _stage_body(jenkins_text, "Build CI Image", "Classify Required HEAVY")
     runtime_build_body = _stage_body(jenkins_text, "Build Runtime Image", "Push Runtime Image")
 
     assert "ARG WES_VCS_REVISION" in dockerfile_text
@@ -106,11 +106,11 @@ def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs()
 
 def test_host_compose_contracts_render_production_and_test_deploy_stacks() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
-    compose_body = _stage_body(jenkins_text, "Compose Contracts", "RuntimeInbox PostgreSQL Acceptance")
+    compose_body = _stage_body(jenkins_text, "Compose Contracts", "Mock Image Contracts")
 
     assert 'BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"' in compose_body
     assert 'FRONTEND_IMAGE="example.invalid/wes/wes_frontend:compose-contract-${CI_SHORT_COMMIT}"' in compose_body
-    assert 'WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"' in compose_body
+    assert "WMS_PROVIDER_PROFILE_HOST_FILE" not in compose_body
     assert "--env-file .env.prod" in compose_body
     assert "-f docker-compose.yml" in compose_body
     assert "-f docker-compose.deploy.yml" in compose_body
@@ -216,6 +216,18 @@ def test_heavy_required_rejects_selected_tests_that_are_skipped() -> None:
 
     assert "uv run --no-sync scripts/run_selected_heavy_tests.py" in heavy_body
     assert 'subprocess.call(["pytest", "-q", *tests])' not in heavy_body
+
+
+def test_heavy_required_runs_the_exact_selector_manifest_without_legacy_filtering() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    classification_body = _stage_body(jenkins_text, "Classify Required HEAVY", "Verification")
+    heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
+
+    assert "scripts/select_heavy_tests.py" in classification_body
+    assert "> reports/heavy-tests.selected.txt" in classification_body
+    assert "cp reports/heavy-tests.selected.txt reports/heavy-tests.txt" in heavy_body
+    assert "runtime-inbox-acceptance-owned.txt" not in heavy_body
+    assert "grep -Fvx -f" not in heavy_body
 
 
 def test_heavy_required_publishes_the_runner_junit_report() -> None:

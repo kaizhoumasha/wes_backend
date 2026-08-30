@@ -18,7 +18,6 @@ REQUIRED_SERVICES=(
     celery_beat
     mock_ecs
     mock_wms
-    mock_wms_provider
     frontend
     nginx
 )
@@ -144,7 +143,6 @@ check_frontend_source_identity() {
 }
 
 check_http() {
-    local effect_body query_body
     local urls=(
         "http://127.0.0.1:8001/health"
         "http://127.0.0.1:8001/ready"
@@ -154,40 +152,11 @@ check_http() {
         "http://127.0.0.1/"
         "http://127.0.0.1:8010/"
         "http://127.0.0.1:8011/"
-        "http://127.0.0.1:8012/"
     )
     for url in "${urls[@]}"; do
         curl --fail --silent --show-error --connect-timeout 3 --max-time 10 --output /dev/null "$url"
         echo "OK $url"
     done
-    query_body="$(
-        curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-            "http://127.0.0.1:8012/api/wms/master-data/materials/MAT-001"
-    )"
-    validate_provider_response "wms.master_data.get_material@v1" "$query_body"
-    echo "OK WMS Provider QUERY"
-
-    effect_body="$(curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-        --request POST \
-        --header "Content-Type: application/json" \
-        --header "Idempotency-Key: dev-env-check-reserve" \
-        --header "X-WES-Operation-Identity: wms.inventory.reserve_inventory@v1" \
-        --data '{"dispatch_key":"dev-env-check-reserve","material_code":"MAT-001","quantity":"10","warehouse_code":"WH-A"}' \
-        "http://127.0.0.1:8012/api/wms/inventory/reservations")"
-    validate_provider_response "wms.inventory.reserve_inventory@v1" "$effect_body"
-    echo "OK WMS Provider EFFECT"
-}
-
-validate_provider_response() {
-    local body="$2" operation_identity="$1"
-    printf '%s' "$body" | compose exec -T api python -c '
-import json
-import sys
-from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
-
-operation = WMS_OPERATION_BY_IDENTITY[sys.argv[1]]
-operation.result_model.model_validate(json.load(sys.stdin))
-' "$operation_identity"
 }
 
 check_environment() {
@@ -205,7 +174,7 @@ up_environment() {
     compose up -d --wait --wait-timeout "$WAIT_TIMEOUT" db redis
 
     echo "构建开发镜像..."
-    compose build api mock_ecs mock_wms mock_wms_provider
+    compose build api mock_ecs mock_wms
 
     echo "执行数据库迁移..."
     compose run --rm --no-deps api alembic upgrade head

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import importlib
 import inspect
 import os
@@ -17,8 +16,6 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -109,10 +106,9 @@ def _runtime_module() -> ModuleType:
 
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
+    from deployment import rough_sorter_composition
     from src.app.device import composition as device_composition
-    from src.app.runtime.system_capabilities.wms import provider_catalog
     from src.app.transport import composition as transport_composition
-    from src.app.wms_integration import effect_lane_runtime, effect_preparation_runtime, query_runtime
     from src.database import db as db_module
     from src.database import redis_client as redis_module
 
@@ -121,26 +117,13 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         close_db=AsyncMock(),
         init_redis=AsyncMock(),
         close_redis=AsyncMock(),
-        startup=SimpleNamespace(catalog=object()),
-        validate_wms_transport_configuration=MagicMock(),
-        effect_runtime=SimpleNamespace(client=object()),
-        build_wms_effect_lane_runtime=MagicMock(),
-        bind_wms_effect_lane_runtime=MagicMock(),
-        close_bound_wms_effect_lane_runtime=AsyncMock(),
-        effect_preparation_runtime=object(),
-        build_wms_effect_preparation_runtime=MagicMock(),
-        bind_wms_effect_preparation_runtime=MagicMock(),
-        close_bound_wms_effect_preparation_runtime=AsyncMock(),
-        close_wms_effect_preparation_runtime=AsyncMock(),
-        build_wms_data_lane_query_runtime=MagicMock(return_value=SimpleNamespace()),
-        bind_wms_data_lane_query_runtime=MagicMock(),
-        close_bound_wms_data_lane_query_runtime=AsyncMock(),
-        validate_transport_runtime_profile=MagicMock(),
         transport_runtimes=[],
         build_transport_runtime=AsyncMock(),
         device_command_runtimes=[],
         resolve_device_command_runtime_config=MagicMock(return_value=SimpleNamespace(timeout_seconds=3.0)),
         build_device_command_runtime=MagicMock(),
+        execution_runtime=object(),
+        build_rough_sorter_runtime=MagicMock(),
     )
 
     def build_transport_runtime(**_: object) -> SimpleNamespace:
@@ -148,10 +131,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         infra.transport_runtimes.append(runtime)
         return runtime
 
-    infra.validate_wms_transport_configuration.return_value = infra.startup
     infra.build_transport_runtime.side_effect = build_transport_runtime
-    infra.build_wms_effect_lane_runtime.return_value = infra.effect_runtime
-    infra.build_wms_effect_preparation_runtime.return_value = infra.effect_preparation_runtime
 
     def build_device_command_runtime(**_: object) -> SimpleNamespace:
         runtime = SimpleNamespace(aclose=AsyncMock(), command_service=object())
@@ -159,6 +139,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         return runtime
 
     infra.build_device_command_runtime.side_effect = build_device_command_runtime
+    infra.build_rough_sorter_runtime.return_value = infra.execution_runtime
     redis_manager = SimpleNamespace(
         init_redis=infra.init_redis,
         close_redis=infra.close_redis,
@@ -171,16 +152,6 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     monkeypatch.setattr(module, "init_db", infra.init_db, raising=False)
     monkeypatch.setattr(module, "close_db", infra.close_db, raising=False)
     monkeypatch.setattr(module, "redis_manager", redis_manager, raising=False)
-    monkeypatch.setattr(
-        provider_catalog,
-        "validate_wms_transport_configuration",
-        infra.validate_wms_transport_configuration,
-    )
-    monkeypatch.setattr(
-        transport_composition,
-        "validate_transport_runtime_profile",
-        infra.validate_transport_runtime_profile,
-    )
     monkeypatch.setattr(
         transport_composition,
         "build_transport_runtime",
@@ -197,60 +168,15 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         infra.build_device_command_runtime,
     )
     monkeypatch.setattr(
-        effect_lane_runtime,
-        "build_wms_effect_lane_runtime",
-        infra.build_wms_effect_lane_runtime,
-    )
-    monkeypatch.setattr(
-        effect_lane_runtime,
-        "bind_wms_effect_lane_runtime",
-        infra.bind_wms_effect_lane_runtime,
-    )
-    monkeypatch.setattr(
-        effect_lane_runtime,
-        "close_bound_wms_effect_lane_runtime",
-        infra.close_bound_wms_effect_lane_runtime,
-    )
-    monkeypatch.setattr(
-        effect_preparation_runtime,
-        "build_wms_effect_preparation_runtime",
-        infra.build_wms_effect_preparation_runtime,
-    )
-    monkeypatch.setattr(
-        effect_preparation_runtime,
-        "bind_wms_effect_preparation_runtime",
-        infra.bind_wms_effect_preparation_runtime,
-    )
-    monkeypatch.setattr(
-        effect_preparation_runtime,
-        "close_bound_wms_effect_preparation_runtime",
-        infra.close_bound_wms_effect_preparation_runtime,
-    )
-    monkeypatch.setattr(
-        effect_preparation_runtime,
-        "close_wms_effect_preparation_runtime",
-        infra.close_wms_effect_preparation_runtime,
-    )
-    monkeypatch.setattr(
-        query_runtime,
-        "build_wms_data_lane_query_runtime",
-        infra.build_wms_data_lane_query_runtime,
-    )
-    monkeypatch.setattr(
-        query_runtime,
-        "bind_wms_data_lane_query_runtime",
-        infra.bind_wms_data_lane_query_runtime,
-    )
-    monkeypatch.setattr(
-        query_runtime,
-        "close_bound_wms_data_lane_query_runtime",
-        infra.close_bound_wms_data_lane_query_runtime,
+        rough_sorter_composition,
+        "build_rough_sorter_runtime",
+        infra.build_rough_sorter_runtime,
     )
     return infra
 
 
 def _install_runtime(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> Any:
-    runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.WES)
+    runtime = module.CeleryAsyncRuntime()
     monkeypatch.setattr(module, "celery_async_runtime", runtime, raising=False)
     return runtime
 
@@ -269,8 +195,8 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     assert device_runtime_kwargs["timeout_seconds"] == 3.0
     assert "base_url" not in device_runtime_kwargs
     first_transport_runtime = first_runtime.transport_runtime
-    assert infra.build_wms_data_lane_query_runtime.call_args.kwargs["client"] is infra.effect_runtime.client
-    assert infra.build_wms_effect_preparation_runtime.call_args.kwargs["catalog"] is infra.startup.catalog
+    assert infra.build_transport_runtime.call_args.kwargs["wms_base_url"] == "http://localhost:8011"
+    assert infra.build_transport_runtime.call_args.kwargs["transport_submit_path"] == ("/api/v1/wes/transport-requests")
     first_generation = first_runtime.runner_generation
     assert isinstance(first_generation, str) and first_generation
     first_runtime.initialize()
@@ -279,41 +205,28 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     assert infra.build_transport_runtime.await_count == 1
     first_runtime.shutdown()
     first_transport_runtime.aclose.assert_awaited_once()
-    infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
-    infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
     assert first_runtime.runner_generation is None
 
-    second_runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.WES)
+    second_runtime = module.CeleryAsyncRuntime()
     second_runtime.initialize()
     assert second_runtime.runner_generation != first_generation
     assert second_runtime.transport_runtime is not first_transport_runtime
     second_runtime.shutdown()
 
 
-def test_fulfillment_role_initializes_only_its_actual_effect_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fulfillment_queue_initializes_target_transport_without_device_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime(process_role=WmsProviderProcessRole.FULFILLMENT)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
+    runtime = module.CeleryAsyncRuntime()
 
     runtime.initialize()
 
-    assert infra.build_wms_effect_lane_runtime.call_args.kwargs["process_role"] is WmsProviderProcessRole.FULFILLMENT
-    infra.build_wms_data_lane_query_runtime.assert_not_called()
-    infra.bind_wms_data_lane_query_runtime.assert_not_called()
+    infra.build_transport_runtime.assert_awaited_once()
+    infra.build_device_command_runtime.assert_not_called()
+    assert runtime.transport_runtime is infra.transport_runtimes[0]
     runtime.shutdown()
-    infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
-
-
-def test_preparation_bind_failure_does_not_unbind_an_existing_owner(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = _runtime_module()
-    infra = _patch_infrastructure(monkeypatch, module)
-    runtime = _install_runtime(monkeypatch, module)
-    infra.bind_wms_effect_preparation_runtime.side_effect = RuntimeError("already bound")
-
-    with pytest.raises(RuntimeError, match="already bound"):
-        runtime.initialize()
-
-    infra.close_wms_effect_preparation_runtime.assert_not_awaited()
+    infra.transport_runtimes[0].aclose.assert_awaited_once()
 
 
 def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -560,7 +473,7 @@ def _configure_parent_worker_queues(monkeypatch: pytest.MonkeyPatch, app_module:
     monkeypatch.setattr(app_module, "_frozen_worker_queues", None)
 
 
-def test_worker_init_validates_transport_and_leaves_parent_async_resources_empty(
+def test_worker_init_freezes_target_queues_and_leaves_parent_async_resources_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _runtime_module()
@@ -572,22 +485,17 @@ def test_worker_init_validates_transport_and_leaves_parent_async_resources_empty
     monkeypatch.setattr(db_module, "engine", None)
     monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    validate_transport = MagicMock()
-    monkeypatch.setattr(
-        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
-        validate_transport,
-    )
     _configure_parent_worker_queues(monkeypatch, app_module)
 
     app_module.on_worker_init()
 
-    validate_transport.assert_called_once_with(settings_source=app_module.settings)
+    assert app_module._frozen_worker_queues == frozenset({"celery"})
     assert db_module.engine is None
     assert db_module.AsyncSessionLocal is None
     infra.init_db.assert_not_awaited()
 
 
-def test_worker_init_fails_before_consuming_tasks_when_wms_transport_is_invalid(
+def test_worker_init_fails_before_consuming_tasks_when_declared_queues_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from celery.exceptions import WorkerTerminate
@@ -595,37 +503,33 @@ def test_worker_init_fails_before_consuming_tasks_when_wms_transport_is_invalid(
 
     from src.celery_app import app as app_module
 
-    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(
-        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
-        MagicMock(side_effect=ValueError("invalid WMS transport")),
-    )
-    _configure_parent_worker_queues(monkeypatch, app_module)
+    setup_logger = MagicMock()
+    monkeypatch.setattr(app_module, "setup_logger", setup_logger)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "celery")
+    monkeypatch.setattr(app_module, "_actual_worker_queues", lambda _sender: frozenset({"device-command"}))
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None)
 
-    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+    with pytest.raises(WorkerTerminate, match="worker queue configuration rejected"):
         worker_init.send(sender=app_module.celery_app)
 
+    setup_logger.assert_not_called()
 
-def test_worker_init_validates_transport_before_logger_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_worker_init_validates_queues_before_logger_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     from celery.exceptions import WorkerTerminate
     from celery.signals import worker_init
 
     from src.celery_app import app as app_module
 
-    validate_transport = MagicMock(side_effect=ValueError("invalid WMS transport"))
     setup_logger = MagicMock(side_effect=OSError("log directory unavailable"))
     monkeypatch.setattr(app_module, "setup_logger", setup_logger)
-    monkeypatch.setattr(
-        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
-        validate_transport,
-    )
     _configure_parent_worker_queues(monkeypatch, app_module)
 
-    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+    with pytest.raises(WorkerTerminate, match="worker logging initialization rejected"):
         worker_init.send(sender=app_module.celery_app)
 
-    validate_transport.assert_called_once_with(settings_source=app_module.settings)
-    setup_logger.assert_not_called()
+    assert app_module._frozen_worker_queues == frozenset({"celery"})
+    setup_logger.assert_called_once_with()
 
 
 def test_worker_init_fails_closed_when_logger_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -634,45 +538,29 @@ def test_worker_init_fails_closed_when_logger_initialization_fails(monkeypatch: 
 
     from src.celery_app import app as app_module
 
-    validate_transport = MagicMock()
     monkeypatch.setattr(app_module, "setup_logger", MagicMock(side_effect=OSError("log directory unavailable")))
-    monkeypatch.setattr(
-        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration",
-        validate_transport,
-    )
     _configure_parent_worker_queues(monkeypatch, app_module)
 
     with pytest.raises(WorkerTerminate, match="worker logging initialization rejected"):
         worker_init.send(sender=app_module.celery_app)
 
-    validate_transport.assert_called_once_with(settings_source=app_module.settings)
+    assert app_module._frozen_worker_queues == frozenset({"celery"})
 
 
-def test_worker_init_fails_closed_when_provider_catalog_import_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_init_rejects_fulfillment_queue_without_single_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
     from celery.exceptions import WorkerTerminate
     from celery.signals import worker_init
 
     from src.celery_app import app as app_module
 
-    real_import = builtins.__import__
-
-    def fail_provider_catalog_import(
-        name: str,
-        globals: dict[str, object] | None = None,
-        locals: dict[str, object] | None = None,
-        fromlist: tuple[str, ...] = (),
-        level: int = 0,
-    ) -> Any:
-        if name == "src.app.runtime.system_capabilities.wms.provider_catalog":
-            raise ImportError("provider catalog unavailable")
-        return real_import(name, globals, locals, fromlist, level)
-
     setup_logger = MagicMock()
     monkeypatch.setattr(app_module, "setup_logger", setup_logger)
-    monkeypatch.setattr(builtins, "__import__", fail_provider_catalog_import)
-    _configure_parent_worker_queues(monkeypatch, app_module)
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
+    monkeypatch.setenv("CELERY_WORKER_CONCURRENCY", "2")
+    monkeypatch.setattr(app_module, "_actual_worker_queues", lambda _sender: frozenset({"wms-fulfillment"}))
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", None)
 
-    with pytest.raises(WorkerTerminate, match="WMS transport configuration rejected"):
+    with pytest.raises(WorkerTerminate, match="worker queue configuration rejected"):
         worker_init.send(sender=app_module.celery_app)
 
     setup_logger.assert_not_called()
@@ -715,24 +603,6 @@ def test_runtime_rebuilds_fork_inherited_owner(monkeypatch: pytest.MonkeyPatch) 
         runtime.shutdown()
         if inherited_runner is not None:
             inherited_runner.close()
-
-
-def test_transport_profile_rejection_precedes_worker_database_initialization(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _runtime_module()
-    infra = _patch_infrastructure(monkeypatch, module)
-    runtime = _install_runtime(monkeypatch, module)
-    infra.validate_transport_runtime_profile.side_effect = ValueError(
-        "Transport runtime requires inbound_auth.scheme=NONE"
-    )
-
-    with pytest.raises(ValueError, match=r"inbound_auth\.scheme=NONE"):
-        runtime.initialize()
-
-    infra.init_db.assert_not_awaited()
-    infra.build_transport_runtime.assert_not_awaited()
-    assert runtime.state is module.RuntimeState.NEW
 
 
 def test_transport_runtime_build_failure_rolls_back_database_without_publishing_candidate(
@@ -1301,37 +1171,23 @@ def test_failed_init_rollback_gives_every_cleanup_stage_its_own_budget(
     async def close_redis() -> None:
         await record("redis")
 
-    async def close_data() -> None:
-        await record("wms-data")
-
-    async def close_preparation(_runtime: object) -> None:
-        await record("preparation")
-
-    async def close_effect() -> None:
-        await record("effect")
-
     async def close_database() -> None:
         await record("database")
 
     device_command_runtime = SimpleNamespace(aclose=lambda: record("device-command"))
     transport_runtime = SimpleNamespace(aclose=lambda: record("transport"))
-    preparation_runtime = object()
     infra.close_redis.side_effect = close_redis
-    infra.close_bound_wms_data_lane_query_runtime.side_effect = close_data
-    infra.close_wms_effect_preparation_runtime.side_effect = close_preparation
-    infra.close_bound_wms_effect_lane_runtime.side_effect = close_effect
     infra.close_db.side_effect = close_database
     monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.05)
 
     asyncio.run(
         module.CeleryAsyncRuntime._rollback_failed_initialization(
-            effect_preparation_runtime=preparation_runtime,
             transport_runtime=transport_runtime,
             device_command_runtime=device_command_runtime,
         )
     )
 
-    assert events == ["redis", "wms-data", "device-command", "transport", "preparation", "effect", "database"]
+    assert events == ["redis", "device-command", "transport", "database"]
 
 
 def test_normal_shutdown_permanently_rejects_initialize_and_run_async(
@@ -1440,7 +1296,7 @@ class _ShutdownFaultRunnerProbe(_RunnerProbe):
         return super().run(coroutine, context=context)
 
 
-@pytest.mark.parametrize("failure_call", range(1, 10))
+@pytest.mark.parametrize("failure_call", range(1, 7))
 def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
     failure_call: int,
@@ -1457,24 +1313,18 @@ def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
     with _sync_watchdog(0.50, f"shutdown runner.run failure {failure_call}"):
         runtime.shutdown()
 
-    assert probe.shutdown_run_calls == 9
+    assert probe.shutdown_run_calls == 6
     if failure_call != 2:
         infra.close_redis.assert_awaited_once()
     if failure_call != 3:
-        infra.close_bound_wms_data_lane_query_runtime.assert_awaited_once()
-    if failure_call != 4:
-        infra.close_wms_effect_preparation_runtime.assert_awaited_once_with(infra.effect_preparation_runtime)
-    if failure_call != 5:
         infra.transport_runtimes[0].aclose.assert_awaited_once()
-    if failure_call != 6:
+    if failure_call != 4:
         infra.device_command_runtimes[0].aclose.assert_awaited_once()
-    if failure_call != 7:
-        infra.close_bound_wms_effect_lane_runtime.assert_awaited_once()
-    if failure_call != 8:
+    if failure_call != 5:
         infra.close_db.assert_awaited_once()
     assert runtime.state is module.RuntimeState.CLOSED
     assert runtime._runner is None
     assert runtime._owner_pid is None
 
     runtime.shutdown()
-    assert probe.shutdown_run_calls == 9
+    assert probe.shutdown_run_calls == 6

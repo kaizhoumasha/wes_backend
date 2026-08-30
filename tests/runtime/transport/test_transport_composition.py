@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import inspect
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.app.wms_integration.provider_profile import WmsProviderAuthScheme
-from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
 register_required_sqlmodel_metadata()
@@ -29,29 +28,8 @@ class _ConstructionError(RuntimeError):
     pass
 
 
-def _startup(
-    *,
-    network_trust_mode: str = "isolated_lan",
-    outbound_scheme: WmsProviderAuthScheme = WmsProviderAuthScheme.NONE,
-    inbound_scheme: WmsProviderAuthScheme = WmsProviderAuthScheme.NONE,
-) -> SimpleNamespace:
-    profile = build_compiled_provider_profile().profile.model_copy(
-        update={
-            "network_trust_mode": network_trust_mode,
-            "outbound_auth": SimpleNamespace(scheme=outbound_scheme, credential_reference=None),
-            "inbound_auth": SimpleNamespace(scheme=inbound_scheme, credential_reference=None),
-        }
-    )
-    return SimpleNamespace(
-        compiled_profile=SimpleNamespace(
-            profile=profile,
-            transport_submit_path="/api/WES/TransportRequests",
-        )
-    )
-
-
 @pytest.mark.asyncio
-async def test_supported_profile_builds_one_closed_transport_runtime_without_publisher(
+async def test_explicit_endpoint_builds_one_closed_transport_runtime_without_publisher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.app.transport import composition
@@ -62,7 +40,8 @@ async def test_supported_profile_builds_one_closed_transport_runtime_without_pub
     monkeypatch.setattr(factory, "build_wms_client", client_factory)
 
     runtime = await composition.build_transport_runtime(
-        startup=_startup(),
+        wms_base_url="http://factory-wms.example:8080",
+        transport_submit_path="/api/WES/TransportRequests",
         session_factory=MagicMock(),
     )
 
@@ -84,42 +63,11 @@ async def test_supported_profile_builds_one_closed_transport_runtime_without_pub
 def test_runtime_builder_has_no_preconstructed_client_injection_seam() -> None:
     from src.app.transport.composition import build_transport_runtime
 
-    assert tuple(inspect.signature(build_transport_runtime).parameters) == ("startup", "session_factory")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("startup", "expected_error"),
-    [
-        (
-            _startup(
-                outbound_scheme=WmsProviderAuthScheme.HMAC_SHA256,
-                inbound_scheme=WmsProviderAuthScheme.HMAC_SHA256,
-            ),
-            "outbound_auth.scheme=NONE",
-        ),
-        (_startup(network_trust_mode="authenticated_network"), "network_trust_mode=isolated_lan"),
-        (
-            _startup(inbound_scheme=WmsProviderAuthScheme.HMAC_SHA256),
-            "inbound_auth.scheme=NONE",
-        ),
-    ],
-)
-async def test_unsupported_profile_fails_before_transport_resource_creation(
-    monkeypatch: pytest.MonkeyPatch,
-    startup: SimpleNamespace,
-    expected_error: str,
-) -> None:
-    from src.app.transport import composition
-    from src.app.wms_adapter import factory
-
-    client_factory = MagicMock()
-    monkeypatch.setattr(factory, "build_wms_client", client_factory)
-
-    with pytest.raises(ValueError, match=expected_error):
-        await composition.build_transport_runtime(startup=startup, session_factory=MagicMock())
-
-    client_factory.assert_not_called()
+    assert tuple(inspect.signature(build_transport_runtime).parameters) == (
+        "wms_base_url",
+        "transport_submit_path",
+        "session_factory",
+    )
 
 
 @pytest.mark.asyncio
@@ -138,7 +86,11 @@ async def test_partial_runtime_construction_closes_the_created_client(
     )
 
     with pytest.raises(RuntimeError, match="service construction failed"):
-        await composition.build_transport_runtime(startup=_startup(), session_factory=MagicMock())
+        await composition.build_transport_runtime(
+            wms_base_url="http://factory-wms.example:8080",
+            transport_submit_path="/api/WES/TransportRequests",
+            session_factory=MagicMock(),
+        )
 
     assert client.close_count == 1
 
@@ -167,7 +119,11 @@ async def test_partial_runtime_construction_preserves_primary_error_when_client_
     monkeypatch.setattr(composition.logger, "warning", cleanup_warning)
 
     with pytest.raises(_ConstructionError, match="service construction failed"):
-        await composition.build_transport_runtime(startup=_startup(), session_factory=MagicMock())
+        await composition.build_transport_runtime(
+            wms_base_url="http://factory-wms.example:8080",
+            transport_submit_path="/api/WES/TransportRequests",
+            session_factory=MagicMock(),
+        )
 
     assert client.close_count == 1
     cleanup_warning.assert_called_once()
@@ -175,15 +131,20 @@ async def test_partial_runtime_construction_preserves_primary_error_when_client_
 
 
 @pytest.mark.asyncio
-async def test_outcome_publisher_is_supplied_only_at_the_publish_call(db_engine: object) -> None:
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-    from src.app.transport.repository import TransportRepository
+async def test_outcome_publisher_is_supplied_only_at_the_publish_call() -> None:
     from src.app.transport.service import TransportService
 
-    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    class _Repository:
+        async def claim_pending_outcomes(self, _db: object, **_kwargs: object) -> list[object]:
+            return []
+
+    @asynccontextmanager
+    async def begin():
+        yield object()
+
+    sessions = SimpleNamespace(begin=begin)
     publisher = SimpleNamespace(publish=AsyncMock())
-    service = TransportService(sessions, TransportRepository(), SimpleNamespace())
+    service = TransportService(sessions, _Repository(), SimpleNamespace())  # type: ignore[arg-type]
 
     assert await service.publish_pending_outcomes(1, publisher) == 0
     publisher.publish.assert_not_awaited()

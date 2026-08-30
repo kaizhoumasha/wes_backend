@@ -21,12 +21,7 @@ from src.app.transport.models import (
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
-from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
 from src.core.uuid7 import new_uuid7
-from tests.contracts.wms_integration.provider_profile_support import (
-    build_provider_profile_payload,
-    write_provider_profile,
-)
 from tests.support.transport_broker import (
     MockWmsHttpServer,
     TransportBrokerWorker,
@@ -39,12 +34,9 @@ pytestmark = pytest.mark.integration
 
 SUBMIT_TASK = "src.celery_app.tasks.transport.submit_transport_tasks_batch"
 EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
-FULFILLMENT_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch"
-EFFECT_STATUS_TASK = "src.celery_app.tasks.workline.scan_wms_effect_status_batch"
 
 
 async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persisted_facts(
-    tmp_path,
     integration_session_factory,
 ) -> None:
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
@@ -78,12 +70,12 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
     try:
         # 首次响应为受限 CI 的数据库/调度开销留足 5 秒领取预算，第二次请求仍占满 10 秒 HTTP 预算。
         server = MockWmsHttpServer((3.0, 10.5)).start()
-        payload = build_provider_profile_payload()
-        payload["server_url"] = server.url
-        profile_file = write_provider_profile(tmp_path / "provider.yaml", payload)
-        startup = assemble_wms_provider_startup(type("Settings", (), {"WMS_PROVIDER_PROFILE_FILE": profile_file})())
-        runtime = await build_transport_runtime(startup=startup, session_factory=integration_session_factory)
-        worker = TransportBrokerWorker(database_url, redis_url, profile_file)
+        runtime = await build_transport_runtime(
+            wms_base_url=server.url,
+            transport_submit_path="/api/v1/wes/transport-requests",
+            session_factory=integration_session_factory,
+        )
+        worker = TransportBrokerWorker(database_url, redis_url, server.url)
         worker.start()
         suffix = uuid.uuid4().hex
         rack_ids = [f"rack-submit-{index}-{suffix}" for index in range(2)] + [f"rack-evidence-{suffix}"]
@@ -153,11 +145,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             worker.result(stale_evidence_result, timeout=5)
 
         next_evidence = worker.send(EVIDENCE_TASK, kwargs={"limit": 100}, expires=10)
-        next_outbox = worker.send(FULFILLMENT_OUTBOX_TASK, expires=10)
-        next_status = worker.send(EFFECT_STATUS_TASK, expires=10)
         assert worker.result(next_evidence, timeout=10) >= 1
-        assert isinstance(worker.result(next_outbox, timeout=10), dict)
-        assert isinstance(worker.result(next_status, timeout=10), list)
         assert time.monotonic() - submit_finished < 10
 
         async with integration_session_factory() as db:
@@ -184,7 +172,6 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
 
 
 async def test_real_worker_rejects_non_fixed_transport_batches_before_database_scan(
-    tmp_path,
     integration_guard: None,
 ) -> None:
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
@@ -197,8 +184,7 @@ async def test_real_worker_rejects_non_fixed_transport_batches_before_database_s
         return None
 
     try:
-        profile_file = write_provider_profile(tmp_path / "provider.yaml", build_provider_profile_payload())
-        worker = TransportBrokerWorker(database_url, redis_url, profile_file)
+        worker = TransportBrokerWorker(database_url, redis_url, "http://127.0.0.1:9")
         worker.start()
         for task_name in (
             SUBMIT_TASK,

@@ -45,11 +45,7 @@ from src.celery_app.async_runtime import celery_async_runtime, run_async
 from src.core.logger import logger
 from src.database.db import get_db_context
 from src.database.redis_client import is_redis_available
-from tests.contracts.wms_integration.provider_profile_support import (
-    build_provider_profile_payload,
-    write_provider_profile,
-)
-from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+from tests.support.postgresql_heavy import run_alembic, temporary_database
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -69,10 +65,10 @@ TRANSACTION_TASK = "tests.integration.celery_prefork.transaction_probe"
 ENDPOINT_PROVIDER_PROBE_TASK = "tests.integration.celery_prefork.endpoint_provider_probe"
 FAMILY_TASKS = (
     "src.celery_app.tasks.core.health_check",
-    "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
     "src.celery_app.tasks.device_command.reconcile_device_commands_batch",
-    "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
-    "src.celery_app.tasks.handling.process_signal",
+    "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+    "src.celery_app.tasks.execution.process_execution_facts_batch",
+    "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
 )
 WMS_CONFIRMATION_TASK = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
 SAFETY_DRAIN_TASK = "src.celery_app.tasks.workline.drain_safety_incidents_batch"
@@ -374,7 +370,7 @@ def _component_environment(database_url: str, redis_url: str, *, run_id: str) ->
 
 
 @pytest.fixture(scope="module")
-def prefork_services(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
+def prefork_services() -> Iterator[dict[str, str]]:
     """为模块创建一个迁移到 head 的隔离数据库。"""
 
     admin_database_url, redis_url = _required_integration_urls()
@@ -383,7 +379,6 @@ def prefork_services(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[
         environ={**os.environ, "INTEGRATION_DATABASE_URL": admin_database_url},
         required_free_slots=8,
     )
-    provider_profile = write_provider_profile(tmp_path_factory.mktemp("wms-provider") / "provider.yaml")
     database, sqlalchemy_url = runner.run(database_context.__aenter__())
     try:
         run_alembic("upgrade", "head", database_url=sqlalchemy_url)
@@ -404,7 +399,8 @@ def prefork_services(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[
             "database": database,
             "database_url": sqlalchemy_url,
             "redis_url": redis_url,
-            "wms_provider_profile_file": str(provider_profile),
+            "wms_base_url": "http://127.0.0.1:9",
+            "transport_submit_path": "/api/v1/wes/transport-requests",
         }
     finally:
         runner.run(database_context.__aexit__(None, None, None))
@@ -854,7 +850,8 @@ class PreforkWorker:
         environment.update(
             _component_environment(self.services["database_url"], self.services["redis_url"], run_id=self.run_id)
         )
-        environment["WMS_PROVIDER_PROFILE_FILE"] = self.services["wms_provider_profile_file"]
+        environment["WMS_BASE_URL"] = self.services["wms_base_url"]
+        environment["TRANSPORT_SUBMIT_PATH"] = self.services["transport_submit_path"]
         if self.application_redis_url is not None:
             app_redis = make_url(self.application_redis_url)
             environment.update(
@@ -1216,7 +1213,7 @@ def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_s
         family_tasks = list(
             zip(
                 FAMILY_TASKS,
-                ([], [0], [100], [0], [{"run_id": worker.run_id}]),
+                ([], [100], [100], [100], [100]),
                 strict=True,
             )
         )
@@ -1324,13 +1321,9 @@ def test_real_worker_retries_safety_drain_until_completed(prefork_services: dict
 
 def test_real_worker_keeps_e07_behind_retrying_e03(
     prefork_services: dict[str, str],
-    tmp_path: Path,
 ) -> None:
     with _wms_confirmation_endpoint() as (server_url, server):
-        profile_payload = build_provider_profile_payload()
-        profile_payload["server_url"] = server_url
-        profile_path = write_provider_profile(tmp_path / "wms-provider.yaml", profile_payload)
-        services = {**prefork_services, "wms_provider_profile_file": str(profile_path)}
+        services = {**prefork_services, "wms_base_url": server_url}
         worker = PreforkWorker(services, concurrency=1).start()
         success = False
         try:

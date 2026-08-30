@@ -24,14 +24,9 @@ from src.app.transport.models import (
 )
 from src.app.wms_adapter import WmsInboundAuthPolicy
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
-from src.app.wms_integration.provider_startup import assemble_wms_provider_startup
 from src.celery_app.app import celery_app
 from src.core.uuid7 import new_uuid7
 from src.register import register_routers
-from tests.contracts.wms_integration.provider_profile_support import (
-    build_provider_profile_payload,
-    write_provider_profile,
-)
 from tests.integration.conftest import (
     integration_engine,
     integration_guard,
@@ -76,7 +71,6 @@ async def _transport_counts(session_factory) -> tuple[int, int, int, int]:
 
 
 async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_business_producer(
-    tmp_path,
     integration_session_factory,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -116,13 +110,12 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
 
     try:
         server = MockWmsHttpServer().start()
-        payload = build_provider_profile_payload()
-        payload["server_url"] = server.url
-        payload["transport_submit_path"] = "/api/WES/TransportRequests"
-        profile_file = write_provider_profile(tmp_path / "provider.yaml", payload)
-        startup = assemble_wms_provider_startup(SimpleNamespace(WMS_PROVIDER_PROFILE_FILE=profile_file))
-        runtime = await build_transport_runtime(startup=startup, session_factory=integration_session_factory)
-        worker = TransportBrokerWorker(database_url, redis_url, profile_file)
+        runtime = await build_transport_runtime(
+            wms_base_url=server.url,
+            transport_submit_path="/api/WES/TransportRequests",
+            session_factory=integration_session_factory,
+        )
+        worker = TransportBrokerWorker(database_url, redis_url, server.url, "/api/WES/TransportRequests")
         worker.start()
         before_empty = await _transport_counts(integration_session_factory)
         assert worker.result(worker.send(SUBMIT_TASK, kwargs={"limit": 100})) == 0
@@ -136,7 +129,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         await confirm_rack_faces_with_sessions(integration_session_factory, {rack_id: RackFace.A})
         app = FastAPI()
         app.state.transport_runtime = runtime
-        app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
+        app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
         register_routers(app)
         _allow_transport_permissions(app)
         client_request_id = new_uuid7()

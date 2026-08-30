@@ -20,7 +20,6 @@ pipeline {
         DEPLOY_PATH = '/opt/wes_backend'
         DEPLOY_ENV_FILE = '.env'
         DEPLOY_COMPOSE_FILE = 'docker-compose.test-deploy.yml'
-        WMS_PROVIDER_PROFILE_HOST_FILE = '/etc/wes/wms-provider.yaml'
         CURRENT_RELEASE_EVIDENCE_DIR = '/srv/wes/releases/current'
         RELEASE_EVIDENCE_ROOT = '/srv/wes/releases'
         HEALTH_CHECK_URL = 'http://127.0.0.1:8001/ready'
@@ -123,24 +122,11 @@ pipeline {
                         cd "${WORKSPACE}"
                         [ "$(git rev-parse HEAD)" = "${DEPLOY_SOURCE_COMMIT_SHA}" ] || exit 1
 
-                        if [ -z "${WMS_PROVIDER_PROFILE_HOST_FILE:-}" ]; then
-                            echo "PRE-CUTOVER_ABORTED: 未配置 WMS Provider profile 路径"
-                            exit 1
-                        fi
-                        if [ ! -f "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
-                            echo "PRE-CUTOVER_ABORTED: WMS Provider profile 不是普通文件"
-                            exit 1
-                        fi
-                        if [ ! -r "${WMS_PROVIDER_PROFILE_HOST_FILE}" ]; then
-                            echo "PRE-CUTOVER_ABORTED: WMS Provider profile 不可读"
-                            exit 1
-                        fi
                         if [ ! -r "${DEPLOY_PATH}/${DEPLOY_ENV_FILE}" ]; then
                             echo "PRE-CUTOVER_ABORTED: TEST runtime env 不可读"
                             exit 1
                         fi
                         export REGISTRY_URL="${REGISTRY_URL}"
-                        export WMS_PROVIDER_PROFILE_HOST_FILE="${WMS_PROVIDER_PROFILE_HOST_FILE}"
                         sh ./docker/test/registry-login.sh
 
                         PREFLIGHT_DIR=$(mktemp -d "${WORKSPACE}/.release-preflight.XXXXXX")
@@ -354,7 +340,7 @@ with open(target, "w", encoding="utf-8") as stream:
 PY
                         }
                         write_effective_facts() {
-                            python3 - "${STAGED_DEPLOY_PATH}" "${STAGED_RUNTIME_ENV_FILE}" "${WMS_PROVIDER_PROFILE_HOST_FILE}" "${PREFLIGHT_DIR}/effective-facts-base.json" <<'PY'
+                            python3 - "${STAGED_DEPLOY_PATH}" "${STAGED_RUNTIME_ENV_FILE}" "${PREFLIGHT_DIR}/effective-facts-base.json" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
 def item(logical, physical):
@@ -362,9 +348,9 @@ def item(logical, physical):
 root = Path(sys.argv[1])
 deploy_paths = ["Jenkinsfile.test-deploy", "docker-compose.test-deploy.yml", "scripts/wait_for_http.py", "nginx/nginx.conf", "nginx/conf.d/default.conf", "postgresql/base.conf", "postgresql/test.conf", "redis/base.conf", "redis/test.conf"]
 deploy = [item(path, root / path) for path in deploy_paths]
-runtime = [item("runtime/.env", sys.argv[2]), item("runtime/wms-provider.yaml", sys.argv[3])]
+runtime = [item("runtime/.env", sys.argv[2])]
 value = {"deploy": {"kind": "wes.release.input-set.v1", "files": sorted(deploy, key=lambda x: x["path"])}, "runtime": {"kind": "wes.release.input-set.v1", "files": sorted(runtime, key=lambda x: x["path"])}}
-with open(sys.argv[4], "w", encoding="utf-8") as stream:
+with open(sys.argv[3], "w", encoding="utf-8") as stream:
     json.dump(value, stream, sort_keys=True, separators=(",", ":")); print(file=stream)
 PY
                         }
@@ -507,14 +493,36 @@ PY
                         }
                         business_preflight() {
                             candidate_backend_python -c '
-from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
+import asyncio
+from src.app.wms_adapter.factory import build_wms_client
+from src.celery_app.app import celery_app
+from src.celery_app.config import task_routes
 from src.core.conf import settings
 try:
-    validate_wms_transport_configuration(settings_source=settings)
+    client = build_wms_client(base_url=settings.WMS_BASE_URL, timeout_seconds=10.0)
+    asyncio.run(client.aclose())
+    celery_app.loader.import_default_modules()
+    required = {
+        "src.celery_app.tasks.transport.process_transport_evidence_batch",
+        "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
+        "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+        "src.celery_app.tasks.transport.submit_transport_tasks_batch",
+        "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
+    }
+    legacy = {
+        "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch",
+        "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
+        "src.celery_app.tasks.workline.check_wms_effect_status",
+        "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+    }
+    assert required == {name for name, route in task_routes.items() if route == {"queue": "wms-fulfillment"}}
+    registered = set(celery_app.tasks)
+    assert required <= registered
+    assert legacy.isdisjoint(registered)
 except Exception as exc:
-    print(f"WMS_PROFILE_PREFLIGHT_ERROR={type(exc).__name__}: {exc}", flush=True)
+    print(f"WMS_TARGET_PREFLIGHT_ERROR={type(exc).__name__}: {exc}", flush=True)
     raise SystemExit(1) from exc
-print("WMS_PROFILE_PREFLIGHT=valid", flush=True)
+print("WMS_TARGET_PREFLIGHT=valid", flush=True)
 ' || return 1
                         }
                         write_next_current_fingerprints() {
@@ -572,8 +580,8 @@ PY
                         query_database_state || abort_pre_cutover database-state
                         write_checker_inputs || abort_pre_cutover checker-inputs
                         run_release_checker || abort_pre_cutover compatibility-check
-                        echo "🔎 在维护态前编译校验 WMS Provider profile"
-                        business_preflight || abort_pre_cutover wms-profile-preflight
+                        echo "🔎 在维护态前校验 WMS target client/queue readiness"
+                        business_preflight || abort_pre_cutover wms-target-readiness-preflight
                         write_next_current_fingerprints || abort_pre_cutover current-evidence-build
                         # TEST_DEPLOY_PREFLIGHT_ORDER_END
 

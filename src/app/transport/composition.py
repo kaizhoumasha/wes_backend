@@ -6,10 +6,8 @@ import asyncio
 import os
 from typing import TYPE_CHECKING
 
-from src.app.sys.services.event_stream_service import event_stream_service
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
-from src.app.wms_integration.provider_profile import WmsProviderAuthScheme
 from src.core.logger import logger
 
 if TYPE_CHECKING:
@@ -20,7 +18,6 @@ if TYPE_CHECKING:
     from src.app.wms_adapter.client import WmsClient
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
     from src.app.wms_adapter.transport_event_handler import TransportEventHandler
-    from src.app.wms_integration.provider_startup import WmsProviderStartupConfiguration
 
 
 class TransportRuntime:
@@ -70,21 +67,10 @@ class TransportRuntime:
             self._closed = True
 
 
-def validate_transport_runtime_profile(startup: WmsProviderStartupConfiguration) -> None:
-    """在资源创建前拒绝 Transport 尚未实现的网络或认证配置。"""
-
-    profile = startup.compiled_profile.profile
-    if profile.network_trust_mode != "isolated_lan":
-        raise ValueError("Transport runtime requires network_trust_mode=isolated_lan")
-    if profile.outbound_auth.scheme is not WmsProviderAuthScheme.NONE:
-        raise ValueError("Transport runtime requires outbound_auth.scheme=NONE")
-    if profile.inbound_auth.scheme is not WmsProviderAuthScheme.NONE:
-        raise ValueError("Transport runtime requires inbound_auth.scheme=NONE")
-
-
 async def build_transport_runtime(
     *,
-    startup: WmsProviderStartupConfiguration,
+    wms_base_url: str,
+    transport_submit_path: str,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> TransportRuntime:
     """构造一个进程/事件循环唯一的 Transport 运行时。"""
@@ -94,9 +80,8 @@ async def build_transport_runtime(
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
     from src.app.wms_adapter.transport_event_handler import TransportEventHandler
 
-    validate_transport_runtime_profile(startup)
     client = build_wms_client(
-        base_url=startup.compiled_profile.profile.server_url,
+        base_url=wms_base_url,
         timeout_seconds=10.0,
     )
     try:
@@ -107,14 +92,13 @@ async def build_transport_runtime(
         position_projection_service = PositionProjectionService(repository=PositionProjectionRepository())
         adapter = WmsTransportAdapter(
             client,
-            submit_path=startup.compiled_profile.transport_submit_path,
+            submit_path=transport_submit_path,
         )
         service = TransportService(
             session_factory,
             repository,
             adapter,
             position_projections=position_projection_service,
-            event_publisher=event_stream_service,
         )
         handler = TransportEventHandler(service)
         return TransportRuntime(
@@ -136,4 +120,4 @@ async def build_transport_runtime(
         raise
 
 
-__all__ = ["TransportRuntime", "build_transport_runtime", "validate_transport_runtime_profile"]
+__all__ = ["TransportRuntime", "build_transport_runtime"]

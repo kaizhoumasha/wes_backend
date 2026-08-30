@@ -686,7 +686,6 @@ def test_effective_inputs_and_database_rules_are_owned_by_checker_inputs() -> No
         "redis/base.conf",
         "redis/test.conf",
         "runtime/.env",
-        "runtime/wms-provider.yaml",
     ):
         assert path in pipeline
     assert (
