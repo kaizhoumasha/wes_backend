@@ -16,7 +16,7 @@ from scripts.data.seed_initial_data import (
 )
 from src.app.admin.models import Permission, Role, User, role_permission, user_role
 from src.core.security import get_password_hash
-from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+from tests.support.postgresql_heavy import run_alembic, temporary_database
 
 SEED_PASSWORD = "admin123"
 

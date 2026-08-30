@@ -123,14 +123,14 @@ def test_jenkins_runs_canonical_quality_profile_without_partial_duplicates() -> 
 def test_jenkins_quality_gate_mounts_git_metadata_read_only() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
     quality_body = jenkinsfile.split("stage('Quality Gate')", maxsplit=1)[1].split(
-        "stage('RuntimeInbox PostgreSQL Acceptance')", maxsplit=1
+        "stage('Compose Contracts')", maxsplit=1
     )[0]
 
     assert '-v "$WORKSPACE/.git:/app/.git:ro"' in quality_body
     assert "git config --global --add safe.directory /app" in quality_body
 
 
-def test_jenkins_parallelizes_independent_quality_compose_and_runtime_inbox_gates() -> None:
+def test_jenkins_parallelizes_independent_quality_and_compose_gates() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
     verification = jenkinsfile.split("stage('Build CI Image')", maxsplit=1)[1].split(
         "stage('Mock Image Contracts')", maxsplit=1
@@ -138,27 +138,21 @@ def test_jenkins_parallelizes_independent_quality_compose_and_runtime_inbox_gate
 
     assert "stage('Verification')" in verification
     parallel_position = verification.index("parallel {")
-    for stage_name in ("Quality Gate", "Compose Contracts", "RuntimeInbox PostgreSQL Acceptance"):
+    for stage_name in ("Quality Gate", "Compose Contracts"):
         assert verification.index(f"stage('{stage_name}')") > parallel_position
+    assert "RuntimeInbox PostgreSQL Acceptance" not in verification
 
 
-def test_jenkins_does_not_repeat_dedicated_runtime_inbox_acceptance_in_general_heavy_stage() -> None:
+def test_jenkins_passes_selector_manifest_to_general_heavy_runner_without_legacy_filter() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
     heavy_stage = jenkinsfile.split("stage('HEAVY Required')", maxsplit=1)[1].split(
         "stage('Build Runtime Image')", maxsplit=1
     )[0]
-    acceptance_owners = [
-        "tests/integration/test_runtime_inbox_migration_postgresql.py",
-        "tests/integration/test_runtime_inbox_processing_postgresql.py",
-        "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py",
-        "tests/load/test_runtime_inbox_claim_benchmark.py",
-    ]
-
-    assert "reports/runtime-inbox-acceptance-owned.txt" in heavy_stage
-    assert "grep -Fvx -f" in heavy_stage
-    assert heavy_stage.index("grep -Fvx -f") < heavy_stage.index("if [ ! -s reports/heavy-tests.txt ]")
-    for owner in acceptance_owners:
-        assert owner in heavy_stage
+    assert "cp reports/heavy-tests.selected.txt reports/heavy-tests.txt" in heavy_stage
+    assert "scripts/run_selected_heavy_tests.py /artifacts/heavy-tests.txt /reports/heavy-required.xml" in heavy_stage
+    assert "runtime-inbox-acceptance-owned.txt" not in heavy_stage
+    assert "grep -Fvx -f" not in heavy_stage
+    assert "runtime_inbox" not in heavy_stage.lower()
 
 
 def test_ci_architecture_check_disables_uv_sync_for_nested_guardrail(tmp_path: Path) -> None:

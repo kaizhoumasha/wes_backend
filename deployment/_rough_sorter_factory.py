@@ -55,11 +55,11 @@ from src.app.execution.repositories.rack_replacement_transport_binding_repositor
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.resource.repositories import rack_placement_repository
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
-from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.transport.repository import TransportRepository
 from src.app.workline.epoch_digest import configuration_digest, topology_digest
 from src.app.workline.models.line_run_epoch import LineRunEpochStatus
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
+from src.app.workline.repositories.workline_repository import workline_repository
 
 if TYPE_CHECKING:
     from deployment._rough_sorter_types import RoughSorterTypes

@@ -185,7 +185,7 @@ class SystemCapabilityIndexBuilder:
             else ["SYSTEM_CAPABILITY_INDEX = MappingProxyType(", "    {", *mapping_entries, "    }", ")"]
         )
         lines = [
-            '"""由 scripts/generate_runtime_extensions.py 生成；禁止手工编辑。"""',
+            '"""由确定性能力索引生成器生成；禁止手工编辑。"""',
             "",
             "from types import MappingProxyType",
             "",

@@ -1,22 +1,11 @@
-"""系统级发件箱模型。
-
-所有面向外部硬件系统的异步副作用都从这里派发：
-
-    Domain Service -> DispatchEnvelope -> SystemOutbox -> SystemOutboxEngine
-        -> endpoint/device sender -> WMS/RCS/AGV/CTU -> callback
-
-SystemOutbox 采用 at-least-once 派发语义。下游请求必须携带稳定的
-dispatch_key/request_id，并由对方按该键幂等处理重复请求。
-"""
+"""后续 DDL 前保留的 SystemOutbox schema identity。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
-from pydantic import model_validator
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -26,25 +15,14 @@ from sqlalchemy import (
     Index,
     LargeBinary,
     Text,
-    event,
-    inspect,
 )
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.app.effect_ledger_status import SystemOutboxStatus
-from src.app.sys.canonical_dispatch import CanonicalPayload
-from src.app.sys.external_http_binding import FrozenExternalHttpBinding
-from src.app.wms_integration.operation_registry import (
-    ASYNC_EFFECT_OPERATION_IDENTITIES,
-    EFFECT_OPERATION_IDENTITIES,
-)
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm.state import InstanceState
 
 
 class SystemOutboxDispatchType(str, Enum):
@@ -59,75 +37,6 @@ class SystemOutboxTargetType(str, Enum):
 
     HTTP_ENDPOINT = "HTTP_ENDPOINT"
     INTERNAL_SERVICE = "INTERNAL_SERVICE"
-
-
-WMS_EFFECT_OPERATION_IDENTITIES = EFFECT_OPERATION_IDENTITIES
-WMS_ASYNC_EFFECT_OPERATION_IDENTITIES = ASYNC_EFFECT_OPERATION_IDENTITIES
-
-
-def _validate_wms_effect_idempotency(outbox: Any) -> None:
-    if getattr(outbox, "operation_identity", None) not in WMS_EFFECT_OPERATION_IDENTITIES:
-        return
-    idempotency_key = getattr(outbox, "idempotency_key", None)
-    if (
-        not isinstance(idempotency_key, str)
-        or not idempotency_key.strip()
-        or "\n" in idempotency_key
-        or "\r" in idempotency_key
-    ):
-        raise ValueError("WMS EFFECT requires a non-empty single-line idempotency_key")
-
-
-class OperationCompletionPolicy(str, Enum):
-    """Operation 完成确认策略。"""
-
-    RESOURCE_PROJECTION_REQUIRED = "RESOURCE_PROJECTION_REQUIRED"
-
-
-@dataclass(frozen=True)
-class DispatchEnvelope:
-    """领域 gateway 交给 SystemOutbox 的统一派发包络。"""
-
-    dispatch_key: str
-    dispatch_type: SystemOutboxDispatchType
-    target_type: SystemOutboxTargetType
-    target_code: str
-    provider_profile_identity: str
-    operation_identity: str
-    payload_json: dict[str, Any]
-    operation_domain: str
-    idempotency_key: str | None = None
-    frozen_binding: FrozenExternalHttpBinding | None = None
-    canonical_payload_bytes: bytes | None = None
-    payload_hash: str | None = None
-    operation_key: str | None = None
-    workline_id: int | None = None
-    session_id: int | None = None
-    trace_id: str | None = None
-
-    def __post_init__(self) -> None:
-        _validate_wms_effect_idempotency(self)
-        if self.dispatch_type != SystemOutboxDispatchType.EXTERNAL_HTTP:
-            if self.frozen_binding is not None:
-                raise ValueError("non-EXTERNAL_HTTP DispatchEnvelope must not carry frozen binding")
-            return
-        if self.frozen_binding is None:
-            raise ValueError("EXTERNAL_HTTP DispatchEnvelope requires frozen binding")
-        if (
-            self.frozen_binding.provider_profile_identity != self.provider_profile_identity
-            or self.frozen_binding.operation_identity != self.operation_identity
-            or self.frozen_binding.target_snapshot.code != self.target_code
-        ):
-            raise ValueError("EXTERNAL_HTTP DispatchEnvelope identity differs from frozen binding")
-        if self.canonical_payload_bytes is None:
-            raise ValueError("EXTERNAL_HTTP DispatchEnvelope requires canonical_payload_bytes")
-        if self.payload_hash is None:
-            raise ValueError("EXTERNAL_HTTP DispatchEnvelope requires payload_hash")
-        canonical = CanonicalPayload.from_persisted(
-            canonical_payload_bytes=self.canonical_payload_bytes,
-            payload_hash=self.payload_hash,
-        )
-        canonical.validate_projection(self.payload_json)
 
 
 class SystemOutboxBase(BaseMixin):
@@ -337,18 +246,9 @@ class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
         {"schema": SchemaType.BIZ.value},
     )
 
-    def __init__(self, **data: Any) -> None:
-        super().__init__(**data)
-        _validate_system_outbox_canonical_payload(self)
-
 
 class SystemOutboxCreate(ModelFactory(SystemOutboxBase).for_create()):
     """系统级发件箱创建 Schema。"""
-
-    @model_validator(mode="after")
-    def validate_external_http_canonical_payload(self) -> SystemOutboxCreate:
-        _validate_system_outbox_canonical_payload(self)
-        return self
 
 
 class SystemOutboxUpdate(
@@ -395,88 +295,7 @@ class SystemOutboxUpdate(
     lease_expires_at: ClassVar[datetime]
 
 
-def _validate_system_outbox_canonical_payload(outbox: Any) -> None:
-    _validate_wms_effect_idempotency(outbox)
-    dispatch_type = getattr(outbox, "dispatch_type", None)
-    dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
-    if dispatch_type_value != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-        frozen_fields = (
-            "provider_profile_hash",
-            "binding_revision",
-            "target_snapshot_json",
-            "target_snapshot_hash",
-            "auth_scheme",
-            "network_trust_mode",
-            "credential_reference",
-        )
-        if any(getattr(outbox, field_name, None) is not None for field_name in frozen_fields):
-            raise ValueError("non-EXTERNAL_HTTP SystemOutbox must not carry frozen target and credential binding")
-        return
-    canonical_payload_bytes = getattr(outbox, "canonical_payload_bytes", None)
-    payload_hash = getattr(outbox, "payload_hash", None)
-    if canonical_payload_bytes is None:
-        raise ValueError("EXTERNAL_HTTP SystemOutbox requires canonical_payload_bytes")
-    if payload_hash is None:
-        raise ValueError("EXTERNAL_HTTP SystemOutbox requires payload_hash")
-    canonical = CanonicalPayload.from_persisted(
-        canonical_payload_bytes=canonical_payload_bytes,
-        payload_hash=payload_hash,
-    )
-    payload_projection = getattr(outbox, "payload_json", None)
-    if not isinstance(payload_projection, dict):
-        raise TypeError("EXTERNAL_HTTP SystemOutbox requires payload_json object")
-    canonical.validate_projection(payload_projection)
-    try:
-        _ = FrozenExternalHttpBinding.from_persisted(
-            provider_profile_identity=getattr(outbox, "provider_profile_identity", None),
-            provider_profile_hash=getattr(outbox, "provider_profile_hash", None),
-            operation_identity=getattr(outbox, "operation_identity", None),
-            binding_revision=getattr(outbox, "binding_revision", None),
-            target_code=getattr(outbox, "target_code", None),
-            target_snapshot_json=getattr(outbox, "target_snapshot_json", None),
-            target_snapshot_hash=getattr(outbox, "target_snapshot_hash", None),
-            auth_scheme=getattr(outbox, "auth_scheme", None),
-            network_trust_mode=getattr(outbox, "network_trust_mode", None),
-            credential_reference=getattr(outbox, "credential_reference", None),
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError("EXTERNAL_HTTP SystemOutbox requires frozen target and credential binding") from exc
-
-
-@event.listens_for(SystemOutbox, "before_update")
-def _prevent_external_http_payload_update(_mapper: Any, _connection: Any, outbox: SystemOutbox) -> None:
-    """调度 identity 与 EXTERNAL_HTTP canonical payload 一经持久化均不可改写。"""
-
-    state = cast("InstanceState[SystemOutbox]", inspect(outbox))
-    scheduling_fields = (
-        "provider_profile_identity",
-        "provider_profile_hash",
-        "operation_identity",
-        "binding_revision",
-        "target_code",
-        "target_snapshot_json",
-        "target_snapshot_hash",
-        "auth_scheme",
-        "network_trust_mode",
-        "credential_reference",
-        "idempotency_key",
-    )
-    if any(state.attrs[field_name].history.has_changes() for field_name in scheduling_fields):
-        raise ValueError("SystemOutbox scheduling identity persisted fields are immutable")
-    dispatch_type = getattr(outbox, "dispatch_type", None)
-    dispatch_type_value = dispatch_type.value if isinstance(dispatch_type, Enum) else dispatch_type
-    if dispatch_type_value != SystemOutboxDispatchType.EXTERNAL_HTTP.value:
-        return
-    immutable_fields = ("payload_json", "canonical_payload_bytes", "payload_hash")
-    if any(state.attrs[field_name].history.has_changes() for field_name in immutable_fields):
-        raise ValueError("EXTERNAL_HTTP SystemOutbox canonical payload persisted fields are immutable")
-
-
 __all__ = [
-    "WMS_ASYNC_EFFECT_OPERATION_IDENTITIES",
-    "WMS_EFFECT_OPERATION_IDENTITIES",
-    "DispatchEnvelope",
-    "OperationCompletionPolicy",
     "SystemOutbox",
     "SystemOutboxBase",
     "SystemOutboxCreate",

@@ -295,17 +295,5 @@ __all__ = [
     "cleanup_old_logs",
     "clear_cache",
     "health_check",
-    "process_signal",
     "send_notification",
 ]
-
-
-@celery_app.task(
-    name="src.celery_app.tasks.core.process_signal",
-    base=celery_app.Task,
-    bind=True,
-    max_retries=3,
-    default_retry_delay=10,
-)
-def process_signal(self: Any, payload: dict[str, Any]) -> None:
-    logger.info(f"core process_signal 接收到 payload: {payload}")

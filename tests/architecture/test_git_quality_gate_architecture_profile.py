@@ -118,14 +118,15 @@ exit 0
 
 
 def test_quality_profile_runs_runtime_contract_guardrails(tmp_path):
-    """quality profile 必须执行 runtime owner 与 RuntimeInbox authority 回归护栏。"""
+    """quality profile 必须执行 target owner 与 outbound boundary 回归护栏。"""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(parents=True, exist_ok=True)
     fake_uv = fake_bin / "uv"
     fake_uv.write_text(
         """#!/usr/bin/env bash
 if [[ "$*" == *"tests/architecture/test_runtime_status_owner_guardrail.py"* ]] \
-  && [[ "$*" == *"tests/callback/test_callback_runtime_inbox_authority.py"* ]]; then
+  && [[ "$*" == *"tests/architecture/test_legacy_absence_guardrail.py"* ]] \
+  && [[ "$*" == *"tests/architecture/test_outbound_http_boundary_guardrail.py"* ]]; then
   echo "runtime contract guardrails reached" >&2
   exit 27
 fi
@@ -154,7 +155,8 @@ exit 0
         "[runtime-contract-guardrails] pytest tests/architecture/test_runtime_status_owner_guardrail.py"
         in result.stdout
     )
-    assert "tests/callback/test_callback_runtime_inbox_authority.py" in result.stdout
+    assert "tests/architecture/test_legacy_absence_guardrail.py" in result.stdout
+    assert "tests/architecture/test_outbound_http_boundary_guardrail.py" in result.stdout
     assert "runtime contract guardrails reached" in result.stderr
 
 
@@ -166,7 +168,8 @@ def test_runtime_contract_guardrails_check_is_available(tmp_path):
     fake_uv.write_text(
         """#!/usr/bin/env bash
 if [[ "$*" == *"tests/architecture/test_runtime_status_owner_guardrail.py"* ]] \
-  && [[ "$*" == *"tests/callback/test_callback_runtime_inbox_authority.py"* ]]; then
+  && [[ "$*" == *"tests/architecture/test_legacy_absence_guardrail.py"* ]] \
+  && [[ "$*" == *"tests/architecture/test_outbound_http_boundary_guardrail.py"* ]]; then
   echo "runtime contract guardrails reached" >&2
   exit 27
 fi
@@ -194,7 +197,8 @@ exit 0
         "[runtime-contract-guardrails] pytest tests/architecture/test_runtime_status_owner_guardrail.py"
         in result.stdout
     )
-    assert "tests/callback/test_callback_runtime_inbox_authority.py" in result.stdout
+    assert "tests/architecture/test_legacy_absence_guardrail.py" in result.stdout
+    assert "tests/architecture/test_outbound_http_boundary_guardrail.py" in result.stdout
     assert "runtime contract guardrails reached" in result.stderr
 
 

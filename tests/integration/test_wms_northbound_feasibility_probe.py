@@ -156,6 +156,9 @@ async def test_probe_cli_ignores_host_proxy_environment(monkeypatch: pytest.Monk
         async def __aexit__(self, *_args: object) -> None:
             return None
 
+        async def aclose(self) -> None:
+            return None
+
     monkeypatch.setattr(
         probe_module,
         "_parse_args",

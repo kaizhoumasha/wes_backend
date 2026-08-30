@@ -42,10 +42,19 @@ INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
     Path(
         "tests/architecture/test_cleanup_matrix_guardrail.py"
     ): "legacy cleanup matrix schema guardrail owns historical audit fields",
+    Path("tests/architecture/test_legacy_absence_guardrail.py"): "legacy removal guardrail owns frozen phase labels",
+    Path("tests/architecture/test_release_operational_readiness_repository_boundary.py"): (
+        "release readiness boundary owns frozen matrix phase labels"
+    ),
     Path("tests/architecture/test_process_naming_guardrail.py"): "guardrail defines the forbidden tokens it enforces",
     Path(
         "tests/contracts/test_business_legacy_matrix_closure.py"
     ): "business legacy matrix closure checks historical audit columns",
+    Path("tests/scripts/test_select_heavy_tests.py"): "selector contract owns frozen removal phase labels",
+    Path("scripts/check_legacy_drain_readiness.py"): "cutover checker owns the frozen manifest identity and path",
+    Path(
+        "tests/scripts/test_check_legacy_drain_readiness.py"
+    ): "checker contract owns the frozen manifest identity and path",
     Path(
         "tests/migrations/test_phase1_device_fk_ring_dissolve.py"
     ): "migration semantic contract for immutable historical migration",
@@ -154,12 +163,12 @@ def test_process_naming_guardrail_scans_default_test_tree_and_ci_file() -> None:
     assert Path(".githooks/pre-commit") in set(_iter_scan_files())
 
 
-def test_callback_runtime_inbox_tests_do_not_use_cutover_names() -> None:
+def test_callback_contract_tests_do_not_use_cutover_names() -> None:
     active_callback_tests = {path.as_posix() for path in Path("tests/callback").glob("test_*.py")}
     retired_cutover_path = "tests/callback/test_callback_runtime_inbox_" + "cutover.py"
 
     assert retired_cutover_path not in active_callback_tests
-    assert "tests/callback/test_callback_runtime_inbox_authority.py" in active_callback_tests
+    assert "tests/callback/test_callback_mirror_integration.py" in active_callback_tests
 
 
 def test_active_guardrail_allowlist_no_longer_contains_retired_phase_test_paths() -> None:

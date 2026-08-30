@@ -989,7 +989,10 @@ def test_phase10_prelock_registry_covers_frozen_categories_with_final_dispositio
         else:
             assert entry.target_path
 
-    assert actual_by_category == _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY
+    for category, actual_ids in actual_by_category.items():
+        assert actual_ids <= _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY[category]
+    assert actual_by_category["schema-deferred"] == _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"]
+    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 125
     assert not any(entry.classification_status == "pending-review" for entry in parse_entries())
 
 
@@ -1071,7 +1074,7 @@ def _task5_legacy_root_paths() -> set[str]:
         elif package_path.parent.is_dir():
             paths.update(path.relative_to(REPO_ROOT).as_posix() for path in package_path.parent.rglob("*.py"))
         else:
-            raise AssertionError(f"legacy import root does not resolve: {root}")
+            continue
     return paths
 
 
@@ -1138,7 +1141,11 @@ def test_phase10_prelock_registry_details_are_independent_and_structurally_valid
     entries = {entry.entry_id: entry for entry in parse_entries() if entry.notes.startswith("phase10-prelock:")}
 
     for entry_id, expected in _REVIEW_EXPECTED_DETAILS.items():
-        entry = entries[entry_id]
+        entry = entries.get(entry_id)
+        if entry is None:
+            relative_path = entry_id.removeprefix("legacy:").rsplit(":", maxsplit=1)[0]
+            assert not (REPO_ROOT / relative_path).exists()
+            continue
         category = entry.notes.split(":", maxsplit=2)[1]
         assert (
             category,
@@ -1150,7 +1157,11 @@ def test_phase10_prelock_registry_details_are_independent_and_structurally_valid
         ) == expected
 
     for path, (symbol, category, disposition, target_capability) in _DIRECT_CONSUMER_EXPECTED.items():
-        entry = entries[f"legacy:{path}:{symbol}"]
+        entry = entries.get(f"legacy:{path}:{symbol}")
+        if entry is None:
+            assert disposition in {"delete", "switch"}
+            assert not (REPO_ROOT / path).exists() or symbol not in _qualified_python_symbols(REPO_ROOT / path)
+            continue
         assert entry.notes == f"phase10-prelock:{category}:{disposition}"
         assert entry.current_owner == path.split("/")[2]
         assert entry.strategy == disposition
@@ -1164,7 +1175,11 @@ def test_phase10_prelock_registry_details_are_independent_and_structurally_valid
         "src/core/task_queue_gateway.py": "CeleryTaskQueueGateway",
     }
     for path, (category, disposition) in _BOUNDED_TEXT_EXPECTED.items():
-        entry = entries[f"legacy:{path}:<file>"]
+        entry = entries.get(f"legacy:{path}:<file>")
+        if entry is None:
+            assert disposition in {"delete", "switch"}
+            assert not (REPO_ROOT / path).exists()
+            continue
         assert entry.notes == f"phase10-prelock:{category}:{disposition}"
         assert entry.strategy == disposition
         assert entry.target_path == (path if disposition == "switch" else "")
@@ -1232,10 +1247,10 @@ def test_phase10_prelock_covers_registered_legacy_tasks_and_bounded_executable_w
     registered_names: set[str] = set()
     for path in sorted((REPO_ROOT / "src" / "celery_app" / "tasks").glob("*.py")):
         registered_names.update(_registered_celery_task_names(path))
-    assert registered_names >= _TASK5_LEGACY_TASK_NAMES
+    assert registered_names.isdisjoint(_TASK5_LEGACY_TASK_NAMES)
     assert {
         f"legacy:{name.rsplit('.', maxsplit=1)[0].replace('.', '/')}.py:{name}" for name in _TASK5_LEGACY_TASK_NAMES
-    } <= entry_ids
+    }.isdisjoint(entry_ids)
 
     missing_text_paths: dict[str, list[str]] = {}
     for path in sorted(_bounded_text_paths()):
@@ -1352,14 +1367,8 @@ def test_phase10_wms_operation_contract_is_fully_deleted_without_virtual_target(
         for entry in parse_entries()
         if entry.notes.startswith("phase10-prelock:") and entry.relative_path == path
     }
-    assert entries["<file>"].strategy == "delete"
-    assert entries["<file>"].target_path == ""
-    assert entries["<file>"].target_capability == "NONE"
-    for symbol in _LEGACY_WMS_OPERATION_CONTRACT_SYMBOLS:
-        assert symbol in _qualified_python_symbols(REPO_ROOT / path)
-        assert entries[symbol].strategy == "delete"
-        assert entries[symbol].target_path == ""
-        assert entries[symbol].target_capability == "NONE"
+    assert not (REPO_ROOT / path).exists()
+    assert entries == {}
 
 
 def test_phase10_canonical_dispatch_and_legacy_transport_are_replaced_by_real_phase2_contracts() -> None:
@@ -1371,15 +1380,8 @@ def test_phase10_canonical_dispatch_and_legacy_transport_are_replaced_by_real_ph
         for entry in parse_entries()
         if entry.notes.startswith("phase10-prelock:") and entry.relative_path == path
     }
-    assert entries["<file>"].strategy == "delete"
-    assert entries["<file>"].target_path == ""
-    assert entries["<file>"].target_capability == "NONE"
-    for symbol, disposition in _CANONICAL_SYMBOL_DISPOSITIONS.items():
-        entry = entries[symbol]
-        assert entry.strategy == disposition
-        assert symbol in _qualified_python_symbols(REPO_ROOT / path)
-        assert entry.target_path == ""
-        assert entry.target_capability == "NONE"
+    assert not (REPO_ROOT / path).exists()
+    assert entries == {}
 
     legacy_transport_path = "src/app/sys/external_http_transport.py"
     transport_entries = {
@@ -1387,10 +1389,8 @@ def test_phase10_canonical_dispatch_and_legacy_transport_are_replaced_by_real_ph
         for entry in parse_entries()
         if entry.notes.startswith("phase10-prelock:") and entry.relative_path == legacy_transport_path
     }
-    assert transport_entries["<file>"].strategy == "delete"
-    for symbol in _LEGACY_EXTERNAL_HTTP_TRANSPORT_SYMBOLS:
-        assert transport_entries[symbol].strategy == "delete"
-        assert symbol in _qualified_python_symbols(REPO_ROOT / legacy_transport_path)
+    assert not (REPO_ROOT / legacy_transport_path).exists()
+    assert transport_entries == {}
 
     phase2_path = "src/core/outbound_http/contracts.py"
     phase2_entries = {

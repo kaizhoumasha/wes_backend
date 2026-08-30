@@ -4,28 +4,17 @@
 调用方应从本包导入。
 """
 
-from src.app.runtime.orchestration.services.query.material_location_query_service import (
-    MaterialLocationConflictState,
-    MaterialLocationEvidence,
-    MaterialLocationQueryService,
-    MaterialLocationResult,
-    material_location_query_service,
-)
-from src.app.runtime.orchestration.services.query.northbound_operations_query_service import (
-    NorthboundOperationsQueryService,
-    northbound_operations_query_service,
+from src.app.runtime.orchestration.services.query.legacy_drain_readiness_service import (
+    LegacyDrainReadinessQueryError,
+    LegacyDrainReadinessResult,
+    LegacyDrainReadinessService,
 )
 from src.app.runtime.orchestration.services.query.release_operational_readiness_service import (
     ReleaseOperationalReadinessQueryError,
     ReleaseOperationalReadinessResult,
     ReleaseOperationalReadinessService,
 )
-from src.app.runtime.orchestration.services.query.runtime_query_service import (
-    RuntimeQueryService,
-    runtime_query_service,
-)
 from src.app.runtime.orchestration.services.query.workline_active_objects_service import (
-    RuntimeHoldView,
     WorklineActiveObjectConflictState,
     WorklineActiveObjectsResponse,
     WorklineActiveObjectsService,
@@ -34,22 +23,15 @@ from src.app.runtime.orchestration.services.query.workline_active_objects_servic
 )
 
 __all__ = [
-    "MaterialLocationConflictState",
-    "MaterialLocationEvidence",
-    "MaterialLocationQueryService",
-    "MaterialLocationResult",
-    "NorthboundOperationsQueryService",
+    "LegacyDrainReadinessQueryError",
+    "LegacyDrainReadinessResult",
+    "LegacyDrainReadinessService",
     "ReleaseOperationalReadinessQueryError",
     "ReleaseOperationalReadinessResult",
     "ReleaseOperationalReadinessService",
-    "RuntimeHoldView",
-    "RuntimeQueryService",
     "WorklineActiveObjectConflictState",
     "WorklineActiveObjectView",
     "WorklineActiveObjectsResponse",
     "WorklineActiveObjectsService",
-    "material_location_query_service",
-    "northbound_operations_query_service",
-    "runtime_query_service",
     "workline_active_objects_service",
 ]

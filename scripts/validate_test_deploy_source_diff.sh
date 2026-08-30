@@ -24,9 +24,6 @@ while IFS= read -r -d '' changed_path; do
             docker/test/* | \
             docs/architecture/heavy-test-impact.toml | \
             docs/devops/* | \
-            scripts/classify_runtime_inbox_acceptance.py | \
-            scripts/run_runtime_inbox_postgresql_acceptance.py | \
-            scripts/run_runtime_inbox_postgresql_acceptance_ci.sh | \
             tests/deployment/* | \
             tests/scripts/test_select_heavy_tests.py | \
             tests/scripts/test_select_heavy_tests_regression_2.py | \

@@ -40,7 +40,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import httpx
 from sqlalchemy import text
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +48,13 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from src.app.transport.debug_reset import normalize_transport_task_id
 from src.core.conf import settings
+from src.core.outbound_http.contracts import (
+    OutboundHttpDeliveryState,
+    OutboundHttpMethod,
+    OutboundHttpRequest,
+    OutboundHttpResponseLimits,
+)
+from src.core.outbound_http.factory import build_outbound_http_transport
 from src.database.db import close_db, get_db_context, init_db
 
 if TYPE_CHECKING:
@@ -178,10 +184,27 @@ async def reset_mock_wms() -> dict[str, Any]:
     WES 重发),不需要重置。
     """
     url = _mock_wms_reset_url()
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(url)
-        resp.raise_for_status()
-        return {"url": url, "ok": True, "body": resp.json()}
+    base_url, _, path = url.partition("/debug/reset")
+    transport = build_outbound_http_transport(
+        system_id="dev_mock_wms_reset",
+        base_url=base_url,
+        timeout_seconds=10.0,
+    )
+    try:
+        result = await transport.send(
+            OutboundHttpRequest(
+                method=OutboundHttpMethod.POST,
+                path=path or "/debug/reset",
+                response_limits=OutboundHttpResponseLimits(max_wire_bytes=256 * 1024, max_decoded_bytes=256 * 1024),
+            )
+        )
+    finally:
+        await transport.aclose()
+    if result.delivery_state != OutboundHttpDeliveryState.RESPONSE_RECEIVED or result.status_code is None:
+        raise RuntimeError("Mock WMS reset request did not receive a response")
+    if not 200 <= result.status_code < 300:
+        raise RuntimeError(f"Mock WMS reset failed with status={result.status_code}")
+    return {"url": url, "ok": True, "body": json.loads(result.decoded_body)}
 
 
 def _validate_table_sets(targets: tuple[TableTarget, ...] = RUNTIME_TABLES) -> None:

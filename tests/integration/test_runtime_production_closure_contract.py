@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
-
-from src.utils.timezone import timezone
-
 _PLACEHOLDER_EVIDENCE_SHA256 = "0" * 64
 
 
@@ -187,156 +183,16 @@ def test_runtime_production_e2e_gate_cli_accepts_production_artifact(tmp_path) -
     assert "Runtime production E2E artifact passed" in result.stdout
 
 
-def test_runtime_production_minimal_chain_records_runtime_effects_and_reconciliation() -> None:
-    """P0 闭环必须串起 manifest/session/inbox/intent/device/WMS/plane/reconciliation。"""
-
-    from src.app.runtime.orchestration.scenario_replay import (
-        ScenarioEvent,
-        ScenarioRecorder,
-        ScenarioReplayRunner,
-    )
-
-    events = [
-        ScenarioEvent(
-            event_id="manifest-001",
-            kind="workline_manifest",
-            occurred_at="2026-07-02T10:00:00Z",
-            payload={"object_key": "workline:WL-1", "state": "ACTIVE"},
-        ),
-        ScenarioEvent(
-            event_id="session-001",
-            kind="execution_session",
-            occurred_at="2026-07-02T10:00:01Z",
-            payload={"object_key": "session:S-1", "state": "RUNNING"},
-        ),
-        ScenarioEvent(
-            event_id="inbox-001",
-            kind="runtime_inbox",
-            occurred_at="2026-07-02T10:00:02Z",
-            payload={"source_event_id": "ecs-scan-1", "object_key": "pkg:PKG-0001", "state": "RECEIVED"},
-        ),
-        ScenarioEvent(
-            event_id="intent-001",
-            kind="runtime_intent",
-            occurred_at="2026-07-02T10:00:03Z",
-            payload={"effect_key": "device-command:CMD-1", "object_key": "pkg:PKG-0001", "state": "DISPATCHING"},
-        ),
-        ScenarioEvent(
-            event_id="device-001",
-            kind="device_command",
-            occurred_at="2026-07-02T10:00:04Z",
-            payload={"effect_key": "device-command:CMD-1", "object_key": "pkg:PKG-0001", "state": "ACKED"},
-        ),
-        ScenarioEvent(
-            event_id="wms-001",
-            kind="wms_fulfillment",
-            occurred_at="2026-07-02T10:00:05Z",
-            payload={"effect_key": "wms-fulfillment:WMS-1", "object_key": "pkg:PKG-0001", "state": "SUCCEEDED"},
-        ),
-        ScenarioEvent(
-            event_id="plane-001",
-            kind="plane_snapshot",
-            occurred_at="2026-07-02T10:00:06Z",
-            payload={"object_key": "pkg:PKG-0001", "state": "VISIBLE"},
-        ),
-        ScenarioEvent(
-            event_id="recon-001",
-            kind="runtime_conflict",
-            occurred_at="2026-07-02T10:00:07Z",
-            payload={"object_key": "pkg:PKG-0001", "state": "RECONCILING", "reason": "callback_out_of_order"},
-        ),
-    ]
-
-    recording = ScenarioRecorder().record(scenario_id="runtime-production-minimal", events=events)
-    result = ScenarioReplayRunner().replay(recording)
-
-    assert result.timeline == tuple(f"{event.kind}:{event.event_id}" for event in recording.events)
-    assert result.outbox_effect_keys == ("device-command:CMD-1", "wms-fulfillment:WMS-1")
-    assert result.reconciliation_reasons == ("callback_out_of_order",)
-    assert len(result.projection_hash) == 64
-
-
-def test_runtime_device_timeout_and_wms_reject_enter_reconciling_without_silent_success() -> None:
-    """ECS 超时与 WMS 拒绝必须进入 RECONCILING, 不能静默成功。"""
-
-    from src.app.reconciliation.manager import ReconciliationConflictInput, ReconciliationManager
-    from src.app.runtime.orchestration.services.device_dispatch_policy import (
-        DeviceDispatchDecisionKind,
-        DeviceDispatchPolicy,
-        DeviceDispatchRequest,
-        DeviceRuntimeSnapshot,
-        DeviceRuntimeStatus,
-    )
-    from src.app.wms_integration.state_machine import (
-        FulfillmentEvent,
-        FulfillmentState,
-        WmsFulfillmentStateMachine,
-    )
-
-    now = timezone.now_for_db()
-    device_decision = DeviceDispatchPolicy().evaluate(
-        DeviceDispatchRequest(
-            command_code="CMD-TIMEOUT",
-            device_role="scanner",
-            capability_code="SCAN",
-            dispatch_deadline_at=now,
-        ),
-        snapshot=DeviceRuntimeSnapshot(
-            device_code="DEV-1",
-            status=DeviceRuntimeStatus.RUNNING,
-            observed_at=now,
-            status_valid_until=now + timedelta(milliseconds=1000),
-        ),
-        now=now + timedelta(milliseconds=1),
-    )
-    wms_result = WmsFulfillmentStateMachine().transition(
-        current=FulfillmentState.SENT,
-        event=FulfillmentEvent.PROVIDER_REJECTED,
-        now=now,
-    )
-    reconciliation = ReconciliationManager().register_conflict(
-        ReconciliationConflictInput(
-            owner_domain="runtime",
-            owner_kind="ExecutionSession",
-            owner_id="session-timeout",
-            conflict_kind="DEVICE_TIMEOUT_WMS_REJECT",
-            reason="device timeout and WMS business reject require manual resolution",
-            evidence_refs=["device:CMD-TIMEOUT", "wms:reject"],
-            detected_at=now,
-        )
-    )
-
-    assert device_decision.kind == DeviceDispatchDecisionKind.CREATE_RUNTIME_HOLD
-    assert device_decision.runtime_hold_required is True
-    assert wms_result.state == FulfillmentState.REJECTED
-    assert reconciliation.runtime_hold_required is True
-    assert reconciliation.status == "PENDING"
-
-
 def test_runtime_benchmark_gate_lists_all_required_runtime_scenarios() -> None:
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
 
     gate = RuntimeBenchmarkGate()
 
-    assert gate.missing_required({"runtime_inbox_claim"}) == (
-        "conveyor_queue_writer",
-        "ecs_status_command",
-        "plane_snapshot",
-    )
-    assert (
-        gate.missing_required(
-            {
-                "runtime_inbox_claim",
-                "conveyor_queue_writer",
-                "ecs_status_command",
-                "plane_snapshot",
-            }
-        )
-        == ()
-    )
-    conveyor_queue_writer = next(scenario for scenario in gate.scenarios if scenario.name == "conveyor_queue_writer")
-    assert "integrity_conflict_recheck_count" in conveyor_queue_writer.required_metrics
-    assert conveyor_queue_writer.command == "uv run python scripts/run_runtime_benchmarks.py"
+    assert gate.missing_required({"ecs_status_command"}) == ("plane_snapshot",)
+    assert gate.missing_required({"ecs_status_command", "plane_snapshot"}) == ()
+    ecs_status_command = next(scenario for scenario in gate.scenarios if scenario.name == "ecs_status_command")
+    assert "command_post_p95_ms" in ecs_status_command.required_metrics
+    assert ecs_status_command.command == "uv run pytest tests/load/test_ecs_status_command_benchmark.py -q"
 
 
 def test_runtime_benchmark_scenarios_expose_release_gate_blocking_contract() -> None:
@@ -348,8 +204,8 @@ def test_runtime_benchmark_scenarios_expose_release_gate_blocking_contract() -> 
     assert all(scenario.blocks_release_gate is True for scenario in default_runtime_benchmark_scenarios())
     non_blocking = RuntimeBenchmarkScenario(
         name="diagnostic_only",
-        command="uv run pytest tests/load/test_runtime_inbox_claim_benchmark.py -q",
-        required_metrics=frozenset({"claim_p95_ms"}),
+        command="uv run pytest tests/load/test_ecs_status_command_benchmark.py -q",
+        required_metrics=frozenset({"status_get_p95_ms"}),
         blocks_release_gate=False,
     )
 
@@ -430,13 +286,13 @@ def test_runtime_benchmark_gate_rejects_non_numeric_required_metric() -> None:
 
     repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
-    artifact["scenarios"]["runtime_inbox_claim"]["metrics"]["claim_p95_ms"] = "4.0"
+    artifact["scenarios"]["ecs_status_command"]["metrics"]["status_get_p95_ms"] = "8.0"
 
     validation = RuntimeBenchmarkGate().validate_artifact(artifact)
 
     assert validation.valid is False
     assert validation.reason == "INVALID_METRICS"
-    assert validation.invalid_metrics == ("runtime_inbox_claim.claim_p95_ms",)
+    assert validation.invalid_metrics == ("ecs_status_command.status_get_p95_ms",)
 
 
 def test_runtime_benchmark_gate_rejects_non_numeric_required_threshold() -> None:
@@ -447,13 +303,13 @@ def test_runtime_benchmark_gate_rejects_non_numeric_required_threshold() -> None
 
     repo_root = Path(__file__).resolve().parents[2]
     artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "runtime_benchmark_artifact.json").read_text())
-    artifact["scenarios"]["runtime_inbox_claim"]["thresholds"]["claim_p95_ms"] = None
+    artifact["scenarios"]["ecs_status_command"]["thresholds"]["status_get_p95_ms"] = None
 
     validation = RuntimeBenchmarkGate().validate_artifact(artifact)
 
     assert validation.valid is False
     assert validation.reason == "INVALID_THRESHOLDS"
-    assert validation.invalid_thresholds == ("runtime_inbox_claim.claim_p95_ms",)
+    assert validation.invalid_thresholds == ("ecs_status_command.status_get_p95_ms",)
 
 
 def test_runtime_benchmark_gate_rejects_production_artifact_without_scenario_provenance() -> None:
@@ -477,10 +333,8 @@ def test_runtime_benchmark_gate_rejects_production_artifact_without_scenario_pro
     assert validation.valid is False
     assert validation.reason == "MISSING_SCENARIO_PROVENANCE"
     assert validation.missing_provenance_fields == (
-        "conveyor_queue_writer.source",
         "ecs_status_command.source",
         "plane_snapshot.source",
-        "runtime_inbox_claim.source",
     )
 
 
@@ -499,16 +353,6 @@ def test_runtime_benchmark_gate_rejects_production_artifact_without_workload_met
         "concurrency_level": 64,
         "duration_seconds": 300,
     }
-    artifact["scenarios"]["runtime_inbox_claim"]["source"] = {
-        "kind": "postgresql",
-        "evidence": "reports/benchmarks/runtime-inbox-claim.json",
-        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
-    }
-    artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
-        "kind": "postgresql",
-        "evidence": "reports/benchmarks/conveyor-queue-writer.json",
-        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
-    }
     artifact["scenarios"]["ecs_status_command"]["source"] = {
         "kind": "ecs-http",
         "evidence": "reports/benchmarks/ecs-status-command.json",
@@ -525,8 +369,6 @@ def test_runtime_benchmark_gate_rejects_production_artifact_without_workload_met
     assert validation.valid is False
     assert validation.reason == "MISSING_WORKLOAD_METADATA"
     assert validation.missing_workload_fields == (
-        "conveyor_queue_writer.workload.active_membership_count",
-        "conveyor_queue_writer.workload.concurrent_identity_collision",
         "ecs_status_command.workload.command_post_count",
         "ecs_status_command.workload.status_get_count",
         "plane_snapshot.workload.active_object_count",
@@ -534,8 +376,6 @@ def test_runtime_benchmark_gate_rejects_production_artifact_without_workload_met
         "plane_snapshot.workload.device_count",
         "plane_snapshot.workload.queue_count",
         "plane_snapshot.workload.workline_count",
-        "runtime_inbox_claim.workload.pending_inbox_count",
-        "runtime_inbox_claim.workload.worker_concurrency",
     )
 
 
@@ -553,24 +393,6 @@ def test_runtime_benchmark_gate_accepts_production_artifact_with_scenario_proven
         "dependency_profile": "wms-ecs-simulator",
         "concurrency_level": 64,
         "duration_seconds": 300,
-    }
-    artifact["scenarios"]["runtime_inbox_claim"]["source"] = {
-        "kind": "postgresql",
-        "evidence": "reports/benchmarks/runtime-inbox-claim.json",
-        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
-    }
-    artifact["scenarios"]["runtime_inbox_claim"]["workload"] = {
-        "pending_inbox_count": 1000,
-        "worker_concurrency": 4,
-    }
-    artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
-        "kind": "postgresql",
-        "evidence": "reports/benchmarks/conveyor-queue-writer.json",
-        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
-    }
-    artifact["scenarios"]["conveyor_queue_writer"]["workload"] = {
-        "active_membership_count": 200,
-        "concurrent_identity_collision": True,
     }
     artifact["scenarios"]["ecs_status_command"]["source"] = {
         "kind": "ecs-http",
@@ -629,8 +451,6 @@ def test_runtime_benchmark_runner_generates_gate_valid_artifact() -> None:
     assert validation.valid is True
     assert validation.reason == "OK"
     assert set(artifact["scenarios"]) == {
-        "runtime_inbox_claim",
-        "conveyor_queue_writer",
         "ecs_status_command",
         "plane_snapshot",
     }
@@ -679,10 +499,10 @@ def test_runtime_benchmark_gate_rejects_incomplete_artifact() -> None:
             "environment": "local-postgres-redis-ecs-simulator",
             "generated_at": "2026-07-02T12:00:00Z",
             "scenarios": {
-                "runtime_inbox_claim": {
+                "ecs_status_command": {
                     "sample_count": 1000,
-                    "metrics": {"claim_p95_ms": 4.0},
-                    "thresholds": {"claim_p95_ms": 30.0},
+                    "metrics": {"status_get_p95_ms": 4.0},
+                    "thresholds": {"status_get_p95_ms": 30.0},
                 }
             },
         }
@@ -690,8 +510,4 @@ def test_runtime_benchmark_gate_rejects_incomplete_artifact() -> None:
 
     assert validation.valid is False
     assert validation.reason == "MISSING_SCENARIOS"
-    assert validation.missing_scenarios == (
-        "conveyor_queue_writer",
-        "ecs_status_command",
-        "plane_snapshot",
-    )
+    assert validation.missing_scenarios == ("plane_snapshot",)

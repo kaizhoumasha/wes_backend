@@ -222,6 +222,9 @@ async def test_transport_reports_not_sent_when_the_shared_permit_wait_expires(
     ]
     try:
         await asyncio.wait_for(twenty_requests_entered.wait(), timeout=1)
+        # Occupiers keep the 0.2s deadline captured at send() entry; give only the
+        # waiting request a shorter deadline so permit expiry cannot race their release.
+        transport._timeout_seconds = 0.01  # type: ignore[attr-defined]
         result = await transport.send(OutboundHttpRequest(method=OutboundHttpMethod.GET, path="/waiting"))
 
         assert result.delivery_state is OutboundHttpDeliveryState.NOT_SENT

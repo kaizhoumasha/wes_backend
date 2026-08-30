@@ -8,7 +8,7 @@ import subprocess
 import asyncpg
 import pytest
 
-from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
+from tests.support.postgresql_heavy import connect, run_alembic, temporary_database
 
 PREDECESSOR_REVISION = "7bdca6f754ee"
 HEAD_REVISION = "baf328359533"

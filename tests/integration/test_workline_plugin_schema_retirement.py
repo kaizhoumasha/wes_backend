@@ -14,7 +14,7 @@ from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.workline.models.workline import WorkLine
-from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
+from tests.support.postgresql_heavy import connect, run_alembic, temporary_database
 
 _RETIRED_COLUMNS: dict[tuple[str, str], frozenset[str]] = {
     ("wes_biz", "work_lines"): frozenset(

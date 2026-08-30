@@ -1,22 +1,14 @@
 import hashlib
 from pathlib import Path
 
-import pytest
-
 from scripts.select_heavy_tests import load_config, select_heavy_tests
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MAPPING_PATH = REPO_ROOT / "docs/architecture/heavy-test-impact.toml"
 
 
-@pytest.mark.parametrize(
-    "changed_path",
-    [
-        "src/app/runtime/system_capabilities/__init__.py",
-        "src/app/runtime/orchestration/observability.py",
-    ],
-)
-def test_surviving_runtime_observability_none_is_pinned_to_current_content(changed_path: str) -> None:
+def test_surviving_system_capability_surface_none_is_pinned_to_current_content() -> None:
+    changed_path = "src/app/runtime/system_capabilities/__init__.py"
     config = load_config(MAPPING_PATH)
     mapping = next(mapping for mapping in config[1] if mapping.source_glob == changed_path)
 

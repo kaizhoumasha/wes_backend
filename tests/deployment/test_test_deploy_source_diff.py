@@ -90,17 +90,6 @@ def test_deploy_source_accepts_a_descendant_with_only_delivery_and_verification_
     worktree, runtime_commit = repository
     _commit(worktree, "Jenkinsfile.backend-ci", "pipeline-v2\n")
     _commit(worktree, "Jenkinsfile.test-deploy", "pipeline-v2\n")
-    _commit(worktree, "scripts/classify_runtime_inbox_acceptance.py", "classifier-v2\n")
-    _commit(
-        worktree,
-        "scripts/run_runtime_inbox_postgresql_acceptance.py",
-        "runner-v2\n",
-    )
-    _commit(
-        worktree,
-        "scripts/run_runtime_inbox_postgresql_acceptance_ci.sh",
-        "runner-ci-v2\n",
-    )
     _commit(worktree, "tests/deployment/test_cutover.py", "test-v2\n")
     _commit(worktree, "docs/architecture/heavy-test-impact.toml", "mapping-v2\n")
     _commit(worktree, "tests/scripts/test_select_heavy_tests.py", "selector-test-v2\n")

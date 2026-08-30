@@ -18,6 +18,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.app.wms_adapter.strict_json import is_json_utf8_media_type  # noqa: E402
+from src.core.outbound_http.contracts import (  # noqa: E402
+    OutboundHttpDeliveryState,
+    OutboundHttpMethod,
+    OutboundHttpRequest,
+    OutboundHttpResponseLimits,
+)
+from src.core.outbound_http.factory import build_outbound_http_transport  # noqa: E402
 from src.core.uuid7 import new_uuid7  # noqa: E402
 
 TRANSPORT_PATH = "/api/v1/wes/transport-requests"
@@ -142,13 +149,37 @@ class FeasibilityReport:
 
 
 async def _request(
-    client: httpx.AsyncClient,
+    client: Any,
     method: str,
     path: str,
     *,
     request_timeout_seconds: float,
     **kwargs: Any,
 ) -> httpx.Response | None:
+    if not isinstance(client, httpx.AsyncClient):
+        payload = kwargs.get("json")
+        body = json.dumps(payload, separators=(",", ":")).encode() if payload is not None else b""
+        headers = (("content-type", "application/json"),) if payload is not None else ()
+        result = await client.send(
+            OutboundHttpRequest(
+                method=OutboundHttpMethod(method),
+                path=path,
+                headers=headers,
+                body=body,
+                response_limits=OutboundHttpResponseLimits(
+                    max_wire_bytes=MAX_RESPONSE_BYTES,
+                    max_decoded_bytes=MAX_RESPONSE_BYTES,
+                ),
+            )
+        )
+        if result.delivery_state != OutboundHttpDeliveryState.RESPONSE_RECEIVED or result.status_code is None:
+            return None
+        return httpx.Response(
+            result.status_code,
+            headers=result.response_headers,
+            content=result.decoded_body,
+            request=httpx.Request(method, f"http://wms-probe{path}"),
+        )
     try:
         async with asyncio.timeout(request_timeout_seconds):
             request = client.build_request(method, path, **kwargs)
@@ -488,12 +519,15 @@ def _parse_args() -> argparse.Namespace:
 
 async def _main() -> int:
     args = _parse_args()
-    async with httpx.AsyncClient(
+    transport = build_outbound_http_transport(
+        system_id="wms_transport_feasibility",
         base_url=args.base_url,
-        timeout=httpx.Timeout(args.timeout_seconds),
-        trust_env=False,
-    ) as client:
-        report = await run_probe(client, request_timeout_seconds=args.timeout_seconds)
+        timeout_seconds=args.timeout_seconds,
+    )
+    try:
+        report = await run_probe(transport, request_timeout_seconds=args.timeout_seconds)
+    finally:
+        await transport.aclose()
     print(json.dumps({"passed": report.passed, "cases": [asdict(case) for case in report.cases]}, ensure_ascii=False))
     return 0 if report.passed else 1
 

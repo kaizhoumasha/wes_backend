@@ -42,13 +42,3 @@ async def test_material_unit_fact_snapshot_ignores_unpersisted_identity(
     snapshot = await repository_module.MaterialUnitRepository().get_fact_snapshot(db, material_unit_id=101)
 
     assert snapshot is None
-
-
-@pytest.mark.parametrize("raw_id", [None, "101"])
-def test_material_unit_write_rejects_unpersisted_mutation_result(raw_id: object) -> None:
-    from src.app.runtime.system_capabilities.material_flow.material_unit_write.handler import (
-        _persisted_material_unit_id,
-    )
-
-    with pytest.raises(TypeError, match="unpersisted material unit"):
-        _persisted_material_unit_id(SimpleNamespace(id=raw_id))

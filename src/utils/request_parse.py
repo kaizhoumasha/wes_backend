@@ -9,7 +9,6 @@
 
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
-import httpx
 from asgiref.sync import sync_to_async
 from fastapi import Request
 from pydantic import dataclasses
@@ -66,27 +65,6 @@ def get_request_ip(request: Request) -> str:
     return resolve_client_ip(request)
 
 
-async def get_location_online(ip: str, user_agent: str) -> LocationInfo | None:
-    """
-    在线获取 ip 地址属地，无法保证可用性，准确率较高
-
-    :param ip:
-    :param user_agent:
-    :return:
-    """
-    async with httpx.AsyncClient(timeout=3) as client:
-        ip_api_url = f"http://ip-api.com/json/{ip}?lang=zh-CN"
-        headers = {"User-Agent": user_agent}
-        try:
-            response = await client.get(ip_api_url, headers=headers)
-            if response.status_code == 200:
-                return cast("LocationInfo", response.json())
-        except Exception as e:
-            logger.error(f"在线获取 ip 地址属地失败，错误信息：{getattr(e, 'data', e)!s}")
-            return None
-        return None
-
-
 @sync_to_async
 def get_location_offline(ip: str) -> LocationInfo | None:
     """
@@ -129,10 +107,7 @@ async def parse_ip_info(request: Request) -> IpInfo:
             # IP 属地缓存是辅助能力，Redis 池异常不能阻断主请求链路。
             logger.warning(f"读取 IP 属地缓存失败，已降级: {exc}")
             _ = await ensure_redis_connection()
-    user_agent = request.headers.get("User-Agent") or ""
-    if settings.IP_LOCATION_PARSE == "online":
-        location_info = await get_location_online(ip, user_agent)
-    elif settings.IP_LOCATION_PARSE == "offline":
+    if settings.IP_LOCATION_PARSE == "offline":
         location_info = await get_location_offline(ip)
     else:
         location_info = None

@@ -42,9 +42,6 @@ SCAN_DIRS = {
 # runtime migration 会把 workline/services 的实现物理迁入 runtime/orchestration
 # 或 runtime/capabilities，但 legacy cleanup matrix 仍需按旧入口追踪清理策略。
 MIGRATED_SERVICE_IMPLS = {
-    "src/app/workline/services/bin_cell_reservation_service.py": (
-        "src/app/runtime/capabilities/material_flow/bin_cell_reservation_service.py"
-    ),
     "src/app/workline/services/dispatch_attempt_service.py": (
         "src/app/runtime/orchestration/services/inbox/dispatch_attempt_service.py"
     ),
@@ -75,9 +72,6 @@ MIGRATED_SERVICE_IMPLS = {
         "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
     ),
     "src/app/workline/services/start_admission_service.py": ("src/app/workline/services/workline_start_service.py"),
-    "src/app/workline/services/station_lease_service.py": (
-        "src/app/runtime/capabilities/material_flow/station_lease_service.py"
-    ),
     "src/app/workline/services/timeline_sequence_service.py": (
         "src/app/runtime/orchestration/services/trace/timeline_sequence_service.py"
     ),
@@ -95,11 +89,6 @@ MIGRATED_IMPL_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_SERVICE_IMP
 # 旧服务删除前的历史顶层符号是 legacy provenance 的正向真源。
 # 目标 runtime 后续新增的 helper/result 不得反向膨胀历史清理范围。
 MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
-    "src/app/workline/services/bin_cell_reservation_service.py": (
-        "BinCellReservationResult",
-        "BinCellReservationStatusCode",
-        "WorklineBinCellReservationService",
-    ),
     "src/app/workline/services/device_command_gateway.py": (
         "DeviceCommandGateway",
         "_DeviceCommandGovernanceError",
@@ -274,11 +263,6 @@ MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
         "StartAdmissionStatusFetchResult",
         "StartAdmissionStatusTarget",
         "WorkLineStartAdmissionService",
-    ),
-    "src/app/workline/services/station_lease_service.py": (
-        "StationLeaseReasonCode",
-        "StationLeaseResult",
-        "WorklineStationLeaseService",
     ),
     "src/app/workline/services/timeline_sequence_service.py": (
         "_dialect_name",
@@ -1571,7 +1555,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
                 "src/app/runtime/orchestration/services/query/__init__.py",
                 "runtime",
                 "switch",
-                "MaterialLocationQueryService",
+                "__all__",
             ),
             ("src/app/runtime/orchestration/services/runtime_inbox/__init__.py", "runtime", "delete", ""),
             (
@@ -1922,7 +1906,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
             (
                 "src/app/wms_integration/models/__init__.py",
                 "switch",
-                "WmsCircuitBreakerState",
+                "__all__",
             ),
             (
                 "src/app/wms_integration/ports/__init__.py",
@@ -2105,7 +2089,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
         "celery_app",
         "switch",
         "src/celery_app/tasks/__init__.py",
-        "workline",
+        "__all__",
         "tests/deployment/test_execution_worker_startup.py;tests/deployment/test_wms_confirmation_dispatcher.py",
         "HIGH",
     ),
@@ -2235,7 +2219,7 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
         "retain",
         "docker-compose.wms-acceptance.yml",
         "file:docker-compose.wms-acceptance.yml",
-        "tests/mock/test_wms_provider_mock_server.py",
+        "tests/deployment/test_docker_compose_mock_urls.py",
         "MEDIUM",
     ),
     *(
@@ -3099,10 +3083,39 @@ def _validate_phase10_prelock_spec(
         raise RuntimeError(f"phase10 non-Python target must use file:<path> identity: {path}:{target_capability}")
 
 
+def _phase10_source_identity_exists(spec: Phase10PrelockSpec) -> bool:
+    """判断冻结 identity 是否仍存在；Task 5 只退休已物理移除的 delete/switch identity。"""
+
+    _category, path, symbol, entry_type, _owner, _disposition, *_rest = spec
+    source_path = REPO_ROOT / path
+    if not source_path.exists():
+        return False
+    if symbol == "<file>":
+        return True
+    if entry_type == "celery_task":
+        return symbol in _phase10_registered_celery_task_names(source_path)
+    if entry_type == "queue":
+        try:
+            _validate_phase10_queue_identity(source_path, symbol)
+        except RuntimeError:
+            return False
+        return True
+    return source_path.suffix == ".py" and symbol in _phase10_python_symbols(source_path)
+
+
+def _phase10_prelock_spec_is_retired(spec: Phase10PrelockSpec) -> bool:
+    """Execution Lock 后仅 delete/switch identity 可因 Task 5 实际移除而退出当前矩阵。"""
+
+    disposition = spec[5]
+    return disposition in {"delete", "switch"} and not _phase10_source_identity_exists(spec)
+
+
 def _add_phase10_prelock_entries(entries: list[Entry], seen: set[str]) -> None:
     """登记 Execution Lock 前冻结的 Phase 10 disposition，不允许静默覆盖旧条目。"""
 
     for spec in PHASE10_PRELOCK_SPECS:
+        if _phase10_prelock_spec_is_retired(spec):
+            continue
         _validate_phase10_prelock_spec(spec)
         (
             category,

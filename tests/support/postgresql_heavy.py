@@ -1,4 +1,4 @@
-"""RuntimeInbox PostgreSQL heavy tests 共用的隔离数据库 harness。"""
+"""PostgreSQL HEAVY tests 共用的隔离数据库 harness。"""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Collection, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SAFE_DATABASE_PREFIX = "wes_tmp_runtime_inbox_"
-SAFE_TEMPLATE_DATABASE_NAME = "wes_tmp_runtime_inbox_template"
+SAFE_DATABASE_PREFIX = "wes_tmp_heavy_"
+SAFE_TEMPLATE_DATABASE_NAME = "wes_tmp_heavy_template"
 REQUIRED_FREE_CONNECTION_SLOTS = 3
 DEFAULT_SAFE_DATABASE_HOSTS = frozenset({"localhost", "db"})
 _SAFE_DATABASE_PATTERN = re.compile(rf"{re.escape(SAFE_DATABASE_PREFIX)}[0-9a-f]{{32}}\Z")
@@ -239,7 +239,7 @@ def _validate_temporary_database_name(database: str) -> None:
 
 def _validate_template_database_name(database: str) -> None:
     if database != SAFE_TEMPLATE_DATABASE_NAME:
-        raise HeavyHarnessError("unsafe_target", "拒绝从非固定 RuntimeInbox 模板创建数据库")
+        raise HeavyHarnessError("unsafe_target", "拒绝从非固定 HEAVY 模板创建数据库")
 
 
 def _quote_database(database: str) -> str:

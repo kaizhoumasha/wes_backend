@@ -1,19 +1,3 @@
-"""Reconciliation domain public exports."""
+"""Reconciliation package retained for the schema-only model identity."""
 
-from src.app.reconciliation.manager import (
-    ReconciliationConflictInput,
-    ReconciliationDecision,
-    ReconciliationManager,
-    ReconciliationRegistrationResult,
-    ReconciliationSeverity,
-    ResolutionAction,
-)
-
-__all__ = [
-    "ReconciliationConflictInput",
-    "ReconciliationDecision",
-    "ReconciliationManager",
-    "ReconciliationRegistrationResult",
-    "ReconciliationSeverity",
-    "ResolutionAction",
-]
+__all__: list[str] = []
