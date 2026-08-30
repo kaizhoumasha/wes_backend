@@ -1,7 +1,7 @@
 """RuntimeInbox Revision A/B PostgreSQL 真实升降级回环。
 
 该 heavy integration 测试必须显式运行，并且只创建/删除
-``wes_tmp_runtime_inbox_`` 前缀的临时数据库。
+``wes_tmp_heavy_`` 前缀的临时数据库。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import subprocess
 import asyncpg
 import pytest
 
-from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
+from tests.support.postgresql_heavy import connect, run_alembic, temporary_database
 
 REVISION_A = "b8a28e1bfec8"
 REVISION_B = "ec426c628516"
@@ -388,12 +388,9 @@ def test_runtime_inbox_head_repairs_deployed_integer_millisecond_columns() -> No
             finally:
                 await connection.close()
 
-            run_alembic("upgrade", "head", database_url=database_url)
+            run_alembic("upgrade", REVISION_TYPE_REPAIR, database_url=database_url)
             connection = await connect(database)
             try:
-                assert (
-                    await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_TYPE_REPAIR
-                )
                 await _assert_runtime_inbox_numeric_types(connection)
                 await _assert_millisecond_row(connection, inbox_id, value=INTEGER_REPRESENTABLE_VALUE)
             finally:

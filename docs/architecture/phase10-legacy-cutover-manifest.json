@@ -1,0 +1,112 @@
+{
+  "kind": "phase10-legacy-cutover-manifest@v1",
+  "producer_seal": [
+    {"id": "callback.external_runtime_inbox_writer", "source": "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py", "identity": "CallbackRuntimeInboxWriter.write_external_callback"},
+    {"id": "workline.sandbox_external_callback", "source": "src/app/workline/v1/operation.py", "identity": "submit_sandbox_external_callback", "route": "/sandbox/external-callbacks"},
+    {"id": "workline.runtime_inbox_replay", "source": "src/app/workline/v1/operation.py", "identity": "replay_inbox", "route": "/replay/inboxes/{inbox_id}"},
+    {"id": "workline.runtime_reconciliation_resolve", "source": "src/app/workline/v1/operation.py", "identity": "resolve_runtime_reconciliation", "route": "/reconciliations/sessions/{session_id}/resolve"},
+    {"id": "workline.effect_reconciliation_resolve", "source": "src/app/workline/v1/operation.py", "identity": "resolve_effect_reconciliation", "route": "/reconciliations/effects/{dispatch_key}/resolve"},
+    {"id": "runtime.system_capability_intent_create", "source": "src/app/runtime/orchestration/services/intent/system_capability_intent_service.py", "identity": "SystemCapabilityIntentService.prepare_and_claim"},
+    {"id": "runtime.station_lease_outbox_create", "source": "src/app/runtime/capabilities/material_flow/station_lease_service.py", "identity": "WorklineStationLeaseService.claim_station_dispatch_lease"},
+    {"id": "core.enqueue_runtime_inbox", "source": "src/core/task_queue_gateway.py", "identity": "CeleryTaskQueueGateway.enqueue_runtime_inbox", "task5_relation": "remove_legacy_method"},
+    {"id": "core.enqueue_legacy_outbox", "source": "src/core/task_queue_gateway.py", "identity": "CeleryTaskQueueGateway.enqueue_outbox", "task5_relation": "adapt_remove_legacy_targets"},
+    {"id": "core.enqueue_internal_signal", "source": "src/core/task_queue_gateway.py", "identity": "CeleryTaskQueueGateway.enqueue_internal_signal", "task5_relation": "remove_legacy_method"},
+    {"id": "core.enqueue_wms_effect_status", "source": "src/core/task_queue_gateway.py", "identity": "CeleryTaskQueueGateway.enqueue_wms_effect_status", "task5_relation": "remove_legacy_method"},
+    {"id": "core.direct_celery_send_task", "source": "src/core/task_queue_gateway.py", "identity": "CeleryTaskQueueGateway._send_task", "task5_relation": "adapt_target_only"}
+  ],
+  "excluded_target_producers": [
+    "CeleryTaskQueueGateway.enqueue_transport_evidence",
+    "CeleryTaskQueueGateway.enqueue_execution_facts",
+    "CeleryTaskQueueGateway.enqueue_wms_confirmations",
+    "CeleryTaskQueueGateway.enqueue_device_commands",
+    "CeleryTaskQueueGateway.enqueue_safety_drain"
+  ],
+  "paired_outbox_contract": {
+    "operation_domain": "WMS",
+    "dispatch_type": "EXTERNAL_HTTP",
+    "producer": "src/app/runtime/system_capabilities/wms/effect_runtime.py:SystemCapabilityEffectRuntime.prepare",
+    "operation_identities": [
+      "wms.inventory.reserve_inventory@v1",
+      "wms.inventory.release_reservation@v1",
+      "wms.inventory.confirm_inbound@v1",
+      "wms.inventory.confirm_outbound@v1",
+      "wms.inventory.transfer_inventory@v1",
+      "wms.inventory.confirm_return_putaway@v1",
+      "wms.fulfillment.notify_pkg_binding@v1",
+      "wms.fulfillment.request_rack_supply@v1",
+      "wms.fulfillment.change_rack_face@v1",
+      "wms.fulfillment.publish_manual_task@v1",
+      "wms.fulfillment.cancel_request@v1"
+    ]
+  },
+  "broker": {
+    "legacy_task_names": [
+      "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
+      "src.celery_app.tasks.runtime_inbox.process_signal",
+      "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
+      "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch",
+      "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
+      "src.celery_app.tasks.sys.process_signal",
+      "src.celery_app.tasks.workline.check_wms_effect_status",
+      "src.celery_app.tasks.workline.scan_wms_effect_status_batch",
+      "src.celery_app.tasks.workline.process_signal"
+    ],
+    "legacy_beat_schedule": {
+      "process-runtime-inbox-batch": "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
+      "dispatch-outbox-batch": "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
+      "dispatch-wms-data-outbox-batch": "src.celery_app.tasks.sys.dispatch_wms_data_outbox_batch",
+      "dispatch-wms-fulfillment-outbox-batch": "src.celery_app.tasks.sys.dispatch_wms_fulfillment_outbox_batch",
+      "scan-wms-effect-status-batch": "src.celery_app.tasks.workline.scan_wms_effect_status_batch"
+    },
+    "inspect_states": ["active", "reserved", "scheduled"],
+    "required_worker_nodes": [
+      "celery@wes_backend_test-celery-1",
+      "celery@wes_backend_test-celery-wms-fulfillment-1"
+    ],
+    "shared_queues": ["celery", "device-command", "wms-fulfillment"],
+    "purge_shared_queues": false,
+    "direct_redis_task_producers": [],
+    "excluded_generic_redis_publishers": [
+      "src/utils/event_publisher.py:RedisEventPublisher.publish",
+      "src/app/sys/services/event_stream_service.py:EventStreamService.publish"
+    ]
+  },
+  "observations": {
+    "producer_freeze_timestamp_required": true,
+    "legacy_stable_zero_observations": 2,
+    "candidate_ready_observations": 2,
+    "interval_seconds": 30,
+    "during_interval_require_no_new_legacy_rows": true
+  },
+  "manual_disposition": {
+    "output": "original identity investigation items only",
+    "automatic_actions": []
+  },
+  "cutover": {
+    "old_services": {
+      "entrypoint": "nginx",
+      "api": "api",
+      "beat": "celery_beat",
+      "workers": ["celery", "celery-wms-fulfillment", "flower"]
+    },
+    "candidate_readiness_command": "scripts/check_release_operational_readiness.py",
+    "candidate_readiness_service": "candidate_backend_python",
+    "legacy_readiness_command": "scripts/check_legacy_drain_readiness.py",
+    "immutable_digest_inputs": [
+      "DEPLOY_SOURCE_COMMIT_SHA",
+      "BACKEND_CANDIDATE_DIGEST",
+      "FRONTEND_CANDIDATE_DIGEST",
+      "CHECKER_DIGEST_VALUE",
+      "effective-facts.json"
+    ],
+    "maintenance_steps": [
+      {"id": "stop_entrypoint", "target": "nginx", "verify": "old public listener absent", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"},
+      {"id": "stop_api", "target": "api", "verify": "old API process absent", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"},
+      {"id": "stop_beat", "target": "celery_beat", "verify": "old scheduler process absent", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"},
+      {"id": "observe_legacy_drain", "target": "scripts/check_legacy_drain_readiness.py", "verify": "two consecutive READY observations", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"},
+      {"id": "observe_candidate_readiness", "target": "scripts/check_release_operational_readiness.py", "verify": "two consecutive READY observations", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"},
+      {"id": "stop_old_workers", "target": "celery,celery-wms-fulfillment,flower", "verify": "old worker processes absent after drain", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"},
+      {"id": "switch_immutable_candidate", "target": "candidate deployment", "verify": "all immutable digest inputs equal approved values", "on_failure": "CUTOVER_FAILED_MAINTENANCE_HELD"}
+    ]
+  }
+}

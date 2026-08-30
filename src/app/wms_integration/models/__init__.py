@@ -1,31 +1,3 @@
-"""WMS 对接辅助域模型导出。"""
+"""后续 DDL 前不从 package root 导出 WMS schema-only models。"""
 
-from .circuit_breaker import WmsCircuitBreakerState, WmsCircuitBreakerStatus
-from .evidence import WmsCallEvidence, WmsEvidenceStatus
-from .ports import (
-    ConfirmOutboundRequest,
-    ConfirmOutboundResponse,
-    ReleaseReservationRequest,
-    ReleaseReservationResponse,
-    ReserveInventoryRequest,
-    ReserveInventoryResponse,
-    WmsOperationName,
-    WmsPortRequest,
-    WmsPortResponse,
-)
-
-__all__ = [
-    "ConfirmOutboundRequest",
-    "ConfirmOutboundResponse",
-    "ReleaseReservationRequest",
-    "ReleaseReservationResponse",
-    "ReserveInventoryRequest",
-    "ReserveInventoryResponse",
-    "WmsCallEvidence",
-    "WmsCircuitBreakerState",
-    "WmsCircuitBreakerStatus",
-    "WmsEvidenceStatus",
-    "WmsOperationName",
-    "WmsPortRequest",
-    "WmsPortResponse",
-]
+__all__: list[str] = []

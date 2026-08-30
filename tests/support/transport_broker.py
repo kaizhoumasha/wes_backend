@@ -145,7 +145,8 @@ def _validate_test_redis_url(redis_url: str) -> None:
 def _worker_environment(
     database_url: str,
     redis_url: str,
-    profile_file: Path,
+    wms_base_url: str,
+    transport_submit_path: str,
     run_id: str,
     key_prefix: str,
 ) -> dict[str, str]:
@@ -171,9 +172,8 @@ def _worker_environment(
         "CELERY_RESULT_BACKEND": redis_url,
         "CELERY_WORKER_QUEUES": FULFILLMENT_QUEUE,
         "CELERY_WORKER_CONCURRENCY": "1",
-        "WMS_PROVIDER_PROCESS_ROLE": "fulfillment",
-        "WMS_PROVIDER_PROFILE_FILE": str(profile_file),
-        "WMS_DEPLOYMENT_ROLE": "fulfillment-worker",
+        "WMS_BASE_URL": wms_base_url,
+        "TRANSPORT_SUBMIT_PATH": transport_submit_path,
         "WORKLINE_ALLOW_NULL_PLUGIN": "1",
         TRANSPORT_BROKER_KEY_PREFIX_ENV: key_prefix,
         "PYTHONPATH": f"{REPO_ROOT}:{os.environ.get('PYTHONPATH', '')}".rstrip(":"),
@@ -186,7 +186,8 @@ class TransportBrokerWorker:
 
     database_url: str
     redis_url: str
-    profile_file: Path
+    wms_base_url: str
+    transport_submit_path: str = "/api/v1/wes/transport-requests"
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     hostname: str = field(init=False)
     process: subprocess.Popen[str] | None = field(default=None, init=False)
@@ -240,7 +241,8 @@ class TransportBrokerWorker:
             env=_worker_environment(
                 self.database_url,
                 self.redis_url,
-                self.profile_file,
+                self.wms_base_url,
+                self.transport_submit_path,
                 self.run_id,
                 self.key_prefix,
             ),

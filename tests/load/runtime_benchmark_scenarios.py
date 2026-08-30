@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from time import perf_counter_ns
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
-    ConveyorQueueMembershipWriteDiagnostics,
-)
-from src.app.runtime.orchestration.services.conveyor_queue_writer import (
-    ConveyorQueueMembershipSnapshot,
-    ConveyorQueueWriter,
-    ConveyorQueueWriteRequest,
-)
 from src.app.runtime.orchestration.services.device_dispatch_policy import (
     DeviceDispatchPolicy,
     DeviceDispatchRequest,
@@ -45,14 +36,6 @@ class RuntimeBenchmarkResult:
 
 
 RUNTIME_PRODUCTION_BENCHMARK_SCENARIO_METADATA: dict[str, dict[str, dict[str, Any]]] = {
-    "runtime_inbox_claim": {
-        "source": {"kind": "postgresql"},
-        "workload": {"pending_inbox_count": 1000, "worker_concurrency": 4},
-    },
-    "conveyor_queue_writer": {
-        "source": {"kind": "postgresql"},
-        "workload": {"active_membership_count": 200, "concurrent_identity_collision": True},
-    },
     "ecs_status_command": {
         "source": {"kind": "ecs-http"},
         "workload": {"status_get_count": 400, "command_post_count": 400},
@@ -91,105 +74,6 @@ def _measure(operation: Callable[[], None], *, iterations: int) -> float:
         operation()
         samples.append(perf_counter_ns() - started_at)
     return _p95_ms(samples)
-
-
-def run_runtime_inbox_claim_benchmark() -> RuntimeBenchmarkResult:
-    pending = deque(f"evt-{index}" for index in range(512))
-    claimed: set[str] = set()
-    duplicate_claim_count = 0
-
-    def claim_next() -> None:
-        nonlocal duplicate_claim_count
-
-        if not pending:
-            return
-        event_id = pending.popleft()
-        if event_id in claimed:
-            duplicate_claim_count += 1
-        claimed.add(event_id)
-
-    claim_p95_ms = _measure(claim_next, iterations=512)
-
-    return RuntimeBenchmarkResult(
-        sample_count=512,
-        metrics={"claim_p95_ms": claim_p95_ms, "duplicate_claim_count": duplicate_claim_count},
-        thresholds={"claim_p95_ms": 1.0, "duplicate_claim_count": 0},
-    )
-
-
-def run_conveyor_queue_writer_benchmark() -> RuntimeBenchmarkResult:
-    writer = ConveyorQueueWriter()
-    active_memberships = [
-        ConveyorQueueMembershipSnapshot(workline_id=1, queue_code="Q-A", bin_code="BIN-A"),
-        ConveyorQueueMembershipSnapshot(workline_id=1, queue_code="Q-B", placeholder_key="PH-1"),
-    ]
-    requests = (
-        ConveyorQueueWriteRequest(
-            workline_id=1,
-            queue_code="Q-A",
-            bin_code="BIN-CREATE",
-            declared_queue_codes=frozenset({"Q-A", "Q-B"}),
-        ),
-        ConveyorQueueWriteRequest(
-            workline_id=1,
-            queue_code="Q-A",
-            bin_code="BIN-A",
-            declared_queue_codes=frozenset({"Q-A", "Q-B"}),
-        ),
-        ConveyorQueueWriteRequest(
-            workline_id=1,
-            queue_code="Q-B",
-            bin_code="BIN-A",
-            declared_queue_codes=frozenset({"Q-A", "Q-B"}),
-        ),
-        ConveyorQueueWriteRequest(
-            workline_id=1,
-            queue_code="Q-B",
-            bin_code="BIN-B",
-            placeholder_key="PH-1",
-            declared_queue_codes=frozenset({"Q-A", "Q-B"}),
-        ),
-    )
-    cursor = 0
-    reconciling_count = 0
-    integrity_conflict_recheck_count = 0
-
-    def plan_write() -> None:
-        nonlocal cursor, integrity_conflict_recheck_count, reconciling_count
-
-        request = requests[cursor % len(requests)]
-        cursor += 1
-        decision = writer.plan_write(request, active_memberships=active_memberships)
-        if decision.reconciliation_required:
-            reconciling_count += 1
-        if decision.kind.value == "CREATE_ACTIVE":
-            diagnostics = ConveyorQueueMembershipWriteDiagnostics(
-                decision_kind=decision.kind.value,
-                decision_reason=decision.reason,
-                created=False,
-                reused_existing_after_integrity_conflict=True,
-                runtime_hold_required=decision.runtime_hold_required,
-                reconciliation_required=decision.reconciliation_required,
-                membership_status="ACTIVE",
-            )
-            if diagnostics.reused_existing_after_integrity_conflict:
-                integrity_conflict_recheck_count += 1
-
-    write_p95_ms = _measure(plan_write, iterations=400)
-
-    return RuntimeBenchmarkResult(
-        sample_count=400,
-        metrics={
-            "write_p95_ms": write_p95_ms,
-            "reconciling_count": reconciling_count,
-            "integrity_conflict_recheck_count": integrity_conflict_recheck_count,
-        },
-        thresholds={
-            "write_p95_ms": 1.0,
-            "reconciling_count": 100,
-            "integrity_conflict_recheck_count": 100,
-        },
-    )
 
 
 def run_ecs_status_command_benchmark() -> RuntimeBenchmarkResult:
@@ -278,8 +162,6 @@ def run_plane_snapshot_benchmark() -> RuntimeBenchmarkResult:
 
 def build_runtime_benchmark_artifact(*, environment: str, generated_at: str) -> dict[str, Any]:
     results = {
-        "runtime_inbox_claim": run_runtime_inbox_claim_benchmark(),
-        "conveyor_queue_writer": run_conveyor_queue_writer_benchmark(),
         "ecs_status_command": run_ecs_status_command_benchmark(),
         "plane_snapshot": run_plane_snapshot_benchmark(),
     }

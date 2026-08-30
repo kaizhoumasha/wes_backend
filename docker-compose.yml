@@ -32,32 +32,9 @@ x-no-localhost-proxy-build-args: &no-localhost-proxy-build-args
   http_proxy: ""
   https_proxy: ""
 
-x-external-http-credentials: &external-http-credentials
-  WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED: ${WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED:-false}
-  WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1:-}
-  WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1:-}
-  WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1: ${WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1:-}
-  WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2:-}
-  WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2:-}
-  WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2: ${WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2:-}
-  WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES: ${WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES:-}
-
-x-wms-effect-status-config: &wms-effect-status-config
-  WMS_PROVIDER_PROFILE_FILE: ${WMS_PROVIDER_PROFILE_FILE:-}
-  WMS_EFFECT_ADMISSION_ENABLED: ${WMS_EFFECT_ADMISSION_ENABLED:-false}
-  WMS_EFFECT_STATUS_TIMEOUT_SECONDS: ${WMS_EFFECT_STATUS_TIMEOUT_SECONDS}
-  WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES: ${WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES}
-  WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS: ${WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS}
-  WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS: ${WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS}
-  WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS: ${WES_EFFECT_MAX_CONFIRMATION_AGE_SECONDS}
-  WES_EFFECT_NOT_FOUND_GRACE_SECONDS: ${WES_EFFECT_NOT_FOUND_GRACE_SECONDS}
-  WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS: ${WES_EFFECT_STATUS_SAFETY_MARGIN_SECONDS}
-  WES_EFFECT_STATUS_SCAN_BATCH_SIZE: ${WES_EFFECT_STATUS_SCAN_BATCH_SIZE}
-  WES_EFFECT_STATUS_MAX_IN_FLIGHT: ${WES_EFFECT_STATUS_MAX_IN_FLIGHT}
-  WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS: ${WES_EFFECT_STATUS_CLAIM_LEASE_SECONDS}
-  WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS: ${WES_EFFECT_STATUS_MAX_QUERY_ATTEMPTS}
-  WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS: ${WES_EFFECT_STATUS_INITIAL_BACKOFF_SECONDS}
-  WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS: ${WES_EFFECT_STATUS_MAX_BACKOFF_SECONDS}
+x-wms-target-config: &wms-target-config
+  WMS_BASE_URL: ${WMS_BASE_URL}
+  TRANSPORT_SUBMIT_PATH: ${TRANSPORT_SUBMIT_PATH}
 
 services:
   # ============================================
@@ -77,7 +54,7 @@ services:
     env_file:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
-      <<: [*no-localhost-proxy, *external-http-credentials, *wms-effect-status-config]
+      <<: [*no-localhost-proxy, *wms-target-config]
       # 应用配置
       APP_HOST: 0.0.0.0
       APP_PORT: 8001
@@ -93,7 +70,6 @@ services:
       DATABASE_MAX_OVERFLOW: 0
       DATABASE_POOL_TIMEOUT: 30
       DATABASE_APPLICATION_NAME: ${ENV:-prod}
-      WMS_DEPLOYMENT_ROLE: api
 
       # Redis 配置 ${REDIS_HOST}
       REDIS_HOST: redis
@@ -172,7 +148,7 @@ services:
     env_file:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
-      <<: [*no-localhost-proxy, *external-http-credentials, *wms-effect-status-config]
+      <<: [*no-localhost-proxy, *wms-target-config]
       # 数据库配置
       POSTGRES_HOST: db
       POSTGRES_PORT: ${POSTGRES_PORT}
@@ -195,8 +171,6 @@ services:
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
       CELERY_WORKER_QUEUES: default,celery,device-command
       CELERY_WORKER_CONCURRENCY: ${CELERY_CONCURRENCY:-4}
-      WMS_PROVIDER_PROCESS_ROLE: wes
-      WMS_DEPLOYMENT_ROLE: wes-worker
 
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -266,8 +240,6 @@ services:
     environment:
       CELERY_WORKER_QUEUES: wms-fulfillment
       CELERY_WORKER_CONCURRENCY: "1"
-      WMS_PROVIDER_PROCESS_ROLE: fulfillment
-      WMS_DEPLOYMENT_ROLE: fulfillment-worker
     deploy:
       replicas: 1
 
@@ -294,11 +266,10 @@ services:
     env_file:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
-      <<: [*no-localhost-proxy, *external-http-credentials, *wms-effect-status-config]
+      <<: *no-localhost-proxy
       DATABASE_RUNTIME_ROLE: cli
       DATABASE_POOL_SIZE: 1
       DATABASE_MAX_OVERFLOW: 0
-      WMS_DEPLOYMENT_ROLE: beat
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
@@ -740,48 +711,6 @@ services:
   # ============================================
   # WMS Provider Mock - full-factory query/effect 与搬运提交本机联调面
   # 同一 Provider origin 复用搬运提交合同；独立 Transport Mock 保留 callback 与调试能力。
-  # ============================================
-  mock_wms_provider:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: ${BUILD_TARGET:-production}
-      args: *no-localhost-proxy-build-args
-    image: wes-backend:${ENV:-dev}
-    container_name: wes_mock_wms_provider_${ENV:-dev}
-    restart: ${RESTART_POLICY:-unless-stopped}
-    ports:
-      - "${DOCKER_HOST_BIND_IP:-127.0.0.1}:${MOCK_WMS_PROVIDER_PORT:-8012}:8012"
-    working_dir: /app
-    command: >
-      python -m uvicorn
-      tests.mock.wms_provider_mock_server:app
-      --host 0.0.0.0
-      --port 8012
-      --log-level info
-      --reload
-      --reload-dir /app/tests
-      --reload-dir /app/src
-    environment:
-      <<: *no-localhost-proxy
-      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
-    volumes:
-      - ./tests:/app/tests:rw
-      - ./src:/app/src:rw
-      - ./deployment/dev/wms-provider.yaml:/run/wes/wms-provider.yaml:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8012/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
-    networks:
-      wesp9-network:
-        aliases:
-          - mock-wms-provider
-    profiles:
-      - dev
-
 # ============================================
 # 网络配置
 # ============================================

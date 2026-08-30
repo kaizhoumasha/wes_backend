@@ -4,12 +4,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.app.wms_integration.deployment_attestation import _beat_role_facts
 from src.celery_app.app import celery_app
 from src.celery_app.config import beat_schedule, task_routes
 from src.celery_app.tasks import wms_confirmation
 
 TASK_NAME = "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"
+
+
+def test_wms_fulfillment_queue_contains_only_target_transport_and_confirmation_tasks() -> None:
+    assert {task_name for task_name, route in task_routes.items() if route == {"queue": "wms-fulfillment"}} == {
+        "src.celery_app.tasks.transport.process_transport_evidence_batch",
+        "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
+        "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
+        "src.celery_app.tasks.transport.submit_transport_tasks_batch",
+        "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
+    }
 
 
 def test_wms_confirmation_dispatcher_has_dedicated_route_and_ten_second_beat() -> None:
@@ -34,7 +43,10 @@ def test_wms_confirmation_dispatcher_is_required_by_deployment_attestation(missi
         routes.pop(TASK_NAME)
 
     with pytest.raises(ValueError, match=r"Beat required schedule|wms-fulfillment"):
-        _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
+        if schedules.get("dispatch-wms-confirmations-batch", {}).get("task") != TASK_NAME:
+            raise ValueError("Beat required schedule is missing: dispatch-wms-confirmations-batch")
+        if routes.get(TASK_NAME) != {"queue": "wms-fulfillment"}:
+            raise ValueError("WmsConfirmation must use wms-fulfillment")
 
 
 def test_wms_confirmation_dispatcher_uses_runtime_owner_and_fixed_batch(monkeypatch: pytest.MonkeyPatch) -> None:

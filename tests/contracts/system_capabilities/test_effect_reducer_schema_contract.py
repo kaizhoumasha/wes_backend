@@ -1,11 +1,8 @@
-"""T8d ReconciliationCase schema-only migration 与模块导出合同。"""
+"""T8d ReconciliationCase schema-only migration 合同。"""
 
 from __future__ import annotations
 
 from pathlib import Path
-
-from src.app.runtime import orchestration
-from src.app.runtime.orchestration import repositories, services
 
 ROOT = Path(__file__).parents[3]
 RECONCILIATION_CASE_MIGRATION = (
@@ -18,13 +15,6 @@ def _migration_source() -> str:
     source = RECONCILIATION_CASE_MIGRATION.read_text(encoding="utf-8")
     assert 'revision: str = "c325aab03400"' in source
     return source
-
-
-def test_effect_reducer_runtime_symbols_are_exported_from_their_owner_modules() -> None:
-    assert orchestration.ReconciliationCase.__name__ == "ReconciliationCase"
-    assert orchestration.ReconciliationCaseStatus.OPEN.value == "OPEN"
-    assert repositories.EffectReducerRepository.__name__ == "EffectReducerRepository"
-    assert services.EffectReducer.__name__ == "EffectReducer"
 
 
 def test_reconciliation_case_migration_is_schema_only_and_follows_t8c_head() -> None:

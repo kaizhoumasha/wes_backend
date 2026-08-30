@@ -22,8 +22,9 @@ from sqlalchemy import BigInteger, CheckConstraint, Integer
 from sqlalchemy.exc import IntegrityError
 
 from src.app.device.models.command import DeviceCommand
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold as _RuntimeHold
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.sys.models import SystemOutbox
+from src.app.sys.models.outbox import SystemOutbox
 
 # ============================================================
 # Field presence + type contract

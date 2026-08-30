@@ -25,7 +25,11 @@ from src.app.resource.models import (
     ResourceStateEventType,
 )
 from src.app.resource.services.projection_service import ResourceProjectionService
-from src.app.resource.services.relation_service import ResourceRelationService
+from src.app.resource.services.relation_service import (
+    ResourceProjectionResult,
+    ResourceProjectionStatus,
+    ResourceRelationService,
+)
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 
 RESOURCE_SESSION_BASES = (
@@ -79,6 +83,29 @@ def test_resource_projection_write_surfaces_do_not_accept_retired_plugin_identit
         parameters = signature(method).parameters
         assert "plugin_key" not in parameters
         assert "contract_version" not in parameters
+
+
+def test_resource_reconciliation_result_has_no_generic_runtime_hold_payload() -> None:
+    """资源冲突只返回领域 RECONCILING 事实，不创建或回传全线 RuntimeHold。"""
+
+    result = ResourceProjectionResult(
+        status=ResourceProjectionStatus.RECONCILING,
+        reason_code="RACK_PLACEMENT_CONFLICT",
+        message="conflict",
+    )
+
+    assert set(ResourceProjectionResult.model_fields) == {
+        "status",
+        "event",
+        "projection",
+        "reason_code",
+        "message",
+    }
+    assert result.model_dump(mode="json", exclude_none=True) == {
+        "status": "RECONCILING",
+        "reason_code": "RACK_PLACEMENT_CONFLICT",
+        "message": "conflict",
+    }
 
 
 def test_resource_projection_models_have_required_foreign_keys() -> None:

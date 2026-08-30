@@ -3,7 +3,7 @@
 status: Approved
 decision_date: 2026-08-26
 scope: 开发流程、运输接入诊断、Phase 9—14 阶段边界、教学式插件开发和规划 worktree 收敛
-implementation_status: backend planning baseline 已闭合于 `50bd9ac2098005b346d48b10ad9d78ac0ae5d982`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 分支完成性验收已于 2026-08-29 通过，`develop` 集成待完成
+implementation_status: backend current baseline 为 `develop@c5a93872f6c5fb0d7ee29ecefd817e54681de0a6`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A/B 与 Phase 9 已完成；Phase 10 Tasks 0–6 已于 2026-08-29 在 `codex/phase10-implementation@834fe59e` 完成仓内实施和准入，Task 7 已于 2026-08-30 完成联调环境 cutover 与 Phase 11 handoff；发布分支已推送、尚未合入 `develop`，Phase 11–14 尚未实施
 
 ## 1. 决策摘要
 
@@ -13,7 +13,9 @@ implementation_status: backend planning baseline 已闭合于 `50bd9ac2098005b34
 开发流程优化形成统一执行规则
   → 运输接入诊断独立交付
   → Phase 9 最小执行基础闭合
+  → Phase 10 Task 0 prerequisite freeze
   → 发布四目标账本静默门禁
+  → Phase 10 Task 0 final admission / Execution Lock
   → Phase 10 旧平台原子删除
   → Phase 11 当前产品干净 Schema 基线
   → Phase 12 manual_bin_processing 教学式开发
@@ -50,7 +52,7 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 ### 3.1 目标
 
 - 让 Phase 9 只承担 Phase 10 真正需要的最小基础闭合，不夹带人工或自动业务。
-- 在 Phase 10 前完成运输诊断和四目标账本静默门禁，保护已有现场诊断与物理执行。
+- 在 Phase 10 Task 0 前置冻结后、Execution Lock 前独立完成发布四目标账本静默门禁 Tasks 1–4，保护已有现场诊断与物理执行。
 - 让 Phase 11 基线只包含已批准且已实现的最小执行内核和当时真实运行的业务模型，不为未来插件预留表、字段或 operation。
 - 把 `manual_bin_processing` 变成用户可完整参与的二次开发教学样板。
 - 形成唯一 backend/frontend `develop` 规划基线，避免不同 worktree 继续维护冲突真源。
@@ -76,8 +78,9 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 运输接入诊断计划和阶段重排设计已进入 `develop`。旧 Phase 9 中仍有效的内容已分别由
 `plans/2026-08-27-phase9-minimum-execution-foundation.md` 和
 `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` 承接，旧过程文档与未重新评审的合同已移至项目外归档。
-运输诊断已完成仓内实现、验证与合入，但未部署、未执行现场物理动作或业务验收；Phase 9 分支完成性验收已通过但尚未合入 `develop`，
-Phase 10–14 仍是后续计划，不得描述为已经实施。
+运输诊断已完成仓内实现、验证与合入，但未部署、未执行现场物理动作或业务验收；Phase 9 已合入
+`develop@c5a93872`。发布四目标账本静默门禁与 Phase 10 Tasks 0–6 已在 `codex/phase10-implementation@834fe59e`
+完成仓内实施和准入；Task 7 已完成联调环境 cutover 与 Phase 11 handoff，发布分支已推送、尚未合入 `develop`，Phase 11–14 仍是后续计划。该证据不得描述为供应商、物理或业务验收完成。
 
 ## 5. 阶段设计
 
@@ -118,8 +121,13 @@ Phase 9 不实现 `manual_bin_processing`、RETURN_BUFFER、人工任务、INGRE
 
 ### 5.4 发布四目标账本静默门禁
 
-`DeviceCommand`、`TransportTask`、`InboundEvidence` 和 `WmsConfirmation` 的发布静默门禁继续作为独立高风险切片，在首次 Phase 10
-cutover 前完成 RED、DEV、GREEN、Review 和不可变 candidate 集成。门禁不读取 legacy 表，也不自动取消、重试、claim 或修复状态。
+`DeviceCommand`、`TransportTask`、`InboundEvidence` 和 `WmsConfirmation` 的发布静默门禁继续作为独立高风险切片。Phase 10 Task 0
+先冻结 minimum cutover order、candidate runner 和 readiness insertion-point interface；门禁 Tasks 1–4 再完成 RED、DEV、GREEN 和
+Review；随后重跑并最终确认 Task 0 admission，才能进入 Execution Lock。Phase 10 Task 6 只复用/核验该基线并集成不可变 candidate。
+门禁不读取 legacy 表，也不自动取消、重试、claim 或修复状态。
+
+当前状态：Tasks 1–4 已在 Phase 10 实施分支的 `eb9b1a54` 完成，并由 Task 6 复核后纳入本地不可变候选；Task 5 TEST
+部署验收未执行。
 
 ### 5.5 Phase 10：旧平台原子删除
 
@@ -127,13 +135,19 @@ Phase 10 的入口改为：
 
 - Gate A、Gate B 和 Phase 9 已完成；
 - 已交付的运输诊断能力登记为 `RETAIN`；
-- 当前真实 target consumer 和测试 owner 已冻结；
-- 所有 legacy owner 都是 `DELETE → successor`、`DELETE → NONE`、`RETAIN` 或 `schema-deferred`；
+- Task 0 已冻结 prerequisite、minimum cutover order、candidate runner 和 readiness insertion-point interface；
+- 发布四目标账本静默门禁 Tasks 1–4 已独立完成 RED/DEV/GREEN/Review，Task 0 已重跑并最终确认 admission；
+- 当前真实 target consumer 和测试 owner 已冻结；现有 ESTOP router 与 `WmsConfirmation` typed successor 默认为 `Verify/Retain`，只有 Phase 10 Task 1 RED 证明精确 residual legacy dependency 时才修改；
+- 唯一 `legacy-cleanup-matrix.csv` 已覆盖 runtime、sys、WMS、Celery/boot、deployment 和 schema-deferred identity；所有 legacy owner 都是 `DELETE → successor`、`DELETE → NONE`、`RETAIN` 或 `schema-deferred`；
 - `UNRESOLVED=0`；
-- 四目标账本静默门禁已经进入不可变 candidate。
+- Phase 10 Task 6 只需复核发布门禁基线并将其纳入不可变 candidate。
 
 首次切换仍遵守：candidate ready、关闭 admission/Beat、旧 worker 排空、legacy stable zero、四表连续 `READY`、停止旧 worker、激活
 target-only candidate、重开 admission。Phase 10 不删除 schema/revision，也不恢复任何旧平台作为未来插件后备路径。
+
+当前状态：Tasks 0–6 已在 `codex/phase10-implementation@834fe59e` 完成，每个 Task 一个提交；QUALITY、staged HEAVY、
+架构门禁、fresh Review 和隔离候选验证均通过。Task 7 已取得单独 Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成
+target-only cutover 和 Phase 11 handoff；发布分支已推送、尚未合入 `develop`。Phase 11 仍须通过独立实施前准入评审后才能开始。
 
 ### 5.6 Phase 11：当前产品首个干净 Schema 基线
 

@@ -112,25 +112,6 @@ run_capacity_guard() {
         api python scripts/capacity_guard.py --services api,celery,celery-wms-fulfillment "${guard_args[@]}"
 }
 
-# 使用共享 runner 从四个实际临时容器生成并验证脱敏 artifact。
-run_wms_deployment_attestation() {
-    local env=$1
-    local env_file=""
-    local runner_args=(--compose-file docker-compose.yml)
-
-    if [ -f ".env.$env" ]; then
-        env_file=".env.$env"
-    elif [ -f ".env" ]; then
-        env_file=".env"
-    fi
-    if [ "$env" = "prod" ]; then
-        runner_args+=(--compose-file docker-compose.deploy.yml)
-    fi
-    [ -z "$env_file" ] || runner_args+=(--env-file "$env_file")
-    runner_args+=(--profile "$env")
-    bash scripts/run_wms_deployment_attestation.sh "${runner_args[@]}"
-}
-
 # 扩缩容不能依赖上一次命令的离线默认值；每次必须同时声明两个服务的完整目标。
 validate_complete_scale_targets() {
     local has_api=false
@@ -218,11 +199,10 @@ cmd_up() {
         env_file="--env-file .env"
     fi
 
-    # 生产环境分阶段启动：容量与 WMS 四角色门禁通过后才允许应用启动。
+    # 生产环境分阶段启动：容量门禁通过后才允许应用启动。
     if [ "$env" = "prod" ]; then
         $compose_cmd $compose_files $env_file --profile "$env" up -d --wait db redis
         run_capacity_guard "$env" "$@"
-        run_wms_deployment_attestation "$env"
         $compose_cmd $compose_files $env_file --profile "$env" up -d "$@"
     else
         $compose_cmd $compose_files $env_file --profile "$env" up -d "$@"

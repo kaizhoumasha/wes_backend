@@ -14,18 +14,18 @@ from sqlalchemy.engine import make_url
 from src import register as register_module
 from src.core.conf import settings
 from src.register import register_init
-from tests.contracts.wms_integration.provider_profile_support import write_provider_profile
 
 pytestmark = pytest.mark.integration
 
 
-def _integration_settings(profile_file) -> object:
+def _integration_settings() -> object:
     database_url = make_url(os.environ["INTEGRATION_DATABASE_URL"])
     redis_url = urlparse(os.environ["INTEGRATION_REDIS_URL"])
     return settings.model_copy(
         update={
             "APP_ENV": "test",
-            "WMS_PROVIDER_PROFILE_FILE": profile_file,
+            "WMS_BASE_URL": "http://127.0.0.1:8011",
+            "TRANSPORT_SUBMIT_PATH": "/api/v1/wes/transport-requests",
             "POSTGRES_HOST": database_url.host or "127.0.0.1",
             "POSTGRES_PORT": database_url.port or 5432,
             "POSTGRES_USER": database_url.username or "postgres",
@@ -44,15 +44,13 @@ def _integration_settings(profile_file) -> object:
 
 @pytest.mark.asyncio
 async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
-    tmp_path,
     integration_guard: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.database import db as database
     from src.database import redis_client
 
-    profile_file = write_provider_profile(tmp_path / "provider.yaml")
-    integration_settings = _integration_settings(profile_file)
+    integration_settings = _integration_settings()
     monkeypatch.setattr(register_module, "settings", integration_settings)
     monkeypatch.setattr(database, "settings", integration_settings)
     monkeypatch.setattr(redis_client, "settings", integration_settings)

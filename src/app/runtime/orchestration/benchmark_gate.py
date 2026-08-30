@@ -336,8 +336,6 @@ def _collect_scenario_provenance_validation(
 
 
 _PRODUCTION_WORKLOAD_REQUIREMENTS: dict[str, dict[str, int | bool]] = {
-    "runtime_inbox_claim": {"pending_inbox_count": 1000, "worker_concurrency": 4},
-    "conveyor_queue_writer": {"active_membership_count": 200, "concurrent_identity_collision": True},
     "ecs_status_command": {"status_get_count": 1, "command_post_count": 1},
     "plane_snapshot": {
         "workline_count": 1,
@@ -381,18 +379,6 @@ def _collect_scenario_workload_validation(
 
 def default_runtime_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:
     return [
-        RuntimeBenchmarkScenario(
-            name="runtime_inbox_claim",
-            command="uv run pytest tests/load/test_runtime_inbox_claim_benchmark.py -q",
-            required_metrics=frozenset({"claim_p95_ms", "duplicate_claim_count"}),
-            production_source_kinds=frozenset({"postgresql"}),
-        ),
-        RuntimeBenchmarkScenario(
-            name="conveyor_queue_writer",
-            command="uv run python scripts/run_runtime_benchmarks.py",
-            required_metrics=frozenset({"write_p95_ms", "reconciling_count", "integrity_conflict_recheck_count"}),
-            production_source_kinds=frozenset({"postgresql"}),
-        ),
         RuntimeBenchmarkScenario(
             name="ecs_status_command",
             command="uv run pytest tests/load/test_ecs_status_command_benchmark.py -q",

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -30,7 +29,6 @@ from src.app.transport.models import (
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
-from tests.contracts.wms_integration.provider_profile_support import build_compiled_provider_profile
 from tests.support.transport_callbacks import record_valid_callback
 from tests.support.transport_projections import ensure_projection_authority
 
@@ -99,7 +97,8 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     publisher = _Publisher()
     monkeypatch.setattr(factory, "build_wms_client", lambda **_kwargs: client)
     runtime = await transport_composition.build_transport_runtime(
-        startup=SimpleNamespace(compiled_profile=build_compiled_provider_profile()),
+        wms_base_url="http://wms.example",
+        transport_submit_path="/api/v1/wes/transport-requests",
         session_factory=integration_session_factory,
     )
     service = runtime.service

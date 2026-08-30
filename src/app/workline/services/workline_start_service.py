@@ -6,15 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.device.repositories.command_repository import device_command_repository
-from src.app.runtime.orchestration.repositories.session_repository import workline_session_repository
-from src.app.runtime.orchestration.repository_wiring import workline_repository
-from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
-    workline_runtime_status_projection_service,
-)
-from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
-from src.app.sys.repositories.outbox_repository import system_outbox_repository
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
+from src.app.workline.repositories.workline_repository import workline_repository
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
 from src.utils.timezone import timezone
 
@@ -50,7 +44,6 @@ class WorkLineStartResult:
     epoch: LineRunEpoch
     current_workline_runtime_status: str | None
     created: bool
-    released_outbox_count: int
 
 
 class EpochRepositoryPort(Protocol):
@@ -83,18 +76,8 @@ class WorkLineRepositoryPort(Protocol):
     async def get_unfinished_workload_summary(self, db: Any, workline_id: int) -> dict[str, Any]: ...
 
 
-class ProjectionServicePort(Protocol):
-    async def runtime_status_snapshot(self, db: Any, *, workline_id: int) -> Any: ...
-
-    async def project_ready_after_start(self, db: Any, *, workline_id: int, occurred_at: datetime) -> Any: ...
-
-
 class SafetyRepositoryPort(Protocol):
     async def get_active_for_workline(self, db: Any, workline_id: int) -> Any | None: ...
-
-
-class ReconciliationRepositoryPort(Protocol):
-    async def count_pending_reconciliations_for_workline(self, db: Any, workline_id: int) -> int: ...
 
 
 class WorkLineStartPlanBuilderPort(Protocol):
@@ -111,10 +94,6 @@ class UnclosedCommandRepositoryPort(Protocol):
     async def has_unclosed_for_epoch_for_update(self, db: Any, line_run_epoch_id: int) -> bool: ...
 
 
-class OutboxRepositoryPort(Protocol):
-    async def release_parked_after_workline_start(self, db: Any, workline_id: int) -> int: ...
-
-
 class WorkLineStartService:
     """在调用方事务内分类 replay 或创建完整 Epoch。"""
 
@@ -124,29 +103,19 @@ class WorkLineStartService:
         plan_builder: WorkLineStartPlanBuilderPort,
         epoch_repository: EpochRepositoryPort = cast("EpochRepositoryPort", line_run_epoch_repository),
         workline_repository: WorkLineRepositoryPort = cast("WorkLineRepositoryPort", workline_repository),
-        projection_service: ProjectionServicePort = cast(
-            "ProjectionServicePort", workline_runtime_status_projection_service
-        ),
         safety_repository: SafetyRepositoryPort = cast("SafetyRepositoryPort", workline_safety_incident_repository),
-        reconciliation_repository: ReconciliationRepositoryPort = cast(
-            "ReconciliationRepositoryPort", workline_session_repository
-        ),
         epoch_service: EpochServicePort | None = None,
         command_repository: UnclosedCommandRepositoryPort = cast(
             "UnclosedCommandRepositoryPort", device_command_repository
         ),
-        outbox_repository: OutboxRepositoryPort = cast("OutboxRepositoryPort", system_outbox_repository),
         clock: Any = timezone.now_for_db,
     ) -> None:
         self._plan_builder = plan_builder
         self._epochs = epoch_repository
         self._worklines = workline_repository
-        self._projection = projection_service
         self._safety = safety_repository
-        self._reconciliations = reconciliation_repository
         self._epoch_service = epoch_service or LineRunEpochService(repository=epoch_repository)
         self._commands = command_repository
-        self._outboxes = outbox_repository
         self._clock = clock
 
     async def start(self, db: Any, *, workline_id: int, request_id: str) -> WorkLineStartResult:
@@ -158,12 +127,12 @@ class WorkLineStartService:
                 raise WorkLineStartIdempotencyConflictError(
                     f"request_id {normalized_request_id} 已属于 WorkLine {existing.workline_id}"
                 )
-            snapshot = await self._projection.runtime_status_snapshot(db, workline_id=existing.workline_id)
             return WorkLineStartResult(
                 epoch=existing,
-                current_workline_runtime_status=snapshot.runtime_status,
+                current_workline_runtime_status=(
+                    "READY" if getattr(existing.status, "value", existing.status) == "ACTIVE" else None
+                ),
                 created=False,
-                released_outbox_count=0,
             )
 
         workline = await self._worklines.get_for_update(db, workline_id)
@@ -194,13 +163,10 @@ class WorkLineStartService:
             position_bindings=plan.position_bindings,
             started_at=started_at,
         )
-        await self._projection.project_ready_after_start(db, workline_id=workline_id, occurred_at=started_at)
-        released = await self._outboxes.release_parked_after_workline_start(db, workline_id)
         return WorkLineStartResult(
             epoch=epoch,
-            current_workline_runtime_status=WorkLineRuntimeStatus.READY.value,
+            current_workline_runtime_status="READY",
             created=True,
-            released_outbox_count=released,
         )
 
     async def _lock_active_epoch_lifecycle(self, db: Any, workline_id: int) -> None:
@@ -217,17 +183,8 @@ class WorkLineStartService:
     async def _assert_startable(self, db: Any, workline: Any) -> None:
         if not bool(getattr(workline, "is_active", False)):
             raise WorkLineStartInvalidStateError("WorkLine 未静态启用")
-        snapshot = await self._projection.runtime_status_snapshot(db, workline_id=workline.id)
-        if snapshot.runtime_status != WorkLineRuntimeStatus.STOPPED.value:
-            raise WorkLineStartInvalidStateError(
-                f"WorkLine 当前运行态不是 STOPPED: {snapshot.runtime_status or 'UNKNOWN'}"
-            )
-        if snapshot.active_safety_incident_id is not None:
-            raise WorkLineStartInvalidStateError("WorkLine 存在 active safety incident")
         if await self._safety.get_active_for_workline(db, workline.id) is not None:
             raise WorkLineStartInvalidStateError("WorkLine 存在 active safety incident")
-        if await self._reconciliations.count_pending_reconciliations_for_workline(db, workline.id):
-            raise WorkLineStartInvalidStateError("WorkLine 存在 pending runtime reconciliation")
         unfinished = await self._worklines.get_unfinished_workload_summary(db, workline.id)
         blockers = [
             owner_type

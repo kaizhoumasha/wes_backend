@@ -1,4 +1,0 @@
-from src.app.runtime.system_capabilities.wms.effect_runtime import build_wms_effect_capability_definition
-from src.app.wms_integration.ports.inventory_operations import RELEASE_RESERVATION
-
-DEFINITION = build_wms_effect_capability_definition(RELEASE_RESERVATION)

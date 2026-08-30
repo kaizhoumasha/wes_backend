@@ -16,19 +16,24 @@ from sqlalchemy import BigInteger, create_engine
 from sqlalchemy.exc import NoReferencedTableError
 from sqlmodel import SQLModel
 
+from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold as BizRuntimeHold
+from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase
 from src.app.runtime.orchestration.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.app.sys.models.outbox import SystemOutbox
 from src.database.schema_conf import get_all_schemas, validate_schema
 from src.database.sqlite_schema import configure_sqlite_schemas
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
 # 为 create_all 显式注册 remaining runtime 模型依赖的跨域外键目标。
 register_required_sqlmodel_metadata()
+SCHEMA_DEPENDENCY_MODELS = (BinRouteInstance, BizRuntimeHold, ReconciliationCase, SystemOutbox)
 
 REMAINING_RUNTIME_MODELS = (
     ExecutionWorkItem,

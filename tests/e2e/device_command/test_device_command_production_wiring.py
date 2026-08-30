@@ -20,10 +20,6 @@ from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDev
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
-from tests.contracts.wms_integration.provider_profile_support import (
-    build_provider_profile_payload,
-    write_provider_profile,
-)
 from tests.integration.conftest import (
     integration_engine,
     integration_guard,
@@ -43,7 +39,6 @@ EVIDENCE_TASK = "src.celery_app.tasks.device_command.process_device_evidence_bat
 
 
 async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postgresql(
-    tmp_path,
     integration_session_factory,
 ) -> None:
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
@@ -73,13 +68,9 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
     try:
         callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
         ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
-        provider_payload = build_provider_profile_payload()
-        provider_payload["server_url"] = ecs_server.url
-        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
         worker = DeviceCommandBrokerWorker(
             database_url=database_url,
             redis_url=redis_url,
-            provider_file=provider_file,
         )
         worker.start()
 
@@ -169,7 +160,6 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
 
 
 async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
-    tmp_path,
     integration_session_factory,
 ) -> None:
     database_url = os.environ["INTEGRATION_DATABASE_URL"]
@@ -227,13 +217,9 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
             device_id = device.id
         callback_server = WesCallbackServer(session_factory=integration_session_factory).start()
         ecs_server = UniformEcsServer(callback_url=callback_server.result_url).start()
-        provider_payload = build_provider_profile_payload()
-        provider_payload["server_url"] = ecs_server.url
-        provider_file = write_provider_profile(tmp_path / "provider.yaml", provider_payload)
         worker = DeviceCommandBrokerWorker(
             database_url=database_url,
             redis_url=redis_url,
-            provider_file=provider_file,
         )
         worker.start()
 

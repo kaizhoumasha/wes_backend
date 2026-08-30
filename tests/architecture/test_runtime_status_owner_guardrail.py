@@ -7,8 +7,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-PROJECTION_SERVICE = Path("src/app/runtime/orchestration/services/workline_runtime_status_projection_service.py")
-READONLY_PROJECTION_VIEWS = {
+RETIRED_PROJECTION_SERVICE = Path(
+    "src/app/runtime/orchestration/services/workline_runtime_status_projection_service.py"
+)
+RETIRED_READONLY_PROJECTION_VIEWS = {
     Path("src/app/runtime/orchestration/services/query/runtime_query_service.py"),
     Path("src/app/runtime/orchestration/services/trace/trace_query_service.py"),
 }
@@ -144,8 +146,8 @@ def _direct_runtime_status_writes(tree: ast.AST) -> list[int]:
     return sorted(set(lines))
 
 
-def test_runtime_status_writes_are_centralized_in_projection_service() -> None:
-    """runtime_status 直接写入只能出现在 runtime/orchestration 兼容投影服务。"""
+def test_runtime_status_writes_are_absent_from_active_application_code() -> None:
+    """retired runtime_status 不得再成为 application owner。"""
     violations: list[str] = []
     for rel_path in sorted(Path("src/app").glob("**/*.py")):
         path = REPO_ROOT / rel_path
@@ -157,19 +159,17 @@ def test_runtime_status_writes_are_centralized_in_projection_service() -> None:
         if source is None:
             continue
         tree = ast.parse(source, filename=str(rel_path))
-        if rel_path == PROJECTION_SERVICE:
-            continue
         lines = _direct_runtime_status_writes(tree)
         violations.extend(f"{rel_path}:{line}" for line in lines)
 
-    assert not violations, "WorkLine 运行态直接写入必须集中到 projection service:\n  " + "\n  ".join(violations)
+    assert not violations, "WorkLine 运行态不得再直接写入 retired runtime_status:\n  " + "\n  ".join(violations)
 
 
 def test_runtime_status_scan_tolerates_disappearing_guardrail_fixture(monkeypatch) -> None:
     missing = Path("src/app/runtime/orchestration/services/_deleted_guardrail_fixture.py")
     monkeypatch.setattr(Path, "glob", lambda _self, _pattern: iter((missing,)))
 
-    test_runtime_status_writes_are_centralized_in_projection_service()
+    test_runtime_status_writes_are_absent_from_active_application_code()
 
 
 def test_workline_model_no_longer_declares_runtime_status_column() -> None:
@@ -179,11 +179,8 @@ def test_workline_model_no_longer_declares_runtime_status_column() -> None:
     assert "WorkLineRuntimeStatus" not in source
 
 
-def test_runtime_status_projection_service_no_longer_writes_workline_field() -> None:
-    source = _source(PROJECTION_SERVICE)
-
-    assert "workline.runtime_status =" not in source
-    assert 'getattr(workline, "runtime_status"' not in source
+def test_runtime_status_projection_service_is_retired() -> None:
+    assert not (REPO_ROOT / RETIRED_PROJECTION_SERVICE).exists()
 
 
 def test_runtime_status_migration_mentions_runtime_status_targets() -> None:
@@ -246,18 +243,14 @@ status = workline_snapshot.runtime_status
     assert _direct_runtime_status_reads(violation_tree) == [3]
 
 
-def test_workline_and_material_flow_owner_sensitive_paths_use_projection_snapshot_for_runtime_status() -> None:
-    """WorkLine 域与 material-flow capability 不能直接读取 runtime_status 作归属判断。
-
-    允许列表保持很窄：projection service 是唯一字段读写入口；query/trace 是
-    runtime/orchestration 只读展示层，且另有专门测试要求它们通过 snapshot 暴露。
-    """
+def test_workline_and_material_flow_owner_sensitive_paths_do_not_read_retired_runtime_status() -> None:
+    """WorkLine 域与 material-flow capability 不能直接读取 runtime_status 作归属判断。"""
     violations: list[str] = []
     owner_sensitive_files = sorted(
         rel_path
         for root in OWNER_SENSITIVE_ROOTS
         for rel_path in root.rglob("*.py")
-        if rel_path != PROJECTION_SERVICE and rel_path not in READONLY_PROJECTION_VIEWS
+        if rel_path != RETIRED_PROJECTION_SERVICE and rel_path not in RETIRED_READONLY_PROJECTION_VIEWS
     )
     for rel_path in owner_sensitive_files:
         tree = ast.parse(_source(rel_path), filename=str(rel_path))
@@ -265,17 +258,9 @@ def test_workline_and_material_flow_owner_sensitive_paths_use_projection_snapsho
         violations.extend(f"{rel_path}:{line}" for line in lines)
 
     assert not violations, (
-        "归属敏感路径必须通过 WorkLineRuntimeStatusProjectionService snapshot/readiness 读取 runtime_status:\n  "
-        + "\n  ".join(violations)
+        "归属敏感路径必须通过 target owner facts 而非 retired runtime_status 归属判断:\n  " + "\n  ".join(violations)
     )
 
 
-def test_runtime_query_and_trace_only_expose_runtime_status_snapshot() -> None:
-    """query/trace 只允许展示 projection snapshot，不直接把 WorkLine 字段当事实源。"""
-    violations: list[str] = []
-    for rel_path in sorted(READONLY_PROJECTION_VIEWS):
-        tree = ast.parse(_source(rel_path), filename=str(rel_path))
-        lines = _direct_runtime_status_reads(tree)
-        violations.extend(f"{rel_path}:{line}" for line in lines)
-
-    assert not violations, "query/trace 应通过 runtime_status_snapshot 暴露兼容字段:\n  " + "\n  ".join(violations)
+def test_runtime_query_and_trace_compatibility_views_are_retired() -> None:
+    assert all(not (REPO_ROOT / path).exists() for path in RETIRED_READONLY_PROJECTION_VIEWS)

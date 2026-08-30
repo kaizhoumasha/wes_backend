@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from src.utils.snowflake import generate_snowflake_id
-from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
+from tests.support.postgresql_heavy import connect, run_alembic, temporary_database
 
 if TYPE_CHECKING:
     import asyncpg

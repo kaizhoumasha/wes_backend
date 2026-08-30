@@ -21,6 +21,27 @@
 - 旧 revision 测试只有在最终基线 successor 先通过后才能删除；删除说明必须标注 successor 或 `NONE`。
 - `docs/hardware/` 不参与数据库基线清理。
 
+## Phase 10 → Phase 11 入口交接（2026-08-30）
+
+Phase 10 已在联调环境完成 target-only cutover。现场 source commit 为
+`834fe59e0c44c943487eedb6ed41af1c519df7ad`，backend image digest 为
+`sha256:018c1cd82276b876a64ffbdaa9379ceca15a091fc1b1b265960793d732d8e00d`，新建 `wes_db` 的唯一 Alembic head 为
+`dd35f04b258f`。3 个 worker 注册的 legacy task、Beat 中 legacy schedule task、旧 WMS profile/effect env/mount 和旧 backend
+container 均为 0；详细现场证据位于联调服务器
+`/srv/wes/app/releases/phase10-task7-20260830T054232Z-834fe59e/`。
+
+本次 handoff 只传递 `docs/architecture/legacy-cleanup-matrix.csv` 中以下 22 个 `schema-deferred` model/table identity：
+
+- `wes_biz`: `workline_diagnostics`、`workline_bin_cell_reservations`、`workline_dispatch_attempts`、`ng_return_items`、
+  `runtime_holds`、`system_outbox`、`wms_circuit_breaker_state`、`wms_call_evidence`。
+- `wes_runtime`: `bin_route_instances`、`conveyor_queue_memberships`、`idempotency_keys`、`material_flow_owners`、
+  `execution_correlations`、`execution_sessions`、`execution_work_items`、`reconciliation_cases`、`runtime_holds`、`runtime_inbox`、
+  `runtime_intent_logs`、`runtime_timelines`、`wms_rack_demands`、`workline_runtime_status_projections`。
+
+这些 identity 的 model definition、`migrations/env.py`、现有 revisions 与 schema-only tests 是 Task 1 重新冻结 FK、index、constraint
+和 PostgreSQL/TimescaleDB 专有对象的输入。该列表不传递 DDL、revision ID、删除路径或基线生成方案，也不授权跳过 Task 1 的
+独立实施前评审。Phase 10 分支仍未 Push、未创建 PR、未合入 `develop`；Phase 11 尚未开始。
+
 ---
 
 ### Task 1: 验证 Phase 11 入口门禁并冻结对象清单

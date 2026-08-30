@@ -8,15 +8,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.runtime.orchestration.repositories import (
-    RuntimeHoldRepository,
-    WorklineDiagnosticRepository,
-    WorklineDispatchAttemptRepository,
-    WorklineSessionRepository,
-)
-from src.app.runtime.orchestration.repository_wiring import workline_repository
-from src.app.sys.repositories import SystemOutboxRepository
-from src.app.workline.repositories import WorklineSafetyIncidentRepository
+from src.app.workline.repositories import WorklineSafetyIncidentRepository, workline_repository
 from src.database.db import get_db_context
 
 if TYPE_CHECKING:
@@ -42,13 +34,8 @@ class WorklineUnitOfWork:
         self._session_context: AbstractAsyncContextManager[AsyncSession] | None = None
         self._db: AsyncSession | None = None
 
-        self.sessions = WorklineSessionRepository()
         self.worklines = workline_repository
-        self.runtime_holds = RuntimeHoldRepository()
-        self.diagnostics = WorklineDiagnosticRepository()
-        self.dispatch_attempts = WorklineDispatchAttemptRepository()
         self.safety_incidents = WorklineSafetyIncidentRepository()
-        self.outboxes = SystemOutboxRepository()
 
     async def __aenter__(self) -> WorklineUnitOfWork:
         if self._external_db is not None:

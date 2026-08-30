@@ -7,12 +7,13 @@ runtime/orchestration/repositories/。
 
 from .line_run_epoch_repository import LineRunEpochRepository, line_run_epoch_repository
 from .safety_incident_repository import WorklineSafetyIncidentRepository, workline_safety_incident_repository
-from .workline_repository import WorkLineRepository
+from .workline_repository import WorkLineRepository, workline_repository
 
 __all__ = [
     "LineRunEpochRepository",
     "WorkLineRepository",
     "WorklineSafetyIncidentRepository",
     "line_run_epoch_repository",
+    "workline_repository",
     "workline_safety_incident_repository",
 ]

@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -34,19 +33,12 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     transport_runtime = None
     device_command_runtime = None
     rough_sorter_runtime = None
-    wms_data_lane_runtime = None
-    wms_effect_preparation_runtime = None
     primary_error: BaseException | None = None
     try:
         logger.info("Initializing application resources...")
-        from src.app.runtime.orchestration.repositories.northbound_operations_repository import (
-            northbound_operations_repository,
-        )
-        from src.app.runtime.system_capabilities.wms.provider_catalog import validate_wms_transport_configuration
-        from src.app.transport.composition import validate_transport_runtime_profile
         from src.app.wms_adapter import WmsInboundAuthPolicy
 
-        # 先清空前一轮 lifecycle 可能遗留的策略；profile 编译失败时必须 fail closed。
+        # 先清空前一轮 lifecycle 可能遗留的策略；初始化失败时必须 fail closed。
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
         _app.state.device_command_runtime = None
@@ -55,11 +47,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_start_service = None
         _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_inbound_event_handler = None
-        startup = validate_wms_transport_configuration(settings_source=settings)
-        validate_transport_runtime_profile(startup)
-        wms_inbound_auth_policy = WmsInboundAuthPolicy.from_compiled_profile(startup.compiled_profile)
-        _app.state.wms_inbound_auth_policy = wms_inbound_auth_policy
-        northbound_operations_repository.bind_provider_catalog(startup.catalog)
+        _app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
         await init_db()
         if db_module.AsyncSessionLocal is None:
             raise RuntimeError("Database session factory is unavailable after initialization")
@@ -76,7 +64,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         from src.app.transport.composition import build_transport_runtime
 
         transport_runtime = await build_transport_runtime(
-            startup=startup,
+            wms_base_url=settings.WMS_BASE_URL,
+            transport_submit_path=settings.TRANSPORT_SUBMIT_PATH,
             session_factory=db_module.AsyncSessionLocal,
         )
         _app.state.transport_runtime = transport_runtime
@@ -105,28 +94,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_start_service = build_rough_sorter_start_service()
         await init_redis()
 
-        from src.app.wms_integration.effect_preparation_runtime import (
-            bind_wms_effect_preparation_runtime,
-            build_wms_effect_preparation_runtime,
-        )
-        from src.app.wms_integration.query_runtime import (
-            bind_wms_data_lane_query_runtime,
-            build_wms_data_lane_query_runtime,
-        )
-
-        # 一个进程/事件循环/data lane 只持有一个长期 client；attempt/page 仅借用。
-        wms_data_lane_runtime = build_wms_data_lane_query_runtime(startup, settings_source=settings)
-        bind_wms_data_lane_query_runtime(wms_data_lane_runtime)
-        _app.state.wms_data_lane_query_runtime = wms_data_lane_runtime
-
-        effect_preparation_candidate = build_wms_effect_preparation_runtime(
-            catalog=startup.catalog,
-            admission_enabled=settings.WMS_EFFECT_ADMISSION_ENABLED,
-        )
-        bind_wms_effect_preparation_runtime(effect_preparation_candidate)
-        wms_effect_preparation_runtime = effect_preparation_candidate
-        _app.state.wms_effect_preparation_runtime = wms_effect_preparation_runtime
-
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
         from src.core.health import system_health
 
@@ -144,8 +111,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             )
         raise
     finally:
-        from src.app.runtime.orchestration.observability import runtime_observability_registry
-
         _app.state.wms_inbound_auth_policy = None
         _app.state.transport_runtime = None
         _app.state.device_command_runtime = None
@@ -155,29 +120,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.task_queue_gateway = None
         _app.state.wms_inbound_event_handler = None
         cleanup_errors: list[BaseException] = []
-        try:
-            await asyncio.to_thread(runtime_observability_registry.close)
-        except BaseException as exc:
-            cleanup_errors.append(exc)
-            logger.warning(f"FastAPI observability 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
-        if wms_data_lane_runtime is not None:
-            from src.app.wms_integration.query_runtime import close_bound_wms_data_lane_query_runtime
-
-            try:
-                await close_bound_wms_data_lane_query_runtime()
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-                logger.warning(f"FastAPI WMS data lane 清理失败（继续）: type={type(exc).__name__}, error={exc!r}")
-        if wms_effect_preparation_runtime is not None:
-            from src.app.wms_integration.effect_preparation_runtime import close_wms_effect_preparation_runtime
-
-            try:
-                await close_wms_effect_preparation_runtime(wms_effect_preparation_runtime)
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-                logger.warning(
-                    f"FastAPI WMS effect preparation 清理失败（继续）: type={type(exc).__name__}, error={exc!r}"
-                )
         if transport_runtime is not None:
             try:
                 await transport_runtime.aclose()

@@ -11,12 +11,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.app.device.models.device import Device
-from src.app.effect_ledger_status import SystemOutboxStatus
-from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold, RuntimeHoldStatus, RuntimeHoldType
-from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
-    workline_runtime_status_projection_service,
-)
-from src.app.sys.models.outbox import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.workline.epoch_activation import (
     LineRunEpochDeviceBindingInput,
     LineRunEpochPositionBindingInput,
@@ -33,7 +27,7 @@ from src.app.workline.services.workline_start_service import (
     WorkLineStartIdempotencyConflictError,
     WorkLineStartService,
 )
-from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+from tests.support.postgresql_heavy import run_alembic, temporary_database
 
 pytestmark = pytest.mark.integration
 
@@ -103,34 +97,7 @@ async def _seed_workline(session_factory: async_sessionmaker[AsyncSession], suff
         db.add(device)
         await db.flush()
         assert device.id is not None
-        await workline_runtime_status_projection_service.ensure_default(db, workline_id=workline.id)
         return workline.id, device.id
-
-
-def _parked_outbox(
-    *,
-    dispatch_key: str,
-    workline_id: int,
-    blocked_reason: str = "WORKLINE_STOPPED_WAITING_START",
-    reconciliation_session_id: int | None = None,
-    runtime_hold_id: int | None = None,
-) -> SystemOutbox:
-    return SystemOutbox(
-        workline_id=workline_id,
-        operation_domain="WORKLINE",
-        dispatch_type=SystemOutboxDispatchType.INTERNAL_SIGNAL,
-        dispatch_key=dispatch_key,
-        target_type=SystemOutboxTargetType.INTERNAL_SERVICE,
-        target_code="START-PG",
-        provider_profile_identity="internal.start-pg.v1",
-        operation_identity="workline.start-pg@v1",
-        payload_json={},
-        status=SystemOutboxStatus.RETRY_WAIT,
-        blocked_workline_id=workline_id,
-        blocked_reason=blocked_reason,
-        blocked_by_reconciliation_session_id=reconciliation_session_id,
-        blocked_by_runtime_hold_id=runtime_hold_id,
-    )
 
 
 def test_workline_start_migration_drops_legacy_columns_from_package_one_head() -> None:
@@ -196,63 +163,11 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
                 workline_id, device_id = await _seed_workline(session_factory, "LIFECYCLE")
                 builder = Builder({workline_id: device_id})
                 service = WorkLineStartService(plan_builder=builder)
-                async with session_factory.begin() as db:
-                    resolved_hold = RuntimeHold(
-                        hold_type=RuntimeHoldType.MANUAL_HOLD,
-                        status=RuntimeHoldStatus.RESOLVED,
-                        blocking=False,
-                        workline_id=workline_id,
-                        source_kind="START_PG_TEST",
-                        source_reason="resolved before START",
-                        source_idempotency_key="START-PG-RESOLVED-HOLD",
-                    )
-                    db.add(resolved_hold)
-                    await db.flush()
-                    assert resolved_hold.id is not None
-                    db.add_all(
-                        [
-                            _parked_outbox(dispatch_key="start-pg-eligible", workline_id=workline_id),
-                            _parked_outbox(
-                                dispatch_key="start-pg-reconciliation",
-                                workline_id=workline_id,
-                                reconciliation_session_id=91,
-                            ),
-                            _parked_outbox(
-                                dispatch_key="start-pg-runtime-hold",
-                                workline_id=workline_id,
-                                runtime_hold_id=resolved_hold.id,
-                            ),
-                            _parked_outbox(
-                                dispatch_key="start-pg-other-reason",
-                                workline_id=workline_id,
-                                blocked_reason="DEVICE_BUSY",
-                            ),
-                        ]
-                    )
 
                 async with session_factory.begin() as db:
                     started = await service.start(db, workline_id=workline_id, request_id="START-PG-LIFECYCLE")
                 assert started.created is True
-                assert started.released_outbox_count == 1
                 assert started.current_workline_runtime_status == "READY"
-
-                async with session_factory() as db:
-                    outboxes = {
-                        item.dispatch_key: item
-                        for item in await db.scalars(
-                            select(SystemOutbox).where(SystemOutbox.workline_id == workline_id)
-                        )
-                    }
-                    assert outboxes["start-pg-eligible"].blocked_reason is None
-                    assert outboxes["start-pg-reconciliation"].blocked_reason == "WORKLINE_STOPPED_WAITING_START"
-                    assert outboxes["start-pg-runtime-hold"].blocked_reason == "WORKLINE_STOPPED_WAITING_START"
-                    assert outboxes["start-pg-runtime-hold"].blocked_by_runtime_hold_id == resolved_hold.id
-                    assert outboxes["start-pg-other-reason"].blocked_reason == "DEVICE_BUSY"
-                    snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
-                        db,
-                        workline_id=workline_id,
-                    )
-                    assert snapshot.runtime_status == "READY"
 
                 async with session_factory.begin() as db:
                     epoch = await db.scalar(
@@ -272,8 +187,6 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
 
                 rollback_line_id, rollback_device_id = await _seed_workline(session_factory, "ROLLBACK")
                 rollback_service = WorkLineStartService(plan_builder=Builder({rollback_line_id: rollback_device_id}))
-                async with session_factory.begin() as db:
-                    db.add(_parked_outbox(dispatch_key="start-pg-rollback", workline_id=rollback_line_id))
                 with pytest.raises(RuntimeError, match="rollback marker"):
                     async with session_factory.begin() as db:
                         await rollback_service.start(
@@ -289,18 +202,6 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
                     )
                     assert (await db.scalar(select(func.count()).select_from(LineRunEpochDeviceBinding))) == 1
                     assert (await db.scalar(select(func.count()).select_from(LineRunEpochPositionBinding))) == 1
-                    rollback_outbox = await db.scalar(
-                        select(SystemOutbox).where(SystemOutbox.dispatch_key == "start-pg-rollback")
-                    )
-                    assert rollback_outbox is not None
-                    assert rollback_outbox.status == SystemOutboxStatus.RETRY_WAIT.value
-                    assert rollback_outbox.blocked_reason == "WORKLINE_STOPPED_WAITING_START"
-                    assert rollback_outbox.blocked_workline_id == rollback_line_id
-                    snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
-                        db,
-                        workline_id=rollback_line_id,
-                    )
-                    assert snapshot.runtime_status == "STOPPED"
 
                 serial_line_id, serial_device_id = await _seed_workline(session_factory, "SERIAL")
                 serial_builder = Builder({serial_line_id: serial_device_id})

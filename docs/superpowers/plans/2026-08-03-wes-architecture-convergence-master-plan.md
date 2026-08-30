@@ -16,10 +16,11 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
-**Status:** In progress — Phase 1–7 核心基线已完成。Phase 8 后端功能实现、本机 Mock 验收、WorkLine Epoch 激活和多 Endpoint
-派发已完成；`backend_rc = CLOSED`。GitLab 发布提交 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成
-不可变后端 RC 镜像 `88-f51677b`。
-前端在独立仓库关闭自己的 RC；真实 WMS/RCS/ECS、设备、版本组合、现场部署和业务验收不属于开发阶段关闭门禁。
+**Status:** In progress — Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9 已合入 `develop@c5a93872`。Phase 10 Tasks 0–7 已完成，
+`codex/phase10-implementation@834fe59e` 的 target-only candidate 已于 2026-08-30 部署到联调环境并通过 cutover 门禁；发布分支
+已推送、尚未合入 `develop`，该部署不代表供应商、设备物理或业务验收。Phase 8 的 GitLab 发布提交
+`f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成不可变后端 RC 镜像 `88-f51677b`。
+真实 WMS/RCS/ECS、设备、供应商版本组合和业务验收不属于上述联调部署证据。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -29,9 +30,13 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Backend planning baseline:** `develop@50bd9ac2098005b346d48b10ad9d78ac0ae5d982`（PR #179 已闭合旧 Phase 9 承接与归档）；
+**Backend current baseline:** `develop@c5a93872f6c5fb0d7ee29ecefd817e54681de0a6`（Phase 9 已合入）；
+**Phase 10 deployed candidate baseline:** `codex/phase10-implementation@834fe59e0c44c943487eedb6ed41af1c519df7ad`
+（source tree `58fbe212ba57186668783eb06f85c7cf37a0d7a6`，image digest
+`sha256:018c1cd82276b876a64ffbdaa9379ceca15a091fc1b1b265960793d732d8e00d`，已部署联调、未合入）；
 **Frontend planning baseline:** `develop@63489e7c89aa0fb758e7a08ea97a8000a3b843fc`（PR #82 已合入开发流程优化）。
-Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 分支完成性验收已于 2026-08-29 通过，`develop` 集成待完成。Phase 8 RC 发布证据仍为
+Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 已于 2026-08-29
+合入 backend `develop@c5a93872`；Phase 10 已执行 Task 7 联调 cutover，但分支尚未合入。Phase 8 RC 发布证据仍为
 `f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`。
 
 ---
@@ -136,7 +141,8 @@ Transport/Adapter/核心所有权。
 
 阶段状态：Phase 1–3 已完成，Phase 4 已完成暗构建和后端 QA；Phase 5 已完成零插件基线；
 Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 后端功能和本机 Mock 已完成，
-后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 分支完成性验收已通过但尚未合入 `develop`；Phase 10–14 尚未开始。
+后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 已合入 `develop@c5a93872`；发布四目标账本静默门禁和
+Phase 10 Tasks 0–7 已完成，`834fe59e` 候选已部署到联调环境并通过 target-only cutover；Phase 11–14 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -159,7 +165,15 @@ Phase 8  粗分机参考插件与最小 SPI
    ↓
 Phase 9  最小执行基础闭合
    ↓
-Phase 10 旧平台代码最终闭环
+Phase 10 Task 0 prerequisite freeze（仓内已完成）
+   ↓
+发布四目标账本静默门禁 Tasks 1–4（仓内已完成）
+   ↓
+Phase 10 Task 0 final admission / Execution Lock（已取得）
+   ↓
+Phase 10 Tasks 1–6 target-only 实施与候选验证（已完成）
+   ↓
+Phase 10 Task 7 联调环境 Deploy/Cutover（已完成；不代表供应商、物理或业务验收）
    ↓
 Phase 11 旧数据模型与迁移链
    ↓
@@ -620,8 +634,9 @@ HEAVY owner。`rough_sorter` 只验证现有插件机制，不替代 `BinExecuti
 
 **Authoritative inputs:** 各阶段删除/交接清单、GitNexus 变更影响、全仓 import/语义扫描、当前装配与部署配置。
 
-**Entry conditions:** Gate A 开发流程优化、Gate B 运输接入诊断和 Phase 9 最小基础已完成；已交付运输诊断登记为 `RETAIN`；
-四目标账本静默门禁进入不可变 candidate；任何仍活动的旧所有者都有明确 successor 或 `DELETE → NONE`，`UNRESOLVED=0`。
+**Entry conditions:** 已在 `codex/phase10-implementation` 闭合。Gate A、Gate B 和 Phase 9 已完成；Task 0 prerequisite freeze、
+发布静默门禁 Tasks 1–4 RED/DEV/GREEN/Review、Task 0 final admission 与 Execution Lock 均已完成；运输诊断登记为 `RETAIN`，
+唯一 cleanup matrix 覆盖 runtime、sys、WMS、Celery/boot、deployment 和 schema-deferred identity，且 `UNRESOLVED=0`。
 
 **Scope:** 清除 Runtime/System Capability/Manifest/Intent/Effect/Hold/Recovery/Reconciliation/Reservation；清除裸
 httpx Client、重复连接池、无真实合同依据的认证配置和 transport fallback；建立 import/语义缺席门禁。
@@ -642,9 +657,11 @@ Phase 11 固化最终 metadata。
 **Exit gate:** 机器门禁证明旧架构、裸 Client、重复传输和无依据认证零引用；应用/Celery/部署只装配最终对象、WMS/RCS
 Adapter、设备统一接口和明确插件。
 
-**需要单独编写的子计划:** Phase 10 详细计划已建立为
-`docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`；当前状态为 `GATED`。只有 Gate A、Gate B、Phase 9 Foundation、
-五项 successor、四目标账本静默门禁闭合且详细计划的 `UNRESOLVED=0` 后，才能开启 Phase 10 Execution Lock。Phase 12/13 插件不是入口条件。
+**需要单独编写的子计划:** Phase 10 详细计划为
+`docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`。Tasks 0–6 已在
+`codex/phase10-implementation@834fe59e` 完成；Task 6 复用并核验既有发布静默基线，未重复建设。Task 7 已取得单独
+Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 target-only cutover；Phase 11 handoff 已形成，但 Phase 11
+仍须独立实施前评审后才能开始。
 
 **风险及防止阶段越权的约束:** 缺席扫描按语义和所有者判断，不按 `replay`/`reconciliation` 等词批量删除，避免误伤最终可靠行为。
 
@@ -738,7 +755,7 @@ OpenAPI 仅作为归档输入；Phase 12 开始前必须按真实教学范围重
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1 至 7 核心基线已完成；Phase 8 后端 RC 已关闭，当前证据以 `docs/integration/rough-sorter-joint-acceptance.md` 为准；前端和现场活动独立推进；Phase 9 分支完成性验收已通过但尚未合入 `develop`；Phase 10 至 14 未开始 |
+| 当前状态准确性 | 通过 | Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9 已合入；Phase 10 Tasks 0–7 已完成，`834fe59e` candidate 已部署联调并通过 target-only cutover；Phase 11–14 未开始；供应商、物理与业务验收仍未完成 |
 
 ## 22. 总体完成定义
 
@@ -765,6 +782,9 @@ RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 | 2 | Phase 7 DeviceCommand/ECS 核心生产基线 | Completed | 唯一生产装配、schema、旧 owner、FAST、PostgreSQL、broker E2E 与精确 HEAVY 已闭环 |
 | 3 | Phase 5 后退役插件活动残留收敛 | Completed | `5fe59968` 已合入；deletion tombstone 已清理，完成计划已移出项目归档 |
 | 4 | Phase 8 粗分机后端 RC | Closed | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；Jenkins #88 已发布不可变镜像 `88-f51677b` |
+| 5 | Phase 9 最小执行基础 | Completed | 已合入 `develop@c5a93872`；七项 successor、migration、QUALITY、HEAVY 和 handoff 已闭合 |
+| 6 | Phase 10 Tasks 0–6 | Implemented and verified | 七个 Task 提交、QUALITY `2378 passed`、staged HEAVY `439 passed`、fresh Review 0 findings、本地候选健康 |
+| 7 | Phase 10 Task 7 原子 cutover | Completed | 联调环境 legacy 两次 stable zero、授权 empty-site rebuild、候选两次 READY、旧 runtime absence 与 Phase 11 handoff 已闭合；发布分支已推送、尚未合入 `develop`，未完成供应商/物理/业务验收 |
 
 Phase 8 后端实施、本机 Mock 和不可变 RC 镜像发布已完成。这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 

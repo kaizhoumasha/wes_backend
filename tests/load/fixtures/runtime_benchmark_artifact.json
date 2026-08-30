@@ -9,30 +9,6 @@
     "duration_seconds": 0
   },
   "scenarios": {
-    "runtime_inbox_claim": {
-      "sample_count": 1000,
-      "metrics": {
-        "claim_p95_ms": 4.0,
-        "duplicate_claim_count": 0
-      },
-      "thresholds": {
-        "claim_p95_ms": 30.0,
-        "duplicate_claim_count": 0
-      }
-    },
-    "conveyor_queue_writer": {
-      "sample_count": 1000,
-      "metrics": {
-        "write_p95_ms": 6.0,
-        "reconciling_count": 0,
-        "integrity_conflict_recheck_count": 0
-      },
-      "thresholds": {
-        "write_p95_ms": 30.0,
-        "reconciling_count": 0,
-        "integrity_conflict_recheck_count": 100
-      }
-    },
     "ecs_status_command": {
       "sample_count": 1000,
       "metrics": {

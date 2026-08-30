@@ -10,12 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Found by /qa on 2026-08-02
 def test_core_env_profiles_use_fingerprinted_authoritative_heavy_mapping() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-    expected = [
+    common_owners = [
         "tests/e2e/device_command/test_device_command_production_wiring.py",
-        "tests/integration/wms_integration/test_northbound_contract.py",
+        "tests/e2e/transport/test_transport_production_wiring.py",
     ]
 
     for env_file in (".env.dev", ".env.test", ".env.prod"):
         mapping = next(mapping for mapping in config[1] if mapping.source_glob == env_file)
         assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / env_file).read_bytes()).hexdigest()
+        expected = list(common_owners)
+        if env_file != ".env.prod":
+            expected.append("tests/mock/test_wms_transport_mock_server.py")
         assert select_heavy_tests([env_file], config, repo_root=REPO_ROOT) == expected

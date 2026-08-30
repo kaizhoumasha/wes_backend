@@ -23,7 +23,7 @@ from src.app.workline.models.line_run_epoch import (
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
-from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+from tests.support.postgresql_heavy import run_alembic, temporary_database
 
 PARENT_REVISION = "ec18b2a79400"
 PACKAGE_TWO_HEAD = "a05b2676f681"

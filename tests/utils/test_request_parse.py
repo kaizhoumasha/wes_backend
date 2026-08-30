@@ -14,7 +14,6 @@ from src.utils.request_parse import (
     IpInfo,
     UserAgentInfo,
     get_location_offline,
-    get_location_online,
     get_request_ip,
     parse_ip_info,
     parse_user_agent_info,
@@ -54,46 +53,6 @@ class TestGetRequestIp:
 
         ip = get_request_ip(request)
         assert ip == "unknown"
-
-
-# ==================== get_location_online 测试 ====================
-
-
-class TestGetLocationOnline:
-    """测试在线获取 IP 位置"""
-
-    @pytest.mark.asyncio
-    async def test_get_location_online_success(self):
-        """测试：在线获取 IP 位置成功"""
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "country": "中国",
-            "regionName": "广东",
-            "city": "深圳",
-        }
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
-
-            result = await get_location_online("8.8.8.8", "test-agent")
-
-            assert result is not None
-            assert result["country"] == "中国"
-            assert result["regionName"] == "广东"
-            assert result["city"] == "深圳"
-
-    @pytest.mark.asyncio
-    async def test_get_location_online_failure(self):
-        """测试：在线获取 IP 位置失败"""
-        mock_response = Mock()
-        mock_response.status_code = 500
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_response)
-
-            result = await get_location_online("8.8.8.8", "test-agent")
-            assert result is None
 
 
 # ==================== get_location_offline 测试 ====================
@@ -159,8 +118,8 @@ class TestParseIpInfo:
             mock_redis.get.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_parse_ip_info_online_mode(self):
-        """测试：在线模式获取 IP 信息"""
+    async def test_parse_ip_info_offline_mode(self):
+        """测试：离线模式获取 IP 信息"""
         request = Mock(spec=Request)
         request.headers = {"User-Agent": "test-agent"}
         request.client = Mock(host="8.8.8.8")
@@ -171,12 +130,12 @@ class TestParseIpInfo:
 
         with patch("src.utils.request_parse.get_redis", return_value=mock_redis):
             with patch("src.utils.request_parse.settings") as mock_settings:
-                mock_settings.IP_LOCATION_PARSE = "online"
+                mock_settings.IP_LOCATION_PARSE = "offline"
                 mock_settings.IP_LOCATION_REDIS_PREFIX = "ip_location"
                 mock_settings.IP_LOCATION_EXPIRE_SECONDS = 3600
 
-                with patch("src.utils.request_parse.get_location_online") as mock_online:
-                    mock_online.return_value = {
+                with patch("src.utils.request_parse.get_location_offline", new_callable=AsyncMock) as mock_offline:
+                    mock_offline.return_value = {
                         "country": "美国",
                         "regionName": "加州",
                         "city": "旧金山",
@@ -249,12 +208,12 @@ class TestParseIpInfo:
         with patch("src.utils.request_parse.get_redis", return_value=mock_redis):
             with patch("src.utils.request_parse.ensure_redis_connection", new_callable=AsyncMock) as mock_ensure:
                 with patch("src.utils.request_parse.settings") as mock_settings:
-                    mock_settings.IP_LOCATION_PARSE = "online"
+                    mock_settings.IP_LOCATION_PARSE = "offline"
                     mock_settings.IP_LOCATION_REDIS_PREFIX = "ip_location"
                     mock_settings.IP_LOCATION_EXPIRE_SECONDS = 3600
 
-                    with patch("src.utils.request_parse.get_location_online") as mock_online:
-                        mock_online.return_value = {
+                    with patch("src.utils.request_parse.get_location_offline", new_callable=AsyncMock) as mock_offline:
+                        mock_offline.return_value = {
                             "country": "美国",
                             "regionName": "加州",
                             "city": "旧金山",

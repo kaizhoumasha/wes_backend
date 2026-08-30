@@ -1,5 +1,6 @@
 """通用 WorkLine START 的 replay 优先级与首次激活原子行为。"""
 
+from dataclasses import fields
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,6 +17,7 @@ from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochE
 from src.app.workline.services.workline_start_service import (
     WorkLineStartIdempotencyConflictError,
     WorkLineStartInvalidStateError,
+    WorkLineStartResult,
     WorkLineStartService,
 )
 
@@ -49,6 +51,16 @@ class EpochRepository:
         return await self.get_active_for_workline(_db, workline_id)
 
 
+def test_start_result_exposes_only_target_epoch_state() -> None:
+    """START 结果不再泄漏 parked SystemOutbox release 计数。"""
+
+    assert tuple(field.name for field in fields(WorkLineStartResult)) == (
+        "epoch",
+        "current_workline_runtime_status",
+        "created",
+    )
+
+
 class WorkLineRepository:
     def __init__(self, workline: object | None, *, unfinished_by_type: dict[str, bool] | None = None) -> None:
         self.workline = workline
@@ -72,27 +84,6 @@ class WorkLineRepository:
         }
 
 
-class ProjectionService:
-    def __init__(self, runtime_status: str | None = "STOPPED") -> None:
-        self.runtime_status = runtime_status
-        self.snapshots = 0
-        self.ready_calls = 0
-
-    async def runtime_status_snapshot(self, _db: object, *, workline_id: int) -> object:
-        del workline_id
-        self.snapshots += 1
-        return SimpleNamespace(
-            runtime_status=self.runtime_status,
-            active_safety_incident_id=None,
-        )
-
-    async def project_ready_after_start(self, _db: object, *, workline_id: int, occurred_at: datetime) -> object:
-        del workline_id, occurred_at
-        self.ready_calls += 1
-        self.runtime_status = "READY"
-        return object()
-
-
 class EmptyGateRepository:
     def __init__(self, count: int = 0) -> None:
         self.calls = 0
@@ -101,16 +92,6 @@ class EmptyGateRepository:
     async def get_active_for_workline(self, _db: object, workline_id: int) -> None:
         del workline_id
         self.calls += 1
-
-    async def count_active_by_workline(self, _db: object, workline_id: int) -> int:
-        del workline_id
-        self.calls += 1
-        return self.count
-
-    async def count_pending_reconciliations_for_workline(self, _db: object, workline_id: int) -> int:
-        del workline_id
-        self.calls += 1
-        return self.count
 
 
 class Builder:
@@ -180,17 +161,6 @@ class EpochService:
         )
 
 
-class OutboxRepository:
-    def __init__(self, released: int = 0) -> None:
-        self.released = released
-        self.calls = 0
-
-    async def release_parked_after_workline_start(self, _db: object, workline_id: int) -> int:
-        assert workline_id == 7
-        self.calls += 1
-        return self.released
-
-
 def _epoch(*, workline_id: int = 7, status: LineRunEpochStatus = LineRunEpochStatus.CLOSED) -> LineRunEpoch:
     return LineRunEpoch(
         id=21,
@@ -211,10 +181,6 @@ def _epoch(*, workline_id: int = 7, status: LineRunEpochStatus = LineRunEpochSta
 def _service(
     *,
     existing: LineRunEpoch | None = None,
-    runtime_status: str | None = "STOPPED",
-    released: int = 0,
-    active_holds: int = 0,
-    pending_reconciliations: int = 0,
     events: list[str] | None = None,
     close_error: Exception | None = None,
     unfinished_by_type: dict[str, bool] | None = None,
@@ -224,33 +190,24 @@ def _service(
         SimpleNamespace(id=7, is_active=True),
         unfinished_by_type=unfinished_by_type,
     )
-    projection = ProjectionService(runtime_status)
     safety = EmptyGateRepository()
-    holds = EmptyGateRepository(active_holds)
-    reconciliations = EmptyGateRepository(pending_reconciliations)
     builder = Builder(events)
     epoch_service = EpochService(events, close_error=close_error)
-    outboxes = OutboxRepository(released)
     service = WorkLineStartService(
         epoch_repository=epochs,
         workline_repository=worklines,
-        projection_service=projection,
         safety_repository=safety,
-        reconciliation_repository=reconciliations,
         plan_builder=builder,
         epoch_service=epoch_service,
         command_repository=object(),
-        outbox_repository=outboxes,
         clock=lambda: datetime(2026, 8, 19, 9),
     )
-    return service, epochs, worklines, projection, safety, holds, reconciliations, builder, epoch_service, outboxes
+    return service, epochs, worklines, safety, builder, epoch_service
 
 
 @pytest.mark.asyncio
 async def test_replay_returns_historical_epoch_before_workline_or_current_gates() -> None:
-    service, epochs, worklines, projection, safety, holds, reconciliations, builder, epoch_service, outboxes = _service(
-        existing=_epoch(), runtime_status=None
-    )
+    service, epochs, worklines, safety, builder, epoch_service = _service(existing=_epoch())
     worklines.workline = None  # 历史 replay 不依赖当前 WorkLine 是否已软删除。
 
     result = await service.start(object(), workline_id=7, request_id=" REQUEST-1 ")
@@ -259,42 +216,34 @@ async def test_replay_returns_historical_epoch_before_workline_or_current_gates(
     assert result.epoch.status == LineRunEpochStatus.CLOSED.value
     assert result.created is False
     assert result.current_workline_runtime_status is None
-    assert result.released_outbox_count == 0
-    assert worklines.calls == builder.calls == projection.ready_calls == outboxes.calls == 0
-    assert safety.calls == holds.calls == reconciliations.calls == 0
+    assert worklines.calls == builder.calls == 0
+    assert safety.calls == 0
     assert epoch_service.calls == []
-    assert projection.snapshots == 1
 
 
 @pytest.mark.asyncio
 async def test_replay_rejects_same_request_for_different_workline_before_builder() -> None:
-    service, _epochs, worklines, projection, safety, holds, reconciliations, builder, epoch_service, outboxes = (
-        _service(existing=_epoch(workline_id=8))
-    )
+    service, _epochs, worklines, safety, builder, epoch_service = _service(existing=_epoch(workline_id=8))
 
     with pytest.raises(WorkLineStartIdempotencyConflictError, match="REQUEST-1"):
         await service.start(object(), workline_id=7, request_id="REQUEST-1")
 
-    assert worklines.calls == projection.snapshots == projection.ready_calls == builder.calls == outboxes.calls == 0
-    assert safety.calls == holds.calls == reconciliations.calls == 0
+    assert worklines.calls == builder.calls == 0
+    assert safety.calls == 0
     assert epoch_service.calls == []
 
 
 @pytest.mark.asyncio
-async def test_first_start_builds_complete_epoch_projects_ready_and_releases_only_start_parked_outbox() -> None:
-    service, _epochs, worklines, projection, safety, holds, reconciliations, builder, epoch_service, outboxes = (
-        _service(released=2)
-    )
+async def test_first_start_builds_complete_epoch_after_target_admission() -> None:
+    service, _epochs, worklines, safety, builder, epoch_service = _service()
 
     result = await service.start(object(), workline_id=7, request_id=" REQUEST-2 ")
 
     assert result.created is True
     assert result.epoch.epoch_code == "REQUEST-2"
     assert result.current_workline_runtime_status == "READY"
-    assert result.released_outbox_count == 2
-    assert worklines.calls == projection.ready_calls == builder.calls == outboxes.calls == 1
-    assert safety.calls == reconciliations.calls == 1
-    assert holds.calls == 0
+    assert worklines.calls == builder.calls == 1
+    assert safety.calls == 1
     assert epoch_service.calls[0]["configuration_snapshot"] == {"mode": "GENERIC"}
 
 
@@ -312,7 +261,7 @@ async def test_first_start_closes_safe_active_epoch_before_building_replacement(
 @pytest.mark.asyncio
 async def test_first_start_rejects_active_epoch_with_unclosed_commands_before_builder() -> None:
     events: list[str] = []
-    service, *_prefix, builder, epoch_service, outboxes = _service(
+    service, *_prefix, builder, epoch_service = _service(
         events=events,
         close_error=ActiveLineRunEpochExistsError("still unclosed"),
     )
@@ -323,44 +272,12 @@ async def test_first_start_rejects_active_epoch_with_unclosed_commands_before_bu
     assert events == ["close"]
     assert builder.calls == 0
     assert epoch_service.calls == []
-    assert outboxes.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_first_start_rejects_current_non_stopped_state_before_builder() -> None:
-    service, _epochs, _worklines, projection, safety, holds, reconciliations, builder, epoch_service, outboxes = (
-        _service(runtime_status="READY")
-    )
-
-    with pytest.raises(WorkLineStartInvalidStateError, match="READY"):
-        await service.start(object(), workline_id=7, request_id="REQUEST-3")
-
-    assert projection.ready_calls == builder.calls == outboxes.calls == 0
-    assert safety.calls == holds.calls == reconciliations.calls == 0
-    assert epoch_service.calls == []
-
-
-@pytest.mark.asyncio
-async def test_first_start_rejects_pending_runtime_reconciliation_before_builder_or_release() -> None:
-    service, _epochs, _worklines, projection, _safety, _holds, _reconciliations, builder, epoch_service, outboxes = (
-        _service(
-            active_holds=1,
-            pending_reconciliations=1,
-            released=3,
-        )
-    )
-
-    with pytest.raises(WorkLineStartInvalidStateError, match="runtime reconciliation"):
-        await service.start(object(), workline_id=7, request_id="REQUEST-BLOCKED")
-
-    assert projection.ready_calls == builder.calls == outboxes.calls == 0
-    assert epoch_service.calls == []
 
 
 @pytest.mark.asyncio
 async def test_first_start_rejects_unfinished_execution_owner_before_epoch_replacement() -> None:
     events: list[str] = []
-    service, *_prefix, builder, epoch_service, outboxes = _service(
+    service, *_prefix, builder, epoch_service = _service(
         events=events,
         unfinished_by_type={"material_executions": True},
     )
@@ -371,4 +288,3 @@ async def test_first_start_rejects_unfinished_execution_owner_before_epoch_repla
     assert events == []
     assert builder.calls == 0
     assert epoch_service.calls == []
-    assert outboxes.calls == 0

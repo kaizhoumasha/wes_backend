@@ -17,10 +17,6 @@ from src.app.resource.repositories import (
     rack_bin_mount_repository,
     rack_placement_repository,
 )
-from src.app.runtime.orchestration.repositories import (
-    WorklineBinCellReservationRepository,
-    workline_bin_cell_reservation_repository,
-)
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 
 DEFAULT_SMT_RACK_POSITION_CODE = "SINGLE_LAYER_A"
@@ -151,14 +147,12 @@ class SmtActiveRackSnapshotService:
         rack_bin_mount_repo: RackBinMountRepository = rack_bin_mount_repository,
         bin_cell_occupancy_repo: BinCellOccupancyRepository = bin_cell_occupancy_repository,
         bin_material_mount_repo: BinMaterialMountRepository = bin_material_mount_repository,
-        bin_cell_reservation_repo: WorklineBinCellReservationRepository = workline_bin_cell_reservation_repository,
         session_repo: WorklineSessionRepository | None = None,
     ) -> None:
         self.rack_placement_repo = rack_placement_repo
         self.rack_bin_mount_repo = rack_bin_mount_repo
         self.bin_cell_occupancy_repo = bin_cell_occupancy_repo
         self.bin_material_mount_repo = bin_material_mount_repo
-        self.bin_cell_reservation_repo = bin_cell_reservation_repo
         self.session_repo = session_repo or WorklineSessionRepository()
 
     def bind(self, *, db: Any, workline: Any) -> SmtActiveRackSnapshotProvider:
@@ -213,11 +207,6 @@ class SmtActiveRackSnapshotService:
             db,
             [bin_code for bin_code in bin_codes if bin_code is not None],
         )
-        active_reservations = await self.bin_cell_reservation_repo.list_active_by_bin_codes(
-            db,
-            [bin_code for bin_code in bin_codes if bin_code is not None],
-        )
-
         base_snapshot = self._active_rack_from_context(runtime_context, rack_code)
         if base_snapshot is None:
             base_snapshot = await self._latest_session_active_rack(db, workline=workline, rack_code=rack_code)
@@ -240,7 +229,6 @@ class SmtActiveRackSnapshotService:
             return None
 
         self._overlay_occupancies(cells, active_occupancies, active_material_mounts)
-        self._overlay_active_reservations(cells, active_reservations)
         self._remove_derived_bin_snapshots(snapshot)
         return snapshot
 
@@ -499,35 +487,6 @@ class SmtActiveRackSnapshotService:
             cell["capacity_depth_mm"] = capacity_depth_mm
             cell["used_depth_mm"] = "0"
             cell["remaining_depth_mm"] = capacity_depth_mm
-
-    def _overlay_active_reservations(self, cells: Sequence[dict[str, Any]], reservations: Sequence[Any]) -> None:
-        reservations_by_cell: dict[tuple[str, str], Any] = {}
-        for reservation in reservations:
-            bin_code = _text_or_none(getattr(reservation, "bin_code", None))
-            cell_index = _text_or_none(getattr(reservation, "bin_cell_index", None))
-            if bin_code is not None and cell_index is not None:
-                reservations_by_cell[(bin_code, cell_index)] = reservation
-
-        for cell in cells:
-            bin_code = _bin_code(cell)
-            cell_index = _cell_index(cell)
-            if bin_code is None or cell_index is None:
-                continue
-            reservation = reservations_by_cell.get((bin_code, cell_index))
-            if reservation is None:
-                continue
-            metadata = getattr(reservation, "metadata_json", None)
-            material_identity_key = metadata.get("material_identity_key") if isinstance(metadata, Mapping) else None
-            cell["status"] = "LOCKED"
-            cell["locked"] = True
-            cell["bin_code"] = bin_code
-            cell["bin_id"] = bin_code
-            cell["bin_cell_index"] = cell_index
-            cell["reservation_status"] = "PLANNED"
-            cell["reservation_session_id"] = getattr(reservation, "session_id", None)
-            cell["reserved_pkg_code"] = getattr(reservation, "pkg_code", None)
-            if material_identity_key is not None:
-                cell["reserved_material_identity_key"] = material_identity_key
 
 
 smt_active_rack_snapshot_service = SmtActiveRackSnapshotService()

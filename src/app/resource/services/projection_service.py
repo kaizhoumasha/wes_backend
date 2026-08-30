@@ -41,9 +41,6 @@ from src.app.resource.services.relation_service import ResourceProjectionResult,
 from src.app.resource.services.snapshot_service import ResourceSnapshotService, resource_snapshot_service
 from src.app.runtime.orchestration.models.object_transition_event import ObjectTransitionDomain
 from src.app.runtime.orchestration.repositories import MaterialUnitRepository, material_unit_repository
-from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
-    runtime_hold_creation_service as default_runtime_hold_creation_service,
-)
 from src.app.runtime.orchestration.services.inbox.object_transition_event_service import (
     ObjectTransitionEventService,
     object_transition_event_service,
@@ -164,7 +161,7 @@ def _occupancy_status_value(value: Any) -> str:
 
 
 class ResourceProjectionService:
-    """统一处理资源事实写入、active 投影和冲突 RuntimeHold。"""
+    """统一处理资源事实写入、active 投影和冲突结果。"""
 
     def __init__(
         self,
@@ -176,7 +173,6 @@ class ResourceProjectionService:
         bin_material_mount_repo: BinMaterialMountRepository = bin_material_mount_repository,
         bin_cell_occupancy_repo: BinCellOccupancyRepository = bin_cell_occupancy_repository,
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
-        runtime_hold_creator: Any = default_runtime_hold_creation_service,
         snapshot_service: ResourceSnapshotService = resource_snapshot_service,
         object_transition_event_service: ObjectTransitionEventService = object_transition_event_service,
         material_unit_repository: MaterialUnitRepository = material_unit_repository,
@@ -188,7 +184,6 @@ class ResourceProjectionService:
         self.bin_material_mount_repo = bin_material_mount_repo
         self.bin_cell_occupancy_repo = bin_cell_occupancy_repo
         self.rack_position_service = rack_position_service
-        self.runtime_hold_creator = runtime_hold_creator
         self.snapshot_service = snapshot_service
         self.object_transition_event_service = object_transition_event_service
         self.material_unit_repository = material_unit_repository
@@ -300,18 +295,6 @@ class ResourceProjectionService:
                 },
             )
             reason_code = "WORKLINE_RACK_POSITION_UNAVAILABLE"
-            runtime_hold = await self._create_placement_reconciliation_hold(
-                db,
-                reason_code=reason_code,
-                rack_code=rack_code,
-                incoming={"workline_code": workline_code, "position_code": position_code},
-                active_placements=[],
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-                evidence={"validation_error": str(exc)},
-            )
             await self._record_resource_transition(
                 db,
                 object_type="RACK",
@@ -339,7 +322,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code=reason_code,
                 message=f"工作线停靠位不可用，已追加事实但不创建当前投影: {exc}",
             )
@@ -468,18 +450,6 @@ class ResourceProjectionService:
         active_count = len(active_placements)
         if active_count >= capacity:
             reason_code = "WORKLINE_POSITION_CAPACITY_EXHAUSTED"
-            runtime_hold = await self._create_placement_reconciliation_hold(
-                db,
-                reason_code=reason_code,
-                rack_code=rack_code,
-                incoming={"workline_code": workline_code, "position_code": position_code},
-                active_placements=active_placements,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=resolved_workline_id,
-                evidence={"capacity": capacity, "active_count": active_count},
-            )
             await self._record_resource_transition(
                 db,
                 object_type="RACK",
@@ -510,7 +480,6 @@ class ResourceProjectionService:
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
                 projection=active_placements[0] if active_placements else None,
-                runtime_hold=runtime_hold,
                 reason_code=reason_code,
                 message="工作线停靠位 active 货架数已达到容量，已追加事实但不创建当前投影",
             )
@@ -587,7 +556,6 @@ class ResourceProjectionService:
         occurred_at: datetime,
         source_version: str | None = None,
         trace_id: str | None = None,
-        workline_id: int | None = None,
         workline_session_id: int | None = None,
     ) -> ResourceProjectionResult:
         """记录货架槽位挂载料箱事实，并创建 active RackBinMount。"""
@@ -640,18 +608,6 @@ class ResourceProjectionService:
                 and getattr(active_bin, "rack_slot_code", None) == rack_slot_code
             )
             if (active_slot is not None and not same_active_slot) or (active_bin is not None and not same_active_bin):
-                runtime_hold = await self._create_rack_bin_mount_conflict_hold(
-                    db,
-                    rack_code=rack_code,
-                    rack_slot_code=rack_slot_code,
-                    bin_code=bin_code,
-                    active_slot=active_slot,
-                    active_bin=active_bin,
-                    source_event_id=source_event_id,
-                    trace_id=trace_id,
-                    session_id=workline_session_id,
-                    workline_id=workline_id,
-                )
                 await self._record_resource_transition(
                     db,
                     object_type="BIN",
@@ -683,7 +639,6 @@ class ResourceProjectionService:
                 return ResourceProjectionResult(
                     status=ResourceProjectionStatus.RECONCILING,
                     event=event,
-                    runtime_hold=runtime_hold,
                     reason_code="RACK_BIN_MOUNT_CONFLICT",
                     message="货架槽位或料箱已有 active 挂载",
                 )
@@ -876,18 +831,6 @@ class ResourceProjectionService:
             cell_capacity_depth_mm=cell_capacity_depth_mm,
         )
         if conflict is not None:
-            runtime_hold = await self._create_material_mount_conflict_hold(
-                db,
-                conflict=conflict,
-                bin_code=bin_code,
-                bin_cell_index=bin_cell_index,
-                pkg_code=pkg_code,
-                wms_inventory_id=wms_inventory_id,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-            )
             await self._record_resource_transition(
                 db,
                 object_type="MATERIAL",
@@ -921,7 +864,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code=conflict["reason_code"],
                 message=conflict["message"],
             )
@@ -1097,24 +1039,6 @@ class ResourceProjectionService:
             reel_thickness=reel_thickness,
         )
         if conflict is not None:
-            runtime_hold = await self._create_material_unmount_reconciliation_hold(
-                db,
-                reason_code=conflict["reason_code"],
-                message=conflict["message"],
-                bin_code=bin_code,
-                bin_cell_index=bin_cell_index,
-                material_identity_key=material_identity_key,
-                pkg_code=pkg_code,
-                wms_inventory_id=wms_inventory_id,
-                active_mount=active_mount,
-                active_cell=active_cell,
-                source_event_id=source_event_id,
-                source_version=source_version,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-                evidence=conflict.get("evidence"),
-            )
             await self._record_resource_transition(
                 db,
                 object_type="MATERIAL",
@@ -1148,7 +1072,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code=conflict["reason_code"],
                 message=conflict["message"],
             )
@@ -1344,18 +1267,6 @@ class ResourceProjectionService:
             and (active_by_bin := await self.bin_placement_repo.get_active_by_bin_code(db, bin_code, for_update=True))
             is not None
         ):
-            runtime_hold = await self._create_bin_placement_reconciliation_hold(
-                db,
-                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
-                bin_code=bin_code,
-                placeholder_key=placeholder_key,
-                incoming={"position_type": position_type, "position_code": position_code},
-                active_placement=active_by_bin,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-            )
             await self._record_resource_transition(
                 db,
                 object_type="BIN",
@@ -1384,7 +1295,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
                 message="料箱已有 active 位置投影",
             )
@@ -1396,18 +1306,6 @@ class ResourceProjectionService:
                 for_update=True,
             )
         if active_by_placeholder is not None:
-            runtime_hold = await self._create_bin_placement_reconciliation_hold(
-                db,
-                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
-                bin_code=bin_code,
-                placeholder_key=placeholder_key,
-                incoming={"position_type": position_type, "position_code": position_code},
-                active_placement=active_by_placeholder,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-            )
             await self._record_resource_transition(
                 db,
                 object_type="BIN",
@@ -1436,7 +1334,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
                 message="占位键已有 active 位置投影",
             )
@@ -1461,19 +1358,6 @@ class ResourceProjectionService:
         try:
             _ = await self._create_bin_placement_with_integrity_guard(db, placement_data)
         except IntegrityError as exc:
-            runtime_hold = await self._create_bin_placement_reconciliation_hold(
-                db,
-                reason_code="BIN_ACTIVE_PLACEMENT_CONCURRENT_CONFLICT",
-                bin_code=bin_code,
-                placeholder_key=placeholder_key,
-                incoming={"position_type": position_type, "position_code": position_code},
-                active_placement=None,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-                evidence={"integrity_error": str(getattr(exc, "orig", exc))},
-            )
             await self._record_resource_transition(
                 db,
                 object_type="BIN",
@@ -1501,7 +1385,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code="BIN_ACTIVE_PLACEMENT_CONCURRENT_CONFLICT",
                 message="料箱 active 位置投影发生并发唯一冲突",
             )
@@ -1544,7 +1427,6 @@ class ResourceProjectionService:
         position_code: str | None = None,
         source_version: str | None = None,
         trace_id: str | None = None,
-        workline_id: int | None = None,
         workline_session_id: int | None = None,
     ) -> ResourceProjectionResult:
         """记录料箱离开非货架位置事实，并关闭 active BinPlacement。"""
@@ -1624,18 +1506,6 @@ class ResourceProjectionService:
             )
 
         if active_placement is None:
-            runtime_hold = await self._create_bin_placement_reconciliation_hold(
-                db,
-                reason_code="BIN_ACTIVE_PLACEMENT_MISSING",
-                bin_code=bin_code,
-                placeholder_key=placeholder_key,
-                incoming={"position_type": position_type, "position_code": position_code},
-                active_placement=None,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-            )
             await record_departure_transition(
                 from_state=None,
                 to_state="RECONCILING",
@@ -1649,24 +1519,11 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code="BIN_ACTIVE_PLACEMENT_MISSING",
                 message="料箱离开事件没有找到 active 位置投影",
             )
 
         if _bin_placement_position_mismatch(active_placement, position_type=position_type, position_code=position_code):
-            runtime_hold = await self._create_bin_placement_reconciliation_hold(
-                db,
-                reason_code="BIN_PLACEMENT_POSITION_MISMATCH",
-                bin_code=bin_code,
-                placeholder_key=placeholder_key,
-                incoming={"position_type": position_type, "position_code": position_code},
-                active_placement=active_placement,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-            )
             await record_departure_transition(
                 from_state=enum_str(getattr(active_placement, "placement_status", None)),
                 to_state="RECONCILING",
@@ -1682,24 +1539,10 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code="BIN_PLACEMENT_POSITION_MISMATCH",
                 message="料箱离开事件位置与 active 投影不一致",
             )
         if _source_version_is_older(source_version, getattr(active_placement, "source_version", None)):
-            runtime_hold = await self._create_bin_placement_reconciliation_hold(
-                db,
-                reason_code="BIN_PLACEMENT_SOURCE_VERSION_STALE",
-                bin_code=bin_code,
-                placeholder_key=placeholder_key,
-                incoming={"position_type": position_type, "position_code": position_code},
-                active_placement=active_placement,
-                source_event_id=source_event_id,
-                trace_id=trace_id,
-                session_id=workline_session_id,
-                workline_id=workline_id,
-                evidence={"incoming_source_version": source_version},
-            )
             await record_departure_transition(
                 from_state=enum_str(getattr(active_placement, "placement_status", None)),
                 to_state="RECONCILING",
@@ -1717,7 +1560,6 @@ class ResourceProjectionService:
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
-                runtime_hold=runtime_hold,
                 reason_code="BIN_PLACEMENT_SOURCE_VERSION_STALE",
                 message="料箱离开事件来源版本早于 active 投影版本",
             )
@@ -1785,7 +1627,6 @@ class ResourceProjectionService:
                 external_location_code=payload_json.get("external_location_code"),
                 released_rack_codes=payload_json.get("released_rack_codes"),
                 trace_id=trace_id,
-                workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
             )
 
@@ -1822,7 +1663,6 @@ class ResourceProjectionService:
                 occurred_at=occurred_at,
                 source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
-                workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
             )
 
@@ -1837,7 +1677,6 @@ class ResourceProjectionService:
                 occurred_at=occurred_at,
                 source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
-                workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
             )
 
@@ -2220,261 +2059,6 @@ class ResourceProjectionService:
             async with cast("Any", begin_nested)():
                 return await self.bin_placement_repo.create(db, placement_data)
         return await self.bin_placement_repo.create(db, placement_data)
-
-    async def _create_bin_placement_reconciliation_hold(
-        self,
-        db: AsyncSession,
-        *,
-        reason_code: str,
-        bin_code: str | None,
-        placeholder_key: str | None,
-        incoming: dict[str, Any],
-        active_placement: Any | None,
-        source_event_id: str,
-        trace_id: str | None,
-        session_id: int | None,
-        workline_id: int | None,
-        evidence: dict[str, Any] | None = None,
-    ) -> Any | None:
-        if workline_id is None:
-            return None
-
-        hold_evidence = {
-            "resource_type": ResourceType.BIN.value,
-            "bin_code": bin_code,
-            "placeholder_key": placeholder_key,
-            "incoming_position_type": incoming.get("position_type"),
-            "incoming_position_code": incoming.get("position_code"),
-        }
-        if active_placement is not None:
-            hold_evidence.update(
-                {
-                    "active_bin_code": getattr(active_placement, "bin_code", None),
-                    "active_placeholder_key": getattr(active_placement, "placeholder_key", None),
-                    "active_position_type": getattr(active_placement, "position_type", None),
-                    "active_position_code": getattr(active_placement, "position_code", None),
-                    "active_source_event_id": getattr(active_placement, "source_event_id", None),
-                    "active_source_version": getattr(active_placement, "source_version", None),
-                }
-            )
-        hold_evidence.update(evidence or {})
-        return await self.runtime_hold_creator.create_for_resource_reconciliation(
-            db,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            source_reason=reason_code,
-            source_event_id=source_event_id,
-            evidence=hold_evidence,
-        )
-
-    async def _create_placement_conflict_hold(
-        self,
-        db: AsyncSession,
-        *,
-        reason_code: str,
-        rack_code: str,
-        active_placement: RackPlacement,
-        incoming: dict[str, Any],
-        source_event_id: str,
-        trace_id: str | None,
-        session_id: int | None,
-        workline_id: int | None,
-    ) -> Any | None:
-        if workline_id is None:
-            return None
-        return await self.runtime_hold_creator.create_for_resource_reconciliation(
-            db,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            source_reason=reason_code,
-            source_event_id=source_event_id,
-            evidence={
-                "resource_type": ResourceType.RACK.value,
-                "rack_code": rack_code,
-                "active_workline_code": active_placement.workline_code,
-                "active_position_code": active_placement.position_code,
-                "incoming_workline_code": incoming.get("workline_code"),
-                "incoming_position_code": incoming.get("position_code"),
-            },
-        )
-
-    async def _create_placement_reconciliation_hold(
-        self,
-        db: AsyncSession,
-        *,
-        reason_code: str,
-        rack_code: str,
-        incoming: dict[str, Any],
-        active_placements: Sequence[RackPlacement],
-        source_event_id: str,
-        trace_id: str | None,
-        session_id: int | None,
-        workline_id: int | None,
-        evidence: dict[str, Any] | None = None,
-    ) -> Any | None:
-        if workline_id is None:
-            return None
-        active_rack_codes = [placement.rack_code for placement in active_placements]
-        hold_evidence = {
-            "resource_type": ResourceType.RACK.value,
-            "rack_code": rack_code,
-            "active_rack_codes": active_rack_codes,
-            "incoming_workline_code": incoming.get("workline_code"),
-            "incoming_position_code": incoming.get("position_code"),
-        }
-        hold_evidence.update(evidence or {})
-        return await self.runtime_hold_creator.create_for_resource_reconciliation(
-            db,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            source_reason=reason_code,
-            source_event_id=source_event_id,
-            evidence=hold_evidence,
-        )
-
-    async def _create_material_mount_conflict_hold(
-        self,
-        db: AsyncSession,
-        *,
-        conflict: dict[str, Any],
-        bin_code: str,
-        bin_cell_index: str,
-        pkg_code: str | None,
-        wms_inventory_id: str | None,
-        source_event_id: str,
-        trace_id: str | None,
-        session_id: int | None,
-        workline_id: int | None,
-    ) -> Any | None:
-        if workline_id is None:
-            return None
-        active = conflict["active"]
-        evidence = {
-            "resource_type": ResourceType.MATERIAL.value,
-            "bin_code": bin_code,
-            "bin_cell_index": bin_cell_index,
-            "active_bin_code": getattr(active, "bin_code", None),
-            "active_bin_cell_index": getattr(active, "bin_cell_index", None),
-            "active_material_identity_key": getattr(active, "material_identity_key", None),
-            "active_pkg_code": getattr(active, "pkg_code", None),
-            "active_wms_inventory_id": getattr(active, "wms_inventory_id", None),
-            "incoming_pkg_code": pkg_code,
-            "incoming_wms_inventory_id": wms_inventory_id,
-        }
-        evidence.update(conflict.get("evidence") or {})
-        return await self.runtime_hold_creator.create_for_resource_reconciliation(
-            db,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            source_reason=conflict["reason_code"],
-            source_event_id=source_event_id,
-            evidence=evidence,
-        )
-
-    async def _create_material_unmount_reconciliation_hold(
-        self,
-        db: AsyncSession,
-        *,
-        reason_code: str,
-        message: str,
-        bin_code: str,
-        bin_cell_index: str,
-        material_identity_key: str,
-        pkg_code: str | None,
-        wms_inventory_id: str | None,
-        active_mount: Any | None,
-        active_cell: Any | None,
-        source_event_id: str,
-        source_version: str | None,
-        trace_id: str | None,
-        session_id: int | None,
-        workline_id: int | None,
-        evidence: dict[str, Any] | None = None,
-    ) -> Any | None:
-        if workline_id is None:
-            return None
-        hold_evidence = {
-            "resource_type": ResourceType.MATERIAL.value,
-            "bin_code": bin_code,
-            "bin_cell_index": bin_cell_index,
-            "source_session_id": session_id,
-            "source_event_id": source_event_id,
-            "source_command_id": source_event_id,
-            "source_version": source_version,
-            "expected_material_identity_key": material_identity_key,
-            "expected_pkg_code": pkg_code,
-            "expected_wms_inventory_id": wms_inventory_id,
-            "message": message,
-        }
-        if active_mount is not None:
-            hold_evidence.update(
-                {
-                    "active_mount_id": getattr(active_mount, "id", None),
-                    "active_material_identity_key": getattr(active_mount, "material_identity_key", None),
-                    "active_pkg_code": getattr(active_mount, "pkg_code", None),
-                    "active_wms_inventory_id": getattr(active_mount, "wms_inventory_id", None),
-                    "active_cell_stack_position": getattr(active_mount, "cell_stack_position", None),
-                    "active_source_event_id": getattr(active_mount, "source_event_id", None),
-                    "active_source_version": getattr(active_mount, "source_version", None),
-                }
-            )
-        if active_cell is not None:
-            hold_evidence.update(
-                {
-                    "active_occupancy_id": getattr(active_cell, "id", None),
-                    "active_reel_count": getattr(active_cell, "reel_count", None),
-                    "active_used_depth_mm": _json_depth_text(getattr(active_cell, "used_depth_mm", None)),
-                    "active_remaining_depth_mm": _json_depth_text(getattr(active_cell, "remaining_depth_mm", None)),
-                }
-            )
-        hold_evidence.update(evidence or {})
-        return await self.runtime_hold_creator.create_for_resource_reconciliation(
-            db,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            source_reason=reason_code,
-            source_event_id=source_event_id,
-            evidence=hold_evidence,
-        )
-
-    async def _create_rack_bin_mount_conflict_hold(
-        self,
-        db: AsyncSession,
-        *,
-        rack_code: str,
-        rack_slot_code: str,
-        bin_code: str,
-        active_slot: Any | None,
-        active_bin: Any | None,
-        source_event_id: str,
-        trace_id: str | None,
-        session_id: int | None,
-        workline_id: int | None,
-    ) -> Any | None:
-        if workline_id is None:
-            return None
-        return await self.runtime_hold_creator.create_for_resource_reconciliation(
-            db,
-            workline_id=workline_id,
-            session_id=session_id,
-            trace_id=trace_id,
-            source_reason="RACK_BIN_MOUNT_CONFLICT",
-            source_event_id=source_event_id,
-            evidence={
-                "resource_type": ResourceType.BIN.value,
-                "rack_code": rack_code,
-                "rack_slot_code": rack_slot_code,
-                "bin_code": bin_code,
-                "active_slot_bin_code": getattr(active_slot, "bin_code", None),
-                "active_bin_rack_code": getattr(active_bin, "rack_code", None),
-                "active_bin_slot_code": getattr(active_bin, "rack_slot_code", None),
-            },
-        )
 
 
 resource_projection_service = ResourceProjectionService()

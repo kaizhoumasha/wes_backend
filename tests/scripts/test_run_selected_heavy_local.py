@@ -75,7 +75,7 @@ set -eu
 if [ "$REJECT_INHERITED_STDIN" = "1" ] && [ ! -c /dev/fd/0 ]; then
   exit 91
 fi
-printf 'uv %s RUN=%s DB=%s REDIS=%s TEMPLATE=%s\n' "$*" "${RUN_WORKLINE_INTEGRATION:-}" "${INTEGRATION_DATABASE_URL:-}" "${INTEGRATION_REDIS_URL:-}" "${RUNTIME_INBOX_DATABASE_TEMPLATE:-}" >> "$CALL_LOG"
+printf 'uv %s RUN=%s DB=%s REDIS=%s\n' "$*" "${RUN_WORKLINE_INTEGRATION:-}" "${INTEGRATION_DATABASE_URL:-}" "${INTEGRATION_REDIS_URL:-}" >> "$CALL_LOG"
 case "$*" in
   "run scripts/select_heavy_tests.py "*)
     if [ -n "${SELECTED_TEST:-}" ]; then
@@ -173,9 +173,7 @@ def test_local_heavy_entry_selects_migrates_runs_and_cleans_isolated_services(tm
     assert "RUN=1" in calls[migration_index]
     assert "DB=postgresql+asyncpg://heavy_user:heavy_password@127.0.0.1:15432/test_heavy" in calls[migration_index]
     assert "REDIS=redis://:redis_password@127.0.0.1:16379/15" in calls[migration_index]
-    template_index = next(index for index, call in enumerate(calls) if " exec -T db createdb " in call)
-    assert migration_index < template_index < runner_index
-    assert "TEMPLATE=wes_tmp_runtime_inbox_template" in calls[runner_index]
+    assert not any(" exec -T db createdb " in call for call in calls)
     assert calls[-1] == CLEANUP_FINISHED
 
 

@@ -40,11 +40,12 @@
 
 - deploy-source 是已批准的干净 Commit，且其中固定的 checker digest 可从受控 Registry 拉取；
 - 所选 candidate 使用不可变 digest，而不是 channel tag；
-- `.env.prod`、WMS provider profile 和 Compose 所需秘密已在现场受控配置中提供，日志只记录批准配置文件的 SHA-256，不记录值；
+- `.env.prod` 中的 `WMS_BASE_URL`、`TRANSPORT_SUBMIT_PATH` 和 Compose 所需秘密已在现场受控配置中提供，日志只记录批准配置文件的 SHA-256，不记录值；
 - `/srv/wes/releases/` 可写，发布目录及报告只允许授权运维账号访问；
 - PostgreSQL 备份目标、恢复命令和维护窗口已确认；
+- TEST/现场主机上的 Redis 发布端口只监听 loopback，Firewalld 不对外开放该端口；容器仍通过 `redis:6379` 使用受控共享密码；
 - 外部入口、管理员凭据、Registry、磁盘空间和 Docker/Compose 满足既有现场要求；
-- WMS Provider profile 可读且能通过当前后端配置校验。该预检不探测真实 WMS/ECS，也不证明物理或业务验收完成。
+- WMS 最小 target config 可由当前后端镜像读取并通过配置校验。该预检不探测真实 WMS/ECS，也不证明物理或业务验收完成。
 
 首次使用新门禁时没有上一份有效新格式报告，自动进入 FULL，并以 `DEPLOY_SCOPE=BOTH` 建立基线。
 
@@ -57,9 +58,13 @@ Orchestrator 必须在关闭外部入口之前完成以下工作；任一失败�
 3. 单侧发布时同时读取 live peer digest 与最近成功报告；缺失、不一致或无法证明时阻断。
 4. 校验两侧镜像各自的 OCI revision、原始发布制品和 `org.wes.release.*` SHA-256 label。revision 只与镜像自身核对，不做跨镜像相等比较。
 5. 读取当前 DB head，计算有效配置、Compose 和 cutover 输入的 SHA-256；不得输出秘密内容。
-6. 由 checker 验证 required permissions 是 provided permissions 的子集，并只针对 required operations 检查 OpenAPI。
-7. 使用所选后端镜像编译校验 WMS Provider profile。
-8. 生成并归档确定性的 `compatibility-report.json`。
+6. 运行 checker，验证 required permissions 是 provided permissions 的子集、只针对 required operations 检查 OpenAPI，并生成确定性的 `compatibility-report.json`。
+7. 使用所选后端镜像完成 WMS 最小 target config/readiness 校验。
+8. 对 `BACKEND`/`BOTH` FULL 使用所选后端镜像查询四账本发布静默状态；只有 `READY` 可进入维护态。
+
+报告生成与成功证据归档是两个阶段：checker 在第 6 步生成报告；只有后续 cutover 成功后，orchestrator 才将报告和 current facts 一并持久化、归档并切换成功证据指针。维护前失败不得归档为成功发布证据。
+
+四账本查询的机器结果为：`READY`（退出码 `0`）、查询失败或非法结果（`1`）、`BLOCK`（`2`）、`WAIT_DRAIN`（`3`）。在线阶段后三种结果都保持当前服务在线并终止本次部署；不得通过忽略状态、修改业务记录或自动重试写操作来强行进入维护态。
 
 Checker 硬超时 60 秒：
 
@@ -76,7 +81,7 @@ Checker 硬超时 60 秒：
 - Backend：migration tree、依赖输入、provider OpenAPI、provided permissions、生产 recipe/entrypoint；
 - Frontend：依赖/lockfile、consumer OpenAPI、required operations、required permissions、生产 Dockerfile/Nginx 配置；
 - Deploy：实际 Compose、cutover 脚本或其声明的运行配置；
-- Runtime：DB head、有效 `.env`、WMS provider profile 等批准配置 hash；
+- Runtime：DB head、有效 `.env` 中的 WMS 最小 target config 等批准配置 hash；
 - 首次基线、上一版证据缺失或任一事实读取异常。
 
 FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致。`BACKEND`/`BOTH` FULL 只允许数据库从已知祖先向前迁移；多 head、未知 revision、倒退或分叉均在维护前阻断。`FRONTEND` FULL 不执行任何数据库 mutation。
@@ -98,13 +103,19 @@ FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致
 
 `BACKEND` FULL（以及包含 backend 的 `BOTH` FULL）关闭 Nginx 后按 orchestrator 顺序完成：
 
-1. 停止应用服务并保持 PostgreSQL、Redis 可用于备份和取证；
-2. 创建可验证的数据库备份；
-3. 仅执行已批准的 forward migration；
-4. 对已有数据库执行权限收敛并重新运行独立 `--check`；精确 post-commit cache marker 仍只允许 repair 一次，禁止重跑 mutation；
-5. 原子重建全部 backend services；`BACKEND` 不重建已部署 frontend，`BOTH` 才同时重建两侧；
-6. 执行真实数据库查询、管理员 login/logout、精确 topology 和共享 HTTP readiness；
-7. 全部门禁通过后才恢复 Nginx，并再次验证外部 `/health` 与首页。
+1. 验证 Nginx listener 已关闭，使用 `compose stop -t 30 api` 优雅停止 API 并验证 API listener 已关闭，再停止 `celery_beat`；
+2. 保持执行 worker 运行，每 2 秒查询一次四账本；只有连续两次 `READY` 才完成静默确认，任一 `WAIT_DRAIN` 都把连续计数清零，整体最多 60 秒；
+3. 稳定 `READY` 后停止 worker 并切换 deploy-source，同时保持 PostgreSQL、Redis 可用于备份和取证；
+4. 创建可验证的数据库备份；
+5. 仅执行已批准的 forward migration；
+6. 对已有数据库执行权限收敛并重新运行独立 `--check`；精确 post-commit cache marker 仍只允许 repair 一次，禁止重跑 mutation；
+7. 原子重建全部 backend services；`BACKEND` 不重建已部署 frontend，`BOTH` 才同时重建两侧；
+8. 执行真实数据库查询、管理员 login/logout、精确 topology 和共享 HTTP readiness；
+9. 全部门禁通过后才恢复 Nginx，并再次验证外部 `/health` 与首页。
+
+API 关闭后不保证需要新 HTTP callback 的记录会自然排空。维护态出现 `BLOCK`、查询失败或达到 60 秒仍未稳定 `READY` 时，必须保持入口关闭并结束本次 cutover；操作员先诊断并按领域流程闭合或对账，再从头重新触发完整发布。禁止 pipeline 自动修改四账本、释放资源、重发物理动作、跳过记录、延长窗口或自动重开入口。
+
+每次四账本探测使用由 sanitized Jenkins `BUILD_TAG` 和 deploy-source 前 12 位组成的 release/build-scoped exact container name。无论结果为 `READY`、`BLOCK`、`WAIT_DRAIN`、查询错误、超时或 signal，orchestrator 都先显式 force-remove 该唯一容器再映射结果；EXIT cleanup 和 pipeline post 只以同一 exact name 兜底，不使用 glob 或批量删除。
 
 菜单收敛按两个独立候选顺序发布：先以 `DEPLOY_SCOPE=FRONTEND` 发布新 frontend，并由 checker 允许“新 frontend + 当前旧 backend”；再以 `DEPLOY_SCOPE=BACKEND` 发布新 backend。此时 checker 必须拒绝仍要求菜单 API 或 `/auth/my.menus` 的旧 frontend，不能用前后端 Commit 相等替代兼容判定。frontend 镜像内的静态路由与 `meta.menu` 是菜单唯一真源，backend FULL 不依赖 frontend 源码、menu manifest 或其它菜单产物。
 
@@ -114,6 +125,7 @@ FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致
 
 - 维护前失败：`PRE_CUTOVER_ABORTED`，当前环境保持不变。
 - 进入维护态后失败：`CUTOVER_FAILED_MAINTENANCE_HELD`，Nginx 保持关闭，PostgreSQL 与 Redis 保留用于诊断。
+- 静默复核失败后不得从中间步骤续跑；完成独立诊断和获授权处置后，重新触发 orchestrator，使在线预检和连续两次 `READY` 都重新取证。
 - 未发生 migration 时，可在确认上一份成功报告、先前 digest 和配置仍有效后，由同一 orchestrator 选择恢复。
 - migration 后禁止无条件自动切回旧镜像。只能 forward-fix，或在单独授权后恢复已验证的数据库备份和与其匹配的先前镜像。
 - 禁止临时恢复 exact-commit 门禁、旧标签、旧 schema、双路径或 force-FAST。
@@ -140,6 +152,7 @@ FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致
 - [ ] 当前 peer、上一份成功报告、配置 hash 和 DB head 已被预检交叉验证；
 - [ ] checker 为 PASS，或 WARN 已提供绑定本次三个 digest 与 diff hash 的理由；
 - [ ] 自动/有效 FAST 或 FULL 原因可解释，不存在 force-FAST；
+- [ ] `BACKEND`/`BOTH` FULL 在线四账本结果为 `READY`，维护态已在 60 秒内取得连续两次 `READY`；
 - [ ] `BACKEND`/`BOTH` FULL 已完成备份和仅向前 migration，`FRONTEND` FULL 与全部 FAST 均未执行数据库 mutation；
 - [ ] 后端切换没有混合 backend service digest；
 - [ ] 管理员 login/logout、精确 topology、内部及外部 readiness 通过；

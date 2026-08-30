@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from scripts.data.reset_runtime_data import reset_runtime_data, reset_transport_task_data
-from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
+from tests.support.postgresql_heavy import connect, run_alembic, temporary_database
 
 
 def _session_factory(database_url: str) -> tuple[async_sessionmaker[AsyncSession], AsyncEngine]:

@@ -5,11 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
-from src.app.runtime.orchestration.repository_wiring import workline_repository
-from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
-    WorkLineRuntimeStatusProjectionService,
-    workline_runtime_status_projection_service,
-)
 from src.app.workline.domain.run_mode import (
     is_sandbox_allowed_environment,
     is_simulation_run_mode,
@@ -21,7 +16,7 @@ from src.app.workline.models import (
     WorkLineConfigurationStatus,
     WorkLineRunMode,
 )
-from src.app.workline.repositories import WorkLineRepository
+from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings
@@ -38,15 +33,11 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset({"line_code", "config", "runtime_config
 
 
 class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
-    """管理 WorkLine 的通用配置、启停和运行状态投影。"""
+    """管理 WorkLine 的通用配置与启停。"""
 
     def __init__(
         self,
         repository: WorkLineRepository = workline_repository,
-        *,
-        runtime_status_projection_service: WorkLineRuntimeStatusProjectionService = (
-            workline_runtime_status_projection_service
-        ),
     ) -> None:
         super().__init__(
             repository,
@@ -56,14 +47,12 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             list_cache_prefix=cache_settings.WORKLINE_LIST.prefix,
             list_cache_expire=cache_settings.WORKLINE_LIST.expire,
         )
-        self.runtime_status_projection_service = runtime_status_projection_service
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         self._reject_active_state_write(data)
         self._validate_run_mode(data)
         self._validate_runtime_config(data)
         result = await self.repo.create(db, data)
-        _ = await self._ensure_default_runtime_status_projection(db, result)
         await self._commit_mutation(db)
         if cache:
             await self.invalidate_cache(cache, invalidate_list=True)
@@ -105,7 +94,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     async def restore(self, db: AsyncSession, id: int, cache: object | None = None) -> WorkLine | None:
         result = await self.repo.restore(db, id)
-        _ = await self._ensure_default_runtime_status_projection(db, result)
         await self._commit_mutation(db)
         if cache:
             await self.invalidate_cache(cache, id, invalidate_list=True)
@@ -141,10 +129,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 message="配置预检未通过，不能启用作业线",
                 detail={"checks": [check.model_dump() for check in checks]},
             )
-        projection_created = await self._ensure_default_runtime_status_projection(db, current)
         if current.is_active:
-            if projection_created:
-                await self._commit_mutation(db)
             return current
         return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
 
@@ -181,18 +166,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         if cache:
             await self.invalidate_cache(cache, workline_id, invalidate_list=True)
         return updated
-
-    async def _ensure_default_runtime_status_projection(self, db: AsyncSession, workline: WorkLine | None) -> bool:
-        if workline is None:
-            return False
-        workline_id = getattr(workline, "id", None)
-        if not isinstance(workline_id, int):
-            raise TypeError("WorkLine 缺少主键，无法创建 runtime 状态投影")
-        snapshot = await self.runtime_status_projection_service.runtime_status_snapshot(db, workline_id=workline_id)
-        if snapshot.runtime_status is not None:
-            return False
-        result = await self.runtime_status_projection_service.ensure_default_result(db, workline_id=workline_id)
-        return bool(getattr(result, "created", False))
 
     @staticmethod
     def _assert_version(workline: WorkLine, workline_id: int, version: int) -> None:

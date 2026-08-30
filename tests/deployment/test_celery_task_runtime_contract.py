@@ -8,30 +8,32 @@ import importlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TASK_MODULES = ("core", "handling", "runtime_inbox", "sys", "transport", "workline")
+TASK_MODULES = ("core", "device_command", "execution", "safety", "transport", "wms_confirmation")
 ASYNC_TASKS = {
     "core": ("health_check", "clear_cache", "send_notification"),
-    "runtime_inbox": ("process_runtime_inbox_batch",),
-    "sys": (
-        "dispatch_system_outbox_batch",
-        "dispatch_wms_data_outbox_batch",
-        "dispatch_wms_fulfillment_outbox_batch",
+    "device_command": (
+        "dispatch_device_commands_batch",
+        "process_device_evidence_batch",
+        "reconcile_device_commands_batch",
     ),
+    "execution": ("process_execution_facts_batch",),
+    "safety": ("drain_safety_incidents_batch",),
     "transport": (
         "submit_transport_tasks_batch",
         "process_transport_evidence_batch",
         "reconcile_transport_tasks_batch",
+        "publish_transport_outcomes_batch",
     ),
+    "wms_confirmation": ("dispatch_wms_confirmations_batch",),
 }
 DB_TASKS = {
     "core": ("health_check", "send_notification"),
-    "runtime_inbox": ("process_runtime_inbox_batch",),
-    "sys": ASYNC_TASKS["sys"],
+    "safety": ("drain_safety_incidents_batch",),
 }
 
 
@@ -104,9 +106,6 @@ def test_task_modules_do_not_cache_database_sessions_on_task_instances(module_na
             and node.attr in {"_db", "db"}
         ):
             violations.append(f"self.{node.attr}")
-        if isinstance(node, ast.Attribute) and node.attr == "AsyncSessionLocal":
-            violations.append("AsyncSessionLocal")
-
     assert violations == [], f"{module_name} 每条消息必须通过 get_db_context() 创建 task-local Session"
 
 
@@ -151,55 +150,11 @@ def test_database_task_async_body_uses_task_local_get_db_context(module_name: st
     assert len(context_calls) == 1, f"{module_name}.{task_name} 必须在 async with 中创建 task-local Session"
 
 
-@pytest.mark.parametrize(
-    ("module_name", "task_name", "base_countdown"),
-    [
-        ("runtime_inbox", "process_runtime_inbox_batch", 5),
-        ("sys", "dispatch_system_outbox_batch", 10),
-    ],
-)
-def test_retry_countdown_keeps_exponential_backoff_contract(
-    monkeypatch: pytest.MonkeyPatch,
-    module_name: str,
-    task_name: str,
-    base_countdown: int,
-) -> None:
-    module = importlib.import_module(f"src.celery_app.tasks.{module_name}")
-    task = getattr(module, task_name)
-    retry = MagicMock(side_effect=RuntimeError("retry requested"))
-
-    def fail_runtime(factory_or_coroutine: Any) -> None:
-        if asyncio.iscoroutine(factory_or_coroutine):
-            factory_or_coroutine.close()
-        raise ConnectionError("database unavailable")
-
-    monkeypatch.setattr(module, "run_async", fail_runtime, raising=False)
-    monkeypatch.setattr(module, "_run_async", fail_runtime, raising=False)
-    monkeypatch.setattr(task, "retry", retry)
-
-    task.push_request(retries=2)
-    try:
-        with pytest.raises(RuntimeError, match="retry requested"):
-            task.run()
-    finally:
-        task.pop_request()
-
-    assert isinstance(retry.call_args.kwargs["exc"], ConnectionError)
-    assert retry.call_args.kwargs["countdown"] == base_countdown * 4
-
-
 TASK_CONTRACTS: dict[str, tuple[str, int, int, str]] = {
     "src.celery_app.tasks.core.health_check": ("default", 3, 180, "core"),
     "src.celery_app.tasks.core.clear_cache": ("default", 3, 180, "core"),
     "src.celery_app.tasks.core.send_notification": ("default", 3, 180, "core"),
     "src.celery_app.tasks.core.cleanup_old_logs": ("default", 3, 180, "core"),
-    "src.celery_app.tasks.core.process_signal": ("default", 3, 10, "core"),
-    "src.celery_app.tasks.handling.process_signal": ("celery", 3, 10, "handling"),
-    "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch": ("celery", 3, 5, "runtime_inbox"),
-    "src.celery_app.tasks.runtime_inbox.process_signal": ("celery", 3, 10, "runtime_inbox"),
-    "src.celery_app.tasks.sys.dispatch_system_outbox_batch": ("celery", 3, 10, "sys"),
-    "src.celery_app.tasks.sys.process_signal": ("celery", 3, 10, "sys"),
-    "src.celery_app.tasks.workline.process_signal": ("celery", 3, 10, "workline"),
 }
 
 
@@ -230,25 +185,13 @@ def test_retired_smt_handoff_task_is_not_registered_or_scheduled() -> None:
 
     from src.celery_app.app import celery_app
     from src.celery_app.config import beat_schedule
-    from src.celery_app.tasks import workline
 
     task_name = "src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch"
     celery_app.loader.import_default_modules()
 
     assert task_name not in celery_app.tasks
     assert all(item.get("task") != task_name for item in beat_schedule.values())
-    assert not hasattr(workline, "scan_smt_inbound_handoff_demands_batch")
-
-
-def test_wms_effect_status_scanner_has_a_budgeted_soft_and_hard_time_limit() -> None:
-    from src.celery_app.app import celery_app
-    from src.core.conf import settings
-
-    celery_app.loader.import_default_modules()
-    task = celery_app.tasks["src.celery_app.tasks.workline.scan_wms_effect_status_batch"]
-
-    assert task.soft_time_limit == settings.WES_EFFECT_STATUS_TASK_SOFT_TIME_LIMIT_SECONDS
-    assert task.time_limit == settings.WES_EFFECT_STATUS_TASK_HARD_TIME_LIMIT_SECONDS
+    assert not (REPO_ROOT / "src/celery_app/tasks/workline.py").exists()
 
 
 @pytest.mark.parametrize(

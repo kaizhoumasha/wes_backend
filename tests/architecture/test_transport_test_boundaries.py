@@ -15,18 +15,13 @@ TRANSPORT_TEST_FILES = tuple(
     REPO_ROOT / relative_path
     for relative_path in (
         "tests/api/test_wms_transport_events.py",
-        "tests/core/test_outbox_dispatch_target_gateway.py",
         "tests/core/test_uuid7.py",
         "tests/e2e/transport/test_transport_production_wiring.py",
         "tests/integration/test_transport_broker_harness_cleanup.py",
         "tests/integration/test_transport_fastapi_lifespan.py",
         "tests/integration/test_transport_fulfillment_queue.py",
-        "tests/integration/test_celery_async_runtime_postgresql.py",
         "tests/integration/test_celery_prefork_harness_cleanup.py",
-        "tests/integration/test_wms_deployment_attestation.py",
         "tests/deployment/test_celery_task_runtime_contract.py",
-        "tests/deployment/test_wms_effect_lane_dispatch.py",
-        "tests/deployment/test_wms_transport_startup.py",
         "tests/support/transport_broker.py",
     )
 )
@@ -41,7 +36,6 @@ FORBIDDEN_IMPORT_PREFIXES = (
 def test_transport_test_asset_set_has_exact_frozen_core_owners() -> None:
     frozen_core_owners = {
         REPO_ROOT / "tests/core/test_uuid7.py",
-        REPO_ROOT / "tests/core/test_outbox_dispatch_target_gateway.py",
     }
     discovered_core_owners = {
         candidate for candidate in TRANSPORT_TEST_FILES if candidate.relative_to(REPO_ROOT).parent == Path("tests/core")

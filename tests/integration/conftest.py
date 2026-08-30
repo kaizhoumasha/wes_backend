@@ -16,14 +16,10 @@ from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-# 预加载外键目标模型，避免 SQLModel 在 flush 时出现 NoReferencedTableError。
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
-from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
-from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.sys.models import SystemOutbox
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.database.schema_conf import get_schema_search_path
@@ -182,21 +178,6 @@ async def integration_db_session(
         await session.rollback()
 
 
-async def _find_hot_queue_inboxes(db: AsyncSession) -> list[tuple[object, ...]]:
-    result = await db.execute(
-        select(
-            RuntimeInbox.id,
-            RuntimeInbox.status,
-            RuntimeInbox.next_retry_at,
-            RuntimeInbox.updated_at,
-        )
-        .where(RuntimeInbox.status.in_(["RECEIVED", "FAILED", "PROCESSING"]))  # type: ignore[arg-type]
-        .order_by(RuntimeInbox.received_at.asc(), RuntimeInbox.id.asc())  # type: ignore[arg-type]
-        .limit(5)
-    )
-    return list(result.all())
-
-
 async def _count_timed_out_sessions(db: AsyncSession) -> int:
     result = await db.execute(
         select(func.count())
@@ -230,16 +211,6 @@ async def _count_ack_timed_out_commands(db: AsyncSession) -> int:
         )
     )
     return sum(1 for command in result.scalars().all() if command.is_timeout())
-
-
-@pytest_asyncio.fixture(scope="function")
-async def isolated_runtime_inbox_queue(
-    integration_session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    async with integration_session_factory() as db:
-        hot_queue_rows = await _find_hot_queue_inboxes(db)
-    if hot_queue_rows:
-        pytest.fail(f"RuntimeInbox 全局 task smoke 需要空队列；当前 Docker DB 仍有热队列 inbox: {hot_queue_rows}")
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -380,50 +351,6 @@ async def test_prefix(
             or_(
                 WorklineSession.trace_id.like(f"{prefix}%"),  # type: ignore[arg-type]
                 WorklineSession.workline_id.in_(prefixed_worklines),
-            )
-        )
-        prefixed_inboxes = select(RuntimeInbox.id).where(
-            or_(
-                RuntimeInbox.trace_id.like(f"{prefix}%"),  # type: ignore[arg-type]
-                RuntimeInbox.workline_id.in_(prefixed_worklines),
-            )
-        )
-        prefixed_outboxes = select(SystemOutbox.id).where(
-            or_(
-                SystemOutbox.dispatch_key.like(f"{prefix}%"),  # type: ignore[arg-type]
-                SystemOutbox.workline_id.in_(prefixed_worklines),
-                SystemOutbox.session_id.in_(prefixed_sessions),
-            )
-        )
-
-        await cleanup_session.execute(
-            delete(WorklineDiagnostic).where(  # type: ignore[arg-type]
-                or_(
-                    WorklineDiagnostic.trace_id.like(f"{prefix}%"),
-                    WorklineDiagnostic.request_id.like(f"{prefix}%"),
-                    WorklineDiagnostic.device_code.like(f"{prefix}%"),
-                    WorklineDiagnostic.workline_id.in_(prefixed_worklines),
-                    WorklineDiagnostic.session_id.in_(prefixed_sessions),
-                    WorklineDiagnostic.inbox_id.in_(prefixed_inboxes),
-                    WorklineDiagnostic.outbox_id.in_(prefixed_outboxes),
-                )
-            )
-        )
-        await cleanup_session.execute(
-            delete(SystemOutbox).where(  # type: ignore[arg-type]
-                or_(
-                    SystemOutbox.dispatch_key.like(f"{prefix}%"),
-                    SystemOutbox.workline_id.in_(prefixed_worklines),
-                    SystemOutbox.session_id.in_(prefixed_sessions),
-                )
-            )
-        )
-        await cleanup_session.execute(
-            delete(RuntimeInbox).where(  # type: ignore[arg-type]
-                or_(
-                    RuntimeInbox.trace_id.like(f"{prefix}%"),
-                    RuntimeInbox.workline_id.in_(prefixed_worklines),
-                )
             )
         )
         await cleanup_session.execute(

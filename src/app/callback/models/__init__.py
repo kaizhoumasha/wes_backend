@@ -9,7 +9,6 @@ from src.app.callback.models.callback_log import (
     build_callback_log_response,
     build_callback_log_responses,
 )
-from src.app.callback.models.external import CallbackExternalRequest
 from src.app.callback.models.ingress_response import (
     CallbackExternalAcceptedResponse,
     CallbackExternalIngressResponse,
@@ -23,7 +22,6 @@ from src.app.callback.models.ingress_response import (
 __all__ = [
     "CallbackExternalAcceptedResponse",
     "CallbackExternalIngressResponse",
-    "CallbackExternalRequest",
     "CallbackHTTPExceptionResponse",
     "CallbackLog",
     "CallbackLogCreate",

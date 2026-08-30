@@ -11,7 +11,7 @@ INTEGRATION_DATABASE_URL='postgresql+asyncpg://<user>:<password>@127.0.0.1:<port
 安全约束：
 
 - 主机必须是本机安全地址，数据库名必须是 `postgres`、`template1`、`test`、`test_*` 或 `*_test`。
-- 每个场景只创建并删除随机命名的 `wes_tmp_runtime_inbox_<uuid>` 临时数据库。
+- 每个场景只创建并删除随机命名的 `wes_tmp_heavy_<uuid>` 临时数据库。
 - 缺少 URL、目标不安全、管理员连接失败或连接容量不足时，夹具会在 preflight 阶段拒绝运行；错误中的阶段名可用于定位配置问题。
 - 不要把开发库 URL 或生产凭据写入本文、测试代码或版本库。
 

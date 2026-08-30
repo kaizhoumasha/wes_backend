@@ -64,16 +64,13 @@ def test_static_device_model_has_no_runtime_or_transport_fields() -> None:
 
 def test_runtime_inbox_has_no_device_command_or_evidence_ingress() -> None:
     inbox_model = (REPO_ROOT / "src/app/runtime/orchestration/runtime_inbox.py").read_text(encoding="utf-8")
-    inbox_service = (
-        REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py"
-    ).read_text(encoding="utf-8")
+    inbox_service_path = REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py"
     input_normalizer = (REPO_ROOT / "src/app/runtime/normalization/normalizers/input_normalizer.py").read_text(
         encoding="utf-8"
     )
 
     assert "COMMAND_RESULT" not in inbox_model
     assert "DEVICE_EVENT" not in inbox_model
-    assert "accept_command_result" not in inbox_service
-    assert "accept_device_event" not in inbox_service
+    assert not inbox_service_path.exists()
     assert "NormalizedCommandResult" not in input_normalizer
     assert 'kind == "COMMAND_RESULT"' not in input_normalizer

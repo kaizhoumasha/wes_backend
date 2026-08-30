@@ -149,21 +149,9 @@ pipeline {
                                 sh -c 'git config --global --add safe.directory /app && uv run --no-sync scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' \
                                 > reports/heavy-tests.selected.txt
                         '''
-                        env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE = sh(
-                            returnStdout: true,
-                            script: '''
-                                docker run --rm \
-                                    -v "$WORKSPACE/reports/heavy-tests.selected.txt:/artifacts/heavy-tests.txt:ro" \
-                                    "${CI_IMAGE}" \
-                                    uv run --no-sync python scripts/classify_runtime_inbox_acceptance.py \
-                                        /artifacts/heavy-tests.txt
-                            '''
-                        ).trim()
                     } else {
                         sh ': > reports/heavy-tests.selected.txt'
-                        env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE = 'full'
                     }
-                    echo "📋 RuntimeInbox PostgreSQL 验收模式: ${env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE}"
                 }
             }
             post {
@@ -205,8 +193,6 @@ pipeline {
                             set -eu
                             export BACKEND_IMAGE="${RUNTIME_IMAGE_LOCAL}"
                             export FRONTEND_IMAGE="example.invalid/wes/wes_frontend:compose-contract-${CI_SHORT_COMMIT}"
-                            export WMS_PROVIDER_PROFILE_HOST_FILE="$WORKSPACE/.env.test"
-
                             docker compose \
                                 --env-file .env.prod \
                                 -f docker-compose.yml \
@@ -221,27 +207,6 @@ pipeline {
                     }
                 }
 
-                stage('RuntimeInbox PostgreSQL Acceptance') {
-                    when {
-                        expression {
-                            env.CI_RUNTIME_INBOX_ACCEPTANCE_MODE != 'none'
-                        }
-                    }
-                    steps {
-                        sh '''
-                            set -e
-                            chmod +x scripts/run_runtime_inbox_postgresql_acceptance_ci.sh
-                            scripts/run_runtime_inbox_postgresql_acceptance_ci.sh run
-                        '''
-                    }
-                    post {
-                        always {
-                            sh 'scripts/run_runtime_inbox_postgresql_acceptance_ci.sh cleanup'
-                            junit testResults: 'reports/runtime-inbox-acceptance/junit/*.xml', allowEmptyResults: true
-                            archiveArtifacts artifacts: 'reports/runtime-inbox-acceptance/**/*', allowEmptyArchive: true, fingerprint: true
-                        }
-                    }
-                }
             }
             post {
                 always {
@@ -286,25 +251,8 @@ pipeline {
                     mkdir -p reports
                     cp reports/heavy-tests.selected.txt reports/heavy-tests.txt
 
-                    printf '%s\n' \
-                        'tests/integration/test_runtime_inbox_migration_postgresql.py' \
-                        'tests/integration/test_runtime_inbox_processing_postgresql.py' \
-                        'tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py' \
-                        'tests/load/test_runtime_inbox_claim_benchmark.py' \
-                        > reports/runtime-inbox-acceptance-owned.txt
-                    if grep -Fvx -f reports/runtime-inbox-acceptance-owned.txt \
-                        reports/heavy-tests.txt > reports/heavy-tests.remaining.txt; then
-                        :
-                    else
-                        grep_status=$?
-                        if [ "${grep_status}" -ne 1 ]; then
-                            exit "${grep_status}"
-                        fi
-                    fi
-                    mv reports/heavy-tests.remaining.txt reports/heavy-tests.txt
-
                     if [ ! -s reports/heavy-tests.txt ]; then
-                        echo '除已完成的 RuntimeInbox 专项验收外，本次差异未选择其它核心 HEAVY 测试。'
+                        echo '本次差异未选择核心 HEAVY 测试。'
                         exit 0
                     fi
 
@@ -334,7 +282,7 @@ pipeline {
             post {
                 always {
                     junit testResults: 'reports/heavy-required.xml', allowEmptyResults: true
-                    archiveArtifacts artifacts: 'reports/heavy-tests.selected.txt,reports/heavy-tests.txt,reports/heavy-required.xml,reports/runtime-inbox-acceptance-owned.txt', allowEmptyArchive: true
+                    archiveArtifacts artifacts: 'reports/heavy-tests.selected.txt,reports/heavy-tests.txt,reports/heavy-required.xml', allowEmptyArchive: true
                     sh '''
                         docker compose \
                             -f docker-compose.ci-heavy.yml \

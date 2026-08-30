@@ -54,6 +54,13 @@ def _database_head_reader() -> str:
     return textwrap.dedent(pipeline[start:stop]).replace(r"\$", "$")
 
 
+def _candidate_backend_python() -> str:
+    pipeline = _pipeline()
+    start = pipeline.index("candidate_backend_python() {")
+    stop = pipeline.index("business_preflight() {", start)
+    return textwrap.dedent(pipeline[start:stop]).replace(r"\$", "$")
+
+
 def _embedded_python_blocks() -> list[str]:
     pipeline = _pipeline()
     return [
@@ -587,6 +594,28 @@ def test_checker_container_has_one_fixed_name_and_is_always_force_removed() -> N
     assert "docker run --rm" not in validator + checker
 
 
+def test_release_readiness_container_owner_is_build_scoped_sanitized_and_exactly_cleaned() -> None:
+    pipeline = _pipeline()
+
+    assert "\"${env.BUILD_TAG ?: ''}-${deploySourceCommit.take(12)}\"" in pipeline
+    assert ".toLowerCase().replaceAll(/[^a-z0-9-]/, '-').replaceAll(/-+/, '-')" in pipeline
+    assert 'env.RELEASE_READINESS_CONTAINER_NAME = "wes-release-readiness-${releaseContainerOwner}"' in pipeline
+    assert pipeline.count('--name "${RELEASE_READINESS_CONTAINER_NAME}"') == 1
+    assert pipeline.count('docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}"') >= 3
+
+    release_probe = pipeline[pipeline.index("release_operational_readiness() {") : pipeline.index("run_full_cutover()")]
+    assert (
+        release_probe.index("candidate_backend_python")
+        < release_probe.index('docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}"')
+        < release_probe.index('return "$readiness_status"')
+    )
+
+    cleanup = pipeline[pipeline.index("cleanup_private_inputs() {") : pipeline.index("hold_entrypoint_on_failure()")]
+    exit_trap = pipeline[pipeline.index("keep_external_entrypoint_closed() {") : pipeline.index("fail_cutover()")]
+    assert 'docker rm -f "${RELEASE_READINESS_CONTAINER_NAME}"' in cleanup
+    assert "cleanup_private_inputs" in exit_trap
+
+
 def test_checker_timeout_force_removes_a_lingering_named_container(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -657,7 +686,6 @@ def test_effective_inputs_and_database_rules_are_owned_by_checker_inputs() -> No
         "redis/base.conf",
         "redis/test.conf",
         "runtime/.env",
-        "runtime/wms-provider.yaml",
     ):
         assert path in pipeline
     assert (
@@ -737,8 +765,10 @@ def test_full_preserves_backup_forward_migration_authorization_and_readiness() -
     full = pipeline[pipeline.index("run_full_cutover()") : pipeline.index("# TEST_DEPLOY_CUTOVER_END")]
 
     assert "pg_dump" in full
-    assert "compose stop api celery celery-wms-fulfillment celery_beat flower frontend" in full
-    assert full.index("compose stop api celery") < full.index("pg_dump") < full.index("upgrade head")
+    assert "compose stop -t 30 api" in full
+    assert "compose stop celery_beat" in full
+    assert "compose stop celery celery-wms-fulfillment flower" in full
+    assert full.index("pg_dump") < full.index("upgrade head")
     assert "migrated_head_count" in full
     assert '[ "$migrated_heads" = "${EXPECTED_SCHEMA_HEAD}" ]' in full
     assert "alembic" in full and "upgrade head" in full
@@ -785,6 +815,35 @@ def _fake_docker() -> str:
         set -u
         trace() { printf '%s\n' "$1" >>"$TRACE_FILE"; }
         fail() { [ "${FAIL_STAGE:-}" = "$1" ]; }
+        readiness_probe() {
+            outcome=$(sed -n '1p' "$READINESS_OUTCOMES")
+            sed '1d' "$READINESS_OUTCOMES" >"${READINESS_OUTCOMES}.next"
+            mv "${READINESS_OUTCOMES}.next" "$READINESS_OUTCOMES"
+            probe_advance=$(sed -n '1p' "$READINESS_PROBE_ADVANCES")
+            sed '1d' "$READINESS_PROBE_ADVANCES" >"${READINESS_PROBE_ADVANCES}.next"
+            mv "${READINESS_PROBE_ADVANCES}.next" "$READINESS_PROBE_ADVANCES"
+            if [ -n "$probe_advance" ]; then
+                now=$(cat "$CLOCK_FILE")
+                printf '%s' "$((now + probe_advance))" >"$CLOCK_FILE"
+            fi
+            phase=maintenance
+            [ "$(cat "$NGINX_STATE")" = running ] && phase=online
+            trace "probe:${phase}:${outcome}"
+            case "$outcome" in
+                READY) return 0 ;;
+                BLOCK) return 2 ;;
+                WAIT_DRAIN) return 3 ;;
+                TIMEOUT) return 124 ;;
+                SIGNAL) return 137 ;;
+                *) return 1 ;;
+            esac
+        }
+        if [ "$1" = rm ] && [ "$2" = -f ]; then
+            trace "readiness-cleanup:$3"
+            [ "$3" = "$RELEASE_READINESS_CONTAINER_NAME" ] || exit 78
+            rm -f "$READINESS_CONTAINER_STATE"
+            exit 0
+        fi
         if [ "$1" = inspect ]; then
             service="${@: -1}"
             case "$service" in
@@ -824,6 +883,10 @@ def _fake_docker() -> str:
         esac
         case "$operation:$args" in
             "stop:nginx") trace nginx-stop; printf stopped >"$NGINX_STATE" ;;
+            "stop:-t 30 api") trace api-stop-t30; exit 0 ;;
+            "stop:celery_beat") trace beat-stop; exit 0 ;;
+            "stop:celery celery-wms-fulfillment"|"stop:celery celery-wms-fulfillment flower")
+                trace worker-stop; exit 0 ;;
             "stop:frontend") trace frontend-stop; exit 0 ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*frontend*) trace application-stop; exit 0 ;;
             stop:*api*celery*celery-wms-fulfillment*celery_beat*flower*) trace backend-stop; exit 0 ;;
@@ -853,6 +916,15 @@ def _fake_docker() -> str:
             run:*alembic*upgrade*head*) trace migration; fail migration && exit 84; exit 0 ;;
             run:*sync_permissions.py*--apply*) trace authorization-apply; fail authorization && exit 85; exit 0 ;;
             run:*sync_permissions.py*--check*) trace authorization-check; exit 0 ;;
+            run:*check_release_operational_readiness.py*)
+                case " $args " in
+                    *" --name ${RELEASE_READINESS_CONTAINER_NAME} "*) ;;
+                    *) trace readiness-name-invalid; exit 94 ;;
+                esac
+                printf '%s\n' "$RELEASE_READINESS_CONTAINER_NAME" >"$READINESS_CONTAINER_STATE"
+                readiness_probe
+                exit $?
+                ;;
             exec:*check_bootstrap_admin_login.py*) trace admin-login; fail admin-login && exit 86; exit 0 ;;
             exec:*curl*) trace backend-ready; fail readiness && exit 87; exit 0 ;;
             exec:*wget*) trace frontend-ready; fail readiness && exit 88; exit 0 ;;
@@ -992,12 +1064,32 @@ def test_each_premaintenance_failure_aborts_once_before_any_cutover(tmp_path: Pa
     assert all(token not in trace for token in ("nginx-stop", "backup", "migration", "frontend-start", "backend-start"))
 
 
-def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "") -> tuple[int, list[str], str, str]:
+def _run_cutover(
+    tmp_path: Path,
+    *,
+    mode: str,
+    scope: str,
+    fail_stage: str = "",
+    readiness_outcomes: tuple[str, ...] = (),
+    readiness_probe_advance_seconds: tuple[int, ...] = (),
+    clock_advance_seconds: int = 2,
+) -> tuple[int, list[str], str, str]:
+    if not readiness_outcomes and mode == "FULL" and scope in {"BACKEND", "BOTH"}:
+        readiness_outcomes = ("READY", "READY", "READY")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     trace_file = tmp_path / "trace"
     nginx_state = tmp_path / "nginx-state"
     nginx_state.write_text("running", encoding="utf-8")
+    readiness_outcomes_path = tmp_path / "readiness-outcomes"
+    readiness_outcomes_path.write_text("\n".join(readiness_outcomes) + "\n", encoding="utf-8")
+    readiness_probe_advances_path = tmp_path / "readiness-probe-advances"
+    readiness_probe_advances_path.write_text(
+        "\n".join(str(seconds) for seconds in readiness_probe_advance_seconds) + "\n",
+        encoding="utf-8",
+    )
+    clock_path = tmp_path / "clock"
+    clock_path.write_text("1000", encoding="utf-8")
     report_file = tmp_path / "compatibility-report.json"
     report_file.write_text("{}\n", encoding="utf-8")
     next_current = tmp_path / "next-current-fingerprints.json"
@@ -1012,7 +1104,17 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
     live_state = tmp_path / "live-state"
     live_state.mkdir()
     _write_executable(bin_dir / "docker", _fake_docker())
-    _write_executable(bin_dir / "curl", "#!/bin/sh\nexit 7\n")
+    _write_executable(
+        bin_dir / "curl",
+        """
+        #!/bin/bash
+        case "$*" in
+            *":${APP_HOST_PORT}"*) printf '%s\n' listener-closed:api >>"$TRACE_FILE" ;;
+            *":${NGINX_HTTP_PORT}"*) printf '%s\n' listener-closed:nginx >>"$TRACE_FILE" ;;
+        esac
+        exit 7
+        """,
+    )
     _write_executable(
         bin_dir / "timeout",
         """
@@ -1028,8 +1130,27 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
         """
         #!/bin/bash
         [ "$1" = -C ] && shift 2
+        [ "$1" = fetch ] && printf '%s\n' source-switch >>"$TRACE_FILE"
         [ "$1 $2" = "rev-parse HEAD" ] && printf '%s\n' "$DEPLOY_SOURCE_COMMIT_SHA"
         exit 0
+        """,
+    )
+    _write_executable(
+        bin_dir / "date",
+        """
+        #!/bin/bash
+        now=$(cat "$CLOCK_FILE")
+        printf '%s\n' "$now"
+        printf '%s' "$((now + CLOCK_ADVANCE_SECONDS))" >"$CLOCK_FILE"
+        """,
+    )
+    _write_executable(
+        bin_dir / "sleep",
+        """
+        #!/bin/bash
+        printf 'sleep:%s\n' "$1" >>"$TRACE_FILE"
+        now=$(cat "$CLOCK_FILE")
+        printf '%s' "$((now + $1))" >"$CLOCK_FILE"
         """,
     )
     _write_executable(
@@ -1049,6 +1170,9 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
     staged_runtime_env.write_text("COMPOSE_PROJECT_NAME=wes_backend_test\n", encoding="utf-8")
     env = os.environ | {
         "BACKEND_IMAGE": current_backend if scope == "FRONTEND" else candidate_backend,
+        "APP_HOST_PORT": "8002",
+        "CLOCK_ADVANCE_SECONDS": str(clock_advance_seconds),
+        "CLOCK_FILE": str(clock_path),
         "CURRENT_BACKEND_DIGEST": "sha256:" + "2" * 64,
         "CURRENT_BACKEND_IMAGE": current_backend,
         "CURRENT_FRONTEND_DIGEST": "sha256:" + "1" * 64,
@@ -1076,6 +1200,10 @@ def _run_cutover(tmp_path: Path, *, mode: str, scope: str, fail_stage: str = "")
         "CURRENT_RELEASE_EVIDENCE_DIR": str(evidence_root / "current"),
         "RELEASE_ID": "release-test",
         "REAL_PYTHON": sys.executable,
+        "READINESS_OUTCOMES": str(readiness_outcomes_path),
+        "READINESS_PROBE_ADVANCES": str(readiness_probe_advances_path),
+        "READINESS_CONTAINER_STATE": str(tmp_path / "readiness-container"),
+        "RELEASE_READINESS_CONTAINER_NAME": "wes-release-readiness-42-aaaaaaaaaaaa",
         "REPORT_FILE": str(report_file),
         "STAGED_RUNTIME_ENV_FILE": str(staged_runtime_env),
         "TARGET_POSTGRES_DB": "wes_current",
@@ -1106,11 +1234,13 @@ discover_live_digest() {
 }
 """
             + _database_head_reader()
+            + _candidate_backend_python()
             + """
 resolve_database_identity() {
     printf '%s\n' database-identity-reverification >>"$TRACE_FILE"
     [ "${FAIL_STAGE:-}" != database-identity-reverification ]
 }
+abort_pre_cutover() { return 1; }
 """
             + _marked_shell("# TEST_DEPLOY_CUTOVER_BEGIN", "# TEST_DEPLOY_CUTOVER_END"),
         ],
@@ -1167,14 +1297,14 @@ def test_postmaintenance_failure_holds_nginx_closed_and_does_not_repeat_mutation
     assert "nginx-start" not in trace
 
 
-def test_full_reverifies_database_identity_after_application_stop_and_before_backup(tmp_path: Path) -> None:
+def test_full_reverifies_database_identity_after_worker_stop_and_before_backup(tmp_path: Path) -> None:
     status, trace, nginx, output = _run_cutover(
         tmp_path, mode="FULL", scope="BOTH", fail_stage="database-identity-reverification"
     )
 
     assert status != 0, output
     assert nginx == "stopped"
-    assert trace.index("application-stop") < trace.index("database-identity-reverification")
+    assert trace.index("worker-stop") < trace.index("database-identity-reverification")
     assert "backup" not in trace
     assert "migration" not in trace
 
@@ -1208,7 +1338,8 @@ def test_backend_full_converges_database_before_backend_exposure_without_restart
     assert nginx == "running"
     assert "frontend-start" not in trace
     expected = [
-        "backend-stop",
+        "worker-stop",
+        "source-switch",
         "database-identity-reverification",
         "backup",
         "migration",
@@ -1327,3 +1458,281 @@ def test_successful_fast_full_simulation_changes_only_the_required_scope(
                 assert (tmp_path / "live-state" / service).read_text(encoding="utf-8").strip() == (
                     "repo/backend@sha256:" + "2" * 64
                 )
+
+
+def test_test_deploy_redis_host_listener_is_loopback_only() -> None:
+    compose_source = (REPO_ROOT / "docker-compose.test-deploy.yml").read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_source.replace("!override", ""))
+
+    assert compose["services"]["redis"]["ports"] == ["127.0.0.1:${REDIS_HOST_PORT:-6380}:6379"]
+    assert "${REDIS_HOST_PORT:-6380}:6379" not in compose_source.replace("127.0.0.1:${REDIS_HOST_PORT:-6380}:6379", "")
+
+
+@pytest.mark.parametrize(("mode", "scope"), [("FAST", "BACKEND"), ("FULL", "FRONTEND")])
+def test_release_readiness_gate_bypasses_fast_and_frontend(
+    tmp_path: Path,
+    mode: str,
+    scope: str,
+) -> None:
+    status, trace, nginx, output = _run_cutover(
+        tmp_path,
+        mode=mode,
+        scope=scope,
+    )
+
+    assert status == 0, output
+    assert nginx == "running"
+    assert not any(item.startswith("probe:") for item in trace)
+    assert "api-stop-t30" not in trace
+    assert "beat-stop" not in trace
+
+
+@pytest.mark.parametrize("scope", ["BACKEND", "BOTH"])
+def test_backend_full_requires_online_and_two_maintenance_ready_observations_before_irreversible_steps(
+    tmp_path: Path,
+    scope: str,
+) -> None:
+    status, trace, nginx, output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope=scope,
+        readiness_outcomes=("READY", "READY", "READY"),
+    )
+
+    assert status == 0, output
+    assert nginx == "running"
+    ordered = [
+        item
+        for item in trace
+        if item.startswith("probe:")
+        or item
+        in {
+            "nginx-stop",
+            "listener-closed:nginx",
+            "api-stop-t30",
+            "listener-closed:api",
+            "beat-stop",
+            "sleep:2",
+            "worker-stop",
+            "source-switch",
+            "backup",
+            "migration",
+        }
+    ]
+    assert ordered[:13] == [
+        "probe:online:READY",
+        "nginx-stop",
+        "listener-closed:nginx",
+        "api-stop-t30",
+        "listener-closed:api",
+        "beat-stop",
+        "probe:maintenance:READY",
+        "sleep:2",
+        "probe:maintenance:READY",
+        "worker-stop",
+        "source-switch",
+        "backup",
+        "migration",
+    ]
+
+
+def test_maintenance_wait_drain_resets_stability_and_requires_two_new_ready_observations(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=("READY", "READY", "WAIT_DRAIN", "READY", "READY"),
+    )
+
+    assert status == 0, output
+    assert nginx == "running"
+    ordered = [
+        item
+        for item in trace
+        if item.startswith("probe:") or item in {"sleep:2", "worker-stop", "source-switch", "backup", "migration"}
+    ]
+    assert ordered[:12] == [
+        "probe:online:READY",
+        "probe:maintenance:READY",
+        "sleep:2",
+        "probe:maintenance:WAIT_DRAIN",
+        "sleep:2",
+        "probe:maintenance:READY",
+        "sleep:2",
+        "probe:maintenance:READY",
+        "worker-stop",
+        "source-switch",
+        "backup",
+        "migration",
+    ]
+    final_ready = max(index for index, item in enumerate(trace) if item == "probe:maintenance:READY")
+    for irreversible in ("worker-stop", "source-switch", "backup", "migration"):
+        assert trace.index(irreversible) > final_ready
+
+
+@pytest.mark.parametrize("outcome", ["WAIT_DRAIN", "BLOCK", "QUERY_ERROR", "TIMEOUT"])
+def test_online_non_ready_aborts_without_closing_entrypoint_or_irreversible_steps(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    status, trace, nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=(outcome,),
+    )
+
+    assert status != 0
+    assert nginx == "running"
+    assert f"probe:online:{outcome}" in trace
+    assert not {"nginx-stop", "api-stop-t30", "beat-stop", "worker-stop", "source-switch", "backup", "migration"} & set(
+        trace
+    )
+
+
+@pytest.mark.parametrize("outcome", ["BLOCK", "QUERY_ERROR", "TIMEOUT"])
+def test_maintenance_failure_keeps_entrypoint_closed_and_blocks_irreversible_steps(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    status, trace, nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BOTH",
+        readiness_outcomes=("READY", outcome),
+    )
+
+    assert status != 0
+    assert nginx == "stopped"
+    positions = [
+        trace.index(item)
+        for item in (
+            "probe:online:READY",
+            "nginx-stop",
+            "listener-closed:nginx",
+            "api-stop-t30",
+            "listener-closed:api",
+            "beat-stop",
+            f"probe:maintenance:{outcome}",
+        )
+    ]
+    assert positions == sorted(positions)
+    assert not {"worker-stop", "source-switch", "backup", "migration"} & set(trace)
+
+
+def test_maintenance_wait_drain_times_out_at_sixty_seconds_without_irreversible_steps(tmp_path: Path) -> None:
+    status, trace, nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=("READY", "WAIT_DRAIN", "WAIT_DRAIN"),
+        readiness_probe_advance_seconds=(0, 60),
+        clock_advance_seconds=0,
+    )
+
+    assert status != 0
+    assert nginx == "stopped"
+    assert "probe:online:READY" in trace
+    assert "probe:maintenance:WAIT_DRAIN" in trace
+    assert not {"worker-stop", "source-switch", "backup", "migration"} & set(trace)
+
+
+def test_second_ready_returning_after_deadline_keeps_entrypoint_closed_without_irreversible_steps(
+    tmp_path: Path,
+) -> None:
+    status, trace, nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=("READY", "READY", "READY"),
+        readiness_probe_advance_seconds=(0, 0, 61),
+        clock_advance_seconds=0,
+    )
+
+    assert status != 0
+    assert nginx == "stopped"
+    assert trace.count("probe:maintenance:READY") == 2
+    assert not {"worker-stop", "source-switch", "backup", "migration"} & set(trace)
+
+
+def test_insufficient_poll_interval_fails_without_sleeping_or_starting_another_probe(tmp_path: Path) -> None:
+    status, trace, nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=("READY", "READY", "READY"),
+        readiness_probe_advance_seconds=(0, 59, 0),
+        clock_advance_seconds=0,
+    )
+
+    assert status != 0
+    assert nginx == "stopped"
+    assert trace.count("probe:maintenance:READY") == 1
+    assert "sleep:2" not in trace
+    assert not {"worker-stop", "source-switch", "backup", "migration"} & set(trace)
+
+
+def test_maintenance_probe_timeout_budget_is_capped_by_remaining_hard_window(tmp_path: Path) -> None:
+    status, trace, nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=("READY", "TIMEOUT"),
+        clock_advance_seconds=53,
+    )
+
+    assert status != 0
+    assert nginx == "stopped"
+    readiness_budgets = [item for item in trace if item.startswith("budget:")]
+    assert readiness_budgets[:2] == ["budget:15s", "budget:7s"]
+    assert not {"worker-stop", "source-switch", "backup", "migration"} & set(trace)
+
+
+def test_timeout_cleanup_removes_exact_readiness_container_before_cutover_failure(tmp_path: Path) -> None:
+    status, trace, nginx, output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=("READY", "TIMEOUT"),
+    )
+
+    assert status != 0
+    assert nginx == "stopped"
+    cleanup = "readiness-cleanup:wes-release-readiness-42-aaaaaaaaaaaa"
+    timeout_probe = trace.index("probe:maintenance:TIMEOUT")
+    cleanup_index = trace.index(cleanup, timeout_probe)
+    assert cleanup_index == timeout_probe + 1
+    assert "nginx-stop" in trace[cleanup_index + 1 :]
+    assert "CUTOVER_FAILED_MAINTENANCE_HELD: release-readiness-maintenance" in output
+    assert not (tmp_path / "readiness-container").exists()
+    assert not {"worker-stop", "source-switch", "backup", "migration"} & set(trace)
+
+
+@pytest.mark.parametrize(
+    ("readiness_outcomes", "expected_status"),
+    [
+        (("READY", "READY", "READY"), 0),
+        (("BLOCK",), 1),
+        (("WAIT_DRAIN",), 1),
+        (("QUERY_ERROR",), 1),
+        (("SIGNAL",), 1),
+    ],
+)
+def test_every_normal_readiness_result_cleans_up_the_exact_candidate_container(
+    tmp_path: Path,
+    readiness_outcomes: tuple[str, ...],
+    expected_status: int,
+) -> None:
+    status, trace, _nginx, _output = _run_cutover(
+        tmp_path,
+        mode="FULL",
+        scope="BACKEND",
+        readiness_outcomes=readiness_outcomes,
+    )
+
+    assert status == expected_status
+    cleanup = "readiness-cleanup:wes-release-readiness-42-aaaaaaaaaaaa"
+    probe_indexes = [index for index, item in enumerate(trace) if item.startswith("probe:")]
+    assert probe_indexes
+    assert all(trace[index + 1] == cleanup for index in probe_indexes)
+    assert not (tmp_path / "readiness-container").exists()

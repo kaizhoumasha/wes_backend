@@ -7,6 +7,19 @@ FRONTEND_ROOT="${WES_FRONTEND_ROOT:-$(dirname "$BACKEND_ROOT")/wes_frontend}"
 ENV_FILE="$BACKEND_ROOT/.env.dev"
 WAIT_TIMEOUT="${DEV_ENV_WAIT_TIMEOUT:-240}"
 DEV_COMPOSE_PROJECT="${WES_DEV_COMPOSE_PROJECT:-wes_backend_dev}"
+APP_HOST_PORT="${APP_HOST_PORT:-8001}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+NGINX_HTTP_PORT="${NGINX_HTTP_PORT:-80}"
+MOCK_ECS_PORT="${MOCK_ECS_PORT:-8010}"
+MOCK_WMS_PORT="${MOCK_WMS_PORT:-8011}"
+MOCK_ECS_URL="http://127.0.0.1:8010/"
+MOCK_WMS_URL="http://127.0.0.1:8011/"
+if [ "$MOCK_ECS_PORT" != "8010" ]; then
+    MOCK_ECS_URL="http://127.0.0.1:${MOCK_ECS_PORT}/"
+fi
+if [ "$MOCK_WMS_PORT" != "8011" ]; then
+    MOCK_WMS_URL="http://127.0.0.1:${MOCK_WMS_PORT}/"
+fi
 COMMAND="${1:-}"
 
 REQUIRED_SERVICES=(
@@ -18,7 +31,6 @@ REQUIRED_SERVICES=(
     celery_beat
     mock_ecs
     mock_wms
-    mock_wms_provider
     frontend
     nginx
 )
@@ -144,50 +156,20 @@ check_frontend_source_identity() {
 }
 
 check_http() {
-    local effect_body query_body
     local urls=(
-        "http://127.0.0.1:8001/health"
-        "http://127.0.0.1:8001/ready"
-        "http://127.0.0.1:8001/api/openapi.json"
-        "http://127.0.0.1:5173/"
-        "http://127.0.0.1:5173/api/openapi.json"
-        "http://127.0.0.1/"
-        "http://127.0.0.1:8010/"
-        "http://127.0.0.1:8011/"
-        "http://127.0.0.1:8012/"
+        "http://127.0.0.1:${APP_HOST_PORT}/health"
+        "http://127.0.0.1:${APP_HOST_PORT}/ready"
+        "http://127.0.0.1:${APP_HOST_PORT}/api/openapi.json"
+        "http://127.0.0.1:${FRONTEND_PORT}/"
+        "http://127.0.0.1:${FRONTEND_PORT}/api/openapi.json"
+        "http://127.0.0.1:${NGINX_HTTP_PORT}/"
+        "$MOCK_ECS_URL"
+        "$MOCK_WMS_URL"
     )
     for url in "${urls[@]}"; do
         curl --fail --silent --show-error --connect-timeout 3 --max-time 10 --output /dev/null "$url"
         echo "OK $url"
     done
-    query_body="$(
-        curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-            "http://127.0.0.1:8012/api/wms/master-data/materials/MAT-001"
-    )"
-    validate_provider_response "wms.master_data.get_material@v1" "$query_body"
-    echo "OK WMS Provider QUERY"
-
-    effect_body="$(curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-        --request POST \
-        --header "Content-Type: application/json" \
-        --header "Idempotency-Key: dev-env-check-reserve" \
-        --header "X-WES-Operation-Identity: wms.inventory.reserve_inventory@v1" \
-        --data '{"dispatch_key":"dev-env-check-reserve","material_code":"MAT-001","quantity":"10","warehouse_code":"WH-A"}' \
-        "http://127.0.0.1:8012/api/wms/inventory/reservations")"
-    validate_provider_response "wms.inventory.reserve_inventory@v1" "$effect_body"
-    echo "OK WMS Provider EFFECT"
-}
-
-validate_provider_response() {
-    local body="$2" operation_identity="$1"
-    printf '%s' "$body" | compose exec -T api python -c '
-import json
-import sys
-from src.app.wms_integration.operation_registry import WMS_OPERATION_BY_IDENTITY
-
-operation = WMS_OPERATION_BY_IDENTITY[sys.argv[1]]
-operation.result_model.model_validate(json.load(sys.stdin))
-' "$operation_identity"
 }
 
 check_environment() {
@@ -205,7 +187,7 @@ up_environment() {
     compose up -d --wait --wait-timeout "$WAIT_TIMEOUT" db redis
 
     echo "构建开发镜像..."
-    compose build api mock_ecs mock_wms mock_wms_provider
+    compose build api mock_ecs mock_wms
 
     echo "执行数据库迁移..."
     compose run --rm --no-deps api alembic upgrade head

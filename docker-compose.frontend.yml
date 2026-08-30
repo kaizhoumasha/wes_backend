@@ -1,29 +1,15 @@
 services:
   api:
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_api
-    environment:
-      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
-    volumes:
-      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
 
   celery:
-    environment:
-      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
-    volumes:
-      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery
 
   celery-wms-fulfillment:
-    environment:
-      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
-    volumes:
-      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
+    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery_wms_fulfillment
 
   celery_beat:
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery_beat
-    environment:
-      WMS_PROVIDER_PROFILE_FILE: /run/wes/wms-provider.yaml
-    volumes:
-      - ${WES_DEV_PROVIDER_PROFILE_FILE:-./deployment/dev/wms-provider.yaml}:/run/wes/wms-provider.yaml:ro
 
   db:
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_postgres
@@ -36,9 +22,6 @@ services:
 
   mock_wms:
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_mock_wms
-
-  mock_wms_provider:
-    container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_mock_wms_provider
 
   frontend:
     image: node:22-bookworm-slim

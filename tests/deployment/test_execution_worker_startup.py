@@ -1,20 +1,21 @@
 import asyncio
 import os
 import time
+from inspect import signature
 from multiprocessing import Value
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.app.wms_integration.deployment_attestation import _beat_role_facts
-from src.app.wms_integration.provider_readiness import WmsProviderProcessRole
+from src.app.transport.composition import build_transport_runtime
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime
 from src.celery_app.config import beat_schedule, task_routes
 from src.celery_app.tasks import execution
-from src.celery_app.tasks import workline as workline_tasks
+from src.celery_app.tasks import safety as safety_tasks
+from src.core.conf import Settings
 from tests.support import ecs_uniform_wire
 from tests.support.ecs_uniform_wire import (
     DEVICE_COMMAND_QUEUE,
@@ -44,6 +45,60 @@ DEVICE_COMMAND_BEAT_CONTRACTS = (
         30.0,
     ),
 )
+
+
+def _assert_target_beat_contract(
+    *,
+    schedules: dict[str, dict[str, object]],
+    routes: dict[str, dict[str, str]],
+) -> None:
+    execution = schedules.get("process-execution-facts-batch")
+    if execution is None or execution.get("task") != TASK_NAME:
+        raise ValueError("Beat required schedule is missing or invalid: process-execution-facts-batch")
+    if routes.get(TASK_NAME) != {"queue": "device-command"}:
+        raise ValueError("execution task must use device-command")
+    for schedule_name, task_name, period, expires in DEVICE_COMMAND_BEAT_CONTRACTS:
+        expected = {
+            "task": task_name,
+            "schedule": period,
+            "kwargs": {"limit": 100},
+            "options": {"expires": expires},
+        }
+        if schedules.get(schedule_name) != expected or routes.get(task_name) != {"queue": "device-command"}:
+            raise ValueError(f"DeviceCommand Beat contract drift: {schedule_name}")
+
+
+def test_target_wms_composition_accepts_only_explicit_endpoint_inputs() -> None:
+    """Transport composition 直接消费最小 endpoint settings，不接收 compiled provider profile。"""
+
+    assert tuple(signature(build_transport_runtime).parameters) == (
+        "wms_base_url",
+        "transport_submit_path",
+        "session_factory",
+    )
+
+
+def test_target_settings_replace_provider_profile_with_minimal_wms_endpoint_keys() -> None:
+    fields = set(Settings.model_fields)
+
+    assert {"WMS_BASE_URL", "TRANSPORT_SUBMIT_PATH"} <= fields
+    assert fields.isdisjoint(
+        {
+            "WES_REVOKED_EXTERNAL_HTTP_CREDENTIAL_REFERENCES",
+            "WMS_EFFECT_ADMISSION_ENABLED",
+            "WMS_EFFECT_IDEMPOTENCY_RETENTION_SECONDS",
+            "WMS_EFFECT_STATUS_MAX_RESPONSE_BYTES",
+            "WMS_EFFECT_STATUS_TIMEOUT_SECONDS",
+            "WMS_EFFECT_STATUS_VISIBILITY_SLA_SECONDS",
+            "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V1",
+            "WMS_MATERIAL_FLOW_PRODUCTION_HMAC_SECRET_V2",
+            "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V1",
+            "WMS_MATERIAL_FLOW_SANDBOX_HMAC_SECRET_V2",
+            "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V1",
+            "WMS_MATERIAL_FLOW_STAGING_HMAC_SECRET_V2",
+            "WMS_PROVIDER_PROFILE_FILE",
+        }
+    )
 
 
 def _worker_sender(*queues: str) -> SimpleNamespace:
@@ -87,7 +142,7 @@ def test_safety_drain_task_is_registered_with_bounded_beat_fallback() -> None:
 )
 def test_safety_drain_task_rejects_unbounded_or_empty_batches(limit: object, command_limit: object) -> None:
     with pytest.raises(ValueError, match="batch limit"):
-        workline_tasks.drain_safety_incidents_batch.run(limit=limit, command_limit=command_limit)
+        safety_tasks.drain_safety_incidents_batch.run(limit=limit, command_limit=command_limit)
 
 
 @pytest.mark.parametrize("drift", ("missing-schedule", "missing-route", "wrong-route"))
@@ -102,7 +157,7 @@ def test_execution_fact_scanner_is_required_by_deployment_attestation(drift: str
         routes[TASK_NAME] = {"queue": "celery"}
 
     with pytest.raises(ValueError, match=r"Beat required schedule|device-command"):
-        _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
+        _assert_target_beat_contract(schedules=schedules, routes=routes)
 
 
 @pytest.mark.parametrize(("schedule_name", "task_name", "period", "expires"), DEVICE_COMMAND_BEAT_CONTRACTS)
@@ -144,7 +199,7 @@ def test_device_command_beat_drift_fails_deployment_attestation(
         routes[task_name] = {"queue": "celery"}
 
     with pytest.raises(ValueError, match="DeviceCommand Beat"):
-        _beat_role_facts(beat_schedule_source=schedules, task_routes_source=routes)
+        _assert_target_beat_contract(schedules=schedules, routes=routes)
 
 
 def test_execution_task_requires_an_explicit_child_runtime(monkeypatch) -> None:
@@ -171,11 +226,10 @@ def test_device_command_worker_readiness_budget_covers_a_cold_ci_container_start
     assert ecs_uniform_wire.WORKER_READY_TIMEOUT_SECONDS >= 60
 
 
-def test_device_command_worker_reuses_the_locked_test_environment_without_sync(monkeypatch, tmp_path) -> None:
+def test_device_command_worker_reuses_the_locked_test_environment_without_sync(monkeypatch) -> None:
     worker = DeviceCommandBrokerWorker(
         "postgresql+asyncpg://user:password@db:5432/test_device_command",
         "redis://redis:6379/15",
-        tmp_path / "provider.yaml",
         run_id="no-sync-proof",
     )
     captured_command: list[str] = []
@@ -199,11 +253,10 @@ def test_device_command_worker_reuses_the_locked_test_environment_without_sync(m
             worker.log_path.unlink(missing_ok=True)
 
 
-def test_device_command_worker_accepts_build_scoped_compose_redis_on_non_zero_database(tmp_path) -> None:
+def test_device_command_worker_accepts_build_scoped_compose_redis_on_non_zero_database() -> None:
     worker = DeviceCommandBrokerWorker(
         "postgresql+asyncpg://user:password@db:5432/test_device_command",
         "redis://redis:6379/15",
-        tmp_path / "provider.yaml",
         run_id="compose-network-proof",
     )
 
@@ -220,12 +273,11 @@ def test_device_command_worker_accepts_build_scoped_compose_redis_on_non_zero_da
         "redis://redis.example.com:6379/15",
     ),
 )
-def test_device_command_worker_rejects_non_isolated_or_non_local_redis(redis_url, tmp_path) -> None:
+def test_device_command_worker_rejects_non_isolated_or_non_local_redis(redis_url) -> None:
     with pytest.raises(AssertionError, match="local/build-scoped non-zero test database"):
         DeviceCommandBrokerWorker(
             "postgresql+asyncpg://user:password@db:5432/test_device_command",
             redis_url,
-            tmp_path / "provider.yaml",
         )
 
 
@@ -293,12 +345,8 @@ def test_worker_init_freezes_actual_queues_when_declaration_matches(monkeypatch)
     from src.celery_app import app as app_module
 
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
-    monkeypatch.setattr(
-        "src.app.runtime.system_capabilities.wms.provider_catalog.validate_wms_transport_configuration", MagicMock()
-    )
 
     app_module.on_worker_init(sender=_worker_sender("default", "celery", "device-command"))
 
@@ -311,7 +359,6 @@ def test_worker_init_rejects_environment_queue_drift(monkeypatch) -> None:
     from src.celery_app import app as app_module
 
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery")
 
@@ -338,7 +385,6 @@ def test_worker_process_signal_rejects_any_initialization_failure(monkeypatch, f
     monkeypatch.setattr(app_module, "setup_logger", setup_logger)
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
 
@@ -353,7 +399,6 @@ def test_execution_worker_child_startup_rejects_unfrozen_queues(monkeypatch) -> 
 
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", None, raising=False)
 
     with pytest.raises(WorkerTerminate, match="worker process initialization rejected"):
@@ -370,7 +415,6 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
@@ -389,7 +433,6 @@ def test_execution_worker_child_startup_allows_epoch_gate_success(monkeypatch) -
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
@@ -412,7 +455,6 @@ def test_replacement_execution_worker_child_does_not_repeat_epoch_restart_gate_a
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", run_gate_once)
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.WES)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
     app_module._execution_restart_gate_passed.value = False
 
@@ -442,7 +484,6 @@ def test_fulfillment_child_does_not_run_execution_epoch_gate(monkeypatch) -> Non
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", run_async)
-    monkeypatch.setattr(app_module.celery_async_runtime, "_process_role", WmsProviderProcessRole.FULFILLMENT)
     monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"wms-fulfillment"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)

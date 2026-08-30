@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import Device
 from src.app.device.repositories import DeviceRepository
-from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.workline.models import WorkLine
+from src.app.workline.repositories import workline_repository
 from src.core.logger import logger
 
 

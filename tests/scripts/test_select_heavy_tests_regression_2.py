@@ -22,13 +22,3 @@ def test_test_deploy_source_diff_validator_has_no_runtime_heavy_owner() -> None:
         )
         == []
     )
-
-
-def test_runtime_inbox_acceptance_classifier_has_no_runtime_heavy_owner() -> None:
-    assert (
-        select_heavy_tests(
-            ["scripts/classify_runtime_inbox_acceptance.py"],
-            load_config(MAPPING_PATH),
-        )
-        == []
-    )
