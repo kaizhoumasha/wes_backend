@@ -40,12 +40,12 @@
 
 - deploy-source 是已批准的干净 Commit，且其中固定的 checker digest 可从受控 Registry 拉取；
 - 所选 candidate 使用不可变 digest，而不是 channel tag；
-- `.env.prod`、WMS provider profile 和 Compose 所需秘密已在现场受控配置中提供，日志只记录批准配置文件的 SHA-256，不记录值；
+- `.env.prod` 中的 `WMS_BASE_URL`、`TRANSPORT_SUBMIT_PATH` 和 Compose 所需秘密已在现场受控配置中提供，日志只记录批准配置文件的 SHA-256，不记录值；
 - `/srv/wes/releases/` 可写，发布目录及报告只允许授权运维账号访问；
 - PostgreSQL 备份目标、恢复命令和维护窗口已确认；
 - TEST/现场主机上的 Redis 发布端口只监听 loopback，Firewalld 不对外开放该端口；容器仍通过 `redis:6379` 使用受控共享密码；
 - 外部入口、管理员凭据、Registry、磁盘空间和 Docker/Compose 满足既有现场要求；
-- WMS Provider profile 可读且能通过当前后端配置校验。该预检不探测真实 WMS/ECS，也不证明物理或业务验收完成。
+- WMS 最小 target config 可由当前后端镜像读取并通过配置校验。该预检不探测真实 WMS/ECS，也不证明物理或业务验收完成。
 
 首次使用新门禁时没有上一份有效新格式报告，自动进入 FULL，并以 `DEPLOY_SCOPE=BOTH` 建立基线。
 
@@ -81,7 +81,7 @@ Checker 硬超时 60 秒：
 - Backend：migration tree、依赖输入、provider OpenAPI、provided permissions、生产 recipe/entrypoint；
 - Frontend：依赖/lockfile、consumer OpenAPI、required operations、required permissions、生产 Dockerfile/Nginx 配置；
 - Deploy：实际 Compose、cutover 脚本或其声明的运行配置；
-- Runtime：DB head、有效 `.env`、WMS provider profile 等批准配置 hash；
+- Runtime：DB head、有效 `.env` 中的 WMS 最小 target config 等批准配置 hash；
 - 首次基线、上一版证据缺失或任一事实读取异常。
 
 FAST 还要求现场 DB head 与候选 backend expected schema head 精确一致。`BACKEND`/`BOTH` FULL 只允许数据库从已知祖先向前迁移；多 head、未知 revision、倒退或分叉均在维护前阻断。`FRONTEND` FULL 不执行任何数据库 mutation。
