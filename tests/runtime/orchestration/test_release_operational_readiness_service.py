@@ -110,9 +110,7 @@ async def test_service_uses_ten_second_cancellation_boundary(monkeypatch: pytest
 @pytest.mark.asyncio
 async def test_repository_error_is_mapped_without_leaking_detail() -> None:
     module = _service_module()
-    repository = SimpleNamespace(
-        load_counts=AsyncMock(side_effect=RuntimeError("postgresql://operator:secret@db/payload-42"))
-    )
+    repository = SimpleNamespace(load_counts=AsyncMock(side_effect=RuntimeError("database failure secret payload-42")))
 
     with pytest.raises(module.ReleaseOperationalReadinessQueryError) as raised:
         await module.ReleaseOperationalReadinessService(repository=repository).check(SimpleNamespace())

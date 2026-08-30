@@ -76,7 +76,7 @@ async def test_cli_query_error_exits_one_and_redacts_sensitive_detail() -> None:
     module = _load_script()
     stdout = io.StringIO()
     stderr = io.StringIO()
-    error = RuntimeError("postgresql://operator:secret@db payload={private-device-parameter}")
+    error = RuntimeError("database failure secret payload={private-device-parameter}")
 
     actual = await module.run(
         service=SimpleNamespace(check=AsyncMock(side_effect=error)),
