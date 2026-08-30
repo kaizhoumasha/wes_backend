@@ -9,6 +9,8 @@ import pytest
 
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import (
+    E03_CONFIRM_INBOUND,
+    E07_NOTIFY_PKG_BINDING,
     WmsConfirmationBarrierBlockedError,
     WmsConfirmationIdentityConflictError,
     WmsConfirmationIdentityConflictResult,
@@ -16,6 +18,15 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationResponseConflictResult,
     WmsConfirmationService,
 )
+
+
+def test_e03_e07_use_the_frozen_typed_operation_identities() -> None:
+    """双义务 identity 直接绑定 typed successor，不从 provider registry 动态发现。"""
+
+    assert (E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING) == (
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.notify_pkg_binding@v1",
+    )
 
 
 class FakeWmsConfirmationRepository:

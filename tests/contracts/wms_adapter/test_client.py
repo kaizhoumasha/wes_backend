@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from src.app.wms_adapter import WmsAccessResult, WmsClient
+from src.app.wms_adapter import factory as wms_factory
 from src.core.outbound_http import (
     OutboundHttpClosedError,
     OutboundHttpDeliveryState,
@@ -78,6 +79,30 @@ def test_wms_adapter_exposes_only_the_public_surface() -> None:
         "build_wms_client",
         "router_v1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_wms_client_factory_uses_the_literal_wms_origin_without_profile_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = _FakeTransport(_response(body=b'{"ready":true}'))
+    captured: dict[str, object] = {}
+
+    def build_transport(**kwargs: object) -> _FakeTransport:
+        captured.update(kwargs)
+        return transport
+
+    monkeypatch.setattr(wms_factory, "build_outbound_http_transport", build_transport)
+
+    client = wms_factory.build_wms_client(base_url="http://wms.internal:8080", timeout_seconds=10.0)
+    result = await client.get("/health")
+
+    assert captured == {
+        "system_id": "wms",
+        "base_url": "http://wms.internal:8080",
+        "timeout_seconds": 10.0,
+    }
+    assert result.json_body == {"ready": True}
 
 
 @pytest.mark.asyncio
