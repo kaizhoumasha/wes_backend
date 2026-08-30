@@ -1,6 +1,6 @@
 # Phase 9 Minimum Execution Foundation 实施计划
 
-status: Implementation accepted on feature branch; develop integration pending
+status: Implemented and merged into develop@c5a93872
 decision_date: 2026-08-28
 owner: WES 基础执行能力
 depends_on: Gate A 开发流程基线、Gate B 运输接入诊断、Phase 8 backend RC
@@ -338,9 +338,11 @@ Synthesized from this review's findings. Each task derives from a specific findi
 7. GitNexus staged change scope、唯一主 Review 与反馈闭环完成，Phase 10 inventory `UNRESOLVED=0`；
 8. 未把代码、Mock、镜像、部署 readiness、callback receipt 或历史绿灯描述成物理/供应商/业务验收。
 
-满足以上条件后，才能把 Phase 9 标记为完成并开启 Phase 10 Execution Lock。
+满足以上条件后，才能把 Phase 9 标记为完成并作为 Phase 10 Task 0 的当前输入；Phase 9 完成本身不直接开启 Phase 10 Execution Lock。
 
-### 11.1 2026-08-29 分支完成性验收证据
+### 11.1 2026-08-29 分支完成性历史验收证据
+
+以下内容保留合入前 feature branch 验收时点的原始历史状态，不表示当前 `develop` 状态。
 
 - 基线：`develop@a78e8d66eb36c7fdc361a71b310706cdd3fc3fb7`；实施分支
   `codex/phase9-minimum-execution-foundation`；主体实现提交为 `b68fb4ca`，最终门禁修复提交为 `a776af12`，尚未合入 `develop`。
@@ -355,6 +357,13 @@ Synthesized from this review's findings. Each task derives from a specific findi
 - 在该分支合入 `develop` 前，不得把 Phase 9 描述为 `develop` 基线，也不得开启 Phase 10 Execution Lock；Phase 10 继续保持
   `GATED`。
 - 未执行部署、供应商联调、现场物理运动或业务验收；仓内绿灯不能替代这些证据。
+
+### 11.2 2026-08-29 当前集成状态
+
+Phase 9 已合入 `develop@c5a93872`。这只证明仓内实施与集成完成，不表示部署、供应商联调、现场物理运动或业务验收完成；Phase 10
+已在 `codex/phase10-implementation@834fe59e` 消费本计划 handoff，完成 Task 0 prerequisite freeze、发布运行静默门禁
+Tasks 1–4、Task 0 final admission 和 Tasks 1–6 仓内实施/准入。该 Phase 10 分支尚未 Push、创建 PR、合入或部署，Task 7
+cutover 未执行；因此本计划的未部署、未现场验收边界不变。
 
 ## 12. Review completion summary
 
@@ -387,6 +396,8 @@ Transport 联调诊断链。当前计划因此不再依赖旧 Phase 9 假设，�
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | 后端计划，不需要 |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | 本轮未运行 |
 
-**VERDICT:** APPROVED — Phase 9 可按本计划进入 Execution Lock；生产实施尚未开始，本次批准不授权实施、Push、PR、Merge 或 Deploy。
+**HISTORICAL VERDICT:** APPROVED — Phase 9 可按本计划进入 Execution Lock；生产实施尚未开始，本次批准不授权实施、Push、PR、Merge 或 Deploy。
+
+该 verdict 保留原计划评审时点的历史文字；当前 Phase 10 admission 顺序以 11.2 和 Phase 10 计划 Task 0 为准。
 
 NO UNRESOLVED DECISIONS
