@@ -37,7 +37,7 @@
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
 | `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能实现、本机 Mock 验收和 RC 关闭门禁的实施历史 |
 | `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
-| `docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役计划；Tasks 0–6 已在 `codex/phase10-implementation@834fe59e` 按 Task 独立提交并完成仓内准入；Task 7 Deploy/Cutover 未执行，分支尚未合入 `develop` |
+| `docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役与联调 cutover 退出证据；Tasks 0–7 已完成，`834fe59e` target-only candidate 已部署联调，分支尚未合入 `develop`，供应商/物理/业务验收未完成 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |

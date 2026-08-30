@@ -2,10 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-status: Tasks 0–6 implemented and verified on codex/phase10-implementation@834fe59e; Task 7 not run
-implementation_date: 2026-08-29
+status: Tasks 0–7 completed; onsite target-only cutover verified from candidate 834fe59e
+implementation_date: 2026-08-29 to 2026-08-30
 merge_status: NOT PUSHED / NO PR / NOT MERGED
-deployment_status: NOT DEPLOYED / NO CUTOVER
+deployment_status: DEPLOYED TO INTEGRATION / CUTOVER VERIFIED / NOT SUPPLIER OR BUSINESS ACCEPTED
 
 **Goal:** 在 Phase 9 最小执行基础和当前生产 successor 已真实交付后，通过一次 target-only 原子切换删除旧 Runtime/Intent/Outbox/Hold/Provider 生产路径，并只把零生产消费者的 schema identity 交给 Phase 11。
 
@@ -18,7 +18,8 @@ deployment_status: NOT DEPLOYED / NO CUTOVER
 ## Global Constraints
 
 - Task 0 prerequisite freeze、独立发布运行静默门禁 Tasks 1–4、Task 0 final admission 与 Execution Lock 已在
-  `codex/phase10-implementation` 闭合；Tasks 1–6 已完成仓内实施与验证。该证据不授权也不证明 Task 7 现场切换，旧部署仍未停用。
+  `codex/phase10-implementation` 闭合；Tasks 1–6 已完成仓内实施与验证。Task 7 已于 2026-08-30 在联调环境完成
+  target-only cutover；该结果不代表供应商、物理流程或业务验收。
 - Phase 9 必须先真实交付 SRS 已批准的 `BinExecution`、活动管辖期 `PositionProjection` 和本计划需要的最小 successor；不得用 `MaterialExecution`、旧 29-operation registry 或只有 schema、没有领域不变量与测试 owner 的空模型顶替。`BinExecution` 是核心执行对象，不代表人工或自动插件已经交付。
 - Task 0 必须证明 `WorkLineRepository.get_unfinished_workload_summary()` 覆盖 `LineRunEpoch`、`MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask`、`InboundEvidence`、`WmsConfirmation` 七类 owner，现有 `ESTOP_PRESSED` final router 与 E03/E07 `WmsConfirmation` typed successor 可 `Verify/Retain`，并冻结 OpenTelemetry 同步 exporter 处置和当前仍需保留的 WMS consumer；任一 `UNRESOLVED` 非零即 `STOP`。
 - `manual_bin_processing`、RETURN_BUFFER、人工 Task、自动上架、自动拣货及其 WMS 业务 wire 不属于 Phase 10 入口条件；尚无当前生产消费者的旧 operation 必须裁决为 `DELETE → NONE`，不得为 Phase 12/13 保留旧 Provider 路径。
@@ -61,6 +62,30 @@ deployment_status: NOT DEPLOYED / NO CUTOVER
   `dd35f04b258f`，四表 readiness 返回 `READY`，候选容器健康。
 - 上述证据只证明仓内实现、隔离环境和本地不可变候选。Push、PR、Merge、Deploy/Cutover、现场 legacy drain、连续 READY、
   旧 worker 停止、供应商/设备/业务验收均未执行。
+
+## 2026-08-30 Task 7 联调环境退出证据
+
+- 目标：`CANTAISYS@100.94.216.118`；release evidence：
+  `/srv/wes/app/releases/phase10-task7-20260830T054232Z-834fe59e/`。
+- 不可变候选：source commit `834fe59e0c44c943487eedb6ed41af1c519df7ad`，native amd64 image digest
+  `sha256:018c1cd82276b876a64ffbdaa9379ceca15a091fc1b1b265960793d732d8e00d`，expected schema head
+  `dd35f04b258f`；API、2 个 general worker、1 个 fulfillment worker、Beat 与 Flower 共 6 个后端容器使用同一 digest。
+- 旧入口/producer：Nginx、API、Beat 按序停止，旧 worker 保持运行时，现场专用 manifest 对全部 3 个精确 Celery node
+  完成两次 legacy database/broker stable zero，结果 `READY`；没有 purge Redis queue。
+- 在线四账本预检发现 1 个 `DeviceCommand`、1 个 `TransportTask` 与 4 个 `InboundEvidence` blocker。用户明确确认联调数据可清理并
+  授权完整重建精确数据库 `wes_db`；因此本次维护窗采用 empty-site rebuild 处置，而不是伪造 callback、改写原 identity 或盲重发。
+- 删除前备份：`/srv/wes/app/backups/wes_db-pre-phase10-task7-20260830T054232Z.dump`，SHA-256
+  `4a8bd0dfd5ed7665184d880b6e73e712b6ef72d5a320a90d7a86f007907e3961`，并通过 `pg_restore --list` 校验。只 drop/create
+  `wes_db`；PostgreSQL volume、Redis、frontend 与其它数据库均未删除。
+- 新库由候选从 base migration 到唯一 head `dd35f04b258f`，运行 `bootstrap_foundation.sh` 后权限独立 `--check` 为
+  149 permissions、5 roles、0 delta；候选四账本随后间隔 30 秒取得两次 `READY`，激活后再次 `READY`。
+- 运行时 absence：3 个 worker 注册的 legacy task 为 0，Beat 中 legacy schedule task 为 0；7 个遗留 WMS profile/effect env key
+  从现场 `.env.prod` 精确删除并重建后端，`/run/wes/wms-provider.yaml` mount 为 0，旧 backend image container 为 0；实时
+  OpenAPI 除运行时版本字段外与候选 provider artifact 一致，管理员真实 login/logout 通过。
+- 最终入口：HTTP `/health` 与首页从联调主机及远端客户端均返回 200；现有 Nginx 只配置 `listen 80`，虽然 Compose 发布 443，
+  但没有 TLS listener/certificate，因此本次不把 HTTPS 记为通过证据。frontend 容器未重建。
+- 边界：这证明 Phase 10 target-only 部署与运行准入，不证明 WMS/RCS/ECS、设备物理完成、供应商联调或业务验收。分支仍未
+  Push、创建 PR 或合入 `develop`。
 
 ---
 
@@ -418,47 +443,62 @@ Phase 9 已于 2026-08-29 合入 `develop@c5a93872`，其 `UNRESOLVED=0` operati
 - Consumes: Task 6 不可变 candidate digest、已验证的四表 readiness CLI、Task 4 drain/cutover manifest 和 Deploy/Cutover 授权。
 - Produces: Phase 10 exit evidence；只包含零消费者 schema identities 的 Phase 11 handoff。
 
-- [ ] **Step 1: 复核 candidate ready 后关闭旧 admission 与 Beat**
+- [x] **Step 1: 复核 candidate ready 后关闭旧 admission 与 Beat**
 
   先用 candidate-container 对当前现场数据库执行在线四表预检，并核对 candidate digest/config。只有结果为 `READY` 才停止旧 deployment 的 Nginx、优雅停止 API、验证 listener 关闭，再停止旧 Beat；旧 worker、数据库和 Redis 继续运行。在线 `BLOCK`、`WAIT_DRAIN` 或查询失败在不进入维护态时终止；listener 或 Beat 停止失败则保持维护态。两类失败都不得激活 candidate。
 
-- [ ] **Step 2: 由旧 worker 排空 legacy owner**
+  现场预检为 `BLOCK`，首次尝试按门禁中止。用户随后明确授权清理联调数据与完整重建 `wes_db`，形成新的 empty-site
+  maintenance 授权；候选未在 blocker 数据库上激活，入口关闭后才继续执行。
+
+- [x] **Step 2: 由旧 worker 排空 legacy owner**
 
   旧部署的 consumer worker 继续处理已经落账的 RuntimeInbox/Intent/Outbox 等工作；执行 Task 4 的数据库同快照查询、broker inspection 和 producer freeze 复核。任一 active、ambiguous、identity conflict、查询失败或期间新增旧 row 都保持维护态，按原 identity 人工调查，不自动重发或清理。
 
-- [ ] **Step 3: 证明 legacy 连续稳定为零**
+- [x] **Step 3: 证明 legacy 连续稳定为零**
 
   按 cutover manifest 的间隔取得连续两次 database/broker/producer stable zero。只有两次都满足且无新旧 identity 冲突，才允许继续；旧 worker 此时仍运行。
 
-- [ ] **Step 4: 在旧 worker 仍运行时取得四表连续 READY**
+- [x] **Step 4: 在旧 worker 仍运行时取得四表连续 READY**
 
   由同一不可变 candidate-container 读取现场 `DeviceCommand`、`TransportTask`、`InboundEvidence`、`WmsConfirmation`，按发布静默门禁取得连续两次 `READY`。`WAIT_DRAIN` 继续等待至批准的超时，`BLOCK`、查询失败或超时保持维护态；不得先停旧 worker 逼出静默。
 
-- [ ] **Step 5: 停止旧 worker 并激活 target-only candidate**
+  原保留数据路径因 blocker 未满足；在旧 worker 仍运行时先完成 legacy stable zero，随后按用户单独授权停止全部 writer、备份并
+  完整重建精确数据库。新库初始化后由同一候选间隔 30 秒取得两次 `READY`。这是联调 empty-site rebuild 的显式例外，不能
+  复用为日常 FULL 发布，也不能作为生产数据清理授权。
+
+- [x] **Step 5: 停止旧 worker 并激活 target-only candidate**
 
   只有 legacy stable zero 与四表连续 READY 同时成立后，才有序停止旧共享 worker并确认无 task 正在执行；随后激活不可变 candidate。禁止 old/new worker、Beat、API 或 profile 并行，不 purge 共享 Redis queue。
 
-- [ ] **Step 6: 重开 admission 前复核 absence 与 readiness**
+  本次按 Step 4 记录的 empty-site rebuild 例外，在 legacy stable zero 后先停止全部 writer，完成备份/重建和两次候选 `READY`，
+  再激活 target-only candidate；全程没有 old/new worker、Beat 或 API 并行，也未 purge Redis。
+
+- [x] **Step 6: 重开 admission 前复核 absence 与 readiness**
 
   在 candidate 运行态复核旧 import/task/Beat/route/env/mount/production schema owner absence、registered tasks/queues 和四表 readiness。任何失败保持 admission 关闭，不自动 fallback 到旧路径；成功后才启动 target Beat/API/Nginx 并验证 listener。
 
-- [ ] **Step 7: 形成 Phase 10 exit 证据**
+- [x] **Step 7: 形成 Phase 10 exit 证据**
 
   记录 source/image/config digest、legacy drain snapshots、四表连续 READY、task/queue/route/config absence、QUALITY/HEAVY 和未验证现场边界。健康检查、Mock、部署成功不等于设备、供应商或业务验收。
 
-- [ ] **Step 8: 只交接零消费者 schema identities**
+- [x] **Step 8: 只交接零消费者 schema identities**
 
   对 Task 0 的每个 schema-deferred identity证明只有 model definition、`migrations/env.py`、已有 revisions 和 schema-only tests可引用，再将 schema/name/FK/index identity交给 `2026-08-15-wes-schema-and-migration-baseline-reset.md` Task 1 重新冻结。Phase 10 不传递 DDL、revision ID 或基线生成方案。
+
+  已交接 22 个 cleanup matrix `schema-deferred` table/model identity；Phase 11 只把它们作为 Task 1 重新枚举 FK、index 与
+  PostgreSQL 专有对象的输入，不把本次 handoff 当作删除授权。
 
 ---
 
 ## Phase 10 完成定义
 
-Tasks 0–6 已满足仓内实现与准入要求，但只有以下全部成立才能把 master 的 Phase 10 标记为完成。当前第 2、8、9 项仍依赖
-Task 7 的现场 cutover/Phase 11 handoff 证据，因此 Phase 10 当前状态是 `IMPLEMENTED — VERIFIED — NOT DEPLOYED`，不是 Completed：
+Tasks 0–7 已满足仓内实施、准入与联调环境 target-only cutover；Phase 10 当前状态是
+`COMPLETED — DEPLOYED TO INTEGRATION — NOT SUPPLIER OR BUSINESS ACCEPTED`。其中 empty-site rebuild 只绑定本次用户授权，
+不改变普通发布的保留数据门禁：
 
 1. Phase 9 exit 已证明，Task 0 所有 successor 唯一且 `UNRESOLVED=0`；
-2. 旧 producer 封闭，数据库与 broker 一次性 drain 连续稳定为零，歧义按原 identity 收敛且无盲重发；
+2. 旧 producer 封闭，数据库与 broker 一次性 drain 连续稳定为零；本次联调四账本 blocker 未冒充物理闭合，而是在可验证备份后
+   按用户明确授权完整重建 empty-site 数据库，全程无盲重发；
 3. production/package export/API/OpenAPI/permission/Celery/Beat/Compose/env/mount/script/current-doc 对旧 owner 零引用；
 4. target Safety/START/Resource、DeviceCommand、TransportTask、Material/BinExecution、InboundEvidence、WmsConfirmation 和插件 owner 测试闭合；
 5. 生产 `AsyncClient` constructor 只有 Phase 2 factory，无同步 raw Client、scripts raw Client、业务 direct httpx import 或重复 WMS pool；ECS endpoint pool 仍按 canonical endpoint 复用；
@@ -480,6 +520,7 @@ Task 7 的现场 cutover/Phase 11 handoff 证据，因此 Phase 10 当前状态�
 
 **HISTORICAL VERDICT:** ENG CLEARED — ready to implement within the frozen gate order
 
-**CURRENT VERDICT:** Tasks 0–6 IMPLEMENTED AND VERIFIED；fresh Review 0 findings；Task 7 NOT AUTHORIZED / NOT RUN。
+**CURRENT VERDICT:** Tasks 0–7 COMPLETED；target-only candidate 已部署到联调环境；旧 backend runtime consumer 为零；
+Phase 11 schema handoff 已形成；未 Push、未创建 PR、未合入 `develop`，且未完成供应商、设备物理或业务验收。
 
 NO UNRESOLVED DECISIONS
