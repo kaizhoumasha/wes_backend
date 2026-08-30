@@ -17,8 +17,8 @@ Transport member-position/result evidence 和位置投影。Phase 5 退役旧工
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9 已合入 `develop@c5a93872`。Phase 10 Tasks 0–7 已完成，
-`codex/phase10-implementation@834fe59e` 的 target-only candidate 已于 2026-08-30 部署到联调环境并通过 cutover 门禁；分支尚未
-Push、创建 PR 或合入 `develop`，该部署不代表供应商、设备物理或业务验收。Phase 8 的 GitLab 发布提交
+`codex/phase10-implementation@834fe59e` 的 target-only candidate 已于 2026-08-30 部署到联调环境并通过 cutover 门禁；发布分支
+已推送、尚未合入 `develop`，该部署不代表供应商、设备物理或业务验收。Phase 8 的 GitLab 发布提交
 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成不可变后端 RC 镜像 `88-f51677b`。
 真实 WMS/RCS/ECS、设备、供应商版本组合和业务验收不属于上述联调部署证据。
 
@@ -784,7 +784,7 @@ RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 | 4 | Phase 8 粗分机后端 RC | Closed | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；Jenkins #88 已发布不可变镜像 `88-f51677b` |
 | 5 | Phase 9 最小执行基础 | Completed | 已合入 `develop@c5a93872`；七项 successor、migration、QUALITY、HEAVY 和 handoff 已闭合 |
 | 6 | Phase 10 Tasks 0–6 | Implemented and verified | 七个 Task 提交、QUALITY `2378 passed`、staged HEAVY `439 passed`、fresh Review 0 findings、本地候选健康 |
-| 7 | Phase 10 Task 7 原子 cutover | Completed | 联调环境 legacy 两次 stable zero、授权 empty-site rebuild、候选两次 READY、旧 runtime absence 与 Phase 11 handoff 已闭合；未 Push/PR/Merge，未完成供应商/物理/业务验收 |
+| 7 | Phase 10 Task 7 原子 cutover | Completed | 联调环境 legacy 两次 stable zero、授权 empty-site rebuild、候选两次 READY、旧 runtime absence 与 Phase 11 handoff 已闭合；发布分支已推送、尚未合入 `develop`，未完成供应商/物理/业务验收 |
 
 Phase 8 后端实施、本机 Mock 和不可变 RC 镜像发布已完成。这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 

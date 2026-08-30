@@ -4,7 +4,7 @@
 
 status: Tasks 1–4 implemented and verified on codex/phase10-implementation@834fe59e; Task 5 not run
 implementation_commit: eb9b1a54
-deployment_status: NOT DEPLOYED
+deployment_status: Tasks 1–4 included in Phase 10 Task 7 integration cutover; Task 5 TEST Deploy not run
 
 **Goal:** 在 `BACKEND FULL` 和 `BOTH FULL` 停止执行进程前，以两阶段只读门禁阻止未决、歧义或仍在途物理执行被发布切断。
 
@@ -32,7 +32,8 @@ deployment_status: NOT DEPLOYED
 - 不默认新增索引或 migration；只有实际 `EXPLAIN` 和代表性数据证明 10 秒目标无法满足时，才暂停并另行确认索引变更。
 - `RuntimeInbox`、`RuntimeIntentLog` / Effect、`SystemOutbox`、`RuntimeHold` 和 `ExecutionSession` 是 Phase 10 legacy owner；不得成为新 DTO、registry、查询、兼容路径或空 schema 依赖。Phase 11 只删除 Phase 10 证明零生产消费者的无 owner schema。
 - Phase 9 已合入 `develop@c5a93872`。Phase 10 Task 0 prerequisite freeze、本计划 Tasks 1–4 的 RED/DEV/GREEN/Review、
-  Task 0 final admission 与 Execution Lock 已在 `codex/phase10-implementation` 闭合；实现已进入本地不可变候选，但尚未合入或部署。
+  Task 0 final admission 与 Execution Lock 已在 `codex/phase10-implementation` 闭合；实现已纳入 `834fe59e` 不可变候选并由
+  Phase 10 Task 7 完成联调环境 cutover，但发布分支尚未合入 `develop`，本计划 Task 5 TEST Deploy 仍未执行。
   不使用 feature flag、legacy adapter、双查询或兼容 facade。
 
 ## FULL 发布时序
@@ -236,7 +237,8 @@ git diff --check -- src/app/runtime/orchestration scripts/check_release_operatio
 
 **Classification:** 部署验收；只有获得 Deploy 授权后执行。
 
-当前状态：未取得 Deploy 授权，以下步骤均未执行。本地候选容器的隔离 readiness/health 证据不能替代 TEST 或现场部署验收。
+当前状态：本计划 Task 5 未取得 TEST Deploy 授权，以下步骤均未执行。Phase 10 Task 7 的一次性联调 cutover 证据不能替代普通
+TEST FULL 发布验收，也不代表供应商、物理或业务验收完成。
 
 - [ ] **Step 1: 验证 READY 路径**
 

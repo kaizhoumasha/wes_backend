@@ -360,10 +360,10 @@ Synthesized from this review's findings. Each task derives from a specific findi
 
 ### 11.2 2026-08-29 当前集成状态
 
-Phase 9 已合入 `develop@c5a93872`。这只证明仓内实施与集成完成，不表示部署、供应商联调、现场物理运动或业务验收完成；Phase 10
+Phase 9 已合入 `develop@c5a93872`。这只证明仓内实施与集成完成，不表示供应商联调、现场物理运动或业务验收完成；Phase 10
 已在 `codex/phase10-implementation@834fe59e` 消费本计划 handoff，完成 Task 0 prerequisite freeze、发布运行静默门禁
-Tasks 1–4、Task 0 final admission 和 Tasks 1–6 仓内实施/准入。该 Phase 10 分支尚未 Push、创建 PR、合入或部署，Task 7
-cutover 未执行；因此本计划的未部署、未现场验收边界不变。
+Tasks 1–4、Task 0 final admission 和 Tasks 1–6 仓内实施/准入。Task 7 已使用同一不可变候选完成联调环境 target-only cutover
+与 Phase 11 handoff；发布分支已推送、尚未合入 `develop`。该证据仍不代表供应商、物理或业务验收完成。
 
 ## 12. Review completion summary
 
