@@ -7,6 +7,19 @@ FRONTEND_ROOT="${WES_FRONTEND_ROOT:-$(dirname "$BACKEND_ROOT")/wes_frontend}"
 ENV_FILE="$BACKEND_ROOT/.env.dev"
 WAIT_TIMEOUT="${DEV_ENV_WAIT_TIMEOUT:-240}"
 DEV_COMPOSE_PROJECT="${WES_DEV_COMPOSE_PROJECT:-wes_backend_dev}"
+APP_HOST_PORT="${APP_HOST_PORT:-8001}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+NGINX_HTTP_PORT="${NGINX_HTTP_PORT:-80}"
+MOCK_ECS_PORT="${MOCK_ECS_PORT:-8010}"
+MOCK_WMS_PORT="${MOCK_WMS_PORT:-8011}"
+MOCK_ECS_URL="http://127.0.0.1:8010/"
+MOCK_WMS_URL="http://127.0.0.1:8011/"
+if [ "$MOCK_ECS_PORT" != "8010" ]; then
+    MOCK_ECS_URL="http://127.0.0.1:${MOCK_ECS_PORT}/"
+fi
+if [ "$MOCK_WMS_PORT" != "8011" ]; then
+    MOCK_WMS_URL="http://127.0.0.1:${MOCK_WMS_PORT}/"
+fi
 COMMAND="${1:-}"
 
 REQUIRED_SERVICES=(
@@ -144,14 +157,14 @@ check_frontend_source_identity() {
 
 check_http() {
     local urls=(
-        "http://127.0.0.1:8001/health"
-        "http://127.0.0.1:8001/ready"
-        "http://127.0.0.1:8001/api/openapi.json"
-        "http://127.0.0.1:5173/"
-        "http://127.0.0.1:5173/api/openapi.json"
-        "http://127.0.0.1/"
-        "http://127.0.0.1:8010/"
-        "http://127.0.0.1:8011/"
+        "http://127.0.0.1:${APP_HOST_PORT}/health"
+        "http://127.0.0.1:${APP_HOST_PORT}/ready"
+        "http://127.0.0.1:${APP_HOST_PORT}/api/openapi.json"
+        "http://127.0.0.1:${FRONTEND_PORT}/"
+        "http://127.0.0.1:${FRONTEND_PORT}/api/openapi.json"
+        "http://127.0.0.1:${NGINX_HTTP_PORT}/"
+        "$MOCK_ECS_URL"
+        "$MOCK_WMS_URL"
     )
     for url in "${urls[@]}"; do
         curl --fail --silent --show-error --connect-timeout 3 --max-time 10 --output /dev/null "$url"
