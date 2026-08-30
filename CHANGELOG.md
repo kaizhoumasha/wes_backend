@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.3.0] - 2026-08-30
+
+### Added
+
+- 增加四账本发布静默门禁与 legacy database/broker 双样本 drain 检查，发布人员可以在关闭旧 worker 前得到 `READY`、`WAIT_DRAIN` 或 `BLOCK` 的 fail-closed 结论。
+- 增加 Phase 10 cutover manifest、只读调查身份和 release evidence，支持从不可变候选追溯 source、image、schema、配置与联调环境退出事实。
+
+### Changed
+
+- WorkLine、Safety、Resource、WMS、HTTP、Celery、Compose 与 Jenkins 改为只装配 Phase 9 successor 和 target-only 执行路径，不再依赖旧 Runtime/Intent/Outbox/Hold/Provider 生产闭包。
+- 发布准备改用 `WMS_BASE_URL` 与 `TRANSPORT_SUBMIT_PATH` 的最小 target config，并保持四账本 readiness、不可变 digest 与维护态失败边界。
+- `dev-env.sh check` 按当前 worktree 的配置端口探测 API、前端、Nginx 和 Mock 服务，避免误把另一 checkout 的默认端口服务当成当前环境。
+
+### Removed
+
+- 删除旧 RuntimeInbox、RuntimeIntent、SystemOutbox、通用 Hold/Recovery/Reservation、WMS Provider/Profile/query/effect/status lane 及其 Celery、脚本、配置和行为测试消费者；schema identity 仅保留给 Phase 11 基线重置重新枚举。
+
+### Fixed
+
+- 修复 Phase 10 Task 7 当前态索引与总控文档仍标记为未执行的问题，并保留联调 cutover 不等于供应商、物理或业务验收的边界。
+- 增加 worktree 自定义端口回归测试，冻结 `dev-env.sh check` 不跨 checkout 误判的行为。
+
+### Verification
+
+- QUALITY 通过：2379 项默认 FAST 测试通过，5 项按既有外部条件跳过；Ruff、Bandit、架构、合同和测试所有权门禁通过。
+- `heavy-test-impact.toml` 选中的 46 个 HEAVY 文件共 439 项通过，覆盖干净 PostgreSQL migration、真实 worker/Broker、并发、Transport、WMS Adapter、load 与 Mock 边界，无 skip。
+- 覆盖审计为 90%，Fresh Review 无剩余意见；联调主机只读复核 Task 7 release 目录、备份 SHA-256、连续 readiness evidence、legacy runtime 零值和 6 个后端容器的同一 candidate digest。
+- 本版本只证明仓内实现、联调环境 target-only cutover 和发布准入；不证明 WMS/RCS/ECS、设备物理完成、供应商一致性或业务验收。
+
 ## [0.29.2.0] - 2026-08-29
 
 ### Added
