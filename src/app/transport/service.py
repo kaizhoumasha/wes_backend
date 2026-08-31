@@ -16,10 +16,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
 
+from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
 from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import (
     MAX_SUBMIT_ATTEMPTS,
+    TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
     TRANSPORT_POSITION_OPERATION,
     TRANSPORT_RESULT_OPERATION,
     BinExchangePair,
@@ -50,6 +52,8 @@ from src.app.transport.contracts import (
 from src.app.transport.debug_reset import (
     TransportDebugResetPreview,
     TransportDebugResetResult,
+    TransportDebugStep,
+    TransportDebugStepConfirmation,
     normalize_transport_task_id,
 )
 from src.app.transport.models import (
@@ -232,6 +236,22 @@ class TransportService:
     ) -> TransportHandle:
         return await self._create_task(MoveBinsRequest(client_request_id, caller, moves), execution_authority)
 
+    async def move_bins_for_debug(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        moves: tuple[BinMove, ...],
+    ) -> TransportHandle:
+        """按请求内冻结的货架面创建联调 BIN_MOVE，不读取或写入业务位置投影。"""
+
+        if caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+            raise TransportContractError("debug bin move requires TRANSPORT_DEBUG caller")
+        return await self._create_task(
+            MoveBinsRequest(client_request_id, caller, moves),
+            None,
+            allow_debug_rack_face=True,
+        )
+
     async def exchange_bins(
         self,
         client_request_id: str,
@@ -275,12 +295,21 @@ class TransportService:
         async with self._sessions() as db:
             return await self._build_debug_reset_preview(db, task_id, for_update=False)
 
-    async def reset_debug_task(self, transport_task_id: str) -> TransportDebugResetResult:
+    async def reset_debug_task(
+        self,
+        transport_task_id: str,
+        confirmation: TransportDebugStepConfirmation | None = None,
+    ) -> TransportDebugResetResult:
         """锁定并原子删除指定 TransportTask 的完整本地 Transport 链路。"""
 
         task_id = _validated_transport_task_id(transport_task_id)
         async with self._sessions.begin() as db:
             await self._build_debug_reset_preview(db, task_id, for_update=True)
+            if confirmation is not None:
+                task = await self._repository.get_task(db, task_id, for_update=True)
+                if task is None:
+                    raise NotFoundException(resource_type="TransportTask", resource_id=task_id)
+                await self._audit_debug_step_confirmation(db, task, confirmation)
             (
                 callback_receipt_count,
                 evidence_count,
@@ -298,6 +327,45 @@ class TransportService:
             deleted_position_projection_count=position_projection_count,
             deleted_member_count=member_count,
             deleted_binding_count=binding_count,
+        )
+
+    async def _audit_debug_step_confirmation(
+        self,
+        db: AsyncSession,
+        task: TransportTask,
+        confirmation: TransportDebugStepConfirmation,
+    ) -> None:
+        if task.caller_json.get("workline_id") != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+            raise TransportContractError("operator confirmation requires a TRANSPORT_DEBUG task")
+        expected_kind = {
+            TransportDebugStep.RACK_TO_STATION: TransportTaskKind.RACK_MOVE.value,
+            TransportDebugStep.BINS_TO_INFEED: TransportTaskKind.BIN_MOVE.value,
+            TransportDebugStep.BINS_TO_RACK: TransportTaskKind.BIN_MOVE.value,
+            TransportDebugStep.RACK_TO_STORAGE: TransportTaskKind.RACK_MOVE.value,
+        }[confirmation.step]
+        if task.kind != expected_kind:
+            raise TransportContractError("operator confirmation step does not match Transport task kind")
+        if not _debug_step_matches_frozen_request(task, confirmation.step):
+            raise TransportContractError("operator confirmation step does not match frozen Transport request")
+        await audit_log_service.create_audit_log(
+            db,
+            method="POST",
+            title="确认 Transport 联调物理步骤",
+            path=f"/api/v1/transport/debug-tasks/{task.transport_task_id}/reset",
+            args={
+                "model": "TransportTask",
+                "operation": "debug_step_confirm",
+                "record_id": task.transport_task_id,
+                "changes": {
+                    "source": "OPERATOR_DEBUG",
+                    "business_authoritative": False,
+                    "step": confirmation.step.value,
+                    "assertion": confirmation.assertion,
+                    "client_request_id": task.client_request_id,
+                    "kind": task.kind,
+                    "frozen_targets": _debug_frozen_targets(task),
+                },
+            },
         )
 
     async def _build_debug_reset_preview(
@@ -750,11 +818,18 @@ class TransportService:
         self,
         request: TransportRequest,
         execution_authority: TransportExecutionAuthority | None,
+        *,
+        allow_debug_rack_face: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         try:
             async with self._sessions.begin() as db:
-                return await self._create_task_in_session(db, request, execution_authority)
+                return await self._create_task_in_session(
+                    db,
+                    request,
+                    execution_authority,
+                    allow_debug_rack_face=allow_debug_rack_face,
+                )
         except IntegrityError as error:
             async with self._sessions() as db:
                 existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
@@ -767,6 +842,8 @@ class TransportService:
         db: AsyncSession,
         request: TransportRequest,
         execution_authority: TransportExecutionAuthority | None,
+        *,
+        allow_debug_rack_face: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         task_id = f"transport-{uuid.uuid4()}"
@@ -827,6 +904,14 @@ class TransportService:
             if projection.arrival_face == request.target_face.value:
                 raise TransportContractError("target face equals current face")
         elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
+            if allow_debug_rack_face and (
+                not isinstance(request, MoveBinsRequest)
+                or request.caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID
+            ):
+                raise TransportContractError("debug rack face override requires TRANSPORT_DEBUG BIN_MOVE")
+            if allow_debug_rack_face:
+                await self._repository.add_aggregate(db, task, members, bindings)
+                return TransportHandle(task_id, request.client_request_id)
             for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
                 projection = await self._position_projections.get_current(db, "RACK", rack_id, for_update=True)
                 if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
@@ -1227,6 +1312,61 @@ def _rack_faces_for_bin_request(request: MoveBinsRequest | ExchangeBinsRequest) 
             position for pair in request.exchange_pairs for position in (pair.left_location, pair.right_location)
         )
     return {position.rack_id: position.rack_face for position in positions if isinstance(position, RackBinSlot)}
+
+
+def _debug_frozen_targets(task: TransportTask) -> list[dict[str, Any]]:
+    request = task.request_json
+    if task.kind == TransportTaskKind.RACK_MOVE.value:
+        return [
+            {
+                "object_id": request["rack_id"],
+                "target": request["target"],
+                "arrival_face": request["target_face"],
+            }
+        ]
+    if task.kind == TransportTaskKind.BIN_MOVE.value:
+        return [
+            {
+                "object_id": move["bin_id"],
+                "target": move["target"],
+                "arrival_face": move["target"].get("rack_face"),
+            }
+            for move in request["moves"]
+        ]
+    raise TransportContractError("operator confirmation supports RACK_MOVE or BIN_MOVE only")
+
+
+def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebugStep) -> bool:
+    request = task.request_json
+    if task.kind == TransportTaskKind.RACK_MOVE.value:
+        route = (
+            request["source"]["location_code"],
+            request["target"]["location_code"],
+        )
+        expected_route = {
+            TransportDebugStep.RACK_TO_STATION: ("WH01", "KT16"),
+            TransportDebugStep.RACK_TO_STORAGE: ("KT16", "WH01"),
+        }.get(step)
+        return route == expected_route
+    if task.kind == TransportTaskKind.BIN_MOVE.value:
+        expected_positions = {
+            TransportDebugStep.BINS_TO_INFEED: ("RACK_BIN_SLOT", "HANDOFF_POSITION", "CNV0301"),
+            TransportDebugStep.BINS_TO_RACK: ("HANDOFF_POSITION", "RACK_BIN_SLOT", "CNV0302"),
+        }.get(step)
+        if expected_positions is None:
+            return False
+        source_kind, target_kind, handoff_code = expected_positions
+        return all(
+            move["source"]["kind"] == source_kind
+            and move["target"]["kind"] == target_kind
+            and (
+                move["target"].get("location_code") == handoff_code
+                if step == TransportDebugStep.BINS_TO_INFEED
+                else move["source"].get("location_code") == handoff_code
+            )
+            for move in request["moves"]
+        )
+    return False
 
 
 def _request_digest(

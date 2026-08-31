@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 
 def normalize_transport_task_id(value: str) -> str:
@@ -37,8 +38,27 @@ class TransportDebugResetResult:
     deleted_binding_count: int
 
 
+class TransportDebugStep(StrEnum):
+    RACK_TO_STATION = "RACK_TO_STATION"
+    BINS_TO_INFEED = "BINS_TO_INFEED"
+    BINS_TO_RACK = "BINS_TO_RACK"
+    RACK_TO_STORAGE = "RACK_TO_STORAGE"
+
+
+@dataclass(frozen=True, slots=True)
+class TransportDebugStepConfirmation:
+    step: TransportDebugStep
+    assertion: str
+
+    def __post_init__(self) -> None:
+        if self.assertion != "PHYSICAL_TARGET_REACHED":
+            raise ValueError("assertion must be PHYSICAL_TARGET_REACHED")
+
+
 __all__ = [
     "TransportDebugResetPreview",
     "TransportDebugResetResult",
+    "TransportDebugStep",
+    "TransportDebugStepConfirmation",
     "normalize_transport_task_id",
 ]
