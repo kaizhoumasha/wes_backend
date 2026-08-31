@@ -3,7 +3,7 @@ title: WMS / WES Phase 8 粗分逐盘入库合同
 status: Approved
 implementation_authorization: true
 approved_at: 2026-08-16
-contract_version: "1.0"
+contract_version: "1.1"
 audience: WMS、WES、RCS、ECS 开发与联调人员
 scope: Phase 8 粗分逐盘准入、设备执行、目标 Cell 晚绑定、单层货架更换、NG、事实确认与人工核验恢复
 related:
@@ -232,6 +232,11 @@ old_loaded_rack: rack_id + source + target + target_face
 new_empty_rack:  rack_id + source + target + target_face
 ```
 
+两个计划的 `source/target` 都使用 `kind + location_code`。`kind` 只允许 `RACK | ZONE | RACK_POSITION`，分别表示货架编号、区域编号和
+精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 只允许整数 `90 | 270`。对于 `RACK` 目标，WMS/RCS
+按冻结货架编号和模板解析最终位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。回调统一返回精确
+`RACK_POSITION(location_code)`。
+
 同一 `rack_replacement_id` 重试必须返回完全相同的计划。旧架 Transport 创建前必须闭合 release gate：
 
 - 没有指向旧架的活动 PUT；
@@ -243,8 +248,8 @@ Phase 8 真实消费既有 Transport Port，并创建两个互相独立的 `RACK
 
 | 任务 | 业务幂等键 | `client_request_id` | Transport data |
 | --- | --- | --- | --- |
-| 旧装载架移出 | `(rack_replacement_id, OLD_OUT)` | 应用端持久化映射的全局唯一 UUIDv7 | `old_loaded_rack` 的 `rack_id + source + target + target_face` |
-| 新空架移入 | `(rack_replacement_id, NEW_IN)` | 应用端持久化映射的全局唯一 UUIDv7 | `new_empty_rack` 的 `rack_id + source + target + target_face` |
+| 旧装载架移出 | `(rack_replacement_id, OLD_OUT)` | 应用端持久化映射的全局唯一 UUIDv7 | `CTU03 + old_loaded_rack` 的 `rack_id + source + target + target_face` |
+| 新空架移入 | `(rack_replacement_id, NEW_IN)` | 应用端持久化映射的全局唯一 UUIDv7 | `CTU01 + new_empty_rack` 的 `rack_id + source + target + target_face` |
 
 业务幂等键不是 wire 字段，也不能直接写入 `client_request_id`。应用端必须在首次调用 Transport 前原子保存
 `(rack_replacement_id, leg) -> client_request_id` 一对一映射和完整冻结输入；同键重试复用原 UUIDv7，不同键生成不同 UUIDv7。
@@ -252,7 +257,9 @@ Phase 8 真实消费既有 Transport Port，并创建两个互相独立的 `RACK
 不新增 `RACK_EXCHANGE`。两个任务可以同时提交；实际顺序、路径、避让和共享工作位互锁完全由 RCS 负责。该顺序能力是外部未
 验证前提，不是 Phase 8 新增合同条款，也不由 WES 测试代证。
 
-新架的 `transport.task.resulted@v1` 搬运最终结果为 `SUCCEEDED`，且 `rack_id + final_position + arrival_face` 与计划一致后，WES 可以重新请求目标 Cell，不等待旧架结果。
+新架的 `transport.task.resulted@v1` 搬运最终结果为 `SUCCEEDED`，`final_position` 是精确 `RACK_POSITION`，且 `rack_id + arrival_face`
+与冻结任务一致后，WES 可以重新请求目标 Cell，不等待旧架结果。`RACK_POSITION` 目标还要求最终地码相等；`RACK` 目标要求最终位置
+是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。
 旧架失败或未知只隔离旧 rack；新架失败或未知阻止目标请求和出料。两个 TransportTask 状态不得级联或互相改写。
 
 ## 10. 失败与恢复
