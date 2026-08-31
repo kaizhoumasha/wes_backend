@@ -18,7 +18,7 @@ migration_strategy: direct_replacement
 
 | 合同版本 | 日期 | 状态 | 主要变化 |
 | --- | --- | --- | --- |
-| `0.3.0` | 2026-08-31 | 待外发 | 货架任务增加 `rcs_template_id`；面向值改为整数 `90/270`；`RACK_MOVE` 支持 `RACK/ZONE/RACK_POSITION`，最终结果统一返回精确 `RACK_POSITION` |
+| `0.3.0` | 2026-08-31 | 待外发 | 货架任务增加 `rcs_template_id`；面向值改为普通不透明 string；`RACK_MOVE` 支持 `RACK/ZONE/RACK_POSITION`，最终结果统一返回精确 `RACK_POSITION` |
 | `0.2.0` | 2026-08-20 | 待外发 | Transport 两族 DTO 保持不变；明确逐容器中间位置事件只在存在权威事实时可选发送；入线前由 TransportTask 负责，最终到位且实扫匹配后才创建 BinExecution |
 
 `contract_version` 只用于双方确认拿到的是同一份外发合同，不进入任何 JSON 信封，也不产生旧版本兼容逻辑。正式外发时将
@@ -262,7 +262,7 @@ flowchart LR
     "rack_id": "RACK-005-01",
     "source": {"kind": "ZONE", "location_code": "WAREHOUSE-A"},
     "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "target_face": 90
+    "target_face": "90"
   }
 }
 ```
@@ -1035,10 +1035,15 @@ static string CreateUuidV7()
 | `slot_id/location_code` | 非空 UTF-8 string，`1..100` 字符 | 由位置权威方提供；不得用空字符串或 `null` |
 | `kind` | enum | `RACK_MOVE \| RACK_ROTATE \| BIN_MOVE \| BIN_EXCHANGE` |
 | `rcs_template_id` | enum | `CTU01 \| CTU02 \| CTU03 \| F01`；货架任务始终发送规范化后的明确值 |
-| `rack_face/target_face/arrival_face` | integer enum | `90 \| 270`；`rack_face` 是储位身份的一部分，不能从 `slot_id` 推断 |
+| `rack_face/target_face/arrival_face` | string 或 `null` | 是否允许 `null` 由具体上下文决定；提供时必须是非空 string，内容不解释且原样传递；`rack_face` 是储位身份的一部分，不能从 `slot_id` 推断 |
 | `milestone` | enum | `SOURCE_PICKED \| TARGET_PLACED \| POSITION_UNKNOWN` |
 | `results[].status` | enum | `SUCCEEDED \| FAILED` |
 | `failure_code` | 非空 UTF-8 string，`1..120` 字符 | WMS 将 RCS 原始失败归一化后的稳定码，不发送自由文本或供应商原始业务载荷 |
+
+三个面字段没有专用词法或长度规则：按具体上下文可为 `null`，一旦提供，JSON value 必须是非空 string；空白、控制字符、
+U+FEFF 和任意长度内容均按普通 string 处理。公共 HTTP Body 仍须符合第 2 章 UTF-8/JSON 信封规则。各方对 JSON 解析后的 string
+原样传递并精确比较，不得 trim、case folding、Unicode normalization、A/B 转换、角度计算或容差。不同 JSON 转义解析为相同字符
+序列时属于同一 string；组合字符与预组字符未经 normalization 时仍不相等。
 
 #### 3.1.2 位置严格联合
 
@@ -1091,7 +1096,7 @@ static string CreateUuidV7()
 {
   "kind": "RACK_BIN_SLOT",
   "rack_id": "RACK-005-01",
-  "rack_face": 90,
+  "rack_face": "90",
   "slot_id": "SLOT-03"
 }
 ```
@@ -1206,12 +1211,12 @@ operation = transport.task.submit@v1
 
 | DTO 族 | `kind` | 其余必填字段 | 关键规则 |
 | --- | --- | --- | --- |
-| 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target + target_face` | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；`target_face=90\|270` |
-| 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置都是精确 `RACK_POSITION` 且相同；`target_face=90\|270` 且不同于可信当前面 |
+| 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target + target_face` | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；`target_face` 是不透明 string token |
+| 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置都是精确 `RACK_POSITION` 且相同；`target_face` 是不透明 string token 且不同于可信当前面 |
 | 料箱 | `BIN_MOVE` | `moves[] {container_id + source + target}` | `moves` 为 `1..4`；`container_id` 唯一；每项来源与目标不同且至少一端是 `RACK_BIN_SLOT` |
 | 料箱 | `BIN_EXCHANGE` | `moves[] {container_id + source + target}` | `moves` 只能为 `2` 或 `4`；`container_id` 唯一；所有位置是 `RACK_BIN_SLOT`；形成 1～2 个二元闭环 |
 
-`target_face` 是业务调用方冻结的整数面向值，WMS 原样传给 RCS；成功回调 `arrival_face` 必须与其相等。WMS 可以把 `RACK_MOVE`
+`target_face` 是业务调用方冻结的普通非空 string，WMS 原样传给 RCS；成功回调 `arrival_face` 必须与其精确相等。WMS 可以把 `RACK_MOVE`
 分解为多个 RCS 子任务，但必须保存 WES `transport_task_id` 与全部厂商 `taskCode` 的关联。`RACK_POSITION` 目标要求最终地码相等；
 `RACK` 目标要求最终位置是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。回调统一返回精确
 `RACK_POSITION`。
@@ -1222,7 +1227,7 @@ operation = transport.task.submit@v1
 `BIN_MOVE` 中，精确 `RACK_BIN_SLOT(rack_id+rack_face+slot_id)` 在全部成员的 `source/target` 中不得重复出现；多个成员可以使用
 同一个 `HANDOFF_POSITION`。`BIN_EXCHANGE` 的来源精确储位分别唯一、目标精确储位分别唯一，且来源储位集合必须等于目标储位集合。
 
-同一 Bin 请求中，同一个 `rack_id` 只能出现一个 `rack_face`；不同货架可以分别使用 `90` 面或 `270` 面。`BIN_EXCHANGE` 只允许涉及一个
+同一 Bin 请求中，同一个 `rack_id` 只能出现一个 `rack_face`；不同货架可以使用不同的不透明面 token。`BIN_EXCHANGE` 只允许涉及一个
 或两个 `rack_id+rack_face` 组：一个组时在该货架当前面的不同精确储位之间交换；两个组时每个成员都必须跨组移动。展开后的每个
 `source=S,target=T` 必须且只能存在一个 `source=T,target=S` 的反向成员；四个成员只能形成两个互不重叠的二元闭环。需要操作
 任一货架另一面时，先完成独立 `RACK_ROTATE`，再创建新的 Bin 任务。
@@ -1249,7 +1254,9 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 | 批量搬运料箱 | `BIN_MOVE` | 不适用 | `RACK_BIN_SLOT` | `HANDOFF_POSITION` | 各成员请求指定的位置 |
 | 协调交换料箱 | `BIN_EXCHANGE` | 不适用 | `RACK_BIN_SLOT` | `RACK_BIN_SLOT` | 各成员请求指定的位置 |
 
-以下十个请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。
+以下十个请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。样例 3、9、10 使用现场分配的专用联调测试数据：
+货架 `510056`、料箱 `A000001922/A000002653`、储位 `510056A3F2C101/510056A2F2C101`、精确工作位 `KT16`、仓储区域
+`WH01` 和滚筒线投料口 `CNV0301`。由于当前 RCS→WMS→WES 回调链路尚未接通，后文对应结果是合同预期数据，不是现场抓取结果。
 
 **样例 1：整架搬运（`RACK_MOVE`）**
 
@@ -1267,14 +1274,14 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "rack_id": "RACK-005-01",
     "source": {"kind": "ZONE", "location_code": "WAREHOUSE-A"},
     "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "target_face": 90
+    "target_face": "90"
   }
 }
 ```
 
 **样例 2：货架原地换面（`RACK_ROTATE`）**
 
-货架保持在当前工作位，将到达面调整为 `270` 面。
+货架保持在当前工作位，将到达面调整为示例 string token `"270"`。
 
 ```json
 {
@@ -1288,14 +1295,15 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "rack_id": "RACK-005-01",
     "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
     "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "target_face": 270
+    "target_face": "270"
   }
 }
 ```
 
 **样例 3：批量搬运 Bin（`BIN_MOVE`）**
 
-一次搬运两个 Bin，从同一货架的不同储位送到同一个工作线交接位。
+一次搬运两个专用联调料箱，从测试货架 `510056` 的不同储位送到滚筒线投料口 `CNV0301`。`rack_face="90"` 是当前 WMS/RCS
+联调约定并由操作员/WMS 显式提供的不透明 string token，WES 不从储位编码中的字母推导该值，也不把它换算为 A/B。
 
 ```json
 {
@@ -1307,14 +1315,14 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "kind": "BIN_MOVE",
     "moves": [
       {
-        "container_id": "CONTAINER-0001",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": 90, "slot_id": "SLOT-01"},
-        "target": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
+        "container_id": "A000001922",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "510056A3F2C101"},
+        "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"}
       },
       {
-        "container_id": "CONTAINER-0002",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": 90, "slot_id": "SLOT-02"},
-        "target": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
+        "container_id": "A000002653",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "510056A2F2C101"},
+        "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"}
       }
     ]
   }
@@ -1322,6 +1330,10 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 ```
 
 **样例 4：两个货架当前面协调交换两对、四个容器（`BIN_EXCHANGE`）**
+
+该联调循环的后续阶段继续复用同一组测试资产：料箱经 `SCAN9 → SCAN10 → SCAN11 → SCAN12` 到达 `CNV0302` 后，再创建
+`BIN_MOVE` 把两个料箱送回 `510056` 的原空储位，最后执行样例 10 的 `CTU03` 回库。SCAN 链属于 ECS 调试事件，不增加新的
+Transport DTO；在回调链路接通前，人工确认只能形成明确标注的联调审计事实，不能冒充 WMS/RCS 权威回调。
 
 在一个不可拆分的协调任务中，让两个货架当前面的四个确定容器形成两个二元闭环。`moves` 已按 `container_id` 升序排列，数组
 顺序不代表 CTU 动作顺序。空储位不能代替 `container_id` 参与交换。
@@ -1337,23 +1349,23 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "moves": [
       {
         "container_id": "CONTAINER-0001",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-01"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-05"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-01"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-05"}
       },
       {
         "container_id": "CONTAINER-0002",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-05"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-01"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-05"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-01"}
       },
       {
         "container_id": "CONTAINER-0003",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-02"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-06"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-02"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-06"}
       },
       {
         "container_id": "CONTAINER-0004",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-06"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-02"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-06"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-02"}
       }
     ]
   }
@@ -1377,7 +1389,7 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "rack_id": "RACK-005-08",
     "source": {"kind": "RACK", "location_code": "RACK-005-08"},
     "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-B"},
-    "target_face": 90
+    "target_face": "90"
   }
 }
 ```
@@ -1398,7 +1410,7 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "rack_id": "RACK-005-09",
     "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-C"},
     "target": {"kind": "RACK", "location_code": "RACK-005-09"},
-    "target_face": 270
+    "target_face": "270"
   }
 }
 ```
@@ -1419,7 +1431,7 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "rack_id": "RACK-005-10",
     "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-D"},
     "target": {"kind": "ZONE", "location_code": "WAREHOUSE-B"},
-    "target_face": 90
+    "target_face": "90"
   }
 }
 ```
@@ -1441,14 +1453,14 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "rack_id": "RACK-005-11",
     "source": {"kind": "RACK_POSITION", "location_code": "BUFFER-01-RACK-A"},
     "target": {"kind": "RACK_POSITION", "location_code": "MAINTENANCE-01-RACK-A"},
-    "target_face": 90
+    "target_face": "90"
   }
 }
 ```
 
-**样例 9：精确库位货架搬运到工作位（`RACK_MOVE + CTU01`）**
+**样例 9：仓储区域内货架搬运到工作位（`RACK_MOVE + CTU01`）**
 
-来源已经是精确库位，WMS/RCS 按该地码取架并搬运到指定工作位。
+专用联调货架 `510056` 初始位于仓储区域 `WH01`，WMS/RCS 在该区域内定位货架并通过 `CTU01` 搬运到精确工作位 `KT16`。
 
 ```json
 {
@@ -1459,17 +1471,18 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "transport_task_id": "TRANSPORT-000012",
     "kind": "RACK_MOVE",
     "rcs_template_id": "CTU01",
-    "rack_id": "RACK-005-12",
-    "source": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-A-RACK-005-12-P02"},
-    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-E"},
-    "target_face": 270
+    "rack_id": "510056",
+    "source": {"kind": "ZONE", "location_code": "WH01"},
+    "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
+    "target_face": "90"
   }
 }
 ```
 
-**样例 10：工作位返回精确库位（`RACK_MOVE + CTU03`）**
+**样例 10：工作位返回仓储区域（`RACK_MOVE + CTU03`）**
 
-目标已经是精确库位，成功回调必须返回同一个 `RACK_POSITION/location_code`。
+专用联调货架 `510056` 从精确工作位 `KT16` 通过 `CTU03` 返回仓储区域 `WH01`；成功回调必须返回 WMS/RCS 实际选择的
+精确 `RACK_POSITION/location_code`，不能把区域编码 `WH01` 直接当作精确点位。
 
 ```json
 {
@@ -1480,10 +1493,10 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "transport_task_id": "TRANSPORT-000013",
     "kind": "RACK_MOVE",
     "rcs_template_id": "CTU03",
-    "rack_id": "RACK-005-13",
-    "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-F"},
-    "target": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-C-RACK-005-13-P04"},
-    "target_face": 90
+    "rack_id": "510056",
+    "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
+    "target": {"kind": "ZONE", "location_code": "WH01"},
+    "target_face": "90"
   }
 }
 ```
@@ -1731,7 +1744,7 @@ operation = transport.task.resulted@v1
 - `SUCCEEDED` 必须携带 `final_position`，禁止携带 `failure_code` 和 `position_unknown`；
 - `FAILED` 必须携带 `failure_code`，并在 `final_position` 与字面量 `position_unknown=true` 之间严格二选一；
 - `position_unknown=false`、同时携带最终位置和未知标记、或两者都缺少，均为非法 DTO；
-- 货架位置明确时 `final_position.kind=RACK_POSITION` 且必须携带整数 `arrival_face=90|270`；位置未知时禁止 `arrival_face`；
+- 货架位置明确时 `final_position.kind=RACK_POSITION` 且必须携带非空 string `arrival_face`；位置未知时禁止 `arrival_face`；
 - 料箱位置明确时只能使用 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，并禁止携带 `arrival_face`；
 - `RACK_MOVE/RACK_ROTATE` 成功时实际到达面必须等于冻结 `target_face`。`RACK_POSITION` 目标还要求最终地码相等；`RACK` 目标
   要求最终位置是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。结果必须返回精确 `RACK_POSITION`；
@@ -1748,7 +1761,7 @@ operation = transport.task.resulted@v1
 
 **样例 1：货架搬运成功（`RACK_MOVE`）**
 
-货架已经到达 RCS 选定的精确地码，并由 RCS 确认当前到达面为 `90`。
+货架已经到达 RCS 选定的精确地码，并由 RCS 确认当前到达面为示例 string token `"90"`。
 
 ```json
 {
@@ -1762,14 +1775,14 @@ operation = transport.task.resulted@v1
     "rack_id": "RACK-005-01",
     "status": "SUCCEEDED",
     "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "arrival_face": 90
+    "arrival_face": "90"
   }
 }
 ```
 
 **样例 2：货架换面成功（`RACK_ROTATE`）**
 
-货架保持在搬运提交指定位置，实际到达面与 `target_face=270` 一致。
+货架保持在搬运提交指定位置，实际到达面与示例 string token `target_face="270"` 一致。
 
 ```json
 {
@@ -1783,7 +1796,7 @@ operation = transport.task.resulted@v1
     "rack_id": "RACK-005-01",
     "status": "SUCCEEDED",
     "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "arrival_face": 270
+    "arrival_face": "270"
   }
 }
 ```
@@ -1804,7 +1817,7 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "rack_id": "RACK-005-08",
     "status": "SUCCEEDED",
     "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-B"},
-    "arrival_face": 90
+    "arrival_face": "90"
   }
 }
 ```
@@ -1825,7 +1838,7 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "rack_id": "RACK-005-09",
     "status": "SUCCEEDED",
     "final_position": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-A-RACK-005-09-P01"},
-    "arrival_face": 270
+    "arrival_face": "270"
   }
 }
 ```
@@ -1846,7 +1859,7 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "rack_id": "RACK-005-10",
     "status": "SUCCEEDED",
     "final_position": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-B-RACK-005-10-P03"},
-    "arrival_face": 90
+    "arrival_face": "90"
   }
 }
 ```
@@ -1867,14 +1880,15 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "rack_id": "RACK-005-11",
     "status": "SUCCEEDED",
     "final_position": {"kind": "RACK_POSITION", "location_code": "MAINTENANCE-01-RACK-A"},
-    "arrival_face": 90
+    "arrival_face": "90"
   }
 }
 ```
 
-**样例 7：精确库位货架搬运到工作位成功（`RACK_MOVE + CTU01`）**
+**样例 7：仓储区域内货架搬运到工作位成功（`RACK_MOVE + CTU01`）**
 
-请求已给出精确来源和目标；回调返回请求指定的精确工作位，实际到达面与 `target_face=270` 一致。
+请求已给出专用联调货架的来源区域 `WH01` 和精确目标 `KT16`；以下数据是合同预期回调，实际到达面与冻结 string token
+`target_face="90"` 一致。
 
 ```json
 {
@@ -1885,17 +1899,18 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "transport_task_id": "TRANSPORT-000012",
     "kind": "RACK_MOVE",
     "outcome_revision": 1,
-    "rack_id": "RACK-005-12",
+    "rack_id": "510056",
     "status": "SUCCEEDED",
-    "final_position": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-E"},
-    "arrival_face": 270
+    "final_position": {"kind": "RACK_POSITION", "location_code": "KT16"},
+    "arrival_face": "90"
   }
 }
 ```
 
-**样例 8：工作位返回精确库位成功（`RACK_MOVE + CTU03`）**
+**样例 8：工作位返回仓储区域成功（`RACK_MOVE + CTU03`）**
 
-成功回调的精确地码必须与搬运请求指定的精确目标完全相同。
+专用联调货架从 `KT16` 返回 `WH01` 区域后，合同预期回调必须给出 WMS/RCS 实际选择的精确点位。下方
+`WH01-RCS-SELECTED-01` 只是合同示例地码，不是现场抓包；WES 不从该地码推导区域成员关系。
 
 ```json
 {
@@ -1906,10 +1921,10 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "transport_task_id": "TRANSPORT-000013",
     "kind": "RACK_MOVE",
     "outcome_revision": 1,
-    "rack_id": "RACK-005-13",
+    "rack_id": "510056",
     "status": "SUCCEEDED",
-    "final_position": {"kind": "RACK_POSITION", "location_code": "WAREHOUSE-C-RACK-005-13-P04"},
-    "arrival_face": 90
+    "final_position": {"kind": "RACK_POSITION", "location_code": "WH01-RCS-SELECTED-01"},
+    "arrival_face": "90"
   }
 }
 ```
@@ -1929,14 +1944,14 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "outcome_revision": 1,
     "results": [
       {
-        "container_id": "CONTAINER-0001",
+        "container_id": "A000001922",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
+        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"}
       },
       {
-        "container_id": "CONTAINER-0002",
+        "container_id": "A000002653",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "SORTING-LINE-01-BIN-IN"}
+        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"}
       }
     ]
   }
@@ -1960,22 +1975,22 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
       {
         "container_id": "CONTAINER-0001",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-05"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-05"}
       },
       {
         "container_id": "CONTAINER-0002",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-01"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-01"}
       },
       {
         "container_id": "CONTAINER-0003",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-06"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-06"}
       },
       {
         "container_id": "CONTAINER-0004",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-02"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-02"}
       }
     ]
   }
@@ -2005,7 +2020,7 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
       {
         "container_id": "CONTAINER-0002",
         "status": "FAILED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": 90, "slot_id": "SLOT-02"},
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-005-01", "rack_face": "90", "slot_id": "SLOT-02"},
         "failure_code": "RCS_EXECUTION_FAILED"
       }
     ]
@@ -2063,23 +2078,23 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
       {
         "container_id": "CONTAINER-0011",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": 270, "slot_id": "SLOT-05"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": "270", "slot_id": "SLOT-05"}
       },
       {
         "container_id": "CONTAINER-0012",
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-02", "rack_face": 90, "slot_id": "SLOT-01"}
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-02", "rack_face": "90", "slot_id": "SLOT-01"}
       },
       {
         "container_id": "CONTAINER-0013",
         "status": "FAILED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-02", "rack_face": 90, "slot_id": "SLOT-02"},
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-02", "rack_face": "90", "slot_id": "SLOT-02"},
         "failure_code": "RCS_EXECUTION_FAILED"
       },
       {
         "container_id": "CONTAINER-0014",
         "status": "FAILED",
-        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": 270, "slot_id": "SLOT-06"},
+        "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-02", "rack_face": "270", "slot_id": "SLOT-06"},
         "failure_code": "RCS_EXECUTION_FAILED"
       }
     ]
@@ -2256,12 +2271,12 @@ ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入
     "rack_id": "RACK-005-01",
     "source": {"kind": "ZONE", "location_code": "WAREHOUSE-A"},
     "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "target_face": 90
+    "target_face": "90"
   }
 }
 ```
 
-**同一货架跨面交换错误请求：** `RACK-SOURCE-01` 在同一任务中同时出现 `90`、`270` 面，因此整条搬运提交非法。
+**同一货架跨面交换错误请求：** `RACK-SOURCE-01` 在同一任务中同时出现两个不同 token `"90"`、`"270"`，因此整条搬运提交非法。
 
 ```json
 {
@@ -2274,23 +2289,23 @@ ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入
     "moves": [
       {
         "container_id": "CONTAINER-0001",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-01"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-05"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-01"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-05"}
       },
       {
         "container_id": "CONTAINER-0002",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-05"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 90, "slot_id": "SLOT-01"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-05"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "90", "slot_id": "SLOT-01"}
       },
       {
         "container_id": "CONTAINER-0003",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 270, "slot_id": "SLOT-02"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-06"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "270", "slot_id": "SLOT-02"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-06"}
       },
       {
         "container_id": "CONTAINER-0004",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": 270, "slot_id": "SLOT-06"},
-        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": 270, "slot_id": "SLOT-02"}
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-TARGET-01", "rack_face": "270", "slot_id": "SLOT-06"},
+        "target": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-SOURCE-01", "rack_face": "270", "slot_id": "SLOT-02"}
       }
     ]
   }
@@ -2311,8 +2326,8 @@ WMS 建议将 WES 到 RCS 的转换集中为货架、料箱两个明确映射职
 | `ZONE.location_code` | 作为区域编号交给 RCS 选址 |
 | `RACK_POSITION.location_code` | 作为精确地码映射为 `positionCodePath[].positionCode` |
 | `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
-| `target_face` | 整数 `90 | 270`，WMS 原样传给 RCS |
-| `arrival_face` | RCS 回传的整数 `90 | 270`，成功时与冻结 `target_face` 精确相等 |
+| `target_face` | 普通非空 string，WMS 原样传给 RCS |
+| `arrival_face` | RCS 回传的同类 string token，成功时与冻结 `target_face` 精确相等 |
 | `rcs_template_id` | 直接调用同名 RCS 模板；只允许 `CTU01 | CTU02 | CTU03 | F01` |
 
 厂商 `sideA/sideB` 是 WMS 根据自身库存和货架主数据形成的整架容器上报，不进入 WES 搬运提交。WES 不复制 WMS 已拥有的两面容器
@@ -2663,7 +2678,7 @@ operation = putaway.source_rack.plan_decide@v1
 | --- | --- |
 | `rack_release_id` | WES 在入库换架与人工核验的释放水位内所有请求、设备命令和事实报告都完成后，为固定现场记录生成的身份 |
 | `rack_id/rack_slot_code` | 入库换架与人工核验的释放决定和现场复核结果 |
-| `occupied_cells[]` | WES 固定现场记录中的实际占用 Cell；每项必须带来源 Bin 的 `rack_face=90|270`，由扫码、WES 现场位置记录和已经记录的事实报告交叉确认 |
+| `occupied_cells[]` | WES 固定现场记录中的实际占用 Cell；每项必须带来源 Bin 的不透明 string `rack_face`，由扫码、WES 现场位置记录和已经记录的事实报告交叉确认 |
 
 WMS 将固定现场记录逐项与库存主账核对，并一致生成 `putaway_plan_id` 和完整来源成员：满足满箱交换资格的 Bin 进入冻结的
 `exchange_sources`，其余料盘进入 `source_executions`。每个物理占用 Cell 必须恰好覆盖一次。该计划冻结“哪些来源必须处理”和

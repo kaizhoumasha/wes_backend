@@ -159,9 +159,9 @@ GET /api/v1/transport/tasks/{transport_task_id}
     },
     "moves": [
       {
-        "bin_id": "BIN-001",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-01", "rack_face": 90, "slot_id": "SLOT-01"},
-        "target": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-01"}
+        "bin_id": "A000001922",
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "510056A3F2C101"},
+        "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"}
       }
     ]
   },
@@ -171,7 +171,7 @@ GET /api/v1/transport/tasks/{transport_task_id}
     "reason_code": "TARGET_BLOCKED",
     "members": [
       {
-        "object_id": "BIN-001",
+        "object_id": "A000001922",
         "status": "FAILED",
         "final_position": null,
         "position_unknown": false,

@@ -233,7 +233,8 @@ new_empty_rack:  rack_id + source + target + target_face
 ```
 
 两个计划的 `source/target` 都使用 `kind + location_code`。`kind` 只允许 `RACK | ZONE | RACK_POSITION`，分别表示货架编号、区域编号和
-精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 只允许整数 `90 | 270`。对于 `RACK` 目标，WMS/RCS
+精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 使用 Transport 合同定义的普通非空 string。对于
+`RACK` 目标，WMS/RCS
 按冻结货架编号和模板解析最终位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。回调统一返回精确
 `RACK_POSITION(location_code)`。
 

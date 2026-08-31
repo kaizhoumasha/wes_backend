@@ -89,8 +89,13 @@ Position接口契约固定为：
 
 `RACK` 出现在 `source` 或 `target` 时，`location_code` 必须等于同一 `RackTransportData.rack_id`；不一致的请求无效。
 
-不适用字段不得出现在 JSON 中。`rack_face`、`target_face`、`arrival_face` 都只允许 JSON 整数 `90 | 270`。WES/WMS/RCS
-将其作为约定面向值原样传递和精确比较，不接受 A/B 字符串、数字字符串、角度换算或容差。
+不适用字段不得出现在 JSON 中。`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是
+非空 string，除空字符串外不限制字符内容或长度。公共 HTTP Body 仍须符合 UTF-8/JSON 信封规则。当前 WMS/RCS 联调约定使用
+`"90"`、`"270"`，它们与 `"LEFT"`、`"面-1"` 一样只是普通 string，不携带 WES 角度或 A/B 语义。
+
+WES/WMS/RCS 对 JSON 解析后的 token 原样传递并按大小写敏感的 Unicode code point 序列精确比较；禁止 trim、case folding、
+Unicode normalization、A/B 转换、角度计算或容差。不同 JSON 转义只要解析为相同 code point 序列即为同一 token；例如组合字符与
+预组字符未经 normalization 时仍是不同 token。
 
 ## 5. 搬运提交请求设计
 
@@ -105,7 +110,7 @@ rcs_template_id: CTU01 | CTU02 | CTU03 | F01
 rack_id
 source: RACK | ZONE | RACK_POSITION
 target: RACK | ZONE | RACK_POSITION
-target_face: 90 | 270
+target_face: non-empty string
 ```
 
 | `kind` | 结构约束 | 完成条件 |
@@ -116,7 +121,8 @@ target_face: 90 | 270
 `RACK_MOVE` 可以由 WMS 分解为直接搬运、先换面后搬运或搬运后换面等一个或多个厂商任务。WES 不接收分解步骤，也不根据
 RCS 中间步骤提前完成 TransportTask；WMS 必须以最终位置和最终工作面闭合一个 WES 运输义务。
 
-`target_face` 是业务调用方在创建任务时给出的目标义务。WMS 将整数面向值原样传给 RCS，最终回调 `arrival_face` 必须与其相等。
+`target_face` 是业务调用方在创建任务时给出的不透明目标面 token。WMS 将该字符串原样传给 RCS，最终回调 `arrival_face` 必须与其
+按上述规则精确相等；各系统均不解释 token 含义。
 `rcs_template_id` 使用 RCS 真实模板标识：库位到工作位为 `CTU01`，工作位原地旋转为 `CTU02`，工作位返回库位为 `CTU03`，
 未指定时在形成不可变请求前规范化为 `F01`。Wire 始终携带明确模板；WES 不根据位置编码推断模板，也不建立模板配置映射。
 
@@ -164,7 +170,7 @@ moves[] {
 
 ### 5.3 当前工作面约束
 
-一个 Bin 批次可以涉及不同货架，但同一 `rack_id` 在整个请求中只能出现一个 `rack_face`。不同货架可以分别使用 `90` 面或 `270` 面。
+一个 Bin 批次可以涉及不同货架，但同一 `rack_id` 在整个请求中只能出现一个 `rack_face`。不同货架可以使用不同的不透明面 token。
 
 - WES 在创建 TransportTask 前使用可靠本地位置/工作面投影校验。
 - WMS 在返回 `RECEIVED` 前使用自身权威主数据及可信 RCS 状态再次校验。
@@ -172,7 +178,7 @@ moves[] {
 - 无法取得可信当前面时返回 `503 / UNAVAILABLE`，不调用 RCS。
 - 需要操作另一面时，业务 owner 先完成独立 `RACK_ROTATE`，再基于新事实创建新的 Bin 任务。
 
-同一 Bin 批次禁止先操作 `90` 面部分容器、再换面操作 `270` 面剩余容器。
+同一 Bin 批次禁止先操作一个 `rack_face` token 的部分容器、再换面操作另一个 token 的剩余容器。
 
 ## 6. 容器中间位置事件（可选）
 
@@ -328,8 +334,8 @@ WMS 只需要一个公共信封、一个 Position DTO、两个搬运提交 data 
 | `ZONE.location_code` | 作为区域编号交给 RCS 选址 |
 | `RACK_POSITION.location_code` | 作为精确地码映射 `positionCodePath[].positionCode` |
 | `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
-| `target_face` | 整数 `90 | 270`，WMS 原样传给 RCS |
-| `arrival_face` | RCS 回传的整数 `90 | 270`，成功时与冻结 `target_face` 精确相等 |
+| `target_face` | 普通非空 string，WMS 原样传给 RCS |
+| `arrival_face` | RCS 回传的同类 string token，成功时与冻结 `target_face` 精确相等 |
 | `rcs_template_id` | 直接调用同名 RCS 模板；只允许 `CTU01 | CTU02 | CTU03 | F01` |
 
 厂商 `sideA/sideB` 是 WMS 基于自身库存和货架主数据形成的整架容器上报，不进入 WES 搬运提交。WES 不复制 WMS 已拥有的两面容器
@@ -376,7 +382,7 @@ WES 目标接口契约的 `transport_task_id` 长度为 `1..80`，`rack_id`、`c
 
 1. WMS 面向搬运提交只需要 `RackTransportData` 和 `BinTransportData` 两种 `data` Schema；WMS 私有 C# 类名不属于本合同。
 2. 四种 `kind` 的 JSON 都能通过一次 rack/bin 分流完成严格解析，不需要自定义多态转换器。
-3. `RACK_MOVE` 与 `RACK_ROTATE` 都携带明确 `rcs_template_id` 和整数 `target_face=90|270`；成功回调返回精确
+3. `RACK_MOVE` 与 `RACK_ROTATE` 都携带明确 `rcs_template_id` 和不透明 string `target_face`；成功回调返回精确
    `RACK_POSITION`，并校验 `arrival_face` 与冻结面向值一致。
 4. `BIN_MOVE` 与 `BIN_EXCHANGE` 都使用 `moves[].container_id + source + target`，且严格执行单面、端点组和闭环规则。
 5. 容器中间位置事件/搬运最终结果接口契约不再出现 `bin_id` 或 `object_id`；货架和料箱结果身份分别明确为 `rack_id`、`container_id`。
