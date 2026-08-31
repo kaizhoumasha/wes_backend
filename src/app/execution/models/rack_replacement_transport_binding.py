@@ -49,7 +49,7 @@ class RackReplacementTransportBinding(EnterpriseMixin, DataTableMixin, table=Tru
 
     rack_replacement_id: str = Field(min_length=1, max_length=160)
     leg: str = Field(min_length=1, max_length=20)
-    line_run_epoch_id: int
+    line_run_epoch_id: int = Field(sa_type=SQL_COMPAT_BIGINT)
     current_rack_id: str = Field(min_length=1, max_length=80)
     client_request_id: str = Field(min_length=1, max_length=120)
     source_evidence_id: int = Field(

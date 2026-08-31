@@ -42,7 +42,7 @@ class WorkLineBase(BaseMixin):
     config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="工作线通用配置")
     runtime_config_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON, nullable=False),
         description="工作线运行时配置（重试、超时、会话归属等）",
     )
     run_mode: WorkLineRunMode = Field(
@@ -53,7 +53,7 @@ class WorkLineBase(BaseMixin):
     )
     diagnostic_profile: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON, nullable=False),
         description="工作线诊断配置（软件/硬件分类偏好、展示策略等）",
     )
     description: str | None = Field(default=None, max_length=500, description="作业线描述")

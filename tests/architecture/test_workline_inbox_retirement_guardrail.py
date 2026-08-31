@@ -10,9 +10,6 @@ from scripts.workline_inbox_retirement_guardrail import (
     find_legacy_references,
     main,
 )
-from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
-from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
-from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_FILES = (
@@ -36,12 +33,14 @@ def test_active_source_and_tests_have_zero_legacy_workline_inbox_references() ->
     assert not offenders, f"active code/test 仍引用旧 WorklineInbox: {sorted(offenders)}"
 
 
-def test_migration_roundtrip_test_is_the_only_allowed_test_reference(tmp_path: Path) -> None:
+def test_retired_migration_test_reference_is_rejected(tmp_path: Path) -> None:
     migration_test = tmp_path / "tests/integration/test_runtime_inbox_migration_postgresql.py"
     migration_test.parent.mkdir(parents=True)
     migration_test.write_text("SELECT * FROM wes_biz.workline_inbox", encoding="utf-8")
 
-    assert _find_legacy_references(repo_root=tmp_path, roots=("tests",)) == []
+    assert _find_legacy_references(repo_root=tmp_path, roots=("tests",)) == [
+        "tests/integration/test_runtime_inbox_migration_postgresql.py"
+    ]
 
 
 def test_other_test_file_with_legacy_reference_is_still_rejected(tmp_path: Path) -> None:
@@ -52,7 +51,10 @@ def test_other_test_file_with_legacy_reference_is_still_rejected(tmp_path: Path)
     offender.parent.mkdir(parents=True)
     offender.write_text("from somewhere import WorklineInbox", encoding="utf-8")
 
-    assert _find_legacy_references(repo_root=tmp_path, roots=("tests",)) == ["tests/api/test_legacy_reference.py"]
+    assert _find_legacy_references(repo_root=tmp_path, roots=("tests",)) == [
+        "tests/api/test_legacy_reference.py",
+        "tests/integration/test_runtime_inbox_migration_postgresql.py",
+    ]
 
 
 def test_scanner_covers_active_python_and_shell(tmp_path: Path) -> None:
@@ -513,17 +515,3 @@ def test_architecture_script_executes_shared_workline_inbox_scanner() -> None:
     assert "workline_inbox_retirement_guardrail.py" in source
     assert "scanner_status -ne 0 && -z" in source
     assert "拒绝 fail open" in source
-
-
-def test_runtime_inbox_and_dependent_models_point_to_current_authorities() -> None:
-    assert RuntimeInbox.__table__.c.workline_session_id.foreign_keys.pop().target_fullname == (
-        "wes_biz.workline_sessions.id"
-    )
-    runtime_target = "wes_runtime.runtime_inbox.id"
-    for model, column_name in (
-        (RuntimeHold, "source_inbox_id"),
-        (WorklineDiagnostic, "inbox_id"),
-    ):
-        foreign_keys = getattr(model.__table__.c, column_name).foreign_keys
-        assert len(foreign_keys) == 1
-        assert next(iter(foreign_keys)).target_fullname == runtime_target

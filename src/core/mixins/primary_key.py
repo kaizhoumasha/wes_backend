@@ -29,7 +29,6 @@ if settings.USE_SNOWFLAKE_ID:
         id: int | None = Field(
             default_factory=generate_snowflake_id,
             primary_key=True,
-            index=True,
             sa_type=SQL_COMPAT_BIGINT,
             sa_column_kwargs={"nullable": False, "comment": "雪花算法主键 ID"},
         )  # type: ignore[assignment]
@@ -43,14 +42,10 @@ else:
         id: int | None = Field(
             default=None,
             primary_key=True,
-            index=True,
-            unique=True,
             sa_type=SQL_COMPAT_BIGINT,
             sa_column_kwargs={
                 "autoincrement": True,
                 "nullable": False,
-                "index": True,
-                "unique": True,
                 "comment": "主键 ID",
             },
         )  # type: ignore[assignment]

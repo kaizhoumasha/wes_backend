@@ -23,18 +23,15 @@ MATRIX_PATH = PROJECT_ROOT / "docs/architecture/legacy-cleanup-matrix.csv"
 FROZEN_SCHEMA_ONLY_TEST_PATHS = frozenset(
     {
         "tests/architecture/test_cleanup_matrix_guardrail.py",
-        "tests/architecture/test_workline_inbox_retirement_guardrail.py",
-        "tests/integration/test_runtime_remaining_entities.py",
-        "tests/integration/test_workline_plugin_schema_retirement.py",
-        "tests/runtime/orchestration/test_runtime_inbox_schema_contract.py",
+        "tests/architecture/test_runtime_status_owner_guardrail.py",
     }
 )
 CURRENT_MIGRATION_REVISION_PATHS = frozenset(
     path.relative_to(PROJECT_ROOT).as_posix() for path in (PROJECT_ROOT / "migrations/versions").glob("*.py")
 )
-FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "f695ce63ec0fd6130cfc185b1a159930615d62777dee88f438c48c4d9f4d45bf"
+FROZEN_MIGRATION_REVISION_PATHS_SHA256 = "a92025769bf300d4866d25b1bcd1ccbefd2e10d55e7e8e5eabc2602228583b21"
 FROZEN_PHASE10_HISTORICAL_SPEC_COUNT = 328
-FROZEN_PHASE10_HISTORICAL_SPEC_SHA256 = "c7c136d32bc7dd41f53662ef2a6c77e8fd4d85e6e3f7cf5b13c2423179676f2f"
+FROZEN_PHASE10_HISTORICAL_SPEC_SHA256 = "33cb6ba9bc804fa2e2150763d486bbbde81104dc647d6f4869326c739ce02a63"
 FROZEN_ALLOWED_MISSING_READS: frozenset[tuple[str, str]] = frozenset()
 
 LEGACY_ROUTE_PATHS = frozenset(
@@ -82,10 +79,49 @@ MACHINE_CONFIG_PATHS = (
     "docker-compose.yml",
     "src/core/conf.py",
 )
+PHASE11_RETIRED_OPERATIONAL_PATHS = (
+    "scripts/check_legacy_drain_readiness.py",
+    "src/app/runtime/orchestration/repositories/legacy_drain_readiness_repository.py",
+    "src/app/runtime/orchestration/services/query/legacy_drain_readiness_service.py",
+)
+PHASE11_RETIRED_MODEL_PATHS = (
+    "src/app/runtime/orchestration/bin_route_instance.py",
+    "src/app/runtime/orchestration/conveyor_queue_membership.py",
+    "src/app/runtime/orchestration/execution_correlation.py",
+    "src/app/runtime/orchestration/execution_session.py",
+    "src/app/runtime/orchestration/execution_work_item.py",
+    "src/app/runtime/orchestration/idempotency_key.py",
+    "src/app/runtime/orchestration/material_flow_owner.py",
+    "src/app/runtime/orchestration/models/bin_cell_reservation.py",
+    "src/app/runtime/orchestration/models/diagnostic.py",
+    "src/app/runtime/orchestration/models/dispatch_attempt.py",
+    "src/app/runtime/orchestration/models/runtime_hold.py",
+    "src/app/runtime/orchestration/reconciliation_case.py",
+    "src/app/runtime/orchestration/runtime_hold.py",
+    "src/app/runtime/orchestration/runtime_inbox.py",
+    "src/app/runtime/orchestration/runtime_intent_log.py",
+    "src/app/runtime/orchestration/runtime_timeline.py",
+    "src/app/runtime/orchestration/wms_rack_demand.py",
+    "src/app/sys/models/outbox.py",
+    "src/app/wms_integration/models/circuit_breaker.py",
+    "src/app/wms_integration/models/evidence.py",
+)
 
 
 def _token(*parts: str) -> str:
     return "".join(parts)
+
+
+def test_phase11_legacy_drain_operational_chain_is_absent() -> None:
+    existing = [path for path in PHASE11_RETIRED_OPERATIONAL_PATHS if (PROJECT_ROOT / path).exists()]
+
+    assert not existing, f"Phase 11 legacy drain operational chain must be retired: {existing}"
+
+
+def test_phase11_retired_schema_model_sources_are_absent() -> None:
+    existing = [path for path in PHASE11_RETIRED_MODEL_PATHS if (PROJECT_ROOT / path).exists()]
+
+    assert not existing, f"Phase 11 retired schema model sources must be absent: {existing}"
 
 
 _HANDLING_QUEUE_MEMBERSHIP_MODULE = _token("bin", "_", "transit", "_", "membership")
@@ -509,7 +545,9 @@ def test_schema_deferred_scanner_rejects_scripts_and_behavior_tests_without_reje
 ) -> None:
     schema_entries = [row for row in _phase10_entries() if row["strategy"] == "schema-deferred"]
     model_path = schema_entries[0]["relative_path"]
-    schema_import = "from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox\n"
+    model_module = _module_name(model_path)
+    model_symbol = schema_entries[0]["symbol_or_route"].split(".", 1)[0]
+    schema_import = f"from {model_module} import {model_symbol}\n"
     fixtures = {
         model_path: schema_import,
         "migrations/env.py": schema_import,
@@ -530,7 +568,7 @@ def test_schema_deferred_scanner_rejects_scripts_and_behavior_tests_without_reje
         schema_only_test_paths=frozenset({"tests/schema/test_frozen_schema_owner.py"}),
         migration_revision_paths=frozenset({"migrations/versions/frozen_revision.py"}),
     ) == [
-        "migrations/versions/extra_revision.py -> src.app.runtime.orchestration.runtime_inbox:RuntimeInbox",
-        "scripts/behavior_consumer.py -> src.app.runtime.orchestration.runtime_inbox:RuntimeInbox",
-        "tests/api/test_behavior_consumer.py -> src.app.runtime.orchestration.runtime_inbox:RuntimeInbox",
+        f"migrations/versions/extra_revision.py -> {model_module}:{model_symbol}",
+        f"scripts/behavior_consumer.py -> {model_module}:{model_symbol}",
+        f"tests/api/test_behavior_consumer.py -> {model_module}:{model_symbol}",
     ]

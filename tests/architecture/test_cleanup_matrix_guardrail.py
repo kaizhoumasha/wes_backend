@@ -105,27 +105,7 @@ _TASK5_LEGACY_IMPORT_ROOTS = frozenset(
 
 _SCHEMA_DEFERRED_MODULE_ROOTS = frozenset(
     {
-        "src.app.runtime.orchestration.bin_route_instance",
-        "src.app.runtime.orchestration.conveyor_queue_membership",
-        "src.app.runtime.orchestration.execution_correlation",
-        "src.app.runtime.orchestration.execution_session",
-        "src.app.runtime.orchestration.execution_work_item",
-        "src.app.runtime.orchestration.idempotency_key",
-        "src.app.runtime.orchestration.material_flow_owner",
-        "src.app.runtime.orchestration.models.bin_cell_reservation",
-        "src.app.runtime.orchestration.models.diagnostic",
-        "src.app.runtime.orchestration.models.dispatch_attempt",
-        "src.app.runtime.orchestration.models.runtime_hold",
-        "src.app.runtime.orchestration.reconciliation_case",
-        "src.app.runtime.orchestration.runtime_hold",
-        "src.app.runtime.orchestration.runtime_inbox",
-        "src.app.runtime.orchestration.runtime_intent_log",
-        "src.app.runtime.orchestration.runtime_timeline",
-        "src.app.runtime.orchestration.wms_rack_demand",
         "src.app.runtime.orchestration.workline_runtime_status_projection",
-        "src.app.sys.models.outbox",
-        "src.app.wms_integration.models.circuit_breaker",
-        "src.app.wms_integration.models.evidence",
     }
 )
 
@@ -615,15 +595,7 @@ _BOUNDED_TEXT_EXPECTED = {
     "src/core/task_queue_gateway.py": ("celery-boot", "switch"),
 }
 
-_FK_DEPENDENT_SCHEMA_EXPECTED = {
-    "legacy:src/app/runtime/orchestration/models/diagnostic.py:WorklineDiagnostic": "wes_biz.workline_diagnostics",
-    "legacy:src/app/runtime/orchestration/bin_route_instance.py:BinRouteInstance": "wes_runtime.bin_route_instances",
-    "legacy:src/app/runtime/orchestration/conveyor_queue_membership.py:ConveyorQueueMembership": (
-        "wes_runtime.conveyor_queue_memberships"
-    ),
-    "legacy:src/app/runtime/orchestration/idempotency_key.py:IdempotencyKey": "wes_runtime.idempotency_keys",
-    "legacy:src/app/runtime/orchestration/material_flow_owner.py:MaterialFlowOwner": "wes_runtime.material_flow_owners",
-}
+_FK_DEPENDENT_SCHEMA_EXPECTED: dict[str, str] = {}
 
 _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY = {
     "runtime": {
@@ -804,23 +776,7 @@ _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY = {
         "legacy:docker-compose.yml:<file>",
     },
     "schema-deferred": {
-        "legacy:src/app/runtime/orchestration/execution_correlation.py:ExecutionCorrelation",
-        "legacy:src/app/runtime/orchestration/execution_session.py:ExecutionSession",
-        "legacy:src/app/runtime/orchestration/execution_work_item.py:ExecutionWorkItem",
-        "legacy:src/app/runtime/orchestration/models/bin_cell_reservation.py:WorklineBinCellReservation",
-        "legacy:src/app/runtime/orchestration/models/dispatch_attempt.py:WorklineDispatchAttempt",
-        "legacy:src/app/runtime/orchestration/models/runtime_hold.py:NgReturnItem",
-        "legacy:src/app/runtime/orchestration/models/runtime_hold.py:RuntimeHold",
-        "legacy:src/app/runtime/orchestration/reconciliation_case.py:ReconciliationCase",
-        "legacy:src/app/runtime/orchestration/runtime_hold.py:RuntimeHold",
-        "legacy:src/app/runtime/orchestration/runtime_inbox.py:RuntimeInbox",
-        "legacy:src/app/runtime/orchestration/runtime_intent_log.py:RuntimeIntentLog",
-        "legacy:src/app/runtime/orchestration/runtime_timeline.py:RuntimeTimeline",
-        "legacy:src/app/runtime/orchestration/wms_rack_demand.py:WmsRackDemand",
         "legacy:src/app/runtime/orchestration/workline_runtime_status_projection.py:WorklineRuntimeStatusProjection",
-        "legacy:src/app/sys/models/outbox.py:SystemOutbox",
-        "legacy:src/app/wms_integration/models/circuit_breaker.py:WmsCircuitBreakerState",
-        "legacy:src/app/wms_integration/models/evidence.py:WmsCallEvidence",
     },
 }
 
@@ -838,10 +794,11 @@ for _symbol in _LEGACY_WMS_OPERATION_CONTRACT_SYMBOLS:
     _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["wms"].add(f"legacy:src/app/wms_integration/operation_contract.py:{_symbol}")
 _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"].update(_FK_DEPENDENT_SCHEMA_EXPECTED)
 
-_SCHEMA_BLOCKING_TESTS = dict.fromkeys(
-    _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"],
-    "tests/architecture/test_cleanup_matrix_guardrail.py",
-)
+_SCHEMA_BLOCKING_TESTS = {
+    "legacy:src/app/runtime/orchestration/workline_runtime_status_projection.py:WorklineRuntimeStatusProjection": (
+        "tests/architecture/test_runtime_status_owner_guardrail.py"
+    )
+}
 
 _REVIEW_EXPECTED_DETAILS = {
     "legacy:src/app/sys/canonical_dispatch.py:<file>": (
@@ -992,7 +949,7 @@ def test_phase10_prelock_registry_covers_frozen_categories_with_final_dispositio
     for category, actual_ids in actual_by_category.items():
         assert actual_ids <= _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY[category]
     assert actual_by_category["schema-deferred"] == _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"]
-    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 125
+    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 84
     assert not any(entry.classification_status == "pending-review" for entry in parse_entries())
 
 
@@ -1286,7 +1243,7 @@ def test_phase10_schema_deferred_metadata_identity_and_fk_reverse_closure() -> N
     assert inbound_dependents <= frozen_tables, "schema-deferred FK reverse closure missing tables: " + ", ".join(
         sorted(inbound_dependents - frozen_tables)
     )
-    assert all(entry.blocking_tests == "tests/architecture/test_cleanup_matrix_guardrail.py" for entry in entries)
+    assert all(entry.blocking_tests == "tests/architecture/test_runtime_status_owner_guardrail.py" for entry in entries)
 
 
 def test_phase10_generator_rejects_schema_identity_not_backed_by_model_metadata() -> None:
@@ -1305,11 +1262,11 @@ def test_phase10_schema_validation_ignores_parent_process_metadata_pollution() -
     from sqlmodel import SQLModel
 
     from scripts.generate_legacy_matrix import collect_isolated_phase10_schema_snapshot
-    from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+    from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
 
-    path = "src/app/runtime/orchestration/models/diagnostic.py"
-    symbol = "WorklineDiagnostic"
-    table_identity = WorklineDiagnostic.__table__.fullname
+    path = "src/app/runtime/orchestration/workline_runtime_status_projection.py"
+    symbol = "WorklineRuntimeStatusProjection"
+    table_identity = WorklineRuntimeStatusProjection.__table__.fullname
     assert table_identity in SQLModel.metadata.tables
 
     snapshot = collect_isolated_phase10_schema_snapshot(

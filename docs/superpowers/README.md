@@ -21,17 +21,17 @@
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9 已合入 `develop@c5a93872`；Phase 10 Tasks 0–6 已在 `codex/phase10-implementation@834fe59e` 完成仓内准入，Task 7 已完成联调环境 cutover；发布分支已推送、尚未合入 `develop`，Phase 11–14 尚未开始 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9 已合入 `develop@c5a93872`；Phase 10 已通过 #187 合入 `develop@97e6887a`；Phase 11 Tasks 1–5 已在实施分支闭合，Task 6 最终 staged 门禁进行中，尚未合入；Phase 12–14 未开始 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |
 | `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
-| `plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役与 Phase 11 零消费者 schema 交接 | Implemented and verified on feature branch；Tasks 0–6 各一提交，候选 `834fe59e`；Task 7 已完成联调环境 cutover 与 Phase 11 handoff，发布分支已推送、尚未合入 `develop` |
-| `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Gated；仅在 Phase 10 零旧路径与最终模型稳定后执行 |
+| `plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役与 Phase 11 零消费者 schema 交接 | Merged；#187 合入 `develop@97e6887a`；此前 `834fe59e` candidate 已完成联调 cutover，merge commit 未证明重新部署，供应商/设备物理/业务验收未完成 |
+| `plans/2026-08-15-wes-schema-and-migration-baseline-reset.md` | Phase 11 单一空库 Alembic 基线重置 | Tasks 1–5 complete；唯一初始 revision、strict final manifest、双 fresh-DB、selector 与 unstaged HEAVY 已闭合；Task 6 最终 staged 门禁进行中，尚未合入 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
-| `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化已合入，后端发布运行静默 Tasks 1–4 已纳入 Phase 10 Task 7 联调候选，但发布分支尚未合入，独立 Task 5 TEST Deploy 未执行 |
-| `specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 教学式插件开发重排 | Approved；Gate A/B 与 Phase 9 已完成；Phase 10 Tasks 0–6 已在 feature branch 完成仓内准入，Task 7 已完成联调环境 cutover；发布分支已推送、尚未合入 `develop`，Phase 11–14 尚未开始 |
+| `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入 `develop@97e6887a`；此前 candidate 已部署联调，merge commit 未证明重新部署，独立 Task 5 TEST Deploy 未执行 |
+| `specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 教学式插件开发重排 | Approved；Gate A/B 与 Phase 9 已完成；Phase 10 已合入 `develop@97e6887a`；Phase 11 Tasks 1–5 已在实施分支闭合，Task 6 最终 staged 门禁进行中，尚未合入；Phase 12–14 未开始 |
 | `plans/2026-08-27-phase9-minimum-execution-foundation.md` | Phase 9 最小执行内核、七项 successor、测试 owner 和 Phase 10 handoff | Implemented and merged；`develop@c5a93872`；其 handoff 已被 Phase 10 Tasks 0–6 消费；未部署、未现场验收 |
 | `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Planned；Phase 11 后启动，旧合同必须重新联合评审 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |

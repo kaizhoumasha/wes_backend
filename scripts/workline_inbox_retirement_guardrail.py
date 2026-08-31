@@ -173,10 +173,6 @@ _ALL_SIGNATURE_KEYS = frozenset(signature.key for signature in LEGACY_SIGNATURES
 ALLOWED_EVIDENCE: dict[str, frozenset[str]] = {
     "scripts/workline_inbox_retirement_guardrail.py": _ALL_SIGNATURE_KEYS,
     "tests/architecture/test_workline_inbox_retirement_guardrail.py": _ALL_SIGNATURE_KEYS,
-    "migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py": _ALL_SIGNATURE_KEYS,
-    "migrations/versions/retire_workline_inbox.py": _ALL_SIGNATURE_KEYS,
-    "tests/integration/test_runtime_inbox_migration_postgresql.py": _ALL_SIGNATURE_KEYS,
-    "tests/deployment/test_retire_workline_inbox_migration.py": _ALL_SIGNATURE_KEYS,
     "tests/deployment/test_runtime_inbox_celery_cutover.py": frozenset(
         {"legacy_task", "legacy_task_short", "legacy_enqueue"}
     ),

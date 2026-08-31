@@ -11,6 +11,7 @@ from sqlmodel import Field
 
 from src.app.resource.models import RackKind
 from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -28,7 +29,12 @@ class WorklineRackPositionRole(str, Enum):
 class WorklineRackPositionBase(BaseMixin):
     """工作线货架停靠位基础字段。"""
 
-    workline_id: int = Field(index=True, foreign_key="wes_biz.work_lines.id", description="关联 WorkLine.id")
+    workline_id: int = Field(
+        index=True,
+        foreign_key="wes_biz.work_lines.id",
+        sa_type=SQL_COMPAT_BIGINT,
+        description="关联 WorkLine.id",
+    )
     workline_code: str = Field(min_length=1, max_length=50, index=True, description="工作线编码")
     position_code: str = Field(min_length=1, max_length=80, index=True, description="停靠位编码")
     position_name: str = Field(min_length=1, max_length=120, description="停靠位名称")
@@ -49,7 +55,11 @@ class WorklineRackPositionBase(BaseMixin):
     device_role: str | None = Field(default=None, max_length=100, index=True, description="关联设备角色")
     priority: int = Field(default=100, ge=0, description="候选优先级")
     enabled: bool = Field(default=True, index=True, description="是否启用")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展属性",
+    )
 
 
 class WorklineRackPosition(WorklineRackPositionBase, DataTableMixin, table=True):

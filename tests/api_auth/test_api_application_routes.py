@@ -47,6 +47,14 @@ def test_application_response_exposes_assigned_permissions() -> None:
     assert "permissions" in APIApplicationResponse.model_fields
 
 
+def test_api_application_primary_key_has_no_explicit_duplicate_index() -> None:
+    id_indexes = [
+        index for index in APIApplication.__table__.indexes if tuple(column.name for column in index.columns) == ("id",)
+    ]
+
+    assert id_indexes == []
+
+
 def test_application_model_registers_permissions_relationship() -> None:
     relationship = sa_inspect(APIApplication).relationships["permissions"]
 

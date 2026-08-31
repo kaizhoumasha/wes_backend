@@ -2229,10 +2229,14 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
             symbol,
             "model",
             owner,
-            "schema-deferred",
-            "migrations/env.py",
-            table_identity,
-            "tests/architecture/test_cleanup_matrix_guardrail.py",
+            "schema-deferred" if path.endswith("workline_runtime_status_projection.py") else "delete",
+            "migrations/env.py" if path.endswith("workline_runtime_status_projection.py") else "",
+            table_identity if path.endswith("workline_runtime_status_projection.py") else "NONE",
+            (
+                "tests/architecture/test_runtime_status_owner_guardrail.py"
+                if path.endswith("workline_runtime_status_projection.py")
+                else "tests/architecture/test_legacy_absence_guardrail.py"
+            ),
             "HIGH",
         )
         for path, symbol, owner, table_identity, _blocking_tests in (

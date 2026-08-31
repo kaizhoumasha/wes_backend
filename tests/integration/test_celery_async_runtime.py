@@ -183,6 +183,10 @@ def _install_runtime(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> Any
 
 def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
+    from src.core.conf import settings
+
+    monkeypatch.setattr(settings, "WMS_BASE_URL", "http://localhost:8011")
+    monkeypatch.setattr(settings, "TRANSPORT_SUBMIT_PATH", "/api/v1/wes/transport-requests")
     infra = _patch_infrastructure(monkeypatch, module)
     first_runtime = _install_runtime(monkeypatch, module)
     assert first_runtime.runner_generation is None

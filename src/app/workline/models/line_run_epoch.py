@@ -11,6 +11,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 
@@ -88,7 +89,11 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
         {"schema": SchemaType.BIZ.value},
     )
 
-    line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
+    line_run_epoch_id: int = Field(
+        foreign_key="wes_biz.line_run_epochs.id",
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
     device_id: int = Field(foreign_key="wes_biz.devices.id", index=True)
     device_code: str = Field(min_length=1, max_length=100)
     device_role: str = Field(min_length=1, max_length=50)
@@ -133,7 +138,11 @@ class LineRunEpochPositionBinding(EnterpriseMixin, DataTableMixin, table=True):
         {"schema": SchemaType.BIZ.value},
     )
 
-    line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
+    line_run_epoch_id: int = Field(
+        foreign_key="wes_biz.line_run_epochs.id",
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
     position_role: str = Field(min_length=1, max_length=50)
     location_id: str = Field(min_length=1, max_length=120)
     location_type: str = Field(min_length=1, max_length=50)

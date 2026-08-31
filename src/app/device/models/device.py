@@ -33,7 +33,7 @@ class DeviceBase(BaseMixin):
         foreign_key="wes_biz.devices.id",
         ondelete="SET NULL",
     )
-    diagnostic_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    diagnostic_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     endpoint_base_url: DeviceEndpointBaseUrl | None = Field(default=None, max_length=255)
 
 

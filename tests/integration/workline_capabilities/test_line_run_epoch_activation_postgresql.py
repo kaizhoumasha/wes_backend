@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 from datetime import datetime
 
 import pytest
@@ -24,9 +23,6 @@ from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
 from tests.support.postgresql_heavy import run_alembic, temporary_database
-
-PARENT_REVISION = "ec18b2a79400"
-PACKAGE_TWO_HEAD = "a05b2676f681"
 
 
 async def _seed_line_and_device(session_factory: async_sessionmaker[AsyncSession]) -> tuple[int, int]:
@@ -191,7 +187,7 @@ def test_complete_epoch_activation_is_atomic_and_serialized_by_workline_lock() -
     asyncio.run(scenario())
 
 
-def test_configuration_snapshot_migration_is_non_nullable_and_rejects_existing_epoch() -> None:
+def test_configuration_snapshot_is_non_nullable() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
@@ -215,52 +211,10 @@ def test_configuration_snapshot_migration_is_non_nullable_and_rejects_existing_e
             finally:
                 await engine.dispose()
 
-        async with temporary_database() as (_database, database_url):
-            run_alembic("upgrade", PARENT_REVISION, database_url=database_url)
-            engine = create_async_engine(database_url, pool_pre_ping=True)
-            try:
-                async with engine.begin() as connection:
-                    workline_id = (
-                        await connection.execute(
-                            WorkLine.__table__.insert()
-                            .values(line_code="MIGRATION-REJECT", line_name="Migration reject", line_type="AUTO")
-                            .returning(WorkLine.id)
-                        )
-                    ).scalar_one()
-                    await connection.execute(
-                        LineRunEpoch.__table__.insert().values(
-                            epoch_code="MIGRATION-REJECT-EPOCH",
-                            workline_id=workline_id,
-                            plugin_key="example_plugin",
-                            plugin_version="1.0",
-                            flow_mode="GENERIC_FLOW",
-                            topology_digest="a" * 64,
-                            configuration_digest="b" * 64,
-                            status="ACTIVE",
-                            started_at=datetime(2026, 8, 19),
-                        )
-                    )
-            finally:
-                await engine.dispose()
-
-            with pytest.raises(subprocess.CalledProcessError) as error:
-                run_alembic("upgrade", "head", database_url=database_url)
-            assert "配置快照 direct cutover 要求清空" in error.value.stderr
-
-            engine = create_async_engine(database_url, pool_pre_ping=True)
-            try:
-                async with engine.connect() as connection:
-                    assert (
-                        await connection.scalar(text("SELECT version_num FROM wes_sys.alembic_version"))
-                        == PARENT_REVISION
-                    )
-            finally:
-                await engine.dispose()
-
     asyncio.run(scenario())
 
 
-def test_endpoint_migration_is_non_nullable_and_rejects_existing_epoch_or_binding() -> None:
+def test_endpoint_schema_nullability_matches_current_contract() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
@@ -289,79 +243,5 @@ def test_endpoint_migration_is_non_nullable_and_rejects_existing_epoch_or_bindin
                 }
             finally:
                 await engine.dispose()
-
-        for with_binding in (False, True):
-            async with temporary_database() as (_database, database_url):
-                run_alembic("upgrade", PACKAGE_TWO_HEAD, database_url=database_url)
-                engine = create_async_engine(database_url, pool_pre_ping=True)
-                try:
-                    async with engine.begin() as connection:
-                        workline_id = (
-                            await connection.execute(
-                                WorkLine.__table__.insert()
-                                .values(
-                                    line_code="ENDPOINT-MIGRATION", line_name="Endpoint migration", line_type="AUTO"
-                                )
-                                .returning(WorkLine.id)
-                            )
-                        ).scalar_one()
-                        epoch_id = (
-                            await connection.execute(
-                                LineRunEpoch.__table__.insert()
-                                .values(
-                                    epoch_code="ENDPOINT-MIGRATION-EPOCH",
-                                    workline_id=workline_id,
-                                    plugin_key="example_plugin",
-                                    plugin_version="1.0",
-                                    flow_mode="GENERIC_FLOW",
-                                    topology_digest="a" * 64,
-                                    configuration_digest="b" * 64,
-                                    configuration_snapshot_json={},
-                                    status="ACTIVE",
-                                    started_at=datetime(2026, 8, 19),
-                                )
-                                .returning(LineRunEpoch.id)
-                            )
-                        ).scalar_one()
-                        if with_binding:
-                            device_id = (
-                                await connection.execute(
-                                    Device.__table__.insert()
-                                    .values(
-                                        device_code="ENDPOINT-MIGRATION-DEVICE",
-                                        device_name="Endpoint migration device",
-                                        work_line_id=workline_id,
-                                        device_role="DEVICE_ROLE",
-                                    )
-                                    .returning(Device.id)
-                                )
-                            ).scalar_one()
-                            await connection.execute(
-                                LineRunEpochDeviceBinding.__table__.insert().values(
-                                    line_run_epoch_id=epoch_id,
-                                    device_id=device_id,
-                                    device_code="ENDPOINT-MIGRATION-DEVICE",
-                                    device_role="DEVICE_ROLE",
-                                    contract_key="generic.contract",
-                                    contract_version="1.0",
-                                    status_max_age_ms=1_000,
-                                    command_timeout_ms=5_000,
-                                )
-                            )
-                finally:
-                    await engine.dispose()
-
-                with pytest.raises(subprocess.CalledProcessError):
-                    run_alembic("upgrade", "head", database_url=database_url)
-
-                engine = create_async_engine(database_url, pool_pre_ping=True)
-                try:
-                    async with engine.connect() as connection:
-                        assert (
-                            await connection.scalar(text("SELECT version_num FROM wes_sys.alembic_version"))
-                            == PACKAGE_TWO_HEAD
-                        )
-                finally:
-                    await engine.dispose()
 
     asyncio.run(scenario())

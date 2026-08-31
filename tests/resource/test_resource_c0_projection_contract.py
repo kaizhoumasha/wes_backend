@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from inspect import signature
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, get_args, get_origin
 
@@ -10,16 +9,24 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.app.resource.models import (
+    Bin,
     BinCellOccupancy,
     BinCellOccupancyBase,
+    BinContentSnapshot,
+    BinContentSnapshotItem,
     BinMaterialMount,
     BinMaterialMountBase,
     BinPlacement,
     BinPlacementBase,
+    BinSlotTemplate,
+    BinType,
+    Rack,
     RackBinMount,
     RackBinMountBase,
     RackPlacement,
     RackPlacementBase,
+    RackSlotTemplate,
+    RackType,
     ResourceStateEvent,
     ResourceStateEventBase,
     ResourceStateEventType,
@@ -41,6 +48,23 @@ RESOURCE_SESSION_BASES = (
     BinCellOccupancyBase,
 )
 
+RESOURCE_TABLE_MODELS = (
+    RackType,
+    RackSlotTemplate,
+    Rack,
+    BinType,
+    BinSlotTemplate,
+    Bin,
+    ResourceStateEvent,
+    RackPlacement,
+    RackBinMount,
+    BinPlacement,
+    BinMaterialMount,
+    BinCellOccupancy,
+    BinContentSnapshot,
+    BinContentSnapshotItem,
+)
+
 
 def _field_allows_int_none(annotation: Any) -> bool:
     if annotation is int:
@@ -50,21 +74,64 @@ def _field_allows_int_none(annotation: Any) -> bool:
     return int in get_args(annotation) and type(None) in get_args(annotation)
 
 
-def _resource_c0_migration_source() -> str:
-    candidates = [
-        path
-        for path in Path("migrations/versions").glob("*.py")
-        if "resource c0 session fk integrity" in path.read_text(encoding="utf-8")
-    ]
-    assert candidates, "missing generated resource C0 migration"
-    return candidates[0].read_text(encoding="utf-8")
-
-
 def test_resource_session_contract_uses_int_workline_session_id_only() -> None:
     for model in RESOURCE_SESSION_BASES:
         assert "session_id" not in model.model_fields
         field = model.model_fields["workline_session_id"]
         assert _field_allows_int_none(field.annotation)
+
+
+def test_resource_metadata_has_no_exact_duplicate_indexes() -> None:
+    duplicates: list[str] = []
+    for model in RESOURCE_TABLE_MODELS:
+        indexes_by_definition: dict[tuple[tuple[str, ...], str | None], list[str]] = {}
+        for index in model.__table__.indexes:
+            key = (
+                tuple(column.name for column in index.columns),
+                str(index.dialect_options["postgresql"].get("where") or "") or None,
+            )
+            indexes_by_definition.setdefault(key, []).append(str(index.name))
+        duplicates.extend(
+            f"{model.__tablename__}:{','.join(sorted(names))}"
+            for names in indexes_by_definition.values()
+            if len(names) > 1
+        )
+
+    assert duplicates == []
+
+
+def test_resource_metadata_has_no_unowned_single_column_indexes() -> None:
+    unowned_columns = {
+        BinContentSnapshot: {"bin_code", "captured_at", "source_event_id", "source_session_id"},
+        BinContentSnapshotItem: {"material_code", "wms_inventory_id"},
+        BinPlacement: {
+            "bin_code",
+            "ended_at",
+            "placeholder_key",
+            "position_code",
+            "position_type",
+            "source_event_id",
+            "trace_id",
+            "workline_code",
+            "workline_id",
+        },
+        BinSlotTemplate: {"bin_type_code"},
+        RackBinMount: {"bin_code", "ended_at", "rack_code", "rack_slot_code", "source_event_id", "trace_id"},
+        RackPlacement: {"ended_at", "location_code", "rack_code", "source_event_id", "trace_id"},
+        RackSlotTemplate: {"rack_type_code"},
+        ResourceStateEvent: {"resource_code", "source_event_id"},
+    }
+    offenders = {
+        f"{model.__tablename__}.{column_name}"
+        for model, column_names in unowned_columns.items()
+        for column_name in column_names
+        if any(
+            str(index.name).startswith("ix_wes_") and tuple(column.name for column in index.columns) == (column_name,)
+            for index in model.__table__.indexes
+        )
+    }
+
+    assert offenders == set()
 
 
 def test_resource_projection_write_surfaces_do_not_accept_retired_plugin_identity() -> None:
@@ -112,6 +179,9 @@ def test_resource_projection_models_have_required_foreign_keys() -> None:
     mount_fks = BinMaterialMount.__table__.c.bin_cell_occupancy_id.foreign_keys
     assert {fk.target_fullname for fk in mount_fks} == {"wes_biz.resource_bin_cell_occupancies.id"}
 
+    placement_workline_fks = BinPlacement.__table__.c.workline_id.foreign_keys
+    assert {fk.target_fullname for fk in placement_workline_fks} == {"wes_biz.work_lines.id"}
+
     for model in (BinCellOccupancy, BinMaterialMount):
         fks = model.__table__.c.workline_session_id.foreign_keys
         assert {fk.target_fullname for fk in fks} == {"wes_biz.workline_sessions.id"}
@@ -132,21 +202,6 @@ def test_resource_fk_tracking_columns_use_sql_compat_bigint() -> None:
     assert expected_pg_type == "BIGINT"
     for column in columns:
         assert column.type.compile(dialect=postgresql.dialect()).upper() == expected_pg_type
-
-
-def test_resource_c0_migration_documents_session_cleanup_and_fk_contract() -> None:
-    source = _resource_c0_migration_source()
-
-    assert "def upgrade()" in source
-    assert "def downgrade()" in source
-    assert "workline_session_id" in source
-    assert "workline_sessions.id" in source
-    assert "resource_bin_cell_occupancies.id" in source
-    assert "session_id ~ '^[0-9]+$'" in source
-    assert "legacy_session_id" in source
-    assert "resource_c0_session_cleanup_report" in source
-    assert "LEGACY_SESSION_ID_NOT_NUMERIC" in source
-    assert "DROP COLUMN" in source and "session_id" in source
 
 
 @pytest.mark.asyncio
@@ -422,82 +477,3 @@ def test_material_location_default_persistence_adapter_persists_and_marks_reconc
     assert unit_drift.current_location == "BIN-9:1"
     assert unit_conflict.status == "RECONCILING"
     assert db.added == [unit_drift, unit_conflict]
-
-
-def _assert_json_legacy_session_restore(source: str, *, table_name: str, json_column: str) -> None:
-    assert f'("{table_name}", "{json_column}")' in source
-    assert "SET session_id = ({json_column}->'legacy_session_id') #>> '{{}}'" in source
-    assert "AND {json_column} IS NOT NULL" in source
-    assert "AND ({json_column}->'legacy_session_id') IS NOT NULL" in source
-
-
-def test_resource_c0_migration_handles_json_casts_orphans_and_downgrade_round_trip_order() -> None:
-    source = _resource_c0_migration_source()
-
-    assert "COALESCE({json_column}, '{{}}'::json)::jsonb" in source
-    assert ")::json" in source
-
-    numeric_orphan_report = source.index("LEGACY_SESSION_ID_NUMERIC_ORPHAN")
-    numeric_orphan_cleanup = source.index("SET workline_session_id = NULL")
-    session_fk = source.index("RESOURCE_SESSION_FK_NAMES[table_name]")
-    assert "LEFT JOIN {SCHEMA}.workline_sessions" in source
-    assert numeric_orphan_report < numeric_orphan_cleanup < session_fk
-    assert "fk_rbco_workline_session" in source
-    assert all(
-        len(name) <= 63
-        for name in (
-            "fk_rse_workline_session",
-            "fk_rrp_workline_session",
-            "fk_rrbm_workline_session",
-            "fk_rbp_workline_session",
-            "fk_rbmm_workline_session",
-            "fk_rbco_workline_session",
-        )
-    )
-
-    mount_orphan_report = source.index("ORPHAN_BIN_CELL_OCCUPANCY")
-    mount_orphan_cleanup = source.index("SET bin_cell_occupancy_id = NULL")
-    mount_fk = source.index("fk_resource_bin_material_mounts_bin_cell_occupancy_id")
-    assert "LEFT JOIN {SCHEMA}.resource_bin_cell_occupancies" in source
-    assert mount_orphan_report < mount_orphan_cleanup < mount_fk
-
-    assert "SET session_id = report.legacy_session_id" in source
-    assert "cleanup_reason IN (" in source
-    _assert_json_legacy_session_restore(source, table_name="resource_state_events", json_column="payload_json")
-    _assert_json_legacy_session_restore(source, table_name="resource_bin_placements", json_column="metadata_json")
-    _assert_json_legacy_session_restore(
-        source,
-        table_name="resource_bin_cell_occupancies",
-        json_column="metadata_json",
-    )
-    assert source.index("SET session_id = report.legacy_session_id") < source.index(
-        "DROP TABLE IF EXISTS {SCHEMA}.resource_c0_session_cleanup_report"
-    )
-
-
-def test_resource_c0_migration_index_names_match_sqlmodel_metadata() -> None:
-    source = _resource_c0_migration_source()
-    expected_index_names = {
-        index.name
-        for model in (
-            ResourceStateEvent,
-            RackPlacement,
-            RackBinMount,
-            BinPlacement,
-            BinMaterialMount,
-            BinCellOccupancy,
-        )
-        for index in model.__table__.indexes
-        if "workline_session_id" in {column.name for column in index.columns}
-    }
-
-    assert expected_index_names == {
-        "ix_wes_biz_resource_state_events_workline_session_id",
-        "ix_wes_biz_resource_rack_placements_workline_session_id",
-        "ix_wes_biz_resource_rack_bin_mounts_workline_session_id",
-        "ix_wes_biz_resource_bin_placements_workline_session_id",
-        "ix_wes_biz_resource_bin_material_mounts_workline_session_id",
-        "ix_wes_biz_resource_bin_cell_occupancies_workline_session_id",
-    }
-    assert 'f"ix_{SCHEMA}_{table_name}_workline_session_id"' in source
-    assert 'f"ix_{table_name}_workline_session_id"' not in source

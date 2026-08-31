@@ -51,16 +51,9 @@ INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
         "tests/contracts/test_business_legacy_matrix_closure.py"
     ): "business legacy matrix closure checks historical audit columns",
     Path("tests/scripts/test_select_heavy_tests.py"): "selector contract owns frozen removal phase labels",
-    Path("scripts/check_legacy_drain_readiness.py"): "cutover checker owns the frozen manifest identity and path",
-    Path(
-        "tests/scripts/test_check_legacy_drain_readiness.py"
-    ): "checker contract owns the frozen manifest identity and path",
     Path(
         "tests/migrations/test_phase1_device_fk_ring_dissolve.py"
     ): "migration semantic contract for immutable historical migration",
-    Path("tests/migrations/test_phase4_runtime_location_reservation_migration.py"): (
-        "migration semantic contract for immutable historical migration"
-    ),
 }
 
 PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (

@@ -100,48 +100,6 @@ async def _seed_workline(session_factory: async_sessionmaker[AsyncSession], suff
         return workline.id, device.id
 
 
-def test_workline_start_migration_drops_legacy_columns_from_package_one_head() -> None:
-    async def scenario() -> None:
-        async with temporary_database() as (_database, database_url):
-            run_alembic("upgrade", "53e560430c1a", database_url=database_url)
-            engine = create_async_engine(database_url, pool_pre_ping=True)
-            try:
-                async with engine.connect() as connection:
-                    package_one_version = await connection.scalar(
-                        text("SELECT version_num FROM wes_sys.alembic_version")
-                    )
-                    package_one_columns = set(
-                        await connection.scalars(
-                            text(
-                                "SELECT column_name FROM information_schema.columns "
-                                "WHERE table_schema = 'wes_biz' AND table_name = 'work_lines'"
-                            )
-                        )
-                    )
-                assert package_one_version == "53e560430c1a"
-                assert package_one_columns >= RETIRED_COLUMNS
-
-                run_alembic("upgrade", "a05b2676f681", database_url=database_url)
-                async with engine.connect() as connection:
-                    package_two_version = await connection.scalar(
-                        text("SELECT version_num FROM wes_sys.alembic_version")
-                    )
-                    package_two_columns = set(
-                        await connection.scalars(
-                            text(
-                                "SELECT column_name FROM information_schema.columns "
-                                "WHERE table_schema = 'wes_biz' AND table_name = 'work_lines'"
-                            )
-                        )
-                    )
-                assert package_two_version == "a05b2676f681"
-                assert RETIRED_COLUMNS.isdisjoint(package_two_columns)
-            finally:
-                await engine.dispose()
-
-    asyncio.run(scenario())
-
-
 def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identity() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):

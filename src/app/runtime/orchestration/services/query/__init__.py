@@ -4,11 +4,6 @@
 调用方应从本包导入。
 """
 
-from src.app.runtime.orchestration.services.query.legacy_drain_readiness_service import (
-    LegacyDrainReadinessQueryError,
-    LegacyDrainReadinessResult,
-    LegacyDrainReadinessService,
-)
 from src.app.runtime.orchestration.services.query.release_operational_readiness_service import (
     ReleaseOperationalReadinessQueryError,
     ReleaseOperationalReadinessResult,
@@ -23,9 +18,6 @@ from src.app.runtime.orchestration.services.query.workline_active_objects_servic
 )
 
 __all__ = [
-    "LegacyDrainReadinessQueryError",
-    "LegacyDrainReadinessResult",
-    "LegacyDrainReadinessService",
     "ReleaseOperationalReadinessQueryError",
     "ReleaseOperationalReadinessResult",
     "ReleaseOperationalReadinessService",
