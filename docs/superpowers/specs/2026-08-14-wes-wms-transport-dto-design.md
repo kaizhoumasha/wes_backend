@@ -2,11 +2,11 @@
 title: WES-WMS Transport DTO 收敛设计
 status: Approved
 created_at: 2026-08-14
-updated_at: 2026-08-20
+updated_at: 2026-08-31
 scope: WES 与 WMS 之间 Transport 搬运提交/容器中间位置事件/搬运最终结果接口契约、WMS C# DTO 和 WMS-RCS 映射边界
 system_stage: pre_release
 migration_strategy: direct_replacement
-implementation_alignment: ALIGNED
+implementation_alignment: ALIGNMENT_REQUIRED
 related:
   - docs/integration/wes-wms-interface-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
@@ -21,9 +21,8 @@ related:
 本文定义尚未发布系统的 WES-WMS Transport接口契约目标设计，重点减少 WMS 在 .NET Framework 4.6 中解析和组装
 `RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE` 四种请求的重复工作，同时守住 WES、WMS 与 RCS 的职责边界。
 
-本文是已经完成联合设计评审的目标基线。两份现行合同、当前 WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-已经完成同一合同对齐，因此 `implementation_alignment=ALIGNED`。该状态不表示 WMS 提供方实现、双方联调或现场业务验收已经完成，
-也不允许保留旧接口契约形成双真源。
+本文是已完成联合设计评审的目标基线。两份现行合同已经更新，WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
+尚未按本设计调整，因此 `implementation_alignment=ALIGNMENT_REQUIRED`。实施时直接替换旧合同，不保留兼容入口。
 
 两份 `docs/hardware/` PDF 是厂商原始输入，保持原貌。厂商字段只用于说明 WMS ACL 的映射依据，不升级为 WES 核心合同。
 
@@ -42,7 +41,8 @@ related:
 
 ### 2.2 非目标
 
-- 不让 WES 发送厂商 `taskTyp`、`ctnrTyp`、`positionCodePath.type`、`podDir`、`ctuSide` 或 `sideA/sideB`。
+- 除三方明确约定的 `rcs_template_id` 外，不让 WES 发送厂商 `taskTyp`、`ctnrTyp`、`positionCodePath.type`、`podDir`、
+  `ctuSide` 或 `sideA/sideB`。
 - 不让 WES 规划 AGV/CTU 车辆、路径、交通管制、动作顺序或供应商子任务。
 - 不复用同一个 C# 类同时表示 WMS 面向 WES 的协议 DTO 和 WMS 面向 RCS 的出站 DTO。
 - 不建立 DTO 注册表、反射式处理框架、通用工作流或自定义多态 JSON 转换器。
@@ -52,7 +52,8 @@ related:
 
 1. 搬运提交保持一个 endpoint、一个公共信封和一个 `kind` 闭集，但 `data` 只分为 `RackTransportData` 与
    `BinTransportData` 两族。
-2. `RACK_MOVE` 与 `RACK_ROTATE` 共用 `source + target + target_face`。原地换面通过 `source == target` 表达。
+2. `RACK_MOVE` 与 `RACK_ROTATE` 共用 `rcs_template_id + source + target + target_face`。`RACK_MOVE` 的位置允许
+   `RACK | ZONE | RACK_POSITION`，原地换面只使用精确 `RACK_POSITION` 并通过 `source == target` 表达。
 3. `BIN_MOVE` 与 `BIN_EXCHANGE` 共用 `moves[] { container_id + source + target }`。交换通过闭环约束表达，不使用
    `exchange_pairs` 或 left/right 角色。
 4. 接口契约中的物理料箱统一叫 `container_id`；`slot_id` 继续表示 WES 结构化货架槽位。WMS 根据主数据把槽位映射为厂商
@@ -80,11 +81,16 @@ Position接口契约固定为：
 
 | `kind` | 完整字段 | 用途 |
 | --- | --- | --- |
-| `RACK_POSITION` | `kind + location_code` | 货架来源、目标和货架最终位置 |
+| `RACK` | `kind + location_code` | `RACK_MOVE` 来源或目标；`location_code` 必须等于外层 `rack_id`，由 RCS 解析位置 |
+| `ZONE` | `kind + location_code` | `RACK_MOVE` 来源或目标；`location_code` 表示区域编号，不指定精确地码 |
+| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE` 精确来源或目标、`RACK_ROTATE` 位置和货架最终位置 |
 | `RACK_BIN_SLOT` | `kind + rack_id + rack_face + slot_id` | 指定货架、当前工作面和槽位 |
 | `HANDOFF_POSITION` | `kind + location_code` | CTU、输送线或工作线交接位 |
 
-不适用字段不得出现在 JSON 中。`rack_face`、`target_face`、`arrival_face` 都只允许 `A | B`。
+`RACK` 出现在 `source` 或 `target` 时，`location_code` 必须等于同一 `RackTransportData.rack_id`；不一致的请求无效。
+
+不适用字段不得出现在 JSON 中。`rack_face`、`target_face`、`arrival_face` 都只允许 JSON 整数 `90 | 270`。WES/WMS/RCS
+将其作为约定面向值原样传递和精确比较，不接受 A/B 字符串、数字字符串、角度换算或容差。
 
 ## 5. 搬运提交请求设计
 
@@ -95,23 +101,29 @@ Position接口契约固定为：
 ```text
 transport_task_id
 kind: RACK_MOVE | RACK_ROTATE
+rcs_template_id: CTU01 | CTU02 | CTU03 | F01
 rack_id
-source: RACK_POSITION
-target: RACK_POSITION
-target_face: A | B
+source: RACK | ZONE | RACK_POSITION
+target: RACK | ZONE | RACK_POSITION
+target_face: 90 | 270
 ```
 
 | `kind` | 结构约束 | 完成条件 |
 | --- | --- | --- |
-| `RACK_MOVE` | `source != target`；`target_face` 必填 | 到达 `target`，且可用工作面等于 `target_face` |
-| `RACK_ROTATE` | `source == target`；`target_face` 必填且不同于可信当前面 | 保持在 `target`，且可用工作面等于 `target_face` |
+| `RACK_MOVE` | `source/target` 属于位置闭集且不同；`target_face` 必填 | 回调精确 `RACK_POSITION`；精确目标还须地码相等，实际面等于 `target_face` |
+| `RACK_ROTATE` | `source == target` 且均为精确 `RACK_POSITION`；`target_face` 不同于可信当前面 | 保持在精确位置，实际面等于 `target_face` |
 
 `RACK_MOVE` 可以由 WMS 分解为直接搬运、先换面后搬运或搬运后换面等一个或多个厂商任务。WES 不接收分解步骤，也不根据
 RCS 中间步骤提前完成 TransportTask；WMS 必须以最终位置和最终工作面闭合一个 WES 运输义务。
 
-`target_face` 是业务调用方在创建任务时给出的目标义务，不是 WMS Adapter 根据当前投影或厂商字段推断出的结果。实施时
-`move_rack()`、`rotate_rack()` 及其请求对象都必须显式接收 `target_face`，并把它写入 TransportTask 的不可变请求快照和
-`request_body_digest`；后续重提只能读取该冻结值。WES 只以冻结 `target + target_face` 校验成功结果。
+`target_face` 是业务调用方在创建任务时给出的目标义务。WMS 将整数面向值原样传给 RCS，最终回调 `arrival_face` 必须与其相等。
+`rcs_template_id` 使用 RCS 真实模板标识：库位到工作位为 `CTU01`，工作位原地旋转为 `CTU02`，工作位返回库位为 `CTU03`，
+未指定时在形成不可变请求前规范化为 `F01`。Wire 始终携带明确模板；WES 不根据位置编码推断模板，也不建立模板配置映射。
+
+`move_rack()`、`rotate_rack()` 及其请求对象必须把 `rcs_template_id`、位置和 `target_face` 写入 TransportTask 的不可变请求快照及
+`request_body_digest`，后续重提只能读取冻结值。`RACK_POSITION` 目标要求最终地码相等；`RACK` 目标要求最终位置是 WMS/RCS 按
+冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。回调统一返回精确 `RACK_POSITION`，WES 不自行解析
+宽泛目标。
 
 ### 5.2 料箱族
 
@@ -152,7 +164,7 @@ moves[] {
 
 ### 5.3 当前工作面约束
 
-一个 Bin 批次可以涉及不同货架，但同一 `rack_id` 在整个请求中只能出现一个 `rack_face`。不同货架可以分别使用 A 面或 B 面。
+一个 Bin 批次可以涉及不同货架，但同一 `rack_id` 在整个请求中只能出现一个 `rack_face`。不同货架可以分别使用 `90` 面或 `270` 面。
 
 - WES 在创建 TransportTask 前使用可靠本地位置/工作面投影校验。
 - WMS 在返回 `RECEIVED` 前使用自身权威主数据及可信 RCS 状态再次校验。
@@ -160,7 +172,7 @@ moves[] {
 - 无法取得可信当前面时返回 `503 / UNAVAILABLE`，不调用 RCS。
 - 需要操作另一面时，业务 owner 先完成独立 `RACK_ROTATE`，再基于新事实创建新的 Bin 任务。
 
-同一 Bin 批次禁止先操作 A 面部分容器、再换面操作 B 面剩余容器。
+同一 Bin 批次禁止先操作 `90` 面部分容器、再换面操作 `270` 面剩余容器。
 
 ## 6. 容器中间位置事件（可选）
 
@@ -195,8 +207,8 @@ failure_code?
 arrival_face?
 ```
 
-- `SUCCEEDED` 必须携带 `final_position + arrival_face`，二者分别等于冻结 `target + target_face`，不得携带 `failure_code` 或
-  `position_unknown`。
+- `SUCCEEDED` 必须携带精确 `RACK_POSITION final_position + arrival_face`；`arrival_face` 等于冻结 `target_face`。精确目标还须
+  地码相等；`RACK | ZONE` 目标以 WMS/RCS 返回的实际精确地码更新位置事实。不得携带 `failure_code` 或 `position_unknown`。
 - `FAILED` 且位置明确时必须携带 `final_position + arrival_face + failure_code`，其中 `failure_code` 只允许
   `RCS_TASK_REJECTED | RCS_EXECUTION_FAILED | MANUAL_ABORTED`。
 - `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或到达面。
@@ -312,11 +324,13 @@ WMS 只需要一个公共信封、一个 Position DTO、两个搬运提交 data 
 | `transport_task_id` | WMS 为每个厂商子任务生成符合厂商限制的 `taskCode`，并保存一个 WES 任务到一个或多个厂商任务的关联 |
 | `rack_id` | 通过 WMS 主数据解析为厂商 `podCode`，并校验厂商字段限制 |
 | `container_id` | 通过 WMS 主数据解析为厂商 `containerId`，并校验厂商字段限制 |
-| `RACK_POSITION.location_code` | 映射 `positionCodePath[].positionCode` |
+| `RACK.location_code` | 必须等于外层 `rack_id`，作为货架编号交给 RCS 解析位置 |
+| `ZONE.location_code` | 作为区域编号交给 RCS 选址 |
+| `RACK_POSITION.location_code` | 作为精确地码映射 `positionCodePath[].positionCode` |
 | `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
-| `target_face` | 只驱动 WMS 的厂商任务分解和预期结果校验；不直接映射为厂商当前面字段 |
-| `arrival_face` | RCS 确认实际到达工作面后，由 WMS 用于形成搬运最终结果，并在需要整架上报时映射为当前面 `ctuSide` |
-| `kind + source + target` | 由 WMS 场景解析器选择厂商 `AGV01..03`、`CTU01..04` 等任务类型 |
+| `target_face` | 整数 `90 | 270`，WMS 原样传给 RCS |
+| `arrival_face` | RCS 回传的整数 `90 | 270`，成功时与冻结 `target_face` 精确相等 |
+| `rcs_template_id` | 直接调用同名 RCS 模板；只允许 `CTU01 | CTU02 | CTU03 | F01` |
 
 厂商 `sideA/sideB` 是 WMS 基于自身库存和货架主数据形成的整架容器上报，不进入 WES 搬运提交。WES 不复制 WMS 已拥有的两面容器
 全集，也不参与厂商短时 `taskCode + podCode` 幂等规则。
@@ -348,7 +362,7 @@ WES 目标接口契约的 `transport_task_id` 长度为 `1..80`，`rack_id`、`c
 - Transport 核心测试验证四个领域方法、位置/工作面不变量、不可变快照和任务聚合。
 - `tests/contracts/wms_adapter/` 验证两族搬运提交接口契约、容器中间位置事件/搬运最终结果、ACK 闭集、严格 JSON 和 ACL 转换。
 - `tests/integration/wms_adapter/` 只在需要真实持久化或事务时验证 WMS Adapter，不证明基础 HTTP 能力。
-- 供应商 `AGV01..03`、`CTU01..04` 和原始错误码映射由 WMS/RCS 交付边界的供应商一致性验收负责，不进入 WES 核心测试。
+- `rcs_template_id` 的闭集与默认值由 WES 合同测试负责；模板实际行为和原始错误码仍由 WMS/RCS 交付边界验收。
 - 两份人类阅读文档不增加正文断言测试；纯文档阶段只做格式、引用和 diff 检查。
 
 ### 11.3 直接替换
@@ -362,14 +376,15 @@ WES 目标接口契约的 `transport_task_id` 长度为 `1..80`，`rack_id`、`c
 
 1. WMS 面向搬运提交只需要 `RackTransportData` 和 `BinTransportData` 两种 `data` Schema；WMS 私有 C# 类名不属于本合同。
 2. 四种 `kind` 的 JSON 都能通过一次 rack/bin 分流完成严格解析，不需要自定义多态转换器。
-3. `RACK_MOVE` 与 `RACK_ROTATE` 都携带必填 `target_face`，搬运最终结果成功时同时校验最终位置和工作面。
+3. `RACK_MOVE` 与 `RACK_ROTATE` 都携带明确 `rcs_template_id` 和整数 `target_face=90|270`；成功回调返回精确
+   `RACK_POSITION`，并校验 `arrival_face` 与冻结面向值一致。
 4. `BIN_MOVE` 与 `BIN_EXCHANGE` 都使用 `moves[].container_id + source + target`，且严格执行单面、端点组和闭环规则。
 5. 容器中间位置事件/搬运最终结果接口契约不再出现 `bin_id` 或 `object_id`；货架和料箱结果身份分别明确为 `rack_id`、`container_id`。
 6. 搬运提交 ACK、实现和测试中不存在 `429 / BUSY`、`BUSY` 或 `retry_after_ms`。
 7. 搬运提交 ACK `data`、活动资源围栏以及容器中间位置事件/搬运最终结果幂等、修订和确定终态规则均有唯一、可执行的闭集定义。
-8. `target_face` 由业务调用方提供并冻结；WMS 不把它误作厂商当前面，搬运最终结果 `arrival_face` 才表达确认后的实际工作面。
+8. `target_face` 由业务调用方提供并冻结，WMS 原样传给 RCS；搬运最终结果 `arrival_face` 表达确认后的实际工作面并与其精确比较。
 9. WMS 为厂商子任务生成合规 `taskCode`，所有跨协议身份经过主数据解析和长度校验，不依赖字符串直接复用。
-10. WMS/RCS 私有字段不进入 WES 公共合同；两份厂商 PDF 未被修改。
+10. 除批准的 `rcs_template_id` 外，WMS/RCS 私有字段不进入 WES 公共合同；两份厂商 PDF 未被修改。
 11. 两份当前态合同、OpenAPI、生产代码和行为测试使用同一目标接口契约，不存在旧格式兼容入口。
 12. 基础能力、WMS ACL、Transport 业务不变量和供应商一致性由各自测试所有者独立验证。
 13. 初级 WMS 开发人员只阅读 WMS 对接指南即可得到完整 DTO、映射表、成功路径、错误分类和失败处理，不需要反查 WES 内部代码。

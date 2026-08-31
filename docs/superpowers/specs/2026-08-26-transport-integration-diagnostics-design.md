@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-26
 
-**状态：** 已实施并分别合入 backend `41ab69bf`、frontend `e103b692`；未部署、未执行现场物理动作或业务验收
+**状态：** 诊断功能已分别合入 backend `41ab69bf`、frontend `e103b692`；Transport 0.3.0 请求字段尚未实施。当前未部署，也未执行现场物理动作或业务验收
 
 **范围：** WES 后端、WES 前端，以及 WMS 回调进入 WES 后的可观测链路
 
@@ -160,7 +160,7 @@ GET /api/v1/transport/tasks/{transport_task_id}
     "moves": [
       {
         "bin_id": "BIN-001",
-        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-01", "rack_face": "A", "slot_id": "SLOT-01"},
+        "source": {"kind": "RACK_BIN_SLOT", "rack_id": "RACK-01", "rack_face": 90, "slot_id": "SLOT-01"},
         "target": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-01"}
       }
     ]

@@ -2,9 +2,9 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-08-20
-contract_version: 0.2.0
-implementation_alignment: ALIGNED
+updated_at: 2026-08-31
+contract_version: 0.3.0
+implementation_alignment: ALIGNMENT_REQUIRED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -27,9 +27,8 @@ related:
 本文是 Phase 4 搬运能力的唯一线上接口评审基线。它定义工作线插件如何调用四个通用搬运方法，以及 WES 如何经 WMS
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
-本合同生命周期为 `Approved`，本文已经按已评审的两族 DTO 设计定义目标接口契约；当前 WES 代码、运行时 OpenAPI、独立
-OpenAPI 3.0.3 文件和行为测试已完成同一合同对齐，实施状态为 `ALIGNED`。该状态只描述 WES 本地实现对齐度，不等于 WMS
-已经实现、双方环境已经连通或现场业务已经验收。
+本合同生命周期为 `Approved`，内容是已评审的目标接口契约。WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
+尚未按本版本调整，因此 `implementation_alignment=ALIGNMENT_REQUIRED`。WMS 实现、双方联调和现场业务验收也尚未完成。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
 
@@ -89,23 +88,30 @@ WES 当前只经 WMS 转发 RCS，不直连 RCS、AGV、CTU 或 ECS。未来替�
 ### 3.2 四个方法
 
 ```text
-move_rack(client_request_id, caller, rack_id, source, target, target_face) -> TransportHandle
-rotate_rack(client_request_id, caller, rack_id, position, target_face) -> TransportHandle
+move_rack(client_request_id, caller, rack_id, source, target, target_face, rcs_template_id=F01) -> TransportHandle
+rotate_rack(client_request_id, caller, rack_id, position, target_face, rcs_template_id=F01) -> TransportHandle
 move_bins(client_request_id, caller, moves) -> TransportHandle
 exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 ```
 
 #### 搬运货架 `move_rack()`
 
-一次只搬一个确定货架。来源和目标均为 `RACK_POSITION`，且必须不同；`target_face` 为业务调用方冻结的目标可用工作面，取值闭集为
-`A | B`。货架是单层、五层、空架或目标架不改变方法。WMS 可以把该义务分解为一个或多个厂商任务，但只有最终位置等于目标且
-实际到达面等于 `target_face` 才能形成成功结果。
+一次只搬一个确定货架。来源和目标均使用 `kind + location_code`，`kind` 只能为 `RACK | ZONE | RACK_POSITION`，且两个位置不能
+完全相同。`RACK` 的 `location_code` 表示货架编号，必须等于外层 `rack_id`；`ZONE` 表示区域编号，`RACK_POSITION` 表示精确地码。
+`target_face` 是业务调用方冻结的目标工作面，只允许整数 `90 | 270`。货架类型不改变调用方法。
+
+`RACK_POSITION` 目标要求最终地码等于冻结目标。`RACK` 目标由 WMS/RCS 按冻结的货架编号和 `rcs_template_id` 解析位置；`ZONE`
+目标由 WMS/RCS 选址，并确认最终地码属于冻结区域。满足对应目标后，WMS 才能回调 `SUCCEEDED`，并返回实际的精确
+`RACK_POSITION(location_code)`。WES 不自行解析宽泛目标，只校验回调结构和 `arrival_face`。
 
 #### 货架原地换面 `rotate_rack()`
 
-一次只处理一个确定货架，位置为 `RACK_POSITION`，目标面为闭集 `A | B`。内部请求仍使用单个 `position`；Adapter 形成接口契约时
+一次只处理一个确定货架，位置为精确 `RACK_POSITION`，目标面只允许整数 `90 | 270`。内部请求仍使用单个 `position`；Adapter 形成接口契约时
 把它同时写入 `source + target`。当前位置或 WMS 最近一次权威结果回传的当前工作面未知时失败关闭；WES 不从旧数据、目标面或
 业务流程推断当前面。
+
+货架任务携带真实 `rcs_template_id`。库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
+调用方未指定时，WES 在形成不可变请求前规范化为 `F01`。Wire 始终发送明确值，WES 不根据位置编码反推模板，也不建立模板配置映射。
 
 #### 批量搬运料箱 `move_bins()`
 
@@ -120,7 +126,7 @@ BinMove = bin_id + source + target
 计算 CTU 背篓、滚筒线和货架容量，也不选择可用料箱或空储位。
 
 同一批次可以包含不同端点组，但同一 `rack_id` 在全部来源和目标中只能出现一个 `rack_face`，且该面必须等于 WES 的可信当前面。
-不同货架可以分别使用 A 面或 B 面。需要操作同一货架另一面时，业务 owner 必须先完成独立 `RACK_ROTATE`，再创建新的 Bin 任务。
+不同货架可以分别使用 `90` 面或 `270` 面。需要操作同一货架另一面时，业务 owner 必须先完成独立 `RACK_ROTATE`，再创建新的 Bin 任务。
 
 自动出库中，WES 先提供来源货架实际到达面和已预留的具体 `HANDOFF_POSITION`，由 WMS 形成入站 moves；退箱则只以
 `RETURN_BUFFER` 的实际候选触发，由 WMS 在当前工作货架面选择并预留目标 `RACK_BIN_SLOT`。两类决定都在业务层形成后一次
@@ -158,9 +164,9 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 | 方法 | 失败关闭条件 |
 | --- | --- |
 | 全部方法 | 标识为空、位置类型或必填字段不符合闭集 |
-| `move_rack()` | 来源与目标相同、来源/目标不是 `RACK_POSITION`，或目标面不在 `A/B` |
-| `rotate_rack()` | 目标面不在 `A/B`、当前面未知，或目标面等于当前面 |
-| `move_bins()` | 成员数不在 `1..4`、重复 `bin_id`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT`，或同一 `rack_id` 混用 A/B 面 |
+| `move_rack()` | 来源与目标相同、来源/目标不属于 `RACK \| ZONE \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、目标面不在 `90/270`，或模板不在闭集 |
+| `rotate_rack()` | 位置不是精确 `RACK_POSITION`、目标面不在 `90/270`、当前面未知、目标面等于当前面，或模板不在闭集 |
+| `move_bins()` | 成员数不在 `1..4`、重复 `bin_id`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT`，或同一 `rack_id` 混用 `90/270` 面 |
 | `exchange_bins()` | 交换对数量不是 1～2、料箱或储位重复、位置不是 `RACK_BIN_SLOT`、涉及超过两个工作面组、同一货架混面，或不能展开为 1～2 个互不重叠的二元闭环 |
 
 多个成员可以使用同一个 `HANDOFF_POSITION`；其容量和排队规则仍由 WMS/工作线插件决定。
@@ -169,8 +175,10 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 
 | 位置类型 | 必填字段 | 权威来源 | 用途 |
 | --- | --- | --- | --- |
-| `RACK_POSITION` | `location_code` | WMS/RCS 全局货架位置主数据 | 货架来源、目标和换面位置 |
-| `RACK_BIN_SLOT` | `rack_id + rack_face + slot_id` | WMS 货架、货架面与储位主数据 | 料箱所在货架储位；`rack_face` 只能为 `A | B` |
+| `RACK` | `location_code` | WMS/RCS 货架主数据 | `RACK_MOVE` 来源或目标；值必须等于外层 `rack_id`，由 RCS 解析位置 |
+| `ZONE` | `location_code` | WMS/RCS 区域主数据 | `RACK_MOVE` 来源或目标；值表示区域编号，不指定精确地码 |
+| `RACK_POSITION` | `location_code` | WMS/RCS 全局货架位置主数据 | `RACK_MOVE` 精确来源或目标、`RACK_ROTATE` 位置和货架最终位置 |
+| `RACK_BIN_SLOT` | `rack_id + rack_face + slot_id` | WMS 货架、货架面与储位主数据 | 料箱所在货架储位；`rack_face` 只能为整数 `90 | 270` |
 | `HANDOFF_POSITION` | `location_code` | WES 静态工作线拓扑和位置投影 | 滚筒线入料口、出料口等 CTU 交接位置 |
 
 不得使用任意字符串、供应商 DTO 或从 `bin_id` 反推位置。
@@ -250,13 +258,34 @@ kind
 
 | DTO 族 | `kind` | 来源方法 | `data` 专属字段 |
 | --- | --- | --- | --- |
-| `RackTransportData` | `RACK_MOVE` | `move_rack()` | `rack_id + source + target + target_face`；`source != target` |
-| `RackTransportData` | `RACK_ROTATE` | `rotate_rack()` | `rack_id + source + target + target_face`；`source == target` |
+| `RackTransportData` | `RACK_MOVE` | `move_rack()` | `rcs_template_id + rack_id + source + target + target_face`；`source != target` |
+| `RackTransportData` | `RACK_ROTATE` | `rotate_rack()` | `rcs_template_id + rack_id + source + target + target_face`；`source == target` |
 | `BinTransportData` | `BIN_MOVE` | `move_bins()` | `moves[1..4] { container_id + source + target }` |
 | `BinTransportData` | `BIN_EXCHANGE` | `exchange_bins()` | `moves[2\|4] { container_id + source + target }`，且为 1～2 个二元闭环 |
 
-`RackTransportData.target_face` 是业务调用方传入并随不可变请求冻结的目标义务，不由 Adapter 根据当前投影或厂商字段推断。
-`RACK_MOVE` 与 `RACK_ROTATE` 的成功结果都必须同时匹配冻结 `target + target_face`。
+`RackTransportData.target_face` 由业务调用方传入并随请求冻结，只允许整数 `90 | 270`。WMS 将该值原样传给 RCS；成功回调中的
+`arrival_face` 必须与冻结值相等。`RACK_POSITION` 目标还要求最终位置相等。对于 `RACK` 目标，WMS/RCS 必须确认最终位置是按冻结
+货架编号和模板解析出的结果；对于 `ZONE` 目标，最终位置必须属于冻结区域。两种回调都返回精确 `RACK_POSITION`。
+
+`rcs_template_id` 只允许 `CTU01 | CTU02 | CTU03 | F01`，分别表示库位到工作位、工作位原地旋转、工作位返回库位和默认模板。
+调用方省略与显式 `F01` 在规范化后形成相同请求；模板、位置和面向值全部进入不可变请求快照及摘要。
+
+货架搬运场景固定如下。`RACK` 和 `ZONE` 是宽泛位置选择器；成功结果一律返回实际到达的精确
+`RACK_POSITION/location_code`。
+
+| 场景 | `rcs_template_id` | `source.kind` | `target.kind` | 成功结果约束 |
+| --- | --- | --- | --- | --- |
+| 区域内货架到工作位 | `CTU01` | `ZONE` | `RACK_POSITION` | 等于请求目标 |
+| 指定货架到工作位 | `CTU01` | `RACK` | `RACK_POSITION` | 等于请求目标 |
+| 精确库位货架到工作位 | `CTU01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
+| 工作位原地换面 | `CTU02` | `RACK_POSITION` | `RACK_POSITION` | 位置不变，面向等于 `target_face` |
+| 工作位按货架编号返回库位 | `CTU03` | `RACK_POSITION` | `RACK` | WMS/RCS 选定的精确库位 |
+| 工作位返回指定区域 | `CTU03` | `RACK_POSITION` | `ZONE` | 指定区域内的精确库位 |
+| 工作位返回精确库位 | `CTU03` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
+| 其它精确位置搬运 | `F01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
+
+上述八种货架场景以及 `BIN_MOVE`、`BIN_EXCHANGE` 的完整提交与结果 JSON，见
+[WES 与 WMS 接口需求说明](../integration/wes-wms-interface-requirements.md) 第 3.1 节。
 
 `RACK_ROTATE` 创建任务前，WES 必须确认 `target_face` 不同于可信当前面；WMS 返回 `RECEIVED` 前使用自身权威主数据和可信 RCS
 状态再次校验。WMS 无法取得可信当前面时返回 `503 / UNAVAILABLE`，确认 `target_face` 等于当前面时返回
@@ -272,7 +301,7 @@ CTU 物理动作顺序。
 
 `TransportCaller` 不随请求发送。WMS/RCS 只接收已冻结的对象、来源和目标，跨系统诊断使用 `transport_task_id` 和当前
 `operation_id`，不复制本地工作线归属字段。
-请求不得携带货架类型、空/满箱、容量、车辆、路径、RCS 内部动作顺序或供应商私有字段。
+除批准的 `rcs_template_id` 外，请求不得携带货架类型、空/满箱、容量、车辆、路径、RCS 内部动作顺序或供应商私有字段。
 
 ### 4.2 同步 ACK
 
@@ -428,8 +457,9 @@ failure_code?
 arrival_face?
 ```
 
-- `SUCCEEDED` 必须携带 `final_position + arrival_face`，分别等于冻结 `target + target_face`；不得携带 `failure_code` 或
-  `position_unknown`。
+- `SUCCEEDED` 必须携带精确 `RACK_POSITION final_position + arrival_face`；`arrival_face` 等于冻结 `target_face`。对于
+  `RACK_POSITION` 目标，最终地码必须等于冻结目标；对于 `RACK` 目标，最终位置必须是 WMS/RCS 按冻结货架编号和模板解析出的
+  位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。不得携带 `failure_code` 或 `position_unknown`。
 - `FAILED` 且位置明确时必须携带 `final_position + arrival_face + failure_code`。
 - `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或到达面。
 - 货架结果不使用只有一个成员的 `results[]`。
@@ -465,7 +495,8 @@ results[] {
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
 料箱任务不回传可由 `results[]` 推导的任务总状态；货架任务的顶层 `status` 就是唯一对象结果，不形成第二份聚合状态。
 
-`arrival_face` 为闭集 `A | B`，是 WMS/RCS 对货架实际到达工作面的权威事实，不是搬运提交的目标指令。缺少应有
+`arrival_face` 为整数闭集 `90 | 270`，是 WMS/RCS 对货架实际到达工作面的权威事实。WMS 将冻结 `target_face` 原样传给 RCS，
+不做 A/B 转换、角度计算或容差处理。缺少应有
 `arrival_face` 的货架结果不得接受为确定结果；WES 接受后同步更新本地面向投影，后续货架和 Bin 任务都使用该投影校验工作面。
 
 WMS 为同一 `transport_task_id` 的首条完整搬运最终结果使用 `outcome_revision=1`，每次形成新的完整权威结果时连续加一，技术重试不得改号。
