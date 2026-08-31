@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - QUALITY 通过：2320 项默认 FAST 测试通过，5 项按既有外部条件跳过；Ruff、Bandit、架构和测试所有权门禁通过。
 - HEAVY selector 选中的 55 项 PostgreSQL、Transport 并发、生产 wiring 与 WMS Adapter 测试通过，无 skip。
-- 覆盖审计 65%，fresh Review 已修复同类型错误步骤可能污染审计标签的问题；本次验证不包含真实 WMS/RCS/ECS 物理完成或业务验收。
+- 补充非调试任务、kind 错配、BIN 冻结目标与非法断言测试后覆盖审计约 88%；fresh Review 已修复同类型错误步骤可能污染审计标签的问题。本次验证不包含真实 WMS/RCS/ECS 物理完成或业务验收。
 
 ## [0.29.3.0] - 2026-08-30
 
