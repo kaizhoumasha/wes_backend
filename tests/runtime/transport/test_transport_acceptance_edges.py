@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
+    TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
     BinExchangePair,
     BinMove,
     HandoffPosition,
@@ -24,6 +26,7 @@ from src.app.transport.contracts import (
     TransportSubmitCode,
     TransportSubmitResult,
 )
+from src.app.transport.debug_reset import TransportDebugStep, TransportDebugStepConfirmation
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -208,8 +211,236 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
 
     with pytest.raises(TransportContractError, match="current position is not confirmed"):
         await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("OTHER"), RackFace.B)
+
     with pytest.raises(TransportContractError, match="target face equals current face"):
         await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), RackFace.A)
+
+
+@pytest.mark.asyncio
+async def test_debug_bin_move_uses_frozen_request_face_without_business_projection(db_engine: object) -> None:
+    service = _service(db_engine)
+    moves = (
+        BinMove(
+            "bin-debug",
+            RackBinSlot("rack-debug", RackFace.A, "A1"),
+            HandoffPosition("CNV0301"),
+        ),
+    )
+
+    with pytest.raises(TransportContractError, match="current face is unknown"):
+        await service.move_bins(new_uuid7(), TransportCaller("SORTER", "CTU01"), moves)
+    with pytest.raises(TransportContractError, match="requires TRANSPORT_DEBUG caller"):
+        await service.move_bins_for_debug(new_uuid7(), TransportCaller("SORTER", "CTU01"), moves)
+
+    handle = await service.move_bins_for_debug(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        moves,
+    )
+    task = await _load_task(db_engine, handle.transport_task_id)
+
+    assert task.request_json["moves"][0]["source"]["rack_face"] == "A"
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        assert await db.scalar(select(PositionProjection).where(PositionProjection.object_id == "rack-debug")) is None
+
+
+@pytest.mark.asyncio
+async def test_debug_step_confirmation_is_audited_before_local_reset(
+    db_engine: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(db_engine)
+    audit = AsyncMock()
+    monkeypatch.setattr("src.app.transport.service.audit_log_service.create_audit_log", audit)
+    handle = await service.move_rack(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        "510056",
+        RackPosition("WH01"),
+        RackPosition("KT16"),
+        RackFace.A,
+    )
+
+    await service.reset_debug_task(
+        handle.transport_task_id,
+        TransportDebugStepConfirmation(
+            step=TransportDebugStep.RACK_TO_STATION,
+            assertion="PHYSICAL_TARGET_REACHED",
+        ),
+    )
+
+    audit.assert_awaited_once()
+    audit_args = audit.await_args.kwargs["args"]
+    assert audit_args["model"] == "TransportTask"
+    assert audit_args["operation"] == "debug_step_confirm"
+    assert audit_args["record_id"] == handle.transport_task_id
+    assert audit_args["changes"]["source"] == "OPERATOR_DEBUG"
+    assert audit_args["changes"]["business_authoritative"] is False
+    assert audit_args["changes"]["step"] == "RACK_TO_STATION"
+    assert audit_args["changes"]["frozen_targets"] == [
+        {
+            "object_id": "510056",
+            "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
+            "arrival_face": "A",
+        }
+    ]
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        assert await db.get(TransportTask, handle.transport_task_id) is None
+
+
+@pytest.mark.asyncio
+async def test_debug_step_confirmation_rejects_same_kind_wrong_direction(db_engine: object) -> None:
+    service = _service(db_engine)
+    handle = await service.move_rack(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        "510056",
+        RackPosition("KT16"),
+        RackPosition("WH01"),
+        RackFace.A,
+    )
+
+    with pytest.raises(TransportContractError, match="does not match frozen Transport request"):
+        await service.reset_debug_task(
+            handle.transport_task_id,
+            TransportDebugStepConfirmation(
+                step=TransportDebugStep.RACK_TO_STATION,
+                assertion="PHYSICAL_TARGET_REACHED",
+            ),
+        )
+
+    assert await _load_task(db_engine, handle.transport_task_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_debug_step_confirmation_rejects_non_debug_task_and_kind_mismatch(db_engine: object) -> None:
+    service = _service(db_engine)
+    normal = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-normal",
+        RackPosition("WH01"),
+        RackPosition("KT16"),
+        RackFace.A,
+    )
+    debug = await service.move_rack(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        "rack-debug-kind",
+        RackPosition("WH01"),
+        RackPosition("KT16"),
+        RackFace.A,
+    )
+
+    with pytest.raises(TransportContractError, match="requires a TRANSPORT_DEBUG task"):
+        await service.reset_debug_task(
+            normal.transport_task_id,
+            TransportDebugStepConfirmation(
+                step=TransportDebugStep.RACK_TO_STATION,
+                assertion="PHYSICAL_TARGET_REACHED",
+            ),
+        )
+    with pytest.raises(TransportContractError, match="does not match Transport task kind"):
+        await service.reset_debug_task(
+            debug.transport_task_id,
+            TransportDebugStepConfirmation(
+                step=TransportDebugStep.BINS_TO_INFEED,
+                assertion="PHYSICAL_TARGET_REACHED",
+            ),
+        )
+
+    assert await _load_task(db_engine, normal.transport_task_id) is not None
+    assert await _load_task(db_engine, debug.transport_task_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_debug_bin_step_confirmation_audits_frozen_handoff_targets(
+    db_engine: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(db_engine)
+    audit = AsyncMock()
+    monkeypatch.setattr("src.app.transport.service.audit_log_service.create_audit_log", audit)
+    handle = await service.move_bins_for_debug(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        (
+            BinMove(
+                "A000001922",
+                RackBinSlot("510056", RackFace.A, "510056A3F2C101"),
+                HandoffPosition("CNV0301"),
+            ),
+            BinMove(
+                "A000002653",
+                RackBinSlot("510056", RackFace.A, "510056A2F2C101"),
+                HandoffPosition("CNV0301"),
+            ),
+        ),
+    )
+
+    await service.reset_debug_task(
+        handle.transport_task_id,
+        TransportDebugStepConfirmation(
+            step=TransportDebugStep.BINS_TO_INFEED,
+            assertion="PHYSICAL_TARGET_REACHED",
+        ),
+    )
+
+    assert audit.await_args.kwargs["args"]["changes"]["frozen_targets"] == [
+        {
+            "object_id": "A000001922",
+            "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+            "arrival_face": None,
+        },
+        {
+            "object_id": "A000002653",
+            "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+            "arrival_face": None,
+        },
+    ]
+
+
+def test_debug_step_confirmation_rejects_any_other_assertion() -> None:
+    with pytest.raises(ValueError, match="assertion must be PHYSICAL_TARGET_REACHED"):
+        TransportDebugStepConfirmation(
+            step=TransportDebugStep.RACK_TO_STATION,
+            assertion="ACK_ACCEPTED",
+        )
+
+
+@pytest.mark.asyncio
+async def test_debug_step_audit_failure_does_not_start_local_deletion(
+    db_engine: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(db_engine)
+    delete_aggregate = AsyncMock(wraps=service._repository.delete_debug_task_aggregate)
+    monkeypatch.setattr(service._repository, "delete_debug_task_aggregate", delete_aggregate)
+    monkeypatch.setattr(
+        "src.app.transport.service.audit_log_service.create_audit_log",
+        AsyncMock(side_effect=RuntimeError("audit unavailable")),
+    )
+    handle = await service.move_rack(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        "510056",
+        RackPosition("WH01"),
+        RackPosition("KT16"),
+        RackFace.A,
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await service.reset_debug_task(
+            handle.transport_task_id,
+            TransportDebugStepConfirmation(
+                step=TransportDebugStep.RACK_TO_STATION,
+                assertion="PHYSICAL_TARGET_REACHED",
+            ),
+        )
+
+    delete_aggregate.assert_not_awaited()
 
 
 @pytest.mark.asyncio

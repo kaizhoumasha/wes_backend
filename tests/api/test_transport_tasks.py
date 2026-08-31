@@ -17,6 +17,7 @@ from src.app.transport.contracts import (
     TransportIdempotencyConflict,
     TransportResourceConflict,
 )
+from src.app.transport.debug_reset import TransportDebugStep, TransportDebugStepConfirmation
 from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
 from src.register import register_exception, register_routers
@@ -32,15 +33,17 @@ class FakeTransportPort:
 
 
 def _runtime() -> SimpleNamespace:
+    service = SimpleNamespace(
+        get_task_snapshot=AsyncMock(),
+        list_task_snapshots=AsyncMock(),
+        preview_debug_task_reset=AsyncMock(),
+        reset_debug_task=AsyncMock(),
+        move_bins_for_debug=AsyncMock(),
+    )
     return SimpleNamespace(
         closed=False,
         port=FakeTransportPort(),
-        service=SimpleNamespace(
-            get_task_snapshot=AsyncMock(),
-            list_task_snapshots=AsyncMock(),
-            preview_debug_task_reset=AsyncMock(),
-            reset_debug_task=AsyncMock(),
-        ),
+        service=service,
     )
 
 
@@ -235,13 +238,24 @@ def test_debug_task_openapi_exposes_exactly_four_named_examples_and_union_branch
     assert union_schema["discriminator"]["propertyName"] == "kind"
 
 
-def test_debug_reset_openapi_exposes_transport_task_id_length_contract() -> None:
+def test_debug_reset_openapi_exposes_task_id_and_optional_confirmation_contract() -> None:
     schema = _app(_runtime()).openapi()
     parameters = schema["paths"]["/api/v1/transport/debug-tasks/{transport_task_id}/reset-preview"]["get"]["parameters"]
     task_id = next(parameter for parameter in parameters if parameter["name"] == "transport_task_id")
+    reset = schema["paths"]["/api/v1/transport/debug-tasks/{transport_task_id}/reset"]["post"]
 
     assert task_id["schema"]["minLength"] == 1
     assert task_id["schema"]["maxLength"] == 80
+    confirmation = reset["requestBody"]["content"]["application/json"]["schema"]
+    assert confirmation["anyOf"] == [
+        {"$ref": "#/components/schemas/_DebugTransportStepConfirmation"},
+        {"type": "null"},
+    ]
+    assert "400" in reset["responses"]
+    assert (
+        "400"
+        not in schema["paths"]["/api/v1/transport/debug-tasks/{transport_task_id}/reset-preview"]["get"]["responses"]
+    )
 
 
 @pytest.mark.asyncio
@@ -258,7 +272,9 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     runtime = _runtime()
     payload = _valid_payload(kind)
     expected_handle = TransportHandle("transport-api-test", str(payload["client_request_id"]))
-    getattr(runtime.port, expected_method).return_value = expected_handle
+    target = runtime.service if kind == "BIN_MOVE" else runtime.port
+    target_method = "move_bins_for_debug" if kind == "BIN_MOVE" else expected_method
+    getattr(target, target_method).return_value = expected_handle
 
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
         response = await client.post("/api/v1/transport/debug-tasks", json=payload)
@@ -270,8 +286,10 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
         "client_request_id": expected_handle.client_request_id,
     }
     for method_name in ("move_rack", "rotate_rack", "move_bins", "exchange_bins"):
-        assert getattr(runtime.port, method_name).await_count == (1 if method_name == expected_method else 0)
-    called_args = getattr(runtime.port, expected_method).await_args.args
+        expected_count = 1 if kind != "BIN_MOVE" and method_name == expected_method else 0
+        assert getattr(runtime.port, method_name).await_count == expected_count
+    assert runtime.service.move_bins_for_debug.await_count == (1 if kind == "BIN_MOVE" else 0)
+    called_args = getattr(target, target_method).await_args.args
     assert called_args[1].workline_id == "TRANSPORT_DEBUG"
     assert called_args[1].station_id == "STATION-DEBUG"
 
@@ -326,6 +344,51 @@ async def test_debug_task_reset_preview_and_apply_expose_bounded_cleanup_result(
     }
     runtime.service.preview_debug_task_reset.assert_awaited_once_with("transport-reset-test")
     runtime.service.reset_debug_task.assert_awaited_once_with("transport-reset-test")
+
+
+@pytest.mark.asyncio
+async def test_debug_task_reset_accepts_operator_step_confirmation() -> None:
+    runtime = _runtime()
+    runtime.service.reset_debug_task.return_value = SimpleNamespace(
+        transport_task_id="transport-reset-test",
+        deleted_callback_receipt_count=0,
+        deleted_evidence_count=0,
+        deleted_position_projection_count=0,
+        deleted_member_count=1,
+        deleted_binding_count=1,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/transport/debug-tasks/transport-reset-test/reset",
+            json={"step": "RACK_TO_STATION", "assertion": "PHYSICAL_TARGET_REACHED"},
+        )
+
+    assert response.status_code == 200
+    runtime.service.reset_debug_task.assert_awaited_once_with(
+        "transport-reset-test",
+        TransportDebugStepConfirmation(
+            step=TransportDebugStep.RACK_TO_STATION,
+            assertion="PHYSICAL_TARGET_REACHED",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_debug_task_reset_rejects_mismatched_operator_step_confirmation() -> None:
+    runtime = _runtime()
+    runtime.service.reset_debug_task.side_effect = TransportContractError(
+        "operator confirmation step does not match Transport task kind"
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/transport/debug-tasks/transport-reset-test/reset",
+            json={"step": "BINS_TO_INFEED", "assertion": "PHYSICAL_TARGET_REACHED"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "2004"
 
 
 @pytest.mark.asyncio

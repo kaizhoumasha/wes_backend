@@ -23,7 +23,11 @@ from src.app.transport.contracts import (
     TransportTaskKind,
     TransportTaskStatus,
 )
-from src.app.transport.debug_reset import normalize_transport_task_id
+from src.app.transport.debug_reset import (
+    TransportDebugStep,
+    TransportDebugStepConfirmation,
+    normalize_transport_task_id,
+)
 from src.core.exceptions import ConflictException, ServiceUnavailableException, ValidationException
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
@@ -153,6 +157,11 @@ class DebugTransportTaskResetResult(_StrictApiModel):
     deleted_position_projection_count: int
     deleted_member_count: int
     deleted_binding_count: int
+
+
+class _DebugTransportStepConfirmation(_StrictApiModel):
+    step: TransportDebugStep
+    assertion: Literal["PHYSICAL_TARGET_REACHED"]
 
 
 class TransportEvidenceResponse(_StrictApiModel):
@@ -336,7 +345,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
             )
             for move in payload.data.moves
         )
-        return await runtime.port.move_bins(payload.client_request_id, caller, moves)
+        return await runtime.service.move_bins_for_debug(payload.client_request_id, caller, moves)
     pairs = tuple(
         BinExchangePair(
             left_bin_id=pair.left_bin_id,
@@ -409,6 +418,7 @@ async def preview_debug_transport_task_reset(
     response_model=ResponseSchemaModel[DebugTransportTaskResetResult],
     status_code=status.HTTP_200_OK,
     responses={
+        400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "操作员确认与任务不匹配"},
         404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "TransportTask 不存在"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
     },
@@ -417,9 +427,22 @@ async def preview_debug_transport_task_reset(
 async def reset_debug_transport_task(
     request: Request,
     transport_task_id: Annotated[_TRANSPORT_TASK_ID, Path()],
+    confirmation: Annotated[_DebugTransportStepConfirmation | None, Body()] = None,
 ) -> ResponseSchemaModel[DebugTransportTaskResetResult]:
     runtime = _transport_runtime(request)
-    result = await runtime.service.reset_debug_task(transport_task_id)
+    try:
+        if confirmation is None:
+            result = await runtime.service.reset_debug_task(transport_task_id)
+        else:
+            result = await runtime.service.reset_debug_task(
+                transport_task_id,
+                TransportDebugStepConfirmation(
+                    step=confirmation.step,
+                    assertion=confirmation.assertion,
+                ),
+            )
+    except (TransportContractError, ValueError) as exc:
+        raise ValidationException(str(exc), code="2004", status_code=400) from exc
     data = DebugTransportTaskResetResult.model_validate(result, from_attributes=True)
     return cast("ResponseSchemaModel[DebugTransportTaskResetResult]", response_builder.success(data=data))
 
