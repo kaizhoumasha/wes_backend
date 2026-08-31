@@ -483,7 +483,7 @@ Phase 9 已于 2026-08-29 合入 `develop@c5a93872`，其 `UNRESOLVED=0` operati
 
 - [x] **Step 8: 只交接零消费者 schema identities**
 
-  对 Task 0 的每个 schema-deferred identity证明只有 model definition、`migrations/env.py`、已有 revisions 和 schema-only tests可引用，再将 schema/name/FK/index identity交给 `2026-08-15-wes-schema-and-migration-baseline-reset.md` Task 1 重新冻结。Phase 10 不传递 DDL、revision ID 或基线生成方案。
+  对 Task 0 的每个 schema-deferred identity证明只有 model definition、`migrations/env.py`、已有 revisions 和 schema-only tests可引用，再将 schema/name/FK/index identity交给项目外归档 `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset-completed-2026-08-31.md` 记录的 Task 1 重新冻结。Phase 10 不传递 DDL、revision ID 或基线生成方案。
 
   已交接 22 个 cleanup matrix `schema-deferred` table/model identity；Phase 11 只把它们作为 Task 1 重新枚举 FK、index 与
   PostgreSQL 专有对象的输入，不把本次 handoff 当作删除授权。
