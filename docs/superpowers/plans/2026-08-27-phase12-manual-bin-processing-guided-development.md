@@ -1,9 +1,9 @@
 # Phase 12 `manual_bin_processing` 用户教学实施计划
 
-status: Planned — starts after Phase 11
+status: Ready for contract review — Phase 11 complete; production implementation not started
 implementation_owner: 用户
 agent_role: 任务讲解、只读影响分析、Review 与根因诊断
-depends_on: Phase 11 单一空库 Schema 基线、人工业务合同重新评审
+depends_on: Phase 11 单一空库 Schema 基线（已完成）、人工业务合同重新评审（待完成）
 
 ## 1. 教学目标
 
