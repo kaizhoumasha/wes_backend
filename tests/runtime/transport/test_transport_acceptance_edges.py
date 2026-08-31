@@ -315,6 +315,102 @@ async def test_debug_step_confirmation_rejects_same_kind_wrong_direction(db_engi
 
 
 @pytest.mark.asyncio
+async def test_debug_step_confirmation_rejects_non_debug_task_and_kind_mismatch(db_engine: object) -> None:
+    service = _service(db_engine)
+    normal = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-normal",
+        RackPosition("WH01"),
+        RackPosition("KT16"),
+        RackFace.A,
+    )
+    debug = await service.move_rack(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        "rack-debug-kind",
+        RackPosition("WH01"),
+        RackPosition("KT16"),
+        RackFace.A,
+    )
+
+    with pytest.raises(TransportContractError, match="requires a TRANSPORT_DEBUG task"):
+        await service.reset_debug_task(
+            normal.transport_task_id,
+            TransportDebugStepConfirmation(
+                step=TransportDebugStep.RACK_TO_STATION,
+                assertion="PHYSICAL_TARGET_REACHED",
+            ),
+        )
+    with pytest.raises(TransportContractError, match="does not match Transport task kind"):
+        await service.reset_debug_task(
+            debug.transport_task_id,
+            TransportDebugStepConfirmation(
+                step=TransportDebugStep.BINS_TO_INFEED,
+                assertion="PHYSICAL_TARGET_REACHED",
+            ),
+        )
+
+    assert await _load_task(db_engine, normal.transport_task_id) is not None
+    assert await _load_task(db_engine, debug.transport_task_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_debug_bin_step_confirmation_audits_frozen_handoff_targets(
+    db_engine: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(db_engine)
+    audit = AsyncMock()
+    monkeypatch.setattr("src.app.transport.service.audit_log_service.create_audit_log", audit)
+    handle = await service.move_bins_for_debug(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
+        (
+            BinMove(
+                "A000001922",
+                RackBinSlot("510056", RackFace.A, "510056A3F2C101"),
+                HandoffPosition("CNV0301"),
+            ),
+            BinMove(
+                "A000002653",
+                RackBinSlot("510056", RackFace.A, "510056A2F2C101"),
+                HandoffPosition("CNV0301"),
+            ),
+        ),
+    )
+
+    await service.reset_debug_task(
+        handle.transport_task_id,
+        TransportDebugStepConfirmation(
+            step=TransportDebugStep.BINS_TO_INFEED,
+            assertion="PHYSICAL_TARGET_REACHED",
+        ),
+    )
+
+    assert audit.await_args.kwargs["args"]["changes"]["frozen_targets"] == [
+        {
+            "object_id": "A000001922",
+            "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+            "arrival_face": None,
+        },
+        {
+            "object_id": "A000002653",
+            "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+            "arrival_face": None,
+        },
+    ]
+
+
+def test_debug_step_confirmation_rejects_any_other_assertion() -> None:
+    with pytest.raises(ValueError, match="assertion must be PHYSICAL_TARGET_REACHED"):
+        TransportDebugStepConfirmation(
+            step=TransportDebugStep.RACK_TO_STATION,
+            assertion="ACK_ACCEPTED",
+        )
+
+
+@pytest.mark.asyncio
 async def test_debug_step_audit_failure_does_not_start_local_deletion(
     db_engine: object,
     monkeypatch: pytest.MonkeyPatch,
