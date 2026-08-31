@@ -104,8 +104,9 @@ async def test_submit_uses_fixed_path_closed_envelope_and_no_auth_header() -> No
 
 
 @pytest.mark.asyncio
-async def test_submit_rejects_accepted_success_message() -> None:
-    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": "Accepted"})])
+@pytest.mark.parametrize("message", ["Accepted", "OK"])
+async def test_submit_rejects_non_ack_success_message(message: str) -> None:
+    transport = FakeOutboundHttpTransport([_response(200, {"code": 200, "message": message, "data": None})])
 
     result = await EcsAdapter(transport).submit_command(
         device_code="ARM-01",
@@ -118,6 +119,40 @@ async def test_submit_rejects_accepted_success_message() -> None:
     )
 
     assert result.disposition is EcsSubmitDisposition.RECONCILING
+
+
+@pytest.mark.asyncio
+async def test_submit_accepts_ack_with_additional_top_level_fields() -> None:
+    transport = FakeOutboundHttpTransport(
+        [
+            _response(
+                200,
+                {
+                    "code": 200,
+                    "message": "ACK",
+                    "trace_id": "T-1",
+                    "data": None,
+                    "error_detail": None,
+                    "status": "SUCCESS",
+                },
+            )
+        ]
+    )
+
+    result = await EcsAdapter(transport).submit_command(
+        device_code="ARM-01",
+        command_code="CMD-001",
+        task_type="PICK",
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
+        params={},
+    )
+
+    assert result.disposition is EcsSubmitDisposition.ACKNOWLEDGED
+    assert result.code == 200
+    assert result.message == "ACK"
+    assert result.trace_id == "T-1"
 
 
 @pytest.mark.asyncio
@@ -288,6 +323,25 @@ async def test_explicit_not_accepted_status_can_retry_same_identity(status_code:
     )
 
     assert result.disposition is EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_non_ack_response_with_additional_top_level_fields_remains_untrusted() -> None:
+    transport = FakeOutboundHttpTransport(
+        [_response(503, {"code": 503, "message": "TEMPORARILY_UNAVAILABLE", "data": None})]
+    )
+
+    result = await EcsAdapter(transport).submit_command(
+        device_code="ARM-01",
+        command_code="CMD-001",
+        task_type="PICK",
+        priority=1,
+        timeout_ms=30_000,
+        timestamp=1_786_032_000_000,
+        params={},
+    )
+
+    assert result.disposition is EcsSubmitDisposition.RECONCILING
 
 
 @pytest.mark.asyncio
