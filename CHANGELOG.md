@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.4.0] - 2026-08-31
+
+### Added
+
+- Transport 联调清理接口支持携带操作员物理步骤确认，并在删除本地联调任务链前记录非业务权威审计，保留任务身份、步骤、断言与冻结目标。
+
+### Changed
+
+- `TRANSPORT_DEBUG` 的 BIN_MOVE 可直接使用请求中冻结的货架面，不读取或写入业务 `PositionProjection`；正式 Transport 路径保持原有位置投影约束。
+- 操作员确认按任务类型和冻结方向校验，仅接受 WH01/KT16 与 CNV0301/CNV0302 对应的四个固定联调步骤。
+
+### Verification
+
+- QUALITY 通过：2320 项默认 FAST 测试通过，5 项按既有外部条件跳过；Ruff、Bandit、架构和测试所有权门禁通过。
+- HEAVY selector 选中的 55 项 PostgreSQL、Transport 并发、生产 wiring 与 WMS Adapter 测试通过，无 skip。
+- 覆盖审计 65%，fresh Review 已修复同类型错误步骤可能污染审计标签的问题；本次验证不包含真实 WMS/RCS/ECS 物理完成或业务验收。
+
 ## [0.29.3.0] - 2026-08-30
 
 ### Added
