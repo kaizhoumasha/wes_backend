@@ -32,7 +32,7 @@ class DeviceStatusObservation(EnterpriseMixin, DataTableMixin, table=True):
     device_timestamp: int = Field(sa_type=BigInteger)
     received_at: datetime
     payload_digest: str = Field(min_length=64, max_length=64)
-    raw_payload: dict[str, Any] = Field(sa_column=Column(JSON))
+    raw_payload: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
 
 
 __all__ = ["DeviceStatusObservation"]

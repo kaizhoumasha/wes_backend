@@ -105,16 +105,27 @@ def _is_mutation(statement: str) -> bool:
     return statement.lstrip().upper().startswith(("TRUNCATE", "UPDATE", "INSERT", "DELETE"))
 
 
-def test_runtime_targets_use_explicit_schema_identity_and_retire_workline_inbox() -> None:
+def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema_tables() -> None:
     identities = {(target.schema, target.table) for target in reset_module.RUNTIME_TABLES}
 
-    assert ("wes_runtime", "runtime_inbox") in identities
     assert {
         ("wes_biz", "line_run_epochs"),
         ("wes_biz", "line_run_epoch_device_bindings"),
         ("wes_biz", "line_run_epoch_position_bindings"),
     }.issubset(identities)
-    assert ("wes_biz", "workline_inbox") not in identities
+    assert identities.isdisjoint(
+        {
+            ("wes_biz", "ng_return_items"),
+            ("wes_biz", "runtime_holds"),
+            ("wes_biz", "system_outbox"),
+            ("wes_biz", "wms_call_evidence"),
+            ("wes_biz", "wms_circuit_breaker_state"),
+            ("wes_biz", "workline_bin_cell_reservations"),
+            ("wes_biz", "workline_diagnostics"),
+            ("wes_biz", "workline_dispatch_attempts"),
+            ("wes_runtime", "runtime_inbox"),
+        }
+    )
     assert all(target.schema and target.table for target in reset_module.RUNTIME_TABLES)
     assert identities.isdisjoint({(target.schema, target.table) for target in reset_module.MASTER_DATA_TABLES})
 
@@ -179,13 +190,14 @@ async def test_dry_run_lists_schema_qualified_targets_without_mutation(monkeypat
 
 @pytest.mark.asyncio
 async def test_apply_rejects_missing_target_before_mock_or_database_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    missing_target = reset_module.RUNTIME_TABLES[0]
     catalog = [(target.schema, target.table) for target in reset_module.RUNTIME_TABLES]
-    catalog.remove(("wes_runtime", "runtime_inbox"))
+    catalog.remove((missing_target.schema, missing_target.table))
     session = _FakeSession(catalog=catalog)
     reset_mock = AsyncMock()
     monkeypatch.setattr(reset_module, "reset_mock_wms", reset_mock)
 
-    with pytest.raises(RuntimeError, match=r"目标表不存在.*wes_runtime\.runtime_inbox"):
+    with pytest.raises(RuntimeError, match=rf"目标表不存在.*{missing_target.identity}"):
         await reset_module.reset_runtime_data(
             session,
             apply=True,
@@ -200,16 +212,18 @@ async def test_apply_rejects_missing_target_before_mock_or_database_mutation(mon
 
 @pytest.mark.asyncio
 async def test_apply_rejects_schema_mismatch_before_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    missing_target = reset_module.RUNTIME_TABLES[0]
+    wrong_schema = "wes_sys" if missing_target.schema != "wes_sys" else "wes_biz"
     catalog = [(target.schema, target.table) for target in reset_module.RUNTIME_TABLES]
-    catalog.remove(("wes_runtime", "runtime_inbox"))
-    catalog.append(("wes_biz", "runtime_inbox"))
+    catalog.remove((missing_target.schema, missing_target.table))
+    catalog.append((wrong_schema, missing_target.table))
     session = _FakeSession(catalog=catalog)
     reset_mock = AsyncMock()
     monkeypatch.setattr(reset_module, "reset_mock_wms", reset_mock)
 
     with pytest.raises(
         RuntimeError,
-        match=r"schema 不匹配.*wes_runtime\.runtime_inbox.*wes_biz\.runtime_inbox",
+        match=rf"schema 不匹配.*{missing_target.identity}.*{wrong_schema}\.{missing_target.table}",
     ):
         await reset_module.reset_runtime_data(
             session,

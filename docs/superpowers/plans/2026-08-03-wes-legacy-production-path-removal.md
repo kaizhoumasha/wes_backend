@@ -520,7 +520,7 @@ Tasks 0–7 已满足仓内实施、准入与联调环境 target-only cutover；
 
 **HISTORICAL VERDICT:** ENG CLEARED — ready to implement within the frozen gate order
 
-**CURRENT VERDICT:** Tasks 0–7 COMPLETED；target-only candidate 已部署到联调环境；旧 backend runtime consumer 为零；
-Phase 11 schema handoff 已形成；未 Push、未创建 PR、未合入 `develop`，且未完成供应商、设备物理或业务验收。
+**CURRENT VERDICT:** Tasks 0–7 COMPLETED；#187 已合入 `develop@97e6887a`；此前 target-only candidate 已部署到联调环境，
+但 merge commit 未证明重新部署；旧 backend runtime consumer 为零，Phase 11 schema handoff 已形成；未完成供应商、设备物理或业务验收。
 
 NO UNRESOLVED DECISIONS

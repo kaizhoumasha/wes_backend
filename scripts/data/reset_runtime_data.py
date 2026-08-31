@@ -78,7 +78,7 @@ def _biz(table: str) -> TableTarget:
 
 
 # 运行时/调试数据表。这些表记录的是"跑流程产生的事实",清空后只要主数据在,
-# 就能重新跑。wes_runtime.runtime_inbox 显式列出,避免再依赖默认 wes_biz schema。
+# 就能重新跑。退役表不再作为 reset target。
 RUNTIME_TABLES: tuple[TableTarget, ...] = (
     *(
         _biz(table)
@@ -88,7 +88,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "line_run_epoch_device_bindings",
             "line_run_epoch_position_bindings",
             "line_run_epochs",
-            "ng_return_items",
             "resource_bin_cell_occupancies",
             "resource_bin_content_snapshot_items",
             "resource_bin_content_snapshots",
@@ -97,19 +96,11 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
             "resource_rack_bin_mounts",
             "resource_rack_placements",
             "resource_state_events",
-            "runtime_holds",
-            "system_outbox",
-            "wms_call_evidence",
-            "wms_circuit_breaker_state",
-            "workline_bin_cell_reservations",
-            "workline_diagnostics",
-            "workline_dispatch_attempts",
             "workline_safety_incidents",
             "workline_sessions",
             "workline_timelines",
         )
     ),
-    TableTarget("wes_runtime", "runtime_inbox"),
 )
 
 # 主数据/字典表白名单:绝对不能清。列出来既是文档,也用于自检——

@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 RETIRED_PROJECTION_SERVICE = Path(
@@ -18,28 +20,19 @@ OWNER_SENSITIVE_ROOTS = (
     Path("src/app/workline"),
     Path("src/app/runtime/capabilities/material_flow"),
 )
-MIGRATIONS_DIR = Path("migrations/versions")
 
 
-def _token(*parts: str) -> str:
-    return "".join(parts)
+def test_runtime_status_projection_has_no_exact_duplicate_indexes() -> None:
+    indexes_by_columns: dict[tuple[str, ...], list[str]] = {}
+    for index in WorklineRuntimeStatusProjection.__table__.indexes:
+        key = tuple(column.name for column in index.columns)
+        indexes_by_columns.setdefault(key, []).append(str(index.name))
 
-
-_HANDLING_QUEUE_MEMBERSHIP_TABLE = _token("bin", "_", "transit", "_", "memberships")
+    assert {key: names for key, names in indexes_by_columns.items() if len(names) > 1} == {}
 
 
 def _source(path: Path) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
-
-
-def _migration_text_containing(*tokens: str) -> str:
-    migrations = sorted((REPO_ROOT / MIGRATIONS_DIR).glob("*.py"))
-    assert migrations, "migrations/versions 下必须存在 Alembic revision"
-    for migration in reversed(migrations):
-        migration_text = migration.read_text(encoding="utf-8")
-        if all(token in migration_text for token in tokens):
-            return migration_text
-    raise AssertionError(f"未找到同时包含目标标识的迁移: {tokens}")
 
 
 def _parse_source(source: str) -> ast.Module:
@@ -183,15 +176,12 @@ def test_runtime_status_projection_service_is_retired() -> None:
     assert not (REPO_ROOT / RETIRED_PROJECTION_SERVICE).exists()
 
 
-def test_runtime_status_migration_mentions_runtime_status_targets() -> None:
-    migration_text = _migration_text_containing(
-        "workline_runtime_status_projections",
-        _HANDLING_QUEUE_MEMBERSHIP_TABLE,
-    )
+def test_runtime_status_projection_uses_shared_schema_owner() -> None:
+    source = _source(Path("src/app/runtime/orchestration/workline_runtime_status_projection.py"))
 
-    assert "workline_runtime_status_projections" in migration_text
-    assert _HANDLING_QUEUE_MEMBERSHIP_TABLE in migration_text
-    assert "runtime_status" in migration_text
+    assert "from src.database.schema_conf import SchemaType" in source
+    assert "RUNTIME_SCHEMA = SchemaType.RUNTIME.value" in source
+    assert "execution_session import RUNTIME_SCHEMA" not in source
 
 
 def test_runtime_status_write_detector_catches_nested_assignment_and_setattr() -> None:

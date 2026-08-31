@@ -18,13 +18,16 @@ import asyncpg
 from sqlalchemy.engine import URL, make_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Collection, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAFE_DATABASE_PREFIX = "wes_tmp_heavy_"
 SAFE_TEMPLATE_DATABASE_NAME = "wes_tmp_heavy_template"
+BASELINE_GENERATION_DATABASE_NAME = "wes_baseline_generation"
 REQUIRED_FREE_CONNECTION_SLOTS = 3
 DEFAULT_SAFE_DATABASE_HOSTS = frozenset({"localhost", "db"})
+_BASELINE_GENERATION_DATABASE_NAME = "wes_baseline_generation"
+_BASELINE_GENERATION_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SAFE_DATABASE_PATTERN = re.compile(rf"{re.escape(SAFE_DATABASE_PREFIX)}[0-9a-f]{{32}}\Z")
 _SAFE_HOSTNAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
 _PREFLIGHT_SQL = """
@@ -37,6 +40,7 @@ SELECT
 FROM pg_roles AS role
 WHERE role.rolname = current_user
 """
+_DATABASE_ABSENCE_SQL = "SELECT count(*)::integer FROM pg_database WHERE datname = $1"
 
 
 class HeavyHarnessError(RuntimeError):
@@ -242,6 +246,11 @@ def _validate_template_database_name(database: str) -> None:
         raise HeavyHarnessError("unsafe_target", "拒绝从非固定 HEAVY 模板创建数据库")
 
 
+def _validate_baseline_generation_database_name(database: str) -> None:
+    if database != _BASELINE_GENERATION_DATABASE_NAME:
+        raise HeavyHarnessError("unsafe_target", "拒绝创建或删除非固定基线生成数据库")
+
+
 def _quote_database(database: str) -> str:
     return '"' + database.replace('"', '""') + '"'
 
@@ -249,6 +258,67 @@ def _quote_database(database: str) -> str:
 async def _drop_database(admin: Any, database: str) -> None:
     _validate_temporary_database_name(database)
     await admin.execute(f"DROP DATABASE IF EXISTS {_quote_database(database)} WITH (FORCE)")
+
+
+async def _drop_baseline_generation_database(admin: Any, database: str) -> None:
+    _validate_baseline_generation_database_name(database)
+    await admin.execute(f"DROP DATABASE IF EXISTS {_quote_database(database)} WITH (FORCE)")
+
+
+async def _baseline_generation_database_count(admin: Any, database: str) -> int:
+    _validate_baseline_generation_database_name(database)
+    try:
+        return int(await admin.fetchval(_DATABASE_ABSENCE_SQL, database))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        raise HeavyHarnessError("catalog", "无法确认固定基线生成数据库状态") from None
+
+
+async def _baseline_generation_absence_diagnostic(admin: Any, database: str) -> str | None:
+    try:
+        remaining_databases = await _baseline_generation_database_count(admin, database)
+    except HeavyHarnessError:
+        return "post_drop_check_failed"
+    return "database_still_present" if remaining_databases != 0 else None
+
+
+async def _baseline_generation_unowned_diagnostics(admin: Any, database: str) -> tuple[str, ...]:
+    try:
+        remaining_databases = await _baseline_generation_database_count(admin, database)
+    except HeavyHarnessError:
+        return ("unowned_database_check_failed",)
+    if remaining_databases != 0:
+        return ("unowned_database_present",)
+    return ()
+
+
+async def _create_baseline_generation_database(admin: Any, database: str) -> None:
+    _validate_baseline_generation_database_name(database)
+    await admin.execute(f"CREATE DATABASE {_quote_database(database)}")
+
+
+async def _wait_for_baseline_generation_create(
+    admin: Any,
+    database: str,
+) -> tuple[bool, asyncio.CancelledError | None, HeavyHarnessError | None]:
+    create_task = asyncio.create_task(
+        _create_baseline_generation_database(admin, database),
+        name="create-baseline-generation-database",
+    )
+    interrupted_by: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(create_task)
+        except asyncio.CancelledError as exc:
+            if create_task.cancelled():
+                return False, interrupted_by or exc, None
+            if interrupted_by is None:
+                interrupted_by = exc
+        except Exception:
+            return False, interrupted_by, HeavyHarnessError("create", "创建固定基线生成数据库失败")
+        else:
+            return True, interrupted_by, None
 
 
 def _random_database_name() -> str:
@@ -268,15 +338,21 @@ async def _cleanup_database(
     checked: PostgreSQLPreflight,
     database: str,
     *,
-    create_attempted: bool,
+    drop_requested: bool,
+    drop_database: Callable[[Any, str], Awaitable[None]] = _drop_database,
+    post_drop_diagnostic: Callable[[Any, str], Awaitable[str | None]] | None = None,
 ) -> tuple[str, ...]:
     diagnostics: list[str] = []
     try:
-        if create_attempted:
+        if drop_requested:
             try:
-                await _drop_database(checked.admin, database)
+                await drop_database(checked.admin, database)
             except Exception:
                 diagnostics.append("drop_failed")
+            if post_drop_diagnostic is not None:
+                diagnostic = await post_drop_diagnostic(checked.admin, database)
+                if diagnostic is not None:
+                    diagnostics.append(diagnostic)
     finally:
         try:
             await checked.close()
@@ -289,10 +365,18 @@ async def _wait_for_cleanup(
     checked: PostgreSQLPreflight,
     database: str,
     *,
-    create_attempted: bool,
+    drop_requested: bool,
+    drop_database: Callable[[Any, str], Awaitable[None]] = _drop_database,
+    post_drop_diagnostic: Callable[[Any, str], Awaitable[str | None]] | None = None,
 ) -> tuple[tuple[str, ...], asyncio.CancelledError | None]:
     cleanup_task = asyncio.create_task(
-        _cleanup_database(checked, database, create_attempted=create_attempted),
+        _cleanup_database(
+            checked,
+            database,
+            drop_requested=drop_requested,
+            drop_database=drop_database,
+            post_drop_diagnostic=post_drop_diagnostic,
+        ),
         name=f"cleanup-{database}",
     )
     interrupted_by: asyncio.CancelledError | None = None
@@ -304,6 +388,84 @@ async def _wait_for_cleanup(
                 raise
             if interrupted_by is None:
                 interrupted_by = exc
+
+
+@asynccontextmanager
+async def baseline_generation_database(
+    *,
+    environ: Mapping[str, str] | None = None,
+    driver: Any = asyncpg,
+    required_free_slots: int = REQUIRED_FREE_CONNECTION_SLOTS,
+) -> AsyncIterator[tuple[str, str]]:
+    """创建固定用途基线生成库，并在每条退出路径证明其已删除。"""
+
+    database = BASELINE_GENERATION_DATABASE_NAME
+    _validate_baseline_generation_database_name(database)
+    source_url = _integration_url(environ)
+    if _normalize_host(source_url.host or "") not in _BASELINE_GENERATION_HOSTS:
+        raise HeavyHarnessError("unsafe_target", "基线生成数据库只允许 loopback PostgreSQL host")
+    checked = await preflight(
+        environ=environ,
+        driver=driver,
+        required_free_slots=required_free_slots,
+    )
+    primary_error: BaseException | None = None
+    owns_database = False
+    ownership_diagnostics: tuple[str, ...] = ()
+    cleanup_diagnostics: tuple[str, ...] = ()
+    cleanup_cancellation: asyncio.CancelledError | None = None
+
+    try:
+        try:
+            if await _baseline_generation_database_count(checked.admin, database) != 0:
+                primary_error = HeavyHarnessError("unsafe_target", "固定基线生成数据库已存在")
+        except asyncio.CancelledError as exc:
+            primary_error = exc
+        except HeavyHarnessError as exc:
+            primary_error = exc
+
+        if primary_error is None:
+            owns_database, create_cancellation, create_error = await _wait_for_baseline_generation_create(
+                checked.admin,
+                database,
+            )
+            if create_cancellation is not None:
+                primary_error = create_cancellation
+            elif create_error is not None:
+                primary_error = create_error
+            if not owns_database:
+                ownership_diagnostics = await _baseline_generation_unowned_diagnostics(checked.admin, database)
+
+        if primary_error is None:
+            try:
+                yield database, _render_url(checked.base_url, database=database, sqlalchemy_driver=True)
+            except asyncio.CancelledError as exc:
+                primary_error = exc
+            except HeavyHarnessError as exc:
+                primary_error = exc
+            except Exception:
+                primary_error = HeavyHarnessError("scenario", "基线生成场景执行失败")
+    finally:
+        cleanup_diagnostics, cleanup_cancellation = await _wait_for_cleanup(
+            checked,
+            database,
+            drop_requested=owns_database,
+            drop_database=_drop_baseline_generation_database,
+            post_drop_diagnostic=_baseline_generation_absence_diagnostic,
+        )
+
+    cleanup_diagnostics = ownership_diagnostics + cleanup_diagnostics
+    if cleanup_cancellation is not None and primary_error is None:
+        primary_error = cleanup_cancellation
+    if primary_error is not None:
+        _attach_cleanup(primary_error, cleanup_diagnostics)
+        raise primary_error from None
+    if cleanup_diagnostics:
+        raise HeavyHarnessError(
+            "cleanup",
+            "固定基线生成数据库清理失败",
+            cleanup_diagnostics=cleanup_diagnostics,
+        )
 
 
 @asynccontextmanager
@@ -360,7 +522,7 @@ async def temporary_database(
         cleanup_diagnostics, cleanup_cancellation = await _wait_for_cleanup(
             checked,
             database,
-            create_attempted=create_attempted,
+            drop_requested=create_attempted,
         )
 
     if cleanup_cancellation is not None and primary_error is None:
@@ -391,10 +553,12 @@ def run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[st
 
 
 __all__ = [
+    "BASELINE_GENERATION_DATABASE_NAME",
     "SAFE_DATABASE_PREFIX",
     "SAFE_TEMPLATE_DATABASE_NAME",
     "HeavyHarnessError",
     "PostgreSQLPreflight",
+    "baseline_generation_database",
     "connect",
     "database_url",
     "preflight",

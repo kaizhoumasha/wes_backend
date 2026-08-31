@@ -1,0 +1,30 @@
+{
+  "kind": "wes.schema.disposition.v1",
+  "source_manifest_sha256": "77214740a6fd48c113c043aeb32887209681c4fd213833e7e9ee391f317117c9",
+  "tables": [
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.ng_return_items"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.runtime_holds"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.system_outbox"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.wms_call_evidence"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.wms_circuit_breaker_state"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.workline_bin_cell_reservations"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.workline_diagnostics"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_biz.workline_dispatch_attempts"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.bin_route_instances"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.conveyor_queue_memberships"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.execution_correlations"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.execution_sessions"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.execution_work_items"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.idempotency_keys"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.material_flow_owners"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.reconciliation_cases"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.runtime_holds"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.runtime_inbox"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.runtime_intent_logs"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.runtime_timelines"},
+    {"catalog_only": false, "disposition": "FINAL_DELETE_AFTER_SUCCESSOR", "final_state": "ABSENT", "identity": "wes_runtime.wms_rack_demands"},
+    {"catalog_only": false, "disposition": "RETAIN", "final_state": "PRESENT", "identity": "wes_runtime.workline_runtime_status_projections", "target": "wes_runtime.workline_runtime_status_projections"},
+    {"catalog_only": true, "disposition": "FINAL_DELETE", "final_state": "ABSENT", "identity": "wes_biz.resource_c0_session_cleanup_report", "target": "NONE"},
+    {"catalog_only": true, "disposition": "FINAL_DELETE", "final_state": "ABSENT", "identity": "wes_runtime.device_runtime_projections", "target": "NONE"}
+  ]
+}

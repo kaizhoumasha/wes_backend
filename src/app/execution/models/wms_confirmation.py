@@ -50,7 +50,7 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
     operation_id: str = Field(min_length=1, max_length=160)
     material_execution_id: int = Field(foreign_key="wes_biz.material_executions.id", index=True)
     request_digest: str = Field(min_length=64, max_length=64)
-    request_payload: dict[str, Any] = Field(sa_column=Column(JSON))
+    request_payload: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
     deadline_at: datetime
 
     status: WmsConfirmationStatus = Field(

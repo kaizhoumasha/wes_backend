@@ -58,44 +58,21 @@ from src.app.resource.models import (  # noqa: F401
     RackType,
     ResourceStateEvent,
 )
-from src.app.runtime.orchestration.bin_route_instance import BinRouteInstance  # noqa: F401
-from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership  # noqa: F401
-from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
-from src.app.runtime.orchestration.execution_session import ExecutionSession  # noqa: F401
-from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem  # noqa: F401
-from src.app.runtime.orchestration.idempotency_key import IdempotencyKey  # noqa: F401
 
 # 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
-from src.app.runtime.orchestration.material_flow_owner import MaterialFlowOwner  # noqa: F401
-from src.app.runtime.orchestration.models.bin_cell_reservation import WorklineBinCellReservation  # noqa: F401
-from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic  # noqa: F401
-from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt  # noqa: F401
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition  # noqa: F401
-from src.app.runtime.orchestration.models.runtime_hold import (  # noqa: F401
-    NgReturnItem,
-    RuntimeHold as WorklineRuntimeHold,
-)
 from src.app.runtime.orchestration.models.session import WorklineSession  # noqa: F401
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline  # noqa: F401
-from src.app.runtime.orchestration.reconciliation_case import ReconciliationCase  # noqa: F401
-from src.app.runtime.orchestration.runtime_hold import RuntimeHold as OrchestrationRuntimeHold  # noqa: F401
-from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox  # noqa: F401
-from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog  # noqa: F401
-from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline  # noqa: F401
-from src.app.runtime.orchestration.wms_rack_demand import WmsRackDemand  # noqa: F401
 from src.app.runtime.orchestration.workline_runtime_status_projection import (  # noqa: F401
     WorklineRuntimeStatusProjection,
 )
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
-from src.app.sys.models.outbox import SystemOutbox  # noqa: F401
 from src.app.transport.models import (  # noqa: F401
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
     TransportTask,
 )
-from src.app.wms_integration.models.circuit_breaker import WmsCircuitBreakerState  # noqa: F401
-from src.app.wms_integration.models.evidence import WmsCallEvidence  # noqa: F401
 from src.app.workline.models import (  # noqa: F401
     LineRunEpoch,
     LineRunEpochDeviceBinding,
@@ -192,10 +169,11 @@ def render_item(type_, obj, autogen_context):
             if enum_name:
                 params.append(f"name={enum_name!r}")
 
-            # 🔥 关键参数：禁用原生 ENUM
-            params.append("native_enum=False")
-            params.append("create_constraint=True")
-            params.append("length=50")  # VARCHAR 长度
+            # 保留 model metadata 的精确配置；不得在 render 阶段新增 CHECK 或改变 VARCHAR 长度。
+            params.append(f"native_enum={obj.native_enum!r}")
+            params.append(f"create_constraint={obj.create_constraint!r}")
+            if obj.length is not None:
+                params.append(f"length={obj.length}")
 
             # 返回非原生 ENUM 定义
             return f"sa.Enum({', '.join(params)})"
@@ -261,9 +239,6 @@ def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        # Revision C 含有 autocommit block；每个 revision 独立事务，
-        # 避免并发索引提交前序 revision 的半成品状态。
-        transaction_per_migration=True,
         # 支持 PostgreSQL 特性
         compare_type=True,
         compare_server_default=True,
@@ -287,8 +262,7 @@ def do_run_migrations(connection: Connection) -> None:
     )
 
     with context.begin_transaction():
-        # schema DDL 必须由 Alembic 事务持有；在 configure() 前执行会触发
-        # SQLAlchemy autobegin，使 Alembic 无法管理 autocommit block。
+        # schema DDL 与唯一初始 revision 由同一 Alembic 事务持有。
         for schema in get_all_schemas():
             if schema != "public":
                 connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {schema}")
@@ -307,8 +281,7 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
     )
 
-    # 事务由 Alembic context.begin_transaction() 持有，Revision 可使用
-    # autocommit_block 执行 PostgreSQL CREATE INDEX CONCURRENTLY。
+    # 事务由 Alembic context.begin_transaction() 持有。
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
 

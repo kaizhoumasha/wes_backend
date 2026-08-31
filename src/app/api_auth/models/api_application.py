@@ -161,7 +161,6 @@ class APIApplication(
     __table_args__ = (
         Index("ix_api_applications_status", "status", "is_deleted"),
         Index("ix_api_applications_type", "app_type", "is_deleted"),
-        Index("ix_api_applications_id", "id", unique=True),
         Index("ix_api_applications_app_id", "app_id", "is_deleted", unique=True, postgresql_where="NOT is_deleted"),
     )
 

@@ -27,13 +27,9 @@ async def _seed_master_and_runtime(session: AsyncSession) -> None:
     )
     await session.execute(
         text(
-            "INSERT INTO wes_runtime.runtime_inbox ("
-            "provider_code, event_type, received_at, failed_at, status, attempt_count, max_retries, "
-            "next_retry_at, lease_until, last_error_code, last_error_message"
-            ") VALUES ("
-            "'reset-test', 'AUDIT_ONLY', 1783699200123, 1783699200123, 'DEAD_LETTER', 1, 5, "
-            "1783699200123, 1783699200123, 'PRE_CUTOVER_AUDIT_ONLY', 'reset integration audit only'"
-            ")"
+            "INSERT INTO wes_biz.callback_logs ("
+            "created_at, callback_type, subject_code, request_body, response_status, response_time_ms"
+            ") VALUES (CURRENT_TIMESTAMP, 'event', 'RESET-RUNTIME', '{}'::json, 200, 1)"
         )
     )
     await session.commit()
@@ -99,10 +95,10 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                         reset_mocks=False,
                     )
                     assert any(
-                        row["table"] == "wes_runtime.runtime_inbox" and row["rows_before"] == 1
+                        row["table"] == "wes_biz.callback_logs" and row["rows_before"] == 1
                         for row in dry_summary.truncated
                     )
-                    assert await session.scalar(text("SELECT count(*) FROM wes_runtime.runtime_inbox")) == 1
+                    assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs")) == 1
 
                     await reset_runtime_data(
                         session,
@@ -110,7 +106,7 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
                         include_audit_logs=False,
                         reset_mocks=False,
                     )
-                    assert await session.scalar(text("SELECT count(*) FROM wes_runtime.runtime_inbox")) == 0
+                    assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs")) == 0
                     assert (
                         await session.scalar(
                             text("SELECT count(*) FROM wes_biz.resource_bin_types WHERE bin_type_code = 'RESET-MASTER'")
@@ -122,7 +118,7 @@ def test_reset_dry_run_and_apply_preserve_master_data() -> None:
 
             connection = await connect(database)
             try:
-                assert await connection.fetchval("SELECT count(*) FROM wes_runtime.runtime_inbox") == 0
+                assert await connection.fetchval("SELECT count(*) FROM wes_biz.callback_logs") == 0
             finally:
                 await connection.close()
 
@@ -137,9 +133,9 @@ def test_reset_rejects_missing_or_wrong_schema_without_mutation(failure_mode: st
             run_alembic("upgrade", "head", database_url=database_url)
             connection = await connect(database)
             try:
-                await connection.execute("ALTER TABLE wes_runtime.runtime_inbox RENAME TO runtime_inbox_saved")
+                await connection.execute("ALTER TABLE wes_biz.callback_logs RENAME TO callback_logs_saved")
                 if failure_mode == "schema-mismatch":
-                    await connection.execute("CREATE TABLE wes_biz.runtime_inbox (id bigint primary key)")
+                    await connection.execute("CREATE TABLE wes_sys.callback_logs (id bigint primary key)")
                 await connection.execute(
                     "INSERT INTO wes_biz.resource_bin_types "
                     "(created_at, bin_type_code, bin_type_name, active, metadata_json) "
@@ -166,7 +162,7 @@ def test_reset_rejects_missing_or_wrong_schema_without_mutation(failure_mode: st
                         )
                         == 1
                     )
-                    assert await session.scalar(text("SELECT count(*) FROM wes_runtime.runtime_inbox_saved")) == 0
+                    assert await session.scalar(text("SELECT count(*) FROM wes_biz.callback_logs_saved")) == 0
             finally:
                 await engine.dispose()
 

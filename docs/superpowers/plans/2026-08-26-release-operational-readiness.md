@@ -32,8 +32,8 @@ deployment_status: Tasks 1–4 included in Phase 10 Task 7 integration cutover; 
 - 不默认新增索引或 migration；只有实际 `EXPLAIN` 和代表性数据证明 10 秒目标无法满足时，才暂停并另行确认索引变更。
 - `RuntimeInbox`、`RuntimeIntentLog` / Effect、`SystemOutbox`、`RuntimeHold` 和 `ExecutionSession` 是 Phase 10 legacy owner；不得成为新 DTO、registry、查询、兼容路径或空 schema 依赖。Phase 11 只删除 Phase 10 证明零生产消费者的无 owner schema。
 - Phase 9 已合入 `develop@c5a93872`。Phase 10 Task 0 prerequisite freeze、本计划 Tasks 1–4 的 RED/DEV/GREEN/Review、
-  Task 0 final admission 与 Execution Lock 已在 `codex/phase10-implementation` 闭合；实现已纳入 `834fe59e` 不可变候选并由
-  Phase 10 Task 7 完成联调环境 cutover，但发布分支尚未合入 `develop`，本计划 Task 5 TEST Deploy 仍未执行。
+  Task 0 final admission 与 Execution Lock 已随 #187 合入 `develop@97e6887a`；`834fe59e` 不可变候选此前已由 Phase 10 Task 7
+  完成联调环境 cutover，但 merge commit 未证明重新部署，本计划 Task 5 TEST Deploy 仍未执行。
   不使用 feature flag、legacy adapter、双查询或兼容 facade。
 
 ## FULL 发布时序

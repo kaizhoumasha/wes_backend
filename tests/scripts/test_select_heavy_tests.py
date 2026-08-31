@@ -35,11 +35,11 @@ OPTIMISTIC_LOCK_HEAVY_TEST = "tests/integration/test_optimistic_lock.py"
 RUNTIME_EXTERNAL_HTTP_EFFECT_CRASH_HEAVY_TEST = "tests/resilience/test_external_http_effect_crash_matrix_postgresql.py"
 RUNTIME_EXTERNAL_HTTP_TRANSPORT_HEAVY_TEST = "tests/integration/test_external_http_transport_attempt_postgresql.py"
 RUNTIME_INBOX_CONSUMER_SERVICE_HEAVY_TEST = "tests/integration/test_runtime_inbox_consumer_service.py"
-RUNTIME_INBOX_MIGRATION_HEAVY_TEST = "tests/integration/test_runtime_inbox_migration_postgresql.py"
+RUNTIME_INBOX_MIGRATION_HEAVY_TEST = "tests/integration/test_initial_schema_baseline_postgresql.py"
 RUNTIME_INBOX_SERVICE_INTERNAL_EVENTS_HEAVY_TEST = "tests/integration/test_runtime_inbox_service_internal_events.py"
 RUNTIME_INTENT_LOG_EFFECT_REPOSITORY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_effect_repository.py"
 RUNTIME_INTENT_LOG_IDEMPOTENCY_HEAVY_TEST = "tests/integration/test_runtime_intent_log_idempotency.py"
-RUNTIME_REMAINING_ENTITIES_HEAVY_TEST = "tests/integration/test_runtime_remaining_entities.py"
+RUNTIME_REMAINING_ENTITIES_HEAVY_TEST = "tests/integration/test_initial_schema_baseline_postgresql.py"
 RUNTIME_PRODUCTION_CLOSURE_HEAVY_TEST = "tests/integration/test_runtime_production_closure_contract.py"
 RUNTIME_ECS_STATUS_BENCHMARK_HEAVY_TEST = "tests/load/test_ecs_status_command_benchmark.py"
 RUNTIME_INTEGRATION_LAB_HEAVY_TEST = "tests/resilience/test_runtime_integration_lab.py"
@@ -71,13 +71,39 @@ TRANSPORT_REPOSITORY_HEAVY_TEST = "tests/integration/transport/test_transport_re
 TRANSPORT_SCHEMA_HEAVY_TEST = "tests/integration/transport/test_transport_schema.py"
 TRANSPORT_DEBUG_RESET_HEAVY_TEST = "tests/integration/transport/test_transport_debug_reset.py"
 RESET_RUNTIME_DATA_HEAVY_TEST = "tests/integration/test_reset_runtime_data_postgresql.py"
+INITIAL_SCHEMA_BASELINE_HEAVY_TEST = "tests/integration/test_initial_schema_baseline_postgresql.py"
+INITIAL_SCHEMA_REVISION_PATH = "migrations/versions/20260831_1531_f9c7c2e5f501_建立最终初始数据库基线.py"
+RETIRED_REVISION_PATHS_SHA256 = "bd256cf50b7ce34ce840210a9486cc536893df992665f70fa9b7beac8d54ae4f"
+RETIRED_SCHEMA_MODEL_PATHS = (
+    "src/app/runtime/orchestration/bin_route_instance.py",
+    "src/app/runtime/orchestration/conveyor_queue_membership.py",
+    "src/app/runtime/orchestration/execution_correlation.py",
+    "src/app/runtime/orchestration/execution_session.py",
+    "src/app/runtime/orchestration/execution_work_item.py",
+    "src/app/runtime/orchestration/idempotency_key.py",
+    "src/app/runtime/orchestration/material_flow_owner.py",
+    "src/app/runtime/orchestration/models/bin_cell_reservation.py",
+    "src/app/runtime/orchestration/models/diagnostic.py",
+    "src/app/runtime/orchestration/models/dispatch_attempt.py",
+    "src/app/runtime/orchestration/models/runtime_hold.py",
+    "src/app/runtime/orchestration/reconciliation_case.py",
+    "src/app/runtime/orchestration/runtime_hold.py",
+    "src/app/runtime/orchestration/runtime_inbox.py",
+    "src/app/runtime/orchestration/runtime_intent_log.py",
+    "src/app/runtime/orchestration/runtime_timeline.py",
+    "src/app/runtime/orchestration/wms_rack_demand.py",
+    "src/app/sys/models/outbox.py",
+    "src/app/wms_integration/models/circuit_breaker.py",
+    "src/app/wms_integration/models/evidence.py",
+)
+RETIRED_SCHEMA_MODEL_PATHS_SHA256 = "a698b67e77d8c32ced9d205bf237911c33e6f559307dbb02994f738c4dd42827"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
 TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
 TRANSPORT_FULFILLMENT_QUEUE_HEAVY_TEST = "tests/integration/test_transport_fulfillment_queue.py"
 DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST = "tests/integration/device_command/test_device_command_constraints.py"
 EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST = (
-    "tests/integration/device_command/test_event_command_block_migration_postgresql.py"
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
 )
 EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST = (
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"
@@ -278,7 +304,7 @@ def test_menu_persistence_migration_selects_its_postgresql_owner() -> None:
     migration = "migrations/versions/20260826_0109_9624cc34fa93_drop_menu_persistence.py"
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests([migration], config) == ["tests/integration/test_menu_persistence_removal_postgresql.py"]
+    assert select_heavy_tests([migration], config) == ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 
 def test_admin_router_menu_removal_is_exact_reviewed_none() -> None:
@@ -299,7 +325,7 @@ def test_relationship_metadata_selects_both_postgresql_owners() -> None:
 
     assert select_heavy_tests([relationships], config, repo_root=REPO_ROOT) == [
         "tests/integration/test_authorization_bootstrap_postgresql.py",
-        "tests/integration/test_menu_persistence_removal_postgresql.py",
+        "tests/integration/test_initial_schema_baseline_postgresql.py",
     ]
 
 
@@ -505,12 +531,15 @@ def test_core_composition_root_keeps_its_heavy_owners() -> None:
 def test_device_endpoint_paths_select_exact_runtime_and_schema_owners(changed_path: str) -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests([changed_path], config) == [
+    expected = [
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
         LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
     ]
+    if changed_path.startswith("migrations/versions/"):
+        expected = [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
+    assert select_heavy_tests([changed_path], config) == expected
 
 
 @pytest.mark.parametrize(
@@ -535,7 +564,7 @@ def test_event_command_block_migration_selects_postgresql_owner() -> None:
     assert select_heavy_tests(
         ["migrations/versions/20260827_0433_71eeea05c864_记录_event_命令阻塞因果.py"],
         config,
-    ) == [EVENT_COMMAND_BLOCK_MIGRATION_HEAVY_TEST]
+    ) == [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
 
 
 @pytest.mark.parametrize(
@@ -604,6 +633,8 @@ def test_workline_start_paths_select_postgresql_owner(changed_path: str) -> None
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     expected = [WORKLINE_START_POSTGRESQL_HEAVY_TEST]
+    if changed_path.startswith("migrations/versions/"):
+        expected = [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
     if changed_path == "src/app/workline/services/workline_start_service.py":
         expected.insert(0, UNFINISHED_EXECUTION_SNAPSHOT_HEAVY_TEST)
     assert select_heavy_tests([changed_path], config) == expected
@@ -636,11 +667,7 @@ def test_wms_confirmation_dispatcher_and_schema_cutover_select_exact_owners() ->
     assert select_heavy_tests(
         ["migrations/versions/20260817_2308_5695afa99545_闭合粗分持久触发.py"],
         config,
-    ) == [
-        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
-        EXECUTION_CONSTRAINTS_HEAVY_TEST,
-        WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
-    ]
+    ) == [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
 
 
 def test_human_document_candidate_is_excluded_before_heavy_mapping(tmp_path: Path) -> None:
@@ -1052,6 +1079,37 @@ def test_repository_mapping_only_references_existing_heavy_owners() -> None:
     assert missing == []
 
 
+def test_initial_schema_revision_tombstones_are_exact_and_complete() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    revision_mappings = [mapping for mapping in config[1] if mapping.source_glob.startswith("migrations/versions/")]
+    retired_paths = sorted(
+        mapping.source_glob for mapping in revision_mappings if mapping.source_glob != INITIAL_SCHEMA_REVISION_PATH
+    )
+
+    assert len(retired_paths) == 128
+    assert hashlib.sha256(("\n".join(retired_paths) + "\n").encode()).hexdigest() == RETIRED_REVISION_PATHS_SHA256
+    assert all(not any(token in path for token in "*?[]{}") for path in retired_paths)
+    assert all(mapping.heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,) for mapping in revision_mappings)
+    assert select_heavy_tests(retired_paths, config, repo_root=REPO_ROOT) == [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
+    assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST
+    ]
+
+
+def test_retired_schema_model_tombstones_are_exact_and_select_successor() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    paths = tuple(sorted(RETIRED_SCHEMA_MODEL_PATHS))
+
+    assert hashlib.sha256(("\n".join(paths) + "\n").encode()).hexdigest() == RETIRED_SCHEMA_MODEL_PATHS_SHA256
+    for path in paths:
+        matching = [mapping for mapping in config[1] if mapping.source_glob == path]
+        assert len(matching) == 1
+        assert matching[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
+        assert matching[0].reviewed_content_sha256 is None
+        assert not (REPO_ROOT / path).exists()
+    assert select_heavy_tests(paths, config, repo_root=REPO_ROOT) == [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
+
+
 @pytest.mark.parametrize(
     "changed_path",
     (
@@ -1095,7 +1153,7 @@ def test_phase10_retired_heavy_assets_are_exact_none(changed_path: str) -> None:
         ),
         (
             "src/app/runtime/orchestration/repositories/legacy_drain_readiness_repository.py",
-            ["tests/integration/test_legacy_drain_readiness_postgresql.py"],
+            ["tests/integration/test_initial_schema_baseline_postgresql.py"],
         ),
         (
             "tests/support/ecs_uniform_wire.py",

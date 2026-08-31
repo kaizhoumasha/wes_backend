@@ -252,7 +252,10 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         sa_type=cast("Any", SQLAEnum(CommandStatus, native_enum=False, create_constraint=False, length=20)),
         index=True,
     )
-    params: dict[str, DeviceCommandParamValue] = Field(default_factory=dict, sa_column=Column(JSON))
+    params: dict[str, DeviceCommandParamValue] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+    )
 
     attempt_count: int = Field(default=0, ge=0)
     next_attempt_at: datetime | None = Field(default=None)

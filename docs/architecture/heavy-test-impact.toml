@@ -14,16 +14,19 @@ ignore_globs = [
 ]
 
 # selector 实现由 QUALITY 脚本合同承接，不触发运行时 HEAVY 测试。
+
 [[mapping]]
 source_glob = "scripts/select_heavy_tests.py"
 heavy_tests = []
 
 # 已退役工具只在删除 diff 中出现；FAST 治理 owner 验证 CI/selector 收敛。
+
 [[mapping]]
 source_glob = "scripts/{classify_runtime_inbox_acceptance.py,generate_runtime_extensions.py,run_runtime_inbox_postgresql_acceptance.py,run_runtime_inbox_postgresql_acceptance_ci.sh}"
 heavy_tests = []
 
 # 无 caller 的 generic capability/package surface 退役，由 FAST absence/import 护栏承接。
+
 [[mapping]]
 source_glob = "src/app/reconciliation/__init__.py"
 heavy_tests = []
@@ -41,16 +44,19 @@ source_glob = "src/app/runtime/system_capabilities/{generated_index.py,index_bui
 heavy_tests = []
 
 # 已删除的 legacy support owner 仅由新 target owners 与 absence scanner 承接。
+
 [[mapping]]
 source_glob = "tests/support/external_http.py"
 heavy_tests = []
 
 # TEST 部署源码差异分类由部署合同测试承接，不启动业务服务或数据库。
+
 [[mapping]]
 source_glob = "scripts/validate_test_deploy_source_diff.sh"
 heavy_tests = []
 
 # Redis 降级演练由人工运维执行，不触发自动 HEAVY。
+
 [[mapping]]
 source_glob = "scripts/manual/redis_degradation_drill.py"
 heavy_tests = []
@@ -60,12 +66,14 @@ source_glob = "docs/architecture/heavy-test-impact.toml"
 heavy_tests = []
 
 # 发布 provider exporter 是离线机器合同；migration/input-set/原子替换由聚焦 FAST 脚本测试承接。
+
 [[mapping]]
 source_glob = "scripts/export_release_provider.py"
 heavy_tests = []
 reviewed_content_sha256 = "81956eca4b54a7b62709ca47686b2ad578dbfb6a1913dac1a52a5f5fa41a15c3"
 
 # 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
+
 [[mapping]]
 source_glob = "tools/release_checker/release_checker.py"
 heavy_tests = []
@@ -82,6 +90,7 @@ heavy_tests = []
 reviewed_content_sha256 = "d2a5c594625258c0a3ac4366e462a350d73df3387ba64c38a3082385ac6ce425"
 
 # BaseAPI/TreeAPI 生成的权限码进入完整应用目录，并由隔离 PostgreSQL dev-seed owner 验收。
+
 [[mapping]]
 source_glob = "src/core/base_api.py"
 heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
@@ -91,43 +100,25 @@ source_glob = "src/core/tree_api.py"
 heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
 
 # TreeMixin 的共享 parent_id、Permission 的 FK 重声明与 schema migration 由真实 PostgreSQL 升降级承接。
+
 [[mapping]]
 source_glob = "src/core/mixins/tree.py"
-heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/admin/models/perm.py"
-heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
-[[mapping]]
-source_glob = "migrations/versions/20260820_1808_db0859fd3259_align_tree_parent_ids.py"
-heavy_tests = ["tests/integration/test_tree_parent_id_migration_postgresql.py"]
-
-# 遗留缺席台账只承载审计证据；内容变化由质量门禁和当前指纹共同约束，不触发运行时 HEAVY。
 [[mapping]]
 source_glob = "docs/architecture/business-legacy-absence-ledger.csv"
 heavy_tests = []
-reviewed_content_sha256 = "42c317e65dd78999be5e981b5f22e2d45262a05f77d6ff0bdcb932a5d5e95008"
+reviewed_content_sha256 = "cbb3931e9f7c10d6631effa65f706b547df15789b2dc58390de9d246a241c566"
 
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "ae02b4f1d22c1fd8e971624b18f2f8df299d4e6379fbadbe8bb99badcb5126f3"
+reviewed_content_sha256 = "802990ac6dc10ff69e00930974fe75fd59a9ca6dfbf0c2a0c83f693494946fb4"
 
-[[mapping]]
-source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/runtime_intent_log.py"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
-reviewed_content_sha256 = "07c95a0c5b9e352440c3ee7ac2f0bcb0e75c6f9b310747d68655a9f996ac176a"
-
-# 旧命令请求/响应 Schema 退役后，由 DeviceCommand 生产闭环承接。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
 heavy_tests = [
@@ -136,6 +127,7 @@ heavy_tests = [
 ]
 
 # 后端 CI 编排变更同时验证当前数据库合同、Transport 生产接线和 WMS Mock 镜像合同。
+
 [[mapping]]
 source_glob = "Jenkinsfile.backend-ci"
 heavy_tests = [
@@ -146,6 +138,7 @@ heavy_tests = [
 ]
 
 # 本地 HEAVY 入口及其 compose 覆盖共同负责构建隔离依赖、迁移并执行 Transport 生产接线。
+
 [[mapping]]
 source_glob = "docker-compose.ci-heavy.local.yml"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
@@ -154,15 +147,17 @@ heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 source_glob = "scripts/run_selected_heavy_local.sh"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/test_runtime_inbox_migration_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
 
 # Docker build context 过滤规则影响 HEAVY runner 镜像内容，由最小数据库合同验证镜像可执行。
+
 [[mapping]]
 source_glob = ".dockerignore"
 heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
 
 # 生产镜像入口变更触发最终接线 E2E 与四角色部署证明；参数静态合同由 FAST 承接，发布前仍需最终镜像 smoke。
+
 [[mapping]]
 source_glob = "Dockerfile"
 heavy_tests = [
@@ -199,6 +194,7 @@ heavy_tests = [
 ]
 
 # 环境文件的 WMS/ECS 生产接线已按冻结合同评审；任意后续内容变化先恢复 fail closed。
+
 [[mapping]]
 source_glob = ".env.dev"
 heavy_tests = [
@@ -218,6 +214,7 @@ heavy_tests = [
 reviewed_content_sha256 = "95547d6a4674875f7a2508a734fc2f2256fe7463656f759d36130bf0818e1937"
 
 # E2E 环境生成与启动脚本共同决定当前 ECS/WMS callback 接线。
+
 [[mapping]]
 source_glob = "scripts/{init-env.sh,start_e2e_env.sh}"
 heavy_tests = [
@@ -234,32 +231,38 @@ heavy_tests = [
 reviewed_content_sha256 = "540998e11316b9b02240289174578bfa8048625e0deb0e5c328f67ea3c2029ff"
 
 # MR HEAVY 专用数据库编排由当前命令结果关联 PostgreSQL 合同承接；Redis 由 Compose healthcheck 验证。
+
 [[mapping]]
 source_glob = "docker-compose.ci-heavy.yml"
 heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
 
 # 质量门禁只编排 FAST/QUALITY；生产 closure 由 HEAVY selector 独立承接。
+
 [[mapping]]
 source_glob = "scripts/git-quality-gate.sh"
 heavy_tests = []
 
 # Markdown 格式检查只处理人类阅读文档，由 QUALITY 直接承接。
+
 [[mapping]]
 source_glob = "scripts/markdownlint.sh"
 heavy_tests = []
 
 # workspace 依赖与插件安装拓扑由 concrete rough sorter PostgreSQL composition owner 承接。
+
 [[mapping]]
 source_glob = "pyproject.toml"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 # lock 变化同样必须证明 concrete rough sorter composition 可从冻结依赖启动。
+
 [[mapping]]
 source_glob = "uv.lock"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 # 独立插件 SDK 仅定义标准库不可变类型、只读协议和静态元数据；当前精确内容由架构测试承接。
 # 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
+
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/pyproject.toml"
 heavy_tests = []
@@ -293,16 +296,19 @@ heavy_tests = []
 reviewed_content_sha256 = "2b3b74a22bf16160c7efbf5a96886661b1b0749e0f5cd7ecea2640023dafd00b"
 
 # 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。
+
 [[mapping]]
 source_glob = "scripts/{architecture-guardrails.allowlist,architecture-guardrails.sh,check_business_legacy_absence_gate.py,check_fast_test_budget.py,generate_legacy_matrix.py,run_selected_heavy_tests.py,test_live_suite.sh,workline_inbox_retirement_guardrail.py}"
 heavy_tests = []
 
 # 未发布旧平台数据修复和迁移盘点入口已删除，DELETE → NONE；不得替换为运行时兼容路径。
+
 [[mapping]]
 source_glob = "scripts/{data/repair_runtime_holds.py,workline_migration_inventory.py,workline_migration_matrix.py}"
 heavy_tests = []
 
 # WMS deployment attestation 的 CLI、领域事实与 Beat 路由必须共同验证四角色部署产物。
+
 [[mapping]]
 source_glob = "scripts/check_runtime_production_e2e_gate.py"
 heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
@@ -338,6 +344,7 @@ source_glob = "src/app/runtime/orchestration/benchmark_gate.py"
 heavy_tests = ["tests/integration/test_runtime_production_closure_contract.py"]
 
 # fresh interpreter import 独立验证 EFFECT 合同模块没有隐藏的进程级导入依赖。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/effect_state_contract.py"
 heavy_tests = [
@@ -349,6 +356,7 @@ heavy_tests = [
 ]
 
 # Celery 单异步 runtime 的两个直接合同与显式复用 PostgreSQL harness 的清理合同共同承接该源文件。
+
 [[mapping]]
 source_glob = "src/celery_app/async_runtime.py"
 heavy_tests = [
@@ -358,16 +366,19 @@ heavy_tests = [
 ]
 
 # Celery WorkLine 静态任务由真实 PostgreSQL worker smoke 承接。
+
 [[mapping]]
 source_glob = "src/celery_app/tasks/workline.py"
 heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 
 # Safety target task 与原 incident drain 共享同一真实 PostgreSQL worker owner。
+
 [[mapping]]
 source_glob = "src/celery_app/tasks/safety.py"
 heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 
 # Celery Beat schedule、route 与 expires 同时由 worker smoke 和 Transport 队列竞争承接。
+
 [[mapping]]
 source_glob = "src/celery_app/config.py"
 heavy_tests = [
@@ -376,11 +387,13 @@ heavy_tests = [
 ]
 
 # WMS QUERY runtime 与共享执行 Port 由真实 prefork worker 启动与任务执行闭环承接。
+
 [[mapping]]
 source_glob = "src/app/wms_integration/{query_runtime.py,ports/query_execution.py}"
 heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py"]
 
 # FAST SQLite 共享 fixture 只影响显式消费 db_engine/db_session 的 HEAVY 测试。
+
 [[mapping]]
 source_glob = "tests/conftest.py"
 heavy_tests = [
@@ -391,6 +404,7 @@ heavy_tests = [
 ]
 
 # Callback/Repository/Outbox/Intent 测试只映射可穷尽的窄 source/support；其余共享支撑与广泛依赖继续 fail closed。
+
 [[mapping]]
 source_glob = "src/app/callback/v1/{__init__.py,callback.py}"
 heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
@@ -400,11 +414,13 @@ source_glob = "src/app/callback/{__init__.py,contracts/external_callbacks.py,mod
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # 旧 Callback 事件模型删除后，由 Phase 7 ECS callback 生产闭环承接缺席与接线。
+
 [[mapping]]
 source_glob = "src/app/callback/models/event.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # Callback 当前所有权与依赖说明不改变运行时行为，由既有 FAST 合同承接；指纹变化后恢复 fail closed。
+
 [[mapping]]
 source_glob = "src/app/callback/utils.py"
 heavy_tests = []
@@ -461,6 +477,7 @@ heavy_tests = []
 reviewed_content_sha256 = "07eefe2764dddc252cc11dcee542abc36268551046bf8d3b3ae2aefbeddc42c0"
 
 # TraceContext 只规范化进程内诊断字段；本次删除退役来源由 FAST mirror 合同承接。
+
 [[mapping]]
 source_glob = "src/app/callback/contracts/trace_context.py"
 heavy_tests = []
@@ -479,11 +496,13 @@ source_glob = "src/app/runtime/system_capabilities/device/device_command_write/*
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # 共享 contract 包入口当前只声明依赖边界，不导出运行时对象；QUALITY import guardrail 直接承接。
+
 [[mapping]]
 source_glob = "src/app/contracts/__init__.py"
 heavy_tests = []
 
 # Phase 7 DeviceCommand/ECS owner 由隔离 PostgreSQL 不变量与真实生产闭环共同承接。
+
 [[mapping]]
 source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py}"
 heavy_tests = [
@@ -521,12 +540,12 @@ source_glob = "src/app/device/models/__init__.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/device/models/event_command_block.py"
-heavy_tests = ["tests/integration/device_command/test_event_command_block_migration_postgresql.py"]
+heavy_tests = ["tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/device/event_block_contracts.py"
@@ -544,13 +563,6 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "migrations/versions/20260825_0021_f11b613771fa_对齐设备结果证据外键类型.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/execution/test_evidence_foreign_key_migration_postgresql.py",
-]
-
-[[mapping]]
 source_glob = "src/app/device/repositories/{command_repository.py,status_observation_repository.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
@@ -563,18 +575,18 @@ source_glob = "src/app/device/repositories/__init__.py"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/device/repositories/event_command_block_repository.py"
 heavy_tests = [
-    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
 ]
 
 # 被 InboundEvidenceRepository 直接接管的旧路径 tombstone，删除 diff 仍必须选中 DeviceCommand 闭环。
+
 [[mapping]]
 source_glob = "src/app/device/repositories/evidence_repository.py"
 heavy_tests = [
@@ -595,7 +607,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 [[mapping]]
@@ -630,32 +642,6 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "migrations/versions/20260823_1616_11013119b97d_audit_manual_device_command.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_device_command_migration_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260825_0350_d68e6be4006e_支持事件联调自动指令.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_device_command_migration_postgresql.py",
-]
-
-# 菜单持久化删除顺序与授权表保留由隔离 PostgreSQL 迁移 owner 验收。
-[[mapping]]
-source_glob = "migrations/versions/20260826_0109_9624cc34fa93_drop_menu_persistence.py"
-heavy_tests = ["tests/integration/test_menu_persistence_removal_postgresql.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260827_0433_71eeea05c864_记录_event_命令阻塞因果.py"
-heavy_tests = ["tests/integration/device_command/test_event_command_block_migration_postgresql.py"]
-
-# Nginx 精确代理规则由部署合同测试和 nginx -t 直接承接。
-[[mapping]]
 source_glob = "nginx/conf.d/default.conf"
 heavy_tests = []
 reviewed_content_sha256 = "3541109d4e3d40bb41391979674083c1d60edaf2e3450b4affcbac005e854f6a"
@@ -669,28 +655,25 @@ heavy_tests = [
 ]
 
 # runtime 包入口移除旧 DeviceProjection 导出，由 Phase 7 生产闭环承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/__init__.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/execution_correlation.py"
-heavy_tests = []
-reviewed_content_sha256 = "964ffc2c7c8288b164cb059c55f6c5e099462307ecc312f0f68cfb0699b99bcb"
-
-# ExecutionSession 的旧插件 pin/state 列收敛仍可能影响共享外部传输会话模型。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/enums.py"
 heavy_tests = []
 reviewed_content_sha256 = "877085114f511f955b8999affcb37f3fab98575764cb9de935cab09f38baf1ff"
 
 # WorklineSession 由真实 PostgreSQL 持久化与会话租约闭环承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/timeline.py"
 heavy_tests = []
 reviewed_content_sha256 = "c906b248c47842d75440e611379b9e3220ddab25e7db260ee6deb866b022af60"
 
 # Trace/Runtime 读模型收敛 DeviceCommand 状态后，由生产闭环承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/runtime.py"
 heavy_tests = [
@@ -699,20 +682,9 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/models/diagnostic.py"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
-reviewed_content_sha256 = "3e93ce9035922ef12a097a02ff7cf7bd0539c2fa16f20cfcd0609f4e3f263e32"
-
-[[mapping]]
 source_glob = "src/app/runtime/orchestration/{models/runtime_hold_api.py,services/trace/__init__.py,services/trace/trace_response_builder.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/models/runtime_hold.py"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
-reviewed_content_sha256 = "cdbb295ad0d16b8176590e377dba0e343c5a579a8e011ea50958b4480441e5d0"
-
-# Runtime 诊断镜像与 snapshot 输出只收敛退役字段，由 FAST 合同承接；指纹变化后恢复 fail closed。
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/diagnostics/builder.py"
 heavy_tests = []
@@ -747,13 +719,14 @@ source_glob = "src/app/runtime/orchestration/services/runtime_snapshot_assembler
 heavy_tests = []
 
 # 删除无消费者的插件事实读取方法不改变存活 Repository 行为；指纹变化后恢复 fail closed。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/repositories/material_unit_repository.py"
 heavy_tests = []
 reviewed_content_sha256 = "b7e49e4b1318deb3b7c9f0b2332eaea0caeafe5755823f7f669b147a0589550e"
 
 [[mapping]]
-source_glob = "src/app/sys/{models/__init__.py,models/outbox.py,repositories/outbox_repository.py,services/outbox_engine.py}"
+source_glob = "src/app/sys/{models/__init__.py,repositories/outbox_repository.py,services/outbox_engine.py}"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
@@ -764,62 +737,27 @@ source_glob = "src/core/mixins/optimistic_lock.py"
 heavy_tests = ["tests/integration/test_optimistic_lock.py"]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/idempotency_key.py"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-]
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/conveyor_queue_membership.py"
-heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/execution_work_item.py"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-]
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/runtime_hold.py"
-heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
-
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/runtime_timeline.py"
-heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py"
-heavy_tests = ["tests/integration/test_runtime_remaining_entities.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260824_1152_fe7280088174_修复_runtimeinbox_毫秒字段类型.py"
-heavy_tests = ["tests/integration/test_runtime_inbox_migration_postgresql.py"]
-
-[[mapping]]
 source_glob = "tests/support/runtime_binding.py"
-heavy_tests = [
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/test_runtime_remaining_entities.py",
-]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 # RuntimeInbox PostgreSQL 共享夹具只承接核心持久化与可靠性闭环。
+
 [[mapping]]
 source_glob = "tests/api/callback_test_support.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 [[mapping]]
 source_glob = "tests/support/sqlmodel_metadata.py"
-heavy_tests = [
-    "tests/integration/test_optimistic_lock.py",
-    "tests/integration/test_runtime_remaining_entities.py",
-]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py"]
 
 # 核心测试拓扑工具由 architecture/QUALITY 门禁承接。
+
 [[mapping]]
 source_glob = "tests/support/test_suite_topology.py"
 heavy_tests = []
 
 # Mock 镜像入口由 MR 固定构建步骤验证，Dockerfile 同时承接 ECS 与 Transport 依赖。
+
 [[mapping]]
 source_glob = "tests/mock/Dockerfile"
 heavy_tests = [
@@ -840,11 +778,13 @@ source_glob = "tests/mock/robot_arm_mock_server.py"
 heavy_tests = ["tests/mock/test_robot_arm_mock_server.py"]
 
 # 旧 WMS document wire DTO 由其所属 WMS integration 合同承接，不再耦合 Transport Mock。
+
 [[mapping]]
 source_glob = "src/app/wms_integration/ports/document_operations.py"
 heavy_tests = []
 
 # WMS 北向可行性探针只承接核心 HTTP/CLI/安全与 deadline 可靠性；具体工作线规则由插件包独立拥有。
+
 [[mapping]]
 source_glob = "scripts/verify_wms_northbound_feasibility.py"
 heavy_tests = [
@@ -881,6 +821,7 @@ source_glob = "src/core/outbound_http/**"
 heavy_tests = []
 
 # WMS Adapter 公共导出同时承载 Transport 与粗分 ACL，由各自唯一 HEAVY owner 承接。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/__init__.py"
 heavy_tests = [
@@ -897,6 +838,7 @@ source_glob = "src/app/wms_adapter/factory.py"
 heavy_tests = []
 
 # 粗分 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/{inbound_adapter.py,inbound_wire.py}"
 heavy_tests = ["tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
@@ -909,11 +851,13 @@ heavy_tests = [
 ]
 
 # OpenAPI 片段不执行运行时逻辑，由同目录 FAST 合同唯一承接。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/inbound_openapi.py"
 heavy_tests = []
 
 # Transport 公共入口和唯一生产组合根由真实 broker/worker/HTTP/PostgreSQL E2E 验收。
+
 [[mapping]]
 source_glob = "src/app/transport/{__init__.py,composition.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
@@ -923,6 +867,7 @@ source_glob = "src/app/transport/v1/{__init__.py,tasks.py,evidence_stream.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Transport wire 合同还被 WMS Transport Mock 镜像直接导入。
+
 [[mapping]]
 source_glob = "src/app/transport/contracts.py"
 heavy_tests = [
@@ -936,6 +881,7 @@ heavy_tests = [
 ]
 
 # Transport 持久化约束、领取和收敛由隔离 PostgreSQL 验收。
+
 [[mapping]]
 source_glob = "src/app/transport/{models.py,repository.py}"
 heavy_tests = [
@@ -961,6 +907,7 @@ heavy_tests = [
 ]
 
 # 联调任务完整链路清理由 API Service/Repository 与 CLI raw-SQL 两条 PostgreSQL owner 共同承接。
+
 [[mapping]]
 source_glob = "src/app/transport/debug_reset.py"
 heavy_tests = [
@@ -980,6 +927,7 @@ heavy_tests = [
 ]
 
 # submit snapshot 同时经过持久化闭环与真实 worker/HTTP 生产接线。
+
 [[mapping]]
 source_glob = "src/app/transport/submit_snapshot.py"
 heavy_tests = [
@@ -988,6 +936,7 @@ heavy_tests = [
 ]
 
 # 独立 OpenAPI 交付文件不参与运行时；其与共享 schema builder 的一致性由 FAST 合同测试验证。
+
 [[mapping]]
 source_glob = "docs/contracts/openapi/wes-wms-transport.openapi.json"
 heavy_tests = []
@@ -1000,6 +949,7 @@ heavy_tests = [
 ]
 
 # 入站 handler 必须由真实 route E2E 承接，同时保留暗闭环覆盖。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/transport_event_handler.py"
 heavy_tests = [
@@ -1009,6 +959,7 @@ heavy_tests = [
 ]
 
 # 共享 callback wire/OpenAPI 同时由生产 route 和 WMS Transport Mock 消费。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/{transport_openapi.py,transport_wire.py}"
 heavy_tests = [
@@ -1028,6 +979,7 @@ heavy_tests = [
 ]
 
 # 离线 Swagger 资产既影响 Mock 镜像内容，也影响运行时文档页面。
+
 [[mapping]]
 source_glob = "src/static/swagger-ui/**"
 heavy_tests = [
@@ -1053,47 +1005,8 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py"
-heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260814_0516_ce53af214081_对齐_wms_*.py"
-heavy_tests = ["tests/integration/transport/test_transport_schema.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py"
-heavy_tests = [
-    "tests/integration/transport/test_transport_schema.py",
-    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260829_0800_7bdca6f754ee_记录_transport_位置投影来源任务.py"
-heavy_tests = [
-    "tests/integration/transport/test_transport_debug_reset.py",
-    "tests/integration/transport/test_transport_schema.py",
-]
-
-[[mapping]]
 source_glob = "migrations/env.py"
-heavy_tests = [
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
-    "tests/integration/transport/test_transport_schema.py",
-    "tests/integration/execution/test_execution_constraints.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260813_1016_a08d72f135d2_rebuild_device_command_ecs_lifecycle.py"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260823_0007_1000c501e52a_支持设备指令手动联调.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_device_command_migration_postgresql.py",
-]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/{epoch_activation.py,models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"
@@ -1107,6 +1020,7 @@ heavy_tests = [
 ]
 
 # 最小 execution owner 由独立 PostgreSQL 约束承接；设备 evidence 切换同时刷新既有 DeviceCommand 闭环。
+
 [[mapping]]
 source_glob = "src/app/execution/{__init__.py,composition.py,models/__init__.py,repositories/__init__.py,services/__init__.py}"
 heavy_tests = [
@@ -1115,22 +1029,12 @@ heavy_tests = [
 ]
 
 # 活动料箱 owner、统一 current projection 与稳定 advisory identity 由 PostgreSQL 约束/并发和真实 Transport worker 承接。
+
 [[mapping]]
 source_glob = "src/app/execution/{locks.py,models/bin_execution.py,models/position_projection.py,repositories/bin_execution_repository.py,repositories/position_projection_repository.py,services/bin_execution_service.py,services/position_projection_service.py}"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_execution_constraints.py",
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260829_1129_baf328359533_add_execution_authority_projections.py"
-heavy_tests = [
-    "tests/e2e/transport/test_transport_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/execution/test_execution_constraints.py",
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
-    "tests/integration/transport/test_transport_schema.py",
 ]
 
 [[mapping]]
@@ -1152,14 +1056,6 @@ heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.
 [[mapping]]
 source_glob = "src/app/execution/{models/material_execution.py,repositories/material_execution_repository.py,services/material_execution_service.py}"
 heavy_tests = [
-    "tests/integration/execution/test_execution_constraints.py",
-    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260829_1159_273898a3f09b_add_material_admission_fifo.py"
-heavy_tests = [
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
 ]
@@ -1199,23 +1095,6 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "migrations/versions/20260817_1325_72ecc4fd560f_add_phase8_decision_processing.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260817_2308_5695afa99545_闭合粗分持久触发.py"
-heavy_tests = [
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/execution/test_execution_constraints.py",
-    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
-]
-
-# Phase 8 运行时部署适配、同事务 Fact 重建与持久触发由真实 execution/Celery/Transport owner 承接。
-[[mapping]]
 source_glob = "deployment/{__init__.py,_rough_sorter_device_facts.py,_rough_sorter_factory.py,_rough_sorter_persistence.py,_rough_sorter_transport.py,_rough_sorter_transport_recovery_facts.py,_rough_sorter_types.py,_rough_sorter_values.py,_rough_sorter_wms_facts.py,_rough_sorter_wms_resolver.py}"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
@@ -1224,6 +1103,7 @@ heavy_tests = [
 ]
 
 # 公开 START 的粗分机部署组合同时由通用 PostgreSQL START owner 承接；插件业务 E2E 按插件边界显式运行。
+
 [[mapping]]
 source_glob = "deployment/rough_sorter_composition.py"
 heavy_tests = [
@@ -1239,31 +1119,6 @@ heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260819_0804_53e560430c1a_为运行代际冻结配置快照.py"
-heavy_tests = ["tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260819_1202_a05b2676f681_删除旧start准入字段.py"
-heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
-
-[[mapping]]
-source_glob = "migrations/versions/20260819_1359_0a6378b66e1a_增加设备派发端点.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/test_celery_async_runtime_postgresql.py",
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
-]
-
-[[mapping]]
-source_glob = "migrations/versions/20260818_0131_ec18b2a79400_闭合粗分持久触发.py"
-heavy_tests = [
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 [[mapping]]
@@ -1293,15 +1148,6 @@ source_glob = "src/app/resource/models/{__init__.py,resource.py}"
 heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
 
 [[mapping]]
-source_glob = "migrations/versions/20260816_2248_48c71f31cafb_收敛执行对象.py"
-heavy_tests = [
-    "tests/e2e/device_command/test_device_command_production_wiring.py",
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/execution/test_execution_constraints.py",
-]
-
-# Phase 5 已批准为 destructive removal：嵌入式插件包无核心行为 successor，仅由 FAST 缺席门禁验收。
-[[mapping]]
 source_glob = "src/app/runtime/workline_plugins/**"
 heavy_tests = []
 
@@ -1312,6 +1158,7 @@ heavy_tests = [
 ]
 
 # 旧 station/device lease 旁路删除，由唯一 DeviceCommand lease/dispatch 闭环承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/station_lease_service.py"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
@@ -1321,6 +1168,7 @@ source_glob = "src/app/resource/services/{__init__.py,smt_bin_cell_allocation_po
 heavy_tests = []
 
 # 资源冲突移除 generic RuntimeHold side effect；现有 FAST 投影合同承接，当前无已验收的资源数据库 HEAVY。
+
 [[mapping]]
 source_glob = "src/app/resource/services/projection_service.py"
 heavy_tests = []
@@ -1332,6 +1180,7 @@ heavy_tests = []
 reviewed_content_sha256 = "bf04965c05109d168dfc713f03e3afb2394146b7d8a3fce3547d7e5855601292"
 
 # Phase 5 只将已删除的业务能力标记为 NONE，不覆盖同目录存活的基础能力。
+
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/{__init__.py,ng_return_item_service.py,rough_sorter_q19_admission_service.py,smt_inbound_handoff_route_service.py,smt_ng_wms_reconciliation_policy.py,smt_ng_wms_reconciliation_preview_service.py,smt_ng_wms_reconciliation_runtime_service.py,sorter_inbound_preview_service.py,sorter_inbound_runtime_service.py}"
 heavy_tests = []
@@ -1341,6 +1190,7 @@ source_glob = "src/app/runtime/capabilities/material_flow/contracts/{__init__.py
 heavy_tests = []
 
 # NG reason 枚举与 DTO 的退役插件身份缺席由专用 FAST 合同承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py"
 heavy_tests = []
@@ -1361,24 +1211,27 @@ heavy_tests = []
 reviewed_content_sha256 = "5f49270d7ec440dfcea30c887bbb8873c4748ee7a58420793cfa64714de8872b"
 
 # 已退役观测 surface 的删除 diff 由 absence/selector FAST 合同承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/observability.py"
 heavy_tests = []
 
 # Phase 9 operation handoff 是机器可读合同；其闭集与 owner 路径由 architecture FAST 测试承接。
+
 [[mapping]]
 source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
 heavy_tests = []
 reviewed_content_sha256 = "abb408790de7994eabc2ee2277db677481c08ed198b09c61ba730719223f8dd1"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
 heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/{__init__.py,smt_inbound_handoff.py}"
-heavy_tests = ["tests/integration/test_workline_plugin_schema_retirement.py"]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/{__init__.py,full_box_exchange_service.py,hold/**,intent/**,session/**,wms_conveyor_batch_service.py,wms_conveyor_return_batch_service.py,wms_effect_status_service.py,wms_fulfillment_domain_projector.py}"
@@ -1387,19 +1240,7 @@ heavy_tests = [
 ]
 
 # 发布静默门禁是独立的四账本只读查询；Repository、Service 与 CLI 由同一 PostgreSQL owner 验收。
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/repositories/legacy_drain_readiness_repository.py"
-heavy_tests = ["tests/integration/test_legacy_drain_readiness_postgresql.py"]
 
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/services/query/legacy_drain_readiness_service.py"
-heavy_tests = ["tests/integration/test_legacy_drain_readiness_postgresql.py"]
-
-[[mapping]]
-source_glob = "scripts/check_legacy_drain_readiness.py"
-heavy_tests = ["tests/integration/test_legacy_drain_readiness_postgresql.py"]
-
-# Cutover manifest 是 Task 4 一次性机器合同；其 producer、broker 与维护态不变量由 FAST owner 承接。
 [[mapping]]
 source_glob = "docs/architecture/phase10-legacy-cutover-manifest.json"
 heavy_tests = []
@@ -1426,11 +1267,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/query/__init__.py"
-heavy_tests = [
-    "tests/integration/test_legacy_drain_readiness_postgresql.py",
-    "tests/integration/test_release_operational_readiness_postgresql.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "scripts/check_release_operational_readiness.py"
@@ -1453,39 +1290,22 @@ heavy_tests = [
 ]
 
 # Phase 10 target-only removal 的其余 runtime paths：每个 brace member 都来自冻结 matrix，禁止目录级兜底。
-[[mapping]]
-source_glob = "src/app/runtime/orchestration/{bin_route_instance.py,effect_result.py,integration_lab.py,material_target_resolver.py,reconciliation_case.py,system_capability_effect_claim.py,wms_effect_observability.py,workline_runtime_status_projection.py}"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/models/{bin_cell_reservation.py,dispatch_attempt.py}"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-]
+source_glob = "src/app/runtime/orchestration/{effect_result.py,integration_lab.py,material_target_resolver.py,system_capability_effect_claim.py,wms_effect_observability.py,workline_runtime_status_projection.py}"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/repositories/{bin_cell_reservation_repository.py,conveyor_queue_membership_repository.py,diagnostic_repository.py,dispatch_attempt_repository.py,effect_reducer_repository.py,northbound_operations_repository.py,runtime_hold_repository.py,runtime_inbox_repository.py,wms_effect_status_repository.py,wms_putaway_sync_barrier_repository.py,workline_runtime_status_projection_repository.py}"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/{conveyor_queue_membership_writer_service.py,effect_reconciliation_resolution_service.py,effect_reducer_service.py,material_unit_mutation_service.py,system_outbox_cancellation_service.py,workline_runtime_status_projection_service.py}"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/{contracts/runtime_inbox_query.py,runtime/capabilities/material_flow/bin_cell_reservation_service.py,runtime/orchestration/consumers/__init__.py}"
-heavy_tests = [
-    "tests/integration/test_runtime_remaining_entities.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/{unit_of_work.py,v1/runtime_operations.py}"
@@ -1496,6 +1316,7 @@ heavy_tests = [
 ]
 
 # Phase 10 target-only removal 的其余 WMS platform paths，全部是冻结 manifest 的精确成员。
+
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/wms/document/{get_grn,get_outbound_order,get_pick_order,get_task_snapshot,get_wave,list_grn_packages}/definition.py"
 heavy_tests = [
@@ -1541,7 +1362,7 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/wms_integration/models/{__init__.py,circuit_breaker.py,evidence.py,ports.py}"
+source_glob = "src/app/wms_integration/models/{__init__.py,ports.py}"
 heavy_tests = [
 ]
 
@@ -1570,6 +1391,7 @@ heavy_tests = [
 ]
 
 # SystemOutbox/external transport closure uses exact source members and their durable PostgreSQL/resilience owners.
+
 [[mapping]]
 source_glob = "src/app/sys/{canonical_dispatch.py,external_http_binding.py,external_http_credentials.py,external_http_dispatch_faults.py,external_http_evidence.py,external_http_transport.py,models/operation_completion.py,repositories/__init__.py,services/endpoint_registry.py,services/outbox_delivery.py}"
 heavy_tests = [
@@ -1596,10 +1418,7 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/workline/models/{__init__.py,migration_inventory.py,migration_matrix.py,plugin_binding.py,workline.py}"
-heavy_tests = [
-    "tests/integration/test_workline_plugin_schema_retirement.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/models/start.py"
@@ -1624,11 +1443,13 @@ heavy_tests = [
 ]
 
 # 旧 START admission 路径已删除；删除 diff 仍由唯一 WorkLine START PostgreSQL owner 承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/capabilities/material_flow/start_admission_service.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 # 共享 FAST helper 仅删除无消费者的旧 admission 模拟；其现存消费者全部由默认 QUALITY 收集。
+
 [[mapping]]
 source_glob = "tests/support/workline_contracts.py"
 heavy_tests = []
@@ -1637,19 +1458,15 @@ heavy_tests = []
 source_glob = "src/app/workline/services/{safety_service.py,workline_service.py,write_back_service.py}"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
 ]
 
 [[mapping]]
 source_glob = "src/app/workline/{models/safety.py,repositories/safety_incident_repository.py}"
 heavy_tests = [
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
-
-[[mapping]]
-source_glob = "migrations/versions/20260829_1217_dd35f04b258f_add_safety_evidence_authority.py"
-heavy_tests = ["tests/integration/execution/test_execution_authority_projection_migration_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/services/diagnosis_verdict_builder_service.py"
@@ -1659,6 +1476,7 @@ heavy_tests = [
 ]
 
 # RuntimeInbox 不再派发设备 SystemOutbox，保留的 inbox/outbox 行为仍由其 PostgreSQL owner 承接。
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/services/inbox/outbox_dispatch_service.py"
 heavy_tests = [
@@ -1700,22 +1518,26 @@ source_glob = "scripts/data/reset_runtime_data.{py,sh}"
 heavy_tests = ["tests/integration/test_reset_runtime_data_postgresql.py"]
 
 # Phase 6 直接改写原 WMS 履约 revision；最终 rack supply schema 由独立 PostgreSQL owner 验证。
+
 [[mapping]]
 source_glob = "src/app/callback/services/{__init__.py,wms_inbound_auth.py}"
 heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 # E09 schema 退出由空库最终 schema 验收；不以 NONE 掩盖模型和约束变更。
+
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/wms/fulfillment/{request_load_unit_transport/definition.py,request_rack_transport/definition.py}"
 heavy_tests = [
 ]
 
 # 共享认证 owner 同时由 callback payload 边界和 Transport 生产接线 E2E 承接。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/inbound_auth.py"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # 唯一 WMS event route 同时静态分派 Transport 与粗分对账；不建立第二入口。
+
 [[mapping]]
 source_glob = "src/app/wms_adapter/v1/**"
 heavy_tests = [
@@ -1724,6 +1546,7 @@ heavy_tests = [
 ]
 
 # Transport worker 只由 Transport 队列竞争与生产接线 E2E 承接。
+
 [[mapping]]
 source_glob = "src/celery_app/tasks/transport.py"
 heavy_tests = [
@@ -1732,6 +1555,7 @@ heavy_tests = [
 ]
 
 # Celery App 同时注册 DeviceCommand 与 Transport worker，必须承接两条生产接线。
+
 [[mapping]]
 source_glob = "src/celery_app/app.py"
 heavy_tests = [
@@ -1742,6 +1566,7 @@ heavy_tests = [
 ]
 
 # 开发 wrapper 必须与生产 worker 使用同一队列声明，并由真实 Celery 接线承接。
+
 [[mapping]]
 source_glob = "src/celery_app/dev_worker_autoreload.sh"
 heavy_tests = [
@@ -1765,11 +1590,13 @@ heavy_tests = [
 ]
 
 # 本机联调 overlay 复用 target Transport Mock owner。
+
 [[mapping]]
 source_glob = "docker-compose.frontend.yml"
 heavy_tests = ["tests/mock/test_wms_transport_mock_server.py"]
 
 # 本机 dev 编排由 target Transport Mock 和隔离 PostgreSQL seed 共同承接。
+
 [[mapping]]
 source_glob = "scripts/dev-env.sh"
 heavy_tests = [
@@ -1821,6 +1648,7 @@ heavy_tests = [
 ]
 
 # 代码权限目录的 Repository、Service 与公开导出由隔离 PostgreSQL 精确物化验收承接。
+
 [[mapping]]
 source_glob = "src/app/admin/repositories/perm_repository.py"
 heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
@@ -1830,32 +1658,37 @@ source_glob = "src/app/admin/services/permission_catalog_service.py"
 heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 
 # 权限目录管理 API 仅收敛公开读路由和通用缓存；目录物化仍由既有 PostgreSQL owner 承接，不新增 HEAVY 场景。
+
 [[mapping]]
 source_glob = "src/app/admin/{models/__init__.py,services/perm_service.py,v1/perm.py}"
 heavy_tests = []
 
 # role_menus metadata 删除由菜单持久化 PostgreSQL owner 验收；保留的 user_roles/role_permissions
 # metadata 及授权收敛由 authorization bootstrap PostgreSQL owner 验收。
+
 [[mapping]]
 source_glob = "src/app/admin/models/relationships.py"
 heavy_tests = [
     "tests/integration/test_authorization_bootstrap_postgresql.py",
-    "tests/integration/test_menu_persistence_removal_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
 
 # Admin 包入口仅删除菜单 router 注册，缺席行为由 FAST OpenAPI/auth 合同承接；内容漂移后重新 fail closed。
+
 [[mapping]]
 source_glob = "src/app/admin/__init__.py"
 heavy_tests = []
 reviewed_content_sha256 = "f185ab9050f37d5490e2ff22c1b51a9804a8428e44b83c4736d7b00e256b0683"
 
 # Admin Repository 包入口仅删除已退役菜单导出，由 FAST import/缺席合同承接。
+
 [[mapping]]
 source_glob = "src/app/admin/repositories/__init__.py"
 heavy_tests = []
 reviewed_content_sha256 = "c3c4cbc8c92ac34018ad509b05fbd3f107a212fc0367d01a6b7058b0966b9e25"
 
 # /auth/my 响应模型与 handler 仅删除菜单字段/调用，由 FAST auth 响应与调用边界合同承接。
+
 [[mapping]]
 source_glob = "src/app/auth/models/auth.py"
 heavy_tests = []
@@ -1874,6 +1707,7 @@ heavy_tests = [
 ]
 
 # 内置角色、首个管理员与权限缓存门禁由同一个隔离 PostgreSQL/Redis owner 验收。
+
 [[mapping]]
 source_glob = "src/app/admin/services/authorization_bootstrap_service.py"
 heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
@@ -1907,6 +1741,7 @@ source_glob = "src/database/redis_namespace.py"
 heavy_tests = ["tests/integration/test_authorization_bootstrap_postgresql.py"]
 
 # 运行时目录重扫路由已删除；路由不存在性由 FAST 精确测试承接，无对应 HEAVY 行为。
+
 [[mapping]]
 source_glob = "src/app/api_auth/v1/api_application.py"
 heavy_tests = []
@@ -1920,6 +1755,7 @@ heavy_tests = [
 ]
 
 # UUIDv7 同时参与 submit 快照和 evidence 身份，由两个 PostgreSQL Transport 闭环承接。
+
 [[mapping]]
 source_glob = "src/core/uuid7.py"
 heavy_tests = [
@@ -1929,6 +1765,7 @@ heavy_tests = [
 ]
 
 # API 路由由生产接线 E2E 承接；完整 lifespan 由真实 PostgreSQL/Redis owner 承接。
+
 [[mapping]]
 source_glob = "src/register.py"
 heavy_tests = [
@@ -1938,6 +1775,7 @@ heavy_tests = [
 ]
 
 # Transport broker harness 同时服务 teardown、共享队列竞争和生产接线 E2E。
+
 [[mapping]]
 source_glob = "tests/support/transport_broker.py"
 heavy_tests = [
@@ -1965,16 +1803,19 @@ heavy_tests = [
 # 也不以显式 NONE 掩盖风险。未映射候选路径继续 fail closed，待业务交接后再补精确 [[mapping]]。
 
 # HTTP readiness helper is fully owned by injected-opener FAST tests and deployment cutover simulation.
+
 [[mapping]]
 source_glob = "scripts/wait_for_http.py"
 heavy_tests = []
 
 # Bootstrap administrator login gate is owned by fake-HTTP FAST tests and fail-closed cutover simulation.
+
 [[mapping]]
 source_glob = "scripts/check_bootstrap_admin_login.py"
 heavy_tests = []
 
 # Phase 10 Task 5 exact delete/adapt paths: legacy HEAVY owners retired; retained successors have FAST owners.
+
 [[mapping]]
 source_glob = "scripts/check_wms_deployment_attestation.py"
 heavy_tests = []
@@ -2205,52 +2046,13 @@ heavy_tests = []
 
 
 # Phase 10 Task 5 shared integration metadata/cleanup fixtures invalidate every retained integration owner.
+
 [[mapping]]
-source_glob = "{tests/integration/conftest.py,tests/support/postgresql_heavy.py,tests/support/runtime_inbox_postgresql.py}"
-heavy_tests = [
-    "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/device_command/test_device_command_migration_postgresql.py",
-    "tests/integration/device_command/test_event_command_block_migration_postgresql.py",
-    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
-    "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/execution/test_evidence_foreign_key_migration_postgresql.py",
-    "tests/integration/execution/test_execution_authority_projection_migration_postgresql.py",
-    "tests/integration/execution/test_execution_constraints.py",
-    "tests/integration/test_authorization_bootstrap_postgresql.py",
-    "tests/integration/test_base_repository_crud.py",
-    "tests/integration/test_base_repository_hooks.py",
-    "tests/integration/test_celery_async_runtime.py",
-    "tests/integration/test_celery_async_runtime_postgresql.py",
-    "tests/integration/test_celery_prefork_harness_cleanup.py",
-    "tests/integration/test_dev_seed_initial_data_postgresql.py",
-    "tests/integration/test_legacy_drain_readiness_postgresql.py",
-    "tests/integration/test_menu_persistence_removal_postgresql.py",
-    "tests/integration/test_optimistic_lock.py",
-    "tests/integration/test_permission_catalog_sync_postgresql.py",
-    "tests/integration/test_release_operational_readiness_postgresql.py",
-    "tests/integration/test_reset_runtime_data_postgresql.py",
-    "tests/integration/test_runtime_inbox_migration_postgresql.py",
-    "tests/integration/test_runtime_production_closure_contract.py",
-    "tests/integration/test_runtime_remaining_entities.py",
-    "tests/integration/test_transport_broker_harness_cleanup.py",
-    "tests/integration/test_transport_fastapi_lifespan.py",
-    "tests/integration/test_transport_fulfillment_queue.py",
-    "tests/integration/test_tree_parent_id_migration_postgresql.py",
-    "tests/integration/test_wms_northbound_feasibility_probe.py",
-    "tests/integration/test_workline_plugin_schema_retirement.py",
-    "tests/integration/transport/test_dark_transport_loop.py",
-    "tests/integration/transport/test_transport_debug_reset.py",
-    "tests/integration/transport/test_transport_evidence_transaction.py",
-    "tests/integration/transport/test_transport_repository.py",
-    "tests/integration/transport/test_transport_schema.py",
-    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
-    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
-    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
-    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
-]
+source_glob = "{tests/integration/conftest.py,tests/support/runtime_inbox_postgresql.py}"
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 # Phase 10 Task 5 retired HEAVY support/test assets.
+
 [[mapping]]
 source_glob = "tests/load/runtime_inbox_postgresql_benchmark.py"
 heavy_tests = []
@@ -2310,3 +2112,635 @@ heavy_tests = []
 [[mapping]]
 source_glob = "deployment/dev/wms-provider.yaml"
 heavy_tests = []
+
+# Phase 11 唯一初始基线、旧 revision/source deletion tombstone 与 catalog successor。
+[[mapping]]
+source_glob = "migrations/versions/20260316_2040_be330a8cda0a_initial_migration_all_models_with_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260317_0919_4884d68cbe09_add_session_id_and_workline_id_to_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260317_0925_e86574a11839_fix_audit_log_status_enum_type.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260317_0930_8f8180e751c3_create_workline_session_timeline_inbox_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260317_1608_ab8b14fe397c_add_callback_log_table.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260325_1540_4d2d6f0d9d8a_add_workline_plugin_fields.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260325_1840_9b1a6a4f2d3e_add_command_result_inbox_kind.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260328_1235_c6f8e1a2b4d9_fix_workline_inbox_kind_constraint_name.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260329_1100_7a2c4d6e8f10_add_workline_contract_snapshots.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260330_1030_b9e1c2d3f4a5_drop_device_event_logs.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260331_1600_5d26a11a4cd9_add_has_children_field_to_tree_mixin.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260331_1607_6f84ab2bf6e6_add_parent_sort_index_to_menus.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260405_1353_60cd0040b702_extend_task_type_enum_for_conveyor_and_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260405_2022_ee46b1b4e252_drop_deprecated_device_fields.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260408_1700_f4cd014e337e_initialize_has_children_for_existing_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260413_1815_3b7c9d2e4f11_extend_workline_inbox_retry_status.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260413_2130_a1b2c3d4e5f6_add_log_center_fields.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260416_1505_c7d8e9f0a1b2_add_runtime_governance_fields_to_device_and_workline.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260416_1845_d1e2f3a4b5c6_add_ingress_fields_to_callback_logs.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260417_1115_e2f4a6b8c9d0_add_ingress_count_to_workline_sessions.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260417_1145_f3a5b7c9d1e2_add_last_ingress_fields_to_workline_sessions.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260417_1730_a7c4d5e6f7a8_drop_dead_workline_fields.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260418_0030_c66ad6e468a8_drop_trace_soft_delete_and_version_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260425_1100_d4e5f6a7b8c9_add_workline_run_mode.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260425_1200_e5f6a7b8c9d0_relax_device_command_task_type.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260425_1500_f6a7b8c9d0e1_add_device_maintenance_status.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260425_1515_f7a8b9c0d1e2_repair_failed_outbox_device_commands.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260427_1200_a8c9d0e1f2a3_workline_record_diagnostics.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260505_1219_b9d0e1f2a3b4_drop_workline_capacity_sort_order.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260505_2330_c0d1e2f3a4b5_drop_workline_owner_support.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260506_1535_9b7c6d5e4f3a_add_workline_safety_incidents.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260507_1015_a1b2c3d4e5f7_govern_device_runtime_state.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260508_1558_2555f6c1b08d_add_runtime_reconciliation_fields.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260508_2117_49e5ef9fa864_rename_workline_plugin_state.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260509_1737_608d8cdb5aa0_add_runtime_hold.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260511_0201_5a43d0d64ce1_allow_workflow_ng_return_items.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260511_1039_7782860238c2_add_open_session_business_key_guard.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260511_1145_3a31e15009d7_rename_callback_log_subject_code.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260512_1255_78ff506d4d9a_drop_legacy_plugin_state_fields.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260516_1750_13140cee49a7_add_resource_runtime_base.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260516_1839_7541d77ecf3b_add_resource_fact_projections.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260516_1858_1fdeed75fd3a_add_wms_writeback_evidence.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260516_2032_e9ec8588062f_add_rack_release_exchange_snapshots.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260517_1658_2f424528ea71_drop_resource_record_enterprise_columns.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260518_1646_5f4e9323a65a_slim_resource_model_mixins.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260519_0004_bbaa8662d7fe_add_workline_rack_positions_and_bin_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260519_1417_286ddc5bc27d_add_bin_cell_occupancy_aggregate.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260519_1431_b4685be483de_add_material_mount_stack_position.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260520_1453_083e85d1bf93_add_workline_rack_tasks.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260521_1513_97dbf218ed9f_add_rack_operation_task_metadata.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260522_0024_c0ff648f8718_add_rack_task_source_claim_guard.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260522_1449_745068e173c2_add_handling_core.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260525_1239_3cf0dc588be9_system_outbox_and_rack_operation_domain.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260526_1544_c5d469c98d89_set_handling_full_box_completion_policy.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260527_0025_793f8773f841_add_wms_call_evidence.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260527_1434_a6c2c77adabd_add_workline_inbox_hot_queue_indexes.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260528_1432_4d08cdff2766_drop_demo_module_tables.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260529_1053_c1ea657cb2d7_workline_activation_state_default.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260530_0144_86b2d22f0103_repair_system_outbox_deployed_schema_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260602_0005_ec493e8e53a1_add_workline_stopped_start_admission.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260602_0730_1bda271cfeb5_numeric_bin_cell_depth.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260604_0133_fa9a235a48fd_add_system_outbox_resource_wait_metadata.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260609_2208_2937b05e1b1c_add_workline_inbox_claim_bucket_key.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260610_0959_e563116f56f1_add_workline_inbox_processing_hot_queue_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260611_0731_fb02178f9772_add_smt_inbound_handoff.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260621_1018_e680301d30c8_add_material_units_reel_root_entity.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260622_1052_84c693e1bac9_sync_workline_plugin_contract_versions.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260623_0224_194dcb39daf4_add_object_transition_events.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260623_0237_9b660037b4bb_resource_c0_session_fk_integrity.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260623_0406_8a1b17cba3db_handling_bin_transit_membership.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260626_1140_c0bccb9de6f3_add_execution_session_correlation.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260626_1200_0e9de1e6c7e3_phase1_device_fk_ring_dissolve.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260702_0953_629d8e64eb13_add_wms_evidence_gin_indexes.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260702_1913_f88092809f4b_add_device_runtime_projection.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260704_0158_de288342b42d_phase4_runtime_location_and_reservation.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260708_0106_f0851c5bcfdb_drop_legacy_workline_runtime_residuals.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260714_1103_e0d58415afc9_create_runtime_inbox_indexes_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260717_0739_fa15ba0aef65_add_workline_plugin_runtime_binding.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260718_0117_a92c1f8ee28b_add_workline_session_optimistic_version.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260722_0125_8db8cbba582c_add_query_shadow_readiness.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260722_1053_8fb4b595a85c_converge_effect_state_contract.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260722_1220_df58f4068f02_freeze_external_http_canonical_payload_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260722_1312_8de7cb4de434_record_typed_external_http_transport_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260723_0027_c325aab03400_add_effect_reconciliation_cases.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260723_0108_2c1407a3606e_add_system_outbox_dispatch_concurrency.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260723_0939_7824db01402d_freeze_external_http_delivery_binding.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260723_1445_5d251fdbb1e8_drop_legacy_port_method_snapshots.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260723_1933_bba1942e9ea8_add_provider_identity_to_wms_query_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260724_2200_6ea20f0c0d22_add_system_outbox_idempotency_key.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260724_2315_65e212c90737_add_wms_effect_status_polling_state.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260725_0208_deb3e0c39e98_remove_query_shadow_readiness.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260727_1742_be496b91f3e3_enforce_runtime_plugin_binding.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260729_1826_36aa187238cc_allow_external_http_none_auth.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260730_0340_f9ffbef8992a_新增_wms_履约领域关系.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260730_0811_8612c6926f4c_add_e12_entry_membership_constraints.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260730_0859_9cc0848560c6_扩展_e12_unknown_入口位置占用.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260730_1159_f557c7b749b1_allow_runtime_domain_effect_without_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260730_1314_46f11dd0a874_drop_legacy_rack_handling_operation_.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260730_1417_7fadfb5469ee_add_wms_business_event_idempotency_index.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260809_2029_a8d9b9eba49b_新增_agv_ctu_通用搬运聚合.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260810_2214_de392f5ff5d0_remove_workline_plugin_execution_schema.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260813_1016_a08d72f135d2_rebuild_device_command_ecs_lifecycle.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260814_0516_ce53af214081_对齐_wms_搬运最终结果来源版本.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260815_0427_fa685260524f_remove_retired_plugin_residuals.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260816_0229_ef9495ba331d_对齐_transport_回调收据与冻结请求体.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260816_2248_48c71f31cafb_收敛执行对象.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260817_1325_72ecc4fd560f_add_phase8_decision_processing.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260817_2308_5695afa99545_闭合粗分持久触发.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260818_0131_ec18b2a79400_闭合粗分持久触发.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260819_0804_53e560430c1a_为运行代际冻结配置快照.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260819_1202_a05b2676f681_删除旧start准入字段.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260819_1359_0a6378b66e1a_增加设备派发端点.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260820_1808_db0859fd3259_align_tree_parent_ids.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260823_0007_1000c501e52a_支持设备指令手动联调.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260823_1616_11013119b97d_audit_manual_device_command.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260824_1152_fe7280088174_修复_runtimeinbox_毫秒字段类型.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260825_0021_f11b613771fa_对齐设备结果证据外键类型.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260825_0350_d68e6be4006e_支持事件联调自动指令.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260826_0109_9624cc34fa93_drop_menu_persistence.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260827_0433_71eeea05c864_记录_event_命令阻塞因果.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_0800_7bdca6f754ee_记录_transport_位置投影来源任务.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_1129_baf328359533_add_execution_authority_projections.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_1159_273898a3f09b_add_material_admission_fifo.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260829_1217_dd35f04b258f_add_safety_evidence_authority.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260831_1531_f9c7c2e5f501_建立最终初始数据库基线.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "scripts/check_legacy_drain_readiness.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/bin_route_instance.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/conveyor_queue_membership.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/execution_correlation.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/execution_session.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/execution_work_item.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/idempotency_key.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/material_flow_owner.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/bin_cell_reservation.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/diagnostic.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/dispatch_attempt.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/runtime_hold.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/reconciliation_case.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/repositories/legacy_drain_readiness_repository.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_hold.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_inbox.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_intent_log.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/runtime_timeline.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/query/legacy_drain_readiness_service.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/wms_rack_demand.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/sys/models/outbox.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/models/circuit_breaker.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_integration/models/evidence.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "tests/support/postgresql_heavy.py"
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
+source_glob = "{tests/support/postgresql_catalog.py,tests/integration/fixtures/initial_schema_old_chain_catalog.json,tests/integration/fixtures/initial_schema_final_manifest.json,tests/integration/fixtures/initial_schema_disposition.json,tests/integration/fixtures/initial_schema_transition_disposition.json}"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/api_auth/models/api_application.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/models/rack_position.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/core/mixins/primary_key.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]

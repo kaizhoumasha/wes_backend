@@ -3,7 +3,7 @@
 status: Approved
 decision_date: 2026-08-26
 scope: 开发流程、运输接入诊断、Phase 9—14 阶段边界、教学式插件开发和规划 worktree 收敛
-implementation_status: backend current baseline 为 `develop@c5a93872f6c5fb0d7ee29ecefd817e54681de0a6`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A/B 与 Phase 9 已完成；Phase 10 Tasks 0–6 已于 2026-08-29 在 `codex/phase10-implementation@834fe59e` 完成仓内实施和准入，Task 7 已于 2026-08-30 完成联调环境 cutover 与 Phase 11 handoff；发布分支已推送、尚未合入 `develop`，Phase 11–14 尚未实施
+implementation_status: backend current baseline 为 `develop@97e6887a83bce1633c09462c5f9fac4f74d2730c`；frontend planning baseline 已闭合于 `63489e7c89aa0fb758e7a08ea97a8000a3b843fc`；Gate A/B 与 Phase 9 已完成；Phase 10 Tasks 0–7 已通过 #187 合入，`834fe59e` candidate 此前完成联调环境 cutover 与 Phase 11 handoff，但 merge commit 未证明重新部署；Phase 11 Tasks 1–5 已在实施分支闭合，Task 6 最终 staged 门禁进行中，尚未合入；Phase 12–14 尚未实施
 
 ## 1. 决策摘要
 
@@ -79,8 +79,9 @@ metadata。因此可推迟的是业务插件，不是已批准的最小执行内
 `plans/2026-08-27-phase9-minimum-execution-foundation.md` 和
 `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` 承接，旧过程文档与未重新评审的合同已移至项目外归档。
 运输诊断已完成仓内实现、验证与合入，但未部署、未执行现场物理动作或业务验收；Phase 9 已合入
-`develop@c5a93872`。发布四目标账本静默门禁与 Phase 10 Tasks 0–6 已在 `codex/phase10-implementation@834fe59e`
-完成仓内实施和准入；Task 7 已完成联调环境 cutover 与 Phase 11 handoff，发布分支已推送、尚未合入 `develop`，Phase 11–14 仍是后续计划。该证据不得描述为供应商、物理或业务验收完成。
+`develop@c5a93872`。发布四目标账本静默门禁与 Phase 10 Tasks 0–7 已通过 #187 合入 `develop@97e6887a`；`834fe59e`
+candidate 此前完成联调环境 cutover 与 Phase 11 handoff，但 merge commit 未证明重新部署。Phase 11 Tasks 1–5 已在实施分支闭合，
+Task 6 最终 staged 门禁进行中且尚未合入；Phase 12–14 仍是后续计划。该证据不得描述为供应商、设备物理或业务验收完成。
 
 ## 5. 阶段设计
 
@@ -145,9 +146,13 @@ Phase 10 的入口改为：
 首次切换仍遵守：candidate ready、关闭 admission/Beat、旧 worker 排空、legacy stable zero、四表连续 `READY`、停止旧 worker、激活
 target-only candidate、重开 admission。Phase 10 不删除 schema/revision，也不恢复任何旧平台作为未来插件后备路径。
 
-当前状态：Tasks 0–6 已在 `codex/phase10-implementation@834fe59e` 完成，每个 Task 一个提交；QUALITY、staged HEAVY、
-架构门禁、fresh Review 和隔离候选验证均通过。Task 7 已取得单独 Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成
-target-only cutover 和 Phase 11 handoff；发布分支已推送、尚未合入 `develop`。Phase 11 仍须通过独立实施前准入评审后才能开始。
+当前状态：Tasks 0–7 已通过 #187 合入 `develop@97e6887a`；QUALITY、staged HEAVY、架构门禁、fresh Review 和隔离候选验证
+均通过。Task 7 已取得单独 Deploy/Cutover 与联调数据重建授权，并以 `834fe59e` 不可变候选完成 target-only cutover 和 Phase 11
+handoff；merge commit 未证明重新部署。Phase 11 Task 1B 已在单独授权后完成 old-chain catalog、byte-identical、cleanup absence、
+final metadata/`rough_sorter` roster 与独立 review。22 identity 原子终裁为 `21 FINAL_DELETE_AFTER_SUCCESSOR + 1 RETAIN`，两张
+catalog-only historical/orphan 表终裁 `FINAL_DELETE -> NONE`。Phase 11 Tasks 2–5 已在实施分支完成 strict final
+manifest、唯一初始 revision、双 fresh-DB、selector 和 unstaged HEAVY 闭合；Task 6 最终 staged 门禁进行中，
+尚未 Push/PR/Merge/Deploy，Phase 12–14 仍未开始。
 
 ### 5.6 Phase 11：当前产品首个干净 Schema 基线
 

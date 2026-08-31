@@ -45,6 +45,7 @@ from src.celery_app.async_runtime import celery_async_runtime, run_async
 from src.core.logger import logger
 from src.database.db import get_db_context
 from src.database.redis_client import is_redis_available
+from src.utils.timezone import timezone
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
 if TYPE_CHECKING:
@@ -600,7 +601,7 @@ async def _seed_wms_confirmation_chain(database_url: str, run_id: str) -> tuple[
 
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    occurred_at = datetime(2026, 8, 29, 12, 0, 0)
+    occurred_at = timezone.now_for_db()
     e03_operation_id = f"{run_id}-e03"
     e07_operation_id = f"{run_id}-e07"
     try:

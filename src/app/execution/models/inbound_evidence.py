@@ -118,7 +118,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     )
     source_identity: str = Field(min_length=1, max_length=300)
     payload_digest: str = Field(min_length=64, max_length=64)
-    normalized_payload: dict[str, Any] = Field(sa_column=Column(JSON))
+    normalized_payload: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
     received_at: datetime
 
     line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id", index=True)
@@ -165,7 +165,7 @@ class InboundEvidenceConflict(EnterpriseMixin, DataTableMixin, table=True):
         sa_type=SQL_COMPAT_BIGINT,
     )
     conflicting_digest: str = Field(min_length=64, max_length=64)
-    normalized_payload: dict[str, Any] = Field(sa_column=Column(JSON))
+    normalized_payload: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
     reason_code: str = Field(min_length=1, max_length=120)
     received_at: datetime
 

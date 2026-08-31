@@ -161,7 +161,7 @@ class BinContentSnapshotStatus(str, Enum):
 class RackTypeBase(BaseMixin):
     """货架类型基础字段。"""
 
-    rack_type_code: str = Field(min_length=1, max_length=50, index=True, description="货架类型编码")
+    rack_type_code: str = Field(min_length=1, max_length=50, description="货架类型编码")
     rack_type_name: str = Field(min_length=1, max_length=100, description="货架类型名称")
     rack_kind: RackKind = Field(
         sa_type=cast("Any", SQLAEnum(RackKind, native_enum=False, create_constraint=True, length=50)),
@@ -171,7 +171,11 @@ class RackTypeBase(BaseMixin):
     has_side: bool = Field(default=False, description="是否区分 A/B 面")
     description: str | None = Field(default=None, max_length=500, description="说明")
     active: bool = Field(default=True, description="是否启用")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展属性",
+    )
 
 
 class RackType(RackTypeBase, DataTableMixin, table=True):
@@ -185,7 +189,7 @@ class RackType(RackTypeBase, DataTableMixin, table=True):
 class RackSlotTemplateBase(BaseMixin):
     """货架槽位模板基础字段。"""
 
-    rack_type_code: str = Field(min_length=1, max_length=50, index=True, description="所属货架类型编码")
+    rack_type_code: str = Field(min_length=1, max_length=50, description="所属货架类型编码")
     slot_code: str = Field(min_length=1, max_length=50, description="货架槽位编码")
     side: RackSlotSide = Field(
         default=RackSlotSide.NONE,
@@ -200,12 +204,12 @@ class RackSlotTemplateBase(BaseMixin):
     )
     allowed_bin_types: list[str] = Field(
         default_factory=list,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON, nullable=False),
         description="允许的料箱类型",
     )
     allowed_material_carrier_types: list[str] = Field(
         default_factory=list,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON, nullable=False),
         description="允许的物料承载形态",
     )
     active: bool = Field(default=True, description="是否启用")
@@ -229,7 +233,7 @@ class RackSlotTemplate(RackSlotTemplateBase, DataTableMixin, table=True):
 class RackBase(BaseMixin):
     """货架实例基础字段。"""
 
-    rack_code: str = Field(min_length=1, max_length=80, index=True, description="WES 货架编码")
+    rack_code: str = Field(min_length=1, max_length=80, description="WES 货架编码")
     wms_rack_id: str | None = Field(default=None, max_length=100, description="WMS 货架 ID")
     rack_type_code: str = Field(min_length=1, max_length=50, index=True, description="货架类型编码")
     status: ResourceMasterStatus = Field(
@@ -243,7 +247,11 @@ class RackBase(BaseMixin):
         description="来源系统",
     )
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展属性",
+    )
 
 
 class Rack(RackBase, DataTableMixin, table=True):
@@ -257,11 +265,15 @@ class Rack(RackBase, DataTableMixin, table=True):
 class BinTypeBase(BaseMixin):
     """料箱类型基础字段。"""
 
-    bin_type_code: str = Field(min_length=1, max_length=50, index=True, description="料箱类型编码")
+    bin_type_code: str = Field(min_length=1, max_length=50, description="料箱类型编码")
     bin_type_name: str = Field(min_length=1, max_length=100, description="料箱类型名称")
     description: str | None = Field(default=None, max_length=500, description="说明")
     active: bool = Field(default=True, description="是否启用")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展属性",
+    )
 
 
 class BinType(BinTypeBase, DataTableMixin, table=True):
@@ -275,7 +287,7 @@ class BinType(BinTypeBase, DataTableMixin, table=True):
 class BinSlotTemplateBase(BaseMixin):
     """料箱内部槽位模板基础字段。"""
 
-    bin_type_code: str = Field(min_length=1, max_length=50, index=True, description="所属料箱类型编码")
+    bin_type_code: str = Field(min_length=1, max_length=50, description="所属料箱类型编码")
     bin_slot_index: int = Field(ge=1, description="料箱内槽位权威序号")
     bin_slot_code: str = Field(min_length=1, max_length=50, description="料箱内槽位编码")
     slot_size: BinSlotSize = Field(
@@ -294,7 +306,11 @@ class BinSlotTemplateBase(BaseMixin):
     max_depth_mm: int | None = Field(default=None, ge=1, description="最大深度")
     max_weight_g: int | None = Field(default=None, ge=1, description="最大重量")
     active: bool = Field(default=True, description="是否启用")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展属性",
+    )
 
 
 class BinSlotTemplate(BinSlotTemplateBase, DataTableMixin, table=True):
@@ -325,7 +341,7 @@ class BinSlotTemplate(BinSlotTemplateBase, DataTableMixin, table=True):
 class BinBase(BaseMixin):
     """料箱实例基础字段。"""
 
-    bin_code: str = Field(min_length=1, max_length=80, index=True, description="WES 料箱编码")
+    bin_code: str = Field(min_length=1, max_length=80, description="WES 料箱编码")
     wms_bin_id: str | None = Field(default=None, max_length=100, description="WMS 料箱 ID")
     bin_type_code: str = Field(min_length=1, max_length=50, index=True, description="料箱类型编码")
     status: ResourceMasterStatus = Field(
@@ -339,7 +355,11 @@ class BinBase(BaseMixin):
         description="来源系统",
     )
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展属性",
+    )
 
 
 class Bin(BinBase, DataTableMixin, table=True):
@@ -353,7 +373,7 @@ class Bin(BinBase, DataTableMixin, table=True):
 class ResourceStateEventBase(BaseMixin):
     """资源 append-only 事实基础字段。"""
 
-    event_code: str = Field(min_length=1, max_length=160, index=True, description="资源事件唯一编码")
+    event_code: str = Field(min_length=1, max_length=160, description="资源事件唯一编码")
     idempotency_key: str | None = Field(default=None, max_length=240, index=True, description="资源事实幂等键")
     event_type: ResourceStateEventType = Field(
         sa_type=cast("Any", SQLAEnum(ResourceStateEventType, native_enum=False, create_constraint=True, length=80)),
@@ -363,12 +383,12 @@ class ResourceStateEventBase(BaseMixin):
         sa_type=cast("Any", SQLAEnum(ResourceType, native_enum=False, create_constraint=True, length=50)),
         description="资源类型",
     )
-    resource_code: str = Field(min_length=1, max_length=120, index=True, description="资源编码")
+    resource_code: str = Field(min_length=1, max_length=120, description="资源编码")
     source_system: ResourceSourceSystem = Field(
         sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
         description="来源系统",
     )
-    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_event_id: str = Field(min_length=1, max_length=200, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
     workline_session_id: int | None = Field(
@@ -378,12 +398,21 @@ class ResourceStateEventBase(BaseMixin):
         foreign_key="wes_biz.workline_sessions.id",
         description="关联 workline_sessions.id",
     )
-    workline_id: int | None = Field(default=None, index=True, description="关联 WorkLine.id")
+    workline_id: int | None = Field(
+        default=None,
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+        description="关联 WorkLine.id",
+    )
     workline_code: str | None = Field(default=None, max_length=50, index=True, description="工作线编码")
     position_code: str | None = Field(default=None, max_length=80, index=True, description="工作线停靠位编码")
     logic_location_code: str | None = Field(default=None, max_length=120, index=True, description="WES 逻辑位置")
     external_location_code: str | None = Field(default=None, max_length=120, index=True, description="外部地码证据")
-    payload_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="事件事实")
+    payload_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="事件事实",
+    )
     occurred_at: datetime = Field(description="事实发生时间")
     received_at: datetime = Field(description="WES 接收时间")
 
@@ -409,14 +438,19 @@ class ResourceStateEvent(ResourceStateEventBase, DataTableMixin, table=True):
 class RackPlacementBase(BaseMixin):
     """货架当前工作线停靠位投影基础字段。"""
 
-    rack_code: str = Field(min_length=1, max_length=80, index=True, description="货架编码")
+    rack_code: str = Field(min_length=1, max_length=80, description="货架编码")
     rack_kind: RackKind | None = Field(
         default=None,
         sa_type=cast("Any", SQLAEnum(RackKind, native_enum=False, create_constraint=True, length=50)),
         description="货架类型",
     )
-    location_code: str | None = Field(default=None, max_length=80, index=True, description="兼容地码或逻辑位置")
-    workline_id: int | None = Field(default=None, index=True, description="关联 WorkLine.id")
+    location_code: str | None = Field(default=None, max_length=80, description="兼容地码或逻辑位置")
+    workline_id: int | None = Field(
+        default=None,
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+        description="关联 WorkLine.id",
+    )
     workline_code: str | None = Field(default=None, max_length=50, index=True, description="工作线编码")
     position_code: str | None = Field(default=None, max_length=80, index=True, description="工作线停靠位编码")
     position_role: str | None = Field(default=None, max_length=80, index=True, description="工作线停靠位角色")
@@ -432,9 +466,9 @@ class RackPlacementBase(BaseMixin):
         description="来源系统",
     )
     source_task_id: str | None = Field(default=None, max_length=120, description="WMS/RCS 搬运任务 ID")
-    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_event_id: str = Field(min_length=1, max_length=200, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
-    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    trace_id: str | None = Field(default=None, max_length=100, description="WorkLine trace")
     workline_session_id: int | None = Field(
         default=None,
         sa_type=SQL_COMPAT_BIGINT,
@@ -443,7 +477,7 @@ class RackPlacementBase(BaseMixin):
         description="关联 workline_sessions.id",
     )
     started_at: datetime = Field(description="进入该关系的时间")
-    ended_at: datetime | None = Field(default=None, index=True, description="离开该关系的时间")
+    ended_at: datetime | None = Field(default=None, description="离开该关系的时间")
 
 
 class RackPlacement(RackPlacementBase, DataTableMixin, table=True):
@@ -471,9 +505,9 @@ class RackPlacement(RackPlacementBase, DataTableMixin, table=True):
 class RackBinMountBase(BaseMixin):
     """料箱挂载投影基础字段。"""
 
-    rack_code: str = Field(min_length=1, max_length=80, index=True, description="货架编码")
-    rack_slot_code: str = Field(min_length=1, max_length=50, index=True, description="货架槽位编码")
-    bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
+    rack_code: str = Field(min_length=1, max_length=80, description="货架编码")
+    rack_slot_code: str = Field(min_length=1, max_length=50, description="货架槽位编码")
+    bin_code: str = Field(min_length=1, max_length=80, description="料箱编码")
     mount_status: RackBinMountStatus = Field(
         default=RackBinMountStatus.UNKNOWN,
         sa_type=cast("Any", SQLAEnum(RackBinMountStatus, native_enum=False, create_constraint=True, length=50)),
@@ -483,9 +517,9 @@ class RackBinMountBase(BaseMixin):
         sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
         description="来源系统",
     )
-    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_event_id: str = Field(min_length=1, max_length=200, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
-    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    trace_id: str | None = Field(default=None, max_length=100, description="WorkLine trace")
     workline_session_id: int | None = Field(
         default=None,
         sa_type=SQL_COMPAT_BIGINT,
@@ -494,7 +528,7 @@ class RackBinMountBase(BaseMixin):
         description="关联 workline_sessions.id",
     )
     started_at: datetime = Field(description="挂载确认时间")
-    ended_at: datetime | None = Field(default=None, index=True, description="解除挂载时间")
+    ended_at: datetime | None = Field(default=None, description="解除挂载时间")
 
 
 class RackBinMount(RackBinMountBase, DataTableMixin, table=True):
@@ -522,12 +556,17 @@ class RackBinMount(RackBinMountBase, DataTableMixin, table=True):
 class BinPlacementBase(BaseMixin):
     """料箱处于非货架位置的当前投影基础字段。"""
 
-    bin_code: str | None = Field(default=None, max_length=80, index=True, description="料箱编码")
-    placeholder_key: str | None = Field(default=None, max_length=120, index=True, description="未扫码占位键")
-    position_type: str = Field(min_length=1, max_length=80, index=True, description="位置类型")
-    position_code: str = Field(min_length=1, max_length=120, index=True, description="位置编码")
-    workline_id: int | None = Field(default=None, index=True, description="关联 WorkLine.id")
-    workline_code: str | None = Field(default=None, max_length=50, index=True, description="工作线编码")
+    bin_code: str | None = Field(default=None, max_length=80, description="料箱编码")
+    placeholder_key: str | None = Field(default=None, max_length=120, description="未扫码占位键")
+    position_type: str = Field(min_length=1, max_length=80, description="位置类型")
+    position_code: str = Field(min_length=1, max_length=120, description="位置编码")
+    workline_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        foreign_key="wes_biz.work_lines.id",
+        description="关联 WorkLine.id",
+    )
+    workline_code: str | None = Field(default=None, max_length=50, description="工作线编码")
     placement_status: BinPlacementStatus = Field(
         default=BinPlacementStatus.UNKNOWN,
         sa_type=cast("Any", SQLAEnum(BinPlacementStatus, native_enum=False, create_constraint=True, length=50)),
@@ -537,9 +576,9 @@ class BinPlacementBase(BaseMixin):
         sa_type=cast("Any", SQLAEnum(ResourceSourceSystem, native_enum=False, create_constraint=True, length=50)),
         description="来源系统",
     )
-    source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
+    source_event_id: str = Field(min_length=1, max_length=200, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
-    trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
+    trace_id: str | None = Field(default=None, max_length=100, description="WorkLine trace")
     workline_session_id: int | None = Field(
         default=None,
         sa_type=SQL_COMPAT_BIGINT,
@@ -548,8 +587,12 @@ class BinPlacementBase(BaseMixin):
         description="关联 workline_sessions.id",
     )
     started_at: datetime = Field(description="进入该位置的时间")
-    ended_at: datetime | None = Field(default=None, index=True, description="离开该位置的时间")
-    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展证据")
+    ended_at: datetime | None = Field(default=None, description="离开该位置的时间")
+    metadata_json: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+        description="扩展证据",
+    )
 
 
 class BinPlacement(BinPlacementBase, DataTableMixin, table=True):
@@ -616,7 +659,11 @@ class BinMaterialMountBase(BaseMixin):
     reel_thickness: str | None = Field(default=None, max_length=80, description="料盘厚度")
     wms_inventory_id: str | None = Field(default=None, max_length=120, index=True, description="WMS 库存记录引用")
     wms_inventory_version: str | None = Field(default=None, max_length=120, description="WMS 库存或分拆版本引用")
-    writeback_evidence_id: int | None = Field(default=None, description="关联 WMS 回写证据")
+    writeback_evidence_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        description="关联 WMS 回写证据",
+    )
     mount_status: BinMaterialMountStatus = Field(
         default=BinMaterialMountStatus.UNKNOWN,
         sa_type=cast("Any", SQLAEnum(BinMaterialMountStatus, native_enum=False, create_constraint=True, length=50)),
@@ -773,11 +820,15 @@ class BinMaterialMount(BinMaterialMountBase, DataTableMixin, table=True):
 class BinContentSnapshotBase(BaseMixin):
     """料箱内部过程内容快照头基础字段。"""
 
-    snapshot_id: str = Field(min_length=1, max_length=160, index=True, description="快照业务 ID")
-    bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
-    source_session_id: int | None = Field(default=None, index=True, description="产生快照的 WorklineSession")
-    source_event_id: str | None = Field(default=None, max_length=200, index=True, description="来源事件或命令结果")
-    captured_at: datetime = Field(index=True, description="快照时间")
+    snapshot_id: str = Field(min_length=1, max_length=160, description="快照业务 ID")
+    bin_code: str = Field(min_length=1, max_length=80, description="料箱编码")
+    source_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        description="产生快照的 WorklineSession",
+    )
+    source_event_id: str | None = Field(default=None, max_length=200, description="来源事件或命令结果")
+    captured_at: datetime = Field(description="快照时间")
     snapshot_status: BinContentSnapshotStatus = Field(
         default=BinContentSnapshotStatus.UNKNOWN,
         sa_type=cast("Any", SQLAEnum(BinContentSnapshotStatus, native_enum=False, create_constraint=True, length=50)),
@@ -803,18 +854,18 @@ class BinContentSnapshot(BinContentSnapshotBase, DataTableMixin, table=True):
 class BinContentSnapshotItemBase(BaseMixin):
     """料箱内部过程内容快照明细基础字段。"""
 
-    snapshot_id: str = Field(min_length=1, max_length=160, index=True, description="所属快照业务 ID")
+    snapshot_id: str = Field(min_length=1, max_length=160, description="所属快照业务 ID")
     bin_cell_code: str | None = Field(default=None, max_length=80, index=True, description="料箱内部格位编码")
     bin_cell_index: str | None = Field(default=None, max_length=20, index=True, description="料箱内部格位序号")
-    pkg_code: str | None = Field(default=None, max_length=200, index=True, description="PKG 展示字段")
-    material_code: str | None = Field(default=None, max_length=120, index=True, description="物料编码引用")
+    pkg_code: str | None = Field(default=None, max_length=200, description="PKG 展示字段")
+    material_code: str | None = Field(default=None, max_length=120, description="物料编码引用")
     vendor_code: str | None = Field(default=None, max_length=120, description="供应商引用")
     lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
     date_code: str | None = Field(default=None, max_length=80, description="Date Code")
     qty_snapshot: float | None = Field(default=None, ge=0, description="当时执行过程看到的数量")
     thickness_mm: float | None = Field(default=None, ge=0, description="厚度")
     dims_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False), description="尺寸")
-    wms_inventory_id: str | None = Field(default=None, max_length=160, index=True, description="WMS 库存记录引用")
+    wms_inventory_id: str | None = Field(default=None, max_length=160, description="WMS 库存记录引用")
 
 
 class BinContentSnapshotItem(BinContentSnapshotItemBase, DataTableMixin, table=True):
