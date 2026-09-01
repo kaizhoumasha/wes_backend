@@ -33,6 +33,8 @@ pipeline {
                     boolean hasMergeRequestId = ((env.gitlabMergeRequestId ?: '').trim()) as boolean
                     boolean isMergeRequest = gitlabActionType.contains('MERGE') || hasMergeRequestId
                     boolean isDevelopPush = gitlabActionType == 'PUSH' && sourceBranch == 'develop' && !isMergeRequest
+                    String mergeRequestCommit = (env.gitlabMergeRequestLastCommit ?: '').trim()
+                    String trustedSourceCommit = isMergeRequest ? mergeRequestCommit : afterCommit
                     if (isMergeRequest && !targetBranch) {
                         error('Merge request build requires gitlabTargetBranch')
                     }
@@ -41,22 +43,10 @@ pipeline {
                     env.CI_TARGET_BRANCH = targetBranch
                     env.CI_EVENT_TYPE = gitlabActionType ?: 'MANUAL'
                     env.CI_IS_MERGE_REQUEST = isMergeRequest ? 'true' : 'false'
-                    env.CI_DIFF_BASE = isMergeRequest ? "origin/${targetBranch}" : ''
+                    env.CI_DIFF_BASE = ''
                     env.CI_RELEASE_GATE_READY = 'false'
 
                     echo "📥 检出源码: source=${sourceBranch}, target=${targetBranch ?: '-'}, event=${env.CI_EVENT_TYPE}"
-
-                    def extensions = [[$class: 'CleanBeforeCheckout']]
-                    if (isMergeRequest && targetBranch) {
-                        extensions << [
-                            $class: 'PreBuildMerge',
-                            options: [
-                                fastForwardMode: 'FF',
-                                mergeRemote: 'origin',
-                                mergeTarget: targetBranch
-                            ]
-                        ]
-                    }
 
                     checkout([
                         $class: 'GitSCM',
@@ -64,11 +54,61 @@ pipeline {
                         userRemoteConfigs: [[
                             name: 'origin',
                             url: 'http://192.168.0.220:9080/wes/wes_backend.git',
-                            credentialsId: 'gitlab-http-creds',
                             refspec: '+refs/heads/*:refs/remotes/origin/*'
                         ]],
-                        extensions: extensions
+                        extensions: [[$class: 'CleanBeforeCheckout']]
                     ])
+
+                    if (!(trustedSourceCommit ==~ /^[0-9a-fA-F]{40}$/) || trustedSourceCommit ==~ /^0{40}$/) {
+                        error('Source event requires a non-zero 40-character trusted commit')
+                    }
+                    String fetchedSourceCommit = sh(
+                        returnStdout: true,
+                        script: 'git rev-parse "refs/remotes/origin/${CI_SOURCE_BRANCH}^{commit}"'
+                    ).trim()
+                    if (!trustedSourceCommit.equalsIgnoreCase(fetchedSourceCommit)) {
+                        error('Fetched source ref must match the trusted event commit')
+                    }
+
+                    if (isMergeRequest) {
+                        String trustedTargetRef
+                        withCredentials([usernamePassword(
+                            credentialsId: 'gitlab-http-creds',
+                            usernameVariable: 'GITLAB_USERNAME',
+                            passwordVariable: 'GITLAB_PASSWORD'
+                        )]) {
+                            trustedTargetRef = sh(
+                                returnStdout: true,
+                                script: '''
+                                    set +x
+                                    GIT_TERMINAL_PROMPT=0 timeout --kill-after=5s 30s \
+                                        git -c credential.helper= \
+                                            -c 'credential.helper=!f() { printf "%s\\n" \
+                                                "username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"; }; f' \
+                                            ls-remote --heads https://git.zontecmes.com/wes/wes_backend.git \
+                                            "refs/heads/${CI_TARGET_BRANCH}"
+                                '''
+                            ).trim()
+                        }
+                        List<String> targetRefFields = trustedTargetRef.split(/\s+/, -1) as List<String>
+                        String expectedTargetRef = "refs/heads/${targetBranch}"
+                        if (
+                            targetRefFields.size() != 2 ||
+                            !(targetRefFields[0] ==~ /^[0-9a-fA-F]{40}$/) ||
+                            targetRefFields[0] ==~ /^0{40}$/ ||
+                            targetRefFields[1] != expectedTargetRef
+                        ) {
+                            error('Merge request target lookup must return one exact trusted ref')
+                        }
+                        env.CI_DIFF_BASE = targetRefFields[0].toLowerCase()
+                        int targetObjectStatus = sh(
+                            returnStatus: true,
+                            script: 'git cat-file -e "${CI_DIFF_BASE}^{commit}"'
+                        )
+                        if (targetObjectStatus != 0) {
+                            error('Fetched repository must contain the trusted target commit')
+                        }
+                    }
 
                     String fullCommit = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                     String sourceTree = sh(returnStdout: true, script: 'git rev-parse HEAD^{tree}').trim()
