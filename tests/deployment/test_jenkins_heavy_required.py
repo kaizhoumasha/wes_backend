@@ -222,10 +222,13 @@ def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None
 def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
-    checkout_config = checkout_body.split("userRemoteConfigs:", maxsplit=1)[1].split("extensions:", maxsplit=1)[0]
 
-    assert "url: 'http://192.168.0.220:9080/wes/wes_backend.git'" in checkout_config
-    assert "credentialsId" not in checkout_config
+    assert "deleteDir()" in checkout_body
+    assert "git remote add origin http://192.168.0.220:9080/wes/wes_backend.git" in checkout_body
+    assert '"+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
+    assert '"+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"' in checkout_body
+    assert 'git checkout --detach "refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
+    assert "checkout([" not in checkout_body
     assert "env.gitlabMergeRequestLastCommit" in checkout_body
     assert 'git rev-parse "refs/remotes/origin/${CI_SOURCE_BRANCH}^{commit}"' in checkout_body
     assert "Source event requires a non-zero 40-character trusted commit" in checkout_body
