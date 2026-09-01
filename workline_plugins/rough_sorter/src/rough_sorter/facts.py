@@ -26,6 +26,9 @@ from wes_plugin_sdk import (
 from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
+from wes_plugin_sdk.validation import validate_opaque_face
+from wes_plugin_sdk.validation import validate_required_refs as _required_refs
+from wes_plugin_sdk.validation import validate_required_text as _required
 
 
 class ShapeResult(StrEnum):
@@ -119,22 +122,6 @@ class RoughSorterRuntimeSnapshot:
             raise TypeError("runtime snapshot requires exact SDK snapshot values")
         if self.execution.line_run_epoch_id != self.epoch.line_run_epoch_id:
             raise ValueError("execution and Epoch snapshots do not match")
-
-
-def _required(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field_name} must not be blank")
-
-
-def _opaque_face(value: object, field_name: str) -> None:
-    if type(value) is not str or value == "":
-        raise ValueError(f"{field_name} must be a non-empty string")
-    if "\x00" in value:
-        raise ValueError(f"{field_name} must not contain NUL")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError(f"{field_name} must be valid UTF-8") from error
 
 
 def _operation_id(value: str, field_name: str) -> None:
@@ -569,13 +556,6 @@ class TargetDecidedFact(WmsResultReadyFact):
         )
 
 
-def _required_refs(values: tuple[str, ...], field_name: str) -> None:
-    if type(values) is not tuple or not values or len(values) != len(set(values)):
-        raise ValueError(f"{field_name} must be a non-empty unique tuple")
-    for value in values:
-        _required(value, field_name)
-
-
 @dataclass(frozen=True, slots=True)
 class PlacementCompletedFact(WmsResultReadyFact):
     runtime_snapshot: RoughSorterRuntimeSnapshot
@@ -616,7 +596,7 @@ class RackMoveLegPlan:
             raise TypeError("source and target must be TransportRackMovePosition values")
         if self.source == self.target:
             raise ValueError("source and target must differ")
-        _opaque_face(self.target_face, "target_face")
+        validate_opaque_face(self.target_face, "target_face")
 
 
 @dataclass(frozen=True, slots=True)
@@ -781,7 +761,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             raise ValueError("material transport outcome only accepts NEW_IN")
         if type(self.expected_target) not in (TransportRackReference, TransportZonePosition, TransportRackPosition):
             raise TypeError("expected target must use an SDK transport position")
-        _opaque_face(self.expected_face, "expected_face")
+        validate_opaque_face(self.expected_face, "expected_face")
         if self.outcome is not TransportOutcome.SUCCEEDED:
             _required(self.reason_code or "", "reason_code")
             _reject_present_fields(
@@ -800,7 +780,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
         _required(self.actual_rack_id or "", "actual_rack_id")
         if type(self.final_position) is not TransportRackPosition:
             raise TypeError("successful transport outcome requires a typed final position")
-        _opaque_face(self.arrival_face, "arrival_face")
+        validate_opaque_face(self.arrival_face, "arrival_face")
         if self.reason_code is not None:
             raise ValueError("successful transport outcome must not include reason_code")
         self._require_new_rack_target_request()

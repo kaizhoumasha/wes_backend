@@ -16,6 +16,7 @@ from src.core.logger import logger
 from src.database.base_repository import BaseRepository
 from src.utils.audit import get_current_username, get_request_id, get_request_info
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_str
 
 
 class AuditLogService(BaseService[AuditLog, BaseRepository]):
@@ -23,14 +24,6 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
 
     def __init__(self, repo: BaseRepository[AuditLog] = audit_log_repository):
         cast("Any", BaseService.__init__)(self, repo)
-
-    @staticmethod
-    def _as_non_empty_text(value: Any) -> str | None:
-        if value is None:
-            return None
-
-        text = str(value).strip()
-        return text or None
 
     def _build_change_summary(
         self,
@@ -81,11 +74,11 @@ class AuditLogService(BaseService[AuditLog, BaseRepository]):
         normalized_changes = changes if isinstance(changes, Mapping) else None
 
         return {
-            "object_type": self._as_non_empty_text(args.get("model")),
-            "action": self._as_non_empty_text(args.get("operation")),
-            "object_id": self._as_non_empty_text(args.get("record_id")),
+            "object_type": coerce_optional_str(args.get("model")),
+            "action": coerce_optional_str(args.get("operation")),
+            "object_id": coerce_optional_str(args.get("record_id")),
             "change_summary": self._build_change_summary(
-                operation=self._as_non_empty_text(args.get("operation")),
+                operation=coerce_optional_str(args.get("operation")),
                 changes=normalized_changes,
             ),
         }

@@ -41,7 +41,13 @@ class ReplacementPlanDecidedHandler:
         )
         _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is ReplacementResult.WAIT:
-            return (self._wait(fact, fact.reason_code or "WMS_REPLACEMENT_WAIT"),)
+            return (
+                Wait(
+                    material_execution_id=fact.material_execution_id,
+                    fact_id=fact.fact_id,
+                    reason_code=fact.reason_code or "WMS_REPLACEMENT_WAIT",
+                ),
+            )
         if fact.result is ReplacementResult.RECONCILING:
             return (
                 PauseForReconciliation(
@@ -119,14 +125,6 @@ class ReplacementPlanDecidedHandler:
                 target_face=new_plan.target_face,
                 rcs_template_id=TransportRcsTemplateId.CTU01,
             ),
-        )
-
-    @staticmethod
-    def _wait(fact: ReplacementPlanDecidedFact, reason_code: str) -> Wait:
-        return Wait(
-            material_execution_id=fact.material_execution_id,
-            fact_id=fact.fact_id,
-            reason_code=reason_code,
         )
 
 

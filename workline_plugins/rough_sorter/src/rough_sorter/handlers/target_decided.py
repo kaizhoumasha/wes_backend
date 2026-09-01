@@ -36,7 +36,13 @@ class TargetDecidedHandler:
         )
         _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is TargetResult.WAIT:
-            return (self._wait(fact, fact.reason_code or "WMS_TARGET_WAIT"),)
+            return (
+                Wait(
+                    material_execution_id=fact.material_execution_id,
+                    fact_id=fact.fact_id,
+                    reason_code=fact.reason_code or "WMS_TARGET_WAIT",
+                ),
+            )
         if fact.result is TargetResult.RECONCILING:
             return (
                 PauseForReconciliation(
@@ -106,14 +112,6 @@ class TargetDecidedHandler:
                 affected_resource_ids=(fact.current_rack_id, target_rack_id or ""),
             )
         return None
-
-    @staticmethod
-    def _wait(fact: TargetDecidedFact, reason_code: str) -> Wait:
-        return Wait(
-            material_execution_id=fact.material_execution_id,
-            fact_id=fact.fact_id,
-            reason_code=reason_code,
-        )
 
 
 __all__ = ["TargetDecidedHandler"]

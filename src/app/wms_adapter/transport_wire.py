@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from wes_plugin_sdk.validation import validate_opaque_face
+
 from src.app.transport.contracts import (
     TRANSPORT_POSITION_OPERATION,
     TRANSPORT_RESULT_OPERATION,
     TransportContractError,
+    require_transport_text,
 )
 from src.core.uuid7 import is_uuid7
 
@@ -25,7 +28,7 @@ class UnsupportedTransportOperation(TransportContractError):
 
 def validate_callback_envelope(value: object) -> dict[str, Any]:
     envelope = _strict_dict(value, {"operation_id", "operation", "timestamp", "data"}, "callback envelope")
-    operation_id = _nonblank(envelope["operation_id"], "operation_id")
+    operation_id = require_transport_text(envelope["operation_id"], "operation_id")
     if not is_uuid7(operation_id) or operation_id != operation_id.lower():
         raise TransportContractError("operation_id must be a lowercase canonical UUIDv7")
     if not isinstance(envelope["timestamp"], int) or isinstance(envelope["timestamp"], bool):
@@ -49,8 +52,8 @@ def _validate_position_data(value: object) -> dict[str, Any]:
         "position data",
         optional={"final_position"},
     )
-    _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
-    _nonblank(data["container_id"], "container_id", max_length=100)
+    require_transport_text(data["transport_task_id"], "transport_task_id", max_length=80)
+    require_transport_text(data["container_id"], "container_id", max_length=100)
     milestone = data["milestone"]
     if milestone not in {"SOURCE_PICKED", "TARGET_PLACED", "POSITION_UNKNOWN"}:
         raise TransportContractError("invalid position milestone")
@@ -80,7 +83,7 @@ def _validate_result_data(value: object) -> dict[str, Any]:
         )
     else:
         data = _strict_dict(value, {"transport_task_id", "kind", "outcome_revision", "results"}, "result data")
-    _nonblank(data["transport_task_id"], "transport_task_id", max_length=80)
+    require_transport_text(data["transport_task_id"], "transport_task_id", max_length=80)
     outcome_revision = data["outcome_revision"]
     if (
         not isinstance(outcome_revision, int)
@@ -128,7 +131,7 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
         "member result",
         optional={"final_position", "position_unknown", "failure_code", "arrival_face"},
     )
-    _nonblank(result[id_field], id_field, max_length=100)
+    require_transport_text(result[id_field], id_field, max_length=100)
     status = result["status"]
     if status not in {"SUCCEEDED", "FAILED"}:
         raise TransportContractError("invalid member result status")
@@ -147,7 +150,7 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
     if status == "SUCCEEDED" and (not has_position or "failure_code" in result):
         raise TransportContractError("SUCCEEDED requires known position and no failure_code")
     if status == "FAILED":
-        failure_code = _nonblank(result.get("failure_code"), "failure_code")
+        failure_code = require_transport_text(result.get("failure_code"), "failure_code")
         if failure_code not in TRANSPORT_FAILURE_CODES:
             raise TransportContractError("invalid failure_code")
         if is_unknown != (failure_code == "POSITION_UNKNOWN"):
@@ -156,7 +159,7 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
         arrival_face = result.get("arrival_face")
         if type(arrival_face) is not str or arrival_face == "":
             raise TransportContractError("known rack result requires arrival_face")
-        _opaque_face(arrival_face, "arrival_face")
+        validate_opaque_face(arrival_face, "arrival_face", error_type=TransportContractError)
     if (not rack_kind or is_unknown) and "arrival_face" in result:
         raise TransportContractError("arrival_face is not valid for this result")
     return result
@@ -168,17 +171,17 @@ def _validate_position(value: object) -> dict[str, Any]:
     kind = value["kind"]
     if kind == "RACK_POSITION":
         position = _strict_dict(value, {"kind", "location_code"}, "rack position")
-        _nonblank(position["location_code"], "location_code", max_length=100)
+        require_transport_text(position["location_code"], "location_code", max_length=100)
         return position
     if kind == "RACK_BIN_SLOT":
         position = _strict_dict(value, {"kind", "rack_id", "rack_face", "slot_id"}, "rack bin slot")
-        _nonblank(position["rack_id"], "rack_id", max_length=100)
-        _opaque_face(position["rack_face"], "rack_face")
-        _nonblank(position["slot_id"], "slot_id", max_length=100)
+        require_transport_text(position["rack_id"], "rack_id", max_length=100)
+        validate_opaque_face(position["rack_face"], "rack_face", error_type=TransportContractError)
+        require_transport_text(position["slot_id"], "slot_id", max_length=100)
         return position
     if kind == "HANDOFF_POSITION":
         position = _strict_dict(value, {"kind", "location_code"}, "handoff position")
-        _nonblank(position["location_code"], "location_code", max_length=100)
+        require_transport_text(position["location_code"], "location_code", max_length=100)
         return position
     raise TransportContractError("invalid position kind")
 
@@ -197,31 +200,6 @@ def _strict_dict(
     if not required <= keys or not keys <= allowed:
         raise TransportContractError(f"{field_name} fields do not match the closed contract")
     return dict(value)
-
-
-def _nonblank(value: object, field_name: str, *, max_length: int | None = None) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise TransportContractError(f"{field_name} must not be blank")
-    if "\x00" in value:
-        raise TransportContractError(f"{field_name} must not contain NUL")
-    if max_length is not None and len(value) > max_length:
-        raise TransportContractError(f"{field_name} exceeds {max_length} characters")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise TransportContractError(f"{field_name} must be valid UTF-8") from error
-    return value
-
-
-def _opaque_face(value: object, field_name: str) -> None:
-    if type(value) is not str or value == "":
-        raise TransportContractError(f"{field_name} must be a non-empty string")
-    if "\x00" in value:
-        raise TransportContractError(f"{field_name} must not contain NUL")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise TransportContractError(f"{field_name} must be valid UTF-8") from error
 
 
 __all__ = [

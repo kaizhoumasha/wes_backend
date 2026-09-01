@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
+from wes_plugin_sdk.validation import is_persistable_text
 
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
@@ -49,6 +50,7 @@ from src.app.transport.contracts import (
     TransportSubmitCode,
     TransportTaskKind,
     TransportTaskStatus,
+    require_transport_text,
 )
 from src.app.transport.debug_reset import (
     TransportDebugResetPreview,
@@ -629,8 +631,8 @@ class TransportService:
         payload: dict[str, Any] | None,
         rejection_reason_code: str | None,
     ) -> dict[str, Any]:
-        _validate_persisted_text(operation_id, "operation_id", 36)
-        _validate_persisted_text(operation, "operation", 80)
+        require_transport_text(operation_id, "operation_id", max_length=36)
+        require_transport_text(operation, "operation", max_length=80)
         encoded = canonical_callback_json(message).encode("utf-8")
         message_digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
@@ -638,7 +640,7 @@ class TransportService:
         transport_task_id = _associated_transport_task_id(message)
         if payload is not None:
             transport_task_id = payload["transport_task_id"]
-            _validate_persisted_text(transport_task_id, "transport_task_id", 80)
+            require_transport_text(transport_task_id, "transport_task_id", max_length=80)
         outcome_revision = _source_outcome_revision(operation, payload) if payload is not None else None
         if rejection_reason_code is not None:
             ack_data = {"reason_code": rejection_reason_code}
@@ -1597,15 +1599,6 @@ def _validate_limit(limit: int) -> None:
         raise ValueError("limit must be a positive integer")
 
 
-def _validate_persisted_text(value: object, field_name: str, max_length: int) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise TransportContractError(f"{field_name} must not be blank")
-    if "\x00" in value:
-        raise TransportContractError(f"{field_name} must not contain NUL")
-    if len(value) > max_length:
-        raise TransportContractError(f"{field_name} exceeds {max_length} characters")
-
-
 def _position_matches_member_type(member: TransportMember, position: object) -> bool:
     if not isinstance(position, dict):
         return False
@@ -1731,11 +1724,7 @@ def _associated_transport_task_id(message: dict[str, Any]) -> str | None:
     if not isinstance(data, dict):
         return None
     value = data.get("transport_task_id")
-    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > 80:
-        return None
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
+    if not is_persistable_text(value, 80):
         return None
     return value
 

@@ -12,6 +12,7 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
+from wes_plugin_sdk.validation import validate_persistable_text
 
 ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
 TARGET_OPERATION = "inbound.material.target_decide@v1"
@@ -40,13 +41,7 @@ _DECIMAL_MM_PATTERN = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
 
 
 def _nonblank_utf8_identifier(value: str) -> str:
-    if not value.strip() or "\x00" in value:
-        raise ValueError("业务身份必须是非空且不含 NUL 的 UTF-8 string")
-    try:
-        _ = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("业务身份必须是有效 UTF-8 string") from error
-    return value
+    return validate_persistable_text(value, "业务身份")
 
 
 Identifier = Annotated[str, AfterValidator(_nonblank_utf8_identifier)]
@@ -61,13 +56,7 @@ MeasurementMillimeters = Annotated[str, StringConstraints(pattern=_DECIMAL_MM_PA
 
 
 def _nonblank_device_text(value: str) -> str:
-    if not value.strip() or "\x00" in value:
-        raise ValueError("六合一码字段必须是非空 UTF-8 string")
-    try:
-        _ = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("六合一码字段必须是有效 UTF-8 string") from error
-    return value
+    return validate_persistable_text(value, "六合一码字段")
 
 
 DeviceText = Annotated[str, AfterValidator(_nonblank_device_text)]

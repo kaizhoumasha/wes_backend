@@ -173,29 +173,15 @@ curl -sS -X POST "$WES_API/workline/operations/replay/inboxes/<inbox_id>" \
   }'
 ```
 
-## 7. 标准诊断码
+## 7. 诊断结论
 
-| 诊断码 | 默认 owner | 默认恢复动作 |
-| --- | --- | --- |
-| `CALLBACK_SCHEMA_INVALID` | `integration` | 按 callback 协议修正顶层字段和 `data` 结构后重发。 |
-| `SESSION_CONTEXT_MISSING` | `workflow` | 检查 inbox 与 session 归属字段；没有权威 owner 时停止重放并修复上游事件。 |
-| `SESSION_RESOLVE_FAILED` | `workflow` | 检查 `business_key`、`trace_id`、设备绑定和 SessionResolver 规则。 |
-| `CONTRACT_MISMATCH` | `integration` | 核对事件身份、设备或指令归属、协议字段与 WES 权威记录。 |
-| `DEVICE_UNREACHABLE` | `device` | 检查设备电源、网络、host/port 和 `callback_path` 配置。 |
-| `DEVICE_TIMEOUT` | `device` | 检查设备执行状态，必要时人工完成或重试命令。 |
-| `OUTBOX_DISPATCH_FAILED` | `integration` | 检查目标配置、最近一次 attempt 错误和外部服务可用性后重试。 |
-| `RESOURCE_WAIT` | `workflow` | 查看 `resource_kind`、`resource_key`、首次等待、最近等待和等待次数；释放对应资源后等待自动重试。 |
-| `INBOX_RETRY_EXHAUSTED` | `workflow` | 查看诊断卡 evidence，修复根因后通过 replay 创建新事件。 |
-| `CONFIG_INVALID` | `configuration` | 修正主数据配置并重新触发事件。 |
-| `UNKNOWN` | `platform` | 补充 callback、inbox、timeline 和 outbox evidence 后重新诊断。 |
+Trace API 根据当前 callback、inbox、command、outbox、timeline 和资源证据直接生成 `diagnosis_verdict`，不维护一套与
+运行状态分离的固定诊断码注册表。现场处理以响应中的 `state`、`severity`、`blocking_point`、`owner`、
+`requires_operator_action` 和 `primary_action` 为准。
 
 `RESOURCE_WAIT` 表示编排阶段已经知道某个 Station、rack/bin/cell 或外部资源暂时不可用。它是自动等待态，不是人工 Hold，也不是设备失败。现场排障应先释放或补齐 `resource_key` 指向的资源，再观察同一 Inbox 的重试结果。
 
-Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE` 都可以在 UI/Trace 中展示为资源等待，但写入边界不同：前者由 Runtime decision 表达“下一步资源暂不可用”，后者由设备派发前的实时 ECS `IDLE` probe 表达“目标设备暂忙”。不要把本地 DeviceStatus 投影当作 blocked outbox 放行事实。
-
-`WORKLINE_ENTRY_ADMISSION_BLOCKED` 不再是新运行过程的正常诊断。看到该诊断时，按历史数据或旧版本残留处理，不作为当前工作线并发容量判断依据。
-
-诊断码来源：`src/app/runtime/orchestration/diagnostics/registry.py`。
+诊断结论来源：`src/app/workline/services/diagnosis_verdict_builder_service.py`。
 
 ## 8. 合同规则
 

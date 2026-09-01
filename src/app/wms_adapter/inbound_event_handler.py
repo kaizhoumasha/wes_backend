@@ -8,6 +8,7 @@ from datetime import datetime  # noqa: TC003
 from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
 
 from pydantic import ValidationError
+from wes_plugin_sdk.validation import is_persistable_text
 
 from src.app.execution.models import (
     InboundEvidenceApplyStatus,
@@ -252,13 +253,7 @@ def _is_operation_id(value: object) -> TypeGuard[str]:
 
 
 def _is_operation(value: object) -> TypeGuard[str]:
-    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > 160:
-        return False
-    try:
-        _ = value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
+    return is_persistable_text(value, 160)
 
 
 __all__ = [

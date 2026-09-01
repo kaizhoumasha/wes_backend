@@ -6,12 +6,12 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.callback.contracts import TraceContext
 from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import (
     CallbackLogRepository,
     callback_log_repository,
 )
+from src.app.runtime.orchestration.trace_context import TraceContext
 from src.core.base_service import BaseService
 
 

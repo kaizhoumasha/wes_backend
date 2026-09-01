@@ -1,7 +1,3 @@
-# 旧 plugin runtime 镜像实现:src.workline_runtime.timeline_generator 的平级副本
-# 旧 runtime 入口删除后,本模块承载正式实现。
-# 自引用 src.workline_runtime.trace_context 已重定向到 stable trace context mirror。
-
 """
 TimelineGenerator - 时间线记录生成器
 
@@ -20,7 +16,7 @@ from src.app.runtime.orchestration.models.timeline import (
     TimelineStatus,
     WorklineTimeline,
 )
-from src.app.workline.trace_context import TraceContext
+from src.app.runtime.orchestration.trace_context import TraceContext
 from src.utils.timezone import timezone
 
 

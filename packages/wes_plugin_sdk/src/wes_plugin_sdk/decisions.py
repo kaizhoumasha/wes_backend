@@ -4,32 +4,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-
-def _required(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field_name} must not be blank")
-
-
-def _opaque_face(value: object, field_name: str) -> None:
-    if type(value) is not str or value == "":
-        raise ValueError(f"{field_name} must be a non-empty string")
-    if "\x00" in value:
-        raise ValueError(f"{field_name} must not contain NUL")
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError(f"{field_name} must be valid UTF-8") from error
-
-
-def _required_refs(values: tuple[str, ...], field_name: str) -> None:
-    if type(values) is not tuple:
-        raise TypeError(f"{field_name} must be a tuple")
-    if not values:
-        raise ValueError(f"{field_name} must not be empty")
-    if len(values) != len(set(values)):
-        raise ValueError(f"{field_name} must not contain duplicates")
-    for value in values:
-        _required(value, field_name)
+from .validation import validate_opaque_face
+from .validation import validate_required_refs as _required_refs
+from .validation import validate_required_text as _required
 
 
 class TransportTaskType(StrEnum):
@@ -200,7 +177,7 @@ class CreateTransportTask:
         position_types = {TransportRackReference, TransportZonePosition, TransportRackPosition}
         if type(self.source) not in position_types or type(self.target) not in position_types:
             raise TypeError("source and target must be Transport rack move positions")
-        _opaque_face(self.target_face, "target_face")
+        validate_opaque_face(self.target_face, "target_face")
         if type(self.rcs_template_id) is not TransportRcsTemplateId:
             raise ValueError("rcs_template_id must be a TransportRcsTemplateId")
         if self.source == self.target:

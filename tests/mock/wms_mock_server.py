@@ -16,6 +16,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 from starlette.staticfiles import StaticFiles
+from wes_plugin_sdk.validation import is_opaque_face
+from wes_plugin_sdk.validation import is_persistable_text as _nonblank
 
 from src.app.transport.callback_json import canonical_callback_json
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
@@ -356,26 +358,6 @@ def _valid_identity(envelope: object) -> tuple[str, str] | None:
     return operation, operation_id
 
 
-def _nonblank(value: object, *, max_length: int) -> bool:
-    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > max_length:
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
-
-
-def _opaque_face(value: object) -> bool:
-    if type(value) is not str or value == "" or "\x00" in value:
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
-
-
 def _strict_object(value: object, required: set[str], optional: set[str] | None = None) -> dict[str, Any] | None:
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         return None
@@ -398,7 +380,7 @@ def _position(value: object, *, allowed_kinds: set[str]) -> tuple[Any, ...] | No
     if (
         position is None
         or not _nonblank(position["rack_id"], max_length=100)
-        or not _opaque_face(position["rack_face"])
+        or not is_opaque_face(position["rack_face"])
         or not _nonblank(position["slot_id"], max_length=100)
     ):
         return None
@@ -418,7 +400,7 @@ def _result_matches_frozen_request(frozen: dict[str, Any], result: dict[str, obj
         if _position(final_position, allowed_kinds={"RACK_POSITION"}) is None:
             return False
         arrival_face = result.get("arrival_face")
-        if not _opaque_face(arrival_face):
+        if not is_opaque_face(arrival_face):
             return False
         if result.get("status") == "SUCCEEDED":
             target = frozen.get("target")
@@ -500,7 +482,7 @@ def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
         rack is None
         or not _nonblank(rack["transport_task_id"], max_length=80)
         or not _nonblank(rack["rack_id"], max_length=100)
-        or not _opaque_face(rack["target_face"])
+        or not is_opaque_face(rack["target_face"])
         or rack["rcs_template_id"] not in {"CTU01", "CTU02", "CTU03", "F01"}
     ):
         return False
@@ -793,7 +775,7 @@ async def debug_transport_submit_mode(request: SubmitModeRequest) -> dict[str, S
 @app.post("/debug/rack-faces", tags=[MOCK_DEBUG_TAG])
 async def debug_rack_faces(request: RackFaceConfiguration) -> RackFaceConfiguration:
     if any(not _nonblank(rack_id, max_length=100) for rack_id in request.rack_faces) or any(
-        not _opaque_face(face) for face in request.rack_faces.values()
+        not is_opaque_face(face) for face in request.rack_faces.values()
     ):
         return JSONResponse(status_code=422, content={"code": "INVALID_RACK_ID"})
     transport_submission_store.configure_rack_faces(request.rack_faces)
