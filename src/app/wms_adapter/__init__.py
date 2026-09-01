@@ -49,7 +49,7 @@ def __getattr__(name: str) -> Any:
 
         from src.app.wms_adapter.v1 import router as wms_router
 
-        router = APIRouter(prefix="/v1/wms", tags=["WMS Transport"])
+        router = APIRouter(prefix="/v1/wms", tags=["WMS Events"])
         router.include_router(wms_router)
         globals()[name] = router
         return router
