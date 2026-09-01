@@ -19,7 +19,7 @@ from src.database.schema_conf import SchemaType
 class RoleBase(BaseMixin):
     """角色基础字段"""
 
-    name: str = Field(max_length=100, index=True)
+    name: str = Field(min_length=1, max_length=100, index=True)
     description: str | None = Field(default=None, max_length=255)
 
 

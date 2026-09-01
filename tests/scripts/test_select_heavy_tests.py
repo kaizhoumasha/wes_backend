@@ -289,6 +289,18 @@ def test_admin_router_menu_removal_is_exact_reviewed_none() -> None:
     assert select_heavy_tests([admin_router], config, repo_root=REPO_ROOT) == []
 
 
+def test_role_schema_validation_is_exact_reviewed_none() -> None:
+    role_model = "src/app/admin/models/role.py"
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == role_model]
+    assert len(matching_mappings) == 1
+    mapping = matching_mappings[0]
+    assert mapping.heavy_tests == ()
+    assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / role_model).read_bytes()).hexdigest()
+    assert select_heavy_tests([role_model], config, repo_root=REPO_ROOT) == []
+
+
 def test_relationship_metadata_selects_both_postgresql_owners() -> None:
     relationships = "src/app/admin/models/relationships.py"
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")

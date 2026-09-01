@@ -1663,6 +1663,14 @@ heavy_tests = ["tests/integration/test_permission_catalog_sync_postgresql.py"]
 source_glob = "src/app/admin/{models/__init__.py,services/perm_service.py,v1/perm.py}"
 heavy_tests = []
 
+# Role 的名称最小长度仅约束 Pydantic 请求/响应模型，不改变现有 VARCHAR(100)、索引或持久化流程；
+# 由 FAST schema 回归与浏览器/API 合同验收承接，内容漂移后重新 fail closed。
+
+[[mapping]]
+source_glob = "src/app/admin/models/role.py"
+heavy_tests = []
+reviewed_content_sha256 = "61865bf3ae2687764b4b5854fce91d681320d3d8aad009e271cc5e99e5ee47ef"
+
 # role_menus metadata 删除由菜单持久化 PostgreSQL owner 验收；保留的 user_roles/role_permissions
 # metadata 及授权收敛由 authorization bootstrap PostgreSQL owner 验收。
 
