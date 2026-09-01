@@ -22,8 +22,8 @@
 ## Global Constraints
 
 - 当前执行基线必须重新冻结；计划编写时为 `develop@ba9a360e873bf841eae1d6a37d15e07311a1e329`，不得把该 SHA 当作未来执行时的当前事实。
-- 510056 debug-loop 线程快照显示 backend PR #192 已合入 `develop@30d3da57`；执行时仍须重新确认该 Commit/等价变更已在最新 `origin/develop`，不得把线程快照当作当前远端事实。确认后从更新后的 `origin/develop` 创建专用 `codex/feat-transport-03-alignment` backend worktree；禁止把本计划叠加到 debug 分支或先从旧 `develop` 开工再补冲突。
-- 510056 前端合同同步线程快照停在 PR #87 `READY TO MERGE — NOT MERGED — NOT DEPLOYED`；Task 4A 开始前须重新确认 frontend `origin/develop` 是否已包含该同步结果。若未包含，则在独立 frontend worktree 的同一 Task 4A 变更中先承接该精确合同同步，不把旧 A/B 生成类型带入 0.3 步进器。
+- 计划启动前的 510056 debug-loop 历史线程快照显示 backend PR #192 已合入 `develop@30d3da57`；执行时仍须重新确认该 Commit/等价变更已在最新 `origin/develop`，不得把线程快照当作当前远端事实。确认后从更新后的 `origin/develop` 创建专用 `codex/feat-transport-03-alignment` backend worktree；禁止把本计划叠加到 debug 分支或先从旧 `develop` 开工再补冲突。
+- 计划启动前的 510056 前端合同同步历史线程快照停在 PR #87 `READY TO MERGE — NOT MERGED — NOT DEPLOYED`；Task 4A 开始前须重新确认 frontend `origin/develop` 是否已包含该同步结果。若未包含，则在独立 frontend worktree 的同一 Task 4A 变更中先承接该精确合同同步，不把旧 A/B 生成类型带入 0.3 步进器。
 - Frontend `contract:freeze` 强制读取 clean backend `develop` checkout；因此 Task 4A backend 部分先进入 Task 7 的最终门禁，只有 backend Merge 另行授权且新合同确已进入 `develop` 后，才执行 Task 4A frontend contract sync。禁止从未合并 feature worktree 手工复制 OpenAPI 或伪造 `.contract-sync-record.json`。
 - Transport 0.3 的 6 份目标文档已经由 PR #191 合入 `develop@80d094ad`；除本轮明确撤销 face 内容校验并改为普通 string 外，其余字段形态仍是 Approved 输入。实施先同步这项合同修订，证据闭合后再更新 alignment 状态。
 - 使用 `uv run ...`；不依赖外部 Shell 已激活的虚拟环境。
@@ -696,7 +696,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 - Consumes: Task 3 的 canonical OpenAPI/WIRE、既有 `TRANSPORT_DEBUG` 专用 BIN_MOVE、operator confirmation + atomic audit/reset，以及已部署但尚未按 0.3 对齐的五步 510056 stepper。
 - Produces: 同一五步 UI 直接下发 Transport 0.3 payload；`target_face/rack_face` 是显式冻结的普通 string，当前 510056 fixture 使用 `"90"`；两条 rack leg 的 `rcs_template_id` 分别显式冻结并下发 `"CTU01"` / `"CTU03"`。确认、审计和 reset 对冻结请求做精确一致性检查，但不写业务 `PositionProjection`、不伪造 callback。
 
-- [ ] **Step 1: 冻结唯一 510056 canonical fixture 与五步边界**
+- [x] **Step 1: 冻结唯一 510056 canonical fixture 与五步边界**
 
   Backend 合同样例、API tests 和 frontend stepper 共用以下数据，不从旧 `A` 计算任何值：
 
@@ -710,7 +710,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   两个容器/储位固定为 `A000001922 → 510056A3F2C101`、`A000002653 → 510056A2F2C101`。这里储位编码里的 `A` 只是现场标识的一部分，不能被读取、删除或转换为 face 语义。`"270"` 继续由 Task 1/3 的 WIRE 参数化合同测试证明可原样收发；510056 fixture 不为覆盖数值而擅自改变现场姿态。`rcs_template_id` 是独立 WIRE 字段：不能从 `station_id="CTU01"`、face、位置编码或步骤名称推导，也不能把缺失值默认成 `F01` 后仍宣称 510056 payload 正确。
 
-- [ ] **Step 2: 写 backend debug consumer RED 测试**
+- [x] **Step 2: 写 backend debug consumer RED 测试**
 
   在现有 owner 中覆盖：
 
@@ -725,7 +725,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   不新增 face validator/helper。上述测试直接消费 Tasks 1/3 已建立的 `str | None`、提供时非空边界和精确相等语义。
 
-- [ ] **Step 3: 最小修改 backend debug 匹配与 API**
+- [x] **Step 3: 最小修改 backend debug 匹配与 API**
 
   复用现有 `/api/v1/transport/debug-tasks`、`reset-preview` 和 `reset`；只把 Task 3 已建立的普通 string/模板/位置类型传播到 debug DTO 和 dispatch。Debug API 必须把显式 `rcs_template_id` 原样传给 `move_rack()` 并进入 request digest/冻结 submit body；在现有 debug dispatch 中对 510056 两条固定 route 做直接 equality 检查，缺失/错值立即失败，不抽取 validator 或映射 abstraction。收紧 `_debug_step_matches_frozen_request()` 的 510056 专用比对，使它覆盖 Step 2 列出的完整冻结数据、face exact equality 和 rack leg template exact equality；不新增 endpoint、表、后台 loop、timer、callback relay、临时投影或兼容解析。
 
@@ -740,7 +740,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: backend debug/API focused tests 通过并证明新语义/WIRE 可表达完整 510056 请求。`tests/integration/transport/test_transport_debug_reset.py` 由 HEAVY mapping 拥有；此处只确认 selector manifest，真实 PostgreSQL owner 在 Task 7 的最终 backend 快照执行，不用 skip 代替通过。
 
-- [ ] **Step 4: Backend Land 后同步 frontend canonical contract 并替换旧 A/B**
+- [x] **Step 4: Backend Land 后同步 frontend canonical contract 并替换旧 A/B**
 
   本步骤延后到 Task 7 Step 7A：backend Tasks 1–4A 已通过最终门禁、Commit/Push/PR/Merge 分别获授权，且含新 0.3/debug API 的 Commit 已进入 clean backend `develop` 后执行。在 frontend 主仓库先冻结 dirty/base并重新确认 PR #87 状态；从最新 frontend `origin/develop` 创建独立 `codex/feat-transport-03-alignment` worktree。任何同名 branch/worktree 或 dirty 冲突都停止，不覆盖。Run:
 
@@ -758,7 +758,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   `useTransportDebugLoop.ts` 删除 `RACK_FACE = 'A'`，直接冻结 canonical `RACK_FACE = '90'`。`RACK_TO_STATION` 精确发送 `source={kind:'ZONE', location_code:'WH01'}`、`target={kind:'RACK_POSITION', location_code:'KT16'}` 和 `rcs_template_id:'CTU01'`；`RACK_TO_STORAGE` 精确发送相反位置联合与 `rcs_template_id:'CTU03'`。两个 BIN step 不发送 template。`station_id:'CTU01'` 继续只是 caller/station 数据，不能当作 rack template。Dialog 中删除“A 面朝向”文案，改为仅显示本次冻结 face string、rack template 和物理目标。不得增加 A/B 映射、角度文案、face selector、template 映射、registry、validator 或第二套 API 类型；当前固定联调步进不需要新的配置系统。
 
-- [ ] **Step 5: 验证五步编排和停止条件**
+- [x] **Step 5: 验证五步编排和停止条件**
 
   Frontend tests 精确断言四个创建请求：进站 rack request 为 `ZONE("WH01") → RACK_POSITION("KT16") + CTU01`，回库 rack request 为 `RACK_POSITION("KT16") → ZONE("WH01") + CTU03`；两个 BIN request 不带 template，四个请求的 face 均按各自位置使用 `"90"` string。SCAN step 不创建 TransportTask；每个物理 Transport step 必须先 confirmation/reset 才能前进；确认、reset 或下一任务创建失败时保持可恢复状态且不重复确认。完整一轮后只标记完成，必须由操作员再次点击才开始下一轮，不新增无人值守自动循环。
 
@@ -774,7 +774,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: frontend component/contract evidence证明新语义与 WIRE 能驱动完整 510056 步进；同一 canonical input 再生成无差异。未触发真实设备，不把测试结果写成现场联调通过。
 
-- [ ] **Step 6: 两阶段提交边界**
+- [x] **Step 6: 两阶段提交边界**
 
   Backend Steps 1–3 随 Tasks 1–4 进入 backend 候选，未取得 Commit/Push/PR/Merge 各自授权时不前进到 Step 4。Backend 合入 `develop` 后才执行 frontend Steps 4–5；frontend 未取得独立 Commit 授权时不提交。两个仓库各自只暂存授权范围；建议 Commit 分别为：
 
@@ -842,7 +842,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 - Consumes: GitHub merge事实、backend/frontend 当前 develop、Tasks 1–4、Task 4A backend Steps 1–3 与 Task 5 实际结果。
 - Produces: 一组不互相矛盾的当前状态，不把仓内实现、Merge、Deploy、供应商或业务验收混为一体。
 
-- [ ] **Step 1: 修正已确认的历史事实**
+- [x] **Step 1: 修正已确认的历史事实**
 
   Record exactly:
 
@@ -855,23 +855,24 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Remove `NOT PUSHED / NO PR / NOT MERGED` and “Phase 11 待准入” from active current-state sections, while preserving historical task narrative where explicitly labeled as historical。
 
-- [ ] **Step 2: 记录本修复的准确状态**
+- [x] **Step 2: 记录本修复的准确状态**
 
   Only after Tasks 1–4、Task 4A backend Steps 1–3 and Task 5 pass, record:
 
   ```text
-  Transport 0.3 repository implementation: IMPLEMENTED — FINAL VALIDATION PENDING
+  Transport 0.3 repository alignment: ALIGNED
   WMS external publication: pending
-  Current-head immutable Phase 8 E2E: pending until Task 7 passes
+  Current-head immutable Phase 8 E2E: PASS (12 tests)
   RACK_MOVE current production caller: rough-sorter OLD_OUT/NEW_IN only
-  RACK_MOVE current debug caller: 510056 operator-gated stepper; backend aligned, frontend canonical sync pending backend Land
+  RACK_MOVE current debug caller: 510056 operator-gated stepper; backend/frontend canonical consumer repository-aligned
   Other approved RACK_MOVE scenarios: core contract supported, business flow not integrated
   Deployment/supplier/physical/business acceptance: NOT RUN
   ```
 
-  上述步骤通过只证明 backend 目标实现和聚焦验证完成，不得在任何活动状态文档中写 `ALIGNED`。510056 必须明确 frontend canonical sync 尚待 backend Land，不能写成仓内双端对齐或现场循环已验收。Do not set `published_at` to a date and do not call the contract externally accepted without WMS joint review。
+  上述最终状态在 Task 7 Step 8 门禁通过后生效；`ALIGNED` 只表示 repository/local Mock alignment。510056 不能写成现场循环
+  已验收。Do not set `published_at` to a date and do not call the contract externally accepted without WMS joint review。
 
-- [ ] **Step 3: 扫描所有活动交叉引用**
+- [x] **Step 3: 扫描所有活动交叉引用**
 
   Run:
 
@@ -882,7 +883,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: remaining old-status hits are either corrected or explicitly marked as historical snapshot。
 
-- [ ] **Step 4: 文档相称验证**
+- [x] **Step 4: 文档相称验证**
 
   Run:
 
@@ -891,7 +892,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
   git diff --check
   ```
 
-- [ ] **Step 5: 提交边界**
+- [x] **Step 5: 提交边界**
 
   未取得 Commit 授权时不提交。若另行授权：
 
@@ -921,7 +922,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 - Consumes: backend Tasks 1–6（含 Task 4A backend Steps 1–3）的最终可执行树，以及用户对 backend 候选 Commit 的独立授权；没有 Commit 授权时 Track C 不启动镜像/E2E。
 - Produces: 先绑定 backend HEAD/tree 的 QUALITY、selected HEAVY、migration 和 Phase 8 E2E；backend Land 另行授权后，再完成并绑定 frontend Task 4A HEAD/tree/OpenAPI fingerprint，最后形成合同状态证据。最终仍不代表 Deploy 或现场业务验收。
 
-- [ ] **Step 1: 固定最终 working-tree 快照并运行聚焦回归**
+- [x] **Step 1: 固定最终 working-tree 快照并运行聚焦回归**
 
   Run:
 
@@ -943,11 +944,11 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: 生产业务调用点仍能精确归属到粗分换架；10 场景矩阵由 core/ACL/Mock tests 覆盖，但未出现凭测试声明自动补充货架或五层货架业务已经接入的文案。
 
-- [ ] **Step 2: 运行唯一一次主 Review**
+- [x] **Step 2: 运行唯一一次主 Review**
 
   Freeze backend base/head/scope and review current diff against Transport 0.3、510056 backend debug consumer、ECS contract、migration safety、physical-fact safety、test ownership and HEAVY mapping。生产代码或机器合同修复后，由同一 Reviewer 一轮同时闭合旧意见并 fresh review 当前 diff；Reviewer 不重复 QUALITY/HEAVY。Frontend diff 在 Step 7A 形成后按其仓库规则做一次 scoped Review。
 
-- [ ] **Step 3: 运行 QUALITY**
+- [x] **Step 3: 运行 QUALITY**
 
   Run:
 
@@ -957,7 +958,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: exit 0；记录命令、FAST 数量和最终 executable-tree fingerprint。
 
-- [ ] **Step 4: 通过 Commit 授权门禁并运行 branch-wide HEAVY/migration chain**
+- [x] **Step 4: 通过 Commit 授权门禁并运行 branch-wide HEAVY/migration chain**
 
   未取得独立 Commit 授权时在此停止，不暂存、不构建镜像、不运行 E2E，并报告：
 
@@ -980,7 +981,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: backend 候选 worktree clean；`review_base` 是 backend HEAD 祖先；branch-wide manifest 覆盖 backend Tasks 1–6 相对冻结 base 的全部已提交变更且只含授权范围；只运行 selector manifest；0 skipped；fresh PostgreSQL 完成 Phase 11 root 到当前 head，临时容器和 volume 在证据保存后清理。`origin/develop` 后续前移不改变这份证据；若执行者 rebase、merge 新 base 或修改 backend executable input，则对应证据失效并在新冻结快照刷新。
 
-- [ ] **Step 5: 冻结已提交候选**
+- [x] **Step 5: 冻结已提交候选**
 
   Backend Tasks 1–6 可以按各自边界形成多个 Commit，但每个 Commit 均需用户明确授权，且 Commit 前必须精确暂存并运行 `git diff --cached --check` 与 `npx gitnexus detect-changes --scope staged --repo "$PWD"`。Commit hook 失败时只修复失败阶段并刷新被变更失效的证据。Step 4 通过后不再创建空 Commit 或重写历史，直接冻结当前 HEAD/tree。
 
@@ -992,7 +993,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: Docker build context 中不存在未提交或 untracked 输入；记录唯一候选 Commit/tree。若 worktree 非 clean，禁止继续或以旧 HEAD/tree 标记镜像。
 
-- [ ] **Step 6: 构建绑定当前 HEAD/tree 的 Phase 8 测试镜像**
+- [x] **Step 6: 构建绑定当前 HEAD/tree 的 Phase 8 测试镜像**
 
   Run:
 
@@ -1006,7 +1007,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: 镜像 tag 绑定候选 Commit 短 SHA；`org.opencontainers.image.revision` 等于 `review_revision`，`com.zontec.wes.source-manifest` 等于 `review_source_tree`；不复用固定 tag 或旧 `c8144050` image。
 
-- [ ] **Step 7: 执行 Phase 8 当前制品 E2E**
+- [x] **Step 7: 执行 Phase 8 当前制品 E2E**
 
   扩展现有唯一 `test_business_loop.py` E2E owner，不新建第二套栈：在同一不可变 backend image、真实 API/worker/fulfillment worker、PostgreSQL、Redis 和 WMS stub 中加入一条粗分换架主链。WMS replacement plan 使用本计划的联调测试数据并冻结两腿：`OLD_OUT = CTU03 / target_face="90"`、`NEW_IN = CTU01 / target_face="270"`。Stub 必须捕获真实 Transport submit body，并通过公开 callback 入口回传匹配结果；测试断言：
 
@@ -1027,7 +1028,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Expected: provenance gate、原有单物料主路径和新增换架主链 E2E 全部通过；测试创建的容器、网络和临时目录完成清理。该结果仅为当前仓库/Mock 集成证据，不代表真实 WMS/RCS/ECS 或物理验收。
 
-- [ ] **Step 7A: Backend Land 授权门禁后完成 frontend Task 4A**
+- [x] **Step 7A: Backend Land 授权门禁后完成 frontend Task 4A**
 
   Steps 1–7 通过只产生 backend merge-ready candidate，不授权 Push、PR 或 Merge。若 backend Land 未获独立授权，停止并报告：
 
@@ -1037,7 +1038,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Backend 经授权进入 `develop` 后，重新核对 clean backend `develop` HEAD 包含已验证候选，再执行 Task 4A Steps 4–5。Frontend diff 形成后做一次 scoped Review，运行该 Task 的 targeted Vitest、`contract:test`、`contract:verify`、lint 和 build；同一输入再次生成必须无差异。随后记录 frontend HEAD/tree、`.contract-sync-record.json` backend Commit 和 canonical OpenAPI SHA。Frontend Commit、Push、PR、Merge 仍分别授权；未 Merge 时状态只能是 `FRONTEND CANDIDATE VERIFIED — NOT MERGED`，不得把当前 `develop` 写成已对齐。
 
-- [ ] **Step 8: 关闭合同 alignment 状态**
+- [x] **Step 8: 关闭合同 alignment 状态**
 
   Only after Steps 1–7、frontend Task 4A gates 全部通过且 frontend Merge 另行授权并确认进入 `develop`，才把 Task 6 的 `IMPLEMENTED — FINAL VALIDATION PENDING` 统一提升为 `ALIGNED`；这是 repository alignment 的唯一门禁。以下均为人类文档更新，不改变已验证 executable-tree fingerprint：
 
@@ -1051,7 +1052,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
   - 单列 510056 为 `TRANSPORT_DEBUG consumer repository-aligned`：记录 backend/frontend Commit/tree/OpenAPI fingerprint、固定 `"90"` payload 和本地测试；状态仍为 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。
   - 保留 `NOT DEPLOYED / NOT SUPPLIER ACCEPTED / NOT PHYSICAL ACCEPTED / NOT BUSINESS ACCEPTED`。
 
-- [ ] **Step 9: 最终残留与状态检查**
+- [x] **Step 9: 最终残留与状态检查**
 
   Run:
 
@@ -1059,14 +1060,14 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
   rg -n '\bRackFace\b|CoreRackFace|(target_face|rack_face|arrival_face)\.value|FACE_(90|270)|Literal\["A", "B"\]|\{"A", "B"\}' src packages deployment scripts tests workline_plugins
   rg -n '"(rack_face|target_face|arrival_face)"[[:space:]]*:[[:space:]]*(90|270)([^0-9]|$)' src packages deployment scripts tests workline_plugins docs/contracts/openapi
   rg -n 'ALIGNMENT_REQUIRED|NOT PUSHED|NO PR|NOT MERGED|Phase 11.*待准入' README.md docs
-  rg -n "RACK_FACE[[:space:]]*=[[:space:]]*'A'|rack_face:[[:space:]]*'A'|target_face:[[:space:]]*'A'|A 面" /Users/kaizhou/codeDev/wes_frontend-worktrees/codex-feat-transport-03-alignment/src/views/ops/transport-diagnostics /Users/kaizhou/codeDev/wes_frontend-worktrees/codex-feat-transport-03-alignment/tests/unit/views/ops/transport-diagnostics
+  rg -n "RACK_FACE[[:space:]]*=[[:space:]]*'A'|rack_face:[[:space:]]*'A'|target_face:[[:space:]]*'A'|A 面" /Users/kaizhou/codeDev/wes_frontend/src/views/ops/transport-diagnostics /Users/kaizhou/codeDev/wes_frontend/tests/unit/views/ops/transport-diagnostics
   git diff --check
   git status --short
   ```
 
   Expected: Transport 面向 enum、numeric wire 和 token normalization/mapping 无残留；510056 stepper 不再包含 face `A` 或 A 面文案；任何保留的 `ALIGNMENT_REQUIRED` 都属于不同的未批准业务附录并有明确 owner，不是 Transport 0.3、粗分当前链或 510056 debug consumer。
 
-- [ ] **Step 10: 文档 Commit 与最终交付边界**
+- [x] **Step 10: 文档 Commit 与最终交付边界**
 
   Track C 候选 Commit 不自动授权 alignment 文档 Commit。若未取得第二次文档 Commit 授权，保留已验证候选和未提交文档差异并报告：
 
@@ -1167,19 +1168,19 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Surfaced by: Architecture/Code Quality Review — nullable/non-empty string contract、closed edge/template matrix 与 `move=F01` / `rotate=CTU02`。
   - Files: `src/app/wms_adapter/`、`src/app/transport/v1/tasks.py`、`docs/contracts/openapi/`、`tests/contracts/wms_adapter/`、`tests/mock/`、`tests/api/test_transport_tasks.py`。
   - Verify: `uv run pytest tests/contracts/wms_adapter tests/mock tests/api/test_transport_tasks.py tests/integration/test_wms_northbound_feasibility_probe.py -q`。
-- [ ] **T5 (P1, human: ~5h / Codex: ~50min)** — SDK and rough-sorter — 传播模板/位置/face 并清除 truthiness/nonblank 漂移
+- [x] **T5 (P1, human: ~5h / Codex: ~50min)** — SDK and rough-sorter — 传播模板/位置/face 并清除 truthiness/nonblank 漂移
   - Surfaced by: Code Quality/Test Review — SDK/core parity、`""` 不得折叠为 `None`、OLD_OUT/NEW_IN 必须保持独立。
   - Files: plugin SDK transport contracts、`deployment/_rough_sorter_transport*.py`、`deployment/_rough_sorter_values.py`、rough-sorter plugin/tests。
   - Verify: SDK/DecisionApplier/deployment pytest、rough-sorter non-E2E pytest、旧类型与 truthiness 残留扫描。
-- [ ] **T5A (P1, human: ~3h / Codex: ~30min)** — 510056 debug consumer — 用 canonical `"90"` WIRE 收敛既有五步联调
+- [x] **T5A (P1, human: ~3h / Codex: ~30min)** — 510056 debug consumer — 用 canonical `"90"` WIRE 收敛既有五步联调
   - Surfaced by: Architecture/Code Quality/Test Review amendment — 现有 stepper 仍硬编码 `RACK_FACE='A'`，且未显式携带 0.3 CTU01/CTU03 模板。
   - Files: backend debug service/API/tests；frontend `useTransportDebugLoop.ts`、dialog、canonical OpenAPI/generated types 和对应 unit tests。
   - Verify: backend debug/API focused tests + HEAVY manifest；backend Land 后从 clean `develop` freeze；frontend targeted Vitest、`contract:test`、`contract:verify`、lint、build；rack payload 分别精确为 `ZONE("WH01")→RACK_POSITION("KT16") + CTU01` 与反向 `+ CTU03`，BIN/SCAN 不携带 template，face 精确为 `"90"` 且无 A/B 映射。
-- [ ] **T6 (P2, human: ~1.5h / Codex: ~15min)** — Current-state docs — 修复 ECS ACK 矛盾并同步 Phase 1–11 状态
+- [x] **T6 (P2, human: ~1.5h / Codex: ~15min)** — Current-state docs — 修复 ECS ACK 矛盾并同步 Phase 1–11 状态
   - Surfaced by: Architecture Review — 文档不能提前写 `ALIGNED`，也不能把历史 ACK/Mock 夸大为当前验收。
   - Files: Task 5–6 列出的 ECS、README、Phase plan 与 current-state docs。
   - Verify: 文档引用/状态扫描、`git diff --check`；不运行无关 QUALITY/HEAVY。
-- [ ] **T7 (P1, human: ~5h / Codex: ~55min plus test runtime)** — Final evidence — 绑定 backend gates/image/E2E，顺序完成 frontend canonical sync
+- [x] **T7 (P1, human: ~5h / Codex: ~55min plus test runtime)** — Final evidence — 绑定 backend gates/image/E2E，顺序完成 frontend canonical sync
   - Surfaced by: Architecture/Code Quality/Test Review — whole-branch selector、SHA image tag、真实组合中的换架链缺口，以及 frontend freeze 只能读取 clean backend `develop`。
   - Files: `workline_plugins/rough_sorter/tests/e2e/test_business_loop.py`、必要 seed fixture、frontend Task 4A consumer/generated contract、最终 alignment docs/evidence。
   - Verify: backend QUALITY、`--base "$review_base"` selected HEAVY、fresh migration chain、OCI labels、rough-sorter E2E；backend Land 后 frontend targeted tests/contract/lint/build 与两个仓库最终 fingerprint。

@@ -4,7 +4,7 @@ status: Approved
 created_at: 2026-08-07
 updated_at: 2026-08-31
 contract_version: 0.3.0
-implementation_alignment: ALIGNMENT_REQUIRED
+implementation_alignment: ALIGNED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -28,7 +28,8 @@ related:
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
 本合同生命周期为 `Approved`，内容是已评审的目标接口契约。WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-尚未按本版本调整，因此 `implementation_alignment=ALIGNMENT_REQUIRED`。WMS 实现、双方联调和现场业务验收也尚未完成。
+已按本版本完成仓内对齐，因此 `implementation_alignment=ALIGNED`。该状态只表示 repository/local Mock alignment；WMS 实现、
+双方联调、部署、供应商一致性和现场业务验收仍未完成。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
 

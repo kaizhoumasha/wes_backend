@@ -6,7 +6,7 @@ updated_at: 2026-08-31
 scope: WES 与 WMS 之间 Transport 搬运提交/容器中间位置事件/搬运最终结果接口契约、WMS C# DTO 和 WMS-RCS 映射边界
 system_stage: pre_release
 migration_strategy: direct_replacement
-implementation_alignment: ALIGNMENT_REQUIRED
+implementation_alignment: ALIGNED
 related:
   - docs/integration/wes-wms-interface-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
@@ -21,8 +21,9 @@ related:
 本文定义尚未发布系统的 WES-WMS Transport接口契约目标设计，重点减少 WMS 在 .NET Framework 4.6 中解析和组装
 `RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE` 四种请求的重复工作，同时守住 WES、WMS 与 RCS 的职责边界。
 
-本文是已完成联合设计评审的目标基线。两份现行合同已经更新，WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-尚未按本设计调整，因此 `implementation_alignment=ALIGNMENT_REQUIRED`。实施时直接替换旧合同，不保留兼容入口。
+本文是已完成联合设计评审的目标基线。两份现行合同、WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试均已
+按本设计完成仓内对齐，因此 `implementation_alignment=ALIGNED`。系统仍按直接替换策略运行，不保留兼容入口；该状态不代表
+WMS 已实施、已经部署或已经完成供应商、物理和业务验收。
 
 两份 `docs/hardware/` PDF 是厂商原始输入，保持原貌。厂商字段只用于说明 WMS ACL 的映射依据，不升级为 WES 核心合同。
 

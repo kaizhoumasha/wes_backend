@@ -1,6 +1,37 @@
 # Phase 8 粗分机后端开发验收与现场边界状态
 
-## 总体结论
+## 2026-08-31 Transport 0.3 repository alignment
+
+**TRANSPORT 0.3 REPOSITORY ALIGNMENT: ALIGNED；LOCAL IMMUTABLE IMAGE E2E: PASS**。
+
+当前仓内合同、backend、frontend canonical consumer 与粗分换架主链已经对齐。该状态只证明 repository/local Mock
+alignment，明确保留：`NOT DEPLOYED / NOT SUPPLIER ACCEPTED / NOT PHYSICAL ACCEPTED / NOT BUSINESS ACCEPTED`。
+
+### 当前不可变证据
+
+| 项目 | 当前证据 |
+| --- | --- |
+| Backend Transport 0.3 实现 Commit / tree | `33f204bad65ce8ac689a0a03918ec5c81defc692` / `5d48e81794bf4502fa548b5b1de425ca92e4f286` |
+| Backend 最终 E2E Commit / tree | `f2129982744af481f8c5a50b14f85a33e614c55b` / `1753c308a8481f5cf625ae6ea42a272907ab2bff` |
+| Backend 测试镜像 | `wes-backend:phase8-rough-sorter-f2129982744a`；digest `sha256:feef7a60d8aed787c381e70b35344a247df92bfb48d01b84878a357b244b767b`；OCI revision/tree 与最终 E2E Commit/tree 精确一致 |
+| Backend 当前门禁 | Commit hook QUALITY：`2403 passed, 5 skipped`；`ROUGH_SORTER_E2E_BACKEND_IMAGE=wes-backend:phase8-rough-sorter-f2129982744a uv run pytest tests/e2e -q`：`12 passed` |
+| Frontend Commit / tree | `aea88687691556b0b115698fdf4056783d69fe6f` / `a52b8421f7fbae402c23cd947c0d0e0b247d27f9` |
+| Frontend canonical OpenAPI | `.contract-sync-record.json` 绑定 backend `33f204bad65ce8ac689a0a03918ec5c81defc692`；`contracts/openapi.current.json` SHA-256 `cd539bae4577b69b57ee91809625ee56f115e1cc93b59ce587db7b77e81830f8` |
+| Frontend 当前门禁 | 83 files / 624 tests、lint、build、`contract:test`、`contract:verify`、`permission:verify` 全部通过 |
+
+### 核心合同能力与当前调用点边界
+
+| 范围 | 当前状态 | 不得扩大为 |
+| --- | --- | --- |
+| Transport 0.3 核心合同 | 10 个批准请求场景由 core/ACL/Mock tests 支持；face 为上下文一致的不透明非空 string，不做 A/B 或数值语义转换 | 所有合同场景已有生产业务 flow |
+| 粗分生产调用链 | `OLD_OUT = CTU03 / target_face="90"`、`NEW_IN = CTU01 / target_face="270"`；两腿使用不同 `transport_task_id` 并独立闭合，`NEW_IN` 成功无需等待 `OLD_OUT` 即可重新请求 target | `RACK_EXCHANGE`、现场换架已验收或 WMS 库存已闭合 |
+| 其它批准的 `RACK_MOVE` | 例如其它单层货架到工作位、五层货架到 `FIVE_STATION` 仍只是核心合同能力 | 已接入生产业务调用点 |
+| 510056 `TRANSPORT_DEBUG` consumer | repository-aligned；`WH01` 是 `ZONE`，`KT16` 是 `RACK_POSITION`，去程 `CTU01`、回程 `CTU03`，固定 payload `target_face="90"` | 权威生产业务链或真实物理运行 |
+
+510056 当前状态为 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。本机测试数据无需脱敏，但测试通过不能替代 WMS/RCS
+真实接纳、callback、供应商映射、现场位置事实或 WMS 库存事务。
+
+## 历史 Phase 8 RC 结论（2026-08-20 冻结快照）
 
 **BACKEND FUNCTIONAL IMPLEMENTATION PASS；LOCAL MOCK ACCEPTANCE PASS；BACKEND RC CLOSED**（2026-08-20）。
 

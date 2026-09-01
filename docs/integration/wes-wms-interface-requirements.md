@@ -3,7 +3,7 @@ title: WES - WMS 对接接口需求
 status: ReviewRequired
 contract_version: 0.3.0
 published_at: pending
-wes_alignment: ALIGNMENT_REQUIRED
+wes_alignment: ALIGNED
 created_at: 2026-08-13
 updated_at: 2026-08-31
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
@@ -53,18 +53,18 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | --- | --- | --- | --- |
 | 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
-| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNMENT_REQUIRED` | 本文已更新为目标合同；WES 代码、OpenAPI 和行为测试尚未实施本版本 |
+| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES repository、OpenAPI 和行为测试已对齐 0.3.0；WMS 实现、发布和真实联调仍为 `NOT RUN` |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
-| 粗分自动入库 | `Approved` | `ALIGNMENT_REQUIRED` | 现有流程已通过旧合同的本机 Mock；Transport 0.3.0 尚未实施，真实联调与业务验收均为 `NOT RUN` |
+| 粗分自动入库 | `Approved` | `ALIGNED` | `OLD_OUT/NEW_IN` 已通过 Transport 0.3.0 本机不可变镜像 E2E；真实联调与业务验收均为 `NOT RUN` |
 | 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
 公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`，但容器中间位置事件
 只在供应商能够提供权威逐容器中间事实时启用，当前 CTU/RCS 不实施；
-Transport 0.3.0 的 WES 代码、OpenAPI 和行为测试均为 `ALIGNMENT_REQUIRED`。粗分入库现有流程已通过旧合同的本机 Mock，但也要
-随 Transport 0.3.0 调整。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明自动上架或
-自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
+Transport 0.3.0 的 WES 代码、OpenAPI 和行为测试已完成 repository alignment；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链
+已通过本机不可变镜像 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
+自动上架或自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
 
@@ -1501,6 +1501,11 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
 }
 ```
 
+样例 9～10 的 `TRANSPORT_DEBUG` consumer 已完成 repository alignment：前端和后端均使用固定 string payload
+`target_face="90"`，不解释或转换其面语义；`WH01` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和
+`CTU03`。当前只完成仓内生成合同、前后端测试和本地 Mock 验证，状态仍为
+`NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。
+
 WMS 的对外处理结果必须满足：
 
 1. 检查公共字段、重复消息，以及第 3.1 节规定的成员数量、容器唯一性、精确储位唯一性、端点组、工作面和位置结构。
@@ -2192,7 +2197,7 @@ ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入
 ### 3.3 规范 fixture 最小集合
 
 下表的基准请求均引用本节给出的完整 JSON，“修改”是对基准请求的唯一变化。双方必须使用相同预期，WMS 不再自行定义错误结果。
-这些 fixture 属于 Transport 0.3.0 目标合同，当前 WES 代码和 OpenAPI 尚未对齐。实施完成后，双方仍须在实际联调环境运行 fixture
+这些 fixture 属于 Transport 0.3.0 目标合同，当前 WES 代码、OpenAPI 和仓内行为测试已对齐。双方仍须在实际联调环境运行 fixture
 并保存证据，才能确认联调通过。
 
 | Fixture | 基准与唯一修改 | 固定预期 |

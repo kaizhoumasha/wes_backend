@@ -2,7 +2,8 @@
 
 **日期：** 2026-08-26
 
-**状态：** 诊断功能已分别合入 backend `41ab69bf`、frontend `e103b692`；Transport 0.3.0 请求字段尚未实施。当前未部署，也未执行现场物理动作或业务验收
+**状态：** 诊断功能及 Transport 0.3.0 请求字段已完成仓内对齐；当前 local backend `develop@f2129982`、local frontend
+`develop@aea88687`。当前未部署，也未执行供应商一致性、现场物理动作或业务验收
 
 **范围：** WES 后端、WES 前端，以及 WMS 回调进入 WES 后的可观测链路
 
