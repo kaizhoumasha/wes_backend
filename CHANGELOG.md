@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.7.0] - 2026-09-01
+
+### Fixed
+
+- 为 Docker builder 的每次 `uv` 安装尝试增加 180 秒墙钟上限，并在 TERM 后 10 秒强制终止，确保外部镜像挂起时三次重试仍有硬边界。
+
+### Verification
+
+- Docker/Jenkins 合同测试 19 项与实际 `builder` 镜像构建通过；HEAVY selector 选中的生产 wiring 1 项通过。
+- fresh Review 无剩余 finding；完整 QUALITY 通过（FAST 2417 passed、5 skipped）。
+
 ## [0.29.6.0] - 2026-09-01
 
 ### Fixed

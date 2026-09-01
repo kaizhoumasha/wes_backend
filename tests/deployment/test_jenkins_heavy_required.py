@@ -84,7 +84,7 @@ def test_builder_retries_transient_uv_bootstrap_failures() -> None:
     )[0]
 
     assert "for attempt in 1 2 3" in builder_stage
-    assert "if pip install --no-cache-dir uv" in builder_stage
+    assert "if timeout --kill-after=10s 180s pip install --no-cache-dir uv" in builder_stage
     assert "break;" in builder_stage
     assert '[ "$attempt" -eq 3 ]' in builder_stage
     assert "exit 1;" in builder_stage
