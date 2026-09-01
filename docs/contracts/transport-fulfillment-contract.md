@@ -4,7 +4,7 @@ status: Approved
 created_at: 2026-08-07
 updated_at: 2026-08-31
 contract_version: 0.3.0
-implementation_alignment: ALIGNED
+implementation_alignment: FINAL_VALIDATION_PENDING
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -28,7 +28,8 @@ related:
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
 本合同生命周期为 `Approved`，内容是已评审的目标接口契约。WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-已按本版本完成仓内对齐，因此 `implementation_alignment=ALIGNED`。该状态只表示 repository/local Mock alignment；WMS 实现、
+当前实现与本合同的修复候选已完成聚焦对齐，但尚未形成绑定同一 Commit/tree 的不可变镜像，因此
+`implementation_alignment=FINAL_VALIDATION_PENDING`。该状态只表示 repository candidate；WMS 实现、
 双方联调、部署、供应商一致性和现场业务验收仍未完成。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
@@ -99,7 +100,7 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 
 一次只搬一个确定货架。来源和目标均使用 `kind + location_code`，`kind` 只能为 `RACK | ZONE | RACK_POSITION`，且两个位置不能
 完全相同。`RACK` 的 `location_code` 表示货架编号，必须等于外层 `rack_id`；`ZONE` 表示区域编号，`RACK_POSITION` 表示精确地码。
-`target_face` 是业务调用方冻结的不透明目标面 string；该必填字段只拒绝空字符串，不限制其它字符内容或长度。货架类型和 string 内容不改变
+`target_face` 是业务调用方冻结的不透明目标面 string；该必填字段拒绝空字符串和 NUL，不限制其它字符内容或长度。货架类型和 string 内容不改变
 调用方法，WES 不解释其业务或设备语义。
 
 `RACK_POSITION` 目标要求最终地码等于冻结目标。`RACK` 目标由 WMS/RCS 按冻结的货架编号和 `rcs_template_id` 解析位置；`ZONE`
@@ -499,8 +500,9 @@ results[] {
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
 料箱任务不回传可由 `results[]` 推导的任务总状态；货架任务的顶层 `status` 就是唯一对象结果，不形成第二份聚合状态。
 
-`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是非空 string。除空字符串外不定义
-字符内容或长度限制；HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。WES/WMS/RCS 对解析后的 string 原样传递，不做 trim、case folding、
+`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是非空且不含 NUL 的 UTF-8 string。
+除 NUL 外不定义字符内容或长度限制；该边界保证值可进入 PostgreSQL `TEXT`，HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
+WES/WMS/RCS 对解析后的 string 原样传递，不做 trim、case folding、
 Unicode normalization、A/B 转换、角度计算或容差处理。成功结果的 `arrival_face` 必须
 与冻结 `target_face` 精确相等。缺少应有
 `arrival_face` 的货架结果不得接受为确定结果；WES 接受后同步更新本地面向投影，后续货架和 Bin 任务都使用该投影校验工作面。

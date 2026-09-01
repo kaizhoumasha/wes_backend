@@ -559,7 +559,7 @@ def test_move_rack_accepts_only_approved_position_and_template_edges(
     assert request.rcs_template_id is template
 
 
-@pytest.mark.parametrize("target_face", ["270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+@pytest.mark.parametrize("target_face", ["270", "FACE@01", "面-1", " ", "x" * 1000])
 def test_face_values_are_opaque_non_empty_strings(target_face: str) -> None:
     request = MoveRackRequest(
         _REQUEST_ID,
@@ -573,6 +573,35 @@ def test_face_values_are_opaque_non_empty_strings(target_face: str) -> None:
 
     assert request.target_face == target_face
     assert slot.rack_face == target_face
+
+
+@pytest.mark.parametrize(
+    ("invalid_face", "expected_message"),
+    [("\x00", "must not contain NUL"), ("\ud800", "must be valid UTF-8")],
+)
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda face: RackBinSlot("rack-1", face, "slot-1"),
+        lambda face: MoveRackRequest(
+            _REQUEST_ID,
+            _caller(),
+            "rack-1",
+            RackPosition("SOURCE"),
+            RackPosition("TARGET"),
+            face,
+        ),
+        lambda face: RotateRackRequest(_REQUEST_ID, _caller(), "rack-1", RackPosition("WORK"), face),
+        lambda face: TransportMemberOutcome("rack-1", RackPosition("TARGET"), arrival_face=face),
+    ],
+)
+def test_face_values_reject_unrepresentable_values_before_persistence(
+    factory: Callable[[str], object],
+    invalid_face: str,
+    expected_message: str,
+) -> None:
+    with pytest.raises(TransportContractError, match=expected_message):
+        factory(invalid_face)
 
 
 @pytest.mark.parametrize("target_face", ["", 90, True, None])

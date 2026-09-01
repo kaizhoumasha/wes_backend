@@ -353,7 +353,7 @@ def test_response_status_code_and_result_pairings_are_strict() -> None:
         )
 
 
-@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 1000])
 def test_replacement_response_preserves_broad_positions_and_any_non_empty_face(face: str) -> None:
     response = parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, _replacement_response(face))
 
@@ -362,8 +362,8 @@ def test_replacement_response_preserves_broad_positions_and_any_non_empty_face(f
     assert response.data.new_empty_rack.source.kind == "RACK"
 
 
-@pytest.mark.parametrize("face", ["", None, 90, True])
-def test_replacement_response_rejects_empty_or_non_string_face(face: object) -> None:
+@pytest.mark.parametrize("face", ["", "\x00", "\ud800", None, 90, True])
+def test_replacement_response_rejects_invalid_face(face: object) -> None:
     with pytest.raises(ValidationError):
         parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, _replacement_response(face))
 

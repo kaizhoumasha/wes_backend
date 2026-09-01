@@ -3,7 +3,7 @@ title: WES - WMS 对接接口需求
 status: ReviewRequired
 contract_version: 0.3.0
 published_at: pending
-wes_alignment: ALIGNED
+wes_alignment: FINAL_VALIDATION_PENDING
 created_at: 2026-08-13
 updated_at: 2026-08-31
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
@@ -53,17 +53,17 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | --- | --- | --- | --- |
 | 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
-| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES repository、OpenAPI 和行为测试已对齐 0.3.0；WMS 实现、发布和真实联调仍为 `NOT RUN` |
+| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `FINAL_VALIDATION_PENDING` | WES 修复候选、OpenAPI 和聚焦行为测试已对齐 0.3.0；同 Commit/tree 的不可变镜像、WMS 实现、发布和真实联调仍为 `NOT RUN` |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
-| 粗分自动入库 | `Approved` | `ALIGNED` | `OLD_OUT/NEW_IN` 已通过 Transport 0.3.0 本机不可变镜像 E2E；真实联调与业务验收均为 `NOT RUN` |
+| 粗分自动入库 | `Approved` | `FINAL_VALIDATION_PENDING` | `OLD_OUT/NEW_IN` 生产调用链已交付；历史 `f2129982` 镜像 E2E 已通过，但当前修复候选的同 Commit/tree 镜像尚未生成；真实联调与业务验收均为 `NOT RUN` |
 | 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
 公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`，但容器中间位置事件
 只在供应商能够提供权威逐容器中间事实时启用，当前 CTU/RCS 不实施；
-Transport 0.3.0 的 WES 代码、OpenAPI 和行为测试已完成 repository alignment；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链
-已通过本机不可变镜像 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
+Transport 0.3.0 的 WES 修复候选、OpenAPI 和聚焦行为测试已对齐；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链已交付，
+但当前候选仍缺同 Commit/tree 的不可变镜像 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
 自动上架或自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览
@@ -86,8 +86,9 @@ Transport 0.3.0 的 WES 代码、OpenAPI 和行为测试已完成 repository ali
 公共通信基础能力和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，搬运提交、搬运最终结果以及条件启用的容器中间位置事件单个业务
 样例通过，也不能证明所有公共幂等、冲突和重试规则正确。
 
-当前**不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts` 及自动出库、粗分入库、自动上架场景的 operation。它们保持
-`ReviewRequired`，只能参加联合评审，不能创建临时 DTO、空实现或兼容入口。
+当前 WMS **不要求开发** `/api/v1/wes/decisions`、`/api/v1/wes/facts`，也不要求为粗分入库新增专用 endpoint 或 operation。
+粗分 `OLD_OUT/NEW_IN` 业务合同已批准并由 WES 生产调用链消费，但 WMS 侧只需实现上表共享的 Transport submit/result 接口。
+自动出库、自动上架等未批准场景仍为 `ReviewRequired`，只能参加联合评审，不能创建临时 DTO、空实现或兼容入口。
 
 ### 0.3 WMS C# 技术基线
 
@@ -1035,13 +1036,14 @@ static string CreateUuidV7()
 | `slot_id/location_code` | 非空 UTF-8 string，`1..100` 字符 | 由位置权威方提供；不得用空字符串或 `null` |
 | `kind` | enum | `RACK_MOVE \| RACK_ROTATE \| BIN_MOVE \| BIN_EXCHANGE` |
 | `rcs_template_id` | enum | `CTU01 \| CTU02 \| CTU03 \| F01`；货架任务始终发送规范化后的明确值 |
-| `rack_face/target_face/arrival_face` | string 或 `null` | 是否允许 `null` 由具体上下文决定；提供时必须是非空 string，内容不解释且原样传递；`rack_face` 是储位身份的一部分，不能从 `slot_id` 推断 |
+| `rack_face/target_face/arrival_face` | string 或 `null` | 是否允许 `null` 由具体上下文决定；提供时必须是非空且不含 NUL 的 UTF-8 string，内容不解释且原样传递；`rack_face` 是储位身份的一部分，不能从 `slot_id` 推断 |
 | `milestone` | enum | `SOURCE_PICKED \| TARGET_PLACED \| POSITION_UNKNOWN` |
 | `results[].status` | enum | `SUCCEEDED \| FAILED` |
 | `failure_code` | 非空 UTF-8 string，`1..120` 字符 | WMS 将 RCS 原始失败归一化后的稳定码，不发送自由文本或供应商原始业务载荷 |
 
-三个面字段没有专用词法或长度规则：按具体上下文可为 `null`，一旦提供，JSON value 必须是非空 string；空白、控制字符、
-U+FEFF 和任意长度内容均按普通 string 处理。公共 HTTP Body 仍须符合第 2 章 UTF-8/JSON 信封规则。各方对 JSON 解析后的 string
+三个面字段没有业务词法或长度规则：按具体上下文可为 `null`，一旦提供，JSON value 必须是非空且不含 NUL 的 UTF-8 string；
+空白、除 NUL 外的控制字符、U+FEFF 和任意长度内容均按普通 string 处理。该最小边界保证值可进入 PostgreSQL `TEXT`；
+公共 HTTP Body 仍须符合第 2 章 UTF-8/JSON 信封规则。各方对 JSON 解析后的 string
 原样传递并精确比较，不得 trim、case folding、Unicode normalization、A/B 转换、角度计算或容差。不同 JSON 转义解析为相同字符
 序列时属于同一 string；组合字符与预组字符未经 normalization 时仍不相等。
 

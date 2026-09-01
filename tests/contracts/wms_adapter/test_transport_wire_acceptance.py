@@ -76,11 +76,40 @@ def _rack_result_data(**overrides: object) -> dict[str, object]:
     return data
 
 
-@pytest.mark.parametrize("arrival_face", ["270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+@pytest.mark.parametrize("arrival_face", ["270", "FACE@01", "面-1", " ", "x" * 1000])
 def test_rack_callback_preserves_any_non_empty_face_string(arrival_face: str) -> None:
     envelope = _envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face))
 
     assert validate_callback_envelope(envelope)["data"]["arrival_face"] == arrival_face
+
+
+@pytest.mark.parametrize(
+    ("arrival_face", "expected_message"),
+    [("\x00", "arrival_face must not contain NUL"), ("\ud800", "arrival_face must be valid UTF-8")],
+)
+def test_rack_callback_rejects_invalid_face(arrival_face: str, expected_message: str) -> None:
+    with pytest.raises(TransportContractError, match=expected_message):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face)))
+
+
+def test_rack_bin_slot_rejects_nul_face() -> None:
+    with pytest.raises(TransportContractError, match="rack_face must not contain NUL"):
+        validate_callback_envelope(
+            _envelope(
+                POSITION_OPERATION,
+                {
+                    "transport_task_id": "transport-1",
+                    "container_id": "bin-1",
+                    "milestone": "TARGET_PLACED",
+                    "final_position": {
+                        "kind": "RACK_BIN_SLOT",
+                        "rack_id": "rack-1",
+                        "rack_face": "\x00",
+                        "slot_id": "slot-1",
+                    },
+                },
+            )
+        )
 
 
 @pytest.mark.parametrize("arrival_face", ["", 90, True])

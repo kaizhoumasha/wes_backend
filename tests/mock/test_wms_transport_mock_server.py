@@ -355,7 +355,7 @@ def test_transport_submit_mock_rejects_unapproved_rack_move_matrix(
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 1000])
 def test_transport_submit_mock_preserves_any_non_empty_face_string(face: str) -> None:
     envelope = deepcopy(RACK_MOVE)
     envelope["data"]["target_face"] = face
@@ -365,6 +365,28 @@ def test_transport_submit_mock_preserves_any_non_empty_face_string(face: str) ->
 
     assert response.status_code == 202
     assert wms_mock_server.transport_submission_store.snapshots()[-1]["request"]["data"]["target_face"] == face
+
+
+@pytest.mark.parametrize("template", [RACK_MOVE, BIN_MOVE], ids=["target-face", "rack-face"])
+def test_transport_submit_mock_rejects_nul_face(template: dict[str, object]) -> None:
+    envelope = deepcopy(template)
+    data = envelope["data"]
+    assert isinstance(data, dict)
+    if data["kind"] == "RACK_MOVE":
+        data["target_face"] = "\x00"
+    else:
+        moves = data["moves"]
+        assert isinstance(moves, list)
+        moves[0]["source"]["rack_face"] = "\x00"
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 422
+
+
+def test_transport_submit_mock_rejects_face_not_representable_as_utf8() -> None:
+    assert wms_mock_server._opaque_face("\ud800") is False
 
 
 @pytest.mark.parametrize(("field_path", "invalid_value"), [("kind", []), ("target_face", {})])

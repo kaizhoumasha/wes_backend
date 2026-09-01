@@ -50,7 +50,8 @@ _POSITION_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100, "pa
 _FACE_SCHEMA = {
     "type": "string",
     "minLength": 1,
-    "description": "Opaque non-empty face value; preserve exactly",
+    "pattern": r"^[^\u0000]+$",
+    "description": "Opaque non-empty face value without NUL; preserve exactly",
 }
 _RACK_POSITION_SCHEMA = _closed_object(
     ["kind", "location_code"],

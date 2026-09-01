@@ -10,6 +10,17 @@ def _required(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must not be blank")
 
 
+def _opaque_face(value: object, field_name: str) -> None:
+    if type(value) is not str or value == "":
+        raise ValueError(f"{field_name} must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError(f"{field_name} must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{field_name} must be valid UTF-8") from error
+
+
 def _required_refs(values: tuple[str, ...], field_name: str) -> None:
     if type(values) is not tuple:
         raise TypeError(f"{field_name} must be a tuple")
@@ -189,8 +200,7 @@ class CreateTransportTask:
         position_types = {TransportRackReference, TransportZonePosition, TransportRackPosition}
         if type(self.source) not in position_types or type(self.target) not in position_types:
             raise TypeError("source and target must be Transport rack move positions")
-        if type(self.target_face) is not str or self.target_face == "":
-            raise ValueError("target_face must be a non-empty string")
+        _opaque_face(self.target_face, "target_face")
         if type(self.rcs_template_id) is not TransportRcsTemplateId:
             raise ValueError("rcs_template_id must be a TransportRcsTemplateId")
         if self.source == self.target:

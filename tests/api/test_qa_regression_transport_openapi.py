@@ -84,8 +84,10 @@ def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
     ]
     assert constrained_strings
     for schema in constrained_strings:
-        if schema.get("description") == "Opaque non-empty face value; preserve exactly":
-            assert not {"enum", "pattern", "maxLength", "allOf"} & set(schema)
+        if schema.get("description") == "Opaque non-empty face value without NUL; preserve exactly":
+            assert not {"enum", "maxLength", "allOf"} & set(schema)
+            assert re.search(schema["pattern"], "\x00") is None
+            assert re.search(schema["pattern"], " ") is not None
             continue
         if "pattern" in schema:
             assert re.search(schema["pattern"], "   ") is None
@@ -107,7 +109,8 @@ def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
         == {
             "type": "string",
             "minLength": 1,
-            "description": "Opaque non-empty face value; preserve exactly",
+            "pattern": "^[^\\u0000]+$",
+            "description": "Opaque non-empty face value without NUL; preserve exactly",
         }
         for schema in rack_slots
     )

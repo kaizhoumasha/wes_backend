@@ -378,7 +378,10 @@ async def test_510056_debug_rack_routes_reject_missing_or_wrong_kind_and_templat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("face", "expected_status"), [(" ", 202), ("", 422), (90, 422), (True, 422)])
+@pytest.mark.parametrize(
+    ("face", "expected_status"),
+    [(" ", 202), ("", 422), ("\x00", 422), (90, 422), (True, 422)],
+)
 async def test_debug_rack_face_is_a_strict_non_empty_opaque_string(face: object, expected_status: int) -> None:
     runtime = _runtime()
     payload = _valid_payload("RACK_MOVE")

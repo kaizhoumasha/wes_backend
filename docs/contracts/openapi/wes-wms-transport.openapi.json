@@ -157,7 +157,8 @@
                                       "rack_face": {
                                         "type": "string",
                                         "minLength": 1,
-                                        "description": "Opaque non-empty face value; preserve exactly"
+                                        "pattern": "^[^\\u0000]+$",
+                                        "description": "Opaque non-empty face value without NUL; preserve exactly"
                                       },
                                       "slot_id": {
                                         "type": "string",
@@ -296,7 +297,8 @@
                               "arrival_face": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Opaque non-empty face value; preserve exactly"
+                                "pattern": "^[^\\u0000]+$",
+                                "description": "Opaque non-empty face value without NUL; preserve exactly"
                               }
                             }
                           },
@@ -378,7 +380,8 @@
                               "arrival_face": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Opaque non-empty face value; preserve exactly"
+                                "pattern": "^[^\\u0000]+$",
+                                "description": "Opaque non-empty face value without NUL; preserve exactly"
                               }
                             }
                           },
@@ -522,7 +525,8 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
-                                                  "description": "Opaque non-empty face value; preserve exactly"
+                                                  "pattern": "^[^\\u0000]+$",
+                                                  "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",
@@ -607,7 +611,8 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
-                                                  "description": "Opaque non-empty face value; preserve exactly"
+                                                  "pattern": "^[^\\u0000]+$",
+                                                  "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",
@@ -778,7 +783,8 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
-                                                  "description": "Opaque non-empty face value; preserve exactly"
+                                                  "pattern": "^[^\\u0000]+$",
+                                                  "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",
@@ -863,7 +869,8 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
-                                                  "description": "Opaque non-empty face value; preserve exactly"
+                                                  "pattern": "^[^\\u0000]+$",
+                                                  "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",

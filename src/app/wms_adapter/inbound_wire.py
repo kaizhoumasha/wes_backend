@@ -273,7 +273,7 @@ class RackMovePlan(_StrictModel):
     rack_id: Identifier
     source: RackMovePosition
     target: RackMovePosition
-    target_face: Annotated[str, Field(min_length=1)]
+    target_face: Annotated[str, Field(min_length=1, pattern=r"^[^\x00]+$")]
 
     @model_validator(mode="after")
     def validate_rack_reference_identity(self) -> RackMovePlan:
