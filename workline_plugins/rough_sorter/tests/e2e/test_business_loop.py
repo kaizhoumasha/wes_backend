@@ -111,6 +111,8 @@ def _released_event() -> threading.Event:
 class _BoundaryState:
     api_url: str = ""
     admission_results: list[str] = field(default_factory=lambda: ["ACCEPT"])
+    target_results: list[str] = field(default_factory=lambda: ["ASSIGNED"])
+    assigned_target_rack_id: str = "RACK-1"
     admission_retry_after_ms: int = 500
     admission_accept_release: threading.Event = field(default_factory=_released_event)
     ecs_callback_release: threading.Event = field(default_factory=_released_event)
@@ -150,6 +152,9 @@ class _WmsStubHandler(_JsonHandler):
     def do_POST(self) -> None:
         request = self._read_json()
         operation = request.get("operation")
+        if self.path == "/api/v1/wes/transport-requests":
+            self._respond_transport_submit(request, operation)
+            return
         expected_path = (
             "/api/v1/wes/facts" if operation == "inbound.material.placement_report@v1" else "/api/v1/wes/decisions"
         )
@@ -158,49 +163,105 @@ class _WmsStubHandler(_JsonHandler):
             return
         with self.state.lock:
             self.state.wms_requests.append(request)
-            if operation == "inbound.material.admission_decide@v1":
-                if not self.state.admission_results:
-                    self._write_json(500, {"error": "unexpected admission request"})
-                    return
-                admission_result = self.state.admission_results.pop(0)
         common = {
             "operation_id": request["operation_id"],
             "timestamp": int(time.time() * 1000),
         }
+        response = self._application_response(operation, common)
+        if response is not None:
+            self._write_json(200, response)
+
+    def _respond_transport_submit(self, request: dict[str, Any], operation: object) -> None:
+        if operation != "transport.task.submit@v1":
+            self._write_json(422, {"error": "unexpected transport operation"})
+            return
+        with self.state.lock:
+            self.state.wms_requests.append(request)
+        self._write_json(
+            202,
+            {
+                "operation_id": request["operation_id"],
+                "code": "RECEIVED",
+                "timestamp": int(time.time() * 1000),
+                "data": {"transport_task_id": request["data"]["transport_task_id"]},
+            },
+        )
+
+    def _application_response(self, operation: object, common: dict[str, Any]) -> dict[str, Any] | None:
         if operation == "inbound.material.admission_decide@v1":
-            if admission_result == "WAIT":
-                response = common | {
-                    "code": "DECIDED",
-                    "data": {
-                        "result": "WAIT",
-                        "reason_code": "CELL_PENDING",
-                        "retry_after_ms": self.state.admission_retry_after_ms,
+            return self._admission_response(common)
+        if operation == "inbound.material.target_decide@v1":
+            return self._target_response(common)
+        if operation == "inbound.source_rack.replacement_plan_decide@v1":
+            return common | {
+                "code": "DECIDED",
+                "data": {
+                    "result": "READY",
+                    "rack_replacement_id": "REPLACEMENT-RS-E2E-001",
+                    "old_loaded_rack": {
+                        "rack_id": "RACK-1",
+                        "source": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                        "target": {"kind": "RACK_POSITION", "location_code": "STORAGE-OLD"},
+                        "target_face": "90",
                     },
-                }
-            elif admission_result == "ACCEPT":
-                if not self.state.admission_accept_release.wait(timeout=API_TIMEOUT_SECONDS):
-                    self._write_json(504, {"error": "timed out waiting to release admission ACCEPT"})
-                    return
-                response = common | {
-                    "code": "DECIDED",
-                    "data": {
-                        "result": "ACCEPT",
-                        "pkg_id": "PKG-RS-E2E-001",
-                        "inbound_admission_id": "ADM-RS-E2E-001",
+                    "new_empty_rack": {
+                        "rack_id": "RACK-2",
+                        "source": {"kind": "RACK_POSITION", "location_code": "STORAGE-NEW"},
+                        "target": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                        "target_face": "270",
                     },
-                }
-            else:
-                self._write_json(500, {"error": f"unsupported admission result: {admission_result}"})
-                return
-        elif operation == "inbound.material.target_decide@v1":
-            response = common | {
+                },
+            }
+        if operation == "inbound.material.placement_report@v1":
+            return common | {"code": "RECORDED", "data": {}}
+        self._write_json(422, common | {"code": "REJECTED", "data": {"reason_code": "UNSUPPORTED_OPERATION"}})
+        return None
+
+    def _admission_response(self, common: dict[str, Any]) -> dict[str, Any] | None:
+        with self.state.lock:
+            if not self.state.admission_results:
+                self._write_json(500, {"error": "unexpected admission request"})
+                return None
+            result = self.state.admission_results.pop(0)
+        if result == "WAIT":
+            return common | {
+                "code": "DECIDED",
+                "data": {
+                    "result": "WAIT",
+                    "reason_code": "CELL_PENDING",
+                    "retry_after_ms": self.state.admission_retry_after_ms,
+                },
+            }
+        if result == "ACCEPT":
+            if not self.state.admission_accept_release.wait(timeout=API_TIMEOUT_SECONDS):
+                self._write_json(504, {"error": "timed out waiting to release admission ACCEPT"})
+                return None
+            return common | {
+                "code": "DECIDED",
+                "data": {
+                    "result": "ACCEPT",
+                    "pkg_id": "PKG-RS-E2E-001",
+                    "inbound_admission_id": "ADM-RS-E2E-001",
+                },
+            }
+        self._write_json(500, {"error": f"unsupported admission result: {result}"})
+        return None
+
+    def _target_response(self, common: dict[str, Any]) -> dict[str, Any] | None:
+        with self.state.lock:
+            if not self.state.target_results:
+                self._write_json(500, {"error": "unexpected target request"})
+                return None
+            result = self.state.target_results.pop(0)
+        if result == "ASSIGNED":
+            return common | {
                 "code": "DECIDED",
                 "data": {
                     "result": "ASSIGNED",
                     "target_assignment_id": "TARGET-RS-E2E-001",
                     "target_position": {
                         "type": "ONE_LAYER_BIN_CELL",
-                        "rack_id": "RACK-1",
+                        "rack_id": self.state.assigned_target_rack_id,
                         "rack_slot_code": "SLOT-1",
                         "bin_id": "BIN-1",
                         "bin_cell_id": "CELL-1",
@@ -209,12 +270,13 @@ class _WmsStubHandler(_JsonHandler):
                     "expected_height_mm": "2.0",
                 },
             }
-        elif operation == "inbound.material.placement_report@v1":
-            response = common | {"code": "RECORDED", "data": {}}
-        else:
-            self._write_json(422, common | {"code": "REJECTED", "data": {"reason_code": "UNSUPPORTED_OPERATION"}})
-            return
-        self._write_json(200, response)
+        if result == "NO_AVAILABLE_CELL":
+            return common | {
+                "code": "DECIDED",
+                "data": {"result": "NO_AVAILABLE_CELL", "reason_code": "RACK_FULL"},
+            }
+        self._write_json(500, {"error": f"unsupported target result: {result}"})
+        return None
 
 
 class _EcsStubHandler(_JsonHandler):
@@ -232,14 +294,27 @@ class _EcsStubHandler(_JsonHandler):
         self._write_json(
             200,
             {
-                "device_code": device_code,
-                "contract_key": contract_key,
-                "contract_version": "1.0",
-                "mode": "AUTO",
-                "status": "IDLE",
-                "current_command_code": None,
-                "error_detail": None,
-                "timestamp": _recent_past_timestamp_ms(time.time()),
+                "devices": [
+                    {
+                        "device": {
+                            "device_code": device_code,
+                            "device_name": device_code,
+                            "device_type": contract_key,
+                            "role": contract_key.rsplit(".", 1)[-1].upper(),
+                            "supported_commands": ["PICK_AND_PUT", "MOVE_FORWARD"],
+                            "supported_events": ["COMMAND_RESULT"],
+                        },
+                        "state": {
+                            "device_code": device_code,
+                            "mode": "AUTO",
+                            "status": "IDLE",
+                            "is_online": True,
+                            "current_command_code": None,
+                            "scenario": "success",
+                            "updated_at": _recent_past_timestamp_ms(time.time()),
+                        },
+                    }
+                ]
             },
             no_store=True,
         )
@@ -251,7 +326,7 @@ class _EcsStubHandler(_JsonHandler):
         command = self._read_json()
         with self.state.lock:
             self.state.ecs_commands.append(command)
-        self._write_json(200, {"code": 200, "message": "Accepted"})
+        self._write_json(200, {"code": 200, "message": "ACK"})
         threading.Thread(target=self._callback_success, args=(command,), daemon=True).start()
 
     def _callback_success(self, command: dict[str, Any]) -> None:
@@ -354,6 +429,46 @@ def _start_workline(stack: _DockerStack, api_url: str) -> None:
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epochs") == "1"
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_device_bindings") == "3"
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_position_bindings") == "4"
+
+
+def _wait_wms_requests(
+    state: _BoundaryState,
+    operation: str,
+    minimum: int,
+    *,
+    timeout: float = API_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], ...]:
+    deadline = time.monotonic() + timeout
+    matches: tuple[dict[str, Any], ...] = ()
+    while time.monotonic() < deadline:
+        with state.lock:
+            matches = tuple(item for item in state.wms_requests if item.get("operation") == operation)
+        if len(matches) >= minimum:
+            return matches
+        if state.callback_errors:
+            break
+        time.sleep(0.1)
+    raise AssertionError(f"WMS operation {operation!r} did not reach {minimum}; actual={matches!r}")
+
+
+def _rack_move_success_callback(submit: dict[str, Any], operation_id: str) -> dict[str, Any]:
+    data = submit["data"]
+    target = data["target"]
+    assert target["kind"] == "RACK_POSITION"
+    return {
+        "operation_id": operation_id,
+        "operation": "transport.task.resulted@v1",
+        "timestamp": int(time.time() * 1000),
+        "data": {
+            "transport_task_id": data["transport_task_id"],
+            "kind": "RACK_MOVE",
+            "outcome_revision": 1,
+            "rack_id": data["rack_id"],
+            "status": "SUCCEEDED",
+            "final_position": target,
+            "arrival_face": data["target_face"],
+        },
+    }
 
 
 class _DockerStack:
@@ -484,6 +599,8 @@ class _DockerStack:
             "-e",
             "CELERY_RESULT_BACKEND=redis://:rough-sorter-e2e@redis:6379/2",
             "-e",
+            f"WMS_BASE_URL=http://wms-stub:{self.wms_port}",
+            "-e",
             "WMS_PROVIDER_PROFILE_FILE=/run/rough-sorter/wms-provider.yaml",
             "-e",
             "WMS_QUERY_IN_PROCESS_SIMULATION_ENABLED=false",
@@ -542,7 +659,23 @@ class _DockerStack:
         assert "ERROR" not in result.stderr
 
     def query(self, sql: str) -> str:
-        return _run("docker", "exec", self.db, "psql", "-U", "wes", "-d", "wes", "-At", "-c", sql).stdout.strip()
+        result = _run(
+            "docker",
+            "exec",
+            self.db,
+            "psql",
+            "-U",
+            "wes",
+            "-d",
+            "wes",
+            "-At",
+            "-c",
+            sql,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise AssertionError(f"database query failed: {result.stderr.strip()}\nsql={sql}")
+        return result.stdout.strip()
 
     def wait_query(self, sql: str, expected: str, *, timeout: float = API_TIMEOUT_SECONDS) -> None:
         deadline = time.monotonic() + timeout
@@ -939,5 +1072,101 @@ def test_installed_plugin_closes_one_material_through_public_ingress_and_real_wo
             assert len({item["command_code"] for item in ecs_commands}) == 3
             assert wms_requests[1]["operation_id"] == ecs_commands[1]["command_code"]
             assert wms_requests[2]["operation_id"] == ecs_commands[2]["command_code"]
+        finally:
+            stack.close()
+
+
+def test_installed_plugin_runs_two_independent_rack_replacement_legs_through_real_transport_boundaries() -> None:
+    """Prove the approved replacement WIRE and callback ordering without real WMS/RCS/ECS."""
+
+    state = _BoundaryState(
+        target_results=["NO_AVAILABLE_CELL", "ASSIGNED"],
+        assigned_target_rack_id="RACK-2",
+    )
+    with _serve(_WmsStubHandler, state) as wms_port, _serve(_EcsStubHandler, state) as ecs_port:
+        stack = _DockerStack(wms_port=wms_port, ecs_port=ecs_port)
+        try:
+            stack.start()
+            state.api_url = f"http://127.0.0.1:{stack.api_port}"
+            stack.seed_initial_environment()
+            _start_workline(stack, state.api_url)
+            assert _json_request(f"{state.api_url}/api/v1/callback/event", _measurement_scan())["code"] == 200
+
+            submits = _wait_wms_requests(state, "transport.task.submit@v1", 2)
+            assert len({item["data"]["transport_task_id"] for item in submits}) == 2
+            by_template = {item["data"]["rcs_template_id"]: item for item in submits}
+            assert set(by_template) == {"CTU01", "CTU03"}
+
+            old_out = by_template["CTU03"]
+            new_in = by_template["CTU01"]
+            assert old_out["data"] == {
+                "transport_task_id": old_out["data"]["transport_task_id"],
+                "kind": "RACK_MOVE",
+                "rack_id": "RACK-1",
+                "source": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                "target": {"kind": "RACK_POSITION", "location_code": "STORAGE-OLD"},
+                "target_face": "90",
+                "rcs_template_id": "CTU03",
+            }
+            assert new_in["data"] == {
+                "transport_task_id": new_in["data"]["transport_task_id"],
+                "kind": "RACK_MOVE",
+                "rack_id": "RACK-2",
+                "source": {"kind": "RACK_POSITION", "location_code": "STORAGE-NEW"},
+                "target": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                "target_face": "270",
+                "rcs_template_id": "CTU01",
+            }
+            assert stack.query("SELECT count(*) FROM wes_runtime.transport_tasks WHERE kind = 'RACK_EXCHANGE'") == "0"
+
+            new_in_ack = _json_request(
+                f"{state.api_url}/api/v1/wms/events",
+                _rack_move_success_callback(new_in, "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"),
+            )
+            assert new_in_ack["code"] == "RECEIVED"
+            stack.wait_query(
+                "SELECT status FROM wes_runtime.transport_tasks "
+                f"WHERE transport_task_id = '{new_in['data']['transport_task_id']}'",
+                "SUCCEEDED",
+            )
+            target_requests = _wait_wms_requests(state, "inbound.material.target_decide@v1", 2)
+            assert len(target_requests) == 2
+            assert (
+                stack.query(
+                    "SELECT status FROM wes_runtime.transport_tasks "
+                    f"WHERE transport_task_id = '{old_out['data']['transport_task_id']}'"
+                )
+                == "ACCEPTED"
+            )
+            assert (
+                stack.query(
+                    "SELECT (position_json->>'kind') || ':' || (position_json->>'location_code') || ':' || "
+                    "arrival_face "
+                    "FROM wes_biz.position_projections WHERE object_type = 'RACK' AND object_id = 'RACK-2'"
+                )
+                == "RACK_POSITION:OUTLET-1:270"
+            )
+
+            old_out_ack = _json_request(
+                f"{state.api_url}/api/v1/wms/events",
+                _rack_move_success_callback(old_out, "019f12d0-58d7-7b4d-a23a-1b90aa5d4473"),
+            )
+            assert old_out_ack["code"] == "RECEIVED"
+            stack.wait_query(
+                "SELECT status FROM wes_runtime.transport_tasks "
+                f"WHERE transport_task_id = '{old_out['data']['transport_task_id']}'",
+                "SUCCEEDED",
+            )
+            assert (
+                stack.query(
+                    "SELECT (position_json->>'kind') || ':' || (position_json->>'location_code') || ':' || "
+                    "arrival_face "
+                    "FROM wes_biz.position_projections WHERE object_type = 'RACK' AND object_id = 'RACK-1'"
+                )
+                == "RACK_POSITION:STORAGE-OLD:90"
+            )
+            assert len(_wait_wms_requests(state, "inbound.material.target_decide@v1", 2)) == 2
+            stack.persist_logs()
+            assert state.callback_errors == []
         finally:
             stack.close()
