@@ -90,19 +90,27 @@ def test_builder_retries_transient_uv_bootstrap_failures() -> None:
     assert "exit 1;" in builder_stage
 
 
-def test_backend_and_mock_images_use_the_same_regional_package_mirrors() -> None:
+def test_backend_and_mock_images_keep_cached_debian_layer_before_python_mirror_override() -> None:
     for dockerfile in (REPO_ROOT / "Dockerfile", REPO_ROOT / "tests/mock/Dockerfile"):
         dockerfile_text = dockerfile.read_text(encoding="utf-8")
 
-        assert "ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian" in dockerfile_text
-        assert "ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security" in dockerfile_text
-        assert "ARG PYPI_MIRROR=https://mirrors.aliyun.com/pypi/simple" in dockerfile_text
+        assert "ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian" in dockerfile_text
+        assert "ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security" in dockerfile_text
+        assert "ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple" in dockerfile_text
         assert "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" in dockerfile_text
         assert "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" in dockerfile_text
-        assert "PIP_INDEX_URL=${PYPI_MIRROR}" in dockerfile_text
-        assert "tuna.tsinghua.edu.cn" not in dockerfile_text
+        assert "ARG PYPI_INSTALL_MIRROR=https://mirrors.aliyun.com/pypi/simple" in dockerfile_text
+        assert "PIP_INDEX_URL=${PYPI_INSTALL_MIRROR}" in dockerfile_text
+        apt_install_index = dockerfile_text.index("apt-get update")
+        python_mirror_arg_index = dockerfile_text.index("ARG PYPI_INSTALL_MIRROR=")
+        python_mirror_env_index = dockerfile_text.index("PIP_INDEX_URL=${PYPI_INSTALL_MIRROR}")
+        python_install_index = dockerfile_text.index("pip install --no-cache-dir")
+        assert apt_install_index < python_mirror_arg_index < python_mirror_env_index < python_install_index
 
-    assert "UV_DEFAULT_INDEX=${PYPI_MIRROR}" in (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    backend_dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert backend_dockerfile_text.index("UV_DEFAULT_INDEX=${PYPI_INSTALL_MIRROR}") < backend_dockerfile_text.index(
+        "pip install --no-cache-dir uv"
+    )
 
 
 def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs() -> None:

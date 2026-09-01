@@ -10,9 +10,9 @@ FROM python:3.13-slim
 LABEL maintainer="WES Backend Team"
 LABEL description="Mock 外部系统服务（ECS、WMS）用于 E2E 测试"
 
-ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
-ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security
-ARG PYPI_MIRROR=https://mirrors.aliyun.com/pypi/simple
+ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ENV PIP_INDEX_URL=${PYPI_MIRROR}
 # 固定运行目录为 /app/tests/mock；显式暴露镜像内打包的 src/tests 命名空间。
@@ -26,6 +26,10 @@ RUN sed -i \
     apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
+
+# 保留既有系统依赖层缓存，仅对发生故障的 Python 包源应用覆盖。
+ARG PYPI_INSTALL_MIRROR=https://mirrors.aliyun.com/pypi/simple
+ENV PIP_INDEX_URL=${PYPI_INSTALL_MIRROR}
 
 # 安装 Python 依赖（仅 mock 服务需要的）
 RUN pip install --no-cache-dir \

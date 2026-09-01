@@ -17,9 +17,9 @@ WORKDIR /app
 # ⚠️ 注意：应与 .env 中的 DATETIME_TIMEZONE 保持一致
 # 构建时指定：docker build --build-arg CONTAINER_TIMEZONE=Asia/Shanghai ...
 ARG CONTAINER_TIMEZONE=Asia/Shanghai
-ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
-ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security
-ARG PYPI_MIRROR=https://mirrors.aliyun.com/pypi/simple
+ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
@@ -56,6 +56,11 @@ RUN sed -i \
     curl \
     # 清理缓存
     && rm -rf /var/lib/apt/lists/*
+
+# 保留既有系统依赖层缓存，仅对发生故障的 Python 包源应用覆盖。
+ARG PYPI_INSTALL_MIRROR=https://mirrors.aliyun.com/pypi/simple
+ENV PIP_INDEX_URL=${PYPI_INSTALL_MIRROR} \
+    UV_DEFAULT_INDEX=${PYPI_INSTALL_MIRROR}
 
 # 复制依赖文件
 COPY pyproject.toml uv.lock ./
