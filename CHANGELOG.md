@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.9.0] - 2026-09-01
+
+### Fixed
+
+- 根据 Jenkins 实测将镜像源修复缩窄为 Python 包源覆盖：保留既有 Debian 基础层及其缓存，只在系统依赖安装完成后把 pip/uv 切换至阿里云 HTTPS 源，避免触发 107 MB 无关 apt 冷下载。
+
+### Verification
+
+- Docker/Jenkins 合同测试 20 项完成 RED → GREEN；主 `builder` 与 Mock 镜像均命中既有 apt 层缓存，并从阿里云 PyPI 成功安装依赖。
+
 ## [0.29.8.0] - 2026-09-01
 
 ### Fixed
