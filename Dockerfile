@@ -69,10 +69,10 @@ COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
 # ============================================
 FROM base AS builder
 
-# 安装 uv；外部镜像偶发返回截断索引时，在同一构建中有限重试。
+# 安装 uv；外部镜像偶发返回截断索引或挂起时，限制单次等待并有限重试。
 RUN set -eu; \
     for attempt in 1 2 3; do \
-        if pip install --no-cache-dir uv; then \
+        if timeout --kill-after=10s 180s pip install --no-cache-dir uv; then \
             break; \
         fi; \
         if [ "$attempt" -eq 3 ]; then \
