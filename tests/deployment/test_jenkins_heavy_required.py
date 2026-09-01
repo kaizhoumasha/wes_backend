@@ -77,17 +77,18 @@ def test_backend_provenance_labels_do_not_invalidate_shared_dependency_layers() 
         assert 'com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"' in stage
 
 
-def test_builder_retries_transient_uv_bootstrap_failures() -> None:
+def test_builder_uses_pinned_uv_bootstrap_image() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     builder_stage = dockerfile_text.split("FROM base AS builder", maxsplit=1)[1].split(
         "FROM base AS development", maxsplit=1
     )[0]
 
-    assert "for attempt in 1 2 3" in builder_stage
-    assert "if timeout --kill-after=10s 180s pip install --no-cache-dir uv" in builder_stage
-    assert "break;" in builder_stage
-    assert '[ "$attempt" -eq 3 ]' in builder_stage
-    assert "exit 1;" in builder_stage
+    assert (
+        "FROM ghcr.io/astral-sh/uv:0.12.7@sha256:95f2aa1fe59274951cfe9b0cbc7972e879ff1004bc8945d130a32eb0dbd85945 "
+        "AS uv-tool"
+    ) in dockerfile_text
+    assert "COPY --from=uv-tool /uv /usr/local/bin/uv" in builder_stage
+    assert "pip install --no-cache-dir uv" not in builder_stage
 
 
 def test_backend_and_mock_images_keep_cached_debian_layer_before_python_mirror_override() -> None:
@@ -104,12 +105,13 @@ def test_backend_and_mock_images_keep_cached_debian_layer_before_python_mirror_o
         apt_install_index = dockerfile_text.index("apt-get update")
         python_mirror_arg_index = dockerfile_text.index("ARG PYPI_INSTALL_MIRROR=")
         python_mirror_env_index = dockerfile_text.index("PIP_INDEX_URL=${PYPI_INSTALL_MIRROR}")
-        python_install_index = dockerfile_text.index("pip install --no-cache-dir")
+        python_install_marker = "uv sync" if dockerfile == REPO_ROOT / "Dockerfile" else "pip install --no-cache-dir"
+        python_install_index = dockerfile_text.index(python_install_marker)
         assert apt_install_index < python_mirror_arg_index < python_mirror_env_index < python_install_index
 
     backend_dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert backend_dockerfile_text.index("UV_DEFAULT_INDEX=${PYPI_INSTALL_MIRROR}") < backend_dockerfile_text.index(
-        "pip install --no-cache-dir uv"
+        "uv sync"
     )
 
 
