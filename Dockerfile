@@ -8,6 +8,8 @@
 # ============================================
 # Stage 1: Base - 基础镜像
 # ============================================
+FROM ghcr.io/astral-sh/uv:0.12.7@sha256:95f2aa1fe59274951cfe9b0cbc7972e879ff1004bc8945d130a32eb0dbd85945 AS uv-tool
+
 FROM python:3.13-slim AS base
 
 # 设置工作目录
@@ -74,17 +76,8 @@ COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
 # ============================================
 FROM base AS builder
 
-# 安装 uv；外部镜像偶发返回截断索引或挂起时，限制单次等待并有限重试。
-RUN set -eu; \
-    for attempt in 1 2 3; do \
-        if timeout --kill-after=10s 180s pip install --no-cache-dir uv; then \
-            break; \
-        fi; \
-        if [ "$attempt" -eq 3 ]; then \
-            exit 1; \
-        fi; \
-        sleep $((attempt * 5)); \
-    done
+# 使用固定摘要的官方工具镜像引入 uv，避免构建启动依赖 PyPI 下载自身。
+COPY --from=uv-tool /uv /usr/local/bin/uv
 
 # 创建虚拟环境并基于锁文件安装依赖
 RUN --mount=type=cache,target=/root/.cache/uv \

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.10.0] - 2026-09-01
+
+### Fixed
+
+- 后端 builder 从固定摘要的官方 `uv 0.12.7` 工具镜像复制二进制，移除构建启动阶段下载 `uv` wheel 的 PyPI 依赖；锁文件依赖安装和既有 apt 层缓存保持不变。
+
+### Verification
+
+- Docker/Jenkins 合同测试完成 RED → GREEN；固定摘要的多架构工具镜像可拉取并报告 `uv 0.12.7`。
+
 ## [0.29.9.0] - 2026-09-01
 
 ### Fixed
