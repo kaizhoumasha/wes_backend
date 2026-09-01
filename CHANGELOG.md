@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.11.0] - 2026-09-01
+
+### Fixed
+
+- Jenkins 后端检出改为从匿名内网 Git 读取对象，移除明文 HTTP 凭据；源码提交必须匹配 GitLab webhook 的不可变 SHA，MR 的目标基线必须由外部 TLS 精确解析并存在于已检出的对象库中，不再执行 `PreBuildMerge`。
+
+### Verification
+
+- Jenkins/HEAVY 合同测试 21 项通过；外部目标引用解析异常、零 SHA、事件 SHA 不匹配和目标对象缺失均 fail closed。
+
 ## [0.29.10.0] - 2026-09-01
 
 ### Fixed

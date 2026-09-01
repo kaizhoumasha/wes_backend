@@ -201,7 +201,8 @@ def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None
         "boolean isDevelopPush = gitlabActionType == 'PUSH' && sourceBranch == 'develop' && !isMergeRequest"
         in checkout_body
     )
-    assert "env.CI_DIFF_BASE = isMergeRequest ? \"origin/${targetBranch}\" : ''" in checkout_body
+    assert "env.CI_DIFF_BASE = ''" in checkout_body
+    assert "env.CI_DIFF_BASE = targetRefFields[0].toLowerCase()" in checkout_body
     assert "if (!(beforeCommit ==~ /^[0-9a-fA-F]{40}$/) || beforeCommit ==~ /^0{40}$/)" in checkout_body
     assert "error('Develop push requires a non-zero 40-character gitlabBefore')" in checkout_body
     assert "if (!(afterCommit ==~ /^[0-9a-fA-F]{40}$/) || !afterCommit.equalsIgnoreCase(fullCommit))" in checkout_body
@@ -216,6 +217,34 @@ def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None
     assert '-e CI_DIFF_BASE="${CI_DIFF_BASE}"' in classification_body
     assert 'scripts/select_heavy_tests.py --base "${CI_DIFF_BASE}"' in classification_body
     assert '--base "origin/${CI_TARGET_BRANCH}"' not in classification_body
+
+
+def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
+    jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
+    checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
+    checkout_config = checkout_body.split("userRemoteConfigs:", maxsplit=1)[1].split("extensions:", maxsplit=1)[0]
+
+    assert "url: 'http://192.168.0.220:9080/wes/wes_backend.git'" in checkout_config
+    assert "credentialsId" not in checkout_config
+    assert "env.gitlabMergeRequestLastCommit" in checkout_body
+    assert 'git rev-parse "refs/remotes/origin/${CI_SOURCE_BRANCH}^{commit}"' in checkout_body
+    assert "Source event requires a non-zero 40-character trusted commit" in checkout_body
+    assert "Fetched source ref must match the trusted event commit" in checkout_body
+    assert "timeout --kill-after=5s 30s" in checkout_body
+    assert "withCredentials([usernamePassword(" in checkout_body
+    assert "credentialsId: 'gitlab-http-creds'" in checkout_body
+    assert "usernameVariable: 'GITLAB_USERNAME'" in checkout_body
+    assert "passwordVariable: 'GITLAB_PASSWORD'" in checkout_body
+    assert "set +x" in checkout_body
+    assert "credential.helper=!f()" in checkout_body
+    assert '"username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"' in checkout_body
+    assert "ls-remote --heads https://git.zontecmes.com/wes/wes_backend.git" in checkout_body
+    assert '"refs/heads/${CI_TARGET_BRANCH}"' in checkout_body
+    assert "Merge request target lookup must return one exact trusted ref" in checkout_body
+    assert 'git cat-file -e "${CI_DIFF_BASE}^{commit}"' in checkout_body
+    assert "Fetched repository must contain the trusted target commit" in checkout_body
+    assert "PreBuildMerge" not in checkout_body
+    assert "mergeTarget" not in checkout_body
 
 
 def test_heavy_required_uses_non_zero_build_scoped_redis_database() -> None:
