@@ -10,9 +10,9 @@ FROM python:3.13-slim
 LABEL maintainer="WES Backend Team"
 LABEL description="Mock 外部系统服务（ECS、WMS）用于 E2E 测试"
 
-ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian
-ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
-ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
+ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security
+ARG PYPI_MIRROR=https://mirrors.aliyun.com/pypi/simple
 
 ENV PIP_INDEX_URL=${PYPI_MIRROR}
 # 固定运行目录为 /app/tests/mock；显式暴露镜像内打包的 src/tests 命名空间。

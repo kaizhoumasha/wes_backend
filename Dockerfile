@@ -17,9 +17,9 @@ WORKDIR /app
 # ⚠️ 注意：应与 .env 中的 DATETIME_TIMEZONE 保持一致
 # 构建时指定：docker build --build-arg CONTAINER_TIMEZONE=Asia/Shanghai ...
 ARG CONTAINER_TIMEZONE=Asia/Shanghai
-ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian
-ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
-ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
+ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security
+ARG PYPI_MIRROR=https://mirrors.aliyun.com/pypi/simple
 
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1 \
