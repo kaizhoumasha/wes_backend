@@ -167,9 +167,6 @@ class RoughSorterPluginFactFactory:
                 epochs=self._epochs,
                 commands=self._commands,
                 readiness=self._device_readiness,
-                confirmations=self._wms_confirmations,
-                rack_positions=self._rack_positions,
-                rack_placements=self._rack_placements,
             )
         raise TypeError(f"rough sorter 不支持基础 Fact: {type(fact).__name__}")
 

@@ -68,7 +68,7 @@ def base_fact_for_persisted_evidence(
             **common,
             transport_task_id=required_string(evidence.transport_task_id, "evidence.transport_task_id"),
         )
-    raise ValueError("当前粗分 FactFactory 不支持该 evidence kind")
+    raise ValueError("当前 WMS request resolver 不支持该 evidence kind")
 
 
 def position_binding(snapshot: Any, role: str) -> Any:
@@ -126,6 +126,21 @@ def wire_position(value: object, material_trace_id: str, expected_type: str) -> 
         location_type=expected_type,
         material_trace_id=material_trace_id,
     )
+
+
+def wms_position(position: DevicePosition) -> dict[str, str]:
+    if position.location_type == "RACK_CELL":
+        return {
+            "type": "ONE_LAYER_BIN_CELL",
+            "rack_id": required_string(position.rack_id, "rack_id"),
+            "rack_slot_code": required_string(position.rack_slot_code, "rack_slot_code"),
+            "bin_id": required_string(position.bin_id, "bin_id"),
+            "bin_cell_id": required_string(position.bin_cell_id, "bin_cell_id"),
+        }
+    return {
+        "type": "NG_POSITION" if position.location_type == "NG_POSITION" else "HANDOFF_POSITION",
+        "location_code": position.location_id,
+    }
 
 
 def rack_move_plan(value: object, types: RoughSorterTypes) -> Any:

@@ -35,12 +35,16 @@
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段架构收敛总控计划 |
 | `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
+| `docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能实现、本机 Mock 验收和 RC 关闭门禁的实施历史 |
 | `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
+| `docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役与联调 cutover 退出证据；#187 已合入 `develop@97e6887a`，此前 `834fe59e` candidate 已部署联调，merge commit 未证明重新部署，供应商/设备物理/业务验收未完成 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
+| `docs/superpowers/specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 用户主导插件开发的阶段重排设计 |
+| `docs/superpowers/plans/2026-08-27-phase9-minimum-execution-foundation.md` | Phase 9 最小执行基础、七项 successor、测试所有权与 Phase 10 handoff 的实施计划；已合入 `develop@c5a93872` |
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、Nginx/API/Beat admission closure 与维护态稳定静默门禁实施计划；Tasks 1–4 已在 Phase 10 分支完成并纳入候选镜像，Task 5 TEST Deploy 未执行 |
@@ -84,15 +88,14 @@ API → Service → Repository → Database
 | `src/app/*/services/` | 业务协调和事务边界 |
 | `src/app/*/repositories/` | 数据访问 |
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
-| `src/app/execution/` | 通用执行对象、RACK/BIN 当前位置投影、可靠 WMS confirmation 生命周期与静态插件事实处理；不拥有具体 operation 的请求重建、顺序或结果语义 |
+| `src/app/execution/` | Phase 9 最小执行对象、RACK/BIN 当前位置投影、可靠 WMS 确认与静态插件事实处理 |
 | `src/app/runtime/` | 保留当前 Session/Timeline/位置事件、诊断与最小能力合同；Phase 10 旧 Runtime/Intent/Effect/Hold/Provider 应用消费者与 Phase 11 终裁删除的 legacy model identity 均已移出活动源码 |
 | `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影；核心本身不拥有业务 producer，当前由粗分插件 `OLD_OUT/NEW_IN` 通过 port 消费 |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
-| `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层、严格 operation DTO/parser、可靠派发与统一 Event route；未知 operation 明确拒绝，不做业务 fallback |
-| `src/app/wms_integration/` | 仅保留 schema-deferred models 与空命名空间；旧 Provider/Profile/Manifest/query/effect/status 运行时及无 owner 的 operation DTO 已退役，不是业务插件模板 |
-| `packages/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata 与合同内生校验；不得包含宿主实现、WMS operation DTO 或具体工作线业务 |
-| `workline_plugins/` | 具体工作线业务纵向切片；纯 Decision 层只依赖 SDK，应用层可调用 `src` 基础端口，反向依赖禁止 |
+| `src/app/wms_adapter/` | WMS HTTP/JSON 薄访问层和业务系统 ACL；具体业务 API 由对应业务 owner 按获批合同实现 |
+| `src/app/wms_integration/` | 保留 typed fulfillment/inventory ports 与 schema-deferred models；Phase 10 Provider/Profile/Manifest/query/effect/status 运行时已退役，不是业务插件模板 |
+| `workline_plugins/` | 具体工作线插件独立包，不属于核心运行时 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以
 `AGENTS.md` 为准。

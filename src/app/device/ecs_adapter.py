@@ -17,7 +17,6 @@ from src.core.outbound_http import (
     OutboundHttpResult,
     OutboundHttpTransport,
 )
-from src.utils.canonical_json import canonical_json_bytes
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -89,7 +88,7 @@ class EcsAdapter:
                 method=OutboundHttpMethod.POST,
                 path=COMMAND_PATH,
                 headers=(("content-type", "application/json"),),
-                body=canonical_json_bytes(envelope),
+                body=_canonical_json_bytes(envelope),
                 response_limits=_WIRE_RESPONSE_LIMITS,
             )
         )
@@ -227,6 +226,10 @@ def _retry_after_seconds(headers: tuple[tuple[str, str], ...]) -> int | None:
 def _is_json_response(headers: tuple[tuple[str, str], ...]) -> bool:
     values = [value for name, value in headers if name.lower() == "content-type"]
     return len(values) == 1 and values[0].split(";", 1)[0].strip().lower() == "application/json"
+
+
+def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
 __all__ = ["COMMAND_PATH", "STATUS_PATH", "EcsAdapter", "EcsStatusUnavailableError"]

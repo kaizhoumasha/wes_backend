@@ -10,6 +10,7 @@ from wes_plugin_sdk import (
 )
 from wes_plugin_sdk import (
     RecoveryDecision,
+    TransportLeg,
     TransportRackPosition,
     TransportRackReference,
     TransportResultReadyFact,
@@ -18,7 +19,6 @@ from wes_plugin_sdk import (
 
 from deployment._rough_sorter_device_facts import completed_response
 from deployment._rough_sorter_values import (
-    COMMAND_SOURCE_PATTERN,
     bound_position,
     canonical_evidence_id,
     command_position,
@@ -42,7 +42,6 @@ from src.app.transport.contracts import (
     ZonePosition,
 )
 from src.app.wms_adapter.inbound_wire import parse_outbound_request, parse_outbound_response
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,7 +197,7 @@ async def build_transport_fact(
         "runtime_snapshot": runtime,
         "material_trace_id": execution.material_trace_id,
         "rack_replacement_id": binding.rack_replacement_id,
-        "leg": types.TransportLeg.NEW_IN,
+        "leg": TransportLeg.NEW_IN,
         "outcome": outcome,
         "rack_id": plan.rack_id,
         "expected_target": plan.target,
@@ -252,9 +251,6 @@ async def build_recovery_fact(
     epochs: EpochRepositoryPort,
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
-    confirmations: WmsConfirmationRepositoryPort,
-    rack_positions: RackPositionRepositoryPort,
-    rack_placements: RackPlacementRepositoryPort,
 ) -> Any:
     if evidence.kind != InboundEvidenceKind.WMS_EVENT or evidence.operation != "inbound.execution.recovery_decided@v1":
         raise ValueError("Recovery Fact 必须引用 recovery_decided evidence")
@@ -287,20 +283,17 @@ async def build_recovery_fact(
     authoritative = required_position(fact.authoritative_position, "authoritative_position")
     if causal.kind == InboundEvidenceKind.WMS_RESULT:
         operation = required_string(causal.operation, "causal.operation")
-        confirmation = await confirmations.get_by_identity_for_update(
-            db,
-            operation,
-            required_string(causal.operation_id, "causal.operation_id"),
-        )
-        if confirmation is None or confirmation.material_execution_id != execution.id:
-            raise ValueError("Recovery causal WMS confirmation correlation 不匹配")
-        request_data = parse_outbound_request(confirmation.request_payload).model_dump(mode="json")["data"]
         return types.RecoveryDecidedFact(
             **common,
             continuation=types.RecoveryWmsContinuation(
                 operation=operation,
                 operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
-                request_data=request_data,
+                evidence_refs=(fact.evidence_id, str(causal_id)),
+                snapshot_refs=(
+                    f"execution:{execution.execution_code}",
+                    f"causal-evidence:{causal_id}",
+                    f"position:{authoritative.location_id}",
+                ),
             ),
         )
     if causal.kind == InboundEvidenceKind.DEVICE_RESULT:
@@ -341,86 +334,17 @@ async def build_recovery_fact(
                 **common,
                 continuation=types.RecoveryDeferContinuation(reason_code="RECOVERY_NEXT_DEVICE_REBUILD_REQUIRED"),
             )
-        request_data: dict[str, Any]
-        if operation == "inbound.material.target_decide@v1":
-            admission = await completed_response(
-                db=db,
-                execution=execution,
-                operation="inbound.material.admission_decide@v1",
-                required_result="ACCEPT",
-                confirmations=confirmations,
-                evidences=evidences,
-            )
-            request_data = {
-                "material_execution_id": execution.execution_code,
-                "material_trace_id": execution.material_trace_id,
-                "pkg_id": admission.get("pkg_id"),
-                "inbound_admission_id": admission.get("inbound_admission_id"),
-                "source_position": types.wms_position(target),
-                "current_rack_id": await current_rack_id(
-                    db=db,
-                    runtime=runtime,
-                    rack_positions=rack_positions,
-                    rack_placements=rack_placements,
-                ),
-            }
-        elif operation == "inbound.material.placement_report@v1":
-            admission = await completed_response(
-                db=db,
-                execution=execution,
-                operation="inbound.material.admission_decide@v1",
-                required_result="ACCEPT",
-                confirmations=confirmations,
-                evidences=evidences,
-            )
-            assigned = await completed_response(
-                db=db,
-                execution=execution,
-                operation="inbound.material.target_decide@v1",
-                required_result="ASSIGNED",
-                confirmations=confirmations,
-                evidences=evidences,
-            )
-            request_data = {
-                "material_execution_id": execution.execution_code,
-                "material_trace_id": execution.material_trace_id,
-                "pkg_id": admission.get("pkg_id"),
-                "inbound_admission_id": admission.get("inbound_admission_id"),
-                "target_assignment_id": assigned.get("target_assignment_id"),
-                "target_position": types.wms_position(target),
-                "placement_sequence": assigned.get("placement_sequence"),
-                "command_code": command.command_code,
-                "placed_at": int(timezone.to_utc(evidence.received_at).timestamp() * 1000),
-            }
-        else:
-            source_match = COMMAND_SOURCE_PATTERN.fullmatch(command.execution_ref_id)
-            source_evidence = (
-                await evidences.get_by_id_for_update(db, int(source_match.group(1)))
-                if source_match is not None
-                else None
-            )
-            if source_evidence is None:
-                raise ValueError("Recovery NG command source evidence missing")
-            source_response = parse_outbound_response(
-                required_string(source_evidence.operation, "source.operation"),
-                200,
-                source_evidence.normalized_payload,
-            ).model_dump(mode="json", exclude_none=True)
-            source_data = cast("dict[str, Any]", source_response["data"])
-            request_data = {
-                "material_execution_id": execution.execution_code,
-                "material_trace_id": execution.material_trace_id,
-                "ng_evidence_id": str(causal.id),
-                "ng_position": types.wms_position(target),
-                "reason_code": source_data.get("reason_code"),
-                "business_context": "ROUGH_SORT_INBOUND",
-            }
         return types.RecoveryDecidedFact(
             **common,
             continuation=types.RecoveryWmsContinuation(
                 operation=operation,
                 operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
-                request_data=request_data,
+                evidence_refs=(fact.evidence_id, str(causal_id)),
+                snapshot_refs=(
+                    f"execution:{execution.execution_code}",
+                    f"causal-command:{command_code}",
+                    f"position:{authoritative.location_id}",
+                ),
             ),
         )
     return types.RecoveryDecidedFact(

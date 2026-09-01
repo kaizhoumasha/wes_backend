@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
@@ -45,7 +47,6 @@ from src.app.workline.repositories.line_run_epoch_repository import (
     line_run_epoch_repository,
 )
 from src.core.uuid7 import new_uuid7
-from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -733,7 +734,8 @@ def _command_payload_digest(request: DeviceCommandRequestData) -> str:
                 "command_timeout_ms": request.command_timeout_ms,
             }
         )
-    return canonical_json_digest(payload)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _same_manual_debug_identity(

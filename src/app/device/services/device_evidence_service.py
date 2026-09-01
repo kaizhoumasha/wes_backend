@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import TYPE_CHECKING, Protocol
 
@@ -45,7 +47,6 @@ from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
-from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -617,7 +618,8 @@ def _normalize_result(command: DeviceCommand, report: EcsCommandResultReport) ->
 
 def _event_source_identity(report: EcsDeviceEventReport) -> str:
     wire_payload = report.model_dump(mode="json")
-    return f"EVENT:{canonical_json_digest(wire_payload)}"
+    encoded = json.dumps(wire_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return f"EVENT:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _normalize_event(

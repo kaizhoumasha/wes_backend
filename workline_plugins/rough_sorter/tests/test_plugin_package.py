@@ -35,7 +35,7 @@ def _absolute_imports(path: Path) -> set[str]:
     return imports
 
 
-def test_plugin_decision_layer_has_only_sdk_and_stdlib_imports() -> None:
+def test_plugin_has_only_sdk_runtime_dependency_and_stdlib_source_imports() -> None:
     config = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert config["project"]["dependencies"] == ["wes-plugin-sdk==0.1.0"]
 
@@ -44,7 +44,7 @@ def test_plugin_decision_layer_has_only_sdk_and_stdlib_imports() -> None:
         path.relative_to(PACKAGE_ROOT).as_posix(): sorted(
             imported for imported in _absolute_imports(path) if imported.split(".", maxsplit=1)[0] not in allowed_roots
         )
-        for path in (*SOURCE_ROOT.glob("*.py"), *(SOURCE_ROOT / "handlers").rglob("*.py"))
+        for path in SOURCE_ROOT.rglob("*.py")
         if any(imported.split(".", maxsplit=1)[0] not in allowed_roots for imported in _absolute_imports(path))
     }
     assert offenders == {}

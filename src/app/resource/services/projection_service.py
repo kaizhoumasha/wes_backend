@@ -50,7 +50,7 @@ from src.app.workline.services.rack_position_service import (
     workline_rack_position_service,
 )
 from src.utils.timezone import timezone
-from src.utils.value_normalization import coerce_optional_str, enum_str
+from src.utils.value_normalization import enum_str
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -83,23 +83,26 @@ def _db_time(value: Any) -> Any:
     return timezone.to_db_datetime(value) or timezone.now_for_db()
 
 
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _bin_placement_position_mismatch(active_placement: Any, *, position_type: Any, position_code: Any) -> bool:
-    expected_type = coerce_optional_str(position_type)
-    expected_code = coerce_optional_str(position_code)
-    if (
-        expected_type is not None
-        and coerce_optional_str(getattr(active_placement, "position_type", None)) != expected_type
-    ):
+    expected_type = _optional_text(position_type)
+    expected_code = _optional_text(position_code)
+    if expected_type is not None and _optional_text(getattr(active_placement, "position_type", None)) != expected_type:
         return True
     return (
-        expected_code is not None
-        and coerce_optional_str(getattr(active_placement, "position_code", None)) != expected_code
+        expected_code is not None and _optional_text(getattr(active_placement, "position_code", None)) != expected_code
     )
 
 
 def _source_version_is_older(incoming_version: Any, active_version: Any) -> bool:
-    incoming_text = coerce_optional_str(incoming_version)
-    active_text = coerce_optional_str(active_version)
+    incoming_text = _optional_text(incoming_version)
+    active_text = _optional_text(active_version)
     if incoming_text is None or active_text is None:
         return False
     return _source_version_sort_key(incoming_text) < _source_version_sort_key(active_text)
@@ -1758,7 +1761,7 @@ class ResourceProjectionService:
                 "message": "源料格 top mount 物料身份与出账事实不一致",
             }
         elif pkg_code is not None and (
-            (active_pkg_code := coerce_optional_str(getattr(active_mount, "pkg_code", None))) is None
+            (active_pkg_code := _optional_text(getattr(active_mount, "pkg_code", None))) is None
             or active_pkg_code != pkg_code
         ):
             conflict = {
@@ -1766,7 +1769,7 @@ class ResourceProjectionService:
                 "message": "源料格 top mount PKG 与出账事实不一致",
             }
         elif wms_inventory_id is not None and (
-            (active_wms_inventory_id := coerce_optional_str(getattr(active_mount, "wms_inventory_id", None))) is None
+            (active_wms_inventory_id := _optional_text(getattr(active_mount, "wms_inventory_id", None))) is None
             or active_wms_inventory_id != wms_inventory_id
         ):
             conflict = {

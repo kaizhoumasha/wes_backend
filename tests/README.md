@@ -63,16 +63,14 @@ workline_plugins/<plugin_key>/
 └── fixtures/
 ```
 
-插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、业务应用协调、现场拓扑和插件级 E2E/韧性/负载场景。插件纯
-Decision 子层只依赖 `wes_plugin_sdk`；插件应用层可依赖 `src` 的基础端口，但 `src` 测试不得反向导入具体插件。所有设备供应商必须
+插件包自己的 `tests/` 唯一拥有具体工作线流程、Handler、现场拓扑和插件级 E2E/韧性/负载场景。所有设备供应商必须
 适配 WES 第三方设备统一接口（wire）；供应商内部 DTO、认证、原始 Payload、原始码转换和真实设备行为由供应商在其
 ECS/网关交付边界执行一致性验收。核心 pytest、覆盖率、质量门禁和 HEAVY selector 均不发现、不映射也不运行插件测试或
 外部供应商验收。
 
-产品内唯一共享 WMS 北向 Adapter 位于 `src/app/wms_adapter/`，只验证 HTTP/JSON、operation DTO/parser、可靠派发和统一
-Event route；具体工作线的请求数据、结果解释与恢复由插件测试拥有。共享跨系统 FAST 合同放在
-`tests/contracts/wms_adapter/`，真实持久化与事务场景放在 `tests/integration/wms_adapter/`；两处测试不得导入具体插件来
-证明基础能力，也不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
+产品内唯一 WMS 北向 Adapter 是 `src/app/wms_adapter/` 下的业务系统 ACL，不是设备厂商二次开发包。它的跨系统 FAST
+合同放在 `tests/contracts/wms_adapter/`，真实持久化与事务场景放在 `tests/integration/wms_adapter/`；两处测试只验证
+WMS Adapter，不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
 
 ### 当前治理约束
 

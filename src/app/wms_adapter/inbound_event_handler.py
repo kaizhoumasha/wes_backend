@@ -1,11 +1,13 @@
-"""粗分业务应用层的 WMS 单对象恢复事件接收。"""
+"""粗分机 WMS 单对象恢复事件接收。"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime  # noqa: TC003
 from typing import TYPE_CHECKING, Any, Protocol, TypeGuard, cast
+
+from pydantic import ValidationError
 
 from src.app.execution.models import (
     InboundEvidenceApplyStatus,
@@ -32,36 +34,37 @@ from src.app.wms_adapter.inbound_wire import (
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
 from src.core.uuid7 import is_uuid7
 from src.utils.timezone import timezone
-from wes_plugin_sdk.validation import is_persistable_text
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class RecoveryEventResponse:
+class InboundEventResponse:
     http_status: int
     body: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
-class RecoveryEventPersistenceResult:
+class InboundEventPersistenceResult:
     code: str
     timestamp_ms: int
 
 
-class _RecoveryEventRecorder(Protocol):
+class _InboundEventRecorder(Protocol):
     async def record(
         self,
         envelope: RecoveryEvent,
         *,
         received_at: datetime,
-    ) -> RecoveryEventPersistenceResult: ...
+    ) -> InboundEventPersistenceResult: ...
 
 
-class RecoveryEventCorrelationError(ValueError):
+class InboundEventCorrelationError(ValueError):
     """恢复事件不匹配当前 execution 因果围栏。"""
 
 
@@ -77,12 +80,12 @@ class _InboundEvidenceRepository(Protocol):
     async def get_by_id_for_update(self, db: object, evidence_id: int) -> object | None: ...
 
 
-class RecoveryEventEvidenceRecorder:
-    """在一个短事务中只保存 WMS_EVENT, 不应用人工决定。"""
+class InboundEventEvidenceRecorder:
+    """在一个短事务中只保存 WMS_EVENT，不应用人工决定。"""
 
     def __init__(
         self,
-        session_factory: Any,
+        session_factory: async_sessionmaker[AsyncSession],
         evidence_service: InboundEvidenceService | None = None,
         material_execution_repository: _MaterialExecutionRepository | None = None,
         inbound_evidence_repository: _InboundEvidenceRepository | None = None,
@@ -105,7 +108,7 @@ class RecoveryEventEvidenceRecorder:
         envelope: RecoveryEvent,
         *,
         received_at: datetime,
-    ) -> RecoveryEventPersistenceResult:
+    ) -> InboundEventPersistenceResult:
         payload = envelope.model_dump(mode="json")
         source_identity = f"{envelope.operation}:{envelope.operation_id}"
         async with self._sessions.begin() as db:
@@ -118,7 +121,7 @@ class RecoveryEventEvidenceRecorder:
                 or execution.id is None
                 or execution.material_trace_id != envelope.data.material_trace_id
             ):
-                raise RecoveryEventCorrelationError(envelope.data.material_execution_id)
+                raise InboundEventCorrelationError(envelope.data.material_execution_id)
             result = await self._evidence.accept(
                 db,
                 kind=InboundEvidenceKind.WMS_EVENT,
@@ -127,7 +130,7 @@ class RecoveryEventEvidenceRecorder:
                 received_at=received_at,
                 line_run_epoch_id=execution.line_run_epoch_id,
                 material_execution_id=execution.id,
-                contract_key=envelope.operation,
+                contract_key="rough_sorter_inbound",
                 contract_version="1.0",
                 operation=envelope.operation,
                 operation_id=envelope.operation_id,
@@ -145,7 +148,7 @@ class RecoveryEventEvidenceRecorder:
                 timestamp_ms = int(timezone.to_utc(result.evidence.received_at).timestamp() * 1000)
         if persisted_code in {"RECEIVED", "DUPLICATE"}:
             self._enqueue_execution_facts()
-        return RecoveryEventPersistenceResult(code=persisted_code, timestamp_ms=timestamp_ms)
+        return InboundEventPersistenceResult(code=persisted_code, timestamp_ms=timestamp_ms)
 
     def _enqueue_execution_facts(self) -> None:
         if self._task_queue is None:
@@ -163,9 +166,9 @@ class RecoveryEventEvidenceRecorder:
     ) -> None:
         causal_id: object = execution.last_transition_evidence_id
         if reconciling_evidence_id != str(causal_id):
-            raise RecoveryEventCorrelationError(reconciling_evidence_id)
+            raise InboundEventCorrelationError(reconciling_evidence_id)
         if not isinstance(causal_id, int) or causal_id < 1:
-            raise RecoveryEventCorrelationError(reconciling_evidence_id)
+            raise InboundEventCorrelationError(reconciling_evidence_id)
         causal = await self._evidences.get_by_id_for_update(db, causal_id)
         if (
             MaterialExecutionStatus(execution.status) is not MaterialExecutionStatus.RECONCILING
@@ -175,37 +178,37 @@ class RecoveryEventEvidenceRecorder:
             or getattr(causal, "material_execution_id", None) != execution.id
             or getattr(causal, "line_run_epoch_id", None) != execution.line_run_epoch_id
         ):
-            raise RecoveryEventCorrelationError(reconciling_evidence_id)
+            raise InboundEventCorrelationError(reconciling_evidence_id)
 
 
-class RecoveryEventHandler:
-    def __init__(self, recorder: _RecoveryEventRecorder) -> None:
+class InboundEventHandler:
+    def __init__(self, recorder: _InboundEventRecorder) -> None:
         self._recorder = recorder
 
-    async def handle(self, raw_body: bytes) -> RecoveryEventResponse:  # noqa: PLR0911 - 入口按关联阶段明确拒绝。
+    async def handle(self, raw_body: bytes) -> InboundEventResponse:  # noqa: PLR0911 - 入口按关联阶段明确拒绝。
         if len(raw_body) > MAX_INBOUND_BODY_BYTES:
-            return RecoveryEventResponse(413, {})
+            return InboundEventResponse(413, {})
         try:
             raw_value = loads_transport_json(raw_body.decode("utf-8"))
         except (UnicodeDecodeError, StrictJsonError):
-            return RecoveryEventResponse(400, {})
+            return InboundEventResponse(400, {})
         if not isinstance(raw_value, dict):
-            return RecoveryEventResponse(400, {})
+            return InboundEventResponse(400, {})
         raw_envelope = cast("dict[str, Any]", raw_value)
         operation_id = raw_envelope.get("operation_id")
         operation = raw_envelope.get("operation")
         if not _is_operation_id(operation_id) or not _is_operation(operation):
-            return RecoveryEventResponse(400, {})
+            return InboundEventResponse(400, {})
         received_at = timezone.now_utc()
         if operation != RECOVERY_OPERATION:
             return _ack(422, operation_id, "REJECTED", received_at, {"reason_code": "UNSUPPORTED_OPERATION"})
         try:
             envelope = parse_recovery_event(raw_envelope)
-        except (ValueError, TypeError):
+        except (ValidationError, ValueError, TypeError):
             return _ack(422, operation_id, "REJECTED", received_at, {"reason_code": "INVALID_DATA"})
         try:
             persisted = await self._recorder.record(envelope, received_at=timezone.now_for_db())
-        except RecoveryEventCorrelationError:
+        except InboundEventCorrelationError:
             return _ack(409, operation_id, "CONFLICT", received_at, {"reason_code": "EXECUTION_CORRELATION_CONFLICT"})
         except Exception:
             logger.exception("WMS recovery 事件持久化失败: operation_id=%s", operation_id)
@@ -215,7 +218,7 @@ class RecoveryEventHandler:
         if http_status is None:
             logger.warning("WMS recovery 事件持久化返回未知 code: %s", persisted.code)
             return _ack(503, operation_id, "UNAVAILABLE", received_at, {})
-        return RecoveryEventResponse(
+        return InboundEventResponse(
             http_status,
             {
                 "operation_id": operation_id,
@@ -232,8 +235,8 @@ def _ack(
     code: str,
     at: datetime,
     data: dict[str, Any],
-) -> RecoveryEventResponse:
-    return RecoveryEventResponse(
+) -> InboundEventResponse:
+    return InboundEventResponse(
         http_status,
         {
             "operation_id": operation_id,
@@ -249,13 +252,19 @@ def _is_operation_id(value: object) -> TypeGuard[str]:
 
 
 def _is_operation(value: object) -> TypeGuard[str]:
-    return is_persistable_text(value, 160)
+    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > 160:
+        return False
+    try:
+        _ = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 __all__ = [
-    "RecoveryEventCorrelationError",
-    "RecoveryEventEvidenceRecorder",
-    "RecoveryEventHandler",
-    "RecoveryEventPersistenceResult",
-    "RecoveryEventResponse",
+    "InboundEventCorrelationError",
+    "InboundEventEvidenceRecorder",
+    "InboundEventHandler",
+    "InboundEventPersistenceResult",
+    "InboundEventResponse",
 ]

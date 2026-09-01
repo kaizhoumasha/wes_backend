@@ -1,4 +1,4 @@
-"""共享 WMS Event 唯一生产入口。"""
+"""WMS Transport evidence 唯一生产入口。"""
 
 from __future__ import annotations
 
@@ -10,12 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 
 from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
-from src.app.transport.contracts import (
-    TRANSPORT_POSITION_OPERATION,
-    TRANSPORT_RESULT_OPERATION,
-    TransportIngressAttempt,
-    TransportIngressDisposition,
-)
+from src.app.transport.contracts import TransportIngressAttempt, TransportIngressDisposition
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.inbound_openapi import RECOVERY_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
 from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
@@ -49,7 +44,7 @@ async def _read_bounded_body(request: Request) -> tuple[bytes | None, int]:
     return raw_body, len(raw_body)
 
 
-def _permits_wms_event_endpoint(policy: object) -> bool:
+def _permits_transport_endpoint(policy: object) -> bool:
     return isinstance(policy, WmsInboundAuthPolicy) and policy.allows_unsigned_wms_callbacks
 
 
@@ -88,28 +83,7 @@ def _unavailable_response(operation_id: str) -> JSONResponse:
     )
 
 
-def _unsupported_operation_ack(raw_body: bytes) -> JSONResponse | Response:
-    try:
-        value = loads_transport_json(raw_body.decode("utf-8"))
-    except (UnicodeDecodeError, StrictJsonError):
-        return Response(status_code=400)
-    if not isinstance(value, dict):
-        return Response(status_code=400)
-    operation_id = value.get("operation_id")
-    if not is_wire_operation_id(operation_id) or not is_wire_operation(value.get("operation")):
-        return Response(status_code=400)
-    return JSONResponse(
-        status_code=422,
-        content={
-            "operation_id": operation_id,
-            "code": "REJECTED",
-            "timestamp": int(timezone.now_utc().timestamp() * 1000),
-            "data": {"reason_code": "UNSUPPORTED_OPERATION"},
-        },
-    )
-
-
-def _valid_wms_event_request_headers(request: Request) -> bool:
+def _valid_transport_request_headers(request: Request) -> bool:
     content_types = request.headers.getlist("content-type")
     if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
         return False
@@ -229,10 +203,10 @@ def _disposition(code: object, status_code: int) -> TransportIngressDisposition:
         }
     },
 )
-async def receive_wms_event(request: Request) -> Response:
+async def receive_transport_event(request: Request) -> Response:
     request_id = new_uuid7()
     received_at = timezone.now_utc().isoformat()
-    if not _valid_wms_event_request_headers(request):
+    if not _valid_transport_request_headers(request):
         await _publish_transport_ingress_attempt(
             request,
             request_id=request_id,
@@ -261,7 +235,7 @@ async def receive_wms_event(request: Request) -> Response:
         return Response(status_code=413)
 
     policy = getattr(request.app.state, "wms_inbound_auth_policy", None)
-    if not _permits_wms_event_endpoint(policy):
+    if not _permits_transport_endpoint(policy):
         await _publish_transport_ingress_attempt(
             request,
             request_id=request_id,
@@ -278,11 +252,11 @@ async def receive_wms_event(request: Request) -> Response:
     operation = _extract_operation(raw_body)
     is_inbound_event = operation == RECOVERY_OPERATION
     if is_inbound_event:
-        handler = getattr(request.app.state, "wms_recovery_event_handler", None)
+        handler = getattr(request.app.state, "wms_inbound_event_handler", None)
         if handler is None:
             return _unavailable_ack(raw_body)
         result = await handler.handle(raw_body)
-    elif operation in {TRANSPORT_POSITION_OPERATION, TRANSPORT_RESULT_OPERATION}:
+    else:
         runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
         if runtime is None:
             response = _unavailable_ack(raw_body)
@@ -302,8 +276,6 @@ async def receive_wms_event(request: Request) -> Response:
             )
             return response
         result = await runtime.handler.handle(raw_body)
-    else:
-        return _unsupported_operation_ack(raw_body)
     # Evidence 已持久化后先应答 WMS；Celery 唤醒只是加速提示，失败时由 Beat 兜底扫描。
     background = (
         (BackgroundTask(_enqueue_transport_evidence) if result.body.get("code") in {"RECEIVED", "DUPLICATE"} else None)

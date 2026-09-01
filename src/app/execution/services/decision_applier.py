@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import hashlib
+import json
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -32,14 +34,24 @@ from src.app.transport.contracts import (
     TransportExecutionAuthority,
     ZonePosition,
 )
-from src.app.wms_adapter.inbound_wire import parse_outbound_request
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
-from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+
+
+@dataclass(frozen=True, slots=True)
+class WmsConfirmationRequest:
+    request_payload: dict[str, Any]
+    deadline_at: datetime
+
+
+class WmsConfirmationRequestResolver(Protocol):
+    """只把 Decision 的稳定 refs 解析为该 operation 已批准的严格请求。"""
+
+    async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest: ...
 
 
 class EpochRepositoryPort(Protocol):
@@ -113,7 +125,8 @@ def decision_digest(decisions: tuple[object, ...]) -> str:
                 "payload": asdict(cast("Any", decision)),
             }
         )
-    return canonical_json_digest(canonical)
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class DecisionApplier:
@@ -123,6 +136,7 @@ class DecisionApplier:
         epoch_repository: EpochRepositoryPort | None = None,
         device_command_service: DeviceCommandServicePort,
         wms_confirmation_service: WmsConfirmationServicePort,
+        wms_request_resolver: WmsConfirmationRequestResolver,
         rack_binding_repository: RackBindingRepositoryPort | None = None,
         transport_service: TransportServicePort,
         material_execution_service: MaterialExecutionServicePort,
@@ -132,6 +146,7 @@ class DecisionApplier:
         self._epochs: EpochRepositoryPort = epoch_repository or line_run_epoch_repository
         self._device_commands = device_command_service
         self._wms_confirmations = wms_confirmation_service
+        self._wms_requests = wms_request_resolver
         self._rack_bindings: RackBindingRepositoryPort = (
             rack_binding_repository or rack_replacement_transport_binding_repository
         )
@@ -202,7 +217,7 @@ class DecisionApplier:
         if type(decision) is CreateDeviceCommand:
             await self._create_device_command(db, evidence, execution, ordinal, decision, now)
         elif type(decision) is CreateWmsConfirmation:
-            await self._create_wms_confirmation(db, evidence, execution, decision, now)
+            await self._create_wms_confirmation(db, execution, decision, now)
         elif type(decision) is CreateTransportTask:
             await self._create_transport_task(db, evidence, execution, decision)
         else:  # decision_digest 已封闭类型，这里保持 fail closed 防御。
@@ -249,27 +264,18 @@ class DecisionApplier:
     async def _create_wms_confirmation(
         self,
         db: object,
-        evidence: InboundEvidence,
         execution: MaterialExecution,
         decision: CreateWmsConfirmation,
         now: datetime,
     ) -> None:
-        timestamp = int(timezone.to_utc(evidence.received_at).timestamp() * 1000)
-        request_payload = parse_outbound_request(
-            {
-                "operation": decision.operation,
-                "operation_id": decision.operation_id,
-                "timestamp": timestamp,
-                "data": decision.request_data,
-            }
-        ).model_dump(mode="json", exclude_none=True)
+        request = await self._wms_requests.resolve(db, decision)
         result = await self._wms_confirmations.create_or_get(
             db,
             operation=decision.operation,
             operation_id=decision.operation_id,
             material_execution_id=cast("int", execution.id),
-            request_payload=request_payload,
-            deadline_at=evidence.received_at + timedelta(seconds=30),
+            request_payload=request.request_payload,
+            deadline_at=request.deadline_at,
             created_at=now,
         )
         if isinstance(result, WmsConfirmationIdentityConflictResult):
@@ -282,33 +288,33 @@ class DecisionApplier:
         execution: MaterialExecution,
         decision: CreateTransportTask,
     ) -> None:
-        step = decision.step
+        leg = decision.leg.value
         await self._rack_bindings.lock_rack_fence(
             db,
             line_run_epoch_id=execution.line_run_epoch_id,
-            current_rack_id=decision.resource_fence_id,
+            current_rack_id=decision.current_rack_id,
         )
-        await self._rack_bindings.lock_business_identity(db, decision.correlation_id, step)
+        await self._rack_bindings.lock_business_identity(db, decision.rack_replacement_id, leg)
         binding = await self._rack_bindings.get_by_business_identity_for_update(
             db,
-            rack_replacement_id=decision.correlation_id,
-            leg=step,
+            rack_replacement_id=decision.rack_replacement_id,
+            leg=leg,
         )
         if binding is None:
             binding = await self._rack_bindings.add(
                 db,
                 RackReplacementTransportBinding(
-                    rack_replacement_id=decision.correlation_id,
-                    leg=step,
+                    rack_replacement_id=decision.rack_replacement_id,
+                    leg=leg,
                     line_run_epoch_id=execution.line_run_epoch_id,
-                    current_rack_id=decision.resource_fence_id,
+                    current_rack_id=decision.current_rack_id,
                     client_request_id=self._uuid_factory(),
                     source_evidence_id=cast("int", evidence.id),
                 ),
             )
         elif (
             binding.line_run_epoch_id != execution.line_run_epoch_id
-            or binding.current_rack_id != decision.resource_fence_id
+            or binding.current_rack_id != decision.current_rack_id
             or binding.source_evidence_id != evidence.id
         ):
             raise ValueError("existing rack replacement binding correlation conflict")
@@ -367,5 +373,7 @@ class DecisionApplier:
 
 __all__ = [
     "DecisionApplier",
+    "WmsConfirmationRequest",
+    "WmsConfirmationRequestResolver",
     "decision_digest",
 ]

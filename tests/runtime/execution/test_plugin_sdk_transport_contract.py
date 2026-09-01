@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import pytest
 from wes_plugin_sdk import (
-    CompleteExecution,
     CreateTransportTask,
-    DeferExecution,
-    PauseForReconciliation,
+    TransportLeg,
     TransportRackPosition,
     TransportRackReference,
     TransportRcsTemplateId,
     TransportTaskType,
     TransportZonePosition,
-    Wait,
 )
 
 
@@ -22,15 +19,15 @@ def _decision(
     face: object = "90",
     template: object = TransportRcsTemplateId.CTU01,
     rack_id: str = "rack-1",
-    step: str = "NEW_IN",
+    leg: TransportLeg = TransportLeg.NEW_IN,
 ) -> CreateTransportTask:
     return CreateTransportTask(
         material_execution_id="execution-1",
         fact_id="fact-1",
         task_type=TransportTaskType.RACK_MOVE,
-        correlation_id="replacement-1",
-        step=step,
-        resource_fence_id="rack-old",
+        rack_replacement_id="replacement-1",
+        leg=leg,
+        current_rack_id="rack-old",
         rack_id=rack_id,
         source=source,  # type: ignore[arg-type]
         target=target,  # type: ignore[arg-type]
@@ -68,46 +65,6 @@ def test_sdk_preserves_any_non_empty_face_string(face: str) -> None:
 def test_sdk_rejects_invalid_face(face: object) -> None:
     with pytest.raises((TypeError, ValueError), match="target_face"):
         _decision(TransportZonePosition("zone-1"), TransportRackPosition("work"), face=face)
-
-
-@pytest.mark.parametrize(
-    ("affected_resource_ids", "expected_message"),
-    [
-        ((), "affected_resource_ids must not be empty"),
-        (("rack-1", "rack-1"), "affected_resource_ids must not contain duplicates"),
-        ((" ",), "affected_resource_ids must not be blank"),
-    ],
-)
-def test_sdk_rejects_invalid_reconciliation_reference_tuples(
-    affected_resource_ids: tuple[str, ...],
-    expected_message: str,
-) -> None:
-    with pytest.raises(ValueError, match=expected_message):
-        PauseForReconciliation(
-            material_execution_id="execution-1",
-            fact_id="fact-1",
-            reason_code="POSITION_UNKNOWN",
-            affected_resource_ids=affected_resource_ids,
-        )
-
-
-@pytest.mark.parametrize("decision_type", [Wait, DeferExecution, PauseForReconciliation, CompleteExecution])
-@pytest.mark.parametrize("field_name", ["material_execution_id", "fact_id", "reason_code"])
-def test_reasoned_execution_decisions_reject_blank_identity_fields(
-    decision_type: type[Wait | DeferExecution | PauseForReconciliation | CompleteExecution],
-    field_name: str,
-) -> None:
-    values: dict[str, object] = {
-        "material_execution_id": "execution-1",
-        "fact_id": "fact-1",
-        "reason_code": "WAIT",
-    }
-    values[field_name] = " "
-    if decision_type is PauseForReconciliation:
-        values["affected_resource_ids"] = ("rack-1",)
-
-    with pytest.raises(ValueError, match=field_name):
-        decision_type(**values)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

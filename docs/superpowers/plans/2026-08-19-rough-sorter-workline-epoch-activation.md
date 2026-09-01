@@ -9,8 +9,8 @@
 **直接替换：** 系统未发布，不保留旧 START、旧 admission/probe 字段、别名、wrapper、fallback 或旧数据迁移。
 
 **真源定位：** 本计划是 Phase 8 已有仓内闭环之上的增量实施真源，只负责 WorkLine Epoch 激活、多 Endpoint 派发及其前端入口。
-Phase 8 后端收敛交付、本机 Mock 验收和 RC 关闭历史由 Git 与项目外归档保留，不作为当前检索真源；
-本计划不新增 Phase 8A/8B 等正式阶段，也不改写历史交付事实。
+`2026-08-03-rough-sorter-plugin-convergence.md` 继续保存 Phase 8 后端收敛交付、本机 Mock 验收和 RC 关闭状态，不再指导本计划范围内的新增实现；
+本计划不新增 Phase 8A/8B 等正式阶段，也不改写旧计划的历史交付事实。
 现场部署人员自行选择前后端镜像并完成真实系统联调；本计划不创建跨仓库 RC manifest、现场 runner 或验收 bundle。
 
 ## 1. 架构裁决

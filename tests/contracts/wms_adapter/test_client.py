@@ -67,6 +67,8 @@ def test_wms_adapter_exposes_only_the_public_surface() -> None:
     module = importlib.import_module("src.app.wms_adapter")
 
     assert module.__all__ == [
+        "InboundEventHandler",
+        "InboundEventResponse",
         "TransportEventHandler",
         "TransportEventResponse",
         "WmsAccessResult",

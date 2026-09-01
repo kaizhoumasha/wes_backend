@@ -89,12 +89,15 @@ class RecoveryDecidedHandler:
             position.location_type, set()
         ):
             raise ValueError("WMS continuation does not match authoritative position")
+        if fact.evidence_id not in continuation.evidence_refs:
+            raise ValueError("WMS continuation must reference recovery evidence")
         return CreateWmsConfirmation(
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
             operation=continuation.operation,
             operation_id=continuation.operation_id,
-            request_data=continuation.request_data,
+            evidence_refs=continuation.evidence_refs,
+            snapshot_refs=continuation.snapshot_refs,
         )
 
     def _continue_device(

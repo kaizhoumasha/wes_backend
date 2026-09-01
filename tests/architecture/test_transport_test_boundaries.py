@@ -14,7 +14,7 @@ TRANSPORT_TEST_DIRECTORIES = (
 TRANSPORT_TEST_FILES = tuple(
     REPO_ROOT / relative_path
     for relative_path in (
-        "tests/api/test_wms_events.py",
+        "tests/api/test_wms_transport_events.py",
         "tests/core/test_uuid7.py",
         "tests/e2e/transport/test_transport_production_wiring.py",
         "tests/integration/test_transport_broker_harness_cleanup.py",

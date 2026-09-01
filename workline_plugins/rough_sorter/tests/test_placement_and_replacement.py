@@ -9,9 +9,11 @@ from conftest import (
 from wes_plugin_sdk import (
     CompleteExecution,
     CreateTransportTask,
+    CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
     PauseForReconciliation,
+    TransportLeg,
     TransportRackPosition,
     TransportRcsTemplateId,
     TransportTaskType,
@@ -33,7 +35,6 @@ from rough_sorter.facts import (
     RackReleaseSnapshot,
     ReplacementPlanDecidedFact,
     ReplacementResult,
-    TransportLeg,
     rack_release_snapshot_ref,
 )
 from rough_sorter.handlers.device_position_confirmed import DevicePositionConfirmedHandler
@@ -173,16 +174,20 @@ def test_successful_cell_position_creates_placement_report() -> None:
         placed_at_ms=1_787_000_000_000,
     )
 
-    decision = DevicePositionConfirmedHandler(*readers)(fact)[0]
-    assert decision.operation == "inbound.material.placement_report@v1"
-    assert decision.request_data["command_code"] == "command-placement-1"
-    assert decision.request_data["target_position"] == {
-        "type": "ONE_LAYER_BIN_CELL",
-        "rack_id": "rack-current",
-        "rack_slot_code": "slot-1",
-        "bin_id": "bin-1",
-        "bin_cell_id": "cell-1",
-    }
+    assert DevicePositionConfirmedHandler(*readers)(fact) == (
+        CreateWmsConfirmation(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            operation="inbound.material.placement_report@v1",
+            operation_id=fact.request_operation_id,
+            evidence_refs=(fact.evidence_id,),
+            snapshot_refs=(
+                f"execution:{EXECUTION_ID}",
+                "command:command-placement-1",
+                "target-assignment:assignment-1",
+            ),
+        ),
+    )
 
 
 def test_successful_ng_position_creates_ng_report() -> None:
@@ -209,10 +214,16 @@ def test_successful_ng_position_creates_ng_report() -> None:
         reason_code="GRN_REJECTED",
     )
 
-    decision = DevicePositionConfirmedHandler(*readers)(fact)[0]
-    assert decision.operation == "inbound.material.ng_placement_report@v1"
-    assert decision.request_data["ng_evidence_id"] == "ng-evidence-1"
-    assert decision.request_data["business_context"] == "ROUGH_SORT_INBOUND"
+    assert DevicePositionConfirmedHandler(*readers)(fact) == (
+        CreateWmsConfirmation(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            operation="inbound.material.ng_placement_report@v1",
+            operation_id=fact.request_operation_id,
+            evidence_refs=(fact.evidence_id, "ng-evidence-1"),
+            snapshot_refs=(f"execution:{EXECUTION_ID}", "command:command-ng-1"),
+        ),
+    )
 
 
 def test_recorded_or_duplicate_placement_is_the_only_automatic_close() -> None:
@@ -368,9 +379,9 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
             material_execution_id=EXECUTION_ID,
             fact_id=fact.fact_id,
             task_type=TransportTaskType.RACK_MOVE,
-            correlation_id="replacement-1",
-            step=TransportLeg.OLD_OUT.value,
-            resource_fence_id="rack-old",
+            rack_replacement_id="replacement-1",
+            leg=TransportLeg.OLD_OUT,
+            current_rack_id="rack-old",
             rack_id="rack-old",
             source=old_plan.source,
             target=old_plan.target,
@@ -381,9 +392,9 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
             material_execution_id=EXECUTION_ID,
             fact_id=fact.fact_id,
             task_type=TransportTaskType.RACK_MOVE,
-            correlation_id="replacement-1",
-            step=TransportLeg.NEW_IN.value,
-            resource_fence_id="rack-old",
+            rack_replacement_id="replacement-1",
+            leg=TransportLeg.NEW_IN,
+            current_rack_id="rack-old",
             rack_id="rack-new",
             source=new_plan.source,
             target=new_plan.target,
@@ -391,9 +402,9 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
             rcs_template_id=TransportRcsTemplateId.CTU01,
         ),
     )
-    assert {decision.correlation_identity for decision in first} == {
-        ("replacement-1", TransportLeg.OLD_OUT.value),
-        ("replacement-1", TransportLeg.NEW_IN.value),
+    assert {decision.business_identity for decision in first} == {
+        ("replacement-1", TransportLeg.OLD_OUT),
+        ("replacement-1", TransportLeg.NEW_IN),
     }
 
 

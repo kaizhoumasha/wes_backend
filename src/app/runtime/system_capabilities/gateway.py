@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
 
+from src.app.runtime.extension_identity import canonical_json, sha256_digest
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
 from src.app.runtime.system_capabilities.evidence import QueryEvidence
 from src.app.runtime.system_capabilities.outcomes import (
@@ -18,7 +19,6 @@ from src.app.runtime.system_capabilities.outcomes import (
     RetryableFailure,
     Success,
 )
-from src.utils.canonical_json import canonical_json_bytes, canonical_json_digest
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -146,7 +146,7 @@ class SystemCapabilityGateway:
         if _canonical_bytes(request_payload) > self._limits.max_input_bytes:
             return self._violation("QUERY_INPUT_LIMIT_EXCEEDED", "canonical query input size limit exceeded")
 
-        query_key = canonical_json_digest(
+        query_key = sha256_digest(
             {
                 "attempt_id": self.attempt_id,
                 "definition": definition.identity,
@@ -260,8 +260,8 @@ class SystemCapabilityGateway:
             evidence = QueryEvidence(
                 capability_key=definition.capability_key,
                 contract_version=definition.contract_version,
-                input_hash=canonical_json_digest(request.model_dump(mode="json")),
-                output_hash=canonical_json_digest(raw_output),
+                input_hash=sha256_digest(request.model_dump(mode="json")),
+                output_hash=sha256_digest(raw_output),
                 authority=self._authority,
                 source=self._source,
                 evidence_at=datetime.now(UTC),
@@ -269,7 +269,7 @@ class SystemCapabilityGateway:
                 admission_snapshot=self._admission_snapshot,
                 summary={"outcome": redacted},
             )
-            evidence_bytes = len(canonical_json_bytes(evidence.model_dump(mode="json")))
+            evidence_bytes = len(canonical_json(evidence.model_dump(mode="json")).encode("utf-8"))
         except Exception:
             return self._violation("EVIDENCE_REDACTION_FAILED", "evidence redaction failed")
         if evidence_bytes > self._limits.max_evidence_bytes:
@@ -302,7 +302,7 @@ class SystemCapabilityGateway:
         summary: dict[str, Any] = {
             "kind": raw_output.get("kind", "unknown"),
             "payload_type": type(raw_output.get("payload")).__name__,
-            "payload_bytes": len(canonical_json_bytes(raw_output)),
+            "payload_bytes": len(canonical_json(raw_output).encode("utf-8")),
         }
         if isinstance(stable_code, str):
             summary["code"] = stable_code
@@ -344,7 +344,7 @@ def _bounded_output_value(outcome: CapabilityOutcome) -> Any:
 
 
 def _canonical_bytes(value: Any) -> int:
-    return len(canonical_json_bytes(value))
+    return len(canonical_json(value).encode("utf-8"))
 
 
 __all__ = ["AttemptCloseReport", "GatewayLimits", "GatewayQueryResult", "SystemCapabilityGateway"]

@@ -1,0 +1,78 @@
+"""Callback 域 failure mapper — runtime diagnostics failure mapper 镜像。
+
+镜像说明:
+- FailureDomain 使用 callback 域内本地字符串映射,避免反向依赖 runtime enums。
+- 错误码与域映射行为与 runtime diagnostics failure mapper 一致。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .codes import ErrorCode, ErrorDomain, error_domain_for
+
+_FAILURE_DOMAIN_VALUES = frozenset(
+    {
+        "HARDWARE",
+        "SOFTWARE",
+        "ORCHESTRATION",
+        "TIMEOUT",
+        "CONFIG",
+        "DATA",
+    }
+)
+
+
+def _map_failure_to_error_code(*, failure: Any | None = None) -> ErrorCode:
+    failure_domain = getattr(failure, "domain", None)
+    failure_code = getattr(failure, "code", None)
+
+    if failure_code == "CONTRACT_MISMATCH":
+        return ErrorCode.CONTRACT_MISMATCH
+    if failure_code == "DEVICE_TIMEOUT":
+        return ErrorCode.DEVICE_TIMEOUT
+    if failure_code == "DEVICE_NOT_FOUND":
+        return ErrorCode.DEVICE_UNREACHABLE
+    if failure_code == "STATE_MISMATCH":
+        return ErrorCode.WORKFLOW_TRANSITION_INVALID
+    if failure_domain == "CONFIG":
+        return ErrorCode.CONFIG_INVALID
+    if failure_domain == "TIMEOUT":
+        return ErrorCode.DEVICE_TIMEOUT
+    if failure_domain in {"SOFTWARE", "ORCHESTRATION"}:
+        return ErrorCode.WORKFLOW_EXECUTION_FAILED
+    return ErrorCode.UNKNOWN
+
+
+def _domain_from_failure(failure: Any | None) -> ErrorDomain:
+    failure_domain = getattr(failure, "domain", None)
+    if failure_domain == "HARDWARE":
+        return ErrorDomain.DEVICE
+    if failure_domain == "TIMEOUT":
+        return ErrorDomain.NETWORK
+    if failure_domain in {"SOFTWARE", "ORCHESTRATION"}:
+        return ErrorDomain.WORKFLOW
+    if failure_domain == "CONFIG":
+        return ErrorDomain.CONFIG
+    if failure_domain == "DATA":
+        return ErrorDomain.DATA_QUALITY
+    return ErrorDomain.SYSTEM
+
+
+def map_failure_to_diagnostic(
+    *, failure: Any | None = None, error_code: str | None = None
+) -> tuple[ErrorCode, ErrorDomain]:
+    """将运行时 failure 或 orchestrator error_code 映射到统一诊断维度。"""
+
+    if error_code and error_code in ErrorCode._value2member_map_:
+        mapped = ErrorCode(error_code)
+        return mapped, error_domain_for(mapped)
+
+    mapped = _map_failure_to_error_code(failure=failure)
+    if mapped == ErrorCode.UNKNOWN:
+        return mapped, _domain_from_failure(failure)
+    return mapped, error_domain_for(mapped)
+
+
+# 仅供调试 / 测试断言使用,主调用方应使用 map_failure_to_diagnostic。
+__all__ = ["_FAILURE_DOMAIN_VALUES", "map_failure_to_diagnostic"]

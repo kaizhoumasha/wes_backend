@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import (
+    E03_CONFIRM_INBOUND,
+    E07_NOTIFY_PKG_BINDING,
+    WmsConfirmationBarrierBlockedError,
     WmsConfirmationIdentityConflictError,
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationResponseConflictError,
     WmsConfirmationResponseConflictResult,
     WmsConfirmationService,
 )
+
+
+def test_e03_e07_use_the_frozen_typed_operation_identities() -> None:
+    """双义务 identity 直接绑定 typed successor，不从 provider registry 动态发现。"""
+
+    assert (E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING) == (
+        "wms.inventory.confirm_inbound@v1",
+        "wms.fulfillment.notify_pkg_binding@v1",
+    )
 
 
 class FakeWmsConfirmationRepository:
@@ -38,6 +51,35 @@ class FakeWmsConfirmationRepository:
 
     async def flush(self, _db: object) -> None:
         return None
+
+    async def list_for_execution_operations_for_update(
+        self,
+        _db: object,
+        *,
+        material_execution_id: int,
+        operations: tuple[str, ...],
+    ) -> list[WmsConfirmation]:
+        return sorted(
+            (
+                item
+                for item in self.confirmations.values()
+                if item.material_execution_id == material_execution_id and item.operation in operations
+            ),
+            key=lambda item: operations.index(item.operation),
+        )
+
+
+class FakeExecutionRepository:
+    def __init__(self, execution_id: int, *, fifo_head_id: int | None = None) -> None:
+        self.execution = SimpleNamespace(id=execution_id, workline_id=7, line_run_epoch_id=11)
+        self.fifo_head_id = fifo_head_id if fifo_head_id is not None else execution_id
+
+    async def get_by_id_for_update(self, _db: object, execution_id: int):
+        return self.execution if execution_id == self.execution.id else None
+
+    async def get_admission_head_for_update(self, _db: object, *, workline_id: int, line_run_epoch_id: int):
+        assert (workline_id, line_run_epoch_id) == (7, 11)
+        return SimpleNamespace(id=self.fifo_head_id, execution_code=f"EXEC-{self.fifo_head_id}")
 
 
 async def _create(
@@ -196,3 +238,66 @@ def test_status_is_the_minimal_approved_closed_set() -> None:
         "COMPLETED",
         "RECONCILING",
     }
+
+
+@pytest.mark.asyncio
+async def test_e03_e07_creation_obeys_execution_mutex_fifo_and_predecessor_barrier() -> None:
+    repository = FakeWmsConfirmationRepository()
+    executions = FakeExecutionRepository(21)
+    service = WmsConfirmationService(repository=repository, execution_repository=executions)
+    common = {
+        "material_execution_id": 21,
+        "deadline_at": datetime(2026, 8, 16, 0, 5),
+        "created_at": datetime(2026, 8, 16),
+    }
+
+    with pytest.raises(WmsConfirmationBarrierBlockedError, match="E03"):
+        await service.create_or_get(
+            object(),
+            operation="wms.fulfillment.notify_pkg_binding@v1",
+            operation_id="E07-001",
+            request_payload={"operation": "wms.fulfillment.notify_pkg_binding@v1"},
+            **common,
+        )
+
+    e03 = await service.create_or_get(
+        object(),
+        operation="wms.inventory.confirm_inbound@v1",
+        operation_id="E03-001",
+        request_payload={"operation": "wms.inventory.confirm_inbound@v1"},
+        **common,
+    )
+    await service.complete(
+        object(),
+        e03.confirmation,
+        response_evidence_id=301,
+        response_result="RECORDED",
+        completed_at=datetime(2026, 8, 16, 0, 1),
+    )
+    e07 = await service.create_or_get(
+        object(),
+        operation="wms.fulfillment.notify_pkg_binding@v1",
+        operation_id="E07-001",
+        request_payload={"operation": "wms.fulfillment.notify_pkg_binding@v1"},
+        **common,
+    )
+
+    assert e07.duplicate is False
+
+    executions.fifo_head_id = 20
+    replayed_e03 = await service.create_or_get(
+        object(),
+        operation="wms.inventory.confirm_inbound@v1",
+        operation_id="E03-001",
+        request_payload={"operation": "wms.inventory.confirm_inbound@v1"},
+        **common,
+    )
+    assert replayed_e03.duplicate is True
+    with pytest.raises(WmsConfirmationBarrierBlockedError, match="FIFO"):
+        await service.create_or_get(
+            object(),
+            operation="wms.inventory.confirm_inbound@v1",
+            operation_id="E03-LATE",
+            request_payload={"operation": "wms.inventory.confirm_inbound@v1"},
+            **common,
+        )

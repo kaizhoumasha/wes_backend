@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
-from wes_plugin_sdk.validation import is_persistable_text
 
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
@@ -50,7 +49,6 @@ from src.app.transport.contracts import (
     TransportSubmitCode,
     TransportTaskKind,
     TransportTaskStatus,
-    require_transport_text,
 )
 from src.app.transport.debug_reset import (
     TransportDebugResetPreview,
@@ -69,7 +67,6 @@ from src.app.transport.models import (
 from src.app.transport.submit_snapshot import build_submit_data, build_submit_request_body, request_body_digest
 from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
-from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -632,8 +629,8 @@ class TransportService:
         payload: dict[str, Any] | None,
         rejection_reason_code: str | None,
     ) -> dict[str, Any]:
-        require_transport_text(operation_id, "operation_id", max_length=36)
-        require_transport_text(operation, "operation", max_length=80)
+        _validate_persisted_text(operation_id, "operation_id", 36)
+        _validate_persisted_text(operation, "operation", 80)
         encoded = canonical_callback_json(message).encode("utf-8")
         message_digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
@@ -641,7 +638,7 @@ class TransportService:
         transport_task_id = _associated_transport_task_id(message)
         if payload is not None:
             transport_task_id = payload["transport_task_id"]
-            require_transport_text(transport_task_id, "transport_task_id", max_length=80)
+            _validate_persisted_text(transport_task_id, "transport_task_id", 80)
         outcome_revision = _source_outcome_revision(operation, payload) if payload is not None else None
         if rejection_reason_code is not None:
             ack_data = {"reason_code": rejection_reason_code}
@@ -1424,7 +1421,8 @@ def _request_digest(
         "data": submit_data,
         "execution_authority": _json_value(execution_authority) if execution_authority is not None else None,
     }
-    return canonical_json_digest(request_semantics)
+    encoded = json.dumps(request_semantics, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _execution_authority_from_task(task: TransportTask) -> TransportExecutionAuthority | None:
@@ -1599,6 +1597,15 @@ def _validate_limit(limit: int) -> None:
         raise ValueError("limit must be a positive integer")
 
 
+def _validate_persisted_text(value: object, field_name: str, max_length: int) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise TransportContractError(f"{field_name} must not be blank")
+    if "\x00" in value:
+        raise TransportContractError(f"{field_name} must not contain NUL")
+    if len(value) > max_length:
+        raise TransportContractError(f"{field_name} exceeds {max_length} characters")
+
+
 def _position_matches_member_type(member: TransportMember, position: object) -> bool:
     if not isinstance(position, dict):
         return False
@@ -1724,7 +1731,11 @@ def _associated_transport_task_id(message: dict[str, Any]) -> str | None:
     if not isinstance(data, dict):
         return None
     value = data.get("transport_task_id")
-    if not is_persistable_text(value, 80):
+    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > 80:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
         return None
     return value
 

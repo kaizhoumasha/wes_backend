@@ -46,11 +46,20 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.rough_sorter_runtime = None
         _app.state.workline_start_service = None
         _app.state.task_queue_gateway = task_queue_gateway
-        _app.state.wms_recovery_event_handler = None
+        _app.state.wms_inbound_event_handler = None
         _app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
         await init_db()
         if db_module.AsyncSessionLocal is None:
             raise RuntimeError("Database session factory is unavailable after initialization")
+
+        from src.app.wms_adapter.inbound_event_handler import InboundEventEvidenceRecorder, InboundEventHandler
+
+        _app.state.wms_inbound_event_handler = InboundEventHandler(
+            InboundEventEvidenceRecorder(
+                db_module.AsyncSessionLocal,
+                task_queue_gateway=task_queue_gateway,
+            )
+        )
 
         from src.app.transport.composition import build_transport_runtime
 
@@ -82,7 +91,6 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             device_command_service=device_command_runtime.command_service,
         )
         _app.state.rough_sorter_runtime = rough_sorter_runtime
-        _app.state.wms_recovery_event_handler = rough_sorter_runtime.wms_recovery_event_handler
         _app.state.workline_start_service = build_rough_sorter_start_service()
         await init_redis()
 
@@ -110,7 +118,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.rough_sorter_runtime = None
         _app.state.workline_start_service = None
         _app.state.task_queue_gateway = None
-        _app.state.wms_recovery_event_handler = None
+        _app.state.wms_inbound_event_handler = None
         cleanup_errors: list[BaseException] = []
         if transport_runtime is not None:
             try:

@@ -116,48 +116,6 @@ PLUGIN_SDK_REVIEWED_NONE_PATHS = (
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py",
 )
-RUNTIME_TEXT_REVIEWED_NONE_PATHS = (
-    "src/app/runtime/orchestration/services/_text.py",
-    "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py",
-    "src/app/runtime/orchestration/services/runtime_location_event_service.py",
-)
-TRACE_REVIEWED_NONE_PATHS = (
-    "src/app/callback/contracts/__init__.py",
-    "src/app/callback/services/callback_log_service.py",
-    "src/app/runtime/orchestration/timeline_generator.py",
-    "src/app/runtime/orchestration/trace_context.py",
-    "src/app/workline/outbox_dispatch_support.py",
-)
-VALUE_NORMALIZATION_REVIEWED_NONE_PATHS = (
-    "src/app/resource/services/projection_service.py",
-    "src/app/resource/services/relation_service.py",
-    "src/app/sys/services/audit_service.py",
-)
-SYSTEM_CAPABILITY_IDENTITY_REVIEWED_NONE_PATHS = (
-    "src/app/runtime/extension_identity.py",
-    "src/app/runtime/system_capabilities/definition.py",
-    "src/app/runtime/system_capabilities/gateway.py",
-    "src/app/runtime/system_capabilities/index_builder.py",
-)
-RETIRED_RUNTIME_MIRROR_PATHS = (
-    "src/app/callback/utils.py",
-    "src/app/callback/contracts/builder.py",
-    "src/app/callback/contracts/codes.py",
-    "src/app/callback/contracts/diagnostics.py",
-    "src/app/callback/contracts/failure_mapper.py",
-    "src/app/callback/contracts/models.py",
-    "src/app/callback/contracts/registry.py",
-    "src/app/callback/contracts/timeline_generator.py",
-    "src/app/callback/contracts/trace_context.py",
-    "src/app/workline/trace_context.py",
-    "src/app/runtime/orchestration/diagnostics.py",
-    "src/app/runtime/orchestration/diagnostics/__init__.py",
-    "src/app/runtime/orchestration/diagnostics/builder.py",
-    "src/app/runtime/orchestration/diagnostics/codes.py",
-    "src/app/runtime/orchestration/diagnostics/failure_mapper.py",
-    "src/app/runtime/orchestration/diagnostics/models.py",
-    "src/app/runtime/orchestration/diagnostics/registry.py",
-)
 
 
 def _write_mapping(
@@ -522,70 +480,6 @@ def test_plugin_sdk_transport_decisions_select_real_transport_and_execution_owne
         TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
     ]
-    assert select_heavy_tests(["packages/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"], config) == [
-        TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
-        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
-        WMS_MOCK_SERVER_HEAVY_TEST,
-    ]
-
-
-def test_runtime_text_refactor_is_exact_reviewed_none() -> None:
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-
-    for changed_path in RUNTIME_TEXT_REVIEWED_NONE_PATHS:
-        matching_mappings = [mapping for mapping in config[1] if mapping.source_glob == changed_path]
-        assert len(matching_mappings) == 1
-        mapping = matching_mappings[0]
-        assert mapping.heavy_tests == ()
-        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
-        assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
-
-
-def test_trace_convergence_is_exact_reviewed_none() -> None:
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-    _, mappings = config
-
-    for changed_path in TRACE_REVIEWED_NONE_PATHS:
-        matched = [mapping for mapping in mappings if matches_glob(changed_path, mapping.source_glob)]
-        assert len(matched) == 1
-        mapping = matched[0]
-        assert mapping.source_glob == changed_path
-        assert mapping.heavy_tests == ()
-        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
-
-
-def test_value_normalization_reuse_is_exact_reviewed_none() -> None:
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-    _, mappings = config
-
-    for changed_path in VALUE_NORMALIZATION_REVIEWED_NONE_PATHS:
-        matched = [mapping for mapping in mappings if matches_glob(changed_path, mapping.source_glob)]
-        assert len(matched) == 1
-        mapping = matched[0]
-        assert mapping.source_glob == changed_path
-        assert mapping.heavy_tests == ()
-        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
-
-
-def test_system_capability_identity_reuse_is_exact_reviewed_none() -> None:
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-    _, mappings = config
-
-    for changed_path in SYSTEM_CAPABILITY_IDENTITY_REVIEWED_NONE_PATHS:
-        matched = [mapping for mapping in mappings if matches_glob(changed_path, mapping.source_glob)]
-        assert len(matched) == 1
-        mapping = matched[0]
-        assert mapping.source_glob == changed_path
-        assert mapping.heavy_tests == ()
-        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
-        assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
-
-
-def test_retired_runtime_mirror_paths_are_absent_and_classified_none() -> None:
-    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
-
-    assert select_heavy_tests(RETIRED_RUNTIME_MIRROR_PATHS, config) == []
-    assert all(not (REPO_ROOT / path).exists() for path in RETIRED_RUNTIME_MIRROR_PATHS)
 
 
 def test_plugin_sdk_reviewed_none_fails_closed_on_content_drift(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ from wes_plugin_sdk import (
     CreateWmsConfirmation,
     DevicePosition,
     EvidenceReadyFact,
+    TransportLeg,
     TransportRackPosition,
     TransportRcsTemplateId,
     TransportResultReadyFact,
@@ -54,6 +55,7 @@ from src.app.execution.services import (
     InboundEvidenceService,
     MaterialExecutionService,
     WmsConfirmationIdentityConflictError,
+    WmsConfirmationRequest,
     WmsConfirmationService,
 )
 from src.app.transport.contracts import (
@@ -184,8 +186,8 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
 ) -> None:
     identity = uuid4().hex
     line_code = f"DECISION-ATOMIC-{identity}"
-    operation = "inbound.source_rack.replacement_plan_decide@v1"
-    operation_id = "019d0000-0000-7000-8000-" + identity[:12]
+    operation = f"decision.atomic@{identity}"
+    operation_id = f"OP-{identity}"
     rack_replacement_id = f"REPLACE-{identity}"
     client_request_id = "019cd8ce-34b7-7000-8000-" + identity[:12]
     now = datetime(2026, 8, 17)
@@ -261,9 +263,16 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
         device_id = device.id
         line_id = line.id
 
+    class _Resolver:
+        async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
+            del db
+            marker = decision.snapshot_refs[0]
+            return WmsConfirmationRequest({"marker": marker}, now + timedelta(minutes=1))
+
     applier = DecisionApplier(
         device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
         wms_confirmation_service=WmsConfirmationService(),
+        wms_request_resolver=_Resolver(),
         transport_service=TransportService(
             integration_session_factory,
             TransportRepository(),
@@ -294,7 +303,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             fact.fact_id,
             TransportTaskType.RACK_MOVE,
             rack_replacement_id,
-            "NEW_IN",
+            TransportLeg.NEW_IN,
             f"RACK-CURRENT-{identity}",
             f"RACK-{identity}",
             TransportRackPosition("BUFFER"),
@@ -307,22 +316,16 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             fact.fact_id,
             operation,
             operation_id,
-            {
-                "material_execution_id": fact.material_execution_id,
-                "material_trace_id": f"TRACE-{identity}",
-                "current_rack_id": "first",
-            },
+            (fact.evidence_id,),
+            ("first",),
         ),
         CreateWmsConfirmation(
             fact.material_execution_id,
             fact.fact_id,
             operation,
             operation_id,
-            {
-                "material_execution_id": fact.material_execution_id,
-                "material_trace_id": f"TRACE-{identity}",
-                "current_rack_id": "second",
-            },
+            (fact.evidence_id,),
+            ("second",),
         ),
     )
 
@@ -1011,6 +1014,7 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
     applier = DecisionApplier(
         device_command_service=object(),
         wms_confirmation_service=object(),
+        wms_request_resolver=object(),
         transport_service=transport,
         material_execution_service=object(),
         clock=lambda: now,
@@ -1026,7 +1030,7 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
         fact.fact_id,
         TransportTaskType.RACK_MOVE,
         f"REPLACE-{identity}",
-        "NEW_IN",
+        TransportLeg.NEW_IN,
         "RACK-1",
         "RACK-2",
         TransportRackPosition("BUFFER"),

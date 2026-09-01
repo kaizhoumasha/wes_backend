@@ -29,7 +29,6 @@ from src.app.resource.repositories import (
     resource_state_event_repository,
 )
 from src.utils.timezone import timezone
-from src.utils.value_normalization import coerce_optional_str
 
 
 class ResourceProjectionStatus(str, Enum):
@@ -305,14 +304,14 @@ def _extract_bin_mounts(post_exchange_relations: Mapping[str, Any]) -> list[dict
     if not isinstance(raw_mounts, Sequence) or isinstance(raw_mounts, (str, bytes)):
         return []
 
-    default_rack_code = coerce_optional_str(post_exchange_relations.get("rack_code"))
+    default_rack_code = _text_or_none(post_exchange_relations.get("rack_code"))
     mounts: list[dict[str, str]] = []
     for item in raw_mounts:
         if not isinstance(item, Mapping):
             continue
-        rack_code = coerce_optional_str(item.get("rack_code")) or default_rack_code
-        rack_slot_code = coerce_optional_str(item.get("rack_slot_code")) or coerce_optional_str(item.get("slot_code"))
-        bin_code = coerce_optional_str(item.get("bin_code")) or coerce_optional_str(item.get("bin_id"))
+        rack_code = _text_or_none(item.get("rack_code")) or default_rack_code
+        rack_slot_code = _text_or_none(item.get("rack_slot_code")) or _text_or_none(item.get("slot_code"))
+        bin_code = _text_or_none(item.get("bin_code")) or _text_or_none(item.get("bin_id"))
         if rack_code is None or rack_slot_code is None or bin_code is None:
             continue
         mounts.append(
@@ -323,6 +322,13 @@ def _extract_bin_mounts(post_exchange_relations: Mapping[str, Any]) -> list[dict
             }
         )
     return mounts
+
+
+def _text_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 resource_relation_service = ResourceRelationService()

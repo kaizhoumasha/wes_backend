@@ -10,7 +10,6 @@ from wes_plugin_sdk import (
 
 from rough_sorter.facts import TransportOutcome, TransportOutcomePublishedFact
 from rough_sorter.handlers._guards import require_epoch, require_execution
-from rough_sorter.wms_requests import target_data
 
 TARGET_OPERATION = "inbound.material.target_decide@v1"
 
@@ -69,7 +68,14 @@ class TransportOutcomePublishedHandler:
                 fact_id=fact.fact_id,
                 operation=TARGET_OPERATION,
                 operation_id=fact.request_operation_id or "",
-                request_data=target_data(fact),
+                evidence_refs=(fact.evidence_id,),
+                snapshot_refs=(
+                    f"execution:{fact.material_execution_id}",
+                    f"transport:{fact.transport_task_id}",
+                    f"wms-admission:{fact.inbound_admission_id}",
+                    f"position:{source_position.location_id}",
+                    f"rack:{fact.rack_id}",
+                ),
             ),
         )
 

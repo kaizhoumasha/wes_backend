@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 from rough_sorter.handlers import ReplacementPlanDecidedHandler, TargetDecidedHandler, TransportOutcomePublishedHandler
-from rough_sorter.wms_requests import admission_data, ng_placement_data, placement_data, target_data
 from wes_plugin_sdk import (
+    CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
     DeviceResultReadyFact,
@@ -26,6 +26,7 @@ from deployment._rough_sorter_transport import RoughSorterTransportOutcomePublis
 from deployment.rough_sorter_composition import (
     RoughSorterInitialExecutionCorrelator,
     RoughSorterPluginFactFactory,
+    RoughSorterWmsConfirmationRequestResolver,
 )
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.evidence import DeviceStatusObservation
@@ -190,7 +191,7 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
             received_at=NOW,
             line_run_epoch_id=11,
             material_execution_id=21,
-            contract_key=operation,
+            contract_key="rough_sorter_inbound",
             contract_version="1.0",
             operation=operation,
             operation_id=first_operation_id,
@@ -222,7 +223,7 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
             received_at=NOW,
             line_run_epoch_id=11,
             material_execution_id=21,
-            contract_key=operation,
+            contract_key="rough_sorter_inbound",
             contract_version="1.0",
             operation=operation,
             operation_id=second_operation_id,
@@ -486,7 +487,7 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
@@ -571,7 +572,7 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key=operation,
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation=operation,
         operation_id=TARGET_OPERATION_ID,
@@ -717,7 +718,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
@@ -831,7 +832,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
@@ -886,7 +887,22 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
     assert fact.current_rack_id == "RACK-1"
     assert fact.request_operation_id == command_code
 
-    assert target_data(fact) == {
+    resolved = await RoughSorterWmsConfirmationRequestResolver(
+        fact_factory=factory,
+        evidence_repository=factory._evidences,  # type: ignore[attr-defined]
+        execution_repository=factory._executions,  # type: ignore[attr-defined]
+    ).resolve(
+        object(),
+        CreateWmsConfirmation(
+            material_execution_id="EXEC-21",
+            fact_id=base.fact_id,
+            operation="inbound.material.target_decide@v1",
+            operation_id=command_code,
+            evidence_refs=(base.evidence_id,),
+            snapshot_refs=("execution:EXEC-21", "rack:RACK-1"),
+        ),
+    )
+    assert resolved.request_payload["data"] == {
         "material_execution_id": "EXEC-21",
         "material_trace_id": "TRACE-21",
         "pkg_id": "PKG-1",
@@ -930,7 +946,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key=operation,
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation=operation,
         operation_id=operation_id,
@@ -1039,7 +1055,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
@@ -1168,9 +1184,15 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             return current
 
     confirmations = ConfirmationCreator()
+    resolver = RoughSorterWmsConfirmationRequestResolver(
+        fact_factory=factory,
+        evidence_repository=factory._evidences,  # type: ignore[attr-defined]
+        execution_repository=factory._executions,  # type: ignore[attr-defined]
+    )
     applier = DecisionApplier(
         device_command_service=object(),
         wms_confirmation_service=confirmations,
+        wms_request_resolver=resolver,
         rack_binding_repository=object(),
         transport_service=object(),
         material_execution_service=ExecutionTransitions(),
@@ -1308,7 +1330,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
@@ -1340,7 +1362,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.target_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.target_decide@v1",
         operation_id=TARGET_OPERATION_ID,
@@ -1375,11 +1397,26 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
     base = DeviceResultReadyFact("evidence:37", "37", "1.0", "EXEC-21", command_code, "DEVICE-3", "TRACE-21")
 
     fact = await factory.build(object(), base)
+    resolved = await RoughSorterWmsConfirmationRequestResolver(
+        fact_factory=factory,
+        evidence_repository=factory._evidences,  # type: ignore[attr-defined]
+        execution_repository=factory._executions,  # type: ignore[attr-defined]
+    ).resolve(
+        object(),
+        CreateWmsConfirmation(
+            material_execution_id="EXEC-21",
+            fact_id=base.fact_id,
+            operation="inbound.material.placement_report@v1",
+            operation_id=command_code,
+            evidence_refs=(base.evidence_id,),
+            snapshot_refs=("execution:EXEC-21", "command:" + command_code),
+        ),
+    )
+
     assert fact.step.value == "PLACEMENT_TO_CELL"
-    request_data = placement_data(fact)
-    assert request_data["target_assignment_id"] == "ASSIGN-1"
-    assert request_data["placement_sequence"] == 4
-    assert request_data["placed_at"] == 1_787_040_000_600
+    assert resolved.request_payload["data"]["target_assignment_id"] == "ASSIGN-1"
+    assert resolved.request_payload["data"]["placement_sequence"] == 4
+    assert resolved.request_payload["data"]["placed_at"] == 1_787_040_000_600
 
 
 @pytest.mark.asyncio
@@ -1465,7 +1502,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
@@ -1476,10 +1513,25 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
     base = DeviceResultReadyFact("evidence:39", "39", "1.0", "EXEC-21", command_code, "DEVICE-1", "TRACE-21")
 
     fact = await factory.build(object(), base)
+    resolved = await RoughSorterWmsConfirmationRequestResolver(
+        fact_factory=factory,
+        evidence_repository=factory._evidences,  # type: ignore[attr-defined]
+        execution_repository=factory._executions,  # type: ignore[attr-defined]
+    ).resolve(
+        object(),
+        CreateWmsConfirmation(
+            material_execution_id="EXEC-21",
+            fact_id=base.fact_id,
+            operation="inbound.material.ng_placement_report@v1",
+            operation_id=command_code,
+            evidence_refs=(base.evidence_id,),
+            snapshot_refs=("execution:EXEC-21", "command:" + command_code),
+        ),
+    )
+
     assert fact.step.value == "MEASUREMENT_TO_NG"
-    request_data = ng_placement_data(fact)
-    assert request_data["ng_position"] == {"type": "NG_POSITION", "location_code": "NG-1"}
-    assert request_data["reason_code"] == "MATERIAL_REJECTED"
+    assert resolved.request_payload["data"]["ng_position"] == {"type": "NG_POSITION", "location_code": "NG-1"}
+    assert resolved.request_payload["data"]["reason_code"] == "MATERIAL_REJECTED"
 
 
 def test_core_application_does_not_import_concrete_rough_sorter_plugin() -> None:
@@ -1581,12 +1633,28 @@ async def test_initial_correlator_rebuilds_stable_execution_identity_from_persis
 
 
 @pytest.mark.asyncio
-async def test_plugin_builds_complete_admission_data_from_same_db_snapshot() -> None:
+async def test_wms_resolver_builds_strict_admission_wire_from_same_db_snapshot() -> None:
     factory, base = _factory()
-    fact = await factory.build(object(), base)
-    request_data = admission_data(fact)
+    resolver = RoughSorterWmsConfirmationRequestResolver(
+        fact_factory=factory,
+        evidence_repository=factory._evidences,  # type: ignore[attr-defined]
+        execution_repository=factory._executions,  # type: ignore[attr-defined]
+    )
+    decision = CreateWmsConfirmation(
+        material_execution_id=base.material_execution_id,
+        fact_id=base.fact_id,
+        operation="inbound.material.admission_decide@v1",
+        operation_id=(await factory.build(object(), base)).request_operation_id,
+        evidence_refs=(base.evidence_id,),
+        snapshot_refs=("execution:EXEC-21", "epoch:11"),
+    )
+    db = object()
 
-    assert request_data["six_in_one"] == {
+    resolved = await resolver.resolve(db, decision)
+
+    assert resolved.request_payload["operation"] == decision.operation
+    assert resolved.request_payload["operation_id"] == decision.operation_id
+    assert resolved.request_payload["data"]["six_in_one"] == {
         "LotCode": "LOT",
         "DateCode": "DATE",
         "Qty": "1",
@@ -1594,10 +1662,11 @@ async def test_plugin_builds_complete_admission_data_from_same_db_snapshot() -> 
         "MfrPN": "MFR",
         "PONumber": "PO",
     }
-    assert request_data["source_position"] == {
+    assert resolved.request_payload["data"]["source_position"] == {
         "type": "HANDOFF_POSITION",
         "location_code": "MEASUREMENT-1",
     }
+    assert resolved.deadline_at > NOW
 
 
 @pytest.mark.asyncio
@@ -1973,7 +2042,7 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.execution.recovery_decided@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.execution.recovery_decided@v1",
         operation_id=recovery_operation_id,
@@ -1988,46 +2057,13 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
         received_at=NOW,
         line_run_epoch_id=11,
         material_execution_id=21,
-        contract_key="inbound.material.admission_decide@v1",
+        contract_key="rough_sorter_inbound",
         contract_version="1.0",
         operation="inbound.material.admission_decide@v1",
         operation_id=ADMISSION_OPERATION_ID,
         apply_status=InboundEvidenceApplyStatus.APPLIED,
     )
     factory._evidences = _Evidences(recovery, causal)  # type: ignore[attr-defined]
-    admission_data = {
-        "material_execution_id": "EXEC-21",
-        "material_trace_id": "TRACE-21",
-        "six_in_one": {
-            "LotCode": "L",
-            "DateCode": "D",
-            "Qty": "1",
-            "ProductNo": "P",
-            "MfrPN": "M",
-            "PONumber": "PO",
-        },
-        "measurements": {"diameter_mm": "1", "thickness_mm": "1"},
-        "shape_result": "PASS",
-        "line_run_epoch_id": "11",
-        "workline_code": "ROUGH-LINE-1",
-        "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT-1"},
-    }
-    factory._wms_confirmations = _Confirmations(  # type: ignore[attr-defined]
-        WmsConfirmation(
-            id=31,
-            operation="inbound.material.admission_decide@v1",
-            operation_id=ADMISSION_OPERATION_ID,
-            material_execution_id=21,
-            request_digest="3" * 64,
-            request_payload={
-                "operation": "inbound.material.admission_decide@v1",
-                "operation_id": ADMISSION_OPERATION_ID,
-                "timestamp": 1,
-                "data": admission_data,
-            },
-            deadline_at=NOW,
-        )
-    )
     position = DevicePosition("MEASUREMENT-1", "MEASUREMENT_POSITION", "TRACE-21")
     base = BaseRecoveryDecidedFact(
         "evidence:42",
@@ -2048,4 +2084,3 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
     assert first.continuation.operation == "inbound.material.admission_decide@v1"
     assert first.continuation.operation_id != ADMISSION_OPERATION_ID
     assert is_uuid7(first.continuation.operation_id)
-    assert first.continuation.request_data == admission_data

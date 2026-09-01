@@ -1,4 +1,4 @@
-"""共享 WMS Event 唯一生产入口的 ASGI 合同。"""
+"""WMS Transport evidence 唯一生产入口的 ASGI 合同。"""
 
 from __future__ import annotations
 
@@ -13,15 +13,11 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from src.app.wms_adapter.inbound_event_handler import InboundEventResponse
 from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
 from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
     TransportEventResponse,
-)
-
-TRANSPORT_BODY = (
-    b'{"operation_id":"01988ef1-4d2a-7000-8000-000000000001",'
-    b'"operation":"transport.task.resulted@v1","timestamp":1,"data":{}}'
 )
 
 
@@ -61,7 +57,7 @@ async def test_oversized_stream_stops_at_the_boundary_before_auth_json_or_handle
     def _auth_must_not_run(_policy: object) -> bool:
         raise AssertionError("oversized body must be rejected before authentication")
 
-    monkeypatch.setattr(module, "_permits_wms_event_endpoint", _auth_must_not_run)
+    monkeypatch.setattr(module, "_permits_transport_endpoint", _auth_must_not_run)
     handler = AsyncMock()
     app = _route_app(module, handler, policy)
     messages = [
@@ -117,7 +113,7 @@ def test_none_profile_forwards_exact_bytes_and_wakes_evidence_worker_after_persi
     http_status: int,
 ) -> None:
     module = _events_module()
-    raw_body = TRANSPORT_BODY
+    raw_body = b'{"operation_id":"01988ef1-4d2a-7000-8000-000000000001"}'
     response_body = {
         "operation_id": "01988ef1-4d2a-7000-8000-000000000001",
         "code": ack_code,
@@ -220,9 +216,7 @@ def test_transport_ingress_publisher_failure_does_not_change_persisted_ack(
     app = _route_app(module, handler, _none_policy(module), publisher=publisher)
 
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
-        )
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 202
     assert response.json() == response_body
@@ -255,7 +249,7 @@ def test_transport_ingress_diagnostics_sanitize_overlong_identity_without_changi
     raw_body = json.dumps(
         {
             "operation_id": "o" * 37,
-            "operation": "transport.task.resulted@v1",
+            "operation": "x" * 81,
             "data": {"transport_task_id": "t" * 81},
         }
     ).encode()
@@ -266,7 +260,7 @@ def test_transport_ingress_diagnostics_sanitize_overlong_identity_without_changi
     assert response.status_code == 422
     payload = publisher.publish_to.await_args.args[2]
     assert payload["operation_id"] is None
-    assert payload["operation"] == "transport.task.resulted@v1"
+    assert payload["operation"] is None
     assert payload["transport_task_id"] is None
 
 
@@ -286,7 +280,7 @@ async def test_persisted_ack_defers_evidence_wakeup_until_response_background(
         if received:
             return {"type": "http.disconnect"}
         received = True
-        return {"type": "http.request", "body": TRANSPORT_BODY, "more_body": False}
+        return {"type": "http.request", "body": b"{}", "more_body": False}
 
     request = Request(
         {
@@ -299,7 +293,7 @@ async def test_persisted_ack_defers_evidence_wakeup_until_response_background(
         receive,
     )
 
-    response = await module.receive_wms_event(request)
+    response = await module.receive_transport_event(request)
 
     assert response.status_code == 202
     enqueue.assert_not_called()
@@ -328,9 +322,7 @@ def test_non_persisted_ack_does_not_wake_evidence_worker(monkeypatch: pytest.Mon
     app = _route_app(module, handler, _none_policy(module))
 
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
-        )
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 409
     enqueue.assert_not_called()
@@ -357,14 +349,14 @@ def test_transport_event_route_enforces_json_utf8_identity_headers(
     app = _route_app(module, handler, _none_policy(module))
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/wms/events", content=TRANSPORT_BODY, headers=headers)
+        response = client.post("/api/v1/wms/events", content=b"{}", headers=headers)
 
     assert response.status_code == expected_status
     if expected_status == 400:
         assert response.content == b""
         handler.assert_not_awaited()
     else:
-        handler.assert_awaited_once_with(TRANSPORT_BODY)
+        handler.assert_awaited_once_with(b"{}")
 
 
 @pytest.mark.parametrize(
@@ -416,9 +408,7 @@ def test_enqueue_failure_keeps_persisted_ack_and_emits_stable_event(
     app = _route_app(module, handler, _none_policy(module))
 
     with caplog.at_level(logging.WARNING, logger=module.__name__), TestClient(app) as client:
-        response = client.post(
-            "/api/v1/wms/events", content=TRANSPORT_BODY, headers={"Content-Type": "application/json"}
-        )
+        response = client.post("/api/v1/wms/events", content=b"{}", headers={"Content-Type": "application/json"})
 
     assert response.status_code == 202
     assert response.json() == response_body
@@ -541,7 +531,7 @@ def test_missing_transport_runtime_rejects_nested_duplicate_key_before_associati
                 "timestamp": 1,
                 "data": {},
             },
-            422,
+            503,
         ),
         (
             {
@@ -578,7 +568,7 @@ def test_missing_transport_runtime_cannot_persist_associated_invalid_envelope(
     assert response.status_code == expected_status
     if expected_status == 400:
         assert response.content == b""
-    elif expected_status == 503:
+    else:
         assert response.json() == {
             "operation_id": envelope["operation_id"],
             "code": "UNAVAILABLE",
@@ -586,12 +576,9 @@ def test_missing_transport_runtime_cannot_persist_associated_invalid_envelope(
             "data": {},
         }
         assert isinstance(response.json()["timestamp"], int)
-    else:
-        assert response.json()["operation_id"] == envelope["operation_id"]
-        assert response.json()["code"] == "REJECTED"
 
 
-def test_application_registers_exactly_one_shared_wms_events_route() -> None:
+def test_application_registers_exactly_one_wms_transport_events_route() -> None:
     from src import register
 
     app = FastAPI()
@@ -602,13 +589,13 @@ def test_application_registers_exactly_one_shared_wms_events_route() -> None:
     assert matches[0].methods == {"POST"}
 
 
-def test_shared_wms_event_route_dispatches_recovery_to_the_exact_business_handler(
+def test_shared_wms_event_route_dispatches_recovery_to_the_single_inbound_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _events_module()
     transport_handler = AsyncMock()
-    recovery_handler = AsyncMock(
-        return_value=SimpleNamespace(
+    inbound_handler = AsyncMock(
+        return_value=InboundEventResponse(
             http_status=202,
             body={
                 "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
@@ -622,7 +609,7 @@ def test_shared_wms_event_route_dispatches_recovery_to_the_exact_business_handle
     monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", enqueue)
     publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
     app = _route_app(module, transport_handler, _none_policy(module), publisher=publisher)
-    app.state.wms_recovery_event_handler = SimpleNamespace(handle=recovery_handler)
+    app.state.wms_inbound_event_handler = SimpleNamespace(handle=inbound_handler)
     raw_body = json.dumps(
         {
             "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
@@ -636,33 +623,7 @@ def test_shared_wms_event_route_dispatches_recovery_to_the_exact_business_handle
         response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
 
     assert response.status_code == 202
-    recovery_handler.assert_awaited_once_with(raw_body)
+    inbound_handler.assert_awaited_once_with(raw_body)
     transport_handler.assert_not_awaited()
     publisher.publish_to.assert_not_awaited()
     enqueue.assert_not_called()
-
-
-def test_shared_wms_event_route_rejects_unknown_operation_without_transport_fallback() -> None:
-    module = _events_module()
-    transport_handler = AsyncMock()
-    recovery_handler = AsyncMock()
-    app = _route_app(module, transport_handler, _none_policy(module))
-    app.state.wms_recovery_event_handler = SimpleNamespace(handle=recovery_handler)
-    operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/wms/events",
-            json={
-                "operation_id": operation_id,
-                "operation": "unknown.operation@v1",
-                "timestamp": 1,
-                "data": {},
-            },
-        )
-
-    assert response.status_code == 422
-    assert response.json()["code"] == "REJECTED"
-    assert response.json()["operation_id"] == operation_id
-    transport_handler.assert_not_awaited()
-    recovery_handler.assert_not_awaited()

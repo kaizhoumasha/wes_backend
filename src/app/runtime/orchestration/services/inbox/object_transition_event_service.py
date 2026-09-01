@@ -9,8 +9,6 @@ from src.app.runtime.orchestration.repositories.object_transition_event_reposito
     ObjectTransitionEventRepository,
     object_transition_event_repository,
 )
-from src.app.runtime.orchestration.services._text import escape_key_part as _escape_key_part
-from src.app.runtime.orchestration.services._text import normalize_required_text as _required
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 
@@ -154,6 +152,17 @@ class ObjectTransitionEventService(BaseService[ObjectTransitionEvent, ObjectTran
 
 def _domain_value(domain: ObjectTransitionDomain | str) -> str:
     return domain.value if isinstance(domain, ObjectTransitionDomain) else _required(str(domain), "domain")
+
+
+def _required(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} 不能为空")
+    return normalized
+
+
+def _escape_key_part(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(":", "\\:")
 
 
 object_transition_event_service = ObjectTransitionEventService()

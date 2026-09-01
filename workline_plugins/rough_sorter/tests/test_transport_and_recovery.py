@@ -13,6 +13,7 @@ from wes_plugin_sdk import (
     DevicePosition,
     ExecutionLifecycle,
     PauseForReconciliation,
+    TransportLeg,
     TransportRackPosition,
     TransportZonePosition,
 )
@@ -23,7 +24,6 @@ from rough_sorter.facts import (
     RecoveryDeferContinuation,
     RecoveryDeviceContinuation,
     RecoveryWmsContinuation,
-    TransportLeg,
     TransportOutcome,
     TransportOutcomePublishedFact,
 )
@@ -101,14 +101,22 @@ def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack()
         inbound_admission_id="admission-1",
     )
 
-    decision = _transport_handler()(fact)[0]
-    assert decision.operation == "inbound.material.target_decide@v1"
-    assert decision.operation_id == "stable-target-request-after-new-rack"
-    assert decision.request_data["current_rack_id"] == "rack-new"
-    assert decision.request_data["source_position"] == {
-        "type": "HANDOFF_POSITION",
-        "location_code": "pipeline-outlet",
-    }
+    assert _transport_handler()(fact) == (
+        CreateWmsConfirmation(
+            material_execution_id=EXECUTION_ID,
+            fact_id=fact.fact_id,
+            operation="inbound.material.target_decide@v1",
+            operation_id="stable-target-request-after-new-rack",
+            evidence_refs=(fact.evidence_id,),
+            snapshot_refs=(
+                f"execution:{EXECUTION_ID}",
+                "transport:task-NEW_IN",
+                "wms-admission:admission-1",
+                "position:pipeline-outlet",
+                "rack:rack-new",
+            ),
+        ),
+    )
 
 
 def test_new_rack_broad_zone_target_accepts_concrete_position_without_zone_inference() -> None:
@@ -405,7 +413,8 @@ def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> Non
     continuation = RecoveryWmsContinuation(
         operation="inbound.material.target_decide@v1",
         operation_id="stable-reconciled-target-request",
-        request_data={"material_execution_id": EXECUTION_ID},
+        evidence_refs=("recovery-evidence",),
+        snapshot_refs=(f"execution:{EXECUTION_ID}", "position:pipeline-outlet", "rack:rack-new"),
     )
     fact = RecoveryDecidedFact(
         runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
@@ -435,7 +444,8 @@ def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> Non
                 fact_id=fact.fact_id,
                 operation=continuation.operation,
                 operation_id=continuation.operation_id,
-                request_data=continuation.request_data,
+                evidence_refs=continuation.evidence_refs,
+                snapshot_refs=continuation.snapshot_refs,
             ),
         )
     )
@@ -521,7 +531,8 @@ def test_recovery_continue_requires_authoritative_position() -> None:
             continuation=RecoveryWmsContinuation(
                 operation="inbound.material.target_decide@v1",
                 operation_id="stable-target-request",
-                request_data={"material_execution_id": EXECUTION_ID},
+                evidence_refs=("recovery-evidence",),
+                snapshot_refs=(f"execution:{EXECUTION_ID}",),
             ),
         )
 
@@ -548,7 +559,8 @@ def test_recovery_abort_forbids_continuation_and_self_causal_identity() -> None:
     continuation = RecoveryWmsContinuation(
         operation="inbound.material.target_decide@v1",
         operation_id="new-target-operation",
-        request_data={"material_execution_id": EXECUTION_ID},
+        evidence_refs=("recovery-evidence",),
+        snapshot_refs=(f"execution:{EXECUTION_ID}",),
     )
     values = {
         "runtime_snapshot": runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),

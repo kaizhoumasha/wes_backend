@@ -678,6 +678,7 @@ _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY = {
     },
     "wms": {
         "legacy:src/app/wms_adapter/client.py:WmsClient",
+        "legacy:src/app/wms_adapter/execution_confirmation_adapter.py:<file>",
         "legacy:src/app/wms_adapter/inbound_adapter.py:WmsInboundAdapter",
         "legacy:src/app/wms_adapter/inbound_auth.py:WmsInboundAuthPolicy",
         "legacy:src/app/wms_adapter/transport_adapter.py:<file>",
@@ -708,7 +709,17 @@ _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY = {
         "legacy:src/app/wms_integration/ports/effect_preparation.py:<file>",
         "legacy:src/app/wms_integration/ports/effect_status.py:<file>",
         "legacy:src/app/wms_integration/ports/event.py:<file>",
+        "legacy:src/app/wms_integration/ports/fulfillment_operations.py:<file>",
+        "legacy:src/app/wms_integration/ports/fulfillment_operations.py:NotifyPkgBindingRequest",
+        "legacy:src/app/wms_integration/ports/fulfillment_operations.py:NotifyPkgBindingResult",
+        "legacy:src/app/wms_integration/ports/fulfillment_operations.py:validate_notify_pkg_binding_terminal_identity",
+        "legacy:src/app/wms_integration/ports/inventory_operations.py:<file>",
+        "legacy:src/app/wms_integration/ports/inventory_operations.py:ConfirmInboundRequest",
+        "legacy:src/app/wms_integration/ports/inventory_operations.py:ConfirmInboundResult",
+        "legacy:src/app/wms_integration/ports/inventory_operations.py:validate_confirm_inbound_terminal_identity",
         "legacy:src/app/wms_integration/ports/master_data_operations.py:<file>",
+        "legacy:src/app/wms_integration/ports/operation_common.py:<file>",
+        "legacy:src/app/wms_integration/ports/operation_common.py:validate_json_payload",
         "legacy:src/app/wms_integration/ports/query_execution.py:<file>",
         "legacy:src/app/wms_integration/ports/query_outcome.py:<file>",
         "legacy:src/app/wms_integration/ports/reconciliation_operations.py:<file>",
@@ -831,6 +842,30 @@ _REVIEW_EXPECTED_DETAILS = {
         "NONE",
         "tests/architecture/test_legacy_absence_guardrail.py",
     ),
+    "legacy:src/app/wms_integration/ports/fulfillment_operations.py:<file>": (
+        "wms",
+        "switch",
+        "wms_integration",
+        "src/app/wms_integration/ports/fulfillment_operations.py",
+        "NotifyPkgBindingRequest",
+        "tests/runtime/execution/test_wms_confirmation_service.py",
+    ),
+    "legacy:src/app/wms_integration/ports/inventory_operations.py:<file>": (
+        "wms",
+        "switch",
+        "wms_integration",
+        "src/app/wms_integration/ports/inventory_operations.py",
+        "ConfirmInboundRequest",
+        "tests/runtime/execution/test_wms_confirmation_service.py",
+    ),
+    "legacy:src/app/wms_integration/ports/operation_common.py:<file>": (
+        "wms",
+        "switch",
+        "wms_integration",
+        "src/app/wms_integration/ports/operation_common.py",
+        "validate_json_payload",
+        "tests/runtime/execution/test_wms_confirmation_service.py",
+    ),
 }
 
 
@@ -915,7 +950,7 @@ def test_phase10_prelock_registry_covers_frozen_categories_with_final_dispositio
     for category, actual_ids in actual_by_category.items():
         assert actual_ids <= _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY[category]
     assert actual_by_category["schema-deferred"] == _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"]
-    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 73
+    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 84
     assert not any(entry.classification_status == "pending-review" for entry in parse_entries())
 
 

@@ -32,13 +32,7 @@ class AdmissionDecidedHandler:
         )
         require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is AdmissionResult.WAIT:
-            return (
-                Wait(
-                    material_execution_id=fact.material_execution_id,
-                    fact_id=fact.fact_id,
-                    reason_code=fact.reason_code or "WMS_ADMISSION_WAIT",
-                ),
-            )
+            return (self._wait(fact, fact.reason_code or "WMS_ADMISSION_WAIT"),)
         if fact.result is AdmissionResult.RECONCILING:
             return (
                 PauseForReconciliation(
@@ -70,6 +64,14 @@ class AdmissionDecidedHandler:
                 source=fact.source_position,
                 target=target,
             ),
+        )
+
+    @staticmethod
+    def _wait(fact: AdmissionDecidedFact, reason_code: str) -> Wait:
+        return Wait(
+            material_execution_id=fact.material_execution_id,
+            fact_id=fact.fact_id,
+            reason_code=reason_code,
         )
 
 

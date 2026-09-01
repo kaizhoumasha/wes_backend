@@ -386,7 +386,7 @@ def test_transport_submit_mock_rejects_nul_face(template: dict[str, object]) -> 
 
 
 def test_transport_submit_mock_rejects_face_not_representable_as_utf8() -> None:
-    assert wms_mock_server.is_opaque_face("\ud800") is False
+    assert wms_mock_server._opaque_face("\ud800") is False
 
 
 @pytest.mark.parametrize(("field_path", "invalid_value"), [("kind", []), ("target_face", {})])

@@ -15,6 +15,7 @@ from wes_plugin_sdk import (
     EvidenceReadyFact,
     ExecutionSnapshot,
     RecoveryDecision,
+    TransportLeg,
     TransportRackMovePosition,
     TransportRackPosition,
     TransportRackReference,
@@ -25,19 +26,11 @@ from wes_plugin_sdk import (
 from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
-from wes_plugin_sdk.validation import validate_opaque_face
-from wes_plugin_sdk.validation import validate_required_refs as _required_refs
-from wes_plugin_sdk.validation import validate_required_text as _required
 
 
 class ShapeResult(StrEnum):
     PASS = "PASS"
     FAIL = "FAIL"
-
-
-class TransportLeg(StrEnum):
-    OLD_OUT = "OLD_OUT"
-    NEW_IN = "NEW_IN"
 
 
 class AdmissionResult(StrEnum):
@@ -126,6 +119,22 @@ class RoughSorterRuntimeSnapshot:
             raise TypeError("runtime snapshot requires exact SDK snapshot values")
         if self.execution.line_run_epoch_id != self.epoch.line_run_epoch_id:
             raise ValueError("execution and Epoch snapshots do not match")
+
+
+def _required(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must not be blank")
+
+
+def _opaque_face(value: object, field_name: str) -> None:
+    if type(value) is not str or value == "":
+        raise ValueError(f"{field_name} must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError(f"{field_name} must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{field_name} must be valid UTF-8") from error
 
 
 def _operation_id(value: str, field_name: str) -> None:
@@ -560,6 +569,13 @@ class TargetDecidedFact(WmsResultReadyFact):
         )
 
 
+def _required_refs(values: tuple[str, ...], field_name: str) -> None:
+    if type(values) is not tuple or not values or len(values) != len(set(values)):
+        raise ValueError(f"{field_name} must be a non-empty unique tuple")
+    for value in values:
+        _required(value, field_name)
+
+
 @dataclass(frozen=True, slots=True)
 class PlacementCompletedFact(WmsResultReadyFact):
     runtime_snapshot: RoughSorterRuntimeSnapshot
@@ -600,7 +616,7 @@ class RackMoveLegPlan:
             raise TypeError("source and target must be TransportRackMovePosition values")
         if self.source == self.target:
             raise ValueError("source and target must differ")
-        validate_opaque_face(self.target_face, "target_face")
+        _opaque_face(self.target_face, "target_face")
 
 
 @dataclass(frozen=True, slots=True)
@@ -765,7 +781,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             raise ValueError("material transport outcome only accepts NEW_IN")
         if type(self.expected_target) not in (TransportRackReference, TransportZonePosition, TransportRackPosition):
             raise TypeError("expected target must use an SDK transport position")
-        validate_opaque_face(self.expected_face, "expected_face")
+        _opaque_face(self.expected_face, "expected_face")
         if self.outcome is not TransportOutcome.SUCCEEDED:
             _required(self.reason_code or "", "reason_code")
             _reject_present_fields(
@@ -784,7 +800,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
         _required(self.actual_rack_id or "", "actual_rack_id")
         if type(self.final_position) is not TransportRackPosition:
             raise TypeError("successful transport outcome requires a typed final position")
-        validate_opaque_face(self.arrival_face, "arrival_face")
+        _opaque_face(self.arrival_face, "arrival_face")
         if self.reason_code is not None:
             raise ValueError("successful transport outcome must not include reason_code")
         self._require_new_rack_target_request()
@@ -816,14 +832,15 @@ _RECOVERY_WMS_OPERATIONS = {
 class RecoveryWmsContinuation:
     operation: str
     operation_id: str
-    request_data: dict[str, object]
+    evidence_refs: tuple[str, ...]
+    snapshot_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.operation not in _RECOVERY_WMS_OPERATIONS:
             raise ValueError("unsupported recovery WMS operation")
         _operation_id(self.operation_id, "operation_id")
-        if type(self.request_data) is not dict:
-            raise TypeError("request_data must be a dict")
+        _required_refs(self.evidence_refs, "evidence_refs")
+        _required_refs(self.snapshot_refs, "snapshot_refs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -919,7 +936,6 @@ __all__ = [
     "ShapeResult",
     "TargetDecidedFact",
     "TargetResult",
-    "TransportLeg",
     "TransportOutcome",
     "TransportOutcomePublishedFact",
     "rack_release_snapshot_ref",

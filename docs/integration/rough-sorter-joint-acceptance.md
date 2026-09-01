@@ -1,24 +1,12 @@
 # Phase 8 粗分机后端开发验收与现场边界状态
 
-## 2026-09-01 Transport 0.3 联调部署与当前门禁
+## 2026-08-31 Transport 0.3 repository alignment
 
-**TRANSPORT 0.3 WES IMPLEMENTATION: ALIGNED AND DEPLOYED；CURRENT ROUGH-SORTER IMAGE E2E: PENDING**。
+**TRANSPORT 0.3 CANDIDATE: FOCUSED VERIFIED；CURRENT IMMUTABLE IMAGE E2E: PENDING**。
 
-仓内合同、backend、frontend canonical consumer 与粗分换架主链已完成对齐。backend `develop@fdfa4725` 与联调部署
-revision `e7e3d6af` 具有相同 tree `46d568d1`，frontend 联调部署 revision 为 `a6c3193f`。当前 backend 快照的 QUALITY 为
-`2421 passed, 5 skipped`，selector HEAVY 为 `110 passed, 0 skipped`，其中包含真实 broker/worker/HTTP/PostgreSQL 的
-Transport production-wiring E2E；它不能替代完整粗分业务 E2E。`f2129982` 镜像的 12 项粗分 E2E 仍是历史冻结证据，
-尚未对当前镜像重新执行。
-
-2026-09-01 只读复核时，联调环境发布静默门禁为 `BLOCK`：`STATION_SCAN7/8` 各有一条 `EVENT_DEBUG` 命令因
-`ACK_DEADLINE_EXPIRED` 保持 `RECONCILING`，并各自阻塞一条后继 `DEVICE_EVENT`。原命令身份和资源围栏必须保留，
-等待匹配的权威终态或人工对账；本轮未重发、未关闭、未释放围栏。明确保留：
-`DEPLOYED / NOT SUPPLIER ACCEPTED / NOT PHYSICAL ACCEPTED / NOT BUSINESS ACCEPTED`。
-
-| 设备 | 原 `DeviceCommand` identity | 命令状态 | 被阻塞的后继 evidence | 围栏 identity / 状态 |
-| --- | --- | --- | --- | --- |
-| `STATION_SCAN7` | id=`344890128294464`；code=`01a05d21-cd56-7312-835b-5d4a3ee9d773` | `RECONCILING / ACK_DEADLINE_EXPIRED` | id=`344891469869632`；kind=`DEVICE_EVENT`；source=`EVENT:28ba48233c45202e33d9075e8e171dd0c06ecc0093aa1f0115d9f1fbda103b0a` | blocker id=`344891479941696`；`DEVICE_HAS_ACTIVE_COMMAND / BLOCKED` |
-| `STATION_SCAN8` | id=`344890169246272`；code=`01a05d21-f463-72b1-9c8f-d503f66fdb87` | `RECONCILING / ACK_DEADLINE_EXPIRED` | id=`344891474297408`；kind=`DEVICE_EVENT`；source=`EVENT:8e03bc7917632f0675226e7dc6a360acc50c98a20cbe7eee1a0879dee447b4a4` | blocker id=`344891480019520`；`DEVICE_HAS_ACTIVE_COMMAND / BLOCKED` |
+当前修复候选中的仓内合同、backend、frontend canonical consumer 与粗分换架主链已完成聚焦对齐。`f2129982` 镜像及其
+12 项 E2E 是历史冻结证据；当前候选生成匹配同一 Commit/tree 的不可变镜像并完成验证前，不把它写成当前 E2E 证据。
+明确保留：`NOT DEPLOYED / NOT SUPPLIER ACCEPTED / NOT PHYSICAL ACCEPTED / NOT BUSINESS ACCEPTED`。
 
 ### 最近一次不可变证据（历史冻结快照）
 
@@ -57,10 +45,10 @@ Transport production-wiring E2E；它不能替代完整粗分业务 E2E。`f2129
 
 | 层级 | 状态 | 当前有效证据 | 证据边界 / 阻塞 |
 | --- | --- | --- | --- |
-| 核心与共享基础能力 | PASS；当前 tree 已验证并部署 | QUALITY：`2421 passed, 5 skipped`；selector HEAVY：`110 passed, 0 skipped` | 当前 HEAVY 含 Transport production-wiring E2E，不含完整粗分业务 E2E |
+| 核心与共享基础能力 | PASS；最终工作树已验证 | 当前候选快照 QUALITY：`3625 passed, 4 skipped`；本次 selector HEAVY：`85 passed, 0 skipped`；计划锁定的核心 FAST owner：`21 passed` | 本次未修改 Phase 8 生产代码、插件 E2E、migration 或 schema；对应既有相同指纹证据继续有效 |
 | WMS Adapter 合同 | PASS | FAST owner、QUALITY 与 HEAVY 均通过；operation、DTO、幂等、`WAIT` 后继与投递未知由仓库合同测试拥有 | 只证明 WES 侧 ACL 与合同；真实 WMS 联调为 `NOT RUN` |
 | 粗分业务能力本机 Mock 联调 | PASS | `HEAD@c8144050` 干净 archive production image（source manifest `78313267…`）插件 E2E：`11 passed, 0 skipped` | 真实 WES HTTP/PostgreSQL/Redis/Celery/Beat；WMS/ECS 为 stdlib mock，不证明供应商、PLC、RCS 或现场物理闭环 |
-| 当前联调镜像 | DEPLOYED；运行门禁 BLOCK | `wes-backend:release-e7e3d6af`，OCI revision=`e7e3d6afc003e49de5246fb56265b2696d9e06df`，tree=`46d568d1e65289dc98935093b4a31978e208afd5` | 软件已部署；两条物理不确定命令及其后继事件仍需对账，不能据此宣称现场可放行 |
+| 后端 RC 镜像 | PASS；PUBLISHED | 不可变标签 `88-f51677b`，manifest `sha256:e38dec0294d406540c734d86c70da85682438627a9f8e685d54e3a2f3883a453`；OCI revision=`f51677b62f5da906d4b60fa5a528d04692aff7a2`，source-manifest=`bd1a1d33d4e27ac54ddbddd126eef660aea1c13c` | Jenkins #88 由 GitLab push 触发并成功；`develop` channel 仅表示最新候选，不作为 RC 关闭或现场选版证据 |
 | 供应商与现场联合验收 | OUTSIDE BACKEND RC；NOT RUN | 见 [`rough-sorter-supplier-conformance.md`](rough-sorter-supplier-conformance.md) | 由现场部署验收人员选择版本并执行，不阻塞后端或前端各自发布 RC |
 
 ## 已通过的仓内工程与本机 Mock 验收

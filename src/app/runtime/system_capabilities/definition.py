@@ -11,8 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
-from src.app.runtime.extension_identity import stable_sort, validate_key_version
-from src.utils.canonical_json import canonical_json_digest
+from src.app.runtime.extension_identity import sha256_digest, stable_sort, validate_key_version
 
 
 class SystemCapabilityMode(str, Enum):
@@ -121,7 +120,7 @@ class SystemCapabilityDefinition:
             "required_ports": [_type_identity(port) for port in self.required_ports],
             "timeout_seconds": self.timeout_seconds,
         }
-        return f"{self.capability_key}@{self.contract_version}:{canonical_json_digest(payload)}"
+        return f"{self.capability_key}@{self.contract_version}:{sha256_digest(payload)}"
 
 
 __all__ = [

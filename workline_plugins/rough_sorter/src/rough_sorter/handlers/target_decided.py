@@ -14,7 +14,6 @@ from wes_plugin_sdk import (
 
 from rough_sorter.facts import TargetDecidedFact, TargetResult
 from rough_sorter.handlers._guards import require_epoch, require_execution
-from rough_sorter.wms_requests import replacement_plan_data
 
 REPLACEMENT_PLAN_OPERATION = "inbound.source_rack.replacement_plan_decide@v1"
 
@@ -37,13 +36,7 @@ class TargetDecidedHandler:
         )
         _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is TargetResult.WAIT:
-            return (
-                Wait(
-                    material_execution_id=fact.material_execution_id,
-                    fact_id=fact.fact_id,
-                    reason_code=fact.reason_code or "WMS_TARGET_WAIT",
-                ),
-            )
+            return (self._wait(fact, fact.reason_code or "WMS_TARGET_WAIT"),)
         if fact.result is TargetResult.RECONCILING:
             return (
                 PauseForReconciliation(
@@ -60,7 +53,11 @@ class TargetDecidedHandler:
                     fact_id=fact.fact_id,
                     operation=REPLACEMENT_PLAN_OPERATION,
                     operation_id=fact.request_operation_id or "",
-                    request_data=replacement_plan_data(fact),
+                    evidence_refs=(fact.evidence_id,),
+                    snapshot_refs=(
+                        f"execution:{fact.material_execution_id}",
+                        f"rack:{fact.current_rack_id}",
+                    ),
                 ),
             )
         target = fact.target_position
@@ -109,6 +106,14 @@ class TargetDecidedHandler:
                 affected_resource_ids=(fact.current_rack_id, target_rack_id or ""),
             )
         return None
+
+    @staticmethod
+    def _wait(fact: TargetDecidedFact, reason_code: str) -> Wait:
+        return Wait(
+            material_execution_id=fact.material_execution_id,
+            fact_id=fact.fact_id,
+            reason_code=reason_code,
+        )
 
 
 __all__ = ["TargetDecidedHandler"]

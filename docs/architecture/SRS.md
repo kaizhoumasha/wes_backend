@@ -72,8 +72,7 @@
     * **独立数据库 (Independent DB)**: 拥有私有的 PostgreSQL/Redis 实例，不依赖 L1 数据库。
     * **执行插件 (Execution Plugin)**: 每条 WorkLine 通过显式注册的代码插件，把 WMS 封闭业务结果映射为本线设备等待、
       发送、暂停、隔离和对账动作；插件不拥有业务规则。
-    * **执行内核 (Execution Kernel)**: 接收插件返回的封闭 Decision，可靠创建设备命令、搬运任务或 WMS 确认义务；WMS 请求的
-      业务 data 由插件一次性给出，内核只按共享 operation 合同校验、冻结和派发，不查询业务表补全 payload。
+    * **执行内核 (Execution Kernel)**: 接收插件返回的封闭 Decision，可靠创建设备命令、搬运任务或 WMS 确认义务。
     * **对象投影 (Object Projection)**: 分别跟踪物料、料箱、位置、设备命令和外部义务，不使用一个通用任务状态机承载全部职责。
 * **L3 - 执行层 (External - Hardware)**:
   * **职责**: 物理动作执行 (RCS, ECS)。其中 ECS 类作业设备由 WES 直接接入；RCS/AGV/CTU 类运输与交换设备由 WMS 统一调度并向 WES 回传结果。

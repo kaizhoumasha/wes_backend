@@ -4,13 +4,41 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from .validation import validate_opaque_face
-from .validation import validate_required_refs as _required_refs
-from .validation import validate_required_text as _required
+
+def _required(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must not be blank")
+
+
+def _opaque_face(value: object, field_name: str) -> None:
+    if type(value) is not str or value == "":
+        raise ValueError(f"{field_name} must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError(f"{field_name} must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{field_name} must be valid UTF-8") from error
+
+
+def _required_refs(values: tuple[str, ...], field_name: str) -> None:
+    if type(values) is not tuple:
+        raise TypeError(f"{field_name} must be a tuple")
+    if not values:
+        raise ValueError(f"{field_name} must not be empty")
+    if len(values) != len(set(values)):
+        raise ValueError(f"{field_name} must not contain duplicates")
+    for value in values:
+        _required(value, field_name)
 
 
 class TransportTaskType(StrEnum):
     RACK_MOVE = "RACK_MOVE"
+
+
+class TransportLeg(StrEnum):
+    OLD_OUT = "OLD_OUT"
+    NEW_IN = "NEW_IN"
 
 
 class TransportRcsTemplateId(StrEnum):
@@ -76,12 +104,6 @@ class TransportZonePosition:
 type TransportRackMovePosition = TransportRackReference | TransportZonePosition | TransportRackPosition
 
 
-def _validate_reasoned_execution_decision(material_execution_id: str, fact_id: str, reason_code: str) -> None:
-    _required(material_execution_id, "material_execution_id")
-    _required(fact_id, "fact_id")
-    _required(reason_code, "reason_code")
-
-
 @dataclass(frozen=True, slots=True)
 class Wait:
     material_execution_id: str
@@ -89,7 +111,9 @@ class Wait:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
+        _required(self.material_execution_id, "material_execution_id")
+        _required(self.fact_id, "fact_id")
+        _required(self.reason_code, "reason_code")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +123,9 @@ class DeferExecution:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
+        _required(self.material_execution_id, "material_execution_id")
+        _required(self.fact_id, "fact_id")
+        _required(self.reason_code, "reason_code")
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,15 +161,16 @@ class CreateWmsConfirmation:
     fact_id: str
     operation: str
     operation_id: str
-    request_data: dict[str, object]
+    evidence_refs: tuple[str, ...]
+    snapshot_refs: tuple[str, ...]
 
     def __post_init__(self) -> None:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.fact_id, "fact_id")
         _required(self.operation, "operation")
         _required(self.operation_id, "operation_id")
-        if type(self.request_data) is not dict:
-            raise TypeError("request_data must be a dict")
+        _required_refs(self.evidence_refs, "evidence_refs")
+        _required_refs(self.snapshot_refs, "snapshot_refs")
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,9 +178,9 @@ class CreateTransportTask:
     material_execution_id: str
     fact_id: str
     task_type: TransportTaskType
-    correlation_id: str
-    step: str
-    resource_fence_id: str
+    rack_replacement_id: str
+    leg: TransportLeg
+    current_rack_id: str
     rack_id: str
     source: TransportRackMovePosition
     target: TransportRackMovePosition
@@ -163,16 +190,17 @@ class CreateTransportTask:
     def __post_init__(self) -> None:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.fact_id, "fact_id")
-        _required(self.correlation_id, "correlation_id")
-        _required(self.step, "step")
-        _required(self.resource_fence_id, "resource_fence_id")
+        _required(self.rack_replacement_id, "rack_replacement_id")
+        _required(self.current_rack_id, "current_rack_id")
         _required(self.rack_id, "rack_id")
         if type(self.task_type) is not TransportTaskType or self.task_type is not TransportTaskType.RACK_MOVE:
             raise ValueError("task_type must be RACK_MOVE")
+        if type(self.leg) is not TransportLeg:
+            raise ValueError("leg must be a TransportLeg")
         position_types = {TransportRackReference, TransportZonePosition, TransportRackPosition}
         if type(self.source) not in position_types or type(self.target) not in position_types:
             raise TypeError("source and target must be Transport rack move positions")
-        validate_opaque_face(self.target_face, "target_face")
+        _opaque_face(self.target_face, "target_face")
         if type(self.rcs_template_id) is not TransportRcsTemplateId:
             raise ValueError("rcs_template_id must be a TransportRcsTemplateId")
         if self.source == self.target:
@@ -195,10 +223,12 @@ class CreateTransportTask:
         }
         if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
             raise ValueError("source, target, and rcs_template_id are not an approved edge")
+        if self.leg is TransportLeg.OLD_OUT and self.rack_id != self.current_rack_id:
+            raise ValueError("OLD_OUT rack_id must match current_rack_id")
 
     @property
-    def correlation_identity(self) -> tuple[str, str]:
-        return self.correlation_id, self.step
+    def business_identity(self) -> tuple[str, TransportLeg]:
+        return self.rack_replacement_id, self.leg
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +239,9 @@ class PauseForReconciliation:
     affected_resource_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
+        _required(self.material_execution_id, "material_execution_id")
+        _required(self.fact_id, "fact_id")
+        _required(self.reason_code, "reason_code")
         _required_refs(self.affected_resource_ids, "affected_resource_ids")
 
 
@@ -220,7 +252,9 @@ class CompleteExecution:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
+        _required(self.material_execution_id, "material_execution_id")
+        _required(self.fact_id, "fact_id")
+        _required(self.reason_code, "reason_code")
 
 
 Decision = (

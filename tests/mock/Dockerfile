@@ -42,7 +42,6 @@ RUN pip install --no-cache-dir \
 # 复制 mock 服务代码
 WORKDIR /app
 COPY tests/mock/ /app/tests/mock/
-COPY packages/wes_plugin_sdk/src/wes_plugin_sdk/ /app/wes_plugin_sdk/
 COPY src/static/swagger-ui/ /app/src/static/swagger-ui/
 # WMS Transport Mock 复用基础线协议能力，不依赖旧业务 operation registry。
 COPY src/app/wms_adapter/strict_json.py /app/src/app/wms_adapter/strict_json.py

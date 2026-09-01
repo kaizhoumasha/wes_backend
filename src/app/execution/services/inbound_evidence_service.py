@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
@@ -15,7 +16,6 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
-from src.utils.canonical_json import canonical_json_bytes, canonical_json_digest
 
 
 class InboundEvidenceIdentityConflictError(ValueError):
@@ -66,7 +66,7 @@ def normalize_payload(
     *,
     digest_policy: InboundEvidenceDigestPolicy = InboundEvidenceDigestPolicy.EXACT,
 ) -> tuple[dict[str, Any], str]:
-    encoded = canonical_json_bytes(payload)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     normalized = json.loads(encoded)
     if not isinstance(normalized, dict):
         raise TypeError("normalized payload 必须是 JSON object")
@@ -75,7 +75,13 @@ def normalize_payload(
         if digest_policy is InboundEvidenceDigestPolicy.UNIFORM_WIRE
         else normalized
     )
-    return normalized, canonical_json_digest(semantic_payload)
+    semantic_encoded = json.dumps(
+        semantic_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return normalized, hashlib.sha256(semantic_encoded).hexdigest()
 
 
 class InboundEvidenceService:

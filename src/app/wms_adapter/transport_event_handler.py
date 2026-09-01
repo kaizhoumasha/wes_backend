@@ -6,8 +6,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeGuard, cast
 
-from wes_plugin_sdk.validation import is_persistable_text as _is_persistable_text
-
 from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
@@ -137,6 +135,16 @@ def is_wire_operation_id(value: object) -> TypeGuard[str]:
 
 def is_wire_operation(value: object) -> TypeGuard[str]:
     return _is_persistable_text(value, 80)
+
+
+def _is_persistable_text(value: object, max_length: int) -> TypeGuard[str]:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value or len(value) > max_length:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 __all__ = [

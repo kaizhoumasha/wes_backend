@@ -1,4 +1,4 @@
-"""WMS 线协议共享的严格 JSON 处理。"""
+"""WMS 线协议共享的严格 JSON 解码。"""
 
 from __future__ import annotations
 
@@ -98,26 +98,6 @@ def is_json_utf8_media_type(value: str) -> bool:
     return separator == "=" and name.casefold() == "charset" and charset.casefold() in {"utf-8", '"utf-8"'}
 
 
-def valid_json_response_headers(headers: object) -> bool:
-    """校验 WMS JSON 响应唯一 Content-Type 与 identity Content-Encoding。"""
-
-    if not isinstance(headers, (tuple, list)):
-        return False
-    pairs: list[tuple[str, str]] = []
-    for pair in headers:
-        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
-            return False
-        name, value = pair
-        if not isinstance(name, str) or not isinstance(value, str):
-            return False
-        pairs.append((name, value))
-    content_types = [value for name, value in pairs if name.casefold() == "content-type"]
-    encodings = [value for name, value in pairs if name.casefold() == "content-encoding"]
-    if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
-        return False
-    return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
-
-
 def _unique_top_level_value(value: object, key: str) -> object:
     if not isinstance(value, _ObjectPairs):
         return None
@@ -213,10 +193,4 @@ def _parse_transport_float(value: str) -> _PreservedJsonFloat:
     return _PreservedJsonFloat(value)
 
 
-__all__ = [
-    "StrictJsonError",
-    "is_json_utf8_media_type",
-    "loads_strict_json",
-    "loads_transport_json",
-    "valid_json_response_headers",
-]
+__all__ = ["StrictJsonError", "is_json_utf8_media_type", "loads_strict_json", "loads_transport_json"]

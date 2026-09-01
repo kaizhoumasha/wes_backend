@@ -9,8 +9,6 @@ from src.app.runtime.orchestration.repositories.runtime_location_event_repositor
     RuntimeLocationEventRepository,
     runtime_location_event_repository,
 )
-from src.app.runtime.orchestration.services._text import escape_key_part as _escape_key_part
-from src.app.runtime.orchestration.services._text import normalize_required_text as _required
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 
@@ -145,11 +143,22 @@ class RuntimeLocationEventService(BaseService[RuntimeLocationEvent, RuntimeLocat
         )
 
 
+def _required(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} 不能为空")
+    return normalized
+
+
 def _optional(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _escape_key_part(value: str) -> str:
+    return value.replace("\\", "\\\\").replace(":", "\\:")
 
 
 runtime_location_event_service = RuntimeLocationEventService()
