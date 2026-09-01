@@ -126,6 +126,17 @@ def _required(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must not be blank")
 
 
+def _opaque_face(value: object, field_name: str) -> None:
+    if type(value) is not str or value == "":
+        raise ValueError(f"{field_name} must be a non-empty string")
+    if "\x00" in value:
+        raise ValueError(f"{field_name} must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{field_name} must be valid UTF-8") from error
+
+
 def _operation_id(value: str, field_name: str) -> None:
     _required(value, field_name)
 
@@ -605,8 +616,7 @@ class RackMoveLegPlan:
             raise TypeError("source and target must be TransportRackMovePosition values")
         if self.source == self.target:
             raise ValueError("source and target must differ")
-        if type(self.target_face) is not str or self.target_face == "":
-            raise ValueError("target_face must be a non-empty string")
+        _opaque_face(self.target_face, "target_face")
 
 
 @dataclass(frozen=True, slots=True)
@@ -771,8 +781,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             raise ValueError("material transport outcome only accepts NEW_IN")
         if type(self.expected_target) not in (TransportRackReference, TransportZonePosition, TransportRackPosition):
             raise TypeError("expected target must use an SDK transport position")
-        if type(self.expected_face) is not str or self.expected_face == "":
-            raise ValueError("expected_face must be a non-empty string")
+        _opaque_face(self.expected_face, "expected_face")
         if self.outcome is not TransportOutcome.SUCCEEDED:
             _required(self.reason_code or "", "reason_code")
             _reject_present_fields(
@@ -791,8 +800,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
         _required(self.actual_rack_id or "", "actual_rack_id")
         if type(self.final_position) is not TransportRackPosition:
             raise TypeError("successful transport outcome requires a typed final position")
-        if type(self.arrival_face) is not str or self.arrival_face == "":
-            raise ValueError("successful transport outcome requires a non-empty arrival face")
+        _opaque_face(self.arrival_face, "arrival_face")
         if self.reason_code is not None:
             raise ValueError("successful transport outcome must not include reason_code")
         self._require_new_rack_target_request()

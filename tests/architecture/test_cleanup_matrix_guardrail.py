@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import csv
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -1289,6 +1290,28 @@ def test_phase10_schema_validation_ignores_parent_process_metadata_pollution() -
             ),
             schema_snapshot=snapshot,
         )
+
+
+def test_phase10_schema_collector_does_not_depend_on_repo_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh collector 必须在没有仓库 .env 的 checkout 中加载 migration models。"""
+
+    from scripts import generate_legacy_matrix
+
+    shutil.copytree(REPO_ROOT / "src", tmp_path / "src")
+    monkeypatch.setattr(generate_legacy_matrix, "REPO_ROOT", tmp_path)
+    generate_legacy_matrix._collect_isolated_phase10_schema_snapshot.cache_clear()
+
+    try:
+        snapshot = generate_legacy_matrix.collect_isolated_phase10_schema_snapshot(
+            (("from", "src.app.admin.models", (("Permission", ""),)),),
+            (),
+        )
+
+        assert "wes_sys.permissions" in snapshot.tables
+    finally:
+        generate_legacy_matrix._collect_isolated_phase10_schema_snapshot.cache_clear()
 
 
 def test_phase10_isolated_collector_validates_imported_names_and_import_form() -> None:

@@ -2949,7 +2949,14 @@ def _collect_isolated_phase10_schema_snapshot(
         completed = subprocess.run(  # noqa: S603 -- fixed current interpreter runs a constant collector program
             [sys.executable, "-c", _PHASE10_SCHEMA_COLLECTOR_SOURCE],
             cwd=REPO_ROOT,
-            env={"PYTHONHASHSEED": "0", "PYTHONPATH": str(REPO_ROOT)},
+            env={
+                "API_SECRET_ENCRYPTION_KEY": "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
+                "DATABASE_POOL_SIZE": "1",
+                "DATABASE_RUNTIME_ROLE": "cli",
+                "JWT_SECRET_KEY": "phase10-schema-collector-only-key-000000000000000000",
+                "PYTHONHASHSEED": "0",
+                "PYTHONPATH": str(REPO_ROOT),
+            },
             input=json.dumps(request, ensure_ascii=True, separators=(",", ":"), sort_keys=True),
             capture_output=True,
             text=True,

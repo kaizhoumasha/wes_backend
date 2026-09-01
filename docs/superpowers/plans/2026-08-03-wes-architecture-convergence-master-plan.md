@@ -24,8 +24,9 @@ Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已�
 Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始。
 真实 WMS/RCS/ECS、设备、供应商版本组合和业务验收不属于上述联调部署证据。
 
-**2026-08-31 acceptance remediation status:** `Transport 0.3 repository alignment: ALIGNED`。Backend QUALITY、selected HEAVY、
-不可变镜像和 12 项 Phase 8 E2E 已通过；frontend canonical contract、测试、lint 与 build 已通过。WMS external publication pending。
+**2026-09-01 acceptance review status:** `Transport 0.3 candidate: FINAL_VALIDATION_PENDING`。当前 NUL 修复候选已完成聚焦验证；
+`f2129982` 的 Backend QUALITY、selected HEAVY、不可变镜像和 12 项 Phase 8 E2E 是历史冻结证据，不代表当前候选。
+frontend canonical contract、测试、lint 与 build 的历史证据仍保留；WMS external publication pending。
 `RACK_MOVE` 当前生产 caller 只有 rough-sorter `OLD_OUT/NEW_IN`；当前 debug caller 是 operator-gated 510056 stepper，已对齐
 `ZONE("WH01") → RACK_POSITION("KT16") + CTU01` 与反向 `+ CTU03`，固定 face payload 为 `"90"`。其余 approved
 `RACK_MOVE` 场景只由 core contract 支持，尚无业务 flow 接入。Deployment、supplier、physical、business acceptance 均为
@@ -39,8 +40,8 @@ Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始。
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Backend current baseline:** local `develop@f2129982744af481f8c5a50b14f85a33e614c55b`（Transport 0.3 alignment 与最终 E2E
-已提交，未 push、未部署）；
+**Backend review base:** `develop@0a163b08f64109a27ce5ba1d108fc3cf74605cc7`；当前 NUL 修复候选尚未 Commit，
+同 Commit/tree 的不可变镜像与 E2E 将在已授权交付流程中生成并验证；
 **Phase 10 deployed candidate baseline:** `codex/phase10-implementation@834fe59e0c44c943487eedb6ed41af1c519df7ad`
 （source tree `58fbe212ba57186668783eb06f85c7cf37a0d7a6`，image digest
 `sha256:018c1cd82276b876a64ffbdaa9379ceca15a091fc1b1b265960793d732d8e00d`，已部署联调、未合入）；
@@ -674,8 +675,8 @@ Adapter、设备统一接口和明确插件。
 **需要单独编写的子计划:** Phase 10 详细计划为
 `docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`。Tasks 0–6 已在
 `codex/phase10-implementation@834fe59e` 完成；Task 6 复用并核验既有发布静默基线，未重复建设。Task 7 已取得单独
-Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 target-only cutover；Phase 11 handoff 已形成，但 Phase 11
-仍须独立实施前评审后才能开始。
+Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 target-only cutover；Phase 11 单一空库基线与合入后 cleanup
+已通过 #188/#189 完成，状态为 `MERGED — NOT DEPLOYED`，不再处于实施前准入阶段。
 
 **风险及防止阶段越权的约束:** 缺席扫描按语义和所有者判断，不按 `replay`/`reconciliation` 等词批量删除，避免误伤最终可靠行为。
 

@@ -51,6 +51,20 @@ def _position(location_id: str, location_type: str, **ids: str) -> DevicePositio
     )
 
 
+@pytest.mark.parametrize(
+    ("target_face", "expected_message"),
+    [("\x00", "target_face must not contain NUL"), ("\ud800", "target_face must be valid UTF-8")],
+)
+def test_rack_move_leg_plan_rejects_invalid_face(target_face: str, expected_message: str) -> None:
+    with pytest.raises(ValueError, match=expected_message):
+        RackMoveLegPlan(
+            rack_id="rack-1",
+            source=TransportZonePosition("zone-1"),
+            target=TransportRackPosition("work-position"),
+            target_face=target_face,
+        )
+
+
 def _readers(*_positions: tuple[str, str, str | None, bool]):
     return ()
 

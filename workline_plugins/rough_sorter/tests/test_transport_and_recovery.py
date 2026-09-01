@@ -63,6 +63,31 @@ def _transport_handler() -> TransportOutcomePublishedHandler:
     return TransportOutcomePublishedHandler()
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "expected_message"),
+    [
+        ("expected_face", "\x00", "expected_face must not contain NUL"),
+        ("arrival_face", "\x00", "arrival_face must not contain NUL"),
+        ("expected_face", "\ud800", "expected_face must be valid UTF-8"),
+        ("arrival_face", "\ud800", "arrival_face must be valid UTF-8"),
+    ],
+)
+def test_transport_outcome_fact_rejects_invalid_face(field: str, value: str, expected_message: str) -> None:
+    overrides: dict[str, object] = {
+        "final_position": TransportRackPosition("work-position"),
+        "arrival_face": "270",
+        "actual_rack_id": "rack-new",
+        "source_position": _outlet(),
+        "request_operation_id": "stable-target-request",
+        "pkg_id": "pkg-1",
+        "inbound_admission_id": "admission-1",
+    }
+    overrides[field] = value
+
+    with pytest.raises(ValueError, match=expected_message):
+        _transport_fact(TransportLeg.NEW_IN, TransportOutcome.SUCCEEDED, **overrides)
+
+
 def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack() -> None:
     fact = _transport_fact(
         TransportLeg.NEW_IN,

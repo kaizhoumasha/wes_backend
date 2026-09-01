@@ -47,7 +47,8 @@ _TIMESTAMP_SCHEMA = {"type": "integer", "format": "int64", "minimum": 0, "maximu
 _FACE_SCHEMA = {
     "type": "string",
     "minLength": 1,
-    "description": "Opaque non-empty face value; preserve exactly",
+    "pattern": r"^[^\u0000]+$",
+    "description": "Opaque non-empty face value without NUL; preserve exactly",
 }
 _RCS_TEMPLATE_SCHEMA = {"type": "string", "enum": ["CTU01", "CTU02", "CTU03", "F01"]}
 

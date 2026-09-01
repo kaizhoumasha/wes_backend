@@ -156,6 +156,7 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
         arrival_face = result.get("arrival_face")
         if type(arrival_face) is not str or arrival_face == "":
             raise TransportContractError("known rack result requires arrival_face")
+        _opaque_face(arrival_face, "arrival_face")
     if (not rack_kind or is_unknown) and "arrival_face" in result:
         raise TransportContractError("arrival_face is not valid for this result")
     return result
@@ -172,8 +173,7 @@ def _validate_position(value: object) -> dict[str, Any]:
     if kind == "RACK_BIN_SLOT":
         position = _strict_dict(value, {"kind", "rack_id", "rack_face", "slot_id"}, "rack bin slot")
         _nonblank(position["rack_id"], "rack_id", max_length=100)
-        if type(position["rack_face"]) is not str or position["rack_face"] == "":
-            raise TransportContractError("rack_face must be a non-empty string")
+        _opaque_face(position["rack_face"], "rack_face")
         _nonblank(position["slot_id"], "slot_id", max_length=100)
         return position
     if kind == "HANDOFF_POSITION":
@@ -211,6 +211,17 @@ def _nonblank(value: object, field_name: str, *, max_length: int | None = None) 
     except UnicodeEncodeError as error:
         raise TransportContractError(f"{field_name} must be valid UTF-8") from error
     return value
+
+
+def _opaque_face(value: object, field_name: str) -> None:
+    if type(value) is not str or value == "":
+        raise TransportContractError(f"{field_name} must be a non-empty string")
+    if "\x00" in value:
+        raise TransportContractError(f"{field_name} must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise TransportContractError(f"{field_name} must be valid UTF-8") from error
 
 
 __all__ = [

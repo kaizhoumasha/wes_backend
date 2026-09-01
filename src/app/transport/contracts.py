@@ -122,6 +122,17 @@ def _required(value: str, field_name: str, *, max_length: int | None = None) -> 
     return value
 
 
+def _opaque_face(value: object, field_name: str) -> None:
+    if type(value) is not str or value == "":
+        raise TransportContractError(f"{field_name} must be a non-empty string")
+    if "\x00" in value:
+        raise TransportContractError(f"{field_name} must not contain NUL")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise TransportContractError(f"{field_name} must be valid UTF-8") from error
+
+
 @dataclass(frozen=True, slots=True)
 class TransportCaller:
     workline_id: str
@@ -190,8 +201,7 @@ class RackBinSlot:
 
     def __post_init__(self) -> None:
         _required(self.rack_id, "rack_id", max_length=100)
-        if type(self.rack_face) is not str or self.rack_face == "":
-            raise TransportContractError("rack_face must be a non-empty string")
+        _opaque_face(self.rack_face, "rack_face")
         _required(self.slot_id, "slot_id", max_length=100)
 
 
@@ -263,8 +273,7 @@ class MoveRackRequest:
             raise TransportContractError("rack source and target must be rack move positions")
         if self.source == self.target:
             raise TransportContractError("rack source and target must differ")
-        if type(self.target_face) is not str or self.target_face == "":
-            raise TransportContractError("target_face must be a non-empty string")
+        _opaque_face(self.target_face, "target_face")
         if type(self.rcs_template_id) is not RcsTemplateId:
             raise TransportContractError("rcs_template_id must be a supported template")
         for position in (self.source, self.target):
@@ -302,8 +311,7 @@ class RotateRackRequest:
         _required(self.rack_id, "rack_id", max_length=100)
         if type(self.position) is not RackPosition:
             raise TransportContractError("rack rotation position must be a rack position")
-        if type(self.target_face) is not str or self.target_face == "":
-            raise TransportContractError("target_face must be a non-empty string")
+        _opaque_face(self.target_face, "target_face")
         if self.rcs_template_id is not RcsTemplateId.CTU02:
             raise TransportContractError("rack rotation requires rcs_template_id CTU02")
 
@@ -434,8 +442,8 @@ class TransportMemberOutcome:
 
     def __post_init__(self) -> None:
         _required(self.object_id, "object_id")
-        if self.arrival_face is not None and (type(self.arrival_face) is not str or self.arrival_face == ""):
-            raise TransportContractError("arrival_face must be null or a non-empty string")
+        if self.arrival_face is not None:
+            _opaque_face(self.arrival_face, "arrival_face")
         if (self.final_position is None) == (self.position_unknown is False):
             raise TransportContractError("final_position xor position_unknown=true is required")
 

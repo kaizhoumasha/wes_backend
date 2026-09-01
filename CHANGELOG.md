@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.5.0] - 2026-09-01
+
+### Changed
+
+- Transport `rack_face`、`target_face` 与 `arrival_face` 保持不透明字符串语义，同时在 core、WMS ACL、SDK、Mock 与粗分插件边界一致拒绝 NUL 和不可表示为 UTF-8 的值。
+- Transport 0.3 OpenAPI、联调合同与 Phase 1–11 当前态证据同步到修复候选，历史不可变镜像不再被表述为当前候选证据。
+
+### Fixed
+
+- Phase 10 schema collector 在隔离 checkout 中显式提供最小确定性 Settings，避免 Jenkins 容器没有仓库 `.env` 时导入 migration models 失败。
+- 补齐 PostgreSQL callback receipt、各 face 合同 owner 与 schema collector 的持久化、非法 UTF-8 和测试缓存隔离回归。
+
+### Verification
+
+- Transport API、WMS ACL/Mock、SDK、core 与粗分插件聚焦测试通过；Review 闭环后的 32 项边界回归通过。
+- HEAVY selector 选中的 10 个 owner 共 140 项通过，无 failure、error 或 skip；覆盖新鲜 PostgreSQL migration、Transport 并发/证据、WMS callback receipt、生产 wiring 与 Mock。
+- fresh Review 无剩余 finding；本版本不包含 510056 物理动作、供应商一致性或业务验收。
+
 ## [0.29.4.0] - 2026-08-31
 
 ### Added

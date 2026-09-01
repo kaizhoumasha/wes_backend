@@ -6,7 +6,7 @@ updated_at: 2026-08-31
 scope: WES 与 WMS 之间 Transport 搬运提交/容器中间位置事件/搬运最终结果接口契约、WMS C# DTO 和 WMS-RCS 映射边界
 system_stage: pre_release
 migration_strategy: direct_replacement
-implementation_alignment: ALIGNED
+implementation_alignment: FINAL_VALIDATION_PENDING
 related:
   - docs/integration/wes-wms-interface-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
@@ -22,7 +22,8 @@ related:
 `RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE` 四种请求的重复工作，同时守住 WES、WMS 与 RCS 的职责边界。
 
 本文是已完成联合设计评审的目标基线。两份现行合同、WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试均已
-按本设计完成仓内对齐，因此 `implementation_alignment=ALIGNED`。系统仍按直接替换策略运行，不保留兼容入口；该状态不代表
+当前修复候选已按本设计完成聚焦对齐，但同 Commit/tree 的不可变镜像仍待授权交付流程生成，因此
+`implementation_alignment=FINAL_VALIDATION_PENDING`。系统仍按直接替换策略运行，不保留兼容入口；该状态不代表
 WMS 已实施、已经部署或已经完成供应商、物理和业务验收。
 
 两份 `docs/hardware/` PDF 是厂商原始输入，保持原貌。厂商字段只用于说明 WMS ACL 的映射依据，不升级为 WES 核心合同。
@@ -91,7 +92,7 @@ Position接口契约固定为：
 `RACK` 出现在 `source` 或 `target` 时，`location_code` 必须等于同一 `RackTransportData.rack_id`；不一致的请求无效。
 
 不适用字段不得出现在 JSON 中。`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是
-非空 string，除空字符串外不限制字符内容或长度。公共 HTTP Body 仍须符合 UTF-8/JSON 信封规则。当前 WMS/RCS 联调约定使用
+非空且不含 NUL 的 UTF-8 string，除 NUL 外不限制字符内容或长度。公共 HTTP Body 仍须符合 UTF-8/JSON 信封规则。当前 WMS/RCS 联调约定使用
 `"90"`、`"270"`，它们与 `"LEFT"`、`"面-1"` 一样只是普通 string，不携带 WES 角度或 A/B 语义。
 
 WES/WMS/RCS 对 JSON 解析后的 token 原样传递并按大小写敏感的 Unicode code point 序列精确比较；禁止 trim、case folding、

@@ -1,6 +1,10 @@
 # Phase 1–11 验收阻塞项修复实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `wes-implementation` to execute this WES plan. If the user later explicitly authorizes subagents, use `superpowers:subagent-driven-development`; otherwise use `superpowers:executing-plans` and execute task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **2026-09-01 复核记录：** Tasks 0–7 已在后续提交中完成；本轮验收发现 face NUL 会通过领域/ACL 后落入
+> PostgreSQL `TEXT` 不可表示区间，已在当前候选中补齐 core、wire、OpenAPI、SDK 与粗分边界。当前已获得 PATCH
+> Commit、Push、PR、Merge 与 Deploy 授权；`f2129982` 镜像仅保留为历史证据，当前候选在新不可变镜像完成前仍为 `FINAL_VALIDATION_PENDING`。
+
+**For agentic workers:** REQUIRED SUB-SKILL: Use `wes-implementation` to execute this WES plan. If the user later explicitly authorizes subagents, use `superpowers:subagent-driven-development`; otherwise use `superpowers:executing-plans` and execute task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 闭合 Phase 1–11 当前验收中的五类阻塞：Transport 0.3 实施对齐、510056 联调步进消费新语义/WIRE、ECS ACK Approved 合同自洽、活动状态文档准确、当前 HEAD 的 Phase 8 不可变集成制品与 E2E 证据。
 
@@ -29,8 +33,8 @@
 - 使用 `uv run ...`；不依赖外部 Shell 已激活的虚拟环境。
 - 本计划是实施授权前的执行设计，不授权 Commit、Push、PR、Merge、Deploy、数据库重建、外发合同或物理设备操作。
 - 系统未发布，`migration_strategy=direct_replacement`：不保留 A/B enum、整数面、双写、shim、v2 路由或兼容解析。
-- `rack_face`、`target_face`、`arrival_face` 按各自既有上下文允许 `None`；一旦提供，线上 JSON value 必须是非空 string。除拒绝 `""` 这条 presence 约束外，不定义 `RackFace` enum/class，不增加最大长度、字符集合、空白、BOM、控制字符、大小写或 Unicode normalization 规则。当前联调 happy path 使用 `"90" | "270"`，`"FACE@01"` 和 `"面-1"` 只用于证明非空 string 都按普通数据处理。
-- WES 对 face string 不执行 trim、case folding、Unicode normalization、A/B 转换、角度计算、容差或其它内容解释；只对 JSON 解析后字符串做普通精确相等比较。底层 JSON/UTF-8/PostgreSQL 自身无法表示的输入按平台错误处理，不为此增加编码、映射或兼容层。
+- `rack_face`、`target_face`、`arrival_face` 按各自既有上下文允许 `None`；一旦提供，线上 JSON value 必须是非空且不含 NUL 的 UTF-8 string。除该 PostgreSQL `TEXT` 可表示性边界外，不定义 `RackFace` enum/class，不增加最大长度、业务字符集合、空白、BOM、其它控制字符、大小写或 Unicode normalization 规则。当前联调 happy path 使用 `"90" | "270"`，`"FACE@01"` 和 `"面-1"` 只用于证明普通 string 按原值处理。
+- WES 对 face string 不执行 trim、case folding、Unicode normalization、A/B 转换、角度计算、容差或其它内容解释；只在领域/ACL 边界拒绝 NUL 和非法 UTF-8，并对其余 JSON 解析后字符串做普通精确相等比较。不增加编码、映射或兼容层。
 - `rcs_template_id` 只接受 `CTU01 | CTU02 | CTU03 | F01`；`move_rack()` 省略时在冻结请求前规范化为 `F01`，`rotate_rack()` 省略时规范化为 `CTU02`，wire 始终显式发送。除此之外不根据位置或 face 内容推断模板，也不建立模板映射表。
 - Alembic 把 `arrival_face` 从真实基线的 `VARCHAR(1)` 扩为 `TEXT`，不增加 face 内容 CHECK，不推断或转换任何旧值；基线没有 A/B CHECK constraint，不得在 upgrade 或 downgrade 中虚构该历史合同。现有字符串原样保留。生产代码、恢复、回调、fixture 和 API 均直接使用普通 string。
 - 当前仅处于联调阶段且没有生产数据；执行者可在运行迁移链前清理或重建明确识别的专用联调数据库，但数据库清理不是 migration 逻辑，不能把 `""` 改写为 `NULL`。实际清理前仍须核对精确目标、非生产标识和可恢复性；本评审只记录允许边界，不执行清理。
@@ -283,7 +287,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
   assert RotateRackRequest(..., RackPosition("WORK"), "270").rcs_template_id is RcsTemplateId.CTU02
   ```
 
-  Face 字段按上下文接受 `None` 或非空 string；必填请求字段仍不得为 `None`。拒绝空字符串、JSON number `90/270` 和 `bool`，但空白、控制字符以及任意长度的非空 string 均不触发其它 face 内容校验。另 reject `RACK.location_code != rack_id`、未知位置 kind、非法模板、`source == target`；逐项拒绝矩阵外的 `RACK → ZONE`、`ZONE → RACK`、`RACK → RACK`、`ZONE → ZONE`、模板与边不匹配以及 `CTU02 + RACK_MOVE`，并证明失败不会创建 outbox 或调用 WMS。`RotateRackRequest` 只接受 `CTU02` 和同一精确 `RackPosition`。精确比较测试证明 `"face" != "FACE"` 且 `"é" != "e\u0301"`，但两边都是合法 string。
+  Face 字段按上下文接受 `None` 或非空 string；必填请求字段仍不得为 `None`。拒绝空字符串、NUL、非法 UTF-8、JSON number `90/270` 和 `bool`，但空白、除 NUL 外的控制字符以及任意长度的可表示 string 均不触发其它 face 内容校验。另 reject `RACK.location_code != rack_id`、未知位置 kind、非法模板、`source == target`；逐项拒绝矩阵外的 `RACK → ZONE`、`ZONE → RACK`、`RACK → RACK`、`ZONE → ZONE`、模板与边不匹配以及 `CTU02 + RACK_MOVE`，并证明失败不会创建 outbox 或调用 WMS。`RotateRackRequest` 只接受 `CTU02` 和同一精确 `RackPosition`。精确比较测试证明 `"face" != "FACE"` 且 `"é" != "e\u0301"`，但两边都是合法 string。
 
   增加 rack 模板默认值的幂等回归：同一 `client_request_id` 下，`move_rack()` 省略模板与显式 `F01`、`rotate_rack()` 省略模板与显式 `CTU02` 必须得到相同 `request_digest`、冻结 `request_json`、submit body 和原 handle，数据库仍只有一个 task/outbox。使用同一 identity 改为另一条经位置矩阵允许的显式模板时必须产生 `TransportIdempotencyConflict`，且不得新增 task/outbox。该测试证明默认值在摘要和冻结之前规范化，不能只断言 dataclass 属性。
 
@@ -299,7 +303,7 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
 - [ ] **Step 3: 最小实现领域类型、端口签名和请求校验**
 
-  删除 `RackFace` enum/class 和全部 `.value` 调用，face 字段直接标注为 `str` 或上下文所需的 `str | None`；领域入口显式检查 `None` 允许性、`type(value) is str` 和 `value != ""`，不新增 face helper、映射或其它内容 validator。Add only the two broad rack position dataclasses and one union。`MoveRackRequest`/`RotateRackRequest` 在 `__post_init__`（或同等单一领域入口）执行上述封闭位置/模板矩阵，且把规范化模板和原始 face string 写入 dataclass，使 `asdict()`、`request_digest` 和幂等冲突自然消费同一冻结字段；不得在摘要前修改内容。Service、Debug API、SDK 和 Mock 不复制 face 内容规则。
+  删除 `RackFace` enum/class 和全部 `.value` 调用，face 字段直接标注为 `str` 或上下文所需的 `str | None`；core、ACL、SDK 和业务插件各自在自身独立边界复用一个最小 layer-local helper，检查 `None` 允许性、`type(value) is str`、`value != ""`、NUL 与 UTF-8 可表示性，不共享跨层业务 validator，不做映射或内容解释。Add only the two broad rack position dataclasses and one union。`MoveRackRequest`/`RotateRackRequest` 在 `__post_init__`（或同等单一领域入口）执行上述封闭位置/模板矩阵，且把规范化模板和原始 face string 写入 dataclass，使 `asdict()`、`request_digest` 和幂等冲突自然消费同一冻结字段；不得在摘要前修改内容。
 
 - [ ] **Step 4: 更新唯一 submit 快照**
 
@@ -483,17 +487,18 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
   assert validated["data"]["arrival_face"] == "90"
   ```
 
-  同时接受 `"270"`、`"FACE@01"`、`"面-1"`、空白 string 和长 string，且精确保留内容；按上下文接受 `None`。Reject `""`、JSON number `90/270`、`True` 等非法值。OpenAPI 对非 nullable 的 `rack_face/target_face/arrival_face` 使用：
+  同时接受 `"270"`、`"FACE@01"`、`"面-1"`、空白 string 和长 string，且精确保留内容；按上下文接受 `None`。Reject `""`、NUL、非法 UTF-8、JSON number `90/270`、`True` 等非法值。OpenAPI 对非 nullable 的 `rack_face/target_face/arrival_face` 使用 `minLength: 1` 与排除 NUL 的 pattern，不增加业务字符闭集或最大长度。
 
   ```json
-  {"type": "string", "minLength": 1, "description": "Opaque non-empty face value; preserve exactly"}
+  {"type": "string", "minLength": 1, "pattern": "^[^\\u0000]+$", "description": "Opaque non-empty face value without NUL; preserve exactly"}
   ```
 
-  nullable 上下文按 OpenAPI 3.0.3 增加 `nullable: true`；不声明 `enum`、`pattern`、`maxLength` 或数值格式，不暗示角度/A-B 语义，也不增加非空之外的 face 内容规则。
+  nullable 上下文按 OpenAPI 3.0.3 增加 `nullable: true`；除排除 NUL 的 `pattern` 外，不声明 `enum`、`maxLength` 或数值格式，
+  不暗示角度/A-B 语义，也不增加业务内容规则。
 
 - [ ] **Step 2: 实施严格 wire 解析**
 
-  `transport_wire.py` 的 face 分支显式检查 `type(value) is str and value != ""` 并返回原值；nullable 字段先精确处理 `None`。不调用会拒绝空白的 `_nonblank()`，不新增 face helper，不 trim、不 normalize、不 casefold，也不把 `"90"/"270"` 转换为整数。API/Pydantic face 字段使用 strict `str` / `str | None` 和 `min_length=1`，禁止把 number/bool coercion 为 string，但不校验非空之外的 string 内容。
+  `transport_wire.py` 的 face 分支使用最小 layer-local helper 检查 string、非空、NUL 与 UTF-8 可表示性并返回原值；nullable 字段先精确处理 `None`。不调用会拒绝空白的 `_nonblank()`，不 trim、不 normalize、不 casefold，也不把 `"90"/"270"` 转换为整数。API/Pydantic face 字段使用 strict `str` / `str | None`、`min_length=1` 和排除 NUL 的 pattern，禁止把 number/bool coercion 为 string。
 
 - [ ] **Step 3: 更新 OpenAPI builder 和权威 JSON artifact**
 
@@ -505,7 +510,9 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   精确通过。把测试名中的 `v02` 更新为 `v03`，并断言 face schema 不再包含 A/B enum 或 integer/number 类型，且 request/callback 示例保留 JSON string token。
 
-  同步三份人类合同，删除旧 `1..64`、空白/BOM/控制字符和专用 Unicode lexical 约束；只保留“按上下文可为 `null`，提供时为非空 JSON string，并原样传递、精确相等”。同时把模板缺省规则改为 `move_rack → F01`、`rotate_rack → CTU02`。公共 HTTP Body 的 UTF-8/JSON 语法规则仍属于整体信封，不改写为 face 业务 validator。
+  同步三份人类合同，删除旧 `1..64`、空白/BOM、除 NUL 外控制字符和专用 Unicode lexical 约束；只保留“按上下文可为
+  `null`，提供时为非空、不含 NUL 的 UTF-8 JSON string，并原样传递、精确相等”。同时把模板缺省规则改为
+  `move_rack → F01`、`rotate_rack → CTU02`。公共 HTTP Body 的 UTF-8/JSON 语法规则仍属于整体信封。
 
 - [ ] **Step 4: 更新 Debug API 和示例**
 
@@ -860,9 +867,9 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
   Only after Tasks 1–4、Task 4A backend Steps 1–3 and Task 5 pass, record:
 
   ```text
-  Transport 0.3 repository alignment: ALIGNED
+  Transport 0.3 candidate: FINAL_VALIDATION_PENDING
   WMS external publication: pending
-  Current-head immutable Phase 8 E2E: PASS (12 tests)
+  Current-candidate immutable Phase 8 E2E: PENDING (requires committed Commit/tree image)
   RACK_MOVE current production caller: rough-sorter OLD_OUT/NEW_IN only
   RACK_MOVE current debug caller: 510056 operator-gated stepper; backend/frontend canonical consumer repository-aligned
   Other approved RACK_MOVE scenarios: core contract supported, business flow not integrated
@@ -1042,12 +1049,10 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
   Only after Steps 1–7、frontend Task 4A gates 全部通过且 frontend Merge 另行授权并确认进入 `develop`，才把 Task 6 的 `IMPLEMENTED — FINAL VALIDATION PENDING` 统一提升为 `ALIGNED`；这是 repository alignment 的唯一门禁。以下均为人类文档更新，不改变已验证 executable-tree fingerprint：
 
-  - `docs/contracts/transport-fulfillment-contract.md`: `implementation_alignment: ALIGNED`。
-  - `docs/superpowers/specs/2026-08-14-wes-wms-transport-dto-design.md`: `implementation_alignment: ALIGNED`，正文删除“代码尚未调整”的当前态句子。
-  - `docs/integration/wes-wms-interface-requirements.md`: `wes_alignment: ALIGNED`，但总状态保持 `ReviewRequired`；Transport 与粗分入库只改为 repository/local Mock aligned，`published_at` 仍为 `pending`。
+  - 历史 Step 8 曾将 Transport 合同、DTO 设计和 WMS 接口说明提升为 `ALIGNED`；2026-09-01 NUL 复核发现使当前候选重新进入 `FINAL_VALIDATION_PENDING`。
   - `docs/superpowers/specs/2026-08-26-transport-integration-diagnostics-design.md`: 把“Transport 0.3.0 请求字段尚未实施”改为仓内已对齐，同时保留未部署和未现场验收。
   - `docs/integration/rough-sorter-joint-acceptance.md`: 增加当前 HEAD/tree/image digest、命令与结果，历史 RC 保留且明确是旧冻结快照。
-  - `README.md`、架构总控和 legacy removal 活动状态：把 Task 6 的 pending 状态统一改为 `Transport 0.3 repository alignment: ALIGNED`，不得遗漏仍在活动引用中的副本。
+  - `README.md`、架构总控和活动状态必须使用同一候选状态；当前为 `FINAL_VALIDATION_PENDING`，不得把历史镜像写成当前证据。
   - 在验收记录中把“核心合同场景支持”和“生产业务调用点”分栏：粗分 `OLD_OUT/NEW_IN` 为当前已接入调用链；补充 1–2 个单层货架、五层货架到 `FIVE_STATION` 等仍为合同能力，不得写成已交付业务闭环。
   - 单列 510056 为 `TRANSPORT_DEBUG consumer repository-aligned`：记录 backend/frontend Commit/tree/OpenAPI fingerprint、固定 `"90"` payload 和本地测试；状态仍为 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。
   - 保留 `NOT DEPLOYED / NOT SUPPLIER ACCEPTED / NOT PHYSICAL ACCEPTED / NOT BUSINESS ACCEPTED`。
@@ -1152,19 +1157,19 @@ Legend: ★★★ behavior + edge + error  |  [->E2E] immutable-image integratio
 
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Codex using `wes-implementation`; checkbox as you ship.
 
-- [ ] **T1 (P1, human: ~45min / Codex: ~8min)** — Execution Lock — 从 debug Land 后的 `origin/develop` 创建唯一干净候选
+- [x] **T1 (P1, human: ~45min / Codex: ~8min)** — Execution Lock — 从 debug Land 后的 `origin/develop` 创建唯一干净候选
   - Surfaced by: Architecture Review — base/worktree、track convergence 与 branch-wide evidence 必须同源。
   - Files: Git/worktree metadata、执行证据目录；不改生产代码。
   - Verify: `git status --short`、`git rev-parse origin/develop`、`git merge-base --is-ancestor "$review_base" HEAD`。
-- [ ] **T2 (P1, human: ~5h / Codex: ~45min)** — Transport core — 实施普通非空 string、位置/模板矩阵、默认模板和宽泛目标结果规则
+- [x] **T2 (P1, human: ~5h / Codex: ~45min)** — Transport core — 实施普通非空 string、位置/模板矩阵、默认模板和宽泛目标结果规则
   - Surfaced by: Architecture/Code Quality/Test Review — 移除 `RackFace` 语义、修正 move/rotate default、幂等与 callback matrix。
   - Files: `src/app/transport/contracts.py`、`src/app/transport/service.py`、`src/app/transport/submit_snapshot.py`、`tests/runtime/transport/`。
   - Verify: `uv run pytest tests/runtime/transport tests/contracts/wms_adapter/test_transport_wire_acceptance.py::test_rack_submit_data_uses_one_shared_wire_shape -q`。
-- [ ] **T3 (P1, human: ~3h / Codex: ~30min)** — Persistence — 扩宽 `arrival_face` 为 TEXT 并验证透明迁移
+- [x] **T3 (P1, human: ~3h / Codex: ~30min)** — Persistence — 扩宽 `arrival_face` 为 TEXT 并验证透明迁移
   - Surfaced by: Architecture/Test Review — 真实 baseline 为 `VARCHAR(1)` 且无 A/B CHECK；legacy `""` 由 migration 原样保留。
   - Files: `src/app/transport/models.py`、`src/app/execution/models/position_projection.py`、新 Alembic revision、migration/integration tests、`docs/architecture/heavy-test-impact.toml`。
   - Verify: migration structure +独占 PostgreSQL `base → head`、upgrade/downgrade owner tests、`uv run alembic heads`。
-- [ ] **T4 (P1, human: ~4h / Codex: ~40min)** — WMS boundary — 对齐 wire、OpenAPI、Mock 与 Debug API
+- [x] **T4 (P1, human: ~4h / Codex: ~40min)** — WMS boundary — 对齐 wire、OpenAPI、Mock 与 Debug API
   - Surfaced by: Architecture/Code Quality Review — nullable/non-empty string contract、closed edge/template matrix 与 `move=F01` / `rotate=CTU02`。
   - Files: `src/app/wms_adapter/`、`src/app/transport/v1/tasks.py`、`docs/contracts/openapi/`、`tests/contracts/wms_adapter/`、`tests/mock/`、`tests/api/test_transport_tasks.py`。
   - Verify: `uv run pytest tests/contracts/wms_adapter tests/mock tests/api/test_transport_tasks.py tests/integration/test_wms_northbound_feasibility_probe.py -q`。
@@ -1215,7 +1220,7 @@ _No new tasks from Performance Review._
 本计划只有在以下条件同时满足时，才能把 Phase 1–11 仓内工程验收从 `DONE_WITH_CONCERNS` 提升为 `ACCEPTED — REPOSITORY/LOCAL INTEGRATION ONLY`：
 
 1. Transport 0.3 的领域、wire、OpenAPI、Mock、数据库投影、SDK 和粗分换架消费者一致；
-2. 活动代码与测试中不存在 `RackFace` 类型、face enum、numeric face wire 或 normalization/mapping；face 按上下文接受 `None`，提供时必须是非空 string，`"90"/"270"` 与其它非空 string 均精确透传；
+2. 活动代码与测试中不存在 `RackFace` 类型、face enum、numeric face wire 或 normalization/mapping；face 按上下文接受 `None`，提供时必须是非空且不含 NUL 的 UTF-8 string，`"90"/"270"` 与其它可表示 string 均精确透传；
 3. 510056 五步 debug consumer 的 rack/bin WIRE、冻结请求、确认审计和 frontend generated contract 使用精确 `"90"`；进站为 `ZONE("WH01") → RACK_POSITION("KT16")` 并显式下发 `rcs_template_id="CTU01"`，回库为相反位置联合并显式下发 `rcs_template_id="CTU03"`，BIN/SCAN 不携带该字段；不存在把 `WH01` 当精确点位、face `"A"`、A/B/template 映射或业务投影伪造；
 4. 510056 operator confirmation 只在完整 frozen fixture 匹配时清理，失败停止且保留原 identity/evidence/fence；真实物理联调仍为 `NOT RUN`；
 5. ECS ACK Approved 文档只有一套扩展字段规则；

@@ -41,7 +41,11 @@ _UUID7 = Annotated[str, StringConstraints(min_length=36, max_length=36, pattern=
 _TEXT = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100, pattern=r".*\S.*")]
 _FACE = Annotated[
     StrictStr,
-    Field(min_length=1, description="Opaque non-empty face value; preserve exactly"),
+    Field(
+        min_length=1,
+        pattern=r"^[^\x00]+$",
+        description="Opaque non-empty face value without NUL; preserve exactly",
+    ),
 ]
 _TRANSPORT_TASK_ID = Annotated[
     str,
