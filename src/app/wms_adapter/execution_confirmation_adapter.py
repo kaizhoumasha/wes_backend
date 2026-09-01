@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -11,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from src.app.wms_adapter.client import OutboundHttpClosedError, WmsClient, WmsRequestBodyTooLargeError
-from src.app.wms_adapter.strict_json import is_json_utf8_media_type
+from src.app.wms_adapter.strict_json import valid_json_response_headers
 from src.app.wms_integration.ports.fulfillment_operations import (
     NotifyPkgBindingRequest,
     NotifyPkgBindingResult,
@@ -24,6 +22,7 @@ from src.app.wms_integration.ports.inventory_operations import (
 )
 from src.app.wms_integration.ports.operation_common import validate_json_payload
 from src.core.outbound_http import OutboundHttpDeliveryState
+from src.utils.canonical_json import canonical_json_digest
 
 MAX_CONFIRMATION_BODY_BYTES = 256 * 1024
 E03_CONFIRM_INBOUND = "wms.inventory.confirm_inbound@v1"
@@ -86,7 +85,7 @@ class WmsExecutionConfirmationAdapter:
         request_digest: str,
     ) -> ExecutionConfirmationDispatchResult:
         contract = _CONTRACTS.get(operation)
-        if contract is None or _canonical_digest(request_payload) != request_digest:
+        if contract is None or canonical_json_digest(request_payload) != request_digest:
             return ExecutionConfirmationDispatchResult(ExecutionConfirmationDispatchCode.RECONCILING)
         try:
             request = validate_json_payload(contract.request_model, request_payload)
@@ -123,7 +122,7 @@ class WmsExecutionConfirmationAdapter:
             or access.json_failure is not None
             or not access.body_present
             or normalized is None
-            or not _valid_json_headers(access.response_headers)
+            or not valid_json_response_headers(access.response_headers)
         ):
             return ExecutionConfirmationDispatchResult(
                 ExecutionConfirmationDispatchCode.RECONCILING,
@@ -157,19 +156,6 @@ class WmsConfirmationTypedRouter:
         if values.get("operation") in _CONTRACTS:
             return await self._execution_adapter.dispatch(**values)
         return await self._rough_sorter_adapter.dispatch(**values)
-
-
-def _canonical_digest(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _valid_json_headers(headers: tuple[tuple[str, str], ...]) -> bool:
-    content_types = [value for name, value in headers if name.casefold() == "content-type"]
-    if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
-        return False
-    encodings = [value for name, value in headers if name.casefold() == "content-encoding"]
-    return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
 
 
 __all__ = [

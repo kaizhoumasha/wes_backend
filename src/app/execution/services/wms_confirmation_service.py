@@ -22,6 +22,7 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceService,
 )
 from src.core.uuid7 import is_uuid7, new_uuid7
+from src.utils.canonical_json import canonical_json_bytes
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -169,7 +170,7 @@ class WmsConfirmationResponseConflictResult:
 
 
 def _immutable_request(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    encoded = canonical_json_bytes(payload)
     normalized = cast("object", json.loads(encoded))
     if not isinstance(normalized, dict):
         raise TypeError("request_payload 必须是 JSON object")

@@ -81,6 +81,12 @@ class TransportZonePosition:
 type TransportRackMovePosition = TransportRackReference | TransportZonePosition | TransportRackPosition
 
 
+def _validate_reasoned_execution_decision(material_execution_id: str, fact_id: str, reason_code: str) -> None:
+    _required(material_execution_id, "material_execution_id")
+    _required(fact_id, "fact_id")
+    _required(reason_code, "reason_code")
+
+
 @dataclass(frozen=True, slots=True)
 class Wait:
     material_execution_id: str
@@ -88,9 +94,7 @@ class Wait:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        _required(self.reason_code, "reason_code")
+        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,9 +104,7 @@ class DeferExecution:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        _required(self.reason_code, "reason_code")
+        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,9 +218,7 @@ class PauseForReconciliation:
     affected_resource_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        _required(self.reason_code, "reason_code")
+        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
         _required_refs(self.affected_resource_ids, "affected_resource_ids")
 
 
@@ -229,9 +229,7 @@ class CompleteExecution:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        _required(self.reason_code, "reason_code")
+        _validate_reasoned_execution_decision(self.material_execution_id, self.fact_id, self.reason_code)
 
 
 Decision = (

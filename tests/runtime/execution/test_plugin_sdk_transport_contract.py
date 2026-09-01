@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 from wes_plugin_sdk import (
+    CompleteExecution,
     CreateTransportTask,
+    DeferExecution,
     PauseForReconciliation,
     TransportLeg,
     TransportRackPosition,
@@ -10,6 +12,7 @@ from wes_plugin_sdk import (
     TransportRcsTemplateId,
     TransportTaskType,
     TransportZonePosition,
+    Wait,
 )
 
 
@@ -87,6 +90,25 @@ def test_sdk_rejects_invalid_reconciliation_reference_tuples(
             reason_code="POSITION_UNKNOWN",
             affected_resource_ids=affected_resource_ids,
         )
+
+
+@pytest.mark.parametrize("decision_type", [Wait, DeferExecution, PauseForReconciliation, CompleteExecution])
+@pytest.mark.parametrize("field_name", ["material_execution_id", "fact_id", "reason_code"])
+def test_reasoned_execution_decisions_reject_blank_identity_fields(
+    decision_type: type[Wait | DeferExecution | PauseForReconciliation | CompleteExecution],
+    field_name: str,
+) -> None:
+    values: dict[str, object] = {
+        "material_execution_id": "execution-1",
+        "fact_id": "fact-1",
+        "reason_code": "WAIT",
+    }
+    values[field_name] = " "
+    if decision_type is PauseForReconciliation:
+        values["affected_resource_ids"] = ("rack-1",)
+
+    with pytest.raises(ValueError, match=field_name):
+        decision_type(**values)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

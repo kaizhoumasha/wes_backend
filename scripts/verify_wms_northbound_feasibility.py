@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.app.wms_adapter.strict_json import is_json_utf8_media_type  # noqa: E402
+from src.app.wms_adapter.strict_json import valid_json_response_headers  # noqa: E402
 from src.core.outbound_http.contracts import (  # noqa: E402
     OutboundHttpDeliveryState,
     OutboundHttpMethod,
@@ -214,15 +214,6 @@ def _json_object(response: httpx.Response | None) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _valid_json_response_headers(response: httpx.Response) -> bool:
-    headers = response.headers.multi_items()
-    content_types = [value for name, value in headers if name.casefold() == "content-type"]
-    if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
-        return False
-    encodings = [value for name, value in headers if name.casefold() == "content-encoding"]
-    return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
-
-
 def _matches_ack(
     response: httpx.Response | None,
     *,
@@ -243,7 +234,7 @@ def _matches_ack(
         set(payload) == {"operation_id", "code", "timestamp", "data"}
         and payload["operation_id"] == operation_id
         and payload["code"] == code
-        and _valid_json_response_headers(response)
+        and valid_json_response_headers(response.headers.multi_items())
         and isinstance(timestamp, int)
         and not isinstance(timestamp, bool)
         and 0 <= timestamp <= SIGNED_INT64_MAX

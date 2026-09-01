@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import timedelta
@@ -29,9 +28,10 @@ from src.app.wms_adapter.inbound_wire import (
     parse_outbound_request,
     parse_outbound_response,
 )
-from src.app.wms_adapter.strict_json import is_json_utf8_media_type
+from src.app.wms_adapter.strict_json import valid_json_response_headers
 from src.core.outbound_http import OutboundHttpDeliveryState
 from src.core.uuid7 import new_uuid7
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ class WmsInboundAdapter:
         if (
             request.operation != operation
             or request.operation_id != operation_id
-            or _canonical_digest(request_payload) != request_digest
+            or canonical_json_digest(request_payload) != request_digest
         ):
             return InboundDispatchResult(InboundDispatchCode.RECONCILING)
         if operation in DECISION_OPERATIONS:
@@ -107,7 +107,7 @@ class WmsInboundAdapter:
         received_json = dict(access.json_body) if isinstance(access.json_body, dict) else None
         if access.status_code in {400, 413} and not access.body_present:
             return InboundDispatchResult(InboundDispatchCode.RECONCILING)
-        if access.failure_kind is not None or not _valid_json_headers(access.response_headers):
+        if access.failure_kind is not None or not valid_json_response_headers(access.response_headers):
             return InboundDispatchResult(InboundDispatchCode.RECONCILING, normalized_response=received_json)
         if access.json_failure is not None or not access.body_present or not isinstance(access.json_body, dict):
             return InboundDispatchResult(InboundDispatchCode.RECONCILING)
@@ -176,19 +176,6 @@ class WmsInboundBusinessWaitPlanner:
             request_payload=request_payload,
             next_attempt_at=received_at + timedelta(milliseconds=retry_after_ms),
         )
-
-
-def _canonical_digest(payload: dict[str, Any]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _valid_json_headers(headers: tuple[tuple[str, str], ...]) -> bool:
-    content_types = [value for name, value in headers if name.casefold() == "content-type"]
-    if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
-        return False
-    encodings = [value for name, value in headers if name.casefold() == "content-encoding"]
-    return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
 
 
 __all__ = ["InboundDispatchCode", "InboundDispatchResult", "WmsInboundAdapter", "WmsInboundBusinessWaitPlanner"]

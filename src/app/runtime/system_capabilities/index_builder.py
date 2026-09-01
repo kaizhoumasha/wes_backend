@@ -8,12 +8,13 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, get_type_hints
 
-from src.app.runtime.extension_identity import sha256_digest, stable_sort
+from src.app.runtime.extension_identity import stable_sort
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
+from src.utils.canonical_json import canonical_json_digest
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -95,7 +96,7 @@ class SystemCapabilityIndexBuilder:
             self._validate_definition(definition)
 
         identities = tuple(self._identity_key(item.definition) for item in ordered)
-        digest = sha256_digest(tuple(item.definition.identity for item in ordered))
+        digest = canonical_json_digest(tuple(item.definition.identity for item in ordered))
         return GeneratedSystemCapabilityIndex(
             identities=identities,
             digest=digest,

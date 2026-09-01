@@ -40,7 +40,7 @@ source_glob = "src/app/runtime/system_capabilities/wms/inventory/query_inventory
 heavy_tests = []
 
 [[mapping]]
-source_glob = "src/app/runtime/system_capabilities/{generated_index.py,index_builder.py}"
+source_glob = "src/app/runtime/system_capabilities/generated_index.py"
 heavy_tests = []
 
 # 已删除的 legacy support owner 仅由新 target owners 与 absence scanner 承接。
@@ -939,7 +939,54 @@ heavy_tests = [
 source_glob = "src/app/wms_adapter/strict_json.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/mock/test_wms_transport_mock_server.py",
+]
+
+# System Capability identity 仅由 FAST 合同承接；共享 canonical owner 单独映射其跨领域 HEAVY 消费者。
+
+[[mapping]]
+source_glob = "src/app/runtime/extension_identity.py"
+heavy_tests = []
+reviewed_content_sha256 = "734a4e8b9d1c2a079245d0f4564289933d743a17f4ad71f110442f574290bb54"
+
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/definition.py"
+heavy_tests = []
+reviewed_content_sha256 = "a15bf10520daa1c1a0333c87f0e18b42d1f2284ed357427b5f973d306e02c5d0"
+
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/gateway.py"
+heavy_tests = []
+reviewed_content_sha256 = "a44804b0b87ebdbd92932ef83cbcedfffdb65d4b964c54b7bb1adb0ddcbb0851"
+
+[[mapping]]
+source_glob = "src/app/runtime/system_capabilities/index_builder.py"
+heavy_tests = []
+reviewed_content_sha256 = "cfb404abd2934dcff9f2a868cfe66b0236f717485b477e37268481d9b59e2d57"
+
+# 共享 canonical JSON 字节决定 Device、Execution、Transport 与 WMS 的持久身份摘要。
+
+[[mapping]]
+source_glob = "src/utils/canonical_json.py"
+heavy_tests = [
+    "tests/e2e/device_command/test_device_command_production_wiring.py",
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/transport/test_transport_debug_reset.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
     "tests/mock/test_wms_transport_mock_server.py",
 ]

@@ -69,6 +69,7 @@ from src.app.transport.models import (
 from src.app.transport.submit_snapshot import build_submit_data, build_submit_request_body, request_body_digest
 from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -1423,8 +1424,7 @@ def _request_digest(
         "data": submit_data,
         "execution_authority": _json_value(execution_authority) if execution_authority is not None else None,
     }
-    encoded = json.dumps(request_semantics, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_json_digest(request_semantics)
 
 
 def _execution_authority_from_task(task: TransportTask) -> TransportExecutionAuthority | None:

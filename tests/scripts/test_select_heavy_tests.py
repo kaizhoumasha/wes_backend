@@ -133,6 +133,12 @@ VALUE_NORMALIZATION_REVIEWED_NONE_PATHS = (
     "src/app/resource/services/relation_service.py",
     "src/app/sys/services/audit_service.py",
 )
+SYSTEM_CAPABILITY_IDENTITY_REVIEWED_NONE_PATHS = (
+    "src/app/runtime/extension_identity.py",
+    "src/app/runtime/system_capabilities/definition.py",
+    "src/app/runtime/system_capabilities/gateway.py",
+    "src/app/runtime/system_capabilities/index_builder.py",
+)
 RETIRED_RUNTIME_MIRROR_PATHS = (
     "src/app/callback/utils.py",
     "src/app/callback/contracts/builder.py",
@@ -559,6 +565,20 @@ def test_value_normalization_reuse_is_exact_reviewed_none() -> None:
         assert mapping.source_glob == changed_path
         assert mapping.heavy_tests == ()
         assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+
+
+def test_system_capability_identity_reuse_is_exact_reviewed_none() -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    _, mappings = config
+
+    for changed_path in SYSTEM_CAPABILITY_IDENTITY_REVIEWED_NONE_PATHS:
+        matched = [mapping for mapping in mappings if matches_glob(changed_path, mapping.source_glob)]
+        assert len(matched) == 1
+        mapping = matched[0]
+        assert mapping.source_glob == changed_path
+        assert mapping.heavy_tests == ()
+        assert mapping.reviewed_content_sha256 == hashlib.sha256((REPO_ROOT / changed_path).read_bytes()).hexdigest()
+        assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
 
 
 def test_retired_runtime_mirror_paths_are_absent_and_classified_none() -> None:

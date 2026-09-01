@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
@@ -22,6 +20,7 @@ from src.app.device.services.device_command_admission import (
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
+from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -326,7 +325,6 @@ def _status_observation(
     received_at: datetime,
 ) -> DeviceStatusObservation:
     payload = status.model_dump(mode="json")
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return DeviceStatusObservation(
         device_code=status.device.device_code,
         command_code=command.command_code,
@@ -337,7 +335,7 @@ def _status_observation(
         current_command_code=status.state.current_command_code,
         device_timestamp=status.state.updated_at,
         received_at=received_at,
-        payload_digest=hashlib.sha256(encoded).hexdigest(),
+        payload_digest=canonical_json_digest(payload),
         raw_payload=payload,
     )
 
