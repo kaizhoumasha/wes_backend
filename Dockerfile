@@ -69,8 +69,17 @@ COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
 # ============================================
 FROM base AS builder
 
-# 安装 uv (更快的 Python 包管理器)
-RUN pip install --no-cache-dir uv
+# 安装 uv；外部镜像偶发返回截断索引时，在同一构建中有限重试。
+RUN set -eu; \
+    for attempt in 1 2 3; do \
+        if pip install --no-cache-dir uv; then \
+            break; \
+        fi; \
+        if [ "$attempt" -eq 3 ]; then \
+            exit 1; \
+        fi; \
+        sleep $((attempt * 5)); \
+    done
 
 # 创建虚拟环境并基于锁文件安装依赖
 RUN --mount=type=cache,target=/root/.cache/uv \
