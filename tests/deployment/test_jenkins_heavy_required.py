@@ -1,13 +1,41 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTIVE_JENKINSFILE = REPO_ROOT / "Jenkinsfile.backend-ci"
+GIT_EXECUTABLE = shutil.which("git")
+if GIT_EXECUTABLE is None:
+    raise RuntimeError("git executable is required")
+GIT_LOCAL_ENV_VARS = subprocess.run(
+    [GIT_EXECUTABLE, "rev-parse", "--local-env-vars"],
+    cwd=REPO_ROOT,
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.splitlines()
 
 
 def _stage_body(jenkins_text: str, stage_name: str, next_stage_name: str) -> str:
     return jenkins_text.split(f"stage('{stage_name}')", maxsplit=1)[1].split(f"stage('{next_stage_name}')", maxsplit=1)[
         0
     ]
+
+
+def _git(*args: str, cwd: Path) -> str:
+    clean_env = os.environ.copy()
+    for name in GIT_LOCAL_ENV_VARS:
+        clean_env.pop(name, None)
+    result = subprocess.run(
+        [GIT_EXECUTABLE, *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=clean_env,
+    )
+    return result.stdout.strip()
 
 
 def test_merge_request_without_target_branch_fails_closed() -> None:
@@ -219,16 +247,21 @@ def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None
     assert '--base "origin/${CI_TARGET_BRANCH}"' not in classification_body
 
 
-def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
+def test_checkout_binds_tls_objects_to_trusted_event_refs() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
 
     assert "deleteDir()" in checkout_body
-    assert "git remote add origin http://192.168.0.220:9080/wes/wes_backend.git" in checkout_body
+    assert "git remote add origin https://git.zontecmes.com/wes/wes_backend.git" in checkout_body
+    assert "http://192.168.0.220:9080/wes/wes_backend.git" not in checkout_body
+    assert "timeout --kill-after=10s 180s" in checkout_body
+    assert "fetch --no-tags --force origin" in checkout_body
+    assert "--depth" not in checkout_body
     assert '"+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
     assert '"+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"' in checkout_body
     assert 'git checkout --detach "refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
     assert "checkout([" not in checkout_body
+    assert checkout_body.count("withCredentials([usernamePassword(") == 2
     assert "env.gitlabMergeRequestLastCommit" in checkout_body
     assert 'git rev-parse "refs/remotes/origin/${CI_SOURCE_BRANCH}^{commit}"' in checkout_body
     assert "Source event requires a non-zero 40-character trusted commit" in checkout_body
@@ -248,6 +281,58 @@ def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     assert "Fetched repository must contain the trusted target commit" in checkout_body
     assert "PreBuildMerge" not in checkout_body
     assert "mergeTarget" not in checkout_body
+
+
+def test_exact_ref_fetch_preserves_multi_commit_ancestry_and_merge_base(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    fetched = tmp_path / "fetched"
+    _git("init", "--bare", str(remote), cwd=tmp_path)
+    _git("init", str(seed), cwd=tmp_path)
+    _git("config", "user.name", "CI Test", cwd=seed)
+    _git("config", "user.email", "ci@example.invalid", cwd=seed)
+
+    tracked = seed / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git("add", "tracked.txt", cwd=seed)
+    _git("commit", "-m", "base", cwd=seed)
+    base = _git("rev-parse", "HEAD", cwd=seed)
+    _git("branch", "-M", "develop", cwd=seed)
+    tracked.write_text("develop\n", encoding="utf-8")
+    _git("commit", "-am", "develop", cwd=seed)
+    _git("branch", "feature", base, cwd=seed)
+    _git("switch", "feature", cwd=seed)
+    for index in range(3):
+        tracked.write_text(f"feature-{index}\n", encoding="utf-8")
+        _git("commit", "-am", f"feature-{index}", cwd=seed)
+    feature_tip = _git("rev-parse", "HEAD", cwd=seed)
+    _git("remote", "add", "origin", str(remote), cwd=seed)
+    _git("push", "origin", "develop", "feature", cwd=seed)
+
+    _git("init", str(fetched), cwd=tmp_path)
+    _git("remote", "add", "origin", str(remote), cwd=fetched)
+    for branch in ("develop", "feature"):
+        _git(
+            "fetch",
+            "--no-tags",
+            "--force",
+            "origin",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            cwd=fetched,
+        )
+
+    _git("merge-base", "--is-ancestor", base, feature_tip, cwd=fetched)
+    assert _git("merge-base", "origin/develop", "origin/feature", cwd=fetched) == base
+    assert _git("diff", "--name-only", "origin/develop...origin/feature", cwd=fetched) == "tracked.txt"
+
+
+def test_git_topology_helper_removes_parent_repository_environment(tmp_path: Path, monkeypatch) -> None:
+    repository = tmp_path / "repository"
+    _git("init", str(repository), cwd=tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "foreign.git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "foreign.index"))
+
+    assert _git("rev-parse", "--show-toplevel", cwd=repository) == str(repository)
 
 
 def test_heavy_required_uses_non_zero_build_scoped_redis_database() -> None:

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.13.0] - 2026-09-01
+
+### Fixed
+
+- Jenkins shell checkout 改为使用带凭据的外部 TLS GitLab 精确 ref fetch，避免在明文内网 HTTP 上传递凭据；不截断 source/target 历史，确保多提交 push 的祖先校验与 MR 三点 HEAVY diff 正确，并保留 180 秒硬超时、插件绕过与不可变 SHA 校验。
+
+### Verification
+
+- Jenkins #160 实跑确认插件绕过生效并定位内网端点实际需要认证；新增合同锁定 TLS、凭据不进 URL/trace、完整历史的精确 refspec 与超时边界。
+
 ## [0.29.12.0] - 2026-09-01
 
 ### Fixed
