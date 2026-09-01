@@ -6,7 +6,6 @@ from wes_plugin_sdk import (
     CreateTransportTask,
     DeferExecution,
     PauseForReconciliation,
-    TransportLeg,
     TransportRackPosition,
     TransportRackReference,
     TransportRcsTemplateId,
@@ -23,15 +22,15 @@ def _decision(
     face: object = "90",
     template: object = TransportRcsTemplateId.CTU01,
     rack_id: str = "rack-1",
-    leg: TransportLeg = TransportLeg.NEW_IN,
+    step: str = "NEW_IN",
 ) -> CreateTransportTask:
     return CreateTransportTask(
         material_execution_id="execution-1",
         fact_id="fact-1",
         task_type=TransportTaskType.RACK_MOVE,
-        rack_replacement_id="replacement-1",
-        leg=leg,
-        current_rack_id="rack-old",
+        correlation_id="replacement-1",
+        step=step,
+        resource_fence_id="rack-old",
         rack_id=rack_id,
         source=source,  # type: ignore[arg-type]
         target=target,  # type: ignore[arg-type]

@@ -40,7 +40,9 @@ class RoughSorterTypes:
     TargetResult: Any
     TransportOutcome: Any
     TransportOutcomePublishedFact: Any
+    TransportLeg: Any
     rack_release_snapshot_ref: Any
+    wms_position: Any
 
 
 __all__ = ["RoughSorterTypes"]

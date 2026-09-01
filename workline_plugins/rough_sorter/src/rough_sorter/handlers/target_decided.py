@@ -14,6 +14,7 @@ from wes_plugin_sdk import (
 
 from rough_sorter.facts import TargetDecidedFact, TargetResult
 from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.wms_requests import replacement_plan_data
 
 REPLACEMENT_PLAN_OPERATION = "inbound.source_rack.replacement_plan_decide@v1"
 
@@ -59,11 +60,7 @@ class TargetDecidedHandler:
                     fact_id=fact.fact_id,
                     operation=REPLACEMENT_PLAN_OPERATION,
                     operation_id=fact.request_operation_id or "",
-                    evidence_refs=(fact.evidence_id,),
-                    snapshot_refs=(
-                        f"execution:{fact.material_execution_id}",
-                        f"rack:{fact.current_rack_id}",
-                    ),
+                    request_data=replacement_plan_data(fact),
                 ),
             )
         target = fact.target_position

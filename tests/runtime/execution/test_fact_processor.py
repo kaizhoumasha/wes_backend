@@ -296,8 +296,7 @@ def _handle_wms(fact: EvidenceReadyFact) -> tuple[CreateWmsConfirmation, ...]:
             fact.fact_id,
             "inbound.material.admission_decide@v1",
             "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
-            (fact.evidence_id,),
-            (f"execution:{fact.material_execution_id}",),
+            {"material_execution_id": fact.material_execution_id},
         ),
     )
 
@@ -478,7 +477,6 @@ def _changing_processor(
         epoch_repository=object(),  # type: ignore[arg-type]
         device_command_service=object(),  # type: ignore[arg-type]
         wms_confirmation_service=object(),  # type: ignore[arg-type]
-        wms_request_resolver=object(),  # type: ignore[arg-type]
         rack_binding_repository=object(),  # type: ignore[arg-type]
         transport_service=object(),  # type: ignore[arg-type]
         material_execution_service=service,
@@ -928,7 +926,6 @@ async def test_determinate_pause_refreshes_reconciling_fence_before_late_recover
         epoch_repository=object(),
         device_command_service=object(),
         wms_confirmation_service=object(),
-        wms_request_resolver=object(),
         rack_binding_repository=object(),
         transport_service=object(),
         material_execution_service=MaterialExecutionService(repository),

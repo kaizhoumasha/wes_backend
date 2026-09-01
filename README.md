@@ -69,7 +69,6 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 以下文档承担排障、现场信息采集、发布或机器门禁职责，不是目标架构设计输入：
 
 - [WORKLINE 诊断快速开始](docs/workline_diagnostics_quickstart.md)
-- [Runtime 可观测性合同](docs/contracts/observability-contract.md)、[北向 Operation SLO 目录](docs/operations/northbound-operation-slo-catalog.md) 与 [运维 Runbook](docs/runbooks/northbound-operation-observability.md)
 - [休斯顿现场服务器现状信息采集表](docs/devops/rocky-linux-server-inspection.md)
 - [休斯顿现场服务器初始化与基础支撑环境配置手册](docs/devops/rocky-linux-server-initialization.md)
 - [生产发布 Runbook](docs/devops/prod-release-deploy.md)

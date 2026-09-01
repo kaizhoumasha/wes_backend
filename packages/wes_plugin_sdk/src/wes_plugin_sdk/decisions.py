@@ -13,11 +13,6 @@ class TransportTaskType(StrEnum):
     RACK_MOVE = "RACK_MOVE"
 
 
-class TransportLeg(StrEnum):
-    OLD_OUT = "OLD_OUT"
-    NEW_IN = "NEW_IN"
-
-
 class TransportRcsTemplateId(StrEnum):
     CTU01 = "CTU01"
     CTU02 = "CTU02"
@@ -140,16 +135,15 @@ class CreateWmsConfirmation:
     fact_id: str
     operation: str
     operation_id: str
-    evidence_refs: tuple[str, ...]
-    snapshot_refs: tuple[str, ...]
+    request_data: dict[str, object]
 
     def __post_init__(self) -> None:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.fact_id, "fact_id")
         _required(self.operation, "operation")
         _required(self.operation_id, "operation_id")
-        _required_refs(self.evidence_refs, "evidence_refs")
-        _required_refs(self.snapshot_refs, "snapshot_refs")
+        if type(self.request_data) is not dict:
+            raise TypeError("request_data must be a dict")
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,9 +151,9 @@ class CreateTransportTask:
     material_execution_id: str
     fact_id: str
     task_type: TransportTaskType
-    rack_replacement_id: str
-    leg: TransportLeg
-    current_rack_id: str
+    correlation_id: str
+    step: str
+    resource_fence_id: str
     rack_id: str
     source: TransportRackMovePosition
     target: TransportRackMovePosition
@@ -169,13 +163,12 @@ class CreateTransportTask:
     def __post_init__(self) -> None:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.fact_id, "fact_id")
-        _required(self.rack_replacement_id, "rack_replacement_id")
-        _required(self.current_rack_id, "current_rack_id")
+        _required(self.correlation_id, "correlation_id")
+        _required(self.step, "step")
+        _required(self.resource_fence_id, "resource_fence_id")
         _required(self.rack_id, "rack_id")
         if type(self.task_type) is not TransportTaskType or self.task_type is not TransportTaskType.RACK_MOVE:
             raise ValueError("task_type must be RACK_MOVE")
-        if type(self.leg) is not TransportLeg:
-            raise ValueError("leg must be a TransportLeg")
         position_types = {TransportRackReference, TransportZonePosition, TransportRackPosition}
         if type(self.source) not in position_types or type(self.target) not in position_types:
             raise TypeError("source and target must be Transport rack move positions")
@@ -202,12 +195,10 @@ class CreateTransportTask:
         }
         if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
             raise ValueError("source, target, and rcs_template_id are not an approved edge")
-        if self.leg is TransportLeg.OLD_OUT and self.rack_id != self.current_rack_id:
-            raise ValueError("OLD_OUT rack_id must match current_rack_id")
 
     @property
-    def business_identity(self) -> tuple[str, TransportLeg]:
-        return self.rack_replacement_id, self.leg
+    def correlation_identity(self) -> tuple[str, str]:
+        return self.correlation_id, self.step
 
 
 @dataclass(frozen=True, slots=True)

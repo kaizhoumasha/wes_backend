@@ -107,6 +107,15 @@ def test_plugin_sdk_exposes_only_the_approved_fact_and_decision_categories() -> 
     assert recovery.recovery_id == "recovery-1"
 
 
+def test_transport_decision_uses_neutral_correlation_fields() -> None:
+    sdk = _load_sdk()
+
+    field_names = {field.name for field in dataclasses.fields(sdk.CreateTransportTask)}
+    assert {"correlation_id", "step", "resource_fence_id"} <= field_names
+    assert {"rack_replacement_id", "leg", "current_rack_id"}.isdisjoint(field_names)
+    assert not hasattr(sdk, "TransportLeg")
+
+
 def test_plugin_frozen_fact_subclass_can_carry_typed_decision_data() -> None:
     sdk = _load_sdk()
     fact_reference = getattr(sdk, "FactReference", None)
@@ -195,7 +204,7 @@ def test_handler_rejects_fact_with_slot_outside_copied_dataclass_fields() -> Non
         sdk.handler(fact_type=SlotSpoofFact, name="slot-spoofed", supported_versions=("1.0",))
 
 
-def test_plugin_sdk_values_are_frozen_and_transport_keeps_business_identity_separate() -> None:
+def test_plugin_sdk_values_are_frozen_and_transport_keeps_correlation_identity_separate() -> None:
     sdk = _load_sdk()
     fact = sdk.EvidenceReadyFact(
         fact_id="fact-1",
@@ -209,9 +218,9 @@ def test_plugin_sdk_values_are_frozen_and_transport_keeps_business_identity_sepa
         material_execution_id="execution-1",
         fact_id=fact.fact_id,
         task_type=sdk.TransportTaskType.RACK_MOVE,
-        rack_replacement_id="replacement-1",
-        leg=sdk.TransportLeg.OLD_OUT,
-        current_rack_id="rack-1",
+        correlation_id="operation-1",
+        step="STEP-1",
+        resource_fence_id="rack-1",
         rack_id="rack-1",
         source=source,
         target=target,
@@ -223,7 +232,7 @@ def test_plugin_sdk_values_are_frozen_and_transport_keeps_business_identity_sepa
     assert dataclasses.is_dataclass(decision)
     with pytest.raises(dataclasses.FrozenInstanceError):
         fact.fact_id = "changed"
-    assert decision.business_identity == ("replacement-1", sdk.TransportLeg.OLD_OUT)
+    assert decision.correlation_identity == ("operation-1", "STEP-1")
     assert not hasattr(decision, "client_request_id")
 
 
@@ -296,8 +305,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             fact_id="fact-1",
             operation="operation@v1",
             operation_id="operation-1",
-            evidence_refs=["evidence-1"],
-            snapshot_refs=("snapshot-1",),
+            request_data=[("evidence", "evidence-1")],
         )
     with pytest.raises(TypeError):
         sdk.PauseForReconciliation(
@@ -311,9 +319,9 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             material_execution_id="execution-1",
             fact_id="fact-1",
             task_type=sdk.TransportTaskType.RACK_MOVE,
-            rack_replacement_id="replacement-1",
-            leg=sdk.TransportLeg.OLD_OUT,
-            current_rack_id="rack-1",
+            correlation_id="operation-1",
+            step="STEP-1",
+            resource_fence_id="rack-1",
             rack_id="rack-1",
             source=MutableRackPosition(),
             target=sdk.TransportRackPosition(location_code="RACK-TARGET"),
@@ -452,6 +460,7 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
     plugin_unknown_module_file = fixture / "workline_plugins/demo/src/demo/unknown_module.py"
     plugin_function_flow_file = fixture / "workline_plugins/demo/src/demo/function_flow.py"
     plugin_local_safe_override_file = fixture / "workline_plugins/demo/src/demo/local_safe_override.py"
+    plugin_application_file = fixture / "workline_plugins/demo/src/demo/application/adapter.py"
     for path in (
         sdk_file,
         sdk_dynamic_file,
@@ -479,6 +488,7 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
         plugin_unknown_module_file,
         plugin_function_flow_file,
         plugin_local_safe_override_file,
+        plugin_application_file,
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
     sdk_file.write_text("import fastapi\n", encoding="utf-8")
@@ -633,6 +643,10 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
         encoding="utf-8",
     )
     plugin_file.write_text("from src.app.device.service import DeviceService\n", encoding="utf-8")
+    plugin_application_file.write_text(
+        "from src.app.execution.services import InboundEvidenceService\n",
+        encoding="utf-8",
+    )
     plugin_dynamic_file.write_text(
         "import builtins as b\nfrom importlib import import_module as load\n"
         "b.__import__('src.app.device')\nload('fastapi')\n",
@@ -754,3 +768,4 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
     assert "src.app.device" in violations_for("workline_plugins/demo/src/demo/constant.py")
     assert "不可判定" in violations_for("workline_plugins/demo/src/demo/unknown_module.py")
     assert "src.app.device" in violations_for("workline_plugins/demo/src/demo/function_flow.py")
+    assert violations_for("workline_plugins/demo/src/demo/application/adapter.py") == ""

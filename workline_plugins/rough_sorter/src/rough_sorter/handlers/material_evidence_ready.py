@@ -9,6 +9,7 @@ from wes_plugin_sdk import (
 
 from rough_sorter.facts import MaterialEvidenceReadyFact
 from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.wms_requests import admission_data
 
 ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
 
@@ -35,11 +36,7 @@ class MaterialEvidenceReadyHandler:
                 fact_id=fact.fact_id,
                 operation=ADMISSION_OPERATION,
                 operation_id=fact.request_operation_id,
-                evidence_refs=(fact.evidence_id,),
-                snapshot_refs=(
-                    f"execution:{fact.material_execution_id}",
-                    f"epoch:{fact.line_run_epoch_id}",
-                ),
+                request_data=admission_data(fact),
             ),
         )
 

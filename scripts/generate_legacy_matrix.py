@@ -1768,18 +1768,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
     ),
     (
         "wms",
-        "src/app/wms_adapter/execution_confirmation_adapter.py",
-        "<file>",
-        "service",
-        "wms_adapter",
-        "retain",
-        "src/app/wms_adapter/execution_confirmation_adapter.py",
-        "WmsExecutionConfirmationAdapter",
-        "tests/runtime/execution/test_wms_confirmation_service.py",
-        "HIGH",
-    ),
-    (
-        "wms",
         "src/app/wms_adapter/inbound_adapter.py",
         "WmsInboundAdapter",
         "service",
@@ -1917,34 +1905,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
             ("src/app/wms_integration/services/__init__.py", "delete", ""),
         )
     ),
-    *(
-        (
-            "wms",
-            path,
-            "<file>",
-            "contract",
-            "wms_integration",
-            "switch",
-            path,
-            target_capability,
-            "tests/runtime/execution/test_wms_confirmation_service.py",
-            "HIGH",
-        )
-        for path, target_capability in (
-            (
-                "src/app/wms_integration/ports/fulfillment_operations.py",
-                "NotifyPkgBindingRequest",
-            ),
-            (
-                "src/app/wms_integration/ports/inventory_operations.py",
-                "ConfirmInboundRequest",
-            ),
-            (
-                "src/app/wms_integration/ports/operation_common.py",
-                "validate_json_payload",
-            ),
-        )
-    ),
     (
         "wms",
         "src/app/wms_integration/operation_contract.py",
@@ -1981,35 +1941,6 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
             "WmsPaginationConstraint",
             "effect_operation",
             "query_operation",
-        )
-    ),
-    *(
-        (
-            "wms",
-            path,
-            symbol,
-            "contract_symbol",
-            "wms_integration",
-            "retain",
-            path,
-            symbol,
-            "tests/runtime/execution/test_wms_confirmation_service.py",
-            "HIGH",
-        )
-        for path, symbol in (
-            ("src/app/wms_integration/ports/fulfillment_operations.py", "NotifyPkgBindingRequest"),
-            ("src/app/wms_integration/ports/fulfillment_operations.py", "NotifyPkgBindingResult"),
-            (
-                "src/app/wms_integration/ports/fulfillment_operations.py",
-                "validate_notify_pkg_binding_terminal_identity",
-            ),
-            ("src/app/wms_integration/ports/inventory_operations.py", "ConfirmInboundRequest"),
-            ("src/app/wms_integration/ports/inventory_operations.py", "ConfirmInboundResult"),
-            (
-                "src/app/wms_integration/ports/inventory_operations.py",
-                "validate_confirm_inbound_terminal_identity",
-            ),
-            ("src/app/wms_integration/ports/operation_common.py", "validate_json_payload"),
         )
     ),
     *(
@@ -2526,7 +2457,7 @@ def _target_runtime_capability(entry_type: str, path: str, text: str) -> tuple[s
 
 def _target_wms_integration_boundary(path: str) -> tuple[str, str]:
     if path == "src/workline_runtime/services.py":
-        return "src/app/wms_integration/ports/inventory_operations.py", "wms.inventory.query_inventory@v1"
+        return "", "NONE"
     return "", ""
 
 

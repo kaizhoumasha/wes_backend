@@ -1,19 +1,13 @@
-"""粗分机 WMS 请求适配器。"""
+"""共享 WMS operation 可靠派发适配器。"""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from datetime import timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
 from pydantic import ValidationError
 
-from src.app.execution.services.wms_confirmation_service import (
-    WmsBusinessWaitFollowUp,
-    WmsConfirmationFollowUpPlan,
-)
 from src.app.wms_adapter.client import (
     OutboundHttpClosedError,
     WmsClient,
@@ -30,14 +24,7 @@ from src.app.wms_adapter.inbound_wire import (
 )
 from src.app.wms_adapter.strict_json import valid_json_response_headers
 from src.core.outbound_http import OutboundHttpDeliveryState
-from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
-from src.utils.timezone import timezone
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from src.app.execution.models.wms_confirmation import WmsConfirmation
 
 
 class InboundDispatchCode(str, Enum):
@@ -54,11 +41,10 @@ class InboundDispatchResult:
     normalized_response: dict[str, Any] | None = None
     response_result: str | None = None
     retry_after_ms: int | None = None
-    follow_up_plan: WmsConfirmationFollowUpPlan | None = None
 
 
 class WmsInboundAdapter:
-    """校验不可变请求，调用共享 WmsClient，并解释粗分响应。"""
+    """按共享 operation 合同校验请求、调用 WmsClient 并解释响应。"""
 
     def __init__(self, client: WmsClient) -> None:
         self._client = client
@@ -125,11 +111,6 @@ class WmsInboundAdapter:
                 InboundDispatchCode.DETERMINATE,
                 normalized_response=normalized,
                 response_result=response_result,
-                follow_up_plan=(
-                    WmsConfirmationFollowUpPlan(retry_after_ms=response.data.retry_after_ms)
-                    if response_result == "WAIT"
-                    else None
-                ),
             )
         if response.code == "BUSY":
             return InboundDispatchResult(
@@ -142,40 +123,4 @@ class WmsInboundAdapter:
         return InboundDispatchResult(InboundDispatchCode.RECONCILING, normalized_response=normalized)
 
 
-class WmsInboundBusinessWaitPlanner:
-    """把已验证的粗分 WAIT 响应转换为新的可靠请求身份。"""
-
-    def __init__(
-        self,
-        *,
-        operation_id_factory: Callable[[], str] = new_uuid7,
-    ) -> None:
-        self._operation_id_factory = operation_id_factory
-
-    def plan(
-        self,
-        confirmation: WmsConfirmation,
-        planning: WmsConfirmationFollowUpPlan,
-    ) -> WmsBusinessWaitFollowUp | None:
-        retry_after_ms = planning.retry_after_ms
-        if not isinstance(retry_after_ms, int) or isinstance(retry_after_ms, bool) or retry_after_ms <= 0:
-            return None
-        received_at = confirmation.completed_at
-        if received_at is None:
-            return None
-        operation_id = self._operation_id_factory()
-        request_payload = cast(
-            "dict[str, object]",
-            json.loads(json.dumps(confirmation.request_payload, ensure_ascii=False, separators=(",", ":"))),
-        )
-        request_payload["operation_id"] = operation_id
-        request_payload["timestamp"] = int(timezone.to_utc(received_at).timestamp() * 1000)
-        return WmsBusinessWaitFollowUp(
-            operation=confirmation.operation,
-            operation_id=operation_id,
-            request_payload=request_payload,
-            next_attempt_at=received_at + timedelta(milliseconds=retry_after_ms),
-        )
-
-
-__all__ = ["InboundDispatchCode", "InboundDispatchResult", "WmsInboundAdapter", "WmsInboundBusinessWaitPlanner"]
+__all__ = ["InboundDispatchCode", "InboundDispatchResult", "WmsInboundAdapter"]

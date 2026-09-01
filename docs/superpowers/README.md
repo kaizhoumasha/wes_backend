@@ -24,15 +24,11 @@
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–11 已完成并包含在当前 backend 联调部署中；Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始；当前运行门禁为 `BLOCK`，不等于现场验收完成 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
-| `plans/2026-08-03-rough-sorter-plugin-convergence.md` | Phase 8 后端功能、Mock 验收和 RC 关闭门禁的实施历史 | Task 1—10 已完成；当前状态以联合验收记录为准 |
 | `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
-| `plans/2026-08-03-wes-legacy-production-path-removal.md` | Phase 10 旧 Runtime/Intent/Outbox/Hold/Provider 生产路径原子退役与 Phase 11 零消费者 schema 交接 | Merged；#187 合入 `develop@97e6887a`；其内容现已包含在当前联调部署中，供应商/设备物理/业务验收未完成 |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
-| `specs/2026-08-26-phase9-14-guided-development-resequence-design.md` | 开发流程、运输诊断、Phase 9 最小基础、Phase 10/11 收敛与 Phase 12 教学式插件开发重排 | Approved；Gate A/B 与 Phase 9–11 已完成；Phase 11 基线与 cleanup 已合入 `develop@d458383a`；Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始 |
-| `plans/2026-08-27-phase9-minimum-execution-foundation.md` | Phase 9 最小执行内核、七项 successor、测试 owner 和 Phase 10 handoff | Implemented and merged；`develop@c5a93872`；其 handoff 已被 Phase 10 Tasks 0–6 消费并包含在当前联调部署中；未完成现场验收 |
-| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Ready for contract review；Phase 11 已完成，生产实施尚未开始，旧合同必须重新联合评审 |
+| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Foundation prerequisite implemented；业务合同仍须独立评审后再实施 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Tasks 1–4 implemented and verified on `codex/phase10-implementation`；已纳入 Phase 10 Task 7 联调候选，Task 5 TEST Deploy 未执行 |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Implemented and merged；backend `41ab69bf`、frontend `e103b692`；现已包含在当前联调部署中，未完成现场验收 |
@@ -62,6 +58,13 @@
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-18-rough-sorter-local-mock-acceptance-completion.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-19-rough-sorter-functional-rc-and-field-validation.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-31-phase1-11-acceptance-remediation.md`
+- `../archive_docs/wes_backend/2026-08-03-rough-sorter-plugin-convergence.md`
+- `../archive_docs/wes_backend/2026-08-03-wes-legacy-production-path-removal.md`
+- `../archive_docs/wes_backend/2026-08-26-phase9-14-guided-development-resequence-design.md`
+- `../archive_docs/wes_backend/2026-08-27-phase9-minimum-execution-foundation.md`
+- `../archive_docs/wes_backend/observability-contract.md`
+- `../archive_docs/wes_backend/northbound-operation-slo-catalog.md`
+- `../archive_docs/wes_backend/northbound-operation-observability.md`
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`
@@ -151,12 +154,9 @@
 以下文档即使包含旧 Runtime 名称，也暂不归档，因为它们仍直接承担现有实现的排障、发布、观测或机器门禁职责：
 
 - `docs/workline_diagnostics_quickstart.md`
-- `docs/contracts/observability-contract.md`
 - `docs/contracts/runtime-toggle-governance.md`
 - `docs/integration/wms_caller_checklist.md`
 - `docs/integration/workline_device_error_code_standardization.md`
-- `docs/operations/northbound-operation-slo-catalog.md`
-- `docs/runbooks/northbound-operation-observability.md`
 - `docs/devops/prod-release-deploy.md`
 - `docs/contracts/evidence-catalog.md`
 

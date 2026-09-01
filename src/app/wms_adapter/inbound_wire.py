@@ -1,4 +1,4 @@
-"""粗分机入库与 WMS 之间的严格线上合同。"""
+"""WES 与 WMS 之间当前启用 operation 的严格线上合同。"""
 
 from __future__ import annotations
 
@@ -391,7 +391,7 @@ class RecoveryEvent(_StrictModel):
 
 def parse_outbound_request(value: object) -> OutboundRequest:
     if not isinstance(value, dict):
-        raise TypeError("粗分 WMS request 必须是 JSON object")
+        raise TypeError("WMS operation request 必须是 JSON object")
     envelope = cast("dict[str, Any]", value)
     operation = envelope.get("operation")
     if operation == ADMISSION_OPERATION:
@@ -404,7 +404,7 @@ def parse_outbound_request(value: object) -> OutboundRequest:
         return NgPlacementRequest.model_validate(envelope)
     if operation == REPLACEMENT_PLAN_OPERATION:
         return ReplacementPlanRequest.model_validate(envelope)
-    raise ValueError("不支持的粗分 WMS operation")
+    raise ValueError("不支持的 WMS operation")
 
 
 def parse_outbound_response(operation: str, http_status: int, value: object) -> OutboundResponse:
@@ -429,7 +429,7 @@ def parse_outbound_response(operation: str, http_status: int, value: object) -> 
         return ReplacementDecisionResponse.model_validate(value)
     if operation in FACT_OPERATIONS:
         return FactResponse.model_validate(value)
-    raise ValueError("不支持的粗分 WMS operation")
+    raise ValueError("不支持的 WMS operation")
 
 
 def parse_recovery_event(value: object) -> RecoveryEvent:

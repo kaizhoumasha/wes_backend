@@ -25,7 +25,6 @@ from src.app.execution.services import (
     DecisionApplier,
     FactProcessor,
     MaterialExecutionService,
-    WmsConfirmationRequest,
     WmsConfirmationService,
 )
 from src.app.transport.models import TransportEvidence, TransportTask
@@ -618,8 +617,8 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
 ) -> None:
     identity = uuid4().hex
     now = timezone.now_for_db()
-    operation = f"readiness.fact.confirm@{identity}"
-    operation_id = f"READINESS-FACT-{identity}"
+    operation = "inbound.source_rack.replacement_plan_decide@v1"
+    operation_id = "019d0000-0000-7000-8000-" + identity[:12]
     async with integration_session_factory.begin() as db:
         epoch, binding, execution = await _seed_bound_execution(db)
         evidence = InboundEvidence(
@@ -660,21 +659,17 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
                 fact.fact_id,
                 operation,
                 operation_id,
-                (fact.evidence_id,),
-                ("release-readiness",),
+                {
+                    "material_execution_id": fact.material_execution_id,
+                    "material_trace_id": execution.material_trace_id,
+                    "current_rack_id": "release-readiness",
+                },
             ),
         )
 
     class IdentityFactFactory:
         async def build(self, _db: object, fact: FactReference) -> FactReference:
             return fact
-
-    class Resolver:
-        async def resolve(self, _db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
-            return WmsConfirmationRequest(
-                {"source_evidence_id": decision.snapshot_refs[0]},
-                now + timedelta(minutes=1),
-            )
 
     applied_inside_transaction = asyncio.Event()
     release_commit = asyncio.Event()
@@ -710,7 +705,6 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
     applier = DecisionApplier(
         device_command_service=object(),
         wms_confirmation_service=WmsConfirmationService(),
-        wms_request_resolver=Resolver(),
         transport_service=object(),
         material_execution_service=MaterialExecutionService(),
         clock=lambda: now,

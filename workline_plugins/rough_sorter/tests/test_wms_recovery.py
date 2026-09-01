@@ -7,14 +7,14 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-
-from src.app.wms_adapter.inbound_event_handler import (
-    InboundEventEvidenceRecorder,
-    InboundEventHandler,
-    InboundEventPersistenceResult,
-)
 from src.app.wms_adapter.inbound_wire import MAX_INBOUND_BODY_BYTES, RECOVERY_OPERATION
 from src.utils.timezone import timezone
+
+from rough_sorter.application.wms_recovery import (
+    RecoveryEventEvidenceRecorder,
+    RecoveryEventHandler,
+    RecoveryEventPersistenceResult,
+)
 
 OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
 
@@ -26,7 +26,7 @@ class _Recorder:
 
     async def record(self, envelope, *, received_at):  # type: ignore[no-untyped-def]
         self.calls.append((envelope, received_at))
-        return InboundEventPersistenceResult(
+        return RecoveryEventPersistenceResult(
             code=self.code,
             timestamp_ms=2,
         )
@@ -129,7 +129,7 @@ async def test_valid_recovery_is_persisted_before_received_ack_without_applying_
     db_received_at = datetime(2026, 8, 17, 1, 2, 3)
     monkeypatch.setattr(timezone, "now_for_db", lambda: db_received_at)
     recorder = _Recorder()
-    response = await InboundEventHandler(recorder).handle(_body())
+    response = await RecoveryEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
     assert response.body["operation_id"] == OPERATION_ID
@@ -148,8 +148,8 @@ async def test_recorder_interprets_naive_database_received_at_as_utc_in_non_utc_
         process.setenv("TZ", "Asia/Shanghai")
         process.setattr(timezone, "now_for_db", lambda: db_received_at)
         time.tzset()
-        response = await InboundEventHandler(
-            InboundEventEvidenceRecorder(
+        response = await RecoveryEventHandler(
+            RecoveryEventEvidenceRecorder(
                 _Sessions(),
                 _EvidenceService(),
                 material_execution_repository=_Executions(),
@@ -164,8 +164,8 @@ async def test_recorder_interprets_naive_database_received_at_as_utc_in_non_utc_
 
 @pytest.mark.asyncio
 async def test_duplicate_and_conflict_are_mapped_after_persistence_result() -> None:
-    duplicate = await InboundEventHandler(_Recorder(code="DUPLICATE")).handle(_body())
-    conflict = await InboundEventHandler(_Recorder(code="CONFLICT")).handle(_body())
+    duplicate = await RecoveryEventHandler(_Recorder(code="DUPLICATE")).handle(_body())
+    conflict = await RecoveryEventHandler(_Recorder(code="CONFLICT")).handle(_body())
 
     assert (duplicate.http_status, duplicate.body["code"]) == (200, "DUPLICATE")
     assert (conflict.http_status, conflict.body["code"]) == (409, "CONFLICT")
@@ -174,11 +174,11 @@ async def test_duplicate_and_conflict_are_mapped_after_persistence_result() -> N
 @pytest.mark.asyncio
 async def test_invalid_recovery_is_rejected_without_persistence() -> None:
     recorder = _Recorder()
-    invalid = await InboundEventHandler(recorder).handle(_body(decision="CONTINUE", position=None))
+    invalid = await RecoveryEventHandler(recorder).handle(_body(decision="CONTINUE", position=None))
     unsupported = json.dumps(
         {"operation_id": OPERATION_ID, "operation": "inbound.future@v1", "timestamp": 1, "data": {}}
     ).encode()
-    unknown = await InboundEventHandler(recorder).handle(unsupported)
+    unknown = await RecoveryEventHandler(recorder).handle(unsupported)
 
     assert (invalid.http_status, invalid.body["code"]) == (422, "REJECTED")
     assert invalid.body["data"] == {"reason_code": "INVALID_DATA"}
@@ -192,10 +192,10 @@ async def test_invalid_recovery_is_rejected_without_persistence() -> None:
 @pytest.mark.asyncio
 async def test_handler_enforces_preassociation_body_and_json_limits() -> None:
     recorder = _Recorder()
-    too_large = await InboundEventHandler(recorder).handle(b"x" * (MAX_INBOUND_BODY_BYTES + 1))
-    invalid_json = await InboundEventHandler(recorder).handle(b"{")
+    too_large = await RecoveryEventHandler(recorder).handle(b"x" * (MAX_INBOUND_BODY_BYTES + 1))
+    invalid_json = await RecoveryEventHandler(recorder).handle(b"{")
     exact = _body() + b" " * (MAX_INBOUND_BODY_BYTES - len(_body()))
-    accepted = await InboundEventHandler(recorder).handle(exact)
+    accepted = await RecoveryEventHandler(recorder).handle(exact)
 
     assert (too_large.http_status, too_large.body) == (413, {})
     assert (invalid_json.http_status, invalid_json.body) == (400, {})
@@ -204,7 +204,7 @@ async def test_handler_enforces_preassociation_body_and_json_limits() -> None:
 
 @pytest.mark.asyncio
 async def test_persistence_failure_returns_unavailable_without_false_ack() -> None:
-    response = await InboundEventHandler(_UnavailableRecorder()).handle(_body())
+    response = await RecoveryEventHandler(_UnavailableRecorder()).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (503, "UNAVAILABLE")
 
@@ -213,7 +213,7 @@ async def test_persistence_failure_returns_unavailable_without_false_ack() -> No
 async def test_recorder_freezes_single_execution_and_current_causal_evidence_before_ack() -> None:
     evidence_service = _EvidenceService()
     queue = _TaskQueue()
-    recorder = InboundEventEvidenceRecorder(
+    recorder = RecoveryEventEvidenceRecorder(
         _Sessions(),
         evidence_service,
         material_execution_repository=_Executions(),
@@ -221,7 +221,7 @@ async def test_recorder_freezes_single_execution_and_current_causal_evidence_bef
         task_queue_gateway=queue,  # type: ignore[arg-type]
     )
 
-    response = await InboundEventHandler(recorder).handle(_body())
+    response = await RecoveryEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
     assert queue.execution_wakes == 1
@@ -230,7 +230,7 @@ async def test_recorder_freezes_single_execution_and_current_causal_evidence_bef
 @pytest.mark.asyncio
 async def test_recovery_wake_failure_does_not_change_committed_received_result() -> None:
     queue = _TaskQueue(error=RuntimeError("queue unavailable"))
-    recorder = InboundEventEvidenceRecorder(
+    recorder = RecoveryEventEvidenceRecorder(
         _Sessions(),
         _EvidenceService(),
         material_execution_repository=_Executions(),
@@ -238,7 +238,7 @@ async def test_recovery_wake_failure_does_not_change_committed_received_result()
         task_queue_gateway=queue,  # type: ignore[arg-type]
     )
 
-    response = await InboundEventHandler(recorder).handle(_body())
+    response = await RecoveryEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (202, "RECEIVED")
     assert queue.execution_wakes == 1
@@ -248,14 +248,14 @@ async def test_recovery_wake_failure_does_not_change_committed_received_result()
 async def test_recorder_maps_trace_mismatch_to_execution_correlation_conflict() -> None:
     executions = _Executions()
     executions.values["EXEC-1"].material_trace_id = "OTHER"
-    recorder = InboundEventEvidenceRecorder(
+    recorder = RecoveryEventEvidenceRecorder(
         _Sessions(),
         _EvidenceService(),
         material_execution_repository=executions,
         inbound_evidence_repository=_CausalEvidences(),
     )
 
-    response = await InboundEventHandler(recorder).handle(_body())
+    response = await RecoveryEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (409, "CONFLICT")
     assert response.body["data"] == {"reason_code": "EXECUTION_CORRELATION_CONFLICT"}
@@ -265,14 +265,14 @@ async def test_recorder_maps_trace_mismatch_to_execution_correlation_conflict() 
 async def test_recorder_maps_stale_reconciling_evidence_to_execution_correlation_conflict() -> None:
     executions = _Executions()
     executions.values["EXEC-1"].last_transition_evidence_id = 29
-    recorder = InboundEventEvidenceRecorder(
+    recorder = RecoveryEventEvidenceRecorder(
         _Sessions(),
         _EvidenceService(),
         material_execution_repository=executions,
         inbound_evidence_repository=_CausalEvidences(),
     )
 
-    response = await InboundEventHandler(recorder).handle(_body())
+    response = await RecoveryEventHandler(recorder).handle(_body())
 
     assert (response.http_status, response.body["code"]) == (409, "CONFLICT")
     assert response.body["data"] == {"reason_code": "EXECUTION_CORRELATION_CONFLICT"}
@@ -289,14 +289,14 @@ async def test_recorder_maps_stale_reconciling_evidence_to_execution_correlation
     ],
 )
 async def test_recorder_maps_other_execution_correlation_failures_to_conflict(body: bytes) -> None:
-    recorder = InboundEventEvidenceRecorder(
+    recorder = RecoveryEventEvidenceRecorder(
         _Sessions(),
         _EvidenceService(),
         material_execution_repository=_Executions(),
         inbound_evidence_repository=_CausalEvidences(),
     )
 
-    response = await InboundEventHandler(recorder).handle(body)
+    response = await RecoveryEventHandler(recorder).handle(body)
 
     assert (response.http_status, response.body["code"]) == (409, "CONFLICT")
     assert response.body["data"] == {"reason_code": "EXECUTION_CORRELATION_CONFLICT"}

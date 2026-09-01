@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -13,7 +12,6 @@ from wes_plugin_sdk import (
     DevicePosition,
     EvidenceReadyFact,
     PauseForReconciliation,
-    TransportLeg,
     TransportRackPosition,
     TransportRcsTemplateId,
     TransportTaskType,
@@ -22,12 +20,9 @@ from wes_plugin_sdk import (
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
-from src.app.execution.services.decision_applier import (
-    DecisionApplier,
-    WmsConfirmationRequest,
-    decision_digest,
-)
+from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+from src.utils.timezone import timezone
 
 NOW = datetime(2026, 8, 17, 9, 0, 0)
 
@@ -96,17 +91,6 @@ class _DeviceCommands:
         del db
         self.requests.append(request)
         return SimpleNamespace(command_code="CMD-1")
-
-
-@dataclass
-class _WmsResolver:
-    result: WmsConfirmationRequest
-    db: object | None = None
-
-    async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
-        self.db = db
-        assert decision.operation == "inbound.material.admission_decide@v1"
-        return self.result
 
 
 class _WmsConfirmations:
@@ -186,7 +170,6 @@ def _applier(**overrides: object) -> DecisionApplier:
         "epoch_repository": _Epochs(),
         "device_command_service": _DeviceCommands(),
         "wms_confirmation_service": _WmsConfirmations(),
-        "wms_request_resolver": _WmsResolver(WmsConfirmationRequest({"strict": "payload"}, NOW + timedelta(seconds=8))),
         "rack_binding_repository": _RackBindings(),
         "transport_service": _Transport(),
         "material_execution_service": _Executions(),
@@ -286,30 +269,40 @@ async def test_device_command_execution_identity_is_bounded_when_execution_code_
 
 
 @pytest.mark.asyncio
-async def test_create_wms_confirmation_uses_narrow_resolver_without_guessing_wire() -> None:
+async def test_create_wms_confirmation_freezes_complete_decision_data_without_business_resolver() -> None:
     confirmations = _WmsConfirmations()
-    resolver = _WmsResolver(WmsConfirmationRequest({"strict": "payload"}, NOW + timedelta(seconds=8)))
     db = object()
-    applier = _applier(wms_confirmation_service=confirmations, wms_request_resolver=resolver)
+    applier = _applier(wms_confirmation_service=confirmations)
     decision = CreateWmsConfirmation(
         "EXEC-1",
         "evidence:31",
-        "inbound.material.admission_decide@v1",
-        "OP-1",
-        ("evidence:31",),
-        ("execution:EXEC-1",),
+        "inbound.source_rack.replacement_plan_decide@v1",
+        "019cd8ce-34b7-7000-8000-000000000002",
+        {
+            "material_execution_id": "EXEC-1",
+            "material_trace_id": "TRACE-1",
+            "current_rack_id": "RACK-1",
+        },
     )
 
     await applier.apply(db, _evidence(), _execution(), _fact(), (decision,))
 
-    assert resolver.db is db
     assert confirmations.calls == [
         {
             "operation": decision.operation,
-            "operation_id": "OP-1",
+            "operation_id": "019cd8ce-34b7-7000-8000-000000000002",
             "material_execution_id": 21,
-            "request_payload": {"strict": "payload"},
-            "deadline_at": NOW + timedelta(seconds=8),
+            "request_payload": {
+                "operation": "inbound.source_rack.replacement_plan_decide@v1",
+                "operation_id": "019cd8ce-34b7-7000-8000-000000000002",
+                "timestamp": int(timezone.to_utc(NOW).timestamp() * 1000),
+                "data": {
+                    "material_execution_id": "EXEC-1",
+                    "material_trace_id": "TRACE-1",
+                    "current_rack_id": "RACK-1",
+                },
+            },
+            "deadline_at": NOW + timedelta(seconds=30),
             "created_at": NOW,
         }
     ]
@@ -325,7 +318,7 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
         "evidence:31",
         TransportTaskType.RACK_MOVE,
         "REPLACE-1",
-        TransportLeg.OLD_OUT,
+        "OLD_OUT",
         "RACK-CURRENT",
         "RACK-CURRENT",
         TransportRackPosition("BUFFER"),
@@ -375,7 +368,7 @@ async def test_create_transport_task_rejects_existing_binding_correlation_drift(
         "evidence:31",
         TransportTaskType.RACK_MOVE,
         "REPLACE-1",
-        TransportLeg.OLD_OUT,
+        "OLD_OUT",
         "RACK-CURRENT",
         "RACK-CURRENT",
         TransportRackPosition("BUFFER"),

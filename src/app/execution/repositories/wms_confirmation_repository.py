@@ -5,11 +5,9 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003
 from typing import Any, cast
 
-from sqlalchemy import and_, case, exists, or_, select, text, tuple_
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
-from sqlalchemy.orm import aliased
 
-from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 from src.database.base_repository import BaseRepository
 
@@ -78,27 +76,6 @@ class WmsConfirmationRepository(BaseRepository[WmsConfirmation]):
         )
         return list(result.scalars())
 
-    async def list_for_execution_operations_for_update(
-        self,
-        db: AsyncSession,
-        *,
-        material_execution_id: int,
-        operations: tuple[str, ...],
-    ) -> list[WmsConfirmation]:
-        """按冻结 operation 顺序锁定 execution 的外部确认义务。"""
-
-        columns = cast("Any", WmsConfirmation).__table__.c
-        result = await db.execute(
-            select(WmsConfirmation)
-            .where(
-                columns.material_execution_id == material_execution_id,
-                columns.operation.in_(operations),
-            )
-            .order_by(case({operation: index for index, operation in enumerate(operations)}, value=columns.operation))
-            .with_for_update()
-        )
-        return list(result.scalars())
-
     async def claim_eligible(
         self,
         db: AsyncSession,
@@ -109,53 +86,8 @@ class WmsConfirmationRepository(BaseRepository[WmsConfirmation]):
         limit: int,
     ) -> list[WmsConfirmation]:
         columns = cast("Any", WmsConfirmation).__table__.c
-        execution_columns = cast("Any", MaterialExecution).__table__.c
-        earlier_execution = aliased(MaterialExecution)
-        earlier_columns = cast("Any", earlier_execution)
-        predecessor = aliased(WmsConfirmation)
-        predecessor_columns = cast("Any", predecessor)
-        e03 = "wms.inventory.confirm_inbound@v1"
-        e07 = "wms.fulfillment.notify_pkg_binding@v1"
-        no_earlier_active_execution = ~exists(
-            select(1).where(
-                earlier_columns.workline_id == execution_columns.workline_id,
-                earlier_columns.line_run_epoch_id == execution_columns.line_run_epoch_id,
-                earlier_columns.status != MaterialExecutionStatus.CLOSED,
-                or_(
-                    earlier_columns.admission_received_at.is_(None),
-                    earlier_columns.admission_evidence_id.is_(None),
-                    tuple_(
-                        earlier_columns.admission_received_at,
-                        earlier_columns.admission_evidence_id,
-                        earlier_columns.id,
-                    )
-                    < tuple_(
-                        execution_columns.admission_received_at,
-                        execution_columns.admission_evidence_id,
-                        execution_columns.id,
-                    ),
-                ),
-            )
-        )
-        completed_e03 = exists(
-            select(1).where(
-                predecessor_columns.material_execution_id == columns.material_execution_id,
-                predecessor_columns.operation == e03,
-                predecessor_columns.status == WmsConfirmationStatus.COMPLETED,
-            )
-        )
-        execution_barrier = or_(
-            columns.operation.not_in((e03, e07)),
-            and_(
-                execution_columns.admission_received_at.is_not(None),
-                execution_columns.admission_evidence_id.is_not(None),
-                no_earlier_active_execution,
-                or_(columns.operation == e03, and_(columns.operation == e07, completed_e03)),
-            ),
-        )
         result = await db.execute(
             select(WmsConfirmation)
-            .join(MaterialExecution, execution_columns.id == columns.material_execution_id)
             .where(
                 or_(
                     and_(
@@ -168,16 +100,8 @@ class WmsConfirmationRepository(BaseRepository[WmsConfirmation]):
                         columns.claim_expires_at <= now,
                     ),
                 ),
-                execution_barrier,
             )
             .order_by(
-                case((columns.operation.in_((e03, e07)), 0), else_=1),
-                execution_columns.workline_id,
-                execution_columns.line_run_epoch_id,
-                execution_columns.admission_received_at,
-                execution_columns.admission_evidence_id,
-                execution_columns.id,
-                case({e03: 0, e07: 1}, value=columns.operation, else_=2),
                 columns.created_at,
                 columns.id,
             )

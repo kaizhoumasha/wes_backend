@@ -605,8 +605,7 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从该快照生成带 Commit/source-tree 标签的后端镜像。MR、手工构建、
 前端进度和现场验证均不得参与或替代该门禁。
 
-**需要单独编写的子计划:** 初始插件收敛以
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` 保存实施历史；Epoch/前端增量以
+**需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；Epoch/前端增量以
 `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` 为真源；当前 RC 与外部验收状态以
 `docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
 GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
@@ -618,13 +617,12 @@ GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发
 
 **Objective:** 只交付 Phase 10 删除旧平台前必须存在的目标内核和当前生产 successor，不夹带人工或自动业务插件。
 
-**Authoritative inputs:** SRS、最小执行架构、Phase 6 Transport、Phase 7 Device/ECS、Phase 8 粗分 RC，以及
-`docs/superpowers/specs/2026-08-26-phase9-14-guided-development-resequence-design.md`。
+**Authoritative inputs:** SRS、最小执行架构、Phase 6 Transport、Phase 7 Device/ECS 与 Phase 8 粗分 RC。
 
 **Entry conditions:** 开发流程优化和运输接入诊断已分别进入当前基线；Phase 8 后端 RC 已关闭；Phase 9 Foundation 详细计划获批。
 
 **Scope:** `BinExecution`、唯一活动管辖期 `PositionProjection`、WorkLine unfinished-work target aggregate、
-`ESTOP_PRESSED` final router、E03/E07 `WmsConfirmation` barrier、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
+`ESTOP_PRESSED` final router、业务中立的 `WmsConfirmation` 可靠投递机制、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
 
 `BinExecution` 与 `PositionProjection` 是 SRS 已批准的核心执行对象，不是未来插件的预留 schema。必须同时交付领域不变量、
 Repository/Service、直接/间接测试 owner 和精确 HEAVY mapping；只有表、空模型或 fixture 不算完成。
@@ -638,8 +636,7 @@ HEAVY owner。`rough_sorter` 只验证现有插件机制，不替代 `BinExecuti
 **Exit gate:** 所有基础对象和 successor 有唯一生产 owner；后置业务插件没有遗留 Provider 路径；`UNRESOLVED=0`；
 不存在为 Phase 12/13 预建的业务表、operation、空包或 Composition。
 
-**实施子计划:** `docs/superpowers/plans/2026-08-27-phase9-minimum-execution-foundation.md`。旧 Phase 9 人工业务计划已拆分：
-基础 successor 由该计划承接，人工业务由 Phase 12 教学计划承接，旧过程文档与未重新评审的合同已移至项目外归档。
+**实施状态:** 基础 successor 已交付；人工业务由 Phase 12 教学计划承接，旧过程文档与未重新评审的合同已移至项目外归档。
 
 **风险及防止阶段越权的约束:** 禁止用 `MaterialExecution` 顶替 `BinExecution`，也禁止用核心对象名义提前实现人工或自动业务。
 
@@ -673,9 +670,7 @@ Phase 11 固化最终 metadata。
 **Exit gate:** 机器门禁证明旧架构、裸 Client、重复传输和无依据认证零引用；应用/Celery/部署只装配最终对象、WMS/RCS
 Adapter、设备统一接口和明确插件。
 
-**需要单独编写的子计划:** Phase 10 详细计划为
-`docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`。Tasks 0–6 已在
-`codex/phase10-implementation@834fe59e` 完成；Task 6 复用并核验既有发布静默基线，未重复建设。Task 7 已取得单独
+**实施状态:** Tasks 0–6 已在 `codex/phase10-implementation@834fe59e` 完成；Task 6 复用并核验既有发布静默基线，未重复建设。Task 7 已取得单独
 Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 target-only cutover；Phase 11 单一空库基线与合入后 cleanup
 已通过 #188/#189 完成，并已包含在当前 backend 联调部署 tree `46d568d1` 中，不再处于实施前准入阶段。
 

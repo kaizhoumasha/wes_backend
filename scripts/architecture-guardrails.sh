@@ -568,8 +568,9 @@ if plugin_root.exists():
     for package_root in sorted(path for path in plugin_root.iterdir() if path.is_dir()):
         source_root = package_root / "src"
         own_modules = {path.name for path in source_root.iterdir() if path.is_dir()} if source_root.exists() else set()
-        allowed = stdlib | own_modules | {"wes_plugin_sdk"}
         for path in python_files(source_root):
+            application_layer = "application" in path.relative_to(source_root).parts
+            allowed = stdlib | own_modules | {"wes_plugin_sdk"} | ({"src"} if application_layer else set())
             tree = parse(path)
             if isinstance(tree, SyntaxError):
                 emit(
@@ -590,7 +591,7 @@ if plugin_root.exists():
                         path,
                         line,
                         f"具体插件 import SDK/自身/标准库之外的实现: {module}",
-                        "插件只依赖 wes_plugin_sdk、插件自身与 Python 标准库",
+                        "插件纯 Decision 层只依赖 SDK/自身/标准库；application 层可依赖 src 基础能力",
                     )
             for canonical, target, line, at_import_time in dynamic_import_targets(tree, aliases, constants):
                 target_root = target.split(".", maxsplit=1)[0] if target else None
@@ -600,7 +601,7 @@ if plugin_root.exists():
                         path,
                         line,
                         f"具体插件动态加载禁用或不可判定模块: {canonical}({target})",
-                        "插件只静态依赖 wes_plugin_sdk、插件自身与 Python 标准库",
+                        "插件纯 Decision 层只静态依赖 SDK/自身/标准库；application 层可依赖 src 基础能力",
                     )
 PY
 )"
@@ -774,8 +775,8 @@ def scan_plugin(path: Path) -> None:
     tree = parse(path, "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY")
     if tree is None:
         return
+    application_layer = "application" in path.parts
     forbidden_modules = (
-        "sqlalchemy",
         "httpx",
         "requests",
         "celery",
@@ -784,6 +785,8 @@ def scan_plugin(path: Path) -> None:
         "src.app.device.models",
         "src.app.device.services",
     )
+    if not application_layer:
+        forbidden_modules = ("sqlalchemy", *forbidden_modules)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             modules = tuple(imported_modules(path, node))
@@ -792,8 +795,12 @@ def scan_plugin(path: Path) -> None:
                 exact_or_descendant(module, forbidden)
                 for module in modules
                 for forbidden in forbidden_modules
-            ) or any(has_module_segment(module, segment) for module in modules for segment in ("repositories", "providers")) or any(
-                name.endswith("Repository") for name in imported_names
+            ) or (
+                not application_layer
+                and (
+                    any(has_module_segment(module, segment) for module in modules for segment in ("repositories", "providers"))
+                    or any(name.endswith("Repository") for name in imported_names)
+                )
             ):
                 emit(
                     "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",

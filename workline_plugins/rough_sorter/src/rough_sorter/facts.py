@@ -15,7 +15,6 @@ from wes_plugin_sdk import (
     EvidenceReadyFact,
     ExecutionSnapshot,
     RecoveryDecision,
-    TransportLeg,
     TransportRackMovePosition,
     TransportRackPosition,
     TransportRackReference,
@@ -34,6 +33,11 @@ from wes_plugin_sdk.validation import validate_required_text as _required
 class ShapeResult(StrEnum):
     PASS = "PASS"
     FAIL = "FAIL"
+
+
+class TransportLeg(StrEnum):
+    OLD_OUT = "OLD_OUT"
+    NEW_IN = "NEW_IN"
 
 
 class AdmissionResult(StrEnum):
@@ -812,15 +816,14 @@ _RECOVERY_WMS_OPERATIONS = {
 class RecoveryWmsContinuation:
     operation: str
     operation_id: str
-    evidence_refs: tuple[str, ...]
-    snapshot_refs: tuple[str, ...]
+    request_data: dict[str, object]
 
     def __post_init__(self) -> None:
         if self.operation not in _RECOVERY_WMS_OPERATIONS:
             raise ValueError("unsupported recovery WMS operation")
         _operation_id(self.operation_id, "operation_id")
-        _required_refs(self.evidence_refs, "evidence_refs")
-        _required_refs(self.snapshot_refs, "snapshot_refs")
+        if type(self.request_data) is not dict:
+            raise TypeError("request_data must be a dict")
 
 
 @dataclass(frozen=True, slots=True)
@@ -916,6 +919,7 @@ __all__ = [
     "ShapeResult",
     "TargetDecidedFact",
     "TargetResult",
+    "TransportLeg",
     "TransportOutcome",
     "TransportOutcomePublishedFact",
     "rack_release_snapshot_ref",
