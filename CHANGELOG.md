@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.12.0] - 2026-09-01
+
+### Fixed
+
+- Jenkins 工作区改为在流水线 shell 内初始化并精确 fetch/checkout source 与 target refs，阻断 GitLab 插件通过 `RevisionParameterAction` 动态注入 `PreBuildMerge`；后续构建和验证始终从 webhook 已核验的 source Commit 执行。
+
+### Verification
+
+- Jenkins 实跑确认旧 `checkout` 步骤仍会被插件注入 merge 后新增回归合同；新路径不再调用 Jenkins GitSCM `checkout`，并保留 source SHA、TLS target SHA 与对象存在性 fail-closed 检查。
+
 ## [0.29.11.0] - 2026-09-01
 
 ### Fixed
