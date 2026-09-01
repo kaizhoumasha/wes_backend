@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictStr, StringConstraints
 
 from src.app.transport.contracts import (
     TRANSPORT_DEBUG_CALLER_WORKLINE_ID,
@@ -13,8 +13,9 @@ from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
     RackBinSlot,
-    RackFace,
     RackPosition,
+    RackReference,
+    RcsTemplateId,
     TransportCaller,
     TransportContractError,
     TransportHandle,
@@ -22,6 +23,7 @@ from src.app.transport.contracts import (
     TransportResourceConflict,
     TransportTaskKind,
     TransportTaskStatus,
+    ZonePosition,
 )
 from src.app.transport.debug_reset import (
     TransportDebugStep,
@@ -37,6 +39,10 @@ router = APIRouter(tags=["Transport 调试"])
 _UUID7_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _UUID7 = Annotated[str, StringConstraints(min_length=36, max_length=36, pattern=_UUID7_PATTERN)]
 _TEXT = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100, pattern=r".*\S.*")]
+_FACE = Annotated[
+    StrictStr,
+    Field(min_length=1, description="Opaque non-empty face value; preserve exactly"),
+]
 _TRANSPORT_TASK_ID = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=80),
@@ -58,10 +64,23 @@ class _RackPosition(_StrictApiModel):
     location_code: _TEXT
 
 
+class _RackReference(_StrictApiModel):
+    kind: Literal["RACK"]
+    location_code: _TEXT
+
+
+class _ZonePosition(_StrictApiModel):
+    kind: Literal["ZONE"]
+    location_code: _TEXT
+
+
+type _RackMovePosition = Annotated[_RackReference | _ZonePosition | _RackPosition, Field(discriminator="kind")]
+
+
 class _RackBinSlot(_StrictApiModel):
     kind: Literal["RACK_BIN_SLOT"]
     rack_id: _TEXT
-    rack_face: RackFace
+    rack_face: _FACE
     slot_id: _TEXT
 
 
@@ -75,15 +94,17 @@ type _BinPosition = Annotated[_RackBinSlot | _HandoffPosition, Field(discriminat
 
 class _RackMoveData(_StrictApiModel):
     rack_id: _TEXT
-    source: _RackPosition
-    target: _RackPosition
-    target_face: RackFace
+    source: _RackMovePosition
+    target: _RackMovePosition
+    target_face: _FACE
+    rcs_template_id: RcsTemplateId | None = None
 
 
 class _RackRotateData(_StrictApiModel):
     rack_id: _TEXT
     position: _RackPosition
-    target_face: RackFace
+    target_face: _FACE
+    rcs_template_id: RcsTemplateId | None = None
 
 
 class _BinMoveMember(_StrictApiModel):
@@ -192,7 +213,7 @@ class TransportResultMemberResponse(_StrictApiModel):
     final_position: dict[str, Any] | None
     position_unknown: bool
     failure_code: str | None
-    arrival_face: Literal["A", "B"] | None
+    arrival_face: _FACE | None
 
 
 class TransportResultResponse(_StrictApiModel):
@@ -223,7 +244,8 @@ _OPENAPI_EXAMPLES = {
                 "rack_id": "RACK-01",
                 "source": {"kind": "RACK_POSITION", "location_code": "BUFFER-01"},
                 "target": {"kind": "RACK_POSITION", "location_code": "LINE-01"},
-                "target_face": "A",
+                "target_face": "90",
+                "rcs_template_id": "F01",
             },
         },
     },
@@ -236,7 +258,8 @@ _OPENAPI_EXAMPLES = {
             "data": {
                 "rack_id": "RACK-01",
                 "position": {"kind": "RACK_POSITION", "location_code": "LINE-01"},
-                "target_face": "B",
+                "target_face": "270",
+                "rcs_template_id": "CTU02",
             },
         },
     },
@@ -253,7 +276,7 @@ _OPENAPI_EXAMPLES = {
                         "source": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": "RACK-01",
-                            "rack_face": "A",
+                            "rack_face": "90",
                             "slot_id": "SLOT-01",
                         },
                         "target": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-01"},
@@ -275,14 +298,14 @@ _OPENAPI_EXAMPLES = {
                         "left_location": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": "RACK-01",
-                            "rack_face": "A",
+                            "rack_face": "90",
                             "slot_id": "SLOT-01",
                         },
                         "right_bin_id": "BIN-02",
                         "right_location": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": "RACK-02",
-                            "rack_face": "A",
+                            "rack_face": "90",
                             "slot_id": "SLOT-01",
                         },
                     }
@@ -304,6 +327,14 @@ def _rack_position(position: _RackPosition) -> RackPosition:
     return RackPosition(location_code=position.location_code)
 
 
+def _rack_move_position(position: _RackMovePosition) -> RackReference | ZonePosition | RackPosition:
+    if isinstance(position, _RackReference):
+        return RackReference(location_code=position.location_code)
+    if isinstance(position, _ZonePosition):
+        return ZonePosition(location_code=position.location_code)
+    return RackPosition(location_code=position.location_code)
+
+
 def _rack_bin_slot(position: _RackBinSlot) -> RackBinSlot:
     return RackBinSlot(rack_id=position.rack_id, rack_face=position.rack_face, slot_id=position.slot_id)
 
@@ -320,13 +351,37 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
         station_id=payload.station_id,
     )
     if isinstance(payload, _RackMoveDebugTask):
+        data = payload.data
+        if (
+            data.rack_id == "510056"
+            and data.source.location_code == "WH01"
+            and data.target.location_code == "KT16"
+            and (
+                not isinstance(data.source, _ZonePosition)
+                or not isinstance(data.target, _RackPosition)
+                or data.rcs_template_id is not RcsTemplateId.CTU01
+            )
+        ):
+            raise TransportContractError("510056 rack-to-station requires ZONE WH01, RACK_POSITION KT16, and CTU01")
+        if (
+            data.rack_id == "510056"
+            and data.source.location_code == "KT16"
+            and data.target.location_code == "WH01"
+            and (
+                not isinstance(data.source, _RackPosition)
+                or not isinstance(data.target, _ZonePosition)
+                or data.rcs_template_id is not RcsTemplateId.CTU03
+            )
+        ):
+            raise TransportContractError("510056 rack-to-storage requires RACK_POSITION KT16, ZONE WH01, and CTU03")
         return await runtime.port.move_rack(
             payload.client_request_id,
             caller,
-            payload.data.rack_id,
-            _rack_position(payload.data.source),
-            _rack_position(payload.data.target),
-            payload.data.target_face,
+            data.rack_id,
+            _rack_move_position(data.source),
+            _rack_move_position(data.target),
+            data.target_face,
+            data.rcs_template_id or RcsTemplateId.F01,
         )
     if isinstance(payload, _RackRotateDebugTask):
         return await runtime.port.rotate_rack(
@@ -335,6 +390,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
             payload.data.rack_id,
             _rack_position(payload.data.position),
             payload.data.target_face,
+            payload.data.rcs_template_id or RcsTemplateId.CTU02,
         )
     if isinstance(payload, _BinMoveDebugTask):
         moves = tuple(

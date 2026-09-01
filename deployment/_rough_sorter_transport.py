@@ -197,7 +197,7 @@ def _outcome_payload(outcome: TransportOutcome) -> dict[str, Any]:
                 ),
                 "position_unknown": member.position_unknown,
                 "failure_code": member.failure_code,
-                "arrival_face": member.arrival_face.value if member.arrival_face is not None else None,
+                "arrival_face": member.arrival_face,
             }
             for member in outcome.members
         ],

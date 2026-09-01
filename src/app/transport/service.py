@@ -31,8 +31,9 @@ from src.app.transport.contracts import (
     MoveBinsRequest,
     MoveRackRequest,
     RackBinSlot,
-    RackFace,
+    RackMovePosition,
     RackPosition,
+    RcsTemplateId,
     RotateRackRequest,
     TransportCaller,
     TransportContractError,
@@ -180,14 +181,15 @@ class TransportService:
         client_request_id: str,
         caller: TransportCaller,
         rack_id: str,
-        source: RackPosition,
-        target: RackPosition,
-        target_face: RackFace,
+        source: RackMovePosition,
+        target: RackMovePosition,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
         return await self._create_task(
-            MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face),
+            MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face, rcs_template_id),
             execution_authority,
         )
 
@@ -197,9 +199,10 @@ class TransportService:
         client_request_id: str,
         caller: TransportCaller,
         rack_id: str,
-        source: RackPosition,
-        target: RackPosition,
-        target_face: RackFace,
+        source: RackMovePosition,
+        target: RackMovePosition,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority,
     ) -> TransportHandle:
@@ -207,7 +210,7 @@ class TransportService:
 
         return await self._create_task_in_session(
             db,
-            MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face),
+            MoveRackRequest(client_request_id, caller, rack_id, source, target, target_face, rcs_template_id),
             execution_authority,
         )
 
@@ -217,12 +220,13 @@ class TransportService:
         caller: TransportCaller,
         rack_id: str,
         position: RackPosition,
-        target_face: RackFace,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
         *,
         execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle:
         return await self._create_task(
-            RotateRackRequest(client_request_id, caller, rack_id, position, target_face),
+            RotateRackRequest(client_request_id, caller, rack_id, position, target_face, rcs_template_id),
             execution_authority,
         )
 
@@ -897,11 +901,16 @@ class TransportService:
                 request.rack_id,
                 for_update=True,
             )
-            if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
+            if (
+                projection is None
+                or projection.position_unknown
+                or type(projection.arrival_face) is not str
+                or projection.arrival_face == ""
+            ):
                 raise TransportContractError("rack current face is unknown")
             if projection.position_json != _json_value(request.position):
                 raise TransportContractError("rack current position is not confirmed")
-            if projection.arrival_face == request.target_face.value:
+            if projection.arrival_face == request.target_face:
                 raise TransportContractError("target face equals current face")
         elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
             if allow_debug_rack_face and (
@@ -914,9 +923,14 @@ class TransportService:
                 return TransportHandle(task_id, request.client_request_id)
             for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
                 projection = await self._position_projections.get_current(db, "RACK", rack_id, for_update=True)
-                if projection is None or projection.position_unknown or projection.arrival_face not in {"A", "B"}:
+                if (
+                    projection is None
+                    or projection.position_unknown
+                    or type(projection.arrival_face) is not str
+                    or projection.arrival_face == ""
+                ):
                     raise TransportContractError("rack current face is unknown")
-                if projection.arrival_face != requested_face.value:
+                if projection.arrival_face != requested_face:
                     raise TransportContractError("rack current face does not match request")
         await self._repository.add_aggregate(db, task, members, bindings)
         return TransportHandle(task_id, request.client_request_id)
@@ -1165,7 +1179,7 @@ class TransportService:
             if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
                 raise TransportContractError("failed member requires failure_code")
             arrival_face = result.get("arrival_face")
-            if member.object_type == "RACK" and has_position and arrival_face not in {"A", "B"}:
+            if member.object_type == "RACK" and has_position and (type(arrival_face) is not str or arrival_face == ""):
                 raise TransportContractError("known rack result requires arrival_face")
             final_position = result.get("final_position") if has_position else None
             if member.final_position_json is not None and (
@@ -1183,7 +1197,7 @@ class TransportService:
                 final_position=_contract_position(final_position) if final_position is not None else None,
                 position_unknown=position_unknown,
                 failure_code=failure_code,
-                arrival_face=RackFace(arrival_face) if arrival_face is not None else None,
+                arrival_face=arrival_face,
             )
             validated_results.append((member, result, outcome))
             any_unknown |= position_unknown
@@ -1303,7 +1317,7 @@ def _resource_keys(request: TransportRequest) -> set[tuple[str, str]]:
     return resources
 
 
-def _rack_faces_for_bin_request(request: MoveBinsRequest | ExchangeBinsRequest) -> dict[str, RackFace]:
+def _rack_faces_for_bin_request(request: MoveBinsRequest | ExchangeBinsRequest) -> dict[str, str]:
     positions: list[object] = []
     if isinstance(request, MoveBinsRequest):
         positions.extend(position for move in request.moves for position in (move.source, move.target))
@@ -1322,6 +1336,7 @@ def _debug_frozen_targets(task: TransportTask) -> list[dict[str, Any]]:
                 "object_id": request["rack_id"],
                 "target": request["target"],
                 "arrival_face": request["target_face"],
+                "rcs_template_id": request["rcs_template_id"],
             }
         ]
     if task.kind == TransportTaskKind.BIN_MOVE.value:
@@ -1339,33 +1354,59 @@ def _debug_frozen_targets(task: TransportTask) -> list[dict[str, Any]]:
 def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebugStep) -> bool:
     request = task.request_json
     if task.kind == TransportTaskKind.RACK_MOVE.value:
-        route = (
-            request["source"]["location_code"],
-            request["target"]["location_code"],
-        )
-        expected_route = {
-            TransportDebugStep.RACK_TO_STATION: ("WH01", "KT16"),
-            TransportDebugStep.RACK_TO_STORAGE: ("KT16", "WH01"),
+        expected_request = {
+            TransportDebugStep.RACK_TO_STATION: {
+                "rack_id": "510056",
+                "source": {"kind": "ZONE", "location_code": "WH01"},
+                "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
+                "target_face": "90",
+                "rcs_template_id": "CTU01",
+            },
+            TransportDebugStep.RACK_TO_STORAGE: {
+                "rack_id": "510056",
+                "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
+                "target": {"kind": "ZONE", "location_code": "WH01"},
+                "target_face": "90",
+                "rcs_template_id": "CTU03",
+            },
         }.get(step)
-        return route == expected_route
+        return expected_request is not None and all(
+            request.get(key) == value for key, value in expected_request.items()
+        )
     if task.kind == TransportTaskKind.BIN_MOVE.value:
-        expected_positions = {
-            TransportDebugStep.BINS_TO_INFEED: ("RACK_BIN_SLOT", "HANDOFF_POSITION", "CNV0301"),
-            TransportDebugStep.BINS_TO_RACK: ("HANDOFF_POSITION", "RACK_BIN_SLOT", "CNV0302"),
-        }.get(step)
-        if expected_positions is None:
-            return False
-        source_kind, target_kind, handoff_code = expected_positions
-        return all(
-            move["source"]["kind"] == source_kind
-            and move["target"]["kind"] == target_kind
-            and (
-                move["target"].get("location_code") == handoff_code
-                if step == TransportDebugStep.BINS_TO_INFEED
-                else move["source"].get("location_code") == handoff_code
-            )
-            for move in request["moves"]
+        rack_slots = (
+            ("A000001922", "510056A3F2C101"),
+            ("A000002653", "510056A2F2C101"),
         )
+        expected_moves = {
+            TransportDebugStep.BINS_TO_INFEED: [
+                {
+                    "bin_id": bin_id,
+                    "source": {
+                        "kind": "RACK_BIN_SLOT",
+                        "rack_id": "510056",
+                        "rack_face": "90",
+                        "slot_id": slot_id,
+                    },
+                    "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+                }
+                for bin_id, slot_id in rack_slots
+            ],
+            TransportDebugStep.BINS_TO_RACK: [
+                {
+                    "bin_id": bin_id,
+                    "source": {"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
+                    "target": {
+                        "kind": "RACK_BIN_SLOT",
+                        "rack_id": "510056",
+                        "rack_face": "90",
+                        "slot_id": slot_id,
+                    },
+                }
+                for bin_id, slot_id in rack_slots
+            ],
+        }.get(step)
+        return expected_moves is not None and request.get("moves") == expected_moves
     return False
 
 
@@ -1514,7 +1555,7 @@ def _contract_position(payload: dict[str, Any]) -> RackPosition | RackBinSlot | 
     if kind == "RACK_POSITION":
         return RackPosition(payload["location_code"])
     if kind == "RACK_BIN_SLOT":
-        return RackBinSlot(payload["rack_id"], RackFace(payload["rack_face"]), payload["slot_id"])
+        return RackBinSlot(payload["rack_id"], payload["rack_face"], payload["slot_id"])
     if kind == "HANDOFF_POSITION":
         return HandoffPosition(payload["location_code"])
     raise TransportContractError("invalid final position kind")
@@ -1538,7 +1579,7 @@ def _outcome_from_json(payload: dict[str, Any]) -> TransportOutcome:
                 ),
                 position_unknown=member.get("position_unknown", False),
                 failure_code=member.get("failure_code"),
-                arrival_face=RackFace(member["arrival_face"]) if member.get("arrival_face") else None,
+                arrival_face=member.get("arrival_face"),
             )
             for member in payload.get("members", [])
         ),
@@ -1590,7 +1631,12 @@ def _validate_result_frozen_identity(
             and result.get("arrival_face") != task.request_json["target_face"]
         ):
             raise TransportContractError("successful arrival face differs from frozen target")
-        if status == "SUCCEEDED" and final_position != member.target_json:
+        if status != "SUCCEEDED":
+            continue
+        if task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}:
+            if member.target_json.get("kind") == "RACK_POSITION" and final_position != member.target_json:
+                raise TransportContractError("successful final position differs from frozen exact target")
+        elif final_position != member.target_json:
             raise TransportContractError("successful final position differs from frozen target")
 
 

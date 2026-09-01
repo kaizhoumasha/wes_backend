@@ -15,6 +15,9 @@ from wes_plugin_sdk import (
     CreateWmsConfirmation,
     FactReference,
     PauseForReconciliation,
+    TransportRackPosition,
+    TransportRackReference,
+    TransportZonePosition,
     Wait,
 )
 
@@ -24,12 +27,12 @@ from src.app.execution.models.material_execution import MaterialExecutionStatus
 from src.app.execution.repositories import rack_replacement_transport_binding_repository
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationIdentityConflictResult
 from src.app.transport.contracts import (
-    RackFace as CoreRackFace,
-)
-from src.app.transport.contracts import (
     RackPosition,
+    RackReference,
+    RcsTemplateId,
     TransportCaller,
     TransportExecutionAuthority,
+    ZonePosition,
 )
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
@@ -315,14 +318,31 @@ class DecisionApplier:
             or binding.source_evidence_id != evidence.id
         ):
             raise ValueError("existing rack replacement binding correlation conflict")
+        if type(decision.source) is TransportRackReference:
+            source = RackReference(decision.source.location_code)
+        elif type(decision.source) is TransportZonePosition:
+            source = ZonePosition(decision.source.location_code)
+        elif type(decision.source) is TransportRackPosition:
+            source = RackPosition(decision.source.location_code)
+        else:
+            raise TypeError("unsupported Transport rack source")
+        if type(decision.target) is TransportRackReference:
+            target = RackReference(decision.target.location_code)
+        elif type(decision.target) is TransportZonePosition:
+            target = ZonePosition(decision.target.location_code)
+        elif type(decision.target) is TransportRackPosition:
+            target = RackPosition(decision.target.location_code)
+        else:
+            raise TypeError("unsupported Transport rack target")
         _ = await self._transport.move_rack_in_session(
             db,
             client_request_id=binding.client_request_id,
             caller=TransportCaller(workline_id=str(execution.workline_id)),
             rack_id=decision.rack_id,
-            source=RackPosition(decision.source.location_code),
-            target=RackPosition(decision.target.location_code),
-            target_face=CoreRackFace(decision.target_face.value),
+            source=source,
+            target=target,
+            target_face=decision.target_face,
+            rcs_template_id=RcsTemplateId(decision.rcs_template_id.value),
             execution_authority=TransportExecutionAuthority(
                 workline_id=execution.workline_id,
                 line_run_epoch_id=execution.line_run_epoch_id,

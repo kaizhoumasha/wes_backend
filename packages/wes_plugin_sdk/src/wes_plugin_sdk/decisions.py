@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 
 def _required(value: str, field_name: str) -> None:
@@ -29,9 +30,11 @@ class TransportLeg(StrEnum):
     NEW_IN = "NEW_IN"
 
 
-class RackFace(StrEnum):
-    A = "A"
-    B = "B"
+class TransportRcsTemplateId(StrEnum):
+    CTU01 = "CTU01"
+    CTU02 = "CTU02"
+    CTU03 = "CTU03"
+    F01 = "F01"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +60,37 @@ class DevicePosition:
 @dataclass(frozen=True, slots=True)
 class TransportRackPosition:
     location_code: str
+    kind: Literal["RACK_POSITION"] = "RACK_POSITION"
 
     def __post_init__(self) -> None:
         _required(self.location_code, "location_code")
+        if self.kind != "RACK_POSITION":
+            raise ValueError("kind must be RACK_POSITION")
+
+
+@dataclass(frozen=True, slots=True)
+class TransportRackReference:
+    location_code: str
+    kind: Literal["RACK"] = "RACK"
+
+    def __post_init__(self) -> None:
+        _required(self.location_code, "location_code")
+        if self.kind != "RACK":
+            raise ValueError("kind must be RACK")
+
+
+@dataclass(frozen=True, slots=True)
+class TransportZonePosition:
+    location_code: str
+    kind: Literal["ZONE"] = "ZONE"
+
+    def __post_init__(self) -> None:
+        _required(self.location_code, "location_code")
+        if self.kind != "ZONE":
+            raise ValueError("kind must be ZONE")
+
+
+type TransportRackMovePosition = TransportRackReference | TransportZonePosition | TransportRackPosition
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +171,10 @@ class CreateTransportTask:
     leg: TransportLeg
     current_rack_id: str
     rack_id: str
-    source: TransportRackPosition
-    target: TransportRackPosition
-    target_face: RackFace
+    source: TransportRackMovePosition
+    target: TransportRackMovePosition
+    target_face: str
+    rcs_template_id: TransportRcsTemplateId
 
     def __post_init__(self) -> None:
         _required(self.material_execution_id, "material_execution_id")
@@ -154,12 +186,33 @@ class CreateTransportTask:
             raise ValueError("task_type must be RACK_MOVE")
         if type(self.leg) is not TransportLeg:
             raise ValueError("leg must be a TransportLeg")
-        if type(self.source) is not TransportRackPosition or type(self.target) is not TransportRackPosition:
-            raise TypeError("source and target must be TransportRackPosition values")
-        if type(self.target_face) is not RackFace:
-            raise ValueError("target_face must be a RackFace")
+        position_types = {TransportRackReference, TransportZonePosition, TransportRackPosition}
+        if type(self.source) not in position_types or type(self.target) not in position_types:
+            raise TypeError("source and target must be Transport rack move positions")
+        if type(self.target_face) is not str or self.target_face == "":
+            raise ValueError("target_face must be a non-empty string")
+        if type(self.rcs_template_id) is not TransportRcsTemplateId:
+            raise ValueError("rcs_template_id must be a TransportRcsTemplateId")
         if self.source == self.target:
             raise ValueError("source and target must differ")
+        for position in (self.source, self.target):
+            if type(position) is TransportRackReference and position.location_code != self.rack_id:
+                raise ValueError("RACK location_code must match rack_id")
+        allowed_edges = {
+            TransportRcsTemplateId.CTU01: {
+                (TransportZonePosition, TransportRackPosition),
+                (TransportRackReference, TransportRackPosition),
+                (TransportRackPosition, TransportRackPosition),
+            },
+            TransportRcsTemplateId.CTU03: {
+                (TransportRackPosition, TransportRackReference),
+                (TransportRackPosition, TransportZonePosition),
+                (TransportRackPosition, TransportRackPosition),
+            },
+            TransportRcsTemplateId.F01: {(TransportRackPosition, TransportRackPosition)},
+        }
+        if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
+            raise ValueError("source, target, and rcs_template_id are not an approved edge")
         if self.leg is TransportLeg.OLD_OUT and self.rack_id != self.current_rack_id:
             raise ValueError("OLD_OUT rack_id must match current_rack_id")
 

@@ -24,18 +24,20 @@ def build_submit_data(request: TransportRequest, transport_task_id: str) -> dict
     if isinstance(request, MoveRackRequest):
         return {
             **common,
+            "rcs_template_id": request.rcs_template_id.value,
             "rack_id": request.rack_id,
             "source": _json_value(request.source),
             "target": _json_value(request.target),
-            "target_face": request.target_face.value,
+            "target_face": request.target_face,
         }
     if isinstance(request, RotateRackRequest):
         return {
             **common,
+            "rcs_template_id": request.rcs_template_id.value,
             "rack_id": request.rack_id,
             "source": _json_value(request.position),
             "target": _json_value(request.position),
-            "target_face": request.target_face.value,
+            "target_face": request.target_face,
         }
     if isinstance(request, MoveBinsRequest):
         moves = [

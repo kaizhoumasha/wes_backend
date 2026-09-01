@@ -46,11 +46,8 @@ class TransportOutcomePublishedHandler:
         arrival_face = fact.arrival_face
         if actual_rack_id is None or final_position is None or arrival_face is None:
             raise ValueError("successful transport outcome requires complete actual arrival")
-        if (
-            actual_rack_id != fact.rack_id
-            or final_position != fact.expected_target
-            or arrival_face is not fact.expected_face
-        ):
+        exact_target_mismatch = fact.expected_target.kind == "RACK_POSITION" and final_position != fact.expected_target
+        if actual_rack_id != fact.rack_id or exact_target_mismatch or arrival_face != fact.expected_face:
             affected_resource_ids = (fact.rack_id,)
             if actual_rack_id != fact.rack_id:
                 affected_resource_ids = (*affected_resource_ids, actual_rack_id)

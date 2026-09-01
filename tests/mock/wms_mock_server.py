@@ -49,7 +49,7 @@ class SubmitModeRequest(BaseModel):
 class RackFaceConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    rack_faces: dict[str, Literal["A", "B"]]
+    rack_faces: dict[str, str]
 
 
 class TransportSubmissionSnapshot(BaseModel):
@@ -85,7 +85,7 @@ class TransportSubmissionStore:
         self._task_member_facts: dict[str, dict[str, dict[str, object]]] = {}
         self._terminal_tasks: set[str] = set()
         self._resource_tasks: dict[tuple[str, str], str] = {}
-        self._rack_faces: dict[str, Literal["A", "B"]] = {}
+        self._rack_faces: dict[str, str] = {}
         self._next_mode: SubmitMode = "NORMAL"
 
     def reset(self) -> None:
@@ -100,11 +100,11 @@ class TransportSubmissionStore:
             self._rack_faces.clear()
             self._next_mode = "NORMAL"
 
-    def configure_rack_faces(self, rack_faces: dict[str, Literal["A", "B"]]) -> None:
+    def configure_rack_faces(self, rack_faces: dict[str, str]) -> None:
         with self._lock:
             self._rack_faces.update(rack_faces)
 
-    def rack_faces(self, rack_ids: set[str]) -> dict[str, Literal["A", "B"]]:
+    def rack_faces(self, rack_ids: set[str]) -> dict[str, str]:
         with self._lock:
             return {rack_id: self._rack_faces[rack_id] for rack_id in rack_ids if rack_id in self._rack_faces}
 
@@ -379,7 +379,7 @@ def _position(value: object, *, allowed_kinds: set[str]) -> tuple[Any, ...] | No
     kind = value.get("kind")
     if not isinstance(kind, str) or kind not in allowed_kinds:
         return None
-    if kind in {"RACK_POSITION", "HANDOFF_POSITION"}:
+    if kind in {"RACK", "ZONE", "RACK_POSITION", "HANDOFF_POSITION"}:
         position = _strict_object(value, {"kind", "location_code"})
         if position is None or not _nonblank(position["location_code"], max_length=100):
             return None
@@ -388,8 +388,8 @@ def _position(value: object, *, allowed_kinds: set[str]) -> tuple[Any, ...] | No
     if (
         position is None
         or not _nonblank(position["rack_id"], max_length=100)
-        or not isinstance(position["rack_face"], str)
-        or position["rack_face"] not in {"A", "B"}
+        or type(position["rack_face"]) is not str
+        or position["rack_face"] == ""
         or not _nonblank(position["slot_id"], max_length=100)
     ):
         return None
@@ -408,9 +408,16 @@ def _result_matches_frozen_request(frozen: dict[str, Any], result: dict[str, obj
         final_position = result.get("final_position")
         if _position(final_position, allowed_kinds={"RACK_POSITION"}) is None:
             return False
+        arrival_face = result.get("arrival_face")
+        if type(arrival_face) is not str or arrival_face == "":
+            return False
         if result.get("status") == "SUCCEEDED":
-            return final_position == frozen.get("target") and result.get("arrival_face") == frozen.get("target_face")
-        return result.get("status") == "FAILED" and result.get("arrival_face") in {"A", "B"}
+            target = frozen.get("target")
+            target_matches = (
+                final_position == target if isinstance(target, dict) and target.get("kind") == "RACK_POSITION" else True
+            )
+            return target_matches and arrival_face == frozen.get("target_face")
+        return result.get("status") == "FAILED"
     if kind not in {"BIN_MOVE", "BIN_EXCHANGE"}:
         return False
     moves = frozen.get("moves")
@@ -478,21 +485,39 @@ def _known_member_facts(result: dict[str, object]) -> dict[str, dict[str, object
 def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
     rack = _strict_object(
         data,
-        {"transport_task_id", "kind", "rack_id", "source", "target", "target_face"},
+        {"transport_task_id", "kind", "rack_id", "source", "target", "target_face", "rcs_template_id"},
     )
     if (
         rack is None
         or not _nonblank(rack["transport_task_id"], max_length=80)
         or not _nonblank(rack["rack_id"], max_length=100)
-        or not isinstance(rack["target_face"], str)
-        or rack["target_face"] not in {"A", "B"}
+        or type(rack["target_face"]) is not str
+        or rack["target_face"] == ""
+        or rack["rcs_template_id"] not in {"CTU01", "CTU02", "CTU03", "F01"}
     ):
         return False
-    source = _position(rack["source"], allowed_kinds={"RACK_POSITION"})
-    target = _position(rack["target"], allowed_kinds={"RACK_POSITION"})
+    source = _position(rack["source"], allowed_kinds={"RACK", "ZONE", "RACK_POSITION"})
+    target = _position(rack["target"], allowed_kinds={"RACK", "ZONE", "RACK_POSITION"})
     if source is None or target is None:
         return False
-    return source != target if kind == "RACK_MOVE" else source == target
+    if any(position[0] == "RACK" and position[1] != rack["rack_id"] for position in (source, target)):
+        return False
+    if kind == "RACK_ROTATE":
+        return rack["rcs_template_id"] == "CTU02" and source[0] == "RACK_POSITION" and source == target
+    approved_edges = {
+        "CTU01": {
+            ("ZONE", "RACK_POSITION"),
+            ("RACK", "RACK_POSITION"),
+            ("RACK_POSITION", "RACK_POSITION"),
+        },
+        "CTU03": {
+            ("RACK_POSITION", "RACK"),
+            ("RACK_POSITION", "ZONE"),
+            ("RACK_POSITION", "RACK_POSITION"),
+        },
+        "F01": {("RACK_POSITION", "RACK_POSITION")},
+    }
+    return source != target and (source[0], target[0]) in approved_edges.get(rack["rcs_template_id"], set())
 
 
 def _valid_bin_data(data: dict[str, Any], kind: str) -> bool:
@@ -759,7 +784,9 @@ async def debug_transport_submit_mode(request: SubmitModeRequest) -> dict[str, S
 
 @app.post("/debug/rack-faces", tags=[MOCK_DEBUG_TAG])
 async def debug_rack_faces(request: RackFaceConfiguration) -> RackFaceConfiguration:
-    if any(not _nonblank(rack_id, max_length=100) for rack_id in request.rack_faces):
+    if any(not _nonblank(rack_id, max_length=100) for rack_id in request.rack_faces) or any(
+        type(face) is not str or face == "" for face in request.rack_faces.values()
+    ):
         return JSONResponse(status_code=422, content={"code": "INVALID_RACK_ID"})
     transport_submission_store.configure_rack_faces(request.rack_faces)
     return request

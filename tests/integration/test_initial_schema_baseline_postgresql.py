@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ FINAL_MANIFEST_PATH = FIXTURES_DIR / "initial_schema_final_manifest.json"
 DISPOSITION_PATH = FIXTURES_DIR / "initial_schema_disposition.json"
 TRANSITION_DISPOSITION_PATH = FIXTURES_DIR / "initial_schema_transition_disposition.json"
 INITIAL_REVISION = "f9c7c2e5f501"
+HEAD_REVISION = "e0da335c057d"
 
 
 def _fixtures() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -145,15 +147,13 @@ def test_unregistered_manifest_difference_fails_closed() -> None:
 async def upgraded_initial_schema_catalog() -> dict[str, Any]:
     _raw, final, _disposition = _fixtures()
     async with temporary_database() as (_database, database_url):
-        run_alembic("upgrade", "head", database_url=database_url)
+        run_alembic("upgrade", INITIAL_REVISION, database_url=database_url)
         connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
         try:
             await assert_database_head(connection, INITIAL_REVISION)
             live_manifest = await collect_postgresql_catalog(connection, database=final["database"])
         finally:
             await connection.close()
-        check = run_alembic("check", database_url=database_url)
-        assert "No new upgrade operations detected." in check.stdout
     return live_manifest
 
 
@@ -163,3 +163,92 @@ async def test_initial_schema_matches_reviewed_final_manifest(
 ) -> None:
     _raw, final, disposition = _fixtures()
     assert_final_manifest(upgraded_initial_schema_catalog, final, disposition, allow_disposed_tables=False)
+
+
+@pytest.mark.asyncio()
+async def test_transport_face_successor_preserves_legacy_empty_and_has_lossless_downgrade_guard() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", INITIAL_REVISION, database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await connection.execute(
+                """
+                INSERT INTO wes_runtime.transport_tasks (
+                    id, transport_task_id, client_request_id, request_digest, kind, caller_json, request_json,
+                    submit_operation_id, submit_timestamp_ms, submit_request_body, submit_request_body_digest,
+                    status, submit_attempt_count, outcome_version, published_outcome_version,
+                    last_applied_wms_outcome_revision, created_at, updated_at
+                ) VALUES (
+                    1, 'transport-face-migration', 'request-face-migration', repeat('a', 64), 'RACK_MOVE',
+                    '{}'::json, '{}'::json, '019f12d0-58d7-7b4d-a23a-1b90aa5d4472', 1, '{}', repeat('b', 64),
+                    'PENDING', 0, 0, 0, 0, now(), now()
+                )
+                """
+            )
+            await connection.execute(
+                """
+                INSERT INTO wes_runtime.transport_members (
+                    id, transport_task_id, ordinal, object_type, object_id, source_json, target_json,
+                    status, position_unknown, arrival_face, updated_at
+                ) VALUES (
+                    1, 'transport-face-migration', 0, 'RACK', 'rack-1', '{}'::json, '{}'::json,
+                    'PENDING', FALSE, '', now()
+                )
+                """
+            )
+        finally:
+            await connection.close()
+
+        run_alembic("upgrade", "head", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, HEAD_REVISION)
+            assert (
+                await connection.fetchval("SELECT arrival_face FROM wes_runtime.transport_members WHERE id = 1") == ""
+            )
+            columns = await connection.fetch(
+                """
+                SELECT table_schema, table_name, data_type
+                FROM information_schema.columns
+                WHERE column_name = 'arrival_face'
+                  AND ((table_schema = 'wes_runtime' AND table_name = 'transport_members')
+                    OR (table_schema = 'wes_biz' AND table_name = 'position_projections'))
+                ORDER BY table_schema, table_name
+                """
+            )
+            assert [tuple(row) for row in columns] == [
+                ("wes_biz", "position_projections", "text"),
+                ("wes_runtime", "transport_members", "text"),
+            ]
+            for face in (None, "90", "270", "FACE@01", "面-1", " ", "x" * 1000):
+                await connection.execute(
+                    "UPDATE wes_runtime.transport_members SET arrival_face = $1 WHERE id = 1",
+                    face,
+                )
+                assert (
+                    await connection.fetchval("SELECT arrival_face FROM wes_runtime.transport_members WHERE id = 1")
+                    == face
+                )
+            await connection.execute("UPDATE wes_runtime.transport_members SET arrival_face = 'FACE@01' WHERE id = 1")
+        finally:
+            await connection.close()
+
+        with pytest.raises(subprocess.CalledProcessError) as downgrade_error:
+            run_alembic("downgrade", INITIAL_REVISION, database_url=database_url)
+        assert "cannot fit VARCHAR(1)" in downgrade_error.value.stderr
+
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await connection.execute("UPDATE wes_runtime.transport_members SET arrival_face = '' WHERE id = 1")
+        finally:
+            await connection.close()
+        run_alembic("downgrade", INITIAL_REVISION, database_url=database_url)
+
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, INITIAL_REVISION)
+            assert (
+                await connection.fetchval("SELECT arrival_face FROM wes_runtime.transport_members WHERE id = 1") == ""
+            )
+        finally:
+            await connection.close()

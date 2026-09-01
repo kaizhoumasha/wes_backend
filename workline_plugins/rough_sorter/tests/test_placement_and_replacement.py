@@ -13,10 +13,11 @@ from wes_plugin_sdk import (
     DeferExecution,
     DevicePosition,
     PauseForReconciliation,
-    RackFace,
     TransportLeg,
     TransportRackPosition,
+    TransportRcsTemplateId,
     TransportTaskType,
+    TransportZonePosition,
 )
 
 from rough_sorter.facts import (
@@ -247,13 +248,13 @@ def test_open_release_gate_creates_no_rack_move_and_does_not_claim_recovery() ->
             rack_id="rack-old",
             source=TransportRackPosition("work-position"),
             target=TransportRackPosition("old-buffer"),
-            target_face=RackFace.A,
+            target_face="90",
         ),
         new_empty_rack=RackMoveLegPlan(
             rack_id="rack-new",
             source=TransportRackPosition("new-buffer"),
             target=TransportRackPosition("work-position"),
-            target_face=RackFace.B,
+            target_face="270",
         ),
     )
     handler = ReplacementPlanDecidedHandler()
@@ -279,13 +280,13 @@ def test_active_placement_without_confirmation_defers_rack_release() -> None:
             rack_id="rack-old",
             source=TransportRackPosition("work-position"),
             target=TransportRackPosition("old-buffer"),
-            target_face=RackFace.A,
+            target_face="90",
         ),
         new_empty_rack=RackMoveLegPlan(
             rack_id="rack-new",
             source=TransportRackPosition("new-buffer"),
             target=TransportRackPosition("work-position"),
-            target_face=RackFace.B,
+            target_face="270",
         ),
     )
 
@@ -313,13 +314,13 @@ def test_conflicting_placement_without_confirmation_pauses_rack_release(
             rack_id="rack-old",
             source=TransportRackPosition("work-position"),
             target=TransportRackPosition("old-buffer"),
-            target_face=RackFace.A,
+            target_face="90",
         ),
         new_empty_rack=RackMoveLegPlan(
             rack_id="rack-new",
             source=TransportRackPosition("new-buffer"),
             target=TransportRackPosition("work-position"),
-            target_face=RackFace.B,
+            target_face="270",
         ),
     )
 
@@ -338,13 +339,13 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
         rack_id="rack-old",
         source=TransportRackPosition("work-position"),
         target=TransportRackPosition("old-buffer"),
-        target_face=RackFace.A,
+        target_face="90",
     )
     new_plan = RackMoveLegPlan(
         rack_id="rack-new",
         source=TransportRackPosition("new-buffer"),
         target=TransportRackPosition("work-position"),
-        target_face=RackFace.B,
+        target_face="270",
     )
     fact = _replacement_fact(
         ReplacementResult.READY,
@@ -370,7 +371,8 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
             rack_id="rack-old",
             source=old_plan.source,
             target=old_plan.target,
-            target_face=RackFace.A,
+            target_face="90",
+            rcs_template_id=TransportRcsTemplateId.CTU03,
         ),
         CreateTransportTask(
             material_execution_id=EXECUTION_ID,
@@ -382,10 +384,42 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
             rack_id="rack-new",
             source=new_plan.source,
             target=new_plan.target,
-            target_face=RackFace.B,
+            target_face="270",
+            rcs_template_id=TransportRcsTemplateId.CTU01,
         ),
     )
     assert {decision.business_identity for decision in first} == {
         ("replacement-1", TransportLeg.OLD_OUT),
         ("replacement-1", TransportLeg.NEW_IN),
     }
+
+
+def test_replacement_legs_preserve_broad_positions_and_explicit_templates() -> None:
+    old_plan = RackMoveLegPlan(
+        rack_id="rack-old",
+        source=TransportRackPosition("work-position"),
+        target=TransportZonePosition("storage-zone"),
+        target_face="FACE@01",
+    )
+    new_plan = RackMoveLegPlan(
+        rack_id="rack-new",
+        source=TransportZonePosition("storage-zone"),
+        target=TransportRackPosition("work-position"),
+        target_face="面-1",
+    )
+    fact = _replacement_fact(
+        ReplacementResult.READY,
+        release_snapshot=_release_snapshot(closed=True),
+        rack_replacement_id="replacement-1",
+        old_loaded_rack=old_plan,
+        new_empty_rack=new_plan,
+    )
+
+    old_out, new_in = ReplacementPlanDecidedHandler()(fact)
+
+    assert old_out.target is old_plan.target
+    assert old_out.target_face == "FACE@01"
+    assert old_out.rcs_template_id is TransportRcsTemplateId.CTU03
+    assert new_in.source is new_plan.source
+    assert new_in.target_face == "面-1"
+    assert new_in.rcs_template_id is TransportRcsTemplateId.CTU01

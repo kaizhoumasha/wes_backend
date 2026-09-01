@@ -4,12 +4,14 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import BigInteger, text
+from sqlalchemy import BigInteger, Text, text
 from sqlalchemy.exc import IntegrityError
 
+from src.app.execution.models import PositionProjection
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
+    TransportMember,
     TransportResourceBinding,
     TransportTask,
 )
@@ -26,6 +28,65 @@ pytestmark = pytest.mark.asyncio
 async def test_transport_result_revision_columns_use_signed_64_bit_storage() -> None:
     assert isinstance(TransportTask.__table__.c.last_applied_wms_outcome_revision.type, BigInteger)
     assert isinstance(TransportEvidence.__table__.c.outcome_revision.type, BigInteger)
+
+
+async def test_transport_face_columns_use_nullable_text_without_content_constraint(
+    integration_db_session: AsyncSession,
+) -> None:
+    assert isinstance(TransportMember.__table__.c.arrival_face.type, Text)
+    assert isinstance(PositionProjection.__table__.c.arrival_face.type, Text)
+
+    columns = await integration_db_session.execute(
+        text(
+            "SELECT table_schema, table_name, data_type, is_nullable FROM information_schema.columns "
+            "WHERE column_name = 'arrival_face' AND "
+            "((table_schema = 'wes_runtime' AND table_name = 'transport_members') OR "
+            "(table_schema = 'wes_biz' AND table_name = 'position_projections'))"
+        )
+    )
+    assert {(row[0], row[1], row[2], row[3]) for row in columns} == {
+        ("wes_runtime", "transport_members", "text", "YES"),
+        ("wes_biz", "position_projections", "text", "YES"),
+    }
+    constraints = await integration_db_session.execute(
+        text(
+            "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c "
+            "JOIN pg_class t ON t.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = t.relnamespace "
+            "WHERE n.nspname IN ('wes_runtime', 'wes_biz') "
+            "AND t.relname IN ('transport_members', 'position_projections') "
+            "AND c.contype = 'c'"
+        )
+    )
+    assert all("arrival_face" not in row[0] for row in constraints)
+
+    suffix = uuid.uuid4().hex
+    now = timezone.now_for_db()
+    task = _task(f"transport-face-{suffix}", f"request-face-{suffix}", "f" * 64, now)
+    integration_db_session.add(task)
+    await integration_db_session.flush()
+    faces = (None, "90", "270", "FACE@01", "面-1", " ", "x" * 1000)
+    integration_db_session.add_all(
+        TransportMember(
+            transport_task_id=task.transport_task_id,
+            ordinal=ordinal,
+            object_type="RACK",
+            object_id=f"rack-face-{ordinal}-{suffix}",
+            source_json={"kind": "RACK_POSITION", "location_code": "source"},
+            target_json={"kind": "RACK_POSITION", "location_code": "target"},
+            arrival_face=face,
+            updated_at=now,
+        )
+        for ordinal, face in enumerate(faces)
+    )
+    await integration_db_session.flush()
+    stored = await integration_db_session.execute(
+        text(
+            "SELECT arrival_face FROM wes_runtime.transport_members WHERE transport_task_id = :task_id ORDER BY ordinal"
+        ),
+        {"task_id": task.transport_task_id},
+    )
+    assert [row[0] for row in stored] == list(faces)
 
 
 def _task(task_id: str, request_id: str, digest: str, now: object) -> TransportTask:

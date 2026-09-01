@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import delete, func, select, update
 
 from src.app.execution.models import PositionProjection
-from src.app.transport.contracts import RackFace, RackPosition, TransportCaller, TransportContractError
+from src.app.transport.contracts import RackPosition, TransportCaller, TransportContractError
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -89,7 +89,7 @@ async def _create_reconciling_task(
         resource_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.A,
+        "90",
     )
     async with sessions.begin() as db:
         await db.execute(

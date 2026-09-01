@@ -16,7 +16,7 @@ RACK_MOVE = deepcopy(rack_move)
 RACK_ROTATE = deepcopy(rack_rotate)
 BIN_MOVE = deepcopy(bin_move)
 BIN_EXCHANGE = deepcopy(bin_exchange)
-FIXTURE_RACK_FACES = {"rack-1": "A", "rack-2": "A"}
+FIXTURE_RACK_FACES = {"rack-1": "90", "rack-2": "90"}
 
 
 def setup_function() -> None:
@@ -307,6 +307,66 @@ def test_transport_submit_accepts_the_other_frozen_transport_shapes(envelope: di
     assert response.json()["data"] == {"transport_task_id": envelope["data"]["transport_task_id"]}
 
 
+@pytest.mark.parametrize(
+    ("source", "target", "template"),
+    [
+        ({"kind": "ZONE", "location_code": "zone-1"}, {"kind": "RACK_POSITION", "location_code": "work"}, "CTU01"),
+        ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "RACK_POSITION", "location_code": "work"}, "CTU01"),
+        ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "CTU01"),
+        ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK", "location_code": "rack-1"}, "CTU03"),
+        ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "ZONE", "location_code": "zone-1"}, "CTU03"),
+        ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "CTU03"),
+        ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "F01"),
+    ],
+)
+def test_transport_submit_mock_accepts_the_approved_rack_move_matrix(
+    source: dict[str, str], target: dict[str, str], template: str
+) -> None:
+    envelope = deepcopy(RACK_MOVE)
+    envelope["data"]["source"] = source
+    envelope["data"]["target"] = target
+    envelope["data"]["rcs_template_id"] = template
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 202
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "template"),
+    [
+        ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "ZONE", "location_code": "zone-1"}, "CTU01"),
+        ({"kind": "ZONE", "location_code": "zone-1"}, {"kind": "RACK", "location_code": "rack-1"}, "CTU03"),
+        ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "CTU02"),
+    ],
+)
+def test_transport_submit_mock_rejects_unapproved_rack_move_matrix(
+    source: dict[str, str], target: dict[str, str], template: str
+) -> None:
+    envelope = deepcopy(RACK_MOVE)
+    envelope["data"]["source"] = source
+    envelope["data"]["target"] = target
+    envelope["data"]["rcs_template_id"] = template
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+def test_transport_submit_mock_preserves_any_non_empty_face_string(face: str) -> None:
+    envelope = deepcopy(RACK_MOVE)
+    envelope["data"]["target_face"] = face
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 202
+    assert wms_mock_server.transport_submission_store.snapshots()[-1]["request"]["data"]["target_face"] == face
+
+
 @pytest.mark.parametrize(("field_path", "invalid_value"), [("kind", []), ("target_face", {})])
 def test_transport_submit_rejects_non_string_enum_values(field_path: str, invalid_value: object) -> None:
     invalid = deepcopy(RACK_ROTATE)
@@ -322,10 +382,10 @@ def test_transport_submit_rejects_non_string_enum_values(field_path: str, invali
 
 def test_rack_rotate_requires_a_trusted_opposite_current_face() -> None:
     with TestClient(wms_mock_server.app) as client:
-        configured = client.post("/debug/rack-faces", json={"rack_faces": {"rack-2": "A"}})
+        configured = client.post("/debug/rack-faces", json={"rack_faces": {"rack-2": "90"}})
         accepted = client.post("/api/v1/wes/transport-requests", json=RACK_ROTATE)
         client.post("/debug/reset")
-        client.post("/debug/rack-faces", json={"rack_faces": {"rack-2": "B"}})
+        client.post("/debug/rack-faces", json={"rack_faces": {"rack-2": "270"}})
         same_face = client.post("/api/v1/wes/transport-requests", json=RACK_ROTATE)
         client.post("/debug/reset")
         unknown_face = client.post("/api/v1/wes/transport-requests", json=RACK_ROTATE)
@@ -342,7 +402,7 @@ def test_bin_submit_rejects_unknown_or_mismatched_current_face() -> None:
     with TestClient(wms_mock_server.app) as client:
         client.post("/debug/reset")
         unknown_face = client.post("/api/v1/wes/transport-requests", json=BIN_MOVE)
-        client.post("/debug/rack-faces", json={"rack_faces": {"rack-1": "B"}})
+        client.post("/debug/rack-faces", json={"rack_faces": {"rack-1": "270"}})
         mismatched_face = client.post("/api/v1/wes/transport-requests", json=BIN_MOVE)
 
     assert unknown_face.status_code == 503
@@ -373,7 +433,7 @@ def test_transport_submit_rejects_active_container_resource_conflict() -> None:
     conflicting["data"]["moves"][0]["source"]["rack_id"] = "rack-3"
 
     with TestClient(wms_mock_server.app) as client:
-        client.post("/debug/rack-faces", json={"rack_faces": {"rack-1": "A", "rack-3": "A"}})
+        client.post("/debug/rack-faces", json={"rack_faces": {"rack-1": "90", "rack-3": "90"}})
         first = client.post("/api/v1/wes/transport-requests", json=BIN_MOVE)
         conflict = client.post("/api/v1/wes/transport-requests", json=conflicting)
 
@@ -388,13 +448,13 @@ def test_bin_exchange_rejects_more_than_two_endpoint_groups() -> None:
         [
             {
                 "container_id": "bin-4",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-3", "rack_face": "A", "slot_id": "3"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-4", "rack_face": "A", "slot_id": "3"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-3", "rack_face": "90", "slot_id": "3"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-4", "rack_face": "90", "slot_id": "3"},
             },
             {
                 "container_id": "bin-5",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-4", "rack_face": "A", "slot_id": "3"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-3", "rack_face": "A", "slot_id": "3"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-4", "rack_face": "90", "slot_id": "3"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-3", "rack_face": "90", "slot_id": "3"},
             },
         ]
     )
@@ -435,7 +495,7 @@ def test_bin_exchange_accepts_single_endpoint_group() -> None:
     exchange["data"]["moves"][0]["target"] = {
         "kind": "RACK_BIN_SLOT",
         "rack_id": "rack-1",
-        "rack_face": "A",
+        "rack_face": "90",
         "slot_id": "3",
     }
     exchange["data"]["moves"][1]["source"] = deepcopy(exchange["data"]["moves"][0]["target"])
@@ -454,13 +514,13 @@ def test_bin_exchange_accepts_two_disjoint_pairs() -> None:
         [
             {
                 "container_id": "bin-4",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "3"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "3"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "3"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "3"},
             },
             {
                 "container_id": "bin-5",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "3"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "3"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "3"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "3"},
             },
         ]
     )
@@ -479,15 +539,15 @@ def test_bin_exchange_rejects_non_binary_topology(invalid_topology: str) -> None
         invalid["data"]["moves"][1]["target"] = {
             "kind": "RACK_BIN_SLOT",
             "rack_id": "rack-1",
-            "rack_face": "A",
+            "rack_face": "90",
             "slot_id": "3",
         }
         second_source = deepcopy(invalid["data"]["moves"][1]["target"])
-        second_target = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "3"}
+        second_target = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "3"}
         final_target = deepcopy(invalid["data"]["moves"][0]["source"])
     else:
-        second_source = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "3"}
-        second_target = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "4"}
+        second_source = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "3"}
+        second_target = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "4"}
         final_target = deepcopy(second_source)
     invalid["data"]["moves"].extend(
         [
@@ -669,7 +729,7 @@ def test_determinate_rack_result_releases_resources_and_updates_the_trusted_face
     next_rotate = deepcopy(RACK_ROTATE)
     next_rotate["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4493"
     next_rotate["data"]["transport_task_id"] = "transport-rack-next"
-    next_rotate["data"]["target_face"] = "A"
+    next_rotate["data"]["target_face"] = "90"
 
     async def accepted(_: str, __: dict[str, object]) -> int:
         return 202

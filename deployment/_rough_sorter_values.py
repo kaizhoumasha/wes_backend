@@ -11,9 +11,10 @@ from wes_plugin_sdk import (
     DeviceResultReadyFact,
     EvidenceReadyFact,
     FactReference,
-    RackFace,
     TransportRackPosition,
+    TransportRackReference,
     TransportResultReadyFact,
+    TransportZonePosition,
     WmsResultReadyFact,
 )
 
@@ -144,15 +145,25 @@ def wms_position(position: DevicePosition) -> dict[str, str]:
 
 def rack_move_plan(value: object, types: RoughSorterTypes) -> Any:
     data = strict_object(value, {"rack_id", "source", "target", "target_face"}, "rack move plan")
-    source = strict_object(data["source"], {"type", "location_code"}, "rack move source")
-    target = strict_object(data["target"], {"type", "location_code"}, "rack move target")
-    if source["type"] != "RACK_POSITION" or target["type"] != "RACK_POSITION":
-        raise ValueError("rack move source/target 必须是 RACK_POSITION")
+    source = strict_object(data["source"], {"kind", "location_code"}, "rack move source")
+    target = strict_object(data["target"], {"kind", "location_code"}, "rack move target")
+    position_types = {
+        "RACK": TransportRackReference,
+        "ZONE": TransportZonePosition,
+        "RACK_POSITION": TransportRackPosition,
+    }
+    source_type = position_types.get(source["kind"])
+    target_type = position_types.get(target["kind"])
+    if source_type is None or target_type is None:
+        raise ValueError("rack move source/target kind 非法")
+    target_face = data["target_face"]
+    if type(target_face) is not str or target_face == "":
+        raise ValueError("target_face 必须是非空 string")
     return types.RackMoveLegPlan(
         rack_id=required_string(data["rack_id"], "rack_id"),
-        source=TransportRackPosition(required_string(source["location_code"], "source.location_code")),
-        target=TransportRackPosition(required_string(target["location_code"], "target.location_code")),
-        target_face=RackFace(required_string(data["target_face"], "target_face")),
+        source=source_type(required_string(source["location_code"], "source.location_code")),
+        target=target_type(required_string(target["location_code"], "target.location_code")),
+        target_face=target_face,
     )
 
 

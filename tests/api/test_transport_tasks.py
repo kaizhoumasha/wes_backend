@@ -12,6 +12,7 @@ from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
 from src.app.transport.contracts import (
+    RcsTemplateId,
     TransportContractError,
     TransportHandle,
     TransportIdempotencyConflict,
@@ -83,8 +84,12 @@ def _rack_position(location_code: str) -> dict[str, str]:
     return {"kind": "RACK_POSITION", "location_code": location_code}
 
 
+def _zone_position(location_code: str) -> dict[str, str]:
+    return {"kind": "ZONE", "location_code": location_code}
+
+
 def _rack_slot(rack_id: str, slot_id: str) -> dict[str, str]:
-    return {"kind": "RACK_BIN_SLOT", "rack_id": rack_id, "rack_face": "A", "slot_id": slot_id}
+    return {"kind": "RACK_BIN_SLOT", "rack_id": rack_id, "rack_face": "90", "slot_id": slot_id}
 
 
 def _valid_payload(kind: str) -> dict[str, object]:
@@ -100,7 +105,7 @@ def _valid_payload(kind: str) -> dict[str, object]:
                 "rack_id": "RACK-01",
                 "source": _rack_position("BUFFER-01"),
                 "target": _rack_position("LINE-01"),
-                "target_face": "A",
+                "target_face": "90",
             },
         }
     if kind == "RACK_ROTATE":
@@ -109,7 +114,7 @@ def _valid_payload(kind: str) -> dict[str, object]:
             "data": {
                 "rack_id": "RACK-01",
                 "position": _rack_position("LINE-01"),
-                "target_face": "B",
+                "target_face": "270",
             },
         }
     if kind == "BIN_MOVE":
@@ -292,6 +297,97 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     called_args = getattr(target, target_method).await_args.args
     assert called_args[1].workline_id == "TRANSPORT_DEBUG"
     assert called_args[1].station_id == "STATION-DEBUG"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "target", "template"),
+    [
+        (_zone_position("WH01"), _rack_position("KT16"), RcsTemplateId.CTU01),
+        (_rack_position("KT16"), _zone_position("WH01"), RcsTemplateId.CTU03),
+    ],
+)
+async def test_510056_debug_rack_routes_dispatch_exact_canonical_wire(
+    source: dict[str, str],
+    target: dict[str, str],
+    template: RcsTemplateId,
+) -> None:
+    runtime = _runtime()
+    payload = {
+        "client_request_id": new_uuid7(),
+        "station_id": "CTU01",
+        "kind": "RACK_MOVE",
+        "data": {
+            "rack_id": "510056",
+            "source": source,
+            "target": target,
+            "target_face": "90",
+            "rcs_template_id": template.value,
+        },
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post("/api/v1/transport/debug-tasks", json=payload)
+
+    assert response.status_code == 202
+    called_args = runtime.port.move_rack.await_args.args
+    assert called_args[1].station_id == "CTU01"
+    assert called_args[2] == "510056"
+    assert called_args[3].kind == source["kind"]
+    assert called_args[3].location_code == source["location_code"]
+    assert called_args[4].kind == target["kind"]
+    assert called_args[4].location_code == target["location_code"]
+    assert called_args[5:] == ("90", template)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "target", "template"),
+    [
+        (_zone_position("WH01"), _rack_position("KT16"), None),
+        (_zone_position("WH01"), _rack_position("KT16"), "F01"),
+        (_rack_position("WH01"), _rack_position("KT16"), "CTU01"),
+        (_rack_position("KT16"), _zone_position("WH01"), None),
+        (_rack_position("KT16"), _zone_position("WH01"), "F01"),
+    ],
+)
+async def test_510056_debug_rack_routes_reject_missing_or_wrong_kind_and_template_before_dispatch(
+    source: dict[str, str],
+    target: dict[str, str],
+    template: str | None,
+) -> None:
+    runtime = _runtime()
+    payload = {
+        "client_request_id": new_uuid7(),
+        "station_id": "CTU01",
+        "kind": "RACK_MOVE",
+        "data": {
+            "rack_id": "510056",
+            "source": source,
+            "target": target,
+            "target_face": "90",
+            "rcs_template_id": template,
+        },
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post("/api/v1/transport/debug-tasks", json=payload)
+
+    assert response.status_code == 400
+    runtime.port.move_rack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("face", "expected_status"), [(" ", 202), ("", 422), (90, 422), (True, 422)])
+async def test_debug_rack_face_is_a_strict_non_empty_opaque_string(face: object, expected_status: int) -> None:
+    runtime = _runtime()
+    payload = _valid_payload("RACK_MOVE")
+    payload["data"]["target_face"] = face
+
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post("/api/v1/transport/debug-tasks", json=payload)
+
+    assert response.status_code == expected_status
 
 
 @pytest.mark.asyncio

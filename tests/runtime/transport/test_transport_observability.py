@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import (
-    RackFace,
     RackPosition,
     TransportCaller,
     TransportOutcome,
@@ -106,7 +105,7 @@ async def _create_task(service: TransportService, request_id: str, rack_id: str)
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.A,
+        "90",
     )
     return handle.transport_task_id
 

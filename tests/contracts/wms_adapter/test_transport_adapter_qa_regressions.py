@@ -54,7 +54,8 @@ def _snapshot() -> dict[str, object]:
             "rack_id": "rack-1",
             "source": {"kind": "RACK_POSITION", "location_code": "A"},
             "target": {"kind": "RACK_POSITION", "location_code": "B"},
-            "target_face": "A",
+            "target_face": "90",
+            "rcs_template_id": "F01",
         },
     }
     encoded = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()

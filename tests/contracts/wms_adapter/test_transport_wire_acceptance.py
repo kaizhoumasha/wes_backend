@@ -12,7 +12,6 @@ from src.app.transport.contracts import (
     MoveBinsRequest,
     MoveRackRequest,
     RackBinSlot,
-    RackFace,
     RackPosition,
     RotateRackRequest,
     TransportCaller,
@@ -71,10 +70,23 @@ def _rack_result_data(**overrides: object) -> dict[str, object]:
         "rack_id": "rack-1",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-        "arrival_face": "A",
+        "arrival_face": "90",
     }
     data.update(overrides)
     return data
+
+
+@pytest.mark.parametrize("arrival_face", ["270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+def test_rack_callback_preserves_any_non_empty_face_string(arrival_face: str) -> None:
+    envelope = _envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face))
+
+    assert validate_callback_envelope(envelope)["data"]["arrival_face"] == arrival_face
+
+
+@pytest.mark.parametrize("arrival_face", ["", 90, True])
+def test_rack_callback_rejects_empty_or_non_string_face(arrival_face: object) -> None:
+    with pytest.raises(TransportContractError, match="known rack result requires arrival_face"):
+        validate_callback_envelope(_envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face)))
 
 
 def test_rack_submit_data_uses_one_shared_wire_shape() -> None:
@@ -82,21 +94,23 @@ def test_rack_submit_data_uses_one_shared_wire_shape() -> None:
     source = RackPosition("RACK_BUFFER_A")
     target = RackPosition("RACK_BUFFER_B")
 
-    assert build_submit_data(MoveRackRequest(new_uuid7(), caller, "rack-1", source, target, RackFace.B), "move-1") == {
+    assert build_submit_data(MoveRackRequest(new_uuid7(), caller, "rack-1", source, target, "270"), "move-1") == {
         "transport_task_id": "move-1",
         "kind": "RACK_MOVE",
+        "rcs_template_id": "F01",
         "rack_id": "rack-1",
         "source": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_A"},
         "target": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
-        "target_face": "B",
+        "target_face": "270",
     }
-    assert build_submit_data(RotateRackRequest(new_uuid7(), caller, "rack-1", target, RackFace.A), "rotate-1") == {
+    assert build_submit_data(RotateRackRequest(new_uuid7(), caller, "rack-1", target, "90"), "rotate-1") == {
         "transport_task_id": "rotate-1",
         "kind": "RACK_ROTATE",
+        "rcs_template_id": "CTU02",
         "rack_id": "rack-1",
         "source": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
         "target": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
-        "target_face": "A",
+        "target_face": "90",
     }
 
 
@@ -105,8 +119,8 @@ def test_bin_move_submit_data_maps_container_identity_and_sorts_members() -> Non
         new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
         (
-            BinMove("container-2", RackBinSlot("rack-1", RackFace.A, "2"), HandoffPosition("ROLLER_IN")),
-            BinMove("container-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
+            BinMove("container-2", RackBinSlot("rack-1", "90", "2"), HandoffPosition("ROLLER_IN")),
+            BinMove("container-1", RackBinSlot("rack-1", "90", "1"), HandoffPosition("ROLLER_IN")),
         ),
     )
 
@@ -118,12 +132,12 @@ def test_bin_move_submit_data_maps_container_identity_and_sorts_members() -> Non
         "moves": [
             {
                 "container_id": "container-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             },
             {
                 "container_id": "container-2",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "2"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "2"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             },
         ],
@@ -131,8 +145,8 @@ def test_bin_move_submit_data_maps_container_identity_and_sorts_members() -> Non
 
 
 def test_bin_exchange_submit_data_flattens_pairs_and_sorts_members() -> None:
-    left = RackBinSlot("rack-1", RackFace.A, "1")
-    right = RackBinSlot("rack-2", RackFace.B, "2")
+    left = RackBinSlot("rack-1", "90", "1")
+    right = RackBinSlot("rack-2", "270", "2")
     request = ExchangeBinsRequest(
         new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
@@ -145,13 +159,13 @@ def test_bin_exchange_submit_data_flattens_pairs_and_sorts_members() -> None:
         "moves": [
             {
                 "container_id": "container-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "B", "slot_id": "2"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "270", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
             },
             {
                 "container_id": "container-2",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "B", "slot_id": "2"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "270", "slot_id": "2"},
             },
         ],
     }
@@ -268,7 +282,7 @@ def test_position_callback_enforces_milestone_contract(data: dict[str, object], 
 def test_target_placed_accepts_a_closed_rack_slot_position() -> None:
     data = _position_data(
         milestone="TARGET_PLACED",
-        final_position={"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+        final_position={"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
     )
 
     assert validate_callback_envelope(_envelope(POSITION_OPERATION, data))["data"] == data
@@ -388,7 +402,7 @@ def test_bin_result_callback_rejects_noncanonical_member_count(kind: str, count:
                         "container_id": "container-1",
                         "status": "SUCCEEDED",
                         "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
-                        "arrival_face": "A",
+                        "arrival_face": "90",
                     }
                 ]
             ),
@@ -466,9 +480,9 @@ def test_bin_result_callback_rejects_unsorted_container_ids() -> None:
         (None, "position must be an object with kind"),
         ({}, "position must be an object with kind"),
         ({"kind": "RACK_POSITION", "location_code": " "}, "location_code must not be blank"),
-        ({"kind": "RACK_BIN_SLOT", "rack_id": " ", "rack_face": "A", "slot_id": "1"}, "rack_id must not be blank"),
+        ({"kind": "RACK_BIN_SLOT", "rack_id": " ", "rack_face": "90", "slot_id": "1"}, "rack_id must not be blank"),
         (
-            {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": " "},
+            {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": " "},
             "slot_id must not be blank",
         ),
         ({"kind": "HANDOFF_POSITION", "location_code": " "}, "location_code must not be blank"),
@@ -486,7 +500,7 @@ def test_result_callback_accepts_known_rack_and_unknown_failed_member() -> None:
     known = _rack_result_data(
         kind="RACK_ROTATE",
         final_position={"kind": "RACK_POSITION", "location_code": "ROTATE"},
-        arrival_face="B",
+        arrival_face="270",
     )
     unknown = _result_data(
         results=[
@@ -554,8 +568,8 @@ def test_result_callback_rejects_vendor_private_failure_code() -> None:
     "position",
     [
         {"kind": "RACK_POSITION", "location_code": "L" * 101},
-        {"kind": "RACK_BIN_SLOT", "rack_id": "R" * 101, "rack_face": "A", "slot_id": "1"},
-        {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "S" * 101},
+        {"kind": "RACK_BIN_SLOT", "rack_id": "R" * 101, "rack_face": "90", "slot_id": "1"},
+        {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "S" * 101},
         {"kind": "HANDOFF_POSITION", "location_code": "L" * 101},
     ],
 )

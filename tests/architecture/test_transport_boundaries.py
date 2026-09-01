@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import get_type_hints
 
 from src.app import transport
+from src.app.transport.contracts import TransportExecutionAuthority
 from src.app.transport.service import TransportService
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,14 +66,17 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
         "MoveBinsRequest",
         "MoveRackRequest",
         "RackBinSlot",
-        "RackFace",
+        "RackMovePosition",
         "RackPosition",
+        "RackReference",
+        "RcsTemplateId",
         "RotateRackRequest",
         "TransportCaller",
         "TransportHandle",
         "TransportOutcome",
         "TransportPort",
         "TransportRuntime",
+        "ZonePosition",
         "build_transport_runtime",
     ]
     assert not hasattr(transport, "TransportService")
@@ -83,9 +87,11 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
             "client_request_id": str,
             "caller": transport.TransportCaller,
             "rack_id": str,
-            "source": transport.RackPosition,
-            "target": transport.RackPosition,
-            "target_face": transport.RackFace,
+            "source": transport.RackMovePosition,
+            "target": transport.RackMovePosition,
+            "target_face": str,
+            "rcs_template_id": transport.RcsTemplateId,
+            "execution_authority": TransportExecutionAuthority | None,
             "return": transport.TransportHandle,
         },
         "rotate_rack": {
@@ -93,19 +99,23 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
             "caller": transport.TransportCaller,
             "rack_id": str,
             "position": transport.RackPosition,
-            "target_face": transport.RackFace,
+            "target_face": str,
+            "rcs_template_id": transport.RcsTemplateId,
+            "execution_authority": TransportExecutionAuthority | None,
             "return": transport.TransportHandle,
         },
         "move_bins": {
             "client_request_id": str,
             "caller": transport.TransportCaller,
             "moves": tuple[transport.BinMove, ...],
+            "execution_authority": TransportExecutionAuthority | None,
             "return": transport.TransportHandle,
         },
         "exchange_bins": {
             "client_request_id": str,
             "caller": transport.TransportCaller,
             "exchange_pairs": tuple[transport.BinExchangePair, ...],
+            "execution_authority": TransportExecutionAuthority | None,
             "return": transport.TransportHandle,
         },
     }
@@ -122,12 +132,10 @@ def test_transport_api_and_celery_use_only_production_composition_root() -> None
     expected_imports = {
         "src/register.py": {
             ("src.app.transport.composition", "build_transport_runtime"),
-            ("src.app.transport.composition", "validate_transport_runtime_profile"),
             ("src.app.transport.v1", "router"),
         },
         "src/celery_app/async_runtime.py": {
             ("src.app.transport.composition", "build_transport_runtime"),
-            ("src.app.transport.composition", "validate_transport_runtime_profile"),
         },
     }
     for relative_path in ("src/register.py", "src/celery_app/async_runtime.py"):

@@ -7,6 +7,7 @@ from wes_plugin_sdk import (
     DeferExecution,
     PauseForReconciliation,
     TransportLeg,
+    TransportRcsTemplateId,
     TransportTaskType,
     Wait,
     handler,
@@ -103,6 +104,7 @@ class ReplacementPlanDecidedHandler:
                 source=old_plan.source,
                 target=old_plan.target,
                 target_face=old_plan.target_face,
+                rcs_template_id=TransportRcsTemplateId.CTU03,
             ),
             CreateTransportTask(
                 material_execution_id=fact.material_execution_id,
@@ -115,6 +117,7 @@ class ReplacementPlanDecidedHandler:
                 source=new_plan.source,
                 target=new_plan.target,
                 target_face=new_plan.target_face,
+                rcs_template_id=TransportRcsTemplateId.CTU01,
             ),
         )
 

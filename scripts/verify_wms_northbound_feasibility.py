@@ -41,7 +41,8 @@ RACK_MOVE: dict[str, Any] = {
         "rack_id": "rack-probe",
         "source": {"kind": "RACK_POSITION", "location_code": "buffer-a"},
         "target": {"kind": "RACK_POSITION", "location_code": "station-a"},
-        "target_face": "A",
+        "target_face": "90",
+        "rcs_template_id": "F01",
     },
 }
 
@@ -55,7 +56,8 @@ RACK_ROTATE: dict[str, Any] = {
         "rack_id": "rack-rotate-probe",
         "source": {"kind": "RACK_POSITION", "location_code": "station-b"},
         "target": {"kind": "RACK_POSITION", "location_code": "station-b"},
-        "target_face": "B",
+        "target_face": "270",
+        "rcs_template_id": "CTU02",
     },
 }
 
@@ -69,7 +71,7 @@ BIN_MOVE: dict[str, Any] = {
         "moves": [
             {
                 "container_id": "bin-move",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "3"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "90", "slot_id": "3"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "roller-in"},
             }
         ],
@@ -86,23 +88,23 @@ BIN_EXCHANGE: dict[str, Any] = {
         "moves": [
             {
                 "container_id": "bin-a",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "1"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "90", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "90", "slot_id": "1"},
             },
             {
                 "container_id": "bin-b",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "1"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "90", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "90", "slot_id": "1"},
             },
             {
                 "container_id": "bin-c",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "2"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "2"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "90", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "90", "slot_id": "2"},
             },
             {
                 "container_id": "bin-d",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "A", "slot_id": "2"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "A", "slot_id": "2"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-b", "rack_face": "90", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-a", "rack_face": "90", "slot_id": "2"},
             },
         ],
     },
@@ -268,7 +270,7 @@ async def run_probe(
     active_rack_conflict["data"]["rack_id"] = rack_move["data"]["rack_id"]
     active_rack_conflict["data"]["target"]["location_code"] = "station-active-conflict"
     rack_faces = {
-        rack_rotate["data"]["rack_id"]: "A",
+        rack_rotate["data"]["rack_id"]: "90",
         same_face_rotate["data"]["rack_id"]: same_face_rotate["data"]["target_face"],
     }
     for payload in (bin_move, bin_exchange):

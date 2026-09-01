@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller
+from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, TransportCaller
 from src.app.transport.models import TransportEvidence, TransportResourceBinding, TransportTask
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
@@ -23,8 +23,8 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
     db_engine: object,
 ) -> None:
     moves = (
-        BinMove("bin-version-1", RackBinSlot("rack-version", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
-        BinMove("bin-version-2", RackBinSlot("rack-version", RackFace.A, "2"), HandoffPosition("ROLLER_IN")),
+        BinMove("bin-version-1", RackBinSlot("rack-version", "90", "1"), HandoffPosition("ROLLER_IN")),
+        BinMove("bin-version-2", RackBinSlot("rack-version", "90", "2"), HandoffPosition("ROLLER_IN")),
     )
     handle = await outcome_service.move_bins(new_uuid7(), TransportCaller("SORTER"), moves)
     unknown = {
@@ -95,11 +95,7 @@ async def test_higher_revision_cannot_advance_a_definite_terminal_fact_even_when
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (
-            BinMove(
-                "bin-terminal-revision", RackBinSlot("rack-terminal-revision", RackFace.A, "1"), HandoffPosition("OUT")
-            ),
-        ),
+        (BinMove("bin-terminal-revision", RackBinSlot("rack-terminal-revision", "90", "1"), HandoffPosition("OUT")),),
     )
     result = {
         "transport_task_id": handle.transport_task_id,
@@ -144,7 +140,7 @@ async def test_result_revision_identity_and_late_lower_revision_never_roll_back_
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-revision", RackBinSlot("rack-revision", RackFace.A, "1"), HandoffPosition("OUT")),),
+        (BinMove("bin-revision", RackBinSlot("rack-revision", "90", "1"), HandoffPosition("OUT")),),
     )
     latest = {
         "transport_task_id": handle.transport_task_id,
@@ -229,8 +225,8 @@ async def test_late_lower_revision_still_validates_frozen_identity(
         new_uuid7(),
         TransportCaller("SORTER"),
         (
-            BinMove("bin-late-invalid", RackBinSlot("rack-late-invalid", RackFace.A, "1"), HandoffPosition("OUT")),
-            BinMove("bin-late-peer", RackBinSlot("rack-late-invalid", RackFace.A, "2"), HandoffPosition("OUT")),
+            BinMove("bin-late-invalid", RackBinSlot("rack-late-invalid", "90", "1"), HandoffPosition("OUT")),
+            BinMove("bin-late-peer", RackBinSlot("rack-late-invalid", "90", "2"), HandoffPosition("OUT")),
         ),
     )
     latest = {

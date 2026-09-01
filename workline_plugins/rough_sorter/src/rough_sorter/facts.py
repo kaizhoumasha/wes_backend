@@ -14,11 +14,13 @@ from wes_plugin_sdk import (
     EpochConfigurationSnapshot,
     EvidenceReadyFact,
     ExecutionSnapshot,
-    RackFace,
     RecoveryDecision,
     TransportLeg,
+    TransportRackMovePosition,
     TransportRackPosition,
+    TransportRackReference,
     TransportResultReadyFact,
+    TransportZonePosition,
     WmsResultReadyFact,
 )
 from wes_plugin_sdk import (
@@ -592,18 +594,19 @@ class PlacementCompletedFact(WmsResultReadyFact):
 @dataclass(frozen=True, slots=True)
 class RackMoveLegPlan:
     rack_id: str
-    source: TransportRackPosition
-    target: TransportRackPosition
-    target_face: RackFace
+    source: TransportRackMovePosition
+    target: TransportRackMovePosition
+    target_face: str
 
     def __post_init__(self) -> None:
         _required(self.rack_id, "rack_id")
-        if type(self.source) is not TransportRackPosition or type(self.target) is not TransportRackPosition:
-            raise TypeError("source and target must be TransportRackPosition values")
+        position_types = (TransportRackReference, TransportZonePosition, TransportRackPosition)
+        if type(self.source) not in position_types or type(self.target) not in position_types:
+            raise TypeError("source and target must be TransportRackMovePosition values")
         if self.source == self.target:
             raise ValueError("source and target must differ")
-        if type(self.target_face) is not RackFace:
-            raise TypeError("target_face must be a RackFace")
+        if type(self.target_face) is not str or self.target_face == "":
+            raise ValueError("target_face must be a non-empty string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,10 +745,10 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
     leg: TransportLeg
     outcome: TransportOutcome
     rack_id: str
-    expected_target: TransportRackPosition
-    expected_face: RackFace
+    expected_target: TransportRackMovePosition
+    expected_face: str
     final_position: TransportRackPosition | None = None
-    arrival_face: RackFace | None = None
+    arrival_face: str | None = None
     actual_rack_id: str | None = None
     source_position: DevicePosition | None = None
     request_operation_id: str | None = None
@@ -766,8 +769,10 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             raise ValueError("leg and outcome must use transport enums")
         if self.leg is not TransportLeg.NEW_IN:
             raise ValueError("material transport outcome only accepts NEW_IN")
-        if type(self.expected_target) is not TransportRackPosition or type(self.expected_face) is not RackFace:
-            raise TypeError("expected target and face must use SDK transport values")
+        if type(self.expected_target) not in (TransportRackReference, TransportZonePosition, TransportRackPosition):
+            raise TypeError("expected target must use an SDK transport position")
+        if type(self.expected_face) is not str or self.expected_face == "":
+            raise ValueError("expected_face must be a non-empty string")
         if self.outcome is not TransportOutcome.SUCCEEDED:
             _required(self.reason_code or "", "reason_code")
             _reject_present_fields(
@@ -784,8 +789,10 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             )
             return
         _required(self.actual_rack_id or "", "actual_rack_id")
-        if type(self.final_position) is not TransportRackPosition or type(self.arrival_face) is not RackFace:
-            raise TypeError("successful transport outcome requires typed final position and arrival face")
+        if type(self.final_position) is not TransportRackPosition:
+            raise TypeError("successful transport outcome requires a typed final position")
+        if type(self.arrival_face) is not str or self.arrival_face == "":
+            raise ValueError("successful transport outcome requires a non-empty arrival face")
         if self.reason_code is not None:
             raise ValueError("successful transport outcome must not include reason_code")
         self._require_new_rack_target_request()

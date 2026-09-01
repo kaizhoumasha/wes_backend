@@ -24,6 +24,13 @@ Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已�
 Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始。
 真实 WMS/RCS/ECS、设备、供应商版本组合和业务验收不属于上述联调部署证据。
 
+**2026-08-31 acceptance remediation status:** Transport 0.3 repository implementation passed QUALITY and selected HEAVY，
+current status is `IMPLEMENTED — IMMUTABLE IMAGE E2E PENDING`；WMS external publication pending。
+`RACK_MOVE` 当前生产 caller 只有 rough-sorter `OLD_OUT/NEW_IN`；当前 debug caller 是 operator-gated 510056 stepper，backend
+已对齐 `ZONE("WH01") → RACK_POSITION("KT16") + CTU01` 与反向 `+ CTU03`，frontend canonical sync 等待 backend Land。
+其余 approved `RACK_MOVE` 场景只由 core contract 支持，尚无业务 flow 接入。Deployment、supplier、physical、business acceptance
+均为 `NOT RUN`。
+
 **Requirements baseline:** `docs/architecture/SRS.md`
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`

@@ -80,7 +80,7 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
             "transport_task_id": "transport-1",
             "container_id": "bin-1",
             "milestone": "TARGET_PLACED",
-            "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+            "final_position": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
         },
     )
 

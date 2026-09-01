@@ -271,7 +271,7 @@ reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
 heavy_tests = []
-reviewed_content_sha256 = "ac2ef3861762734651a01f65f1b80e605b19aa395509835d124754fdd9a34cf9"
+reviewed_content_sha256 = "7efe7f551d53ce5ba71f4071c10c08e1deb58199f66ae8208a32936230137ac4"
 
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
@@ -2117,6 +2117,10 @@ heavy_tests = []
 [[mapping]]
 source_glob = "migrations/versions/20260831_1531_f9c7c2e5f501_建立最终初始数据库基线.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260901_0642_e0da335c057d_transport_面向扩为字符串_token.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/execution/test_execution_constraints.py"]
 
 [[mapping]]
 source_glob = "tests/support/postgresql_heavy.py"

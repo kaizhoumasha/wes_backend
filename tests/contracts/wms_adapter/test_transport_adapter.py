@@ -101,13 +101,13 @@ async def test_exchange_pairs_send_one_fixed_persisted_snapshot() -> None:
         "moves": [
             {
                 "container_id": "bin-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "1"},
             },
             {
                 "container_id": "bin-2",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "1"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
             },
         ],
     }
@@ -139,8 +139,8 @@ async def test_delivery_unknown_is_not_interpreted_as_rejection() -> None:
         "moves": [
             {
                 "container_id": "bin-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "1"},
             }
         ],
     }
@@ -161,7 +161,7 @@ async def test_oversized_request_is_a_deterministic_request_body_rejection() -> 
         "moves": [
             {
                 "container_id": "bin-oversized",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "x" * (256 * 1024)},
             }
         ],
@@ -197,7 +197,7 @@ async def test_submit_wire_uses_the_persisted_operation_snapshot_without_local_c
         "moves": [
             {
                 "container_id": "bin-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }
         ],

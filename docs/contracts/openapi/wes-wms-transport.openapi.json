@@ -156,10 +156,8 @@
                                       },
                                       "rack_face": {
                                         "type": "string",
-                                        "enum": [
-                                          "A",
-                                          "B"
-                                        ]
+                                        "minLength": 1,
+                                        "description": "Opaque non-empty face value; preserve exactly"
                                       },
                                       "slot_id": {
                                         "type": "string",
@@ -297,10 +295,8 @@
                               },
                               "arrival_face": {
                                 "type": "string",
-                                "enum": [
-                                  "A",
-                                  "B"
-                                ]
+                                "minLength": 1,
+                                "description": "Opaque non-empty face value; preserve exactly"
                               }
                             }
                           },
@@ -381,10 +377,8 @@
                               },
                               "arrival_face": {
                                 "type": "string",
-                                "enum": [
-                                  "A",
-                                  "B"
-                                ]
+                                "minLength": 1,
+                                "description": "Opaque non-empty face value; preserve exactly"
                               }
                             }
                           },
@@ -527,10 +521,8 @@
                                                 },
                                                 "rack_face": {
                                                   "type": "string",
-                                                  "enum": [
-                                                    "A",
-                                                    "B"
-                                                  ]
+                                                  "minLength": 1,
+                                                  "description": "Opaque non-empty face value; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",
@@ -614,10 +606,8 @@
                                                 },
                                                 "rack_face": {
                                                   "type": "string",
-                                                  "enum": [
-                                                    "A",
-                                                    "B"
-                                                  ]
+                                                  "minLength": 1,
+                                                  "description": "Opaque non-empty face value; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",
@@ -787,10 +777,8 @@
                                                 },
                                                 "rack_face": {
                                                   "type": "string",
-                                                  "enum": [
-                                                    "A",
-                                                    "B"
-                                                  ]
+                                                  "minLength": 1,
+                                                  "description": "Opaque non-empty face value; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",
@@ -874,10 +862,8 @@
                                                 },
                                                 "rack_face": {
                                                   "type": "string",
-                                                  "enum": [
-                                                    "A",
-                                                    "B"
-                                                  ]
+                                                  "minLength": 1,
+                                                  "description": "Opaque non-empty face value; preserve exactly"
                                                 },
                                                 "slot_id": {
                                                   "type": "string",

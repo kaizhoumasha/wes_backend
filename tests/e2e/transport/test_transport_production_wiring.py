@@ -14,7 +14,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy import delete, func, select
 
 from src.app.execution.models import PositionProjection
-from src.app.transport import RackFace, build_transport_runtime
+from src.app.transport import build_transport_runtime
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -126,7 +126,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         suffix = uuid.uuid4().hex
         object_id = f"bin-{suffix}"
         rack_id = f"rack-{suffix}"
-        await confirm_rack_faces_with_sessions(integration_session_factory, {rack_id: RackFace.A})
+        await confirm_rack_faces_with_sessions(integration_session_factory, {rack_id: "90"})
         app = FastAPI()
         app.state.transport_runtime = runtime
         app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()

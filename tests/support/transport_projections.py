@@ -13,17 +13,17 @@ from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from src.app.transport.contracts import RackFace, TransportExecutionAuthority
+    from src.app.transport.contracts import TransportExecutionAuthority
 
 
-async def confirm_rack_faces(db_engine: object, rack_faces: dict[str, RackFace]) -> None:
+async def confirm_rack_faces(db_engine: object, rack_faces: dict[str, str]) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     await confirm_rack_faces_with_sessions(sessions, rack_faces)
 
 
 async def confirm_rack_faces_with_sessions(
     sessions: async_sessionmaker[AsyncSession],
-    rack_faces: dict[str, RackFace],
+    rack_faces: dict[str, str],
 ) -> None:
     async with sessions.begin() as db:
         workline_id, line_run_epoch_id = await ensure_projection_authority(db)
@@ -42,7 +42,7 @@ async def confirm_rack_faces_with_sessions(
                         workline_id=workline_id,
                         line_run_epoch_id=line_run_epoch_id,
                         position_json={"kind": "RACK_POSITION", "location_code": f"STORAGE-{rack_id}"},
-                        arrival_face=str(rack_face),
+                        arrival_face=rack_face,
                         source_operation_id="test-confirmed-rack-face",
                         source_transport_task_id="test-confirmed-rack-face",
                         updated_at=timezone.now_for_db(),
@@ -50,7 +50,7 @@ async def confirm_rack_faces_with_sessions(
                 )
                 continue
             projection.position_unknown = False
-            projection.arrival_face = str(rack_face)
+            projection.arrival_face = rack_face
             projection.source_operation_id = "test-confirmed-rack-face"
             projection.updated_at = timezone.now_for_db()
 

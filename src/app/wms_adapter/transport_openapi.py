@@ -47,6 +47,11 @@ _TIMESTAMP_SCHEMA = {
 _TRANSPORT_TASK_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 80, "pattern": _NONBLANK_PATTERN}
 _OBJECT_ID_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100, "pattern": _NONBLANK_PATTERN}
 _POSITION_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100, "pattern": _NONBLANK_PATTERN}
+_FACE_SCHEMA = {
+    "type": "string",
+    "minLength": 1,
+    "description": "Opaque non-empty face value; preserve exactly",
+}
 _RACK_POSITION_SCHEMA = _closed_object(
     ["kind", "location_code"],
     {"kind": _literal("RACK_POSITION"), "location_code": _POSITION_TEXT_SCHEMA},
@@ -56,7 +61,7 @@ _RACK_BIN_SLOT_SCHEMA = _closed_object(
     {
         "kind": _literal("RACK_BIN_SLOT"),
         "rack_id": _POSITION_TEXT_SCHEMA,
-        "rack_face": {"type": "string", "enum": ["A", "B"]},
+        "rack_face": _FACE_SCHEMA,
         "slot_id": _POSITION_TEXT_SCHEMA,
     },
 )
@@ -112,7 +117,7 @@ def _member_result_schema(
     success_required = [id_field, "status", "final_position"]
     failed_required = [id_field, "status", "final_position", "failure_code"]
     if arrival_face:
-        arrival_schema = {"type": "string", "enum": ["A", "B"]}
+        arrival_schema = _FACE_SCHEMA
         success_properties["arrival_face"] = arrival_schema
         failed_properties["arrival_face"] = arrival_schema
         success_required.append("arrival_face")

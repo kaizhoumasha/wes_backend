@@ -73,6 +73,7 @@ TRANSPORT_DEBUG_RESET_HEAVY_TEST = "tests/integration/transport/test_transport_d
 RESET_RUNTIME_DATA_HEAVY_TEST = "tests/integration/test_reset_runtime_data_postgresql.py"
 INITIAL_SCHEMA_BASELINE_HEAVY_TEST = "tests/integration/test_initial_schema_baseline_postgresql.py"
 INITIAL_SCHEMA_REVISION_PATH = "migrations/versions/20260831_1531_f9c7c2e5f501_建立最终初始数据库基线.py"
+TRANSPORT_FACE_REVISION_PATH = "migrations/versions/20260901_0642_e0da335c057d_transport_面向扩为字符串_token.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
 TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
@@ -1035,8 +1036,17 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
     revision_mappings = [mapping for mapping in config[1] if mapping.source_glob.startswith("migrations/versions/")]
 
-    assert [mapping.source_glob for mapping in revision_mappings] == [INITIAL_SCHEMA_REVISION_PATH]
+    assert [mapping.source_glob for mapping in revision_mappings] == [
+        INITIAL_SCHEMA_REVISION_PATH,
+        TRANSPORT_FACE_REVISION_PATH,
+    ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
+    assert revision_mappings[1].heavy_tests == (
+        EXECUTION_CONSTRAINTS_HEAVY_TEST,
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
+        TRANSPORT_EVIDENCE_HEAVY_TEST,
+        TRANSPORT_SCHEMA_HEAVY_TEST,
+    )
     assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST
     ]

@@ -1,4 +1,4 @@
-"""唯一初始 migration 的结构合同。"""
+"""不可变初始 migration 与单线可持续迁移链的结构合同。"""
 
 from __future__ import annotations
 
@@ -38,14 +38,18 @@ def test_revision_identity_parser_accepts_annotated_assignments(tmp_path: Path) 
     assert _revision_assignments(revision_path) == {"revision": "abc123", "down_revision": None}
 
 
-def test_migration_history_is_one_initial_revision_with_one_head() -> None:
+def test_migration_history_keeps_one_immutable_root_and_one_reachable_head() -> None:
     revision_paths = sorted(VERSIONS_DIR.glob("*.py"))
+    assignments = {_revision_assignments(path)["revision"]: _revision_assignments(path) for path in revision_paths}
+    roots = [revision for revision, values in assignments.items() if values["down_revision"] is None]
 
-    assert len(revision_paths) == 1, f"expected one initial revision, found {len(revision_paths)}"
-
-    assignments = _revision_assignments(revision_paths[0])
-    assert assignments["revision"]
-    assert assignments["down_revision"] is None
+    assert roots == ["f9c7c2e5f501"]
+    assert all(
+        values["down_revision"] is None or values["down_revision"] in assignments for values in assignments.values()
+    )
 
     config = Config(str(REPO_ROOT / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == [assignments["revision"]]
+    scripts = ScriptDirectory.from_config(config)
+    heads = scripts.get_heads()
+    assert len(heads) == 1
+    assert {revision.revision for revision in scripts.walk_revisions()} == set(assignments)

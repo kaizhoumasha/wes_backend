@@ -14,7 +14,6 @@ from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
     RackBinSlot,
-    RackFace,
     RackPosition,
     TransportCaller,
     TransportContractError,
@@ -233,7 +232,7 @@ async def test_concurrent_duplicate_public_calls_share_one_postgresql_aggregate(
                 f"rack-duplicate-{suffix}",
                 RackPosition("SOURCE"),
                 RackPosition("TARGET"),
-                RackFace.A,
+                "90",
             )
             for service in services
         )
@@ -277,7 +276,7 @@ async def test_concurrent_resource_conflict_has_one_postgresql_winner(
                 f"rack-conflict-{suffix}",
                 RackPosition("SOURCE"),
                 RackPosition("TARGET"),
-                RackFace.A,
+                "90",
             )
             for index, service in enumerate(services)
         ),
@@ -329,7 +328,7 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
             "rack_id": f"rack-missing-{suffix}",
             "status": "SUCCEEDED",
             "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-            "arrival_face": "A",
+            "arrival_face": "90",
         },
     )
     blocked_repository = _BlockedEvidenceReadRepository()
@@ -388,7 +387,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         "rack-rollback",
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.A,
+        "90",
         execution_authority=authority,
     )
     operation_id = new_uuid7()
@@ -399,7 +398,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         "rack_id": "rack-rollback",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-        "arrival_face": "A",
+        "arrival_face": "90",
     }
     await record_valid_callback(
         service,
@@ -458,11 +457,11 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         TransportRepository(),
         _UnusedProvider(),
     )
-    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-concurrent": RackFace.A})
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-concurrent": "90"})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-concurrent", RackBinSlot("rack-concurrent", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-concurrent", RackBinSlot("rack-concurrent", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     payload = {
@@ -530,11 +529,11 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
         TransportRepository(),
         _UnusedProvider(),
     )
-    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-revision": RackFace.A})
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-revision": "90"})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-revision", RackBinSlot("rack-revision", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-revision", RackBinSlot("rack-revision", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     payload = {
         "transport_task_id": handle.transport_task_id,
@@ -613,11 +612,11 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         TransportRepository(),
         _UnusedProvider(),
     )
-    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-lock-order": RackFace.A})
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-lock-order": "90"})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-lock-order", RackBinSlot("rack-lock-order", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-lock-order", RackBinSlot("rack-lock-order", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     payload = {
@@ -715,7 +714,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.A,
+        "90",
         execution_authority=authority,
     )
     blocking_repository = _BlockingEvidenceInsertRepository()
@@ -744,7 +743,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
                 "rack_id": rack_id,
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-                "arrival_face": "A",
+                "arrival_face": "90",
             },
         )
     )
@@ -826,7 +825,7 @@ async def test_result_updates_existing_projection_source_transport_task_id(
                 line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
                 position_unknown=False,
-                arrival_face="A",
+                arrival_face="90",
                 source_operation_id="projection-source-initial",
                 source_transport_task_id="projection-source-initial",
                 updated_at=timezone.now_for_db(),
@@ -838,7 +837,7 @@ async def test_result_updates_existing_projection_source_transport_task_id(
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.A,
+        "90",
         execution_authority=TransportExecutionAuthority(
             workline_id=workline_id,
             line_run_epoch_id=line_run_epoch_id,
@@ -860,7 +859,7 @@ async def test_result_updates_existing_projection_source_transport_task_id(
                 "rack_id": rack_id,
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-                "arrival_face": "A",
+                "arrival_face": "90",
             },
         )
         assert await service.process_pending_evidence(1) == 1
@@ -895,11 +894,11 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         TransportRepository(),
         _UnusedProvider(),
     )
-    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-apply-race": RackFace.A})
+    await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-apply-race": "90"})
     handle = await setup_service.move_bins(
         new_uuid7(),
         TransportCaller("INTEGRATION"),
-        (BinMove("bin-apply-race", RackBinSlot("rack-apply-race", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-apply-race", RackBinSlot("rack-apply-race", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     operation_id = new_uuid7()
     original_payload = {
@@ -1008,7 +1007,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
                 line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
                 position_unknown=False,
-                arrival_face="A",
+                arrival_face="90",
                 source_operation_id="rotate-race-initial",
                 source_transport_task_id="rotate-race-initial",
                 updated_at=timezone.now_for_db(),
@@ -1021,7 +1020,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         rack_id,
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.A,
+        "90",
         execution_authority=authority,
     )
     race_projection_port = _RotationProjectionPort()
@@ -1037,7 +1036,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
             TransportCaller("INTEGRATION"),
             rack_id,
             RackPosition("SOURCE"),
-            RackFace.B,
+            "270",
             execution_authority=authority,
         )
     )
@@ -1049,7 +1048,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         "rack_id": rack_id,
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-        "arrival_face": "B",
+        "arrival_face": "90",
     }
     try:
         try:

@@ -30,9 +30,11 @@ class TransportTaskKind(StrEnum):
     BIN_EXCHANGE = "BIN_EXCHANGE"
 
 
-class RackFace(StrEnum):
-    A = "A"
-    B = "B"
+class RcsTemplateId(StrEnum):
+    CTU01 = "CTU01"
+    CTU02 = "CTU02"
+    CTU03 = "CTU03"
+    F01 = "F01"
 
 
 class TransportTaskStatus(StrEnum):
@@ -159,16 +161,37 @@ class RackPosition:
 
 
 @dataclass(frozen=True, slots=True)
+class RackReference:
+    location_code: str
+    kind: str = field(default="RACK", init=False)
+
+    def __post_init__(self) -> None:
+        _required(self.location_code, "location_code", max_length=100)
+
+
+@dataclass(frozen=True, slots=True)
+class ZonePosition:
+    location_code: str
+    kind: str = field(default="ZONE", init=False)
+
+    def __post_init__(self) -> None:
+        _required(self.location_code, "location_code", max_length=100)
+
+
+type RackMovePosition = RackReference | ZonePosition | RackPosition
+
+
+@dataclass(frozen=True, slots=True)
 class RackBinSlot:
     rack_id: str
-    rack_face: RackFace
+    rack_face: str
     slot_id: str
     kind: str = field(default="RACK_BIN_SLOT", init=False)
 
     def __post_init__(self) -> None:
         _required(self.rack_id, "rack_id", max_length=100)
-        if not isinstance(self.rack_face, RackFace):
-            raise TransportContractError("rack_face must be A or B")
+        if type(self.rack_face) is not str or self.rack_face == "":
+            raise TransportContractError("rack_face must be a non-empty string")
         _required(self.slot_id, "slot_id", max_length=100)
 
 
@@ -226,20 +249,42 @@ class MoveRackRequest:
     client_request_id: str
     caller: TransportCaller
     rack_id: str
-    source: RackPosition
-    target: RackPosition
-    target_face: RackFace
+    source: RackMovePosition
+    target: RackMovePosition
+    target_face: str
+    rcs_template_id: RcsTemplateId = RcsTemplateId.F01
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_MOVE, init=False)
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id, self.caller)
         _required(self.rack_id, "rack_id", max_length=100)
-        if type(self.source) is not RackPosition or type(self.target) is not RackPosition:
-            raise TransportContractError("rack source and target must be rack positions")
+        allowed_types = {RackReference, ZonePosition, RackPosition}
+        if type(self.source) not in allowed_types or type(self.target) not in allowed_types:
+            raise TransportContractError("rack source and target must be rack move positions")
         if self.source == self.target:
             raise TransportContractError("rack source and target must differ")
-        if not isinstance(self.target_face, RackFace):
-            raise TransportContractError("target_face must be A or B")
+        if type(self.target_face) is not str or self.target_face == "":
+            raise TransportContractError("target_face must be a non-empty string")
+        if type(self.rcs_template_id) is not RcsTemplateId:
+            raise TransportContractError("rcs_template_id must be a supported template")
+        for position in (self.source, self.target):
+            if type(position) is RackReference and position.location_code != self.rack_id:
+                raise TransportContractError("RACK location_code must match rack_id")
+        allowed_edges = {
+            RcsTemplateId.CTU01: {
+                (ZonePosition, RackPosition),
+                (RackReference, RackPosition),
+                (RackPosition, RackPosition),
+            },
+            RcsTemplateId.CTU03: {
+                (RackPosition, RackReference),
+                (RackPosition, ZonePosition),
+                (RackPosition, RackPosition),
+            },
+            RcsTemplateId.F01: {(RackPosition, RackPosition)},
+        }
+        if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
+            raise TransportContractError("rack source, target, and rcs_template_id are not an approved edge")
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,7 +293,8 @@ class RotateRackRequest:
     caller: TransportCaller
     rack_id: str
     position: RackPosition
-    target_face: RackFace
+    target_face: str
+    rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_ROTATE, init=False)
 
     def __post_init__(self) -> None:
@@ -256,8 +302,10 @@ class RotateRackRequest:
         _required(self.rack_id, "rack_id", max_length=100)
         if type(self.position) is not RackPosition:
             raise TransportContractError("rack rotation position must be a rack position")
-        if not isinstance(self.target_face, RackFace):
-            raise TransportContractError("target_face must be A or B")
+        if type(self.target_face) is not str or self.target_face == "":
+            raise TransportContractError("target_face must be a non-empty string")
+        if self.rcs_template_id is not RcsTemplateId.CTU02:
+            raise TransportContractError("rack rotation requires rcs_template_id CTU02")
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,9 +385,10 @@ class TransportPort(Protocol):
         client_request_id: str,
         caller: TransportCaller,
         rack_id: str,
-        source: RackPosition,
-        target: RackPosition,
-        target_face: RackFace,
+        source: RackMovePosition,
+        target: RackMovePosition,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle: ...
@@ -350,7 +399,8 @@ class TransportPort(Protocol):
         caller: TransportCaller,
         rack_id: str,
         position: RackPosition,
-        target_face: RackFace,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
         *,
         execution_authority: TransportExecutionAuthority | None = None,
     ) -> TransportHandle: ...
@@ -380,10 +430,12 @@ class TransportMemberOutcome:
     final_position: TransportPosition | None = None
     position_unknown: bool = False
     failure_code: str | None = None
-    arrival_face: RackFace | None = None
+    arrival_face: str | None = None
 
     def __post_init__(self) -> None:
         _required(self.object_id, "object_id")
+        if self.arrival_face is not None and (type(self.arrival_face) is not str or self.arrival_face == ""):
+            raise TransportContractError("arrival_face must be null or a non-empty string")
         if (self.final_position is None) == (self.position_unknown is False):
             raise TransportContractError("final_position xor position_unknown=true is required")
 
@@ -435,12 +487,12 @@ def _validate_request_identity(client_request_id: str, caller: TransportCaller) 
         raise TransportContractError("caller must be a TransportCaller")
 
 
-def _position_key(position: RackBinSlot) -> tuple[str, RackFace, str]:
+def _position_key(position: RackBinSlot) -> tuple[str, str, str]:
     return position.rack_id, position.rack_face, position.slot_id
 
 
 def _validate_one_face_per_rack(slots: list[RackBinSlot]) -> None:
-    faces_by_rack: dict[str, set[RackFace]] = {}
+    faces_by_rack: dict[str, set[str]] = {}
     for slot in slots:
         faces_by_rack.setdefault(slot.rack_id, set()).add(slot.rack_face)
     if any(len(faces) != 1 for faces in faces_by_rack.values()):
@@ -465,8 +517,10 @@ __all__ = [
     "MoveBinsRequest",
     "MoveRackRequest",
     "RackBinSlot",
-    "RackFace",
+    "RackMovePosition",
     "RackPosition",
+    "RackReference",
+    "RcsTemplateId",
     "RotateRackRequest",
     "TransportCaller",
     "TransportContractError",
@@ -489,4 +543,5 @@ __all__ = [
     "TransportSubmitResult",
     "TransportTaskKind",
     "TransportTaskStatus",
+    "ZonePosition",
 ]

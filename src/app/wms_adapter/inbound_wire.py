@@ -92,6 +92,27 @@ class RackPosition(_StrictModel):
     location_code: Identifier
 
 
+class RackMoveRackReference(_StrictModel):
+    kind: Literal["RACK"]
+    location_code: Identifier
+
+
+class RackMoveZonePosition(_StrictModel):
+    kind: Literal["ZONE"]
+    location_code: Identifier
+
+
+class RackMoveRackPosition(_StrictModel):
+    kind: Literal["RACK_POSITION"]
+    location_code: Identifier
+
+
+type RackMovePosition = Annotated[
+    RackMoveRackReference | RackMoveZonePosition | RackMoveRackPosition,
+    Field(discriminator="kind"),
+]
+
+
 class OneLayerBinCell(_StrictModel):
     type: Literal["ONE_LAYER_BIN_CELL"]
     rack_id: Identifier
@@ -250,9 +271,16 @@ type TargetDecision = Annotated[TargetAssigned | NoAvailableCell | Rejected | Wa
 
 class RackMovePlan(_StrictModel):
     rack_id: Identifier
-    source: RackPosition
-    target: RackPosition
-    target_face: Literal["A", "B"]
+    source: RackMovePosition
+    target: RackMovePosition
+    target_face: Annotated[str, Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def validate_rack_reference_identity(self) -> RackMovePlan:
+        for position in (self.source, self.target):
+            if isinstance(position, RackMoveRackReference) and position.location_code != self.rack_id:
+                raise ValueError("RACK location_code 必须等于 rack_id")
+        return self
 
 
 class ReplacementReady(_StrictModel):

@@ -58,6 +58,30 @@ def _admission_data() -> dict[str, object]:
     }
 
 
+def _replacement_response(face: object = "90") -> dict[str, object]:
+    return {
+        "operation_id": OPERATION_ID,
+        "code": "DECIDED",
+        "timestamp": 2,
+        "data": {
+            "result": "READY",
+            "rack_replacement_id": "replacement-1",
+            "old_loaded_rack": {
+                "rack_id": "rack-old",
+                "source": {"kind": "RACK_POSITION", "location_code": "work"},
+                "target": {"kind": "ZONE", "location_code": "storage-zone"},
+                "target_face": face,
+            },
+            "new_empty_rack": {
+                "rack_id": "rack-new",
+                "source": {"kind": "RACK", "location_code": "rack-new"},
+                "target": {"kind": "RACK_POSITION", "location_code": "work"},
+                "target_face": "270",
+            },
+        },
+    }
+
+
 def test_outbound_operation_closure_and_paths_are_exact() -> None:
     assert {
         ADMISSION_OPERATION,
@@ -327,6 +351,29 @@ def test_response_status_code_and_result_pairings_are_strict() -> None:
                 "data": {"reason_code": "INVALID_DATA", "field_path": "data.material_trace_id"},
             },
         )
+
+
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "\x00", "x" * 1000])
+def test_replacement_response_preserves_broad_positions_and_any_non_empty_face(face: str) -> None:
+    response = parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, _replacement_response(face))
+
+    assert response.data.old_loaded_rack.target.kind == "ZONE"
+    assert response.data.old_loaded_rack.target_face == face
+    assert response.data.new_empty_rack.source.kind == "RACK"
+
+
+@pytest.mark.parametrize("face", ["", None, 90, True])
+def test_replacement_response_rejects_empty_or_non_string_face(face: object) -> None:
+    with pytest.raises(ValidationError):
+        parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, _replacement_response(face))
+
+
+def test_replacement_response_rejects_mismatched_rack_reference_identity() -> None:
+    response = _replacement_response()
+    response["data"]["new_empty_rack"]["source"]["location_code"] = "other-rack"  # type: ignore[index]
+
+    with pytest.raises(ValidationError, match="rack_id"):
+        parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, response)
 
 
 def test_recovery_is_single_execution_strict_and_continue_has_no_null_position() -> None:

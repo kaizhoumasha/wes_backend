@@ -35,7 +35,6 @@ from src.app.execution.models.material_execution import MaterialExecution, Mater
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services.decision_applier import DecisionApplier
 from src.app.transport.contracts import (
-    RackFace,
     RackPosition,
     TransportCaller,
     TransportMemberOutcome,
@@ -932,15 +931,15 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
                 "rack_replacement_id": "REPLACE-1",
                 "old_loaded_rack": {
                     "rack_id": "RACK-1",
-                    "source": {"type": "RACK_POSITION", "location_code": "OUTLET-1"},
-                    "target": {"type": "RACK_POSITION", "location_code": "BUFFER-OLD"},
-                    "target_face": "A",
+                    "source": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                    "target": {"kind": "RACK_POSITION", "location_code": "BUFFER-OLD"},
+                    "target_face": "90",
                 },
                 "new_empty_rack": {
                     "rack_id": "RACK-2",
-                    "source": {"type": "RACK_POSITION", "location_code": "BUFFER-NEW"},
-                    "target": {"type": "RACK_POSITION", "location_code": "OUTLET-1"},
-                    "target_face": "B",
+                    "source": {"kind": "RACK_POSITION", "location_code": "BUFFER-NEW"},
+                    "target": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                    "target_face": "270",
                 },
             },
         },
@@ -1093,7 +1092,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
                     "final_position": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
                     "position_unknown": False,
                     "failure_code": None,
-                    "arrival_face": "B",
+                    "arrival_face": "270",
                 }
             ],
         },
@@ -1139,7 +1138,8 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             "rack_id": "RACK-2",
             "source": {"location_code": "BUFFER-NEW", "kind": "RACK_POSITION"},
             "target": {"location_code": "OUTLET-1", "kind": "RACK_POSITION"},
-            "target_face": "B",
+            "target_face": "270",
+            "rcs_template_id": "CTU01",
             "kind": "RACK_MOVE",
         },
     )
@@ -1792,7 +1792,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
             TransportMemberOutcome(
                 object_id="RACK-2",
                 final_position=RackPosition("OUTLET-1"),
-                arrival_face=RackFace.B,
+                arrival_face="270",
             ),
         ),
     )
@@ -1857,7 +1857,7 @@ async def test_transport_publisher_confirms_unbound_debug_outcome() -> None:
             TransportMemberOutcome(
                 object_id="RACK-DEBUG",
                 final_position=RackPosition("OUTLET-1"),
-                arrival_face=RackFace.A,
+                arrival_face="90",
             ),
         ),
     )
@@ -1888,7 +1888,7 @@ async def test_transport_publisher_still_rejects_unbound_business_outcome() -> N
             TransportMemberOutcome(
                 object_id="RACK-2",
                 final_position=RackPosition("OUTLET-1"),
-                arrival_face=RackFace.A,
+                arrival_face="90",
             ),
         ),
     )
@@ -2000,7 +2000,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
             TransportMemberOutcome(
                 object_id="RACK-2",
                 final_position=RackPosition("OUTLET-1"),
-                arrival_face=RackFace.B,
+                arrival_face="270",
             ),
         ),
     )

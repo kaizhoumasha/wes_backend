@@ -31,7 +31,7 @@ def test_transport_openapi_limits_outcome_revision_to_signed_int64() -> None:
     assert all(schema["maximum"] == 2**63 - 1 for schema in revisions)
 
 
-def test_transport_openapi_exposes_only_v02_callback_identity_shapes() -> None:
+def test_transport_openapi_exposes_only_v03_callback_identity_shapes() -> None:
     serialized = json.dumps(build_transport_openapi_document(), ensure_ascii=False)
 
     assert '"container_id"' in serialized
@@ -40,6 +40,18 @@ def test_transport_openapi_exposes_only_v02_callback_identity_shapes() -> None:
     assert '"object_id"' not in serialized
     assert '"retry_after_ms"' not in serialized
     assert '"BUSY"' not in serialized
+
+
+def test_transport_openapi_models_faces_as_opaque_non_empty_strings() -> None:
+    schemas = [
+        schema
+        for schema in _walk_schemas(build_transport_openapi_document())
+        if schema.get("description") == "Opaque non-empty face value; preserve exactly"
+    ]
+
+    assert schemas
+    assert all(schema["type"] == "string" and schema["minLength"] == 1 for schema in schemas)
+    assert all({"enum", "pattern", "maxLength", "format"}.isdisjoint(schema) for schema in schemas)
 
 
 def test_transport_openapi_closes_bin_result_member_counts_by_kind() -> None:

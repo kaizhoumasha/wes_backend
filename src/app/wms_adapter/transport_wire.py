@@ -152,8 +152,10 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
             raise TransportContractError("invalid failure_code")
         if is_unknown != (failure_code == "POSITION_UNKNOWN"):
             raise TransportContractError("POSITION_UNKNOWN failure_code must match position_unknown=true")
-    if rack_kind and has_position and result.get("arrival_face") not in {"A", "B"}:
-        raise TransportContractError("known rack result requires arrival_face")
+    if rack_kind and has_position:
+        arrival_face = result.get("arrival_face")
+        if type(arrival_face) is not str or arrival_face == "":
+            raise TransportContractError("known rack result requires arrival_face")
     if (not rack_kind or is_unknown) and "arrival_face" in result:
         raise TransportContractError("arrival_face is not valid for this result")
     return result
@@ -170,8 +172,8 @@ def _validate_position(value: object) -> dict[str, Any]:
     if kind == "RACK_BIN_SLOT":
         position = _strict_dict(value, {"kind", "rack_id", "rack_face", "slot_id"}, "rack bin slot")
         _nonblank(position["rack_id"], "rack_id", max_length=100)
-        if position["rack_face"] not in {"A", "B"}:
-            raise TransportContractError("rack_face must be A or B")
+        if type(position["rack_face"]) is not str or position["rack_face"] == "":
+            raise TransportContractError("rack_face must be a non-empty string")
         _nonblank(position["slot_id"], "slot_id", max_length=100)
         return position
     if kind == "HANDOFF_POSITION":

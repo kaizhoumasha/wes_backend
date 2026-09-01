@@ -13,9 +13,9 @@ from wes_plugin_sdk import (
     DevicePosition,
     ExecutionLifecycle,
     PauseForReconciliation,
-    RackFace,
     TransportLeg,
     TransportRackPosition,
+    TransportZonePosition,
 )
 
 from rough_sorter.facts import (
@@ -53,7 +53,7 @@ def _transport_fact(leg: TransportLeg, outcome: TransportOutcome, **overrides: o
         "outcome": outcome,
         "rack_id": "rack-old" if leg is TransportLeg.OLD_OUT else "rack-new",
         "expected_target": TransportRackPosition("old-buffer" if leg is TransportLeg.OLD_OUT else "work-position"),
-        "expected_face": RackFace.A if leg is TransportLeg.OLD_OUT else RackFace.B,
+        "expected_face": "90" if leg is TransportLeg.OLD_OUT else "270",
     }
     values.update(overrides)
     return TransportOutcomePublishedFact(**values)
@@ -68,7 +68,7 @@ def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack()
         TransportLeg.NEW_IN,
         TransportOutcome.SUCCEEDED,
         final_position=TransportRackPosition("work-position"),
-        arrival_face=RackFace.B,
+        arrival_face="270",
         actual_rack_id="rack-new",
         source_position=_outlet(),
         request_operation_id="stable-target-request-after-new-rack",
@@ -94,6 +94,25 @@ def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack()
     )
 
 
+def test_new_rack_broad_zone_target_accepts_concrete_position_without_zone_inference() -> None:
+    fact = _transport_fact(
+        TransportLeg.NEW_IN,
+        TransportOutcome.SUCCEEDED,
+        expected_target=TransportZonePosition("storage-zone"),
+        final_position=TransportRackPosition("wms-selected-position"),
+        arrival_face="270",
+        actual_rack_id="rack-new",
+        source_position=_outlet(),
+        request_operation_id="stable-target-request-for-broad-zone",
+        pkg_id="pkg-1",
+        inbound_admission_id="admission-1",
+    )
+
+    decisions = _transport_handler()(fact)
+
+    assert isinstance(decisions[0], CreateWmsConfirmation)
+
+
 @pytest.mark.parametrize("outcome", [TransportOutcome.SUCCEEDED, TransportOutcome.FAILED])
 def test_determinate_new_rack_outcome_can_cross_verified_unknown_reconciling_fence(
     outcome: TransportOutcome,
@@ -106,7 +125,7 @@ def test_determinate_new_rack_outcome_can_cross_verified_unknown_reconciling_fen
     if outcome is TransportOutcome.SUCCEEDED:
         values.update(
             final_position=TransportRackPosition("work-position"),
-            arrival_face=RackFace.B,
+            arrival_face="270",
             actual_rack_id="rack-new",
             source_position=_outlet(),
             request_operation_id="stable-target-request-after-unknown-v1",
@@ -136,7 +155,7 @@ def test_new_rack_success_with_wrong_actual_rack_reconciles_without_requesting_t
         TransportLeg.NEW_IN,
         TransportOutcome.SUCCEEDED,
         final_position=TransportRackPosition("work-position"),
-        arrival_face=RackFace.B,
+        arrival_face="270",
         actual_rack_id="rack-unplanned",
         source_position=_outlet(),
         request_operation_id="must-not-be-sent",
@@ -160,13 +179,13 @@ def test_new_rack_success_with_wrong_actual_rack_reconciles_without_requesting_t
 @pytest.mark.parametrize(
     ("final_position", "arrival_face"),
     [
-        (TransportRackPosition("unexpected-position"), RackFace.B),
-        (TransportRackPosition("work-position"), RackFace.A),
+        (TransportRackPosition("unexpected-position"), "270"),
+        (TransportRackPosition("work-position"), "90"),
     ],
 )
 def test_new_rack_success_with_wrong_position_or_face_reconciles_without_requesting_target(
     final_position: TransportRackPosition,
-    arrival_face: RackFace,
+    arrival_face: str,
 ) -> None:
     fact = _transport_fact(
         TransportLeg.NEW_IN,
@@ -239,7 +258,7 @@ def test_old_rack_outcome_cannot_enter_material_decision_lane(outcome: Transport
     if outcome is TransportOutcome.SUCCEEDED:
         values = {
             "final_position": TransportRackPosition("old-buffer"),
-            "arrival_face": RackFace.A,
+            "arrival_face": "90",
         }
 
     with pytest.raises(ValueError, match="NEW_IN"):

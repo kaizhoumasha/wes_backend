@@ -13,9 +13,9 @@ from wes_plugin_sdk import (
     DevicePosition,
     EvidenceReadyFact,
     PauseForReconciliation,
-    RackFace,
     TransportLeg,
     TransportRackPosition,
+    TransportRcsTemplateId,
     TransportTaskType,
     Wait,
 )
@@ -330,7 +330,8 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
         "RACK-CURRENT",
         TransportRackPosition("BUFFER"),
         TransportRackPosition("SORTER"),
-        RackFace.A,
+        "90",
+        TransportRcsTemplateId.CTU03,
     )
 
     await applier.apply(object(), _evidence(), _execution(), _fact(), (decision,))
@@ -379,7 +380,8 @@ async def test_create_transport_task_rejects_existing_binding_correlation_drift(
         "RACK-CURRENT",
         TransportRackPosition("BUFFER"),
         TransportRackPosition("SORTER"),
-        RackFace.A,
+        "90",
+        TransportRcsTemplateId.CTU03,
     )
 
     with pytest.raises(ValueError, match="binding correlation"):

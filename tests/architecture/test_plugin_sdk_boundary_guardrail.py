@@ -215,7 +215,8 @@ def test_plugin_sdk_values_are_frozen_and_transport_keeps_business_identity_sepa
         rack_id="rack-1",
         source=source,
         target=target,
-        target_face=sdk.RackFace.A,
+        target_face="90",
+        rcs_template_id=sdk.TransportRcsTemplateId.CTU03,
     )
 
     assert dataclasses.is_dataclass(fact)
@@ -316,7 +317,8 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             rack_id="rack-1",
             source=MutableRackPosition(),
             target=sdk.TransportRackPosition(location_code="RACK-TARGET"),
-            target_face=sdk.RackFace.A,
+            target_face="90",
+            rcs_template_id=sdk.TransportRcsTemplateId.CTU03,
         )
     with pytest.raises(TypeError):
         sdk.HandlerMetadata(

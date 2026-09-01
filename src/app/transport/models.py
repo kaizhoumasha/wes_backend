@@ -141,7 +141,7 @@ class TransportMember(BaseMixin, table=True):
     final_position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
     failure_code: str | None = Field(default=None, max_length=120)
-    arrival_face: str | None = Field(default=None, max_length=1)
+    arrival_face: str | None = Field(default=None, sa_type=Text)
     last_operation_id: str | None = Field(default=None, max_length=36)
     updated_at: datetime
 

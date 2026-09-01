@@ -16,7 +16,6 @@ from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
     RackBinSlot,
-    RackFace,
     RackPosition,
     TransportCaller,
     TransportContractError,
@@ -126,7 +125,7 @@ class ResultBeforeAckProvider:
                 "rack_id": "rack-before-ack",
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
-                "arrival_face": "A",
+                "arrival_face": "90",
             },
         }
         await self.service.record_callback(
@@ -194,7 +193,7 @@ async def test_task_snapshot_without_callback_returns_local_task_identity(
         "rack-snapshot-empty",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
 
     snapshot = await service.get_task_snapshot(handle.transport_task_id)
@@ -222,7 +221,7 @@ async def test_task_snapshot_reads_task_and_latest_evidence_in_one_statement(
         "rack-snapshot-consistent",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
     statements: list[str] = []
 
@@ -263,7 +262,7 @@ async def test_task_snapshot_returns_latest_callback_evidence_status(
         f"rack-snapshot-{evidence_status.lower()}",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
     now = timezone.now_for_db()
     evidence = TransportEvidence(
@@ -307,14 +306,14 @@ async def test_task_snapshot_normalizes_member_result_status_without_raw_outcome
     service: TransportService,
     db_engine: object,
 ) -> None:
-    await confirm_rack_faces(db_engine, {"rack-detail-result": RackFace.A})
+    await confirm_rack_faces(db_engine, {"rack-detail-result": "90"})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
         (
             BinMove(
                 "bin-unknown",
-                RackBinSlot("rack-detail-result", RackFace.A, "1"),
+                RackBinSlot("rack-detail-result", "90", "1"),
                 HandoffPosition("HANDOFF-1"),
             ),
         ),
@@ -377,7 +376,7 @@ async def test_task_list_uses_stable_keyset_cursor_and_one_query_per_page(
             f"rack-list-{ordinal}",
             RackPosition(f"SOURCE-{ordinal}"),
             RackPosition(f"TARGET-{ordinal}"),
-            RackFace.A,
+            "90",
         )
         for ordinal in range(3)
     ]
@@ -452,14 +451,14 @@ async def test_evidence_update_is_published_only_after_commit_and_failure_is_iso
         FakeProvider(),
         event_publisher=publisher,
     )
-    await confirm_rack_faces(db_engine, {"rack-event-publish": RackFace.A})
+    await confirm_rack_faces(db_engine, {"rack-event-publish": "90"})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
         (
             BinMove(
                 "bin-event-publish",
-                RackBinSlot("rack-event-publish", RackFace.A, "1"),
+                RackBinSlot("rack-event-publish", "90", "1"),
                 HandoffPosition("HANDOFF-EVENT"),
             ),
         ),
@@ -527,7 +526,7 @@ async def test_four_public_methods_create_one_reliable_task_each(
 ) -> None:
     await confirm_rack_faces(
         db_engine,
-        {"rack-2": RackFace.A, "rack-3": RackFace.A, "rack-4": RackFace.A},
+        {"rack-2": "90", "rack-3": "90", "rack-4": "90"},
     )
     handles = [
         await service.move_rack(
@@ -536,12 +535,12 @@ async def test_four_public_methods_create_one_reliable_task_each(
             "rack-1",
             RackPosition("A"),
             RackPosition("B"),
-            RackFace.A,
+            "90",
         ),
         await service.move_bins(
             new_uuid7(),
             _caller(),
-            (BinMove("bin-1", RackBinSlot("rack-2", RackFace.A, "1"), HandoffPosition("IN")),),
+            (BinMove("bin-1", RackBinSlot("rack-2", "90", "1"), HandoffPosition("IN")),),
         ),
         await service.exchange_bins(
             new_uuid7(),
@@ -549,9 +548,9 @@ async def test_four_public_methods_create_one_reliable_task_each(
             (
                 BinExchangePair(
                     "bin-2",
-                    RackBinSlot("rack-3", RackFace.A, "1"),
+                    RackBinSlot("rack-3", "90", "1"),
                     "bin-3",
-                    RackBinSlot("rack-4", RackFace.A, "1"),
+                    RackBinSlot("rack-4", "90", "1"),
                 ),
             ),
         ),
@@ -566,13 +565,13 @@ async def test_four_public_methods_create_one_reliable_task_each(
                 workline_id=workline_id,
                 line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
-                arrival_face="A",
+                arrival_face="90",
                 source_operation_id="seed",
                 source_transport_task_id="seed",
                 updated_at=timezone.now_for_db(),
             )
         )
-    handles.append(await service.rotate_rack(new_uuid7(), _caller(), "rack-5", RackPosition("ROTATE"), RackFace.B))
+    handles.append(await service.rotate_rack(new_uuid7(), _caller(), "rack-5", RackPosition("ROTATE"), "270"))
 
     assert len({handle.transport_task_id for handle in handles}) == 4
 
@@ -584,10 +583,10 @@ async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(
 ) -> None:
     request_id = new_uuid7()
     first = await service.move_rack(
-        request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"), RackFace.A
+        request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"), "90"
     )
     duplicate = await service.move_rack(
-        request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"), RackFace.A
+        request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("B"), "90"
     )
 
     assert duplicate == first
@@ -600,9 +599,7 @@ async def test_same_client_request_is_idempotent_but_changed_payload_conflicts(
         )
     assert task_ids == [first.transport_task_id]
     with pytest.raises(TransportIdempotencyConflict):
-        await service.move_rack(
-            request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("C"), RackFace.A
-        )
+        await service.move_rack(request_id, _caller(), "rack-idempotent", RackPosition("A"), RackPosition("C"), "90")
 
 
 @pytest.mark.asyncio
@@ -622,7 +619,7 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
             "rack-same-session",
             RackPosition("A"),
             RackPosition("B"),
-            RackFace.A,
+            "90",
             execution_authority=TransportExecutionAuthority(
                 workline_id=workline_id,
                 line_run_epoch_id=line_run_epoch_id,
@@ -654,7 +651,7 @@ async def test_same_client_request_with_changed_execution_authority_conflicts(
             "rack-authority-identity",
             RackPosition("A"),
             RackPosition("B"),
-            RackFace.A,
+            "90",
             execution_authority=TransportExecutionAuthority(
                 workline_id=workline_id,
                 line_run_epoch_id=line_run_epoch_id,
@@ -670,7 +667,7 @@ async def test_same_client_request_with_changed_execution_authority_conflicts(
                 "rack-authority-identity",
                 RackPosition("A"),
                 RackPosition("B"),
-                RackFace.A,
+                "90",
                 execution_authority=None,
             )
 
@@ -681,10 +678,10 @@ async def test_move_bins_idempotency_ignores_member_input_order(
     db_engine: object,
 ) -> None:
     request_id = new_uuid7()
-    await confirm_rack_faces(db_engine, {"rack-bin-order": RackFace.A})
+    await confirm_rack_faces(db_engine, {"rack-bin-order": "90"})
     moves = (
-        BinMove("bin-order-1", RackBinSlot("rack-bin-order", RackFace.A, "1"), HandoffPosition("IN")),
-        BinMove("bin-order-2", RackBinSlot("rack-bin-order", RackFace.A, "2"), HandoffPosition("OUT")),
+        BinMove("bin-order-1", RackBinSlot("rack-bin-order", "90", "1"), HandoffPosition("IN")),
+        BinMove("bin-order-2", RackBinSlot("rack-bin-order", "90", "2"), HandoffPosition("OUT")),
     )
 
     first = await service.move_bins(request_id, _caller(), moves)
@@ -699,19 +696,19 @@ async def test_exchange_idempotency_ignores_pair_order_and_left_right_orientatio
     db_engine: object,
 ) -> None:
     request_id = new_uuid7()
-    await confirm_rack_faces(db_engine, {"rack-exchange-left": RackFace.A, "rack-exchange-right": RackFace.B})
+    await confirm_rack_faces(db_engine, {"rack-exchange-left": "90", "rack-exchange-right": "270"})
     pairs = (
         BinExchangePair(
             "bin-left-1",
-            RackBinSlot("rack-exchange-left", RackFace.A, "1"),
+            RackBinSlot("rack-exchange-left", "90", "1"),
             "bin-right-1",
-            RackBinSlot("rack-exchange-right", RackFace.B, "1"),
+            RackBinSlot("rack-exchange-right", "270", "1"),
         ),
         BinExchangePair(
             "bin-left-2",
-            RackBinSlot("rack-exchange-left", RackFace.A, "2"),
+            RackBinSlot("rack-exchange-left", "90", "2"),
             "bin-right-2",
-            RackBinSlot("rack-exchange-right", RackFace.B, "2"),
+            RackBinSlot("rack-exchange-right", "270", "2"),
         ),
     )
     equivalent = tuple(
@@ -741,7 +738,7 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
                 workline_id=workline_id,
                 line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
-                arrival_face="A",
+                arrival_face="90",
                 source_operation_id="seed",
                 source_transport_task_id="seed",
                 updated_at=timezone.now_for_db(),
@@ -752,13 +749,13 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
         _caller(),
         "rack-rotate-idempotent",
         RackPosition("ROTATE"),
-        RackFace.B,
+        "270",
     )
     async with sessions.begin() as db:
         await db.execute(
             update(PositionProjection)
             .where(PositionProjection.object_id == "rack-rotate-idempotent")
-            .values(arrival_face="B")
+            .values(arrival_face="270")
         )
 
     duplicate = await service.rotate_rack(
@@ -766,7 +763,7 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
         _caller(),
         "rack-rotate-idempotent",
         RackPosition("ROTATE"),
-        RackFace.B,
+        "270",
     )
 
     assert duplicate == first
@@ -777,14 +774,14 @@ async def test_active_resource_binding_rejects_overlapping_task(
     service: TransportService,
     db_engine: object,
 ) -> None:
-    await confirm_rack_faces(db_engine, {"rack-resource": RackFace.A})
-    await service.move_rack(new_uuid7(), _caller(), "rack-resource", RackPosition("A"), RackPosition("B"), RackFace.A)
+    await confirm_rack_faces(db_engine, {"rack-resource": "90"})
+    await service.move_rack(new_uuid7(), _caller(), "rack-resource", RackPosition("A"), RackPosition("B"), "90")
 
     with pytest.raises(TransportResourceConflict):
         await service.move_bins(
             new_uuid7(),
             _caller(),
-            (BinMove("bin-resource", RackBinSlot("rack-resource", RackFace.A, "1"), HandoffPosition("IN")),),
+            (BinMove("bin-resource", RackBinSlot("rack-resource", "90", "1"), HandoffPosition("IN")),),
         )
 
 
@@ -794,9 +791,7 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
     db_engine: object,
 ) -> None:
     provider = service.provider
-    handle = await service.move_rack(
-        new_uuid7(), _caller(), "rack-submit", RackPosition("A"), RackPosition("B"), RackFace.A
-    )
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-submit", RackPosition("A"), RackPosition("B"), "90")
 
     assert await service.submit_pending_tasks(10) == 1
     assert await service.submit_pending_tasks(10) == 0
@@ -813,18 +808,14 @@ async def test_delivery_unknown_enters_reconciling_and_keeps_resource(
     db_engine: object,
 ) -> None:
     service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
-    handle = await service.move_rack(
-        new_uuid7(), _caller(), "rack-unknown", RackPosition("A"), RackPosition("B"), RackFace.A
-    )
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("A"), RackPosition("B"), "90")
 
     assert await service.submit_pending_tasks(1) == 1
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert snapshot.status == "RECONCILING"
     assert snapshot.outcome_version == 1
     with pytest.raises(TransportResourceConflict):
-        await service.move_rack(
-            new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), RackFace.A
-        )
+        await service.move_rack(new_uuid7(), _caller(), "rack-unknown", RackPosition("B"), RackPosition("C"), "90")
 
 
 @pytest.mark.asyncio
@@ -840,7 +831,7 @@ async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resourc
         "rack-foreign-ack",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
 
     assert await service.submit_pending_tasks(1) == 1
@@ -854,7 +845,7 @@ async def test_submit_result_with_foreign_task_id_fails_closed_and_keeps_resourc
             "rack-foreign-ack",
             RackPosition("B"),
             RackPosition("C"),
-            RackFace.A,
+            "90",
         )
 
 
@@ -863,9 +854,7 @@ async def test_expired_claim_after_send_started_reconciles_without_resend(
     service: TransportService,
     db_engine: object,
 ) -> None:
-    handle = await service.move_rack(
-        new_uuid7(), _caller(), "rack-crash", RackPosition("A"), RackPosition("B"), RackFace.A
-    )
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-crash", RackPosition("A"), RackPosition("B"), "90")
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     expired = timezone.now_for_db()
     async with sessions.begin() as db:
@@ -891,7 +880,7 @@ async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: ob
         "rack-late-not-sent",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
     submit = asyncio.create_task(service.submit_pending_tasks(1))
     await provider.started.wait()
@@ -939,7 +928,7 @@ async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
         rack_id,
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
     submit = asyncio.create_task(service.submit_pending_tasks(1))
     await provider.started.wait()
@@ -957,10 +946,10 @@ async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
     snapshot = await _load_task(db_engine, handle.transport_task_id)
     assert (snapshot.status, snapshot.reason_code) == (expected_status, expected_reason)
     if resource_released:
-        await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), RackFace.A)
+        await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), "90")
     else:
         with pytest.raises(TransportResourceConflict):
-            await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), RackFace.A)
+            await service.move_rack(new_uuid7(), _caller(), rack_id, RackPosition("B"), RackPosition("C"), "90")
 
 
 @pytest.mark.asyncio
@@ -975,7 +964,7 @@ async def test_result_arriving_during_submit_is_not_regressed_by_late_ack(db_eng
         "rack-before-ack",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
 
     assert await service.submit_pending_tasks(1) == 1
@@ -986,9 +975,7 @@ async def test_result_arriving_during_submit_is_not_regressed_by_late_ack(db_eng
 
 @pytest.mark.asyncio
 async def test_expired_claim_without_send_start_is_reclaimed(service: TransportService, db_engine: object) -> None:
-    handle = await service.move_rack(
-        new_uuid7(), _caller(), "rack-reclaim", RackPosition("A"), RackPosition("B"), RackFace.A
-    )
+    handle = await service.move_rack(new_uuid7(), _caller(), "rack-reclaim", RackPosition("A"), RackPosition("B"), "90")
     expired = timezone.now_for_db() - timedelta(seconds=1)
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
@@ -1014,7 +1001,7 @@ async def test_confirmed_not_sent_stops_after_three_attempts_and_releases_resour
         "rack-retry-budget",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -1039,7 +1026,7 @@ async def test_confirmed_not_sent_stops_after_three_attempts_and_releases_resour
         "rack-retry-budget",
         RackPosition("A"),
         RackPosition("C"),
-        RackFace.A,
+        "90",
     )
     assert replacement.transport_task_id != handle.transport_task_id
 
@@ -1049,11 +1036,11 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     service: TransportService,
     db_engine: object,
 ) -> None:
-    await confirm_rack_faces(db_engine, {"rack-deadline": RackFace.A})
+    await confirm_rack_faces(db_engine, {"rack-deadline": "90"})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
-        (BinMove("bin-deadline", RackBinSlot("rack-deadline", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-deadline", RackBinSlot("rack-deadline", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     await service.submit_pending_tasks(1)
     accepted = await _load_task(db_engine, handle.transport_task_id)
@@ -1099,11 +1086,11 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     db_engine: object,
 ) -> None:
     service.provider.code = TransportSubmitCode.DELIVERY_UNKNOWN
-    await confirm_rack_faces(db_engine, {"rack-late-position": RackFace.A})
+    await confirm_rack_faces(db_engine, {"rack-late-position": "90"})
     handle = await service.move_bins(
         new_uuid7(),
         _caller(),
-        (BinMove("bin-late-position", RackBinSlot("rack-late-position", RackFace.A, "1"), HandoffPosition("OUT")),),
+        (BinMove("bin-late-position", RackBinSlot("rack-late-position", "90", "1"), HandoffPosition("OUT")),),
     )
     assert await service.submit_pending_tasks(1) == 1
     unknown = await _load_task(db_engine, handle.transport_task_id)
@@ -1151,16 +1138,17 @@ async def test_local_client_identity_freezes_a_distinct_submit_snapshot_before_r
         "rack-submit-snapshot",
         RackPosition("A"),
         RackPosition("B"),
-        RackFace.A,
+        "90",
     )
     first = await _load_task(db_engine, handle.transport_task_id)
     expected_payload = {
         "transport_task_id": handle.transport_task_id,
         "kind": "RACK_MOVE",
+        "rcs_template_id": "F01",
         "rack_id": "rack-submit-snapshot",
         "source": {"kind": "RACK_POSITION", "location_code": "A"},
         "target": {"kind": "RACK_POSITION", "location_code": "B"},
-        "target_face": "A",
+        "target_face": "90",
     }
     expected_envelope = {
         "operation_id": first.submit_operation_id,

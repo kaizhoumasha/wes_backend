@@ -4,8 +4,8 @@
 
 status: Tasks 0–7 completed; onsite target-only cutover verified from candidate 834fe59e
 implementation_date: 2026-08-29 to 2026-08-30
-merge_status: NOT PUSHED / NO PR / NOT MERGED
-deployment_status: DEPLOYED TO INTEGRATION / CUTOVER VERIFIED / NOT SUPPLIER OR BUSINESS ACCEPTED
+merge_status: PR #187 MERGED TO develop@97e6887a
+deployment_status: 834fe59e DEPLOYED TO INTEGRATION / MERGE COMMIT NOT REDEPLOYED / NOT SUPPLIER OR BUSINESS ACCEPTED
 
 **Goal:** 在 Phase 9 最小执行基础和当前生产 successor 已真实交付后，通过一次 target-only 原子切换删除旧 Runtime/Intent/Outbox/Hold/Provider 生产路径，并只把零生产消费者的 schema identity 交给 Phase 11。
 

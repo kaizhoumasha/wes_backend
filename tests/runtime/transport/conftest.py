@@ -10,7 +10,6 @@ from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
     RackBinSlot,
-    RackFace,
     TransportCaller,
     TransportHandle,
     TransportOutcome,

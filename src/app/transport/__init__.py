@@ -15,13 +15,16 @@ if TYPE_CHECKING:
         MoveBinsRequest,
         MoveRackRequest,
         RackBinSlot,
-        RackFace,
+        RackMovePosition,
         RackPosition,
+        RackReference,
+        RcsTemplateId,
         RotateRackRequest,
         TransportCaller,
         TransportHandle,
         TransportOutcome,
         TransportPort,
+        ZonePosition,
     )
 
 __all__ = [
@@ -32,18 +35,21 @@ __all__ = [
     "MoveBinsRequest",
     "MoveRackRequest",
     "RackBinSlot",
-    "RackFace",
+    "RackMovePosition",
     "RackPosition",
+    "RackReference",
+    "RcsTemplateId",
     "RotateRackRequest",
     "TransportCaller",
     "TransportHandle",
     "TransportOutcome",
     "TransportPort",
     "TransportRuntime",
+    "ZonePosition",
     "build_transport_runtime",
 ]
 
-_CONTRACT_EXPORTS = frozenset(__all__[:-2])
+_CONTRACT_EXPORTS = frozenset(__all__) - {"TransportRuntime", "build_transport_runtime"}
 
 
 def __getattr__(name: str) -> Any:

@@ -17,9 +17,9 @@ from wes_plugin_sdk import (
     CreateWmsConfirmation,
     DevicePosition,
     EvidenceReadyFact,
-    RackFace,
     TransportLeg,
     TransportRackPosition,
+    TransportRcsTemplateId,
     TransportResultReadyFact,
     TransportTaskType,
     Wait,
@@ -57,9 +57,6 @@ from src.app.execution.services import (
     WmsConfirmationIdentityConflictError,
     WmsConfirmationRequest,
     WmsConfirmationService,
-)
-from src.app.transport.contracts import (
-    RackFace as CoreRackFace,
 )
 from src.app.transport.contracts import (
     RackPosition,
@@ -311,7 +308,8 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             f"RACK-{identity}",
             TransportRackPosition("BUFFER"),
             TransportRackPosition("SORTER"),
-            RackFace.A,
+            "90",
+            TransportRcsTemplateId.CTU01,
         ),
         CreateWmsConfirmation(
             fact.material_execution_id,
@@ -1037,7 +1035,8 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
         "RACK-2",
         TransportRackPosition("BUFFER"),
         TransportRackPosition("OUTLET"),
-        RackFace.B,
+        "270",
+        TransportRcsTemplateId.CTU01,
     )
 
     with pytest.raises(ValueError, match="binding correlation"):
@@ -1154,7 +1153,7 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
             TransportMemberOutcome(
                 object_id="RACK-2",
                 final_position=RackPosition("OUTLET"),
-                arrival_face=CoreRackFace.B,
+                arrival_face="270",
             ),
         ),
     )
@@ -1245,7 +1244,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
                 TransportMemberOutcome(
                     object_id="RACK-2",
                     final_position=RackPosition("OUTLET"),
-                    arrival_face=CoreRackFace.B,
+                    arrival_face="270",
                 ),
             ),
         )
@@ -1266,7 +1265,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
                         "final_position": {"kind": "RACK_POSITION", "location_code": "OUTLET"},
                         "position_unknown": False,
                         "failure_code": None,
-                        "arrival_face": "B",
+                        "arrival_face": "270",
                     }
                 ],
             },

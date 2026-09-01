@@ -12,7 +12,7 @@ from sqlalchemy import delete, select
 
 from src.app.execution.models import PositionProjection
 from src.app.transport.composition import build_transport_runtime
-from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, RackFace, TransportCaller
+from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, TransportCaller
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -82,7 +82,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         projection_object_ids.extend([*rack_ids, f"bin-evidence-{suffix}"])
         await confirm_rack_faces_with_sessions(
             integration_session_factory,
-            dict.fromkeys(rack_ids, RackFace.A),
+            dict.fromkeys(rack_ids, "90"),
         )
         for index in range(2):
             handle = await runtime.service.move_bins(
@@ -91,7 +91,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 (
                     BinMove(
                         f"bin-submit-{index}-{suffix}",
-                        RackBinSlot(rack_ids[index], RackFace.A, "1"),
+                        RackBinSlot(rack_ids[index], "90", "1"),
                         HandoffPosition(f"HANDOFF-{index}-{suffix}"),
                     ),
                 ),
@@ -104,7 +104,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             (
                 BinMove(
                     f"bin-evidence-{suffix}",
-                    RackBinSlot(rack_ids[2], RackFace.A, "1"),
+                    RackBinSlot(rack_ids[2], "90", "1"),
                     HandoffPosition(f"HANDOFF-EVIDENCE-{suffix}"),
                 ),
             ),

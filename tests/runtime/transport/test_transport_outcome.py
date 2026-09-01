@@ -12,7 +12,6 @@ from src.app.transport.contracts import (
     HandoffPosition,
     MoveRackRequest,
     RackBinSlot,
-    RackFace,
     RackPosition,
     TransportCaller,
     TransportContractError,
@@ -42,7 +41,7 @@ async def test_record_evidence_only_persists_then_batch_applies_and_publishes(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER", "STATION_A"),
-        (BinMove("bin-1", RackBinSlot("rack-1", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-1", RackBinSlot("rack-1", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     payload = {
         "transport_task_id": handle.transport_task_id,
@@ -80,7 +79,7 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-2", RackBinSlot("rack-2", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-2", RackBinSlot("rack-2", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     payload = {
         "transport_task_id": handle.transport_task_id,
@@ -265,7 +264,7 @@ async def test_same_evidence_identity_with_changed_event_timestamp_conflicts(
     handle = await outcome_service.move_bins(
         request_id,
         TransportCaller("SORTER"),
-        (BinMove("bin-timestamp", RackBinSlot("rack-timestamp", RackFace.A, "1"), HandoffPosition("OUT")),),
+        (BinMove("bin-timestamp", RackBinSlot("rack-timestamp", "90", "1"), HandoffPosition("OUT")),),
     )
     payload = {
         "transport_task_id": handle.transport_task_id,
@@ -317,11 +316,7 @@ async def test_same_operation_id_is_independent_between_callback_operations(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (
-            BinMove(
-                "bin-operation-scoped", RackBinSlot("rack-operation-scoped", RackFace.A, "1"), HandoffPosition("OUT")
-            ),
-        ),
+        (BinMove("bin-operation-scoped", RackBinSlot("rack-operation-scoped", "90", "1"), HandoffPosition("OUT")),),
     )
     operation_id = "shared-operation-id"
 
@@ -397,8 +392,8 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
     accepted_before_conflict: bool,
 ) -> None:
     moves = (
-        BinMove("bin-atomic-1", RackBinSlot("rack-atomic", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
-        BinMove("bin-atomic-2", RackBinSlot("rack-atomic", RackFace.A, "2"), HandoffPosition("ROLLER_OUT")),
+        BinMove("bin-atomic-1", RackBinSlot("rack-atomic", "90", "1"), HandoffPosition("ROLLER_IN")),
+        BinMove("bin-atomic-2", RackBinSlot("rack-atomic", "90", "2"), HandoffPosition("ROLLER_OUT")),
     )
     handle = await outcome_service.move_bins(new_uuid7(), TransportCaller("SORTER"), moves)
     if accepted_before_conflict:
@@ -507,8 +502,8 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
         new_uuid7(),
         TransportCaller("SORTER"),
         (
-            BinMove("bin-member-1", RackBinSlot("rack-members", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),
-            BinMove("bin-member-2", RackBinSlot("rack-members", RackFace.A, "2"), HandoffPosition("ROLLER_OUT")),
+            BinMove("bin-member-1", RackBinSlot("rack-members", "90", "1"), HandoffPosition("ROLLER_IN")),
+            BinMove("bin-member-2", RackBinSlot("rack-members", "90", "2"), HandoffPosition("ROLLER_OUT")),
         ),
     )
     operation_id = f"operation-members-{len(results)}-{results[-1]['container_id']}"
@@ -551,7 +546,7 @@ async def test_move_success_requires_the_frozen_target_face(
         "rack-move-face",
         RackPosition("SOURCE"),
         RackPosition("TARGET"),
-        RackFace.B,
+        "270",
     )
     operation_id = "operation-move-wrong-face"
     await record_valid_callback(
@@ -566,7 +561,7 @@ async def test_move_success_requires_the_frozen_target_face(
             "rack_id": "rack-move-face",
             "status": "SUCCEEDED",
             "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-            "arrival_face": "A",
+            "arrival_face": "90",
         },
     )
 
@@ -595,7 +590,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
                 line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                 position_unknown=False,
-                arrival_face="A",
+                arrival_face="90",
                 source_operation_id="initial-face",
                 source_transport_task_id="initial-face",
                 updated_at=timezone.now_for_db(),
@@ -606,7 +601,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
         TransportCaller("SORTER"),
         "rack-face",
         RackPosition("ROTATE_POINT"),
-        RackFace.B,
+        "270",
     )
     operation_id = "operation-wrong-face"
     payload = {
@@ -616,7 +611,7 @@ async def test_rotate_success_requires_the_frozen_target_face(
         "rack_id": "rack-face",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-        "arrival_face": "A",
+        "arrival_face": "90",
     }
 
     await record_valid_callback(
@@ -656,7 +651,7 @@ async def test_late_source_picked_does_not_regress_confirmed_target_position(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-order", RackBinSlot("rack-order", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-order", RackBinSlot("rack-order", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     target = {
         "transport_task_id": handle.transport_task_id,
@@ -702,7 +697,7 @@ async def test_late_position_unknown_does_not_regress_confirmed_target_position(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-late-unknown", RackBinSlot("rack-late-unknown", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-late-unknown", RackBinSlot("rack-late-unknown", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
     for operation_id, milestone, final_position in (
@@ -752,11 +747,7 @@ async def test_result_cannot_replace_a_confirmed_target_with_a_different_known_p
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (
-            BinMove(
-                "bin-confirmed-target", RackBinSlot("rack-confirmed", RackFace.A, "1"), HandoffPosition("ROLLER_IN")
-            ),
-        ),
+        (BinMove("bin-confirmed-target", RackBinSlot("rack-confirmed", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     target = {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
     await record_valid_callback(
@@ -820,11 +811,7 @@ async def test_late_source_picked_does_not_overwrite_unknown_position(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (
-            BinMove(
-                "bin-unknown-order", RackBinSlot("rack-unknown-order", RackFace.A, "1"), HandoffPosition("ROLLER_IN")
-            ),
-        ),
+        (BinMove("bin-unknown-order", RackBinSlot("rack-unknown-order", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     for operation_id, milestone in (
         ("operation-position-lost", "POSITION_UNKNOWN"),
@@ -872,7 +859,7 @@ async def test_conflicting_result_cannot_rewrite_a_definite_terminal_fact(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-terminal", RackBinSlot("rack-terminal", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-terminal", RackBinSlot("rack-terminal", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     success = {
         "transport_task_id": handle.transport_task_id,
@@ -931,7 +918,7 @@ async def test_position_unknown_cannot_reopen_a_definite_terminal_fact(
     handle = await outcome_service.move_bins(
         new_uuid7(),
         TransportCaller("SORTER"),
-        (BinMove("bin-position", RackBinSlot("rack-position", RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+        (BinMove("bin-position", RackBinSlot("rack-position", "90", "1"), HandoffPosition("ROLLER_IN")),),
     )
     success = {
         "transport_task_id": handle.transport_task_id,

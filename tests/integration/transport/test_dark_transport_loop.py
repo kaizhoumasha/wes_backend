@@ -15,7 +15,6 @@ from src.app.transport.contracts import (
     BinMove,
     HandoffPosition,
     RackBinSlot,
-    RackFace,
     RackPosition,
     TransportCaller,
 )
@@ -123,7 +122,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     workline_id=workline_id,
                     line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "RACK_WAIT"},
-                    arrival_face="A",
+                    arrival_face="90",
                     source_operation_id=new_uuid7(),
                     source_transport_task_id="dark-loop-rack-face",
                     updated_at=timezone.now_for_db(),
@@ -137,7 +136,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     workline_id=workline_id,
                     line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-                    arrival_face="A",
+                    arrival_face="90",
                     source_operation_id=new_uuid7(),
                     source_transport_task_id="dark-loop-rack-face",
                     updated_at=timezone.now_for_db(),
@@ -146,15 +145,15 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
         )
     try:
         rack_handle = await service.move_rack(
-            new_uuid7(), caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK"), RackFace.A
+            new_uuid7(), caller, rack_id, RackPosition("RACK_WAIT"), RackPosition("RACK_WORK"), "90"
         )
         rotate_handle = await service.rotate_rack(
-            new_uuid7(), caller, rotate_rack_id, RackPosition("ROTATE_POINT"), RackFace.B
+            new_uuid7(), caller, rotate_rack_id, RackPosition("ROTATE_POINT"), "270"
         )
         bin_handle = await service.move_bins(
             new_uuid7(),
             caller,
-            (BinMove(moved_bin_id, RackBinSlot(move_source_rack, RackFace.A, "1"), HandoffPosition("ROLLER_IN")),),
+            (BinMove(moved_bin_id, RackBinSlot(move_source_rack, "90", "1"), HandoffPosition("ROLLER_IN")),),
         )
         exchange_handle = await service.exchange_bins(
             new_uuid7(),
@@ -162,15 +161,15 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
             (
                 BinExchangePair(
                     exchange_bin_ids[0],
-                    RackBinSlot(exchange_left_rack, RackFace.A, "1"),
+                    RackBinSlot(exchange_left_rack, "90", "1"),
                     exchange_bin_ids[1],
-                    RackBinSlot(exchange_right_rack, RackFace.A, "1"),
+                    RackBinSlot(exchange_right_rack, "90", "1"),
                 ),
                 BinExchangePair(
                     exchange_bin_ids[2],
-                    RackBinSlot(exchange_left_rack, RackFace.A, "2"),
+                    RackBinSlot(exchange_left_rack, "90", "2"),
                     exchange_bin_ids[3],
-                    RackBinSlot(exchange_right_rack, RackFace.A, "2"),
+                    RackBinSlot(exchange_right_rack, "90", "2"),
                 ),
             ),
         )
@@ -187,7 +186,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     "rack_id": rack_id,
                     "status": "SUCCEEDED",
                     "final_position": {"kind": "RACK_POSITION", "location_code": "RACK_WORK"},
-                    "arrival_face": "A",
+                    "arrival_face": "90",
                 },
             ),
             (
@@ -198,7 +197,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     "rack_id": rotate_rack_id,
                     "status": "SUCCEEDED",
                     "final_position": {"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
-                    "arrival_face": "B",
+                    "arrival_face": "270",
                 },
             ),
             (
@@ -227,7 +226,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
                                 "rack_id": exchange_right_rack,
-                                "rack_face": "A",
+                                "rack_face": "90",
                                 "slot_id": "1",
                             },
                         },
@@ -237,7 +236,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
                                 "rack_id": exchange_left_rack,
-                                "rack_face": "A",
+                                "rack_face": "90",
                                 "slot_id": "1",
                             },
                         },
@@ -247,7 +246,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
                                 "rack_id": exchange_right_rack,
-                                "rack_face": "A",
+                                "rack_face": "90",
                                 "slot_id": "2",
                             },
                         },
@@ -257,7 +256,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
                                 "rack_id": exchange_left_rack,
-                                "rack_face": "A",
+                                "rack_face": "90",
                                 "slot_id": "2",
                             },
                         },

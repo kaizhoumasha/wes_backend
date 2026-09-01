@@ -6,13 +6,15 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, cast
 
 from wes_plugin_sdk import (
-    RackFace,
-    RecoveryDecision,
-    TransportLeg,
-    TransportResultReadyFact,
+    RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
 from wes_plugin_sdk import (
-    RecoveryDecidedFact as BaseRecoveryDecidedFact,
+    RecoveryDecision,
+    TransportLeg,
+    TransportRackPosition,
+    TransportRackReference,
+    TransportResultReadyFact,
+    TransportZonePosition,
 )
 
 from deployment._rough_sorter_device_facts import completed_response
@@ -31,8 +33,14 @@ from deployment._rough_sorter_values import (
 )
 from deployment._rough_sorter_wms_facts import validate_wms_execution
 from src.app.execution.models import InboundEvidenceKind
-from src.app.transport.contracts import MoveRackRequest, RackPosition, TransportCaller
-from src.app.transport.contracts import RackFace as CoreRackFace
+from src.app.transport.contracts import (
+    MoveRackRequest,
+    RackPosition,
+    RackReference,
+    RcsTemplateId,
+    TransportCaller,
+    ZonePosition,
+)
 from src.app.wms_adapter.inbound_wire import parse_outbound_request, parse_outbound_response
 
 if TYPE_CHECKING:
@@ -51,6 +59,18 @@ if TYPE_CHECKING:
     from deployment._rough_sorter_types import RoughSorterTypes
     from src.app.execution.models import InboundEvidence, MaterialExecution
     from src.app.transport.repository import TransportRepository
+
+
+def _core_rack_move_position(
+    position: TransportRackReference | TransportZonePosition | TransportRackPosition,
+) -> RackReference | ZonePosition | RackPosition:
+    if type(position) is TransportRackReference:
+        return RackReference(position.location_code)
+    if type(position) is TransportZonePosition:
+        return ZonePosition(position.location_code)
+    if type(position) is TransportRackPosition:
+        return RackPosition(position.location_code)
+    raise TypeError("Transport position kind 非法")
 
 
 async def current_rack_id(
@@ -138,14 +158,17 @@ async def build_transport_fact(
         raise ValueError("NEW_IN binding old rack identity 不匹配")
     plan = rack_move_plan(response_data.get("new_empty_rack"), types)
     transport_task = await transport_tasks.get_task_by_client_request(cast("AsyncSession", db), client_request_id)
+    source_position = _core_rack_move_position(plan.source)
+    target_position = _core_rack_move_position(plan.target)
     expected_request = asdict(
         MoveRackRequest(
             client_request_id=client_request_id,
             caller=TransportCaller(workline_id=str(execution.workline_id)),
             rack_id=plan.rack_id,
-            source=RackPosition(plan.source.location_code),
-            target=RackPosition(plan.target.location_code),
-            target_face=CoreRackFace(plan.target_face.value),
+            source=source_position,
+            target=target_position,
+            target_face=plan.target_face,
+            rcs_template_id=RcsTemplateId.CTU01,
         )
     )
     if (
@@ -201,10 +224,13 @@ async def build_transport_fact(
     )
     if admission.get("result") != "ACCEPT":
         raise ValueError("NEW_IN target request 缺少已完成 admission ACCEPT")
+    arrival_face = member.get("arrival_face")
+    if type(arrival_face) is not str or arrival_face == "":
+        raise ValueError("arrival_face 必须是非空 string")
     return types.TransportOutcomePublishedFact(
         **common,
         final_position=final,
-        arrival_face=RackFace(required_string(member.get("arrival_face"), "arrival_face")),
+        arrival_face=arrival_face,
         actual_rack_id=required_string(member.get("object_id"), "object_id"),
         source_position=bound_position(runtime, "PIPELINE_OUTLET", execution.material_trace_id),
         request_operation_id=client_request_id,

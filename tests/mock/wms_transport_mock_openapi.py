@@ -44,6 +44,12 @@ _UUIDV7_SCHEMA = {
     "description": "小写 canonical UUIDv7 operation_id。",
 }
 _TIMESTAMP_SCHEMA = {"type": "integer", "format": "int64", "minimum": 0, "maximum": 2**63 - 1}
+_FACE_SCHEMA = {
+    "type": "string",
+    "minLength": 1,
+    "description": "Opaque non-empty face value; preserve exactly",
+}
+_RCS_TEMPLATE_SCHEMA = {"type": "string", "enum": ["CTU01", "CTU02", "CTU03", "F01"]}
 
 
 def _closed_object(
@@ -64,12 +70,21 @@ _RACK_POSITION_SCHEMA = _closed_object(
     ["kind", "location_code"],
     {"kind": {"type": "string", "enum": ["RACK_POSITION"]}, "location_code": _NONBLANK_TEXT_SCHEMA},
 )
+_RACK_REFERENCE_SCHEMA = _closed_object(
+    ["kind", "location_code"],
+    {"kind": {"type": "string", "enum": ["RACK"]}, "location_code": _NONBLANK_TEXT_SCHEMA},
+)
+_ZONE_POSITION_SCHEMA = _closed_object(
+    ["kind", "location_code"],
+    {"kind": {"type": "string", "enum": ["ZONE"]}, "location_code": _NONBLANK_TEXT_SCHEMA},
+)
+_RACK_MOVE_POSITION_SCHEMA = {"oneOf": [_RACK_REFERENCE_SCHEMA, _ZONE_POSITION_SCHEMA, _RACK_POSITION_SCHEMA]}
 _RACK_BIN_SLOT_SCHEMA = _closed_object(
     ["kind", "rack_id", "rack_face", "slot_id"],
     {
         "kind": {"type": "string", "enum": ["RACK_BIN_SLOT"]},
         "rack_id": _NONBLANK_TEXT_SCHEMA,
-        "rack_face": {"type": "string", "enum": ["A", "B"]},
+        "rack_face": _FACE_SCHEMA,
         "slot_id": _NONBLANK_TEXT_SCHEMA,
     },
 )
@@ -91,26 +106,28 @@ _BIN_EXCHANGE_MOVE_SCHEMA = _closed_object(
 )
 
 _RACK_MOVE_DATA_SCHEMA = _closed_object(
-    ["transport_task_id", "kind", "rack_id", "source", "target", "target_face"],
+    ["transport_task_id", "kind", "rack_id", "source", "target", "target_face", "rcs_template_id"],
     {
         "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
         "kind": {"type": "string", "enum": ["RACK_MOVE"]},
         "rack_id": _NONBLANK_TEXT_SCHEMA,
-        "source": _RACK_POSITION_SCHEMA,
-        "target": _RACK_POSITION_SCHEMA,
-        "target_face": {"type": "string", "enum": ["A", "B"]},
+        "source": _RACK_MOVE_POSITION_SCHEMA,
+        "target": _RACK_MOVE_POSITION_SCHEMA,
+        "target_face": _FACE_SCHEMA,
+        "rcs_template_id": _RCS_TEMPLATE_SCHEMA,
     },
     description="运行时校验 source 与 target 不同。",
 )
 _RACK_ROTATE_DATA_SCHEMA = _closed_object(
-    ["transport_task_id", "kind", "rack_id", "source", "target", "target_face"],
+    ["transport_task_id", "kind", "rack_id", "source", "target", "target_face", "rcs_template_id"],
     {
         "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
         "kind": {"type": "string", "enum": ["RACK_ROTATE"]},
         "rack_id": _NONBLANK_TEXT_SCHEMA,
         "source": _RACK_POSITION_SCHEMA,
         "target": _RACK_POSITION_SCHEMA,
-        "target_face": {"type": "string", "enum": ["A", "B"]},
+        "target_face": _FACE_SCHEMA,
+        "rcs_template_id": _RCS_TEMPLATE_SCHEMA,
     },
     description="运行时校验 source 与 target 相同。",
 )
@@ -171,7 +188,8 @@ rack_move = {
         "rack_id": "rack-1",
         "source": {"kind": "RACK_POSITION", "location_code": "buffer-a"},
         "target": {"kind": "RACK_POSITION", "location_code": "station-a"},
-        "target_face": "A",
+        "target_face": "90",
+        "rcs_template_id": "F01",
     },
 }
 rack_rotate = {
@@ -184,7 +202,8 @@ rack_rotate = {
         "rack_id": "rack-2",
         "source": {"kind": "RACK_POSITION", "location_code": "station-b"},
         "target": {"kind": "RACK_POSITION", "location_code": "station-b"},
-        "target_face": "B",
+        "target_face": "270",
+        "rcs_template_id": "CTU02",
     },
 }
 bin_move = {
@@ -197,7 +216,7 @@ bin_move = {
         "moves": [
             {
                 "container_id": "bin-1",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "1"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "1"},
                 "target": {"kind": "HANDOFF_POSITION", "location_code": "roller-in"},
             }
         ],
@@ -213,13 +232,13 @@ bin_exchange = {
         "moves": [
             {
                 "container_id": "bin-2",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "2"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "2"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "2"},
             },
             {
                 "container_id": "bin-3",
-                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "A", "slot_id": "2"},
-                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "A", "slot_id": "2"},
+                "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-2", "rack_face": "90", "slot_id": "2"},
+                "target": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": "2"},
             },
         ],
     },
@@ -310,7 +329,7 @@ rack_succeeded = {
         "rack_id": "rack-1",
         "status": "SUCCEEDED",
         "final_position": {"kind": "RACK_POSITION", "location_code": "station-a"},
-        "arrival_face": "A",
+        "arrival_face": "90",
     },
 }
 bin_succeeded = {
