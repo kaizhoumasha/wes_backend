@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.8.0] - 2026-09-01
+
+### Fixed
+
+- 将后端与 Mock 镜像的 Debian、Debian Security 和 PyPI 默认镜像统一切换至阿里云 HTTPS 源，保留构建参数覆盖能力，避开联调 CI 无法解析清华镜像的问题。
+
+### Verification
+
+- Docker/Jenkins 合同测试 20 项通过；主 `builder` 与 Mock 镜像均完成无缓存真实构建，确认 apt、pip 和 uv 使用新镜像成功。
+- HEAVY selector 选中的 114 项通过；完整 QUALITY 通过（FAST 2418 passed、5 skipped）。
+
 ## [0.29.7.0] - 2026-09-01
 
 ### Fixed

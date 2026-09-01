@@ -90,6 +90,21 @@ def test_builder_retries_transient_uv_bootstrap_failures() -> None:
     assert "exit 1;" in builder_stage
 
 
+def test_backend_and_mock_images_use_the_same_regional_package_mirrors() -> None:
+    for dockerfile in (REPO_ROOT / "Dockerfile", REPO_ROOT / "tests/mock/Dockerfile"):
+        dockerfile_text = dockerfile.read_text(encoding="utf-8")
+
+        assert "ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian" in dockerfile_text
+        assert "ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security" in dockerfile_text
+        assert "ARG PYPI_MIRROR=https://mirrors.aliyun.com/pypi/simple" in dockerfile_text
+        assert "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" in dockerfile_text
+        assert "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" in dockerfile_text
+        assert "PIP_INDEX_URL=${PYPI_MIRROR}" in dockerfile_text
+        assert "tuna.tsinghua.edu.cn" not in dockerfile_text
+
+    assert "UV_DEFAULT_INDEX=${PYPI_MIRROR}" in (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+
 def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs() -> None:
     required_paths = (
         "Dockerfile",
