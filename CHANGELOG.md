@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.6.0] - 2026-09-01
+
+### Fixed
+
+- 后端 Docker builder 安装 `uv` 时对外部 Python 镜像的瞬时截断响应执行最多三次有限重试，并在最终失败时明确终止构建。
+
+### Verification
+
+- Docker/Jenkins 合同测试 19 项通过，实际 `builder` 镜像构建通过；HEAVY selector 选中的生产 wiring 1 项通过。
+- fresh Review 无剩余 finding；完整 QUALITY 通过（FAST 2417 passed、5 skipped）。
+
 ## [0.29.5.0] - 2026-09-01
 
 ### Changed

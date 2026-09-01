@@ -77,6 +77,19 @@ def test_backend_provenance_labels_do_not_invalidate_shared_dependency_layers() 
         assert 'com.zontec.wes.source-manifest="${WES_SOURCE_TREE}"' in stage
 
 
+def test_builder_retries_transient_uv_bootstrap_failures() -> None:
+    dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    builder_stage = dockerfile_text.split("FROM base AS builder", maxsplit=1)[1].split(
+        "FROM base AS development", maxsplit=1
+    )[0]
+
+    assert "for attempt in 1 2 3" in builder_stage
+    assert "if pip install --no-cache-dir uv" in builder_stage
+    assert "break;" in builder_stage
+    assert '[ "$attempt" -eq 3 ]' in builder_stage
+    assert "exit 1;" in builder_stage
+
+
 def test_testing_image_context_keeps_ci_contract_assets_and_ruff_layout_inputs() -> None:
     required_paths = (
         "Dockerfile",
