@@ -45,6 +45,7 @@ CANDIDATE_GLOBS = (
     "alembic.ini",
     "docker-compose*.yml",
     "Dockerfile",
+    "docker/test/*.entrypoint.sh",
     ".dockerignore",
     "Jenkinsfile.backend-ci",
     "Jenkinsfile.release-checker-ci",

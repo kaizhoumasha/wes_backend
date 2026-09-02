@@ -774,6 +774,14 @@ def test_nginx_runtime_config_is_a_heavy_candidate() -> None:
     assert is_candidate("nginx/conf.d/default.conf") is True
 
 
+def test_container_entrypoint_is_a_heavy_candidate() -> None:
+    changed_path = "docker/test/celery.entrypoint.sh"
+
+    assert is_candidate(changed_path) is True
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert select_heavy_tests([changed_path], config) == ["tests/e2e/transport/test_transport_production_wiring.py"]
+
+
 @pytest.mark.parametrize(
     "changed_path",
     ["tools/release_checker/release_checker.py", "tools/release_checker/Dockerfile", "Jenkinsfile.release-checker-ci"],

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import time
 from inspect import signature
 from multiprocessing import Value
@@ -45,6 +46,34 @@ DEVICE_COMMAND_BEAT_CONTRACTS = (
         30.0,
     ),
 )
+
+
+def test_celery_entrypoint_starts_without_retired_wms_process_role(tmp_path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_celery = fake_bin / "celery"
+    fake_celery.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\"\n", encoding="utf-8")
+    fake_celery.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CELERY_WORKER_QUEUES": "wms-fulfillment",
+        "CELERY_WORKER_CONCURRENCY": "1",
+    }
+    environment.pop("WMS_PROVIDER_PROCESS_ROLE", None)
+
+    completed = subprocess.run(
+        ["/bin/sh", "docker/test/celery.entrypoint.sh"],
+        cwd=os.getcwd(),
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--concurrency=1" in completed.stdout
+    assert "--queues=wms-fulfillment" in completed.stdout
 
 
 def _assert_target_beat_contract(

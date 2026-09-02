@@ -165,6 +165,12 @@ heavy_tests = [
 ]
 
 [[mapping]]
+source_glob = "docker/test/celery.entrypoint.sh"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+]
+
+[[mapping]]
 source_glob = "docker-compose.deploy.yml"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
