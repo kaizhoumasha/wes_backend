@@ -15,7 +15,7 @@ pipeline {
 
     options {
         buildDiscarder(logRotator(daysToKeepStr: '14', numToKeepStr: '10', artifactDaysToKeepStr: '7', artifactNumToKeepStr: '3'))
-        timeout(time: 60, unit: 'MINUTES')
+        timeout(time: 120, unit: 'MINUTES')
         skipDefaultCheckout(true)
         disableConcurrentBuilds(abortPrevious: true)
         timestamps()
@@ -58,20 +58,30 @@ pipeline {
                             set +x
                             set -eu
                             git init
-                            git remote add origin https://git.zontecmes.com/wes/wes_backend.git
-                            timeout --kill-after=10s 180s git -c credential.helper= \
+                            git remote add origin http://192.168.0.220:9080/wes/wes_backend.git
+                            fetch_ref() {
+                                refspec="$1"
+                                for attempt in 1 2 3; do
+                                    if timeout --kill-after=10s 600s git -c credential.helper= \
+                                        -c 'credential.helper=!f() { printf "%s\\n" \
+                                            "username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"; }; f' \
+                                        fetch --no-tags --force --filter=blob:none origin "$refspec"; then
+                                        return 0
+                                    fi
+                                    if [ "$attempt" -lt 3 ]; then
+                                        sleep 10
+                                    fi
+                                done
+                                return 1
+                            }
+                            fetch_ref "+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"
+                            if [ -n "${CI_TARGET_BRANCH}" ] && [ "${CI_TARGET_BRANCH}" != "${CI_SOURCE_BRANCH}" ]; then
+                                fetch_ref "+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"
+                            fi
+                            timeout --kill-after=10s 600s git -c credential.helper= \
                                 -c 'credential.helper=!f() { printf "%s\\n" \
                                     "username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"; }; f' \
-                                fetch --no-tags --force origin \
-                                "+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"
-                            if [ -n "${CI_TARGET_BRANCH}" ] && [ "${CI_TARGET_BRANCH}" != "${CI_SOURCE_BRANCH}" ]; then
-                                timeout --kill-after=10s 180s git -c credential.helper= \
-                                    -c 'credential.helper=!f() { printf "%s\\n" \
-                                        "username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"; }; f' \
-                                    fetch --no-tags --force origin \
-                                    "+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"
-                            fi
-                            git checkout --detach "refs/remotes/origin/${CI_SOURCE_BRANCH}"
+                                checkout --detach "refs/remotes/origin/${CI_SOURCE_BRANCH}"
                         '''
                     }
 
@@ -312,11 +322,21 @@ pipeline {
                         exit 0
                     fi
 
-                    docker compose \
+                    heavy_compose_attempt=1
+                    until docker compose \
                         -f docker-compose.ci-heavy.yml \
                         --env-file .env.test \
                         --project-name "${HEAVY_COMPOSE_PROJECT}" \
                         up -d --wait
+                    do
+                        if [ "$heavy_compose_attempt" -ge 3 ]; then
+                            echo 'HEAVY Compose 启动连续失败 3 次。'
+                            exit 1
+                        fi
+                        echo "HEAVY Compose 启动失败，10 秒后重试（${heavy_compose_attempt}/3）。"
+                        heavy_compose_attempt=$((heavy_compose_attempt + 1))
+                        sleep 10
+                    done
                     docker run --rm \
                         --env-file "$WORKSPACE/.env.test" \
                         --network "${HEAVY_COMPOSE_PROJECT}_default" \

@@ -209,6 +209,11 @@ def test_heavy_required_uses_a_build_scoped_compose_project() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     heavy_body = _stage_body(jenkins_text, "HEAVY Required", "Build Runtime Image")
 
+    assert "timeout(time: 120, unit: 'MINUTES')" in jenkins_text
+    assert "heavy_compose_attempt=1" in heavy_body
+    assert 'if [ "$heavy_compose_attempt" -ge 3 ]; then' in heavy_body
+    assert "heavy_compose_attempt=$((heavy_compose_attempt + 1))" in heavy_body
+    assert "sleep 10" in heavy_body
     assert "-f docker-compose.ci-heavy.yml" in heavy_body
     assert '--project-name "${HEAVY_COMPOSE_PROJECT}"' in heavy_body
     assert '--network "${HEAVY_COMPOSE_PROJECT}_default"' in heavy_body
@@ -247,19 +252,26 @@ def test_develop_push_uses_the_verified_previous_sha_for_release_gates() -> None
     assert '--base "origin/${CI_TARGET_BRANCH}"' not in classification_body
 
 
-def test_checkout_binds_tls_objects_to_trusted_event_refs() -> None:
+def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     jenkins_text = ACTIVE_JENKINSFILE.read_text(encoding="utf-8")
     checkout_body = _stage_body(jenkins_text, "Checkout Source", "Build CI Image")
 
     assert "deleteDir()" in checkout_body
-    assert "git remote add origin https://git.zontecmes.com/wes/wes_backend.git" in checkout_body
-    assert "http://192.168.0.220:9080/wes/wes_backend.git" not in checkout_body
-    assert "timeout --kill-after=10s 180s" in checkout_body
-    assert "fetch --no-tags --force origin" in checkout_body
+    assert "git remote add origin http://192.168.0.220:9080/wes/wes_backend.git" in checkout_body
+    assert "git remote add origin https://git.zontecmes.com/wes/wes_backend.git" not in checkout_body
+    assert checkout_body.count("timeout --kill-after=10s 600s") == 2
+    assert "fetch_ref()" in checkout_body
+    assert "for attempt in 1 2 3" in checkout_body
+    assert 'if [ "$attempt" -lt 3 ]' in checkout_body
+    assert "sleep 10" in checkout_body
+    assert 'fetch_ref "+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
+    assert 'fetch_ref "+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"' in checkout_body
+    assert "fetch --no-tags --force --filter=blob:none origin" in checkout_body
+    assert checkout_body.count("--filter=blob:none") == 1
     assert "--depth" not in checkout_body
     assert '"+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
     assert '"+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"' in checkout_body
-    assert 'git checkout --detach "refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
+    assert 'checkout --detach "refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
     assert "checkout([" not in checkout_body
     assert checkout_body.count("withCredentials([usernamePassword(") == 2
     assert "env.gitlabMergeRequestLastCommit" in checkout_body
@@ -267,6 +279,7 @@ def test_checkout_binds_tls_objects_to_trusted_event_refs() -> None:
     assert "Source event requires a non-zero 40-character trusted commit" in checkout_body
     assert "Fetched source ref must match the trusted event commit" in checkout_body
     assert "timeout --kill-after=5s 30s" in checkout_body
+    assert "ls-remote --heads https://git.zontecmes.com/wes/wes_backend.git" in checkout_body
     assert "withCredentials([usernamePassword(" in checkout_body
     assert "credentialsId: 'gitlab-http-creds'" in checkout_body
     assert "usernameVariable: 'GITLAB_USERNAME'" in checkout_body
@@ -308,6 +321,7 @@ def test_exact_ref_fetch_preserves_multi_commit_ancestry_and_merge_base(tmp_path
     feature_tip = _git("rev-parse", "HEAD", cwd=seed)
     _git("remote", "add", "origin", str(remote), cwd=seed)
     _git("push", "origin", "develop", "feature", cwd=seed)
+    _git("config", "uploadpack.allowFilter", "true", cwd=remote)
 
     _git("init", str(fetched), cwd=tmp_path)
     _git("remote", "add", "origin", str(remote), cwd=fetched)
@@ -316,14 +330,21 @@ def test_exact_ref_fetch_preserves_multi_commit_ancestry_and_merge_base(tmp_path
             "fetch",
             "--no-tags",
             "--force",
+            "--filter=blob:none",
             "origin",
             f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
             cwd=fetched,
         )
 
+    assert any(
+        line.startswith("?")
+        for line in _git("rev-list", "--objects", "--all", "--missing=print", cwd=fetched).splitlines()
+    )
     _git("merge-base", "--is-ancestor", base, feature_tip, cwd=fetched)
     assert _git("merge-base", "origin/develop", "origin/feature", cwd=fetched) == base
     assert _git("diff", "--name-only", "origin/develop...origin/feature", cwd=fetched) == "tracked.txt"
+    _git("checkout", "--detach", "origin/feature", cwd=fetched)
+    assert (fetched / "tracked.txt").read_text(encoding="utf-8") == "feature-2\n"
 
 
 def test_git_topology_helper_removes_parent_repository_environment(tmp_path: Path, monkeypatch) -> None:
