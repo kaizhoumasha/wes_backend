@@ -18,19 +18,19 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 
 **Status:** In progress — Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9 已合入 `develop@c5a93872`。Phase 10 Tasks 0–7 已完成并
 通过 #187 合入 `develop@97e6887a`；`codex/phase10-implementation@834fe59e` 的 target-only candidate 已于 2026-08-30 部署到
-联调环境并通过 cutover 门禁，但 merge commit 未证明重新部署，该证据不代表供应商、设备物理或业务验收。Phase 8 的 GitLab 发布提交
+联调环境并通过 cutover 门禁；该 merge commit 当时未重新部署，其内容现已包含在当前联调部署中。该证据不代表供应商、设备物理或业务验收。Phase 8 的 GitLab 发布提交
 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成不可变后端 RC 镜像 `88-f51677b`。
 Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已由 #189 合入 `develop@d458383a`；Phase 11 完成。
 Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始。
 真实 WMS/RCS/ECS、设备、供应商版本组合和业务验收不属于上述联调部署证据。
 
-**2026-09-01 acceptance review status:** `Transport 0.3 candidate: FINAL_VALIDATION_PENDING`。当前 NUL 修复候选已完成聚焦验证；
-`f2129982` 的 Backend QUALITY、selected HEAVY、不可变镜像和 12 项 Phase 8 E2E 是历史冻结证据，不代表当前候选。
-frontend canonical contract、测试、lint 与 build 的历史证据仍保留；WMS external publication pending。
+**2026-09-01 acceptance review status:** `Transport 0.3 WES implementation: ALIGNED AND DEPLOYED`。backend
+`develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree `46d568d1`；frontend 联调部署 revision 为 `a6c3193f`。
+`f2129982` 的 12 项完整粗分 E2E 仍是历史冻结证据，当前镜像尚未重新执行该业务 E2E；WMS external publication pending。
 `RACK_MOVE` 当前生产 caller 只有 rough-sorter `OLD_OUT/NEW_IN`；当前 debug caller 是 operator-gated 510056 stepper，已对齐
 `ZONE("WH01") → RACK_POSITION("KT16") + CTU01` 与反向 `+ CTU03`，固定 face payload 为 `"90"`。其余 approved
-`RACK_MOVE` 场景只由 core contract 支持，尚无业务 flow 接入。Deployment、supplier、physical、business acceptance 均为
-`NOT RUN`。
+`RACK_MOVE` 场景只由 core contract 支持，尚无业务 flow 接入。软件已部署；supplier、physical、business acceptance 均为
+`NOT RUN`。当前联调环境门禁为 `BLOCK`，由两条 `ACK_DEADLINE_EXPIRED` 的 `EVENT_DEBUG` 命令及其后继事件对账围栏导致。
 
 **Requirements baseline:** `docs/architecture/SRS.md`
 
@@ -40,14 +40,15 @@ frontend canonical contract、测试、lint 与 build 的历史证据仍保留�
 
 **Phase 13 putaway contract baseline:** `docs/contracts/wms-inbound-putaway-integration-requirements.md`（`ReviewRequired`）
 
-**Backend review base:** `develop@0a163b08f64109a27ce5ba1d108fc3cf74605cc7`；当前 NUL 修复候选尚未 Commit，
-同 Commit/tree 的不可变镜像与 E2E 将在已授权交付流程中生成并验证；
+**Backend current baseline:** `develop@fdfa4725821eb39ebbf87415fe1441e56b621497`（tree
+`46d568d1e65289dc98935093b4a31978e208afd5`）；联调部署 revision `e7e3d6afc003e49de5246fb56265b2696d9e06df`
+与该 tree 一致；
 **Phase 10 deployed candidate baseline:** `codex/phase10-implementation@834fe59e0c44c943487eedb6ed41af1c519df7ad`
 （source tree `58fbe212ba57186668783eb06f85c7cf37a0d7a6`，image digest
 `sha256:018c1cd82276b876a64ffbdaa9379ceca15a091fc1b1b265960793d732d8e00d`，已部署联调、未合入）；
-**Frontend current alignment baseline:** local `develop@aea88687691556b0b115698fdf4056783d69fe6f`（canonical OpenAPI
-SHA-256 `cd539bae4577b69b57ee91809625ee56f115e1cc93b59ce587db7b77e81830f8`，未 push、未部署）。
-Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，未部署、未现场验收；Phase 9 已于 2026-08-29
+**Frontend current deployment baseline:** GitLab revision `a6c3193fd95038d19899c17c0d9184924c5b0bf0`（tree
+`595f8f997fd837c534326400395413563c5a389b`），已部署联调；
+Gate A 已完成；Gate B 已分别合入 backend `41ab69bf`、frontend `e103b692`，其合入当时未部署，现已包含在当前联调镜像中；Phase 9 已于 2026-08-29
 合入 backend `develop@c5a93872`；Phase 10 已执行 Task 7 联调 cutover，并通过 #187 合入 `develop@97e6887a`，但 merge commit
 未证明重新部署。Phase 8 RC 发布证据仍为
 `f51677b62f5da906d4b60fa5a528d04692aff7a2` / Jenkins #88 / `88-f51677b`。
@@ -156,7 +157,7 @@ Transport/Adapter/核心所有权。
 Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合入后清理均已完成；Phase 8 后端功能和本机 Mock 已完成，
 后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 已合入 `develop@c5a93872`；发布四目标账本静默门禁和
 Phase 10 Tasks 0–7 已完成并通过 #187 合入 `develop@97e6887a`；`834fe59e` 候选此前已部署到联调环境并通过 target-only
-cutover，merge commit 未证明重新部署。Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已由 #189 合入
+cutover；该 merge commit 当时未重新部署，其内容现已包含在当前联调部署中。Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已由 #189 合入
 `develop@d458383a`；Phase 12 已具备启动条件但尚未开始，Phase 13–14 尚未开始。
 
 ## 5. 总控依赖模型
@@ -604,8 +605,7 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从该快照生成带 Commit/source-tree 标签的后端镜像。MR、手工构建、
 前端进度和现场验证均不得参与或替代该门禁。
 
-**需要单独编写的子计划:** 初始插件收敛以
-`docs/superpowers/plans/2026-08-03-rough-sorter-plugin-convergence.md` 保存实施历史；Epoch/前端增量以
+**需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；Epoch/前端增量以
 `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` 为真源；当前 RC 与外部验收状态以
 `docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
 GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
@@ -617,13 +617,12 @@ GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发
 
 **Objective:** 只交付 Phase 10 删除旧平台前必须存在的目标内核和当前生产 successor，不夹带人工或自动业务插件。
 
-**Authoritative inputs:** SRS、最小执行架构、Phase 6 Transport、Phase 7 Device/ECS、Phase 8 粗分 RC，以及
-`docs/superpowers/specs/2026-08-26-phase9-14-guided-development-resequence-design.md`。
+**Authoritative inputs:** SRS、最小执行架构、Phase 6 Transport、Phase 7 Device/ECS 与 Phase 8 粗分 RC。
 
 **Entry conditions:** 开发流程优化和运输接入诊断已分别进入当前基线；Phase 8 后端 RC 已关闭；Phase 9 Foundation 详细计划获批。
 
 **Scope:** `BinExecution`、唯一活动管辖期 `PositionProjection`、WorkLine unfinished-work target aggregate、
-`ESTOP_PRESSED` final router、E03/E07 `WmsConfirmation` barrier、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
+`ESTOP_PRESSED` final router、业务中立的 `WmsConfirmation` 可靠投递机制、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
 
 `BinExecution` 与 `PositionProjection` 是 SRS 已批准的核心执行对象，不是未来插件的预留 schema。必须同时交付领域不变量、
 Repository/Service、直接/间接测试 owner 和精确 HEAVY mapping；只有表、空模型或 fixture 不算完成。
@@ -637,8 +636,7 @@ HEAVY owner。`rough_sorter` 只验证现有插件机制，不替代 `BinExecuti
 **Exit gate:** 所有基础对象和 successor 有唯一生产 owner；后置业务插件没有遗留 Provider 路径；`UNRESOLVED=0`；
 不存在为 Phase 12/13 预建的业务表、operation、空包或 Composition。
 
-**实施子计划:** `docs/superpowers/plans/2026-08-27-phase9-minimum-execution-foundation.md`。旧 Phase 9 人工业务计划已拆分：
-基础 successor 由该计划承接，人工业务由 Phase 12 教学计划承接，旧过程文档与未重新评审的合同已移至项目外归档。
+**实施状态:** 基础 successor 已交付；人工业务由 Phase 12 教学计划承接，旧过程文档与未重新评审的合同已移至项目外归档。
 
 **风险及防止阶段越权的约束:** 禁止用 `MaterialExecution` 顶替 `BinExecution`，也禁止用核心对象名义提前实现人工或自动业务。
 
@@ -672,11 +670,9 @@ Phase 11 固化最终 metadata。
 **Exit gate:** 机器门禁证明旧架构、裸 Client、重复传输和无依据认证零引用；应用/Celery/部署只装配最终对象、WMS/RCS
 Adapter、设备统一接口和明确插件。
 
-**需要单独编写的子计划:** Phase 10 详细计划为
-`docs/superpowers/plans/2026-08-03-wes-legacy-production-path-removal.md`。Tasks 0–6 已在
-`codex/phase10-implementation@834fe59e` 完成；Task 6 复用并核验既有发布静默基线，未重复建设。Task 7 已取得单独
+**实施状态:** Tasks 0–6 已在 `codex/phase10-implementation@834fe59e` 完成；Task 6 复用并核验既有发布静默基线，未重复建设。Task 7 已取得单独
 Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 target-only cutover；Phase 11 单一空库基线与合入后 cleanup
-已通过 #188/#189 完成，状态为 `MERGED — NOT DEPLOYED`，不再处于实施前准入阶段。
+已通过 #188/#189 完成，并已包含在当前 backend 联调部署 tree `46d568d1` 中，不再处于实施前准入阶段。
 
 **风险及防止阶段越权的约束:** 缺席扫描按语义和所有者判断，不按 `replay`/`reconciliation` 等词批量删除，避免误伤最终可靠行为。
 
@@ -706,7 +702,7 @@ Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 t
 
 **完成记录:** Phase 11 详细计划已完成并移至项目外
 `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-15-wes-schema-and-migration-baseline-reset-completed-2026-08-31.md`。#188 合入唯一初始基线，
-#189 完成合入后 tombstone cleanup；仓库状态为 `MERGED — NOT DEPLOYED`，旧 `dd35f04b258f` 数据库不可原地升级。
+#189 完成合入后 tombstone cleanup；当前联调数据库已按 Phase 11 单一空库基线重建，旧 `dd35f04b258f` 数据库不可原地升级。
 
 **风险及防止阶段越权的约束:** 禁止在模型未稳定前生成基线；禁止因保留开发数据引入兼容迁移。
 
@@ -771,7 +767,7 @@ OpenAPI 仅作为归档输入；Phase 12 开始前必须按真实教学范围重
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9–11 已完成；Phase 10 已合入 `develop@97e6887a`，Phase 11 基线与 cleanup 已合入 `develop@d458383a`；Phase 12 已具备启动条件但尚未开始；未部署新的 merge commit，供应商、设备物理与业务验收仍未完成 |
+| 当前状态准确性 | 通过 | Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9–11 已完成；当前 backend/frontend 已部署联调；Phase 12 已具备启动条件但尚未开始；当前运行门禁为 `BLOCK`，供应商、设备物理与业务验收仍未完成 |
 
 ## 22. 总体完成定义
 
@@ -800,8 +796,8 @@ RC 门禁；本地 Mock 也不得被描述为真实外部结果。
 | 4 | Phase 8 粗分机后端 RC | Closed | 后端功能、本机 Mock、最终候选工作树和 PUSH-only 发布边界已验证；Jenkins #88 已发布不可变镜像 `88-f51677b` |
 | 5 | Phase 9 最小执行基础 | Completed | 已合入 `develop@c5a93872`；七项 successor、migration、QUALITY、HEAVY 和 handoff 已闭合 |
 | 6 | Phase 10 Tasks 0–6 | Implemented and verified | 七个 Task 提交、QUALITY `2378 passed`、staged HEAVY `439 passed`、fresh Review 0 findings、本地候选健康 |
-| 7 | Phase 10 Task 7 原子 cutover | Completed | 联调环境 legacy 两次 stable zero、授权 empty-site rebuild、候选两次 READY、旧 runtime absence 与 Phase 11 handoff 已闭合；#187 已合入 `develop@97e6887a`，merge commit 未证明重新部署，未完成供应商/设备物理/业务验收 |
-| 8 | Phase 11 单一空库基线 | Completed | #188 合入唯一初始 revision 与 fresh-DB/HEAVY 证据，#189 清理过渡 tombstone；`develop@d458383a`，未部署，旧数据库不可原地升级 |
+| 7 | Phase 10 Task 7 原子 cutover | Completed | 联调环境 legacy 两次 stable zero、授权 empty-site rebuild、候选两次 READY、旧 runtime absence 与 Phase 11 handoff 已闭合；#187 已合入 `develop@97e6887a`，其内容现已包含在当前联调部署中；未完成供应商/设备物理/业务验收 |
+| 8 | Phase 11 单一空库基线 | Completed | #188 合入唯一初始 revision 与 fresh-DB/HEAVY 证据，#189 清理过渡 tombstone；已包含在当前联调部署中，旧数据库不可原地升级 |
 
 Phase 8 后端实施、本机 Mock 和不可变 RC 镜像发布已完成。这不表示供应商一致性、真实 RCS 顺序能力或现场业务闭环已通过。
 

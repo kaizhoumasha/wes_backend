@@ -1,4 +1,4 @@
-"""WMS Transport evidence 唯一生产入口。"""
+"""共享 WMS Event 唯一生产入口。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,12 @@ from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 
 from src.app.sys.services.event_stream_service import TRANSPORT_EVIDENCE_STREAM_CHANNEL, event_stream_service
-from src.app.transport.contracts import TransportIngressAttempt, TransportIngressDisposition
+from src.app.transport.contracts import (
+    TRANSPORT_POSITION_OPERATION,
+    TRANSPORT_RESULT_OPERATION,
+    TransportIngressAttempt,
+    TransportIngressDisposition,
+)
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.inbound_openapi import RECOVERY_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
 from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
@@ -31,6 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 router = APIRouter()
 WMS_EVENT_REQUEST_SCHEMA = {"oneOf": [*TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"], RECOVERY_EVENT_REQUEST_SCHEMA]}
+WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
 
 
 async def _read_bounded_body(request: Request) -> tuple[bytes | None, int]:
@@ -44,7 +50,7 @@ async def _read_bounded_body(request: Request) -> tuple[bytes | None, int]:
     return raw_body, len(raw_body)
 
 
-def _permits_transport_endpoint(policy: object) -> bool:
+def _permits_wms_event_endpoint(policy: object) -> bool:
     return isinstance(policy, WmsInboundAuthPolicy) and policy.allows_unsigned_wms_callbacks
 
 
@@ -83,7 +89,28 @@ def _unavailable_response(operation_id: str) -> JSONResponse:
     )
 
 
-def _valid_transport_request_headers(request: Request) -> bool:
+def _unsupported_operation_ack(raw_body: bytes) -> JSONResponse | Response:
+    try:
+        value = loads_transport_json(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, StrictJsonError):
+        return Response(status_code=400)
+    if not isinstance(value, dict):
+        return Response(status_code=400)
+    operation_id = value.get("operation_id")
+    if not is_wire_operation_id(operation_id) or not is_wire_operation(value.get("operation")):
+        return Response(status_code=400)
+    return JSONResponse(
+        status_code=422,
+        content={
+            "operation_id": operation_id,
+            "code": "REJECTED",
+            "timestamp": int(timezone.now_utc().timestamp() * 1000),
+            "data": {"reason_code": "UNSUPPORTED_OPERATION"},
+        },
+    )
+
+
+def _valid_wms_event_request_headers(request: Request) -> bool:
     content_types = request.headers.getlist("content-type")
     if len(content_types) != 1 or not is_json_utf8_media_type(content_types[0]):
         return False
@@ -113,7 +140,8 @@ def _transport_identity(raw_body: bytes) -> dict[str, Any]:
         return {}
     envelope = cast("dict[str, Any]", decoded)
     data = envelope.get("data")
-    data = data if isinstance(data, dict) else {}
+    data = cast("dict[str, Any]", data) if isinstance(data, dict) else {}
+    outcome_revision = data.get("outcome_revision")
     return {
         "operation_id": _safe_diagnostic_text(envelope.get("operation_id"), max_length=36),
         "operation": _safe_diagnostic_text(envelope.get("operation"), max_length=80),
@@ -121,13 +149,9 @@ def _transport_identity(raw_body: bytes) -> dict[str, Any]:
         "kind": data.get("kind")
         if data.get("kind") in {"RACK_MOVE", "RACK_ROTATE", "BIN_MOVE", "BIN_EXCHANGE"}
         else None,
-        "outcome_revision": (
-            data.get("outcome_revision")
-            if isinstance(data.get("outcome_revision"), int)
-            and not isinstance(data.get("outcome_revision"), bool)
-            and data.get("outcome_revision") > 0
-            else None
-        ),
+        "outcome_revision": outcome_revision
+        if isinstance(outcome_revision, int) and not isinstance(outcome_revision, bool) and outcome_revision > 0
+        else None,
     }
 
 
@@ -182,6 +206,38 @@ async def _publish_transport_ingress_attempt(
         )
 
 
+async def _publish_wms_ingress_attempt(
+    request: Request,
+    *,
+    request_id: str,
+    received_at: str,
+    observed_body_bytes: int,
+    status_code: int,
+    disposition: str,
+    error_code: str,
+) -> None:
+    publisher = getattr(request.app.state, "wms_event_stream_service", event_stream_service)
+    try:
+        await publisher.publish_to(
+            WMS_INBOUND_STREAM_CHANNEL,
+            "wms_ingress.attempted",
+            {
+                "request_id": request_id,
+                "received_at": received_at,
+                "disposition": disposition,
+                "status_code": status_code,
+                "error_code": error_code,
+                "observed_body_bytes": observed_body_bytes,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "wms.ingress.event_publish_failed",
+            extra={"event": "wms.ingress.event_publish_failed"},
+            exc_info=True,
+        )
+
+
 def _disposition(code: object, status_code: int) -> TransportIngressDisposition:
     try:
         return TransportIngressDisposition(code)
@@ -203,60 +259,64 @@ def _disposition(code: object, status_code: int) -> TransportIngressDisposition:
         }
     },
 )
-async def receive_transport_event(request: Request) -> Response:
+async def receive_wms_event(request: Request) -> Response:
     request_id = new_uuid7()
     received_at = timezone.now_utc().isoformat()
-    if not _valid_transport_request_headers(request):
-        await _publish_transport_ingress_attempt(
+    if not _valid_wms_event_request_headers(request):
+        await _publish_wms_ingress_attempt(
             request,
             request_id=request_id,
             received_at=received_at,
-            raw_body=b"",
             observed_body_bytes=0,
             status_code=400,
-            disposition=TransportIngressDisposition.REJECTED,
+            disposition="REJECTED",
             error_code="INVALID_CONTENT_TYPE",
-            include_identity=False,
         )
         return Response(status_code=400)
     raw_body, observed_body_bytes = await _read_bounded_body(request)
     if raw_body is None:
-        await _publish_transport_ingress_attempt(
+        await _publish_wms_ingress_attempt(
             request,
             request_id=request_id,
             received_at=received_at,
-            raw_body=b"",
             observed_body_bytes=observed_body_bytes,
             status_code=413,
-            disposition=TransportIngressDisposition.REJECTED,
+            disposition="REJECTED",
             error_code="BODY_TOO_LARGE",
-            include_identity=False,
         )
         return Response(status_code=413)
 
     policy = getattr(request.app.state, "wms_inbound_auth_policy", None)
-    if not _permits_transport_endpoint(policy):
-        await _publish_transport_ingress_attempt(
+    if not _permits_wms_event_endpoint(policy):
+        await _publish_wms_ingress_attempt(
             request,
             request_id=request_id,
             received_at=received_at,
-            raw_body=raw_body,
             observed_body_bytes=observed_body_bytes,
             status_code=401,
-            disposition=TransportIngressDisposition.REJECTED,
+            disposition="REJECTED",
             error_code="UNAUTHORIZED",
-            include_identity=False,
         )
         return Response(status_code=401)
 
     operation = _extract_operation(raw_body)
     is_inbound_event = operation == RECOVERY_OPERATION
     if is_inbound_event:
-        handler = getattr(request.app.state, "wms_inbound_event_handler", None)
+        handler = getattr(request.app.state, "wms_recovery_event_handler", None)
         if handler is None:
-            return _unavailable_ack(raw_body)
+            response = _unavailable_ack(raw_body)
+            await _publish_wms_ingress_attempt(
+                request,
+                request_id=request_id,
+                received_at=received_at,
+                observed_body_bytes=observed_body_bytes,
+                status_code=response.status_code,
+                disposition="UNAVAILABLE" if response.status_code == 503 else "REJECTED",
+                error_code="RECOVERY_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
+            )
+            return response
         result = await handler.handle(raw_body)
-    else:
+    elif operation in {TRANSPORT_POSITION_OPERATION, TRANSPORT_RESULT_OPERATION}:
         runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
         if runtime is None:
             response = _unavailable_ack(raw_body)
@@ -276,6 +336,18 @@ async def receive_transport_event(request: Request) -> Response:
             )
             return response
         result = await runtime.handler.handle(raw_body)
+    else:
+        response = _unsupported_operation_ack(raw_body)
+        await _publish_wms_ingress_attempt(
+            request,
+            request_id=request_id,
+            received_at=received_at,
+            observed_body_bytes=observed_body_bytes,
+            status_code=response.status_code,
+            disposition="REJECTED",
+            error_code="UNSUPPORTED_OPERATION" if response.status_code == 422 else "INVALID_ENVELOPE",
+        )
+        return response
     # Evidence 已持久化后先应答 WMS；Celery 唤醒只是加速提示，失败时由 Beat 兜底扫描。
     background = (
         (BackgroundTask(_enqueue_transport_evidence) if result.body.get("code") in {"RECEIVED", "DUPLICATE"} else None)

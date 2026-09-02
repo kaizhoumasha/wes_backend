@@ -11,9 +11,7 @@ from src.app.wms_adapter.client import OutboundHttpClosedError, WmsRequestBodyTo
 from src.app.wms_adapter.strict_json import (
     StrictJsonError,
     loads_transport_json,
-)
-from src.app.wms_adapter.strict_json import (
-    is_json_utf8_media_type as _valid_json_media_type,
+    valid_json_response_headers,
 )
 from src.core.uuid7 import is_uuid7
 
@@ -89,7 +87,7 @@ class WmsTransportAdapter:
             )
         body = access.json_body
         if (
-            not _valid_json_response_headers(getattr(access, "response_headers", ()))
+            not valid_json_response_headers(getattr(access, "response_headers", ()))
             or access.json_failure is not None
             or not isinstance(body, dict)
             or not _valid_ack_envelope(body, operation_id)
@@ -198,16 +196,6 @@ def _persistable_reason_code(value: object) -> str | None:
 
 def _valid_task_id(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip()) and len(value) <= 80
-
-
-def _valid_json_response_headers(headers: object) -> bool:
-    if not isinstance(headers, (tuple, list)):
-        return False
-    content_types = [value for name, value in headers if name.casefold() == "content-type"]
-    if len(content_types) != 1 or not _valid_json_media_type(content_types[0]):
-        return False
-    encodings = [value for name, value in headers if name.casefold() == "content-encoding"]
-    return len(encodings) <= 1 and (not encodings or encodings[0].strip().casefold() == "identity")
 
 
 __all__ = ["WmsTransportAdapter"]

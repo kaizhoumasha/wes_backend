@@ -1,4 +1,4 @@
-"""粗分机入库与 WMS 之间的严格线上合同。"""
+"""WES 与 WMS 之间当前启用 operation 的严格线上合同。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from pydantic import (
     StringConstraints,
     model_validator,
 )
+from wes_plugin_sdk.validation import validate_persistable_text
 
 ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
 TARGET_OPERATION = "inbound.material.target_decide@v1"
@@ -40,13 +41,7 @@ _DECIMAL_MM_PATTERN = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
 
 
 def _nonblank_utf8_identifier(value: str) -> str:
-    if not value.strip() or "\x00" in value:
-        raise ValueError("业务身份必须是非空且不含 NUL 的 UTF-8 string")
-    try:
-        _ = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("业务身份必须是有效 UTF-8 string") from error
-    return value
+    return validate_persistable_text(value, "业务身份")
 
 
 Identifier = Annotated[str, AfterValidator(_nonblank_utf8_identifier)]
@@ -61,13 +56,7 @@ MeasurementMillimeters = Annotated[str, StringConstraints(pattern=_DECIMAL_MM_PA
 
 
 def _nonblank_device_text(value: str) -> str:
-    if not value.strip() or "\x00" in value:
-        raise ValueError("六合一码字段必须是非空 UTF-8 string")
-    try:
-        _ = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("六合一码字段必须是有效 UTF-8 string") from error
-    return value
+    return validate_persistable_text(value, "六合一码字段")
 
 
 DeviceText = Annotated[str, AfterValidator(_nonblank_device_text)]
@@ -180,7 +169,7 @@ class NgPlacementRequestData(_StrictModel):
     ng_evidence_id: Identifier
     ng_position: NgPosition
     reason_code: Identifier
-    business_context: Literal["ROUGH_SORT_INBOUND"]
+    business_context: Identifier
 
     @model_validator(mode="before")
     @classmethod
@@ -402,7 +391,7 @@ class RecoveryEvent(_StrictModel):
 
 def parse_outbound_request(value: object) -> OutboundRequest:
     if not isinstance(value, dict):
-        raise TypeError("粗分 WMS request 必须是 JSON object")
+        raise TypeError("WMS operation request 必须是 JSON object")
     envelope = cast("dict[str, Any]", value)
     operation = envelope.get("operation")
     if operation == ADMISSION_OPERATION:
@@ -415,7 +404,7 @@ def parse_outbound_request(value: object) -> OutboundRequest:
         return NgPlacementRequest.model_validate(envelope)
     if operation == REPLACEMENT_PLAN_OPERATION:
         return ReplacementPlanRequest.model_validate(envelope)
-    raise ValueError("不支持的粗分 WMS operation")
+    raise ValueError("不支持的 WMS operation")
 
 
 def parse_outbound_response(operation: str, http_status: int, value: object) -> OutboundResponse:
@@ -440,7 +429,7 @@ def parse_outbound_response(operation: str, http_status: int, value: object) -> 
         return ReplacementDecisionResponse.model_validate(value)
     if operation in FACT_OPERATIONS:
         return FactResponse.model_validate(value)
-    raise ValueError("不支持的粗分 WMS operation")
+    raise ValueError("不支持的 WMS operation")
 
 
 def parse_recovery_event(value: object) -> RecoveryEvent:

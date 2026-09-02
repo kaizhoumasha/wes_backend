@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+from src.app.runtime.orchestration.trace_context import TraceContext
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import canonical_event_type, resolve_entity_id, string_value
 

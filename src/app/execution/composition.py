@@ -10,7 +10,7 @@ from src.app.execution.repositories import (
     InboundEvidenceRepository,
     MaterialExecutionRepository,
     PositionProjectionRepository,
-    RackReplacementTransportBindingRepository,
+    TransportDecisionBindingRepository,
     WmsConfirmationRepository,
 )
 from src.app.execution.services import (
@@ -20,7 +20,6 @@ from src.app.execution.services import (
     InboundEvidenceService,
     MaterialExecutionService,
     PositionProjectionService,
-    WmsConfirmationRequestResolver,
     WmsConfirmationService,
 )
 
@@ -30,8 +29,8 @@ if TYPE_CHECKING:
     from src.app.device.services import DeviceCommandService
     from src.app.execution.plugin_binding import StaticPluginBinding
     from src.app.execution.services.wms_confirmation_service import (
-        WmsBusinessWaitPlanner,
         WmsConfirmationAdapterPort,
+        WmsConfirmationFollowUpPlanner,
     )
     from src.app.transport.service import TransportService
     from src.core.task_queue_gateway import TaskQueueGateway
@@ -51,12 +50,11 @@ def build_execution_runtime(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     plugin_binding: StaticPluginBinding,
-    wms_request_resolver: WmsConfirmationRequestResolver,
     device_command_service: DeviceCommandService,
     transport_service: TransportService,
     position_projection_service: PositionProjectionService,
     wms_confirmation_adapter: WmsConfirmationAdapterPort,
-    wms_business_wait_planner: WmsBusinessWaitPlanner,
+    wms_confirmation_follow_up_planner: WmsConfirmationFollowUpPlanner | None,
     task_queue_gateway: TaskQueueGateway,
 ) -> ExecutionRuntime:
     """只组合已显式注入的插件/WMS typed adapter，不发现或导入具体插件。"""
@@ -66,7 +64,7 @@ def build_execution_runtime(
     position_projection_repository = PositionProjectionRepository()
     evidence_repository = InboundEvidenceRepository()
     confirmation_repository = WmsConfirmationRepository()
-    rack_binding_repository = RackReplacementTransportBindingRepository()
+    transport_binding_repository = TransportDecisionBindingRepository()
     material_service = MaterialExecutionService(repository=material_repository)
     bin_execution_service = BinExecutionService(
         repository=bin_execution_repository,
@@ -78,14 +76,13 @@ def build_execution_runtime(
         session_factory=session_factory,
         adapter=wms_confirmation_adapter,
         evidence_service=evidence_service,
-        business_wait_planner=wms_business_wait_planner,
         task_queue_gateway=task_queue_gateway,
+        follow_up_planner=wms_confirmation_follow_up_planner,
     )
     applier = DecisionApplier(
         device_command_service=device_command_service,
         wms_confirmation_service=confirmation_service,
-        wms_request_resolver=wms_request_resolver,
-        rack_binding_repository=rack_binding_repository,
+        transport_binding_repository=transport_binding_repository,
         transport_service=transport_service,
         material_execution_service=material_service,
     )

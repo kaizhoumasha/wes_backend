@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 RAW_MANIFEST_SHA256 = "77214740a6fd48c113c043aeb32887209681c4fd213833e7e9ee391f317117c9"
 DISPOSITION_SHA256 = "04ad7dbf1278b9507b5ae58b92071772e9e31948c79e92c2035fba161a8878f8"
 OLD_DERIVED_MANIFEST_SHA256 = "87c2f3461068b97c713032bd83312bc64cdfbe481574d4d8c4e331b37a5bc0b6"
-FINAL_MANIFEST_SHA256 = "2cf84f8ebdd9b9533813c4765abb186d9c024312efd5b494866abb7be5cd389d"
-TRANSITION_DISPOSITION_SHA256 = "4192a879f7cf4ed006d63b95ea74529d36f1678fd0ad9ae490287e3efd5730b7"
+FINAL_MANIFEST_SHA256 = "430ad5ab75cfabf9a14c820fcb3e6ea061763e99945357f8e4c06e9dc5fe729c"
+TRANSITION_DISPOSITION_SHA256 = "f4d6c253752d2381b0379673f78f50c1ebfdd715913cdbfd663060ed89e57a59"
 
 EXPECTED_DISPOSITION_TABLES = {
     "wes_biz.ng_return_items": ("FINAL_DELETE_AFTER_SUCCESSOR", False, None),
@@ -543,7 +543,7 @@ def validate_transition_disposition_bytes(
         raise ManifestMismatch("transition disposition identities must be unique")
     actual_summary = {
         section: sum(entry.get("section") == section for entry in differences)
-        for section in ("columns", "constraints", "indexes")
+        for section in ("columns", "constraints", "indexes", "tables")
     }
     if disposition["summary"] != actual_summary or sum(actual_summary.values()) != len(differences):
         raise ManifestMismatch("transition disposition summary differs")
@@ -553,6 +553,7 @@ def validate_transition_disposition_bytes(
         "RETAIN_CURRENT_JSON_CONTRACT": (True, True),
         "RETAIN_CURRENT_DEFAULT_CONTRACT": (True, True),
         "RENAME_TO_CURRENT_CONVENTION": None,
+        "REMOVE_BUSINESS_SPECIFIC_INVARIANT": (True, False),
         "RETAIN_CURRENT_INVARIANT": (False, True),
         "CORRECT_REFERENCE_INDEX_TYPE": (True, True),
         "REMOVE_REDUNDANT_PRIMARY_KEY_INDEX": (True, False),
@@ -631,6 +632,8 @@ def disposed_table_identities(raw: Mapping[str, Any], final: Mapping[str, Any]) 
 
 
 def _transition_identity(section: str, row: Mapping[str, Any]) -> str:
+    if section == "tables":
+        return f"{row['schema']}.{row['name']}"
     if section == "columns":
         return f"{row['schema']}.{row['table']}.{row['name']}"
     if section == "constraints":
@@ -643,7 +646,7 @@ def _transition_identity(section: str, row: Mapping[str, Any]) -> str:
 def catalog_transition_differences(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[dict[str, Any]]:
     """枚举 old-derived 与 current live catalog 之间全部已允许的逐项差异。"""
 
-    transition_sections = {"columns", "constraints", "indexes"}
+    transition_sections = {"columns", "constraints", "indexes", "tables"}
     if {key: value for key, value in old.items() if key != "catalog"} != {
         key: value for key, value in new.items() if key != "catalog"
     }:

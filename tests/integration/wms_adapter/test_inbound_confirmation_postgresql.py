@@ -1,4 +1,4 @@
-"""粗分 WMS 确认与入站事件的 PostgreSQL 事务验收。"""
+"""共享 WMS confirmation 的 PostgreSQL 事务验收。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from sqlalchemy import delete, or_, select, update
 
 from src.app.execution.models import (
     InboundEvidence,
-    InboundEvidenceConflict,
     InboundEvidenceKind,
     MaterialExecution,
     MaterialExecutionStatus,
@@ -23,24 +22,16 @@ from src.app.execution.models import (
 )
 from src.app.execution.repositories import InboundEvidenceRepository, WmsConfirmationRepository
 from src.app.execution.services import (
-    WmsBusinessWaitFollowUp,
-    WmsConfirmationFollowUpPlan,
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
-from src.app.execution.services.wms_confirmation_service import E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING
-from src.app.wms_adapter.inbound_adapter import (
-    InboundDispatchCode,
-    WmsInboundBusinessWaitPlanner,
-)
-from src.app.wms_adapter.inbound_event_handler import InboundEventEvidenceRecorder, InboundEventHandler
-from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION, RECOVERY_OPERATION
+from src.app.wms_adapter.inbound_adapter import InboundDispatchCode
+from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 
 PREFIX = "WMS-INBOUND-"
-RECOVERY_OPERATION_IDS: set[str] = set()
 
 
 async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-def]
@@ -165,15 +156,10 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
             InboundEvidence.source_identity.like(f"{PREFIX}%"),
             InboundEvidence.material_execution_id.in_(execution_ids),
         ]
-        if RECOVERY_OPERATION_IDS:
-            evidence_filters.append(InboundEvidence.operation_id.in_(RECOVERY_OPERATION_IDS))
         evidence_ids = tuple((await db.scalars(select(InboundEvidence.id).where(or_(*evidence_filters)))).all())
         epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like(f"{PREFIX}%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like(f"{PREFIX}%"))
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id.in_(execution_ids)))
-        await db.execute(
-            delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
-        )
         await db.execute(
             update(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)).values(material_execution_id=None)
         )
@@ -181,7 +167,6 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
         await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_(epoch_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
-    RECOVERY_OPERATION_IDS.clear()
 
 
 @pytest.mark.asyncio
@@ -274,82 +259,6 @@ async def test_claim_fifo_uses_creation_order_across_due_retry_and_new_pending(i
     assert [item.operation_id for item in claimed] == operation_ids
 
 
-@pytest.mark.asyncio
-async def test_e03_e07_claims_obey_predecessor_and_material_fifo_barriers(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
-    repository = WmsConfirmationRepository()
-    now = datetime(2026, 8, 16)
-    async with integration_session_factory.begin() as setup:
-        head = await _seed_execution(setup)
-        following = await _seed_following_execution(setup, head)
-        for execution in (head, following):
-            for operation in (E03_CONFIRM_INBOUND, E07_NOTIFY_PKG_BINDING):
-                operation_id = f"{operation}:{execution.execution_code}"
-                payload = {"dispatch_key": operation_id, "pkg_id": execution.material_trace_id}
-                setup.add(
-                    WmsConfirmation(
-                        operation=operation,
-                        operation_id=operation_id,
-                        material_execution_id=execution.id,
-                        request_digest=_digest(payload),
-                        request_payload=payload,
-                        deadline_at=now + timedelta(minutes=5),
-                        created_at=now,
-                    )
-                )
-
-    async with integration_session_factory.begin() as db:
-        first_claim = await repository.claim_eligible(
-            db,
-            now=now,
-            claim_token="claim-e03-head",
-            claim_expires_at=now + timedelta(minutes=1),
-            limit=10,
-        )
-        assert [(item.material_execution_id, item.operation) for item in first_claim] == [
-            (head.id, E03_CONFIRM_INBOUND)
-        ]
-        first_claim[0].status = WmsConfirmationStatus.COMPLETED
-        first_claim[0].completed_at = now
-
-    async with integration_session_factory.begin() as db:
-        second_claim = await repository.claim_eligible(
-            db,
-            now=now,
-            claim_token="claim-e07-head",
-            claim_expires_at=now + timedelta(minutes=1),
-            limit=10,
-        )
-        assert [(item.material_execution_id, item.operation) for item in second_claim] == [
-            (head.id, E07_NOTIFY_PKG_BINDING)
-        ]
-        second_claim[0].status = WmsConfirmationStatus.COMPLETED
-        second_claim[0].completed_at = now
-
-    async with integration_session_factory.begin() as db:
-        assert not await repository.claim_eligible(
-            db,
-            now=now,
-            claim_token="claim-following-blocked",
-            claim_expires_at=now + timedelta(minutes=1),
-            limit=10,
-        )
-        persisted_head = await db.get(MaterialExecution, head.id, with_for_update=True)
-        assert persisted_head is not None
-        persisted_head.status = MaterialExecutionStatus.CLOSED
-
-    async with integration_session_factory.begin() as db:
-        following_claim = await repository.claim_eligible(
-            db,
-            now=now,
-            claim_token="claim-e03-following",
-            claim_expires_at=now + timedelta(minutes=1),
-            limit=10,
-        )
-        assert [(item.material_execution_id, item.operation) for item in following_claim] == [
-            (following.id, E03_CONFIRM_INBOUND)
-        ]
-
-
 class _DispatchAdapter:
     async def dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
         operation_id = kwargs["operation_id"]
@@ -361,7 +270,6 @@ class _DispatchAdapter:
                 normalized_response=None,
                 response_result=None,
                 retry_after_ms=None,
-                follow_up_plan=None,
             )
         return SimpleNamespace(
             code=InboundDispatchCode.DETERMINATE,
@@ -373,7 +281,6 @@ class _DispatchAdapter:
             },
             response_result="ACCEPT",
             retry_after_ms=None,
-            follow_up_plan=None,
         )
 
 
@@ -407,7 +314,6 @@ class _ConflictDuringDispatchAdapter:
             },
             response_result="ACCEPT",
             retry_after_ms=None,
-            follow_up_plan=None,
         )
 
 
@@ -423,29 +329,6 @@ class _WaitDispatchAdapter:
             },
             response_result="WAIT",
             retry_after_ms=250,
-            follow_up_plan=WmsConfirmationFollowUpPlan(retry_after_ms=250),
-        )
-
-
-class _OversizedTimestampPlanner:
-    def __init__(self, operation_id: str) -> None:
-        self._operation_id = operation_id
-
-    def plan(
-        self,
-        confirmation: WmsConfirmation,
-        planning: WmsConfirmationFollowUpPlan,
-    ) -> WmsBusinessWaitFollowUp:
-        assert planning.retry_after_ms == 250
-        assert confirmation.completed_at is not None
-        request_payload = json.loads(json.dumps(confirmation.request_payload))
-        request_payload["operation_id"] = self._operation_id
-        request_payload["timestamp"] = 2**63
-        return WmsBusinessWaitFollowUp(
-            operation=confirmation.operation,
-            operation_id=self._operation_id,
-            request_payload=request_payload,
-            next_attempt_at=confirmation.completed_at + timedelta(milliseconds=250),
         )
 
 
@@ -514,9 +397,8 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
 
 
 @pytest.mark.asyncio
-async def test_business_wait_completion_and_follow_up_are_committed_together(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
+async def test_determinate_follow_up_without_injected_planner_fails_closed(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
     now = datetime(2026, 8, 16)
-    follow_up_operation_id = new_uuid7()
     async with integration_session_factory.begin() as db:
         execution = await _seed_execution(db)
         original_operation_id = new_uuid7()
@@ -538,60 +420,6 @@ async def test_business_wait_completion_and_follow_up_are_committed_together(int
         repository=WmsConfirmationRepository(),
         session_factory=integration_session_factory,
         adapter=_WaitDispatchAdapter(),
-        business_wait_planner=WmsInboundBusinessWaitPlanner(
-            operation_id_factory=lambda: follow_up_operation_id,
-        ),
-    )
-
-    assert await service.dispatch_batch(limit=1, now=now) == 1
-    async with integration_session_factory() as db:
-        rows = list(
-            (
-                await db.execute(select(WmsConfirmation).where(WmsConfirmation.material_execution_id == execution_id))
-            ).scalars()
-        )
-        by_operation_id = {row.operation_id: row for row in rows}
-        original = by_operation_id[original_operation_id]
-        follow_up = by_operation_id[follow_up_operation_id]
-        assert original.status == WmsConfirmationStatus.COMPLETED
-        assert original.response_result == "WAIT"
-        assert original.response_evidence_id is not None
-        assert await db.get(InboundEvidence, original.response_evidence_id) is not None
-        assert follow_up.status == WmsConfirmationStatus.PENDING
-        assert follow_up.next_attempt_at == now + timedelta(milliseconds=250)
-        assert follow_up.request_payload["operation_id"] == follow_up_operation_id
-        assert follow_up.deadline_at == original.deadline_at
-
-
-@pytest.mark.asyncio
-async def test_oversized_business_wait_timestamp_preserves_response_evidence_before_reconciling(
-    integration_session_factory,
-) -> None:
-    now = datetime(2026, 8, 16)
-    follow_up_operation_id = new_uuid7()
-    async with integration_session_factory.begin() as db:
-        execution = await _seed_execution(db)
-        original_operation_id = new_uuid7()
-        payload = _request(original_operation_id, execution.execution_code)
-        confirmation = WmsConfirmation(
-            operation=ADMISSION_OPERATION,
-            operation_id=original_operation_id,
-            material_execution_id=execution.id,
-            request_digest=_digest(payload),
-            request_payload=payload,
-            deadline_at=now + timedelta(minutes=5),
-            created_at=now,
-        )
-        db.add(confirmation)
-        await db.flush()
-        confirmation_id = confirmation.id
-        execution_id = execution.id
-
-    service = WmsConfirmationService(
-        repository=WmsConfirmationRepository(),
-        session_factory=integration_session_factory,
-        adapter=_WaitDispatchAdapter(),
-        business_wait_planner=_OversizedTimestampPlanner(follow_up_operation_id),
     )
 
     assert await service.dispatch_batch(limit=1, now=now) == 1
@@ -603,7 +431,6 @@ async def test_oversized_business_wait_timestamp_preserves_response_evidence_bef
         )
         assert len(rows) == 1
         original = rows[0]
-        assert original.id == confirmation_id
         assert original.status == WmsConfirmationStatus.RECONCILING
         assert original.response_result == "WAIT"
         assert original.response_evidence_id is not None
@@ -659,114 +486,3 @@ async def test_inflight_identity_conflict_fences_late_http_response(integration_
         await db.flush()
         assert await repository.get_claimed_for_update(db, confirmation_id, "stale-late-response") is None
         assert persisted.status == WmsConfirmationStatus.RECONCILING
-
-
-def _recovery(
-    operation_id: str,
-    *,
-    reason_code: str,
-    execution_code: str,
-    material_trace_id: str,
-    reconciling_evidence_id: int,
-) -> bytes:
-    return json.dumps(
-        {
-            "operation_id": operation_id,
-            "operation": RECOVERY_OPERATION,
-            "timestamp": 1,
-            "data": {
-                "recovery_id": f"{PREFIX}REC-1",
-                "material_execution_id": execution_code,
-                "material_trace_id": material_trace_id,
-                "reconciling_evidence_id": str(reconciling_evidence_id),
-                "decision": "ABORT",
-                "authoritative_position": None,
-                "reason_code": reason_code,
-            },
-        },
-        separators=(",", ":"),
-    ).encode()
-
-
-@pytest.mark.asyncio
-async def test_recovery_identity_conflict_is_committed_before_409(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
-    operation_id = new_uuid7()
-    RECOVERY_OPERATION_IDS.add(operation_id)
-    handler = InboundEventHandler(InboundEventEvidenceRecorder(integration_session_factory))
-    async with integration_session_factory.begin() as db:
-        execution = await _seed_execution(db)
-        execution.status = MaterialExecutionStatus.RECONCILING
-        await db.flush()
-
-    first = await handler.handle(
-        _recovery(
-            operation_id,
-            reason_code="MANUAL_ABORT",
-            execution_code=execution.execution_code,
-            material_trace_id=execution.material_trace_id,
-            reconciling_evidence_id=execution.last_transition_evidence_id,
-        )
-    )
-    conflict = await handler.handle(
-        _recovery(
-            operation_id,
-            reason_code="CHANGED_REASON",
-            execution_code=execution.execution_code,
-            material_trace_id=execution.material_trace_id,
-            reconciling_evidence_id=execution.last_transition_evidence_id,
-        )
-    )
-
-    assert (first.http_status, conflict.http_status) == (202, 409)
-    async with integration_session_factory() as db:
-        persisted = await db.scalar(
-            select(InboundEvidenceConflict).where(
-                InboundEvidenceConflict.source_identity == f"{RECOVERY_OPERATION}:{operation_id}"
-            )
-        )
-    assert persisted is not None
-    assert persisted.reason_code == "SOURCE_IDENTITY_PAYLOAD_CONFLICT"
-
-
-@pytest.mark.asyncio
-async def test_stale_recovery_causal_fence_rolls_back_new_evidence(integration_session_factory) -> None:  # type: ignore[no-untyped-def]
-    operation_id = new_uuid7()
-    RECOVERY_OPERATION_IDS.add(operation_id)
-    handler = InboundEventHandler(InboundEventEvidenceRecorder(integration_session_factory))
-    async with integration_session_factory.begin() as db:
-        execution = await _seed_execution(db)
-        stale_causal_id = execution.last_transition_evidence_id
-        newer_causal = InboundEvidence(
-            kind=InboundEvidenceKind.DEVICE_EVENT,
-            source_identity=f"{PREFIX}NEWER-CAUSAL-{uuid4().hex}",
-            payload_digest="d" * 64,
-            normalized_payload={"source_event_id": f"{PREFIX}NEWER"},
-            received_at=datetime(2026, 8, 16, 0, 1),
-            line_run_epoch_id=execution.line_run_epoch_id,
-            material_execution_id=execution.id,
-            device_code=f"{PREFIX}DEVICE-NEWER",
-        )
-        db.add(newer_causal)
-        await db.flush()
-        execution.status = MaterialExecutionStatus.RECONCILING
-        execution.last_transition_evidence_id = newer_causal.id
-        execution_code = execution.execution_code
-        material_trace_id = execution.material_trace_id
-        await db.flush()
-
-    response = await handler.handle(
-        _recovery(
-            operation_id,
-            reason_code="STALE_OPERATOR_VIEW",
-            execution_code=execution_code,
-            material_trace_id=material_trace_id,
-            reconciling_evidence_id=stale_causal_id,
-        )
-    )
-
-    assert response.http_status == 409
-    async with integration_session_factory() as db:
-        persisted = await db.scalar(
-            select(InboundEvidence).where(InboundEvidence.source_identity == f"{RECOVERY_OPERATION}:{operation_id}")
-        )
-    assert persisted is None

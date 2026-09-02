@@ -121,7 +121,12 @@ API → Service → Repository → Database
   WES 冻结并执行可靠顺序，ECS/PLC 提供实际运动与位置事实；计划与现场冲突时以物理事实冻结对账。
 - `TransportTask` 与 `DeviceCommand` 是并行概念，不能用一个替代另一个。
 - 本项目尚未发布；除用户明确要求外，不新增 v2、别名、shim、双路径、兼容 wrapper、迁移式兼容或 no-op consumer。目标合同直接替换旧合同。
-- WMS 北向业务 ACL 仅位于 `src/app/wms_adapter/`；设备供应商私有协议和实现不进入 WES 核心仓库。
+- `src/app/wms_adapter/` 只拥有共享 WMS HTTP/JSON、严格 operation DTO/parser、可靠派发和统一 Event route；具体工作线的请求数据、
+  结果解释、因果恢复与业务顺序位于 `workline_plugins/<plugin_key>/`，不得通过默认 resolver 或 fallback 回流基础层。
+- 代码有三个物理根但只有两类职责：`src/` 是宿主基础实现，`packages/wes_plugin_sdk/` 是可独立安装的公开基础 SPI/不可变合同，
+  `workline_plugins/` 是业务实现。`workline_plugins` 可依赖前两者；`src` 和 SDK 均不得导入具体插件。SDK 不放数据库、HTTP、Celery、
+  Repository、operation DTO 或工作线业务流程。
+- 设备供应商私有协议和实现不进入 WES 核心仓库。
 
 修改架构、共享合同或所有权边界前，必须读取对应架构/合同文档，不以历史测试为当前合同证据。
 
@@ -149,7 +154,8 @@ API → Service → Repository → Database
 - 默认 FAST 测试不得依赖真实数据库、HTTP、Celery、Redis 或容器。
 - 禁止在 `tests/` 根目录新增 `test_*.py`；integration、e2e、resilience、load、mock 等重测试必须显式运行。
 - 同一行为只能有一个主要测试所有者。删除测试前先建立并通过承接测试；删除人类文档内容测试可标记 `NONE`。
-- 具体工作线/插件测试位于 `workline_plugins/<plugin_key>/tests/`，不进入核心默认 pytest、覆盖率、QUALITY 或 HEAVY selector。
+- 具体工作线/插件测试位于 `workline_plugins/<plugin_key>/tests/`；纯 Decision 层只依赖 SDK，插件应用层可依赖 `src` 基础端口。
+  这些测试不进入核心默认 pytest、覆盖率、QUALITY 或 HEAVY selector。
 - 供应商一致性验收在供应商 ECS/网关边界运行，不在核心仓库创建私有 `device_adapters/` 测试包。
 - WMS Adapter 的 FAST 合同位于 `tests/contracts/wms_adapter/`；真实持久化/事务测试位于 `tests/integration/wms_adapter/`，不得借此证明通用传输层或 WES 最小内核。
 - integration 命令只有在所需数据库、Redis、worker 和显式启用条件就绪时才执行；因环境未启用而 `skipped` 不属于通过证据，也不应为了得到 skip 结果先跑一轮名义集成测试。

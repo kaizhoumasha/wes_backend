@@ -3525,7 +3525,7 @@ def upgrade() -> None:
         schema="wes_biz",
     )
     op.create_table(
-        "rack_replacement_transport_bindings",
+        "transport_decision_bindings",
         sa.Column("version", sa.Integer(), server_default="0", nullable=False, comment="版本号"),
         sa.Column("created_at", sa.DateTime(), nullable=False, comment="创建时间 (UTC)"),
         sa.Column("updated_at", sa.DateTime(), nullable=True, comment="更新时间 (UTC)"),
@@ -3538,44 +3538,40 @@ def upgrade() -> None:
         ),
         sa.Column("created_by", sa.BigInteger(), nullable=True, comment="创建人ID"),
         sa.Column("updated_by", sa.BigInteger(), nullable=True, comment="更新人ID"),
-        sa.Column("rack_replacement_id", sa.String(length=160), nullable=False),
-        sa.Column("leg", sa.String(length=20), nullable=False),
+        sa.Column("correlation_id", sa.String(length=160), nullable=False),
+        sa.Column("step", sa.String(length=80), nullable=False),
         sa.Column("line_run_epoch_id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), nullable=False),
-        sa.Column("current_rack_id", sa.String(length=80), nullable=False),
+        sa.Column("resource_fence_id", sa.String(length=160), nullable=False),
         sa.Column("client_request_id", sa.String(length=120), nullable=False),
         sa.Column("source_evidence_id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), nullable=False),
-        sa.CheckConstraint(
-            "leg IN ('OLD_OUT', 'NEW_IN')",
-            name=op.f("ck_rack_replacement_transport_bindings_rack_replacement_transport_binding_leg_valid"),
-        ),
         sa.ForeignKeyConstraint(
-            ["line_run_epoch_id"], ["wes_biz.line_run_epochs.id"], name="fk_rack_replacement_transport_bindings_epoch"
+            ["line_run_epoch_id"], ["wes_biz.line_run_epochs.id"], name="fk_transport_decision_bindings_epoch"
         ),
         sa.ForeignKeyConstraint(
             ["source_evidence_id"],
             ["wes_biz.inbound_evidences.id"],
-            name=op.f("fk_rack_replacement_transport_bindings_source_evidence_id_inbound_evidences"),
+            name=op.f("fk_transport_decision_bindings_source_evidence_id_inbound_evidences"),
         ),
-        sa.PrimaryKeyConstraint("id", name=op.f("pk_rack_replacement_transport_bindings")),
-        sa.UniqueConstraint("client_request_id", name="ux_rack_replacement_transport_bindings_client_request_id"),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_transport_decision_bindings")),
+        sa.UniqueConstraint("client_request_id", name="ux_transport_decision_bindings_client_request_id"),
         sa.UniqueConstraint(
-            "line_run_epoch_id", "current_rack_id", "leg", name="ux_rack_replacement_transport_bindings_epoch_rack_leg"
-        ),
-        sa.UniqueConstraint(
-            "rack_replacement_id", "leg", name="ux_rack_replacement_transport_bindings_business_identity"
+            "line_run_epoch_id",
+            "correlation_id",
+            "step",
+            name="ux_transport_decision_bindings_decision_identity",
         ),
         schema="wes_biz",
     )
     op.create_index(
-        "ix_wes_biz_rack_replacement_transport_bindings_epoch_rack",
-        "rack_replacement_transport_bindings",
-        ["line_run_epoch_id", "current_rack_id"],
+        "ix_wes_biz_transport_decision_bindings_epoch_resource",
+        "transport_decision_bindings",
+        ["line_run_epoch_id", "resource_fence_id"],
         unique=False,
         schema="wes_biz",
     )
     op.create_index(
-        op.f("ix_wes_biz_rack_replacement_transport_bindings_source_evidence_id"),
-        "rack_replacement_transport_bindings",
+        op.f("ix_wes_biz_transport_decision_bindings_source_evidence_id"),
+        "transport_decision_bindings",
         ["source_evidence_id"],
         unique=False,
         schema="wes_biz",

@@ -13,6 +13,7 @@ from wes_plugin_sdk import (
 
 from rough_sorter.facts import DeviceOutcome, DevicePositionConfirmedFact, DeviceStep
 from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.wms_requests import ng_placement_data, placement_data, target_data
 
 TARGET_OPERATION = "inbound.material.target_decide@v1"
 PLACEMENT_OPERATION = "inbound.material.placement_report@v1"
@@ -88,19 +89,12 @@ class DevicePositionConfirmedHandler:
 
     @staticmethod
     def _request_target(fact: DevicePositionConfirmedFact) -> CreateWmsConfirmation:
-        actual_position = DevicePositionConfirmedHandler._confirmed_position(fact)
         return CreateWmsConfirmation(
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
             operation=TARGET_OPERATION,
             operation_id=fact.request_operation_id or "",
-            evidence_refs=(fact.evidence_id,),
-            snapshot_refs=(
-                f"execution:{fact.material_execution_id}",
-                f"wms-admission:{fact.inbound_admission_id}",
-                f"position:{actual_position.location_id}",
-                f"rack:{fact.current_rack_id}",
-            ),
+            request_data=target_data(fact),
         )
 
     @staticmethod
@@ -117,12 +111,7 @@ class DevicePositionConfirmedHandler:
             fact_id=fact.fact_id,
             operation=PLACEMENT_OPERATION,
             operation_id=fact.request_operation_id or "",
-            evidence_refs=(fact.evidence_id,),
-            snapshot_refs=(
-                f"execution:{fact.material_execution_id}",
-                f"command:{fact.command_code}",
-                f"target-assignment:{fact.target_assignment_id}",
-            ),
+            request_data=placement_data(fact),
         )
 
     @staticmethod
@@ -132,11 +121,7 @@ class DevicePositionConfirmedHandler:
             fact_id=fact.fact_id,
             operation=NG_PLACEMENT_OPERATION,
             operation_id=fact.request_operation_id or "",
-            evidence_refs=tuple(dict.fromkeys((fact.evidence_id, fact.ng_evidence_id or ""))),
-            snapshot_refs=(
-                f"execution:{fact.material_execution_id}",
-                f"command:{fact.command_code}",
-            ),
+            request_data=ng_placement_data(fact),
         )
 
 

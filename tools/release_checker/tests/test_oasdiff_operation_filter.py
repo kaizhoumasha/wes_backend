@@ -57,7 +57,7 @@ def compare_consumer_to_provider(
     revision_path = work_dir / "selected-provider.json"
     base_path.write_bytes(canonical_json_bytes(project_selected_operations(consumer_baseline, selected_operations)))
     revision_path.write_bytes(canonical_json_bytes(project_selected_operations(selected_provider, selected_operations)))
-    completed = subprocess.run(  # noqa: S603 - binary path is digest-pinned by this test
+    completed = subprocess.run(
         [
             oasdiff_bin,
             "breaking",
@@ -98,9 +98,7 @@ def test_selected_path_item_external_ref_is_rejected_before_projection() -> None
 
 
 def test_pinned_oasdiff_binary_is_available(oasdiff_bin: str) -> None:
-    completed = subprocess.run(  # noqa: S603 - explicit OASDIFF_BIN is the test subject
-        [oasdiff_bin, "--version"], check=True, capture_output=True, text=True
-    )
+    completed = subprocess.run([oasdiff_bin, "--version"], check=True, capture_output=True, text=True)
     assert completed.stdout.strip() == OASDIFF_VERSION
     expected_sha256 = (
         OASDIFF_DARWIN_ALL_BINARY_SHA256

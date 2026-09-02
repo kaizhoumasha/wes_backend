@@ -3,10 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-
-def _required(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field_name} must not be blank")
+from .validation import validate_required_text as _required
 
 
 class ExecutionLifecycle(StrEnum):

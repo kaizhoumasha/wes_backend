@@ -5,7 +5,7 @@ contract_version: 0.3.0
 published_at: pending
 wes_alignment: FINAL_VALIDATION_PENDING
 created_at: 2026-08-13
-updated_at: 2026-08-31
+updated_at: 2026-09-01
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
 scope: WES/WMS 公共通信、Transport 搬运、自动出库、自动入库与上架
 system_stage: pre_release
@@ -53,17 +53,17 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | --- | --- | --- | --- |
 | 公共 HTTP/JSON Client | `Approved` | `ALIGNED` | WES 严格 JSON、HTTP 边界和响应联合已对齐；WMS 可按本文实现并准备联调 |
 | WMS → WES 主动通知公共信封 | `Approved` | `ALIGNED` | WES 接收端和 OpenAPI 3.0.3 已对齐；仍需双方提供实际环境参数和联调证据 |
-| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `FINAL_VALIDATION_PENDING` | WES 修复候选、OpenAPI 和聚焦行为测试已对齐 0.3.0；同 Commit/tree 的不可变镜像、WMS 实现、发布和真实联调仍为 `NOT RUN` |
+| WES 经 WMS 转发 AGV/CTU Transport | `Approved` | `ALIGNED` | WES、OpenAPI 和行为测试已对齐 0.3.0；backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree；WMS 实现和真实联调仍为 `NOT RUN` |
 | 自动出库 | `ReviewRequired` | `NOT_READY` | 附录 A 的自动出库场景只用于联合评审，批准前禁止实现 |
-| 粗分自动入库 | `Approved` | `FINAL_VALIDATION_PENDING` | `OLD_OUT/NEW_IN` 生产调用链已交付；历史 `f2129982` 镜像 E2E 已通过，但当前修复候选的同 Commit/tree 镜像尚未生成；真实联调与业务验收均为 `NOT RUN` |
+| 粗分自动入库 | `Approved` | `FINAL_VALIDATION_PENDING` | `OLD_OUT/NEW_IN` 生产调用链和当前联调镜像已交付；历史 `f2129982` 镜像 E2E 已通过，但尚未对当前镜像重新执行完整粗分业务 E2E；真实联调与业务验收均为 `NOT RUN` |
 | 满箱交换与自动上架 | `ReviewRequired` | `NOT_READY` | 附录 C 的自动上架场景只用于联合评审，批准前禁止实现 |
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
 公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`，但容器中间位置事件
 只在供应商能够提供权威逐容器中间事实时启用，当前 CTU/RCS 不实施；
-Transport 0.3.0 的 WES 修复候选、OpenAPI 和聚焦行为测试已对齐；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链已交付，
-但当前候选仍缺同 Commit/tree 的不可变镜像 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
+Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链已交付，
+但当前镜像仍缺完整粗分业务 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
 自动上架或自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
 
 ### 0.2 当前 WMS 开发任务总览

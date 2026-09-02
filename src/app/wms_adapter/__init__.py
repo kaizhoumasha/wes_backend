@@ -12,15 +12,12 @@ if TYPE_CHECKING:
     from src.app.wms_adapter.factory import build_wms_client
     from src.app.wms_adapter.inbound_adapter import WmsInboundAdapter
     from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
-    from src.app.wms_adapter.inbound_event_handler import InboundEventHandler, InboundEventResponse
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
     from src.app.wms_adapter.transport_event_handler import TransportEventHandler, TransportEventResponse
 
 router_v1: APIRouter
 
 _LAZY_EXPORTS = {
-    "InboundEventHandler": ("src.app.wms_adapter.inbound_event_handler", "InboundEventHandler"),
-    "InboundEventResponse": ("src.app.wms_adapter.inbound_event_handler", "InboundEventResponse"),
     "TransportEventHandler": ("src.app.wms_adapter.transport_event_handler", "TransportEventHandler"),
     "TransportEventResponse": ("src.app.wms_adapter.transport_event_handler", "TransportEventResponse"),
     "WmsAccessResult": ("src.app.wms_adapter.client", "WmsAccessResult"),
@@ -32,8 +29,6 @@ _LAZY_EXPORTS = {
 }
 
 __all__ = [
-    "InboundEventHandler",
-    "InboundEventResponse",
     "TransportEventHandler",
     "TransportEventResponse",
     "WmsAccessResult",
@@ -54,7 +49,7 @@ def __getattr__(name: str) -> Any:
 
         from src.app.wms_adapter.v1 import router as wms_router
 
-        router = APIRouter(prefix="/v1/wms", tags=["WMS Transport"])
+        router = APIRouter(prefix="/v1/wms", tags=["WMS Events"])
         router.include_router(wms_router)
         globals()[name] = router
         return router

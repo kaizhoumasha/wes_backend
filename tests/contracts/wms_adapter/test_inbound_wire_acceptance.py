@@ -211,6 +211,24 @@ def test_optional_pkg_id_must_be_omitted_instead_of_null() -> None:
         )
 
 
+def test_ng_placement_business_context_is_an_opaque_contract_value() -> None:
+    request = parse_outbound_request(
+        _envelope(
+            NG_PLACEMENT_OPERATION,
+            {
+                "material_execution_id": "EXEC-1",
+                "material_trace_id": "TRACE-1",
+                "ng_evidence_id": "EVIDENCE-1",
+                "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
+                "reason_code": "BUSINESS_REJECT",
+                "business_context": "MANUAL_BIN_PROCESSING",
+            },
+        )
+    )
+
+    assert request.data.business_context == "MANUAL_BIN_PROCESSING"
+
+
 def test_identifier_constraints_follow_the_authoritative_field_owners() -> None:
     request = parse_outbound_request(
         _envelope(
