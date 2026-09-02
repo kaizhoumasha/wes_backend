@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1.0] - 2026-09-02
+
+### Fixed
+
+- `TRANSPORT_DEBUG` 已应用终态会维护独立的可丢弃当前位置投影，使货架搬运成功后可以继续提交 `RACK_ROTATE` / `BIN_EXCHANGE`，不再因当前位置或朝向缺失返回 400。
+- 联调任务定向清理只删除仍由该任务产生的联调投影，保留正式业务 `PositionProjection` 以及已被其他任务接管的当前位置事实。
+- 数据库升级会从已有的已应用联调终态补齐最新位置和朝向，回滚不改变原 Transport 历史数据。
+
+### Verification
+
+- Transport API 与 runtime 聚焦回归 256 项通过；覆盖审计达到 86%，迁移、QUALITY 与 HEAVY 结果见 PR 验证记录。
+
 ## [0.30.0.0] - 2026-09-01
 
 ### Changed
