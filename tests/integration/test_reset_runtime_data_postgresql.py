@@ -76,6 +76,22 @@ async def _seed_transport_task(session: AsyncSession, transport_task_id: str, re
         ),
         {"task_id": transport_task_id, "resource_id": resource_id},
     )
+    await session.execute(
+        text(
+            "INSERT INTO wes_runtime.transport_debug_position_projections ("
+            "object_type, object_id, position_json, position_unknown, source_operation_id, "
+            "source_transport_task_id, updated_at"
+            ") VALUES ("
+            "'RACK', :resource_id, '{}'::json, false, "
+            ":operation_id, :task_id, CURRENT_TIMESTAMP"
+            ")"
+        ),
+        {
+            "task_id": transport_task_id,
+            "resource_id": resource_id,
+            "operation_id": f"00000000-0000-0000-0000-{resource_id[-12:].zfill(12)}",
+        },
+    )
     await session.commit()
 
 
@@ -186,6 +202,7 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
                         apply=False,
                     )
                     assert dry_summary.rows_before["wes_runtime.transport_tasks"] == 1
+                    assert dry_summary.rows_before["wes_runtime.transport_debug_position_projections"] == 1
 
                     summary = await reset_transport_task_data(
                         session,
@@ -194,17 +211,22 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
                     )
                     assert summary.deleted["wes_runtime.transport_tasks"] == 1
 
-                    for table in ("transport_resource_bindings", "transport_members", "transport_tasks"):
+                    for table, task_column in (
+                        ("transport_debug_position_projections", "source_transport_task_id"),
+                        ("transport_resource_bindings", "transport_task_id"),
+                        ("transport_members", "transport_task_id"),
+                        ("transport_tasks", "transport_task_id"),
+                    ):
                         assert (
                             await session.scalar(
-                                text(f"SELECT count(*) FROM wes_runtime.{table} WHERE transport_task_id = :task_id"),
+                                text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {task_column} = :task_id"),
                                 {"task_id": "transport-delete"},
                             )
                             == 0
                         )
                         assert (
                             await session.scalar(
-                                text(f"SELECT count(*) FROM wes_runtime.{table} WHERE transport_task_id = :task_id"),
+                                text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {task_column} = :task_id"),
                                 {"task_id": "transport-keep"},
                             )
                             == 1

@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from src.app.execution.models import PositionProjection
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
@@ -34,6 +35,7 @@ async def test_transport_face_columns_use_nullable_text_without_content_constrai
     integration_db_session: AsyncSession,
 ) -> None:
     assert isinstance(TransportMember.__table__.c.arrival_face.type, Text)
+    assert isinstance(TransportDebugPositionProjection.__table__.c.arrival_face.type, Text)
     assert isinstance(PositionProjection.__table__.c.arrival_face.type, Text)
 
     columns = await integration_db_session.execute(
@@ -41,11 +43,13 @@ async def test_transport_face_columns_use_nullable_text_without_content_constrai
             "SELECT table_schema, table_name, data_type, is_nullable FROM information_schema.columns "
             "WHERE column_name = 'arrival_face' AND "
             "((table_schema = 'wes_runtime' AND table_name = 'transport_members') OR "
+            "(table_schema = 'wes_runtime' AND table_name = 'transport_debug_position_projections') OR "
             "(table_schema = 'wes_biz' AND table_name = 'position_projections'))"
         )
     )
     assert {(row[0], row[1], row[2], row[3]) for row in columns} == {
         ("wes_runtime", "transport_members", "text", "YES"),
+        ("wes_runtime", "transport_debug_position_projections", "text", "YES"),
         ("wes_biz", "position_projections", "text", "YES"),
     }
     constraints = await integration_db_session.execute(
@@ -54,7 +58,8 @@ async def test_transport_face_columns_use_nullable_text_without_content_constrai
             "JOIN pg_class t ON t.oid = c.conrelid "
             "JOIN pg_namespace n ON n.oid = t.relnamespace "
             "WHERE n.nspname IN ('wes_runtime', 'wes_biz') "
-            "AND t.relname IN ('transport_members', 'position_projections') "
+            "AND t.relname IN "
+            "('transport_members', 'transport_debug_position_projections', 'position_projections') "
             "AND c.contype = 'c'"
         )
     )
@@ -182,7 +187,8 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
         text(
             "SELECT table_schema, table_name, column_name, column_default FROM information_schema.columns "
             "WHERE (table_schema = 'wes_runtime' AND table_name IN "
-            "('transport_tasks', 'transport_callback_receipts', 'transport_evidence', 'transport_members')) "
+            "('transport_tasks', 'transport_callback_receipts', 'transport_evidence', 'transport_members', "
+            "'transport_debug_position_projections')) "
             "OR (table_schema = 'wes_biz' AND table_name = 'position_projections')"
         )
     )
@@ -202,6 +208,8 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
         ("wes_runtime", "transport_evidence", "ack_timestamp_ms"),
         ("wes_runtime", "transport_evidence", "ack_data_json"),
         ("wes_runtime", "transport_members", "last_operation_id"),
+        ("wes_runtime", "transport_debug_position_projections", "source_operation_id"),
+        ("wes_runtime", "transport_debug_position_projections", "source_transport_task_id"),
         ("wes_biz", "position_projections", "source_operation_id"),
         ("wes_biz", "position_projections", "source_transport_task_id"),
     } <= columns.keys()

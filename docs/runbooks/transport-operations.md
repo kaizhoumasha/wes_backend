@@ -208,9 +208,9 @@ LIMIT 100;
 `GET /api/v1/transport/debug-tasks/{transport_task_id}/reset-preview`，核对目标 ID、Evidence、Callback Receipt、位置投影、outcome 版本、
 成员和绑定数量；
 确认后以 `ops:transport:debug-reset` 权限调用
-`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定任务，随后按 Callback Receipt、
-Evidence、绑定、成员、任务的顺序删除；任一步失败都会回滚。若 callback 在删除后迟到，既有入口仍会持久化 missing-task Evidence，
-并收敛为 `CONFLICT`。
+`POST /api/v1/transport/debug-tasks/{transport_task_id}/reset`。POST 会在同一事务内重新锁定任务，随后删除仍由该任务产生的联调
+位置投影、Callback Receipt、Evidence、绑定、成员和任务；任一步失败都会回滚。若 callback 在删除后迟到，既有入口仍会持久化
+missing-task Evidence，并收敛为 `CONFLICT`。
 
 无法使用页面/API 时，可以使用项目脚本。先 dry-run：
 
@@ -219,14 +219,14 @@ bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> 
 ```
 
 核对输出只包含目标任务及其 `transport_callback_receipts`、`transport_evidence`、
-`transport_resource_bindings` 和 `transport_members` 后，再执行：
+`transport_debug_position_projections`、`transport_resource_bindings` 和 `transport_members` 后，再执行：
 
 ```text
 bash scripts/data/reset_runtime_data.sh --transport-task-id <transport_task_id> --yes --force
 ```
 
-脚本与 API 使用同一删除范围，并在一个事务内先锁定任务，再按 Callback Receipt、Evidence、绑定、成员、任务的顺序
-删除。`--force` 仅用于联调服务器采用生产型运行配置时显式确认数据可丢弃；它不扩大删除范围。生产环境不得使用这些入口。
+脚本与 API 使用同一删除范围，并在一个事务内先锁定任务，再显式删除目标任务拥有的联调位置投影及其本地 Transport 聚合。
+`--force` 仅用于联调服务器采用生产型运行配置时显式确认数据可丢弃；它不扩大删除范围。生产环境不得使用这些入口。
 
 ## 禁止的运维捷径
 

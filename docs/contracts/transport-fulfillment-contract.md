@@ -2,7 +2,7 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-09-01
+updated_at: 2026-09-02
 contract_version: 0.3.0
 implementation_alignment: ALIGNED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
@@ -28,9 +28,8 @@ related:
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
 本合同生命周期为 `Approved`，内容是已评审的目标接口契约。WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-已与本合同对齐；backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree `46d568d1`，因此
-`implementation_alignment=ALIGNED`。该状态只证明 WES 实现与已部署软件版本；WMS 实现、双方真实联调、供应商一致性、
-设备物理和业务验收仍未完成。
+已与本合同对齐，因此 `implementation_alignment=ALIGNED`。该状态只证明当前分支中的 WES 实现；合并、正式部署、WMS 实现、
+双方真实联调、供应商一致性、设备物理和业务验收仍需分别确认。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
 
@@ -48,8 +47,10 @@ Phase 4。
 系统尚未发布，首版直接实现本文目标合同，不保留旧 Effect、WMS/RCS 状态查询、回调提示、别名、兼容路径或数据迁移。
 WES 可以提供本地 TransportTask 运维观察接口；该接口不进入 WMS/RCS 对接合同，也不能驱动轮询、取消、重试、状态修改或
 业务完成判定。唯一写入例外是数据可丢弃联调环境中的定向清理：操作员仅需指定 `transport_task_id`，即可删除该任务的完整本地
-Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。删除范围包括 Callback Receipt、Evidence、由该任务
-Evidence 产生的位置投影、资源绑定、成员和任务；不扩展到库存、业务单据或其它 TransportTask。该动作不是远端取消或重试，
+Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。`TRANSPORT_DEBUG` 的已应用终态只更新 Transport
+自有、可丢弃的联调当前位置投影，供后续 `RACK_ROTATE` / `BIN_EXCHANGE` 校验，不写入活动业务执行使用的核心 `PositionProjection`。
+删除范围包括 Callback Receipt、Evidence、由该任务 Evidence 产生的联调当前位置投影、资源绑定、成员和任务；不扩展到库存、业务单据或
+其它 TransportTask。该动作不是远端取消或重试，
 不得向 WMS/RCS 发送请求，也不能撤销已经发生的物理动作。
 
 ## 2. 权威与职责

@@ -256,9 +256,15 @@ def _parse_transport_task_id(value: str) -> str:
         raise argparse.ArgumentTypeError("transport_task_id 必须是 1..80 个非空且不含 NUL 的字符") from exc
 
 
-async def _transport_task_row_count(db: AsyncSession, table: str, transport_task_id: str) -> int:
+async def _transport_task_row_count(
+    db: AsyncSession,
+    table: str,
+    transport_task_id: str,
+    *,
+    id_column: str = "transport_task_id",
+) -> int:
     result = await db.execute(
-        text(f"SELECT count(*) FROM wes_runtime.{table} WHERE transport_task_id = :transport_task_id"),  # noqa: S608
+        text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {id_column} = :transport_task_id"),  # noqa: S608
         {"transport_task_id": transport_task_id},
     )
     return int(result.scalar_one())
@@ -301,6 +307,12 @@ async def reset_transport_task_data(
     rows_before = {
         "wes_runtime.transport_callback_receipts": int(receipt_result.scalar_one()),
         "wes_runtime.transport_evidence": await _transport_task_row_count(db, "transport_evidence", task_id),
+        "wes_runtime.transport_debug_position_projections": await _transport_task_row_count(
+            db,
+            "transport_debug_position_projections",
+            task_id,
+            id_column="source_transport_task_id",
+        ),
         "wes_runtime.transport_resource_bindings": await _transport_task_row_count(
             db, "transport_resource_bindings", task_id
         ),
@@ -326,6 +338,11 @@ async def reset_transport_task_data(
             (
                 "transport_evidence",
                 "DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :transport_task_id",
+            ),
+            (
+                "transport_debug_position_projections",
+                "DELETE FROM wes_runtime.transport_debug_position_projections "
+                "WHERE source_transport_task_id = :transport_task_id",
             ),
             (
                 "transport_resource_bindings",

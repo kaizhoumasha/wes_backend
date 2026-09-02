@@ -38,7 +38,7 @@ FINAL_MANIFEST_PATH = FIXTURES_DIR / "initial_schema_final_manifest.json"
 DISPOSITION_PATH = FIXTURES_DIR / "initial_schema_disposition.json"
 TRANSITION_DISPOSITION_PATH = FIXTURES_DIR / "initial_schema_transition_disposition.json"
 INITIAL_REVISION = "f9c7c2e5f501"
-HEAD_REVISION = "e0da335c057d"
+HEAD_REVISION = "ed5ed8eb0c46"
 
 
 def _fixtures() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -274,6 +274,88 @@ async def test_transport_face_successor_preserves_legacy_empty_and_has_lossless_
             await assert_database_head(connection, INITIAL_REVISION)
             assert (
                 await connection.fetchval("SELECT arrival_face FROM wes_runtime.transport_members WHERE id = 1") == ""
+            )
+        finally:
+            await connection.close()
+
+
+@pytest.mark.asyncio()
+async def test_transport_debug_projection_successor_backfills_latest_applied_fact() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "e0da335c057d", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await connection.execute(
+                """
+                INSERT INTO wes_runtime.transport_tasks (
+                    id, transport_task_id, client_request_id, request_digest, kind, caller_json, request_json,
+                    submit_operation_id, submit_timestamp_ms, submit_request_body, submit_request_body_digest,
+                    status, submit_attempt_count, outcome_version, published_outcome_version,
+                    last_applied_wms_outcome_revision, created_at, updated_at
+                ) VALUES (
+                    1, 'transport-debug-backfill', 'request-debug-backfill', repeat('a', 64), 'RACK_MOVE',
+                    '{"workline_id":"TRANSPORT_DEBUG"}'::json, '{}'::json,
+                    '019f12d0-58d7-7b4d-a23a-1b90aa5d4472', 1, '{}', repeat('b', 64),
+                    'SUCCEEDED', 1, 2, 2, 1, now(), now()
+                )
+                """
+            )
+            await connection.execute(
+                """
+                INSERT INTO wes_runtime.transport_members (
+                    id, transport_task_id, ordinal, object_type, object_id, source_json, target_json,
+                    status, final_position_json, position_unknown, arrival_face, last_operation_id, updated_at
+                ) VALUES (
+                    1, 'transport-debug-backfill', 0, 'RACK', '510056', '{}'::json, '{}'::json,
+                    'SUCCEEDED', '{"kind":"RACK_POSITION","location_code":"KT19"}'::json,
+                    FALSE, '90', '019f12d0-58d7-7b4d-a23a-1b90aa5d4473', now()
+                )
+                """
+            )
+            await connection.execute(
+                """
+                INSERT INTO wes_runtime.transport_evidence (
+                    id, operation_id, transport_task_id, operation, outcome_revision, event_timestamp_ms,
+                    message_digest, payload_json, ack_timestamp_ms, ack_data_json, status, received_at, processed_at
+                ) VALUES (
+                    1, '019f12d0-58d7-7b4d-a23a-1b90aa5d4473', 'transport-debug-backfill',
+                    'transport.task.resulted@v1', 1, 1, repeat('c', 64), '{}'::json, 2, '{}'::json,
+                    'APPLIED', now(), now()
+                )
+                """
+            )
+        finally:
+            await connection.close()
+
+        run_alembic("upgrade", "head", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            row = await connection.fetchrow(
+                """
+                SELECT object_type, object_id, position_json::text, position_unknown, arrival_face,
+                       source_operation_id, source_transport_task_id
+                FROM wes_runtime.transport_debug_position_projections
+                """
+            )
+            assert tuple(row) == (
+                "RACK",
+                "510056",
+                '{"kind":"RACK_POSITION","location_code":"KT19"}',
+                False,
+                "90",
+                "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+                "transport-debug-backfill",
+            )
+        finally:
+            await connection.close()
+
+        run_alembic("downgrade", "e0da335c057d", database_url=database_url)
+
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, "e0da335c057d")
+            assert (
+                await connection.fetchval("SELECT arrival_face FROM wes_runtime.transport_members WHERE id = 1") == "90"
             )
         finally:
             await connection.close()

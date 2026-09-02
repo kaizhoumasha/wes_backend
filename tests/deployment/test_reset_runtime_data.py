@@ -366,6 +366,7 @@ async def test_transport_task_reset_dry_run_reports_exact_aggregate_without_muta
     assert summary.rows_before == {
         "wes_runtime.transport_callback_receipts": 1,
         "wes_runtime.transport_evidence": 0,
+        "wes_runtime.transport_debug_position_projections": 1,
         "wes_runtime.transport_resource_bindings": 1,
         "wes_runtime.transport_members": 1,
         "wes_runtime.transport_tasks": 1,
@@ -388,6 +389,7 @@ async def test_transport_task_reset_apply_deletes_children_then_task_in_one_comm
     assert deletes == [
         "DELETE FROM wes_runtime.transport_callback_receipts WHERE response_data_json ->> 'transport_task_id' = :transport_task_id",
         "DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :transport_task_id",
+        "DELETE FROM wes_runtime.transport_debug_position_projections WHERE source_transport_task_id = :transport_task_id",
         "DELETE FROM wes_runtime.transport_resource_bindings WHERE transport_task_id = :transport_task_id",
         "DELETE FROM wes_runtime.transport_members WHERE transport_task_id = :transport_task_id",
         "DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :transport_task_id",
@@ -396,6 +398,7 @@ async def test_transport_task_reset_apply_deletes_children_then_task_in_one_comm
     assert summary.deleted == {
         "wes_runtime.transport_callback_receipts": 1,
         "wes_runtime.transport_evidence": 1,
+        "wes_runtime.transport_debug_position_projections": 1,
         "wes_runtime.transport_resource_bindings": 1,
         "wes_runtime.transport_members": 1,
         "wes_runtime.transport_tasks": 1,

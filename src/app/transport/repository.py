@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, func, or_, select, update
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
@@ -51,6 +52,54 @@ class TransportRepository:
         )
         return list(result)
 
+    async def get_debug_position_projection(
+        self,
+        db: AsyncSession,
+        object_type: str,
+        object_id: str,
+        *,
+        for_update: bool = False,
+    ) -> TransportDebugPositionProjection | None:
+        statement = select(TransportDebugPositionProjection).where(
+            TransportDebugPositionProjection.object_type == object_type,
+            TransportDebugPositionProjection.object_id == object_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
+
+    async def apply_debug_position_projection(
+        self,
+        db: AsyncSession,
+        *,
+        object_type: str,
+        object_id: str,
+        position_json: dict[str, Any] | None,
+        position_unknown: bool,
+        arrival_face: str | None,
+        operation_id: str,
+        transport_task_id: str,
+        updated_at: datetime,
+    ) -> TransportDebugPositionProjection:
+        projection = await self.get_debug_position_projection(db, object_type, object_id, for_update=True)
+        if projection is None:
+            projection = TransportDebugPositionProjection(
+                object_type=object_type,
+                object_id=object_id,
+                source_operation_id=operation_id,
+                source_transport_task_id=transport_task_id,
+                updated_at=updated_at,
+            )
+            db.add(projection)
+        projection.position_json = position_json
+        projection.position_unknown = position_unknown
+        projection.arrival_face = arrival_face
+        projection.source_operation_id = operation_id
+        projection.source_transport_task_id = transport_task_id
+        projection.updated_at = updated_at
+        await db.flush()
+        return projection
+
     async def get_debug_reset_counts(
         self,
         db: AsyncSession,
@@ -67,6 +116,11 @@ class TransportRepository:
             select(func.count())
             .select_from(TransportEvidence)
             .where(TransportEvidence.transport_task_id == transport_task_id)
+        )
+        position_projection_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportDebugPositionProjection)
+            .where(TransportDebugPositionProjection.source_transport_task_id == transport_task_id)
         )
         member_count = await db.scalar(
             select(func.count())
@@ -89,7 +143,7 @@ class TransportRepository:
         return (
             int(callback_receipt_count or 0),
             int(evidence_count or 0),
-            0,
+            int(position_projection_count or 0),
             int(member_count or 0),
             int(binding_count or 0),
             int(active_binding_count or 0),
@@ -102,6 +156,11 @@ class TransportRepository:
     ) -> tuple[int, int, int, int, int, int]:
         """按依赖顺序删除指定 TransportTask 的完整本地 Transport 链路。"""
 
+        position_projections = await db.execute(
+            delete(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.source_transport_task_id == transport_task_id
+            )
+        )
         receipts = await db.execute(
             delete(TransportCallbackReceipt).where(
                 TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id
@@ -120,7 +179,7 @@ class TransportRepository:
         return (
             int(receipts.rowcount or 0),
             int(evidence.rowcount or 0),
-            0,
+            int(position_projections.rowcount or 0),
             int(members.rowcount or 0),
             int(bindings.rowcount or 0),
             int(tasks.rowcount or 0),

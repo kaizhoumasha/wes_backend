@@ -140,6 +140,13 @@ class TransportTaskPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _RackPositionFact:
+    position_json: dict[str, Any] | None
+    position_unknown: bool
+    arrival_face: str | None
+
+
 class TransportEventPublisher(Protocol):
     async def publish_to(self, channel: str, event_type: str, payload: dict[str, Any]) -> bool: ...
 
@@ -233,6 +240,25 @@ class TransportService:
             execution_authority,
         )
 
+    async def rotate_rack_for_debug(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        position: RackPosition,
+        target_face: str,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.CTU02,
+    ) -> TransportHandle:
+        """使用已应用的 Transport 联调终态校验货架当前位置与朝向。"""
+
+        if caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+            raise TransportContractError("debug rack rotation requires TRANSPORT_DEBUG caller")
+        return await self._create_task(
+            RotateRackRequest(client_request_id, caller, rack_id, position, target_face, rcs_template_id),
+            None,
+            use_debug_rack_projection=True,
+        )
+
     async def move_bins(
         self,
         client_request_id: str,
@@ -269,6 +295,22 @@ class TransportService:
     ) -> TransportHandle:
         return await self._create_task(
             ExchangeBinsRequest(client_request_id, caller, exchange_pairs), execution_authority
+        )
+
+    async def exchange_bins_for_debug(
+        self,
+        client_request_id: str,
+        caller: TransportCaller,
+        exchange_pairs: tuple[BinExchangePair, ...],
+    ) -> TransportHandle:
+        """使用已应用的 Transport 联调终态校验两侧货架朝向。"""
+
+        if caller.workline_id != TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+            raise TransportContractError("debug bin exchange requires TRANSPORT_DEBUG caller")
+        return await self._create_task(
+            ExchangeBinsRequest(client_request_id, caller, exchange_pairs),
+            None,
+            use_debug_rack_projection=True,
         )
 
     async def get_task_snapshot(self, transport_task_id: str) -> TransportTaskSnapshot:
@@ -827,6 +869,7 @@ class TransportService:
         execution_authority: TransportExecutionAuthority | None,
         *,
         allow_debug_rack_face: bool = False,
+        use_debug_rack_projection: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         try:
@@ -836,6 +879,7 @@ class TransportService:
                     request,
                     execution_authority,
                     allow_debug_rack_face=allow_debug_rack_face,
+                    use_debug_rack_projection=use_debug_rack_projection,
                 )
         except IntegrityError as error:
             async with self._sessions() as db:
@@ -851,6 +895,7 @@ class TransportService:
         execution_authority: TransportExecutionAuthority | None,
         *,
         allow_debug_rack_face: bool = False,
+        use_debug_rack_projection: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         task_id = f"transport-{uuid.uuid4()}"
@@ -898,11 +943,10 @@ class TransportService:
         if existing is not None:
             return _idempotent_handle(existing, request_digest)
         if isinstance(request, RotateRackRequest):
-            projection = await self._position_projections.get_current(
+            projection = await self._get_rack_position_fact(
                 db,
-                "RACK",
                 request.rack_id,
-                for_update=True,
+                use_debug_rack_projection=use_debug_rack_projection,
             )
             if (
                 projection is None
@@ -925,7 +969,11 @@ class TransportService:
                 await self._repository.add_aggregate(db, task, members, bindings)
                 return TransportHandle(task_id, request.client_request_id)
             for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
-                projection = await self._position_projections.get_current(db, "RACK", rack_id, for_update=True)
+                projection = await self._get_rack_position_fact(
+                    db,
+                    rack_id,
+                    use_debug_rack_projection=use_debug_rack_projection,
+                )
                 if (
                     projection is None
                     or projection.position_unknown
@@ -937,6 +985,74 @@ class TransportService:
                     raise TransportContractError("rack current face does not match request")
         await self._repository.add_aggregate(db, task, members, bindings)
         return TransportHandle(task_id, request.client_request_id)
+
+    async def _get_rack_position_fact(
+        self,
+        db: AsyncSession,
+        rack_id: str,
+        *,
+        use_debug_rack_projection: bool,
+    ) -> _RackPositionFact | None:
+        if use_debug_rack_projection:
+            projection = await self._repository.get_debug_position_projection(
+                db,
+                "RACK",
+                rack_id,
+                for_update=True,
+            )
+            if projection is None:
+                return None
+            return _RackPositionFact(
+                position_json=projection.position_json,
+                position_unknown=projection.position_unknown,
+                arrival_face=projection.arrival_face,
+            )
+        projection = await self._position_projections.get_current(db, "RACK", rack_id, for_update=True)
+        if projection is None:
+            return None
+        return _RackPositionFact(
+            position_json=projection.position_json,
+            position_unknown=projection.position_unknown,
+            arrival_face=projection.arrival_face,
+        )
+
+    async def _apply_member_position_projection(
+        self,
+        db: AsyncSession,
+        task: TransportTask,
+        member: TransportMember,
+        evidence: TransportEvidence,
+        *,
+        position_json: dict[str, Any] | None,
+        position_unknown: bool,
+        arrival_face: str | None,
+        updated_at: datetime,
+    ) -> None:
+        if task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+            await self._repository.apply_debug_position_projection(
+                db,
+                object_type=member.object_type,
+                object_id=member.object_id,
+                position_json=position_json,
+                position_unknown=position_unknown,
+                arrival_face=arrival_face,
+                operation_id=evidence.operation_id,
+                transport_task_id=task.transport_task_id,
+                updated_at=updated_at,
+            )
+            return
+        await self._position_projections.apply_transport_result(
+            db,
+            authority=_execution_authority_from_task(task),
+            object_type=member.object_type,
+            object_id=member.object_id,
+            position=position_json,
+            position_unknown=position_unknown,
+            arrival_face=arrival_face,
+            operation_id=evidence.operation_id,
+            transport_task_id=task.transport_task_id,
+            updated_at=updated_at,
+        )
 
     def _apply_submit_result(
         self,
@@ -1220,16 +1336,14 @@ class TransportService:
             member.arrival_face = arrival_face
             member.last_operation_id = evidence.operation_id
             member.updated_at = now
-            await self._position_projections.apply_transport_result(
+            await self._apply_member_position_projection(
                 db,
-                authority=_execution_authority_from_task(task),
-                object_type=member.object_type,
-                object_id=member.object_id,
-                position=final_position,
+                task,
+                member,
+                evidence,
+                position_json=final_position,
                 position_unknown=position_unknown,
                 arrival_face=arrival_face,
-                operation_id=evidence.operation_id,
-                transport_task_id=task.transport_task_id,
                 updated_at=now,
             )
             outcomes.append(outcome)

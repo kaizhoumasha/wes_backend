@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-01
+**最后更新**：2026-09-02
 
 ## 1. 真源与入口
 
@@ -86,7 +86,7 @@ API → Service → Repository → Database
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/execution/` | 通用执行对象、RACK/BIN 当前位置投影、可靠 WMS confirmation 生命周期与静态插件事实处理；不拥有具体 operation 的请求重建、顺序或结果语义 |
 | `src/app/runtime/` | 保留当前 Session/Timeline/位置事件、诊断与最小能力合同；Phase 10 旧 Runtime/Intent/Effect/Hold/Provider 应用消费者与 Phase 11 终裁删除的 legacy model identity 均已移出活动源码 |
-| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影；核心本身不拥有业务 producer，当前由粗分插件 `OLD_OUT/NEW_IN` 通过 port 消费 |
+| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影，`TRANSPORT_DEBUG` 终态只更新 Transport 自有的可丢弃联调投影；核心本身不拥有业务 producer，当前由粗分插件 `OLD_OUT/NEW_IN` 通过 port 消费 |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
 | `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层、严格 operation DTO/parser、可靠派发与统一 Event route；未知 operation 明确拒绝，不做业务 fallback |
