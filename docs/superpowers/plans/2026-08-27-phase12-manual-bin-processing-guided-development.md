@@ -4,6 +4,10 @@ status: Task 0–1 bootstrap admitted; Task 2–7 blocked pending Task 0 exit, T
 implementation_owner: 用户
 agent_role: 已按用户授权完成基础去业务化；后续仍按任务逐项讲解、实施或 Review
 depends_on: Phase 11 单一空库 Schema 基线（已完成）
+frontend_baseline: wes_frontend develop@96841ce4adb825aced9a2617fa9022c5236ced68（PR #97，v0.12.11.0）
+
+前端基线以 PR #97 的 `develop` merge commit 为准，不以前端 feature branch tip 为准。该基线只冻结 Phase 12 开始前的前端状态，
+不改变下述 Bootstrap/Production 两级准入结论。
 
 ## 0. 两级准入门禁
 
