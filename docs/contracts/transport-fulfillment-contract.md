@@ -2,7 +2,7 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-09-01
+updated_at: 2026-09-02
 contract_version: 0.3.0
 implementation_alignment: ALIGNED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
@@ -28,9 +28,8 @@ related:
 提交 RCS 搬运请求、接收位置事实和异步最终结果。
 
 本合同生命周期为 `Approved`，内容是已评审的目标接口契约。WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试
-已与本合同对齐；backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree `46d568d1`，因此
-`implementation_alignment=ALIGNED`。该状态只证明 WES 实现与已部署软件版本；WMS 实现、双方真实联调、供应商一致性、
-设备物理和业务验收仍未完成。
+已与本合同对齐，因此 `implementation_alignment=ALIGNED`。该状态只证明当前分支中的 WES 实现；合并、正式部署、WMS 实现、
+双方真实联调、供应商一致性、设备物理和业务验收仍需分别确认。
 
 Phase 4 的目标不是建立通用执行平台，而是让后续工作线插件用简单方法完成：
 
