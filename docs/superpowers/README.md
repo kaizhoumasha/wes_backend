@@ -21,14 +21,14 @@
 | `../devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集模板 | Current Operational Input |
 | `../devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、数据库和 Redis 基础支撑环境初始化手册 | Current Operational Input |
 | `plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试所有权与重量治理 | 分阶段执行 |
-| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–11 已完成并包含在当前 backend 联调部署中；Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始；当前运行门禁为 `BLOCK`，不等于现场验收完成 |
+| `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–11 已完成并包含在当前 backend 联调部署中；Phase 12 Task 0–1 已具备 Bootstrap 启动条件，Task 2–7 在人工合同冻结且开发环境验证通过前不得开始；Phase 13–14 未开始；当前运行门禁为 `BLOCK`，不等于现场验收完成 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
 | `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
-| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Foundation prerequisite implemented；业务合同仍须独立评审后再实施 |
+| `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Task 0–1 Bootstrap admitted；Task 2–7 在人工业务合同冻结且开发环境验证通过前阻断 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |
 | `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Tasks 1–4 implemented and verified on `codex/phase10-implementation`；已纳入 Phase 10 Task 7 联调候选，Task 5 TEST Deploy 未执行 |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Implemented and merged；backend `41ab69bf`、frontend `e103b692`；现已包含在当前联调部署中，未完成现场验收 |

@@ -1,9 +1,19 @@
 # Phase 12 `manual_bin_processing` 用户教学实施计划
 
-status: Foundation prerequisite implemented; manual business contract review not started
+status: Task 0–1 bootstrap admitted; Task 2–7 blocked pending Task 0 exit, Task 1 contract/OpenAPI approval, and development environment health verification
 implementation_owner: 用户
 agent_role: 已按用户授权完成基础去业务化；后续仍按任务逐项讲解、实施或 Review
-depends_on: Phase 11 单一空库 Schema 基线（已完成）、人工业务合同重新评审（待完成）
+depends_on: Phase 11 单一空库 Schema 基线（已完成）
+
+## 0. 两级准入门禁
+
+Phase 12 分为两个不能互相替代的准入层级：
+
+- **Bootstrap gate（Task 0–1）：** Phase 11 空库基线和本教学计划已就绪后，可进行代码导航、Owner 说明和人工业务合同联合评审；
+- **Production gate（Task 2–7）：** Task 0 退出、Task 1 的当前合同与 OpenAPI 获批，且开发环境健康检查通过后，才允许修改生产代码、
+  测试、migration 或 Composition。
+
+Task 0–1 获准只表示可以完成生产实现前的学习与合同冻结，不代表 Phase 12 生产实现、部署、设备物理或业务验收已经开始或完成。
 
 ## 1. 教学目标
 
@@ -47,9 +57,9 @@ operation 返回 `422`，不得落入 Transport 或其它工作线。
 - 兼容 alias、shim、双写、旧数据迁移或预留 Phase 13 schema；
 - 用 `rough_sorter` 测试替代人工业务验收。
 
-## 3. 开始前合同重审
+## 3. 生产实现前合同重审
 
-PR #151 的旧 Phase 9 人工合同、设备附录、OpenAPI 和实施计划已作为历史输入归档，不是当前实施真源。Phase 12 开始前由用户、WMS、
+PR #151 的旧 Phase 9 人工合同、设备附录、OpenAPI 和实施计划已作为历史输入归档，不是当前实施真源。Task 2 生产实现开始前由用户、WMS、
 WES、RCS/ECS 责任方重新确认真实教学范围，至少冻结：
 
 - 人工任务来源、身份、生命周期和 WMS/PDA 所有权；
@@ -71,14 +81,14 @@ Agent 讲解 `rough_sorter`、Execution、Transport、Device、WMS Adapter、Com
 2. 一个 WMS Event 如何变成持久化 evidence；
 3. 一个 DeviceCommand 如何下发并通过 Result/Event 收敛；
 4. Transport 与 DeviceCommand 为什么不能互相替代；
-5. 插件测试为什么不能访问数据库或进入核心默认 pytest。
+5. 插件纯 Decision 子层为什么不能访问数据库，以及具体插件测试为什么不能进入核心默认 pytest。
 
 退出条件：用户能画出数据流和依赖方向，Agent Review 无边界误解。
 
-### Task 1：冻结人工业务合同和严格解析
+### Task 1：冻结人工业务合同和机器合同
 
-用户根据联合评审结果编写当前 Markdown 合同、OpenAPI 和严格 DTO/operation parser。纯文档不走代码式 TDD；机器合同使用解析、引用、
-operation 映射和既有 contract owner 的聚焦验证。
+用户根据联合评审结果编写当前 Markdown 合同与 OpenAPI，冻结 operation 闭集和严格 DTO schema。Markdown 部分不走代码式 TDD；
+OpenAPI 使用既有 schema、引用和 operation 映射检查。本任务不修改生产 parser 或测试，其实现与行为测试由 Task 4 承接。
 
 退出条件：合同明确 ownership、identity、ACK、错误、重放、状态终态和现场验收责任，没有内部旧 Runtime/Provider 语义。
 
@@ -106,6 +116,7 @@ Model/Repository/Service。
 
 用户复用现有 WMS Event route、`InboundEvidence` 和 `WmsConfirmation`：
 
+- 按 Task 1 获批的 operation 闭集和 DTO schema 实现严格 parser 与行为测试；
 - 入站先持久化再 ACK；
 - 重复 identity 幂等，冲突 fail closed；
 - 业务推进只消费 claimable evidence；

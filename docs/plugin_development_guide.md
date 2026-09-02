@@ -185,29 +185,41 @@ workline_plugins/<plugin_key>/
 │       ├── __init__.py
 │       ├── facts.py
 │       ├── plugin.py
+│       ├── <decision_helper>.py # 存在真实纯逻辑职责时才创建
+│       ├── application/        # 需要业务事务或基础能力接线时才创建
 │       └── handlers/
 │           ├── __init__.py
 │           ├── _guards.py
 │           └── <business_trigger>.py
 ├── tests/
 │   ├── <handler_or_contract_test>.py
+│   ├── integration/
 │   └── e2e/
 └── fixtures/
 ```
 
-插件包只声明 WES SDK 和业务侧依赖，独立维护测试配置和构建入口。核心 `src/` 和核心 `tests/` 不保存具体插件源码或测试；
-已交付插件只放在仓库根目录的独立插件包中。只有出现真实独立职责时才增加文件，不预建设备 Adapter 包、客户尚未需要的
-扩展点或业务模板。
+插件包包含职责不同的两个子层：
+
+- 纯 Decision 子层通常包含 `facts.py`、`plugin.py`、`handlers/` 和必要的纯逻辑 helper，只依赖公开 `wes_plugin_sdk` 与 Python 标准库；
+- 业务 Application 子层只在需要业务事务、事实构造或可靠对象协调时创建，可依赖 `src` 提供的基础端口、Service、Repository
+  与模型；基础 `src` 和 SDK 均不得反向导入具体插件。
+
+插件独立维护测试配置和构建入口，核心 `tests/` 不保存具体插件源码或测试。只有出现真实独立职责时才增加文件，不预建设备
+Adapter 包、客户尚未需要的扩展点或业务模板。Application 子层依赖 WES 运行环境，不得为让插件自己的最小开发环境运行完整
+应用测试而复制核心依赖、基础实现或可靠性机制。
 
 Handler 按稳定业务触发拆分，而不是按物理 `EVENT`、`COMMAND`、`ACK`、`CALLBACK` 各建一套文件。`plugin.py` 只显式构造
-固定 tuple，不扫描 `handlers/`、不使用动态 import，也不提供可变 registry。插件所需执行、Epoch 和位置快照由核心
-Composition Root 在同一事务构造为类型化 Fact；Handler 只消费该不可变快照。
+固定 tuple，不扫描 `handlers/`、不使用动态 import，也不提供可变 registry。部署 Composition Root 只显式装配插件 factory、
+Handler 与核心端口；插件 Application 在核心提供的当前事务中构造类型化 Fact，Handler 只消费该不可变快照。核心只消费
+`PluginFactFactory` 抽象，不导入具体插件。
 
 供应商一致性验收是对外部 ECS/网关实现的验收，不与 WorkLine 插件同包，也不进入核心业务测试。
 
 ## 4. 开发硬规则
 
-- 插件不得访问数据库 Session、ORM、Repository、SQL、HTTP Client 或 Celery。
+- 纯 Decision 子层不得访问 `src`、数据库 Session、ORM、Repository、SQL、HTTP Client 或 Celery。
+- 业务 Application 子层必须依赖 WES 已有基础端口、Service、Repository 和事务边界，不得复制数据库访问、HTTP、Celery、
+  Transport、Device、Evidence、Confirmation 或 retry 基础能力；对外 HTTP 与任务队列只通过核心已装配端口使用。
 - 所有依赖必须显式注入；禁止 Service Locator、全局容器查找和动态 import。
 - 供应商差异必须由供应商 ECS/网关收敛为白皮书统一接口，不得进入插件或核心分支。
 - 插件只读取本地执行投影，通过对应业务模块取得同步 WMS 业务结果；不得直接使用 `WmsClient`，也不得组合事实重算
@@ -233,6 +245,7 @@ Composition Root 在同一事务构造为类型化 Fact；Handler 只消费该�
 | 核心统一接口合同 | 固定路径、公共包络、身份、重复、冲突和 ACK/CALLBACK 边界 |
 | 供应商一致性验收 | 真实设备实现符合白皮书和获批设备合同附录 |
 | 插件纯逻辑测试 | 类型化输入与 WMS 结果下的 Decision、设备忙、物理冲突、模式不匹配、业务 NG、设备故障和依赖暂停 |
+| 插件应用测试 | 业务事务、事实构造及基础端口协调；FAST 使用替身，真实持久化归插件 integration |
 | SDK 测试夹具集成 | 类型化输入、依赖注入、封闭 Decision 及其到可靠对象的公共接线，不承载真实业务场景 |
 | 部署级端到端验收 | 安装后的插件经 WES 公共入口、真实持久化、HTTP/CALLBACK、故障和多对象并发形成闭环 |
 | 架构边界 | Handler 不依赖数据库、Repository、HTTP、Celery、Service Locator 或全局容器 |
@@ -241,7 +254,7 @@ Composition Root 在同一事务构造为类型化 Fact；Handler 只消费该�
 接线；供应商一致性验收只证明外部实现符合协议；插件纯逻辑测试只证明 WMS 结果到执行 Decision 的映射；部署级端到端验收
 证明安装组合能够闭环。各层不得相互替代或复制。
 
-插件包进入自身目录后至少运行：
+只有完全不含 `application/` 的纯 Decision 插件，才可在插件自己的最小开发环境运行全部测试：
 
 ```bash
 uv sync --dev
@@ -250,9 +263,20 @@ uv run ruff format --check .
 uv run ruff check .
 ```
 
-插件包内的 Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备。需要真实 PostgreSQL、HTTP、CALLBACK、
-故障或并发环境时，在部署级端到端验收流水线通过安装后的 WES 公共边界运行；这不会改变插件禁止访问数据库和网络的规则。
-WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 不得发现或运行具体插件测试或部署验收。
+插件包含 `application/` 时，完整 FAST 从 WES 仓库根目录显式运行，使 Application 测试只复用根工作区的基础依赖：
+
+```bash
+WES_PLUGIN_DIR=workline_plugins/your_plugin_key
+uv run pytest "$WES_PLUGIN_DIR/tests" -q \
+  --ignore="$WES_PLUGIN_DIR/tests/integration" \
+  --ignore="$WES_PLUGIN_DIR/tests/e2e"
+uv run ruff format --check "$WES_PLUGIN_DIR"
+uv run ruff check "$WES_PLUGIN_DIR"
+```
+
+Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备。需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，
+由插件自己的 integration/e2e 入口显式运行，并通过 WES 公共边界验收安装后的组合；这不会赋予纯 Decision 子层数据库或网络
+依赖。WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY selector 不得发现或运行具体插件测试或部署验收。
 
 ## 6. 交付检查
 
@@ -262,7 +286,8 @@ WES 核心默认 pytest、核心覆盖率、核心质量门禁和核心 HEAVY se
 - [ ] 供应商实现已通过统一接口一致性验收。
 - [ ] 每个业务场景都有 WMS 封闭结果、执行映射表、Handler 和成功/失败测试。
 - [ ] 插件只处理类型化输入，只返回封闭 Decision。
-- [ ] 插件没有数据库、Repository、HTTP、Celery 或动态依赖查找。
+- [ ] 纯 Decision 子层没有 `src`、数据库、Repository、HTTP、Celery 或动态依赖查找。
+- [ ] 业务 Application 子层只复用核心基础端口和事务边界，没有复制可靠性、数据库、HTTP 或任务队列基础能力。
 - [ ] WMS 业务 NG、设备故障、依赖暂停和人工清线语义明确分离，插件不本地改判。
 - [ ] WMS 不可用只阻止新的依赖型决定；既有命令、回调、确认义务和运输任务保留身份并按各自生命周期闭环。
 - [ ] 插件版本、配置版本和流程模式固定在 `LineRunEpoch`。

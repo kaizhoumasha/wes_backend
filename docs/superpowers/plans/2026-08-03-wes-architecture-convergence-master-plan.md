@@ -21,7 +21,7 @@ Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
 联调环境并通过 cutover 门禁；该 merge commit 当时未重新部署，其内容现已包含在当前联调部署中。该证据不代表供应商、设备物理或业务验收。Phase 8 的 GitLab 发布提交
 `f51677b62f5da906d4b60fa5a528d04692aff7a2` 已由 Jenkins #88 生成不可变后端 RC 镜像 `88-f51677b`。
 Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已由 #189 合入 `develop@d458383a`；Phase 11 完成。
-Phase 12 已具备启动条件但尚未开始，Phase 13–14 未开始。
+Phase 12 Task 0–1 已具备 Bootstrap 启动条件；Task 2–7 在人工合同冻结且开发环境验证通过前不得开始，Phase 13–14 未开始。
 真实 WMS/RCS/ECS、设备、供应商版本组合和业务验收不属于上述联调部署证据。
 
 **2026-09-01 acceptance review status:** `Transport 0.3 WES implementation: ALIGNED AND DEPLOYED`。backend
@@ -158,7 +158,8 @@ Phase 6 与 Phase 7 核心生产基线、退役插件活动残留收敛及其合
 后端 RC 已关闭并发布不可变镜像；前端与现场活动独立推进。Phase 9 已合入 `develop@c5a93872`；发布四目标账本静默门禁和
 Phase 10 Tasks 0–7 已完成并通过 #187 合入 `develop@97e6887a`；`834fe59e` 候选此前已部署到联调环境并通过 target-only
 cutover；该 merge commit 当时未重新部署，其内容现已包含在当前联调部署中。Phase 11 单一空库基线已由 #188 合入，合入后 tombstone cleanup 已由 #189 合入
-`develop@d458383a`；Phase 12 已具备启动条件但尚未开始，Phase 13–14 尚未开始。
+`develop@d458383a`；Phase 12 Task 0–1 已具备 Bootstrap 启动条件；Task 2–7 在人工合同冻结且开发环境验证通过前不得开始，
+Phase 13–14 尚未开始。
 
 ## 5. 总控依赖模型
 
@@ -710,13 +711,17 @@ Deploy/Cutover 与联调数据重建授权，并以同一不可变候选完成 t
 
 **Objective:** 由用户亲自完成一个真实人工 Bin 纵向切片，掌握后续插件和二次开发的完整路径。
 
-**Entry conditions:** Phase 11 空库基线通过；人工业务合同与实际教学范围重新评审；开发环境和最小任务卡准备完成。
+**Bootstrap entry conditions（Task 0–1）：** Phase 11 空库基线通过；教学计划和最小任务卡准备完成。只允许代码导航、Owner 说明与
+人工业务合同联合评审。
+
+**Production entry conditions（Task 2–7）：** Task 0 退出；Task 1 的当前人工业务合同与 OpenAPI 已获批；开发环境健康检查通过。
+Bootstrap 准入不等于生产实现、部署、设备物理或业务验收准入。
 
 **Scope:** 用户实现生产代码、测试、migration、静态 Composition、命令和验证；Agent 只提供现有调用链说明、任务拆解、只读影响分析、
 Review 与根因诊断。只有用户对具体切片另行授权时，Agent 才直接修改生产代码。
 
 **实施子计划:** `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md`。旧 Phase 9 人工合同、设备附录和
-OpenAPI 仅作为归档输入；Phase 12 开始前必须按真实教学范围重新联合评审，不能沿用旧批准状态。
+OpenAPI 仅作为归档输入；Task 2 生产实现开始前必须按真实教学范围重新联合评审，不能沿用旧批准状态。
 
 **Exit gate:** 用户能说明 owner、数据流、失败语义、事务边界和测试归属；人工 Bin 业务合同、插件独立测试和部署激活通过，
 不把 `rough_sorter` 结果当作人工业务验收。
@@ -767,7 +772,7 @@ OpenAPI 仅作为归档输入；Phase 12 开始前必须按真实教学范围重
 | 未确认推测能力 | 通过 | 不含认证 seam、BASIC/HMAC、动态拦截器、DSL、Service Locator、动态发现、未来协议或空插件 |
 | 敏感信息 | 通过 | Phase 2 无凭据与 Secret；日志合同仍禁止 headers/body/query/原始异常文本 |
 | 阶段越权 | 通过 | Phase 5 不接 Transport、不实现 Device/ECS、不重写插件；上一阶段未退出不得启动下一阶段 |
-| 当前状态准确性 | 通过 | Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9–11 已完成；当前 backend/frontend 已部署联调；Phase 12 已具备启动条件但尚未开始；当前运行门禁为 `BLOCK`，供应商、设备物理与业务验收仍未完成 |
+| 当前状态准确性 | 通过 | Phase 1–7 已完成，Phase 8 后端 RC 已关闭，Phase 9–11 已完成；当前 backend/frontend 已部署联调；Phase 12 Task 0–1 已具备 Bootstrap 启动条件，Task 2–7 在人工合同冻结且开发环境验证通过前不得开始；当前运行门禁为 `BLOCK`，供应商、设备物理与业务验收仍未完成 |
 
 ## 22. 总体完成定义
 
