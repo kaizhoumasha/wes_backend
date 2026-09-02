@@ -66,9 +66,8 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [DeviceCommand 运维诊断 Runbook](docs/runbooks/device-command-operations.md)：按数据库事实排查派发、证据、对账和 Epoch fencing，不直接改表或换身份重放。
 - [项目文档生命周期与外部归档索引](docs/superpowers/README.md)：查看保留/归档判定与外部归档路径。
 
-以下文档承担排障、现场信息采集、发布或机器门禁职责，不是目标架构设计输入：
+以下文档承担现场信息采集、发布或机器门禁职责，不是目标架构设计输入：
 
-- [WORKLINE 诊断快速开始](docs/workline_diagnostics_quickstart.md)
 - [休斯顿现场服务器现状信息采集表](docs/devops/rocky-linux-server-inspection.md)
 - [休斯顿现场服务器初始化与基础支撑环境配置手册](docs/devops/rocky-linux-server-initialization.md)
 - [生产发布 Runbook](docs/devops/prod-release-deploy.md)

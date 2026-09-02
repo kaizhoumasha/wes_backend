@@ -143,6 +143,11 @@ Handler 只返回以下封闭 Decision 类别；具体 SDK 使用可判别类型
 
 普通 WMS 业务事件不能终结 `TransportTask`；成员位置事实只更新位置投影，只有通过 Transport evidence 应用端口校验并
 持久化的异步终态才能终结任务。
+
+`CreateWmsConfirmation` 的 `request_data` 由插件按 operation 的获批严格 DTO 一次性构造，并在 Decision 创建时递归冻结；
+核心只校验、持久化和可靠派发，不回查业务表补全请求。`CreateTransportTask` 使用 `correlation_id + step` 冻结插件决定身份，
+并以 `resource_fence_id` 标识资源围栏；核心不再暴露具体工作线的 `TransportLeg` 或其它业务命名。
+
 一个 Handler 不等待整条工作线执行完成。
 
 ### 2.5 静态元数据、显式组合和配置

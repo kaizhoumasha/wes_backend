@@ -65,6 +65,7 @@
 - `../archive_docs/wes_backend/observability-contract.md`
 - `../archive_docs/wes_backend/northbound-operation-slo-catalog.md`
 - `../archive_docs/wes_backend/northbound-operation-observability.md`
+- `../archive_docs/wes_backend/docs/workline_diagnostics_quickstart.md`
 
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-04-wes-outbound-http-transport-convergence.md`
 - `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-05-wes-wms-thin-access-convergence.md`
@@ -153,7 +154,6 @@
 
 以下文档即使包含旧 Runtime 名称，也暂不归档，因为它们仍直接承担现有实现的排障、发布、观测或机器门禁职责：
 
-- `docs/workline_diagnostics_quickstart.md`
 - `docs/contracts/runtime-toggle-governance.md`
 - `docs/integration/wms_caller_checklist.md`
 - `docs/integration/workline_device_error_code_standardization.md`
