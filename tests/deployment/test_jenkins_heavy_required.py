@@ -265,6 +265,7 @@ def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     assert 'if [ "$attempt" -lt 3 ]' in checkout_body
     assert "sleep 10" in checkout_body
     assert 'fetch_ref "+refs/heads/${CI_SOURCE_BRANCH}:refs/remotes/origin/${CI_SOURCE_BRANCH}"' in checkout_body
+    assert '"${CI_TARGET_BRANCH:-}"' in checkout_body
     assert 'fetch_ref "+refs/heads/${CI_TARGET_BRANCH}:refs/remotes/origin/${CI_TARGET_BRANCH}"' in checkout_body
     assert "fetch --no-tags --force --filter=blob:none origin" in checkout_body
     assert checkout_body.count("--filter=blob:none") == 1
@@ -276,6 +277,15 @@ def test_checkout_binds_internal_objects_to_trusted_event_refs() -> None:
     assert checkout_body.count("withCredentials([usernamePassword(") == 2
     assert "env.gitlabMergeRequestLastCommit" in checkout_body
     assert 'git rev-parse "refs/remotes/origin/${CI_SOURCE_BRANCH}^{commit}"' in checkout_body
+    assert (
+        "boolean isManualBuild = !isMergeRequest && !gitlabActionType && !beforeCommit && !afterCommit" in checkout_body
+    )
+    assert "env.CI_EVENT_TYPE = isManualBuild ? 'MANUAL' : (gitlabActionType ?: 'UNKNOWN')" in checkout_body
+    assert "if (isManualBuild)" in checkout_body
+    assert "trustedSourceCommit = fetchedSourceCommit" in checkout_body
+    assert checkout_body.index(
+        'git rev-parse "refs/remotes/origin/${CI_SOURCE_BRANCH}^{commit}"'
+    ) < checkout_body.index("if (isManualBuild)")
     assert "Source event requires a non-zero 40-character trusted commit" in checkout_body
     assert "Fetched source ref must match the trusted event commit" in checkout_body
     assert "timeout --kill-after=5s 30s" in checkout_body
