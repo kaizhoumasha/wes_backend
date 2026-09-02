@@ -48,8 +48,10 @@ Phase 4。
 系统尚未发布，首版直接实现本文目标合同，不保留旧 Effect、WMS/RCS 状态查询、回调提示、别名、兼容路径或数据迁移。
 WES 可以提供本地 TransportTask 运维观察接口；该接口不进入 WMS/RCS 对接合同，也不能驱动轮询、取消、重试、状态修改或
 业务完成判定。唯一写入例外是数据可丢弃联调环境中的定向清理：操作员仅需指定 `transport_task_id`，即可删除该任务的完整本地
-Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。删除范围包括 Callback Receipt、Evidence、由该任务
-Evidence 产生的位置投影、资源绑定、成员和任务；不扩展到库存、业务单据或其它 TransportTask。该动作不是远端取消或重试，
+Transport 链路，不以任务状态、`TransportEvidence` 或 outcome 作为阻断条件。`TRANSPORT_DEBUG` 的已应用终态只更新 Transport
+自有、可丢弃的联调当前位置投影，供后续 `RACK_ROTATE` / `BIN_EXCHANGE` 校验，不写入活动业务执行使用的核心 `PositionProjection`。
+删除范围包括 Callback Receipt、Evidence、由该任务 Evidence 产生的联调当前位置投影、资源绑定、成员和任务；不扩展到库存、业务单据或
+其它 TransportTask。该动作不是远端取消或重试，
 不得向 WMS/RCS 发送请求，也不能撤销已经发生的物理动作。
 
 ## 2. 权威与职责

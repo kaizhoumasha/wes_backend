@@ -146,6 +146,43 @@ class TransportMember(BaseMixin, table=True):
     updated_at: datetime
 
 
+class TransportDebugPositionProjection(BaseMixin, table=True):
+    """由已应用 Transport 联调终态维护的可丢弃当前位置投影。"""
+
+    __tablename__ = "transport_debug_position_projections"  # pyright: ignore[reportAssignmentType]
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = (
+        CheckConstraint(
+            "object_type IN ('RACK', 'BIN')",
+            name="transport_debug_position_projection_object_type_valid",
+        ),
+        UniqueConstraint(
+            "object_type",
+            "object_id",
+            name="ux_transport_debug_position_projection_object",
+        ),
+        Index(
+            "ix_transport_debug_position_projection_source_task",
+            "source_transport_task_id",
+        ),
+        {"schema": RUNTIME_SCHEMA},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    object_type: str = Field(max_length=10)
+    object_id: str = Field(max_length=100)
+    position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
+    position_unknown: bool = Field(default=False)
+    arrival_face: str | None = Field(default=None, sa_type=Text)
+    source_operation_id: str = Field(max_length=36)
+    source_transport_task_id: str = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.transport_tasks.transport_task_id",
+        ondelete="CASCADE",
+        max_length=80,
+    )
+    updated_at: datetime
+
+
 class TransportEvidence(BaseMixin, table=True):
     __tablename__ = "transport_evidence"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
@@ -243,6 +280,7 @@ class TransportResourceBinding(BaseMixin, table=True):
 
 __all__ = [
     "TransportCallbackReceipt",
+    "TransportDebugPositionProjection",
     "TransportEvidence",
     "TransportMember",
     "TransportResourceBinding",

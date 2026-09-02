@@ -388,7 +388,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
             data.rcs_template_id or RcsTemplateId.F01,
         )
     if isinstance(payload, _RackRotateDebugTask):
-        return await runtime.port.rotate_rack(
+        return await runtime.service.rotate_rack_for_debug(
             payload.client_request_id,
             caller,
             payload.data.rack_id,
@@ -415,7 +415,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
         )
         for pair in payload.data.exchange_pairs
     )
-    return await runtime.port.exchange_bins(payload.client_request_id, caller, pairs)
+    return await runtime.service.exchange_bins_for_debug(payload.client_request_id, caller, pairs)
 
 
 @router.post(

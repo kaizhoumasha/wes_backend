@@ -39,7 +39,9 @@ def _runtime() -> SimpleNamespace:
         list_task_snapshots=AsyncMock(),
         preview_debug_task_reset=AsyncMock(),
         reset_debug_task=AsyncMock(),
+        rotate_rack_for_debug=AsyncMock(),
         move_bins_for_debug=AsyncMock(),
+        exchange_bins_for_debug=AsyncMock(),
     )
     return SimpleNamespace(
         closed=False,
@@ -277,8 +279,13 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     runtime = _runtime()
     payload = _valid_payload(kind)
     expected_handle = TransportHandle("transport-api-test", str(payload["client_request_id"]))
-    target = runtime.service if kind == "BIN_MOVE" else runtime.port
-    target_method = "move_bins_for_debug" if kind == "BIN_MOVE" else expected_method
+    debug_service_methods = {
+        "RACK_ROTATE": "rotate_rack_for_debug",
+        "BIN_MOVE": "move_bins_for_debug",
+        "BIN_EXCHANGE": "exchange_bins_for_debug",
+    }
+    target_method = debug_service_methods.get(kind, expected_method)
+    target = runtime.service if kind in debug_service_methods else runtime.port
     getattr(target, target_method).return_value = expected_handle
 
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
@@ -291,9 +298,14 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
         "client_request_id": expected_handle.client_request_id,
     }
     for method_name in ("move_rack", "rotate_rack", "move_bins", "exchange_bins"):
-        expected_count = 1 if kind != "BIN_MOVE" and method_name == expected_method else 0
+        expected_count = 1 if kind == "RACK_MOVE" and method_name == expected_method else 0
         assert getattr(runtime.port, method_name).await_count == expected_count
-    assert runtime.service.move_bins_for_debug.await_count == (1 if kind == "BIN_MOVE" else 0)
+    for method_name, method_kind in (
+        ("rotate_rack_for_debug", "RACK_ROTATE"),
+        ("move_bins_for_debug", "BIN_MOVE"),
+        ("exchange_bins_for_debug", "BIN_EXCHANGE"),
+    ):
+        assert getattr(runtime.service, method_name).await_count == (1 if kind == method_kind else 0)
     called_args = getattr(target, target_method).await_args.args
     assert called_args[1].workline_id == "TRANSPORT_DEBUG"
     assert called_args[1].station_id == "STATION-DEBUG"

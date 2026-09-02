@@ -19,6 +19,7 @@ from src.app.transport.contracts import (
     HandoffPosition,
     RackBinSlot,
     RackPosition,
+    RackReference,
     RcsTemplateId,
     TransportCaller,
     TransportContractError,
@@ -30,6 +31,7 @@ from src.app.transport.contracts import (
 from src.app.transport.debug_reset import TransportDebugStep, TransportDebugStepConfirmation
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
@@ -138,6 +140,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
         for model in (
+            TransportDebugPositionProjection,
             TransportEvidence,
             TransportCallbackReceipt,
             TransportResourceBinding,
@@ -215,6 +218,166 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
 
     with pytest.raises(TransportContractError, match="target face equals current face"):
         await service.rotate_rack(new_uuid7(), _caller(), "rack-rotate", RackPosition("ROTATE"), "90")
+
+
+@pytest.mark.asyncio
+async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: object) -> None:
+    service = _service(db_engine)
+    caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
+    move = await service.move_rack(
+        new_uuid7(),
+        caller,
+        "rack-debug-projection",
+        RackReference("rack-debug-projection"),
+        RackPosition("KT19"),
+        "90",
+        RcsTemplateId.CTU01,
+    )
+    await record_valid_callback(
+        service,
+        operation_id="debug-rack-move-result",
+        transport_task_id=move.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "kind": "RACK_MOVE",
+            "outcome_revision": 1,
+            "rack_id": "rack-debug-projection",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "KT19"},
+            "arrival_face": "90",
+        },
+    )
+    assert await service.process_pending_evidence(1) == 1
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        debug_projection = await db.scalar(
+            select(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.object_type == "RACK",
+                TransportDebugPositionProjection.object_id == "rack-debug-projection",
+            )
+        )
+        assert debug_projection is not None
+        assert debug_projection.position_json == {"kind": "RACK_POSITION", "location_code": "KT19"}
+        assert debug_projection.arrival_face == "90"
+        assert debug_projection.source_transport_task_id == move.transport_task_id
+
+    rotate = await service.rotate_rack_for_debug(
+        new_uuid7(),
+        caller,
+        "rack-debug-projection",
+        RackPosition("KT19"),
+        "270",
+    )
+
+    task = await _load_task(db_engine, rotate.transport_task_id)
+    assert task.request_json["position"] == {"kind": "RACK_POSITION", "location_code": "KT19"}
+    await record_valid_callback(
+        service,
+        operation_id="debug-rack-rotate-result",
+        transport_task_id=rotate.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=2,
+        payload={
+            "kind": "RACK_ROTATE",
+            "outcome_revision": 1,
+            "rack_id": "rack-debug-projection",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "KT19"},
+            "arrival_face": "270",
+        },
+    )
+    assert await service.process_pending_evidence(1) == 1
+    async with sessions() as db:
+        debug_projection = await db.scalar(
+            select(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.object_type == "RACK",
+                TransportDebugPositionProjection.object_id == "rack-debug-projection",
+            )
+        )
+        assert debug_projection is not None
+        assert debug_projection.arrival_face == "270"
+        assert debug_projection.source_transport_task_id == rotate.transport_task_id
+        assert (
+            await db.scalar(select(PositionProjection).where(PositionProjection.object_id == "rack-debug-projection"))
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_debug_bin_exchange_uses_debug_rack_face_projections(db_engine: object) -> None:
+    service = _service(db_engine)
+    caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
+    for rack_id, face in (("rack-debug-left", "90"), ("rack-debug-right", "270")):
+        move = await service.move_rack(
+            new_uuid7(),
+            caller,
+            rack_id,
+            RackReference(rack_id),
+            RackPosition(f"{rack_id}-position"),
+            face,
+            RcsTemplateId.CTU01,
+        )
+        await record_valid_callback(
+            service,
+            operation_id=f"{rack_id}-result",
+            transport_task_id=move.transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=1,
+            payload={
+                "kind": "RACK_MOVE",
+                "outcome_revision": 1,
+                "rack_id": rack_id,
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "RACK_POSITION", "location_code": f"{rack_id}-position"},
+                "arrival_face": face,
+            },
+        )
+    assert await service.process_pending_evidence(2) == 2
+
+    exchange = await service.exchange_bins_for_debug(
+        new_uuid7(),
+        caller,
+        (
+            BinExchangePair(
+                "bin-debug-left",
+                RackBinSlot("rack-debug-left", "90", "LEFT-1"),
+                "bin-debug-right",
+                RackBinSlot("rack-debug-right", "270", "RIGHT-1"),
+            ),
+        ),
+    )
+
+    assert (await _load_task(db_engine, exchange.transport_task_id)).kind == "BIN_EXCHANGE"
+
+
+@pytest.mark.asyncio
+async def test_debug_rotate_and_exchange_reject_non_debug_caller(db_engine: object) -> None:
+    service = _service(db_engine)
+    caller = TransportCaller("SORTER", "STATION-01")
+
+    with pytest.raises(TransportContractError, match="debug rack rotation requires TRANSPORT_DEBUG caller"):
+        await service.rotate_rack_for_debug(
+            new_uuid7(),
+            caller,
+            "rack-debug",
+            RackPosition("KT19"),
+            "270",
+        )
+    with pytest.raises(TransportContractError, match="debug bin exchange requires TRANSPORT_DEBUG caller"):
+        await service.exchange_bins_for_debug(
+            new_uuid7(),
+            caller,
+            (
+                BinExchangePair(
+                    "bin-left",
+                    RackBinSlot("rack-left", "90", "LEFT-1"),
+                    "bin-right",
+                    RackBinSlot("rack-right", "270", "RIGHT-1"),
+                ),
+            ),
+        )
 
 
 @pytest.mark.asyncio

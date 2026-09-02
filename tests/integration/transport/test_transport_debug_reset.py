@@ -11,6 +11,7 @@ from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import RackPosition, TransportCaller, TransportContractError
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
@@ -107,6 +108,11 @@ async def _cleanup(
     operation_ids: tuple[str, ...] = (),
 ) -> None:
     async with sessions.begin() as db:
+        await db.execute(
+            delete(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.source_transport_task_id.in_(task_ids)
+            )
+        )
         if operation_ids:
             await db.execute(
                 delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id.in_(operation_ids))
@@ -235,6 +241,18 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
                 updated_at=now,
             )
         )
+        db.add(
+            TransportDebugPositionProjection(
+                object_type="RACK",
+                object_id=f"rack-reset-ineligible-{suffix}",
+                position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
+                position_unknown=False,
+                arrival_face="A",
+                source_operation_id=operation_id,
+                source_transport_task_id=task_id,
+                updated_at=now,
+            )
+        )
     service = _service(integration_session_factory)
 
     try:
@@ -243,7 +261,7 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
         assert preview.outcome_version == 1
         assert preview.evidence_count == 1
         assert preview.callback_receipt_count == 1
-        assert preview.position_projection_count == 0
+        assert preview.position_projection_count == 1
 
         result = await service.reset_debug_task(task_id)
 
@@ -253,7 +271,7 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
             result.deleted_position_projection_count,
             result.deleted_member_count,
             result.deleted_binding_count,
-        ) == (1, 1, 0, 1, 1)
+        ) == (1, 1, 1, 1, 1)
         assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
         async with integration_session_factory() as db:
             receipt_count = await db.scalar(
@@ -271,7 +289,12 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
                 .select_from(PositionProjection)
                 .where(PositionProjection.source_operation_id == operation_id)
             )
-        assert (receipt_count, evidence_count, projection_count) == (0, 0, 1)
+            debug_projection_count = await db.scalar(
+                select(func.count())
+                .select_from(TransportDebugPositionProjection)
+                .where(TransportDebugPositionProjection.source_operation_id == operation_id)
+            )
+        assert (receipt_count, evidence_count, projection_count, debug_projection_count) == (0, 0, 1, 0)
     finally:
         await _cleanup(integration_session_factory, task_ids=(task_id,), operation_ids=(operation_id,))
 
@@ -329,6 +352,16 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
                     source_transport_task_id=keep_id,
                     updated_at=now,
                 ),
+                TransportDebugPositionProjection(
+                    object_type="RACK",
+                    object_id=f"rack-reset-collision-keep-{suffix}",
+                    position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
+                    position_unknown=False,
+                    arrival_face="A",
+                    source_operation_id=operation_id,
+                    source_transport_task_id=keep_id,
+                    updated_at=now,
+                ),
             ]
         )
 
@@ -342,7 +375,12 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
                 .select_from(PositionProjection)
                 .where(PositionProjection.source_operation_id == operation_id)
             )
-        assert projection_count == 1
+            debug_projection_count = await db.scalar(
+                select(func.count())
+                .select_from(TransportDebugPositionProjection)
+                .where(TransportDebugPositionProjection.source_operation_id == operation_id)
+            )
+        assert (projection_count, debug_projection_count) == (1, 1)
     finally:
         await _cleanup(
             integration_session_factory,
