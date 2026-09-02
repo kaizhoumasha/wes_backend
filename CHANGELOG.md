@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0.0] - 2026-09-01
+
+### Changed
+
+- WMS Event route、入站 DTO、`InboundEvidence` 与 `WmsConfirmation` 收敛为业务中立的基础能力；粗分 WMS 请求、恢复事实、WAIT follow-up 与生产装配归属 `workline_plugins/rough_sorter`。
+- `wes_plugin_sdk` 仅保留独立公开 SPI 与值对象，移除对宿主实现和具体工作线身份的依赖；通用 Transport decision binding 取代粗分专有命名。
+- 删除已被当前架构替代的旧 resolver、adapter、deployment 业务模块和过期过程文档，并直接更新未发布系统的初始数据库基线。
+
+### Fixed
+
+- WMS `DECIDED/WAIT` 使用新 operation identity 可靠续发；每次 follow-up 按服务端 `retry_after_ms` 调度并获得独立 dispatch deadline，支持合法 60 秒延迟与连续 WAIT。
+- NG recovery 请求不再序列化无值的 `pkg_id`，避免显式 `null` 破坏严格 WMS 合同。
+
+### Verification
+
+- fresh Review 无剩余 finding；QUALITY 通过（FAST 2354 passed、5 skipped）；HEAVY selector 选中的 206 项通过。
+- 粗分插件单元测试 151 项、WMS/SDK/执行边界聚焦回归及 PostgreSQL 持久化所有者均通过。
+
 ## [0.29.13.0] - 2026-09-01
 
 ### Fixed

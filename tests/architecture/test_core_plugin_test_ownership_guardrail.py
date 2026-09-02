@@ -11,7 +11,25 @@ CORE_TESTS_ROOT = REPO_ROOT / "tests"
 CORE_ADAPTER_TEST_ROOT = CORE_TESTS_ROOT / "device_adapters"
 CORE_PLUGIN_TEST_ROOT = CORE_TESTS_ROOT / "workline_plugins"
 LEGACY_EXTENSION_TEST_ROOT = CORE_TESTS_ROOT / "workline_runtime" / "extensions"
-SECONDARY_PACKAGE_ROOTS = ("device_adapters", "workline_plugins")
+
+
+def _secondary_import_roots() -> tuple[str, ...]:
+    roots = {"device_adapters", "workline_plugins"}
+    for pyproject_path in (REPO_ROOT / "workline_plugins").glob("*/pyproject.toml"):
+        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        for package_path in (
+            pyproject.get("tool", {})
+            .get("hatch", {})
+            .get("build", {})
+            .get("targets", {})
+            .get("wheel", {})
+            .get("packages", [])
+        ):
+            roots.add(Path(package_path).name)
+    return tuple(sorted(roots))
+
+
+SECONDARY_PACKAGE_ROOTS = _secondary_import_roots()
 
 
 def _secondary_package_imports(path: Path) -> set[str]:
@@ -38,13 +56,17 @@ def _secondary_package_imports(path: Path) -> set[str]:
 def test_secondary_package_import_scanner_covers_plugin_and_adapter_roots(tmp_path: Path) -> None:
     source = tmp_path / "test_secondary_package_imports.py"
     source.write_text(
-        "import workline_plugins.demo\nimport device_adapters.vendor\nfrom device_adapters.acme import Adapter\n",
+        "import workline_plugins.demo\n"
+        "import rough_sorter.handlers\n"
+        "import device_adapters.vendor\n"
+        "from device_adapters.acme import Adapter\n",
         encoding="utf-8",
     )
 
     assert _secondary_package_imports(source) == {
         "device_adapters.acme",
         "device_adapters.vendor",
+        "rough_sorter.handlers",
         "workline_plugins.demo",
     }
 
@@ -71,6 +93,10 @@ def test_core_tests_do_not_import_secondary_development_plugin_packages() -> Non
     assert offenders == {}
 
 
+def test_core_tests_do_not_own_rough_sorter_business_files() -> None:
+    assert list(CORE_TESTS_ROOT.rglob("test_*rough_sorter*.py")) == []
+
+
 def test_core_production_package_does_not_embed_or_import_workline_plugins() -> None:
     embedded_root = REPO_ROOT / "src/app/runtime/workline_plugins"
     assert list(embedded_root.rglob("*.py")) == []
@@ -81,6 +107,12 @@ def test_core_production_package_does_not_embed_or_import_workline_plugins() -> 
         if (found := _secondary_package_imports(path))
     }
     assert offenders == {}
+
+
+def test_deployment_does_not_own_rough_sorter_business_modules() -> None:
+    offenders = sorted(path.name for path in (REPO_ROOT / "deployment").glob("_rough_sorter_*.py"))
+
+    assert offenders == []
 
 
 def test_core_test_entrypoints_do_not_collect_or_map_secondary_plugin_packages() -> None:

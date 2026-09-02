@@ -67,8 +67,8 @@ def test_raw_catalog_fixture_is_immutable_and_disposition_is_complete() -> None:
 
     assert RAW_MANIFEST_SHA256 == "77214740a6fd48c113c043aeb32887209681c4fd213833e7e9ee391f317117c9"
     assert DISPOSITION_SHA256 == "04ad7dbf1278b9507b5ae58b92071772e9e31948c79e92c2035fba161a8878f8"
-    assert FINAL_MANIFEST_SHA256 == "2cf84f8ebdd9b9533813c4765abb186d9c024312efd5b494866abb7be5cd389d"
-    assert TRANSITION_DISPOSITION_SHA256 == "4192a879f7cf4ed006d63b95ea74529d36f1678fd0ad9ae490287e3efd5730b7"
+    assert FINAL_MANIFEST_SHA256 == "430ad5ab75cfabf9a14c820fcb3e6ea061763e99945357f8e4c06e9dc5fe729c"
+    assert TRANSITION_DISPOSITION_SHA256 == "f4d6c253752d2381b0379673f78f50c1ebfdd715913cdbfd663060ed89e57a59"
     assert disposition["source_manifest_sha256"] == RAW_MANIFEST_SHA256
     assert sum(entry["disposition"] == "FINAL_DELETE_AFTER_SUCCESSOR" for entry in entries) == 21
     assert sum(entry["disposition"] == "RETAIN" for entry in entries) == 1
@@ -80,13 +80,19 @@ def test_raw_catalog_fixture_is_immutable_and_disposition_is_complete() -> None:
     assert_reviewed_catalog_transition(old_derived, final, transition)
     with pytest.raises(ManifestMismatch, match="unregistered catalog difference"):
         assert_final_manifest(old_derived, final, disposition)
-    assert disposed_table_identities(raw, final) == {
-        entry["identity"] for entry in entries if entry["disposition"] != "RETAIN"
+    reviewed_transition_removals = {
+        entry["identity"]
+        for entry in transition["differences"]
+        if entry["section"] == "tables" and entry["old"] is not None and entry["new"] is None
     }
+    assert (
+        disposed_table_identities(raw, final)
+        == {entry["identity"] for entry in entries if entry["disposition"] != "RETAIN"} | reviewed_transition_removals
+    )
     assert_final_manifest(raw, old_derived, disposition, allow_disposed_tables=True)
     with pytest.raises(ManifestMismatch, match="reviewed disposed tables still present") as raised:
         assert_final_manifest(raw, old_derived, disposition)
-    for identity in disposed_table_identities(raw, final):
+    for identity in disposed_table_identities(raw, old_derived):
         assert identity in str(raised.value)
     assert_final_manifest(final, final, disposition, allow_disposed_tables=False)
 

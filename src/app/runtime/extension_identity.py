@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from typing import TYPE_CHECKING, Any, cast, overload
 
@@ -11,18 +9,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-def canonical_json(value: Any) -> str:
-    """生成不受字段插入顺序影响的紧凑 JSON。"""
-
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def sha256_digest(value: Any) -> str:
-    """计算 canonical JSON 的 SHA-256 摘要。"""
-
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def validate_key_version(value: str, *, field_name: str) -> str:

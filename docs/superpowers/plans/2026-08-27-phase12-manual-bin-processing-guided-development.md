@@ -1,8 +1,8 @@
 # Phase 12 `manual_bin_processing` 用户教学实施计划
 
-status: Ready for contract review — Phase 11 complete; production implementation not started
+status: Foundation prerequisite implemented; manual business contract review not started
 implementation_owner: 用户
-agent_role: 任务讲解、只读影响分析、Review 与根因诊断
+agent_role: 已按用户授权完成基础去业务化；后续仍按任务逐项讲解、实施或 Review
 depends_on: Phase 11 单一空库 Schema 基线（已完成）、人工业务合同重新评审（待完成）
 
 ## 1. 教学目标
@@ -34,11 +34,16 @@ Agent 讲解当前调用链并给出任务卡
 - 当前可靠性：`InboundEvidence`、`WmsConfirmation`、`LineRunEpoch`；
 - Phase 8：`rough_sorter` 的插件 SDK、静态 Composition、独立测试和部署激活方式。
 
+复用指共享机制，不复用粗分业务语义：`WmsConfirmation` 只持有不可变请求、identity、claim/retry/response evidence；完整业务
+`request_data` 必须在插件 Decision 产生时给出。共享 WMS Event route 只按已知 Transport operation 或显式业务 handler 分派，未知
+operation 返回 `422`，不得落入 Transport 或其它工作线。
+
 ### 2.2 禁止新增
 
 - 第二套 Transport、Device HTTP、evidence、confirmation、retry、outbox 或 callback API；
 - 通用 Task 基类、工作流 DSL、动态 registry、Service Locator 或插件自动发现；
 - 基础模块反向导入 `manual_bin_processing`；
+- 在 `src` 中新增具体工作线 request resolver、结果 planner、业务 contract key 或 operation fallback；
 - 兼容 alias、shim、双写、旧数据迁移或预留 Phase 13 schema；
 - 用 `rough_sorter` 测试替代人工业务验收。
 
@@ -92,7 +97,7 @@ Model/Repository/Service。
 
 - 业务模块拥有事务、Task、可靠对象协调和窄 `ManualPolicyPort`；
 - 插件只接收不可变 Fact/Snapshot，返回封闭 Decision；
-- 业务模块不导入插件包，插件不导入 `src`、数据库、HTTP、Celery 或 Repository；
+- 插件纯 Decision 子层不导入 `src`、数据库、HTTP、Celery 或 Repository；同一插件的应用层可依赖 `src` 基础端口并拥有业务事务；
 - Composition 用固定 Handler tuple 显式注入，不新增通用插件 runtime。
 
 退出条件：import boundary、插件独立测试、业务聚焦测试和激活测试通过。
@@ -105,6 +110,7 @@ Model/Repository/Service。
 - 重复 identity 幂等，冲突 fail closed；
 - 业务推进只消费 claimable evidence；
 - WES 出站 confirmation 保留原 identity，在拒绝、超时和歧义时进入既有收敛状态；
+- confirmation 创建时一次性校验并冻结完整 operation request；基础层不得再查询业务表重建 payload；
 - 不接回旧 RuntimeInbox、SystemOutbox、Provider Profile 或 29-operation registry。
 
 退出条件：合同 FAST、业务事务测试和真实 PostgreSQL owner 通过 Review。

@@ -2,11 +2,11 @@
 title: WES-WMS Transport DTO 收敛设计
 status: Approved
 created_at: 2026-08-14
-updated_at: 2026-08-31
+updated_at: 2026-09-01
 scope: WES 与 WMS 之间 Transport 搬运提交/容器中间位置事件/搬运最终结果接口契约、WMS C# DTO 和 WMS-RCS 映射边界
 system_stage: pre_release
 migration_strategy: direct_replacement
-implementation_alignment: FINAL_VALIDATION_PENDING
+implementation_alignment: ALIGNED
 related:
   - docs/integration/wes-wms-interface-requirements.md
   - docs/contracts/transport-fulfillment-contract.md
@@ -22,9 +22,9 @@ related:
 `RACK_MOVE`、`RACK_ROTATE`、`BIN_MOVE`、`BIN_EXCHANGE` 四种请求的重复工作，同时守住 WES、WMS 与 RCS 的职责边界。
 
 本文是已完成联合设计评审的目标基线。两份现行合同、WES 代码、运行时 OpenAPI、独立 OpenAPI 3.0.3 文件和行为测试均已
-当前修复候选已按本设计完成聚焦对齐，但同 Commit/tree 的不可变镜像仍待授权交付流程生成，因此
-`implementation_alignment=FINAL_VALIDATION_PENDING`。系统仍按直接替换策略运行，不保留兼容入口；该状态不代表
-WMS 已实施、已经部署或已经完成供应商、物理和业务验收。
+按本设计对齐；backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree `46d568d1`，因此
+`implementation_alignment=ALIGNED`。系统仍按直接替换策略运行，不保留兼容入口；该状态不代表 WMS 已实施，
+也不代表供应商一致性、设备物理或业务验收已经完成。
 
 两份 `docs/hardware/` PDF 是厂商原始输入，保持原貌。厂商字段只用于说明 WMS ACL 的映射依据，不升级为 WES 核心合同。
 

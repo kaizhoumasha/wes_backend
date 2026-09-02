@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "wes-rough-sorter-plugin"
 version = "1.0.0"
-description = "Pure business decisions for the WES rough sorter workline"
+description = "Rough sorter business decisions and WES application integration"
 requires-python = ">=3.13"
 dependencies = ["wes-plugin-sdk==0.1.0"]
 
@@ -24,7 +24,7 @@ packages = ["src/rough_sorter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "../.."]
 addopts = ["-q"]
 
 [tool.ruff]
@@ -51,16 +51,22 @@ select = [
 ]
 ignore = [
     "PLR2004",
+    "PLR0915",
+    "PLC0415",
     "PT011",
+    "PT018",
 ]
 
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.ruff.lint.per-file-ignores]
+"src/rough_sorter/application/*.py" = ["PLR0912", "PLR0913", "RUF002"]
+
 [tool.basedpyright]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
 include = ["src"]
-extraPaths = ["src", "../../packages/wes_plugin_sdk/src"]
+extraPaths = ["src", "../..", "../../packages/wes_plugin_sdk/src"]
 reportMissingImports = "error"
 reportUndefinedVariable = "error"

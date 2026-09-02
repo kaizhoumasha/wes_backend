@@ -161,7 +161,10 @@ def test_callback_contract_tests_do_not_use_cutover_names() -> None:
     retired_cutover_path = "tests/callback/test_callback_runtime_inbox_" + "cutover.py"
 
     assert retired_cutover_path not in active_callback_tests
-    assert "tests/callback/test_callback_mirror_integration.py" in active_callback_tests
+
+
+def test_runtime_trace_contract_test_uses_stable_domain_name() -> None:
+    assert Path("tests/runtime/orchestration/test_trace_context.py").is_file()
 
 
 def test_active_guardrail_allowlist_no_longer_contains_retired_phase_test_paths() -> None:

@@ -12,13 +12,12 @@ from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmation
 from src.app.execution.services import (
     InboundEvidenceAcceptance,
     InboundEvidenceConflictResult,
-    WmsBusinessWaitFollowUp,
-    WmsConfirmationFollowUpPlan,
+    WmsConfirmationFollowUp,
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
 from src.app.wms_adapter.client import WmsClient
-from src.app.wms_adapter.inbound_adapter import InboundDispatchCode, WmsInboundAdapter, WmsInboundBusinessWaitPlanner
+from src.app.wms_adapter.inbound_adapter import InboundDispatchCode, WmsInboundAdapter
 from src.app.wms_adapter.inbound_wire import (
     ADMISSION_OPERATION,
     MAX_INBOUND_BODY_BYTES,
@@ -29,6 +28,7 @@ from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpFailur
 
 OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
 OTHER_OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4473"
+THIRD_OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4474"
 
 
 class _Transport:
@@ -141,7 +141,7 @@ async def test_adapter_sends_decision_through_wms_client_and_returns_typed_evide
 
 
 @pytest.mark.asyncio
-async def test_adapter_maps_wait_to_typed_follow_up_plan() -> None:
+async def test_adapter_returns_wait_as_determinate_business_result() -> None:
     payload = _request()
     transport = _Transport(
         _response(
@@ -161,7 +161,9 @@ async def test_adapter_maps_wait_to_typed_follow_up_plan() -> None:
         request_digest=_digest(payload),
     )
 
-    assert result.follow_up_plan == WmsConfirmationFollowUpPlan(retry_after_ms=250)
+    assert result.code is InboundDispatchCode.DETERMINATE
+    assert result.response_result == "WAIT"
+    assert result.retry_after_ms == 250
 
 
 @pytest.mark.asyncio
@@ -520,14 +522,32 @@ class _Adapter:
         return self.result
 
 
-class _BusinessWaitPlanner:
-    def __init__(self, follow_up: WmsBusinessWaitFollowUp | None) -> None:
-        self.follow_up = follow_up
-        self.calls = []
+class _FollowUpPlanner:
+    def __init__(self, operation_ids: tuple[str, ...] = (OTHER_OPERATION_ID,)) -> None:
+        self._operation_ids = iter(operation_ids)
 
-    def plan(self, confirmation, response_payload):  # type: ignore[no-untyped-def]
-        self.calls.append((confirmation, response_payload))
-        return self.follow_up
+    def plan(
+        self,
+        confirmation: WmsConfirmation,
+        *,
+        response_result: str,
+        retry_after_ms: int,
+        received_at: datetime,
+    ) -> WmsConfirmationFollowUp | None:
+        if response_result != "WAIT":
+            return None
+        operation_id = next(self._operation_ids)
+        payload = {
+            **confirmation.request_payload,
+            "operation_id": operation_id,
+            "timestamp": int(received_at.timestamp() * 1000),
+        }
+        return WmsConfirmationFollowUp(
+            operation=confirmation.operation,
+            operation_id=operation_id,
+            request_payload=payload,
+            next_attempt_at=received_at + timedelta(milliseconds=retry_after_ms),
+        )
 
 
 class _ConflictDuringDispatchAdapter:
@@ -559,7 +579,6 @@ class _ConflictDuringDispatchAdapter:
             },
             response_result="ACCEPT",
             retry_after_ms=None,
-            follow_up_plan=None,
         )
 
 
@@ -597,7 +616,6 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
             },
             response_result="ACCEPT",
             retry_after_ms=None,
-            follow_up_plan=None,
         )
     )
     queue = _TaskQueue()
@@ -617,6 +635,7 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
     assert len(adapter.calls) == len(evidence.calls) == 100
     assert all(call["apply_status"] is InboundEvidenceApplyStatus.APPLIED for call in evidence.calls)
     assert all(call["line_run_epoch_id"] == 11 for call in evidence.calls)
+    assert all(call["contract_key"] == ADMISSION_OPERATION for call in evidence.calls)
     assert all(
         read_db is evidence_db
         for (read_db, _), evidence_db in zip(execution_repository.calls, evidence.dbs, strict=True)
@@ -625,6 +644,58 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
     assert confirmations[100].status == WmsConfirmationStatus.PENDING
     assert queue.execution_wakes == 100
     assert queue.wms_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_confirmation_wait_renews_dispatch_window_for_max_delay_and_repeated_wait() -> None:
+    now = datetime(2026, 8, 16, tzinfo=UTC)
+    confirmation = _confirmation(1, now)
+    confirmation.deadline_at = now + timedelta(seconds=30)
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    repository = _ConfirmationRepository([confirmation])
+    service = WmsConfirmationService(
+        repository=repository,
+        execution_repository=_ExecutionRepository(),
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=InboundDispatchCode.DETERMINATE,
+                normalized_response={
+                    "operation_id": confirmation.operation_id,
+                    "code": "DECIDED",
+                    "timestamp": 2,
+                    "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 60_000},
+                },
+                response_result="WAIT",
+                retry_after_ms=60_000,
+            )
+        ),
+        evidence_service=_EvidenceService(),  # type: ignore[arg-type]
+        follow_up_planner=_FollowUpPlanner((OTHER_OPERATION_ID, THIRD_OPERATION_ID)),
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+
+    assert confirmation.status == WmsConfirmationStatus.COMPLETED
+    assert len(repository.confirmations) == 2
+    follow_up = repository.confirmations[1]
+    assert follow_up.status == WmsConfirmationStatus.PENDING
+    assert follow_up.operation == confirmation.operation
+    assert follow_up.operation_id == OTHER_OPERATION_ID
+    assert follow_up.request_payload["operation_id"] == OTHER_OPERATION_ID
+    assert follow_up.request_payload["timestamp"] == int(now.timestamp() * 1000)
+    assert follow_up.next_attempt_at == now + timedelta(seconds=60)
+    assert follow_up.deadline_at == now + timedelta(seconds=90)
+
+    assert await service.dispatch_batch(now=now + timedelta(seconds=60)) == 1
+
+    assert follow_up.status == WmsConfirmationStatus.COMPLETED
+    assert len(repository.confirmations) == 3
+    repeated_follow_up = repository.confirmations[2]
+    assert repeated_follow_up.status == WmsConfirmationStatus.PENDING
+    assert repeated_follow_up.operation_id == THIRD_OPERATION_ID
+    assert repeated_follow_up.next_attempt_at == now + timedelta(seconds=120)
+    assert repeated_follow_up.deadline_at == now + timedelta(seconds=150)
 
 
 @pytest.mark.asyncio
@@ -641,7 +712,6 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
             normalized_response=None,
             response_result=None,
             retry_after_ms=None,
-            follow_up_plan=None,
         )
     )
     service = WmsConfirmationService(
@@ -661,198 +731,6 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
     assert retryable.status == WmsConfirmationStatus.PENDING
     assert retryable.retry_eligible is True
     assert retryable.next_attempt_at == now + timedelta(seconds=1)
-
-
-@pytest.mark.asyncio
-async def test_business_wait_completes_original_and_atomically_creates_due_follow_up() -> None:
-    now = datetime(2026, 8, 16, tzinfo=UTC)
-    confirmation = _confirmation(1, now)
-    confirmation.request_digest = _digest(confirmation.request_payload)
-    repository = _ConfirmationRepository([confirmation])
-    evidence = _EvidenceService()
-    response_body = {
-        "operation_id": confirmation.operation_id,
-        "code": "DECIDED",
-        "timestamp": 2,
-        "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
-    }
-    follow_up_payload = {
-        **confirmation.request_payload,
-        "operation_id": OTHER_OPERATION_ID,
-        "timestamp": int(now.timestamp() * 1000),
-    }
-    planner = _BusinessWaitPlanner(
-        WmsBusinessWaitFollowUp(
-            operation=confirmation.operation,
-            operation_id=OTHER_OPERATION_ID,
-            request_payload=follow_up_payload,
-            next_attempt_at=now + timedelta(milliseconds=250),
-        )
-    )
-    queue = _TaskQueue()
-    service = WmsConfirmationService(
-        repository=repository,
-        execution_repository=_ExecutionRepository(),
-        session_factory=_Sessions(),  # type: ignore[arg-type]
-        adapter=_Adapter(
-            SimpleNamespace(
-                code=InboundDispatchCode.DETERMINATE,
-                normalized_response=response_body,
-                response_result="OPAQUE_DETERMINATE_RESULT",
-                retry_after_ms=250,
-                follow_up_plan=WmsConfirmationFollowUpPlan(retry_after_ms=250),
-            )
-        ),
-        evidence_service=evidence,  # type: ignore[arg-type]
-        business_wait_planner=planner,
-        task_queue_gateway=queue,  # type: ignore[arg-type]
-    )
-
-    assert await service.dispatch_batch(now=now) == 1
-    assert confirmation.status == WmsConfirmationStatus.COMPLETED
-    assert confirmation.response_evidence_id == 501
-    follow_up = repository.confirmations[-1]
-    assert follow_up is not confirmation
-    assert follow_up.status == WmsConfirmationStatus.PENDING
-    assert follow_up.operation_id != confirmation.operation_id
-    assert follow_up.next_attempt_at == now + timedelta(milliseconds=250)
-    assert len(evidence.calls) == len(planner.calls) == 1
-    assert await service.dispatch_batch(now=now) == 0
-    assert queue.execution_wakes == 1
-    assert queue.wms_wakes == 0
-
-    service._adapter = _Adapter(
-        SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
-            normalized_response={
-                "operation_id": follow_up.operation_id,
-                "code": "DECIDED",
-                "timestamp": 4,
-                "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
-            },
-            response_result="ACCEPT",
-            retry_after_ms=None,
-            follow_up_plan=None,
-        )
-    )
-    assert await service.dispatch_batch(now=follow_up.next_attempt_at) == 1
-    assert follow_up.status == WmsConfirmationStatus.COMPLETED
-    assert follow_up.attempt_count == 1
-
-
-def test_wms_business_wait_planner_uses_new_identity_timestamp_and_received_time() -> None:
-    received_at = datetime(2026, 8, 16, tzinfo=UTC)
-    confirmation = _confirmation(1, received_at)
-    confirmation.completed_at = received_at
-    planner = WmsInboundBusinessWaitPlanner(
-        operation_id_factory=lambda: OTHER_OPERATION_ID,
-    )
-
-    follow_up = planner.plan(
-        confirmation,
-        WmsConfirmationFollowUpPlan(retry_after_ms=250),
-    )
-
-    assert follow_up is not None
-    assert follow_up.operation_id == OTHER_OPERATION_ID
-    assert follow_up.request_payload["operation_id"] == OTHER_OPERATION_ID
-    assert follow_up.request_payload["timestamp"] == int(received_at.timestamp() * 1000)
-    assert follow_up.next_attempt_at == received_at + timedelta(milliseconds=250)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "invalid_case",
-    [
-        "identity-format",
-        "identity-overlong",
-        "missing-field",
-        "cross-execution",
-        "cross-trace",
-        "extra-business-field",
-        "timestamp-bool",
-        "timestamp-zero",
-        "timestamp-negative",
-        "timestamp-equal",
-        "timestamp-older",
-        "timestamp-noncanonical-new",
-        "timestamp-over-int64",
-    ],
-)
-async def test_invalid_business_wait_follow_up_keeps_evidence_and_fails_closed(invalid_case: str) -> None:
-    now = datetime(2026, 8, 16, tzinfo=UTC)
-    confirmation = _confirmation(1, now)
-    confirmation.request_payload["timestamp"] = 10
-    confirmation.request_digest = _digest(confirmation.request_payload)
-    repository = _ConfirmationRepository([confirmation])
-    evidence = _EvidenceService()
-    response_body = {
-        "operation_id": confirmation.operation_id,
-        "code": "DECIDED",
-        "timestamp": 2,
-        "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
-    }
-    follow_up_operation_id = OTHER_OPERATION_ID
-    follow_up_payload = json.loads(json.dumps(confirmation.request_payload))
-    follow_up_payload["operation_id"] = follow_up_operation_id
-    follow_up_payload["timestamp"] = int(now.timestamp() * 1000)
-    if invalid_case == "identity-format":
-        follow_up_operation_id = "not-a-uuid"
-        follow_up_payload["operation_id"] = follow_up_operation_id
-    elif invalid_case == "identity-overlong":
-        follow_up_operation_id = "7" * 161
-        follow_up_payload["operation_id"] = follow_up_operation_id
-    elif invalid_case == "missing-field":
-        del follow_up_payload["data"]["workline_code"]
-    elif invalid_case == "cross-execution":
-        follow_up_payload["data"]["material_execution_id"] = "EXEC-OTHER"
-    elif invalid_case == "cross-trace":
-        follow_up_payload["data"]["material_trace_id"] = "TRACE-OTHER"
-    elif invalid_case == "extra-business-field":
-        follow_up_payload["data"]["unexpected_business_field"] = "MUST_NOT_CHANGE"
-    elif invalid_case == "timestamp-bool":
-        follow_up_payload["timestamp"] = True
-    elif invalid_case == "timestamp-zero":
-        follow_up_payload["timestamp"] = 0
-    elif invalid_case == "timestamp-negative":
-        follow_up_payload["timestamp"] = -1
-    elif invalid_case == "timestamp-equal":
-        follow_up_payload["timestamp"] = 10
-    elif invalid_case == "timestamp-older":
-        follow_up_payload["timestamp"] = 9
-    elif invalid_case == "timestamp-noncanonical-new":
-        follow_up_payload["timestamp"] = int(now.timestamp() * 1000) + 1
-    else:
-        follow_up_payload["timestamp"] = 2**63
-    invalid = WmsBusinessWaitFollowUp(
-        operation=confirmation.operation,
-        operation_id=follow_up_operation_id,
-        request_payload=follow_up_payload,
-        next_attempt_at=now + timedelta(milliseconds=250),
-    )
-    service = WmsConfirmationService(
-        repository=repository,
-        execution_repository=_ExecutionRepository(),
-        session_factory=_Sessions(),  # type: ignore[arg-type]
-        adapter=_Adapter(
-            SimpleNamespace(
-                code=InboundDispatchCode.DETERMINATE,
-                normalized_response=response_body,
-                response_result="WAIT",
-                retry_after_ms=250,
-                follow_up_plan=WmsConfirmationFollowUpPlan(retry_after_ms=250),
-            )
-        ),
-        evidence_service=evidence,  # type: ignore[arg-type]
-        business_wait_planner=_BusinessWaitPlanner(invalid),
-    )
-
-    assert await service.dispatch_batch(now=now) == 1
-    assert len(evidence.calls) == 1
-    assert repository.confirmations == [confirmation]
-    assert confirmation.response_evidence_id == 501
-    assert confirmation.response_result == "WAIT"
-    assert confirmation.status == WmsConfirmationStatus.RECONCILING
 
 
 @pytest.mark.asyncio
@@ -878,7 +756,6 @@ async def test_confirmation_persists_received_json_object_before_marking_reconci
                 normalized_response=response_body,
                 response_result=None,
                 retry_after_ms=None,
-                follow_up_plan=None,
             )
         ),
         evidence_service=evidence,  # type: ignore[arg-type]
@@ -913,7 +790,6 @@ async def test_wms_result_identity_conflict_keeps_execution_epoch_and_fails_clos
                 },
                 response_result="ACCEPT",
                 retry_after_ms=None,
-                follow_up_plan=None,
             )
         ),
         evidence_service=evidence,  # type: ignore[arg-type]
@@ -949,7 +825,6 @@ async def test_wms_result_fails_closed_when_execution_epoch_cannot_be_resolved(e
                 },
                 response_result=None,
                 retry_after_ms=None,
-                follow_up_plan=None,
             )
         ),
         evidence_service=evidence,  # type: ignore[arg-type]

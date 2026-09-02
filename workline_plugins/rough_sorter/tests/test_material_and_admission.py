@@ -91,16 +91,15 @@ def test_complete_material_evidence_requests_admission_deterministically() -> No
     second = handler(fact)
 
     assert first == second
-    assert first == (
-        CreateWmsConfirmation(
-            material_execution_id=EXECUTION_ID,
-            fact_id=fact.fact_id,
-            operation="inbound.material.admission_decide@v1",
-            operation_id=fact.request_operation_id,
-            evidence_refs=(fact.evidence_id,),
-            snapshot_refs=(f"execution:{EXECUTION_ID}", f"epoch:{EPOCH_ID}"),
-        ),
-    )
+    assert isinstance(first[0], CreateWmsConfirmation)
+    assert first[0].operation == "inbound.material.admission_decide@v1"
+    assert first[0].operation_id == fact.request_operation_id
+    assert first[0].request_data["material_execution_id"] == EXECUTION_ID
+    assert first[0].request_data["six_in_one"]["LotCode"] == fact.lot_code
+    assert first[0].request_data["source_position"] == {
+        "type": "HANDOFF_POSITION",
+        "location_code": "measurement",
+    }
 
 
 @pytest.mark.parametrize("field", ["lot_code", "diameter_mm", "thickness_mm"])

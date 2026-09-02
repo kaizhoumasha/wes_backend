@@ -7,7 +7,7 @@ from .models import (
     InboundEvidenceKind,
     MaterialExecution,
     MaterialExecutionStatus,
-    RackReplacementTransportBinding,
+    TransportDecisionBinding,
     WmsConfirmation,
     WmsConfirmationStatus,
 )
@@ -19,7 +19,7 @@ __all__ = [
     "InboundEvidenceKind",
     "MaterialExecution",
     "MaterialExecutionStatus",
-    "RackReplacementTransportBinding",
+    "TransportDecisionBinding",
     "WmsConfirmation",
     "WmsConfirmationStatus",
 ]

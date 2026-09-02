@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -9,11 +8,9 @@ from wes_plugin_sdk import (
     CompleteExecution,
     CreateDeviceCommand,
     CreateTransportTask,
-    CreateWmsConfirmation,
     DevicePosition,
     EvidenceReadyFact,
     PauseForReconciliation,
-    TransportLeg,
     TransportRackPosition,
     TransportRcsTemplateId,
     TransportTaskType,
@@ -22,11 +19,7 @@ from wes_plugin_sdk import (
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
-from src.app.execution.services.decision_applier import (
-    DecisionApplier,
-    WmsConfirmationRequest,
-    decision_digest,
-)
+from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
 
 NOW = datetime(2026, 8, 17, 9, 0, 0)
@@ -98,17 +91,6 @@ class _DeviceCommands:
         return SimpleNamespace(command_code="CMD-1")
 
 
-@dataclass
-class _WmsResolver:
-    result: WmsConfirmationRequest
-    db: object | None = None
-
-    async def resolve(self, db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
-        self.db = db
-        assert decision.operation == "inbound.material.admission_decide@v1"
-        return self.result
-
-
 class _WmsConfirmations:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -119,42 +101,27 @@ class _WmsConfirmations:
         return SimpleNamespace(duplicate=False)
 
 
-class _RackBindings:
+class _TransportBindings:
     def __init__(self) -> None:
-        self.bindings: dict[tuple[str, str], object] = {}
-        self.locked: list[tuple[str, str]] = []
-        self.rack_locks: list[tuple[int, str]] = []
+        self.bindings: dict[tuple[int, str, str], object] = {}
+        self.locked: list[tuple[int, str, str]] = []
+        self.resource_locks: list[tuple[int, str]] = []
 
-    async def lock_business_identity(self, db: object, rack_replacement_id: str, leg: str) -> None:
+    async def lock_decision_identity(self, db: object, **kwargs: object) -> None:
         del db
-        self.locked.append((rack_replacement_id, leg))
+        self.locked.append((int(kwargs["line_run_epoch_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
 
-    async def get_by_business_identity_for_update(self, db: object, **kwargs: object) -> object | None:
+    async def get_by_decision_identity_for_update(self, db: object, **kwargs: object) -> object | None:
         del db
-        return self.bindings.get((str(kwargs["rack_replacement_id"]), str(kwargs["leg"])))
+        return self.bindings.get((int(kwargs["line_run_epoch_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
 
-    async def lock_rack_fence(self, db: object, *, line_run_epoch_id: int, current_rack_id: str) -> None:
+    async def lock_resource_fence(self, db: object, *, line_run_epoch_id: int, resource_fence_id: str) -> None:
         del db
-        self.rack_locks.append((line_run_epoch_id, current_rack_id))
-
-    async def get_old_out_fence_for_update(
-        self, db: object, *, line_run_epoch_id: int, current_rack_id: str
-    ) -> object | None:
-        del db
-        return next(
-            (
-                binding
-                for binding in self.bindings.values()
-                if binding.leg == "OLD_OUT"
-                and binding.line_run_epoch_id == line_run_epoch_id
-                and binding.current_rack_id == current_rack_id
-            ),
-            None,
-        )
+        self.resource_locks.append((line_run_epoch_id, resource_fence_id))
 
     async def add(self, db: object, binding: object) -> object:
         del db
-        self.bindings[binding.business_identity] = binding
+        self.bindings[binding.decision_identity] = binding
         return binding
 
 
@@ -186,8 +153,7 @@ def _applier(**overrides: object) -> DecisionApplier:
         "epoch_repository": _Epochs(),
         "device_command_service": _DeviceCommands(),
         "wms_confirmation_service": _WmsConfirmations(),
-        "wms_request_resolver": _WmsResolver(WmsConfirmationRequest({"strict": "payload"}, NOW + timedelta(seconds=8))),
-        "rack_binding_repository": _RackBindings(),
+        "transport_binding_repository": _TransportBindings(),
         "transport_service": _Transport(),
         "material_execution_service": _Executions(),
         "clock": lambda: NOW,
@@ -286,46 +252,16 @@ async def test_device_command_execution_identity_is_bounded_when_execution_code_
 
 
 @pytest.mark.asyncio
-async def test_create_wms_confirmation_uses_narrow_resolver_without_guessing_wire() -> None:
-    confirmations = _WmsConfirmations()
-    resolver = _WmsResolver(WmsConfirmationRequest({"strict": "payload"}, NOW + timedelta(seconds=8)))
-    db = object()
-    applier = _applier(wms_confirmation_service=confirmations, wms_request_resolver=resolver)
-    decision = CreateWmsConfirmation(
-        "EXEC-1",
-        "evidence:31",
-        "inbound.material.admission_decide@v1",
-        "OP-1",
-        ("evidence:31",),
-        ("execution:EXEC-1",),
-    )
-
-    await applier.apply(db, _evidence(), _execution(), _fact(), (decision,))
-
-    assert resolver.db is db
-    assert confirmations.calls == [
-        {
-            "operation": decision.operation,
-            "operation_id": "OP-1",
-            "material_execution_id": 21,
-            "request_payload": {"strict": "payload"},
-            "deadline_at": NOW + timedelta(seconds=8),
-            "created_at": NOW,
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_create_transport_task_persists_business_mapping_before_transport() -> None:
-    rack_bindings = _RackBindings()
+async def test_create_transport_task_persists_scoped_decision_mapping_before_transport() -> None:
+    transport_bindings = _TransportBindings()
     transport = _Transport()
-    applier = _applier(rack_binding_repository=rack_bindings, transport_service=transport)
+    applier = _applier(transport_binding_repository=transport_bindings, transport_service=transport)
     decision = CreateTransportTask(
         "EXEC-1",
         "evidence:31",
         TransportTaskType.RACK_MOVE,
         "REPLACE-1",
-        TransportLeg.OLD_OUT,
+        "PRIMARY_MOVE",
         "RACK-CURRENT",
         "RACK-CURRENT",
         TransportRackPosition("BUFFER"),
@@ -336,11 +272,11 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
 
     await applier.apply(object(), _evidence(), _execution(), _fact(), (decision,))
 
-    binding = rack_bindings.bindings[("REPLACE-1", "OLD_OUT")]
+    binding = transport_bindings.bindings[(11, "REPLACE-1", "PRIMARY_MOVE")]
     assert binding.line_run_epoch_id == 11
-    assert binding.current_rack_id == "RACK-CURRENT"
-    assert rack_bindings.locked == [("REPLACE-1", "OLD_OUT")]
-    assert rack_bindings.rack_locks == [(11, "RACK-CURRENT")]
+    assert binding.resource_fence_id == "RACK-CURRENT"
+    assert transport_bindings.locked == [(11, "REPLACE-1", "PRIMARY_MOVE")]
+    assert transport_bindings.resource_locks == [(11, "RACK-CURRENT")]
     assert transport.calls[0]["client_request_id"] == binding.client_request_id
     assert transport.calls[0]["rack_id"] == "RACK-CURRENT"
     assert transport.calls[0]["caller"].workline_id == "7"
@@ -350,23 +286,23 @@ async def test_create_transport_task_persists_business_mapping_before_transport(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mismatch", ["line_run_epoch_id", "current_rack_id", "source_evidence_id"])
+@pytest.mark.parametrize("mismatch", ["line_run_epoch_id", "resource_fence_id", "source_evidence_id"])
 async def test_create_transport_task_rejects_existing_binding_correlation_drift(mismatch: str) -> None:
-    rack_bindings = _RackBindings()
+    transport_bindings = _TransportBindings()
     transport = _Transport()
     persisted = {
         "line_run_epoch_id": 11,
-        "current_rack_id": "RACK-CURRENT",
+        "resource_fence_id": "RACK-CURRENT",
         "source_evidence_id": 31,
     }
     persisted[mismatch] = {
         "line_run_epoch_id": 12,
-        "current_rack_id": "RACK-OTHER",
+        "resource_fence_id": "RACK-OTHER",
         "source_evidence_id": 32,
     }[mismatch]
-    rack_bindings.bindings[("REPLACE-1", "OLD_OUT")] = SimpleNamespace(
-        rack_replacement_id="REPLACE-1",
-        leg="OLD_OUT",
+    transport_bindings.bindings[(11, "REPLACE-1", "OLD_OUT")] = SimpleNamespace(
+        correlation_id="REPLACE-1",
+        step="OLD_OUT",
         client_request_id="019cd8ce-34b7-7000-8000-000000000099",
         **persisted,
     )
@@ -375,7 +311,7 @@ async def test_create_transport_task_rejects_existing_binding_correlation_drift(
         "evidence:31",
         TransportTaskType.RACK_MOVE,
         "REPLACE-1",
-        TransportLeg.OLD_OUT,
+        "OLD_OUT",
         "RACK-CURRENT",
         "RACK-CURRENT",
         TransportRackPosition("BUFFER"),
@@ -384,8 +320,8 @@ async def test_create_transport_task_rejects_existing_binding_correlation_drift(
         TransportRcsTemplateId.CTU03,
     )
 
-    with pytest.raises(ValueError, match="binding correlation"):
-        await _applier(rack_binding_repository=rack_bindings, transport_service=transport).apply(
+    with pytest.raises(ValueError, match="transport decision binding conflict"):
+        await _applier(transport_binding_repository=transport_bindings, transport_service=transport).apply(
             object(), _evidence(), _execution(), _fact(), (decision,)
         )
 

@@ -125,21 +125,19 @@ def test_outlet_success_requests_target_cell_and_does_not_place_early() -> None:
         current_rack_id="rack-current",
     )
 
-    assert DevicePositionConfirmedHandler(*readers)(fact) == (
-        CreateWmsConfirmation(
-            material_execution_id=EXECUTION_ID,
-            fact_id=fact.fact_id,
-            operation="inbound.material.target_decide@v1",
-            operation_id=fact.request_operation_id,
-            evidence_refs=(fact.evidence_id,),
-            snapshot_refs=(
-                f"execution:{EXECUTION_ID}",
-                "wms-admission:admission-1",
-                "position:pipeline-outlet",
-                "rack:rack-current",
-            ),
-        ),
-    )
+    decision = DevicePositionConfirmedHandler(*readers)(fact)[0]
+
+    assert isinstance(decision, CreateWmsConfirmation)
+    assert decision.operation == "inbound.material.target_decide@v1"
+    assert decision.operation_id == fact.request_operation_id
+    assert decision.request_data == {
+        "material_execution_id": EXECUTION_ID,
+        "material_trace_id": TRACE_ID,
+        "pkg_id": "pkg-1",
+        "inbound_admission_id": "admission-1",
+        "source_position": {"type": "HANDOFF_POSITION", "location_code": "pipeline-outlet"},
+        "current_rack_id": "rack-current",
+    }
 
 
 @pytest.mark.parametrize("step", [DeviceStep.MEASUREMENT_TO_NG, DeviceStep.PLACEMENT_TO_NG])
@@ -163,7 +161,7 @@ def test_ng_report_references_callback_evidence_once(step: DeviceStep) -> None:
     decision = DevicePositionConfirmedHandler()(fact)[0]
 
     assert isinstance(decision, CreateWmsConfirmation)
-    assert decision.evidence_refs == ("3",)
+    assert decision.request_data["ng_evidence_id"] == "3"
 
 
 @pytest.mark.parametrize(
@@ -489,16 +487,13 @@ def test_no_available_cell_requests_stable_replacement_plan_without_device_comma
 
     decisions = TargetDecidedHandler(*readers)(fact)
 
-    assert decisions == (
-        CreateWmsConfirmation(
-            material_execution_id=EXECUTION_ID,
-            fact_id=fact.fact_id,
-            operation="inbound.source_rack.replacement_plan_decide@v1",
-            operation_id=fact.request_operation_id,
-            evidence_refs=(fact.evidence_id,),
-            snapshot_refs=(f"execution:{EXECUTION_ID}", "rack:rack-current"),
-        ),
-    )
+    assert decisions[0].operation == "inbound.source_rack.replacement_plan_decide@v1"
+    assert decisions[0].operation_id == fact.request_operation_id
+    assert decisions[0].request_data == {
+        "material_execution_id": EXECUTION_ID,
+        "material_trace_id": TRACE_ID,
+        "current_rack_id": "rack-current",
+    }
     assert not any(isinstance(decision, CreateDeviceCommand) for decision in decisions)
 
 

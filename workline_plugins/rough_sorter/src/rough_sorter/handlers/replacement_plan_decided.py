@@ -6,7 +6,6 @@ from wes_plugin_sdk import (
     CreateTransportTask,
     DeferExecution,
     PauseForReconciliation,
-    TransportLeg,
     TransportRcsTemplateId,
     TransportTaskType,
     Wait,
@@ -19,6 +18,7 @@ from rough_sorter.facts import (
     PlacementResponseResult,
     ReplacementPlanDecidedFact,
     ReplacementResult,
+    TransportLeg,
 )
 from rough_sorter.handlers._guards import require_epoch, require_execution
 
@@ -41,7 +41,13 @@ class ReplacementPlanDecidedHandler:
         )
         _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is ReplacementResult.WAIT:
-            return (self._wait(fact, fact.reason_code or "WMS_REPLACEMENT_WAIT"),)
+            return (
+                Wait(
+                    material_execution_id=fact.material_execution_id,
+                    fact_id=fact.fact_id,
+                    reason_code=fact.reason_code or "WMS_REPLACEMENT_WAIT",
+                ),
+            )
         if fact.result is ReplacementResult.RECONCILING:
             return (
                 PauseForReconciliation(
@@ -97,9 +103,9 @@ class ReplacementPlanDecidedHandler:
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 task_type=TransportTaskType.RACK_MOVE,
-                rack_replacement_id=replacement_id,
-                leg=TransportLeg.OLD_OUT,
-                current_rack_id=fact.current_rack_id,
+                correlation_id=replacement_id,
+                step=TransportLeg.OLD_OUT.value,
+                resource_fence_id=fact.current_rack_id,
                 rack_id=old_plan.rack_id,
                 source=old_plan.source,
                 target=old_plan.target,
@@ -110,23 +116,15 @@ class ReplacementPlanDecidedHandler:
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 task_type=TransportTaskType.RACK_MOVE,
-                rack_replacement_id=replacement_id,
-                leg=TransportLeg.NEW_IN,
-                current_rack_id=fact.current_rack_id,
+                correlation_id=replacement_id,
+                step=TransportLeg.NEW_IN.value,
+                resource_fence_id=fact.current_rack_id,
                 rack_id=new_plan.rack_id,
                 source=new_plan.source,
                 target=new_plan.target,
                 target_face=new_plan.target_face,
                 rcs_template_id=TransportRcsTemplateId.CTU01,
             ),
-        )
-
-    @staticmethod
-    def _wait(fact: ReplacementPlanDecidedFact, reason_code: str) -> Wait:
-        return Wait(
-            material_execution_id=fact.material_execution_id,
-            fact_id=fact.fact_id,
-            reason_code=reason_code,
         )
 
 

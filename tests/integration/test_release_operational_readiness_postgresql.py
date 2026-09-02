@@ -12,10 +12,11 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import event, select, text
 from sqlalchemy.dialects import postgresql
-from wes_plugin_sdk import CreateWmsConfirmation, EvidenceReadyFact, FactReference, handler
+from wes_plugin_sdk import CreateDeviceCommand, DevicePosition, EvidenceReadyFact, FactReference, handler
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
+from src.app.device.services import DeviceCommandService
 from src.app.execution.models.inbound_evidence import InboundEvidence
 from src.app.execution.models.material_execution import MaterialExecution
 from src.app.execution.models.wms_confirmation import WmsConfirmation
@@ -25,7 +26,6 @@ from src.app.execution.services import (
     DecisionApplier,
     FactProcessor,
     MaterialExecutionService,
-    WmsConfirmationRequest,
     WmsConfirmationService,
 )
 from src.app.transport.models import TransportEvidence, TransportTask
@@ -613,13 +613,11 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
 
 
 @pytest.mark.asyncio
-async def test_fact_processor_creates_decision_owned_wms_confirmation_with_published_evidence_atomically(
+async def test_fact_processor_creates_device_command_with_published_evidence_atomically(
     integration_session_factory,
 ) -> None:
     identity = uuid4().hex
     now = timezone.now_for_db()
-    operation = f"readiness.fact.confirm@{identity}"
-    operation_id = f"READINESS-FACT-{identity}"
     async with integration_session_factory.begin() as db:
         epoch, binding, execution = await _seed_bound_execution(db)
         evidence = InboundEvidence(
@@ -650,31 +648,25 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
     async with integration_session_factory() as observer:
         counts = await readiness_repository.load_counts(observer)
         assert counts.inbound_evidence_wait_drain == 1
-        assert counts.wms_confirmation_wait_drain == 0
+        assert counts.device_command_wait_drain == 0
 
     @handler(fact_type=EvidenceReadyFact, name="release_readiness_fact", supported_versions=("1.0",))
-    def create_confirmation(fact: EvidenceReadyFact) -> tuple[CreateWmsConfirmation, ...]:
+    def create_command(fact: EvidenceReadyFact) -> tuple[CreateDeviceCommand, ...]:
         return (
-            CreateWmsConfirmation(
+            CreateDeviceCommand(
                 fact.material_execution_id,
                 fact.fact_id,
-                operation,
-                operation_id,
-                (fact.evidence_id,),
-                ("release-readiness",),
+                "TEST",
+                "READINESS_CHECK",
+                execution.material_trace_id,
+                DevicePosition("READINESS-SOURCE", "TEST", execution.material_trace_id),
+                DevicePosition("READINESS-TARGET", "TEST", execution.material_trace_id),
             ),
         )
 
     class IdentityFactFactory:
         async def build(self, _db: object, fact: FactReference) -> FactReference:
             return fact
-
-    class Resolver:
-        async def resolve(self, _db: object, decision: CreateWmsConfirmation) -> WmsConfirmationRequest:
-            return WmsConfirmationRequest(
-                {"source_evidence_id": decision.snapshot_refs[0]},
-                now + timedelta(minutes=1),
-            )
 
     applied_inside_transaction = asyncio.Event()
     release_commit = asyncio.Event()
@@ -695,22 +687,18 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
             if persisted is None or persisted.published_at is None or applied_inside_transaction.is_set():
                 return
             created = await db.scalar(
-                select(WmsConfirmation.id).where(
-                    WmsConfirmation.operation == operation,
-                    WmsConfirmation.operation_id == operation_id,
-                )
+                select(DeviceCommand.id).where(DeviceCommand.material_execution_id == execution_id)
             )
             assert created is not None
             counts = await readiness_repository.load_counts(db)
             assert counts.inbound_evidence_wait_drain == 0
-            assert counts.wms_confirmation_wait_drain == 1
+            assert counts.device_command_wait_drain == 1
             applied_inside_transaction.set()
             await release_commit.wait()
 
     applier = DecisionApplier(
-        device_command_service=object(),
-        wms_confirmation_service=WmsConfirmationService(),
-        wms_request_resolver=Resolver(),
+        device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
+        wms_confirmation_service=object(),
         transport_service=object(),
         material_execution_service=MaterialExecutionService(),
         clock=lambda: now,
@@ -722,7 +710,7 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
                 PluginRuntimeBinding(
                     plugin_key="readiness_test",
                     plugin_version="1.0.0",
-                    handlers=(create_confirmation,),
+                    handlers=(create_command,),
                     fact_factory=IdentityFactFactory(),
                 ),
             )
@@ -737,27 +725,25 @@ async def test_fact_processor_creates_decision_owned_wms_confirmation_with_publi
     async with integration_session_factory() as second_session_before_commit:
         counts = await readiness_repository.load_counts(second_session_before_commit)
         assert counts.inbound_evidence_wait_drain == 1
-        assert counts.wms_confirmation_wait_drain == 0
+        assert counts.device_command_wait_drain == 0
     release_commit.set()
     assert await asyncio.wait_for(processing, timeout=5) == 1
 
     async with integration_session_factory() as second_session_after_commit:
         persisted = await second_session_after_commit.get(InboundEvidence, evidence_id)
         created = await second_session_after_commit.scalar(
-            select(WmsConfirmation.id).where(
-                WmsConfirmation.operation == operation,
-                WmsConfirmation.operation_id == operation_id,
-            )
+            select(DeviceCommand.id).where(DeviceCommand.material_execution_id == execution_id)
         )
         assert persisted is not None and persisted.published_at is not None
         assert created is not None
         counts = await readiness_repository.load_counts(second_session_after_commit)
         assert counts.inbound_evidence_wait_drain == 0
-        assert counts.wms_confirmation_wait_drain == 1
+        assert counts.device_command_wait_drain == 1
 
     async with integration_session_factory.begin() as cleanup:
         await cleanup.execute(
-            text("DELETE FROM wes_biz.wms_confirmations WHERE operation = :operation"), {"operation": operation}
+            text("DELETE FROM wes_biz.device_commands WHERE material_execution_id = :execution_id"),
+            {"execution_id": execution_id},
         )
         await cleanup.execute(
             text(

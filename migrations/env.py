@@ -39,7 +39,7 @@ from src.app.execution.models import (  # noqa: F401
     InboundEvidenceConflict,
     MaterialExecution,
     PositionProjection,
-    RackReplacementTransportBinding,
+    TransportDecisionBinding,
     WmsConfirmation,
 )
 from src.app.resource.models import (  # noqa: F401
