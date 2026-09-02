@@ -1,4 +1,9 @@
-"""WorkLine Service 按需导出，避免包导入拉起运行时闭包。"""
+"""WorkLine Service 按需导出，避免包导入拉起运行时闭包。
+
+实际导出符号以本包内 `__all__` 为准；操作 API 直接 import 真实模块，不依赖
+此处懒加载入口（例如 `WorkLineStartService` 由 `operation.py` 通过
+`src.app.workline.services.workline_start_service` 绝对路径引用）。
+"""
 
 from __future__ import annotations
 
@@ -13,14 +18,26 @@ _EXPORTS = {
     "WorkLineSafetyBlocked": ("safety_service", "WorkLineSafetyBlocked"),
     "WorkLineSafetyService": ("safety_service", "WorkLineSafetyService"),
     "workline_safety_service": ("safety_service", "workline_safety_service"),
-    "WorkLineStartService": ("workline_start_service", "WorkLineStartService"),
     "WorkLineService": ("workline_service", "WorkLineService"),
     "workline_service": ("workline_service", "workline_service"),
-    "WorklineDiagnosticService": ("diagnostic_service", "WorklineDiagnosticService"),
-    "workline_diagnostic_service": ("diagnostic_service", "workline_diagnostic_service"),
+    "WorklineDiagnosticService": ("diagnosis_verdict_builder_service", "DiagnosisVerdictBuilder"),
+    "workline_diagnostic_service": ("diagnosis_verdict_builder_service", "diagnosis_verdict_builder"),
 }
 
-__all__ = list(_EXPORTS)
+
+__all__ = [
+    "LineRunEpochService",
+    "WorkLinePlaneService",
+    "WorkLineSafetyBlocked",
+    "WorkLineSafetyService",
+    "WorkLineService",
+    "WorklineDiagnosticService",
+    "line_run_epoch_service",
+    "workline_diagnostic_service",
+    "workline_plane_service",
+    "workline_safety_service",
+    "workline_service",
+]
 
 
 def __getattr__(name: str) -> Any:

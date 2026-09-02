@@ -67,8 +67,8 @@ def test_raw_catalog_fixture_is_immutable_and_disposition_is_complete() -> None:
 
     assert RAW_MANIFEST_SHA256 == "77214740a6fd48c113c043aeb32887209681c4fd213833e7e9ee391f317117c9"
     assert DISPOSITION_SHA256 == "04ad7dbf1278b9507b5ae58b92071772e9e31948c79e92c2035fba161a8878f8"
-    assert FINAL_MANIFEST_SHA256 == "430ad5ab75cfabf9a14c820fcb3e6ea061763e99945357f8e4c06e9dc5fe729c"
-    assert TRANSITION_DISPOSITION_SHA256 == "f4d6c253752d2381b0379673f78f50c1ebfdd715913cdbfd663060ed89e57a59"
+    assert FINAL_MANIFEST_SHA256 == "9b47ad6a40fb6affaaaeffab2e3b530d31493a82562c092440ec017add7aa744"
+    assert TRANSITION_DISPOSITION_SHA256 == "5ce70024332cb6903810750154b3bab10a38cf439a9cfdc578e4e526c910999c"
     assert disposition["source_manifest_sha256"] == RAW_MANIFEST_SHA256
     assert sum(entry["disposition"] == "FINAL_DELETE_AFTER_SUCCESSOR" for entry in entries) == 21
     assert sum(entry["disposition"] == "RETAIN" for entry in entries) == 1
@@ -147,6 +147,25 @@ def test_unregistered_manifest_difference_fails_closed() -> None:
 
     with pytest.raises(ManifestMismatch, match="unregistered catalog difference"):
         assert_final_manifest(drifted, final, disposition)
+
+
+def test_platform_version_is_owned_by_pinned_compose_not_schema_transition_disposition() -> None:
+    raw, final, disposition = _fixtures()
+    old_derived = derive_final_manifest(raw, disposition)
+    platform_updated = copy.deepcopy(final)
+    platform_updated["catalog"]["server"][0] = {
+        "server_version": "17.11",
+        "server_version_num": "170011",
+    }
+    timescaledb = next(row for row in platform_updated["catalog"]["extensions"] if row["name"] == "timescaledb")
+    timescaledb["version"] = "2.28.0"
+
+    assert catalog_transition_differences(old_derived, platform_updated) == catalog_transition_differences(
+        old_derived,
+        final,
+    )
+    with pytest.raises(ManifestMismatch, match="unregistered catalog difference"):
+        assert_final_manifest(platform_updated, final, disposition)
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")

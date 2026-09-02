@@ -37,7 +37,6 @@ def test_runtime_repositories_do_not_import_service_layer() -> None:
     repository_root = Path(__file__).resolve().parents[2] / "src/app/runtime/orchestration/repositories"
     expected_names = {
         "__init__.py",
-        "legacy_drain_readiness_repository.py",
         "material_unit_repository.py",
         "object_transition_event_repository.py",
         "rack_position_repository.py",

@@ -16,8 +16,13 @@ def _stage_body(stage_name: str) -> str:
     return match.group("body")
 
 
-def test_runtime_benchmark_artifact_stage_loads_test_env_file():
-    """benchmark artifact 生成会导入 settings，CI 容器必须加载 .env.test。"""
-    stage = _stage_body("Runtime Benchmark Artifact")
+def test_quality_gate_stage_loads_test_env_file_for_runtime_benchmark():
+    """benchmark artifact 由 Quality Gate 阶段生成，CI 容器必须加载 .env.test。
+
+    历史上曾设独立 ``Runtime Benchmark Artifact`` 阶段；按 KISS 已收敛进
+    ``Verification.Quality Gate`` 阶段，质量门禁脚本与基准物合同同时复用
+    同一 ``.env.test``，不再单独拉一个阶段。
+    """
+    stage = _stage_body("Quality Gate")
 
     assert '--env-file "$WORKSPACE/.env.test"' in stage

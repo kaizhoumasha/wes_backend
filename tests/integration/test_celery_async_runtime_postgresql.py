@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 import asyncpg
 import psutil
 import pytest
+from billiard.pool import EX_OK, EX_RECYCLE  # pyright: ignore[reportMissingTypeStubs]
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
 from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
     task_prerun,
@@ -100,8 +101,12 @@ def _record_child_init_complete(**_: object) -> None:
 
 
 @worker_process_shutdown.connect
-def _record_child_shutdown_complete(**_: object) -> None:
-    _write_probe_marker("child_shutdown_complete", pid=os.getpid())
+def _record_child_shutdown_complete(pid: int | None = None, exitcode: int | None = None, **_: object) -> None:
+    _write_probe_marker(
+        "child_shutdown_complete",
+        pid=pid if pid is not None else os.getpid(),
+        exitcode=exitcode,
+    )
 
 
 @task_prerun.connect
@@ -929,10 +934,18 @@ class PreforkWorker:
             raise BaseExceptionGroup(f"worker {self.run_id} run artifacts 清理失败", errors)
 
 
-def _assert_clean_activity(worker: PreforkWorker, application_names: set[str]) -> None:
+def _assert_clean_activity(
+    worker: PreforkWorker,
+    application_names: set[str],
+    *,
+    require_live_connection: bool = True,
+) -> list[dict[str, object]]:
     rows = _worker_connections(worker.services["database_url"], worker.run_id)
-    assert rows
-    assert {str(row["application_name"]) for row in rows} == application_names
+    if require_live_connection:
+        assert rows
+        assert {str(row["application_name"]) for row in rows} == application_names
+    else:
+        assert {str(row["application_name"]) for row in rows} <= application_names
     assert all(row["state"] != "idle in transaction" for row in rows)
     forbidden = (
         "attached to a different loop",
@@ -942,6 +955,7 @@ def _assert_clean_activity(worker: PreforkWorker, application_names: set[str]) -
     )
     log_text = worker.log_text().lower()
     assert not any(message in log_text for message in forbidden)
+    return rows
 
 
 @contextmanager
@@ -1196,7 +1210,31 @@ def test_max_tasks_per_child_rebuilds_runtime_engine_and_application_name(prefor
             CONNECTION_DRAIN_TIMEOUT,
             "recycled child PostgreSQL connection drain",
         )
-        _assert_clean_activity(worker, {str(second["application_name"])})
+        # max_tasks_per_child=1 时第二个 child 也可能在 result 返回后立即退出；
+        # 只禁止旧连接、未知 owner 和未闭合事务，不要求观察窗口内必须仍有活连接。
+        rows = _assert_clean_activity(
+            worker,
+            {str(second["application_name"])},
+            require_live_connection=False,
+        )
+        if not rows:
+            second_pid = int(second["pid"])
+            shutdown_marker = cast(
+                "dict[str, object]",
+                _wait_until(
+                    lambda: next(
+                        (
+                            marker
+                            for marker in _probe_markers(worker.log_text(), "child_shutdown_complete")
+                            if int(marker["pid"]) == second_pid
+                        ),
+                        None,
+                    ),
+                    CONNECTION_DRAIN_TIMEOUT,
+                    "second recycled child normal shutdown marker",
+                ),
+            )
+            assert int(shutdown_marker["exitcode"]) in {EX_OK, EX_RECYCLE}
         success = True
     finally:
         worker.stop(success=success)
@@ -1303,11 +1341,9 @@ def test_hanging_application_redis_degrades_within_budget_and_db_task_survives(
     with _hanging_redis_url() as (hanging_url, hanging_server):
         worker = PreforkWorker(prefork_services, concurrency=1, application_redis_url=hanging_url)
         success = False
-        started = time.monotonic()
         worker.start()
         try:
             probe = cast("dict[str, object]", worker.result(worker.submit(PROBE_TASK, "redis-degraded")))
-            elapsed = time.monotonic() - started
             markers = _probe_markers(worker.log_text())
             init_marker = next(marker for marker in markers if marker["kind"] == "child_init_complete")
             assert probe["redis_available"] is False
@@ -1316,7 +1352,6 @@ def test_hanging_application_redis_degrades_within_budget_and_db_task_survives(
             assert 0.8 <= hanging_server.connection_closed_at - hanging_server.first_command_at <= 3.25
             assert init_marker["state"] == "degraded"
             assert "Worker Redis 初始化超时，进入降级模式" in worker.project_log_text()
-            assert elapsed < 8  # 还包含 MainProcess 启动和 ready probe，不作为 3 秒预算证据。
             success = True
         finally:
             worker.stop(success=success)

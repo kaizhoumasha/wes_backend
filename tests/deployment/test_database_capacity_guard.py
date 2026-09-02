@@ -24,6 +24,7 @@ from scripts.capacity_guard import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+TIMESCALEDB_IMAGE = "timescale/timescaledb@sha256:6e4b469dee0395a8a6d8c818384b0226a749997a29a312f314413f98e4161f82"
 
 
 class _ComposeSafeLoader(yaml.SafeLoader):
@@ -35,6 +36,15 @@ def _construct_compose_sequence(loader: _ComposeSafeLoader, node: yaml.nodes.Seq
 
 
 _ComposeSafeLoader.add_constructor("!override", _construct_compose_sequence)
+
+
+def test_database_compose_files_pin_the_reviewed_timescaledb_image() -> None:
+    for compose_name in ("docker-compose.yml", "docker-compose.test-deploy.yml", "docker-compose.ci-heavy.yml"):
+        compose = yaml.load(
+            (REPO_ROOT / compose_name).read_text(encoding="utf-8"),
+            Loader=_ComposeSafeLoader,  # noqa: S506 -- 仓库内受控 Compose，需解析 !override 标签。
+        )
+        assert compose["services"]["db"]["image"] == TIMESCALEDB_IMAGE
 
 
 def test_local_compose_build_does_not_require_ci_provenance_arguments() -> None:

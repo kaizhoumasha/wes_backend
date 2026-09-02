@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 RAW_MANIFEST_SHA256 = "77214740a6fd48c113c043aeb32887209681c4fd213833e7e9ee391f317117c9"
 DISPOSITION_SHA256 = "04ad7dbf1278b9507b5ae58b92071772e9e31948c79e92c2035fba161a8878f8"
 OLD_DERIVED_MANIFEST_SHA256 = "87c2f3461068b97c713032bd83312bc64cdfbe481574d4d8c4e331b37a5bc0b6"
-FINAL_MANIFEST_SHA256 = "430ad5ab75cfabf9a14c820fcb3e6ea061763e99945357f8e4c06e9dc5fe729c"
-TRANSITION_DISPOSITION_SHA256 = "f4d6c253752d2381b0379673f78f50c1ebfdd715913cdbfd663060ed89e57a59"
+FINAL_MANIFEST_SHA256 = "9b47ad6a40fb6affaaaeffab2e3b530d31493a82562c092440ec017add7aa744"
+TRANSITION_DISPOSITION_SHA256 = "5ce70024332cb6903810750154b3bab10a38cf439a9cfdc578e4e526c910999c"
 
 EXPECTED_DISPOSITION_TABLES = {
     "wes_biz.ng_return_items": ("FINAL_DELETE_AFTER_SUCCESSOR", False, None),
@@ -352,7 +352,7 @@ CATALOG_QUERIES: dict[str, str] = {
                view_schema, view_name, view_owner,
                materialized_only, compression_enabled,
                materialization_hypertable_schema, materialization_hypertable_name,
-               finalized, view_definition
+               view_definition
         FROM timescaledb_information.continuous_aggregates
         ORDER BY view_schema, view_name
     """,
@@ -454,8 +454,8 @@ async def collect_postgresql_catalog(connection: Any, *, database: str) -> dict[
             rows = await connection.fetch(query)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            raise CatalogCollectionError(f"catalog section 读取失败: {section}") from None
+        except Exception as exc:
+            raise CatalogCollectionError(f"catalog section 读取失败: {section} ({type(exc).__name__}: {exc})") from exc
         collected[section] = _stable_rows(rows)
         if section == "extensions":
             timescaledb_present = any(row.get("name") == "timescaledb" for row in collected[section])
@@ -647,6 +647,7 @@ def catalog_transition_differences(old: Mapping[str, Any], new: Mapping[str, Any
     """枚举 old-derived 与 current live catalog 之间全部已允许的逐项差异。"""
 
     transition_sections = {"columns", "constraints", "indexes", "tables"}
+    platform_sections = {"extensions", "server"}
     if {key: value for key, value in old.items() if key != "catalog"} != {
         key: value for key, value in new.items() if key != "catalog"
     }:
@@ -655,7 +656,7 @@ def catalog_transition_differences(old: Mapping[str, Any], new: Mapping[str, Any
     new_catalog = new["catalog"]
     if set(old_catalog) != set(new_catalog):
         raise ManifestMismatch("catalog transition section set differs")
-    for section in set(old_catalog) - transition_sections:
+    for section in set(old_catalog) - transition_sections - platform_sections:
         if old_catalog[section] != new_catalog[section]:
             raise ManifestMismatch(f"catalog transition differs in unreviewed section: {section}")
 

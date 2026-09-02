@@ -31,6 +31,7 @@ from src.utils.timezone import timezone
 
 auth_service_module = importlib.import_module("src.app.auth.services.auth_service")
 security_runtime_module = importlib.import_module("src.core.security_runtime")
+database_dependencies_module = importlib.import_module("src.database.dependencies")
 
 
 class _FakeRedisPipeline:
@@ -121,6 +122,11 @@ class _FakeRedis:
     def pipeline(self) -> _FakeRedisPipeline:
         return _FakeRedisPipeline(self)
 
+    async def set(self, key: str, value: object, *, expire: int | None = None) -> bool:
+        del expire
+        self._values[key] = value
+        return True
+
 
 @pytest.fixture(autouse=True)
 def auth_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
@@ -131,6 +137,7 @@ def auth_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
     monkeypatch.setattr(security_runtime_module, "get_redis", lambda: fake_redis)
     monkeypatch.setattr(auth_service_module, "is_redis_available", lambda: True)
     monkeypatch.setattr(auth_service_module, "get_redis", lambda: fake_redis)
+    monkeypatch.setattr(database_dependencies_module, "get_cache", lambda: fake_redis)
 
     return fake_redis
 

@@ -176,6 +176,7 @@ source_glob = "docker-compose.yml"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
     "tests/mock/test_wms_transport_mock_server.py",
 ]
 
@@ -184,6 +185,7 @@ source_glob = "docker-compose.test-deploy.yml"
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
 ]
 
 [[mapping]]
@@ -234,7 +236,7 @@ reviewed_content_sha256 = "540998e11316b9b02240289174578bfa8048625e0deb0e5c328f6
 
 [[mapping]]
 source_glob = "docker-compose.ci-heavy.yml"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py"]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 # 质量门禁只编排 FAST/QUALITY；生产 closure 由 HEAVY selector 独立承接。
 
@@ -1064,6 +1066,11 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/execution/{models/inbound_evidence_execution_binding.py,models/transport_decision_binding.py,repositories/inbound_evidence_execution_binding_repository.py,repositories/transport_decision_binding_repository.py}"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
+
+[[mapping]]
+# 旧 rack replacement binding 已由统一 TransportDecisionBinding 取代；删除差异仍由同一 PostgreSQL owner 承接。
+source_glob = "src/app/execution/{models/rack_replacement_transport_binding.py,repositories/rack_replacement_transport_binding_repository.py}"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 [[mapping]]

@@ -195,7 +195,7 @@ services:
       - wesp9-network
 
   db:
-    image: timescale/timescaledb:latest-pg17
+    image: timescale/timescaledb@sha256:6e4b469dee0395a8a6d8c818384b0226a749997a29a312f314413f98e4161f82
     container_name: wes_postgres_${ENV:-test}
     restart: ${RESTART_POLICY:-unless-stopped}
     environment:
