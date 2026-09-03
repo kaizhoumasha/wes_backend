@@ -297,6 +297,19 @@ async def reset_transport_task_data(
         raise RuntimeError(f"TransportTask 不存在: {task_id}")
 
     _, status = row
+    if apply:
+        active_run = await db.scalar(
+            text(
+                "SELECT run.run_id FROM wes_runtime.transport_debug_run_steps AS step "
+                "JOIN wes_runtime.transport_debug_runs AS run ON run.run_id = step.run_id "
+                "WHERE step.transport_task_id = :transport_task_id "
+                "AND run.status IN ('RUNNING', 'NEEDS_ATTENTION') "
+                "LIMIT 1"
+            ),
+            {"transport_task_id": task_id},
+        )
+        if active_run is not None:
+            raise RuntimeError("TransportTask 正被活动 Transport 自动联调轮次引用，拒绝清理")
     receipt_result = await db.execute(
         text(
             "SELECT count(*) FROM wes_runtime.transport_callback_receipts "

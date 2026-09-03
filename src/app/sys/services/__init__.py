@@ -4,6 +4,7 @@ from .audit_service import AuditLogService, audit_log_service
 from .event_stream_service import (
     COMMAND_STATUS_CHANGED_EVENT,
     DEVICE_STATUS_CHANGED_EVENT,
+    TRANSPORT_DEBUG_RUN_STREAM_CHANNEL,
     TRANSPORT_EVIDENCE_STREAM_CHANNEL,
     WORKLINE_RUNTIME_CHANGED_EVENT,
     EventStreamService,
@@ -16,6 +17,7 @@ from .event_stream_service import (
 __all__ = [
     "COMMAND_STATUS_CHANGED_EVENT",
     "DEVICE_STATUS_CHANGED_EVENT",
+    "TRANSPORT_DEBUG_RUN_STREAM_CHANNEL",
     "TRANSPORT_EVIDENCE_STREAM_CHANNEL",
     "WORKLINE_RUNTIME_CHANGED_EVENT",
     "AuditLogService",

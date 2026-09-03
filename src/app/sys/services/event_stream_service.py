@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 SSE_EVENT_CHANNEL = "events:stream"
 DEVICE_EVIDENCE_STREAM_CHANNEL = "device:evidence:stream"
 TRANSPORT_EVIDENCE_STREAM_CHANNEL = "transport:evidence:stream"
+TRANSPORT_DEBUG_RUN_STREAM_CHANNEL = "transport:debug-run:stream"
 DEFERRED_SSE_EVENTS_KEY = "_deferred_sse_events_after_commit"
 SSE_PUBLISH_TIMEOUT_SECONDS = 1.0
 SSE_SUBSCRIBE_TIMEOUT_SECONDS = 5.0

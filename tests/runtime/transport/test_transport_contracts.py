@@ -535,6 +535,7 @@ def test_transport_caller_keeps_only_local_routing_fields() -> None:
         (RackReference("rack-1"), RackPosition("WORK"), RcsTemplateId.CTU01),
         (RackPosition("SOURCE"), RackPosition("WORK"), RcsTemplateId.CTU01),
         (RackPosition("WORK"), RackReference("rack-1"), RcsTemplateId.CTU03),
+        (RackReference("rack-1"), ZonePosition("ZONE-A"), RcsTemplateId.CTU03),
         (RackPosition("WORK"), ZonePosition("ZONE-A"), RcsTemplateId.CTU03),
         (RackPosition("WORK"), RackPosition("TARGET"), RcsTemplateId.CTU03),
         (RackPosition("WORK"), RackPosition("TARGET"), RcsTemplateId.F01),
@@ -656,6 +657,48 @@ def test_rack_reference_must_match_outer_rack_identity() -> None:
             "90",
             RcsTemplateId.CTU01,
         )
+    with pytest.raises(TransportContractError, match="RACK location_code must match rack_id"):
+        RotateRackRequest(
+            _REQUEST_ID,
+            _caller(),
+            "rack-1",
+            RackReference("rack-2"),
+            "270",
+        )
+
+
+def test_510056_edges_accept_rack_reference_without_face_mapping() -> None:
+    caller = TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO")
+    outbound = MoveRackRequest(
+        _REQUEST_ID,
+        caller,
+        "510056",
+        RackReference("510056"),
+        RackPosition("KT16"),
+        "90",
+        RcsTemplateId.CTU01,
+    )
+    rotate = RotateRackRequest(
+        _REQUEST_ID,
+        caller,
+        "510056",
+        RackReference("510056"),
+        "270",
+        RcsTemplateId.CTU02,
+    )
+    returned = MoveRackRequest(
+        _REQUEST_ID,
+        caller,
+        "510056",
+        RackReference("510056"),
+        ZonePosition("WH01"),
+        "90",
+        RcsTemplateId.CTU03,
+    )
+
+    assert outbound.target_face == "90"
+    assert rotate.target_face == "270"
+    assert returned.target == ZonePosition("WH01")
 
 
 def test_rotate_rack_uses_ctu02_and_preserves_opaque_face() -> None:

@@ -38,7 +38,7 @@ FINAL_MANIFEST_PATH = FIXTURES_DIR / "initial_schema_final_manifest.json"
 DISPOSITION_PATH = FIXTURES_DIR / "initial_schema_disposition.json"
 TRANSITION_DISPOSITION_PATH = FIXTURES_DIR / "initial_schema_transition_disposition.json"
 INITIAL_REVISION = "f9c7c2e5f501"
-HEAD_REVISION = "ed5ed8eb0c46"
+HEAD_REVISION = "8f3c61e57a90"
 
 
 def _fixtures() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:

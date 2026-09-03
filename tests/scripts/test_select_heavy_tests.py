@@ -77,6 +77,14 @@ TRANSPORT_FACE_REVISION_PATH = "migrations/versions/20260901_0642_e0da335c057d_t
 TRANSPORT_DEBUG_PROJECTION_REVISION_PATH = (
     "migrations/versions/20260903_0432_ed5ed8eb0c46_增加_transport_联调当前位置投影.py"
 )
+TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH = "migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py"
+TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS = (
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_repository.py",
+    "tests/integration/transport/test_transport_debug_run_schema.py",
+    "tests/integration/transport/test_transport_debug_run_service.py",
+)
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
 TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
@@ -1169,6 +1177,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         INITIAL_SCHEMA_REVISION_PATH,
         TRANSPORT_FACE_REVISION_PATH,
         TRANSPORT_DEBUG_PROJECTION_REVISION_PATH,
+        TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH,
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (
@@ -1183,6 +1192,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         TRANSPORT_EVIDENCE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
     )
+    assert revision_mappings[3].heavy_tests == TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
     assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST
     ]
@@ -1192,6 +1202,9 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         TRANSPORT_EVIDENCE_HEAVY_TEST,
         TRANSPORT_SCHEMA_HEAVY_TEST,
     ]
+    assert select_heavy_tests([TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH], config, repo_root=REPO_ROOT) == list(
+        TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
+    )
 
 
 @pytest.mark.parametrize(

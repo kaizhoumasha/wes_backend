@@ -106,6 +106,15 @@ def test_transport_submit_openapi_schema_is_closed_and_documents_runtime_invaria
     assert "位置唯一" in descriptions_by_kind["BIN_EXCHANGE"]
     assert "source 与 target 不同" in descriptions_by_kind["RACK_MOVE"]
     assert "source 与 target 相同" in descriptions_by_kind["RACK_ROTATE"]
+    rotate_schema = next(
+        envelope
+        for envelope in submit_schema["oneOf"]
+        if envelope["properties"]["data"]["properties"]["kind"]["enum"] == ["RACK_ROTATE"]
+    )["properties"]["data"]
+    for field_name in ("source", "target"):
+        assert {
+            variant["properties"]["kind"]["enum"][0] for variant in rotate_schema["properties"][field_name]["oneOf"]
+        } == {"RACK", "RACK_POSITION"}
     rack_id_schema = submit_schema["oneOf"][0]["properties"]["data"]["properties"]["rack_id"]
     assert "不得包含 NUL" in rack_id_schema["description"]
     assert rack_id_schema["pattern"] == r".*\S.*"
@@ -314,6 +323,7 @@ def test_transport_submit_accepts_the_other_frozen_transport_shapes(envelope: di
         ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "RACK_POSITION", "location_code": "work"}, "CTU01"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "CTU01"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK", "location_code": "rack-1"}, "CTU03"),
+        ({"kind": "RACK", "location_code": "rack-1"}, {"kind": "ZONE", "location_code": "zone-1"}, "CTU03"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "ZONE", "location_code": "zone-1"}, "CTU03"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "CTU03"),
         ({"kind": "RACK_POSITION", "location_code": "a"}, {"kind": "RACK_POSITION", "location_code": "b"}, "F01"),
@@ -348,6 +358,31 @@ def test_transport_submit_mock_rejects_unapproved_rack_move_matrix(
     envelope["data"]["source"] = source
     envelope["data"]["target"] = target
     envelope["data"]["rcs_template_id"] = template
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 422
+
+
+def test_transport_submit_mock_accepts_rack_reference_rotation() -> None:
+    envelope = deepcopy(RACK_ROTATE)
+    rack_id = envelope["data"]["rack_id"]
+    rack_reference = {"kind": "RACK", "location_code": rack_id}
+    envelope["data"]["source"] = rack_reference
+    envelope["data"]["target"] = rack_reference
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 202
+
+
+def test_transport_submit_mock_rejects_rotation_for_a_different_rack_reference() -> None:
+    envelope = deepcopy(RACK_ROTATE)
+    rack_reference = {"kind": "RACK", "location_code": "other-rack"}
+    envelope["data"]["source"] = rack_reference
+    envelope["data"]["target"] = rack_reference
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/v1/wes/transport-requests", json=envelope)
@@ -765,6 +800,87 @@ def test_determinate_rack_result_releases_resources_and_updates_the_trusted_face
     assert first.status_code == 202
     assert callback_response.status_code == 200
     assert next_response.status_code == 202
+
+
+def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventing_final_position(monkeypatch) -> None:
+    rack_id = "510056"
+    rack_out = deepcopy(RACK_MOVE)
+    rack_out["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d44a1"
+    rack_out["data"].update(
+        {
+            "transport_task_id": "transport-rack-out",
+            "rack_id": rack_id,
+            "source": {"kind": "RACK", "location_code": rack_id},
+            "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
+            "target_face": "90",
+            "rcs_template_id": "CTU01",
+        }
+    )
+    rotate = deepcopy(RACK_ROTATE)
+    rotate["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d44a2"
+    rotate["data"].update(
+        {
+            "transport_task_id": "transport-rack-rotate",
+            "rack_id": rack_id,
+            "source": {"kind": "RACK", "location_code": rack_id},
+            "target": {"kind": "RACK", "location_code": rack_id},
+            "target_face": "270",
+            "rcs_template_id": "CTU02",
+        }
+    )
+    rack_return = deepcopy(RACK_MOVE)
+    rack_return["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d44a3"
+    rack_return["data"].update(
+        {
+            "transport_task_id": "transport-rack-return",
+            "rack_id": rack_id,
+            "source": {"kind": "RACK", "location_code": rack_id},
+            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target_face": "90",
+            "rcs_template_id": "CTU03",
+        }
+    )
+
+    def result_for(envelope: dict[str, object], operation_id: str, final_position: str) -> dict[str, object]:
+        data = envelope["data"]
+        assert isinstance(data, dict)
+        callback = deepcopy(wms_transport_mock_openapi.TRANSPORT_CALLBACK_EXAMPLES["rack_succeeded"]["value"])
+        callback["operation_id"] = operation_id
+        callback["data"].update(
+            {
+                "transport_task_id": data["transport_task_id"],
+                "kind": data["kind"],
+                "rack_id": rack_id,
+                "final_position": {"kind": "RACK_POSITION", "location_code": final_position},
+                "arrival_face": data["target_face"],
+            }
+        )
+        return callback
+
+    async def accepted(_: str, __: dict[str, object]) -> int:
+        return 202
+
+    monkeypatch.setattr(wms_mock_server, "_post_transport_callback", accepted)
+    with TestClient(wms_mock_server.app) as client:
+        rack_out_response = client.post("/api/v1/wes/transport-requests", json=rack_out)
+        rack_out_result = client.post(
+            "/debug/transport-callbacks",
+            json=result_for(rack_out, "019f12d0-58d7-7b4d-a23a-1b90aa5d44b1", "KT16"),
+        )
+        rotate_response = client.post("/api/v1/wes/transport-requests", json=rotate)
+        rotate_result = client.post(
+            "/debug/transport-callbacks",
+            json=result_for(rotate, "019f12d0-58d7-7b4d-a23a-1b90aa5d44b2", "KT16"),
+        )
+        return_response = client.post("/api/v1/wes/transport-requests", json=rack_return)
+        return_result = client.post(
+            "/debug/transport-callbacks",
+            json=result_for(rack_return, "019f12d0-58d7-7b4d-a23a-1b90aa5d44b3", "WH01-01"),
+        )
+
+    assert [rack_out_response.status_code, rotate_response.status_code, return_response.status_code] == [202, 202, 202]
+    assert [rack_out_result.status_code, rotate_result.status_code, return_result.status_code] == [200, 200, 200]
+    assert rack_return["data"]["target"] == {"kind": "ZONE", "location_code": "WH01"}
 
 
 def test_determinate_bin_result_releases_container_and_rack_resources(monkeypatch) -> None:

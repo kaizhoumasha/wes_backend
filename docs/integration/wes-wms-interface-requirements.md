@@ -1053,9 +1053,9 @@ static string CreateUuidV7()
 
 | `kind` | 完整字段 | 允许用途 |
 | --- | --- | --- |
-| `RACK` | `kind + location_code` | `RACK_MOVE` 的 `source/target`；值必须等于外层 `rack_id`，由 RCS 解析位置 |
+| `RACK` | `kind + location_code` | `RACK_MOVE` 的 `source/target`、`RACK_ROTATE` 的 `source/target`；值必须等于外层 `rack_id`，由 RCS 解析位置 |
 | `ZONE` | `kind + location_code` | `RACK_MOVE` 的 `source/target`；值表示区域编号，不指定精确地码 |
-| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE` 的精确 `source/target`、`RACK_ROTATE` 的位置和货架最终精确位置 |
+| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE` 的精确 `source/target`、`RACK_ROTATE` 的精确 `source/target` 和货架最终精确位置 |
 | `RACK_BIN_SLOT` | `kind + rack_id + rack_face + slot_id` | Bin 所在货架储位、Bin 搬运最终结果最终位置；四个字段共同定位唯一物理储位 |
 | `HANDOFF_POSITION` | `kind + location_code` | WorkLine 入料口、出料口或其它已批准交接位、Bin 搬运最终结果最终位置 |
 
@@ -1214,7 +1214,7 @@ operation = transport.task.submit@v1
 | DTO 族 | `kind` | 其余必填字段 | 关键规则 |
 | --- | --- | --- | --- |
 | 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target + target_face` | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；`target_face` 是不透明 string token |
-| 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置都是精确 `RACK_POSITION` 且相同；`target_face` 是不透明 string token 且不同于可信当前面 |
+| 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置均为相同的 `RACK` 或相同的精确 `RACK_POSITION`；`RACK.location_code` 等于外层 `rack_id`；`target_face` 是不透明 string token 且不同于可信当前面 |
 | 料箱 | `BIN_MOVE` | `moves[] {container_id + source + target}` | `moves` 为 `1..4`；`container_id` 唯一；每项来源与目标不同且至少一端是 `RACK_BIN_SLOT` |
 | 料箱 | `BIN_EXCHANGE` | `moves[] {container_id + source + target}` | `moves` 只能为 `2` 或 `4`；`container_id` 唯一；所有位置是 `RACK_BIN_SLOT`；形成 1～2 个二元闭环 |
 
@@ -1234,8 +1234,9 @@ operation = transport.task.submit@v1
 `source=S,target=T` 必须且只能存在一个 `source=T,target=S` 的反向成员；四个成员只能形成两个互不重叠的二元闭环。需要操作
 任一货架另一面时，先完成独立 `RACK_ROTATE`，再创建新的 Bin 任务。
 
-WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自身主数据和可信 RCS 状态再次检查。对于 `RACK_ROTATE`，无法
-取得可信当前面时返回 `503 / UNAVAILABLE`，`target_face` 等于可信当前面时返回 `409 / CONFLICT`。对于 Bin 请求，请求中的
+WES 创建任务前检查可信的精确当前位置和当前工作面；WMS 返回 `RECEIVED` 前以自身主数据和可信 RCS 状态再次检查。对于
+`RACK_ROTATE`，即使请求使用 `RACK` 宽引用，也必须先解析并确认精确当前位置；无法取得可信精确位置或当前面时返回
+`503 / UNAVAILABLE`，`target_face` 等于可信当前面时返回 `409 / CONFLICT`。对于 Bin 请求，请求中的
 `rack_face` 与已知当前面不一致时返回 `409 / CONFLICT`，无法取得必须的可信当前面时返回 `503 / UNAVAILABLE`。上述情况均不得
 调用 RCS。除批准的 `rcs_template_id` 外，请求禁止携带货架类型、空/满箱、容量、车辆、路线、RCS 内部动作顺序、WES 工作线
 调用方身份或供应商私有字段。
@@ -1248,7 +1249,9 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 | 区域内货架到工作位 | `RACK_MOVE` | `CTU01` | `ZONE` | `RACK_POSITION` | 精确工作位 |
 | 指定货架到工作位 | `RACK_MOVE` | `CTU01` | `RACK` | `RACK_POSITION` | 精确工作位 |
 | 精确库位货架到工作位 | `RACK_MOVE` | `CTU01` | `RACK_POSITION` | `RACK_POSITION` | 精确工作位 |
+| 指定货架在当前工作位原地换面 | `RACK_ROTATE` | `CTU02` | `RACK` | `RACK` | 当前精确工作位及目标面 |
 | 工作位原地换面 | `RACK_ROTATE` | `CTU02` | `RACK_POSITION` | `RACK_POSITION` | 原工作位及目标面 |
+| 指定货架返回指定区域 | `RACK_MOVE` | `CTU03` | `RACK` | `ZONE` | 区域内的精确库位 |
 | 工作位按货架编号返回库位 | `RACK_MOVE` | `CTU03` | `RACK_POSITION` | `RACK` | RCS 选定的精确库位 |
 | 工作位返回指定区域 | `RACK_MOVE` | `CTU03` | `RACK_POSITION` | `ZONE` | 区域内的精确库位 |
 | 工作位返回精确库位 | `RACK_MOVE` | `CTU03` | `RACK_POSITION` | `RACK_POSITION` | 请求指定的精确库位 |
@@ -1256,7 +1259,8 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 | 批量搬运料箱 | `BIN_MOVE` | 不适用 | `RACK_BIN_SLOT` | `HANDOFF_POSITION` | 各成员请求指定的位置 |
 | 协调交换料箱 | `BIN_EXCHANGE` | 不适用 | `RACK_BIN_SLOT` | `RACK_BIN_SLOT` | 各成员请求指定的位置 |
 
-以下十个请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。样例 3、9、10 使用现场分配的专用联调测试数据：
+以下十个代表性请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。`RACK` 宽引用的自动联调完整请求另见
+[Transport 自动联调联合验收](transport-joint-acceptance.md)。样例 3、9、10 使用现场分配的专用联调测试数据：
 货架 `510056`、料箱 `A000001922/A000002653`、储位 `510056A3F2C101/510056A2F2C101`、精确工作位 `KT16`、仓储区域
 `WH01` 和滚筒线投料口 `CNV0301`。由于当前 RCS→WMS→WES 回调链路尚未接通，后文对应结果是合同预期数据，不是现场抓取结果。
 
@@ -1295,8 +1299,8 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "kind": "RACK_ROTATE",
     "rcs_template_id": "CTU02",
     "rack_id": "RACK-005-01",
-    "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "source": {"kind": "RACK", "location_code": "RACK-005-01"},
+    "target": {"kind": "RACK", "location_code": "RACK-005-01"},
     "target_face": "270"
   }
 }

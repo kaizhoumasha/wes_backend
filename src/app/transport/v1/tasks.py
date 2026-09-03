@@ -79,6 +79,7 @@ class _ZonePosition(_StrictApiModel):
 
 
 type _RackMovePosition = Annotated[_RackReference | _ZonePosition | _RackPosition, Field(discriminator="kind")]
+type _RackRotatePosition = Annotated[_RackReference | _RackPosition, Field(discriminator="kind")]
 
 
 class _RackBinSlot(_StrictApiModel):
@@ -106,7 +107,7 @@ class _RackMoveData(_StrictApiModel):
 
 class _RackRotateData(_StrictApiModel):
     rack_id: _TEXT
-    position: _RackPosition
+    position: _RackRotatePosition
     target_face: _FACE
     rcs_template_id: RcsTemplateId | None = None
 
@@ -339,6 +340,12 @@ def _rack_move_position(position: _RackMovePosition) -> RackReference | ZonePosi
     return RackPosition(location_code=position.location_code)
 
 
+def _rack_rotate_position(position: _RackRotatePosition) -> RackReference | RackPosition:
+    if isinstance(position, _RackReference):
+        return RackReference(location_code=position.location_code)
+    return RackPosition(location_code=position.location_code)
+
+
 def _rack_bin_slot(position: _RackBinSlot) -> RackBinSlot:
     return RackBinSlot(rack_id=position.rack_id, rack_face=position.rack_face, slot_id=position.slot_id)
 
@@ -356,28 +363,6 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
     )
     if isinstance(payload, _RackMoveDebugTask):
         data = payload.data
-        if (
-            data.rack_id == "510056"
-            and data.source.location_code == "WH01"
-            and data.target.location_code == "KT16"
-            and (
-                not isinstance(data.source, _ZonePosition)
-                or not isinstance(data.target, _RackPosition)
-                or data.rcs_template_id is not RcsTemplateId.CTU01
-            )
-        ):
-            raise TransportContractError("510056 rack-to-station requires ZONE WH01, RACK_POSITION KT16, and CTU01")
-        if (
-            data.rack_id == "510056"
-            and data.source.location_code == "KT16"
-            and data.target.location_code == "WH01"
-            and (
-                not isinstance(data.source, _RackPosition)
-                or not isinstance(data.target, _ZonePosition)
-                or data.rcs_template_id is not RcsTemplateId.CTU03
-            )
-        ):
-            raise TransportContractError("510056 rack-to-storage requires RACK_POSITION KT16, ZONE WH01, and CTU03")
         return await runtime.port.move_rack(
             payload.client_request_id,
             caller,
@@ -392,7 +377,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
             payload.client_request_id,
             caller,
             payload.data.rack_id,
-            _rack_position(payload.data.position),
+            _rack_rotate_position(payload.data.position),
             payload.data.target_face,
             payload.data.rcs_template_id or RcsTemplateId.CTU02,
         )
