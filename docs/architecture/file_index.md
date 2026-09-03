@@ -52,6 +52,7 @@
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
 | `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；正常 Bin 通过 Epoch 级 `return_batch` FIFO 回库，可识别但非预期 Bin 冻结并等待独立恢复 wire；停线排空货架面决定 wire 未获批 |
+| `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；仅新增工作位任务完成通知 `outbound.manual_bin.work_completed@v1`，其余全部复用自动出库合同；PDA 归属 WMS，不在 WES 集成范围 |
 | `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` | Phase 8 粗分逐盘入库的获批业务合同；目标 Cell 晚绑定、五态生命周期和两个既有 `RACK_MOVE` 的唯一真源 |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线排空货架面决定 wire 未获批，当前为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
