@@ -7,7 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, TransportCaller
-from src.app.transport.models import TransportEvidence, TransportResourceBinding, TransportTask
+from src.app.transport.models import (
+    TransportCallbackReceipt,
+    TransportEvidence,
+    TransportResourceBinding,
+    TransportTask,
+)
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from tests.support.transport_callbacks import record_valid_callback
@@ -133,7 +138,138 @@ async def test_higher_revision_cannot_advance_a_definite_terminal_fact_even_when
 
 
 @pytest.mark.asyncio
-async def test_result_revision_identity_and_late_lower_revision_never_roll_back_projection(
+async def test_same_result_revision_and_payload_with_new_identity_is_semantic_duplicate(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (BinMove("bin-revision", RackBinSlot("rack-revision", "90", "1"), HandoffPosition("OUT")),),
+    )
+    result = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_MOVE",
+        "outcome_revision": 1,
+        "results": [
+            {
+                "container_id": "bin-revision",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
+            }
+        ],
+    }
+    first = await record_valid_callback(
+        outcome_service,
+        operation_id="revision-semantic-first",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=result,
+    )
+    await outcome_service.process_pending_evidence(1)
+    duplicate = await record_valid_callback(
+        outcome_service,
+        operation_id="revision-semantic-duplicate",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=2,
+        payload=result,
+    )
+    assert (first["http_status"], first["code"]) == (202, "RECEIVED")
+    assert (duplicate["http_status"], duplicate["code"]) == (200, "DUPLICATE")
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidences = list(
+            await db.scalars(
+                select(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
+            )
+        )
+        receipts = list(
+            await db.scalars(
+                select(TransportCallbackReceipt)
+                .where(
+                    TransportCallbackReceipt.operation_id.in_(
+                        ("revision-semantic-first", "revision-semantic-duplicate")
+                    )
+                )
+                .order_by(TransportCallbackReceipt.operation_id)
+            )
+        )
+
+    assert len(evidences) == 1
+    assert [(receipt.operation_id, receipt.response_http_status, receipt.response_code) for receipt in receipts] == [
+        ("revision-semantic-duplicate", 200, "DUPLICATE"),
+        ("revision-semantic-first", 202, "RECEIVED"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_same_result_revision_with_changed_payload_conflicts(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (BinMove("bin-revision-conflict", RackBinSlot("rack-revision-conflict", "90", "1"), HandoffPosition("OUT")),),
+    )
+    succeeded = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_MOVE",
+        "outcome_revision": 1,
+        "results": [
+            {
+                "container_id": "bin-revision-conflict",
+                "status": "SUCCEEDED",
+                "final_position": {"kind": "HANDOFF_POSITION", "location_code": "OUT"},
+            }
+        ],
+    }
+    changed = {
+        **succeeded,
+        "results": [
+            {
+                "container_id": "bin-revision-conflict",
+                "status": "FAILED",
+                "position_unknown": True,
+                "failure_code": "POSITION_UNKNOWN",
+            }
+        ],
+    }
+    first = await record_valid_callback(
+        outcome_service,
+        operation_id="revision-conflict-first",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=succeeded,
+    )
+    conflict = await record_valid_callback(
+        outcome_service,
+        operation_id="revision-conflict-changed",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=2,
+        payload=changed,
+    )
+
+    assert (first["http_status"], first["code"]) == (202, "RECEIVED")
+    assert (conflict["http_status"], conflict["code"]) == (409, "CONFLICT")
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidences = list(
+            await db.scalars(
+                select(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
+            )
+        )
+    assert len(evidences) == 1
+
+
+@pytest.mark.asyncio
+async def test_late_lower_revision_never_rolls_back_projection(
     outcome_service: TransportService,
     db_engine: object,
 ) -> None:
@@ -162,16 +298,7 @@ async def test_result_revision_identity_and_late_lower_revision_never_roll_back_
         timestamp=2,
         payload=latest,
     )
-    same_revision_other_identity = await record_valid_callback(
-        outcome_service,
-        operation_id="revision-2-conflict",
-        transport_task_id=handle.transport_task_id,
-        operation=RESULT_OPERATION,
-        timestamp=2,
-        payload=latest,
-    )
     assert first["code"] == "RECEIVED"
-    assert same_revision_other_identity["code"] == "CONFLICT"
     await outcome_service.process_pending_evidence(1)
 
     older = {

@@ -966,7 +966,7 @@
         },
         "responses": {
           "200": {
-            "description": "重复 evidence 已确认",
+            "description": "同一消息重放或同一 outcome_revision 的相同 data 已确认",
             "content": {
               "application/json": {
                 "schema": {
@@ -1077,7 +1077,7 @@
             "x-operational-error": true
           },
           "409": {
-            "description": "operation_id 或 outcome_revision 身份冲突",
+            "description": "operation_id 内容冲突或同一 outcome_revision 的 data 业务结果冲突",
             "content": {
               "application/json": {
                 "schema": {

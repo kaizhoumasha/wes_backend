@@ -823,8 +823,7 @@ class TransportService:
                         for_update=True,
                     )
                     if revision_owner is not None:
-                        first_http_status = 409
-                        first_code = "CONFLICT"
+                        first_http_status, first_code = _revision_replay_disposition(revision_owner, payload)
                 await self._repository.add_callback_receipt(
                     db,
                     _callback_receipt(
@@ -839,7 +838,7 @@ class TransportService:
                         now=now,
                     ),
                 )
-                if first_code == "CONFLICT":
+                if first_code != "RECEIVED":
                     return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
                 await self._repository.add_evidence(
                     db,
@@ -861,7 +860,7 @@ class TransportService:
             async with self._sessions.begin() as db:
                 existing = await self._repository.get_callback_receipt(db, operation, operation_id, for_update=True)
                 if existing is None:
-                    if outcome_revision is None or transport_task_id is None:
+                    if outcome_revision is None or transport_task_id is None or payload is None:
                         raise
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -871,6 +870,7 @@ class TransportService:
                     )
                     if revision_owner is None:
                         raise
+                    disposition = _revision_replay_disposition(revision_owner, payload)
                     await self._repository.add_callback_receipt(
                         db,
                         _callback_receipt(
@@ -878,14 +878,14 @@ class TransportService:
                             operation=operation,
                             message_digest=message_digest,
                             message=message,
-                            http_status=409,
-                            code="CONFLICT",
+                            http_status=disposition[0],
+                            code=disposition[1],
                             timestamp=ack_timestamp_ms,
                             data=ack_data,
                             now=now,
                         ),
                     )
-                    return _callback_ack(409, "CONFLICT", ack_timestamp_ms, ack_data)
+                    return _callback_ack(disposition[0], disposition[1], ack_timestamp_ms, ack_data)
                 return self._resolve_existing_callback_receipt(existing, message_digest, now)
         return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
 
@@ -1964,6 +1964,15 @@ def _source_outcome_revision(operation: str, payload: dict[str, Any]) -> int | N
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise TransportContractError("result evidence requires a positive outcome_revision")
     return value
+
+
+def _revision_replay_disposition(
+    revision_owner: TransportEvidence,
+    payload: dict[str, Any],
+) -> tuple[int, str]:
+    if revision_owner.payload_json == payload:
+        return 200, "DUPLICATE"
+    return 409, "CONFLICT"
 
 
 def _utc_z(value: datetime) -> str:
