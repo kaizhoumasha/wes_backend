@@ -329,6 +329,13 @@ def test_full_application_permission_routes_are_unique_and_catalog_builds() -> N
     assert duplicate_definitions == {}
     catalog = permission_scanner_module.build_permission_catalog(app)
     assert len({payload["name"] for payload in catalog}) == len(catalog)
+    assert {
+        "ops:transport-debug-run:abort",
+        "ops:transport-debug-run:list",
+        "ops:transport-debug-run:read",
+        "ops:transport-debug-run:start",
+        "ops:transport-debug-run:stream",
+    } <= {payload["name"] for payload in catalog}
 
 
 def test_full_application_permission_catalog_excludes_retired_external_callback_permission() -> None:

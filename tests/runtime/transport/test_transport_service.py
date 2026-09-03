@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import pytest
@@ -803,6 +804,118 @@ async def test_submit_received_sets_acceptance_and_does_not_resend(
 
 
 @pytest.mark.asyncio
+async def test_submit_skips_task_fenced_by_debug_run_and_dispatches_the_next_task(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    first = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-debug-fenced",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    second = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-independent",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+
+    class _Guard:
+        async def is_task_linked_to_active_run(self, _db: object, _task_id: str) -> bool:
+            return False
+
+        async def is_task_dispatch_allowed(self, _db: object, transport_task_id: str) -> bool:
+            return transport_task_id != first.transport_task_id
+
+    service._debug_run_guard = _Guard()  # type: ignore[assignment]
+
+    assert await service.submit_pending_tasks(1) == 1
+    assert service.provider.calls == [second.transport_task_id]
+    blocked = await _load_task(db_engine, first.transport_task_id)
+    assert blocked.status == "PENDING"
+    assert blocked.submit_attempt_count == 0
+    assert blocked.send_started_at is None
+    assert blocked.submit_claim_token is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_unsent_debug_task_records_terminal_outcome_and_releases_resource(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    caller = TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO")
+    handle = await service.move_rack(
+        new_uuid7(),
+        caller,
+        "rack-debug-abort",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        assert await service.finalize_unsent_debug_task_in_session(db, handle.transport_task_id) is True
+
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "FAILED"
+    assert snapshot.reason_code == "TRANSPORT_DEBUG_ABORTED_BEFORE_SEND"
+    replacement = await service.move_rack(
+        new_uuid7(),
+        caller,
+        "rack-debug-abort",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    assert replacement.transport_task_id != handle.transport_task_id
+
+
+@pytest.mark.asyncio
+async def test_finalize_unsent_debug_task_refreshes_cached_task_before_decision(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    caller = TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO")
+    handle = await service.move_rack(
+        new_uuid7(),
+        caller,
+        "rack-debug-dispatch-race",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    now = timezone.now_for_db()
+    async with sessions.begin() as db:
+        cached = await db.scalar(
+            select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id)
+        )
+        assert cached is not None and cached.send_started_at is None
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == handle.transport_task_id)
+            .values(
+                send_started_at=now,
+                submit_claim_token="dispatcher",
+                submit_claim_until=now + timedelta(seconds=30),
+                submit_attempt_count=1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
+        assert await service.finalize_unsent_debug_task_in_session(db, handle.transport_task_id) is False
+
+    snapshot = await _load_task(db_engine, handle.transport_task_id)
+    assert snapshot.status == "PENDING"
+    assert snapshot.send_started_at == now
+
+
+@pytest.mark.asyncio
 async def test_delivery_unknown_enters_reconciling_and_keeps_resource(
     service: TransportService,
     db_engine: object,
@@ -1229,3 +1342,48 @@ def _is_uuid7(value: object) -> bool:
     except ValueError:
         return False
     return candidate.version == 7 and candidate.variant == "specified in RFC 4122"
+
+
+@pytest.mark.asyncio
+async def test_debug_reset_rejects_task_linked_to_active_debug_run_before_delete() -> None:
+    class _Task:
+        transport_task_id = "transport-guarded"
+        status = "RECONCILING"
+        outcome_version = 1
+
+    class _Repository:
+        delete_called = False
+
+        async def get_task(self, _db: object, _task_id: str, *, for_update: bool = False) -> object:
+            assert for_update is True
+            return _Task()
+
+        async def get_debug_reset_counts(self, _db: object, _task_id: str) -> tuple[int, ...]:
+            return (0, 0, 0, 0, 1, 1)
+
+        async def delete_debug_task_aggregate(self, _db: object, _task_id: str) -> tuple[int, ...]:
+            self.delete_called = True
+            return (0, 0, 0, 0, 1, 1)
+
+    class _Guard:
+        async def is_task_linked_to_active_run(self, _db: object, transport_task_id: str) -> bool:
+            assert transport_task_id == "transport-guarded"
+            return True
+
+    class _Sessions:
+        @asynccontextmanager
+        async def begin(self):
+            yield object()
+
+    repository = _Repository()
+    service = TransportService(  # type: ignore[arg-type]
+        _Sessions(),
+        repository,
+        FakeProvider(),
+        debug_run_guard=_Guard(),
+    )
+
+    with pytest.raises(TransportContractError, match="active transport debug run task cannot be reset"):
+        await service.reset_debug_task("transport-guarded")
+
+    assert repository.delete_called is False

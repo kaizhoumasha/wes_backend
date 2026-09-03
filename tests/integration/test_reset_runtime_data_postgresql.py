@@ -238,6 +238,62 @@ def test_targeted_transport_reset_deletes_only_requested_aggregate() -> None:
 
 
 @pytest.mark.integration
+def test_targeted_transport_reset_rejects_task_linked_to_active_debug_run() -> None:
+    async def scenario() -> None:
+        async with temporary_database() as (_database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            session_factory, engine = _session_factory(database_url)
+            try:
+                async with session_factory() as session:
+                    await _seed_transport_task(session, "transport-active-run", "RACK-ACTIVE-RUN")
+                    await session.execute(
+                        text(
+                            "INSERT INTO wes_runtime.transport_debug_runs ("
+                            "run_id, status, active_scope, rack_id, configuration_json, current_group_index, "
+                            "current_phase, current_step_ordinal, version, created_by_user_id, created_at, updated_at"
+                            ") VALUES ("
+                            "'debug-active-run', 'NEEDS_ATTENTION', 'GLOBAL', 'RACK-ACTIVE-RUN', '{}'::json, 0, "
+                            "'RACK_TO_STATION', 0, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                            ")"
+                        )
+                    )
+                    await session.execute(
+                        text(
+                            "INSERT INTO wes_runtime.transport_debug_run_steps ("
+                            "run_id, ordinal, phase, status, client_request_id, transport_task_id, "
+                            "observed_bins_json, created_at, updated_at"
+                            ") VALUES ("
+                            "'debug-active-run', 0, 'RACK_TO_STATION', 'NEEDS_ATTENTION', "
+                            "'01990f0d-1800-7000-8000-000000000001', 'transport-active-run', '[]'::json, "
+                            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                            ")"
+                        )
+                    )
+                    await session.commit()
+
+                    with pytest.raises(RuntimeError, match="活动 Transport 自动联调轮次"):
+                        await reset_transport_task_data(
+                            session,
+                            transport_task_id="transport-active-run",
+                            apply=True,
+                        )
+                    await session.rollback()
+                    assert (
+                        await session.scalar(
+                            text(
+                                "SELECT count(*) FROM wes_runtime.transport_tasks "
+                                "WHERE transport_task_id = 'transport-active-run'"
+                            )
+                        )
+                        == 1
+                    )
+            finally:
+                await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
 def test_targeted_transport_reset_deletes_persisted_evidence_receipt_and_outcome() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):

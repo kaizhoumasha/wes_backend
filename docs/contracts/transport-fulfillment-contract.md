@@ -110,10 +110,10 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 
 #### 货架原地换面 `rotate_rack()`
 
-一次只处理一个确定货架，位置为精确 `RACK_POSITION`，目标面使用与 `RACK_MOVE` 相同的不透明 string token。内部请求仍使用单个
-`position`；Adapter 形成接口契约时
-把它同时写入 `source + target`。当前位置或 WMS 最近一次权威结果回传的当前工作面未知时失败关闭；WES 不从旧数据、目标面或
-业务流程推断当前面。
+一次只处理一个确定货架，`position` 允许精确 `RACK_POSITION` 或与外层 `rack_id` 完全一致的 `RACK` 引用，目标面使用与
+`RACK_MOVE` 相同的不透明 string token。Adapter 形成接口契约时把该位置原样同时写入 `source + target`，不做面值或位置映射。
+无论输入是哪种位置，WES 创建任务前都必须已有该货架的可信精确 `RACK_POSITION` 与当前工作面；精确输入还必须与投影完全一致。
+当前位置或当前工作面未知时失败关闭，WES 不从旧数据、目标面或业务流程推断当前事实。
 
 货架任务携带真实 `rcs_template_id`。库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
 调用方未指定时，WES 在形成不可变请求前规范化为 `F01`。Wire 始终发送明确值，WES 不根据位置编码反推模板，也不建立模板配置映射。
@@ -170,7 +170,7 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 | --- | --- |
 | 全部方法 | 标识为空、位置类型或必填字段不符合闭集 |
 | `move_rack()` | 来源与目标相同、来源/目标不属于 `RACK \| ZONE \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、`target_face` 不是非空 string，或模板不在闭集 |
-| `rotate_rack()` | 位置不是精确 `RACK_POSITION`、`target_face` 不是非空 string、当前面未知、目标面等于当前面，或模板不在闭集 |
+| `rotate_rack()` | 位置不是 `RACK \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、`target_face` 不是非空 string、精确当前位置或当前面未知、目标面等于当前面，或模板不在闭集 |
 | `move_bins()` | 成员数不在 `1..4`、重复 `bin_id`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT`，或同一 `rack_id` 混用不同面 token |
 | `exchange_bins()` | 交换对数量不是 1～2、料箱或储位重复、位置不是 `RACK_BIN_SLOT`、涉及超过两个工作面组、同一货架混面，或不能展开为 1～2 个互不重叠的二元闭环 |
 
@@ -180,7 +180,7 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 
 | 位置类型 | 必填字段 | 权威来源 | 用途 |
 | --- | --- | --- | --- |
-| `RACK` | `location_code` | WMS/RCS 货架主数据 | `RACK_MOVE` 来源或目标；值必须等于外层 `rack_id`，由 RCS 解析位置 |
+| `RACK` | `location_code` | WMS/RCS 货架主数据 | `RACK_MOVE` 来源或目标、`RACK_ROTATE` 位置；值必须等于外层 `rack_id`，由 RCS 解析位置 |
 | `ZONE` | `location_code` | WMS/RCS 区域主数据 | `RACK_MOVE` 来源或目标；值表示区域编号，不指定精确地码 |
 | `RACK_POSITION` | `location_code` | WMS/RCS 全局货架位置主数据 | `RACK_MOVE` 精确来源或目标、`RACK_ROTATE` 位置和货架最终位置 |
 | `RACK_BIN_SLOT` | `rack_id + rack_face + slot_id` | WMS 货架、货架面与储位主数据 | 料箱所在货架储位；`rack_face` 为不透明 string token |
@@ -284,17 +284,19 @@ kind
 | 区域内货架到工作位 | `CTU01` | `ZONE` | `RACK_POSITION` | 等于请求目标 |
 | 指定货架到工作位 | `CTU01` | `RACK` | `RACK_POSITION` | 等于请求目标 |
 | 精确库位货架到工作位 | `CTU01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
+| 指定货架在当前工作位原地换面 | `CTU02` | `RACK` | `RACK` | 返回可信精确位置，面向等于 `target_face` |
 | 工作位原地换面 | `CTU02` | `RACK_POSITION` | `RACK_POSITION` | 位置不变，面向等于 `target_face` |
+| 指定货架返回指定区域 | `CTU03` | `RACK` | `ZONE` | 指定区域内的精确库位 |
 | 工作位按货架编号返回库位 | `CTU03` | `RACK_POSITION` | `RACK` | WMS/RCS 选定的精确库位 |
 | 工作位返回指定区域 | `CTU03` | `RACK_POSITION` | `ZONE` | 指定区域内的精确库位 |
 | 工作位返回精确库位 | `CTU03` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
 | 其它精确位置搬运 | `F01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
 
-上述八种货架场景以及 `BIN_MOVE`、`BIN_EXCHANGE` 的完整提交与结果 JSON，见
+上述十种货架场景以及 `BIN_MOVE`、`BIN_EXCHANGE` 的完整提交与结果 JSON，见
 [WES 与 WMS 接口需求说明](../integration/wes-wms-interface-requirements.md) 第 3.1 节。
 
-`RACK_ROTATE` 创建任务前，WES 必须确认 `target_face` 不同于可信当前面；WMS 返回 `RECEIVED` 前使用自身权威主数据和可信 RCS
-状态再次校验。WMS 无法取得可信当前面时返回 `503 / UNAVAILABLE`，确认 `target_face` 等于当前面时返回
+`RACK_ROTATE` 创建任务前，WES 必须确认货架已有可信精确位置，且 `target_face` 不同于可信当前面；WMS 返回 `RECEIVED` 前使用
+自身权威主数据和可信 RCS 状态再次校验。WMS 无法取得可信精确位置或当前面时返回 `503 / UNAVAILABLE`，确认 `target_face` 等于当前面时返回
 `409 / CONFLICT`，两种情况都不得调用 RCS。
 
 `BinMove.bin_id` 与 `BinExchangePair` 是 WES 内部领域结构；Adapter 形成接口契约时统一输出 `container_id` 和显式 `source + target`。

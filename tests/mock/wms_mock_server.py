@@ -493,7 +493,7 @@ def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
     if any(position[0] == "RACK" and position[1] != rack["rack_id"] for position in (source, target)):
         return False
     if kind == "RACK_ROTATE":
-        return rack["rcs_template_id"] == "CTU02" and source[0] == "RACK_POSITION" and source == target
+        return rack["rcs_template_id"] == "CTU02" and source[0] in {"RACK", "RACK_POSITION"} and source == target
     approved_edges = {
         "CTU01": {
             ("ZONE", "RACK_POSITION"),
@@ -501,6 +501,7 @@ def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
             ("RACK_POSITION", "RACK_POSITION"),
         },
         "CTU03": {
+            ("RACK", "ZONE"),
             ("RACK_POSITION", "RACK"),
             ("RACK_POSITION", "ZONE"),
             ("RACK_POSITION", "RACK_POSITION"),

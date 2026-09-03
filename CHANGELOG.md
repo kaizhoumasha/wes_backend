@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0.0] - 2026-09-03
+
+### Added
+
+- Transport diagnostics 支持从当前挂载事实选择任意货架和料箱，按操作员输入的原始面字符串自动执行 `CTU01 → BIN_MOVE → SCAN12 → BIN_MOVE → CTU02/CTU03` 整轮流程。
+- 新增持久化自动联调轮次、步骤历史、专用 SSE 失效通知、全局单活动围栏及审计后安全终止接口；worker 重启后复用原 `client_request_id` 和 Transport task 恢复。
+
+### Changed
+
+- 正式 `RACK_ROTATE` 合同允许与外层 `rack_id` 一致的 `RACK` 引用并原样下发；`CTU03` 支持 `RACK → ZONE WH01`，成功回调仍须提供精确 `RACK_POSITION`。
+- `SCAN12` 只接受当前步骤 Evidence 水位和时间边界之后的已处理扫码；关联 Transport Evidence 尚未处理、发生身份冲突、位置不确定或货架偏离工作位时均停止后继派发。
+
+### Verification
+
+- Transport API/runtime 聚焦回归 542 项通过（541 passed、1 skipped）；PostgreSQL HEAVY 241 项通过；完整 QUALITY、前端合同消费和联调服务器部署证据见对应 PR 与发布记录。
+
 ## [0.30.1.0] - 2026-09-02
 
 ### Fixed

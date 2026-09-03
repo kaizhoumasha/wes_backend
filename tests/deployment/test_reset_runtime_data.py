@@ -82,6 +82,9 @@ class _TransportResetSession(_FakeSession):
         self.evidence_count = evidence_count
         self.task_delete_rowcount = task_delete_rowcount
 
+    async def scalar(self, statement, parameters=None):
+        self.statements.append(str(statement))
+
     async def execute(self, statement, parameters=None):
         sql = str(statement)
         self.statements.append(sql)
@@ -395,6 +398,9 @@ async def test_transport_task_reset_apply_deletes_children_then_task_in_one_comm
         "DELETE FROM wes_runtime.transport_tasks WHERE transport_task_id = :transport_task_id",
     ]
     assert summary.mode == "apply"
+    active_run_queries = [statement for statement in session.statements if "transport_debug_runs" in statement]
+    assert len(active_run_queries) == 1
+    assert "FOR SHARE" not in active_run_queries[0]
     assert summary.deleted == {
         "wes_runtime.transport_callback_receipts": 1,
         "wes_runtime.transport_evidence": 1,

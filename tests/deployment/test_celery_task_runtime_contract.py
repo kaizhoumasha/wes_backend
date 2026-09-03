@@ -24,6 +24,7 @@ ASYNC_TASKS = {
     "execution": ("process_execution_facts_batch",),
     "safety": ("drain_safety_incidents_batch",),
     "transport": (
+        "advance_transport_debug_runs_batch",
         "submit_transport_tasks_batch",
         "process_transport_evidence_batch",
         "reconcile_transport_tasks_batch",
@@ -312,6 +313,7 @@ def test_transport_tasks_are_registered_and_statically_routed_to_the_single_fulf
     from src.celery_app.config import task_routes
 
     task_names = {
+        "src.celery_app.tasks.transport.advance_transport_debug_runs_batch",
         "src.celery_app.tasks.transport.submit_transport_tasks_batch",
         "src.celery_app.tasks.transport.process_transport_evidence_batch",
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",
@@ -320,3 +322,19 @@ def test_transport_tasks_are_registered_and_statically_routed_to_the_single_fulf
 
     assert task_names <= set(celery_app.tasks)
     assert {task_routes[name]["queue"] for name in task_names} == {"wms-fulfillment"}
+
+
+def test_transport_debug_run_scanner_uses_current_runtime_with_fixed_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("src.celery_app.tasks.transport")
+    debug_run_service = SimpleNamespace(advance_active_runs=AsyncMock(return_value=17))
+    runtime = SimpleNamespace(debug_run_service=debug_run_service)
+    monkeypatch.setattr(module, "celery_async_runtime", SimpleNamespace(transport_runtime=runtime))
+    monkeypatch.setattr(module, "run_async", lambda factory: asyncio.run(factory()))
+
+    assert module.advance_transport_debug_runs_batch.run(limit=100) == 17
+    debug_run_service.advance_active_runs.assert_awaited_once_with(100)
+
+    with pytest.raises(ValueError, match="Transport batch limit must be 100"):
+        module.advance_transport_debug_runs_batch.run(limit=99)

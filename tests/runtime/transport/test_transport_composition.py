@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import inspect
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -10,6 +11,12 @@ import pytest
 from tests.support.sqlmodel_metadata import register_required_sqlmodel_metadata
 
 register_required_sqlmodel_metadata()
+
+
+def test_transport_debug_run_stream_channel_is_public_and_dedicated() -> None:
+    services = importlib.import_module("src.app.sys.services")
+
+    assert getattr(services, "TRANSPORT_DEBUG_RUN_STREAM_CHANNEL", None) == "transport:debug-run:stream"
 
 
 class _CountingClient:
@@ -53,6 +60,9 @@ async def test_explicit_endpoint_builds_one_closed_transport_runtime_without_pub
     assert runtime.service._position_projections is runtime.position_projection_service
     assert runtime.service.provider is runtime.adapter
     assert runtime.handler._recorder is runtime.service
+    assert runtime.debug_run_service._sessions is runtime.service._sessions
+    assert runtime.debug_run_service._transport is runtime.service
+    assert runtime.service._debug_run_guard is runtime.debug_run_service._repository
     assert not hasattr(runtime.service, "_outcome_publisher")
 
     await runtime.aclose()

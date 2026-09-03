@@ -17,6 +17,8 @@ from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
     HandoffPosition,
+    MoveBinsRequest,
+    MoveRackRequest,
     RackBinSlot,
     RackPosition,
     RackReference,
@@ -267,12 +269,19 @@ async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: 
         new_uuid7(),
         caller,
         "rack-debug-projection",
-        RackPosition("KT19"),
+        RackReference("rack-debug-projection"),
         "270",
     )
 
     task = await _load_task(db_engine, rotate.transport_task_id)
-    assert task.request_json["position"] == {"kind": "RACK_POSITION", "location_code": "KT19"}
+    assert task.request_json["position"] == {"kind": "RACK", "location_code": "rack-debug-projection"}
+    async with sessions() as db:
+        member = await db.scalar(
+            select(TransportMember).where(TransportMember.transport_task_id == rotate.transport_task_id)
+        )
+    assert member is not None
+    assert member.source_json == {"kind": "RACK_POSITION", "location_code": "KT19"}
+    assert member.target_json == {"kind": "RACK_POSITION", "location_code": "KT19"}
     await record_valid_callback(
         service,
         operation_id="debug-rack-rotate-result",
@@ -303,6 +312,176 @@ async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: 
             await db.scalar(select(PositionProjection).where(PositionProjection.object_id == "rack-debug-projection"))
             is None
         )
+
+
+@pytest.mark.asyncio
+async def test_debug_rotate_rack_reference_rejects_a_non_exact_current_projection(db_engine: object) -> None:
+    service = _service(db_engine)
+    caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportDebugPositionProjection(
+                object_type="RACK",
+                object_id="rack-debug-unknown-position",
+                position_json={"kind": "RACK", "location_code": "rack-debug-unknown-position"},
+                arrival_face="90",
+                source_operation_id="seed",
+                source_transport_task_id="seed",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+
+    with pytest.raises(TransportContractError, match="current exact position is unknown"):
+        await service.rotate_rack_for_debug(
+            new_uuid7(),
+            caller,
+            "rack-debug-unknown-position",
+            RackReference("rack-debug-unknown-position"),
+            "270",
+        )
+
+
+@pytest.mark.asyncio
+async def test_debug_rotate_rack_reference_rejects_success_at_a_different_exact_position(db_engine: object) -> None:
+    service = _service(db_engine)
+    caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportDebugPositionProjection(
+                object_type="RACK",
+                object_id="rack-debug-wrong-station",
+                position_json={"kind": "RACK_POSITION", "location_code": "KT16"},
+                position_unknown=False,
+                arrival_face="90",
+                source_operation_id="seed",
+                source_transport_task_id="seed",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+
+    rotate = await service.rotate_rack_for_debug(
+        new_uuid7(),
+        caller,
+        "rack-debug-wrong-station",
+        RackReference("rack-debug-wrong-station"),
+        "270",
+    )
+    await record_valid_callback(
+        service,
+        operation_id="debug-rack-wrong-station-result",
+        transport_task_id=rotate.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=2,
+        payload={
+            "kind": "RACK_ROTATE",
+            "outcome_revision": 1,
+            "rack_id": "rack-debug-wrong-station",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "OTHER"},
+            "arrival_face": "270",
+        },
+    )
+
+    assert await service.process_pending_evidence(1) == 1
+    task = await _load_task(db_engine, rotate.transport_task_id)
+    assert task.status == "RECONCILING"
+    assert task.reason_code == "TRANSPORT_EVIDENCE_CONFLICT"
+    async with sessions() as db:
+        projection = await db.scalar(
+            select(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.object_type == "RACK",
+                TransportDebugPositionProjection.object_id == "rack-debug-wrong-station",
+            )
+        )
+        binding = await db.scalar(
+            select(TransportResourceBinding).where(
+                TransportResourceBinding.transport_task_id == rotate.transport_task_id,
+                TransportResourceBinding.released_at.is_(None),
+            )
+        )
+    assert projection is not None
+    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "KT16"}
+    assert projection.arrival_face == "90"
+    assert binding is not None
+
+
+@pytest.mark.asyncio
+async def test_create_debug_task_in_session_persists_inside_the_callers_transaction(db_engine: object) -> None:
+    service = _service(db_engine)
+    caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")
+    request = MoveRackRequest(
+        new_uuid7(),
+        caller,
+        "rack-debug",
+        RackReference("rack-debug"),
+        RackPosition("KT16"),
+        "90",
+        RcsTemplateId.CTU01,
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with sessions.begin() as db:
+        handle = await service.create_debug_task_in_session(db, request)
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+
+    assert task is not None
+    assert task.client_request_id == request.client_request_id
+
+
+@pytest.mark.asyncio
+async def test_create_debug_task_in_session_rejects_non_debug_caller(db_engine: object) -> None:
+    service = _service(db_engine)
+    request = MoveRackRequest(
+        new_uuid7(),
+        TransportCaller("SORTER", "STATION-01"),
+        "rack-1",
+        RackReference("rack-1"),
+        RackPosition("KT16"),
+        "90",
+        RcsTemplateId.CTU01,
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with sessions.begin() as db:
+        with pytest.raises(TransportContractError, match="debug task requires TRANSPORT_DEBUG caller"):
+            await service.create_debug_task_in_session(db, request)
+
+
+@pytest.mark.asyncio
+async def test_create_debug_task_in_session_rejects_bin_move_for_stale_rack_face(db_engine: object) -> None:
+    service = _service(db_engine)
+    now = timezone.now_for_db()
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportDebugPositionProjection(
+                object_type="RACK",
+                object_id="rack-auto-return",
+                position_json={"kind": "RACK_POSITION", "location_code": "KT16"},
+                position_unknown=False,
+                arrival_face="270",
+                source_operation_id=new_uuid7(),
+                source_transport_task_id="transport-prior-rotate",
+                updated_at=now,
+            )
+        )
+
+    request = MoveBinsRequest(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "TRANSPORT_DEBUG_AUTO"),
+        (
+            BinMove(
+                "bin-auto-return",
+                HandoffPosition("CNV0302"),
+                RackBinSlot("rack-auto-return", "90", "SLOT-1"),
+            ),
+        ),
+    )
+    async with sessions.begin() as db:
+        with pytest.raises(TransportContractError, match="rack current face does not match request"):
+            await service.create_debug_task_in_session(db, request)
 
 
 @pytest.mark.asyncio
@@ -973,6 +1152,132 @@ async def test_unmatched_or_unsupported_evidence_is_retained_as_conflict(
         evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.transport_task_id == task_id))
     assert evidence is not None
     assert evidence.status == "CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_conflicting_callback_replay_persists_a_durable_receipt_conflict(db_engine: object) -> None:
+    service = _service(db_engine)
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-callback-conflict",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    operation_id = new_uuid7()
+    payload = {
+        "kind": "RACK_MOVE",
+        "outcome_revision": 1,
+        "rack_id": "rack-callback-conflict",
+        "status": "SUCCEEDED",
+        "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
+        "arrival_face": "90",
+    }
+
+    first = await record_valid_callback(
+        service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
+    )
+    conflicting = await record_valid_callback(
+        service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            **payload,
+            "final_position": {"kind": "RACK_POSITION", "location_code": "OTHER"},
+        },
+    )
+    original_replay = await record_valid_callback(
+        service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
+    )
+
+    assert first["code"] == "RECEIVED"
+    assert conflicting["code"] == "CONFLICT"
+    assert original_replay["code"] == "DUPLICATE"
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        receipt = await db.scalar(
+            select(TransportCallbackReceipt).where(
+                TransportCallbackReceipt.operation == RESULT_OPERATION,
+                TransportCallbackReceipt.operation_id == operation_id,
+            )
+        )
+    assert receipt is not None
+    assert receipt.response_http_status == 202
+    assert receipt.response_code == "RECEIVED"
+    assert receipt.response_data_json == {"transport_task_id": handle.transport_task_id}
+    assert receipt.conflict_code == "TRANSPORT_CALLBACK_IDENTITY_CONFLICT"
+    assert receipt.conflict_detected_at is not None
+    async with sessions() as db:
+        evidence = await db.scalar(
+            select(TransportEvidence).where(
+                TransportEvidence.operation == RESULT_OPERATION,
+                TransportEvidence.operation_id == operation_id,
+            )
+        )
+    assert evidence is not None
+    assert evidence.status == "PENDING"
+    assert evidence.conflict_code is None
+
+
+@pytest.mark.asyncio
+async def test_locked_evidence_read_refreshes_a_stale_identity_map_entry(db_engine: object) -> None:
+    service = _service(db_engine)
+    handle = await service.move_rack(
+        new_uuid7(),
+        _caller(),
+        "rack-evidence-refresh",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+    await record_valid_callback(
+        service,
+        operation_id=new_uuid7(),
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "kind": "RACK_MOVE",
+            "outcome_revision": 1,
+            "rack_id": "rack-evidence-refresh",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "B"},
+            "arrival_face": "90",
+        },
+    )
+
+    repository = TransportRepository()
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        candidate = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.transport_task_id == handle.transport_task_id)
+        )
+        assert candidate is not None
+        await db.execute(
+            update(TransportEvidence)
+            .where(TransportEvidence.id == candidate.id)
+            .values(status="CONFLICT", claim_token=None, conflict_code="TRANSPORT_CALLBACK_IDENTITY_CONFLICT")
+            .execution_options(synchronize_session=False)
+        )
+
+        locked = await repository.get_evidence(db, candidate.id, for_update=True)
+
+    assert locked is candidate
+    assert locked.status == "CONFLICT"
+    assert locked.claim_token is None
 
 
 @pytest.mark.asyncio

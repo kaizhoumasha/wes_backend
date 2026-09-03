@@ -41,7 +41,7 @@ class TransportRepository:
     ) -> TransportTask | None:
         statement = select(TransportTask).where(TransportTask.transport_task_id == transport_task_id)
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return await db.scalar(statement)
 
     async def list_members(self, db: AsyncSession, transport_task_id: str) -> list[TransportMember]:
@@ -207,16 +207,20 @@ class TransportRepository:
         token: str,
         now: datetime,
         claim_until: datetime,
+        excluded_task_ids: set[str] | None = None,
     ) -> TransportTask | None:
+        predicates = [
+            TransportTask.status == "PENDING",
+            TransportTask.submit_attempt_count < MAX_SUBMIT_ATTEMPTS,
+            TransportTask.send_started_at.is_(None),
+            or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
+            or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
+        ]
+        if excluded_task_ids:
+            predicates.append(TransportTask.transport_task_id.not_in(excluded_task_ids))
         statement = (
             select(TransportTask)
-            .where(
-                TransportTask.status == "PENDING",
-                TransportTask.submit_attempt_count < MAX_SUBMIT_ATTEMPTS,
-                TransportTask.send_started_at.is_(None),
-                or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
-                or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
-            )
+            .where(*predicates)
             .order_by(
                 TransportTask.next_submit_at.is_not(None).asc(),
                 TransportTask.next_submit_at.asc(),
@@ -235,6 +239,15 @@ class TransportRepository:
         task.updated_at = now
         await db.flush()
         return task
+
+    async def release_unsent_claim(self, db: AsyncSession, task: TransportTask, *, token: str) -> None:
+        if task.submit_claim_token != token or task.send_started_at is None or task.submit_attempt_count < 1:
+            raise RuntimeError("transport unsent claim does not match")
+        task.submit_claim_token = None
+        task.submit_claim_until = None
+        task.submit_attempt_count -= 1
+        task.send_started_at = None
+        await db.flush()
 
     async def claim_overdue_tasks(
         self,
@@ -446,7 +459,7 @@ class TransportRepository:
     ) -> TransportEvidence | None:
         statement = select(TransportEvidence).where(TransportEvidence.id == evidence_id)
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return await db.scalar(statement)
 
     async def claim_pending_evidence(
