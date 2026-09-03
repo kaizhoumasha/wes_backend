@@ -14,7 +14,6 @@ from src.app.execution.models import (
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
-from src.app.resource.models.resource import RackBinMount, RackBinMountStatus, ResourceSourceSystem
 from src.app.transport.debug_run_contracts import TransportDebugRunPhase
 from src.app.transport.debug_run_repository import TransportDebugRunRepository
 from src.app.transport.models import (
@@ -490,51 +489,3 @@ async def test_committed_scan12_conflict_fences_dispatch_before_run_scanner_upda
             await cleanup_db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id == run_id))
             await cleanup_db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
             await cleanup_db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence.id))
-
-
-async def test_active_mount_recheck_holds_row_lock_until_transaction_finishes(
-    integration_session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    repository = TransportDebugRunRepository()
-    suffix = uuid.uuid4().hex
-    rack_id = f"rack-lock-{suffix}"
-    bin_id = f"bin-lock-{suffix}"
-    slot_id = f"slot-lock-{suffix}"
-    async with integration_session_factory.begin() as setup_db:
-        setup_db.add(
-            RackBinMount(
-                rack_code=rack_id,
-                rack_slot_code=slot_id,
-                bin_code=bin_id,
-                mount_status=RackBinMountStatus.MOUNTED,
-                source_system=ResourceSourceSystem.WMS,
-                source_event_id=f"mount-lock-{suffix}",
-                started_at=timezone.now_for_db(),
-            )
-        )
-
-    update_started = asyncio.Event()
-    update_finished = asyncio.Event()
-
-    async def end_mount() -> None:
-        async with integration_session_factory.begin() as update_db:
-            mount = await update_db.scalar(select(RackBinMount).where(RackBinMount.bin_code == bin_id))
-            assert mount is not None
-            mount.ended_at = timezone.now_for_db()
-            update_started.set()
-            await update_db.flush()
-        update_finished.set()
-
-    try:
-        async with integration_session_factory.begin() as lock_db:
-            locked = await repository.list_active_mounts(lock_db, rack_id, for_update=True)
-            assert [mount.bin_code for mount in locked] == [bin_id]
-            update_task = asyncio.create_task(end_mount())
-            await asyncio.wait_for(update_started.wait(), timeout=1)
-            await asyncio.sleep(0.05)
-            assert not update_finished.is_set()
-        await asyncio.wait_for(update_task, timeout=1)
-        assert update_finished.is_set()
-    finally:
-        async with integration_session_factory.begin() as cleanup_db:
-            await cleanup_db.execute(delete(RackBinMount).where(RackBinMount.bin_code == bin_id))

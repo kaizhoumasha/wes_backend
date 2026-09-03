@@ -1,5 +1,7 @@
 # Transport Debug Auto Run Backend Implementation Plan
 
+> **2026-09-03 修订：** 创建与推进轮次不再读取或校验 `RackBinMount` 基础数据；货架、料箱和原槽位由操作员按现场实物直接录入并冻结。本计划中 active mount 查询、锁定和二次校验步骤已被该修订取代，其他状态机与 Evidence 安全边界保持不变。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建立后端持久化 Transport 自动联调轮次，按 WMS 回调和 `SCAN12` Device Evidence 自动处理选定货架的多面料箱，并在全部料箱回架后执行 `CTU03`。

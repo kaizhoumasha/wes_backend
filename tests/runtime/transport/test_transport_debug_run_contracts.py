@@ -50,6 +50,27 @@ def test_debug_run_contract_preserves_face_strings_exactly() -> None:
     assert tuple(group.face for group in request.face_groups) == (" 90 ", "090")
 
 
+@pytest.mark.parametrize(
+    ("rack_id", "bin_id", "slot_id", "message"),
+    [
+        (" ", "BIN-1", "SLOT-1", "货架编码"),
+        ("RACK-1", " ", "SLOT-1", "料箱编码"),
+        ("RACK-1", "BIN-1", " ", "原货架槽位"),
+    ],
+)
+def test_debug_run_contract_rejects_incomplete_operator_input(
+    rack_id: str,
+    bin_id: str,
+    slot_id: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        CreateTransportDebugRun(
+            rack_id=rack_id,
+            face_groups=(_group("90", _bin(bin_id, slot_id)),),
+        )
+
+
 @pytest.mark.parametrize("face", ["", " ", "\t\n"])
 def test_debug_run_contract_rejects_blank_faces(face: str) -> None:
     with pytest.raises(ValueError, match="面值"):

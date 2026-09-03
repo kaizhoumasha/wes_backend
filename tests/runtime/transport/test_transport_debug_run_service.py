@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 from sqlalchemy import BigInteger
 
-from src.app.resource.models.resource import RackBinMountStatus
 from src.app.transport.debug_run_contracts import (
     CreateTransportDebugRun,
     TransportDebugBinSelection,
@@ -63,15 +62,6 @@ class _Repository:
     def __init__(self) -> None:
         self.runs: dict[str, TransportDebugRun] = {}
         self.steps: dict[str, list[TransportDebugRunStep]] = {}
-        self.mounts = [
-            SimpleNamespace(
-                rack_code="510056",
-                bin_code="A000001922",
-                rack_slot_code="510056A3F2C101",
-                mount_status=RackBinMountStatus.MOUNTED,
-                ended_at=None,
-            )
-        ]
         self.tasks: dict[str, TransportTask] = {}
         self.active_binding = False
         self.current_step_batch_sizes: list[int] = []
@@ -79,16 +69,6 @@ class _Repository:
     async def get_active_run(self, db: object, *, for_update: bool = False) -> TransportDebugRun | None:
         del db, for_update
         return next((run for run in self.runs.values() if run.active_scope == "GLOBAL"), None)
-
-    async def list_active_mounts(
-        self,
-        db: object,
-        rack_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[object]:
-        del db, for_update
-        return [mount for mount in self.mounts if mount.rack_code == rack_id]
 
     async def add_run(self, db: object, run: TransportDebugRun, first_step: TransportDebugRunStep) -> None:
         del db
@@ -203,7 +183,7 @@ def _service() -> tuple[TransportDebugRunService, _Repository, _Sessions, _Publi
     return service, repository, sessions, publisher
 
 
-async def test_create_run_freezes_exact_mount_face_and_first_step_identity() -> None:
+async def test_create_run_freezes_exact_operator_input_and_first_step_identity() -> None:
     service, repository, sessions, publisher = _service()
 
     snapshot = await service.create_run(_request(), actor_id=7)
@@ -235,32 +215,22 @@ async def test_create_run_freezes_exact_mount_face_and_first_step_identity() -> 
     ]
 
 
-@pytest.mark.parametrize(
-    ("input_request", "message"),
-    [
-        (_request(slot_id="WRONG-SLOT"), "MOUNTED"),
-        (
-            CreateTransportDebugRun(
-                rack_id="OTHER-RACK",
-                face_groups=(
-                    TransportDebugFaceGroup(
-                        face="90",
-                        bins=(TransportDebugBinSelection("A000001922", "510056A3F2C101"),),
-                    ),
-                ),
-            ),
-            "MOUNTED",
-        ),
-    ],
-)
-async def test_create_run_rejects_non_exact_current_mount(
-    input_request: CreateTransportDebugRun,
-    message: str,
-) -> None:
+async def test_create_run_accepts_operator_input_without_resource_mounts() -> None:
     service, _, _, _ = _service()
+    input_request = CreateTransportDebugRun(
+        rack_id="FIELD-RACK-07",
+        face_groups=(
+            TransportDebugFaceGroup(
+                face="270",
+                bins=(TransportDebugBinSelection("FIELD-BIN-03", "FIELD-SLOT-02"),),
+            ),
+        ),
+    )
 
-    with pytest.raises(TransportDebugRunConflict, match=message):
-        await service.create_run(input_request, actor_id=7)
+    snapshot = await service.create_run(input_request, actor_id=7)
+
+    assert snapshot.rack_id == "FIELD-RACK-07"
+    assert snapshot.face_groups[0].bins[0] == TransportDebugBinSelection("FIELD-BIN-03", "FIELD-SLOT-02")
 
 
 async def test_create_run_rejects_second_global_active_run() -> None:

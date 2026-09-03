@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import and_, func, or_, select
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, InboundEvidenceKind
-from src.app.resource.models.resource import RackBinMount, RackBinMountStatus
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportDebugRun,
@@ -234,27 +233,6 @@ class TransportDebugRunRepository:
                 .order_by(columns.ordinal.asc(), columns.id.asc())
             )
         )
-
-    async def list_active_mounts(
-        self,
-        db: AsyncSession,
-        rack_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[RackBinMount]:
-        columns = cast("Any", RackBinMount).__table__.c
-        statement = (
-            select(RackBinMount)
-            .where(
-                columns.rack_code == rack_id,
-                columns.mount_status == RackBinMountStatus.MOUNTED,
-                columns.ended_at.is_(None),
-            )
-            .order_by(columns.rack_slot_code.asc(), columns.id.asc())
-        )
-        if for_update:
-            statement = statement.with_for_update()
-        return list(await db.scalars(statement))
 
     async def max_device_evidence_id(self, db: AsyncSession) -> int:
         columns = cast("Any", InboundEvidence).__table__.c

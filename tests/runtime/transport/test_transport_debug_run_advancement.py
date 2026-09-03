@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
-from src.app.resource.models.resource import RackBinMountStatus
 from src.app.transport.contracts import TransportContractError, TransportHandle
 from src.app.transport.debug_run_evidence import Scan12EvidenceDisposition, Scan12EvidenceEvaluation
 from src.app.transport.debug_run_service import TransportDebugRunService
@@ -87,16 +86,6 @@ class _Repository:
         self.conflicting_evidence_ids: set[int] = set()
         self.transport_conflicting_task_ids: set[str] = set()
         self.pending_transport_evidence = False
-        self.mounts = [
-            SimpleNamespace(
-                rack_code="510056",
-                bin_code=bin_id,
-                rack_slot_code=slot_id,
-                mount_status=RackBinMountStatus.MOUNTED,
-                ended_at=None,
-            )
-            for bin_id, slot_id in (("A000001922", "SLOT-01"), ("A000002653", "SLOT-02"))
-        ]
         self.claimed = False
 
     async def claim_run(
@@ -199,16 +188,6 @@ class _Repository:
     async def max_device_evidence_id(self, db: object) -> int:
         del db
         return max((evidence.id or 0 for evidence in self.evidences), default=100)
-
-    async def list_active_mounts(
-        self,
-        db: object,
-        rack_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[object]:
-        del db, for_update
-        return [mount for mount in self.mounts if mount.rack_code == rack_id]
 
     async def list_device_evidences_since(
         self,
@@ -342,15 +321,14 @@ async def test_pending_intent_reuses_persisted_client_id_across_scans() -> None:
     assert repository.steps[0].status == "WAITING"
 
 
-async def test_bin_move_revalidates_frozen_mounts_before_creating_intent() -> None:
+async def test_bin_move_uses_frozen_operator_input_without_resource_mounts() -> None:
     service, repository, transport = _harness(phase="BINS_TO_INFEED")
-    repository.mounts = []
 
     assert await service.advance_run("debug-run-1") is True
 
-    assert transport.calls == []
-    assert repository.run.status == "NEEDS_ATTENTION"
-    assert repository.run.attention_code == "BIN_MOUNT_CHANGED"
+    assert transport.calls == [CLIENT_IDS[0]]
+    assert repository.steps[0].status == "WAITING"
+    assert repository.run.status == "RUNNING"
 
 
 async def test_transport_contract_rejection_becomes_attention_without_retry_loop() -> None:

@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.exc import IntegrityError
 
-from src.app.resource.models.resource import RackBinMount, RackBinMountStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_DEBUG_RUN_STREAM_CHANNEL, event_stream_service
 from src.app.transport.contracts import (
@@ -180,8 +179,6 @@ class TransportDebugRunService:
             async with self._sessions.begin() as db:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
-                mounts = await self._repository.list_active_mounts(db, request.rack_id, for_update=True)
-                _validate_current_mounts(request, mounts)
                 await self._repository.add_run(db, run, first_step)
                 snapshot = await self._snapshot(db, run, first_step=first_step)
                 event_payload = _event_payload(run)
@@ -372,13 +369,6 @@ class TransportDebugRunService:
     ) -> bool:
         if step.status != TransportDebugRunStepStatus.PENDING.value:
             return self._set_attention(run, step, "TRANSPORT_TASK_MISSING", now)
-        if step.phase == TransportDebugRunPhase.BINS_TO_INFEED.value:
-            group = _frozen_face_groups(run.configuration_json)[run.current_group_index]
-            mounts = await self._repository.list_active_mounts(db, run.rack_id, for_update=True)
-            try:
-                _validate_current_mounts(CreateTransportDebugRun(run.rack_id, (group,)), mounts)
-            except TransportDebugRunConflict as error:
-                return self._set_attention(run, step, "BIN_MOUNT_CHANGED", now, str(error))
         if step.phase == TransportDebugRunPhase.BINS_TO_RACK.value and await self._has_observed_evidence_conflict(
             db, step
         ):
@@ -777,20 +767,6 @@ def _event_payload(run: TransportDebugRun) -> dict[str, object]:
 def _ceil_unix_ms(value: datetime) -> int:
     aware = timezone.to_utc(value)
     return int(aware.timestamp()) * 1000 + (aware.microsecond + 999) // 1000
-
-
-def _validate_current_mounts(request: CreateTransportDebugRun, mounts: Sequence[RackBinMount]) -> None:
-    current = {
-        (mount.bin_code, mount.rack_slot_code)
-        for mount in mounts
-        if mount.rack_code == request.rack_id
-        and mount.mount_status is RackBinMountStatus.MOUNTED
-        and mount.ended_at is None
-    }
-    requested = {(item.bin_id, item.slot_id) for group in request.face_groups for item in group.bins}
-    missing = sorted(requested - current)
-    if missing:
-        raise TransportDebugRunConflict(f"selected bin and slot must be currently MOUNTED on rack: {missing[0]}")
 
 
 def _frozen_face_groups(configuration: dict[str, object]) -> tuple[TransportDebugFaceGroup, ...]:
