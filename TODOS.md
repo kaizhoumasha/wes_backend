@@ -7,6 +7,51 @@
 
 ## WorkLine
 
+### 人工 PickingTask 自动准备生产激活
+
+**What:** 将已暗构建的 `outbound.picking_task.prepare@v1` 接入真实人工 WorkLine 运行链路；在同一原子切片完成
+`manual_bin_processing` START/静态 Composition、未完成 PickingTask blocker、prepare adapter production route、Celery task/Beat 和 worker wiring。
+
+**Why:** 单独打开 Beat 会在没有真实人工 Epoch 或 `plan_delta` owner 时形成空转 consumer，或者让 WES 向 WMS 发出无法继续执行的准备承诺；
+未完成 PickingTask blocker 缺失还会允许带任务关闭或替换 Epoch。
+
+**Context:** prepare 当前只提供 `prepare_next_for_workline(workline_id)` 暗构建能力，不注册生产入口。激活前必须保持基础 WorkLine 层
+不依赖 outbound picking 业务模型；由宿主静态 Composition 注入人工业务 blocker 和唯一 operation route，不使用动态 registry、默认 handler、
+临时 API、伪造 Epoch 或旧 runtime/status 路径。
+
+**Scope:**
+
+- 真实 `manual_bin_processing` WorkLine START plan、设备/位置绑定和静态 Composition
+- `outbound.picking_task.plan_delta@v1` 严格接收、持久化及插件应用 owner
+- `PREPARING | EXECUTING` PickingTask 对 STOP/Epoch 切换的静态业务 blocker
+- prepare adapter 唯一 production route、Celery task、Beat schedule、queue route 和 worker runtime
+- 真实 worker、失败恢复、停止/重启与插件业务测试
+
+**Depends on:** `manual_bin_processing` START 合同、`plan_delta` 合同和插件执行 owner 获批并实现；暗构建 prepare 聚焦测试、migration 与
+PostgreSQL 并发验证通过。
+
+**Effort:** L
+
+**Priority:** P1
+
+---
+
+### RETURN_BUFFER 停止/切换排空决策合同
+
+**What:** 冻结 `workline.return_buffer.drain_rack_decide@v1`，用于停止或切换时为既有 `RETURN_BUFFER` FIFO 选择可排空货架面。
+
+**Why:** 当前面无法为 FIFO 队首分配合格空位且没有新入站需求驱动换面时，WorkLine 仍需在不越过队首、不释放未知位置的前提下完成清场和 Epoch 关闭。
+
+**Context:** 现有 `outbound.bin.return_batch@v1` 只处理当前面可执行的连续 FIFO 前缀。出库合同已将排空 decision 标为联合实施硬门禁；本 TODO 只跟踪该独立合同与实现，不扩大 Phase 12 人工出库线唯一新增 operation 的范围。
+
+**Effort:** M
+
+**Priority:** P1
+
+**Depends on:** 当前 `return_batch`、货架切换、位置事实和 FIFO 合同稳定，并由 WMS/WES 联合冻结 operation、严格 DTO、恢复语义与幂等规则。
+
+---
+
 ### WorkLine 角色与拓扑设备绑定向导
 
 **What:** 为 WorkLine 配置台补充按标准设备角色、实际拓扑、现场容量和故障隔离范围组织的设备绑定向导。
@@ -34,6 +79,29 @@
 ---
 
 ## Operations
+
+### WMS Adapter 既有 Inbound/Transport operation 按域迁移
+
+**What:** 将 `src/app/wms_adapter/` 当前平铺的 Inbound 与 Transport operation 文件迁入各自稳定域目录，并同步迁移测试和 HEAVY ownership。
+
+**Why:** 新 operation 已统一采用 `<domain_key>/wire.py|openapi.py|adapter.py|event_handler.py`，继续保留两种目录约定会让调用者和后续实现误用平铺文件作为模板。
+
+**Context:** 本期只整理 `outbound_picking`。现有 Inbound/Transport 行为、公开合同和测试保持不变；后续迁移必须一次性更新调用点，不保留旧 import shim、双路径或动态 registry。
+
+**Scope:**
+
+- `inbound_wire.py`、`inbound_openapi.py`、`inbound_adapter.py` 迁入 `wms_adapter/inbound_material/`
+- `transport_wire.py`、`transport_openapi.py`、`transport_adapter.py`、`transport_event_handler.py` 迁入 `wms_adapter/transport/`
+- 合同测试和真实持久化测试按相同 `<domain_key>` 建立子目录，并同步更新全部 import、HEAVY mapping 和调用点
+- `inbound_auth.py`、`strict_json.py`、`wire_common.py`、共享 Client/Factory 与唯一 `v1/events.py` 不混入具体 operation 域
+
+**Depends on:** `outbound_picking` 目录约定在当前 PickingTask 发布能力中验证稳定。
+
+**Effort:** M
+
+**Priority:** P2
+
+---
 
 ### 统一运营看板、告警与 Runbook
 

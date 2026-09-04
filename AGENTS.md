@@ -123,6 +123,10 @@ API → Service → Repository → Database
 - 本项目尚未发布；除用户明确要求外，不新增 v2、别名、shim、双路径、兼容 wrapper、迁移式兼容或 no-op consumer。目标合同直接替换旧合同。
 - `src/app/wms_adapter/` 只拥有共享 WMS HTTP/JSON、严格 operation DTO/parser、可靠派发和统一 Event route；具体工作线的请求数据、
   结果解释、因果恢复与业务顺序位于 `workline_plugins/<plugin_key>/`，不得通过默认 resolver 或 fallback 回流基础层。
+- 新增 WMS operation 按同一 `<domain_key>` 分别放入 `wms_adapter/<domain_key>/`（wire/OpenAPI/Adapter/Handler）和确有持久化需求时的
+  `wms_integration/<domain_key>/`（model/Repository/Service/Composition），测试镜像相同域目录。Event route 保持唯一静态
+  fail-closed；禁止新增平铺 operation 文件、兼容 import 或动态 registry。现有平铺 Inbound/Transport 仅是 `TODOS.md` 待迁移存量；
+  工作线 Decision、结果解释、因果恢复和业务顺序仍由插件拥有。
 - 代码有三个物理根但只有两类职责：`src/` 是宿主基础实现，`packages/wes_plugin_sdk/` 是可独立安装的公开基础 SPI/不可变合同，
   `workline_plugins/` 是业务实现。`workline_plugins` 可依赖前两者；`src` 和 SDK 均不得导入具体插件。SDK 不放数据库、HTTP、Celery、
   Repository、operation DTO 或工作线业务流程。

@@ -53,9 +53,11 @@ async def test_fastapi_startup_binds_and_shutdown_clears_the_fixed_wms_policy() 
             policy = app.state.wms_inbound_auth_policy
             assert policy == WmsInboundAuthPolicy()
             assert app.state.transport_runtime is transport_runtime
+            assert app.state.wms_picking_task_issued_handler is not None
 
     assert app.state.wms_inbound_auth_policy is None
     assert app.state.transport_runtime is None
+    assert app.state.wms_picking_task_issued_handler is None
     transport_runtime.aclose.assert_awaited_once()
     build_transport_runtime.assert_awaited_once_with(
         wms_base_url=register.settings.WMS_BASE_URL,

@@ -80,6 +80,16 @@ class MaterialExecutionEpochRepositoryPort(Protocol):
     async def get_by_id(self, db: object, execution_id: int) -> MaterialExecution | None: ...
 
 
+class PickingTaskConfirmationOwnerPort(Protocol):
+    async def validate_prepare_response_owner(
+        self,
+        db: object,
+        *,
+        picking_task_id: int,
+        operation: str,
+    ) -> bool: ...
+
+
 class WmsConfirmationDispatchResultPort(Protocol):
     code: object
     normalized_response: dict[str, Any] | None
@@ -170,11 +180,21 @@ class WmsConfirmationLifecycleService:
         *,
         operation: str,
         operation_id: str,
-        material_execution_id: int,
+        material_execution_id: int | None = None,
+        bin_execution_id: int | None = None,
+        picking_task_id: int | None = None,
         request_payload: dict[str, Any],
         deadline_at: datetime,
         created_at: datetime,
     ) -> WmsConfirmationAcceptance | WmsConfirmationIdentityConflictResult:
+        owners = (material_execution_id, bin_execution_id, picking_task_id)
+        if sum(owner is not None for owner in owners) != 1:
+            raise ValueError("WmsConfirmation 必须恰好一个 owner")
+        if any(
+            owner is not None and (not isinstance(owner, int) or isinstance(owner, bool) or owner <= 0)
+            for owner in owners
+        ):
+            raise ValueError("WmsConfirmation owner 必须是正整数")
         payload, digest = _immutable_request(request_payload)
         await self._repository.lock_identity(db, operation, operation_id)
         existing = await self._repository.get_by_identity_for_update(db, operation, operation_id)
@@ -182,6 +202,8 @@ class WmsConfirmationLifecycleService:
             if (
                 existing.request_digest != digest
                 or existing.material_execution_id != material_execution_id
+                or existing.bin_execution_id != bin_execution_id
+                or existing.picking_task_id != picking_task_id
                 or existing.deadline_at != deadline_at
             ):
                 _ = await self.mark_reconciling(db, existing, changed_at=created_at)
@@ -193,6 +215,8 @@ class WmsConfirmationLifecycleService:
                 operation=operation,
                 operation_id=operation_id,
                 material_execution_id=material_execution_id,
+                bin_execution_id=bin_execution_id,
+                picking_task_id=picking_task_id,
                 request_digest=digest,
                 request_payload=payload,
                 deadline_at=deadline_at,
@@ -312,6 +336,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         adapter: WmsConfirmationAdapterPort | None = None,
         evidence_service: InboundEvidenceService | None = None,
         execution_repository: MaterialExecutionEpochRepositoryPort | None = None,
+        picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         follow_up_planner: WmsConfirmationFollowUpPlanner | None = None,
     ) -> None:
@@ -319,6 +344,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         self._sessions = session_factory
         self._adapter = adapter
         self._evidence = evidence_service or InboundEvidenceService()
+        self._picking_task_owner = picking_task_owner
         self._task_queue = task_queue_gateway
         self._follow_up_planner = follow_up_planner
 
@@ -348,7 +374,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             )
         return len(claimed)
 
-    async def _dispatch_claimed(  # noqa: PLR0911 - 每个持久状态分支保留明确的 fail-closed 终点。
+    async def _dispatch_claimed(  # noqa: PLR0911,PLR0912 - 每个持久状态分支保留明确的 fail-closed 终点。
         self,
         *,
         confirmation_id: int,
@@ -376,6 +402,26 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     changed_at=checked_at,
                 )
                 return
+            owner_count = sum(
+                owner is not None
+                for owner in (
+                    confirmation.material_execution_id,
+                    confirmation.bin_execution_id,
+                    confirmation.picking_task_id,
+                )
+            )
+            if owner_count != 1 or confirmation.bin_execution_id is not None:
+                _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
+                return
+            if confirmation.picking_task_id is not None:
+                owner = self._picking_task_owner
+                if owner is None or not await owner.validate_prepare_response_owner(
+                    db,
+                    picking_task_id=confirmation.picking_task_id,
+                    operation=confirmation.operation,
+                ):
+                    _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
+                    return
             operation = confirmation.operation
             operation_id = confirmation.operation_id
             request_payload = dict(confirmation.request_payload)
@@ -393,16 +439,49 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 return
             code = getattr(result.code, "value", result.code)
             if code in {"DETERMINATE", "RECONCILING"} and result.normalized_response is not None:
-                execution = await self._executions.get_by_id(db, confirmation.material_execution_id)
-                if execution is None:
-                    raise LookupError("MaterialExecution 不存在")
-                line_run_epoch_id = execution.line_run_epoch_id
-                if (
-                    not isinstance(line_run_epoch_id, int)
-                    or isinstance(line_run_epoch_id, bool)
-                    or line_run_epoch_id <= 0
-                ):
-                    raise ValueError("MaterialExecution 缺少有效 line_run_epoch_id")
+                owner_count = sum(
+                    owner is not None
+                    for owner in (
+                        confirmation.material_execution_id,
+                        confirmation.bin_execution_id,
+                        confirmation.picking_task_id,
+                    )
+                )
+                if owner_count != 1 or confirmation.bin_execution_id is not None:
+                    _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
+                    return
+                line_run_epoch_id: int | None = None
+                material_execution_id: int | None = None
+                wake_material_execution = False
+                if confirmation.material_execution_id is not None:
+                    material_execution_id = confirmation.material_execution_id
+                    execution = await self._executions.get_by_id(db, material_execution_id)
+                    if execution is None:
+                        raise LookupError("MaterialExecution 不存在")
+                    line_run_epoch_id = execution.line_run_epoch_id
+                    if (
+                        not isinstance(line_run_epoch_id, int)
+                        or isinstance(line_run_epoch_id, bool)
+                        or line_run_epoch_id <= 0
+                    ):
+                        raise ValueError("MaterialExecution 缺少有效 line_run_epoch_id")
+                    wake_material_execution = True
+                else:
+                    picking_task_id = confirmation.picking_task_id
+                    owner = self._picking_task_owner
+                    if (
+                        not isinstance(picking_task_id, int)
+                        or isinstance(picking_task_id, bool)
+                        or picking_task_id <= 0
+                        or owner is None
+                        or not await owner.validate_prepare_response_owner(
+                            db,
+                            picking_task_id=picking_task_id,
+                            operation=operation,
+                        )
+                    ):
+                        _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
+                        return
                 evidence_result = await self._evidence.accept(
                     db,
                     kind=InboundEvidenceKind.WMS_RESULT,
@@ -410,7 +489,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     normalized_payload=result.normalized_response,
                     received_at=changed_at,
                     line_run_epoch_id=line_run_epoch_id,
-                    material_execution_id=confirmation.material_execution_id,
+                    material_execution_id=material_execution_id,
                     contract_key=operation,
                     contract_version="1.0",
                     operation=operation,
@@ -420,7 +499,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 if isinstance(evidence_result, InboundEvidenceConflictResult):
                     _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                     return
-                wake_execution[0] = True
+                wake_execution[0] = wake_material_execution
                 if code == "DETERMINATE":
                     if evidence_result.evidence.id is None or result.response_result is None:
                         _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
@@ -435,6 +514,9 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     if isinstance(completed, WmsConfirmationResponseConflictResult):
                         return
                     if result.retry_after_ms is not None:
+                        if material_execution_id is None:
+                            _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
+                            return
                         await self._create_follow_up(
                             db,
                             confirmation,
