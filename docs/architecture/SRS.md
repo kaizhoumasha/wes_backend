@@ -454,7 +454,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **自动发料：**
 
-1. WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。任务发布只携带身份和排队信息，不分配来源或目标
+1. WMS 根据 SAP 工单、出库单、波次、库存和产线需求形成 `PickingTask`。自动任务发布携带不可变 `task_type=AUTO`、身份和排队信息，不分配来源或目标
    资源。WES 不读取业务单据，也不生成波次。
 2. WES 选择可执行任务和就绪工作线后请求 WMS 准备。WMS 返回 `PREPARE_ACCEPTED`，再按实际 WorkLine 及其 STATION，以连续
    `plan_revision` 分批发布五层来源货架面、退料货架 SLOT 和初始接料货架。`plan_revision=1` 必须且只能定义一个
@@ -509,7 +509,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 **人工发料：**
 
-1. WMS 使用已有且全局唯一的 `task_id` 发布人工任务，不增加人工业务键；WES 只从已激活 `manual_bin_processing` 的人工 WorkLine 中选线。
+1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual_bin_processing` 的人工 WorkLine 中选线。
 2. Task 驱动货架面和 Bin 入站。WMS 选择确定 Bin，WES 依据 CTU、缓存和当前工作位货架状态执行 Transport；入站 Bin 需求是正常运行时换面或换架的唯一触发。
 3. Bin 到达人工工作位后，WES 以扫码和位置证据报告物理到位；操作员通过 WMS PDA 将物料正确放入 Bin 或从 Bin 拣出。WES 不接收物料子任务、不判断人工业务类型。
 4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 Epoch 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。

@@ -7,6 +7,22 @@
 
 ## WorkLine
 
+### RETURN_BUFFER 停止/切换排空决策合同
+
+**What:** 冻结 `workline.return_buffer.drain_rack_decide@v1`，用于停止或切换时为既有 `RETURN_BUFFER` FIFO 选择可排空货架面。
+
+**Why:** 当前面无法为 FIFO 队首分配合格空位且没有新入站需求驱动换面时，WorkLine 仍需在不越过队首、不释放未知位置的前提下完成清场和 Epoch 关闭。
+
+**Context:** 现有 `outbound.bin.return_batch@v1` 只处理当前面可执行的连续 FIFO 前缀。出库合同已将排空 decision 标为联合实施硬门禁；本 TODO 只跟踪该独立合同与实现，不扩大 Phase 12 人工出库线唯一新增 operation 的范围。
+
+**Effort:** M
+
+**Priority:** P1
+
+**Depends on:** 当前 `return_batch`、货架切换、位置事实和 FIFO 合同稳定，并由 WMS/WES 联合冻结 operation、严格 DTO、恢复语义与幂等规则。
+
+---
+
 ### WorkLine 角色与拓扑设备绑定向导
 
 **What:** 为 WorkLine 配置台补充按标准设备角色、实际拓扑、现场容量和故障隔离范围组织的设备绑定向导。
@@ -34,6 +50,29 @@
 ---
 
 ## Operations
+
+### WMS Adapter 既有 Inbound/Transport operation 按域迁移
+
+**What:** 将 `src/app/wms_adapter/` 当前平铺的 Inbound 与 Transport operation 文件迁入各自稳定域目录，并同步迁移测试和 HEAVY ownership。
+
+**Why:** 新 operation 已统一采用 `<domain_key>/wire.py|openapi.py|adapter.py|event_handler.py`，继续保留两种目录约定会让调用者和后续实现误用平铺文件作为模板。
+
+**Context:** 本期只整理 `outbound_picking`。现有 Inbound/Transport 行为、公开合同和测试保持不变；后续迁移必须一次性更新调用点，不保留旧 import shim、双路径或动态 registry。
+
+**Scope:**
+
+- `inbound_wire.py`、`inbound_openapi.py`、`inbound_adapter.py` 迁入 `wms_adapter/inbound_material/`
+- `transport_wire.py`、`transport_openapi.py`、`transport_adapter.py`、`transport_event_handler.py` 迁入 `wms_adapter/transport/`
+- 合同测试和真实持久化测试按相同 `<domain_key>` 建立子目录，并同步更新全部 import、HEAVY mapping 和调用点
+- `inbound_auth.py`、`strict_json.py`、`wire_common.py`、共享 Client/Factory 与唯一 `v1/events.py` 不混入具体 operation 域
+
+**Depends on:** `outbound_picking` 目录约定在当前 PickingTask 发布能力中验证稳定。
+
+**Effort:** M
+
+**Priority:** P2
+
+---
 
 ### 统一运营看板、告警与 Runbook
 
