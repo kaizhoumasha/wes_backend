@@ -17,15 +17,17 @@ from src.app.transport.contracts import (
     TransportIngressDisposition,
 )
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
-from src.app.wms_adapter.inbound_openapi import RECOVERY_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
-from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
-from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
-from src.app.wms_adapter.transport_event_handler import (
-    MAX_TRANSPORT_EVENT_BODY_BYTES,
-    is_wire_operation,
-    is_wire_operation_id,
+from src.app.wms_adapter.inbound_openapi import (
+    RECOVERY_EVENT_REQUEST_SCHEMA,
+    WMS_EVENT_RESPONSES,
 )
+from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
+from src.app.wms_adapter.outbound_picking.openapi import PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA
+from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_ISSUED_OPERATION
+from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
+from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA
+from src.app.wms_adapter.wire_common import is_wire_operation, is_wire_operation_id
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -35,7 +37,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-WMS_EVENT_REQUEST_SCHEMA = {"oneOf": [*TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"], RECOVERY_EVENT_REQUEST_SCHEMA]}
+WMS_EVENT_REQUEST_SCHEMA = {
+    "oneOf": [
+        *TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"],
+        RECOVERY_EVENT_REQUEST_SCHEMA,
+        PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
+    ]
+}
 WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
 
 
@@ -300,8 +308,8 @@ async def receive_wms_event(request: Request) -> Response:
         return Response(status_code=401)
 
     operation = _extract_operation(raw_body)
-    is_inbound_event = operation == RECOVERY_OPERATION
-    if is_inbound_event:
+    is_transport_event = operation in {TRANSPORT_POSITION_OPERATION, TRANSPORT_RESULT_OPERATION}
+    if operation == RECOVERY_OPERATION:
         handler = getattr(request.app.state, "wms_recovery_event_handler", None)
         if handler is None:
             response = _unavailable_ack(raw_body)
@@ -316,7 +324,22 @@ async def receive_wms_event(request: Request) -> Response:
             )
             return response
         result = await handler.handle(raw_body)
-    elif operation in {TRANSPORT_POSITION_OPERATION, TRANSPORT_RESULT_OPERATION}:
+    elif operation == PICKING_TASK_ISSUED_OPERATION:
+        handler = getattr(request.app.state, "wms_picking_task_issued_handler", None)
+        if handler is None:
+            response = _unavailable_ack(raw_body)
+            await _publish_wms_ingress_attempt(
+                request,
+                request_id=request_id,
+                received_at=received_at,
+                observed_body_bytes=observed_body_bytes,
+                status_code=response.status_code,
+                disposition="UNAVAILABLE" if response.status_code == 503 else "REJECTED",
+                error_code="PICKING_TASK_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
+            )
+            return response
+        result = await handler.handle(raw_body)
+    elif is_transport_event:
         runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
         if runtime is None:
             response = _unavailable_ack(raw_body)
@@ -350,15 +373,15 @@ async def receive_wms_event(request: Request) -> Response:
         return response
     # Evidence 已持久化后先应答 WMS；Celery 唤醒只是加速提示，失败时由 Beat 兜底扫描。
     background = (
-        (BackgroundTask(_enqueue_transport_evidence) if result.body.get("code") in {"RECEIVED", "DUPLICATE"} else None)
-        if not is_inbound_event
+        BackgroundTask(_enqueue_transport_evidence)
+        if is_transport_event and result.body.get("code") in {"RECEIVED", "DUPLICATE"}
         else None
     )
     if result.body:
         response: Response = JSONResponse(status_code=result.http_status, content=result.body, background=background)
     else:
         response = Response(status_code=result.http_status, background=background)
-    if not is_inbound_event:
+    if is_transport_event:
         code = result.body.get("code")
         await _publish_transport_ingress_attempt(
             request,

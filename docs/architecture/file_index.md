@@ -53,6 +53,7 @@
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
 | `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；正常 Bin 通过 Epoch 级 `return_batch` FIFO 回库，可识别但非预期 Bin 冻结并等待独立恢复 wire；停线排空货架面决定 wire 未获批 |
+| `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；point2 按实际 Bin 请求人工任务准入，WMS 完成决定授权释放，WES 回报异步应用状态；PDA 归属 WMS，不在 WES 集成范围 |
 | `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` | Phase 8 粗分逐盘入库的获批业务合同；目标 Cell 晚绑定、五态生命周期和两个既有 `RACK_MOVE` 的唯一真源 |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线排空货架面决定 wire 未获批，当前为 `ReviewRequired` |
 | `docs/integration/third_party_integration_whitepaper.md` | 所有第三方固定式设备供应商长期遵循的顶层统一接口（wire）真源 |
@@ -96,13 +97,26 @@ API → Service → Repository → Database
 | `migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py` | 自动联调 run/step 表、活动轮次唯一约束、步骤幂等身份及 claim 索引 |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
-| `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层、严格 operation DTO/parser、可靠派发与统一 Event route；未知 operation 明确拒绝，不做业务 fallback |
-| `src/app/wms_integration/` | 仅保留 schema-deferred models 与空命名空间；旧 Provider/Profile/Manifest/query/effect/status 运行时及无 owner 的 operation DTO 已退役，不是业务插件模板 |
+| `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层；新增 operation 按 `<domain_key>/` 组织严格 DTO/parser、OpenAPI 和 Adapter/Event Handler，统一 Event route 静态分发并拒绝未知 operation |
+| `src/app/wms_integration/` | 使用与 Adapter 相同的 `<domain_key>/` 承载 operation 所需的本地模型、Repository、事务 Service 与组合根；旧 Provider/Profile/Manifest/query/effect/status 通用运行时已退役 |
 | `packages/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata 与合同内生校验；不得包含宿主实现、WMS operation DTO 或具体工作线业务 |
 | `workline_plugins/` | 具体工作线业务纵向切片；纯 Decision 层只依赖 SDK，应用层可调用 `src` 基础端口，反向依赖禁止 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以
 `AGENTS.md` 为准。
+
+新增 WMS operation 必须同时遵循以下目录合同：
+
+```text
+src/app/wms_adapter/<domain_key>/{wire.py,openapi.py,adapter.py|event_handler.py}
+src/app/wms_integration/<domain_key>/{models/,repositories/,services/,composition.py}
+tests/contracts/wms_adapter/<domain_key>/
+tests/integration/wms_adapter/<domain_key>/
+```
+
+仅在 operation 不需要某一职责时省略对应文件或目录，不创建占位。`wms_adapter/v1/events.py` 是唯一入站 Event route；
+具体工作线 Decision、结果解释、因果恢复与业务顺序仍由 `workline_plugins/<plugin_key>/` 拥有。当前平铺的 Inbound/Transport
+文件是 `TODOS.md` 明确记录的待迁移存量，不是新 operation 的模板，也不得为目录迁移保留兼容 import。
 
 ## 4. 测试所有权
 

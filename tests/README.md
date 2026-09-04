@@ -73,6 +73,8 @@ ECS/网关交付边界执行一致性验收。核心 pytest、覆盖率、质量
 Event route；具体工作线的请求数据、结果解释与恢复由插件测试拥有。共享跨系统 FAST 合同放在
 `tests/contracts/wms_adapter/`，真实持久化与事务场景放在 `tests/integration/wms_adapter/`；两处测试不得导入具体插件来
 证明基础能力，也不得用于证明 `src/core/outbound_http/` 基础传输或 WES 最小执行内核。
+新增 WMS operation 的两类测试必须分别使用相同的 `<domain_key>/` 子目录镜像生产目录；现有平铺 Inbound/Transport
+测试只在 `TODOS.md` 对应迁移中一次性调整，不作为新 operation 模板。
 
 ### 当前治理约束
 

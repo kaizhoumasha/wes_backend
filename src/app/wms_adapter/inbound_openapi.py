@@ -1,4 +1,4 @@
-"""粗分机 WMS 入站事件的 OpenAPI 片段。"""
+"""共享 WMS 入站事件的 OpenAPI 片段。"""
 
 from __future__ import annotations
 

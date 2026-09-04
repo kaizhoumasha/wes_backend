@@ -83,6 +83,7 @@ WMS 不创建 TransportTask，也不向设备发送 DeviceCommand。
   "timestamp": 1786060800000,
   "data": {
     "task_id": "PICK-20260811-001",
+    "task_type": "AUTO",
     "queue_revision": 1,
     "dispatch_sequence": 100
   }
@@ -274,6 +275,7 @@ WMS 发布任务：
   "timestamp": 1786060800000,
   "data": {
     "task_id": "PICK-20260811-001",
+    "task_type": "AUTO",
     "queue_revision": 1,
     "dispatch_sequence": 100,
     "not_before": 1786060800000
@@ -306,8 +308,9 @@ DeviceCommand。`queue_changed@v1` 只允许在任务尚未进入 `PREPARING` �
 | JSON Path | `issued` | `queue_changed` | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- | --- |
 | `data.task_id` | 必填 | 必填 | string / WMS | PickingTask 的唯一编号；不要求等于上游拣料单号，WES 不得推导或重建 |
+| `data.task_type` | 必填 | 禁止 | enum / WMS | `MANUAL \| AUTO`；发布后不可变，只用于把任务匹配到人工或自动 Picking WorkLine，不拆分业务实体或任务表 |
 | `data.queue_revision` | 必填且固定为 `1` | 必填且为当前值 `+1` | positive integer / WMS | 只排序队列更新；不能代替 `plan_revision` |
-| `data.dispatch_sequence` | 必填 | 条件 | positive integer / WMS | 自动出库任务池内唯一业务优先序，值越小优先级越高；更新至少改变本字段或 `not_before` |
+| `data.dispatch_sequence` | 必填 | 条件 | positive integer / WMS | 统一出库任务池内唯一业务优先序，值越小优先级越高；更新至少改变本字段或 `not_before` |
 | `data.not_before` | 可选 | 条件 | UTC Unix 毫秒 / WMS | 任务最早可领取时间；省略于发布表示立即具备时间条件，省略于更新表示保持原值 |
 
 需要把已有 `not_before` 恢复为立即可执行时，`queue_changed` 必须发送不晚于当前时间的明确值；禁止发送 `null` 或清除标志。
@@ -1340,7 +1343,7 @@ PickingTask 合同不定义目标机械臂的供应商 `task_type`。实际设�
 ### 12.3 Bin 到达 NG 出口后的上报
 
 `outbound.bin.ng_exit_report@v1` 只报告 Bin 已确认到达 `NG_EXIT`。`reason_code=SOURCE_CELL_MISMATCH` 补充 CELL NG 后的
-Bin 最终位置；其他原因表达 Bin 自身身份或方向异常。CELL 分支示例：
+Bin 最终位置；`MANUAL_PICK_NG` 补充人工拣料 NG 决定后的最终物理位置；其他原因表达 Bin 自身身份或方向异常。CELL 分支示例：
 
 ```json
 {
@@ -1379,8 +1382,8 @@ BIN 分支示例：
 | JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
 | --- | --- | --- | --- |
 | `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask |
-| `data.reason_code` | 是 | enum / WES 证据映射 | `SOURCE_CELL_MISMATCH \| BIN_CODE_UNREADABLE \| BIN_DIRECTION_INVALID` |
-| `data.bin_id` | 条件 | string / 扫码证据 | `SOURCE_CELL_MISMATCH` 或 `BIN_DIRECTION_INVALID` 必填；必须是当前任务已接收的 Bin |
+| `data.reason_code` | 是 | enum / WES 证据映射 | `SOURCE_CELL_MISMATCH \| BIN_CODE_UNREADABLE \| BIN_DIRECTION_INVALID \| MANUAL_PICK_NG` |
+| `data.bin_id` | 条件 | string / 扫码或人工拣料证据 | `SOURCE_CELL_MISMATCH`、`BIN_DIRECTION_INVALID` 或 `MANUAL_PICK_NG` 必填；必须是当前任务已接收的 Bin |
 | `data.expected_bin_id` | 条件 | string / WMS 原值 | `BIN_CODE_UNREADABLE` 必填；表示 `inbound_batch` 已选中并送入工作线的 Bin |
 | `data.ng_exit_code` | 是 | code / WorkLine 静态拓扑 | 实际到达的批准 NG 出口，不得临时生成 |
 | `data.occurred_at` | 是 | UTC Unix 毫秒 / 设备结果 | Bin 到达出口的物理发生时间 |
@@ -1390,7 +1393,8 @@ WMS 在同一事务中保存出口结果并更新 Bin 位置，然后返回 `200
 `task_id + bin_id` 明细；
 `BIN_CODE_UNREADABLE` 不关闭 `task_id + expected_bin_id`。预期 Bin 后续实际到达 SCAN2 时，WMS 仍通过
 `work_plan` 返回 `READY | NO_WORK | WAIT`；因 Bin NG 产生的库存需求缺口由 WMS 创建新的 PickingTask，不通过当前任务的后续计划补充；
-`SOURCE_CELL_MISMATCH` 只补充 Bin 最终位置，不扩大前序 Cell NG 的业务影响范围。
+`SOURCE_CELL_MISMATCH` 只补充 Bin 最终位置，不扩大前序 Cell NG 的业务影响范围；`MANUAL_PICK_NG` 只补充该 Bin 的最终物理位置，不重新决定已由
+`outbound.manual_bin.work_completed@v1` 固结的业务结果。
 
 `RECORDED`只闭合WMS业务位置报告，不释放现场实物。Bin到达整线`NGZone`后继续保留活动 `BinExecution`和WES位置投影；只有操作员
 在`NGZone`扫码并实际取走，WES才关闭该执行并释放管辖权。下次该Bin进入系统时必须使用WMS最新主账创建新的

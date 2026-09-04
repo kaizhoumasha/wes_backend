@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeGuard, cast
+from typing import Any, Protocol, cast
 
 from wes_plugin_sdk.validation import is_persistable_text as _is_persistable_text
 
@@ -12,7 +12,7 @@ from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
 from src.app.wms_adapter.transport_wire import UnsupportedTransportOperation, validate_callback_envelope
-from src.core.uuid7 import is_uuid7
+from src.app.wms_adapter.wire_common import is_wire_operation, is_wire_operation_id
 from src.utils.timezone import timezone
 
 MAX_TRANSPORT_EVENT_BODY_BYTES = 256 * 1024
@@ -131,18 +131,8 @@ def _rejection_message(envelope: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
-def is_wire_operation_id(value: object) -> TypeGuard[str]:
-    return isinstance(value, str) and value == value.lower() and is_uuid7(value)
-
-
-def is_wire_operation(value: object) -> TypeGuard[str]:
-    return _is_persistable_text(value, 80)
-
-
 __all__ = [
     "MAX_TRANSPORT_EVENT_BODY_BYTES",
     "TransportEventHandler",
     "TransportEventResponse",
-    "is_wire_operation",
-    "is_wire_operation_id",
 ]
