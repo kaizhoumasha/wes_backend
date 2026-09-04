@@ -23,11 +23,11 @@ CTU01 货架搬出
 
 | 层级 | 本轮证据 | 当前边界 |
 | --- | --- | --- |
-| 代码/合同 | 单面、多面、重复 Evidence、未知结果、重启恢复和全局单活动轮次均已有自动化验收资产 | 聚焦或集成测试通过只证明对应代码快照 |
+| 代码/合同 | 单面、多面、重复 Evidence、未知结果、重启恢复、全局单活动轮次和活动货架独占均已有自动化验收资产 | 聚焦或集成测试通过只证明对应代码快照 |
 | WMS Mock | Mock 可接受 `CTU01 RACK→RACK_POSITION`、`CTU02 RACK`、`CTU03 RACK→ZONE`，终态仍显式返回精确 `RACK_POSITION` | Mock 不证明真实 WMS/RCS 接纳、执行或回调 |
 | 部署 | 待 release evidence、镜像 digest、OCI source revision 和迁移结果一致后记录 | `/health`、进程存活或 Swagger 可访问不证明业务链路 |
 | `SCAN12` 现场 schema | 暂按 `device_code=SCAN12`、`event_type=SCAN_COMPLETED`、`data.barcode=<料箱编码>` 验收 | 联调时必须确认真实 ECS payload、时间戳、`source_event_id` 和 apply status |
-| RCS/WMS/ECS 物理闭环 | 待现场逐动作核对 | HTTP ACK、Mock 成功、任务数据库 `SUCCEEDED` 均不能单独替代物理事实 |
+| RCS/WMS/ECS 物理闭环 | 操作员已确认本轮直接录入进入真实 WMS/RCS，`SCAN12` 驱动料箱回架并触发最终 `CTU03` | 本轮确认不替代逐消息原始 payload、统一时间窗和现场记录归档 |
 | 业务验收 | 待操作员确认选架、选箱、原 slot 回架及最终返库均符合业务预期 | 只有现场业务 owner 可以签署 |
 
 ## 3. 前置条件
@@ -118,6 +118,7 @@ CTU01("90")
 - 对 `DELIVERY_UNKNOWN` 只能等待同一个 `transport_task_id` 的权威终态；不得生成新 `client_request_id` 重发。
 - worker 或 API 重启后使用持久化 step、`client_request_id` 和 `transport_task_id` 恢复，不得重复创建物理任务。
 - 第二个全局活动轮次必须被拒绝。
+- 活动轮次冻结的 `rack_id` 不得被其它 Transport 创建入口使用；其它货架不应被误拦截。
 - abort 只允许在现场已确认物理静止、关联 Transport 全部确定终态且无活动资源绑定时执行。
 
 ## 6. 证据记录

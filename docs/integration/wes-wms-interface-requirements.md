@@ -1266,7 +1266,8 @@ WES 创建任务前检查可信的精确当前位置和当前工作面；WMS 返
 以下十个代表性请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。`RACK` 宽引用的自动联调完整请求另见
 [Transport 自动联调联合验收](transport-joint-acceptance.md)。样例 3、9、10 使用现场分配的专用联调测试数据：
 货架 `510056`、料箱 `A000001922/A000002653`、储位 `510056A3F2C101/510056A2F2C101`、精确工作位 `KT16`、仓储区域
-`WH01` 和滚筒线投料口 `CNV0301`。由于当前 RCS→WMS→WES 回调链路尚未接通，后文对应结果是合同预期数据，不是现场抓取结果。
+`WH01` 和滚筒线投料口 `CNV0301`。RCS→WMS→WES 回调链路已完成现场联通验证；后文对应结果仍是合同规范样例，不是某次现场
+消息的原始抓取文本。
 
 **样例 1：整架搬运（`RACK_MOVE`）**
 
@@ -1558,6 +1559,9 @@ WMS 的对外处理结果必须满足：
 校验和结果匹配，不另建活动资源绑定；Bin 任务必须绑定其所有来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，防止搬架与
 在该架取放 Bin 并发。`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有搬运提交 ACK 中的 `transport_task_id` 都
 回显本次请求中已解析的合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
+
+WES 中处于 `RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次还会独占其冻结 `rack_id`。除该轮次自身的当前步骤外，
+其它本地 Transport 创建入口必须在形成 WMS submit 前返回资源冲突；该 WES 内部围栏不新增 WMS wire 字段或供应商侧状态。
 
 `RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
 `400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。搬运提交 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有

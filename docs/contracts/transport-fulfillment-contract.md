@@ -2,7 +2,7 @@
 title: WES AGV/CTU 通用搬运能力合同
 status: Approved
 created_at: 2026-08-07
-updated_at: 2026-09-02
+updated_at: 2026-09-03
 contract_version: 0.3.0
 implementation_alignment: ALIGNED
 scope: Phase 4 AGV 整架搬运、货架原地换面、CTU 料箱搬运与协调交换
@@ -614,6 +614,10 @@ CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一�
 直到匹配的权威确定结果完成消歧。唯一例外是第 1 节定义的联调定向清理：事务锁定任务后，按 `transport_task_id` 删除完整本地链路，
 包括随任务聚合删除其绑定；晚到 callback 仍按既有 missing-task Evidence 合同保留为 `CONFLICT`，不得静默丢弃。资源冲突在创建
 阶段失败关闭，不等待 RCS 再拒绝。
+
+`RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次还会在 WES 本地独占其冻结 `rack_id`。只有该轮次在同一事务中创建的
+当前步骤可以继续使用此货架；其它 Transport 创建入口必须在向 WMS 提交前返回资源冲突。自动后继步骤同时复核货架仍位于冻结工作位，
+且当前面与该步骤预期面精确一致，防止任务间隙中其它流程移动或旋转货架后继续操作错误工作面。
 
 精确储位身份使用 `RACK_BIN_SLOT(rack_id + rack_face + slot_id)`，只承担请求内位置唯一性、成员目标校验和结果匹配；活动任务通过
 其所在 `rack_id` 整体互斥，不重复建立精确储位资源绑定。`HANDOFF_POSITION` 可以由多个任务引用，其瞬时容量属于 WMS/RCS 或
