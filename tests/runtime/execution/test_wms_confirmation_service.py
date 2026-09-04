@@ -196,3 +196,45 @@ def test_status_is_the_minimal_approved_closed_set() -> None:
         "COMPLETED",
         "RECONCILING",
     }
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_accepts_exactly_one_picking_task_owner() -> None:
+    service = WmsConfirmationService(repository=FakeWmsConfirmationRepository())
+
+    result = await service.create_or_get(
+        object(),
+        operation="outbound.picking_task.prepare@v1",
+        operation_id="019f3400-0e17-7d2a-b944-3cf7953804da",
+        picking_task_id=31,
+        request_payload={"data": {"task_id": "PICK-1", "workline_code": "LINE-1"}},
+        deadline_at=datetime(2026, 9, 4, 0, 0, 30),
+        created_at=datetime(2026, 9, 4),
+    )
+
+    assert result.confirmation.picking_task_id == 31
+    assert result.confirmation.material_execution_id is None
+    assert result.confirmation.bin_execution_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "owners",
+    [
+        {},
+        {"material_execution_id": 21, "picking_task_id": 31},
+    ],
+)
+async def test_lifecycle_rejects_missing_or_ambiguous_owner(owners: dict[str, int]) -> None:
+    service = WmsConfirmationService(repository=FakeWmsConfirmationRepository())
+
+    with pytest.raises(ValueError, match="恰好一个"):
+        await service.create_or_get(
+            object(),
+            operation="outbound.picking_task.prepare@v1",
+            operation_id="019f3400-0e17-7d2a-b944-3cf7953804da",
+            request_payload={"data": {}},
+            deadline_at=datetime(2026, 9, 4, 0, 0, 30),
+            created_at=datetime(2026, 9, 4),
+            **owners,
+        )
