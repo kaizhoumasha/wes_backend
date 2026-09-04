@@ -328,7 +328,8 @@ async def test_transport_debug_projection_successor_backfills_latest_applied_fac
         finally:
             await connection.close()
 
-        run_alembic("upgrade", "head", database_url=database_url)
+        # 本用例只验证冻结的 Transport 迁移自身可逆性，不跨越后续明确不可 downgrade 的业务迁移。
+        run_alembic("upgrade", HEAD_REVISION, database_url=database_url)
         connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
         try:
             row = await connection.fetchrow(
