@@ -165,28 +165,33 @@ class TransportDebugRunRepository:
             )
         )
 
-    async def list_current_steps(
+    async def list_steps_for_runs(
         self,
         db: AsyncSession,
         runs: list[TransportDebugRun],
-    ) -> dict[str, TransportDebugRunStep]:
+    ) -> dict[str, list[TransportDebugRunStep]]:
         if not runs:
             return {}
         step_columns = cast("Any", TransportDebugRunStep).__table__.c
         steps = await db.scalars(
-            select(TransportDebugRunStep).where(
+            select(TransportDebugRunStep)
+            .where(
                 or_(
                     *(
                         and_(
                             step_columns.run_id == run.run_id,
-                            step_columns.ordinal == run.current_step_ordinal,
+                            step_columns.ordinal <= run.current_step_ordinal,
                         )
                         for run in runs
                     )
                 )
             )
+            .order_by(step_columns.run_id.asc(), step_columns.ordinal.asc(), step_columns.id.asc())
         )
-        return {step.run_id: step for step in steps}
+        grouped = {run.run_id: [] for run in runs}
+        for step in steps:
+            grouped[step.run_id].append(step)
+        return grouped
 
     async def list_recent_runs(
         self,

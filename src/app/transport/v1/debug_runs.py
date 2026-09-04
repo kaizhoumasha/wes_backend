@@ -114,6 +114,7 @@ class TransportDebugRunResponse(_StrictApiModel):
     current_group_index: int
     current_phase: TransportDebugRunPhase
     current_step: TransportDebugRunStepResponse | None
+    steps: list[TransportDebugRunStepResponse]
     observed_bin_ids: list[str]
     attention_code: str | None
     attention_detail: str | None

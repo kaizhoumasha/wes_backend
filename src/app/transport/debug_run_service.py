@@ -108,6 +108,7 @@ class TransportDebugRunSnapshot:
     current_group_index: int
     current_phase: TransportDebugRunPhase
     current_step: TransportDebugRunStepSnapshot | None
+    steps: tuple[TransportDebugRunStepSnapshot, ...]
     observed_bin_ids: tuple[str, ...]
     attention_code: str | None
     attention_detail: str | None
@@ -180,7 +181,7 @@ class TransportDebugRunService:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
                 await self._repository.add_run(db, run, first_step)
-                snapshot = await self._snapshot(db, run, first_step=first_step)
+                snapshot = await self._snapshot(db, run, steps=(first_step,))
                 event_payload = _event_payload(run)
         except IntegrityError as error:
             async with self._sessions() as db:
@@ -209,8 +210,8 @@ class TransportDebugRunService:
                 before_id=before_id,
             )
             visible = runs[:limit]
-            current_steps = await self._repository.list_current_steps(db, visible)
-            items = tuple([await self._snapshot(db, run, first_step=current_steps.get(run.run_id)) for run in visible])
+            step_histories = await self._repository.list_steps_for_runs(db, visible)
+            items = tuple([await self._snapshot(db, run, steps=step_histories.get(run.run_id, ())) for run in visible])
         next_cursor = None
         if len(runs) > limit and visible:
             tail = visible[-1]
@@ -271,7 +272,7 @@ class TransportDebugRunService:
                     },
                 },
             )
-            snapshot = await self._snapshot(db, run)
+            snapshot = await self._snapshot(db, run, steps=steps)
             event_payload = _event_payload(run)
         await self._publish_update(event_payload)
         return snapshot
@@ -663,10 +664,14 @@ class TransportDebugRunService:
         db: AsyncSession,
         run: TransportDebugRun,
         *,
-        first_step: TransportDebugRunStep | None = None,
+        steps: Sequence[TransportDebugRunStep] | None = None,
     ) -> TransportDebugRunSnapshot:
-        step = first_step or await self._repository.get_current_step(db, run)
-        step_snapshot = _step_snapshot(step) if step is not None else None
+        persisted_steps = list(steps) if steps is not None else await self._repository.list_steps(db, run.run_id)
+        step_snapshots = tuple(_step_snapshot(step) for step in persisted_steps)
+        step_snapshot = next(
+            (step for step in step_snapshots if step.ordinal == run.current_step_ordinal),
+            None,
+        )
         return TransportDebugRunSnapshot(
             run_id=run.run_id,
             status=TransportDebugRunStatus(run.status),
@@ -675,6 +680,7 @@ class TransportDebugRunService:
             current_group_index=run.current_group_index,
             current_phase=TransportDebugRunPhase(run.current_phase),
             current_step=step_snapshot,
+            steps=step_snapshots,
             observed_bin_ids=step_snapshot.observed_bin_ids if step_snapshot is not None else (),
             attention_code=run.attention_code,
             attention_detail=run.attention_detail,

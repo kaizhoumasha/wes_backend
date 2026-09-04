@@ -64,7 +64,7 @@ class _Repository:
         self.steps: dict[str, list[TransportDebugRunStep]] = {}
         self.tasks: dict[str, TransportTask] = {}
         self.active_binding = False
-        self.current_step_batch_sizes: list[int] = []
+        self.step_history_batch_sizes: list[int] = []
 
     async def get_active_run(self, db: object, *, for_update: bool = False) -> TransportDebugRun | None:
         del db, for_update
@@ -93,14 +93,14 @@ class _Repository:
         del db
         return self.steps[run_id]
 
-    async def list_current_steps(
+    async def list_steps_for_runs(
         self,
         db: object,
         runs: list[TransportDebugRun],
-    ) -> dict[str, TransportDebugRunStep]:
+    ) -> dict[str, list[TransportDebugRunStep]]:
         del db
-        self.current_step_batch_sizes.append(len(runs))
-        return {run.run_id: self.steps[run.run_id][run.current_step_ordinal] for run in runs}
+        self.step_history_batch_sizes.append(len(runs))
+        return {run.run_id: self.steps[run.run_id] for run in runs}
 
     async def list_recent_runs(
         self,
@@ -201,6 +201,7 @@ async def test_create_run_freezes_exact_operator_input_and_first_step_identity()
     assert snapshot.face_groups[0].face == " 90 "
     assert snapshot.current_step is not None
     assert snapshot.current_step.client_request_id == step.client_request_id
+    assert snapshot.steps == (snapshot.current_step,)
     assert snapshot.can_abort is False
     assert sessions.commits == 1
     assert publisher.events == [
@@ -213,6 +214,36 @@ async def test_create_run_freezes_exact_operator_input_and_first_step_identity()
             "updated_at": "2026-09-02T12:00:00+00:00",
         }
     ]
+
+
+async def test_get_run_returns_complete_step_history() -> None:
+    service, repository, _, _ = _service()
+    created = await service.create_run(_request(), actor_id=7)
+    run = repository.runs[created.run_id]
+    first_step = repository.steps[created.run_id][0]
+    first_step.status = "SUCCEEDED"
+    second_step = TransportDebugRunStep(
+        run_id=created.run_id,
+        ordinal=1,
+        group_index=0,
+        phase="BINS_TO_INFEED",
+        status="WAITING",
+        client_request_id="01a06986-9e3f-7fe9-8602-15a9a4e75805",
+        transport_task_id="transport-2",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    repository.steps[created.run_id].append(second_step)
+    run.current_phase = second_step.phase
+    run.current_step_ordinal = second_step.ordinal
+
+    snapshot = await service.get_run(created.run_id)
+
+    assert [(step.ordinal, step.phase, step.status) for step in snapshot.steps] == [
+        (0, "RACK_TO_STATION", "SUCCEEDED"),
+        (1, "BINS_TO_INFEED", "WAITING"),
+    ]
+    assert snapshot.current_step == snapshot.steps[1]
 
 
 async def test_create_run_accepts_operator_input_without_resource_mounts() -> None:
@@ -249,13 +280,29 @@ async def test_list_runs_uses_stable_cursor_and_rejects_invalid_cursor() -> None
     repository.runs[first.run_id].id = 1
     second = await service.create_run(_request(face="270"), actor_id=8)
     repository.runs[second.run_id].id = 2
+    repository.steps[second.run_id].append(
+        TransportDebugRunStep(
+            run_id=second.run_id,
+            ordinal=1,
+            group_index=0,
+            phase="BINS_TO_INFEED",
+            status="WAITING",
+            client_request_id="01a06986-9e3f-7fe9-8602-15a9a4e75806",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    repository.runs[second.run_id].current_phase = "BINS_TO_INFEED"
+    repository.runs[second.run_id].current_step_ordinal = 1
 
     page = await service.list_runs(limit=1, cursor=None)
     next_page = await service.list_runs(limit=1, cursor=page.next_cursor)
 
     assert [item.run_id for item in page.items] == [second.run_id]
     assert [item.run_id for item in next_page.items] == [first.run_id]
-    assert repository.current_step_batch_sizes == [1, 1]
+    assert [step.ordinal for step in page.items[0].steps] == [0, 1]
+    assert page.items[0].current_step == page.items[0].steps[1]
+    assert repository.step_history_batch_sizes == [1, 1]
     with pytest.raises(TransportDebugRunContractError, match="cursor"):
         await service.list_runs(limit=1, cursor="not-a-cursor")
 

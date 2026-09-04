@@ -41,6 +41,7 @@ def _snapshot(*, run_id: str = "debug-run-1", face: str = " 90 ") -> TransportDe
         current_group_index=0,
         current_phase=TransportDebugRunPhase.RACK_TO_STATION,
         current_step=None,
+        steps=(),
         observed_bin_ids=(),
         attention_code=None,
         attention_detail=None,
@@ -134,6 +135,7 @@ async def test_create_debug_run_preserves_face_and_passes_authenticated_actor() 
     assert response.status_code == 202
     assert response.json()["code"] == "1004"
     assert response.json()["data"]["face_groups"][0]["face"] == " 90 "
+    assert response.json()["data"]["steps"] == []
     request = service.create_run.await_args.args[0]
     assert request.face_groups[0].face == " 90 "
     assert service.create_run.await_args.kwargs == {"actor_id": 42}

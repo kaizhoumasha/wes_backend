@@ -139,7 +139,7 @@ async def test_debug_run_repository_reads_current_step_and_stable_history(
             await cleanup_db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
 
 
-async def test_list_current_steps_uses_the_frozen_parent_cursor(
+async def test_list_steps_for_runs_uses_the_frozen_parent_cursors(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     repository = TransportDebugRunRepository()
@@ -170,9 +170,9 @@ async def test_list_current_steps_uses_the_frozen_parent_cursor(
                     .where(TransportDebugRun.run_id == run_id)
                     .values(current_step_ordinal=1, current_phase=TransportDebugRunPhase.WAIT_SCAN12.value)
                 )
-            current_steps = await repository.list_current_steps(read_db, [frozen])
+            step_histories = await repository.list_steps_for_runs(read_db, [frozen])
 
-        assert current_steps[run_id].ordinal == 0
+        assert [step.ordinal for step in step_histories[run_id]] == [0]
     finally:
         async with integration_session_factory.begin() as cleanup_db:
             await cleanup_db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id == run_id))
