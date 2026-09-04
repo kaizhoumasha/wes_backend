@@ -310,6 +310,10 @@ flowchart LR
 接收方可以比较严格 DTO 或规范化 JSON，但不得比较原始 bytes 后把仅有空白或对象字段顺序变化的请求误判为冲突。发送方仍应保存并
 重发首次形成的同一组 UTF-8 bytes，减少跨语言差异。摘要算法属于内部实现。
 
+`transport.task.resulted@v1` 还按第 3.2 节登记 `transport_task_id + outcome_revision`：新的消息身份若携带与已登记版本完全相同的
+`data`，WES 为兼容上游非规范重发返回 `200 / DUPLICATE`；同版本 `data` 不同仍返回 `409 / CONFLICT`。该兼容不改变同一
+`operation + operation_id` 对应不同完整消息必须冲突的公共规则。
+
 首版幂等记录不自动过期或清理。WMS 必须保留搬运提交的完整请求身份、内容摘要和首次终局响应；WES 必须保留容器中间位置事件/搬运最终结果的对应记录。开发或
 测试数据只有在双方停止相关发送任务，并确认同时重置环境后才能清理。未来确需增加生产清理周期时，必须先修改本文，不能由单方
 自行设置过期时间。
@@ -720,7 +724,7 @@ async Task<HttpResult> ReceiveTransportRequestAsync(HttpRequest request, Cancell
 | --- | --- | --- | --- |
 | `200 / DECIDED` | 同步业务决定已经形成 | operation 专属结果联合 | 按 `data.result` 继续；只用于 `Approved` 后的业务场景 |
 | `200 / RECORDED` | Fact 和对应业务结果已经一致生效 | operation 专属字段或 `{}` | 结束本次 Fact 义务 |
-| `200 / DUPLICATE` | 相同身份和相同完整消息已经接纳 | operation 专属字段；复用第一次 `timestamp + data` | 视为本次义务已经完成 |
+| `200 / DUPLICATE` | 相同身份和相同完整消息已经接纳；或 operation 专属合同定义的相同业务版本已经接纳 | operation 专属字段；同一身份重试复用该身份首次 `timestamp + data` | 视为本次义务已经完成 |
 | `202 / RECEIVED` | Event、Transport 请求或 evidence 已可靠接纳 | operation 专属字段 | 只表示接纳，不表示物理或业务完成 |
 | `202 / PREPARE_ACCEPTED` | 耗时业务准备义务已可靠接纳 | operation 专属字段或 `{}` | 等待后续 Event，不把 ACK 当作计划 |
 | `400`，空响应体 | 错误 `Content-Type`、非法 UTF-8/JSON、number 超出合同规范化域，或无法提取合法 UUIDv7 `operation_id` | 无响应信封 | 停止原消息；修正后创建新身份 |
@@ -1053,9 +1057,9 @@ static string CreateUuidV7()
 
 | `kind` | 完整字段 | 允许用途 |
 | --- | --- | --- |
-| `RACK` | `kind + location_code` | `RACK_MOVE` 的 `source/target`；值必须等于外层 `rack_id`，由 RCS 解析位置 |
+| `RACK` | `kind + location_code` | `RACK_MOVE` 的 `source/target`、`RACK_ROTATE` 的 `source/target`；值必须等于外层 `rack_id`，由 RCS 解析位置 |
 | `ZONE` | `kind + location_code` | `RACK_MOVE` 的 `source/target`；值表示区域编号，不指定精确地码 |
-| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE` 的精确 `source/target`、`RACK_ROTATE` 的位置和货架最终精确位置 |
+| `RACK_POSITION` | `kind + location_code` | `RACK_MOVE` 的精确 `source/target`、`RACK_ROTATE` 的精确 `source/target` 和货架最终精确位置 |
 | `RACK_BIN_SLOT` | `kind + rack_id + rack_face + slot_id` | Bin 所在货架储位、Bin 搬运最终结果最终位置；四个字段共同定位唯一物理储位 |
 | `HANDOFF_POSITION` | `kind + location_code` | WorkLine 入料口、出料口或其它已批准交接位、Bin 搬运最终结果最终位置 |
 
@@ -1214,7 +1218,7 @@ operation = transport.task.submit@v1
 | DTO 族 | `kind` | 其余必填字段 | 关键规则 |
 | --- | --- | --- | --- |
 | 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target + target_face` | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；`target_face` 是不透明 string token |
-| 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置都是精确 `RACK_POSITION` 且相同；`target_face` 是不透明 string token 且不同于可信当前面 |
+| 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置均为相同的 `RACK` 或相同的精确 `RACK_POSITION`；`RACK.location_code` 等于外层 `rack_id`；`target_face` 是不透明 string token 且不同于可信当前面 |
 | 料箱 | `BIN_MOVE` | `moves[] {container_id + source + target}` | `moves` 为 `1..4`；`container_id` 唯一；每项来源与目标不同且至少一端是 `RACK_BIN_SLOT` |
 | 料箱 | `BIN_EXCHANGE` | `moves[] {container_id + source + target}` | `moves` 只能为 `2` 或 `4`；`container_id` 唯一；所有位置是 `RACK_BIN_SLOT`；形成 1～2 个二元闭环 |
 
@@ -1234,8 +1238,9 @@ operation = transport.task.submit@v1
 `source=S,target=T` 必须且只能存在一个 `source=T,target=S` 的反向成员；四个成员只能形成两个互不重叠的二元闭环。需要操作
 任一货架另一面时，先完成独立 `RACK_ROTATE`，再创建新的 Bin 任务。
 
-WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自身主数据和可信 RCS 状态再次检查。对于 `RACK_ROTATE`，无法
-取得可信当前面时返回 `503 / UNAVAILABLE`，`target_face` 等于可信当前面时返回 `409 / CONFLICT`。对于 Bin 请求，请求中的
+WES 创建任务前检查可信的精确当前位置和当前工作面；WMS 返回 `RECEIVED` 前以自身主数据和可信 RCS 状态再次检查。对于
+`RACK_ROTATE`，即使请求使用 `RACK` 宽引用，也必须先解析并确认精确当前位置；无法取得可信精确位置或当前面时返回
+`503 / UNAVAILABLE`，`target_face` 等于可信当前面时返回 `409 / CONFLICT`。对于 Bin 请求，请求中的
 `rack_face` 与已知当前面不一致时返回 `409 / CONFLICT`，无法取得必须的可信当前面时返回 `503 / UNAVAILABLE`。上述情况均不得
 调用 RCS。除批准的 `rcs_template_id` 外，请求禁止携带货架类型、空/满箱、容量、车辆、路线、RCS 内部动作顺序、WES 工作线
 调用方身份或供应商私有字段。
@@ -1248,7 +1253,9 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 | 区域内货架到工作位 | `RACK_MOVE` | `CTU01` | `ZONE` | `RACK_POSITION` | 精确工作位 |
 | 指定货架到工作位 | `RACK_MOVE` | `CTU01` | `RACK` | `RACK_POSITION` | 精确工作位 |
 | 精确库位货架到工作位 | `RACK_MOVE` | `CTU01` | `RACK_POSITION` | `RACK_POSITION` | 精确工作位 |
+| 指定货架在当前工作位原地换面 | `RACK_ROTATE` | `CTU02` | `RACK` | `RACK` | 当前精确工作位及目标面 |
 | 工作位原地换面 | `RACK_ROTATE` | `CTU02` | `RACK_POSITION` | `RACK_POSITION` | 原工作位及目标面 |
+| 指定货架返回指定区域 | `RACK_MOVE` | `CTU03` | `RACK` | `ZONE` | 区域内的精确库位 |
 | 工作位按货架编号返回库位 | `RACK_MOVE` | `CTU03` | `RACK_POSITION` | `RACK` | RCS 选定的精确库位 |
 | 工作位返回指定区域 | `RACK_MOVE` | `CTU03` | `RACK_POSITION` | `ZONE` | 区域内的精确库位 |
 | 工作位返回精确库位 | `RACK_MOVE` | `CTU03` | `RACK_POSITION` | `RACK_POSITION` | 请求指定的精确库位 |
@@ -1256,9 +1263,11 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
 | 批量搬运料箱 | `BIN_MOVE` | 不适用 | `RACK_BIN_SLOT` | `HANDOFF_POSITION` | 各成员请求指定的位置 |
 | 协调交换料箱 | `BIN_EXCHANGE` | 不适用 | `RACK_BIN_SLOT` | `RACK_BIN_SLOT` | 各成员请求指定的位置 |
 
-以下十个请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。样例 3、9、10 使用现场分配的专用联调测试数据：
+以下十个代表性请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。`RACK` 宽引用的自动联调完整请求另见
+[Transport 自动联调联合验收](transport-joint-acceptance.md)。样例 3、9、10 使用现场分配的专用联调测试数据：
 货架 `510056`、料箱 `A000001922/A000002653`、储位 `510056A3F2C101/510056A2F2C101`、精确工作位 `KT16`、仓储区域
-`WH01` 和滚筒线投料口 `CNV0301`。由于当前 RCS→WMS→WES 回调链路尚未接通，后文对应结果是合同预期数据，不是现场抓取结果。
+`WH01` 和滚筒线投料口 `CNV0301`。RCS→WMS→WES 回调链路已完成现场联通验证；后文对应结果仍是合同规范样例，不是某次现场
+消息的原始抓取文本。
 
 **样例 1：整架搬运（`RACK_MOVE`）**
 
@@ -1295,8 +1304,8 @@ WES 创建任务前检查可信本地工作面；WMS 返回 `RECEIVED` 前以自
     "kind": "RACK_ROTATE",
     "rcs_template_id": "CTU02",
     "rack_id": "RACK-005-01",
-    "source": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
-    "target": {"kind": "RACK_POSITION", "location_code": "SORTING-LINE-01-RACK-A"},
+    "source": {"kind": "RACK", "location_code": "RACK-005-01"},
+    "target": {"kind": "RACK", "location_code": "RACK-005-01"},
     "target_face": "270"
   }
 }
@@ -1551,6 +1560,9 @@ WMS 的对外处理结果必须满足：
 在该架取放 Bin 并发。`HANDOFF_POSITION` 允许多个成员共享，其瞬时容量由 WMS/RCS 调度。所有搬运提交 ACK 中的 `transport_task_id` 都
 回显本次请求中已解析的合法值，包括 `409`；不得替换成冲突方任务 ID。稳定身份、当前面不匹配或占用冲突使用 `409`。
 
+WES 中处于 `RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次还会独占其冻结 `rack_id`。除该轮次自身的当前步骤外，
+其它本地 Transport 创建入口必须在形成 WMS submit 前返回资源冲突；该 WES 内部围栏不新增 WMS wire 字段或供应商侧状态。
+
 `RECEIVED/DUPLICATE` 表示 `transport_task_id` 已经绑定本次提交；`UNAVAILABLE` 表示尚未接纳，WES 使用原消息重试；
 `400/413/REJECTED` 表示确定未接纳，WES 不再使用该 `transport_task_id`。搬运提交 `reason_code` 必须来自第 3.1.4 节闭集；WES 对所有
 `REJECTED` 都执行相同的终止处理，不根据诊断码增加自动业务分支。
@@ -1760,7 +1772,8 @@ operation = transport.task.resulted@v1
   准确表达时必须使用 `position_unknown=true + failure_code=POSITION_UNKNOWN`。
 
 搬运最终结果版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES 接纳更高版本并单调应用；低版本迟到时仍可靠 ACK，但不得让结果
-或位置回退。同一版本、同一完整消息按重复处理；同一版本、不同消息返回 `409 / CONFLICT`。`UNKNOWN` 可以经人工核对或更可靠
+或位置回退。同一版本、相同 `data` 按 `200 / DUPLICATE` 处理，不受 `operation_id` 或 `timestamp` 是否重建影响；同一版本、不同 `data`
+返回 `409 / CONFLICT`。`UNKNOWN` 可以经人工核对或更可靠
 证据修订为 `SUCCEEDED/FAILED`；已经确定的 `SUCCEEDED/FAILED` 不允许通过后续搬运最终结果修订，即使版本更高也按证据冲突处理。
 人工对账只形成独立审计与现场处置，不能覆盖已经释放资源的确定终态。
 
@@ -2212,6 +2225,7 @@ ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入
 | `JSON-UNKNOWN-FIELD` | 样例 1 `data` 增加 `vehicle_id` | `422 / REJECTED + INVALID_DATA` |
 | `member-position-missing-final-position` | 容器中间位置事件 `TARGET_PLACED` 省略 `final_position` | `422 / REJECTED + INVALID_EVIDENCE` |
 | `搬运提交-CROSS-FACE-EXCHANGE` | 使用下方跨面请求 | `422 / REJECTED + INVALID_DATA`，不得创建部分任务 |
+| `搬运最终结果-SEMANTIC-DUPLICATE` | 同一任务、同一 `outcome_revision` 和相同 `data`，但使用新的 `operation_id` 与 `timestamp` | 第二条消息 `200 / DUPLICATE`，不得创建第二份 evidence |
 | `搬运最终结果-REVISION-CONFLICT` | 同一任务、同一 `outcome_revision`、相同成员但结果内容不同 | 第二条消息 `409 / CONFLICT` |
 | `搬运最终结果-OLD-REVISION` | WES 已应用版本 2 后收到内容合法的版本 1 | 可靠 ACK，但不得回退结果和位置 |
 

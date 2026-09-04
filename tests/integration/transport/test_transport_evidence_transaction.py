@@ -521,7 +521,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
 
 
-async def test_concurrent_result_revision_binds_to_only_one_operation(
+async def test_concurrent_semantic_duplicate_revision_converges_to_one_evidence(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     setup_service = TransportService(
@@ -571,7 +571,7 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
                 for service, callback_operation_id in zip(services, callback_operation_ids, strict=True)
             )
         )
-        assert sorted(result["code"] for result in results) == ["CONFLICT", "RECEIVED"]
+        assert sorted(result["code"] for result in results) == ["DUPLICATE", "RECEIVED"]
 
         async with integration_session_factory() as db:
             evidence_count = await db.scalar(
@@ -582,7 +582,15 @@ async def test_concurrent_result_revision_binds_to_only_one_operation(
                     TransportEvidence.outcome_revision == 1,
                 )
             )
+            receipt_codes = list(
+                await db.scalars(
+                    select(TransportCallbackReceipt.response_code)
+                    .where(TransportCallbackReceipt.operation_id.in_(callback_operation_ids))
+                    .order_by(TransportCallbackReceipt.response_code)
+                )
+            )
         assert evidence_count == 1
+        assert receipt_codes == ["DUPLICATE", "RECEIVED"]
     finally:
         async with integration_session_factory.begin() as db:
             await db.execute(

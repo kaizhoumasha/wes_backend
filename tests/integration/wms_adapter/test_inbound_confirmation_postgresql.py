@@ -27,6 +27,7 @@ from src.app.execution.services import (
 )
 from src.app.wms_adapter.inbound_adapter import InboundDispatchCode
 from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION
+from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7

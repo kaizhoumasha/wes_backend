@@ -39,7 +39,9 @@ def _runtime() -> SimpleNamespace:
         list_task_snapshots=AsyncMock(),
         preview_debug_task_reset=AsyncMock(),
         reset_debug_task=AsyncMock(),
+        rotate_rack_for_debug=AsyncMock(),
         move_bins_for_debug=AsyncMock(),
+        exchange_bins_for_debug=AsyncMock(),
     )
     return SimpleNamespace(
         closed=False,
@@ -84,6 +86,10 @@ def _rack_position(location_code: str) -> dict[str, str]:
     return {"kind": "RACK_POSITION", "location_code": location_code}
 
 
+def _rack_reference(location_code: str) -> dict[str, str]:
+    return {"kind": "RACK", "location_code": location_code}
+
+
 def _zone_position(location_code: str) -> dict[str, str]:
     return {"kind": "ZONE", "location_code": location_code}
 
@@ -113,7 +119,7 @@ def _valid_payload(kind: str) -> dict[str, object]:
             **common,
             "data": {
                 "rack_id": "RACK-01",
-                "position": _rack_position("LINE-01"),
+                "position": _rack_reference("RACK-01"),
                 "target_face": "270",
             },
         }
@@ -241,6 +247,14 @@ def test_debug_task_openapi_exposes_exactly_four_named_examples_and_union_branch
     union_schema = schema["components"]["schemas"]["_DebugTransportTaskRequest"]
     assert len(union_schema["oneOf"]) == 4
     assert union_schema["discriminator"]["propertyName"] == "kind"
+    rotate_position_ref = schema["components"]["schemas"]["_RackRotateData"]["properties"]["position"]
+    assert rotate_position_ref == {"$ref": "#/components/schemas/_RackRotatePosition"}
+    rotate_position = schema["components"]["schemas"]["_RackRotatePosition"]
+    assert rotate_position["discriminator"]["propertyName"] == "kind"
+    assert rotate_position["oneOf"] == [
+        {"$ref": "#/components/schemas/_RackReference"},
+        {"$ref": "#/components/schemas/_RackPosition"},
+    ]
 
 
 def test_debug_reset_openapi_exposes_task_id_and_optional_confirmation_contract() -> None:
@@ -277,8 +291,13 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     runtime = _runtime()
     payload = _valid_payload(kind)
     expected_handle = TransportHandle("transport-api-test", str(payload["client_request_id"]))
-    target = runtime.service if kind == "BIN_MOVE" else runtime.port
-    target_method = "move_bins_for_debug" if kind == "BIN_MOVE" else expected_method
+    debug_service_methods = {
+        "RACK_ROTATE": "rotate_rack_for_debug",
+        "BIN_MOVE": "move_bins_for_debug",
+        "BIN_EXCHANGE": "exchange_bins_for_debug",
+    }
+    target_method = debug_service_methods.get(kind, expected_method)
+    target = runtime.service if kind in debug_service_methods else runtime.port
     getattr(target, target_method).return_value = expected_handle
 
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
@@ -291,20 +310,29 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
         "client_request_id": expected_handle.client_request_id,
     }
     for method_name in ("move_rack", "rotate_rack", "move_bins", "exchange_bins"):
-        expected_count = 1 if kind != "BIN_MOVE" and method_name == expected_method else 0
+        expected_count = 1 if kind == "RACK_MOVE" and method_name == expected_method else 0
         assert getattr(runtime.port, method_name).await_count == expected_count
-    assert runtime.service.move_bins_for_debug.await_count == (1 if kind == "BIN_MOVE" else 0)
+    for method_name, method_kind in (
+        ("rotate_rack_for_debug", "RACK_ROTATE"),
+        ("move_bins_for_debug", "BIN_MOVE"),
+        ("exchange_bins_for_debug", "BIN_EXCHANGE"),
+    ):
+        assert getattr(runtime.service, method_name).await_count == (1 if kind == method_kind else 0)
     called_args = getattr(target, target_method).await_args.args
     assert called_args[1].workline_id == "TRANSPORT_DEBUG"
     assert called_args[1].station_id == "STATION-DEBUG"
+    if kind == "RACK_ROTATE":
+        assert called_args[3].kind == "RACK"
+        assert called_args[3].location_code == "RACK-01"
+        assert called_args[4] == "270"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("source", "target", "template"),
     [
-        (_zone_position("WH01"), _rack_position("KT16"), RcsTemplateId.CTU01),
-        (_rack_position("KT16"), _zone_position("WH01"), RcsTemplateId.CTU03),
+        (_rack_reference("510056"), _rack_position("KT16"), RcsTemplateId.CTU01),
+        (_rack_reference("510056"), _zone_position("WH01"), RcsTemplateId.CTU03),
     ],
 )
 async def test_510056_debug_rack_routes_dispatch_exact_canonical_wire(
@@ -338,43 +366,6 @@ async def test_510056_debug_rack_routes_dispatch_exact_canonical_wire(
     assert called_args[4].kind == target["kind"]
     assert called_args[4].location_code == target["location_code"]
     assert called_args[5:] == ("90", template)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("source", "target", "template"),
-    [
-        (_zone_position("WH01"), _rack_position("KT16"), None),
-        (_zone_position("WH01"), _rack_position("KT16"), "F01"),
-        (_rack_position("WH01"), _rack_position("KT16"), "CTU01"),
-        (_rack_position("KT16"), _zone_position("WH01"), None),
-        (_rack_position("KT16"), _zone_position("WH01"), "F01"),
-    ],
-)
-async def test_510056_debug_rack_routes_reject_missing_or_wrong_kind_and_template_before_dispatch(
-    source: dict[str, str],
-    target: dict[str, str],
-    template: str | None,
-) -> None:
-    runtime = _runtime()
-    payload = {
-        "client_request_id": new_uuid7(),
-        "station_id": "CTU01",
-        "kind": "RACK_MOVE",
-        "data": {
-            "rack_id": "510056",
-            "source": source,
-            "target": target,
-            "target_face": "90",
-            "rcs_template_id": template,
-        },
-    }
-
-    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
-        response = await client.post("/api/v1/transport/debug-tasks", json=payload)
-
-    assert response.status_code == 400
-    runtime.port.move_rack.assert_not_awaited()
 
 
 @pytest.mark.asyncio

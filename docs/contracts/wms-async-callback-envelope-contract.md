@@ -120,7 +120,7 @@ WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返�
 | HTTP / `code` | 含义 |
 | --- | --- |
 | `202 / RECEIVED` | 首次成功保存，WMS 可以结束本次提交 |
-| `200 / DUPLICATE` | 这条消息以前已经保存，且内容相同 |
+| `200 / DUPLICATE` | 这条消息以前已经保存且内容相同，或 operation 专属合同定义的相同业务版本已经保存 |
 | `409 / CONFLICT` | 相同消息 ID 对应的内容不同，或者业务数据与已保存内容冲突 |
 | `400`，空响应体 | 请求不是合法 JSON，或无法提取合法 `operation_id`；尚未建立消息关联 |
 | `413`，空响应体 | 原始 Body 超过共享入口 `256 KiB` 上限，在解码前拒绝；尚未建立消息关联 |
@@ -139,6 +139,10 @@ WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返�
 收到 `UNAVAILABLE`，或者没有收到明确响应时，WMS 使用原 `operation_id` 和原请求内容重试。
 收到 `400 | 413 | 422` 后不要继续重试原内容。修正请求后生成新的 `operation_id`。
 收到 `CONFLICT` 后停止自动发送并转人工检查，不能只换一个 ID 再发。
+
+`transport.task.resulted@v1` 的专属合同定义了一项接收兼容：新的消息身份若复用同一 `transport_task_id + outcome_revision` 且
+`data` 与已保存结果完全相同，WES 返回 `200 / DUPLICATE` 且不保存第二份 evidence；同版本 `data` 不同仍返回
+`409 / CONFLICT`。同一 `operation + operation_id` 对应不同完整消息的公共冲突规则不变。
 
 ## 6. 每个业务 operation 还要说明什么
 

@@ -1,7 +1,7 @@
 """添加 PickingTask 发布接收
 
 Revision ID: a0f4b56d0f50
-Revises: e0da335c057d
+Revises: 8f3c61e57a90
 Create Date: 2026-09-04 04:58:04.885514+08:00
 
 """
@@ -14,7 +14,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "a0f4b56d0f50"
-down_revision: Union[str, Sequence[str], None] = "e0da335c057d"
+down_revision: Union[str, Sequence[str], None] = "8f3c61e57a90"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

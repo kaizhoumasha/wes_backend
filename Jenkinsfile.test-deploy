@@ -503,6 +503,7 @@ try:
     asyncio.run(client.aclose())
     celery_app.loader.import_default_modules()
     required = {
+        "src.celery_app.tasks.transport.advance_transport_debug_runs_batch",
         "src.celery_app.tasks.transport.process_transport_evidence_batch",
         "src.celery_app.tasks.transport.publish_transport_outcomes_batch",
         "src.celery_app.tasks.transport.reconcile_transport_tasks_batch",

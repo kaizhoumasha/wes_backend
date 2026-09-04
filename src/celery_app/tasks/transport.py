@@ -43,6 +43,19 @@ def submit_transport_tasks_batch(limit: int = 100) -> int:
     return run_async(_submit)
 
 
+@celery_app.task(name="src.celery_app.tasks.transport.advance_transport_debug_runs_batch")
+def advance_transport_debug_runs_batch(limit: int = 100) -> int:
+    _require_fixed_batch(limit)
+
+    async def _advance() -> int:
+        runtime = celery_async_runtime.transport_runtime
+        if runtime is None:
+            raise RuntimeError("Transport runtime is unavailable in the current Celery child")
+        return await runtime.debug_run_service.advance_active_runs(limit)
+
+    return run_async(_advance)
+
+
 @celery_app.task(name="src.celery_app.tasks.transport.process_transport_evidence_batch")
 def process_transport_evidence_batch(limit: int = 100) -> int:
     _require_fixed_batch(limit)
@@ -74,6 +87,7 @@ def publish_transport_outcomes_batch(limit: int = 100) -> int:
 
 
 __all__ = [
+    "advance_transport_debug_runs_batch",
     "process_transport_evidence_batch",
     "publish_transport_outcomes_batch",
     "reconcile_transport_tasks_batch",

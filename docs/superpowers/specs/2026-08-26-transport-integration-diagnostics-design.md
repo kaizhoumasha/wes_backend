@@ -2,8 +2,8 @@
 
 **日期：** 2026-08-26
 
-**状态：** 诊断功能及 Transport 0.3.0 请求字段已完成仓内对齐；当前 local backend `develop@f2129982`、local frontend
-`develop@aea88687`。当前未部署，也未执行供应商一致性、现场物理动作或业务验收
+**状态：** 诊断功能及 Transport 0.3.0 请求字段已完成仓内对齐；`TRANSPORT_DEBUG` 联调当前位置投影已在当前分支实现。
+该状态不代表已合并或正式发布，也不替代供应商一致性、现场物理动作或业务验收
 
 **范围：** WES 后端、WES 前端，以及 WMS 回调进入 WES 后的可观测链路
 
@@ -279,6 +279,10 @@ data: {
 表单字段直接对应现有后端 discriminated union，不提供任意 JSON 编辑器。用户提交前展示不可编辑的规范化 JSON 预览，并进行二次确认，明确提示“可能触发真实 RCS/AGV/CTU 动作”。
 
 对话框不调用 Preflight，不读取或编辑 Provider URL，不提供 force、cancel、fake callback、retry/resend 或绕过资源约束的按钮。
+
+`TRANSPORT_DEBUG` 的已应用终态由 Transport 模块维护独立、可丢弃的联调当前位置投影；后续 `RACK_ROTATE` 和 `BIN_EXCHANGE`
+只使用该投影校验位置与朝向，不读取或污染绑定活动 `LineRunEpoch` 的业务 `PositionProjection`。定向清理当前来源任务时同步删除该
+联调投影，禁止回退到更早的历史任务位置。
 
 ### 6.3 SSE 客户端复用
 

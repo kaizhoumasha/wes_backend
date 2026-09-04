@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.1.0] - 2026-09-03
+
+### Changed
+
+- Transport 自动联调改为由操作员直接录入货架、货架面、料箱与原槽位，不再依赖基础挂载数据；货架面作为非空字符串原样下发。
+- 自动联调查询返回整轮持久化步骤历史，页面刷新或重新登录后仍可恢复货架搬出、逐面旋转、料箱搬出/回架及最终返库进度。
+
+### Fixed
+
+- WMS 重复回调使用同一 `outcome_revision` 且结果一致时按幂等重复处理，即使消息操作标识不同也不会阻断自动联调；同版本结果冲突仍返回 `409` 并停止后继派发。
+- 完成当前货架面后只旋转到下一个已选料箱所在面；所有选中料箱回架后才派发 `CTU03` 返库。
+- 活动自动联调轮次独占目标货架，拒绝同货架的其他 Transport 任务；每个后继步骤原子复核工作位和当前货架面，避免任务间隙被其他流程旋转后继续操作错误货架面。
+- `SCAN12` Evidence 同时核对独立持久化与标准化 payload 中的设备、来源、合同键和合同版本，字段矛盾时停止自动推进。
+
+### Verification
+
+- QUALITY 通过：2474 passed、5 skipped；HEAVY 选中范围共 84 passed。
+- 操作员已确认现场直连 WMS/RCS、真实 `SCAN12` 驱动料箱回架与 `CTU03`、以及刷新/重新登录后的完整步骤历史。
+
+## [0.31.0.0] - 2026-09-03
+
+### Added
+
+- Transport diagnostics 支持从当前挂载事实选择任意货架和料箱，按操作员输入的原始面字符串自动执行 `CTU01 → BIN_MOVE → SCAN12 → BIN_MOVE → CTU02/CTU03` 整轮流程。
+- 新增持久化自动联调轮次、步骤历史、专用 SSE 失效通知、全局单活动围栏及审计后安全终止接口；worker 重启后复用原 `client_request_id` 和 Transport task 恢复。
+
+### Changed
+
+- 正式 `RACK_ROTATE` 合同允许与外层 `rack_id` 一致的 `RACK` 引用并原样下发；`CTU03` 支持 `RACK → ZONE WH01`，成功回调仍须提供精确 `RACK_POSITION`。
+- `SCAN12` 只接受当前步骤 Evidence 水位和时间边界之后的已处理扫码；关联 Transport Evidence 尚未处理、发生身份冲突、位置不确定或货架偏离工作位时均停止后继派发。
+
+### Verification
+
+- Transport API/runtime 聚焦回归 542 项通过（541 passed、1 skipped）；PostgreSQL HEAVY 241 项通过；完整 QUALITY、前端合同消费和联调服务器部署证据见对应 PR 与发布记录。
+
+## [0.30.1.0] - 2026-09-02
+
+### Fixed
+
+- `TRANSPORT_DEBUG` 已应用终态会维护独立的可丢弃当前位置投影，使货架搬运成功后可以继续提交 `RACK_ROTATE` / `BIN_EXCHANGE`，不再因当前位置或朝向缺失返回 400。
+- 联调任务定向清理只删除仍由该任务产生的联调投影，保留正式业务 `PositionProjection` 以及已被其他任务接管的当前位置事实。
+- 数据库升级会从已有的已应用联调终态补齐最新位置和朝向，回滚不改变原 Transport 历史数据。
+
+### Verification
+
+- Transport API 与 runtime 聚焦回归 256 项通过；覆盖审计达到 86%，迁移、QUALITY 与 HEAVY 结果见 PR 验证记录。
+
 ## [0.30.0.0] - 2026-09-01
 
 ### Changed

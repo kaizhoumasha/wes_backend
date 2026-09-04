@@ -43,6 +43,7 @@ from tests.support.transport_projections import confirm_rack_faces_with_sessions
 pytestmark = [pytest.mark.e2e, pytest.mark.integration]
 
 SUBMIT_TASK = "src.celery_app.tasks.transport.submit_transport_tasks_batch"
+DEBUG_RUN_TASK = "src.celery_app.tasks.transport.advance_transport_debug_runs_batch"
 EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
 RECONCILE_TASK = "src.celery_app.tasks.transport.reconcile_transport_tasks_batch"
 PUBLISH_TASK = "src.celery_app.tasks.transport.publish_transport_outcomes_batch"
@@ -119,6 +120,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
         worker.start()
         before_empty = await _transport_counts(integration_session_factory)
         assert worker.result(worker.send(SUBMIT_TASK, kwargs={"limit": 100})) == 0
+        assert worker.result(worker.send(DEBUG_RUN_TASK, kwargs={"limit": 100})) == 0
         assert worker.result(worker.send(EVIDENCE_TASK, kwargs={"limit": 100})) == 0
         assert worker.result(worker.send(RECONCILE_TASK, kwargs={"limit": 100})) == 0
         assert await _transport_counts(integration_session_factory) == before_empty

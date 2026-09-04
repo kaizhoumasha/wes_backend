@@ -13,9 +13,12 @@ from src.app.transport.contracts import (
     MoveRackRequest,
     RackBinSlot,
     RackPosition,
+    RackReference,
+    RcsTemplateId,
     RotateRackRequest,
     TransportCaller,
     TransportContractError,
+    ZonePosition,
 )
 from src.app.transport.submit_snapshot import build_submit_data
 from src.app.wms_adapter.transport_wire import (
@@ -139,6 +142,43 @@ def test_rack_submit_data_uses_one_shared_wire_shape() -> None:
         "rack_id": "rack-1",
         "source": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
         "target": {"kind": "RACK_POSITION", "location_code": "RACK_BUFFER_B"},
+        "target_face": "90",
+    }
+
+
+def test_rack_reference_submit_data_preserves_exact_locations_and_faces() -> None:
+    caller = TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO")
+
+    assert build_submit_data(
+        RotateRackRequest(new_uuid7(), caller, "510056", RackReference("510056"), "270", RcsTemplateId.CTU02),
+        "transport-rotate",
+    ) == {
+        "transport_task_id": "transport-rotate",
+        "kind": "RACK_ROTATE",
+        "rcs_template_id": "CTU02",
+        "rack_id": "510056",
+        "source": {"kind": "RACK", "location_code": "510056"},
+        "target": {"kind": "RACK", "location_code": "510056"},
+        "target_face": "270",
+    }
+    assert build_submit_data(
+        MoveRackRequest(
+            new_uuid7(),
+            caller,
+            "510056",
+            RackReference("510056"),
+            ZonePosition("WH01"),
+            "90",
+            RcsTemplateId.CTU03,
+        ),
+        "transport-return",
+    ) == {
+        "transport_task_id": "transport-return",
+        "kind": "RACK_MOVE",
+        "rcs_template_id": "CTU03",
+        "rack_id": "510056",
+        "source": {"kind": "RACK", "location_code": "510056"},
+        "target": {"kind": "ZONE", "location_code": "WH01"},
         "target_face": "90",
     }
 

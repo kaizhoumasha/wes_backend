@@ -96,6 +96,13 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
         Index("ix_inbound_evidences_device_command", "device_code", "command_code", "kind"),
         Index("ix_inbound_evidences_transport_task", "transport_task_id", "kind"),
         Index(
+            "ix_inbound_evidences_device_event_range",
+            "received_at",
+            "id",
+            postgresql_where=text("kind = 'DEVICE_EVENT'"),
+            sqlite_where=text("kind = 'DEVICE_EVENT'"),
+        ),
+        Index(
             "ux_inbound_evidences_device_result",
             "command_code",
             unique=True,

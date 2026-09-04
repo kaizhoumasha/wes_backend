@@ -256,9 +256,15 @@ def _parse_transport_task_id(value: str) -> str:
         raise argparse.ArgumentTypeError("transport_task_id 必须是 1..80 个非空且不含 NUL 的字符") from exc
 
 
-async def _transport_task_row_count(db: AsyncSession, table: str, transport_task_id: str) -> int:
+async def _transport_task_row_count(
+    db: AsyncSession,
+    table: str,
+    transport_task_id: str,
+    *,
+    id_column: str = "transport_task_id",
+) -> int:
     result = await db.execute(
-        text(f"SELECT count(*) FROM wes_runtime.{table} WHERE transport_task_id = :transport_task_id"),  # noqa: S608
+        text(f"SELECT count(*) FROM wes_runtime.{table} WHERE {id_column} = :transport_task_id"),  # noqa: S608
         {"transport_task_id": transport_task_id},
     )
     return int(result.scalar_one())
@@ -291,6 +297,19 @@ async def reset_transport_task_data(
         raise RuntimeError(f"TransportTask 不存在: {task_id}")
 
     _, status = row
+    if apply:
+        active_run = await db.scalar(
+            text(
+                "SELECT run.run_id FROM wes_runtime.transport_debug_run_steps AS step "
+                "JOIN wes_runtime.transport_debug_runs AS run ON run.run_id = step.run_id "
+                "WHERE step.transport_task_id = :transport_task_id "
+                "AND run.status IN ('RUNNING', 'NEEDS_ATTENTION') "
+                "LIMIT 1"
+            ),
+            {"transport_task_id": task_id},
+        )
+        if active_run is not None:
+            raise RuntimeError("TransportTask 正被活动 Transport 自动联调轮次引用，拒绝清理")
     receipt_result = await db.execute(
         text(
             "SELECT count(*) FROM wes_runtime.transport_callback_receipts "
@@ -301,6 +320,12 @@ async def reset_transport_task_data(
     rows_before = {
         "wes_runtime.transport_callback_receipts": int(receipt_result.scalar_one()),
         "wes_runtime.transport_evidence": await _transport_task_row_count(db, "transport_evidence", task_id),
+        "wes_runtime.transport_debug_position_projections": await _transport_task_row_count(
+            db,
+            "transport_debug_position_projections",
+            task_id,
+            id_column="source_transport_task_id",
+        ),
         "wes_runtime.transport_resource_bindings": await _transport_task_row_count(
             db, "transport_resource_bindings", task_id
         ),
@@ -326,6 +351,11 @@ async def reset_transport_task_data(
             (
                 "transport_evidence",
                 "DELETE FROM wes_runtime.transport_evidence WHERE transport_task_id = :transport_task_id",
+            ),
+            (
+                "transport_debug_position_projections",
+                "DELETE FROM wes_runtime.transport_debug_position_projections "
+                "WHERE source_transport_task_id = :transport_task_id",
             ),
             (
                 "transport_resource_bindings",

@@ -841,7 +841,7 @@ source_glob = "src/app/transport/{__init__.py,composition.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 [[mapping]]
-source_glob = "src/app/transport/v1/{__init__.py,tasks.py,evidence_stream.py}"
+source_glob = "src/app/transport/v1/{__init__.py,tasks.py,evidence_stream.py,debug_runs.py}"
 heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 
 # Transport wire 合同还被 WMS Transport Mock 镜像直接导入。
@@ -863,6 +863,11 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/transport/{models.py,repository.py}"
 heavy_tests = [
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_recovery.py",
+    "tests/integration/transport/test_transport_debug_run_repository.py",
+    "tests/integration/transport/test_transport_debug_run_schema.py",
+    "tests/integration/transport/test_transport_debug_run_service.py",
     "tests/integration/transport/test_transport_debug_reset.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
@@ -876,12 +881,45 @@ source_glob = "src/app/transport/service.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_service.py",
     "tests/integration/transport/test_transport_debug_reset.py",
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/transport/test_transport_repository.py",
     "tests/integration/transport/test_transport_evidence_transaction.py",
     "tests/integration/transport/test_dark_transport_loop.py",
     "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+]
+
+# 自动联调轮次核心由真实 PostgreSQL 状态推进、重启恢复和生产组合根共同承接。
+
+[[mapping]]
+source_glob = "src/app/transport/{debug_run_contracts.py,debug_run_evidence.py,debug_run_state_machine.py}"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_recovery.py",
+    "tests/integration/transport/test_transport_debug_run_service.py",
+]
+
+[[mapping]]
+source_glob = "src/app/transport/debug_run_repository.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_recovery.py",
+    "tests/integration/transport/test_transport_debug_run_repository.py",
+    "tests/integration/transport/test_transport_debug_run_schema.py",
+    "tests/integration/transport/test_transport_debug_run_service.py",
+]
+
+[[mapping]]
+source_glob = "src/app/transport/debug_run_service.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_recovery.py",
+    "tests/integration/transport/test_transport_debug_run_service.py",
 ]
 
 # 联调任务完整链路清理由 API Service/Repository 与 CLI raw-SQL 两条 PostgreSQL owner 共同承接。
@@ -2208,6 +2246,14 @@ heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 [[mapping]]
 source_glob = "migrations/versions/20260901_0642_e0da335c057d_transport_面向扩为字符串_token.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260903_0432_ed5ed8eb0c46_增加_transport_联调当前位置投影.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_debug_auto_run.py", "tests/integration/transport/test_transport_debug_run_repository.py", "tests/integration/transport/test_transport_debug_run_schema.py", "tests/integration/transport/test_transport_debug_run_service.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260904_0458_a0f4b56d0f50_添加_pickingtask_发布接收.py"

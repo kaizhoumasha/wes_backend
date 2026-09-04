@@ -29,6 +29,7 @@ from src.app.execution.services import (
     WmsConfirmationService,
 )
 from src.app.transport.models import TransportEvidence, TransportTask
+from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import WorkLine
 from src.utils.timezone import timezone

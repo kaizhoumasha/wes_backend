@@ -11,6 +11,9 @@ from src.app.execution.models import PositionProjection
 from src.app.transport.contracts import RackPosition, TransportCaller, TransportContractError
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugPositionProjection,
+    TransportDebugRun,
+    TransportDebugRunStep,
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
@@ -105,8 +108,17 @@ async def _cleanup(
     *,
     task_ids: tuple[str, ...],
     operation_ids: tuple[str, ...] = (),
+    run_ids: tuple[str, ...] = (),
 ) -> None:
     async with sessions.begin() as db:
+        if run_ids:
+            await db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id.in_(run_ids)))
+            await db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id.in_(run_ids)))
+        await db.execute(
+            delete(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.source_transport_task_id.in_(task_ids)
+            )
+        )
         if operation_ids:
             await db.execute(
                 delete(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id.in_(operation_ids))
@@ -235,6 +247,18 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
                 updated_at=now,
             )
         )
+        db.add(
+            TransportDebugPositionProjection(
+                object_type="RACK",
+                object_id=f"rack-reset-ineligible-{suffix}",
+                position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
+                position_unknown=False,
+                arrival_face="A",
+                source_operation_id=operation_id,
+                source_transport_task_id=task_id,
+                updated_at=now,
+            )
+        )
     service = _service(integration_session_factory)
 
     try:
@@ -243,7 +267,7 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
         assert preview.outcome_version == 1
         assert preview.evidence_count == 1
         assert preview.callback_receipt_count == 1
-        assert preview.position_projection_count == 0
+        assert preview.position_projection_count == 1
 
         result = await service.reset_debug_task(task_id)
 
@@ -253,7 +277,7 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
             result.deleted_position_projection_count,
             result.deleted_member_count,
             result.deleted_binding_count,
-        ) == (1, 1, 0, 1, 1)
+        ) == (1, 1, 1, 1, 1)
         assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
         async with integration_session_factory() as db:
             receipt_count = await db.scalar(
@@ -271,7 +295,12 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
                 .select_from(PositionProjection)
                 .where(PositionProjection.source_operation_id == operation_id)
             )
-        assert (receipt_count, evidence_count, projection_count) == (0, 0, 1)
+            debug_projection_count = await db.scalar(
+                select(func.count())
+                .select_from(TransportDebugPositionProjection)
+                .where(TransportDebugPositionProjection.source_operation_id == operation_id)
+            )
+        assert (receipt_count, evidence_count, projection_count, debug_projection_count) == (0, 0, 1, 0)
     finally:
         await _cleanup(integration_session_factory, task_ids=(task_id,), operation_ids=(operation_id,))
 
@@ -329,6 +358,16 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
                     source_transport_task_id=keep_id,
                     updated_at=now,
                 ),
+                TransportDebugPositionProjection(
+                    object_type="RACK",
+                    object_id=f"rack-reset-collision-keep-{suffix}",
+                    position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
+                    position_unknown=False,
+                    arrival_face="A",
+                    source_operation_id=operation_id,
+                    source_transport_task_id=keep_id,
+                    updated_at=now,
+                ),
             ]
         )
 
@@ -342,7 +381,12 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
                 .select_from(PositionProjection)
                 .where(PositionProjection.source_operation_id == operation_id)
             )
-        assert projection_count == 1
+            debug_projection_count = await db.scalar(
+                select(func.count())
+                .select_from(TransportDebugPositionProjection)
+                .where(TransportDebugPositionProjection.source_operation_id == operation_id)
+            )
+        assert (projection_count, debug_projection_count) == (1, 1)
     finally:
         await _cleanup(
             integration_session_factory,
@@ -411,3 +455,101 @@ async def test_callback_waiting_on_debug_reset_lock_is_retained_as_missing_task_
                 await asyncio.wait_for(asyncio.gather(*calls, return_exceptions=True), timeout=5)
         finally:
             await _cleanup(integration_session_factory, task_ids=(task_id,), operation_ids=(operation_id,))
+
+
+async def test_debug_reset_rejects_task_referenced_by_active_debug_run(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    task_id = await _create_reconciling_task(
+        integration_session_factory,
+        resource_id=f"rack-reset-active-run-{suffix}",
+    )
+    run_id = f"debug-run-{new_uuid7()}"
+    now = timezone.now_for_db()
+    async with integration_session_factory.begin() as db:
+        db.add(
+            TransportDebugRun(
+                run_id=run_id,
+                status="RUNNING",
+                active_scope="GLOBAL",
+                rack_id=f"rack-reset-active-run-{suffix}",
+                configuration_json={"rack_id": f"rack-reset-active-run-{suffix}", "face_groups": []},
+                current_group_index=0,
+                current_phase="RACK_TO_STATION",
+                current_step_ordinal=0,
+                version=1,
+                created_by_user_id=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            TransportDebugRunStep(
+                run_id=run_id,
+                ordinal=0,
+                group_index=0,
+                phase="RACK_TO_STATION",
+                status="NEEDS_ATTENTION",
+                client_request_id=new_uuid7(),
+                transport_task_id=task_id,
+                reason_code="TRANSPORT_RECONCILING",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    try:
+        with pytest.raises(TransportContractError, match="active transport debug run task cannot be reset"):
+            await _service(integration_session_factory).reset_debug_task(task_id)
+        assert await _aggregate_counts(integration_session_factory, task_id) == (1, 1, 1)
+    finally:
+        await _cleanup(integration_session_factory, task_ids=(task_id,), run_ids=(run_id,))
+
+
+async def test_debug_reset_allows_task_referenced_only_by_completed_debug_run(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    suffix = uuid.uuid4().hex
+    task_id = await _create_reconciling_task(
+        integration_session_factory,
+        resource_id=f"rack-reset-completed-run-{suffix}",
+    )
+    run_id = f"debug-run-{new_uuid7()}"
+    now = timezone.now_for_db()
+    async with integration_session_factory.begin() as db:
+        db.add(
+            TransportDebugRun(
+                run_id=run_id,
+                status="COMPLETED",
+                active_scope=None,
+                rack_id=f"rack-reset-completed-run-{suffix}",
+                configuration_json={"rack_id": f"rack-reset-completed-run-{suffix}", "face_groups": []},
+                current_group_index=0,
+                current_phase="RACK_TO_STORAGE",
+                current_step_ordinal=0,
+                version=2,
+                created_by_user_id=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            TransportDebugRunStep(
+                run_id=run_id,
+                ordinal=0,
+                group_index=0,
+                phase="RACK_TO_STORAGE",
+                status="SUCCEEDED",
+                client_request_id=new_uuid7(),
+                transport_task_id=task_id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    try:
+        await _service(integration_session_factory).reset_debug_task(task_id)
+        assert await _aggregate_counts(integration_session_factory, task_id) == (0, 0, 0)
+    finally:
+        await _cleanup(integration_session_factory, task_ids=(task_id,), run_ids=(run_id,))

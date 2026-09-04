@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, func, or_, select, update
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.app.transport.models import (
     TransportCallbackReceipt,
+    TransportDebugPositionProjection,
     TransportEvidence,
     TransportMember,
     TransportResourceBinding,
@@ -40,7 +41,7 @@ class TransportRepository:
     ) -> TransportTask | None:
         statement = select(TransportTask).where(TransportTask.transport_task_id == transport_task_id)
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return await db.scalar(statement)
 
     async def list_members(self, db: AsyncSession, transport_task_id: str) -> list[TransportMember]:
@@ -50,6 +51,54 @@ class TransportRepository:
             .order_by(TransportMember.ordinal.asc(), TransportMember.id.asc())
         )
         return list(result)
+
+    async def get_debug_position_projection(
+        self,
+        db: AsyncSession,
+        object_type: str,
+        object_id: str,
+        *,
+        for_update: bool = False,
+    ) -> TransportDebugPositionProjection | None:
+        statement = select(TransportDebugPositionProjection).where(
+            TransportDebugPositionProjection.object_type == object_type,
+            TransportDebugPositionProjection.object_id == object_id,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
+
+    async def apply_debug_position_projection(
+        self,
+        db: AsyncSession,
+        *,
+        object_type: str,
+        object_id: str,
+        position_json: dict[str, Any] | None,
+        position_unknown: bool,
+        arrival_face: str | None,
+        operation_id: str,
+        transport_task_id: str,
+        updated_at: datetime,
+    ) -> TransportDebugPositionProjection:
+        projection = await self.get_debug_position_projection(db, object_type, object_id, for_update=True)
+        if projection is None:
+            projection = TransportDebugPositionProjection(
+                object_type=object_type,
+                object_id=object_id,
+                source_operation_id=operation_id,
+                source_transport_task_id=transport_task_id,
+                updated_at=updated_at,
+            )
+            db.add(projection)
+        projection.position_json = position_json
+        projection.position_unknown = position_unknown
+        projection.arrival_face = arrival_face
+        projection.source_operation_id = operation_id
+        projection.source_transport_task_id = transport_task_id
+        projection.updated_at = updated_at
+        await db.flush()
+        return projection
 
     async def get_debug_reset_counts(
         self,
@@ -67,6 +116,11 @@ class TransportRepository:
             select(func.count())
             .select_from(TransportEvidence)
             .where(TransportEvidence.transport_task_id == transport_task_id)
+        )
+        position_projection_count = await db.scalar(
+            select(func.count())
+            .select_from(TransportDebugPositionProjection)
+            .where(TransportDebugPositionProjection.source_transport_task_id == transport_task_id)
         )
         member_count = await db.scalar(
             select(func.count())
@@ -89,7 +143,7 @@ class TransportRepository:
         return (
             int(callback_receipt_count or 0),
             int(evidence_count or 0),
-            0,
+            int(position_projection_count or 0),
             int(member_count or 0),
             int(binding_count or 0),
             int(active_binding_count or 0),
@@ -102,6 +156,11 @@ class TransportRepository:
     ) -> tuple[int, int, int, int, int, int]:
         """按依赖顺序删除指定 TransportTask 的完整本地 Transport 链路。"""
 
+        position_projections = await db.execute(
+            delete(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.source_transport_task_id == transport_task_id
+            )
+        )
         receipts = await db.execute(
             delete(TransportCallbackReceipt).where(
                 TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id
@@ -120,7 +179,7 @@ class TransportRepository:
         return (
             int(receipts.rowcount or 0),
             int(evidence.rowcount or 0),
-            0,
+            int(position_projections.rowcount or 0),
             int(members.rowcount or 0),
             int(bindings.rowcount or 0),
             int(tasks.rowcount or 0),
@@ -148,16 +207,20 @@ class TransportRepository:
         token: str,
         now: datetime,
         claim_until: datetime,
+        excluded_task_ids: set[str] | None = None,
     ) -> TransportTask | None:
+        predicates = [
+            TransportTask.status == "PENDING",
+            TransportTask.submit_attempt_count < MAX_SUBMIT_ATTEMPTS,
+            TransportTask.send_started_at.is_(None),
+            or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
+            or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
+        ]
+        if excluded_task_ids:
+            predicates.append(TransportTask.transport_task_id.not_in(excluded_task_ids))
         statement = (
             select(TransportTask)
-            .where(
-                TransportTask.status == "PENDING",
-                TransportTask.submit_attempt_count < MAX_SUBMIT_ATTEMPTS,
-                TransportTask.send_started_at.is_(None),
-                or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
-                or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
-            )
+            .where(*predicates)
             .order_by(
                 TransportTask.next_submit_at.is_not(None).asc(),
                 TransportTask.next_submit_at.asc(),
@@ -176,6 +239,15 @@ class TransportRepository:
         task.updated_at = now
         await db.flush()
         return task
+
+    async def release_unsent_claim(self, db: AsyncSession, task: TransportTask, *, token: str) -> None:
+        if task.submit_claim_token != token or task.send_started_at is None or task.submit_attempt_count < 1:
+            raise RuntimeError("transport unsent claim does not match")
+        task.submit_claim_token = None
+        task.submit_claim_until = None
+        task.submit_attempt_count -= 1
+        task.send_started_at = None
+        await db.flush()
 
     async def claim_overdue_tasks(
         self,
@@ -387,7 +459,7 @@ class TransportRepository:
     ) -> TransportEvidence | None:
         statement = select(TransportEvidence).where(TransportEvidence.id == evidence_id)
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.with_for_update().execution_options(populate_existing=True)
         return await db.scalar(statement)
 
     async def claim_pending_evidence(

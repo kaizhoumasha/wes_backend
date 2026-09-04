@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from src.app.execution.services.position_projection_service import PositionProjectionService
     from src.app.transport.contracts import TransportPort
+    from src.app.transport.debug_run_service import TransportDebugRunService
     from src.app.wms_adapter.client import WmsClient
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
     from src.app.wms_adapter.transport_event_handler import TransportEventHandler
@@ -30,6 +31,7 @@ class TransportRuntime:
         repository: TransportRepository,
         adapter: WmsTransportAdapter,
         service: TransportService,
+        debug_run_service: TransportDebugRunService,
         handler: TransportEventHandler,
         position_projection_service: PositionProjectionService,
     ) -> None:
@@ -37,6 +39,7 @@ class TransportRuntime:
         self.repository = repository
         self.adapter = adapter
         self.service = service
+        self.debug_run_service = debug_run_service
         self.port: TransportPort = service
         self.handler = handler
         self.position_projection_service = position_projection_service
@@ -89,6 +92,9 @@ async def build_transport_runtime(
         from src.app.execution.services.position_projection_service import PositionProjectionService
 
         repository = TransportRepository()
+        from src.app.transport.debug_run_repository import TransportDebugRunRepository
+
+        debug_run_repository = TransportDebugRunRepository()
         position_projection_service = PositionProjectionService(repository=PositionProjectionRepository())
         adapter = WmsTransportAdapter(
             client,
@@ -99,6 +105,14 @@ async def build_transport_runtime(
             repository,
             adapter,
             position_projections=position_projection_service,
+            debug_run_guard=debug_run_repository,
+        )
+        from src.app.transport.debug_run_service import TransportDebugRunService
+
+        debug_run_service = TransportDebugRunService(
+            session_factory,
+            debug_run_repository,
+            service,
         )
         handler = TransportEventHandler(service)
         return TransportRuntime(
@@ -106,6 +120,7 @@ async def build_transport_runtime(
             repository=repository,
             adapter=adapter,
             service=service,
+            debug_run_service=debug_run_service,
             handler=handler,
             position_projection_service=position_projection_service,
         )

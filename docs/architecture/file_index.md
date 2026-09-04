@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-01
+**最后更新**：2026-09-02
 
 ## 1. 真源与入口
 
@@ -35,6 +35,7 @@
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段架构收敛总控计划 |
 | `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
+| `docs/integration/transport-joint-acceptance.md` | Transport 自动联调的单面/多面、恢复与现场分层验收清单；明确代码、部署、物理闭环和业务验收证据不可互相替代 |
 | `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
@@ -87,7 +88,13 @@ API → Service → Repository → Database
 | `src/app/*/models/` | SQLModel/Pydantic 模型与 DTO |
 | `src/app/execution/` | 通用执行对象、RACK/BIN 当前位置投影、可靠 WMS confirmation 生命周期与静态插件事实处理；不拥有具体 operation 的请求重建、顺序或结果语义 |
 | `src/app/runtime/` | 保留当前 Session/Timeline/位置事件、诊断与最小能力合同；Phase 10 旧 Runtime/Intent/Effect/Hold/Provider 应用消费者与 Phase 11 终裁删除的 legacy model identity 均已移出活动源码 |
-| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影；核心本身不拥有业务 producer，当前由粗分插件 `OLD_OUT/NEW_IN` 通过 port 消费 |
+| `src/app/transport/` | AGV/CTU 通用搬运合同、可靠聚合与 Phase 6 生产运行时；带冻结 execution authority 的终态 Evidence 通过注入 port 更新核心位置投影，`TRANSPORT_DEBUG` 终态只更新 Transport 自有的可丢弃联调投影；核心本身不拥有业务 producer，当前由粗分插件 `OLD_OUT/NEW_IN` 通过 port 消费 |
+| `src/app/transport/debug_run_contracts.py` | Transport 自动联调轮次、面组、选中料箱、步骤与状态的稳定内部合同 |
+| `src/app/transport/debug_run_state_machine.py` | `CTU01 → 分面料箱 → SCAN12 → 原 slot 回架 → CTU02/CTU03` 的纯状态迁移和正式 Transport request 构造 |
+| `src/app/transport/debug_run_evidence.py` | 从中性 `InboundEvidence` 严格筛选 `SCAN12` 扫码事实，不拥有 ECS 入站协议 |
+| `src/app/transport/debug_run_repository.py` / `debug_run_service.py` | 自动联调轮次的持久化、全局单活动约束、claim lease、幂等推进、恢复和安全 abort |
+| `src/app/transport/v1/debug_runs.py` | `/api/v1/transport/debug-runs` 创建、列表、详情、SSE 与 abort 接口；API 只调用 Service |
+| `migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py` | 自动联调 run/step 表、活动轮次唯一约束、步骤幂等身份及 claim 索引 |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
 | `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层；新增 operation 按 `<domain_key>/` 组织严格 DTO/parser、OpenAPI 和 Adapter/Event Handler，统一 Event route 静态分发并拒绝未知 operation |
