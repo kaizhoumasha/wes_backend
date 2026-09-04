@@ -2,7 +2,7 @@
 title: WMS / WES 人工出库拣料交互要求
 status: Approved
 created_at: 2026-09-02
-updated_at: 2026-09-03
+updated_at: 2026-09-04
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: Phase 12 人工出库拣料线（Line3）的 point2 任务准入、完成释放与应用结果；其余环节复用自动出库合同
 related:
@@ -40,7 +40,7 @@ related:
 - 任务状态确认：`outbound.picking_task.completion_confirm@v1`；
 - Transport 四个通用搬运方法（`move_rack` / `rotate_rack` / `move_bins` / `exchange_bins`）与其提交、回调合同；
 - `BinExecution`、`PositionProjection` 等既有执行域对象与不变量；
-- `WmsConfirmation` 的可靠派发、重试和结果证据；本文只把其中立关联扩为料盘或料箱二选一，不新增第二套 outbox。
+- `WmsConfirmation` 的可靠派发、重试和结果证据；其中立关联一次收敛为料盘、料箱或 PickingTask 恰好一个，不新增第二套 outbox。
 
 上述接口的字段、条件必填、响应联合、错误码、幂等和重试语义完全以出库合同为准，本文不重复摘录，也不允许出现与出库合同
 不一致的实现。
@@ -495,12 +495,17 @@ evidence 的业务应用事务只允许数据库操作：
 载荷不同是幂等冲突，受影响执行进入 `RECONCILING`。重复 ECS 扫码、重复到位 evidence 或重复 WMS 完成消息不得派生新的
 `execution_ref_id`。命令可能已送达或结果未知时继续保留原命令身份等待权威终态，不换身份重发。
 
-### 9.4 `WmsConfirmation` 中立 Bin 关联
+### 9.4 `WmsConfirmation` 中立业务 owner 关联
 
-现有 `WmsConfirmation.material_execution_id` 改为可空，并新增可空 `bin_execution_id` 外键；数据库 CHECK 要求两者恰好一个非空。
+现有 `WmsConfirmation.material_execution_id` 改为可空，并新增可空 `bin_execution_id`、`picking_task_id` 外键；数据库 CHECK 要求三者
+恰好一个非空。
 既有料盘 confirmation 数据和行为保持不变。`outbound.manual_bin.work_admission_decide@v1` 与
 `outbound.manual_bin.completion_apply_report@v1` 都关联原 `BinExecution`，复用现有 operation identity、payload digest、deadline、
 派发 claim、响应 evidence 和结果未知恢复语义。
+
+`outbound.picking_task.prepare@v1` 关联已经在同一事务中从 `QUEUED` 领取为 `PREPARING` 的 `PickingTask`，复用相同可靠生命周期；
+PickingTask 只保存业务状态与 WorkLine/Epoch 绑定，不复制 operation、payload、attempt 或 evidence 字段。prepare 响应 Evidence 通过
+`WmsConfirmation.response_evidence_id` 追溯，不在 `InboundEvidence` 重复增加 `picking_task_id`。
 
 该共享模型不得增加 plugin key、人工结果、point2 或 PDA 字段；具体 operation payload 由人工线插件一次性冻结后交给中立可靠对象。
 实现需要一条根 Alembic migration、现有料盘消费者回归、Bin 关联约束测试和精确 HEAVY mapping，不能通过插件专用 outbox 或直接
@@ -512,7 +517,7 @@ HTTP 绕开。
 | --- | --- |
 | `WmsClient` 与严格 HTTP/JSON 边界 | 直接复用；插件只提供 operation DTO 与解释，不重造传输 |
 | `InboundEvidence`、冲突证据和持久化后 ACK | 直接承接 `work_completed`；共享入口不读取人工业务状态 |
-| `WmsConfirmation` 可靠派发与结果恢复 | 复用生命周期，只做 `material_execution_id | bin_execution_id` 中立二选一扩展 |
+| `WmsConfirmation` 可靠派发与结果恢复 | 复用生命周期，使用 `material_execution_id | bin_execution_id | picking_task_id` 恰好一个的显式 owner 约束 |
 | `BinExecution`、`PositionProjection`、`LineRunEpoch` | 继续承载物理身份、位置和 Epoch 围栏；不塞入 PDA/人工任务字段 |
 | `DeviceCommand`、统一 ECS Adapter、ACK/CALLBACK | 直接复用；按 `BinExecution + 物理阶段` 提供稳定命令身份 |
 | `outbound.bin.return_batch@v1` 与 `RETURN_BUFFER` FIFO | 正常运行直接复用；停线/切换排空 decision 留在 `TODOS.md` |

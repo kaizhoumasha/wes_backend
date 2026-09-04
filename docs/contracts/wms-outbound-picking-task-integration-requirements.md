@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-08-20
+updated_at: 2026-09-04
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、逐盘决定、身份冲突、结果确认和任务状态确认
 related:
@@ -319,6 +319,9 @@ DeviceCommand。`queue_changed@v1` 只允许在任务尚未进入 `PREPARING` �
 重放返回 `200 / DUPLICATE`。
 
 ### 7.2 准备请求
+
+> Operation 状态：`Approved`（2026-09-04）。WMS/WES 已联合冻结本节的 operation 字面量、严格请求 DTO、响应联合、错误码、幂等与
+> 重试语义，可以开始生产 wire 实现。本文其他 operation 仍保持各自状态，不受本节批准影响。
 
 WES 选择任务和候选 WorkLine 后发送：
 

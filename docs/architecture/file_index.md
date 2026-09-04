@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-02
+**最后更新**：2026-09-04
 
 ## 1. 真源与入口
 
@@ -43,6 +43,7 @@
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
+| `docs/superpowers/specs/2026-09-03-outbound-picking-task-prepare-design.md` | `outbound.picking_task.prepare@v1` 单 WorkLine 原子领取、三 owner WmsConfirmation、可靠派发暗构建与生产激活门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、Nginx/API/Beat admission closure 与维护态稳定静默门禁实施计划；Tasks 1–4 已在 Phase 10 分支完成并纳入候选镜像，Task 5 TEST Deploy 未执行 |
 | `docs/superpowers/specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、按需详情、共享 SSE 与四类现场调试的前后端设计真源 |

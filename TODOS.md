@@ -7,6 +7,35 @@
 
 ## WorkLine
 
+### 人工 PickingTask 自动准备生产激活
+
+**What:** 将已暗构建的 `outbound.picking_task.prepare@v1` 接入真实人工 WorkLine 运行链路；在同一原子切片完成
+`manual_bin_processing` START/静态 Composition、未完成 PickingTask blocker、prepare adapter production route、Celery task/Beat 和 worker wiring。
+
+**Why:** 单独打开 Beat 会在没有真实人工 Epoch 或 `plan_delta` owner 时形成空转 consumer，或者让 WES 向 WMS 发出无法继续执行的准备承诺；
+未完成 PickingTask blocker 缺失还会允许带任务关闭或替换 Epoch。
+
+**Context:** prepare 当前只提供 `prepare_next_for_workline(workline_id)` 暗构建能力，不注册生产入口。激活前必须保持基础 WorkLine 层
+不依赖 outbound picking 业务模型；由宿主静态 Composition 注入人工业务 blocker 和唯一 operation route，不使用动态 registry、默认 handler、
+临时 API、伪造 Epoch 或旧 runtime/status 路径。
+
+**Scope:**
+
+- 真实 `manual_bin_processing` WorkLine START plan、设备/位置绑定和静态 Composition
+- `outbound.picking_task.plan_delta@v1` 严格接收、持久化及插件应用 owner
+- `PREPARING | EXECUTING` PickingTask 对 STOP/Epoch 切换的静态业务 blocker
+- prepare adapter 唯一 production route、Celery task、Beat schedule、queue route 和 worker runtime
+- 真实 worker、失败恢复、停止/重启与插件业务测试
+
+**Depends on:** `manual_bin_processing` START 合同、`plan_delta` 合同和插件执行 owner 获批并实现；暗构建 prepare 聚焦测试、migration 与
+PostgreSQL 并发验证通过。
+
+**Effort:** L
+
+**Priority:** P1
+
+---
+
 ### RETURN_BUFFER 停止/切换排空决策合同
 
 **What:** 冻结 `workline.return_buffer.drain_rack_decide@v1`，用于停止或切换时为既有 `RETURN_BUFFER` FIFO 选择可排空货架面。
