@@ -522,6 +522,22 @@ class _Adapter:
         return self.result
 
 
+class _PickingTaskOwner:
+    def __init__(self, valid: bool = True) -> None:
+        self.valid = valid
+        self.calls: list[tuple[object, int, str]] = []
+
+    async def validate_prepare_response_owner(
+        self,
+        db: object,
+        *,
+        picking_task_id: int,
+        operation: str,
+    ) -> bool:
+        self.calls.append((db, picking_task_id, operation))
+        return self.valid
+
+
 class _FollowUpPlanner:
     def __init__(self, operation_ids: tuple[str, ...] = (OTHER_OPERATION_ID,)) -> None:
         self._operation_ids = iter(operation_ids)
@@ -595,6 +611,92 @@ def _confirmation(identifier: int, now: datetime) -> WmsConfirmation:
         created_at=now,
         updated_at=now,
     )
+
+
+def _picking_confirmation(identifier: int, now: datetime) -> WmsConfirmation:
+    operation_id = f"019f3400-0e17-7d2a-b944-{identifier:012x}"
+    payload = {
+        "operation_id": operation_id,
+        "operation": "outbound.picking_task.prepare@v1",
+        "timestamp": int(now.timestamp() * 1000),
+        "data": {"task_id": "PICK-1", "workline_code": "LINE-1"},
+    }
+    return WmsConfirmation(
+        id=identifier,
+        operation="outbound.picking_task.prepare@v1",
+        operation_id=operation_id,
+        picking_task_id=31,
+        request_digest=_digest(payload),
+        request_payload=payload,
+        deadline_at=now + timedelta(seconds=30),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.mark.asyncio
+async def test_picking_prepare_response_uses_owner_port_and_never_enters_material_decision_queue() -> None:
+    now = datetime(2026, 9, 4, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    repository = _ConfirmationRepository([confirmation])
+    evidence = _EvidenceService()
+    owner = _PickingTaskOwner()
+    execution_repository = _ExecutionRepository()
+    queue = _TaskQueue()
+    service = WmsConfirmationService(
+        repository=repository,
+        execution_repository=execution_repository,
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=InboundDispatchCode.DETERMINATE,
+                normalized_response={
+                    "operation_id": confirmation.operation_id,
+                    "code": "PREPARE_ACCEPTED",
+                    "timestamp": 2,
+                    "data": {},
+                },
+                response_result="PREPARE_ACCEPTED",
+                retry_after_ms=None,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+        picking_task_owner=owner,
+        task_queue_gateway=queue,  # type: ignore[arg-type]
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert confirmation.status == WmsConfirmationStatus.COMPLETED
+    assert evidence.calls[0]["line_run_epoch_id"] is None
+    assert evidence.calls[0]["material_execution_id"] is None
+    assert owner.calls[0][1:] == (31, "outbound.picking_task.prepare@v1")
+    assert execution_repository.calls == []
+    assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
+async def test_picking_prepare_is_not_sent_without_explicit_business_owner_port() -> None:
+    now = datetime(2026, 9, 4, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    repository = _ConfirmationRepository([confirmation])
+    adapter = _Adapter(
+        SimpleNamespace(
+            code=InboundDispatchCode.DETERMINATE,
+            normalized_response={},
+            response_result="PREPARE_ACCEPTED",
+            retry_after_ms=None,
+        )
+    )
+    service = WmsConfirmationService(
+        repository=repository,
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=adapter,
+        evidence_service=_EvidenceService(),  # type: ignore[arg-type]
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert adapter.calls == []
+    assert confirmation.status == WmsConfirmationStatus.RECONCILING
 
 
 @pytest.mark.asyncio

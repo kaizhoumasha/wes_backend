@@ -44,6 +44,12 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
             "not_before_ms IS NULL OR not_before_ms >= 0",
             name="picking_task_not_before_nonnegative",
         ),
+        CheckConstraint(
+            "(status = 'QUEUED' AND workline_id IS NULL AND line_run_epoch_id IS NULL) OR "
+            "(status IN ('PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED') "
+            "AND workline_id IS NOT NULL AND line_run_epoch_id IS NOT NULL)",
+            name="picking_task_binding_matches_status",
+        ),
         UniqueConstraint("task_id", name="ux_picking_tasks_task_id"),
         UniqueConstraint("issued_evidence_id", name="ux_picking_tasks_issued_evidence"),
         Index(
@@ -53,7 +59,21 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
             postgresql_where=text("status = 'QUEUED'"),
             sqlite_where=text("status = 'QUEUED'"),
         ),
-        Index("ix_picking_tasks_queue", "status", "not_before_ms", "dispatch_sequence", "id"),
+        Index(
+            "ix_picking_tasks_queue",
+            "task_type",
+            "dispatch_sequence",
+            "id",
+            postgresql_where=text("status = 'QUEUED'"),
+            sqlite_where=text("status = 'QUEUED'"),
+        ),
+        Index(
+            "ux_picking_tasks_active_workline",
+            "workline_id",
+            unique=True,
+            postgresql_where=text("status IN ('PREPARING', 'EXECUTING')"),
+            sqlite_where=text("status IN ('PREPARING', 'EXECUTING')"),
+        ),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -78,6 +98,16 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     issued_evidence_id: int = Field(
         foreign_key="wes_biz.inbound_evidences.id",
         sa_type=SQL_COMPAT_BIGINT,
+    )
+    workline_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.work_lines.id",
+        index=True,
+    )
+    line_run_epoch_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.line_run_epochs.id",
+        index=True,
     )
 
 

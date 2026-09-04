@@ -1133,6 +1133,7 @@ source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_co
 heavy_tests = [
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
 
@@ -1189,11 +1190,11 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/wms_integration/outbound_picking/**"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/outbound_picking/**"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/epoch_digest.py"
@@ -2257,6 +2258,10 @@ heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "
 [[mapping]]
 source_glob = "migrations/versions/20260904_0458_a0f4b56d0f50_添加_pickingtask_发布接收.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260904_1437_ff5d0af61f91_扩展_pickingtask_prepare_领取合同.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
 
 [[mapping]]
 source_glob = "tests/support/postgresql_heavy.py"
