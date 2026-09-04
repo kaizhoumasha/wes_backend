@@ -264,7 +264,7 @@ _REASON_DATA_SCHEMA = {
 
 TRANSPORT_EVENT_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
-        "description": "重复 evidence 已确认",
+        "description": "同一消息重放或同一 outcome_revision 的相同 data 已确认",
         "content": {"application/json": {"schema": _ack_schema("DUPLICATE", _ACK_TASK_DATA_SCHEMA)}},
     },
     202: {
@@ -274,7 +274,7 @@ TRANSPORT_EVENT_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"description": "请求媒体类型、编码或 evidence envelope 不满足封闭合同"},
     401: {"description": "部署 profile 不允许无签名 callback", "x-operational-error": True},
     409: {
-        "description": "operation_id 或 outcome_revision 身份冲突",
+        "description": "operation_id 内容冲突或同一 outcome_revision 的 data 业务结果冲突",
         "content": {"application/json": {"schema": _ack_schema("CONFLICT", _CONFLICT_DATA_SCHEMA)}},
     },
     413: {"description": "请求体超过固定上限"},

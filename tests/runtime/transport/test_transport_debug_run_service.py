@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from sqlalchemy import BigInteger
 
-from src.app.resource.models.resource import RackBinMountStatus
+from src.app.transport.contracts import TransportHandle
 from src.app.transport.debug_run_contracts import (
     CreateTransportDebugRun,
     TransportDebugBinSelection,
@@ -63,32 +63,13 @@ class _Repository:
     def __init__(self) -> None:
         self.runs: dict[str, TransportDebugRun] = {}
         self.steps: dict[str, list[TransportDebugRunStep]] = {}
-        self.mounts = [
-            SimpleNamespace(
-                rack_code="510056",
-                bin_code="A000001922",
-                rack_slot_code="510056A3F2C101",
-                mount_status=RackBinMountStatus.MOUNTED,
-                ended_at=None,
-            )
-        ]
         self.tasks: dict[str, TransportTask] = {}
         self.active_binding = False
-        self.current_step_batch_sizes: list[int] = []
+        self.step_history_batch_sizes: list[int] = []
 
     async def get_active_run(self, db: object, *, for_update: bool = False) -> TransportDebugRun | None:
         del db, for_update
         return next((run for run in self.runs.values() if run.active_scope == "GLOBAL"), None)
-
-    async def list_active_mounts(
-        self,
-        db: object,
-        rack_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[object]:
-        del db, for_update
-        return [mount for mount in self.mounts if mount.rack_code == rack_id]
 
     async def add_run(self, db: object, run: TransportDebugRun, first_step: TransportDebugRunStep) -> None:
         del db
@@ -113,14 +94,14 @@ class _Repository:
         del db
         return self.steps[run_id]
 
-    async def list_current_steps(
+    async def list_steps_for_runs(
         self,
         db: object,
         runs: list[TransportDebugRun],
-    ) -> dict[str, TransportDebugRunStep]:
+    ) -> dict[str, list[TransportDebugRunStep]]:
         del db
-        self.current_step_batch_sizes.append(len(runs))
-        return {run.run_id: self.steps[run.run_id][run.current_step_ordinal] for run in runs}
+        self.step_history_batch_sizes.append(len(runs))
+        return {run.run_id: self.steps[run.run_id] for run in runs}
 
     async def list_recent_runs(
         self,
@@ -177,6 +158,16 @@ class _Audit:
         return object()
 
 
+class _Transport:
+    def __init__(self) -> None:
+        self.created = 0
+
+    async def create_debug_task_in_session(self, db: object, request: object) -> TransportHandle:
+        del db
+        self.created += 1
+        return TransportHandle(f"transport-{self.created}", request.client_request_id)  # type: ignore[attr-defined]
+
+
 def _request(*, face: str = " 90 ", slot_id: str = "510056A3F2C101") -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
         rack_id="510056",
@@ -196,14 +187,14 @@ def _service() -> tuple[TransportDebugRunService, _Repository, _Sessions, _Publi
     service = TransportDebugRunService(
         sessions,  # type: ignore[arg-type]
         repository,  # type: ignore[arg-type]
-        SimpleNamespace(),  # type: ignore[arg-type]
+        _Transport(),  # type: ignore[arg-type]
         clock=lambda: NOW,
         event_publisher=publisher,
     )
     return service, repository, sessions, publisher
 
 
-async def test_create_run_freezes_exact_mount_face_and_first_step_identity() -> None:
+async def test_create_run_freezes_exact_operator_input_and_first_step_identity() -> None:
     service, repository, sessions, publisher = _service()
 
     snapshot = await service.create_run(_request(), actor_id=7)
@@ -216,11 +207,13 @@ async def test_create_run_freezes_exact_mount_face_and_first_step_identity() -> 
             "bins": [{"bin_id": "A000001922", "slot_id": "510056A3F2C101"}],
         }
     ]
-    assert (step.phase, step.status, step.group_index) == ("RACK_TO_STATION", "PENDING", 0)
+    assert (step.phase, step.status, step.group_index) == ("RACK_TO_STATION", "WAITING", 0)
+    assert step.transport_task_id == "transport-1"
     assert is_uuid7(step.client_request_id)
     assert snapshot.face_groups[0].face == " 90 "
     assert snapshot.current_step is not None
     assert snapshot.current_step.client_request_id == step.client_request_id
+    assert snapshot.steps == (snapshot.current_step,)
     assert snapshot.can_abort is False
     assert sessions.commits == 1
     assert publisher.events == [
@@ -235,32 +228,52 @@ async def test_create_run_freezes_exact_mount_face_and_first_step_identity() -> 
     ]
 
 
-@pytest.mark.parametrize(
-    ("input_request", "message"),
-    [
-        (_request(slot_id="WRONG-SLOT"), "MOUNTED"),
-        (
-            CreateTransportDebugRun(
-                rack_id="OTHER-RACK",
-                face_groups=(
-                    TransportDebugFaceGroup(
-                        face="90",
-                        bins=(TransportDebugBinSelection("A000001922", "510056A3F2C101"),),
-                    ),
-                ),
-            ),
-            "MOUNTED",
-        ),
-    ],
-)
-async def test_create_run_rejects_non_exact_current_mount(
-    input_request: CreateTransportDebugRun,
-    message: str,
-) -> None:
-    service, _, _, _ = _service()
+async def test_get_run_returns_complete_step_history() -> None:
+    service, repository, _, _ = _service()
+    created = await service.create_run(_request(), actor_id=7)
+    run = repository.runs[created.run_id]
+    first_step = repository.steps[created.run_id][0]
+    first_step.status = "SUCCEEDED"
+    second_step = TransportDebugRunStep(
+        run_id=created.run_id,
+        ordinal=1,
+        group_index=0,
+        phase="BINS_TO_INFEED",
+        status="WAITING",
+        client_request_id="01a06986-9e3f-7fe9-8602-15a9a4e75805",
+        transport_task_id="transport-2",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    repository.steps[created.run_id].append(second_step)
+    run.current_phase = second_step.phase
+    run.current_step_ordinal = second_step.ordinal
 
-    with pytest.raises(TransportDebugRunConflict, match=message):
-        await service.create_run(input_request, actor_id=7)
+    snapshot = await service.get_run(created.run_id)
+
+    assert [(step.ordinal, step.phase, step.status) for step in snapshot.steps] == [
+        (0, "RACK_TO_STATION", "SUCCEEDED"),
+        (1, "BINS_TO_INFEED", "WAITING"),
+    ]
+    assert snapshot.current_step == snapshot.steps[1]
+
+
+async def test_create_run_accepts_operator_input_without_resource_mounts() -> None:
+    service, _, _, _ = _service()
+    input_request = CreateTransportDebugRun(
+        rack_id="FIELD-RACK-07",
+        face_groups=(
+            TransportDebugFaceGroup(
+                face="270",
+                bins=(TransportDebugBinSelection("FIELD-BIN-03", "FIELD-SLOT-02"),),
+            ),
+        ),
+    )
+
+    snapshot = await service.create_run(input_request, actor_id=7)
+
+    assert snapshot.rack_id == "FIELD-RACK-07"
+    assert snapshot.face_groups[0].bins[0] == TransportDebugBinSelection("FIELD-BIN-03", "FIELD-SLOT-02")
 
 
 async def test_create_run_rejects_second_global_active_run() -> None:
@@ -279,13 +292,29 @@ async def test_list_runs_uses_stable_cursor_and_rejects_invalid_cursor() -> None
     repository.runs[first.run_id].id = 1
     second = await service.create_run(_request(face="270"), actor_id=8)
     repository.runs[second.run_id].id = 2
+    repository.steps[second.run_id].append(
+        TransportDebugRunStep(
+            run_id=second.run_id,
+            ordinal=1,
+            group_index=0,
+            phase="BINS_TO_INFEED",
+            status="WAITING",
+            client_request_id="01a06986-9e3f-7fe9-8602-15a9a4e75806",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    repository.runs[second.run_id].current_phase = "BINS_TO_INFEED"
+    repository.runs[second.run_id].current_step_ordinal = 1
 
     page = await service.list_runs(limit=1, cursor=None)
     next_page = await service.list_runs(limit=1, cursor=page.next_cursor)
 
     assert [item.run_id for item in page.items] == [second.run_id]
     assert [item.run_id for item in next_page.items] == [first.run_id]
-    assert repository.current_step_batch_sizes == [1, 1]
+    assert [step.ordinal for step in page.items[0].steps] == [0, 1]
+    assert page.items[0].current_step == page.items[0].steps[1]
+    assert repository.step_history_batch_sizes == [1, 1]
     with pytest.raises(TransportDebugRunContractError, match="cursor"):
         await service.list_runs(limit=1, cursor="not-a-cursor")
 

@@ -166,6 +166,8 @@ class PositionProjectionPort(Protocol):
 
 
 class TransportDebugRunGuardPort(Protocol):
+    async def has_active_run_for_rack(self, db: AsyncSession, rack_id: str) -> bool: ...
+
     async def is_task_linked_to_active_run(self, db: AsyncSession, transport_task_id: str) -> bool: ...
 
     async def is_task_dispatch_allowed(self, db: AsyncSession, transport_task_id: str) -> bool: ...
@@ -286,6 +288,7 @@ class TransportService:
             request,
             None,
             use_debug_rack_projection=isinstance(request, (MoveBinsRequest, RotateRackRequest)),
+            allow_active_debug_run=True,
         )
 
     async def assert_debug_rack_position_in_session(
@@ -293,16 +296,18 @@ class TransportService:
         db: AsyncSession,
         rack_id: str,
         expected_position: RackPosition,
+        expected_face: str,
     ) -> None:
-        """在自动联调事务内锁定并核对货架的可信精确工作位。"""
+        """在自动联调事务内锁定并核对货架的可信精确工作位和朝向。"""
 
         projection = await self._get_rack_position_fact(db, rack_id, use_debug_rack_projection=True)
         if (
             projection is None
             or projection.position_unknown
             or projection.position_json != _json_value(expected_position)
+            or projection.arrival_face != expected_face
         ):
-            raise TransportContractError("rack current exact position does not match debug workstation")
+            raise TransportContractError("rack current exact position or face does not match debug step")
 
     async def move_bins(
         self,
@@ -823,8 +828,7 @@ class TransportService:
                         for_update=True,
                     )
                     if revision_owner is not None:
-                        first_http_status = 409
-                        first_code = "CONFLICT"
+                        first_http_status, first_code = _revision_replay_disposition(revision_owner, payload)
                 await self._repository.add_callback_receipt(
                     db,
                     _callback_receipt(
@@ -839,7 +843,7 @@ class TransportService:
                         now=now,
                     ),
                 )
-                if first_code == "CONFLICT":
+                if first_code != "RECEIVED":
                     return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
                 await self._repository.add_evidence(
                     db,
@@ -861,7 +865,7 @@ class TransportService:
             async with self._sessions.begin() as db:
                 existing = await self._repository.get_callback_receipt(db, operation, operation_id, for_update=True)
                 if existing is None:
-                    if outcome_revision is None or transport_task_id is None:
+                    if outcome_revision is None or transport_task_id is None or payload is None:
                         raise
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -871,6 +875,7 @@ class TransportService:
                     )
                     if revision_owner is None:
                         raise
+                    disposition = _revision_replay_disposition(revision_owner, payload)
                     await self._repository.add_callback_receipt(
                         db,
                         _callback_receipt(
@@ -878,14 +883,14 @@ class TransportService:
                             operation=operation,
                             message_digest=message_digest,
                             message=message,
-                            http_status=409,
-                            code="CONFLICT",
+                            http_status=disposition[0],
+                            code=disposition[1],
                             timestamp=ack_timestamp_ms,
                             data=ack_data,
                             now=now,
                         ),
                     )
-                    return _callback_ack(409, "CONFLICT", ack_timestamp_ms, ack_data)
+                    return _callback_ack(disposition[0], disposition[1], ack_timestamp_ms, ack_data)
                 return self._resolve_existing_callback_receipt(existing, message_digest, now)
         return _callback_ack(first_http_status, first_code, ack_timestamp_ms, ack_data)
 
@@ -1000,6 +1005,7 @@ class TransportService:
         *,
         allow_debug_rack_face: bool = False,
         use_debug_rack_projection: bool = False,
+        allow_active_debug_run: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         task_id = f"transport-{uuid.uuid4()}"
@@ -1046,6 +1052,12 @@ class TransportService:
         existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
         if existing is not None:
             return _idempotent_handle(existing, request_digest)
+        if not allow_active_debug_run:
+            for rack_id in sorted(
+                resource_id for resource_type, resource_id in _resource_keys(request) if resource_type == "RACK"
+            ):
+                if await self._debug_run_guard.has_active_run_for_rack(db, rack_id):
+                    raise TransportResourceConflict("active transport debug run owns rack")
         if isinstance(request, RotateRackRequest):
             projection = await self._get_rack_position_fact(
                 db,
@@ -1964,6 +1976,15 @@ def _source_outcome_revision(operation: str, payload: dict[str, Any]) -> int | N
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise TransportContractError("result evidence requires a positive outcome_revision")
     return value
+
+
+def _revision_replay_disposition(
+    revision_owner: TransportEvidence,
+    payload: dict[str, Any],
+) -> tuple[int, str]:
+    if revision_owner.payload_json == payload:
+        return 200, "DUPLICATE"
+    return 409, "CONFLICT"
 
 
 def _utc_z(value: datetime) -> str:

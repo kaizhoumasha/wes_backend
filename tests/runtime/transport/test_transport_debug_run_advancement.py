@@ -8,8 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
-from src.app.resource.models.resource import RackBinMountStatus
-from src.app.transport.contracts import TransportContractError, TransportHandle
+from src.app.transport.contracts import RackPosition, TransportContractError, TransportHandle
 from src.app.transport.debug_run_evidence import Scan12EvidenceDisposition, Scan12EvidenceEvaluation
 from src.app.transport.debug_run_service import TransportDebugRunService
 from src.app.transport.models import TransportDebugRun, TransportDebugRunStep, TransportMember, TransportTask
@@ -53,6 +52,7 @@ class _Transport:
     def __init__(self, repository: _Repository) -> None:
         self.repository = repository
         self.calls: list[str] = []
+        self.position_checks: list[tuple[str, object, str]] = []
         self.error: Exception | None = None
         self.position_error: Exception | None = None
 
@@ -61,8 +61,10 @@ class _Transport:
         db: object,
         rack_id: str,
         expected_position: object,
+        expected_face: str,
     ) -> None:
-        del db, rack_id, expected_position
+        del db
+        self.position_checks.append((rack_id, expected_position, expected_face))
         if self.position_error is not None:
             raise self.position_error
 
@@ -87,16 +89,6 @@ class _Repository:
         self.conflicting_evidence_ids: set[int] = set()
         self.transport_conflicting_task_ids: set[str] = set()
         self.pending_transport_evidence = False
-        self.mounts = [
-            SimpleNamespace(
-                rack_code="510056",
-                bin_code=bin_id,
-                rack_slot_code=slot_id,
-                mount_status=RackBinMountStatus.MOUNTED,
-                ended_at=None,
-            )
-            for bin_id, slot_id in (("A000001922", "SLOT-01"), ("A000002653", "SLOT-02"))
-        ]
         self.claimed = False
 
     async def claim_run(
@@ -199,16 +191,6 @@ class _Repository:
     async def max_device_evidence_id(self, db: object) -> int:
         del db
         return max((evidence.id or 0 for evidence in self.evidences), default=100)
-
-    async def list_active_mounts(
-        self,
-        db: object,
-        rack_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[object]:
-        del db, for_update
-        return [mount for mount in self.mounts if mount.rack_code == rack_id]
 
     async def list_device_evidences_since(
         self,
@@ -342,15 +324,41 @@ async def test_pending_intent_reuses_persisted_client_id_across_scans() -> None:
     assert repository.steps[0].status == "WAITING"
 
 
-async def test_bin_move_revalidates_frozen_mounts_before_creating_intent() -> None:
+async def test_bin_move_uses_frozen_operator_input_without_resource_mounts() -> None:
     service, repository, transport = _harness(phase="BINS_TO_INFEED")
-    repository.mounts = []
 
     assert await service.advance_run("debug-run-1") is True
 
-    assert transport.calls == []
-    assert repository.run.status == "NEEDS_ATTENTION"
-    assert repository.run.attention_code == "BIN_MOUNT_CHANGED"
+    assert transport.calls == [CLIENT_IDS[0]]
+    assert transport.position_checks == [("510056", RackPosition("KT16"), "90")]
+    assert repository.steps[0].status == "WAITING"
+    assert repository.run.status == "RUNNING"
+
+
+async def test_rotation_rechecks_the_previous_face_before_moving_to_the_next_group() -> None:
+    service, repository, transport = _harness(phase="ROTATE_TO_NEXT_FACE")
+    repository.run.configuration_json["face_groups"].append(
+        {"face": "270", "bins": [{"bin_id": "A000003001", "slot_id": "SLOT-03"}]}
+    )
+    repository.run.current_group_index = 1
+    repository.steps[0].group_index = 1
+
+    assert await service.advance_run("debug-run-1") is True
+
+    assert transport.position_checks == [("510056", RackPosition("KT16"), "90")]
+
+
+async def test_rack_return_rechecks_the_last_selected_face() -> None:
+    service, repository, transport = _harness(phase="RACK_TO_STORAGE")
+    repository.run.configuration_json["face_groups"].append(
+        {"face": "270", "bins": [{"bin_id": "A000003001", "slot_id": "SLOT-03"}]}
+    )
+    repository.run.current_group_index = 1
+    repository.steps[0].group_index = 1
+
+    assert await service.advance_run("debug-run-1") is True
+
+    assert transport.position_checks == [("510056", RackPosition("KT16"), "270")]
 
 
 async def test_transport_contract_rejection_becomes_attention_without_retry_loop() -> None:

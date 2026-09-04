@@ -16,6 +16,7 @@ from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
     HandoffPosition,
+    MoveRackRequest,
     RackBinSlot,
     RackPosition,
     TransportCaller,
@@ -841,6 +842,73 @@ async def test_submit_skips_task_fenced_by_debug_run_and_dispatches_the_next_tas
     assert blocked.submit_attempt_count == 0
     assert blocked.send_started_at is None
     assert blocked.submit_claim_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workline_id", ["TRANSPORT_DEBUG", "SORTER"])
+async def test_transport_task_cannot_claim_a_rack_owned_by_an_active_auto_run(
+    service: TransportService,
+    db_engine: object,
+    workline_id: str,
+) -> None:
+    class _Guard:
+        async def has_active_run_for_rack(self, _db: object, rack_id: str) -> bool:
+            return rack_id == "rack-auto-owned"
+
+        async def is_task_linked_to_active_run(self, _db: object, _task_id: str) -> bool:
+            return False
+
+        async def is_task_dispatch_allowed(self, _db: object, _task_id: str) -> bool:
+            return True
+
+    service._debug_run_guard = _Guard()  # type: ignore[assignment]
+
+    with pytest.raises(TransportResourceConflict, match="active transport debug run owns rack"):
+        await service.move_rack(
+            new_uuid7(),
+            TransportCaller(workline_id, "STATION-DEBUG"),
+            "rack-auto-owned",
+            RackPosition("A"),
+            RackPosition("B"),
+            "90",
+        )
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        tasks = list(await db.scalars(select(TransportTask)))
+    assert tasks == []
+
+
+@pytest.mark.asyncio
+async def test_auto_run_can_create_its_own_task_while_holding_the_rack_reservation(
+    service: TransportService,
+    db_engine: object,
+) -> None:
+    class _Guard:
+        async def has_active_run_for_rack(self, _db: object, _rack_id: str) -> bool:
+            return True
+
+        async def is_task_linked_to_active_run(self, _db: object, _task_id: str) -> bool:
+            return False
+
+        async def is_task_dispatch_allowed(self, _db: object, _task_id: str) -> bool:
+            return True
+
+    service._debug_run_guard = _Guard()  # type: ignore[assignment]
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    request = MoveRackRequest(
+        new_uuid7(),
+        TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO"),
+        "rack-auto-owned",
+        RackPosition("A"),
+        RackPosition("B"),
+        "90",
+    )
+
+    async with sessions.begin() as db:
+        handle = await service.create_debug_task_in_session(db, request)
+
+    assert (await _load_task(db_engine, handle.transport_task_id)).status == "PENDING"
 
 
 @pytest.mark.asyncio

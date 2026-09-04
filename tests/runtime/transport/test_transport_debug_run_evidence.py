@@ -137,6 +137,14 @@ def test_scan12_accepts_a_late_commit_even_when_its_id_is_below_the_recorded_bou
             _evidence(device_code="SCAN13"),
             "DEVICE_IDENTITY_CONFLICT",
         ),
+        (
+            _evidence(contract_key="other.contract"),
+            "CONTRACT_KEY_CONFLICT",
+        ),
+        (
+            _evidence(contract_version="2.0"),
+            "CONTRACT_VERSION_CONFLICT",
+        ),
     ],
 )
 def test_scan12_fails_closed_for_ambiguous_or_unprocessed_evidence(

@@ -114,6 +114,7 @@ class TransportDebugRunResponse(_StrictApiModel):
     current_group_index: int
     current_phase: TransportDebugRunPhase
     current_step: TransportDebugRunStepResponse | None
+    steps: list[TransportDebugRunStepResponse]
     observed_bin_ids: list[str]
     attention_code: str | None
     attention_detail: str | None
@@ -192,7 +193,7 @@ def _parse_update(event_type: object, payload: object) -> TransportDebugRunUpdat
     status_code=status.HTTP_202_ACCEPTED,
     responses={
         400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "自动联调请求不满足合同"},
-        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "已有活动轮次或选择事实冲突"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "已有活动轮次或并发状态冲突"},
         503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Transport runtime 不可用"},
     },
     dependencies=[Depends(RequirePermission("ops:transport-debug-run:start"))],

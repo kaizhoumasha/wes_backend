@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.exc import IntegrityError
 
-from src.app.resource.models.resource import RackBinMount, RackBinMountStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_DEBUG_RUN_STREAM_CHANNEL, event_stream_service
 from src.app.transport.contracts import (
@@ -109,6 +108,7 @@ class TransportDebugRunSnapshot:
     current_group_index: int
     current_phase: TransportDebugRunPhase
     current_step: TransportDebugRunStepSnapshot | None
+    steps: tuple[TransportDebugRunStepSnapshot, ...]
     observed_bin_ids: tuple[str, ...]
     attention_code: str | None
     attention_detail: str | None
@@ -180,16 +180,22 @@ class TransportDebugRunService:
             async with self._sessions.begin() as db:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
-                mounts = await self._repository.list_active_mounts(db, request.rack_id, for_update=True)
-                _validate_current_mounts(request, mounts)
+                first_request = build_debug_transport_request(run, first_step)
+                if first_request is None:
+                    raise TransportDebugRunContractError("first debug step configuration is invalid")
+                handle = await self._transport.create_debug_task_in_session(db, first_request)
+                if handle.client_request_id != first_step.client_request_id:
+                    raise TransportDebugRunContractError("first debug task identity does not match the step")
+                first_step.transport_task_id = handle.transport_task_id
+                first_step.status = TransportDebugRunStepStatus.WAITING.value
                 await self._repository.add_run(db, run, first_step)
-                snapshot = await self._snapshot(db, run, first_step=first_step)
+                snapshot = await self._snapshot(db, run, steps=(first_step,))
                 event_payload = _event_payload(run)
         except IntegrityError as error:
             async with self._sessions() as db:
                 if await self._repository.get_active_run(db) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists") from error
-            raise
+            raise TransportDebugRunConflict("transport resource is already active") from error
         await self._publish_update(event_payload)
         return snapshot
 
@@ -212,8 +218,8 @@ class TransportDebugRunService:
                 before_id=before_id,
             )
             visible = runs[:limit]
-            current_steps = await self._repository.list_current_steps(db, visible)
-            items = tuple([await self._snapshot(db, run, first_step=current_steps.get(run.run_id)) for run in visible])
+            step_histories = await self._repository.list_steps_for_runs(db, visible)
+            items = tuple([await self._snapshot(db, run, steps=step_histories.get(run.run_id, ())) for run in visible])
         next_cursor = None
         if len(runs) > limit and visible:
             tail = visible[-1]
@@ -274,7 +280,7 @@ class TransportDebugRunService:
                     },
                 },
             )
-            snapshot = await self._snapshot(db, run)
+            snapshot = await self._snapshot(db, run, steps=steps)
             event_payload = _event_payload(run)
         await self._publish_update(event_payload)
         return snapshot
@@ -372,13 +378,6 @@ class TransportDebugRunService:
     ) -> bool:
         if step.status != TransportDebugRunStepStatus.PENDING.value:
             return self._set_attention(run, step, "TRANSPORT_TASK_MISSING", now)
-        if step.phase == TransportDebugRunPhase.BINS_TO_INFEED.value:
-            group = _frozen_face_groups(run.configuration_json)[run.current_group_index]
-            mounts = await self._repository.list_active_mounts(db, run.rack_id, for_update=True)
-            try:
-                _validate_current_mounts(CreateTransportDebugRun(run.rack_id, (group,)), mounts)
-            except TransportDebugRunConflict as error:
-                return self._set_attention(run, step, "BIN_MOUNT_CHANGED", now, str(error))
         if step.phase == TransportDebugRunPhase.BINS_TO_RACK.value and await self._has_observed_evidence_conflict(
             db, step
         ):
@@ -398,6 +397,7 @@ class TransportDebugRunService:
                     db,
                     run.rack_id,
                     RackPosition(_configuration_text(run.configuration_json, "workstation")),
+                    _expected_rack_face(run, step),
                 )
             handle = await self._transport.create_debug_task_in_session(db, request)
         except TransportContractError as error:
@@ -673,10 +673,14 @@ class TransportDebugRunService:
         db: AsyncSession,
         run: TransportDebugRun,
         *,
-        first_step: TransportDebugRunStep | None = None,
+        steps: Sequence[TransportDebugRunStep] | None = None,
     ) -> TransportDebugRunSnapshot:
-        step = first_step or await self._repository.get_current_step(db, run)
-        step_snapshot = _step_snapshot(step) if step is not None else None
+        persisted_steps = list(steps) if steps is not None else await self._repository.list_steps(db, run.run_id)
+        step_snapshots = tuple(_step_snapshot(step) for step in persisted_steps)
+        step_snapshot = next(
+            (step for step in step_snapshots if step.ordinal == run.current_step_ordinal),
+            None,
+        )
         return TransportDebugRunSnapshot(
             run_id=run.run_id,
             status=TransportDebugRunStatus(run.status),
@@ -685,6 +689,7 @@ class TransportDebugRunService:
             current_group_index=run.current_group_index,
             current_phase=TransportDebugRunPhase(run.current_phase),
             current_step=step_snapshot,
+            steps=step_snapshots,
             observed_bin_ids=step_snapshot.observed_bin_ids if step_snapshot is not None else (),
             attention_code=run.attention_code,
             attention_detail=run.attention_detail,
@@ -779,18 +784,16 @@ def _ceil_unix_ms(value: datetime) -> int:
     return int(aware.timestamp()) * 1000 + (aware.microsecond + 999) // 1000
 
 
-def _validate_current_mounts(request: CreateTransportDebugRun, mounts: Sequence[RackBinMount]) -> None:
-    current = {
-        (mount.bin_code, mount.rack_slot_code)
-        for mount in mounts
-        if mount.rack_code == request.rack_id
-        and mount.mount_status is RackBinMountStatus.MOUNTED
-        and mount.ended_at is None
-    }
-    requested = {(item.bin_id, item.slot_id) for group in request.face_groups for item in group.bins}
-    missing = sorted(requested - current)
-    if missing:
-        raise TransportDebugRunConflict(f"selected bin and slot must be currently MOUNTED on rack: {missing[0]}")
+def _expected_rack_face(run: TransportDebugRun, step: TransportDebugRunStep) -> str:
+    groups = _frozen_face_groups(run.configuration_json)
+    group_index = step.group_index
+    if group_index is None:
+        raise TransportDebugRunContractError("physical debug step is missing a face group")
+    if step.phase == TransportDebugRunPhase.ROTATE_TO_NEXT_FACE.value:
+        group_index -= 1
+    if group_index < 0 or group_index >= len(groups):
+        raise TransportDebugRunContractError("physical debug step face group is out of range")
+    return groups[group_index].face
 
 
 def _frozen_face_groups(configuration: dict[str, object]) -> tuple[TransportDebugFaceGroup, ...]:

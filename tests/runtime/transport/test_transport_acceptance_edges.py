@@ -223,6 +223,34 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
 
 
 @pytest.mark.asyncio
+async def test_auto_debug_successor_rejects_a_rack_on_the_wrong_face(db_engine: object) -> None:
+    service = _service(db_engine)
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        db.add(
+            TransportDebugPositionProjection(
+                object_type="RACK",
+                object_id="rack-auto-face-drift",
+                position_json={"kind": "RACK_POSITION", "location_code": "KT16"},
+                position_unknown=False,
+                arrival_face="270",
+                source_operation_id="seed",
+                source_transport_task_id="seed",
+                updated_at=timezone.now_for_db(),
+            )
+        )
+
+    async with sessions.begin() as db:
+        with pytest.raises(TransportContractError, match="position or face does not match"):
+            await service.assert_debug_rack_position_in_session(
+                db,
+                "rack-auto-face-drift",
+                RackPosition("KT16"),
+                "90",
+            )
+
+
+@pytest.mark.asyncio
 async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: object) -> None:
     service = _service(db_engine)
     caller = TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "STATION-DEBUG")

@@ -36,6 +36,12 @@ class TransportDebugBinSelection:
     bin_id: str
     slot_id: str
 
+    def __post_init__(self) -> None:
+        if not self.bin_id.strip():
+            raise ValueError("料箱编码不能为空")
+        if not self.slot_id.strip():
+            raise ValueError("原货架槽位不能为空")
+
 
 @dataclass(frozen=True, slots=True)
 class TransportDebugFaceGroup:
@@ -55,6 +61,8 @@ class CreateTransportDebugRun:
     face_groups: tuple[TransportDebugFaceGroup, ...]
 
     def __post_init__(self) -> None:
+        if not self.rack_id.strip():
+            raise ValueError("货架编码不能为空")
         if not self.face_groups:
             raise ValueError("至少选择一个货架面")
 

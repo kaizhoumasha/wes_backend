@@ -13,7 +13,6 @@ from src.app.execution.models import (
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
-from src.app.resource.models.resource import RackBinMount, RackBinMountStatus, ResourceSourceSystem
 from src.app.transport.contracts import (
     MoveBinsRequest,
     MoveRackRequest,
@@ -64,8 +63,9 @@ class _PersistingTransport:
         db: Any,
         rack_id: str,
         expected_position: RackPosition,
+        expected_face: str,
     ) -> None:
-        del db, rack_id, expected_position
+        del db, rack_id, expected_position, expected_face
 
     async def create_debug_task_in_session(self, db: Any, request: TransportRequest) -> TransportHandle:
         task_id = f"transport-acceptance-{uuid.uuid4()}"
@@ -154,24 +154,6 @@ def _configuration(suffix: str, *, faces: tuple[str, ...]) -> tuple[str, CreateT
         for group_index, face in enumerate(faces)
     )
     return rack_id, CreateTransportDebugRun(rack_id=rack_id, face_groups=groups)
-
-
-async def _seed_mounts(session_factory: Any, request: CreateTransportDebugRun, source_prefix: str) -> None:
-    now = timezone.now_for_db()
-    async with session_factory.begin() as db:
-        for group in request.face_groups:
-            for selection in group.bins:
-                db.add(
-                    RackBinMount(
-                        rack_code=request.rack_id,
-                        rack_slot_code=selection.slot_id,
-                        bin_code=selection.bin_id,
-                        mount_status=RackBinMountStatus.MOUNTED,
-                        source_system=ResourceSourceSystem.WMS,
-                        source_event_id=f"{source_prefix}-mount-{selection.bin_id}",
-                        started_at=now,
-                    )
-                )
 
 
 async def _persist_scan12(
@@ -289,7 +271,6 @@ async def _advance_to_scan_wait(
     transport: _PersistingTransport,
     run_id: str,
 ) -> None:
-    assert await service.advance_run(run_id) is True
     await _complete_current_transport(session_factory, service, run_id, transport)
     assert await service.advance_run(run_id) is True
     assert await service.advance_run(run_id) is True
@@ -331,7 +312,6 @@ async def _cleanup(session_factory: Any, *, rack_id: str, source_prefix: str) ->
             await db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id.in_(run_ids)))
             await db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id.in_(run_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{source_prefix}%")))
-        await db.execute(delete(RackBinMount).where(RackBinMount.rack_code == rack_id))
 
 
 @pytest.mark.parametrize("faces", [("90",), ("90", "270")], ids=["single-face", "two-faces"])
@@ -345,7 +325,6 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
     await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     await _persist_scan12(
         integration_session_factory,
         source_event_id=f"{source_prefix}-old",
@@ -357,7 +336,6 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
         expected_kinds: list[str] = []
         for group_index, group in enumerate(request.face_groups):
             if group_index == 0:
-                assert await service.advance_run(run.run_id) is True
                 expected_kinds.append("RACK_MOVE")
                 rack_out = transport.created[-1][1]
                 assert isinstance(rack_out, MoveRackRequest)
@@ -468,10 +446,8 @@ async def test_restart_reuses_the_persisted_step_and_does_not_create_a_second_tr
     rack_id, request = _configuration(suffix, faces=("90",))
     first_transport = _PersistingTransport()
     first_service = _service(integration_session_factory, first_transport)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await first_service.create_run(request, actor_id=7)
-        assert await first_service.advance_run(run.run_id) is True
         async with integration_session_factory() as db:
             before = int(await db.scalar(select(func.count()).select_from(TransportTask)) or 0)
 
@@ -492,7 +468,6 @@ async def test_only_one_debug_run_can_hold_the_global_active_scope(integration_s
     source_prefix = f"single-{suffix}"
     rack_id, request = _configuration(suffix, faces=("90",))
     service = _service(integration_session_factory, _PersistingTransport())
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         await service.create_run(request, actor_id=7)
         with pytest.raises(TransportDebugRunConflict, match="active debug run"):
@@ -510,10 +485,8 @@ async def test_persisted_transport_callback_conflict_blocks_the_next_physical_st
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
     await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await service.create_run(request, actor_id=7)
-        assert await service.advance_run(run.run_id) is True
         await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
         current = await service.get_run(run.run_id)
         assert current.current_step is not None and current.current_step.transport_task_id is not None
@@ -556,10 +529,8 @@ async def test_delivery_unknown_holds_the_same_task_until_a_definite_result_arri
     rack_id, request = _configuration(suffix, faces=("90",))
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await service.create_run(request, actor_id=7)
-        assert await service.advance_run(run.run_id) is True
         task_id = transport.created[-1][0]
         async with integration_session_factory.begin() as db:
             task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
@@ -597,10 +568,8 @@ async def test_ambiguous_rack_result_never_creates_the_next_task(
     rack_id, request = _configuration(suffix, faces=("90",))
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await service.create_run(request, actor_id=7)
-        assert await service.advance_run(run.run_id) is True
         await _complete_current_transport(
             integration_session_factory,
             service,
@@ -626,7 +595,6 @@ async def test_reconciling_scan12_evidence_stops_before_bin_return(
     rack_id, request = _configuration(suffix, faces=("90",))
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await service.create_run(request, actor_id=7)
         await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
@@ -657,7 +625,6 @@ async def test_conflicting_scan12_evidence_stops_before_bin_return(
     rack_id, request = _configuration(suffix, faces=("90",))
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await service.create_run(request, actor_id=7)
         await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
@@ -703,7 +670,6 @@ async def test_late_scan12_conflict_stops_after_bin_return_task_is_bound(
     rack_id, request = _configuration(suffix, faces=("90",))
     transport = _PersistingTransport()
     service = _service(integration_session_factory, transport)
-    await _seed_mounts(integration_session_factory, request, source_prefix)
     try:
         run = await service.create_run(request, actor_id=7)
         await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)

@@ -1,5 +1,7 @@
 # Transport Debug Auto Run Frontend Implementation Plan
 
+> **2026-09-03 修订：** 现场货架、料箱和原槽位改为操作员直接录入，不再加载或校验 `RackBinMount` 基础数据。本计划中与 `MOUNTED` 查询、选择器有关的原实施步骤已被该修订取代，保留其余状态观察与安全边界。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 `/ops/transport-diagnostics` 的固定“510056 联调步进”替换为可选货架、按面分组选择 1～4 个料箱的“自动联调”，并从后端持久轮次恢复和观察进度。

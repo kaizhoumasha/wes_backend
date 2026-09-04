@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import and_, func, or_, select
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, InboundEvidenceKind
-from src.app.resource.models.resource import RackBinMount, RackBinMountStatus
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportDebugRun,
@@ -166,28 +165,33 @@ class TransportDebugRunRepository:
             )
         )
 
-    async def list_current_steps(
+    async def list_steps_for_runs(
         self,
         db: AsyncSession,
         runs: list[TransportDebugRun],
-    ) -> dict[str, TransportDebugRunStep]:
+    ) -> dict[str, list[TransportDebugRunStep]]:
         if not runs:
             return {}
         step_columns = cast("Any", TransportDebugRunStep).__table__.c
         steps = await db.scalars(
-            select(TransportDebugRunStep).where(
+            select(TransportDebugRunStep)
+            .where(
                 or_(
                     *(
                         and_(
                             step_columns.run_id == run.run_id,
-                            step_columns.ordinal == run.current_step_ordinal,
+                            step_columns.ordinal <= run.current_step_ordinal,
                         )
                         for run in runs
                     )
                 )
             )
+            .order_by(step_columns.run_id.asc(), step_columns.ordinal.asc(), step_columns.id.asc())
         )
-        return {step.run_id: step for step in steps}
+        grouped = {run.run_id: [] for run in runs}
+        for step in steps:
+            grouped[step.run_id].append(step)
+        return grouped
 
     async def list_recent_runs(
         self,
@@ -234,27 +238,6 @@ class TransportDebugRunRepository:
                 .order_by(columns.ordinal.asc(), columns.id.asc())
             )
         )
-
-    async def list_active_mounts(
-        self,
-        db: AsyncSession,
-        rack_id: str,
-        *,
-        for_update: bool = False,
-    ) -> list[RackBinMount]:
-        columns = cast("Any", RackBinMount).__table__.c
-        statement = (
-            select(RackBinMount)
-            .where(
-                columns.rack_code == rack_id,
-                columns.mount_status == RackBinMountStatus.MOUNTED,
-                columns.ended_at.is_(None),
-            )
-            .order_by(columns.rack_slot_code.asc(), columns.id.asc())
-        )
-        if for_update:
-            statement = statement.with_for_update()
-        return list(await db.scalars(statement))
 
     async def max_device_evidence_id(self, db: AsyncSession) -> int:
         columns = cast("Any", InboundEvidence).__table__.c
@@ -408,6 +391,18 @@ class TransportDebugRunRepository:
             )
         )
         return bool(count)
+
+    async def has_active_run_for_rack(self, db: AsyncSession, rack_id: str) -> bool:
+        columns = cast("Any", TransportDebugRun).__table__.c
+        run_id = await db.scalar(
+            select(columns.id)
+            .where(
+                columns.active_scope == "GLOBAL",
+                columns.rack_id == rack_id,
+            )
+            .with_for_update()
+        )
+        return run_id is not None
 
     async def is_task_dispatch_allowed(self, db: AsyncSession, transport_task_id: str) -> bool:
         run_columns = cast("Any", TransportDebugRun).__table__.c
