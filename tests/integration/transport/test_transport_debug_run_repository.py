@@ -102,6 +102,25 @@ async def test_debug_run_repository_claims_once_and_recovers_expired_lease(
             await cleanup_db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
 
 
+async def test_active_debug_run_reserves_its_rack_for_manual_debug_tasks(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    repository = TransportDebugRunRepository()
+    run_id = f"debug-rack-reservation-{uuid.uuid4().hex}"
+    run, step = _aggregate(run_id)
+    async with integration_session_factory.begin() as setup_db:
+        await repository.add_run(setup_db, run, step)
+
+    try:
+        async with integration_session_factory.begin() as db:
+            assert await repository.has_active_run_for_rack(db, "510056") is True
+            assert await repository.has_active_run_for_rack(db, "OTHER-RACK") is False
+    finally:
+        async with integration_session_factory.begin() as cleanup_db:
+            await cleanup_db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id == run_id))
+            await cleanup_db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run_id))
+
+
 async def test_debug_run_repository_reads_current_step_and_stable_history(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

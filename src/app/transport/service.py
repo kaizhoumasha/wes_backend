@@ -166,6 +166,8 @@ class PositionProjectionPort(Protocol):
 
 
 class TransportDebugRunGuardPort(Protocol):
+    async def has_active_run_for_rack(self, db: AsyncSession, rack_id: str) -> bool: ...
+
     async def is_task_linked_to_active_run(self, db: AsyncSession, transport_task_id: str) -> bool: ...
 
     async def is_task_dispatch_allowed(self, db: AsyncSession, transport_task_id: str) -> bool: ...
@@ -286,6 +288,7 @@ class TransportService:
             request,
             None,
             use_debug_rack_projection=isinstance(request, (MoveBinsRequest, RotateRackRequest)),
+            allow_active_debug_run=True,
         )
 
     async def assert_debug_rack_position_in_session(
@@ -293,16 +296,18 @@ class TransportService:
         db: AsyncSession,
         rack_id: str,
         expected_position: RackPosition,
+        expected_face: str,
     ) -> None:
-        """在自动联调事务内锁定并核对货架的可信精确工作位。"""
+        """在自动联调事务内锁定并核对货架的可信精确工作位和朝向。"""
 
         projection = await self._get_rack_position_fact(db, rack_id, use_debug_rack_projection=True)
         if (
             projection is None
             or projection.position_unknown
             or projection.position_json != _json_value(expected_position)
+            or projection.arrival_face != expected_face
         ):
-            raise TransportContractError("rack current exact position does not match debug workstation")
+            raise TransportContractError("rack current exact position or face does not match debug step")
 
     async def move_bins(
         self,
@@ -1000,6 +1005,7 @@ class TransportService:
         *,
         allow_debug_rack_face: bool = False,
         use_debug_rack_projection: bool = False,
+        allow_active_debug_run: bool = False,
     ) -> TransportHandle:
         request_digest = _request_digest(request, execution_authority)
         task_id = f"transport-{uuid.uuid4()}"
@@ -1046,6 +1052,12 @@ class TransportService:
         existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
         if existing is not None:
             return _idempotent_handle(existing, request_digest)
+        if not allow_active_debug_run:
+            for rack_id in sorted(
+                resource_id for resource_type, resource_id in _resource_keys(request) if resource_type == "RACK"
+            ):
+                if await self._debug_run_guard.has_active_run_for_rack(db, rack_id):
+                    raise TransportResourceConflict("active transport debug run owns rack")
         if isinstance(request, RotateRackRequest):
             projection = await self._get_rack_position_fact(
                 db,

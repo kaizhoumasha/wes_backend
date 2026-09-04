@@ -122,6 +122,10 @@ def _parse_event(
         return None, _attention(evidence_id, "SOURCE_IDENTITY_CONFLICT", source_event_id=event.source_event_id)
     if evidence.device_code != event.device_code:
         return None, _attention(evidence_id, "DEVICE_IDENTITY_CONFLICT", source_event_id=event.source_event_id)
+    if evidence.contract_key != event.contract_key:
+        return None, _attention(evidence_id, "CONTRACT_KEY_CONFLICT", source_event_id=event.source_event_id)
+    if evidence.contract_version != event.contract_version:
+        return None, _attention(evidence_id, "CONTRACT_VERSION_CONFLICT", source_event_id=event.source_event_id)
     return event, None
 
 

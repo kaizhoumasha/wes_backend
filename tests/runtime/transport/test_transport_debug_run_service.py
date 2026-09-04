@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from sqlalchemy import BigInteger
 
+from src.app.transport.contracts import TransportHandle
 from src.app.transport.debug_run_contracts import (
     CreateTransportDebugRun,
     TransportDebugBinSelection,
@@ -157,6 +158,16 @@ class _Audit:
         return object()
 
 
+class _Transport:
+    def __init__(self) -> None:
+        self.created = 0
+
+    async def create_debug_task_in_session(self, db: object, request: object) -> TransportHandle:
+        del db
+        self.created += 1
+        return TransportHandle(f"transport-{self.created}", request.client_request_id)  # type: ignore[attr-defined]
+
+
 def _request(*, face: str = " 90 ", slot_id: str = "510056A3F2C101") -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
         rack_id="510056",
@@ -176,7 +187,7 @@ def _service() -> tuple[TransportDebugRunService, _Repository, _Sessions, _Publi
     service = TransportDebugRunService(
         sessions,  # type: ignore[arg-type]
         repository,  # type: ignore[arg-type]
-        SimpleNamespace(),  # type: ignore[arg-type]
+        _Transport(),  # type: ignore[arg-type]
         clock=lambda: NOW,
         event_publisher=publisher,
     )
@@ -196,7 +207,8 @@ async def test_create_run_freezes_exact_operator_input_and_first_step_identity()
             "bins": [{"bin_id": "A000001922", "slot_id": "510056A3F2C101"}],
         }
     ]
-    assert (step.phase, step.status, step.group_index) == ("RACK_TO_STATION", "PENDING", 0)
+    assert (step.phase, step.status, step.group_index) == ("RACK_TO_STATION", "WAITING", 0)
+    assert step.transport_task_id == "transport-1"
     assert is_uuid7(step.client_request_id)
     assert snapshot.face_groups[0].face == " 90 "
     assert snapshot.current_step is not None

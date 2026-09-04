@@ -180,6 +180,14 @@ class TransportDebugRunService:
             async with self._sessions.begin() as db:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
+                first_request = build_debug_transport_request(run, first_step)
+                if first_request is None:
+                    raise TransportDebugRunContractError("first debug step configuration is invalid")
+                handle = await self._transport.create_debug_task_in_session(db, first_request)
+                if handle.client_request_id != first_step.client_request_id:
+                    raise TransportDebugRunContractError("first debug task identity does not match the step")
+                first_step.transport_task_id = handle.transport_task_id
+                first_step.status = TransportDebugRunStepStatus.WAITING.value
                 await self._repository.add_run(db, run, first_step)
                 snapshot = await self._snapshot(db, run, steps=(first_step,))
                 event_payload = _event_payload(run)
@@ -187,7 +195,7 @@ class TransportDebugRunService:
             async with self._sessions() as db:
                 if await self._repository.get_active_run(db) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists") from error
-            raise
+            raise TransportDebugRunConflict("transport resource is already active") from error
         await self._publish_update(event_payload)
         return snapshot
 
@@ -389,6 +397,7 @@ class TransportDebugRunService:
                     db,
                     run.rack_id,
                     RackPosition(_configuration_text(run.configuration_json, "workstation")),
+                    _expected_rack_face(run, step),
                 )
             handle = await self._transport.create_debug_task_in_session(db, request)
         except TransportContractError as error:
@@ -773,6 +782,18 @@ def _event_payload(run: TransportDebugRun) -> dict[str, object]:
 def _ceil_unix_ms(value: datetime) -> int:
     aware = timezone.to_utc(value)
     return int(aware.timestamp()) * 1000 + (aware.microsecond + 999) // 1000
+
+
+def _expected_rack_face(run: TransportDebugRun, step: TransportDebugRunStep) -> str:
+    groups = _frozen_face_groups(run.configuration_json)
+    group_index = step.group_index
+    if group_index is None:
+        raise TransportDebugRunContractError("physical debug step is missing a face group")
+    if step.phase == TransportDebugRunPhase.ROTATE_TO_NEXT_FACE.value:
+        group_index -= 1
+    if group_index < 0 or group_index >= len(groups):
+        raise TransportDebugRunContractError("physical debug step face group is out of range")
+    return groups[group_index].face
 
 
 def _frozen_face_groups(configuration: dict[str, object]) -> tuple[TransportDebugFaceGroup, ...]:

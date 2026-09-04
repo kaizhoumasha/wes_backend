@@ -392,6 +392,18 @@ class TransportDebugRunRepository:
         )
         return bool(count)
 
+    async def has_active_run_for_rack(self, db: AsyncSession, rack_id: str) -> bool:
+        columns = cast("Any", TransportDebugRun).__table__.c
+        run_id = await db.scalar(
+            select(columns.id)
+            .where(
+                columns.active_scope == "GLOBAL",
+                columns.rack_id == rack_id,
+            )
+            .with_for_update()
+        )
+        return run_id is not None
+
     async def is_task_dispatch_allowed(self, db: AsyncSession, transport_task_id: str) -> bool:
         run_columns = cast("Any", TransportDebugRun).__table__.c
         step_columns = cast("Any", TransportDebugRunStep).__table__.c

@@ -61,6 +61,7 @@ TransportDebugRun（冻结配置和当前进度）
 权威状态始终是数据库中的诊断轮次、Transport task 和 Device Evidence。SSE 只用于降低页面刷新延迟，不承载状态，也不是流程继续运行的前提。
 
 为避免共用 `KT16`、`CNV0301`、`CNV0302`、`SCAN12` 时发生串线，任一时刻只允许一个未释放的自动诊断轮次。`RUNNING` 和 `NEEDS_ATTENTION` 都占用该全局执行权。
+活动轮次同时独占其 `rack_id`：自动轮次自身以外的 Transport 创建入口不得为同一货架创建新任务；每个自动后继步骤创建前必须在同一事务内复核货架仍位于工作位且朝向与当前步骤一致。
 
 ## 4. 正式 Transport 合同变更
 
@@ -295,6 +296,8 @@ POST /api/v1/transport/debug-runs/{run_id}/abort
 - 人工完成既有 Transport reconciliation 后的状态变化。
 
 所有唤醒最终都执行同一个幂等 `advance(run_id)`：事务内锁定轮次、重读 task/Evidence、验证当前阶段前置条件，只允许一次状态跃迁。重复回调、重复 SSE 通知、worker 并发和进程崩溃都不会产生第二个物理任务。
+
+`SCAN12` 消费还必须核对 Evidence 独立持久化的 `source_identity`、`device_code`、`contract_key`、`contract_version` 与标准化 payload 一致；任一矛盾均 fail closed 并进入 `NEEDS_ATTENTION`。
 
 运行中的诊断轮次禁止使用现有 debug reset 清除其关联 task。reset 端点必须拒绝仍被 `RUNNING` 或 `NEEDS_ATTENTION` 轮次引用的任务。
 
