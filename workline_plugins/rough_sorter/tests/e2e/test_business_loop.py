@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -283,45 +284,43 @@ class _EcsStubHandler(_JsonHandler):
     """Only emulate the uniform ECS wire; this is not supplier conformance."""
 
     def do_GET(self) -> None:
-        if not self.path.startswith("/api/v1/device/status?"):
+        parsed = urlsplit(self.path)
+        if parsed.path != "/api/v1/device/status":
             self._write_json(404, {"error": "unexpected path"})
             return
-        device_code = self.path.split("device_code=", 1)[-1]
-        contract_key = DEVICE_CONTRACTS.get(device_code)
-        if contract_key is None:
+        device_codes = parse_qs(parsed.query).get("device_code", list(DEVICE_CONTRACTS))
+        if any(code not in DEVICE_CONTRACTS for code in device_codes):
             self._write_json(404, {"code": 404, "message": "DEVICE_NOT_FOUND"})
             return
-        self._write_json(
-            200,
-            {
-                "devices": [
-                    {
-                        "device": {
-                            "device_code": device_code,
-                            "device_name": device_code,
-                            "device_type": contract_key,
-                            "role": contract_key.rsplit(".", 1)[-1].upper(),
-                            "supported_commands": ["PICK_AND_PUT", "MOVE_FORWARD"],
-                            "supported_events": (
-                                ["COMMAND_RESULT", "SCAN_COMPLETED"]
-                                if contract_key == "rough_sorter.measurement_device"
-                                else ["COMMAND_RESULT"]
-                            ),
-                        },
-                        "state": {
-                            "device_code": device_code,
-                            "mode": "AUTO",
-                            "status": "IDLE",
-                            "is_online": True,
-                            "current_command_code": None,
-                            "scenario": "success",
-                            "updated_at": _recent_past_timestamp_ms(time.time()),
-                        },
-                    }
-                ]
-            },
-            no_store=True,
-        )
+        devices = []
+        for device_code in device_codes:
+            contract_key = DEVICE_CONTRACTS[device_code]
+            devices.append(
+                {
+                    "device": {
+                        "device_code": device_code,
+                        "device_name": device_code,
+                        "device_type": contract_key,
+                        "role": contract_key.rsplit(".", 1)[-1].upper(),
+                        "supported_commands": ["PICK_AND_PUT", "MOVE_FORWARD"],
+                        "supported_events": (
+                            ["COMMAND_RESULT", "SCAN_COMPLETED"]
+                            if contract_key == "rough_sorter.measurement_device"
+                            else ["COMMAND_RESULT"]
+                        ),
+                    },
+                    "state": {
+                        "device_code": device_code,
+                        "mode": "AUTO",
+                        "status": "IDLE",
+                        "is_online": True,
+                        "current_command_code": None,
+                        "scenario": "success",
+                        "updated_at": _recent_past_timestamp_ms(time.time()),
+                    },
+                }
+            )
+        self._write_json(200, {"devices": devices}, no_store=True)
 
     def do_POST(self) -> None:
         if self.path != "/api/v1/device/command":
@@ -413,6 +412,16 @@ def _start_workline(stack: _DockerStack, api_url: str) -> None:
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epochs") == "1"
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_device_bindings") == "3"
     assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_position_bindings") == "4"
+    # START 要求清线; 启动后再建立本场景的货架已到位前提。
+    stack.query("""
+        INSERT INTO wes_biz.resource_rack_placements (
+            id, created_at, rack_code, placement_status, source_system, source_event_id, started_at,
+            rack_kind, workline_id, workline_code, position_code, position_role, logic_location_code
+        ) VALUES (
+            9601, CURRENT_TIMESTAMP, 'RACK-1', 'ARRIVED', 'WMS', 'RS-E2E-RACK-ARRIVED', CURRENT_TIMESTAMP,
+            'SINGLE_LAYER', 9001, 'RS-E2E-LINE', 'RACK-WORK', 'SMT_CLASSIFIER_SINGLE_RACK_WORK', 'PIPELINE_OUTLET'
+        )
+    """)
 
 
 def _wait_wms_requests(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import datetime, timedelta
 
 import pytest
@@ -14,6 +16,23 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationResponseConflictResult,
     WmsConfirmationService,
 )
+
+
+def test_confirmation_owner_foreign_key_resolves_in_a_fresh_process() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from src.app.execution.models.wms_confirmation import WmsConfirmation; "
+            "fk = next(iter(WmsConfirmation.__table__.c.picking_task_id.foreign_keys)); "
+            "assert fk.column.table.fullname == 'wes_biz.picking_tasks'",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class FakeWmsConfirmationRepository:
