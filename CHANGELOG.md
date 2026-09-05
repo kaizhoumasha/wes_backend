@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.2.0] - 2026-09-05
+
+### Added
+
+- 新增 `outbound.picking_task.issued@v1` 与 `outbound.picking_task.prepare@v1` 暗构建，持久化 PickingTask、WMS confirmation 和严格 operation 合同，但不激活人工料箱处理。
+- 增加 `manual_bin_processing` 插件基础骨架，并迁入人工出库拣料 `plan_delta` 后续设计。
+
+### Fixed
+
+- Transport 自动联调支持现场直接录入目标对象、同版本同结果回调幂等、完整步骤恢复、活动货架独占，以及扫码设备码方向后缀兼容。
+- 固定 Transport migration 回退边界，避免 Phase 12 合入破坏既有迁移链。
+
+### Verification
+
+- 后继工作线插件装配树完整 QUALITY 通过：2585 passed、5 skipped；HEAVY selector 选中的 1 项通过，development Docker 镜像构建通过。
+- 本版本只合入仓库基线，不代表人工料箱处理已激活、部署或现场验收。
+
 ## [0.31.1.0] - 2026-09-03
 
 ### Changed
