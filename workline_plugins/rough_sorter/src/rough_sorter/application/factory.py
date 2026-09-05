@@ -225,7 +225,7 @@ class RoughSorterPluginFactFactory:
                         contract_key=item.contract_key,
                         contract_version=item.contract_version,
                     )
-                    for item in sorted(devices, key=lambda item: item.device_role)
+                    for item in sorted(devices, key=lambda item: (item.device_role, item.device_code))
                 ),
                 position_bindings=tuple(
                     PositionBindingSnapshot(
@@ -243,7 +243,10 @@ class RoughSorterPluginFactFactory:
         devices: tuple[LineRunEpochDeviceBinding, ...],
         positions: tuple[LineRunEpochPositionBinding, ...],
     ) -> None:
-        if {item.device_role: item.contract_key for item in devices} != ROLE_CONTRACTS:
+        if (
+            len(devices) != len(ROLE_CONTRACTS)
+            or {item.device_role: item.contract_key for item in devices} != ROLE_CONTRACTS
+        ):
             raise ValueError("rough sorter Epoch 必须精确绑定三个设备角色与合同")
         if any(item.contract_version != "1.0" for item in devices):
             raise ValueError("rough sorter device contract_version 必须固定为 1.0")

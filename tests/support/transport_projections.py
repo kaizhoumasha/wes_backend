@@ -83,7 +83,8 @@ async def ensure_projection_authority(db: AsyncSession) -> tuple[int, int]:
         epoch = LineRunEpoch(
             epoch_code="TRANSPORT-PROJECTION-TEST-EPOCH",
             workline_id=line.id,
-            plugin_key="transport_test",
+            # 生产 worker 会校验所有 ACTIVE Epoch 均绑定当前部署中的精确插件版本。
+            plugin_key="rough_sorter",
             plugin_version="1.0.0",
             flow_mode="TRANSPORT_TEST",
             topology_digest="a" * 64,

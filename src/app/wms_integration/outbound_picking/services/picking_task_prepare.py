@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.execution.services import (
     WMS_CONFIRMATION_DISPATCH_WINDOW,
@@ -102,12 +102,12 @@ class PickingTaskPrepareService:
             raise ValueError("now 必须是有效时间")
         prepared: PickingTaskPrepareResult
         async with self._sessions.begin() as db:
+            workline = await self._worklines.get_for_update(db, workline_id)
             epoch = await self._epochs.get_active_for_workline(db, workline_id)
             epoch_id = getattr(epoch, "id", None)
             if not isinstance(epoch_id, int) or isinstance(epoch_id, bool) or epoch_id <= 0:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.NO_ACTIVE_EPOCH)
             await self._epochs.lock_epoch_lifecycle(db, epoch_id)
-            workline = await self._worklines.get_for_update(db, workline_id)
             locked_epoch = await self._epochs.get_active_for_workline_for_update(db, workline_id)
             if not self._static_context_ready(workline, locked_epoch, epoch_id):
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
@@ -155,14 +155,14 @@ class PickingTaskPrepareService:
 
     async def _runtime_context_ready(
         self,
-        db: object,
+        db: Any,
         workline_id: int,
         epoch_id: int,
         now: datetime,
     ) -> bool:
         summary = await self._worklines.get_unfinished_workload_summary(db, workline_id)
         by_type = summary.get("by_type") if isinstance(summary, dict) else None
-        if not isinstance(by_type, dict) or by_type.get("line_run_epochs") is not True:
+        if not isinstance(by_type, dict) or by_type.get("line_run_epochs") != 1:
             return False
         if any(bool(blocked) for owner, blocked in by_type.items() if owner != "line_run_epochs"):
             return False

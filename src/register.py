@@ -32,7 +32,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
 
     transport_runtime = None
     device_command_runtime = None
-    rough_sorter_runtime = None
+    deployment_runtime = None
     outbound_picking_runtime = None
     primary_error: BaseException | None = None
     try:
@@ -44,9 +44,10 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.transport_runtime = None
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
-        _app.state.rough_sorter_runtime = None
+        _app.state.deployment_runtime = None
         _app.state.outbound_picking_runtime = None
         _app.state.workline_start_service = None
+        _app.state.workline_configuration_service = None
         _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_recovery_event_handler = None
         _app.state.wms_picking_task_issued_handler = None
@@ -77,16 +78,18 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         )
         _app.state.device_command_runtime = device_command_runtime
         _app.state.device_evidence_service = device_command_runtime.evidence_service
-        from deployment.rough_sorter_composition import build_rough_sorter_runtime, build_rough_sorter_start_service
+        from deployment.plugin_composition import build_deployment_runtime
 
-        rough_sorter_runtime = build_rough_sorter_runtime(
+        deployment_runtime = build_deployment_runtime(
             session_factory=db_module.AsyncSessionLocal,
             transport_runtime=transport_runtime,
             device_command_service=device_command_runtime.command_service,
+            device_adapter_provider=device_command_runtime.provider,
         )
-        _app.state.rough_sorter_runtime = rough_sorter_runtime
-        _app.state.wms_recovery_event_handler = rough_sorter_runtime.wms_recovery_event_handler
-        _app.state.workline_start_service = build_rough_sorter_start_service()
+        _app.state.deployment_runtime = deployment_runtime
+        _app.state.wms_recovery_event_handler = deployment_runtime.wms_recovery_event_handler
+        _app.state.workline_start_service = deployment_runtime.workline_start_service
+        _app.state.workline_configuration_service = deployment_runtime.workline_configuration_service
         from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
 
         outbound_picking_runtime = build_outbound_picking_runtime(
@@ -117,8 +120,9 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.transport_runtime = None
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
-        _app.state.rough_sorter_runtime = None
+        _app.state.deployment_runtime = None
         _app.state.workline_start_service = None
+        _app.state.workline_configuration_service = None
         _app.state.task_queue_gateway = None
         _app.state.wms_recovery_event_handler = None
         _app.state.outbound_picking_runtime = None

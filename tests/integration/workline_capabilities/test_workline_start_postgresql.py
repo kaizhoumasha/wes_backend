@@ -11,11 +11,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.app.device.models.device import Device
+from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.epoch_activation import (
     LineRunEpochDeviceBindingInput,
     LineRunEpochPositionBindingInput,
     WorkLineEpochActivationPlan,
 )
+from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 from src.app.workline.models.line_run_epoch import (
     LineRunEpoch,
     LineRunEpochDeviceBinding,
@@ -77,13 +79,27 @@ class Builder:
         )
 
 
+def _plugin(builder: Builder) -> InstalledWorkLinePlugin:
+    return InstalledWorkLinePlugin(
+        display_name="PostgreSQL test",
+        runtime_binding=PluginRuntimeBinding(
+            plugin_key="postgresql_test",
+            plugin_version="1.0",
+            handlers=(),
+            fact_factory=object(),  # type: ignore[arg-type]
+        ),
+        start_plan_builder=builder,
+        supported_line_types=(LineType.AUTO,),
+    )
+
+
 async def _seed_workline(session_factory: async_sessionmaker[AsyncSession], suffix: str) -> tuple[int, int]:
     async with session_factory.begin() as db:
         workline = WorkLine(
             line_code=f"START-PG-{suffix}",
             line_name=f"START PostgreSQL {suffix}",
             line_type=LineType.AUTO,
-            is_active=True,
+            plugin_key="postgresql_test",
         )
         db.add(workline)
         await db.flush()
@@ -120,7 +136,7 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
 
                 workline_id, device_id = await _seed_workline(session_factory, "LIFECYCLE")
                 builder = Builder({workline_id: device_id})
-                service = WorkLineStartService(plan_builder=builder)
+                service = WorkLineStartService(plugins=(_plugin(builder),))
 
                 async with session_factory.begin() as db:
                     started = await service.start(db, workline_id=workline_id, request_id="START-PG-LIFECYCLE")
@@ -144,7 +160,8 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
                 assert builder.calls == [workline_id]
 
                 rollback_line_id, rollback_device_id = await _seed_workline(session_factory, "ROLLBACK")
-                rollback_service = WorkLineStartService(plan_builder=Builder({rollback_line_id: rollback_device_id}))
+                rollback_builder = Builder({rollback_line_id: rollback_device_id})
+                rollback_service = WorkLineStartService(plugins=(_plugin(rollback_builder),))
                 with pytest.raises(RuntimeError, match="rollback marker"):
                     async with session_factory.begin() as db:
                         await rollback_service.start(
@@ -163,7 +180,7 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
 
                 serial_line_id, serial_device_id = await _seed_workline(session_factory, "SERIAL")
                 serial_builder = Builder({serial_line_id: serial_device_id})
-                serial_service = WorkLineStartService(plan_builder=serial_builder)
+                serial_service = WorkLineStartService(plugins=(_plugin(serial_builder),))
 
                 async def wait_for_lock(backend_pid: int, task: asyncio.Task[object]) -> None:
                     deadline = asyncio.get_running_loop().time() + 10
@@ -235,7 +252,7 @@ def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identit
                 left_id, left_device_id = await _seed_workline(session_factory, "CONFLICT-LEFT")
                 right_id, right_device_id = await _seed_workline(session_factory, "CONFLICT-RIGHT")
                 conflict_builder = Builder({left_id: left_device_id, right_id: right_device_id})
-                conflict_service = WorkLineStartService(plan_builder=conflict_builder)
+                conflict_service = WorkLineStartService(plugins=(_plugin(conflict_builder),))
 
                 async with session_factory() as first_db:
                     await first_db.begin()

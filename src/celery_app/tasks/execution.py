@@ -26,8 +26,11 @@ async def assert_execution_worker_startable() -> None:
 
     if db_module.AsyncSessionLocal is None:
         raise RuntimeError("Database session factory is unavailable for execution worker startup")
+    runtime = celery_async_runtime.execution_runtime
+    if runtime is None:
+        raise RuntimeError("Execution runtime is unavailable for execution worker startup")
     async with db_module.AsyncSessionLocal() as db:
-        await LineRunEpochService().assert_execution_worker_startable(db)
+        await LineRunEpochService().assert_execution_worker_startable(db, plugins=runtime.plugins)
 
 
 @celery_app.task(name="src.celery_app.tasks.execution.process_execution_facts_batch")

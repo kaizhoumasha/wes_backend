@@ -62,11 +62,10 @@ class Device(DeviceBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table
 
 
 class DeviceEditableBase(BaseMixin):
-    """可维护的静态设备字段。"""
+    """不含 WorkLine 归属的设备管理字段。"""
 
     device_code: str = Field(min_length=1, max_length=100)
     device_name: str = Field(min_length=1, max_length=100)
-    work_line_id: int | None = None
     description: str | None = Field(default=None, max_length=500)
     is_active: bool = True
     sort_order: int = 0
@@ -77,7 +76,7 @@ class DeviceEditableBase(BaseMixin):
     endpoint_base_url: DeviceEndpointBaseUrl | None = Field(default=None, max_length=255)
 
 
-class DeviceCreate(ModelFactory(DeviceBase).for_create()):
+class DeviceCreate(ModelFactory(DeviceEditableBase).for_create()):
     """设备创建合同。"""
 
 

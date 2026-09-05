@@ -4,11 +4,14 @@ from datetime import datetime
 
 import pytest
 
+from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.epoch_activation import (
     LineRunEpochDeviceBindingInput,
     LineRunEpochPositionBindingInput,
 )
+from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding, LineRunEpochStatus
+from src.app.workline.models.workline import LineType
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
 
 
@@ -32,8 +35,10 @@ class FakeLineRunEpochRepository:
             return self.active_epoch
         return None
 
-    async def has_active_epoch(self, _db: object) -> bool:
-        return self.active_epoch is not None
+    async def list_active_plugin_identities(self, _db: object) -> list[tuple[str, str]]:
+        if self.active_epoch is None:
+            return []
+        return [(self.active_epoch.plugin_key, self.active_epoch.plugin_version)]
 
     async def add_complete_epoch(
         self,
@@ -155,12 +160,51 @@ async def test_close_epoch_rejects_commands_not_in_terminal_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execution_worker_fails_closed_while_an_epoch_is_active() -> None:
+async def test_execution_worker_accepts_an_active_epoch_with_the_installed_exact_version() -> None:
+    service, _ = _service()
+    await _activate(service, epoch_code="EPOCH-LINE-01-0001")
+    plugin = InstalledWorkLinePlugin(
+        display_name="Example",
+        runtime_binding=PluginRuntimeBinding(
+            plugin_key="example_plugin",
+            plugin_version="1.0.0",
+            handlers=(),
+            fact_factory=object(),  # type: ignore[arg-type]
+        ),
+        start_plan_builder=object(),
+        supported_line_types=(LineType.AUTO,),
+    )
+
+    await service.assert_execution_worker_startable(object(), plugins=(plugin,))
+
+
+@pytest.mark.asyncio
+async def test_execution_worker_rejects_an_active_epoch_whose_plugin_version_is_not_installed() -> None:
     service, _ = _service()
     await _activate(service, epoch_code="EPOCH-LINE-01-0001")
 
-    with pytest.raises(ActiveLineRunEpochExistsError, match="execution worker"):
-        await service.assert_execution_worker_startable(object())
+    with pytest.raises(ActiveLineRunEpochExistsError, match="not installed"):
+        await service.assert_execution_worker_startable(object(), plugins=())
+
+
+@pytest.mark.asyncio
+async def test_execution_worker_rejects_same_plugin_key_with_a_different_version() -> None:
+    service, _ = _service()
+    await _activate(service, epoch_code="EPOCH-LINE-01-0001")
+    plugin = InstalledWorkLinePlugin(
+        display_name="Example",
+        runtime_binding=PluginRuntimeBinding(
+            plugin_key="example_plugin",
+            plugin_version="2.0.0",
+            handlers=(),
+            fact_factory=object(),  # type: ignore[arg-type]
+        ),
+        start_plan_builder=object(),
+        supported_line_types=(LineType.AUTO,),
+    )
+
+    with pytest.raises(ActiveLineRunEpochExistsError, match=r"example_plugin@1\.0\.0"):
+        await service.assert_execution_worker_startable(object(), plugins=(plugin,))
 
 
 @pytest.mark.asyncio

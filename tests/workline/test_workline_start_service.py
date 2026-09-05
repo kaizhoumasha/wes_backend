@@ -4,16 +4,19 @@ from dataclasses import fields
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.epoch_activation import (
     LineRunEpochDeviceBindingInput,
     LineRunEpochPositionBindingInput,
     WorkLineEpochActivationPlan,
 )
+from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
-from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError
+from src.app.workline.models.workline import LineType
 from src.app.workline.services.workline_start_service import (
     WorkLineStartIdempotencyConflictError,
     WorkLineStartInvalidStateError,
@@ -23,8 +26,9 @@ from src.app.workline.services.workline_start_service import (
 
 
 class EpochRepository:
-    def __init__(self, existing: LineRunEpoch | None = None) -> None:
+    def __init__(self, existing: LineRunEpoch | None = None, active: LineRunEpoch | None = None) -> None:
         self.existing = existing
+        self.active = active
         self.locked: list[str] = []
         self.lifecycle_locked: list[int] = []
 
@@ -36,12 +40,8 @@ class EpochRepository:
         return self.existing if self.existing is not None and self.existing.epoch_code == epoch_code else None
 
     async def get_active_for_workline(self, _db: object, workline_id: int) -> LineRunEpoch | None:
-        if (
-            self.existing is not None
-            and self.existing.workline_id == workline_id
-            and self.existing.status == LineRunEpochStatus.ACTIVE
-        ):
-            return self.existing
+        if self.active is not None and self.active.workline_id == workline_id:
+            return self.active
         return None
 
     async def lock_epoch_lifecycle(self, _db: object, line_run_epoch_id: int) -> None:
@@ -66,6 +66,7 @@ class WorkLineRepository:
         self.workline = workline
         self.calls = 0
         self.unfinished_by_type = unfinished_by_type or {}
+        self.active_writes: list[bool] = []
 
     async def get_for_update(self, _db: object, workline_id: int) -> object | None:
         self.calls += 1
@@ -82,6 +83,11 @@ class WorkLineRepository:
             if any(self.unfinished_by_type.values())
             else None,
         }
+
+    async def set_active_for_start(self, _db: object, workline: object) -> object:
+        cast("Any", workline).is_active = True
+        self.active_writes.append(True)
+        return workline
 
 
 class EmptyGateRepository:
@@ -131,21 +137,19 @@ class Builder:
         )
 
 
+class FactFactory:
+    async def build(self, _db: object, fact: object) -> object:
+        return fact
+
+
 class EpochService:
-    def __init__(self, events: list[str] | None = None, *, close_error: Exception | None = None) -> None:
+    def __init__(self, events: list[str] | None = None) -> None:
         self.calls: list[dict[str, object]] = []
         self.events = events
-        self.close_error = close_error
-
-    async def close_active_epoch(self, _db: object, **kwargs: object) -> None:
-        assert kwargs["workline_id"] == 7
-        assert kwargs["closed_at"] == datetime(2026, 8, 19, 9)
-        if self.events is not None:
-            self.events.append("close")
-        if self.close_error is not None:
-            raise self.close_error
 
     async def activate_epoch(self, _db: object, **kwargs: object) -> LineRunEpoch:
+        if self.events is not None:
+            self.events.append("activate")
         self.calls.append(kwargs)
         return LineRunEpoch(
             id=31,
@@ -181,25 +185,39 @@ def _epoch(*, workline_id: int = 7, status: LineRunEpochStatus = LineRunEpochSta
 def _service(
     *,
     existing: LineRunEpoch | None = None,
+    active: LineRunEpoch | None = None,
     events: list[str] | None = None,
-    close_error: Exception | None = None,
     unfinished_by_type: dict[str, bool] | None = None,
+    workline_active: bool = False,
+    business_blocker: object | None = None,
 ):
-    epochs = EpochRepository(existing)
+    epochs = EpochRepository(existing, active)
     worklines = WorkLineRepository(
-        SimpleNamespace(id=7, is_active=True),
+        SimpleNamespace(id=7, is_active=workline_active, plugin_key="example_plugin", line_type=LineType.AUTO),
         unfinished_by_type=unfinished_by_type,
     )
     safety = EmptyGateRepository()
     builder = Builder(events)
-    epoch_service = EpochService(events, close_error=close_error)
+    epoch_service = EpochService(events)
     service = WorkLineStartService(
         epoch_repository=epochs,
         workline_repository=worklines,
         safety_repository=safety,
-        plan_builder=builder,
+        plugins=(
+            InstalledWorkLinePlugin(
+                display_name="Example",
+                runtime_binding=PluginRuntimeBinding(
+                    plugin_key="example_plugin",
+                    plugin_version="1.0",
+                    handlers=(),
+                    fact_factory=FactFactory(),
+                ),
+                start_plan_builder=builder,
+                supported_line_types=(LineType.AUTO,),
+                business_blocker=business_blocker,
+            ),
+        ),
         epoch_service=epoch_service,
-        command_repository=object(),
         clock=lambda: datetime(2026, 8, 19, 9),
     )
     return service, epochs, worklines, safety, builder, epoch_service
@@ -243,39 +261,35 @@ async def test_first_start_builds_complete_epoch_after_target_admission() -> Non
     assert result.epoch.epoch_code == "REQUEST-2"
     assert result.current_workline_runtime_status == "READY"
     assert worklines.calls == builder.calls == 1
+    assert worklines.active_writes == [True]
     assert safety.calls == 1
     assert epoch_service.calls[0]["configuration_snapshot"] == {"mode": "GENERIC"}
 
 
 @pytest.mark.asyncio
-async def test_first_start_closes_safe_active_epoch_before_building_replacement() -> None:
-    events: list[str] = []
-    service, *_rest = _service(events=events)
+async def test_first_start_rejects_an_already_active_workline() -> None:
+    service, *_prefix, builder, epoch_service = _service(workline_active=True)
 
-    result = await service.start(object(), workline_id=7, request_id="REQUEST-NEXT")
-
-    assert result.created is True
-    assert events == ["close", "build"]
-
-
-@pytest.mark.asyncio
-async def test_first_start_rejects_active_epoch_with_unclosed_commands_before_builder() -> None:
-    events: list[str] = []
-    service, *_prefix, builder, epoch_service = _service(
-        events=events,
-        close_error=ActiveLineRunEpochExistsError("still unclosed"),
-    )
-
-    with pytest.raises(WorkLineStartInvalidStateError, match="still unclosed"):
+    with pytest.raises(WorkLineStartInvalidStateError, match="已启用"):
         await service.start(object(), workline_id=7, request_id="REQUEST-NEXT")
 
-    assert events == ["close"]
     assert builder.calls == 0
     assert epoch_service.calls == []
 
 
 @pytest.mark.asyncio
-async def test_first_start_rejects_unfinished_execution_owner_before_epoch_replacement() -> None:
+async def test_first_start_rejects_inactive_workline_with_active_epoch_before_builder() -> None:
+    service, *_prefix, builder, epoch_service = _service(active=_epoch(status=LineRunEpochStatus.ACTIVE))
+
+    with pytest.raises(WorkLineStartInvalidStateError, match="ACTIVE Epoch"):
+        await service.start(object(), workline_id=7, request_id="REQUEST-NEXT")
+
+    assert builder.calls == 0
+    assert epoch_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_first_start_rejects_unfinished_execution_owner_before_epoch_creation() -> None:
     events: list[str] = []
     service, *_prefix, builder, epoch_service = _service(
         events=events,
@@ -286,5 +300,31 @@ async def test_first_start_rejects_unfinished_execution_owner_before_epoch_repla
         await service.start(object(), workline_id=7, request_id="REQUEST-BLOCKED")
 
     assert events == []
+    assert builder.calls == 0
+    assert epoch_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_first_start_rejects_current_plugins_unfinished_business_task() -> None:
+    blocker = SimpleNamespace(
+        get_unfinished_workload_summary=AsyncMock(return_value={"count": 1, "sample": {"identity": "PICK-1"}})
+    )
+    service, *_prefix, builder, epoch_service = _service(business_blocker=blocker)
+
+    with pytest.raises(WorkLineStartInvalidStateError, match="PICK-1"):
+        await service.start(object(), workline_id=7, request_id="REQUEST-BLOCKED")
+
+    assert builder.calls == 0
+    assert epoch_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_first_start_rejects_a_plugin_that_is_not_installed() -> None:
+    service, _epochs, worklines, _safety, builder, epoch_service = _service()
+    cast("Any", worklines.workline).plugin_key = "missing_plugin"
+
+    with pytest.raises(Exception, match="not installed"):
+        await service.start(object(), workline_id=7, request_id="REQUEST-MISSING")
+
     assert builder.calls == 0
     assert epoch_service.calls == []

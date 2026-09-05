@@ -156,8 +156,12 @@ async def build_device_fact(
     if actual != target:
         raise ValueError("device result actual_position 与 frozen command target 不匹配")
     if step is DeviceStep.MEASUREMENT_TO_INLET:
-        transfer = await epochs.get_binding_by_role_for_update(
-            db, line_run_epoch_id=execution.line_run_epoch_id, device_role="TRANSFER_DEVICE"
+        transfer_binding = device_binding(runtime, "TRANSFER_DEVICE")
+        transfer = await epochs.get_binding_by_role_and_code_for_update(
+            db,
+            line_run_epoch_id=execution.line_run_epoch_id,
+            device_role=transfer_binding.device_role,
+            device_code=transfer_binding.device_code,
         )
         if transfer is None:
             raise ValueError("transfer device binding missing")

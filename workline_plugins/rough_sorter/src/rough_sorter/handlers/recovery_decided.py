@@ -7,6 +7,7 @@ from wes_plugin_sdk import (
     CreateDeviceCommand,
     CreateWmsConfirmation,
     DeferExecution,
+    EpochConfigurationSnapshot,
     handler,
 )
 
@@ -17,7 +18,7 @@ from rough_sorter.facts import (
     RecoveryDeviceContinuation,
     RecoveryWmsContinuation,
 )
-from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
 
 _POSITION_WMS_OPERATIONS = {
     "MEASUREMENT_POSITION": {"inbound.material.admission_decide@v1"},
@@ -55,7 +56,7 @@ class RecoveryDecidedHandler:
             material_trace_id=fact.material_trace_id,
             allow_reconciling=True,
         )
-        _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        epoch = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.decision is RecoveryDecision.ABORT:
             return (
                 CompleteExecution(
@@ -71,7 +72,7 @@ class RecoveryDecidedHandler:
         if type(continuation) is RecoveryWmsContinuation:
             return (self._continue_wms(fact, continuation),)
         if type(continuation) is RecoveryDeviceContinuation:
-            return (self._continue_device(fact, continuation),)
+            return (self._continue_device(fact, continuation, epoch),)
         if type(continuation) is RecoveryDeferContinuation:
             return (
                 DeferExecution(
@@ -101,6 +102,7 @@ class RecoveryDecidedHandler:
         self,
         fact: RecoveryDecidedFact,
         continuation: RecoveryDeviceContinuation,
+        epoch: EpochConfigurationSnapshot,
     ) -> CreateDeviceCommand | DeferExecution:
         if continuation.source != fact.authoritative_position:
             raise ValueError("device continuation source must equal authoritative position")
@@ -117,6 +119,7 @@ class RecoveryDecidedHandler:
             material_execution_id=fact.material_execution_id,
             fact_id=fact.fact_id,
             device_role=continuation.device_role,
+            device_code=require_device_binding(epoch, continuation.device_role).device_code,
             task_type=continuation.task_type,
             material_trace_id=fact.material_trace_id,
             source=continuation.source,

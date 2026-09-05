@@ -13,7 +13,6 @@ from src.app.workline.domain.run_mode import (
 from src.app.workline.models import (
     WorkLine,
     WorkLineConfigurationCheck,
-    WorkLineConfigurationStatus,
     WorkLineRunMode,
 )
 from src.app.workline.repositories import WorkLineRepository, workline_repository
@@ -29,7 +28,8 @@ if TYPE_CHECKING:
 _BLOCKER = "BLOCKER"
 _FAIL = "FAIL"
 _OK = "PASS"
-_ACTIVE_CONFIGURATION_FIELDS = frozenset({"line_code", "config", "runtime_config_json", "run_mode", "line_type"})
+_ACTIVE_CONFIGURATION_FIELDS = frozenset({"line_code", "runtime_config_json", "run_mode", "line_type"})
+_PLUGIN_CONFIGURATION_FIELDS = frozenset({"plugin_key", "config"})
 
 
 class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
@@ -50,6 +50,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         self._reject_active_state_write(data)
+        self._reject_plugin_configuration_write(data)
         self._validate_run_mode(data)
         self._validate_runtime_config(data)
         result = await self.repo.create(db, data)
@@ -66,6 +67,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         cache: object | None = None,
     ) -> WorkLine | None:
         self._reject_active_state_write(data)
+        self._reject_plugin_configuration_write(data)
         current = (
             await self.repo.get_for_update(db, id)
             if _ACTIVE_CONFIGURATION_FIELDS.intersection(data)
@@ -99,74 +101,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             await self.invalidate_cache(cache, id, invalidate_list=True)
         return result
 
-    async def configuration_status(self, db: AsyncSession, workline_id: int) -> WorkLineConfigurationStatus:
-        workline = await self.repo.get_by_id(db, workline_id)
-        if workline is None:
-            raise ValueError(f"WorkLine 不存在: {workline_id}")
-        checks = [self._run_mode_check(workline), self._runtime_config_check(workline)]
-        return WorkLineConfigurationStatus(
-            workline_id=workline_id,
-            is_active=bool(workline.is_active),
-            can_activate=self._can_activate(checks),
-            checks=checks,
-        )
-
-    async def activate(
-        self,
-        db: AsyncSession,
-        workline_id: int,
-        *,
-        version: int,
-        cache: object | None = None,
-    ) -> WorkLine | None:
-        current = await self.repo.get_for_update(db, workline_id, populate_existing=True)
-        if current is None:
-            raise ValueError(f"WorkLine 不存在: {workline_id}")
-        self._assert_version(current, workline_id, version)
-        checks = [self._run_mode_check(current), self._runtime_config_check(current)]
-        if not self._can_activate(checks):
-            raise BusinessException(
-                message="配置预检未通过，不能启用作业线",
-                detail={"checks": [check.model_dump() for check in checks]},
-            )
-        if current.is_active:
-            return current
-        return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
-
-    async def deactivate(
-        self,
-        db: AsyncSession,
-        workline_id: int,
-        *,
-        version: int,
-        cache: object | None = None,
-    ) -> WorkLine | None:
-        current = await self.repo.get_for_update(db, workline_id)
-        if current is None:
-            raise ValueError(f"WorkLine 不存在: {workline_id}")
-        self._assert_version(current, workline_id, version)
-        workload = await self.repo.get_unfinished_workload_summary(db, workline_id)
-        if workload["count"] > 0:
-            raise BusinessException(message="存在未完成运行负载，不能停用作业线", detail={"workload": workload})
-        if not current.is_active:
-            return current
-        return await self._set_active_state(db, workline_id, is_active=False, version=version, cache=cache)
-
-    async def _set_active_state(
-        self,
-        db: AsyncSession,
-        workline_id: int,
-        *,
-        is_active: bool,
-        version: int,
-        cache: object | None,
-    ) -> WorkLine | None:
-        updated = await self.repo.update(db, workline_id, {"is_active": is_active, "version": version})
-        await self._commit_mutation(db)
-        if cache:
-            await self.invalidate_cache(cache, workline_id, invalidate_list=True)
-        return updated
-
     @staticmethod
     def _assert_version(workline: WorkLine, workline_id: int, version: int) -> None:
         if getattr(workline, "version", None) != version:
@@ -181,6 +115,12 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _reject_active_state_write(data: dict[str, Any]) -> None:
         if "is_active" in data:
             raise BusinessException(message="作业线启用状态只能通过专用操作修改", detail={"fields": ["is_active"]})
+
+    @staticmethod
+    def _reject_plugin_configuration_write(data: dict[str, Any]) -> None:
+        fields = sorted(_PLUGIN_CONFIGURATION_FIELDS.intersection(data))
+        if fields:
+            raise BusinessException(message="业务插件配置只能通过工作线配置操作修改", detail={"fields": fields})
 
     @staticmethod
     def _reject_active_configuration_update(workline: WorkLine, data: dict[str, Any]) -> None:

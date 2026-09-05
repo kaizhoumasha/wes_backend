@@ -106,7 +106,7 @@ def _runtime_module() -> ModuleType:
 
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
-    from deployment import rough_sorter_composition
+    from deployment import plugin_composition
     from src.app.device import composition as device_composition
     from src.app.transport import composition as transport_composition
     from src.database import db as db_module
@@ -123,7 +123,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         resolve_device_command_runtime_config=MagicMock(return_value=SimpleNamespace(timeout_seconds=3.0)),
         build_device_command_runtime=MagicMock(),
         execution_runtime=object(),
-        build_rough_sorter_runtime=MagicMock(),
+        build_deployment_runtime=MagicMock(),
     )
 
     def build_transport_runtime(**_: object) -> SimpleNamespace:
@@ -139,7 +139,7 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         return runtime
 
     infra.build_device_command_runtime.side_effect = build_device_command_runtime
-    infra.build_rough_sorter_runtime.return_value = infra.execution_runtime
+    infra.build_deployment_runtime.return_value = infra.execution_runtime
     redis_manager = SimpleNamespace(
         init_redis=infra.init_redis,
         close_redis=infra.close_redis,
@@ -168,9 +168,9 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
         infra.build_device_command_runtime,
     )
     monkeypatch.setattr(
-        rough_sorter_composition,
-        "build_rough_sorter_runtime",
-        infra.build_rough_sorter_runtime,
+        plugin_composition,
+        "build_deployment_runtime",
+        infra.build_deployment_runtime,
     )
     return infra
 

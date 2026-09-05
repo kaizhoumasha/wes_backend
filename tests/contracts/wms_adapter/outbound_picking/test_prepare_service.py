@@ -24,29 +24,35 @@ class _Sessions:
 
 
 class _Epochs:
-    def __init__(self, epoch):  # type: ignore[no-untyped-def]
+    def __init__(self, epoch, order: list[str]):  # type: ignore[no-untyped-def]
         self.epoch = epoch
         self.calls: list[str] = []
+        self.order = order
 
     async def get_active_for_workline(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
         self.calls.append("read_epoch")
+        self.order.append("read_epoch")
         return self.epoch
 
     async def lock_epoch_lifecycle(self, _db: object, _epoch_id: int) -> None:
         self.calls.append("lock_lifecycle")
+        self.order.append("lock_lifecycle")
 
     async def get_active_for_workline_for_update(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
         self.calls.append("lock_epoch")
+        self.order.append("lock_epoch")
         return self.epoch
 
 
 class _Worklines:
-    def __init__(self, workline):  # type: ignore[no-untyped-def]
+    def __init__(self, workline, order: list[str]):  # type: ignore[no-untyped-def]
         self.workline = workline
         self.calls: list[str] = []
+        self.order = order
 
     async def get_for_update(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
         self.calls.append("lock_workline")
+        self.order.append("lock_workline")
         return self.workline
 
     async def get_unfinished_workload_summary(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
@@ -161,8 +167,9 @@ def _service(
             run_mode=WorkLineRunMode.AUTO,
         )
     )
-    epochs = _Epochs(epoch_value)
-    worklines = _Worklines(workline_value)
+    lock_order: list[str] = []
+    epochs = _Epochs(epoch_value, lock_order)
+    worklines = _Worklines(workline_value, lock_order)
     tasks = _Tasks(task if task is not None else _task())
     confirmations = _Confirmations()
     queue_value = queue or _Queue()
@@ -199,6 +206,7 @@ async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_o
     assert tasks.flushed is True
     assert epochs.calls == ["read_epoch", "lock_lifecycle", "lock_epoch"]
     assert worklines.calls == ["lock_workline"]
+    assert worklines.order == ["lock_workline", "read_epoch", "lock_lifecycle", "lock_epoch"]
     assert confirmations.kwargs is not None
     assert confirmations.kwargs["picking_task_id"] == 31
     assert confirmations.kwargs["request_payload"]["data"] == {  # type: ignore[index]

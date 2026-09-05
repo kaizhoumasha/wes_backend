@@ -91,7 +91,6 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
             "ux_transport_decision_bindings_decision_identity",
             "ux_transport_decision_bindings_client_request_id",
             "fk_transport_decision_bindings_epoch",
-            "ux_line_run_epoch_device_bindings_epoch_device_role",
             *transport_constraint_names,
         }
         names = set(
@@ -107,8 +106,15 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
         )
 
     assert names == expected
-
     async with integration_session_factory() as db:
+        retired_role_constraint = await db.scalar(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.table_constraints "
+                "WHERE constraint_schema = 'wes_biz' "
+                "AND constraint_name = 'ux_line_run_epoch_device_bindings_epoch_device_role')"
+            )
+        )
+        assert retired_role_constraint is False
         retired_binding_table = await db.scalar(
             text("SELECT to_regclass('wes_biz.inbound_evidence_execution_bindings')")
         )
@@ -354,6 +360,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             fact.material_execution_id,
             fact.fact_id,
             "TRANSFER_DEVICE",
+            f"DEVICE-{identity}",
             "MOVE_FORWARD",
             f"TRACE-{identity}",
             DevicePosition("IN", "HANDOFF", f"TRACE-{identity}"),

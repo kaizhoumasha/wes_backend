@@ -64,9 +64,15 @@ def _fact() -> EvidenceReadyFact:
 
 
 class _Epochs:
-    async def get_binding_by_role_for_update(self, db: object, **kwargs: object) -> LineRunEpochDeviceBinding | None:
+    async def get_binding_by_role_and_code_for_update(
+        self, db: object, **kwargs: object
+    ) -> LineRunEpochDeviceBinding | None:
         del db
-        assert kwargs == {"line_run_epoch_id": 11, "device_role": "TRANSFER_DEVICE"}
+        assert kwargs == {
+            "line_run_epoch_id": 11,
+            "device_role": "TRANSFER_DEVICE",
+            "device_code": "TRANSFER-1",
+        }
         return LineRunEpochDeviceBinding(
             id=41,
             line_run_epoch_id=11,
@@ -171,7 +177,7 @@ async def test_create_device_command_resolves_frozen_role_and_builds_typed_param
     source = DevicePosition("IN", "HANDOFF", "TRACE-1")
     target = DevicePosition("OUT", "HANDOFF", "TRACE-1")
     decision = CreateDeviceCommand(
-        "EXEC-1", "evidence:31", "TRANSFER_DEVICE", "MOVE_FORWARD", "TRACE-1", source, target
+        "EXEC-1", "evidence:31", "TRANSFER_DEVICE", "TRANSFER-1", "MOVE_FORWARD", "TRACE-1", source, target
     )
 
     await applier.apply(object(), _evidence(), _execution(), _fact(), (decision,))
@@ -213,6 +219,7 @@ async def test_create_device_command_rejects_material_trace_mismatch_before_pers
         "EXEC-1",
         "evidence:31",
         "TRANSFER_DEVICE",
+        "TRANSFER-1",
         "MOVE_FORWARD",
         "OTHER-TRACE",
         DevicePosition("IN", "HANDOFF", "OTHER-TRACE"),
@@ -239,6 +246,7 @@ async def test_device_command_execution_identity_is_bounded_when_execution_code_
         execution.execution_code,
         fact.fact_id,
         "TRANSFER_DEVICE",
+        "TRANSFER-1",
         "MOVE_FORWARD",
         "TRACE-1",
         DevicePosition("IN", "HANDOFF", "TRACE-1"),

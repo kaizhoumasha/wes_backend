@@ -79,6 +79,16 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         result = await db.execute(select(columns.id).where(columns.status == LineRunEpochStatus.ACTIVE).limit(1))
         return result.scalar_one_or_none() is not None
 
+    async def list_active_plugin_identities(self, db: AsyncSession) -> list[tuple[str, str]]:
+        columns = cast("Any", LineRunEpoch).__table__.c
+        result = await db.execute(
+            select(columns.plugin_key, columns.plugin_version)
+            .where(columns.status == LineRunEpochStatus.ACTIVE)
+            .distinct()
+            .order_by(columns.plugin_key, columns.plugin_version)
+        )
+        return [(row.plugin_key, row.plugin_version) for row in result]
+
     async def add_complete_epoch(
         self,
         db: AsyncSession,
@@ -164,12 +174,32 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         )
         return result.scalar_one_or_none()
 
-    async def get_binding_by_role_for_update(
+    async def list_bindings_by_role_for_update(
         self,
         db: AsyncSession,
         *,
         line_run_epoch_id: int,
         device_role: str,
+    ) -> list[LineRunEpochDeviceBinding]:
+        columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
+        result = await db.execute(
+            select(LineRunEpochDeviceBinding)
+            .where(
+                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.device_role == device_role,
+            )
+            .order_by(columns.device_code)
+            .with_for_update()
+        )
+        return list(result.scalars())
+
+    async def get_binding_by_role_and_code_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        line_run_epoch_id: int,
+        device_role: str,
+        device_code: str,
     ) -> LineRunEpochDeviceBinding | None:
         columns = cast("Any", LineRunEpochDeviceBinding).__table__.c
         result = await db.execute(
@@ -177,6 +207,7 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
             .where(
                 columns.line_run_epoch_id == line_run_epoch_id,
                 columns.device_role == device_role,
+                columns.device_code == device_code,
             )
             .with_for_update()
         )
@@ -221,7 +252,7 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
         result = await db.execute(
             select(LineRunEpochDeviceBinding)
             .where(columns.line_run_epoch_id == line_run_epoch_id)
-            .order_by(columns.device_role)
+            .order_by(columns.device_role, columns.device_code)
         )
         return list(result.scalars())
 

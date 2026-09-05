@@ -107,6 +107,7 @@ class CreateDeviceCommand:
     material_execution_id: str
     fact_id: str
     device_role: str
+    device_code: str
     task_type: str
     material_trace_id: str
     source: DevicePosition
@@ -116,6 +117,7 @@ class CreateDeviceCommand:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.fact_id, "fact_id")
         _required(self.device_role, "device_role")
+        _required(self.device_code, "device_code")
         _required(self.task_type, "task_type")
         _required(self.material_trace_id, "material_trace_id")
         if type(self.source) is not DevicePosition or type(self.target) is not DevicePosition:

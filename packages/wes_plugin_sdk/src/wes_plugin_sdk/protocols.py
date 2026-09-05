@@ -82,9 +82,9 @@ class EpochConfigurationSnapshot:
             raise ValueError("device_bindings must not be empty")
         if any(type(binding) is not DeviceBindingSnapshot for binding in self.device_bindings):
             raise TypeError("device_bindings must contain DeviceBindingSnapshot values")
-        roles = [binding.device_role for binding in self.device_bindings]
-        if len(roles) != len(set(roles)):
-            raise ValueError("device_bindings must not contain duplicate roles")
+        device_codes = [binding.device_code for binding in self.device_bindings]
+        if len(device_codes) != len(set(device_codes)):
+            raise ValueError("device_bindings must not contain duplicate device codes")
         if type(self.position_bindings) is not tuple:
             raise TypeError("position_bindings must be a tuple")
         if not self.position_bindings:

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
 from src.app.execution.models import WmsConfirmation
 
 from rough_sorter.application.wms_follow_up import RoughSorterWmsFollowUpPlanner
 
 
-def test_wait_follow_up_uses_new_identity_and_preserves_canonical_request() -> None:
+@pytest.mark.asyncio
+async def test_wait_follow_up_uses_new_identity_and_preserves_canonical_request() -> None:
     received_at = datetime(2026, 8, 18, 9, 0, 1)
     original_operation_id = "019d0000-0000-7000-8000-000000000031"
     follow_up_operation_id = "019d0000-0001-7000-8000-000000000032"
@@ -42,7 +44,8 @@ def test_wait_follow_up_uses_new_identity_and_preserves_canonical_request() -> N
     )
     planner = RoughSorterWmsFollowUpPlanner(operation_id_factory=lambda: follow_up_operation_id)
 
-    follow_up = planner.plan(
+    follow_up = await planner.plan(
+        object(),
         confirmation,
         response_result="WAIT",
         retry_after_ms=60_000,
@@ -60,7 +63,8 @@ def test_wait_follow_up_uses_new_identity_and_preserves_canonical_request() -> N
     assert follow_up.next_attempt_at == received_at + timedelta(seconds=60)
 
 
-def test_non_wait_result_does_not_create_follow_up() -> None:
+@pytest.mark.asyncio
+async def test_non_wait_result_does_not_create_follow_up() -> None:
     confirmation = WmsConfirmation(
         operation="inbound.material.admission_decide@v1",
         operation_id="019d0000-0000-7000-8000-000000000031",
@@ -71,7 +75,8 @@ def test_non_wait_result_does_not_create_follow_up() -> None:
     )
 
     assert (
-        RoughSorterWmsFollowUpPlanner().plan(
+        await RoughSorterWmsFollowUpPlanner().plan(
+            object(),
             confirmation,
             response_result="ACCEPT",
             retry_after_ms=250,

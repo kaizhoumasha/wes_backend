@@ -75,11 +75,6 @@ class LineRunEpochDeviceBinding(EnterpriseMixin, DataTableMixin, table=True):
             "device_id",
             name="ux_line_run_epoch_device_bindings_epoch_device_id",
         ),
-        UniqueConstraint(
-            "line_run_epoch_id",
-            "device_role",
-            name="ux_line_run_epoch_device_bindings_epoch_device_role",
-        ),
         CheckConstraint("status_max_age_ms > 0", name="line_run_epoch_binding_status_age_positive"),
         CheckConstraint("command_timeout_ms > 0", name="line_run_epoch_binding_timeout_positive"),
         CheckConstraint(

@@ -9,7 +9,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from deployment.rough_sorter_composition import build_rough_sorter_runtime
+from deployment.plugin_composition import build_deployment_runtime
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.app.device.models import CommandStatus, Device, DeviceCommand
@@ -213,7 +213,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
     from src.core.task_queue_gateway import task_queue_gateway
 
     monkeypatch.setattr(task_queue_gateway, "enqueue_wms_confirmations", lambda: None)
-    runtime = build_rough_sorter_runtime(
+    runtime = build_deployment_runtime(
         session_factory=production_session_factory,
         transport_runtime=SimpleNamespace(
             service=object(),

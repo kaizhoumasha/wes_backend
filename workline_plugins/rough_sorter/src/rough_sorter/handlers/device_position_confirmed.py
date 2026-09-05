@@ -7,12 +7,13 @@ from wes_plugin_sdk import (
     CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
+    EpochConfigurationSnapshot,
     PauseForReconciliation,
     handler,
 )
 
 from rough_sorter.facts import DeviceOutcome, DevicePositionConfirmedFact, DeviceStep
-from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
 from rough_sorter.wms_requests import ng_placement_data, placement_data, target_data
 
 TARGET_OPERATION = "inbound.material.target_decide@v1"
@@ -36,7 +37,7 @@ class DevicePositionConfirmedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        epoch = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.outcome is not DeviceOutcome.SUCCESS:
             return (
                 PauseForReconciliation(
@@ -55,14 +56,18 @@ class DevicePositionConfirmedHandler:
         if actual_position is None:
             raise ValueError("successful device result requires actual_position")
         if fact.step is DeviceStep.MEASUREMENT_TO_INLET:
-            return self._move_to_outlet(fact)
+            return self._move_to_outlet(fact, epoch)
         if fact.step is DeviceStep.TRANSFER_TO_OUTLET:
             return (self._request_target(fact),)
         if fact.step is DeviceStep.PLACEMENT_TO_CELL:
             return (self._report_placement(fact),)
         return (self._report_ng(fact),)
 
-    def _move_to_outlet(self, fact: DevicePositionConfirmedFact) -> tuple[CreateDeviceCommand | DeferExecution]:
+    def _move_to_outlet(
+        self,
+        fact: DevicePositionConfirmedFact,
+        epoch: EpochConfigurationSnapshot,
+    ) -> tuple[CreateDeviceCommand | DeferExecution]:
         if not fact.next_device_ready:
             return (
                 DeferExecution(
@@ -80,6 +85,7 @@ class DevicePositionConfirmedHandler:
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 device_role="TRANSFER_DEVICE",
+                device_code=require_device_binding(epoch, "TRANSFER_DEVICE").device_code,
                 task_type="MOVE_FORWARD",
                 material_trace_id=fact.material_trace_id,
                 source=actual_position,

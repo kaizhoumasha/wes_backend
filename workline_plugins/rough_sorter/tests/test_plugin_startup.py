@@ -122,11 +122,14 @@ class _Epochs:
         del db, epoch_id
         return list(self.positions)
 
-    async def get_binding_by_role_for_update(
-        self, db: object, *, line_run_epoch_id: int, device_role: str
+    async def get_binding_by_role_and_code_for_update(
+        self, db: object, *, line_run_epoch_id: int, device_role: str, device_code: str
     ) -> LineRunEpochDeviceBinding | None:
         del db, line_run_epoch_id
-        return next((item for item in self.devices if item.device_role == device_role), None)
+        return next(
+            (item for item in self.devices if item.device_role == device_role and item.device_code == device_code),
+            None,
+        )
 
 
 class _Worklines:
@@ -1522,14 +1525,14 @@ def test_only_static_composition_root_imports_plugin_without_mutable_registry() 
         if any(module == "rough_sorter" or module.startswith("rough_sorter.") for module in modules):
             direct_importers.append(path.name)
 
-    assert direct_importers == ["rough_sorter_composition.py"]
+    assert direct_importers == ["plugin_composition.py"]
     assert "install_rough_sorter_types" not in "".join(deployment_sources.values())
     assert "get_rough_sorter_types" not in "".join(deployment_sources.values())
     assert "ContextVar" not in "".join(deployment_sources.values())
-    assert "rough_sorter.facts" not in deployment_sources["rough_sorter_composition.py"]
-    assert "_ROUGH_SORTER_TYPES" not in deployment_sources["rough_sorter_composition.py"]
-    assert "class DeviceRepositoryPort" not in deployment_sources["rough_sorter_composition.py"]
-    assert "class RoughSorterStartPlanBuilder" not in deployment_sources["rough_sorter_composition.py"]
+    assert "rough_sorter.facts" not in deployment_sources["plugin_composition.py"]
+    assert "_ROUGH_SORTER_TYPES" not in deployment_sources["plugin_composition.py"]
+    assert "class DeviceRepositoryPort" not in deployment_sources["plugin_composition.py"]
+    assert "class RoughSorterStartPlanBuilder" not in deployment_sources["plugin_composition.py"]
     application_root = Path("workline_plugins/rough_sorter/src/rough_sorter/application")
     application_sources = {path.name: path.read_text(encoding="utf-8") for path in application_root.glob("*.py")}
     assert "types.py" not in application_sources

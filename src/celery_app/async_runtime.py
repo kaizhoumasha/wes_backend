@@ -204,7 +204,7 @@ class CeleryAsyncRuntime:
                 task_queue_gateway=task_queue_gateway,
             )
 
-        from deployment.rough_sorter_composition import build_rough_sorter_runtime
+        from deployment.plugin_composition import build_deployment_runtime
         from src.app.device.services import DeviceCommandService
 
         device_command_service = (
@@ -212,10 +212,15 @@ class CeleryAsyncRuntime:
             if progress["device_command_runtime"] is not None
             else DeviceCommandService(session_factory=db_module.AsyncSessionLocal)
         )
-        progress["execution_runtime"] = build_rough_sorter_runtime(
+        progress["execution_runtime"] = build_deployment_runtime(
             session_factory=db_module.AsyncSessionLocal,
             transport_runtime=transport_runtime,
             device_command_service=device_command_service,
+            device_adapter_provider=(
+                getattr(progress["device_command_runtime"], "provider", None)
+                if progress["device_command_runtime"] is not None
+                else None
+            ),
         )
 
         remaining = max(deadline - time.monotonic(), 0.0)

@@ -308,8 +308,7 @@ reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa
 
 [[mapping]]
 source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
-heavy_tests = []
-reviewed_content_sha256 = "41321cb1ee36deeb1d129df62e6ed886220375f897ece3b9be8205dfea44c2dd"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 # 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。
 
@@ -629,6 +628,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
 ]
 
 # runtime 包入口移除旧 DeviceProjection 导出，由 Phase 7 生产闭环承接。
@@ -1180,11 +1180,22 @@ heavy_tests = [
 # 公开 START 的粗分机部署组合同时由通用 PostgreSQL START owner 承接；插件业务 E2E 按插件边界显式运行。
 
 [[mapping]]
+source_glob = "deployment/plugin_composition.py"
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "deployment/rough_sorter_composition.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
@@ -1229,6 +1240,10 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/resource/models/{__init__.py,resource.py}"
 heavy_tests = ["tests/integration/execution/test_execution_constraints.py"]
+
+[[mapping]]
+source_glob = "src/app/resource/repositories/resource_repository.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/runtime/workline_plugins/**"
@@ -1309,7 +1324,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
 heavy_tests = []
-reviewed_content_sha256 = "980887774ab65295c542fe447cb9fdfafc1d468b64098bc9eb31b2085ea7fbbb"
+reviewed_content_sha256 = "40fa42d65e232dccf1c846f965a969a2aac25164d19d3d8430acee39af2ec731"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 
@@ -1526,7 +1541,15 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/workline/models/{__init__.py,migration_inventory.py,migration_matrix.py,plugin_binding.py,workline.py}"
-heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/workline/installed_plugin.py"
+heavy_tests = ["tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/workline/plugin_routing.py"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/test_celery_async_runtime_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/models/start.py"
@@ -1549,6 +1572,10 @@ heavy_tests = [
     "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "src/app/workline/services/workline_configuration_service.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
 
 # 旧 START admission 路径已删除；删除 diff 仍由唯一 WorkLine START PostgreSQL owner 承接。
 
@@ -1605,7 +1632,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/workline/v1/workline.py"
-heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py"]
+heavy_tests = ["tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/v1/active_objects.py"
@@ -2264,8 +2291,12 @@ source_glob = "migrations/versions/20260904_1437_ff5d0af61f91_扩展_pickingtask
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
 
 [[mapping]]
+source_glob = "migrations/versions/20260905_1102_b42147d0d086_添加工作线插件选择并放开同角色设备.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
 source_glob = "tests/support/postgresql_heavy.py"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
 
 [[mapping]]
 source_glob = "{tests/support/postgresql_catalog.py,tests/integration/fixtures/initial_schema_old_chain_catalog.json,tests/integration/fixtures/initial_schema_final_manifest.json,tests/integration/fixtures/initial_schema_disposition.json,tests/integration/fixtures/initial_schema_transition_disposition.json}"

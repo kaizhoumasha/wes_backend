@@ -15,6 +15,7 @@ _EXPORTS = {
     "line_run_epoch_service": ("line_run_epoch_service", "line_run_epoch_service"),
     "WorkLinePlaneService": ("plane_service", "WorkLinePlaneService"),
     "workline_plane_service": ("plane_service", "workline_plane_service"),
+    "WorkLineConfigurationService": ("workline_configuration_service", "WorkLineConfigurationService"),
     "WorkLineSafetyBlocked": ("safety_service", "WorkLineSafetyBlocked"),
     "WorkLineSafetyService": ("safety_service", "WorkLineSafetyService"),
     "workline_safety_service": ("safety_service", "workline_safety_service"),
@@ -27,6 +28,7 @@ _EXPORTS = {
 
 __all__ = [
     "LineRunEpochService",
+    "WorkLineConfigurationService",
     "WorkLinePlaneService",
     "WorkLineSafetyBlocked",
     "WorkLineSafetyService",

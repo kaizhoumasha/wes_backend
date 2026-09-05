@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.workline.epoch_digest import canonical_configuration_snapshot, configuration_digest, topology_digest
+from src.app.workline.installed_plugin import InstalledWorkLinePlugin, resolve_installed_plugin
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.repositories.line_run_epoch_repository import (
     LineRunEpochRepository,
@@ -33,7 +34,7 @@ class LineRunEpochRepositoryPort(Protocol):
 
     async def get_active_for_workline_for_update(self, db: Any, workline_id: int) -> LineRunEpoch | None: ...
 
-    async def has_active_epoch(self, db: Any) -> bool: ...
+    async def list_active_plugin_identities(self, db: Any) -> list[tuple[str, str]]: ...
 
     async def add_complete_epoch(
         self,
@@ -70,10 +71,22 @@ class LineRunEpochService:
         )
         self._projections = projection_repository
 
-    async def assert_execution_worker_startable(self, db: AsyncSession | object) -> None:
+    async def assert_execution_worker_startable(
+        self,
+        db: AsyncSession | object,
+        *,
+        plugins: tuple[InstalledWorkLinePlugin, ...],
+    ) -> None:
         repository = cast("LineRunEpochRepositoryPort", self._repository)
-        if await repository.has_active_epoch(db):
-            raise ActiveLineRunEpochExistsError("execution worker cannot start while an ACTIVE LineRunEpoch exists")
+        for plugin_key, plugin_version in await repository.list_active_plugin_identities(db):
+            try:
+                installed = resolve_installed_plugin(plugins, plugin_key)
+            except (LookupError, ValueError) as exc:
+                raise ActiveLineRunEpochExistsError(str(exc)) from exc
+            if installed.plugin_version != plugin_version:
+                raise ActiveLineRunEpochExistsError(
+                    f"active Epoch plugin version is not installed: {plugin_key}@{plugin_version}"
+                )
 
     async def activate_epoch(
         self,
@@ -125,9 +138,12 @@ class LineRunEpochService:
             return None
         if active.id != candidate.id:
             raise ActiveLineRunEpochExistsError("活动 Epoch 在 lifecycle fence 前发生变化")
-        if await command_repository.has_unclosed_for_epoch_for_update(db, active.id):
+        active_id = active.id
+        if active_id is None:
+            raise RuntimeError("活动 Epoch 缺少持久化主键")
+        if await command_repository.has_unclosed_for_epoch_for_update(db, active_id):
             raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在 unclosed DeviceCommand")
-        await self._projections.delete_for_epoch(db, active.id)
+        await self._projections.delete_for_epoch(db, active_id)
         return await self._repository.close_epoch(db, active, closed_at=closed_at)
 
 

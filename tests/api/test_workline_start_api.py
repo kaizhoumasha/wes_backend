@@ -127,6 +127,7 @@ async def test_start_commits_once_and_returns_target_epoch() -> None:
         request=_request(service),  # type: ignore[arg-type]
         response=Response(),
         db=db,  # type: ignore[arg-type]
+        cache=object(),  # type: ignore[arg-type]
     )
 
     assert db.commits == 1
@@ -159,6 +160,7 @@ async def test_start_commit_failure_rolls_back() -> None:
             request=_request(service),  # type: ignore[arg-type]
             response=Response(),
             db=db,  # type: ignore[arg-type]
+            cache=object(),  # type: ignore[arg-type]
         )
 
     assert db.commits == 1
@@ -176,6 +178,7 @@ async def test_start_service_missing_returns_503_without_commit() -> None:
         request=_request(None),  # type: ignore[arg-type]
         response=http_response,
         db=db,  # type: ignore[arg-type]
+        cache=object(),  # type: ignore[arg-type]
     )
 
     assert http_response.status_code == 503
@@ -208,6 +211,7 @@ async def test_start_maps_domain_failures_to_stable_http_reason(
         request=_request(StartService(error)),  # type: ignore[arg-type]
         response=http_response,
         db=db,  # type: ignore[arg-type]
+        cache=object(),  # type: ignore[arg-type]
     )
 
     assert http_response.status_code == expected_status

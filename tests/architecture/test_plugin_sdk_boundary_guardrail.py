@@ -257,6 +257,7 @@ def test_device_decision_uses_stable_strings_not_plugin_business_enums() -> None
         material_execution_id="execution-1",
         fact_id="fact-1",
         device_role="PLUGIN_DEVICE",
+        device_code="device-1",
         task_type="PLUGIN_ACTION",
         material_trace_id="trace-1",
         source=source,
@@ -264,6 +265,7 @@ def test_device_decision_uses_stable_strings_not_plugin_business_enums() -> None
     )
 
     assert decision.device_role == "PLUGIN_DEVICE"
+    assert decision.device_code == "device-1"
     assert decision.task_type == "PLUGIN_ACTION"
 
 
@@ -294,6 +296,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             material_execution_id="execution-1",
             fact_id="fact-1",
             device_role="PLUGIN_DEVICE",
+            device_code="device-1",
             task_type="PLUGIN_ACTION",
             material_trace_id="trace-1",
             source=MutablePosition(),
@@ -384,6 +387,34 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
     assert snapshot.device_bindings == (binding,)
     with pytest.raises(dataclasses.FrozenInstanceError):
         source.location_id = "CHANGED"
+
+
+def test_epoch_device_bindings_allow_same_role_but_reject_duplicate_device_code() -> None:
+    sdk = _load_sdk()
+    position = sdk.PositionBindingSnapshot(
+        position_role="PIPELINE_INLET",
+        location_id="LOCATION-IN",
+        location_type="RACK_CELL",
+    )
+    first = sdk.DeviceBindingSnapshot("PLUGIN_DEVICE", "device-1", "contract-1", "1.0")
+    second = sdk.DeviceBindingSnapshot("PLUGIN_DEVICE", "device-2", "contract-1", "1.0")
+
+    snapshot = sdk.EpochConfigurationSnapshot(
+        "epoch-1", "line-1", "plugin-1", "1.0", "config-digest", "topology-digest", (first, second), (position,)
+    )
+    assert snapshot.device_bindings == (first, second)
+
+    with pytest.raises(ValueError, match="duplicate device codes"):
+        sdk.EpochConfigurationSnapshot(
+            "epoch-1",
+            "line-1",
+            "plugin-1",
+            "1.0",
+            "config-digest",
+            "topology-digest",
+            (first, sdk.DeviceBindingSnapshot("OTHER_ROLE", "device-1", "contract-2", "1.0")),
+            (position,),
+        )
 
 
 def test_wms_confirmation_snapshots_nested_request_data() -> None:

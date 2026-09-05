@@ -22,10 +22,14 @@ from src.core.rbac import RequirePermission
 from src.core.response import ResponseCode, ResponseSchemaModel, response_builder
 from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode, ServerErrorCode
 from src.core.security import require_auth
-from src.database.dependencies import AsyncSessionDep  # noqa: TC001
+from src.database.dependencies import AsyncSessionDep, CacheDep  # noqa: TC001
 from src.utils.value_normalization import enum_value
 
 router = APIRouter(tags=["工作线诊断操作"])
+
+type WorkLineStartApiResponse = (
+    ResponseSchemaModel[WorkLineStartResponse] | ResponseSchemaModel[WorkLineStartErrorResponse]
+)
 
 
 def _safety_incident_response(incident: Any) -> dict[str, Any]:
@@ -92,7 +96,8 @@ async def start_workline(
     request: Request,
     response: Response,
     db: AsyncSessionDep,
-) -> ResponseSchemaModel[WorkLineStartResponse | WorkLineStartErrorResponse]:
+    cache: CacheDep,
+) -> WorkLineStartApiResponse:
     """在一个事务内 replay 或创建完整 LineRunEpoch。"""
 
     service_candidate = getattr(request.app.state, "workline_start_service", None)
@@ -107,6 +112,7 @@ async def start_workline(
         )
     service = cast("WorkLineStartService", service_candidate)
 
+    result = None
     try:
         async with WorklineUnitOfWork(db=db) as uow:
             result = await service.start(
@@ -115,6 +121,9 @@ async def start_workline(
                 request_id=payload.request_id,
             )
             await uow.commit()
+        from src.app.workline.services.workline_service import workline_service
+
+        await workline_service.invalidate_cache(cache, workline_id, invalidate_list=True)
     except WorkLineStartNotFoundError as exc:
         return _workline_start_error_response(
             response,
@@ -144,7 +153,11 @@ async def start_workline(
             reason="CONFIGURATION_INVALID",
         )
 
+    if result is None:
+        raise RuntimeError("START 未返回运行代际")
     epoch = result.epoch
+    if epoch.id is None:
+        raise RuntimeError("START 返回的运行代际缺少持久化主键")
     data = WorkLineStartResponse(
         line_run_epoch_id=epoch.id,
         epoch_code=epoch.epoch_code,
@@ -159,8 +172,7 @@ async def start_workline(
         created=result.created,
     )
     return cast(
-        "ResponseSchemaModel[WorkLineStartResponse]",
-        response_builder.success(data=data.model_dump(mode="json")),
+        "ResponseSchemaModel[WorkLineStartResponse]", response_builder.success(data=data.model_dump(mode="json"))
     )
 
 

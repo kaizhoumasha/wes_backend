@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from wes_plugin_sdk import (
+    DeviceBindingSnapshot,
     EpochConfigurationSnapshot,
     ExecutionLifecycle,
     ExecutionSnapshot,
@@ -47,7 +48,7 @@ def require_epoch(
     if workline_code is not None and snapshot.workline_code != workline_code:
         raise ValueError("epoch WorkLine does not match Fact")
     bindings = {binding.device_role: binding for binding in snapshot.device_bindings}
-    if set(bindings) != set(ROLE_CONTRACTS):
+    if len(snapshot.device_bindings) != len(ROLE_CONTRACTS) or set(bindings) != set(ROLE_CONTRACTS):
         raise ValueError("epoch must bind exactly the three rough sorter roles")
     for role, contract_key in ROLE_CONTRACTS.items():
         binding = bindings[role]
@@ -56,9 +57,20 @@ def require_epoch(
     return snapshot
 
 
+def require_device_binding(
+    snapshot: EpochConfigurationSnapshot,
+    device_role: str,
+) -> DeviceBindingSnapshot:
+    matches = tuple(binding for binding in snapshot.device_bindings if binding.device_role == device_role)
+    if len(matches) != 1:
+        raise ValueError(f"epoch must bind exactly one rough sorter device for role: {device_role}")
+    return matches[0]
+
+
 __all__ = [
     "PLUGIN_KEY",
     "PLUGIN_VERSION",
+    "require_device_binding",
     "require_epoch",
     "require_execution",
 ]

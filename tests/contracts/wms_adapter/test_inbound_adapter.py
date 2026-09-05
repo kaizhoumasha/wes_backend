@@ -542,8 +542,9 @@ class _FollowUpPlanner:
     def __init__(self, operation_ids: tuple[str, ...] = (OTHER_OPERATION_ID,)) -> None:
         self._operation_ids = iter(operation_ids)
 
-    def plan(
+    async def plan(
         self,
+        _db: object,
         confirmation: WmsConfirmation,
         *,
         response_result: str,
