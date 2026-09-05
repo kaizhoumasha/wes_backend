@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.5.0] - 2026-09-05
+
+### Changed
+
+- 成功的 BIN 回架聚合结果只有在每个冻结 `RACK_BIN_SLOT` 目标都已有已应用的精确 `TARGET_PLACED` 后才接纳；证据未齐时返回可原消息重试的 `409 / MEMBER_POSITION_EVIDENCE_PENDING`，且不创建 callback receipt 或 evidence。
+- Transport 自动联调在聚合结果完成前按逐箱到位事实更新 `BINS_TO_RACK` 进度，并继续保持当前任务、步骤和资源围栏。
+
+### Verification
+
+- Transport 合同与运行时聚焦测试 252 项通过；完整 QUALITY 2594 passed、5 skipped；HEAVY selector 选中的 15 个测试文件共 161 项通过。
+
 ## [0.31.4.0] - 2026-09-05
 
 ### Changed
