@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from src.register import register_routers
 
 
-def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
+def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts() -> None:
     # Regression: ISSUE-001 — Swagger 无请求体且只声明 200，无法用于 WMS 联调
     # Found by /qa on 2026-08-12
     # Report: .gstack/qa-reports/qa-report-127-0-0-1-8012-2026-08-12.md
@@ -20,7 +20,7 @@ def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
 
     assert request_body["required"] is True
     request_variants = request_schema["oneOf"]
-    assert len(request_variants) == 3
+    assert len(request_variants) == 4
     assert all(variant["type"] == "object" for variant in request_variants)
     assert all(variant["additionalProperties"] is False for variant in request_variants)
     assert all(
@@ -30,14 +30,13 @@ def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
         ["transport.task.member_position_changed@v1"],
         ["transport.task.resulted@v1"],
         ["inbound.execution.recovery_decided@v1"],
+        ["outbound.picking_task.issued@v1"],
     ]
     for variant in request_variants:
         timestamp = variant["properties"]["timestamp"]
         assert timestamp["type"] == "integer"
         assert timestamp["format"] == "int64"
-        expected_minimum = (
-            1 if variant["properties"]["operation"]["enum"] == ["inbound.execution.recovery_decided@v1"] else 0
-        )
+        expected_minimum = 0 if variant["properties"]["operation"]["enum"][0].startswith("transport.") else 1
         assert timestamp["minimum"] == expected_minimum
         assert timestamp["maximum"] >= 2**63 - 1
         assert timestamp["description"] == "Unix 毫秒时间戳"
@@ -56,6 +55,11 @@ def test_wms_event_openapi_exposes_transport_and_recovery_contracts() -> None:
         "BIN_MOVE",
         "BIN_EXCHANGE",
     }
+    picking_task_data = request_variants[3]["properties"]["data"]
+    assert picking_task_data["required"] == ["task_id", "task_type", "queue_revision", "dispatch_sequence"]
+    assert picking_task_data["properties"]["task_type"]["enum"] == ["MANUAL", "AUTO"]
+    assert picking_task_data["properties"]["queue_revision"]["minimum"] == 1
+    assert picking_task_data["properties"]["queue_revision"]["maximum"] == 1
     assert set(operation["responses"]) == {"200", "202", "400", "401", "409", "413", "422", "503"}
     assert operation["responses"]["200"]["description"] == "相同 WMS event 已可靠持久化"
     assert operation["responses"]["202"]["description"] == "WMS event 已可靠持久化"

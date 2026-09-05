@@ -62,6 +62,37 @@ def test_scan12_accepts_processed_device_evidence(apply_status: InboundEvidenceA
     assert evaluation.reason_code is None
 
 
+def test_scan12_accepts_onsite_station_device_code() -> None:
+    evidence = _evidence(
+        device_code="STATION_SCAN12",
+        normalized_payload={
+            **_evidence().normalized_payload,
+            "device_code": "STATION_SCAN12",
+        },
+    )
+
+    evaluation = _evaluate(evidence)
+
+    assert evaluation.disposition is Scan12EvidenceDisposition.MATCH
+    assert evaluation.bin_id == "A000001922"
+
+
+@pytest.mark.parametrize("direction", ["A", "B", "C", "D"])
+def test_scan12_matches_selected_bin_after_removing_direction_suffix(direction: str) -> None:
+    evidence = _evidence(
+        normalized_payload={
+            **_evidence().normalized_payload,
+            "data": {"barcode": f"A000001922-{direction}"},
+        }
+    )
+
+    evaluation = _evaluate(evidence)
+
+    assert evaluation.disposition is Scan12EvidenceDisposition.MATCH
+    assert evaluation.bin_id == "A000001922"
+    assert evidence.normalized_payload["data"] == {"barcode": f"A000001922-{direction}"}
+
+
 @pytest.mark.parametrize(
     ("evidence", "reason_code"),
     [
@@ -93,6 +124,14 @@ def test_scan12_accepts_processed_device_evidence(apply_status: InboundEvidenceA
         ),
         (
             _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": "OTHER-BIN"}}),
+            "UNSELECTED_BIN",
+        ),
+        (
+            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": "A000001922-E"}}),
+            "UNSELECTED_BIN",
+        ),
+        (
+            _evidence(normalized_payload={**_evidence().normalized_payload, "data": {"barcode": "A000001922-A-EXTRA"}}),
             "UNSELECTED_BIN",
         ),
     ],

@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
+from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_ISSUED_OPERATION
 from src.app.wms_adapter.transport_event_handler import (
     MAX_TRANSPORT_EVENT_BODY_BYTES,
     TransportEventResponse,
@@ -667,6 +668,94 @@ def test_shared_wms_event_route_dispatches_recovery_to_the_exact_business_handle
     transport_handler.assert_not_awaited()
     publisher.publish_to.assert_not_awaited()
     enqueue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("http_status", "code", "data"),
+    [
+        (202, "RECEIVED", {}),
+        (409, "CONFLICT", {"reason_code": "STATE_CONFLICT"}),
+        (422, "REJECTED", {"reason_code": "INVALID_DATA"}),
+    ],
+)
+def test_shared_wms_event_route_dispatches_picking_task_issued_to_the_exact_business_handler(
+    http_status: int,
+    code: str,
+    data: dict[str, str],
+) -> None:
+    module = _events_module()
+    transport_handler = AsyncMock()
+    recovery_handler = AsyncMock()
+    issued_handler = AsyncMock(
+        return_value=SimpleNamespace(
+            http_status=http_status,
+            body={
+                "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+                "code": code,
+                "timestamp": 1786060800123,
+                "data": data,
+            },
+        )
+    )
+    publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app = _route_app(module, transport_handler, _none_policy(module), publisher=publisher)
+    app.state.wms_recovery_event_handler = SimpleNamespace(handle=recovery_handler)
+    app.state.wms_picking_task_issued_handler = SimpleNamespace(handle=issued_handler)
+    raw_body = json.dumps(
+        {
+            "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+            "operation": PICKING_TASK_ISSUED_OPERATION,
+            "timestamp": 1786060800000,
+            "data": {
+                "task_id": "PICK-20260811-001",
+                "task_type": "MANUAL",
+                "queue_revision": 1,
+                "dispatch_sequence": 100,
+            },
+        }
+    ).encode()
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == http_status
+    assert response.json()["code"] == code
+    assert response.json()["data"] == data
+    issued_handler.assert_awaited_once_with(raw_body)
+    recovery_handler.assert_not_awaited()
+    transport_handler.assert_not_awaited()
+
+
+def test_shared_wms_event_route_returns_unavailable_when_picking_task_runtime_is_missing() -> None:
+    module = _events_module()
+    transport_handler = AsyncMock()
+    publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
+    app = _route_app(module, transport_handler, _none_policy(module), publisher=publisher)
+    operation_id = "019f33f0-58d7-7b4d-a23a-1b90aa5d4473"
+    raw_body = json.dumps(
+        {
+            "operation_id": operation_id,
+            "operation": PICKING_TASK_ISSUED_OPERATION,
+            "timestamp": 1786060800000,
+            "data": {
+                "task_id": "PICK-20260811-001",
+                "task_type": "MANUAL",
+                "queue_revision": 1,
+                "dispatch_sequence": 100,
+            },
+        }
+    ).encode()
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=raw_body, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 503
+    assert response.json()["operation_id"] == operation_id
+    assert response.json()["code"] == "UNAVAILABLE"
+    transport_handler.assert_not_awaited()
+    channel, event_type, payload = publisher.publish_to.await_args.args
+    assert (channel, event_type) == ("wms:inbound:stream", "wms_ingress.attempted")
+    assert payload["error_code"] == "PICKING_TASK_RUNTIME_UNAVAILABLE"
 
 
 def test_shared_wms_event_route_rejects_unknown_operation_without_transport_fallback() -> None:

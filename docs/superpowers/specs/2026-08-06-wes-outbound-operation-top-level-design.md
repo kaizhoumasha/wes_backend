@@ -126,12 +126,13 @@ WMS记录主账后关闭；NG Bin到达整线 `NGZone` 后等待人工扫码取�
 
 ## 6. PickingTask 发布与队列
 
-`PickingTaskIssued` 只携带任务编号和排队信息：
+`PickingTaskIssued` 只携带任务编号、执行类型和排队信息：
 
 | 字段 | 含义 |
 | --- | --- |
 | `task_id` | PickingTask 的唯一编号，发布后不再改变 |
-| `dispatch_sequence` | WMS 提供的自动出库任务池业务优先序 |
+| `task_type` | `MANUAL \| AUTO`；发布后不可变，用于匹配人工或自动 Picking WorkLine，不拆分 PickingTask 实体 |
+| `dispatch_sequence` | WMS 提供的统一出库任务池业务优先序 |
 | `not_before` | 可选最早启动时间 |
 
 发布阶段禁止携带：
@@ -149,8 +150,9 @@ WES 接收任务后进入 `QUEUED`。任务发布固定建立 `queue_revision=1`
 同一任务的队列更新按 revision 依次发送。前一个 revision 没有得到明确成功响应前，WMS 不能发送下一个 revision；响应不明确时
 只重发原消息。
 
-所有 `QUEUED` 任务进入同一个自动出库任务池，`dispatch_sequence` 在池内唯一。WES 先过滤未到 `not_before`、已被领取或当前
-没有工作线满足启动条件的任务，再选择优先序最小的可执行任务；暂时不可执行的前序任务不阻塞后续可执行任务。
+所有 `QUEUED` 任务进入同一个出库任务池，`dispatch_sequence` 在池内唯一。WES 根据不可变 `task_type` 过滤不匹配的
+Picking WorkLine，再过滤未到 `not_before`、已被领取或当前没有匹配工作线满足启动条件的任务，选择优先序最小的可执行任务；
+暂时不可执行的前序任务不阻塞后续可执行任务。
 
 多条分拣机工作线具有相同物理结构和各自关联的 STATION。WES 从无活动任务，且设备、工作位、缓存和 Transport 状态都允许启动的
 工作线中，按本地 `available_since ASC → workline_code ASC` 稳定选择。任务领取和候选工作线保留在一个事务中完成。WMS 手工

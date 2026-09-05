@@ -40,6 +40,7 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationService,
 )
 from src.app.transport.contracts import TransportExecutionAuthority
+from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
 

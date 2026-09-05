@@ -162,6 +162,7 @@ async def _persist_scan12(
     source_event_id: str,
     bin_id: str,
     timestamp_ms: int,
+    device_code: str = "SCAN12",
     apply_status: InboundEvidenceApplyStatus = InboundEvidenceApplyStatus.APPLIED,
 ) -> None:
     async with session_factory.begin() as db:
@@ -171,7 +172,7 @@ async def _persist_scan12(
                 source_identity=source_event_id,
                 payload_digest="a" * 64,
                 normalized_payload={
-                    "device_code": "SCAN12",
+                    "device_code": device_code,
                     "contract_key": "device.event",
                     "contract_version": "1.0",
                     "event_type": "SCAN_COMPLETED",
@@ -181,7 +182,7 @@ async def _persist_scan12(
                     "data": {"barcode": bin_id},
                 },
                 received_at=timezone.now_for_db(),
-                device_code="SCAN12",
+                device_code=device_code,
                 contract_key="device.event",
                 contract_version="1.0",
                 apply_status=apply_status,
@@ -370,17 +371,19 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
             assert scan_wait.current_step is not None and scan_wait.current_step.evidence_not_before_ms is not None
             scan_timestamp = scan_wait.current_step.evidence_not_before_ms
             for bin_index, selection in enumerate(group.bins):
+                scanned_bin_id = f"{selection.bin_id}-{'ABCD'[bin_index % 4]}"
                 await _persist_scan12(
                     integration_session_factory,
                     source_event_id=f"{source_prefix}-g{group_index}-scan{bin_index}",
-                    bin_id=selection.bin_id,
+                    bin_id=scanned_bin_id,
                     timestamp_ms=scan_timestamp,
+                    device_code="STATION_SCAN12",
                 )
                 if bin_index == 0:
                     await _persist_scan12(
                         integration_session_factory,
                         source_event_id=f"{source_prefix}-g{group_index}-duplicate",
-                        bin_id=selection.bin_id,
+                        bin_id=scanned_bin_id,
                         timestamp_ms=scan_timestamp,
                     )
             assert await service.advance_run(run.run_id) is True

@@ -6,13 +6,20 @@ from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
     AfterValidator,
-    BaseModel,
-    ConfigDict,
     Field,
     StringConstraints,
     model_validator,
 )
 from wes_plugin_sdk.validation import validate_persistable_text
+
+from src.app.wms_adapter.wire_common import (
+    OperationId,
+    PositiveInteger,
+    PositiveMilliseconds,
+)
+from src.app.wms_adapter.wire_common import (
+    StrictWireModel as _StrictModel,
+)
 
 ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
 TARGET_OPERATION = "inbound.material.target_decide@v1"
@@ -36,7 +43,6 @@ DECISION_PATH = "/api/v1/wes/decisions"
 FACT_PATH = "/api/v1/wes/facts"
 MAX_INBOUND_BODY_BYTES = 256 * 1024
 
-_UUIDV7_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 _DECIMAL_MM_PATTERN = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
 
 
@@ -48,9 +54,6 @@ Identifier = Annotated[str, AfterValidator(_nonblank_utf8_identifier)]
 ExecutionCode = Annotated[str, StringConstraints(max_length=120), AfterValidator(_nonblank_utf8_identifier)]
 MaterialTraceId = Annotated[str, StringConstraints(max_length=160), AfterValidator(_nonblank_utf8_identifier)]
 CommandCode = Annotated[str, StringConstraints(max_length=160), AfterValidator(_nonblank_utf8_identifier)]
-OperationId = Annotated[str, StringConstraints(pattern=_UUIDV7_PATTERN)]
-PositiveMilliseconds = Annotated[int, Field(strict=True, gt=0, le=2**63 - 1)]
-PositiveInteger = Annotated[int, Field(strict=True, gt=0, le=2**63 - 1)]
 RetryAfterMilliseconds = Annotated[int, Field(strict=True, ge=1, le=60_000)]
 MeasurementMillimeters = Annotated[str, StringConstraints(pattern=_DECIMAL_MM_PATTERN)]
 
@@ -60,10 +63,6 @@ def _nonblank_device_text(value: str) -> str:
 
 
 DeviceText = Annotated[str, AfterValidator(_nonblank_device_text)]
-
-
-class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class HandoffPosition(_StrictModel):

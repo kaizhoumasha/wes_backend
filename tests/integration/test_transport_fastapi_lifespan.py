@@ -68,6 +68,7 @@ async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
         runtime = app.state.transport_runtime
         assert runtime is not None and runtime.closed is False
         assert app.state.workline_start_service is not None
+        assert app.state.wms_picking_task_issued_handler is not None
         assert app.state.wms_inbound_auth_policy.allows_unsigned_wms_callbacks is True
         assert database.AsyncSessionLocal is not None
         async with database.AsyncSessionLocal() as session:
@@ -78,6 +79,7 @@ async def test_register_init_owns_real_transport_database_and_redis_lifecycle(
     assert runtime is not None and runtime.closed is True
     assert app.state.transport_runtime is None
     assert app.state.workline_start_service is None
+    assert app.state.wms_picking_task_issued_handler is None
     assert app.state.wms_inbound_auth_policy is None
     assert database.engine is None
     assert database.AsyncSessionLocal is None

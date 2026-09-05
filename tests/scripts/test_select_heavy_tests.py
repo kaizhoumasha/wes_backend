@@ -85,6 +85,12 @@ TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS = (
     "tests/integration/transport/test_transport_debug_run_schema.py",
     "tests/integration/transport/test_transport_debug_run_service.py",
 )
+PICKING_TASK_REVISION_PATH = "migrations/versions/20260904_0458_a0f4b56d0f50_添加_pickingtask_发布接收.py"
+PICKING_TASK_PREPARE_REVISION_PATH = (
+    "migrations/versions/20260904_1437_ff5d0af61f91_扩展_pickingtask_prepare_领取合同.py"
+)
+PICKING_TASK_SCHEMA_HEAVY_TEST = "tests/integration/wms_adapter/outbound_picking/test_schema.py"
+PICKING_TASK_PREPARE_HEAVY_TEST = "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
 TRANSPORT_FASTAPI_LIFESPAN_HEAVY_TEST = "tests/integration/test_transport_fastapi_lifespan.py"
 TRANSPORT_BROKER_HARNESS_CLEANUP_HEAVY_TEST = "tests/integration/test_transport_broker_harness_cleanup.py"
@@ -682,6 +688,7 @@ def test_event_command_block_schema_paths_select_postgresql_owner(changed_path: 
             [
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 EXECUTION_CONSTRAINTS_HEAVY_TEST,
+                PICKING_TASK_PREPARE_HEAVY_TEST,
                 WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
             ],
         ),
@@ -1178,6 +1185,8 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         TRANSPORT_FACE_REVISION_PATH,
         TRANSPORT_DEBUG_PROJECTION_REVISION_PATH,
         TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH,
+        PICKING_TASK_REVISION_PATH,
+        PICKING_TASK_PREPARE_REVISION_PATH,
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (
@@ -1193,6 +1202,11 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         TRANSPORT_SCHEMA_HEAVY_TEST,
     )
     assert revision_mappings[3].heavy_tests == TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
+    assert revision_mappings[4].heavy_tests == (PICKING_TASK_SCHEMA_HEAVY_TEST,)
+    assert revision_mappings[5].heavy_tests == (
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
+        PICKING_TASK_SCHEMA_HEAVY_TEST,
+    )
     assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST
     ]
@@ -1205,6 +1219,13 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     assert select_heavy_tests([TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH], config, repo_root=REPO_ROOT) == list(
         TRANSPORT_DEBUG_AUTO_RUN_HEAVY_TESTS
     )
+    assert select_heavy_tests([PICKING_TASK_REVISION_PATH], config, repo_root=REPO_ROOT) == [
+        PICKING_TASK_SCHEMA_HEAVY_TEST
+    ]
+    assert select_heavy_tests([PICKING_TASK_PREPARE_REVISION_PATH], config, repo_root=REPO_ROOT) == [
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
+        PICKING_TASK_SCHEMA_HEAVY_TEST,
+    ]
 
 
 @pytest.mark.parametrize(

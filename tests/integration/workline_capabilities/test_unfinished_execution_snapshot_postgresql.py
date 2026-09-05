@@ -23,6 +23,7 @@ from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.resource.models import BinPlacement, RackPlacement, ResourceSourceSystem
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
+from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding, LineRunEpochStatus
 from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.workline import LineType, WorkLine

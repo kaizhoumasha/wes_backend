@@ -33,6 +33,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     transport_runtime = None
     device_command_runtime = None
     rough_sorter_runtime = None
+    outbound_picking_runtime = None
     primary_error: BaseException | None = None
     try:
         logger.info("Initializing application resources...")
@@ -44,9 +45,11 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.device_command_runtime = None
         _app.state.device_evidence_service = None
         _app.state.rough_sorter_runtime = None
+        _app.state.outbound_picking_runtime = None
         _app.state.workline_start_service = None
         _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_recovery_event_handler = None
+        _app.state.wms_picking_task_issued_handler = None
         _app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
         await init_db()
         if db_module.AsyncSessionLocal is None:
@@ -84,6 +87,13 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.rough_sorter_runtime = rough_sorter_runtime
         _app.state.wms_recovery_event_handler = rough_sorter_runtime.wms_recovery_event_handler
         _app.state.workline_start_service = build_rough_sorter_start_service()
+        from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
+
+        outbound_picking_runtime = build_outbound_picking_runtime(
+            session_factory=db_module.AsyncSessionLocal,
+        )
+        _app.state.outbound_picking_runtime = outbound_picking_runtime
+        _app.state.wms_picking_task_issued_handler = outbound_picking_runtime.picking_task_issued_handler
         await init_redis()
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
@@ -111,6 +121,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.workline_start_service = None
         _app.state.task_queue_gateway = None
         _app.state.wms_recovery_event_handler = None
+        _app.state.outbound_picking_runtime = None
+        _app.state.wms_picking_task_issued_handler = None
         cleanup_errors: list[BaseException] = []
         if transport_runtime is not None:
             try:

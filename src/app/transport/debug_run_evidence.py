@@ -10,6 +10,9 @@ from pydantic import ValidationError
 from src.app.device.contracts import EcsDeviceEvent
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 
+_SCAN12_DIRECTION_SUFFIXES = frozenset({"-A", "-B", "-C", "-D"})
+_SCAN12_DEVICE_CODES = frozenset({"SCAN12", "STATION_SCAN12"})
+
 
 class Scan12EvidenceDisposition(StrEnum):
     MATCH = "MATCH"
@@ -46,7 +49,7 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
     if event is None:
         return _attention(evidence_id, "INVALID_NORMALIZED_PAYLOAD")
 
-    if event.device_code != "SCAN12":
+    if event.device_code not in _SCAN12_DEVICE_CODES:
         return _ignore(evidence_id, "OTHER_DEVICE", source_event_id=event.source_event_id)
     if event.event_type != "SCAN_COMPLETED":
         return _ignore(evidence_id, "OTHER_EVENT", source_event_id=event.source_event_id)
@@ -56,7 +59,8 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
     barcode = event.data.get("barcode")
     if not isinstance(barcode, str) or not barcode:
         return _attention(evidence_id, "INVALID_BARCODE", source_event_id=event.source_event_id)
-    if barcode not in selected_bins:
+    bin_id = _match_selected_bin_id(barcode, selected_bins)
+    if bin_id is None:
         return _ignore(
             evidence_id,
             "UNSELECTED_BIN",
@@ -70,8 +74,18 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
         disposition=Scan12EvidenceDisposition.MATCH,
         evidence_id=evidence_id,
         source_event_id=event.source_event_id,
-        bin_id=barcode,
+        bin_id=bin_id,
     )
+
+
+def _match_selected_bin_id(barcode: str, selected_bins: frozenset[str]) -> str | None:
+    if barcode in selected_bins:
+        return barcode
+    if len(barcode) > 2 and barcode[-2:] in _SCAN12_DIRECTION_SUFFIXES:
+        candidate = barcode[:-2]
+        if candidate in selected_bins:
+            return candidate
+    return None
 
 
 def _evaluate_evidence_boundary(
