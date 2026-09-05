@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.3.0] - 2026-09-05
+
+### Added
+
+- 工作线配置支持从已安装插件清单选择业务插件，并按 `device_role + device_code` 装配属于该工作线的多台设备。
+- 激活工作线时冻结插件精确版本、配置摘要与设备绑定快照，运行期按 Epoch 快照解析对应插件。
+
+### Changed
+
+- 工作线停用与插件切换统一检查未结束的 Transport、BinExecution、MaterialExecution 等任务和插件清场条件；存在活动任务、位置未知或未释放资源时拒绝切换。
+- 部署装配改为从制品内插件清单加载，不再由 `deployment.rough_sorter_composition` 静态绑定具体业务插件；新增业务线只需交付符合 SDK 的插件包并加入清单。
+- 设备继续由 WES 显式管理，一个设备只属于一个工作线；管理接口返回可装配插件、设备角色和当前配置状态。
+
+### Verification
+
+- QUALITY 通过：2585 passed、5 skipped；HEAVY selector 选中的 1 项通过，development Docker 镜像构建通过。
+- 该版本完成仓库能力与管理接口，不代表任何现场工作线已切换、部署或业务验收。
+
 ## [0.31.2.0] - 2026-09-05
 
 ### Added
