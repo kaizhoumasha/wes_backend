@@ -11,7 +11,7 @@ from wes_plugin_sdk import (
 )
 
 from rough_sorter.facts import AdmissionDecidedFact, AdmissionResult
-from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
 
 
 @handler(
@@ -30,7 +30,7 @@ class AdmissionDecidedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        epoch = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
         if fact.result is AdmissionResult.WAIT:
             return (
                 Wait(
@@ -65,6 +65,7 @@ class AdmissionDecidedHandler:
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 device_role="MEASUREMENT_DEVICE",
+                device_code=require_device_binding(epoch, "MEASUREMENT_DEVICE").device_code,
                 task_type="PICK_AND_PUT",
                 material_trace_id=fact.material_trace_id,
                 source=fact.source_position,

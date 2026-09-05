@@ -658,6 +658,7 @@ async def test_fact_processor_creates_device_command_with_published_evidence_ato
                 fact.material_execution_id,
                 fact.fact_id,
                 "TEST",
+                binding.device_code,
                 "READINESS_CHECK",
                 execution.material_trace_id,
                 DevicePosition("READINESS-SOURCE", "TEST", execution.material_trace_id),

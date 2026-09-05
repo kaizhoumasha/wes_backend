@@ -1,10 +1,9 @@
-from inspect import signature
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.workline.models import WorkLineStateTransitionRequest
+from src.app.workline.models import WorkLineConfigurationUpdate, WorkLineStateTransitionRequest
 from src.app.workline.v1 import workline as workline_api
 from src.core.response import ResourceErrorCode
 
@@ -42,6 +41,15 @@ def test_configuration_status_route_requires_dedicated_permission() -> None:
 
     assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == [
         "biz:workline:configuration-status"
+    ]
+
+    available_plugins_route = next(
+        route
+        for route in workline_api.router.routes
+        if route.path == "/work_lines/{id}/available-plugins" and "GET" in route.methods
+    )
+    assert [getattr(dep.dependency, "permission_required", "") for dep in available_plugins_route.dependencies] == [
+        "biz:workline:available-plugins"
     ]
 
 
@@ -105,77 +113,79 @@ async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_configuration_status_route_converts_missing_workline_to_not_found(monkeypatch) -> None:
+async def test_configuration_status_route_converts_missing_workline_to_not_found() -> None:
     service = SimpleNamespace(configuration_status=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
-    monkeypatch.setattr(workline_api, "workline_service", service)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(workline_configuration_service=service)))
 
-    response = await workline_api.get_workline_configuration_status(object(), id=404)
-
-    assert response["code"] == ResourceErrorCode.NOT_FOUND.code
-    assert "不存在" in response["message"]
-
-
-@pytest.mark.asyncio
-async def test_activate_route_converts_missing_workline_to_not_found(monkeypatch) -> None:
-    service = SimpleNamespace(activate=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
-    monkeypatch.setattr(workline_api, "workline_service", service)
-    db = object()
-    cache = object()
-
-    response = await workline_api.activate_workline(
-        db,
-        cache,
-        id=404,
-        payload=WorkLineStateTransitionRequest(version=0),
-    )
+    response = await workline_api.get_workline_configuration_status(object(), request=request, id=404)
 
     assert response["code"] == ResourceErrorCode.NOT_FOUND.code
     assert "不存在" in response["message"]
-    service.activate.assert_awaited_once_with(
-        db,
-        404,
-        version=0,
-        cache=cache,
-    )
+
+
+def test_activate_route_is_removed_because_start_is_the_only_activation_entry() -> None:
+    assert not any(route.path == "/work_lines/{id}/activate" for route in workline_api.router.routes)
 
 
 @pytest.mark.asyncio
-async def test_activate_route_uses_shared_state_transition_contract(monkeypatch) -> None:
-    service = SimpleNamespace(activate=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
-    monkeypatch.setattr(workline_api, "workline_service", service)
-    db = object()
-    cache = object()
-
-    parameters = signature(workline_api.activate_workline).parameters
-    assert parameters["payload"].annotation is WorkLineStateTransitionRequest
-    assert "current_user_id" not in parameters
-
-    await workline_api.activate_workline(
-        db,
-        cache,
-        id=404,
-        payload=WorkLineStateTransitionRequest(version=7),
-    )
-
-    service.activate.assert_awaited_once_with(
-        db,
-        404,
-        version=7,
-        cache=cache,
-    )
-
-
-@pytest.mark.asyncio
-async def test_deactivate_route_converts_missing_workline_to_not_found(monkeypatch) -> None:
+async def test_deactivate_route_converts_missing_workline_to_not_found() -> None:
     service = SimpleNamespace(deactivate=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
-    monkeypatch.setattr(workline_api, "workline_service", service)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(workline_configuration_service=service)))
+    db = object()
+    cache = object()
 
     response = await workline_api.deactivate_workline(
-        object(),
-        object(),
+        db,
+        cache,
+        request,
         id=404,
         payload=WorkLineStateTransitionRequest(version=0),
     )
 
     assert response["code"] == ResourceErrorCode.NOT_FOUND.code
     assert "不存在" in response["message"]
+
+
+@pytest.mark.asyncio
+async def test_configuration_route_saves_plugin_config_and_device_set_through_one_service() -> None:
+    route = next(
+        route
+        for route in workline_api.router.routes
+        if route.path == "/work_lines/{id}/configuration" and "PUT" in route.methods
+    )
+    assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == [
+        "biz:workline:configure"
+    ]
+
+    workline = SimpleNamespace(id=7, version=4, plugin_key="example_plugin", config={"mode": "AUTO"})
+    service = SimpleNamespace(
+        save=AsyncMock(return_value=SimpleNamespace(workline=workline, device_codes=("D-1", "D-2")))
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(workline_configuration_service=service)))
+    db = object()
+    cache = object()
+    payload = WorkLineConfigurationUpdate(
+        version=3,
+        plugin_key="example_plugin",
+        config={"mode": "AUTO"},
+        device_codes=("D-2", "D-1"),
+    )
+
+    response = await workline_api.save_workline_configuration(
+        db,
+        cache,
+        request,
+        id=7,
+        payload=payload,
+    )
+
+    assert response["data"].device_codes == ("D-1", "D-2")
+    service.save.assert_awaited_once_with(
+        db,
+        workline_id=7,
+        version=3,
+        plugin_key="example_plugin",
+        config={"mode": "AUTO"},
+        device_codes=("D-2", "D-1"),
+        cache=cache,
+    )

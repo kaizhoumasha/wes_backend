@@ -228,6 +228,30 @@ class RackPlacementRepository(BaseRepository[RackPlacement]):
         )
         return int(result.scalar_one())
 
+    async def get_active_workline_summary(self, db: AsyncSession, workline_id: int) -> dict[str, Any]:
+        """返回工作线当前货架位置数量与第一条稳定样本。"""
+
+        columns = cast("Any", RackPlacement).__table__.c
+        result = await db.execute(
+            select(RackPlacement, func.count().over().label("owner_count"))
+            .where(columns.workline_id == workline_id, columns.ended_at.is_(None))
+            .order_by(columns.id)
+            .limit(1)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return {"count": 0, "sample": None}
+        placement = row[0]
+        return {
+            "count": int(row.owner_count),
+            "sample": {
+                "type": "rack_placement",
+                "id": str(placement.id),
+                "status": getattr(placement.placement_status, "value", placement.placement_status),
+                "identity": placement.rack_code,
+            },
+        }
+
 
 class RackBinMountRepository(BaseRepository[RackBinMount]):
     """料箱挂载投影 Repository。"""
@@ -320,6 +344,30 @@ class BinPlacementRepository(BaseRepository[BinPlacement]):
             statement = statement.with_for_update()
         result = await db.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_active_workline_summary(self, db: AsyncSession, workline_id: int) -> dict[str, Any]:
+        """返回工作线当前料箱位置数量与第一条稳定样本。"""
+
+        columns = cast("Any", BinPlacement).__table__.c
+        result = await db.execute(
+            select(BinPlacement, func.count().over().label("owner_count"))
+            .where(columns.workline_id == workline_id, columns.ended_at.is_(None))
+            .order_by(columns.id)
+            .limit(1)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return {"count": 0, "sample": None}
+        placement = row[0]
+        return {
+            "count": int(row.owner_count),
+            "sample": {
+                "type": "bin_placement",
+                "id": str(placement.id),
+                "status": getattr(placement.placement_status, "value", placement.placement_status),
+                "identity": placement.bin_code or placement.placeholder_key,
+            },
+        }
 
     async def close_active_by_bin_code(
         self,

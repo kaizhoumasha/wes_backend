@@ -8,7 +8,7 @@ import pytest
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "ff5d0af61f91"
+HEAD_REVISION = "b42147d0d086"
 
 
 @pytest.mark.asyncio

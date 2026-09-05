@@ -21,6 +21,7 @@ from src.app.execution.models import (
 )
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
 from src.app.resource.models import BinPlacement, RackPlacement, ResourceSourceSystem
+from src.app.resource.repositories import bin_placement_repository, rack_placement_repository
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
@@ -181,13 +182,13 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             summary = await repository.get_unfinished_workload_summary(db, line.id)
 
             assert summary["by_type"] == {
-                "line_run_epochs": True,
-                "material_executions": True,
-                "bin_executions": True,
-                "device_commands": True,
-                "transport_tasks": True,
-                "inbound_evidences": True,
-                "wms_confirmations": True,
+                "line_run_epochs": 1,
+                "material_executions": 1,
+                "bin_executions": 1,
+                "device_commands": 1,
+                "transport_tasks": 1,
+                "inbound_evidences": 1,
+                "wms_confirmations": 1,
             }
             assert summary["count"] == 7
             assert summary["sample"] == {
@@ -196,6 +197,54 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 "status": "ACTIVE",
                 "identity": epoch.epoch_code,
             }
+            assert summary["samples"]["transport_tasks"] == {
+                "type": "transport_task",
+                "id": str(transport.id),
+                "status": "PENDING",
+                "identity": transport.transport_task_id,
+            }
+            second_bin_placement = BinPlacement(
+                placeholder_key=f"TARGET-BIN-PLACEHOLDER-{identity}",
+                position_type="WORKLINE_POSITION",
+                position_code="TARGET-BIN-POSITION-2",
+                workline_id=line.id,
+                placement_status="UNKNOWN",
+                source_system=ResourceSourceSystem.WES_RUNTIME,
+                source_event_id=f"TARGET-BIN-EVIDENCE-2-{identity}",
+                started_at=now,
+            )
+            second_rack_placement = RackPlacement(
+                rack_code=f"TARGET-RACK-2-{identity}",
+                workline_id=line.id,
+                position_code="TARGET-RACK-POSITION-2",
+                placement_status="UNKNOWN",
+                source_system=ResourceSourceSystem.WES_RUNTIME,
+                source_event_id=f"TARGET-RACK-EVIDENCE-2-{identity}",
+                started_at=now,
+            )
+            db.add_all([second_bin_placement, second_rack_placement])
+            await db.flush()
+            assert await bin_placement_repository.get_active_workline_summary(db, line.id) == {
+                "count": 2,
+                "sample": {
+                    "type": "bin_placement",
+                    "id": str(bin_placement.id),
+                    "status": "ARRIVED",
+                    "identity": bin_placement.bin_code,
+                },
+            }
+            assert await rack_placement_repository.get_active_workline_summary(db, line.id) == {
+                "count": 2,
+                "sample": {
+                    "type": "rack_placement",
+                    "id": str(rack_placement.id),
+                    "status": "ARRIVED",
+                    "identity": rack_placement.rack_code,
+                },
+            }
+            second_bin_placement.ended_at = now
+            second_rack_placement.ended_at = now
+            await db.flush()
             active_objects = await repository.list_target_active_object_facts(db, workline_id=line.id)
             assert {(row["object_type"], row["object_key"]) for row in active_objects} == {
                 ("LINE_RUN_EPOCH", epoch.epoch_code),
@@ -239,10 +288,38 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             assert not any(terminal_summary["by_type"].values())
             assert terminal_summary["sample"] is None
 
+            second_transport = TransportTask(
+                transport_task_id=f"UNFINISHED-TRANSPORT-2-{identity}",
+                client_request_id=f"UNFINISHED-REQUEST-2-{identity}",
+                request_digest="2" * 64,
+                kind="BIN_MOVE",
+                caller_json={},
+                request_json={},
+                submit_operation_id="019d0000-0000-7000-8000-000000000002",
+                submit_timestamp_ms=2,
+                submit_request_body="{}",
+                submit_request_body_digest="3" * 64,
+                authority_workline_id=line.id,
+                authority_line_run_epoch_id=epoch.id,
+                authority_bin_execution_id=bin_execution.id,
+                created_at=now,
+                updated_at=now,
+            )
+            transport.status = TransportTaskStatus.PENDING
+            db.add(second_transport)
+            await db.flush()
+            two_transport_summary = await repository.get_unfinished_workload_summary(db, line.id)
+            assert two_transport_summary["count"] == 2
+            assert two_transport_summary["by_type"]["transport_tasks"] == 2
+            assert two_transport_summary["samples"]["transport_tasks"]["id"] == str(transport.id)
+            transport.status = TransportTaskStatus.SUCCEEDED
+            await db.delete(second_transport)
+            await db.flush()
+
             async def assert_only(owner: str) -> None:
                 current = await repository.get_unfinished_workload_summary(db, line.id)
                 assert current["count"] == 1
-                assert current["by_type"][owner] is True
+                assert current["by_type"][owner] == 1
                 assert not any(value for name, value in current["by_type"].items() if name != owner)
 
             epoch.status = LineRunEpochStatus.ACTIVE
@@ -364,7 +441,7 @@ async def test_unbound_applied_device_result_is_diagnostic_not_unfinished_owner(
 
             summary = await WorkLineRepository().get_unfinished_workload_summary(db, line.id)
 
-            assert summary["by_type"]["inbound_evidences"] is False
+            assert summary["by_type"]["inbound_evidences"] == 0
             assert summary["count"] == 0
             assert summary["sample"] is None
         finally:

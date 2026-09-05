@@ -178,15 +178,12 @@ def test_workline_service_config_only_after_runtime_split():
     workline_service_singleton = workline_service_module.workline_service
 
     # 配置域方法形态契约:name → 期望返回类型(单类型)或 union 成员集合
-    from src.app.workline.models.workline import WorkLine, WorkLineConfigurationStatus
+    from src.app.workline.models.workline import WorkLine
 
     expected: dict[str, object] = {
         "create": (WorkLine, type(None)),
         "update": (WorkLine, type(None)),
         "delete": (bool, type(None)),
-        "activate": (WorkLine, type(None)),
-        "deactivate": (WorkLine, type(None)),
-        "configuration_status": WorkLineConfigurationStatus,
     }
     for name, expected_return in expected.items():
         method = getattr(workline_service_singleton, name, None)
@@ -215,6 +212,15 @@ def test_workline_service_config_only_after_runtime_split():
             assert return_annotation is expected_return, (
                 f"WorkLine device gateway 收口:WorkLineService.{name} 返回注解必须为 {expected_return},实际 {return_annotation}"
             )
+    for removed_name in ("activate", "deactivate", "configuration_status"):
+        assert not hasattr(workline_service_singleton, removed_name)
+
+    configuration_module = importlib.import_module("src.app.workline.services.workline_configuration_service")
+    configuration_service = configuration_module.WorkLineConfigurationService(plugins=())
+    for name in ("save", "deactivate", "configuration_status"):
+        method = getattr(configuration_service, name)
+        assert asyncio.iscoroutinefunction(method)
+        assert "db" in inspect.signature(method).parameters
 
 
 # WorkLine service facade 收口:workline.services.__init__ 仅保留当前真实
@@ -229,6 +235,8 @@ _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
         # line_run_epoch_service
         "LineRunEpochService",
         "line_run_epoch_service",
+        # workline_configuration_service
+        "WorkLineConfigurationService",
         # plane_service
         "WorkLinePlaneService",
         "workline_plane_service",

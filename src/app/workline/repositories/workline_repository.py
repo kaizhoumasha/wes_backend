@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import String, and_, case, exists, func, literal, or_, select, true, union_all
+from sqlalchemy import String, and_, case, func, literal, or_, select, union_all
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,12 +68,28 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
+    async def set_active_for_start(self, db: AsyncSession, workline: WorkLine) -> WorkLine:
+        """在 START 调用方事务内把已锁定 WorkLine 标记为活动。"""
+
+        workline.is_active = True
+        workline.increment_version()
+        await db.flush()
+        return workline
+
+    async def set_inactive_for_deactivate(self, db: AsyncSession, workline: WorkLine) -> WorkLine:
+        """在停用调用方事务内把已锁定 WorkLine 标记为停用。"""
+
+        workline.is_active = False
+        workline.increment_version()
+        await db.flush()
+        return workline
+
     async def get_unfinished_workload_summary(
         self,
         db: AsyncSession,
         workline_id: int,
     ) -> dict[str, Any]:
-        """以单条 SQL 返回七类 execution owner 的精确阻塞布尔值与诊断样本。"""
+        """以单条 SQL 返回七类 execution owner 的准确数量与每类稳定样本。"""
 
         epoch = cast("Any", LineRunEpoch).__table__.c
         material = cast("Any", MaterialExecution).__table__.c
@@ -141,28 +157,19 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             confirmation.status != WmsConfirmationStatus.COMPLETED,
         )
 
-        owner_queries = (
-            ("line_run_epochs", select(epoch.id).where(predicates["line_run_epochs"])),
-            ("material_executions", select(material.id).where(predicates["material_executions"])),
-            ("bin_executions", select(bin_execution.id).where(predicates["bin_executions"])),
-            ("device_commands", select(command.id).select_from(DeviceCommand, LineRunEpoch).where(unclosed_command)),
-            ("transport_tasks", select(transport.id).where(predicates["transport_tasks"])),
-            (
-                "inbound_evidences",
-                select(evidence.id).select_from(InboundEvidence, LineRunEpoch).where(blocking_evidence),
-            ),
-            (
-                "wms_confirmations",
-                select(confirmation.id).select_from(WmsConfirmation, MaterialExecution).where(unfinished_confirmation),
-            ),
-        )
-
-        sample_union = union_all(
+        owner_union = union_all(
             self._sample_query(
-                1, "line_run_epoch", epoch.id, epoch.status, epoch.epoch_code, predicates["line_run_epochs"]
+                1,
+                "line_run_epochs",
+                "line_run_epoch",
+                epoch.id,
+                epoch.status,
+                epoch.epoch_code,
+                predicates["line_run_epochs"],
             ),
             self._sample_query(
                 2,
+                "material_executions",
                 "material_execution",
                 material.id,
                 material.status,
@@ -171,6 +178,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             ),
             self._sample_query(
                 3,
+                "bin_executions",
                 "bin_execution",
                 bin_execution.id,
                 bin_execution.status,
@@ -179,6 +187,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             ),
             self._sample_query(
                 4,
+                "device_commands",
                 "device_command",
                 command.id,
                 command.status,
@@ -188,6 +197,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             ),
             self._sample_query(
                 5,
+                "transport_tasks",
                 "transport_task",
                 transport.id,
                 transport.status,
@@ -196,6 +206,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             ),
             self._sample_query(
                 6,
+                "inbound_evidences",
                 "inbound_evidence",
                 evidence.id,
                 evidence.apply_status,
@@ -205,6 +216,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             ),
             self._sample_query(
                 7,
+                "wms_confirmations",
                 "wms_confirmation",
                 confirmation.id,
                 confirmation.status,
@@ -213,38 +225,50 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 from_models=(WmsConfirmation, MaterialExecution),
             ),
         ).subquery("unfinished_owner_candidates")
-        sample = (
+        ranked = select(
+            owner_union,
+            func.count().over(partition_by=owner_union.c.owner_key).label("owner_count"),
+            func.row_number()
+            .over(partition_by=owner_union.c.owner_key, order_by=owner_union.c.owner_id)
+            .label("sample_rank"),
+        ).subquery("unfinished_owner_ranked")
+        statement = (
             select(
-                sample_union.c.owner_type,
-                sample_union.c.owner_id,
-                sample_union.c.status,
-                sample_union.c.identity,
+                ranked.c.owner_order,
+                ranked.c.owner_key,
+                ranked.c.owner_type,
+                ranked.c.owner_count,
+                ranked.c.owner_id,
+                ranked.c.status,
+                ranked.c.identity,
             )
-            .order_by(sample_union.c.owner_order, sample_union.c.owner_id)
-            .limit(1)
-            .subquery("unfinished_owner_sample")
+            .where(ranked.c.sample_rank == 1)
+            .order_by(ranked.c.owner_order)
         )
-        anchor = select(literal(1).label("value")).subquery("unfinished_owner_anchor")
-        statement = select(
-            *(exists(query.limit(1)).label(name) for name, query in owner_queries),
-            sample.c.owner_type,
-            sample.c.owner_id,
-            sample.c.status,
-            sample.c.identity,
-        ).select_from(anchor.outerjoin(sample, true()))
-        row = (await db.execute(statement)).one()
-        by_type = {name: bool(getattr(row, name)) for name, _query in owner_queries}
-        diagnostic_sample = None
-        if row.owner_type is not None:
-            diagnostic_sample = {
+        rows = (await db.execute(statement)).all()
+        owner_keys = (
+            "line_run_epochs",
+            "material_executions",
+            "bin_executions",
+            "device_commands",
+            "transport_tasks",
+            "inbound_evidences",
+            "wms_confirmations",
+        )
+        by_type = dict.fromkeys(owner_keys, 0)
+        samples: dict[str, dict[str, str]] = {}
+        for row in rows:
+            by_type[row.owner_key] = int(row.owner_count)
+            samples[row.owner_key] = {
                 "type": row.owner_type,
-                "id": row.owner_id,
+                "id": str(row.owner_id),
                 "status": row.status,
                 "identity": row.identity,
             }
         return {
             "count": sum(by_type.values()),
-            "sample": diagnostic_sample,
+            "sample": next(iter(samples.values()), None),
+            "samples": samples,
             "by_type": by_type,
         }
 
@@ -425,6 +449,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
     @staticmethod
     def _sample_query(
         owner_order: int,
+        owner_key: str,
         owner_type: str,
         owner_id: Any,
         status: Any,
@@ -435,8 +460,9 @@ class WorkLineRepository(BaseRepository[WorkLine]):
     ) -> Any:
         query = select(
             literal(owner_order).label("owner_order"),
+            literal(owner_key).label("owner_key"),
             literal(owner_type).label("owner_type"),
-            sa_cast(owner_id, String).label("owner_id"),
+            owner_id.label("owner_id"),
             sa_cast(status, String).label("status"),
             sa_cast(identity, String).label("identity"),
         )

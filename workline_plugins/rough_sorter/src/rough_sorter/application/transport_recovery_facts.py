@@ -322,8 +322,11 @@ async def build_recovery_fact(
         target = command_position(params["target"], execution.material_trace_id)
         step, role = device_step(command.task_type, source, target)
         if authoritative == source:
-            binding = await epochs.get_binding_by_role_for_update(
-                db, line_run_epoch_id=execution.line_run_epoch_id, device_role=role
+            binding = await epochs.get_binding_by_role_and_code_for_update(
+                db,
+                line_run_epoch_id=execution.line_run_epoch_id,
+                device_role=role,
+                device_code=command.device_code,
             )
             if binding is None:
                 raise ValueError("recovery device binding missing")

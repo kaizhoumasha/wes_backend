@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-import socket
 from copy import deepcopy
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from src.app.device.contracts import (
+    EcsDeviceInfo,
+    EcsDeviceMode,
+    EcsDeviceRuntimeState,
+    EcsDeviceState,
+    EcsDeviceStatus,
+)
 from src.app.workline.services.workline_start_service import WorkLineStartConfigurationError
 
 from rough_sorter.application.start_plan import RoughSorterStartPlanBuilder
@@ -68,24 +75,112 @@ class _DeviceRepository:
         return self.devices_by_workline[workline_id]
 
 
+def _status(
+    device_code: str,
+    command: str,
+    *,
+    online: bool = True,
+    updated_at: int = 999_000,
+    commands: tuple[str, ...] | None = None,
+) -> EcsDeviceStatus:
+    return EcsDeviceStatus(
+        device=EcsDeviceInfo(
+            device_code=device_code,
+            device_name=device_code,
+            device_type="TEST_DEVICE",
+            role="TEST_ROLE",
+            supported_commands=commands if commands is not None else (command,),
+            supported_events=(),
+        ),
+        state=EcsDeviceRuntimeState(
+            device_code=device_code,
+            mode=EcsDeviceMode.AUTO,
+            status=EcsDeviceState.IDLE,
+            is_online=online,
+            current_command_code=None,
+            scenario=None,
+            updated_at=updated_at,
+        ),
+    )
+
+
+def _statuses(devices: list[SimpleNamespace]) -> tuple[EcsDeviceStatus, ...]:
+    commands = {
+        "MEASUREMENT_DEVICE": "PICK_AND_PUT",
+        "TRANSFER_DEVICE": "MOVE_FORWARD",
+        "PLACEMENT_DEVICE": "PICK_AND_PUT",
+    }
+    return tuple(_status(device.device_code, commands[device.device_role]) for device in devices)
+
+
+class _Adapter:
+    def __init__(self, statuses: tuple[EcsDeviceStatus, ...] | Exception) -> None:
+        self.statuses = statuses
+        self.calls = 0
+
+    async def fetch_statuses(self) -> tuple[EcsDeviceStatus, ...]:
+        self.calls += 1
+        if isinstance(self.statuses, Exception):
+            raise self.statuses
+        return self.statuses
+
+
+class _AdapterProvider:
+    def __init__(self, adapters: dict[str, _Adapter]) -> None:
+        self.adapters = adapters
+        self.calls: list[str] = []
+
+    async def get_adapter(self, endpoint: str) -> _Adapter:
+        self.calls.append(endpoint)
+        return self.adapters[endpoint]
+
+
+def _builder(
+    repository: _DeviceRepository,
+    devices_by_endpoint: dict[str, list[SimpleNamespace]],
+) -> tuple[RoughSorterStartPlanBuilder, _AdapterProvider]:
+    provider = _AdapterProvider(
+        {endpoint: _Adapter(_statuses(devices)) for endpoint, devices in devices_by_endpoint.items()}
+    )
+    return (
+        RoughSorterStartPlanBuilder(
+            device_repository=repository,
+            adapter_provider=provider,
+            clock=lambda: datetime.fromtimestamp(1_000, UTC),
+        ),
+        provider,
+    )
+
+
+def test_configuration_checker_reports_static_config_and_device_reasons_without_ecs() -> None:
+    devices = _required_devices()
+    workline = SimpleNamespace(config={"rough_sorter": _rough_sorter_configuration()})
+
+    assert RoughSorterStartPlanBuilder.configuration_incompatibility_reasons(workline, tuple(devices)) == ()
+
+    devices[0].is_active = False
+    devices[1].endpoint_base_url = None
+    devices.pop()
+    assert RoughSorterStartPlanBuilder.configuration_incompatibility_reasons(workline, tuple(devices)) == (
+        "DEVICE_INACTIVE:DEVICE-1",
+        "DEVICE_ENDPOINT_MISSING:DEVICE-2",
+        "DEVICE_ROLE_MISSING:PLACEMENT_DEVICE",
+    )
+
+
 @pytest.mark.asyncio
-async def test_builder_reads_devices_once_without_network_and_returns_complete_foundation_plan(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_builder_reads_devices_once_and_each_ecs_endpoint_once() -> None:
     devices = _required_devices()
     devices.append(_device(4, "REPORT_ONLY", None))
     repository = _DeviceRepository({10: devices})
-    builder = RoughSorterStartPlanBuilder(device_repository=repository)
+    builder, provider = _builder(repository, {"http://ecs-a:8080": devices[:3]})
     workline = SimpleNamespace(id=10, config={"rough_sorter": _rough_sorter_configuration(), "sibling": {"kept": True}})
-
-    def fail_on_network(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("builder 不得发起网络调用")
-
-    monkeypatch.setattr(socket, "socket", fail_on_network)
 
     plan = await builder.build(object(), workline)
 
     assert repository.calls == [10]
+    assert provider.calls == ["http://ecs-a:8080"]
+    assert provider.adapters["http://ecs-a:8080"].calls == 1
     assert (plan.plugin_key, plan.plugin_version, plan.flow_mode) == (
         "rough_sorter",
         "1.0.0",
@@ -111,7 +206,13 @@ async def test_builder_keeps_workline_device_and_endpoint_state_isolated_across_
     second = _required_devices("http://other-ecs:8081", id_offset=100)
     second[2].endpoint_base_url = "http://shared-ecs:8080"
     repository = _DeviceRepository({10: first, 20: second})
-    builder = RoughSorterStartPlanBuilder(device_repository=repository)
+    builder, provider = _builder(
+        repository,
+        {
+            "http://shared-ecs:8080": [*first, second[2]],
+            "http://other-ecs:8081": second[:2],
+        },
+    )
     first_configuration = _rough_sorter_configuration()
     second_configuration = _rough_sorter_configuration()
     second_contracts = second_configuration["device_contracts"]
@@ -148,6 +249,11 @@ async def test_builder_keeps_workline_device_and_endpoint_state_isolated_across_
     )
     assert second_plan.configuration_snapshot["position_bindings"]["NG_POSITION"] == "ng-2"
     assert repository.calls == [10, 20]
+    assert provider.calls == [
+        "http://shared-ecs:8080",
+        "http://other-ecs:8081",
+        "http://shared-ecs:8080",
+    ]
 
 
 @pytest.mark.asyncio
@@ -163,7 +269,8 @@ async def test_builder_fails_closed_for_invalid_required_device_topology(case: s
             devices[0].is_active = False
         case "endpoint_missing":
             devices[0].endpoint_base_url = None
-    builder = RoughSorterStartPlanBuilder(device_repository=_DeviceRepository({10: devices}))
+    repository = _DeviceRepository({10: devices})
+    builder, _provider = _builder(repository, {"http://ecs-a:8080": devices})
 
     with pytest.raises(WorkLineStartConfigurationError):
         await builder.build(object(), SimpleNamespace(id=10, config={"rough_sorter": _rough_sorter_configuration()}))
@@ -171,7 +278,36 @@ async def test_builder_fails_closed_for_invalid_required_device_topology(case: s
 
 @pytest.mark.asyncio
 async def test_builder_maps_invalid_business_configuration_to_start_configuration_error() -> None:
-    builder = RoughSorterStartPlanBuilder(device_repository=_DeviceRepository({10: _required_devices()}))
+    devices = _required_devices()
+    repository = _DeviceRepository({10: devices})
+    builder, _provider = _builder(repository, {"http://ecs-a:8080": devices})
 
     with pytest.raises(WorkLineStartConfigurationError):
         await builder.build(object(), SimpleNamespace(id=10, config={"rough_sorter": {}}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["unavailable", "missing", "stale", "offline", "capability"])
+async def test_builder_fails_closed_when_ecs_fact_is_not_startable(case: str) -> None:
+    devices = _required_devices()
+    statuses = list(_statuses(devices))
+    if case == "missing":
+        statuses.pop()
+    elif case == "stale":
+        statuses[0] = _status("DEVICE-1", "PICK_AND_PUT", updated_at=1)
+    elif case == "offline":
+        statuses[0] = _status("DEVICE-1", "PICK_AND_PUT", online=False)
+    elif case == "capability":
+        statuses[1] = _status("DEVICE-2", "MOVE_FORWARD", commands=("OTHER_COMMAND",))
+    adapter = _Adapter(RuntimeError("unavailable") if case == "unavailable" else tuple(statuses))
+    provider = _AdapterProvider({"http://ecs-a:8080": adapter})
+    builder = RoughSorterStartPlanBuilder(
+        device_repository=_DeviceRepository({10: devices}),
+        adapter_provider=provider,
+        clock=lambda: datetime.fromtimestamp(1_000, UTC),
+    )
+
+    with pytest.raises(WorkLineStartConfigurationError, match="http://ecs-a:8080"):
+        await builder.build(object(), SimpleNamespace(id=10, config={"rough_sorter": _rough_sorter_configuration()}))
+
+    assert adapter.calls == 1

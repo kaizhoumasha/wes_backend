@@ -8,8 +8,11 @@ from src.app.workline.models import (
     PlaneSceneView,
     PlaneSnapshot,
     WorkLine,
+    WorkLineConfigurationResponse,
     WorkLineConfigurationStatus,
+    WorkLineConfigurationUpdate,
     WorkLineCreate,
+    WorkLinePluginSummary,
     WorkLineResponse,
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
@@ -23,12 +26,38 @@ from src.core.response import (
     BusinessErrorCode,
     ResourceErrorCode,
     ResponseSchemaModel,
+    ServerErrorCode,
     response_builder,
 )
 from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 router = APIRouter(tags=["作业线管理"])
+
+
+@router.get(
+    "/work_lines/{id}/available-plugins",
+    summary="[biz:workline:available-plugins] 查询可装配业务插件",
+    response_model=ResponseSchemaModel[list[WorkLinePluginSummary]],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:available-plugins"))],
+)
+async def get_available_workline_plugins(
+    db: AsyncSessionDep,
+    request: Request,
+    id: int = Path(...),
+) -> ResponseSchemaModel[list[WorkLinePluginSummary]]:
+    service = getattr(request.app.state, "workline_configuration_service", None)
+    if service is None:
+        return cast(
+            "ResponseSchemaModel[list[WorkLinePluginSummary]]",
+            response_builder.fail(code=ServerErrorCode.SERVICE_UNAVAILABLE, message="工作线配置服务不可用"),
+        )
+    try:
+        plugins = await service.available_plugins(db, workline_id=id)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[list[WorkLinePluginSummary]]", _workline_value_error_response(exc))
+    return cast("ResponseSchemaModel[list[WorkLinePluginSummary]]", response_builder.success(data=list(plugins)))
 
 
 def _workline_value_error_response(exc: ValueError) -> dict[str, object]:
@@ -57,12 +86,19 @@ def _plane_read_principal(
 )
 async def get_workline_configuration_status(
     db: AsyncSessionDep,
+    request: Request,
     id: int = Path(...),
 ) -> ResponseSchemaModel[WorkLineConfigurationStatus]:
     """查询 WorkLine 启用前配置状态。"""
 
+    service = getattr(request.app.state, "workline_configuration_service", None)
+    if service is None:
+        return cast(
+            "ResponseSchemaModel[WorkLineConfigurationStatus]",
+            response_builder.fail(code=ServerErrorCode.SERVICE_UNAVAILABLE, message="工作线配置服务不可用"),
+        )
     try:
-        status_data = await workline_service.configuration_status(db, id)
+        status_data = await service.configuration_status(db, workline_id=id)
     except ValueError as exc:
         return cast("ResponseSchemaModel[WorkLineConfigurationStatus]", _workline_value_error_response(exc))
 
@@ -72,35 +108,50 @@ async def get_workline_configuration_status(
     )
 
 
-@router.post(
-    "/work_lines/{id}/activate",
-    summary="[biz:workline:activate] 启用作业线",
-    response_model=ResponseSchemaModel[WorkLineResponse],
+@router.put(
+    "/work_lines/{id}/configuration",
+    summary="[biz:workline:configure] 保存业务插件配置与设备全集",
+    response_model=ResponseSchemaModel[WorkLineConfigurationResponse],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:activate"))],
+    dependencies=[Depends(RequirePermission("biz:workline:configure"))],
 )
-async def activate_workline(
+async def save_workline_configuration(
     db: AsyncSessionDep,
     cache: CacheDep,
+    request: Request,
     id: int = Path(...),
-    payload: WorkLineStateTransitionRequest = Body(...),
-) -> ResponseSchemaModel[WorkLineResponse]:
-    """通过配置预检后启用 WorkLine。"""
+    payload: WorkLineConfigurationUpdate = Body(...),
+) -> ResponseSchemaModel[WorkLineConfigurationResponse]:
+    """在一个事务中替换插件配置和 Device 归属。"""
 
+    service = getattr(request.app.state, "workline_configuration_service", None)
+    if service is None:
+        return cast(
+            "ResponseSchemaModel[WorkLineConfigurationResponse]",
+            response_builder.fail(code=ServerErrorCode.SERVICE_UNAVAILABLE, message="工作线配置服务不可用"),
+        )
     try:
-        updated = await workline_service.activate(
+        result = await service.save(
             db,
-            id,
+            workline_id=id,
             version=payload.version,
+            plugin_key=payload.plugin_key,
+            config=payload.config,
+            device_codes=payload.device_codes,
             cache=cache,
         )
     except ValueError as exc:
-        return cast("ResponseSchemaModel[WorkLineResponse]", _workline_value_error_response(exc))
-
-    response_resource = cast("WorkLine", await workline_service.get_by_id(db, cache, id, max_depth=1) or updated)
+        return cast("ResponseSchemaModel[WorkLineConfigurationResponse]", _workline_value_error_response(exc))
+    data = WorkLineConfigurationResponse(
+        workline_id=result.workline.id,
+        version=result.workline.version,
+        plugin_key=result.workline.plugin_key,
+        config=result.workline.config,
+        device_codes=result.device_codes,
+    )
     return cast(
-        "ResponseSchemaModel[WorkLineResponse]",
-        response_builder.success(data=workline_service.to_response(response_resource, WorkLineResponse)),
+        "ResponseSchemaModel[WorkLineConfigurationResponse]",
+        response_builder.success(data=data),
     )
 
 
@@ -114,13 +165,20 @@ async def activate_workline(
 async def deactivate_workline(
     db: AsyncSessionDep,
     cache: CacheDep,
+    request: Request,
     id: int = Path(...),
     payload: WorkLineStateTransitionRequest = Body(...),
 ) -> ResponseSchemaModel[WorkLineResponse]:
     """确认无未完成运行负载后停用 WorkLine。"""
 
+    service = getattr(request.app.state, "workline_configuration_service", None)
+    if service is None:
+        return cast(
+            "ResponseSchemaModel[WorkLineResponse]",
+            response_builder.fail(code=ServerErrorCode.SERVICE_UNAVAILABLE, message="工作线配置服务不可用"),
+        )
     try:
-        updated = await workline_service.deactivate(db, id, version=payload.version, cache=cache)
+        updated = await service.deactivate(db, workline_id=id, version=payload.version, cache=cache)
     except ValueError as exc:
         return cast("ResponseSchemaModel[WorkLineResponse]", _workline_value_error_response(exc))
 

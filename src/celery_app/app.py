@@ -104,7 +104,7 @@ def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
         celery_async_runtime.initialize()
         if _frozen_worker_queues is None:
             raise RuntimeError("worker consume queues were not frozen before fork")
-        if "device-command" in _frozen_worker_queues:
+        if _frozen_worker_queues.intersection({"device-command", "wms-fulfillment"}):
             from src.celery_app.tasks import execution
 
             with _execution_restart_gate_lock:

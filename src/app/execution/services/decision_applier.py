@@ -46,12 +46,13 @@ if TYPE_CHECKING:
 
 
 class EpochRepositoryPort(Protocol):
-    async def get_binding_by_role_for_update(
+    async def get_binding_by_role_and_code_for_update(
         self,
         db: object,
         *,
         line_run_epoch_id: int,
         device_role: str,
+        device_code: str,
     ) -> LineRunEpochDeviceBinding | None: ...
 
 
@@ -229,13 +230,14 @@ class DecisionApplier:
         decision: CreateDeviceCommand,
         now: datetime,
     ) -> None:
-        binding = await self._epochs.get_binding_by_role_for_update(
+        binding = await self._epochs.get_binding_by_role_and_code_for_update(
             db,
             line_run_epoch_id=execution.line_run_epoch_id,
             device_role=decision.device_role,
+            device_code=decision.device_code,
         )
         if binding is None:
-            raise LookupError(f"Epoch 未绑定设备角色: {decision.device_role}")
+            raise LookupError(f"Epoch 未绑定指定设备: {decision.device_role}/{decision.device_code}")
         params = {
             "material_trace_id": decision.material_trace_id,
             "source": asdict(decision.source),

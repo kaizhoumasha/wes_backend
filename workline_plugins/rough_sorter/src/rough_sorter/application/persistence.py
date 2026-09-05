@@ -44,8 +44,8 @@ class EpochRepositoryPort(Protocol):
 
     async def list_position_bindings(self, db: Any, line_run_epoch_id: int) -> list[LineRunEpochPositionBinding]: ...
 
-    async def get_binding_by_role_for_update(
-        self, db: Any, *, line_run_epoch_id: int, device_role: str
+    async def get_binding_by_role_and_code_for_update(
+        self, db: Any, *, line_run_epoch_id: int, device_role: str, device_code: str
     ) -> LineRunEpochDeviceBinding | None: ...
 
 

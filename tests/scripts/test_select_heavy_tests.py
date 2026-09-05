@@ -89,6 +89,7 @@ PICKING_TASK_REVISION_PATH = "migrations/versions/20260904_0458_a0f4b56d0f50_添
 PICKING_TASK_PREPARE_REVISION_PATH = (
     "migrations/versions/20260904_1437_ff5d0af61f91_扩展_pickingtask_prepare_领取合同.py"
 )
+WORKLINE_PLUGIN_REVISION_PATH = "migrations/versions/20260905_1102_b42147d0d086_添加工作线插件选择并放开同角色设备.py"
 PICKING_TASK_SCHEMA_HEAVY_TEST = "tests/integration/wms_adapter/outbound_picking/test_schema.py"
 PICKING_TASK_PREPARE_HEAVY_TEST = "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
@@ -131,7 +132,6 @@ PLUGIN_SDK_REVIEWED_NONE_PATHS = (
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py",
     "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
-    "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py",
 )
 RUNTIME_TEXT_REVIEWED_NONE_PATHS = (
     "src/app/runtime/orchestration/services/_text.py",
@@ -497,7 +497,7 @@ def test_unmapped_plugin_sdk_asset_is_a_core_candidate_and_fails_closed() -> Non
 
 
 def test_deployment_start_composition_is_candidate_with_explicit_heavy_owners() -> None:
-    changed_path = "deployment/rough_sorter_composition.py"
+    changed_path = "deployment/plugin_composition.py"
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     assert is_candidate(changed_path)
@@ -505,6 +505,7 @@ def test_deployment_start_composition_is_candidate_with_explicit_heavy_owners() 
         "tests/e2e/transport/test_transport_production_wiring.py",
         "tests/integration/execution/test_decision_processing_postgresql.py",
         "tests/integration/test_celery_async_runtime_postgresql.py",
+        "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
 
@@ -543,6 +544,9 @@ def test_plugin_sdk_transport_decisions_select_real_transport_and_execution_owne
         TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
         WMS_MOCK_SERVER_HEAVY_TEST,
+    ]
+    assert select_heavy_tests(["packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"], config) == [
+        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
     ]
 
 
@@ -1187,6 +1191,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         TRANSPORT_DEBUG_AUTO_RUN_REVISION_PATH,
         PICKING_TASK_REVISION_PATH,
         PICKING_TASK_PREPARE_REVISION_PATH,
+        WORKLINE_PLUGIN_REVISION_PATH,
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (
@@ -1206,6 +1211,12 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     assert revision_mappings[5].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
         PICKING_TASK_SCHEMA_HEAVY_TEST,
+    )
+    assert revision_mappings[6].heavy_tests == (
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
+        "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+        "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+        WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     )
     assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST

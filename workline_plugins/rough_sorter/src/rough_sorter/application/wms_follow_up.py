@@ -23,8 +23,9 @@ class RoughSorterWmsFollowUpPlanner:
     def __init__(self, operation_id_factory: Callable[[], str] = new_uuid7) -> None:
         self._operation_id_factory = operation_id_factory
 
-    def plan(
+    async def plan(
         self,
+        _db: object,
         confirmation: WmsConfirmation,
         *,
         response_result: str,

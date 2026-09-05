@@ -5,12 +5,13 @@ from datetime import datetime
 import pytest
 
 from src.app.device.models.device import Device
+from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.epoch_activation import (
     LineRunEpochDeviceBindingInput,
     LineRunEpochPositionBindingInput,
 )
 from src.app.workline.epoch_digest import configuration_digest, topology_digest
-from src.app.workline.models.line_run_epoch import LineRunEpoch
+from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
 from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
@@ -145,6 +146,13 @@ async def test_real_repository_persists_complete_epoch_aggregate(db_session) -> 
         device_role="DEVICE_ROLE",
     )
     db_session.add(device)
+    second_device = Device(
+        device_code="ATOMIC-EPOCH-DEVICE-2",
+        device_name="Atomic Epoch Device 2",
+        work_line_id=line.id,
+        device_role="DEVICE_ROLE",
+    )
+    db_session.add(second_device)
     await db_session.flush()
     repository = LineRunEpochRepository()
     service = LineRunEpochService(repository=repository)
@@ -152,6 +160,16 @@ async def test_real_repository_persists_complete_epoch_aggregate(db_session) -> 
     device_input = LineRunEpochDeviceBindingInput(
         device_id=device.id,
         device_code=device.device_code,
+        device_role=device_input.device_role,
+        endpoint_base_url=device_input.endpoint_base_url,
+        contract_key=device_input.contract_key,
+        contract_version=device_input.contract_version,
+        status_max_age_ms=device_input.status_max_age_ms,
+        command_timeout_ms=device_input.command_timeout_ms,
+    )
+    second_device_input = LineRunEpochDeviceBindingInput(
+        device_id=second_device.id,
+        device_code=second_device.device_code,
         device_role=device_input.device_role,
         endpoint_base_url=device_input.endpoint_base_url,
         contract_key=device_input.contract_key,
@@ -168,22 +186,28 @@ async def test_real_repository_persists_complete_epoch_aggregate(db_session) -> 
         plugin_version="1.0",
         flow_mode="GENERIC_FLOW",
         configuration_snapshot={"mode": "GENERIC"},
-        device_bindings=(device_input,),
+        device_bindings=(device_input, second_device_input),
         position_bindings=(_position(),),
         started_at=datetime(2026, 8, 19),
     )
 
     assert epoch.id is not None
     assert [binding.device_code for binding in await repository.list_bindings(db_session, epoch.id)] == [
-        "ATOMIC-EPOCH-DEVICE"
+        "ATOMIC-EPOCH-DEVICE",
+        "ATOMIC-EPOCH-DEVICE-2",
     ]
     assert [binding.location_id for binding in await repository.list_position_bindings(db_session, epoch.id)] == [
         "LOCATION-1"
     ]
-    binding = await repository.get_binding_by_role_for_update(
+    bindings = await repository.list_bindings_by_role_for_update(
         db_session,
         line_run_epoch_id=epoch.id,
         device_role="DEVICE_ROLE",
     )
-    assert binding is not None
-    assert binding.device_code == "ATOMIC-EPOCH-DEVICE"
+    assert [binding.device_code for binding in bindings] == ["ATOMIC-EPOCH-DEVICE", "ATOMIC-EPOCH-DEVICE-2"]
+
+
+def test_epoch_allows_multiple_devices_with_the_same_role() -> None:
+    constraint_names = {constraint.name for constraint in LineRunEpochDeviceBinding.__table__.constraints}
+
+    assert "ux_line_run_epoch_device_bindings_epoch_device_role" not in constraint_names

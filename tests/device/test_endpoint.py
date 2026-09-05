@@ -104,3 +104,11 @@ def test_device_response_uses_the_same_endpoint_contract() -> None:
     )
 
     assert response.endpoint_base_url == "http://[fd00::20]:8080"
+
+
+@pytest.mark.parametrize(("schema", "extra"), [(DeviceCreate, {}), (DeviceUpdate, {"version": 1})])
+def test_device_write_schemas_reject_workline_ownership(schema: type, extra: dict[str, int]) -> None:
+    assert "work_line_id" not in schema.model_fields
+
+    with pytest.raises(ValidationError, match="work_line_id"):
+        schema.model_validate({**_device_payload(None), "work_line_id": 9, **extra})

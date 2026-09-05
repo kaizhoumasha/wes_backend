@@ -350,9 +350,15 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     * **标识信息**: `device_id` (唯一标识), `device_name`, `type` (PDA/工业电脑/打印机/电脑/LCR测试仪)。
     * **层次归属**: `zone_code`, `work_line_id` (设备所属的区域和作业线；`work_line_id` 引用 WES WorkLine 主键)。
     * **用途说明**: 设备的功能描述 (如 "用来点货，绑定栈板发运送任务")。
+  * 每个 Device 最多归属一条 WorkLine，归属只通过 WorkLine 配置一次性替换；设备通用 CRUD 不写 `work_line_id`。
+    同一 `device_role` 可以有多台设备，运行时用 `device_role + device_code` 精确定位。
 
-* **WorkLine 启动与分拣机设备边界**:
-  * `WORKLINE_START_REQUESTED` 只表示工作线进入 READY/待机状态，可以开始接收业务需求；不表示已有货架到位，也不表示立即开始分拣。
+* **WorkLine 插件、启动与分拣机设备边界**:
+  * WorkLine 保存当前选择的 `plugin_key` 和插件业务配置；部署制品提供显式、不可变的已安装插件 tuple，不扫描环境且不提供默认插件。
+  * Fact、WMS WAIT 后继和 Transport outcome 都按原执行身份引用的 Epoch 精确选择 `plugin_key + plugin_version`，不得按 WorkLine 当前选择或单一部署默认值回退。
+  * START 是唯一启用入口。非重放 START 只接受停用且无活动 Epoch 的 WorkLine，并在一个事务内设置活动状态、冻结插件精确版本、配置和设备合同以及创建新 Epoch；不得隐式关闭旧 Epoch。
+  * 停用必须在同一事务内确认 Transport、Bin/MaterialExecution、DeviceCommand、WMS 确认、evidence 和当前插件业务任务均已闭合，然后关闭活动 Epoch 并设置 WorkLine 停用。
+  * START 进入 READY/待机状态只表示可以开始接收业务需求；不表示已有货架到位，也不表示立即开始分拣。
   * 分拣机只有 `SOURCE_ARM` 和 `TARGET_ARM` 两个机械臂，不存在 NG 专用机械臂；NG 放置动作由 `TARGET_ARM` 完成，目标设备角色仍是 `ROLE_SORTING_TARGET_ARM`。
   * 分拣作业启动必须同时满足业务需求、WorkLine READY、Station 业务 lease 空闲、单层货架 active 执行快照或 WMS 到位/授权回调；具体设备命令下发前再按设备角色执行实时准入。
 
@@ -449,8 +455,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.3.3 SMT 生产发料协调 (SMT Production Issue)
 
-场景：SAP 工单进入自动或人工发料线。两条自动线可在清线后切换自动上架与自动拣货插件；两条人工线始终使用统一
-`manual_bin_processing` 插件，具体上架或拣货由 WMS/PDA 处理。
+场景：SAP 工单进入自动或人工发料线。两条自动线可在完全空闲并停用后切换自动上架与自动拣料插件；两条人工线可按相同规则
+切换人工上架与人工拣料插件。后续退料线、拆箱线及其插件继续复用同一装配机制，不增加设备类型专用框架。
 
 **自动发料：**
 
@@ -516,7 +522,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 5. 退料 Bin 不返回原货架面。WMS 根据当前工作位 `rack_id + rack_face` 为 FIFO 连续前缀原子预留精确 `slot_id`；WES 只执行 `BIN_MOVE`。退料 Bin 不为自己触发换面或换架。
 6. 物料正确放入 Bin 或从 Bin 拣出后，WMS 才确认对应子任务完成；全部应完成子任务完成且不再追加后，WMS 才确认业务任务完成。两者都不等待 Bin 回到货架，Bin 回库、未知 Transport 和 Epoch 清场由各自物理生命周期继续闭合。
 7. 实际 Bin 可识别但与本批预期 Bin 不同时，实际 Bin 不进入人工业务或 NG；WES 保存预期/实际身份和位置证据，将其冻结在当前安全位置，等待独立恢复 wire 获批。预期 Bin 仍未完成。
-8. WMS 不可用时停止新的 Task/Bin 推进，复用 Session `WAITING_EXTERNAL` 和 Outbox 可靠重试；不新增 WorkLine 状态，Epoch 保持 `ACTIVE`。WES 进程重启时仍现场清线并创建新 Epoch，不在原 Epoch 自动恢复物理编排。
+8. WMS 不可用时停止新的 Task/Bin 推进，复用 Session `WAITING_EXTERNAL` 和 Outbox 可靠重试；不新增 WorkLine 状态，Epoch 保持 `ACTIVE`。WES 进程重启时校验活动 Epoch 的插件精确版本仍在部署清单中，再从持久化证据恢复可靠处理；未知物理结果不得换身份盲目重发。
 
 人工分拣的完整流程、分段驱动、容量背压、跨任务退料和实施门禁以
 `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 第 20 节为准。具体 wire 合同尚未获批，不复用自动出库必填的机械臂、Cell、料盘或目标货架字段。
@@ -619,8 +625,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   及实际机械顺序。真实区域容量、AGV 拥堵、运输并发、车辆路径规划和避让由 WMS/RCS 判断，WES 不接管 RCS 调度。
 * **通信恢复**: 未发生 WES 进程重启时，未决可靠对象取得权威终态证据、WMS 返回新的有效业务结果并重新通过对象级
   执行准入后，插件可以继续映射执行；不保存通用 Step checkpoint，也不从步骤号继续执行。
-* **重启恢复**: WES 进程重启后只读取持久化证据用于诊断和人工清线，不在原 `LineRunEpoch` 重新判定或恢复
-  物理编排；操作员完成清线并确认后创建新的 `LineRunEpoch`。
+* **重启恢复**: WES 进程重启后校验每个活动 `LineRunEpoch` 的 `plugin_key + plugin_version` 与部署清单精确匹配，再从持久化
+  evidence、执行对象和 outbox 恢复可靠处理。可能已被设备或搬运系统接纳但结果未知的动作保留原身份并进入对账，禁止盲目重发。
 
 ---
 

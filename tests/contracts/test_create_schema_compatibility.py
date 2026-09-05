@@ -1,5 +1,5 @@
 from src.app.device.models.device import DeviceCreate
-from src.app.workline.models.workline import LineType, WorkLineCreate
+from src.app.workline.models.workline import LineType, WorkLineConfigurationUpdate, WorkLineCreate
 
 
 def test_device_create_keeps_static_diagnostic_profile_optional() -> None:
@@ -24,9 +24,13 @@ def test_workline_create_keeps_default_factory_fields_optional() -> None:
 
     workline = WorkLineCreate.model_validate(payload)
 
-    assert not WorkLineCreate.model_fields["config"].is_required()
+    assert "config" not in WorkLineCreate.model_fields
+    assert "plugin_key" not in WorkLineCreate.model_fields
     assert not WorkLineCreate.model_fields["runtime_config_json"].is_required()
     assert not WorkLineCreate.model_fields["diagnostic_profile"].is_required()
-    assert workline.config == {}
     assert workline.runtime_config_json == {}
     assert workline.diagnostic_profile == {}
+
+    configuration = WorkLineConfigurationUpdate.model_validate({"version": 0})
+    assert configuration.config == {}
+    assert configuration.device_codes == ()

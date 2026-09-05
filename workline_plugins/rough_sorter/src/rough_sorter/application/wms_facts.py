@@ -150,10 +150,13 @@ async def build_admission_fact(
     response_data = cast("dict[str, Any]", response["data"])
     result = AdmissionResult(required_string(response_data.get("result"), "admission.result"))
     binding = device_binding(runtime, "MEASUREMENT_DEVICE")
-    persisted = await epochs.get_binding_by_role_for_update(
-        db, line_run_epoch_id=execution.line_run_epoch_id, device_role=binding.device_role
+    persisted = await epochs.get_binding_by_role_and_code_for_update(
+        db,
+        line_run_epoch_id=execution.line_run_epoch_id,
+        device_role=binding.device_role,
+        device_code=binding.device_code,
     )
-    if persisted is None or persisted.device_code != binding.device_code:
+    if persisted is None:
         raise ValueError("measurement device binding drift")
     device_ready = await readiness.is_ready(db, persisted)
     common: dict[str, Any] = {
@@ -407,8 +410,12 @@ async def build_target_fact(
             )
             is not None
         )
-    persisted = await epochs.get_binding_by_role_for_update(
-        db, line_run_epoch_id=execution.line_run_epoch_id, device_role="PLACEMENT_DEVICE"
+    binding = device_binding(runtime, "PLACEMENT_DEVICE")
+    persisted = await epochs.get_binding_by_role_and_code_for_update(
+        db,
+        line_run_epoch_id=execution.line_run_epoch_id,
+        device_role=binding.device_role,
+        device_code=binding.device_code,
     )
     if persisted is None:
         raise ValueError("placement device binding missing")

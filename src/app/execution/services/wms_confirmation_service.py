@@ -117,8 +117,9 @@ class WmsConfirmationFollowUp:
 
 
 class WmsConfirmationFollowUpPlanner(Protocol):
-    def plan(
+    async def plan(
         self,
+        db: object,
         confirmation: WmsConfirmation,
         *,
         response_result: str,
@@ -567,7 +568,8 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         planner = self._follow_up_planner
         try:
             follow_up = (
-                planner.plan(
+                await planner.plan(
+                    db,
                     confirmation,
                     response_result=response_result,
                     retry_after_ms=retry_after_ms,

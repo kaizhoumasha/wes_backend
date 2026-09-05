@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.device import Device
@@ -133,6 +133,31 @@ class DeviceRepository(BaseRepository[Device]):
             .with_for_update()
         )
         return list(result.scalars().all())
+
+    async def list_for_workline_configuration_update(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        device_codes: tuple[str, ...],
+    ) -> list[Device]:
+        """按主键顺序锁定目标工作线当前设备与提交设备的并集。"""
+
+        columns = cast("Any", Device).__table__.c
+        predicates = [columns.work_line_id == workline_id]
+        if device_codes:
+            predicates.append(columns.device_code.in_(device_codes))
+        result = await db.execute(
+            select(Device)
+            .where(
+                columns.is_deleted.is_(False),
+                or_(*predicates),
+            )
+            .order_by(columns.id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        return list(result.scalars())
 
     async def after_device_change(
         self,

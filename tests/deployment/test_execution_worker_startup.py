@@ -330,11 +330,10 @@ def test_device_command_worker_readiness_requires_child_probe_after_parent_ready
 
 
 @pytest.mark.asyncio
-async def test_execution_worker_gate_rejects_a_persisted_active_epoch() -> None:
-    repository = type("_EpochRepository", (), {"has_active_epoch": AsyncMock(return_value=True)})()
+async def test_execution_worker_gate_allows_no_active_epoch() -> None:
+    repository = type("_EpochRepository", (), {"list_active_plugin_identities": AsyncMock(return_value=[])})()
 
-    with pytest.raises(ActiveLineRunEpochExistsError, match="execution worker"):
-        await LineRunEpochService(repository=repository).assert_execution_worker_startable(object())
+    await LineRunEpochService(repository=repository).assert_execution_worker_startable(object(), plugins=())
 
 
 def test_actual_worker_queues_reads_work_controller_sender_app() -> None:
@@ -504,21 +503,20 @@ def test_replacement_execution_worker_child_does_not_repeat_epoch_restart_gate_a
     assert gate_calls.value == 1
 
 
-def test_fulfillment_child_does_not_run_execution_epoch_gate(monkeypatch) -> None:
+def test_fulfillment_child_runs_execution_epoch_gate(monkeypatch) -> None:
     from src.celery_app import app as app_module
 
     initialize = MagicMock()
-    run_async = MagicMock()
     gate = AsyncMock()
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
-    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", run_async)
+    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
     monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"wms-fulfillment"}), raising=False)
     monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
     monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
+    app_module._execution_restart_gate_passed.value = False
 
     app_module.on_worker_process_init()
 
     initialize.assert_called_once_with()
-    run_async.assert_not_called()
-    gate.assert_not_called()
+    gate.assert_awaited_once_with()
