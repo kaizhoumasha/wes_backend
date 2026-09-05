@@ -819,7 +819,7 @@ class TransportService:
                 if payload is None or transport_task_id is None:
                     raise RuntimeError("validated callback is missing transport_task_id")
                 # 与 submit 写回锁同一任务行，使未提交 evidence 在确定性拒绝判断前可见。
-                await self._repository.get_task(db, transport_task_id, for_update=True)
+                task = await self._repository.get_task(db, transport_task_id, for_update=True)
                 if outcome_revision is not None:
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -829,6 +829,27 @@ class TransportService:
                     )
                     if revision_owner is not None:
                         first_http_status, first_code = _revision_replay_disposition(revision_owner, payload)
+                if first_code == "RECEIVED" and task is not None:
+                    members = await self._repository.list_members(db, transport_task_id)
+                    required_members = _successful_rack_slot_result_members(task, payload, members)
+                    if required_members:
+                        applied_position_evidence = await self._repository.list_applied_position_evidence(
+                            db,
+                            transport_task_id,
+                        )
+                        if not _has_applied_exact_target_position_evidence(
+                            required_members,
+                            applied_position_evidence,
+                        ):
+                            return _callback_ack(
+                                409,
+                                "CONFLICT",
+                                ack_timestamp_ms,
+                                {
+                                    "transport_task_id": transport_task_id,
+                                    "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
+                                },
+                            )
                 await self._repository.add_callback_receipt(
                     db,
                     _callback_receipt(
@@ -1427,15 +1448,7 @@ class TransportService:
             if member.object_type == "RACK" and has_position and (type(arrival_face) is not str or arrival_face == ""):
                 raise TransportContractError("known rack result requires arrival_face")
             final_position = result.get("final_position") if has_position else None
-            if member.final_position_json is not None and (
-                position_unknown
-                or final_position != member.final_position_json
-                or (
-                    member.status in {"SUCCEEDED", "FAILED"}
-                    and not member.position_unknown
-                    and not _matches_definite_member_result(member, result)
-                )
-            ):
+            if _result_contradicts_definite_member_fact(member, result):
                 raise TransportContractError("result contradicts confirmed member fact")
             outcome = TransportMemberOutcome(
                 object_id=member.object_id,
@@ -1883,6 +1896,20 @@ def _matches_definite_member_result(member: TransportMember, result: dict[str, A
     )
 
 
+def _result_contradicts_definite_member_fact(member: TransportMember, result: dict[str, Any]) -> bool:
+    final_position = result.get("final_position")
+    position_unknown = result.get("position_unknown") is True
+    return member.final_position_json is not None and (
+        position_unknown
+        or final_position != member.final_position_json
+        or (
+            member.status in {"SUCCEEDED", "FAILED"}
+            and not member.position_unknown
+            and not _matches_definite_member_result(member, result)
+        )
+    )
+
+
 def _mark_evidence_conflict(evidence: TransportEvidence, code: str, now: Any) -> None:
     evidence.status = "CONFLICT"
     evidence.conflict_code = code
@@ -1985,6 +2012,72 @@ def _revision_replay_disposition(
     if revision_owner.payload_json == payload:
         return 200, "DUPLICATE"
     return 409, "CONFLICT"
+
+
+def _successful_rack_slot_result_members(
+    task: TransportTask,
+    payload: dict[str, Any],
+    members: list[TransportMember],
+) -> list[TransportMember]:
+    if task.kind not in {TransportTaskKind.BIN_MOVE.value, TransportTaskKind.BIN_EXCHANGE.value} or task.status in {
+        TransportTaskStatus.REJECTED.value,
+        TransportTaskStatus.SUCCEEDED.value,
+        TransportTaskStatus.FAILED.value,
+    }:
+        return []
+    outcome_revision = payload.get("outcome_revision")
+    if not isinstance(outcome_revision, int) or outcome_revision <= task.last_applied_wms_outcome_revision:
+        return []
+    if payload.get("kind") != task.kind:
+        return []
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return []
+    raw_results = [
+        {
+            "object_id": item.get("container_id"),
+            **{key: value for key, value in item.items() if key != "container_id"},
+        }
+        for item in results
+        if isinstance(item, dict)
+    ]
+    result_by_member_id = {item.get("object_id"): item for item in raw_results}
+    if set(result_by_member_id) != {member.object_id for member in members} or len(result_by_member_id) != len(
+        raw_results
+    ):
+        return []
+    try:
+        _validate_result_frozen_identity(task, members, result_by_member_id)
+    except TransportContractError:
+        return []
+    if any(
+        _result_contradicts_definite_member_fact(member, result_by_member_id[member.object_id]) for member in members
+    ):
+        return []
+    return [
+        member
+        for member in members
+        if member.object_type == "BIN"
+        and member.target_json.get("kind") == "RACK_BIN_SLOT"
+        and (result := result_by_member_id.get(member.object_id)) is not None
+        and result.get("status") == "SUCCEEDED"
+        and result.get("final_position") == member.target_json
+    ]
+
+
+def _has_applied_exact_target_position_evidence(
+    members: list[TransportMember],
+    evidence: list[TransportEvidence],
+) -> bool:
+    return all(
+        any(
+            item.payload_json.get("milestone") == "TARGET_PLACED"
+            and item.payload_json.get("container_id") == member.object_id
+            and item.payload_json.get("final_position") == member.target_json
+            for item in evidence
+        )
+        for member in members
+    )
 
 
 def _utc_z(value: datetime) -> str:

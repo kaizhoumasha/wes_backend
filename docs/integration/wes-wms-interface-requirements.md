@@ -5,7 +5,7 @@ contract_version: 0.3.0
 published_at: pending
 wes_alignment: FINAL_VALIDATION_PENDING
 created_at: 2026-08-13
-updated_at: 2026-09-01
+updated_at: 2026-09-04
 audience: WMS 初级开发工程师，以及参与合同评审和联调的 WES、RCS、ECS 与测试工程师
 scope: WES/WMS 公共通信、Transport 搬运、自动出库、自动入库与上架
 system_stage: pre_release
@@ -18,7 +18,7 @@ migration_strategy: direct_replacement
 
 | 合同版本 | 日期 | 状态 | 主要变化 |
 | --- | --- | --- | --- |
-| `0.3.0` | 2026-08-31 | 待外发 | 货架任务增加 `rcs_template_id`；面向值改为普通不透明 string；`RACK_MOVE` 支持 `RACK/ZONE/RACK_POSITION`，最终结果统一返回精确 `RACK_POSITION` |
+| `0.3.0` | 2026-09-04 | 待外发 | 货架任务增加 `rcs_template_id`；面向值改为普通不透明 string；`RACK_MOVE` 支持 `RACK/ZONE/RACK_POSITION`，最终结果统一返回精确 `RACK_POSITION`；成功料箱回架须先转发逐箱精确目标 `TARGET_PLACED` |
 | `0.2.0` | 2026-08-20 | 待外发 | Transport 两族 DTO 保持不变；明确逐容器中间位置事件只在存在权威事实时可选发送；入线前由 TransportTask 负责，最终到位且实扫匹配后才创建 BinExecution |
 
 `contract_version` 只用于双方确认拿到的是同一份外发合同，不进入任何 JSON 信封，也不产生旧版本兼容逻辑。正式外发时将
@@ -60,8 +60,9 @@ WMS/RCS 私有接口。本文是场景化对接入口；所有标为 `Approved` 
 | 人工分拣 Bin 流转 | 仅业务设计 | `NOT_READY` | 尚未冻结 operation 和严格 DTO，不属于本文可实施接口；不得复用自动上架或自动出库字段表达 |
 
 本文总状态仍为 `ReviewRequired`，因为仍包含未批准的业务附录，且正式外发日期、双方环境参数和现场联调证据尚未完成；其中
-公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`，但容器中间位置事件
-只在供应商能够提供权威逐容器中间事实时启用，当前 CTU/RCS 不实施；
+公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景的合同生命周期为 `Approved`。容器中间位置事件
+一般只在供应商能够提供权威逐容器中间事实时启用；但当前现场 CTU/RCS 对每个完成的料箱回架会提供一条到位事实，WMS 必须转发该
+`TARGET_PLACED` 事件，作为成功回架聚合结果接纳前的逐箱前置条件；
 Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调；粗分入库的 `OLD_OUT/NEW_IN` 当前生产调用链已交付，
 但当前镜像仍缺完整粗分业务 Mock E2E。真实 WMS、供应商、现场联调和业务验收仍为 `NOT RUN`。基础通信或 Transport 验收不能证明
 自动上架或自动出库已经通过，设备动作验收也不能替代 WMS 库存和业务验收。
@@ -75,13 +76,14 @@ Transport 0.3.0 的 WES 实现、OpenAPI 和行为测试已对齐并部署联调
 | --- | --- | --- | --- | --- | --- |
 | 公共通信基础能力 | 架构基础能力 | 为搬运提交服务端接口提供严格 JSON、公共响应和幂等冲突处理 | 为搬运最终结果及条件启用的容器中间位置事件调用提供不可变消息、响应分类和可靠重试 | 完成三个搬运环节共用的 HTTP/JSON 能力，不单独新增通用端点 | 第 2 节“公共通信基础能力开发任务卡” |
 | 搬运提交 | Transport 业务能力 | `POST {{WMS_BASE_URL}}{{TRANSPORT_SUBMIT_PATH}}`<br>`operation=transport.task.submit@v1` | 无 | 接收并可靠接纳四种不可变搬运请求 | 第 3 节“搬运提交开发任务卡” |
-| 容器中间位置事件 | 条件 Transport 能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 当前 CTU/RCS 不实施；未来供应商能提供权威逐容器中间事实时才启用 | 第 3 节“容器中间位置事件条件任务卡” |
+| 容器中间位置事件 | 条件 Transport 能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.member_position_changed@v1` | 一般按权威事实条件启用；当前每个完成料箱回架必须转发精确目标 `TARGET_PLACED`，然后才可接纳成功聚合结果 | 第 3 节“容器中间位置事件条件任务卡” |
 | 搬运最终结果 | Transport 业务能力 | 无 | `POST {{WES_BASE_URL}}/api/v1/wms/events`<br>`operation=transport.task.resulted@v1` | 按连续 `outcome_revision` 回调完整搬运结果和各对象最终位置 | 第 3 节“搬运最终结果开发任务卡” |
 | 联调交付 | 联调交付 | 无新增运行时接口 | 无新增运行时接口 | 提供 Approved 范围的 OpenAPI、固定 JSON、归一化表和联调证据 | 第 5 节 |
 
 因此，当前 WMS 只需要**提供一个接口**：搬运提交的 `POST {{TRANSPORT_SUBMIT_PATH}}`；只需要**访问一个 WES 接口**：
-搬运最终结果使用的 `POST /api/v1/wms/events`。容器中间位置事件与搬运最终结果共用该端点，但当前 CTU/RCS 不产生容器中间位置事件；未来启用时才通过不同 `operation`
-区分中间位置事实和最终结果。WMS 如何调用 RCS 属于 WMS/RCS 内部接口，不在本文定义，也不需要向 WES 暴露。
+搬运最终结果使用的 `POST /api/v1/wms/events`。容器中间位置事件与搬运最终结果共用该端点，并通过不同 `operation` 区分：一般中间
+位置事实按条件形成；当前每个完成料箱回架的精确目标 `TARGET_PLACED` 必须先转发，随后才可接纳成功的聚合最终结果。WMS 如何调用 RCS
+属于 WMS/RCS 内部接口，不在本文定义，也不需要向 WES 暴露。
 
 公共通信基础能力和 Transport 业务任务必须分别验收：公共协议通过不能证明搬运业务正确，搬运提交、搬运最终结果以及条件启用的容器中间位置事件单个业务
 样例通过，也不能证明所有公共幂等、冲突和重试规则正确。
@@ -730,7 +732,8 @@ async Task<HttpResult> ReceiveTransportRequestAsync(HttpRequest request, Cancell
 | `400`，空响应体 | 错误 `Content-Type`、非法 UTF-8/JSON、number 超出合同规范化域，或无法提取合法 UUIDv7 `operation_id` | 无响应信封 | 停止原消息；修正后创建新身份 |
 | `413`，空响应体 | 原始请求正文超过 `256 KiB` | 无响应信封 | 停止原消息；缩小合法业务请求后创建新身份 |
 | `422 / REJECTED` | 已有合法 `operation_id`，但信封、operation 或 DTO 非法 | 必须携带稳定 `reason_code` | 停止原消息；修正后创建新身份 |
-| `409 / CONFLICT` | 同一身份对应不同内容，或违反不可变业务约束 | operation 专属冲突信息 | 禁止换 ID 掩盖，进入对账 |
+| `409 / CONFLICT`（`reason_code=MEMBER_POSITION_EVIDENCE_PENDING`） | 完整、身份有效的成功 BIN 回架早于任一冻结 `RACK_BIN_SLOT` 目标的已应用精确 `TARGET_PLACED` | `transport_task_id + reason_code` | 该次未接纳、未创建 callback receipt/evidence；所需逐箱事实成功 ACK 后即可原样重试，若仍 pending 则保留同一冻结消息并按既有策略继续重试，由 WES 判断内部应用状态 |
+| 其它 `409 / CONFLICT` | 同一身份对应不同内容，或违反不可变业务约束 | operation 专属冲突信息 | 禁止换 ID 掩盖，进入对账 |
 | `503 / UNAVAILABLE` | 接收方当前无法可靠接纳，且尚未接纳 | operation 专属字段或 `{}` | 使用原完整消息重试 |
 
 `400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。本合同不使用 HTTP `Retry-After`。
@@ -824,7 +827,8 @@ WMS 主动通知必须满足以下可联调验证的结果，具体如何实现�
 2. 首次发送前生成新的 UUIDv7 `operation_id`，冻结 `operation + timestamp + data`；进程重启或网络失败不能丢失已形成的发送义务。
 3. 调用 `/api/v1/wms/events` 时使用已经冻结的完整消息，技术重试不得重新读取当前主账并改写旧消息。
 4. 当前容器中间位置事件/搬运最终结果收到 `RECEIVED/DUPLICATE` 后结束本次发送义务；收到 `UNAVAILABLE` 或没有取得明确响应时，使用原完整消息重试。
-5. 收到 `400/413/422` 后停止重试原消息；修正内容后必须创建新的消息身份。收到 `CONFLICT` 后停止自动发送并进入合同对账。
+5. 收到 `400/413/422` 后停止重试原消息；修正内容后必须创建新的消息身份。除第 3.2 节定义的
+   `MEMBER_POSITION_EVIDENCE_PENDING` 外，收到 `CONFLICT` 后停止自动发送并进入合同对账。
 6. 新出现的业务事实必须创建新消息身份，不能覆盖已经形成或已经发送的历史消息。
 7. 每次 WMS → WES HTTP 访问使用 `10000` 毫秒硬超时，并限制响应原始 Body 不超过 `262144` bytes。
 8. 超时、网络失败、响应 Body 超限、非法 JSON、响应信封不合法或未知 HTTP/code 组合都表示“没有取得明确合同响应”；WMS 必须
@@ -928,6 +932,15 @@ async Task DeliverEventAsync(
                 return;
             }
 
+            if (response.Is(409, "CONFLICT") &&
+                response.HasReasonCode("MEMBER_POSITION_EVIDENCE_PENDING"))
+            {
+                // 本次完整结果未被接纳，没有 callback receipt/evidence；不改变任何冻结字段。
+                // 所需逐箱 TARGET_PLACED 已成功 ACK 后即可重发；WES 仍 pending 时继续保留同一组 bytes。
+                await Task.Delay(TimeSpan.FromMilliseconds(2000), cancellationToken);
+                continue;
+            }
+
             if (response.Is(409, "CONFLICT"))
             {
                 await StopAndStartReconciliationAsync(message, response, cancellationToken);
@@ -947,6 +960,8 @@ async Task DeliverEventAsync(
 ```
 
 伪代码中的 `ReliablyFreezeDeliveryObligationAsync`、`MarkDeliveryFinishedAsync` 和重试调度只是行为名称，WMS 可以用现有机制实现。
+`MEMBER_POSITION_EVIDENCE_PENDING` 分支只复用同一冻结消息和既有重试调度，不新增查询、轮询或缓存接口；WMS 不负责观察 WES 的
+内部 `APPLIED` 状态。
 `.NET Framework 4.6` 基础类库没有 `Guid.CreateVersion7()`；`CreateUuidV7` 表示 WMS 封装的 RFC 9562 UUIDv7 生成能力，不要求
 双方使用相同库。关键验收点是：重试的
 `operation_id + operation + timestamp + data` 完全不变，且明确接纳前形成的发送义务不会丢失。
@@ -1025,7 +1040,7 @@ static string CreateUuidV7()
 | 业务环节 | operation | 含义 |
 | --- | --- | --- |
 | 搬运提交 | `transport.task.submit@v1` | WES 向 WMS 提交不可变搬运任务 |
-| 容器中间位置事件 | `transport.task.member_position_changed@v1` | WMS 向 WES 发送可选的逐容器中间位置事件 |
+| 容器中间位置事件 | `transport.task.member_position_changed@v1` | WMS 向 WES 发送条件逐容器中间位置事件；成功料箱回架的精确目标 `TARGET_PLACED` 是例外的强制前置条件 |
 | 搬运最终结果 | `transport.task.resulted@v1` | WMS 向 WES 发送覆盖全部成员的搬运最终结果 |
 
 ### 3.1 Transport 公共数据类型
@@ -1604,13 +1619,14 @@ WES 对每次搬运提交 HTTP 访问使用 `10` 秒硬超时，单个任务最�
 
 ### 容器中间位置事件（可选）：WMS 回调容器位置事实
 
-只有 `BIN_MOVE/BIN_EXCHANGE` 在上游实际形成权威中间位置事实时才可以发送此 operation；它不是搬运必经步骤，货架不发送。
-当前 CTU/RCS 只返回完整最终结果，因此目标 Bin 供给、退回和满箱交换均不发送容器中间位置事件。
+只有 `BIN_MOVE/BIN_EXCHANGE` 在上游实际形成权威中间位置事实时才可以发送此 operation；它一般不是搬运必经步骤，货架不发送。
+但每个成功且冻结目标为 `RACK_BIN_SLOT` 的料箱回架成员是明确例外：当前 CTU/RCS 为每个完成回架提供一条精确目标到位事实，WMS 必须
+转发对应 `TARGET_PLACED`；所有该事件成功 ACK 后即可发送成功聚合最终结果，是否已经应用由 WES 在接收结果时判断。
 
 #### 容器中间位置事件条件任务卡
 
-- **启用条件：** 供应商能够在搬运最终结果形成前提供单个容器离开来源、到达目标或位置未知的权威事实。当前 CTU/RCS 不满足，
-  因此本期不开发、不发送，也不伪造容器中间位置事件。
+- **启用条件：** 一般需要供应商在搬运最终结果形成前提供单个容器离开来源、到达目标或位置未知的权威事实；当前现场对每个完成
+  料箱回架已经提供到达冻结目标的权威事实，因此该回架 `TARGET_PLACED` 必须开发并发送。不得伪造其它容器中间位置事件。
 - **启用后的开发目标：** 把已经确认的单个容器中间位置事实可靠通知 WES。
 - **WMS 接口角色：** HTTP 客户端，调用 `POST /api/v1/wms/events`。
 - **启用后必须完成：**
@@ -1628,6 +1644,10 @@ WES 对每次搬运提交 HTTP 访问使用 `10` 秒硬超时，单个任务最�
   2. `TARGET_PLACED` 正确携带最终位置，其余两种不携带；
   3. 网络响应未知或 `UNAVAILABLE` 后仍发送原完整消息；
   4. `RECEIVED/DUPLICATE` 能结束发送义务，`REJECTED/CONFLICT` 能停止自动发送并报告。
+
+对成功料箱回架，`TARGET_PLACED` 的完成证据还必须证明：每个冻结目标为 `RACK_BIN_SLOT` 的成员各有一条精确目标事件，且这些事件均已
+取得成功 ACK；随后原样发送完整成功 `transport.task.resulted@v1`。若 WES 尚未应用任一所需事件，则返回第 3.2 节定义的临时 `409`，
+不得接纳或生成 callback receipt/evidence；WMS 保留相同冻结结果并按既有策略重试。
 
 ```text
 POST /api/v1/wms/events
@@ -1770,6 +1790,10 @@ operation = transport.task.resulted@v1
 - `BIN_MOVE/BIN_EXCHANGE` 成功成员的最终位置必须等于该成员搬运提交 `target`；
 - 失败但位置明确时可以报告来源、目标或其它已经在第 3.1.2 节建模的实际位置，禁止把预期目标当作实际位置；无法用本文位置联合
   准确表达时必须使用 `position_unknown=true + failure_code=POSITION_UNKNOWN`。
+
+对 `results[].status=SUCCEEDED` 且冻结目标为 `RACK_BIN_SLOT` 的每个 BIN 成员，WMS 先发送该成员精确冻结目标的
+`member_position_changed@v1 / TARGET_PLACED`。所有这些事件均取得成功 ACK 后即可发送完整成功结果；WMS 不观察 WES 的内部应用状态，
+若结果仍收到 pending 响应则保留同一冻结消息并按既有策略重试。该要求不放宽 `results[]` 的 complete-snapshot、成员集合或最终位置规则。
 
 搬运最终结果版本只在同一 `transport_task_id` 内排序，不跨任务累计。WES 接纳更高版本并单调应用；低版本迟到时仍可靠 ACK，但不得让结果
 或位置回退。同一版本、相同 `data` 按 `200 / DUPLICATE` 处理，不受 `operation_id` 或 `timestamp` 是否重建影响；同一版本、不同 `data`
@@ -2129,17 +2153,20 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
 
 #### 容器中间位置事件与搬运最终结果的关系
 
-以下关系只约束上游实际形成容器中间位置事件时的幂等和乱序处理，不要求每个 Bin 搬运必须产生该事件。当前 CTU/RCS
-只返回完整最终到位结果，因此目标 Bin 供给、退回和满箱交换只等待搬运最终结果；不得从搬运提交 ACK 或最终结果反推并补造
-历史中间位置事件。
+以下关系一般只约束上游实际形成容器中间位置事件时的幂等和乱序处理，不要求每个 Bin 搬运都产生该事件。成功且冻结目标为
+`RACK_BIN_SLOT` 的料箱回架是例外：当前现场 CTU/RCS 为每个完成回架产生精确目标 `TARGET_PLACED` 事实，WMS 必须先转发并等待其
+成功 ACK，再发送成功聚合结果；若 WES 尚未应用则原样重试该结果。其它成员位置场景仍按权威事实条件发送；不得从搬运提交 ACK 或
+最终结果反推并补造历史中间位置事件。
 
 1. `BIN_MOVE/BIN_EXCHANGE` 的容器中间位置事件和搬运最终结果是两个独立义务，不能互相替代：前者及时报告逐容器位置事实，后者完整闭合整项任务。
 2. WMS 在对应物理事实出现时形成容器中间位置事件；在全部请求对象已经形成确定结果或位置未知结论时形成一条完整搬运最终结果。
-3. WMS 不等待最后一条容器中间位置事件的 ACK 才形成或发送搬运最终结果。两个独立可靠发送任务可能因网络重试乱序到达，WES
-   必须按事实单调合并，不能因最终结果先到而拒绝后到且不矛盾的中间位置事件。
-4. 成功的搬运最终结果不免除已经形成的容器中间位置事件发送义务；但如果 WMS/RCS 首个可用证据直接是最终结果，不得伪造历史中间位置事件。
-5. 只有上游在最终结果形成前已经独立产生权威位置未知事实时，WMS 才形成 `POSITION_UNKNOWN` 中间位置事件；如果首个可用证据
-   就是完整最终结果，则只发送包含全部成员的搬运最终结果，不补造中间位置事件。
+3. 除成功料箱回架外，WMS 不等待最后一条容器中间位置事件的 ACK 才形成或发送搬运最终结果。两个独立可靠发送任务可能因网络重试
+   乱序到达，WES 必须按事实单调合并，不能因最终结果先到而拒绝后到且不矛盾的中间位置事件。对成功且冻结目标为 `RACK_BIN_SLOT`
+   的每个 BIN 成员则必须先完成精确目标 `TARGET_PLACED` 的成功 ACK，再发送完整成功结果；内部应用状态由 WES 判断。
+4. 成功的搬运最终结果不免除已经形成的容器中间位置事件发送义务；成功回架的所需 `TARGET_PLACED` 必须在结果之前完成。对于其它
+   场景，如果 WMS/RCS 首个可用证据直接是最终结果，不得伪造历史中间位置事件。
+5. 只有上游在最终结果形成前已经独立产生权威位置未知事实时，WMS 才形成 `POSITION_UNKNOWN` 中间位置事件；对于不属于成功回架
+   强制前置条件的场景，如果首个可用证据就是完整最终结果，则只发送包含全部成员的搬运最终结果，不补造中间位置事件。
 6. 搬运最终结果已形成后出现迟到但不矛盾的 RCS 过程通知，不再创建新的中间位置事件；出现矛盾证据时进入人工对账。只有原结果
    为 `UNKNOWN` 时，对账取得完整权威位置后才使用新 `operation_id` 和下一连续 `outcome_revision` 发送完整搬运最终结果；确定终态
    不通过后续结果改写。
@@ -2152,7 +2179,8 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
 | --- | --- | --- |
 | `202 / RECEIVED` | `transport_task_id` | 结束本次消息发送义务；不等于 evidence 已经推进业务 |
 | `200 / DUPLICATE` | `transport_task_id` | 视为已经接纳，结束发送义务 |
-| `409 / CONFLICT` | 首次收据含合法任务 ID 时为 `transport_task_id`，否则为 `{}` | 停止自动重试并对账 |
+| `409 / CONFLICT`（`data={transport_task_id, reason_code=MEMBER_POSITION_EVIDENCE_PENDING}`） | `transport_task_id` 和固定 `reason_code` | 仅适用于完整、身份有效的成功料箱回架结果早于所需已应用精确目标事件；该临时尝试未创建 callback receipt/evidence。所需事件成功 ACK 后即可原样重试；若仍 pending，继续保留同一 `operation_id`、`timestamp`、`outcome_revision` 和 body 并按既有策略重试 |
+| 其它 `409 / CONFLICT` | 首次收据含合法任务 ID 时为 `transport_task_id`，否则为 `{}` | 停止自动重试并对账 |
 | `422 / REJECTED` | 已知 operation 使用 `reason_code=INVALID_EVIDENCE`；未知 operation 使用 `UNSUPPORTED_OPERATION` | 停止原消息；修正后使用新 `operation_id` |
 | `503 / UNAVAILABLE` | `{}` | 2000 毫秒后使用原完整消息重试 |
 | `400`，空响应体 | 无 | 原消息非法，停止重试 |
@@ -2163,7 +2191,10 @@ Transport 合同不使用 `429 / BUSY`，也不定义 `retry_after_ms`。WES 暂
 必须保留原发送义务、停止每 2 秒热重试并告警，等待配置修复后再恢复发送。HTML 或其它未定义组合仍按未知响应处理。
 
 WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/DUPLICATE` 的 `data.transport_task_id` 等于冻结消息中的任务
-ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入对账；其 `data.transport_task_id` 存在时必须等于冻结任务 ID，
+ID 后，才能结束发送义务。除 `MEMBER_POSITION_EVIDENCE_PENDING` 外，`CONFLICT` 必须停止自动重试并进入对账；该临时 `409` 的
+`transport_task_id` 必须等于冻结任务 ID。所需逐箱事件均成功 ACK 后，WMS 即可原样重试同一完整结果；若仍 pending，继续保留原发送义务
+并按既有策略重试，由 WES 判断是否已应用。其它
+`CONFLICT` 的 `data.transport_task_id` 存在时必须等于冻结任务 ID，
 为空则表示同一消息身份的首份收据没有合法任务 ID。任何已返回关联字段不匹配都属于未知响应，绝不能结束发送义务。
 
 容器中间位置事件/搬运最终结果首次接纳响应样例：
@@ -2187,6 +2218,24 @@ ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入
   "data": {"reason_code": "INVALID_EVIDENCE"}
 }
 ```
+
+**成功回架结果早到、等待逐箱证据的临时响应：**
+
+```json
+{
+  "operation_id": "019fd988-0d40-7b4d-a23a-1b90aa5d4472",
+  "code": "CONFLICT",
+  "timestamp": 1786061000123,
+  "data": {
+    "transport_task_id": "TRANSPORT-000003",
+    "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING"
+  }
+}
+```
+
+该响应是 HTTP `409`，不是已接纳 ACK：它不创建 callback receipt 或 evidence。WMS 必须先让每个需要的精确目标
+`TARGET_PLACED` 事件取得成功 ACK，然后以完全相同的 `operation_id`、`timestamp`、`outcome_revision` 和 body 重试该完整结果。若仍
+收到同一 pending 响应，继续保留并按既有策略重试该冻结消息；是否已应用由 WES 判断，不得创建新版本、替换身份或修改消息内容。
 
 能够通过信封和 DTO 校验、但引用未知任务、错误成员或矛盾既有事实的 evidence，仍可能先取得 `RECEIVED`。ACK 只证明 WES 已可靠保存
 原始 evidence；WES 随后冻结最小影响范围并进入诊断或对账，不以 ACK 证明搬运结果已经应用。
@@ -2224,6 +2273,7 @@ ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入
 | `JSON-WRONG-CASE` | 样例 1 的 `operation_id` 改为 `operationId` | 无法取得合法身份，空响应体 `400` |
 | `JSON-UNKNOWN-FIELD` | 样例 1 `data` 增加 `vehicle_id` | `422 / REJECTED + INVALID_DATA` |
 | `member-position-missing-final-position` | 容器中间位置事件 `TARGET_PLACED` 省略 `final_position` | `422 / REJECTED + INVALID_EVIDENCE` |
+| `bin-return-result-before-target-placed` | 完整、身份有效的成功 BIN 回架结果先于任一冻结 `RACK_BIN_SLOT` 目标的已应用精确 `TARGET_PLACED` | `409 / CONFLICT + {transport_task_id, reason_code=MEMBER_POSITION_EVIDENCE_PENDING}`；无 callback receipt/evidence；全部所需事件成功 ACK 后原样重试，若仍 pending 则保留同一冻结消息并按既有策略继续重试 |
 | `搬运提交-CROSS-FACE-EXCHANGE` | 使用下方跨面请求 | `422 / REJECTED + INVALID_DATA`，不得创建部分任务 |
 | `搬运最终结果-SEMANTIC-DUPLICATE` | 同一任务、同一 `outcome_revision` 和相同 `data`，但使用新的 `operation_id` 与 `timestamp` | 第二条消息 `200 / DUPLICATE`，不得创建第二份 evidence |
 | `搬运最终结果-REVISION-CONFLICT` | 同一任务、同一 `outcome_revision`、相同成员但结果内容不同 | 第二条消息 `409 / CONFLICT` |
@@ -2403,23 +2453,24 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | --- | --- | --- |
 | 搬运提交 Transport submit 明确未发送或收到 `503` | 原冻结 `operation_id + timestamp + 完整消息` | 固定等待 2000 毫秒，并在最多实际发送 3 次的预算内按搬运提交规则重试 |
 | 容器中间位置事件/搬运最终结果主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
+| 成功 BIN 回架的 `resulted` 收到 `409 / CONFLICT + MEMBER_POSITION_EVIDENCE_PENDING` | 原冻结 `operation_id + timestamp + outcome_revision + 完整 body` | 当前尝试未接纳、无 callback receipt/evidence；每个所需精确目标 `TARGET_PLACED` 成功 ACK 后原样重试，若仍 pending 则按既有策略继续履行同一发送义务，不换 ID、不刷新时间戳、不改版本或 body |
 | Transport submit `DELIVERY_UNKNOWN` | 原 `transport_task_id` | 禁止自动重提，进入 `UNKNOWN/RECONCILING` |
 | `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 使用新 `operation_id`；是否引用 `previous_operation_id` 由具体业务合同决定 | 等待新事实或到期后，根据当前现场数据重新请求决定；现有 `outbound.*` operation 不传请求链字段，尚未获批的共同 drain operation 以最终审批为准 |
-| `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |
+| 其它 `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |
 
 ## 5. WMS 交付物和场景验收
 
 ### 5.1 WMS 团队必须交付
 
-当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景；是否已经进入具体实现迭代以实施计划为准。当前 Transport 实施范围是
-搬运提交、搬运最终结果，容器中间位置事件只保留已批准合同，待供应商能够提供权威逐容器中间事实时再启用。自动出库和自动上架场景只进入待评审清单，不提交实现、
-OpenAPI 或占位 JSON 样例。
+当前合同放行范围包含公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景；是否已经进入具体实现迭代以实施计划为准。当前 Transport 实施范围包括
+搬运提交、搬运最终结果，以及每个成功 BIN 回架到冻结 `RACK_BIN_SLOT` 所需的逐箱精确目标 `TARGET_PLACED` 转发；其它容器中间位置事件仍待供应商提供对应权威事实后条件启用。
+自动出库和自动上架场景只进入待评审清单，不提交实现、OpenAPI 或占位 JSON 样例。
 
 | 交付物 | 最低要求 |
 | --- | --- |
-| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景标明负责人、路径、operation 和实现状态，并把容器中间位置事件标为当前供应商未启用；自动出库和自动上架场景只列为 `ReviewRequired` |
+| 当前场景接口矩阵 | 对公共通信基础能力、搬运提交、容器中间位置事件、搬运最终结果和粗分入库场景标明负责人、路径、operation 和实现状态；标明成功 BIN 回架的逐箱 `TARGET_PLACED` 当前必须转发，其它容器中间位置事件按权威事实条件启用；自动出库和自动上架场景只列为 `ReviewRequired` |
 | 搬运提交 OpenAPI | WMS 提供其服务端 `POST {{TRANSPORT_SUBMIT_PATH}}` 的 OpenAPI 3.0.3 权威文件，以货架/料箱两个 DTO 分支完整表达四种 `kind`、位置联合和响应联合；Swagger 2.0 只能作为旧工具的非权威导出文件 |
-| 容器中间位置事件/搬运最终结果 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 当前按搬运最终结果 operation 实现客户端，未来启用容器中间位置事件时仍使用该权威定义，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
+| 容器中间位置事件/搬运最终结果 OpenAPI | WES 提供 [独立 OpenAPI 3.0.3 权威文件](../contracts/openapi/wes-wms-transport.openapi.json)，固定接口为 `POST /api/v1/wms/events`；WMS 当前必须实现搬运最终结果和成功 BIN 回架的逐箱 `TARGET_PLACED`，其它容器中间位置事件条件启用且仍使用该权威定义，不由 WMS 另建不同定义；Swagger 2.0 仅可作为非权威导出 |
 | 参数语义与来源 | 每个请求/响应字段对应 WMS 业务事实、WES 前序字段、ECS/搬运证据或配置，不要求披露 WMS 内部表字段 |
 | 规范 fixture | 由本文提供并冻结正确和错误预期，至少覆盖每种请求、`DUPLICATE/CONFLICT/UNAVAILABLE`、重复 key、字段大小写错误、未知字段、缺少条件字段、同面约束和搬运最终结果版本冲突 |
 | WMS 运行证据 | WMS 使用本文规范 fixture，提交实际请求、响应和日志；不得由实现方自行发明合同预期 |
@@ -2778,8 +2829,8 @@ operation = putaway.target_bin.supply_batch@v1
 WMS 根据库存主账选择具有可分配 Cell 的具体 Bin，生成 `READY.bins[]`。每项包含 `bin_id`、五层货架来源和可用 Cell 简要信息。
 当前无批次或暂不能决定时生成 `NO_BATCH/WAIT`，不能返回未在主账确认的候选。
 
-WES 持久化 `READY` 后冻结精确 Bin 和交接位，再创建对应 `BIN_MOVE` TransportTask。当前 CTU/RCS 只能返回
-`transport.task.resulted@v1` 完整最终结果，不提供可靠的逐容器中间位置事件；提交、接纳、失败、位置未知和资源围栏均由
+WES 持久化 `READY` 后冻结精确 Bin 和交接位，再创建对应 `BIN_MOVE` TransportTask。该供给到 `HANDOFF_POSITION` 的场景不属于
+成功回架到冻结 `RACK_BIN_SLOT` 的强制逐箱前置条件；容器中间位置事件仍按是否有权威事实条件发送。提交、接纳、失败、位置未知和资源围栏均由
 TransportTask 负责，搬运最终成功前不创建 `BinExecution`。
 
 最终结果确认 Bin 成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结 `bin_id` 一致后，WES 创建唯一活动 `bin_execution_id`，再调用

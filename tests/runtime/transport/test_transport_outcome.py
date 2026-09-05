@@ -20,6 +20,7 @@ from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
     TransportMember,
+    TransportResourceBinding,
     TransportTask,
 )
 from src.app.wms_adapter.transport_event_handler import TransportEventHandler
@@ -133,6 +134,271 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
     assert evidence.conflict_code is None
     assert task is not None
     assert (task.status, task.reason_code, task.outcome_version) == ("RECONCILING", "TRANSPORT_POSITION_UNKNOWN", 1)
+
+
+@pytest.mark.asyncio
+async def test_successful_rack_slot_result_waits_for_applied_exact_target_member_evidence(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    target_one = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-return", "rack_face": "90", "slot_id": "1"}
+    target_two = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-return", "rack_face": "90", "slot_id": "2"}
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (
+            BinMove("bin-return-1", HandoffPosition("ROLLER_IN"), RackBinSlot("rack-return", "90", "1")),
+            BinMove("bin-return-2", HandoffPosition("ROLLER_OUT"), RackBinSlot("rack-return", "90", "2")),
+        ),
+    )
+    result = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_MOVE",
+        "outcome_revision": 1,
+        "results": [
+            {"container_id": "bin-return-1", "status": "SUCCEEDED", "final_position": target_one},
+            {"container_id": "bin-return-2", "status": "SUCCEEDED", "final_position": target_two},
+        ],
+    }
+    result_operation_id = "result-before-rack-return-evidence"
+
+    early = await record_valid_callback(
+        outcome_service,
+        operation_id=result_operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=result,
+    )
+
+    assert early["http_status"] == 409
+    assert early["code"] == "CONFLICT"
+    assert early["data"] == {
+        "transport_task_id": handle.transport_task_id,
+        "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
+    }
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        receipts = list(
+            await db.scalars(
+                select(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == result_operation_id)
+            )
+        )
+        evidence = list(
+            await db.scalars(select(TransportEvidence).where(TransportEvidence.operation_id == result_operation_id))
+        )
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        bindings = list(
+            await db.scalars(
+                select(TransportResourceBinding).where(
+                    TransportResourceBinding.transport_task_id == handle.transport_task_id
+                )
+            )
+        )
+    assert receipts == []
+    assert evidence == []
+    assert task is not None and task.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
+    assert bindings and all(binding.released_at is None for binding in bindings)
+
+    for operation_id, container_id, target in (
+        ("target-placed-return-1", "bin-return-1", target_one),
+        ("target-placed-return-2", "bin-return-2", target_two),
+    ):
+        accepted = await record_valid_callback(
+            outcome_service,
+            operation_id=operation_id,
+            transport_task_id=handle.transport_task_id,
+            operation="transport.task.member_position_changed@v1",
+            timestamp=1,
+            payload={"container_id": container_id, "milestone": "TARGET_PLACED", "final_position": target},
+        )
+        assert accepted["code"] == "RECEIVED"
+
+    still_pending = await record_valid_callback(
+        outcome_service,
+        operation_id=result_operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=result,
+    )
+    assert (still_pending["http_status"], still_pending["code"]) == (409, "CONFLICT")
+    assert await outcome_service.process_pending_evidence(2) == 2
+
+    accepted_result = await record_valid_callback(
+        outcome_service,
+        operation_id=result_operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=result,
+    )
+    duplicate_result = await record_valid_callback(
+        outcome_service,
+        operation_id=result_operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=result,
+    )
+
+    assert (accepted_result["http_status"], accepted_result["code"]) == (202, "RECEIVED")
+    assert (duplicate_result["http_status"], duplicate_result["code"]) == (200, "DUPLICATE")
+
+
+@pytest.mark.asyncio
+async def test_rejected_task_result_is_not_reclassified_as_pending_member_evidence(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    target = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-rejected", "rack_face": "90", "slot_id": "1"}
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (BinMove("bin-rejected", HandoffPosition("ROLLER_IN"), RackBinSlot("rack-rejected", "90", "1")),),
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        assert task is not None
+        task.status = "REJECTED"
+        task.reason_code = "TRANSPORT_REJECTED"
+
+    operation_id = "result-for-rejected-rack-return"
+    accepted = await record_valid_callback(
+        outcome_service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "transport_task_id": handle.transport_task_id,
+            "kind": "BIN_MOVE",
+            "outcome_revision": 1,
+            "results": [{"container_id": "bin-rejected", "status": "SUCCEEDED", "final_position": target}],
+        },
+    )
+
+    assert (accepted["http_status"], accepted["code"]) == (202, "RECEIVED")
+    assert await outcome_service.process_pending_evidence(1) == 1
+    async with sessions() as db:
+        receipt = await db.scalar(
+            select(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+        )
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+    assert receipt is not None
+    assert evidence is not None and evidence.status == "CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_stale_result_is_not_reclassified_as_pending_member_evidence(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    target = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-stale", "rack_face": "90", "slot_id": "1"}
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (BinMove("bin-stale", HandoffPosition("ROLLER_IN"), RackBinSlot("rack-stale", "90", "1")),),
+    )
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        assert task is not None
+        task.status = "ACCEPTED"
+        task.last_applied_wms_outcome_revision = 1
+
+    operation_id = "stale-result-before-return"
+    accepted = await record_valid_callback(
+        outcome_service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "transport_task_id": handle.transport_task_id,
+            "kind": "BIN_MOVE",
+            "outcome_revision": 1,
+            "results": [{"container_id": "bin-stale", "status": "SUCCEEDED", "final_position": target}],
+        },
+    )
+
+    assert (accepted["http_status"], accepted["code"]) == (202, "RECEIVED")
+    assert await outcome_service.process_pending_evidence(1) == 1
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+    assert evidence is not None and evidence.status == "APPLIED"
+
+
+@pytest.mark.asyncio
+async def test_conflicting_definite_member_fact_takes_priority_over_pending_member_evidence(
+    outcome_service: TransportService,
+    db_engine: object,
+) -> None:
+    target_one = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-conflict", "rack_face": "90", "slot_id": "1"}
+    target_two = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-conflict", "rack_face": "90", "slot_id": "2"}
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (
+            BinMove("bin-conflict-1", HandoffPosition("ROLLER_IN"), RackBinSlot("rack-conflict", "90", "1")),
+            BinMove("bin-conflict-2", HandoffPosition("ROLLER_OUT"), RackBinSlot("rack-conflict", "90", "2")),
+        ),
+    )
+    position_ack = await record_valid_callback(
+        outcome_service,
+        operation_id="target-placed-conflicting-member",
+        transport_task_id=handle.transport_task_id,
+        operation=POSITION_OPERATION,
+        timestamp=1,
+        payload={
+            "container_id": "bin-conflict-1",
+            "milestone": "TARGET_PLACED",
+            "final_position": target_one,
+        },
+    )
+    assert position_ack["code"] == "RECEIVED"
+    assert await outcome_service.process_pending_evidence(1) == 1
+
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        member = await db.scalar(
+            select(TransportMember).where(
+                TransportMember.transport_task_id == handle.transport_task_id,
+                TransportMember.object_id == "bin-conflict-1",
+            )
+        )
+        assert member is not None
+        member.status = "FAILED"
+        member.failure_code = "RCS_EXECUTION_FAILED"
+
+    operation_id = "result-conflict-before-pending"
+    accepted = await record_valid_callback(
+        outcome_service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "transport_task_id": handle.transport_task_id,
+            "kind": "BIN_MOVE",
+            "outcome_revision": 1,
+            "results": [
+                {"container_id": "bin-conflict-1", "status": "SUCCEEDED", "final_position": target_one},
+                {"container_id": "bin-conflict-2", "status": "SUCCEEDED", "final_position": target_two},
+            ],
+        },
+    )
+
+    assert (accepted["http_status"], accepted["code"]) == (202, "RECEIVED")
+    assert await outcome_service.process_pending_evidence(1) == 1
+    async with sessions() as db:
+        receipt = await db.scalar(
+            select(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == operation_id)
+        )
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+    assert receipt is not None
+    assert evidence is not None and evidence.status == "CONFLICT"
 
 
 @pytest.mark.asyncio
@@ -465,17 +731,25 @@ async def test_conflicting_batch_result_does_not_partially_update_members(
         [
             {
                 "container_id": "bin-member-1",
-                "status": "FAILED",
-                "position_unknown": True,
-                "failure_code": "POSITION_UNKNOWN",
+                "status": "SUCCEEDED",
+                "final_position": {
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": "rack-members",
+                    "rack_face": "90",
+                    "slot_id": "3",
+                },
             }
         ],
         [
             {
                 "container_id": "bin-member-1",
-                "status": "FAILED",
-                "position_unknown": True,
-                "failure_code": "POSITION_UNKNOWN",
+                "status": "SUCCEEDED",
+                "final_position": {
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": "rack-members",
+                    "rack_face": "90",
+                    "slot_id": "3",
+                },
             },
             {
                 "container_id": "bin-member-2",
@@ -502,12 +776,12 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
         new_uuid7(),
         TransportCaller("SORTER"),
         (
-            BinMove("bin-member-1", RackBinSlot("rack-members", "90", "1"), HandoffPosition("ROLLER_IN")),
-            BinMove("bin-member-2", RackBinSlot("rack-members", "90", "2"), HandoffPosition("ROLLER_OUT")),
+            BinMove("bin-member-1", HandoffPosition("ROLLER_IN"), RackBinSlot("rack-members", "90", "3")),
+            BinMove("bin-member-2", HandoffPosition("ROLLER_OUT"), RackBinSlot("rack-members", "90", "4")),
         ),
     )
     operation_id = f"operation-members-{len(results)}-{results[-1]['container_id']}"
-    await record_valid_callback(
+    accepted = await record_valid_callback(
         outcome_service,
         operation_id=operation_id,
         transport_task_id=handle.transport_task_id,
@@ -521,6 +795,7 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
         },
     )
 
+    assert (accepted["http_status"], accepted["code"]) == (202, "RECEIVED")
     await outcome_service.process_pending_evidence(1)
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
@@ -533,6 +808,57 @@ async def test_result_members_must_exactly_match_the_frozen_batch(
         )
     assert evidence is not None and evidence.status == "CONFLICT"
     assert all(member.status == "PENDING" and member.final_position_json is None for member in members)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_case", ["wrong-target", "wrong-kind"])
+async def test_invalid_rack_slot_result_is_not_reclassified_as_pending(
+    outcome_service: TransportService,
+    db_engine: object,
+    invalid_case: str,
+) -> None:
+    target_one = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-invalid", "rack_face": "90", "slot_id": "1"}
+    target_two = {"kind": "RACK_BIN_SLOT", "rack_id": "rack-invalid", "rack_face": "90", "slot_id": "2"}
+    handle = await outcome_service.move_bins(
+        new_uuid7(),
+        TransportCaller("SORTER"),
+        (
+            BinMove("bin-invalid-1", HandoffPosition("ROLLER_IN"), RackBinSlot("rack-invalid", "90", "1")),
+            BinMove("bin-invalid-2", HandoffPosition("ROLLER_OUT"), RackBinSlot("rack-invalid", "90", "2")),
+        ),
+    )
+    operation_id = f"invalid-rack-{invalid_case}"
+    payload = {
+        "transport_task_id": handle.transport_task_id,
+        "kind": "BIN_EXCHANGE" if invalid_case == "wrong-kind" else "BIN_MOVE",
+        "outcome_revision": 1,
+        "results": [
+            {"container_id": "bin-invalid-1", "status": "SUCCEEDED", "final_position": target_one},
+            {
+                "container_id": "bin-invalid-2",
+                "status": "SUCCEEDED",
+                "final_position": target_two
+                if invalid_case == "wrong-kind"
+                else {"kind": "RACK_BIN_SLOT", "rack_id": "rack-invalid", "rack_face": "90", "slot_id": "wrong"},
+            },
+        ],
+    }
+
+    accepted = await record_valid_callback(
+        outcome_service,
+        operation_id=operation_id,
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload=payload,
+    )
+
+    assert (accepted["http_status"], accepted["code"]) == (202, "RECEIVED")
+    assert await outcome_service.process_pending_evidence(1) == 1
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        evidence = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+    assert evidence is not None and evidence.status == "CONFLICT"
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,7 @@ from src.app.transport.debug_run_state_machine import (
     evaluate_debug_transport_task,
     next_debug_step,
 )
-from src.app.transport.models import TransportDebugRun, TransportDebugRunStep
+from src.app.transport.models import TransportDebugRun, TransportDebugRunStep, TransportMember
 from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -450,9 +450,10 @@ class TransportDebugRunService:
         if task is None:
             return self._set_attention(run, step, "TRANSPORT_TASK_MISSING", now)
         members = await self._repository.list_transport_members(db, transport_task_id)
+        progress_changed = self._record_confirmed_rack_return_bins(run, step, members, now)
         evaluation = evaluate_debug_transport_task(step, task, members, run)
         if evaluation.disposition == "WAIT":
-            return False
+            return progress_changed
         if evaluation.disposition == "FAILED":
             step.status = TransportDebugRunStepStatus.FAILED.value
             step.reason_code = evaluation.reason_code
@@ -618,12 +619,7 @@ class TransportDebugRunService:
             client_request_id=(None if next_phase == TransportDebugRunPhase.WAIT_SCAN12.value else new_uuid7()),
             evidence_high_watermark=high_watermark,
             evidence_not_before_ms=not_before_ms,
-            observed_bins_json=(
-                list(completed_step.observed_bins_json)
-                if completed_step.phase == TransportDebugRunPhase.WAIT_SCAN12.value
-                and next_phase == TransportDebugRunPhase.BINS_TO_RACK.value
-                else []
-            ),
+            observed_bins_json=[],
             created_at=now,
             updated_at=now,
         )
@@ -635,6 +631,46 @@ class TransportDebugRunService:
         run.attention_code = None
         run.attention_detail = None
         self._touch(run, now)
+
+    def _record_confirmed_rack_return_bins(
+        self,
+        run: TransportDebugRun,
+        step: TransportDebugRunStep,
+        members: Sequence[TransportMember],
+        now: datetime,
+    ) -> bool:
+        if step.phase != TransportDebugRunPhase.BINS_TO_RACK.value:
+            return False
+        group_index = step.group_index
+        if group_index is None:
+            return False
+        groups = _frozen_face_groups(run.configuration_json)
+        if group_index < 0 or group_index >= len(groups):
+            return False
+        members_by_bin_id = {member.object_id: member for member in members if member.object_type == "BIN"}
+        group = groups[group_index]
+        observed = [
+            {"bin_id": selection.bin_id}
+            for selection in group.bins
+            if (
+                (member := members_by_bin_id.get(selection.bin_id)) is not None
+                and not member.position_unknown
+                and member.target_json
+                == {
+                    "kind": "RACK_BIN_SLOT",
+                    "rack_id": run.rack_id,
+                    "rack_face": group.face,
+                    "slot_id": selection.slot_id,
+                }
+                and member.final_position_json == member.target_json
+            )
+        ]
+        if step.observed_bins_json == observed:
+            return False
+        step.observed_bins_json = observed
+        step.updated_at = now
+        self._touch(run, now)
+        return True
 
     def _set_attention(
         self,

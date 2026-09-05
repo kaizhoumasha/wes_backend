@@ -250,7 +250,14 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
-_CONFLICT_DATA_SCHEMA = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
+_RETRYABLE_CONFLICT_DATA_SCHEMA = _closed_object(
+    ["transport_task_id", "reason_code"],
+    {
+        "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
+        "reason_code": {"type": "string", "enum": ["MEMBER_POSITION_EVIDENCE_PENDING"]},
+    },
+)
+_CONFLICT_DATA_SCHEMA = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA, _RETRYABLE_CONFLICT_DATA_SCHEMA]}
 _REASON_CODE_SCHEMA = {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}
 _REASON_DATA_SCHEMA = {
     "oneOf": [
@@ -274,7 +281,7 @@ TRANSPORT_EVENT_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"description": "请求媒体类型、编码或 evidence envelope 不满足封闭合同"},
     401: {"description": "部署 profile 不允许无签名 callback", "x-operational-error": True},
     409: {
-        "description": "operation_id 内容冲突或同一 outcome_revision 的 data 业务结果冲突",
+        "description": "operation_id 内容冲突、同一 outcome_revision 的 data 业务结果冲突，或成功 BIN 回架缺少已应用的精确目标 TARGET_PLACED",
         "content": {"application/json": {"schema": _ack_schema("CONFLICT", _CONFLICT_DATA_SCHEMA)}},
     },
     413: {"description": "请求体超过固定上限"},

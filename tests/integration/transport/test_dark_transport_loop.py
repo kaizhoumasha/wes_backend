@@ -25,7 +25,7 @@ from src.app.transport.models import (
     TransportResourceBinding,
     TransportTask,
 )
-from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
@@ -264,10 +264,31 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 },
             ),
         ]
+        exchange_results = result_payloads[-1][1]["results"]
+        assert isinstance(exchange_results, list)
+        for result in exchange_results:
+            assert isinstance(result, dict)
+            operation_id = new_uuid7()
+            callback_operation_ids.append(operation_id)
+            position_ack = await record_valid_callback(
+                service,
+                operation_id=operation_id,
+                transport_task_id=exchange_handle.transport_task_id,
+                operation=POSITION_OPERATION,
+                timestamp=1,
+                payload={
+                    "container_id": result["container_id"],
+                    "milestone": "TARGET_PLACED",
+                    "final_position": result["final_position"],
+                },
+            )
+            assert (position_ack["http_status"], position_ack["code"]) == (202, "RECEIVED")
+        assert await service.process_pending_evidence(10) == 4
+
         for handle, payload in result_payloads:
             operation_id = new_uuid7()
             callback_operation_ids.append(operation_id)
-            await record_valid_callback(
+            result_ack = await record_valid_callback(
                 service,
                 operation_id=operation_id,
                 transport_task_id=handle.transport_task_id,
@@ -275,6 +296,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                 timestamp=1,
                 payload=payload,
             )
+            assert (result_ack["http_status"], result_ack["code"]) == (202, "RECEIVED")
 
         assert await service.process_pending_evidence(10) == 4
         assert await service.reconcile_overdue_tasks(10) == 0

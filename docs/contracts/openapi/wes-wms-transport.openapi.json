@@ -1077,7 +1077,7 @@
             "x-operational-error": true
           },
           "409": {
-            "description": "operation_id 内容冲突或同一 outcome_revision 的 data 业务结果冲突",
+            "description": "operation_id 内容冲突、同一 outcome_revision 的 data 业务结果冲突，或成功 BIN 回架缺少已应用的精确目标 TARGET_PLACED",
             "content": {
               "application/json": {
                 "schema": {
@@ -1128,6 +1128,28 @@
                               "minLength": 1,
                               "maxLength": 80,
                               "pattern": ".*\\S.*"
+                            }
+                          }
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "transport_task_id",
+                            "reason_code"
+                          ],
+                          "properties": {
+                            "transport_task_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 80,
+                              "pattern": ".*\\S.*"
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "MEMBER_POSITION_EVIDENCE_PENDING"
+                              ]
                             }
                           }
                         }

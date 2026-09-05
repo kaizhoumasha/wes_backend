@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, func, or_, select, update
 
-from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
+from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS, TRANSPORT_POSITION_OPERATION
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportDebugPositionProjection,
@@ -385,6 +385,20 @@ class TransportRepository:
         if for_update:
             statement = statement.with_for_update()
         return await db.scalar(statement)
+
+    async def list_applied_position_evidence(
+        self,
+        db: AsyncSession,
+        transport_task_id: str,
+    ) -> list[TransportEvidence]:
+        result = await db.scalars(
+            select(TransportEvidence).where(
+                TransportEvidence.transport_task_id == transport_task_id,
+                TransportEvidence.operation == TRANSPORT_POSITION_OPERATION,
+                TransportEvidence.status == "APPLIED",
+            )
+        )
+        return list(result)
 
     async def get_task_with_latest_evidence(
         self,
