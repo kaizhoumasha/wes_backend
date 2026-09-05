@@ -383,13 +383,11 @@ def _rough_sorter_configuration() -> dict[str, object]:
 
 
 def _render_seed(ecs_port: int) -> str:
-    now_ms = int(time.time() * 1000)
-    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now_ms / 1000))
+    now = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     return (
         (FIXTURE_ROOT / "business-loop-seed.sql")
         .read_text(encoding="utf-8")
         .replace("__NOW__", now)
-        .replace("__NOW_MS__", str(now_ms))
         .replace("__ROUGH_SORTER_CONFIG__", json.dumps(_rough_sorter_configuration(), separators=(",", ":")))
         .replace("__ECS_ENDPOINT__", f"http://ecs-stub:{ecs_port}")
     )

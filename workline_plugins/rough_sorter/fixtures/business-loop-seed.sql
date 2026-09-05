@@ -1,4 +1,4 @@
--- 初始化单成功路径前置环境：静态 WorkLine/Device 主数据，以及 STOPPED、DeviceStatusObservation 投影。
+-- 初始化单成功路径前置环境：静态 WorkLine/Device 主数据，以及 STOPPED 投影。
 -- direct SQL 只设置前置条件；Epoch 与 bindings 必须由受保护公开 START 创建。
 BEGIN;
 
@@ -23,14 +23,6 @@ INSERT INTO wes_runtime.workline_runtime_status_projections (
 ) VALUES (
     9201, 9001, 'STOPPED', 'rough-sorter-e2e-fixture', '__NOW__', 'E2E_PUBLIC_START_REQUIRED', '{}'
 );
-
-INSERT INTO wes_biz.device_status_observations (
-    version, created_at, device_code, contract_key, contract_version, mode, status,
-    device_timestamp, received_at, payload_digest, raw_payload
-) VALUES
-    (0, '__NOW__', 'RS-E2E-MEASUREMENT', 'rough_sorter.measurement_device', '1.0', 'AUTO', 'IDLE', __NOW_MS__, '__NOW__', repeat('1', 64), '{}'),
-    (0, '__NOW__', 'RS-E2E-TRANSFER', 'rough_sorter.transfer_device', '1.0', 'AUTO', 'IDLE', __NOW_MS__, '__NOW__', repeat('2', 64), '{}'),
-    (0, '__NOW__', 'RS-E2E-PLACEMENT', 'rough_sorter.placement_device', '1.0', 'AUTO', 'IDLE', __NOW_MS__, '__NOW__', repeat('3', 64), '{}');
 
 INSERT INTO wes_biz.workline_rack_positions (
     id, created_at, workline_id, workline_code, position_code, position_name, position_role,

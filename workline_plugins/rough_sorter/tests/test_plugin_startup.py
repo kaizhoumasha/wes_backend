@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from src.app.device.contracts import EcsDeviceMode, EcsDeviceState
+from src.app.device.ecs_adapter import EcsStatusUnavailableError
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
@@ -26,6 +27,7 @@ from src.app.workline.models.line_run_epoch import (
 )
 from src.core.uuid7 import is_uuid7
 from wes_plugin_sdk import (
+    CreateDeviceCommand,
     DeferExecution,
     DevicePosition,
     DeviceResultReadyFact,
@@ -41,9 +43,10 @@ from wes_plugin_sdk import (
 
 from rough_sorter.application.device_facts import completed_response
 from rough_sorter.application.factory import RoughSorterPluginFactFactory
-from rough_sorter.application.persistence import PersistedDeviceReadinessReader, RoughSorterInitialExecutionCorrelator
+from rough_sorter.application.persistence import LiveDeviceReadinessReader, RoughSorterInitialExecutionCorrelator
 from rough_sorter.application.transport import RoughSorterTransportOutcomePublisher
 from rough_sorter.handlers import (
+    AdmissionDecidedHandler,
     RecoveryDecidedHandler,
     ReplacementPlanDecidedHandler,
     TargetDecidedHandler,
@@ -271,30 +274,84 @@ class _Readiness:
         return True
 
 
+def _live_status(**overrides):
+    state = {
+        "is_online": True,
+        "mode": EcsDeviceMode.AUTO,
+        "status": EcsDeviceState.IDLE,
+        "current_command_code": None,
+        "updated_at": int(datetime.now(UTC).timestamp() * 1000),
+    }
+    state.update(overrides)
+    return SimpleNamespace(
+        device=SimpleNamespace(device_code="DEVICE-1"),
+        state=SimpleNamespace(**state),
+    )
+
+
+class _LiveProvider:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.endpoints = []
+        self.codes = []
+
+    async def get_adapter(self, endpoint):
+        self.endpoints.append(endpoint)
+        return self
+
+    async def fetch_status(self, code):
+        self.codes.append(code)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response() if callable(response) else response
+
+
 @pytest.mark.asyncio
-async def test_deferred_readiness_uses_retry_processing_time() -> None:
-    status = DeviceStatusObservation(
-        device_code="DEVICE-1",
-        contract_key="rough_sorter.measurement_device",
-        contract_version="1.0",
-        mode="AUTO",
-        status="IDLE",
-        current_command_code=None,
-        device_timestamp=1_787_040_001_000,
-        received_at=NOW,
-        payload_digest="a" * 64,
-        raw_payload={},
+async def test_live_readiness_uses_response_time_and_refreshes_on_retry() -> None:
+    now = [1_000]
+
+    def response():
+        now[0] = 1_002
+        return _live_status(updated_at=1_002_000)
+
+    provider = _LiveProvider(_live_status(status=EcsDeviceState.RUNNING), response)
+    reader = LiveDeviceReadinessReader(
+        device_adapter_provider=provider, clock=lambda: datetime.fromtimestamp(now[0], UTC)
     )
-    repository = type("_Statuses", (), {"get_latest_for_device": lambda self, db, code: _async_value(status)})()
-    reader = PersistedDeviceReadinessReader(
-        repository=repository, clock=lambda: datetime.fromtimestamp(1_787_040_001.5, UTC)
+    binding = _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device")
+    assert not await reader.is_ready(object(), binding)
+    assert await reader.is_ready(object(), binding)
+    assert provider.codes == ["DEVICE-1", "DEVICE-1"]
+    assert provider.endpoints == [binding.endpoint_base_url] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["busy", "offline", "stale", "future", "error", "no_provider"])
+async def test_live_readiness_fails_closed(case: str) -> None:
+    response = _live_status(updated_at=1_000_000)
+    if case == "busy":
+        response.state.status = EcsDeviceState.RUNNING
+    elif case == "offline":
+        response.state.is_online = False
+    elif case == "stale":
+        response.state.updated_at = 989_999
+    elif case == "future":
+        response.state.updated_at = 1_000_001
+    elif case == "error":
+        response = EcsStatusUnavailableError("unavailable")
+    provider = None if case == "no_provider" else _LiveProvider(response)
+    reader = LiveDeviceReadinessReader(
+        device_adapter_provider=provider, clock=lambda: datetime.fromtimestamp(1_000, UTC)
     )
+    assert not await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
 
-    assert await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
 
-
-async def _async_value(value: object) -> object:
-    return value
+@pytest.mark.asyncio
+async def test_live_readiness_does_not_hide_programming_errors() -> None:
+    reader = LiveDeviceReadinessReader(device_adapter_provider=_LiveProvider(TypeError("bug")))
+    with pytest.raises(TypeError, match="bug"):
+        await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
 
 
 class _Commands:
@@ -477,7 +534,24 @@ async def test_factory_rejects_epoch_digest_drift_before_building_plugin_fact() 
 
 @pytest.mark.asyncio
 async def test_factory_builds_admission_fact_from_confirmation_request_and_response_evidence() -> None:
-    factory, _ = _factory()
+    from deployment.plugin_composition import build_deployment_runtime
+
+    fixture, _ = _factory()
+    provider = _LiveProvider(_live_status(status=EcsDeviceState.RUNNING), _live_status)
+    runtime = build_deployment_runtime(
+        enabled_plugin_keys=("rough_sorter",),
+        device_adapter_provider=provider,
+        session_factory=object(),
+        transport_runtime=SimpleNamespace(
+            service=object(), repository=object(), client=object(), position_projection_service=object()
+        ),
+        device_command_service=object(),
+    )
+    factory = runtime.plugins[0].runtime_binding.fact_factory
+    factory._executions = fixture._executions
+    factory._epochs = fixture._epochs
+    factory._worklines = fixture._worklines
+    factory._evidences = fixture._evidences
     evidence = InboundEvidence(
         id=32,
         kind=InboundEvidenceKind.WMS_RESULT,
@@ -534,10 +608,14 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
     )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
-    factory._device_readiness = _Readiness()  # type: ignore[attr-defined]
     base = WmsResultReadyFact("evidence:32", "32", "1.0", "EXEC-21", ADMISSION_OPERATION_ID)
 
+    waiting = await factory.build(object(), base)
+    assert waiting.device_ready is False
+    assert isinstance(AdmissionDecidedHandler()(waiting)[0], DeferExecution)
     fact = await factory.build(object(), base)
+    assert provider.codes == ["DEVICE-1", "DEVICE-1"]
+    assert isinstance(AdmissionDecidedHandler()(fact)[0], CreateDeviceCommand)
 
     assert fact.result.value == "ACCEPT"
     assert fact.pkg_id == "PKG-1"

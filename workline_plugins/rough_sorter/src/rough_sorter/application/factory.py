@@ -40,7 +40,7 @@ from rough_sorter.application.persistence import (
     EpochRepositoryPort,
     EvidenceRepositoryPort,
     ExecutionRepositoryPort,
-    PersistedDeviceReadinessReader,
+    LiveDeviceReadinessReader,
     RackPlacementRepositoryPort,
     RackPositionRepositoryPort,
     RackReplacementBindingRepositoryPort,
@@ -69,6 +69,7 @@ from rough_sorter.handlers._guards import ROLE_CONTRACTS
 from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, POSITION_ROLES
 
 if TYPE_CHECKING:
+    from src.app.device.composition import DeviceEndpointAdapterProvider
     from src.app.execution.models import InboundEvidence, MaterialExecution
     from src.app.workline.models import LineRunEpochDeviceBinding, LineRunEpochPositionBinding
 
@@ -85,6 +86,7 @@ class RoughSorterPluginFactFactory:
         workline_repository: WorkLineRepositoryPort = workline_repository,
         wms_confirmation_repository: WmsConfirmationRepositoryPort = wms_confirmation_repository,
         device_readiness_reader: DeviceReadinessReader | None = None,
+        device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
         device_command_repository: DeviceCommandRepositoryPort = device_command_repository,
         rack_position_repository: RackPositionRepositoryPort = workline_rack_position_repository,
         rack_placement_repository: RackPlacementRepositoryPort = rack_placement_repository,
@@ -98,7 +100,9 @@ class RoughSorterPluginFactFactory:
         self._epochs = epoch_repository
         self._worklines = workline_repository
         self._wms_confirmations = wms_confirmation_repository
-        self._device_readiness = device_readiness_reader or PersistedDeviceReadinessReader()
+        self._device_readiness = device_readiness_reader or LiveDeviceReadinessReader(
+            device_adapter_provider=device_adapter_provider
+        )
         self._commands = device_command_repository
         self._rack_positions = rack_position_repository
         self._rack_placements = rack_placement_repository

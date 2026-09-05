@@ -61,7 +61,10 @@ def build_deployment_runtime(
         from rough_sorter.application.wms_follow_up import RoughSorterWmsFollowUpPlanner
         from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, build_handlers
 
-        factory = RoughSorterPluginFactFactory(transport_repository=transport_runtime.repository)
+        factory = RoughSorterPluginFactFactory(
+            transport_repository=transport_runtime.repository,
+            device_adapter_provider=device_adapter_provider,
+        )
         rough_sorter_start_plan_builder = RoughSorterStartPlanBuilder(adapter_provider=device_adapter_provider)
         rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher(session_factory=session_factory)
         plugins = (
