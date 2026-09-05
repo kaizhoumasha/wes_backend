@@ -495,7 +495,7 @@ def emit(rule: str, path: Path, line: int, reason: str, fix: str):
     print(f"{rule}\t{display}\t{line}\t{reason}\t{fix}")
 
 
-sdk_root = root / "packages/wes_plugin_sdk/src/wes_plugin_sdk"
+sdk_root = root / "src/wes_plugin_sdk/src/wes_plugin_sdk"
 for path in python_files(sdk_root):
     tree = parse(path)
     if isinstance(tree, SyntaxError):
@@ -608,7 +608,7 @@ PY
     scanner_status=$?
     set -e
     if [[ $scanner_status -ne 0 ]]; then
-        emit_violation "$RULE_PLUGIN_SDK_DEPENDENCY_BOUNDARY" "packages/wes_plugin_sdk" "1" \
+        emit_violation "$RULE_PLUGIN_SDK_DEPENDENCY_BOUNDARY" "src/wes_plugin_sdk" "1" \
             "插件依赖边界 scanner 执行失败，拒绝 fail open" \
             "修复 scanner 后重新运行 architecture guardrail"
         return

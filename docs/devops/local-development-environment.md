@@ -49,8 +49,8 @@ Celery通用 worker、WMS fulfillment worker和Beat没有额外宿主机端口�
 
 以下运行时代码修改不需要重建镜像：
 
-- 后端 `src/` 与 `main.py`：Uvicorn自动 reload。
-- `deployment/`、`packages/wes_plugin_sdk/src/` 与 `workline_plugins/rough_sorter/src/`：API自动 reload，开发态 Celery/Beat检测变更后重启子进程。
+- 后端 `src/`（包括 `src/wes_plugin_sdk/src/`）与 `main.py`：Uvicorn自动 reload，开发态 Celery/Beat检测 `src/` 变更后重启子进程。
+- `deployment/` 与 `workline_plugins/rough_sorter/src/`：API自动 reload，开发态 Celery/Beat检测变更后重启子进程。
 - WMS Provider Mock 的 `tests/mock/`、共享 fixture 与 `src/`：Uvicorn自动 reload。
 - 前端仓库源码：Vite HMR；Docker Desktop使用文件轮询避免macOS文件事件丢失。
 

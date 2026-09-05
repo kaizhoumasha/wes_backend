@@ -128,10 +128,10 @@ SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
     "tests/resilience/test_wms_circuit_breaker.py",
 )
 PLUGIN_SDK_REVIEWED_NONE_PATHS = (
-    "packages/wes_plugin_sdk/pyproject.toml",
-    "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py",
-    "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py",
-    "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
+    "src/wes_plugin_sdk/pyproject.toml",
+    "src/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py",
+    "src/wes_plugin_sdk/src/wes_plugin_sdk/facts.py",
+    "src/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
 )
 RUNTIME_TEXT_REVIEWED_NONE_PATHS = (
     "src/app/runtime/orchestration/services/_text.py",
@@ -421,6 +421,17 @@ def test_deleted_menu_runtime_assets_are_retired_only_while_absent(tmp_path: Pat
     assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == [retired_path]
 
 
+def test_deleted_legacy_plugin_sdk_root_is_retired_only_while_absent(tmp_path: Path) -> None:
+    retired_path = "packages/wes_plugin_sdk/pyproject.toml"
+
+    assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == []
+
+    restored = tmp_path / retired_path
+    restored.parent.mkdir(parents=True)
+    restored.touch()
+    assert filter_deleted_retired_archive_paths([retired_path], repo_root=tmp_path) == [retired_path]
+
+
 def test_moved_core_heavy_tests_select_themselves() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
@@ -488,7 +499,7 @@ def test_plugin_package_assets_do_not_select_core_heavy_tests(changed_path: str)
 
 
 def test_unmapped_plugin_sdk_asset_is_a_core_candidate_and_fails_closed() -> None:
-    changed_path = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decision.py"
+    changed_path = "src/wes_plugin_sdk/src/wes_plugin_sdk/decision.py"
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
     assert is_candidate(changed_path)
@@ -536,16 +547,16 @@ def test_plugin_sdk_assets_are_exact_reviewed_none_mappings() -> None:
 def test_plugin_sdk_transport_decisions_select_real_transport_and_execution_owners() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
-    assert select_heavy_tests(["packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"], config) == [
+    assert select_heavy_tests(["src/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"], config) == [
         TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
     ]
-    assert select_heavy_tests(["packages/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"], config) == [
+    assert select_heavy_tests(["src/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"], config) == [
         TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
         WMS_MOCK_SERVER_HEAVY_TEST,
     ]
-    assert select_heavy_tests(["packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"], config) == [
+    assert select_heavy_tests(["src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"], config) == [
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
     ]
 

@@ -70,7 +70,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "scripts/export_release_provider.py"
 heavy_tests = []
-reviewed_content_sha256 = "81956eca4b54a7b62709ca47686b2ad578dbfb6a1913dac1a52a5f5fa41a15c3"
+reviewed_content_sha256 = "14c8c360b05839c8644b64e86a8cb42d9b877ec05de5a029075f12de9dd57893"
 
 # 独立 release checker 只消费离线制品/部署 facts；方向兼容、timeout、容器和 CI 隔离由聚焦测试承接。
 
@@ -272,24 +272,24 @@ heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.
 # 任一文件内容漂移都会使 reviewed NONE 失效并恢复 fail closed。
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/pyproject.toml"
+source_glob = "src/wes_plugin_sdk/pyproject.toml"
 heavy_tests = []
 reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85359e8386954"
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
 heavy_tests = []
 reviewed_content_sha256 = "449ddba320a4141e2820dab6252de97d09f5ef241629486370ce0b7156d34978"
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
@@ -297,17 +297,17 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/facts.py"
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/facts.py"
 heavy_tests = []
 reviewed_content_sha256 = "72f16ac47121bbae1d35b2c3a269c6b508d8882b1f9bf22eb586008807dda71d"
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
 heavy_tests = []
 reviewed_content_sha256 = "3860b698e8fa51519bba714e216fe611085802fb42b58474143aa35126a8eb4c"
 
 [[mapping]]
-source_glob = "packages/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py"]
 
 # 当前测试治理、遗留审计与 selected HEAVY runner 由 QUALITY/缺席门禁承接。

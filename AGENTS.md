@@ -127,9 +127,9 @@ API → Service → Repository → Database
   `wms_integration/<domain_key>/`（model/Repository/Service/Composition），测试镜像相同域目录。Event route 保持唯一静态
   fail-closed；禁止新增平铺 operation 文件、兼容 import 或动态 registry。现有平铺 Inbound/Transport 仅是 `TODOS.md` 待迁移存量；
   工作线 Decision、结果解释、因果恢复和业务顺序仍由插件拥有。
-- 代码有三个物理根但只有两类职责：`src/` 是宿主基础实现，`packages/wes_plugin_sdk/` 是可独立安装的公开基础 SPI/不可变合同，
-  `workline_plugins/` 是业务实现。`workline_plugins` 可依赖前两者；`src` 和 SDK 均不得导入具体插件。SDK 不放数据库、HTTP、Celery、
-  Repository、operation DTO 或工作线业务流程。
+- 代码只有两个实现根和一个关联目录：`src/` 是宿主基础实现，其中 `src/wes_plugin_sdk/` 是可独立安装的公开基础 SPI/不可变合同；
+  `workline_plugins/` 是业务实现；`deployment/` 只负责显式关联已安装插件。`workline_plugins` 可依赖宿主基础端口和 SDK，宿主与 SDK
+  均不得导入具体插件。SDK 不放数据库、HTTP、Celery、Repository、operation DTO 或工作线业务流程。
 - 设备供应商私有协议和实现不进入 WES 核心仓库。
 
 修改架构、共享合同或所有权边界前，必须读取对应架构/合同文档，不以历史测试为当前合同证据。

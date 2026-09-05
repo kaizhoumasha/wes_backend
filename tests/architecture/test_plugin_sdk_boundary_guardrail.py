@@ -15,7 +15,7 @@ from typing import get_args
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SDK_ROOT = REPO_ROOT / "packages/wes_plugin_sdk"
+SDK_ROOT = REPO_ROOT / "src/wes_plugin_sdk"
 SDK_SOURCE_ROOT = SDK_ROOT / "src"
 PLUGIN_ROOT = REPO_ROOT / "workline_plugins"
 GUARDRAIL = REPO_ROOT / "scripts/architecture-guardrails.sh"
@@ -23,7 +23,7 @@ GUARDRAIL = REPO_ROOT / "scripts/architecture-guardrails.sh"
 
 def _load_sdk():
     if not SDK_SOURCE_ROOT.is_dir():
-        pytest.fail("packages/wes_plugin_sdk 尚未建立")
+        pytest.fail("src/wes_plugin_sdk 尚未建立")
     source_root = str(SDK_SOURCE_ROOT)
     if source_root not in sys.path:
         sys.path.insert(0, source_root)
@@ -43,7 +43,7 @@ def _imports(path: Path) -> set[str]:
 
 def test_plugin_sdk_is_an_independent_stdlib_only_package() -> None:
     if not SDK_ROOT.is_dir():
-        pytest.fail("packages/wes_plugin_sdk 尚未建立")
+        pytest.fail("src/wes_plugin_sdk 尚未建立")
 
     pyproject = tomllib.loads((SDK_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["dependencies"] == []
@@ -513,19 +513,19 @@ def test_handler_decorator_only_attaches_frozen_static_metadata() -> None:
 
 def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tmp_path: Path) -> None:
     fixture = tmp_path / "repo"
-    sdk_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/bad.py"
-    sdk_dynamic_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/dynamic.py"
-    sdk_alias_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/alias_evasions.py"
-    sdk_registry_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/registry_call.py"
-    sdk_instance_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/dependency_instance.py"
-    sdk_assignment_alias_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/assignment_alias.py"
-    sdk_path_receiver_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/path_receiver.py"
-    sdk_import_time_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/import_time_contexts.py"
-    sdk_function_flow_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/function_flow.py"
-    sdk_function_overwrite_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/function_overwrite.py"
-    sdk_safe_then_alias_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/safe_then_alias.py"
-    sdk_local_safe_override_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/local_safe_override.py"
-    sdk_import_time_dynamic_file = fixture / "packages/wes_plugin_sdk/src/wes_plugin_sdk/import_time_dynamic.py"
+    sdk_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/bad.py"
+    sdk_dynamic_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/dynamic.py"
+    sdk_alias_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/alias_evasions.py"
+    sdk_registry_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/registry_call.py"
+    sdk_instance_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/dependency_instance.py"
+    sdk_assignment_alias_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/assignment_alias.py"
+    sdk_path_receiver_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/path_receiver.py"
+    sdk_import_time_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/import_time_contexts.py"
+    sdk_function_flow_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/function_flow.py"
+    sdk_function_overwrite_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/function_overwrite.py"
+    sdk_safe_then_alias_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/safe_then_alias.py"
+    sdk_local_safe_override_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/local_safe_override.py"
+    sdk_import_time_dynamic_file = fixture / "src/wes_plugin_sdk/src/wes_plugin_sdk/import_time_dynamic.py"
     core_file = fixture / "src/app/core.py"
     core_dynamic_file = fixture / "src/app/core_dynamic.py"
     core_constant_file = fixture / "src/app/core_constant.py"
@@ -782,9 +782,9 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
         "core_forbidden_call_before_overwrite_is_blocked": "workline_plugins.demo"
         in violations_for("src/app/core_function_overwrite.py"),
         "sdk_forbidden_call_before_overwrite_is_blocked": "pathlib.Path.rglob"
-        in violations_for("packages/wes_plugin_sdk/src/wes_plugin_sdk/function_overwrite.py"),
+        in violations_for("src/wes_plugin_sdk/src/wes_plugin_sdk/function_overwrite.py"),
         "sdk_safe_call_before_forbidden_alias_is_clean": violations_for(
-            "packages/wes_plugin_sdk/src/wes_plugin_sdk/safe_then_alias.py"
+            "src/wes_plugin_sdk/src/wes_plugin_sdk/safe_then_alias.py"
         )
         == "",
     } == {
@@ -799,7 +799,7 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
         )
         == "",
         "sdk_function_local_safe_alias_is_clean": violations_for(
-            "packages/wes_plugin_sdk/src/wes_plugin_sdk/local_safe_override.py"
+            "src/wes_plugin_sdk/src/wes_plugin_sdk/local_safe_override.py"
         )
         == "",
     } == {
@@ -817,7 +817,7 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
         assert mutable_constructor in result.stderr
     assert "计划外依赖实例化" in result.stderr
     assert "SDK 模块执行动态扫描/导入: importlib.import_module" in violations_for(
-        "packages/wes_plugin_sdk/src/wes_plugin_sdk/assignment_alias.py"
+        "src/wes_plugin_sdk/src/wes_plugin_sdk/assignment_alias.py"
     )
     for filesystem_scan in (
         "pathlib.Path.rglob",
@@ -826,16 +826,14 @@ def test_core_and_plugin_dependency_scanners_reject_forbidden_fixture_imports(tm
         "glob.glob",
         "glob.iglob",
     ):
-        assert filesystem_scan in violations_for("packages/wes_plugin_sdk/src/wes_plugin_sdk/path_receiver.py")
+        assert filesystem_scan in violations_for("src/wes_plugin_sdk/src/wes_plugin_sdk/path_receiver.py")
     assert "concurrent.futures.ThreadPoolExecutor" in violations_for(
-        "packages/wes_plugin_sdk/src/wes_plugin_sdk/import_time_contexts.py"
+        "src/wes_plugin_sdk/src/wes_plugin_sdk/import_time_contexts.py"
     )
-    assert "importlib.import_module" in violations_for(
-        "packages/wes_plugin_sdk/src/wes_plugin_sdk/import_time_dynamic.py"
-    )
-    assert "pathlib.Path.rglob" in violations_for("packages/wes_plugin_sdk/src/wes_plugin_sdk/function_flow.py")
-    assert "pathlib.Path.rglob" in violations_for("packages/wes_plugin_sdk/src/wes_plugin_sdk/function_overwrite.py")
-    assert violations_for("packages/wes_plugin_sdk/src/wes_plugin_sdk/safe_then_alias.py") == ""
+    assert "importlib.import_module" in violations_for("src/wes_plugin_sdk/src/wes_plugin_sdk/import_time_dynamic.py")
+    assert "pathlib.Path.rglob" in violations_for("src/wes_plugin_sdk/src/wes_plugin_sdk/function_flow.py")
+    assert "pathlib.Path.rglob" in violations_for("src/wes_plugin_sdk/src/wes_plugin_sdk/function_overwrite.py")
+    assert violations_for("src/wes_plugin_sdk/src/wes_plugin_sdk/safe_then_alias.py") == ""
     assert "CORE_PLUGIN_DEPENDENCY_BOUNDARY" in result.stderr
     assert "core_dynamic.py" in result.stderr
     assert "workline_plugins.demo" in violations_for("src/app/core_constant.py")

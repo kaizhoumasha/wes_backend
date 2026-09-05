@@ -138,7 +138,6 @@ def test_backend_development_services_mount_all_runtime_source_roots() -> None:
         "${SOURCE_MOUNT:-./src}:/app/src:rw",
         "./main.py:/app/main.py:ro",
         "./deployment:/app/deployment:rw",
-        "./packages/wes_plugin_sdk/src:/app/packages/wes_plugin_sdk/src:rw",
         "./workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:rw",
     }
 
@@ -169,7 +168,6 @@ def test_celery_development_reload_watches_core_sdk_and_plugin_sources() -> None
     expected_paths = (
         "/app/src",
         "/app/deployment",
-        "/app/packages/wes_plugin_sdk/src",
         "/app/workline_plugins/rough_sorter/src",
     )
 

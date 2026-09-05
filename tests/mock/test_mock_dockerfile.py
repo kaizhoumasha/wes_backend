@@ -10,7 +10,7 @@ def _dockerfile_copy_lines() -> set[str]:
 def test_mock_dockerfile_copies_shared_runtime_dependencies() -> None:
     copy_lines = _dockerfile_copy_lines()
 
-    assert "COPY packages/wes_plugin_sdk/src/wes_plugin_sdk/ /app/wes_plugin_sdk/" in copy_lines
+    assert "COPY src/wes_plugin_sdk/src/wes_plugin_sdk/ /app/wes_plugin_sdk/" in copy_lines
     assert "COPY src/app/wms_adapter/strict_json.py /app/src/app/wms_adapter/strict_json.py" in copy_lines
     assert "COPY src/app/transport/callback_json.py /app/src/app/transport/callback_json.py" in copy_lines
     assert "COPY src/core/uuid7.py /app/src/core/uuid7.py" in copy_lines

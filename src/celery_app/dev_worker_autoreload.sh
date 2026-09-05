@@ -4,7 +4,7 @@ set -eu
 # Development-only auto-restart wrapper for Celery worker.
 # It watches python source files and restarts the worker process on changes.
 
-DEFAULT_WATCH_PATHS="/app/src /app/deployment /app/packages/wes_plugin_sdk/src /app/workline_plugins/rough_sorter/src"
+DEFAULT_WATCH_PATHS="/app/src /app/deployment /app/workline_plugins/rough_sorter/src"
 WATCH_PATHS="${CELERY_WATCH_PATHS:-$DEFAULT_WATCH_PATHS}"
 RELOAD_INTERVAL="${CELERY_RELOAD_INTERVAL:-2}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"

@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 _DEPENDENCY_PATHS = (
-    "packages/wes_plugin_sdk/pyproject.toml",
+    "src/wes_plugin_sdk/pyproject.toml",
     "pyproject.toml",
     "uv.lock",
     "workline_plugins/rough_sorter/pyproject.toml",

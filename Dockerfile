@@ -66,8 +66,8 @@ ENV PIP_INDEX_URL=${PYPI_INSTALL_MIRROR} \
 
 # 复制依赖文件
 COPY pyproject.toml uv.lock ./
-COPY packages/wes_plugin_sdk/pyproject.toml packages/wes_plugin_sdk/pyproject.toml
-COPY packages/wes_plugin_sdk/src packages/wes_plugin_sdk/src
+COPY src/wes_plugin_sdk/pyproject.toml src/wes_plugin_sdk/pyproject.toml
+COPY src/wes_plugin_sdk/src src/wes_plugin_sdk/src
 COPY workline_plugins/rough_sorter/pyproject.toml workline_plugins/rough_sorter/pyproject.toml
 COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
 COPY workline_plugins/manual_bin_processing/pyproject.toml workline_plugins/manual_bin_processing/pyproject.toml
