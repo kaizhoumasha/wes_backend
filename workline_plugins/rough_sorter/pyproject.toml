@@ -10,7 +10,7 @@ requires-python = ">=3.13"
 dependencies = ["wes-plugin-sdk==0.1.0"]
 
 [tool.uv.sources]
-wes-plugin-sdk = { path = "../../packages/wes_plugin_sdk" }
+wes-plugin-sdk = { path = "../../src/wes_plugin_sdk" }
 
 [dependency-groups]
 dev = [
@@ -67,6 +67,6 @@ quote-style = "double"
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
 include = ["src"]
-extraPaths = ["src", "../..", "../../packages/wes_plugin_sdk/src"]
+extraPaths = ["src", "../..", "../../src/wes_plugin_sdk/src"]
 reportMissingImports = "error"
 reportUndefinedVariable = "error"

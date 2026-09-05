@@ -1554,7 +1554,7 @@ def test_workspace_lock_and_image_explicitly_include_sdk_and_plugin() -> None:
     assert 'wes-rough-sorter-plugin = { path = "workline_plugins/rough_sorter" }' in pyproject
     assert 'name = "wes-rough-sorter-plugin"' in lock
     assert 'source = { directory = "workline_plugins/rough_sorter" }' in lock
-    assert "COPY packages/wes_plugin_sdk/src packages/wes_plugin_sdk/src" in dockerfile
+    assert "COPY src/wes_plugin_sdk/src src/wes_plugin_sdk/src" in dockerfile
     assert "COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src" in dockerfile
 
 

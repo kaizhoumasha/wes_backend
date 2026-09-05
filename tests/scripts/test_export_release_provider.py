@@ -15,7 +15,7 @@ from scripts import export_release_provider as exporter
 from src.utils import permission_scanner as permission_scanner_module
 
 DEPENDENCY_PATHS = (
-    "packages/wes_plugin_sdk/pyproject.toml",
+    "src/wes_plugin_sdk/pyproject.toml",
     "pyproject.toml",
     "uv.lock",
     "workline_plugins/rough_sorter/pyproject.toml",

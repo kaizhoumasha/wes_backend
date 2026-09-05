@@ -18,7 +18,11 @@ from pathlib import Path, PurePosixPath
 
 HEAVY_DIRECT_GLOB = "tests/{integration,e2e,resilience,load,mock}/**/test_*.py"
 HUMAN_DOCUMENT_SUFFIXES = frozenset({".md", ".mdx", ".rst", ".docx", ".pdf", ".eddx"})
-RETIRED_ARCHIVE_ROOTS = ("docs/archive/", "docs/superpowers/archive/")
+RETIRED_REMOVED_ROOTS = (
+    "docs/archive/",
+    "docs/superpowers/archive/",
+    "packages/wes_plugin_sdk/",
+)
 RETIRED_REMOVED_PATHS = frozenset(
     {
         "Jenkinsfile",
@@ -39,7 +43,6 @@ CANDIDATE_GLOBS = (
     "src/**",
     "deployment/**",
     "nginx/**",
-    "packages/wes_plugin_sdk/**",
     "main.py",
     "migrations/**",
     "alembic.ini",
@@ -539,7 +542,7 @@ def filter_deleted_retired_archive_paths(changed_files: Iterable[str], *, repo_r
     for raw_path in changed_files:
         normalized_path = _validate_repository_relative(raw_path, field="changed path", allow_glob=False)
         is_retired = normalized_path in RETIRED_REMOVED_PATHS or any(
-            normalized_path.startswith(root) for root in RETIRED_ARCHIVE_ROOTS
+            normalized_path.startswith(root) for root in RETIRED_REMOVED_ROOTS
         )
         current_path = repo_root / normalized_path
         if is_retired and not (current_path.exists() or current_path.is_symlink()):

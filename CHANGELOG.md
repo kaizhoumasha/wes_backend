@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.4.0] - 2026-09-05
+
+### Changed
+
+- 将独立 `wes-plugin-sdk` 项目迁入 `src/wes_plugin_sdk/`，工作线插件实现继续位于 `workline_plugins/`，`deployment/` 仅保留装配关联职责。
+- 同步根项目、业务插件、Docker、开发热更新和 HEAVY selector 的 SDK 路径，并移除被 `src/` 根路径覆盖的重复挂载与监听。
+
+### Verification
+
+- 聚焦测试、SDK wheel 一致性、两类 Docker 镜像构建和锁文件检查通过；HEAVY selector 选中的 8 项测试文件共 147 项通过。
+
 ## [0.31.3.0] - 2026-09-05
 
 ### Added

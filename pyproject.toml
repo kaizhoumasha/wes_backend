@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-wes-plugin-sdk = { path = "packages/wes_plugin_sdk" }
+wes-plugin-sdk = { path = "src/wes_plugin_sdk" }
 wes-rough-sorter-plugin = { path = "workline_plugins/rough_sorter" }
 wes-manual-bin-processing-plugin = { path = "workline_plugins/manual_bin_processing" }
 
@@ -256,6 +256,7 @@ fixable = ["ALL"]
 [tool.ruff.lint.isort]
 # 导入排序配置
 known-first-party = ["src"]
+known-third-party = ["wes_plugin_sdk"]
 section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
 
 [tool.ruff.lint.pycodestyle]

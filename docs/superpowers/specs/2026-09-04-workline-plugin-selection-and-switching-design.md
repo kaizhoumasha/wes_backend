@@ -34,7 +34,7 @@ scope: 工作线插件选择、显式装配、运行代际、空闲切换、前�
 | WorkLine 配置、启停和 START 页面 | 在现有页面改成业务插件选择与配置，不建立第二套管理页面 |
 | 设备管理页与 ECS 发现抽屉 | 复用单 Endpoint 比对、状态/能力展示和显式接管；不在设备页维护 WorkLine 归属 |
 | 前端 `DESIGN.md` | 复用工业琥珀、紧凑表格、`StandardDialog`/`StandardDrawer`、状态色和响应式规则 |
-| `packages/wes_plugin_sdk` | 保留公开 import 与独立构建能力，仅做物理目录迁移 |
+| `src/wes_plugin_sdk` | 保留公开 import 与独立构建能力，仅做物理目录迁移 |
 
 当前 `deployment/rough_sorter_composition.py`、Web 和 Celery 仍围绕粗分机装配；人工拣料 prepare 仍判断固定插件键；
 Worker 仍在任一活动 Epoch 存在时拒绝启动。这些是本设计需要消除的主要偏移。
@@ -416,8 +416,8 @@ LLM integration: 不涉及，无 eval。
 
 ## 14. Implementation Tasks
 
-> **实施状态（2026-09-05）：** T1–T5 已在后端 `codex/workline-plugin-selection-switching` 完成；T6 已在前端
-> `codex/workline-plugin-selection-switching-ui` 完成并通过 Vitest、合同/权限门禁及浏览器 QA。T7–T8 保持独立后续切片。
+> **实施状态（2026-09-05）：** T1–T6 已合入前后端 `develop`；T8 已在 `codex/wes-plugin-sdk-root-convergence`
+> 完成目录迁移并通过 wheel、导入、Docker、路径残留与 HEAVY 验证。T7 保持独立后续切片。
 
 - [x] **T1 (P1, human: ~1d / CC: ~2h)** — 合同 — 同步 SRS、四个插件身份、WMS/WES 所有权和独立出口
   - Surfaced by: Architecture — 旧人工统一插件约定与目标冲突
@@ -448,7 +448,7 @@ LLM integration: 不涉及，无 eval。
   - Surfaced by: Architecture D7 — 各业务域负责自己的任务选择与解释
   - Files: `workline_plugins/` 及已批准的 WMS integration 域
   - Verify: 每插件测试、两线并行及四线业务验收
-- [ ] **T8 (P2, human: ~1d / CC: ~3h)** — SDK — 将 SDK 机械迁移到 src 下并更新全部路径消费者
+- [x] **T8 (P2, human: ~1d / CC: ~3h)** — SDK — 将 SDK 机械迁移到 src 下并更新全部路径消费者
   - Surfaced by: Scope/root convergence
   - Files: `src/wes_plugin_sdk/`、根依赖、Docker、scripts、tests、HEAVY mapping
   - Verify: wheel 构建/安装、导入、Docker、残留扫描和 selector
