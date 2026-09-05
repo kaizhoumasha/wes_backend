@@ -86,19 +86,34 @@ def test_transport_openapi_allows_conflict_without_an_associated_task() -> None:
         "schema"
     ]["properties"]["data"]
 
-    assert data_schema == {
-        "oneOf": [
-            {"type": "object", "additionalProperties": False, "required": [], "properties": {}},
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["transport_task_id"],
-                "properties": {
-                    "transport_task_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": r".*\S.*"}
-                },
+    assert data_schema["oneOf"][:2] == [
+        {"type": "object", "additionalProperties": False, "required": [], "properties": {}},
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["transport_task_id"],
+            "properties": {
+                "transport_task_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": r".*\S.*"}
             },
-        ]
-    }
+        },
+    ]
+
+
+def test_transport_openapi_exposes_retryable_member_position_evidence_conflict() -> None:
+    document = build_transport_openapi_document()
+    data_schema = document["paths"]["/api/v1/wms/events"]["post"]["responses"]["409"]["content"]["application/json"][
+        "schema"
+    ]["properties"]["data"]
+
+    assert {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["transport_task_id", "reason_code"],
+        "properties": {
+            "transport_task_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": r".*\S.*"},
+            "reason_code": {"type": "string", "enum": ["MEMBER_POSITION_EVIDENCE_PENDING"]},
+        },
+    } in data_schema["oneOf"]
 
 
 def _walk_schemas(schema: object):

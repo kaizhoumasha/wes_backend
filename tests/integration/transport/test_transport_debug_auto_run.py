@@ -411,9 +411,10 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
                     run.run_id,
                     transport,
                 )
-                assert await service.advance_run(run.run_id) is False
+                assert await service.advance_run(run.run_id) is True
                 partial = await service.get_run(run.run_id)
                 assert partial.current_phase == "BINS_TO_RACK"
+                assert partial.observed_bin_ids == (group.bins[0].bin_id,)
                 assert len(transport.created) == created_count
             await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
             assert await service.advance_run(run.run_id) is True

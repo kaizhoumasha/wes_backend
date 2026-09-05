@@ -39,7 +39,7 @@ from src.app.transport.models import (
     TransportResourceBinding,
     TransportTask,
 )
-from src.app.wms_adapter.transport_wire import RESULT_OPERATION
+from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
@@ -194,6 +194,50 @@ async def _complete_transport_step(
     operation_id = new_uuid7()
     callback_operation_ids.append(operation_id)
     callback_timestamp = int(timezone.now_utc().timestamp() * 1000)
+    if phase is TransportDebugRunPhase.BINS_TO_RACK:
+        early = await record_valid_callback(
+            runtime.service,
+            operation_id=operation_id,
+            transport_task_id=transport_task_id,
+            operation=RESULT_OPERATION,
+            timestamp=callback_timestamp,
+            payload=payload,
+        )
+        assert early == {
+            "http_status": 409,
+            "code": "CONFLICT",
+            "timestamp": callback_timestamp,
+            "data": {
+                "transport_task_id": transport_task_id,
+                "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
+            },
+        }
+        assert (await debug_run_service.get_run(run_id)).observed_bin_ids == ()
+        results = payload["results"]
+        assert isinstance(results, list)
+        for result in results:
+            assert isinstance(result, dict)
+            position_operation_id = new_uuid7()
+            callback_operation_ids.append(position_operation_id)
+            position = await record_valid_callback(
+                runtime.service,
+                operation_id=position_operation_id,
+                transport_task_id=transport_task_id,
+                operation=POSITION_OPERATION,
+                timestamp=callback_timestamp,
+                payload={
+                    "container_id": result["container_id"],
+                    "milestone": "TARGET_PLACED",
+                    "final_position": result["final_position"],
+                },
+            )
+            assert position["code"] == "RECEIVED"
+        assert await runtime.service.process_pending_evidence(10) == len(results)
+        assert await debug_run_service.advance_run(run_id) is True
+        progress = await debug_run_service.get_run(run_id)
+        assert progress.current_phase is TransportDebugRunPhase.BINS_TO_RACK
+        assert progress.observed_bin_ids == tuple(result["container_id"] for result in results)
+
     received = await record_valid_callback(
         runtime.service,
         operation_id=operation_id,

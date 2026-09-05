@@ -78,6 +78,10 @@ class _Transport:
         self.repository.tasks[task_id] = _task(task_id, client_request_id, request.kind.value)  # type: ignore[attr-defined]
         return TransportHandle(task_id, client_request_id)
 
+    async def is_unsent_debug_task_finalizable_in_session(self, db: object, task_id: str) -> bool:
+        del db, task_id
+        return False
+
 
 class _Repository:
     def __init__(self, run: TransportDebugRun, step: TransportDebugRunStep) -> None:
@@ -487,6 +491,81 @@ async def test_pending_transport_callback_waits_before_creating_the_next_step() 
     assert len(repository.steps) == 1
 
 
+async def test_bin_return_reports_only_exactly_confirmed_members_before_aggregate_success() -> None:
+    service, repository, transport = _harness(phase="BINS_TO_RACK", status="WAITING", task_id="transport-1")
+    repository.tasks["transport-1"] = _task("transport-1", CLIENT_IDS[0], "BIN_MOVE", status="ACCEPTED")
+    repository.members["transport-1"] = [
+        _member(
+            "transport-1",
+            object_type="BIN",
+            object_id="A000001922",
+            source={"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
+            target={"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "SLOT-01"},
+            face=None,
+        ),
+        _member(
+            "transport-1",
+            object_type="BIN",
+            object_id="A000002653",
+            source={"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
+            target={"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "SLOT-02"},
+            face=None,
+        ),
+    ]
+    repository.members["transport-1"][1].status = "PENDING"
+    repository.members["transport-1"][1].final_position_json = None
+
+    assert await service.advance_run("debug-run-1") is True
+    partial = await service.get_run("debug-run-1")
+    assert partial.current_phase == "BINS_TO_RACK"
+    assert partial.observed_bin_ids == ("A000001922",)
+    assert partial.current_step is not None and partial.current_step.status == "WAITING"
+    assert len(repository.steps) == 1
+    assert transport.calls == []
+
+    repository.members["transport-1"][1].status = "SUCCEEDED"
+    repository.members["transport-1"][1].final_position_json = repository.members["transport-1"][1].target_json
+    assert await service.advance_run("debug-run-1") is True
+    assert (await service.get_run("debug-run-1")).observed_bin_ids == ("A000001922", "A000002653")
+    assert len(repository.steps) == 1
+
+    repository.tasks["transport-1"].status = "SUCCEEDED"
+    assert await service.advance_run("debug-run-1") is True
+    assert repository.run.current_phase == "RACK_TO_STORAGE"
+
+
+async def test_bin_return_does_not_count_wrong_target_or_unknown_position_as_confirmed() -> None:
+    service, repository, _ = _harness(phase="BINS_TO_RACK", status="WAITING", task_id="transport-1")
+    repository.tasks["transport-1"] = _task("transport-1", CLIENT_IDS[0], "BIN_MOVE", status="ACCEPTED")
+    member = _member(
+        "transport-1",
+        object_type="BIN",
+        object_id="A000001922",
+        source={"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
+        target={"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "SLOT-01"},
+        face=None,
+    )
+    member.final_position_json = {"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "WRONG"}
+    repository.members["transport-1"] = [member]
+
+    assert await service.advance_run("debug-run-1") is False
+    assert (await service.get_run("debug-run-1")).observed_bin_ids == ()
+    assert repository.run.current_phase == "BINS_TO_RACK"
+    assert len(repository.steps) == 1
+
+    member.final_position_json = None
+    member.position_unknown = True
+    repository.tasks["transport-1"].status = "RECONCILING"
+    repository.tasks["transport-1"].reason_code = "TRANSPORT_POSITION_UNKNOWN"
+    assert await service.advance_run("debug-run-1") is True
+    unknown = await service.get_run("debug-run-1")
+    assert unknown.observed_bin_ids == ()
+    assert unknown.current_phase == "BINS_TO_RACK"
+    assert unknown.status == "NEEDS_ATTENTION"
+    assert unknown.attention_code == "TRANSPORT_POSITION_UNKNOWN"
+    assert len(repository.steps) == 1
+
+
 async def test_scan12_uses_set_semantics_and_advances_only_after_every_selected_bin() -> None:
     service, repository, _ = _harness(phase="WAIT_SCAN12", status="WAITING")
     boundary = timezone.to_db_datetime(NOT_BEFORE_MS / 1000)
@@ -508,7 +587,7 @@ async def test_scan12_uses_set_semantics_and_advances_only_after_every_selected_
     assert await service.advance_run("debug-run-1") is True
     snapshot = await service.get_run("debug-run-1")
     assert snapshot.current_phase == "BINS_TO_RACK"
-    assert snapshot.observed_bin_ids == ("A000001922", "A000002653")
+    assert snapshot.observed_bin_ids == ()
     assert snapshot.current_step is not None and snapshot.current_step.client_request_id is not None
 
 
