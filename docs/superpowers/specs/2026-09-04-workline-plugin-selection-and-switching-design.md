@@ -95,7 +95,7 @@ deployment/                  唯一关联目录
 - WMS WAIT 后继规划与 Transport outcome 应用；
 - 当前插件业务任务的关闭 blocker。
 
-不为每项能力创建 registry，也不构造每插件 Runtime。`deployment/plugins.py` 显式列出本制品安装的插件：
+不为每项能力创建 registry，也不构造每插件 Runtime。`deployment/plugin_composition.py` 显式列出本制品安装的插件：
 
 ```text
 已安装插件对象 tuple
@@ -106,7 +106,7 @@ deployment/                  唯一关联目录
 ```
 
 Web 和 Celery 在各自进程与事件循环内读取同一清单定义，构造一次共享 Execution、Transport、DeviceCommand 和 WMS Runtime。
-新增插件只增加真实插件包，并在 `deployment/plugins.py` 增加一项显式装配。
+新增插件只增加真实插件包，并在 `deployment/plugin_composition.py` 增加一项显式装配。
 
 ## 5. WorkLine 配置
 
@@ -393,7 +393,7 @@ LLM integration: 不涉及，无 eval。
 | 切片 | 范围 | 独立出口 |
 | --- | --- | --- |
 | A 合同 | 同步 SRS 与四个业务插件身份；冻结已有 WMS wire 和业务所有权 | 文档/合同联合批准；不虚构未批准 operation |
-| B 宿主装配 | 单一插件对象、`deployment/plugins.py`、Web/Celery 共享 Runtime | 粗分现有行为不变；真实 Worker 与多 binding 测试通过 |
+| B 宿主装配 | 单一插件对象、`deployment/plugin_composition.py`、Web/Celery 共享 Runtime | 粗分现有行为不变；真实 Worker 与多 binding 测试通过 |
 | C 配置与切换 | WorkLine.plugin_key、列表/预检、完整 blocker、原子停用、Epoch 安全恢复 | 后端 API/迁移/并发/HEAVY 通过，可独立交付宿主标准件 |
 | D 前端 | 业务插件选择、配置、检查项、阻塞原因和切换流程 | 合同、权限、Vitest 与浏览器 QA 通过 |
 | E 业务插件 | 自动上架/拣料、人工上架/拣料按已批准合同交付 | 每个插件独立业务测试；四线与切换验收通过后才标记可启动 |
