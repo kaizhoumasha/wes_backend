@@ -7,7 +7,7 @@ from typing import Any, Protocol, cast
 
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.repositories.device_repository import device_repository
-from src.app.workline.installed_plugin import InstalledWorkLinePlugin, resolve_installed_plugin
+from src.app.workline.installed_plugin import InstalledWorkLinePlugin, parse_device_bindings, resolve_installed_plugin
 from src.app.workline.models.workline import (
     LineType,
     WorkLine,
@@ -164,12 +164,15 @@ class WorkLineConfigurationService:
         if normalized_plugin_key is not None:
             plugin = resolve_installed_plugin(self._plugins, normalized_plugin_key)
             line_type = workline.line_type if isinstance(workline.line_type, LineType) else LineType(workline.line_type)
-            reasons = self._plugin_incompatibility_reasons(plugin, line_type, workline, selected_devices)
+            reasons = self._plugin_incompatibility_reasons(plugin, line_type)
+            reasons += self._configuration_reasons(plugin, config, selected_devices, require_complete=False)
             if reasons:
                 raise BusinessException(
                     message="业务插件与工作线设备不兼容",
                     detail={"plugin_key": normalized_plugin_key, "reasons": list(reasons)},
                 )
+        elif config not in ({}, {"device_bindings": {}}):
+            raise BusinessException(message="未选择插件时不能保存角色配置")
 
         changed_device_ids: list[int] = []
         for device in devices:
@@ -208,19 +211,43 @@ class WorkLineConfigurationService:
                 await self._device_cache_invalidator.invalidate_cache(cache, invalidate_list=True)
         return WorkLineConfigurationResult(workline=updated, device_codes=tuple(sorted(normalized_codes)))
 
+    @staticmethod
+    def _configuration_reasons(
+        plugin: InstalledWorkLinePlugin,
+        config: object,
+        devices: tuple[Any, ...],
+        *,
+        require_complete: bool,
+    ) -> tuple[str, ...]:
+        try:
+            bindings = parse_device_bindings(config, plugin.device_roles, require_complete=require_complete)
+        except ValueError:
+            return ("CONFIGURATION_INVALID",)
+        by_code = {device.device_code: device for device in devices if not device.is_deleted}
+        reasons: list[str] = []
+        for code in bindings.values():
+            device = by_code.get(code)
+            if device is None:
+                reasons.append(f"DEVICE_BINDING_UNKNOWN:{code}")
+            elif require_complete:
+                if not device.is_active:
+                    reasons.append(f"DEVICE_INACTIVE:{code}")
+                if device.id is None or not device.endpoint_base_url:
+                    reasons.append(f"DEVICE_ENDPOINT_MISSING:{code}")
+        return tuple(reasons)
+
     async def available_plugins(self, db: Any, *, workline_id: int) -> tuple[WorkLinePluginSummary, ...]:
         workline = await self._worklines.get_by_id(db, workline_id)
         if workline is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
-        devices = tuple(await self._devices.get_by_work_line_id(db, workline_id))
-        return self._summarize_plugins(workline, devices)
+        return self._summarize_plugins(workline)
 
     async def configuration_status(self, db: Any, *, workline_id: int) -> WorkLineConfigurationStatus:
         workline = await self._worklines.get_by_id(db, workline_id)
         if workline is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
         devices = tuple(await self._devices.get_by_work_line_id(db, workline_id))
-        summaries = self._summarize_plugins(workline, devices)
+        summaries = self._summarize_plugins(workline)
         checks = [WorkLineService._run_mode_check(workline), WorkLineService._runtime_config_check(workline)]
         selected = next((item for item in summaries if item.plugin_key == workline.plugin_key), None)
         if not workline.plugin_key:
@@ -237,14 +264,10 @@ class WorkLineConfigurationService:
         else:
             selected_plugin = resolve_installed_plugin(self._plugins, selected.plugin_key)
             configuration_reasons = list(selected.incompatibility_reasons)
-            if selected_plugin.configuration_checker is not None:
-                checked = selected_plugin.configuration_checker(workline, devices)
-                if type(checked) is not tuple or any(not isinstance(reason, str) or not reason for reason in checked):
-                    raise TypeError("configuration_checker must return tuple[str, ...]")
-                checked_reasons = cast("tuple[str, ...]", checked)
-                configuration_reasons.extend(
-                    reason for reason in checked_reasons if reason not in configuration_reasons
-                )
+            checked_reasons = self._configuration_reasons(
+                selected_plugin, workline.config, devices, require_complete=True
+            )
+            configuration_reasons.extend(reason for reason in checked_reasons if reason not in configuration_reasons)
             checks.append(
                 WorkLineService._check(
                     "PLUGIN_CONFIGURATION_COMPATIBLE",
@@ -263,17 +286,18 @@ class WorkLineConfigurationService:
             checks=checks,
         )
 
-    def _summarize_plugins(self, workline: WorkLine, devices: tuple[Any, ...]) -> tuple[WorkLinePluginSummary, ...]:
+    def _summarize_plugins(self, workline: WorkLine) -> tuple[WorkLinePluginSummary, ...]:
         line_type = workline.line_type if isinstance(workline.line_type, LineType) else LineType(workline.line_type)
         summaries: list[WorkLinePluginSummary] = []
         for plugin in self._plugins:
-            reasons = self._plugin_incompatibility_reasons(plugin, line_type, workline, devices)
+            reasons = self._plugin_incompatibility_reasons(plugin, line_type)
             summaries.append(
                 WorkLinePluginSummary(
                     plugin_key=plugin.plugin_key,
                     plugin_version=plugin.plugin_version,
                     display_name=plugin.display_name,
                     supported_line_types=plugin.supported_line_types,
+                    device_roles=plugin.device_roles,
                     compatible=not reasons,
                     incompatibility_reasons=reasons,
                 )
@@ -284,17 +308,10 @@ class WorkLineConfigurationService:
     def _plugin_incompatibility_reasons(
         plugin: InstalledWorkLinePlugin,
         line_type: LineType,
-        workline: WorkLine,
-        devices: tuple[Any, ...],
     ) -> tuple[str, ...]:
         reasons: list[str] = []
         if not plugin.supports(line_type):
             reasons.append(f"LINE_TYPE_UNSUPPORTED:{line_type.value}")
-        if plugin.compatibility_checker is not None:
-            checked = plugin.compatibility_checker(workline, devices)
-            if type(checked) is not tuple or any(not isinstance(reason, str) or not reason for reason in checked):
-                raise TypeError("compatibility_checker must return tuple[str, ...]")
-            reasons.extend(cast("tuple[str, ...]", checked))
         return tuple(reasons)
 
     async def deactivate(

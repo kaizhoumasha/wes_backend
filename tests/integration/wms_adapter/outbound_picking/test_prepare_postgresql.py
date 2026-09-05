@@ -93,7 +93,6 @@ async def _seed_ready_workline(db, *, now: datetime):  # type: ignore[no-untyped
         device_code=f"MANUAL-DEVICE-{identity[-12:]}",
         device_name="Manual line conveyor",
         work_line_id=workline.id,
-        device_role="CONVEYOR",
         endpoint_base_url="http://manual-ecs:8080",
     )
     db.add_all((epoch, device))
@@ -102,7 +101,7 @@ async def _seed_ready_workline(db, *, now: datetime):  # type: ignore[no-untyped
         line_run_epoch_id=epoch.id,
         device_id=device.id,
         device_code=device.device_code,
-        device_role=device.device_role,
+        device_role="CONVEYOR",
         endpoint_base_url="http://manual-ecs:8080",
         contract_key="manual.conveyor",
         contract_version="1.0",

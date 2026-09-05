@@ -81,6 +81,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         from deployment.plugin_composition import build_deployment_runtime
 
         deployment_runtime = build_deployment_runtime(
+            enabled_plugin_keys=settings.ENABLED_WORKLINE_PLUGINS,
             session_factory=db_module.AsyncSessionLocal,
             transport_runtime=transport_runtime,
             device_command_service=device_command_runtime.command_service,

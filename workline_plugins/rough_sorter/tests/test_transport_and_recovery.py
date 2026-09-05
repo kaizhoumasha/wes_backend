@@ -33,7 +33,7 @@ from rough_sorter.handlers.transport_outcome_published import TransportOutcomePu
 
 def _outlet() -> DevicePosition:
     return DevicePosition(
-        location_id="pipeline-outlet",
+        location_id="PIPELINE_OUTLET",
         location_type="PIPELINE_OUTLET",
         material_trace_id=TRACE_ID,
     )
@@ -107,7 +107,7 @@ def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack()
     assert decision.request_data["current_rack_id"] == "rack-new"
     assert decision.request_data["source_position"] == {
         "type": "HANDOFF_POSITION",
-        "location_code": "pipeline-outlet",
+        "location_code": "PIPELINE_OUTLET",
     }
 
 
@@ -313,7 +313,7 @@ def test_recovery_abort_closes_without_deleting_or_inventing_position() -> None:
 
 def test_recovery_authoritative_non_rack_position_rejects_rack_identity() -> None:
     invalid_position = DevicePosition(
-        location_id="pipeline-outlet",
+        location_id="PIPELINE_OUTLET",
         location_type="PIPELINE_OUTLET",
         material_trace_id=TRACE_ID,
         rack_id="rack-must-not-be-here",
@@ -365,7 +365,7 @@ def test_recovery_authoritative_position_rejects_incomplete_rack_cell_identity()
 
 def test_recovery_device_continuation_rejects_non_rack_position_with_bin_identity() -> None:
     invalid_source = DevicePosition(
-        location_id="pipeline-inlet",
+        location_id="PIPELINE_INLET",
         location_type="PIPELINE_INLET",
         material_trace_id=TRACE_ID,
         bin_id="bin-must-not-be-here",
@@ -443,7 +443,7 @@ def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> Non
 
 def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
     inlet = DevicePosition(
-        location_id="pipeline-inlet",
+        location_id="PIPELINE_INLET",
         location_type="PIPELINE_INLET",
         material_trace_id=TRACE_ID,
     )

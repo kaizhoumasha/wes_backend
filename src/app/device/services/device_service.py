@@ -21,8 +21,6 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         {
             "device_code",
             "work_line_id",
-            "device_role",
-            "role_index",
             "upstream_device_id",
             "sort_order",
         }

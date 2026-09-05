@@ -15,6 +15,8 @@ from rough_sorter.handlers import (
 
 PLUGIN_KEY = "rough_sorter"
 PLUGIN_VERSION = "1.0.0"
+# WES 逻辑位置参数。由 Epoch/工作线限定作用域, ECS 负责映射物理点位。
+POSITION_ROLES = ("MEASUREMENT_POSITION", "PIPELINE_INLET", "PIPELINE_OUTLET", "NG_POSITION")
 
 type RoughSorterHandler = (
     MaterialEvidenceReadyHandler

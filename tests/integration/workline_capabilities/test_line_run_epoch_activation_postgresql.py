@@ -34,7 +34,6 @@ async def _seed_line_and_device(session_factory: async_sessionmaker[AsyncSession
             device_code="ATOMIC-EPOCH-PG-DEVICE",
             device_name="Atomic Epoch PG Device",
             work_line_id=line.id,
-            device_role="DEVICE_ROLE",
         )
         db.add(device)
         await db.flush()

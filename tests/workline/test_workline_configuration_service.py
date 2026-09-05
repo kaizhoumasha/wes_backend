@@ -7,7 +7,13 @@ import pytest
 
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType, WorkLineConfigurationUpdate, WorkLineCreate, WorkLineUpdate
+from src.app.workline.models.workline import (
+    LineType,
+    WorkLineConfigurationUpdate,
+    WorkLineCreate,
+    WorkLineDeviceRole,
+    WorkLineUpdate,
+)
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BusinessException
@@ -21,8 +27,6 @@ class _Factory:
 def _plugin(
     *,
     blocker: object | None = None,
-    checker: object | None = None,
-    compatibility_checker: object | None = None,
 ) -> InstalledWorkLinePlugin:
     return InstalledWorkLinePlugin(
         display_name="Example",
@@ -35,8 +39,7 @@ def _plugin(
         start_plan_builder=object(),
         supported_line_types=(LineType.AUTO,),
         business_blocker=blocker,
-        compatibility_checker=compatibility_checker,
-        configuration_checker=checker,
+        device_roles=(WorkLineDeviceRole(role_key="SCAN", display_name="识别设备"),),
     )
 
 
@@ -54,6 +57,76 @@ class _Db:
 
     async def rollback(self) -> None:
         self.rollbacks += 1
+
+
+@pytest.mark.asyncio
+async def test_save_checks_submitted_configuration_before_changing_device_ownership() -> None:
+    db = _Db()
+    workline = _workline(config={"device_bindings": {"SCAN": "D-1"}})
+    worklines = _WorkLines(workline)
+    previous = _device("D-1", 7)
+    incoming = _device("D-2", None)
+
+    service = WorkLineConfigurationService(
+        plugins=(_plugin(),),
+        workline_repository=worklines,
+        device_repository=_Devices([previous, incoming]),
+        safety_repository=_Safety(),
+    )
+    with pytest.raises(BusinessException):
+        await service.save(
+            db,
+            workline_id=7,
+            version=3,
+            plugin_key="example_plugin",
+            config={"device_bindings": {"SCAN": "D-1"}},
+            device_codes=("D-2",),
+        )
+    assert workline.config == {"device_bindings": {"SCAN": "D-1"}}
+    assert previous.work_line_id == 7
+    assert incoming.work_line_id is None
+    assert worklines.updates == []
+    assert db.commits == db.flushes == 0
+
+
+@pytest.mark.asyncio
+async def test_save_accepts_new_configuration_even_when_saved_configuration_is_incomplete() -> None:
+    db = _Db()
+    worklines = _WorkLines(_workline(config={}))
+    incoming = _device("D-2", None)
+
+    service = WorkLineConfigurationService(
+        plugins=(_plugin(),),
+        workline_repository=worklines,
+        device_repository=_Devices([incoming]),
+        safety_repository=_Safety(),
+    )
+    await service.save(
+        db,
+        workline_id=7,
+        version=3,
+        plugin_key="example_plugin",
+        config={"device_bindings": {"SCAN": "D-2"}},
+        device_codes=("D-2",),
+    )
+    assert worklines.updates[0]["config"] == {"device_bindings": {"SCAN": "D-2"}}
+    assert incoming.work_line_id == 7
+    assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_configuration_status_checks_saved_config_in_complete_mode() -> None:
+    service = WorkLineConfigurationService(
+        plugins=(_plugin(),),
+        workline_repository=_WorkLines(
+            _workline(plugin_key="example_plugin", config={"device_bindings": {"SCAN": "D-2"}})
+        ),
+        device_repository=_Devices([_device("D-2", 7)]),
+        safety_repository=_Safety(),
+    )
+    result = await service.configuration_status(_Db(), workline_id=7)
+    check_result = next(check for check in result.checks if check.code == "PLUGIN_CONFIGURATION_COMPATIBLE")
+    assert check_result.status == "PASS"
 
 
 class _WorkLines:
@@ -129,6 +202,8 @@ class _Device:
         self.device_code = code
         self.work_line_id = owner
         self.is_deleted = False
+        self.is_active = True
+        self.endpoint_base_url = "http://ecs:8080"
         self.version = 0
 
     def increment_version(self) -> None:
@@ -214,7 +289,7 @@ async def test_save_configuration_replaces_the_complete_device_set_and_commits_o
         workline_id=7,
         version=3,
         plugin_key="example_plugin",
-        config={"mode": "AUTO"},
+        config={"device_bindings": {"SCAN": "D-2"}},
         device_codes=("D-2",),
     )
 
@@ -222,7 +297,9 @@ async def test_save_configuration_replaces_the_complete_device_set_and_commits_o
     assert selected.work_line_id == 7
     assert bound.version == 1
     assert selected.version == 1
-    assert worklines.updates == [{"plugin_key": "example_plugin", "config": {"mode": "AUTO"}, "version": 3}]
+    assert worklines.updates == [
+        {"plugin_key": "example_plugin", "config": {"device_bindings": {"SCAN": "D-2"}}, "version": 3}
+    ]
     assert result.device_codes == ("D-2",)
     assert db.commits == 1
 
@@ -304,15 +381,7 @@ async def test_save_configuration_fails_closed_without_partial_commit(
 async def test_save_configuration_rejects_a_plugin_incompatible_with_selected_devices() -> None:
     db = _Db()
     service = WorkLineConfigurationService(
-        plugins=(
-            _plugin(
-                compatibility_checker=lambda _workline, devices: (
-                    ()
-                    if any(device.device_role == "TRANSFER_DEVICE" for device in devices)
-                    else ("DEVICE_ROLE_MISSING:TRANSFER_DEVICE",)
-                )
-            ),
-        ),
+        plugins=(_plugin(),),
         workline_repository=_WorkLines(_workline()),
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -324,13 +393,13 @@ async def test_save_configuration_rejects_a_plugin_incompatible_with_selected_de
             workline_id=7,
             version=3,
             plugin_key="example_plugin",
-            config={},
+            config={"device_bindings": {"SCAN": "D-MISSING"}},
             device_codes=(),
         )
 
     assert exc_info.value.detail == {
         "plugin_key": "example_plugin",
-        "reasons": ["DEVICE_ROLE_MISSING:TRANSFER_DEVICE"],
+        "reasons": ["DEVICE_BINDING_UNKNOWN:D-MISSING"],
     }
     assert db.commits == 0
 
@@ -339,7 +408,7 @@ async def test_save_configuration_rejects_a_plugin_incompatible_with_selected_de
 async def test_available_plugins_and_configuration_status_report_stable_incompatibility_reasons() -> None:
     workline = _workline(plugin_key="example_plugin", run_mode="AUTO", runtime_config_json={})
     service = WorkLineConfigurationService(
-        plugins=(_plugin(checker=lambda _workline, _devices: ("DEVICE_ROLE_MISSING:TRANSFER_DEVICE",)),),
+        plugins=(_plugin(),),
         workline_repository=_WorkLines(workline),
         device_repository=_Devices([]),
     )
@@ -347,11 +416,12 @@ async def test_available_plugins_and_configuration_status_report_stable_incompat
     plugins = await service.available_plugins(object(), workline_id=7)
     status = await service.configuration_status(object(), workline_id=7)
 
+    assert plugins[0].device_roles[0].role_key == "SCAN"
     assert plugins[0].compatible is True
     assert plugins[0].incompatibility_reasons == ()
     assert status.can_activate is False
     plugin_check = next(check for check in status.checks if check.code == "PLUGIN_CONFIGURATION_COMPATIBLE")
-    assert plugin_check.context["reasons"] == ["DEVICE_ROLE_MISSING:TRANSFER_DEVICE"]
+    assert plugin_check.context["reasons"] == ["CONFIGURATION_INVALID"]
 
 
 @pytest.mark.asyncio
@@ -367,10 +437,7 @@ async def test_available_plugins_checks_candidate_compatibility_without_current_
         start_plan_builder=object(),
         supported_line_types=(LineType.AUTO,),
     )
-    candidate = _plugin(
-        checker=lambda _workline, _devices: ("CONFIGURATION_INVALID",),
-        compatibility_checker=lambda _workline, _devices: (),
-    )
+    candidate = _plugin()
     service = WorkLineConfigurationService(
         plugins=(current, candidate),
         workline_repository=_WorkLines(_workline(plugin_key="current_plugin", config={"current": {}})),
@@ -381,6 +448,33 @@ async def test_available_plugins_checks_candidate_compatibility_without_current_
 
     candidate_summary = next(item for item in plugins if item.plugin_key == "example_plugin")
     assert candidate_summary.compatible is True
+
+
+@pytest.mark.asyncio
+async def test_save_without_plugin_rejects_leftover_configuration_before_writes() -> None:
+    db = _Db()
+    worklines = _WorkLines(_workline())
+    device = _device("D1", None)
+    service = WorkLineConfigurationService(
+        plugins=(_plugin(),),
+        workline_repository=worklines,
+        device_repository=_Devices([device]),
+        safety_repository=_Safety(),
+    )
+
+    with pytest.raises(BusinessException, match="配置"):
+        await service.save(
+            db,
+            workline_id=7,
+            version=3,
+            plugin_key=None,
+            config={"device_bindings": {"SCAN": "D1"}},
+            device_codes=("D1",),
+        )
+
+    assert device.work_line_id is None
+    assert worklines.workline.config == {}
+    assert db.commits == 0
 
 
 @pytest.mark.asyncio

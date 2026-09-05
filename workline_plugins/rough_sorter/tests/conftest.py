@@ -53,10 +53,10 @@ def epoch_snapshot() -> EpochConfigurationSnapshot:
         position_bindings=tuple(
             PositionBindingSnapshot(position_role=role, location_id=location_id, location_type="RACK_CELL")
             for role, location_id in (
-                ("MEASUREMENT_POSITION", "MEASUREMENT-1"),
-                ("PIPELINE_INLET", "INLET-1"),
-                ("PIPELINE_OUTLET", "OUTLET-1"),
-                ("NG_POSITION", "NG-1"),
+                ("MEASUREMENT_POSITION", "MEASUREMENT_POSITION"),
+                ("PIPELINE_INLET", "PIPELINE_INLET"),
+                ("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
+                ("NG_POSITION", "NG_POSITION"),
             )
         ),
     )

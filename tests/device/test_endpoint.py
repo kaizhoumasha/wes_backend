@@ -78,7 +78,6 @@ def _device_payload(endpoint_base_url: str | None) -> dict[str, object]:
     return {
         "device_code": "D-001",
         "device_name": "Device 1",
-        "device_role": "TRANSFER_DEVICE",
         "endpoint_base_url": endpoint_base_url,
     }
 
@@ -104,6 +103,17 @@ def test_device_response_uses_the_same_endpoint_contract() -> None:
     )
 
     assert response.endpoint_base_url == "http://[fd00::20]:8080"
+    assert "device_role" not in response.model_dump()
+    assert "role_index" not in response.model_dump()
+
+
+@pytest.mark.parametrize("field", ["device_role", "role_index"])
+@pytest.mark.parametrize(("schema", "extra"), [(DeviceCreate, {}), (DeviceUpdate, {"version": 1})])
+def test_device_write_rejects_business_role_fields(field: str, schema: type, extra: dict[str, int]) -> None:
+    with pytest.raises(ValidationError, match=field):
+        schema.model_validate(
+            {**_device_payload(None), **extra, field: "TRANSFER_DEVICE" if field == "device_role" else 1}
+        )
 
 
 @pytest.mark.parametrize(("schema", "extra"), [(DeviceCreate, {}), (DeviceUpdate, {"version": 1})])

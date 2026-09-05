@@ -140,7 +140,7 @@ def _release_snapshot_without_confirmation(command_status: PlacementCommandStatu
 
 
 def test_successful_cell_position_creates_placement_report() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     cell = _position(
         "cell-1",
         "RACK_CELL",
@@ -186,8 +186,8 @@ def test_successful_cell_position_creates_placement_report() -> None:
 
 
 def test_successful_ng_position_creates_ng_report() -> None:
-    measurement = _position("measurement", "MEASUREMENT_POSITION")
-    ng = _position("ng-1", "NG_POSITION")
+    measurement = _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION")
+    ng = _position("NG_POSITION", "NG_POSITION")
     readers = _readers((ng.location_id, ng.location_type, TRACE_ID, False))
     fact = DevicePositionConfirmedFact(
         runtime_snapshot=runtime_snapshot(),

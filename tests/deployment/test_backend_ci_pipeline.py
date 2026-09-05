@@ -62,15 +62,16 @@ def test_provider_image_input_validation_rejects_malformed_and_label_mismatch(
 def test_backend_runtime_image_embeds_only_provider_release_artifacts_and_exact_labels() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     validation = dockerfile.split("FROM testing AS provider-artifact-validation\n", maxsplit=1)[1].split(
-        "FROM base AS production-source\n", maxsplit=1
+        "FROM source AS production-source\n", maxsplit=1
     )[0]
-    production_source = dockerfile.split("FROM base AS production-source\n", maxsplit=1)[1].split(
+    production_source = dockerfile.split("FROM source AS production-source\n", maxsplit=1)[1].split(
         "FROM base AS production\n", maxsplit=1
     )[0]
     production = dockerfile.split("FROM base AS production\n", maxsplit=1)[1]
 
     assert "AS production-source" in dockerfile
-    assert "COPY . /app" in production_source
+    assert "FROM source AS production-source" in dockerfile
+    assert "cp -a /context/. /app/" in dockerfile
     assert "/app/tools/release_checker" in production_source
     assert "rm -rf /app/reports/release-provider" in production_source
     assert "rm -rf /app/.agents" in production_source

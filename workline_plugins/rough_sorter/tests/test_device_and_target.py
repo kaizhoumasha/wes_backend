@@ -40,8 +40,8 @@ def _readers(*_positions: tuple[str, str, str | None, bool]):
 
 
 def _device_fact(step: DeviceStep, **overrides: object) -> DevicePositionConfirmedFact:
-    source = _position("measurement", "MEASUREMENT_POSITION")
-    target = _position("pipeline-inlet", "PIPELINE_INLET")
+    source = _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION")
+    target = _position("PIPELINE_INLET", "PIPELINE_INLET")
     values: dict[str, object] = {
         "fact_id": "evidence:3",
         "runtime_snapshot": runtime_snapshot(),
@@ -72,7 +72,7 @@ def _target_fact(result: TargetResult, **overrides: object) -> TargetDecidedFact
         "operation_id": "019d0000-0000-7000-8000-000000000002",
         "material_trace_id": TRACE_ID,
         "result": result,
-        "source_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
+        "source_position": _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
         "current_rack_id": "rack-current",
         "current_rack_fenced": False,
         "device_ready": True,
@@ -82,8 +82,8 @@ def _target_fact(result: TargetResult, **overrides: object) -> TargetDecidedFact
 
 
 def test_inlet_success_creates_transfer_command_only_after_confirmed_position() -> None:
-    inlet = _position("pipeline-inlet", "PIPELINE_INLET")
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    inlet = _position("PIPELINE_INLET", "PIPELINE_INLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     readers = _readers(
         (inlet.location_id, inlet.location_type, TRACE_ID, False),
         (outlet.location_id, outlet.location_type, None, True),
@@ -111,8 +111,8 @@ def test_inlet_success_creates_transfer_command_only_after_confirmed_position() 
 
 
 def test_outlet_success_requests_target_cell_and_does_not_place_early() -> None:
-    inlet = _position("pipeline-inlet", "PIPELINE_INLET")
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    inlet = _position("PIPELINE_INLET", "PIPELINE_INLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     readers = _readers((outlet.location_id, outlet.location_type, TRACE_ID, False))
     fact = _device_fact(
         DeviceStep.TRANSFER_TO_OUTLET,
@@ -136,21 +136,21 @@ def test_outlet_success_requests_target_cell_and_does_not_place_early() -> None:
         "material_trace_id": TRACE_ID,
         "pkg_id": "pkg-1",
         "inbound_admission_id": "admission-1",
-        "source_position": {"type": "HANDOFF_POSITION", "location_code": "pipeline-outlet"},
+        "source_position": {"type": "HANDOFF_POSITION", "location_code": "PIPELINE_OUTLET"},
         "current_rack_id": "rack-current",
     }
 
 
 @pytest.mark.parametrize("step", [DeviceStep.MEASUREMENT_TO_NG, DeviceStep.PLACEMENT_TO_NG])
 def test_ng_report_references_callback_evidence_once(step: DeviceStep) -> None:
-    ng = _position("ng-1", "NG_POSITION")
+    ng = _position("NG_POSITION", "NG_POSITION")
     fact = _device_fact(
         step,
         device_role="MEASUREMENT_DEVICE" if step is DeviceStep.MEASUREMENT_TO_NG else "PLACEMENT_DEVICE",
         source_position=(
-            _position("measurement", "MEASUREMENT_POSITION")
+            _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION")
             if step is DeviceStep.MEASUREMENT_TO_NG
-            else _position("pipeline-outlet", "PIPELINE_OUTLET")
+            else _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
         ),
         target_position=ng,
         actual_position=ng,
@@ -177,8 +177,8 @@ def test_failed_or_unknown_device_result_never_replays_equivalent_action(
     outcome: DeviceOutcome,
     reason_code: str,
 ) -> None:
-    source = _position("pipeline-inlet", "PIPELINE_INLET")
-    target = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    source = _position("PIPELINE_INLET", "PIPELINE_INLET")
+    target = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     readers = _readers((source.location_id, source.location_type, TRACE_ID, False))
     fact = _device_fact(
         DeviceStep.TRANSFER_TO_OUTLET,
@@ -207,14 +207,14 @@ def test_failed_or_unknown_device_result_never_replays_equivalent_action(
     ("field_name", "field_value"),
     [
         ("request_operation_id", "must-not-leak"),
-        ("next_position", _position("pipeline-outlet", "PIPELINE_OUTLET")),
+        ("next_position", _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")),
         ("target_assignment_id", "assignment-1"),
         ("ng_evidence_id", "ng-evidence-1"),
     ],
 )
 def test_non_success_device_result_rejects_success_branch_fields(field_name: str, field_value: object) -> None:
-    source = _position("pipeline-inlet", "PIPELINE_INLET")
-    target = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    source = _position("PIPELINE_INLET", "PIPELINE_INLET")
+    target = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
 
     with pytest.raises(ValueError, match=r"non-success.*another result branch"):
         _device_fact(
@@ -235,7 +235,7 @@ def test_non_success_device_result_rejects_success_branch_fields(field_name: str
         (
             DeviceStep.MEASUREMENT_TO_INLET,
             {
-                "next_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
+                "next_position": _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
                 "next_device_ready": True,
                 "request_operation_id": "foreign-operation",
             },
@@ -245,9 +245,9 @@ def test_non_success_device_result_rejects_success_branch_fields(field_name: str
             DeviceStep.TRANSFER_TO_OUTLET,
             {
                 "device_role": "TRANSFER_DEVICE",
-                "source_position": _position("pipeline-inlet", "PIPELINE_INLET"),
-                "target_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
-                "actual_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
+                "source_position": _position("PIPELINE_INLET", "PIPELINE_INLET"),
+                "target_position": _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
+                "actual_position": _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
                 "request_operation_id": "target-operation",
                 "pkg_id": "pkg-1",
                 "inbound_admission_id": "admission-1",
@@ -260,7 +260,7 @@ def test_non_success_device_result_rejects_success_branch_fields(field_name: str
             DeviceStep.PLACEMENT_TO_CELL,
             {
                 "device_role": "PLACEMENT_DEVICE",
-                "source_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
+                "source_position": _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
                 "target_position": _position(
                     "cell-1",
                     "RACK_CELL",
@@ -291,9 +291,9 @@ def test_non_success_device_result_rejects_success_branch_fields(field_name: str
             DeviceStep.PLACEMENT_TO_NG,
             {
                 "device_role": "PLACEMENT_DEVICE",
-                "source_position": _position("pipeline-outlet", "PIPELINE_OUTLET"),
-                "target_position": _position("ng-1", "NG_POSITION"),
-                "actual_position": _position("ng-1", "NG_POSITION"),
+                "source_position": _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
+                "target_position": _position("NG_POSITION", "NG_POSITION"),
+                "actual_position": _position("NG_POSITION", "NG_POSITION"),
                 "request_operation_id": "ng-operation",
                 "ng_evidence_id": "ng-evidence-1",
                 "reason_code": "TARGET_REJECTED",
@@ -313,8 +313,8 @@ def test_success_device_step_rejects_fields_from_another_step(
 
 
 def test_transfer_waits_when_device_is_not_ready() -> None:
-    inlet = _position("pipeline-inlet", "PIPELINE_INLET")
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    inlet = _position("PIPELINE_INLET", "PIPELINE_INLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     readers = _readers((inlet.location_id, inlet.location_type, TRACE_ID, False))
     fact = _device_fact(
         DeviceStep.MEASUREMENT_TO_INLET,
@@ -334,7 +334,7 @@ def test_transfer_waits_when_device_is_not_ready() -> None:
 
 
 def test_assigned_target_defers_when_placement_device_is_not_ready() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     cell = _position(
         "cell-1",
         "RACK_CELL",
@@ -363,7 +363,7 @@ def test_assigned_target_defers_when_placement_device_is_not_ready() -> None:
 
 
 def test_assigned_target_creates_placement_pick_and_put() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     cell = _position(
         "cell-1",
         "RACK_CELL",
@@ -453,7 +453,7 @@ def test_assigned_target_for_different_actual_rack_reconciles_without_device_com
 
 
 def test_placement_device_result_rejects_incomplete_rack_cell_identity() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     incomplete_cell = _position(
         "cell-1",
         "RACK_CELL",
@@ -479,7 +479,7 @@ def test_placement_device_result_rejects_incomplete_rack_cell_identity() -> None
 
 
 def test_no_available_cell_requests_stable_replacement_plan_without_device_command() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     readers = _readers((outlet.location_id, outlet.location_type, TRACE_ID, False))
     fact = _target_fact(
         TargetResult.NO_AVAILABLE_CELL,
@@ -500,7 +500,7 @@ def test_no_available_cell_requests_stable_replacement_plan_without_device_comma
 
 
 def test_target_wait_keeps_material_at_outlet() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
     readers = _readers((outlet.location_id, outlet.location_type, TRACE_ID, False))
     fact = _target_fact(TargetResult.WAIT, reason_code="WMS_RETRY_LATER")
 
@@ -520,13 +520,13 @@ def test_target_wait_keeps_material_at_outlet() -> None:
         ),
         (
             TargetResult.REJECT,
-            {"reason_code": "REJECTED", "target_position": _position("ng-1", "NG_POSITION")},
+            {"reason_code": "REJECTED", "target_position": _position("NG_POSITION", "NG_POSITION")},
             {"placement_sequence": 1},
         ),
         (
             TargetResult.NO_AVAILABLE_CELL,
             {"reason_code": "RACK_FULL", "request_operation_id": "replacement-operation"},
-            {"target_position": _position("ng-1", "NG_POSITION")},
+            {"target_position": _position("NG_POSITION", "NG_POSITION")},
         ),
     ],
 )
@@ -540,15 +540,15 @@ def test_non_assigned_target_result_rejects_fields_from_another_branch(
 
 
 def test_non_rack_cell_position_rejects_rack_and_bin_identity() -> None:
-    invalid_source = _position("pipeline-outlet", "PIPELINE_OUTLET", rack_id="rack-current")
+    invalid_source = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET", rack_id="rack-current")
 
     with pytest.raises(ValueError, match="non-RACK_CELL"):
         _target_fact(TargetResult.WAIT, source_position=invalid_source, reason_code="WAIT")
 
 
 def test_target_reject_uses_placement_device_from_outlet_to_wms_ng() -> None:
-    outlet = _position("pipeline-outlet", "PIPELINE_OUTLET")
-    ng = _position("ng-1", "NG_POSITION")
+    outlet = _position("PIPELINE_OUTLET", "PIPELINE_OUTLET")
+    ng = _position("NG_POSITION", "NG_POSITION")
     readers = _readers(
         (outlet.location_id, outlet.location_type, TRACE_ID, False),
         (ng.location_id, ng.location_type, None, True),

@@ -121,7 +121,6 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRun
     device = Device(
         device_code=f"READINESS-DEVICE-{identity[:12]}",
         device_name="Release readiness device",
-        device_role="TEST",
         work_line_id=line.id,
     )
     db.add(device)
@@ -156,7 +155,7 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRun
         line_run_epoch_id=epoch.id,
         device_id=device.id,
         device_code=device.device_code,
-        device_role=device.device_role,
+        device_role="TEST",
         endpoint_base_url="http://readiness-ecs:8080",
         contract_key="test.readiness",
         contract_version="1.0",

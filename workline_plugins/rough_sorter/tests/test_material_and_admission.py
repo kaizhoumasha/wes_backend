@@ -58,7 +58,7 @@ def _material_fact(**overrides: object) -> MaterialEvidenceReadyFact:
         "diameter_mm": "100.5",
         "thickness_mm": "2.0",
         "shape_result": ShapeResult.PASS,
-        "source_position": _position("measurement", "MEASUREMENT_POSITION"),
+        "source_position": _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION"),
         "request_operation_id": "019d0000-0000-7000-8000-000000000001",
     }
     values.update(overrides)
@@ -75,7 +75,7 @@ def _admission_fact(result: AdmissionResult, **overrides: object) -> AdmissionDe
         "operation_id": "019d0000-0000-7000-8000-000000000001",
         "material_trace_id": TRACE_ID,
         "result": result,
-        "source_position": _position("measurement", "MEASUREMENT_POSITION"),
+        "source_position": _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION"),
         "device_ready": True,
     }
     values.update(overrides)
@@ -83,7 +83,7 @@ def _admission_fact(result: AdmissionResult, **overrides: object) -> AdmissionDe
 
 
 def test_complete_material_evidence_requests_admission_deterministically() -> None:
-    readers = _readers(("measurement", "MEASUREMENT_POSITION", TRACE_ID, False))
+    readers = _readers(("MEASUREMENT_POSITION", "MEASUREMENT_POSITION", TRACE_ID, False))
     handler = MaterialEvidenceReadyHandler(*readers)
     fact = _material_fact()
 
@@ -98,7 +98,7 @@ def test_complete_material_evidence_requests_admission_deterministically() -> No
     assert first[0].request_data["six_in_one"]["LotCode"] == fact.lot_code
     assert first[0].request_data["source_position"] == {
         "type": "HANDOFF_POSITION",
-        "location_code": "measurement",
+        "location_code": "MEASUREMENT_POSITION",
     }
 
 
@@ -109,7 +109,7 @@ def test_material_evidence_rejects_incomplete_or_invalid_scan(field: str) -> Non
 
 
 def test_shape_failure_remains_measurement_fact_and_still_requests_wms_admission() -> None:
-    readers = _readers(("measurement", "MEASUREMENT_POSITION", TRACE_ID, False))
+    readers = _readers(("MEASUREMENT_POSITION", "MEASUREMENT_POSITION", TRACE_ID, False))
     decision = MaterialEvidenceReadyHandler(*readers)(_material_fact(shape_result=ShapeResult.FAIL))
 
     assert isinstance(decision[0], CreateWmsConfirmation)
@@ -122,8 +122,8 @@ def test_plugin_accepts_nonblank_stable_operation_identity_without_revalidating_
 
 
 def test_admission_accept_creates_only_measurement_pick_and_put() -> None:
-    source = _position("measurement", "MEASUREMENT_POSITION")
-    inlet = _position("pipeline-inlet", "PIPELINE_INLET")
+    source = _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION")
+    inlet = _position("PIPELINE_INLET", "PIPELINE_INLET")
     readers = _readers(
         (source.location_id, source.location_type, TRACE_ID, False),
         (inlet.location_id, inlet.location_type, None, True),
@@ -151,7 +151,7 @@ def test_admission_accept_creates_only_measurement_pick_and_put() -> None:
 
 
 def test_admission_wait_does_not_create_a_device_command() -> None:
-    readers = _readers(("measurement", "MEASUREMENT_POSITION", TRACE_ID, False))
+    readers = _readers(("MEASUREMENT_POSITION", "MEASUREMENT_POSITION", TRACE_ID, False))
     fact = _admission_fact(AdmissionResult.WAIT, reason_code="WMS_RETRY_LATER")
 
     assert AdmissionDecidedHandler(*readers)(fact) == (
@@ -160,8 +160,8 @@ def test_admission_wait_does_not_create_a_device_command() -> None:
 
 
 def test_admission_reject_uses_measurement_device_directly_to_wms_ng() -> None:
-    source = _position("measurement", "MEASUREMENT_POSITION")
-    ng = _position("ng-1", "NG_POSITION")
+    source = _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION")
+    ng = _position("NG_POSITION", "NG_POSITION")
     readers = _readers(
         (source.location_id, source.location_type, TRACE_ID, False),
         (ng.location_id, ng.location_type, None, True),
@@ -190,12 +190,12 @@ def test_admission_reject_uses_measurement_device_directly_to_wms_ng() -> None:
 
 
 def test_admission_does_not_dispatch_when_device_is_not_ready() -> None:
-    readers = _readers(("measurement", "MEASUREMENT_POSITION", TRACE_ID, False))
+    readers = _readers(("MEASUREMENT_POSITION", "MEASUREMENT_POSITION", TRACE_ID, False))
     fact = _admission_fact(
         AdmissionResult.ACCEPT,
         pkg_id="pkg-1",
         inbound_admission_id="admission-1",
-        next_position=_position("pipeline-inlet", "PIPELINE_INLET"),
+        next_position=_position("PIPELINE_INLET", "PIPELINE_INLET"),
         device_ready=False,
     )
 
@@ -209,7 +209,7 @@ def test_admission_does_not_dispatch_when_device_is_not_ready() -> None:
 
 
 def test_wms_admission_conflict_pauses_only_current_execution_and_position() -> None:
-    source = _position("measurement", "MEASUREMENT_POSITION")
+    source = _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION")
     readers = _readers((source.location_id, source.location_type, TRACE_ID, False))
     fact = _admission_fact(AdmissionResult.RECONCILING, reason_code="WMS_ADMISSION_CONFLICT")
 

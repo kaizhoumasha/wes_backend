@@ -66,7 +66,6 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 device_code=f"SNAPSHOT-DEVICE-{identity[:16]}",
                 device_name="Snapshot device",
                 work_line_id=line.id,
-                device_role="SNAPSHOT_DEVICE",
             )
             db.add(device)
             await db.flush()

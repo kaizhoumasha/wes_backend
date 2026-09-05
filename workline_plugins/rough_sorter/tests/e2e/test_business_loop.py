@@ -93,7 +93,7 @@ def _measurement_scan() -> dict[str, Any]:
             "thickness_mm": "1.2",
             "shape_result": "PASS",
             "position": {
-                "location_id": "MEASUREMENT-1",
+                "location_id": "MEASUREMENT_POSITION",
                 "location_type": "MEASUREMENT_POSITION",
                 "material_trace_id": TRACE_ID,
             },
@@ -200,14 +200,14 @@ class _WmsStubHandler(_JsonHandler):
                     "rack_replacement_id": "REPLACEMENT-RS-E2E-001",
                     "old_loaded_rack": {
                         "rack_id": "RACK-1",
-                        "source": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                        "source": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                         "target": {"kind": "RACK_POSITION", "location_code": "STORAGE-OLD"},
                         "target_face": "90",
                     },
                     "new_empty_rack": {
                         "rack_id": "RACK-2",
                         "source": {"kind": "RACK_POSITION", "location_code": "STORAGE-NEW"},
-                        "target": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                        "target": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                         "target_face": "270",
                     },
                 },
@@ -302,7 +302,11 @@ class _EcsStubHandler(_JsonHandler):
                             "device_type": contract_key,
                             "role": contract_key.rsplit(".", 1)[-1].upper(),
                             "supported_commands": ["PICK_AND_PUT", "MOVE_FORWARD"],
-                            "supported_events": ["COMMAND_RESULT"],
+                            "supported_events": (
+                                ["COMMAND_RESULT", "SCAN_COMPLETED"]
+                                if contract_key == "rough_sorter.measurement_device"
+                                else ["COMMAND_RESULT"]
+                            ),
                         },
                         "state": {
                             "device_code": device_code,
@@ -370,31 +374,11 @@ def _serve(handler: type[_JsonHandler], state: _BoundaryState):
 
 
 def _rough_sorter_configuration() -> dict[str, object]:
-    contract = {
-        "ecs_version": "ecs-e2e-1",
-        "gateway_version": "gateway-e2e-1",
-        "device_model": "rough-sorter-e2e",
-        "firmware_version": "firmware-e2e-1",
-        "status_max_age_ms": 600_000,
-        "command_timeout_ms": 30_000,
-        "time_source": "ecs-stub",
-        "allowed_clock_skew_ms": 1_000,
-        "callback_retry_window_ms": 60_000,
-        "evidence_retention_days": 30,
-    }
     return {
-        "rough_sorter": {
-            "device_contracts": {
-                "MEASUREMENT_DEVICE": dict(contract),
-                "TRANSFER_DEVICE": dict(contract),
-                "PLACEMENT_DEVICE": dict(contract),
-            },
-            "position_bindings": {
-                "MEASUREMENT_POSITION": "MEASUREMENT-1",
-                "PIPELINE_INLET": "INLET-1",
-                "PIPELINE_OUTLET": "OUTLET-1",
-                "NG_POSITION": "NG-1",
-            },
+        "device_bindings": {
+            "MEASUREMENT_DEVICE": "RS-E2E-MEASUREMENT",
+            "TRANSFER_DEVICE": "RS-E2E-TRANSFER",
+            "PLACEMENT_DEVICE": "RS-E2E-PLACEMENT",
         }
     }
 
@@ -578,6 +562,8 @@ class _DockerStack:
             "ecs-stub:host-gateway",
             "--env-file",
             str(REPO_ROOT / ".env.test"),
+            "-e",
+            'ENABLED_WORKLINE_PLUGINS=["rough_sorter"]',
             "-e",
             "POSTGRES_HOST=db",
             "-e",
@@ -888,7 +874,7 @@ def test_ecs_status_timestamp_is_recent_past_despite_one_millisecond_sampling_sk
 
     assert int(ecs_request_at_seconds * 1000) == wes_observed_at_ms + 1
     status_timestamp_ms = _recent_past_timestamp_ms(ecs_request_at_seconds)
-    assert 0 < wes_observed_at_ms - status_timestamp_ms < 600_000
+    assert 0 < wes_observed_at_ms - status_timestamp_ms <= 10_000
 
 
 def test_render_seed_contains_static_configuration_but_no_epoch_placeholders() -> None:
@@ -1103,7 +1089,7 @@ def test_installed_plugin_runs_two_independent_rack_replacement_legs_through_rea
                 "transport_task_id": old_out["data"]["transport_task_id"],
                 "kind": "RACK_MOVE",
                 "rack_id": "RACK-1",
-                "source": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                "source": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                 "target": {"kind": "RACK_POSITION", "location_code": "STORAGE-OLD"},
                 "target_face": "90",
                 "rcs_template_id": "CTU03",
@@ -1113,7 +1099,7 @@ def test_installed_plugin_runs_two_independent_rack_replacement_legs_through_rea
                 "kind": "RACK_MOVE",
                 "rack_id": "RACK-2",
                 "source": {"kind": "RACK_POSITION", "location_code": "STORAGE-NEW"},
-                "target": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                "target": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                 "target_face": "270",
                 "rcs_template_id": "CTU01",
             }
@@ -1144,7 +1130,7 @@ def test_installed_plugin_runs_two_independent_rack_replacement_legs_through_rea
                     "arrival_face "
                     "FROM wes_biz.position_projections WHERE object_type = 'RACK' AND object_id = 'RACK-2'"
                 )
-                == "RACK_POSITION:OUTLET-1:270"
+                == "RACK_POSITION:PIPELINE_OUTLET:270"
             )
 
             old_out_ack = _json_request(

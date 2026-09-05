@@ -33,7 +33,6 @@ from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
 
-from rough_sorter.activation import POSITION_ROLES
 from rough_sorter.application.device_facts import build_device_fact
 from rough_sorter.application.persistence import (
     DeviceCommandRepositoryPort,
@@ -67,7 +66,7 @@ from rough_sorter.facts import (
     ShapeResult,
 )
 from rough_sorter.handlers._guards import ROLE_CONTRACTS
-from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION
+from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, POSITION_ROLES
 
 if TYPE_CHECKING:
     from src.app.execution.models import InboundEvidence, MaterialExecution

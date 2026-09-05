@@ -143,14 +143,12 @@ async def test_real_repository_persists_complete_epoch_aggregate(db_session) -> 
         device_code="ATOMIC-EPOCH-DEVICE",
         device_name="Atomic Epoch Device",
         work_line_id=line.id,
-        device_role="DEVICE_ROLE",
     )
     db_session.add(device)
     second_device = Device(
         device_code="ATOMIC-EPOCH-DEVICE-2",
         device_name="Atomic Epoch Device 2",
         work_line_id=line.id,
-        device_role="DEVICE_ROLE",
     )
     db_session.add(second_device)
     await db_session.flush()

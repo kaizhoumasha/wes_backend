@@ -12,11 +12,11 @@ INSERT INTO wes_biz.work_lines (
 
 INSERT INTO wes_biz.devices (
     id, version, created_at, is_deleted, device_code, device_name, work_line_id,
-    is_active, sort_order, device_role, role_index, diagnostic_profile, endpoint_base_url
+    is_active, sort_order, diagnostic_profile, endpoint_base_url
 ) VALUES
-    (9101, 0, '__NOW__', false, 'RS-E2E-MEASUREMENT', 'Measurement', 9001, true, 1, 'MEASUREMENT_DEVICE', 1, '{}', '__ECS_ENDPOINT__'),
-    (9102, 0, '__NOW__', false, 'RS-E2E-TRANSFER', 'Transfer', 9001, true, 2, 'TRANSFER_DEVICE', 1, '{}', '__ECS_ENDPOINT__'),
-    (9103, 0, '__NOW__', false, 'RS-E2E-PLACEMENT', 'Placement', 9001, true, 3, 'PLACEMENT_DEVICE', 1, '{}', '__ECS_ENDPOINT__');
+    (9101, 0, '__NOW__', false, 'RS-E2E-MEASUREMENT', 'Measurement', 9001, true, 1, '{}', '__ECS_ENDPOINT__'),
+    (9102, 0, '__NOW__', false, 'RS-E2E-TRANSFER', 'Transfer', 9001, true, 2, '{}', '__ECS_ENDPOINT__'),
+    (9103, 0, '__NOW__', false, 'RS-E2E-PLACEMENT', 'Placement', 9001, true, 3, '{}', '__ECS_ENDPOINT__');
 
 INSERT INTO wes_runtime.workline_runtime_status_projections (
     id, workline_id, runtime_status, source, stopped_at, stopped_reason, evidence_json
@@ -37,7 +37,7 @@ INSERT INTO wes_biz.workline_rack_positions (
     allowed_rack_kind, capacity, logic_location_code, priority, enabled, metadata_json
 ) VALUES (
     9501, '__NOW__', 9001, 'RS-E2E-LINE', 'RACK-WORK', 'Rack work position',
-    'SMT_CLASSIFIER_SINGLE_RACK_WORK', 'SINGLE_LAYER', 1, 'OUTLET-1', 100, true, '{}'
+    'SMT_CLASSIFIER_SINGLE_RACK_WORK', 'SINGLE_LAYER', 1, 'PIPELINE_OUTLET', 100, true, '{}'
 );
 
 INSERT INTO wes_biz.resource_rack_placements (
@@ -45,7 +45,7 @@ INSERT INTO wes_biz.resource_rack_placements (
     rack_kind, workline_id, workline_code, position_code, position_role, logic_location_code
 ) VALUES (
     9601, '__NOW__', 'RACK-1', 'ARRIVED', 'WMS', 'RS-E2E-RACK-ARRIVED', '__NOW__',
-    'SINGLE_LAYER', 9001, 'RS-E2E-LINE', 'RACK-WORK', 'SMT_CLASSIFIER_SINGLE_RACK_WORK', 'OUTLET-1'
+    'SINGLE_LAYER', 9001, 'RS-E2E-LINE', 'RACK-WORK', 'SMT_CLASSIFIER_SINGLE_RACK_WORK', 'PIPELINE_OUTLET'
 );
 
 COMMIT;
