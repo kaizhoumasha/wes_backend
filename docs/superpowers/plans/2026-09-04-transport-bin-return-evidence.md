@@ -67,8 +67,7 @@ Risk: LARGE / HIGH-RISK
 
 ## Verification
 
-Primary QA artifact:
-`/Users/kaizhou/.gstack/projects/kaizhoumasha-wes_frontend/kaizhou-develop-eng-review-test-plan-20260904-175540.md`
+Primary QA artifact: the Transport progress UI engineering review record maintained in the frontend workspace.
 
 Focused success requires:
 
