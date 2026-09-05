@@ -70,6 +70,8 @@ COPY packages/wes_plugin_sdk/pyproject.toml packages/wes_plugin_sdk/pyproject.to
 COPY packages/wes_plugin_sdk/src packages/wes_plugin_sdk/src
 COPY workline_plugins/rough_sorter/pyproject.toml workline_plugins/rough_sorter/pyproject.toml
 COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
+COPY workline_plugins/manual_bin_processing/pyproject.toml workline_plugins/manual_bin_processing/pyproject.toml
+COPY workline_plugins/manual_bin_processing/src workline_plugins/manual_bin_processing/src
 
 # ============================================
 # Stage 2: Builder - 依赖安装

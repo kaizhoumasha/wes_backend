@@ -416,8 +416,8 @@ LLM integration: 不涉及，无 eval。
 
 ## 14. Implementation Tasks
 
-> **后端实施状态（2026-09-05）：** T1–T5 已在 `codex/workline-plugin-selection-switching` 完成；最终 QUALITY
-> `2585 passed, 5 skipped`，selector 选中的 HEAVY `211 passed`，Fresh Review clean。T6–T8 保持独立后续切片。
+> **实施状态（2026-09-05）：** T1–T5 已在后端 `codex/workline-plugin-selection-switching` 完成；T6 已在前端
+> `codex/workline-plugin-selection-switching-ui` 完成并通过 Vitest、合同/权限门禁及浏览器 QA。T7–T8 保持独立后续切片。
 
 - [x] **T1 (P1, human: ~1d / CC: ~2h)** — 合同 — 同步 SRS、四个插件身份、WMS/WES 所有权和独立出口
   - Surfaced by: Architecture — 旧人工统一插件约定与目标冲突
@@ -440,7 +440,7 @@ LLM integration: 不涉及，无 eval。
   - Surfaced by: Architecture D3/D6 and Test T1
   - Files: Celery startup、execution recovery、deployment validation
   - Verify: 真实 Worker 重启、缺失版本及禁止盲目重发测试
-- [ ] **T6 (P1, human: ~2d / CC: ~5h)** — 前端 — 将粗分配置改为工作线业务插件选择与空闲切换
+- [x] **T6 (P1, human: ~2d / CC: ~5h)** — 前端 — 将粗分配置改为工作线业务插件选择与空闲切换
   - Surfaced by: Design review — 页面职责、状态覆盖、设备发现密度和恢复流程缺口
   - Files: `wes_frontend/src/views/admin/worklines/`、`wes_frontend/src/views/admin/devices/`、API 生成合同和权限
   - Verify: 单弹窗三段结构、显式插件配置目录、设备发现表格、Vitest、合同/权限门禁和浏览器 E2E
