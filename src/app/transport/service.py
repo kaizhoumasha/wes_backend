@@ -208,7 +208,7 @@ class TransportService:
         rack_id: str,
         source: RackMovePosition,
         target: RackMovePosition,
-        target_face: str,
+        target_face: str | None = None,
         rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority | None = None,
@@ -226,7 +226,7 @@ class TransportService:
         rack_id: str,
         source: RackMovePosition,
         target: RackMovePosition,
-        target_face: str,
+        target_face: str | None = None,
         rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority,
@@ -1874,6 +1874,7 @@ def _validate_result_frozen_identity(
         if (
             task.kind in {TransportTaskKind.RACK_MOVE.value, TransportTaskKind.RACK_ROTATE.value}
             and status == "SUCCEEDED"
+            and task.request_json.get("target_face") is not None
             and result.get("arrival_face") != task.request_json["target_face"]
         ):
             raise TransportContractError("successful arrival face differs from frozen target")

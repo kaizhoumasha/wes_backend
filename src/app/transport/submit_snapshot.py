@@ -28,7 +28,7 @@ def build_submit_data(request: TransportRequest, transport_task_id: str) -> dict
             "rack_id": request.rack_id,
             "source": _json_value(request.source),
             "target": _json_value(request.target),
-            "target_face": request.target_face,
+            **({"target_face": request.target_face} if request.target_face is not None else {}),
         }
     if isinstance(request, RotateRackRequest):
         return {

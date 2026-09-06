@@ -1531,3 +1531,57 @@ async def test_known_partial_failure_forms_failed_outcome_and_releases_resources
     task = await _load_task(db_engine, handle.transport_task_id)
     assert (task.status, task.reason_code) == ("FAILED", "RCS_EXECUTION_FAILED")
     assert publisher.outcomes[0].status.value == "FAILED"
+
+
+@pytest.mark.asyncio
+async def test_ctu03_without_target_face_persists_actual_arrival_and_releases_rack(db_engine: object) -> None:
+    import json
+
+    service = _service(db_engine)
+    handle = await service.move_rack(
+        new_uuid7(),
+        TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID),
+        "rack-return-any-face",
+        RackReference("rack-return-any-face"),
+        ZonePosition("WH01"),
+        rcs_template_id=RcsTemplateId.CTU03,
+    )
+    task = await _load_task(db_engine, handle.transport_task_id)
+    assert "target_face" not in json.loads(task.submit_request_body)["data"]
+    assert await service.submit_pending_tasks(1) == 1
+    await record_valid_callback(
+        service,
+        operation_id="ctu03-actual-arrival",
+        transport_task_id=handle.transport_task_id,
+        operation=RESULT_OPERATION,
+        timestamp=1,
+        payload={
+            "kind": "RACK_MOVE",
+            "outcome_revision": 1,
+            "rack_id": "rack-return-any-face",
+            "status": "SUCCEEDED",
+            "final_position": {"kind": "RACK_POSITION", "location_code": "STORAGE-17"},
+            "arrival_face": "270",
+        },
+    )
+    assert await service.process_pending_evidence(1) == 1
+    task = await _load_task(db_engine, handle.transport_task_id)
+    assert task.status == "SUCCEEDED"
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions() as db:
+        projection = await db.scalar(
+            select(TransportDebugPositionProjection).where(
+                TransportDebugPositionProjection.object_id == "rack-return-any-face"
+            )
+        )
+        bindings = list(
+            await db.scalars(
+                select(TransportResourceBinding).where(
+                    TransportResourceBinding.transport_task_id == handle.transport_task_id
+                )
+            )
+        )
+    assert projection is not None
+    assert projection.arrival_face == "270"
+    assert projection.position_json == {"kind": "RACK_POSITION", "location_code": "STORAGE-17"}
+    assert bindings and all(binding.released_at is not None for binding in bindings)

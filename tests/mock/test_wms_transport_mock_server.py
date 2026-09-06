@@ -118,6 +118,9 @@ def test_transport_submit_openapi_schema_is_closed_and_documents_runtime_invaria
     rack_id_schema = submit_schema["oneOf"][0]["properties"]["data"]["properties"]["rack_id"]
     assert "不得包含 NUL" in rack_id_schema["description"]
     assert rack_id_schema["pattern"] == r".*\S.*"
+    rack_move_schema = submit_schema["oneOf"][0]["properties"]["data"]
+    assert "target_face" not in rack_move_schema["required"]
+    assert rack_move_schema["allOf"][0]["then"]["required"] == ["target_face"]
 
 
 def test_transport_submit_openapi_documents_closed_ack_unions() -> None:
@@ -400,6 +403,16 @@ def test_transport_submit_mock_preserves_any_non_empty_face_string(face: str) ->
 
     assert response.status_code == 202
     assert wms_mock_server.transport_submission_store.snapshots()[-1]["request"]["data"]["target_face"] == face
+
+
+def test_transport_submit_mock_rejects_omitted_target_face_outside_ctu03() -> None:
+    envelope = deepcopy(RACK_MOVE)
+    envelope["data"].pop("target_face")
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize("template", [RACK_MOVE, BIN_MOVE], ids=["target-face", "rack-face"])
@@ -836,10 +849,10 @@ def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventin
             "rack_id": rack_id,
             "source": {"kind": "RACK", "location_code": rack_id},
             "target": {"kind": "ZONE", "location_code": "WH01"},
-            "target_face": "90",
             "rcs_template_id": "CTU03",
         }
     )
+    rack_return["data"].pop("target_face")
 
     def result_for(envelope: dict[str, object], operation_id: str, final_position: str) -> dict[str, object]:
         data = envelope["data"]
@@ -852,7 +865,7 @@ def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventin
                 "kind": data["kind"],
                 "rack_id": rack_id,
                 "final_position": {"kind": "RACK_POSITION", "location_code": final_position},
-                "arrival_face": data["target_face"],
+                "arrival_face": data.get("target_face", "RCS_SELECTED"),
             }
         )
         return callback
@@ -881,6 +894,7 @@ def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventin
     assert [rack_out_response.status_code, rotate_response.status_code, return_response.status_code] == [202, 202, 202]
     assert [rack_out_result.status_code, rotate_result.status_code, return_result.status_code] == [200, 200, 200]
     assert rack_return["data"]["target"] == {"kind": "ZONE", "location_code": "WH01"}
+    assert "target_face" not in rack_return["data"]
 
 
 def test_determinate_bin_result_releases_container_and_rack_resources(monkeypatch) -> None:

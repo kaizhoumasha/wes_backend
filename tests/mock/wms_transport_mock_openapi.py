@@ -107,7 +107,7 @@ _BIN_EXCHANGE_MOVE_SCHEMA = _closed_object(
 )
 
 _RACK_MOVE_DATA_SCHEMA = _closed_object(
-    ["transport_task_id", "kind", "rack_id", "source", "target", "target_face", "rcs_template_id"],
+    ["transport_task_id", "kind", "rack_id", "source", "target", "rcs_template_id"],
     {
         "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
         "kind": {"type": "string", "enum": ["RACK_MOVE"]},
@@ -119,6 +119,12 @@ _RACK_MOVE_DATA_SCHEMA = _closed_object(
     },
     description="运行时校验 source 与 target 不同。",
 )
+_RACK_MOVE_DATA_SCHEMA["allOf"] = [
+    {
+        "if": {"properties": {"rcs_template_id": {"not": {"const": "CTU03"}}}},
+        "then": {"required": ["target_face"]},
+    }
+]
 _RACK_ROTATE_DATA_SCHEMA = _closed_object(
     ["transport_task_id", "kind", "rack_id", "source", "target", "target_face", "rcs_template_id"],
     {

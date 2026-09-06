@@ -247,7 +247,7 @@ class MoveRackRequest:
     rack_id: str
     source: RackMovePosition
     target: RackMovePosition
-    target_face: str
+    target_face: str | None = None
     rcs_template_id: RcsTemplateId = RcsTemplateId.F01
     kind: TransportTaskKind = field(default=TransportTaskKind.RACK_MOVE, init=False)
 
@@ -259,7 +259,8 @@ class MoveRackRequest:
             raise TransportContractError("rack source and target must be rack move positions")
         if self.source == self.target:
             raise TransportContractError("rack source and target must differ")
-        validate_opaque_face(self.target_face, "target_face", error_type=TransportContractError)
+        if self.rcs_template_id is not RcsTemplateId.CTU03 or self.target_face is not None:
+            validate_opaque_face(self.target_face, "target_face", error_type=TransportContractError)
         if type(self.rcs_template_id) is not RcsTemplateId:
             raise TransportContractError("rcs_template_id must be a supported template")
         for position in (self.source, self.target):
@@ -384,7 +385,7 @@ class TransportPort(Protocol):
         rack_id: str,
         source: RackMovePosition,
         target: RackMovePosition,
-        target_face: str,
+        target_face: str | None = None,
         rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
         *,
         execution_authority: TransportExecutionAuthority | None = None,

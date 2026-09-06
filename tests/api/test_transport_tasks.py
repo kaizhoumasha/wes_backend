@@ -722,3 +722,17 @@ async def test_transport_routes_reject_closed_runtime() -> None:
 
 def _port_methods(port: FakeTransportPort) -> tuple[AsyncMock, ...]:
     return port.move_rack, port.rotate_rack, port.move_bins, port.exchange_bins
+
+
+@pytest.mark.asyncio
+async def test_debug_ctu03_accepts_omitted_target_face() -> None:
+    runtime = _runtime()
+    payload = _valid_payload("RACK_MOVE")
+    payload["data"].update(
+        {"source": _rack_reference("RACK-01"), "target": _zone_position("WH01"), "rcs_template_id": "CTU03"}
+    )
+    payload["data"].pop("target_face")
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post("/api/v1/transport/debug-tasks", json=payload)
+    assert response.status_code == 202
+    assert runtime.port.move_rack.await_args.args[5] is None

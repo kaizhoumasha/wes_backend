@@ -407,7 +407,8 @@ def _result_matches_frozen_request(frozen: dict[str, Any], result: dict[str, obj
             target_matches = (
                 final_position == target if isinstance(target, dict) and target.get("kind") == "RACK_POSITION" else True
             )
-            return target_matches and arrival_face == frozen.get("target_face")
+            target_face = frozen.get("target_face")
+            return target_matches and (target_face is None or arrival_face == target_face)
         return result.get("status") == "FAILED"
     if kind not in {"BIN_MOVE", "BIN_EXCHANGE"}:
         return False
@@ -476,15 +477,18 @@ def _known_member_facts(result: dict[str, object]) -> dict[str, dict[str, object
 def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
     rack = _strict_object(
         data,
-        {"transport_task_id", "kind", "rack_id", "source", "target", "target_face", "rcs_template_id"},
+        {"transport_task_id", "kind", "rack_id", "source", "target", "rcs_template_id"},
+        {"target_face"},
     )
     if (
         rack is None
         or not _nonblank(rack["transport_task_id"], max_length=80)
         or not _nonblank(rack["rack_id"], max_length=100)
-        or not is_opaque_face(rack["target_face"])
         or rack["rcs_template_id"] not in {"CTU01", "CTU02", "CTU03", "F01"}
     ):
+        return False
+    target_face = rack.get("target_face")
+    if (rack["rcs_template_id"] != "CTU03" or target_face is not None) and not is_opaque_face(target_face):
         return False
     source = _position(rack["source"], allowed_kinds={"RACK", "ZONE", "RACK_POSITION"})
     target = _position(rack["target"], allowed_kinds={"RACK", "ZONE", "RACK_POSITION"})

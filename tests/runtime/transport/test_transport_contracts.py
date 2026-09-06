@@ -716,3 +716,26 @@ def test_rotate_rack_uses_ctu02_and_preserves_opaque_face() -> None:
             "270",
             RcsTemplateId.F01,
         )
+
+
+def test_ctu03_does_not_require_target_face() -> None:
+    request = MoveRackRequest(
+        _REQUEST_ID,
+        _caller(),
+        "rack-1",
+        RackReference("rack-1"),
+        ZonePosition("WH01"),
+        rcs_template_id=RcsTemplateId.CTU03,
+    )
+    assert request.target_face is None
+
+    explicit_request = MoveRackRequest(
+        _REQUEST_ID,
+        _caller(),
+        "rack-1",
+        RackReference("rack-1"),
+        ZonePosition("WH01"),
+        "270",
+        RcsTemplateId.CTU03,
+    )
+    assert explicit_request.target_face == "270"
