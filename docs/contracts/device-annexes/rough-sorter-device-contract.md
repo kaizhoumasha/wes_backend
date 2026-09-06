@@ -45,8 +45,8 @@ reserved、文档网段和 legacy numeric host 均失败关闭。域名在配置
 
 每个部署实例必须把派发链实际读取的不可变值写入现有 `LineRunEpochDeviceBinding`。`topology_digest` 只摘要创建前即可形成的稳定
 topology input，不摘要数据库生成的 `line_run_epoch_id`、`device_id`、binding 主键、审计字段或时间戳；父 Epoch 关联仍必须持久化，
-但它不是 topology 内容。Device 的稳定摘要输入包含 `device_code`、`device_role`、Endpoint、合同身份和派发策略，Position 的稳定摘要输入
-包含角色、`location_id` 和固定 `location_type`：
+但它不是 topology 内容。设备绑定的稳定摘要输入包含 `device_code`、插件 `device_role`、Endpoint、合同身份和派发策略，
+Position 的稳定摘要输入包含角色、`location_id` 和固定 `location_type`；Device 主数据本身不保存业务角色：
 
 | 绑定项 | 规则 |
 | --- | --- |

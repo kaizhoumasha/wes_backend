@@ -75,13 +75,13 @@ WMS wire 的 `source`、`target` 均为同一个 `RACK` 引用；成功结果仍
   "rack_id": "510056",
   "source": {"kind": "RACK", "location_code": "510056"},
   "target": {"kind": "ZONE", "location_code": "WH01"},
-  "target_face": "90",
   "rcs_template_id": "CTU03",
   "kind": "RACK_MOVE"
 }
 ```
 
-WMS 必须显式返回其在 `WH01` 内解析出的精确 `RACK_POSITION`，例如测试数据 `WH01-01`。WES 不从 `ZONE` 猜测最终地码。
+WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS 必须显式返回其在 `WH01` 内解析出的精确
+`RACK_POSITION`（例如测试数据 `WH01-01`）和非空实际 `arrival_face`；WES 不从 `ZONE` 猜测最终地码，也不按请求目标面比较。
 
 ## 5. 必验场景
 
@@ -93,7 +93,8 @@ WMS 必须显式返回其在 `WH01` 内解析出的精确 `RACK_POSITION`，例�
 4. 在最后一个选中料箱的 `SCAN12` Evidence 到达前，确认不存在回架 task。
 5. 全部选中料箱均被扫描后，核对一个 `BIN_MOVE` 从 `CNV0302` 返回冻结原 slot。
 6. 回架 task 的每个成员均精确成功前，确认不存在 `CTU03`。
-7. 核对最终只创建一个 `CTU03`；WMS 返回精确库位和 `arrival_face="90"` 后轮次才进入 `COMPLETED`。
+7. 核对最终只创建一个省略 `target_face` 的 `CTU03`；WMS 返回精确库位和非空实际 `arrival_face` 后轮次才进入
+   `COMPLETED`。
 
 ### 5.2 两面
 
@@ -104,7 +105,7 @@ CTU01("90")
 → 第一组去 CNV0301 / SCAN12 / 原 slot 回架
 → CTU02("270")
 → 第二组去 CNV0301 / SCAN12 / 原 slot 回架
-→ CTU03("90")
+→ CTU03（省略 target_face）
 ```
 
 必须确认只生成一次 `CTU02`，且第二组全部成员回架成功前没有 `CTU03`。
@@ -114,7 +115,8 @@ CTU01("90")
 - 同一料箱重复扫码只计一次；旧于步骤 high-watermark 或 `not_before` 的扫码不得推进。
 - 非选中料箱、其它设备和其它事件类型不得推进当前面。
 - `InboundEvidence.apply_status=PENDING|RECONCILING`、无效 barcode 或身份冲突必须进入 `NEEDS_ATTENTION`，不得创建回架 task。
-- Transport `RECONCILING`/`DELIVERY_UNKNOWN`、`position_unknown=true`、面值或精确位置不一致时不得创建后继 task。
+- Transport `RECONCILING`/`DELIVERY_UNKNOWN`、`position_unknown=true` 或精确位置不一致时不得创建后继 task；
+  携带目标面的请求仍须校验面值，省略目标面的 `CTU03` 只要求非空实际 `arrival_face`。
 - 对 `DELIVERY_UNKNOWN` 只能等待同一个 `transport_task_id` 的权威终态；不得生成新 `client_request_id` 重发。
 - worker 或 API 重启后使用持久化 step、`client_request_id` 和 `transport_task_id` 恢复，不得重复创建物理任务。
 - 第二个全局活动轮次必须被拒绝。

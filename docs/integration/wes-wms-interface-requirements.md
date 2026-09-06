@@ -1141,7 +1141,7 @@ static string CreateUuidV7()
 
 | 协议 Schema 族 | `kind` | 固定字段 |
 | --- | --- | --- |
-| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rcs_template_id + rack_id + source + target + target_face` |
+| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rcs_template_id + rack_id + source + target`；`target_face` 除 `CTU03` 可省略外均必填 |
 | `BinTransportData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + moves[]`；成员固定为 `container_id + source + target` |
 
 搬运最终结果同样只需要两个 `data` Schema 族：
@@ -1522,15 +1522,15 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
     "rcs_template_id": "CTU03",
     "rack_id": "510056",
     "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
-    "target": {"kind": "ZONE", "location_code": "WH01"},
-    "target_face": "90"
+    "target": {"kind": "ZONE", "location_code": "WH01"}
   }
 }
 ```
 
-样例 9～10 的 `TRANSPORT_DEBUG` consumer 已完成 repository alignment：前端和后端均使用固定 string payload
-`target_face="90"`，不解释或转换其面语义；`WH01` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和
-`CTU03`。当前只完成仓内生成合同、前后端测试和本地 Mock 验证，状态仍为
+样例 9～10 的 `TRANSPORT_DEBUG` consumer 已完成 repository alignment：`CTU01` 使用固定 string payload
+`target_face="90"`；`CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向，成功回调必须带回非空实际 `arrival_face`。
+`WH01` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和 `CTU03`。当前只完成仓内生成合同、
+前后端测试和本地 Mock 验证，状态仍为
 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。
 
 WMS 的对外处理结果必须满足：

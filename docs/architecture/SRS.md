@@ -351,7 +351,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     * **层次归属**: `zone_code`, `work_line_id` (设备所属的区域和作业线；`work_line_id` 引用 WES WorkLine 主键)。
     * **用途说明**: 设备的功能描述 (如 "用来点货，绑定栈板发运送任务")。
   * 每个 Device 最多归属一条 WorkLine，归属只通过 WorkLine 配置一次性替换；设备通用 CRUD 不写 `work_line_id`。
-    同一 `device_role` 可以有多台设备，运行时用 `device_role + device_code` 精确定位。
+    插件声明通用设备角色，WorkLine 配置把每个角色绑定到精确 `device_code`，START 时把
+    `(device_role, device_code)` 冻结到 Epoch；Device 主数据不拥有业务角色。
 
 * **WorkLine 插件、启动与分拣机设备边界**:
   * WorkLine 保存当前选择的 `plugin_key` 和插件业务配置；部署制品提供显式、不可变的已安装插件 tuple，不扫描环境且不提供默认插件。
