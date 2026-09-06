@@ -105,7 +105,6 @@ class DeviceRepository(BaseRepository[Device]):
             )
             .order_by(
                 Device.sort_order.asc(),  # type: ignore[arg-type]
-                Device.role_index.asc(),  # type: ignore[arg-type]
                 Device.id.asc(),  # type: ignore[arg-type]
             )
         )
@@ -126,7 +125,6 @@ class DeviceRepository(BaseRepository[Device]):
             )
             .order_by(
                 Device.sort_order.asc(),  # type: ignore[arg-type]
-                Device.role_index.asc(),  # type: ignore[arg-type]
                 Device.id.asc(),  # type: ignore[arg-type]
             )
             .execution_options(populate_existing=True)

@@ -5,8 +5,12 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING, Any, Protocol
 
-from src.app.device.contracts import EcsDeviceMode, EcsDeviceState
-from src.app.device.repositories.status_observation_repository import device_status_observation_repository
+from src.app.device.ecs_adapter import EcsStatusUnavailableError
+from src.app.device.services.device_command_admission import (
+    DeviceCommandAdmissionError,
+    ensure_runtime_admissible,
+    ensure_status_fresh,
+)
 from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.plugin_binding import InitialExecutionDescriptor
 from src.app.execution.repositories import inbound_evidence_repository
@@ -16,8 +20,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
 
+    from src.app.device.composition import DeviceEndpointAdapterProvider
     from src.app.device.models.command import DeviceCommand
-    from src.app.device.models.evidence import DeviceStatusObservation
     from src.app.execution.models import (
         InboundEvidence,
         MaterialExecution,
@@ -89,10 +93,6 @@ class RackReplacementBindingRepositoryPort(Protocol):
     ) -> TransportDecisionBinding | None: ...
 
 
-class DeviceStatusRepositoryPort(Protocol):
-    async def get_latest_for_device(self, db: Any, device_code: str) -> DeviceStatusObservation | None: ...
-
-
 class DeviceCommandRepositoryPort(Protocol):
     async def get_by_command_code(
         self, db: Any, command_code: str, *, for_update: bool = False
@@ -113,34 +113,33 @@ class DeviceReadinessReader(Protocol):
     ) -> bool: ...
 
 
-class PersistedDeviceReadinessReader:
-    """只用冻结合同与已持久 ECS status observation 判断设备准入。"""
+class LiveDeviceReadinessReader:
+    """每次业务准入使用既有 Endpoint provider 读取实时状态。"""
 
     def __init__(
         self,
-        repository: DeviceStatusRepositoryPort = device_status_observation_repository,
+        device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
-        self._repository = repository
+        self._provider = device_adapter_provider
         self._clock = clock
 
-    async def is_ready(
-        self,
-        db: object,
-        binding: LineRunEpochDeviceBinding,
-    ) -> bool:
-        status = await self._repository.get_latest_for_device(db, binding.device_code)
-        if status is None:
+    async def is_ready(self, db: object, binding: LineRunEpochDeviceBinding) -> bool:
+        if self._provider is None:
             return False
-        observed_at_ms = int(timezone.to_utc(self._clock()).timestamp() * 1000)
-        return (
-            status.contract_key == binding.contract_key
-            and status.contract_version == binding.contract_version
-            and status.mode == EcsDeviceMode.AUTO
-            and status.status == EcsDeviceState.IDLE
-            and status.current_command_code is None
-            and 0 <= observed_at_ms - status.device_timestamp <= binding.status_max_age_ms
-        )
+        try:
+            adapter = await self._provider.get_adapter(binding.endpoint_base_url)
+            status = await adapter.fetch_status(binding.device_code)
+            observed_at = self._clock()
+            ensure_runtime_admissible(status=status, expected_device_code=binding.device_code)
+            ensure_status_fresh(
+                status=status,
+                observed_at=observed_at,
+                status_max_age_ms=binding.status_max_age_ms,
+            )
+        except (EcsStatusUnavailableError, DeviceCommandAdmissionError):
+            return False
+        return True
 
 
 class RoughSorterInitialExecutionCorrelator:
@@ -185,7 +184,7 @@ __all__ = [
     "EpochRepositoryPort",
     "EvidenceRepositoryPort",
     "ExecutionRepositoryPort",
-    "PersistedDeviceReadinessReader",
+    "LiveDeviceReadinessReader",
     "RackPlacementRepositoryPort",
     "RackPositionRepositoryPort",
     "RackReplacementBindingRepositoryPort",

@@ -19,8 +19,6 @@ class ResolvedDeviceRuntimeConfig(BaseModel):
     device_id: int | None = None
     device_code: str | None = None
     device_name: str | None = None
-    device_role: str | None = None
-    role_index: int | None = None
     upstream_device_id: int | None = None
     workline_id: int | None = None
     protocol: str | None = None
@@ -70,8 +68,6 @@ def resolve_device_runtime_config(device: Any, *, workline: Any | None = None) -
         device_id=getattr(device, "id", None),
         device_code=getattr(device, "device_code", None),
         device_name=getattr(device, "device_name", None),
-        device_role=getattr(device, "device_role", None),
-        role_index=getattr(device, "role_index", None),
         upstream_device_id=getattr(device, "upstream_device_id", None),
         workline_id=getattr(device, "work_line_id", None) or getattr(workline, "id", None),
         protocol=enum_value(getattr(device, "protocol", None)),

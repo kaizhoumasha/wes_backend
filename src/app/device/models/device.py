@@ -26,8 +26,6 @@ class DeviceBase(BaseMixin):
     description: str | None = Field(default=None, max_length=500)
     is_active: bool = Field(default=True, description="是否允许进入新运行代际")
     sort_order: int = Field(default=0)
-    device_role: str = Field(min_length=1, max_length=50, description="物理拓扑角色")
-    role_index: int = Field(default=1, ge=1)
     upstream_device_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.devices.id",
@@ -69,8 +67,6 @@ class DeviceEditableBase(BaseMixin):
     description: str | None = Field(default=None, max_length=500)
     is_active: bool = True
     sort_order: int = 0
-    device_role: str = Field(min_length=1, max_length=50)
-    role_index: int = Field(default=1, ge=1)
     upstream_device_id: int | None = None
     diagnostic_profile: dict[str, Any] = Field(default_factory=dict)
     endpoint_base_url: DeviceEndpointBaseUrl | None = Field(default=None, max_length=255)

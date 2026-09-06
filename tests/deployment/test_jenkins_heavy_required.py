@@ -84,20 +84,20 @@ def test_backend_images_embed_the_checked_out_revision_and_source_tree() -> None
 
 def test_backend_provenance_labels_do_not_invalidate_shared_dependency_layers() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
-    shared_layers = dockerfile_text.split("FROM base AS development", maxsplit=1)[0]
+    shared_layers = dockerfile_text.split("FROM source AS development", maxsplit=1)[0]
 
     assert "WES_VCS_REVISION" not in shared_layers
     assert "WES_SOURCE_TREE" not in shared_layers
     for stage_header, next_stage_header, source_copy in (
-        ("FROM base AS development\n", "FROM base AS testing\n", "COPY . ."),
+        ("FROM source AS development\n", "FROM source AS testing\n", "FROM source AS development"),
         (
-            "FROM base AS testing\n",
+            "FROM source AS testing\n",
             "FROM testing AS provider-artifact-validation\n",
-            "COPY . .",
+            "FROM source AS testing",
         ),
         ("FROM base AS production\n", None, "COPY --from=production-source /app /app"),
     ):
-        stage = dockerfile_text.split(stage_header, maxsplit=1)[1]
+        stage = stage_header + dockerfile_text.split(stage_header, maxsplit=1)[1]
         if next_stage_header is not None:
             stage = stage.split(next_stage_header, maxsplit=1)[0]
         assert stage.index(source_copy) < stage.index("ARG WES_VCS_REVISION")
@@ -108,7 +108,7 @@ def test_backend_provenance_labels_do_not_invalidate_shared_dependency_layers() 
 def test_builder_uses_pinned_uv_bootstrap_image() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     builder_stage = dockerfile_text.split("FROM base AS builder", maxsplit=1)[1].split(
-        "FROM base AS development", maxsplit=1
+        "FROM source AS development", maxsplit=1
     )[0]
 
     assert (

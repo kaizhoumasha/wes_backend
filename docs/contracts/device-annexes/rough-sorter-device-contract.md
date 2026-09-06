@@ -3,7 +3,7 @@ status: Approved
 implementation_authorization: true
 annex_key: rough-sorter-device-contract
 contract_version: "1.0"
-approved_at: 2026-08-19
+approved_at: 2026-09-05
 scope: Phase 8 粗分机测量、输送和出料设备统一合同
 owners: [ECS, WES, 业务负责人, 项目交付负责人]
 ---
@@ -12,7 +12,8 @@ owners: [ECS, WES, 业务负责人, 项目交付负责人]
 
 ## 1. 状态与真源
 
-本文是 WES/WMS/ECS 联合批准的 Phase 8 粗分设备附录。固定路径、公共包络、身份、ACK/CALLBACK、幂等、状态查询、
+本文定义 Phase 8 粗分设备的 WES 侧合同；2026-09-05 按用户批准的“约定大于配置”收敛，供应商实现仍需独立验证。
+固定路径、公共包络、身份、ACK/CALLBACK、幂等、状态查询、
 HTTP 错误和投递未知语义全部引用
 [`third_party_integration_whitepaper.md`](../../integration/third_party_integration_whitepaper.md)，本文只收窄粗分实际使用的设备角色、
 `task_type`、`event_type`、严格载荷、结果、稳定错误类型和绑定规则。
@@ -44,8 +45,8 @@ reserved、文档网段和 legacy numeric host 均失败关闭。域名在配置
 
 每个部署实例必须把派发链实际读取的不可变值写入现有 `LineRunEpochDeviceBinding`。`topology_digest` 只摘要创建前即可形成的稳定
 topology input，不摘要数据库生成的 `line_run_epoch_id`、`device_id`、binding 主键、审计字段或时间戳；父 Epoch 关联仍必须持久化，
-但它不是 topology 内容。Device 的稳定摘要输入包含 `device_code`、`device_role`、Endpoint、合同身份和派发策略，Position 的稳定摘要输入
-包含角色、`location_id` 和固定 `location_type`：
+但它不是 topology 内容。设备绑定的稳定摘要输入包含 `device_code`、插件 `device_role`、Endpoint、合同身份和派发策略，
+Position 的稳定摘要输入包含角色、`location_id` 和固定 `location_type`；Device 主数据本身不保存业务角色：
 
 | 绑定项 | 规则 |
 | --- | --- |
@@ -53,34 +54,34 @@ topology input，不摘要数据库生成的 `line_run_epoch_id`、`device_id`�
 | `device_role` | 每个 WorkLine 三个角色各一个绑定 |
 | `device_code` | 全厂唯一；不能用 Endpoint 数量替代设备身份 |
 | Endpoint Base URL | 从可派发 `Device` 复制；必须为非空局域网 HTTP origin，固定路径不进入配置 |
-| `contract_key`、`contract_version=1.0` | 必须与状态接口返回值一致 |
-| `status_max_age_ms`、`command_timeout_ms` | 正整数；值来自该部署验收包，不进入命令 `params` |
+| `contract_key`、`contract_version=1.0` | 插件声明并冻结；实时状态接口验证命令能力，测量角色还必须支持 `SCAN_COMPLETED` |
+| `status_max_age_ms`、`command_timeout_ms` | 插件固定为 10,000 ms 和 30,000 ms；冻结供基础派发读取，不进入命令 `params` |
 
-ECS/网关版本、设备/固件版本、时间来源、允许时钟偏差、回调重传窗口、证据保留期以及位置绑定属于粗分机部署配置，
-不得扩展通用 Device binding。START 必须把规范化后的完整 `WorkLine.config["rough_sorter"]` 保存为
-`LineRunEpoch.configuration_snapshot_json`；`configuration_digest` 由插件身份、运行模式和该 canonical JSON 快照共同生成。
-基础层只负责保存和摘要快照，不解释任何粗分机字段。
+工作线只保存通用 `config.device_bindings`，角色键为上述三个设备角色，值为本线实际 `device_code`。
+START 使用宿主通用绑定校验，冻结该配置快照，并将 Endpoint、合同与执行策略写入现有 Epoch binding。
+不再保存 `rough_sorter` 私有配置子树、版本登记、位置映射或未被执行逻辑消费的参数。
+`configuration_digest` 仍由插件身份、运行模式和 canonical JSON 快照生成；基础层不解释粗分业务。
 
-`WorkLine.config["rough_sorter"]` 的闭集如下：
+粗分插件使用以下固定逻辑位置参数；`location_id` 与 `location_type` 均取该角色字面量：
 
-- `device_contracts` 必须且只能包含 `MEASUREMENT_DEVICE`、`TRANSFER_DEVICE`、`PLACEMENT_DEVICE`；
-- 每个角色合同必须且只能包含下表字段；
-- `position_bindings` 必须且只能包含 `MEASUREMENT_POSITION`、`PIPELINE_INLET`、`PIPELINE_OUTLET`、`NG_POSITION`。
+| 逻辑参数 | 业务含义 |
+| --- | --- |
+| `MEASUREMENT_POSITION` | 测量和准入位置 |
+| `PIPELINE_INLET` | 流水线入口 |
+| `PIPELINE_OUTLET` | 流水线出口 |
+| `NG_POSITION` | 业务拒绝放置位置 |
 
-| 角色合同字段 | 类型 | 规则 |
-| --- | --- | --- |
-| `ecs_version`、`gateway_version` | string | 去空白后非空；等于供应商一致性验收版本 |
-| `device_model`、`firmware_version` | string | 去空白后非空；按角色独立冻结 |
-| `status_max_age_ms`、`command_timeout_ms` | integer | 严格正整数；同时复制到通用 binding 供派发读取 |
-| `time_source` | string | 去空白后非空 |
-| `allowed_clock_skew_ms`、`callback_retry_window_ms` | integer | 严格正整数 |
-| `evidence_retention_days` | integer | 严格正整数 |
+这些参数不是设备编码或厂商坐标。ECS 根据收到命令的设备及约定解释实际位置；WMS 交互使用相同逻辑位置合同。
+绑定和投影沿用工作线/Epoch 范围，不新增点位主数据、映射表或全局位置别名。
+状态年龄阈值 10 秒是 WES 的执行准入策略，使用状态响应后的观察时间；未来或过期状态继续失败关闭。
+插件决定下一步命令前，通过基础 ECS 适配器按 Epoch 冻结的 Endpoint 和设备身份读取实时状态；暂不可用时沿用业务等待重试。
+历史状态记录不能作为持续等待的唯一依据。基础派发层在发送前再次校验实时状态，防止预检后状态变化；两次读取均有界，不新增轮询器。
+固定参数的本地验证不表示供应商已实现对应解释。
 
-四个 `position_bindings` 值必须是去空白后 1–120 字符且互不重复的稳定 `location_id`；`location_type` 由对应 position role 固定，不接受配置覆盖。
 `plugin_key="rough_sorter"`、`plugin_version="1.0.0"`、`flow_mode="ROUGH_SORT_INBOUND"`、三组 `contract_key` 和
 `contract_version="1.0"` 来自静态部署组合，不由数据库配置选择。Endpoint 不进入该业务配置。
 
-粗分插件只声明角色、合同和业务处理逻辑，不读取或保存 Endpoint。START 对三个可派发角色逐一要求 Device Endpoint 非空，并复制到
+粗分纯 Decision 层只声明角色、合同和业务处理逻辑，不读取或保存 Endpoint。插件应用层的 START 对三个可派发角色逐一要求 Device Endpoint 非空，并复制到
 Epoch binding；活动 Epoch 和派发链只读取冻结 binding，不回读可变 Device 主数据。业务诊断读取 Epoch 快照，不把当前
 `WorkLine.config` 伪装成历史运行配置。活动 Epoch 内任何绑定或配置变化都必须停止新接纳、闭合或人工清理活动对象并使用新的
 `request_id` 创建新 Epoch；不得静默替换，也不新增数据库插件注册表或 Endpoint 注册表。

@@ -197,6 +197,7 @@ pipeline {
                         --provenance=false \
                         --sbom=false \
                         ${PROXY_BUILD_ARGS} \
+                        --build-arg "WES_PLUGIN_EXTRAS=rough-sorter" \
                         --build-arg "WES_VCS_REVISION=${CI_COMMIT_SHA}" \
                         --build-arg "WES_SOURCE_TREE=${CI_SOURCE_TREE}" \
                         --target "${CI_BUILD_TARGET}" \
@@ -438,6 +439,7 @@ pipeline {
                         --provenance=false \
                         --sbom=false \
                         ${PROXY_BUILD_ARGS} \
+                        --build-arg "WES_PLUGIN_EXTRAS=rough-sorter" \
                         --build-arg "WES_VCS_REVISION=${CI_COMMIT_SHA}" \
                         --build-arg "WES_SOURCE_TREE=${CI_SOURCE_TREE}" \
                         --build-arg "WES_PROVIDER_OPENAPI_SHA256=${WES_PROVIDER_OPENAPI_SHA256}" \

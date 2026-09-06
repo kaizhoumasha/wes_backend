@@ -273,7 +273,6 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             device_code=f"DEVICE-{identity}",
             device_name="Decision transfer",
             work_line_id=line.id,
-            device_role="TRANSFER_DEVICE",
         )
         db.add(device)
         await db.flush()

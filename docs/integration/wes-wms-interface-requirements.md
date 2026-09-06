@@ -1141,7 +1141,7 @@ static string CreateUuidV7()
 
 | 协议 Schema 族 | `kind` | 固定字段 |
 | --- | --- | --- |
-| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rcs_template_id + rack_id + source + target + target_face` |
+| `RackTransportData` | `RACK_MOVE \| RACK_ROTATE` | `transport_task_id + kind + rcs_template_id + rack_id + source + target`；`target_face` 除 `CTU03` 可省略外均必填 |
 | `BinTransportData` | `BIN_MOVE \| BIN_EXCHANGE` | `transport_task_id + kind + moves[]`；成员固定为 `container_id + source + target` |
 
 搬运最终结果同样只需要两个 `data` Schema 族：
@@ -1232,12 +1232,13 @@ operation = transport.task.submit@v1
 
 | DTO 族 | `kind` | 其余必填字段 | 关键规则 |
 | --- | --- | --- | --- |
-| 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target + target_face` | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；`target_face` 是不透明 string token |
+| 货架 | `RACK_MOVE` | `rcs_template_id + rack_id + source + target`；CTU03 的 `target_face` 可选 | 位置属于 `RACK \| ZONE \| RACK_POSITION` 且不同；已提供的 `target_face` 是不透明 string token |
 | 货架 | `RACK_ROTATE` | `rcs_template_id + rack_id + source + target + target_face` | 两个位置均为相同的 `RACK` 或相同的精确 `RACK_POSITION`；`RACK.location_code` 等于外层 `rack_id`；`target_face` 是不透明 string token 且不同于可信当前面 |
 | 料箱 | `BIN_MOVE` | `moves[] {container_id + source + target}` | `moves` 为 `1..4`；`container_id` 唯一；每项来源与目标不同且至少一端是 `RACK_BIN_SLOT` |
 | 料箱 | `BIN_EXCHANGE` | `moves[] {container_id + source + target}` | `moves` 只能为 `2` 或 `4`；`container_id` 唯一；所有位置是 `RACK_BIN_SLOT`；形成 1～2 个二元闭环 |
 
-`target_face` 是业务调用方冻结的普通非空 string，WMS 原样传给 RCS；成功回调 `arrival_face` 必须与其精确相等。WMS 可以把 `RACK_MOVE`
+CTU03 未提供 `target_face` 时，Wire 省略该字段并由 RCS 决定回库朝向；成功回调仍须返回实际非空 `arrival_face`。提供 `target_face` 时，
+WMS 原样传给 RCS，成功回调 `arrival_face` 必须与其精确相等。WMS 可以把 `RACK_MOVE`
 分解为多个 RCS 子任务，但必须保存 WES `transport_task_id` 与全部厂商 `taskCode` 的关联。`RACK_POSITION` 目标要求最终地码相等；
 `RACK` 目标要求最终位置是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。回调统一返回精确
 `RACK_POSITION`。
@@ -1521,15 +1522,15 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
     "rcs_template_id": "CTU03",
     "rack_id": "510056",
     "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
-    "target": {"kind": "ZONE", "location_code": "WH01"},
-    "target_face": "90"
+    "target": {"kind": "ZONE", "location_code": "WH01"}
   }
 }
 ```
 
-样例 9～10 的 `TRANSPORT_DEBUG` consumer 已完成 repository alignment：前端和后端均使用固定 string payload
-`target_face="90"`，不解释或转换其面语义；`WH01` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和
-`CTU03`。当前只完成仓内生成合同、前后端测试和本地 Mock 验证，状态仍为
+样例 9～10 的 `TRANSPORT_DEBUG` consumer 已完成 repository alignment：`CTU01` 使用固定 string payload
+`target_face="90"`；`CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向，成功回调必须带回非空实际 `arrival_face`。
+`WH01` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和 `CTU03`。当前只完成仓内生成合同、
+前后端测试和本地 Mock 验证，状态仍为
 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。
 
 WMS 的对外处理结果必须满足：
@@ -1771,7 +1772,7 @@ operation = transport.task.resulted@v1
 | `outcome_revision` | WMS 对同一 `transport_task_id` 的完整搬运最终结果从 `1` 开始连续递增；同一版本技术重试保持不变 |
 | 货架 `rack_id/status` | `RACK_MOVE/RACK_ROTATE` 直接在 `data` 顶层表达唯一货架及结果，不使用 `results[]` |
 | 货架 `final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
-| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；成功时必须等于搬运提交 `target_face` |
+| 货架 `arrival_face` | 位置明确时由 RCS 实际到达姿态生成；提交已指定 `target_face` 时必须与其精确相等，CTU03 未指定时记录实际非空值 |
 | 料箱 `results[]` | 完整覆盖搬运提交全部 `container_id`，按 `container_id` 升序输出，不能多、少或重复 |
 | `results[].status` | RCS 最终结果归一化为 `SUCCEEDED` 或 `FAILED` |
 | `results[].final_position/position_unknown` | 成功必须位置明确；失败按证据严格二选一 |
@@ -1785,7 +1786,8 @@ operation = transport.task.resulted@v1
 - `position_unknown=false`、同时携带最终位置和未知标记、或两者都缺少，均为非法 DTO；
 - 货架位置明确时 `final_position.kind=RACK_POSITION` 且必须携带非空 string `arrival_face`；位置未知时禁止 `arrival_face`；
 - 料箱位置明确时只能使用 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，并禁止携带 `arrival_face`；
-- `RACK_MOVE/RACK_ROTATE` 成功时实际到达面必须等于冻结 `target_face`。`RACK_POSITION` 目标还要求最终地码相等；`RACK` 目标
+- `RACK_MOVE/RACK_ROTATE` 已指定 `target_face` 时，成功实际到达面必须等于冻结值；CTU03 未指定时接受并记录 RCS 返回的实际非空面。
+  `RACK_POSITION` 目标还要求最终地码相等；`RACK` 目标
   要求最终位置是按冻结货架编号和模板解析出的结果；`ZONE` 目标要求最终位置属于冻结区域。结果必须返回精确 `RACK_POSITION`；
 - `BIN_MOVE/BIN_EXCHANGE` 成功成员的最终位置必须等于该成员搬运提交 `target`；
 - 失败但位置明确时可以报告来源、目标或其它已经在第 3.1.2 节建模的实际位置，禁止把预期目标当作实际位置；无法用本文位置联合
@@ -2397,8 +2399,8 @@ WMS 建议将 WES 到 RCS 的转换集中为货架、料箱两个明确映射职
 | `ZONE.location_code` | 作为区域编号交给 RCS 选址 |
 | `RACK_POSITION.location_code` | 作为精确地码映射为 `positionCodePath[].positionCode` |
 | `RACK_BIN_SLOT` | 通过 WMS 主数据映射厂商仓位 `binId`，不得从字符串格式猜测 |
-| `target_face` | 普通非空 string，WMS 原样传给 RCS |
-| `arrival_face` | RCS 回传的同类 string token，成功时与冻结 `target_face` 精确相等 |
+| `target_face` | CTU03 可省略并由 RCS 决定回库朝向；已提供的非空 string 由 WMS 原样传给 RCS |
+| `arrival_face` | RCS 回传的实际非空 string token；已冻结 `target_face` 时成功结果必须与其精确相等 |
 | `rcs_template_id` | 直接调用同名 RCS 模板；只允许 `CTU01 | CTU02 | CTU03 | F01` |
 
 厂商 `sideA/sideB` 是 WMS 根据自身库存和货架主数据形成的整架容器上报，不进入 WES 搬运提交。WES 不复制 WMS 已拥有的两面容器

@@ -427,7 +427,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
         assert rack_return.rcs_template_id is RcsTemplateId.CTU03
         assert asdict(rack_return.source) == {"kind": "RACK", "location_code": rack_id}
         assert asdict(rack_return.target) == {"kind": "ZONE", "location_code": "WH01"}
-        assert rack_return.target_face == "90"
+        assert rack_return.target_face is None
         assert [created_request.kind.value for _, created_request in transport.created] == expected_kinds
         await _complete_current_transport(
             integration_session_factory,
@@ -435,6 +435,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
             run.run_id,
             transport,
             storage_position="WH01-01",
+            arrival_face_override="RCS_SELECTED",
         )
         assert await service.advance_run(run.run_id) is True
         assert (await service.get_run(run.run_id)).status == "COMPLETED"

@@ -60,7 +60,6 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     device = Device(
                         device_code="CONFIG-PG-DEVICE",
                         device_name="Configuration device",
-                        device_role="TRANSFER_DEVICE",
                     )
                     db.add_all([left, right, device])
                     await db.flush()
@@ -122,14 +121,12 @@ def test_configuration_can_claim_the_active_replacement_for_a_deleted_device_cod
                     deleted = Device(
                         device_code="CONFIG-PG-REUSED-DEVICE",
                         device_name="Deleted device",
-                        device_role="TRANSFER_DEVICE",
                         work_line_id=workline.id,
                         is_deleted=True,
                     )
                     replacement = Device(
                         device_code="CONFIG-PG-REUSED-DEVICE",
                         device_name="Replacement device",
-                        device_role="TRANSFER_DEVICE",
                     )
                     db.add_all([deleted, replacement])
                     await db.flush()

@@ -15,6 +15,7 @@ from src.app.transport.contracts import (
     RcsTemplateId,
     RotateRackRequest,
     TransportCaller,
+    TransportContractError,
     ZonePosition,
 )
 from src.app.transport.debug_run_state_machine import (
@@ -165,7 +166,7 @@ def _step(phase: str, *, group_index: int = 0, client_id: str = CLIENT_IDS[0]) -
                 "510056",
                 RackReference("510056"),
                 ZonePosition("WH01"),
-                "90",
+                None,
                 RcsTemplateId.CTU03,
             ),
         ),
@@ -354,3 +355,34 @@ def test_evaluate_rotate_accepts_rack_reference_intent_and_exact_station_result(
     member.target_json = {"kind": "RACK_POSITION", "location_code": "KT16"}
 
     assert evaluate_debug_transport_task(step, task, (member,), run).disposition == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("arrival_face", ["270", "OTHER"])
+def test_ctu03_accepts_actual_arrival_face_without_requested_orientation(arrival_face: str) -> None:
+    from src.app.transport.service import _validate_result_frozen_identity
+
+    run = _run(phase="RACK_TO_STORAGE", group_index=1)
+    step = _step("RACK_TO_STORAGE", group_index=1)
+    request = build_debug_transport_request(run, step)
+    assert isinstance(request, MoveRackRequest)
+    assert request.target_face is None
+    task = _task("SUCCEEDED")
+    task.request_json = {"rcs_template_id": "CTU03"}
+    member = _member(final_position={"kind": "RACK_POSITION", "location_code": "STORAGE-1"}, arrival_face=arrival_face)
+    member.target_json = {"kind": "ZONE", "location_code": "WH01"}
+    result = {"status": "SUCCEEDED", "final_position": member.final_position_json, "arrival_face": arrival_face}
+    _validate_result_frozen_identity(task, [member], {"510056": result})
+    assert evaluate_debug_transport_task(step, task, [member], run).disposition == "SUCCEEDED"
+
+
+def test_ctu03_with_requested_orientation_rejects_a_different_arrival_face() -> None:
+    from src.app.transport.service import _validate_result_frozen_identity
+
+    task = _task("SUCCEEDED")
+    task.request_json = {"rcs_template_id": "CTU03", "target_face": "90"}
+    member = _member(final_position={"kind": "RACK_POSITION", "location_code": "STORAGE-1"}, arrival_face="270")
+    member.target_json = {"kind": "ZONE", "location_code": "WH01"}
+    result = {"status": "SUCCEEDED", "final_position": member.final_position_json, "arrival_face": "270"}
+
+    with pytest.raises(TransportContractError, match="successful arrival face differs from frozen target"):
+        _validate_result_frozen_identity(task, [member], {"510056": result})

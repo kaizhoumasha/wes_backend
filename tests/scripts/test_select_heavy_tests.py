@@ -90,6 +90,7 @@ PICKING_TASK_PREPARE_REVISION_PATH = (
     "migrations/versions/20260904_1437_ff5d0af61f91_扩展_pickingtask_prepare_领取合同.py"
 )
 WORKLINE_PLUGIN_REVISION_PATH = "migrations/versions/20260905_1102_b42147d0d086_添加工作线插件选择并放开同角色设备.py"
+DEVICE_ROLE_REMOVAL_REVISION_PATH = "migrations/versions/20260906_0426_627291489210_remove_device_business_roles.py"
 PICKING_TASK_SCHEMA_HEAVY_TEST = "tests/integration/wms_adapter/outbound_picking/test_schema.py"
 PICKING_TASK_PREPARE_HEAVY_TEST = "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"
 TRANSPORT_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/transport/test_transport_production_wiring.py"
@@ -1203,6 +1204,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         PICKING_TASK_REVISION_PATH,
         PICKING_TASK_PREPARE_REVISION_PATH,
         WORKLINE_PLUGIN_REVISION_PATH,
+        DEVICE_ROLE_REMOVAL_REVISION_PATH,
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (
@@ -1228,6 +1230,10 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
+    )
+    assert revision_mappings[7].heavy_tests == revision_mappings[6].heavy_tests
+    assert select_heavy_tests([DEVICE_ROLE_REMOVAL_REVISION_PATH], config, repo_root=REPO_ROOT) == sorted(
+        revision_mappings[7].heavy_tests
     )
     assert select_heavy_tests([INITIAL_SCHEMA_REVISION_PATH], config, repo_root=REPO_ROOT) == [
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST

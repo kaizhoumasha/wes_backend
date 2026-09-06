@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     DATETIME_FORMAT: str = "%Y-%m-%d"
     DATETIME_TIMEZONE: str = "Asia/Shanghai"
     API_PATH: str = "/api"
+    ENABLED_WORKLINE_PLUGINS: tuple[str, ...] = ()
 
     # ==================== 安全配置 ====================
 

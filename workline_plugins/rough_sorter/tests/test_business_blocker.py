@@ -23,7 +23,7 @@ async def test_business_blocker_returns_exact_counts_and_per_type_samples() -> N
     projection_sample = {
         "type": "position_projection",
         "id": "31",
-        "status": "OUTLET-1",
+        "status": "PIPELINE_OUTLET",
         "identity": "RACK:RACK-1",
     }
     blocker = RoughSorterBusinessBlocker(

@@ -41,6 +41,9 @@ from src.app.transport.contracts import (
     TransportOutcome,
     TransportOutcomeStatus,
 )
+
+# WmsConfirmation 的可空外键仍需在独立插件测试进程中注册目标表。
+from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.app.workline.epoch_digest import configuration_digest, topology_digest
 from src.app.workline.models import (
     LineRunEpoch,
@@ -107,10 +110,10 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
         ("PLACEMENT_DEVICE", "rough_sorter.placement_device"),
     )
     position_values = (
-        ("MEASUREMENT_POSITION", "MEASUREMENT-1"),
-        ("PIPELINE_INLET", "INLET-1"),
-        ("PIPELINE_OUTLET", "OUTLET-1"),
-        ("NG_POSITION", "NG-1"),
+        ("MEASUREMENT_POSITION", "MEASUREMENT_POSITION"),
+        ("PIPELINE_INLET", "PIPELINE_INLET"),
+        ("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
+        ("NG_POSITION", "NG_POSITION"),
     )
     async with production_session_factory.begin() as db:
         line = WorkLine(
@@ -125,7 +128,6 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
                 device_code=f"ROUGH-{role}-{identity[:12]}",
                 device_name=role,
                 work_line_id=line.id,
-                device_role=role,
             )
             for role, _contract in roles
         ]
@@ -154,8 +156,8 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
                 endpoint_base_url="http://ecs-decision:8080",
                 contract_key=contract,
                 contract_version="1.0",
-                status_max_age_ms=1_000,
-                command_timeout_ms=5_000,
+                status_max_age_ms=10_000,
+                command_timeout_ms=30_000,
             )
             for device, (role, contract) in zip(devices, roles, strict=True)
         ]
@@ -190,7 +192,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
                     "thickness_mm": "1.2",
                     "shape_result": "PASS",
                     "position": {
-                        "location_id": "MEASUREMENT-1",
+                        "location_id": "MEASUREMENT_POSITION",
                         "location_type": "MEASUREMENT_POSITION",
                         "material_trace_id": f"TRACE-{identity}",
                     },
@@ -214,6 +216,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
 
     monkeypatch.setattr(task_queue_gateway, "enqueue_wms_confirmations", lambda: None)
     runtime = build_deployment_runtime(
+        enabled_plugin_keys=("rough_sorter",),
         session_factory=production_session_factory,
         transport_runtime=SimpleNamespace(
             service=object(),
@@ -301,8 +304,8 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
             endpoint_base_url="http://ecs-decision:8080",
             contract_key="rough_sorter.placement_device",
             contract_version="1.0",
-            status_max_age_ms=1_000,
-            command_timeout_ms=5_000,
+            status_max_age_ms=10_000,
+            command_timeout_ms=30_000,
         )
         db.add(binding)
         seeds = [
@@ -351,7 +354,7 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
             params={
                 "material_trace_id": executions[1].material_trace_id,
                 "source": {
-                    "location_id": "OUTLET-1",
+                    "location_id": "PIPELINE_OUTLET",
                     "location_type": "PIPELINE_OUTLET",
                     "material_trace_id": executions[1].material_trace_id,
                 },
@@ -448,8 +451,8 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
             endpoint_base_url="http://ecs-decision:8080",
             contract_key="rough_sorter.placement_device",
             contract_version="1.0",
-            status_max_age_ms=1_000,
-            command_timeout_ms=5_000,
+            status_max_age_ms=10_000,
+            command_timeout_ms=30_000,
         )
         db.add(device_binding)
         seeds = [
@@ -530,7 +533,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                     params={
                         "material_trace_id": target_trace_id,
                         "source": {
-                            "location_id": "OUTLET-1",
+                            "location_id": "PIPELINE_OUTLET",
                             "location_type": "PIPELINE_OUTLET",
                             "material_trace_id": target_trace_id,
                         },
@@ -739,7 +742,7 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
         members=(
             TransportMemberOutcome(
                 object_id="RACK-2",
-                final_position=RackPosition("OUTLET"),
+                final_position=RackPosition("PIPELINE_OUTLET"),
                 arrival_face="270",
             ),
         ),
@@ -828,7 +831,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
             members=(
                 TransportMemberOutcome(
                     object_id="RACK-2",
-                    final_position=RackPosition("OUTLET"),
+                    final_position=RackPosition("PIPELINE_OUTLET"),
                     arrival_face="270",
                 ),
             ),
@@ -847,7 +850,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
                 "members": [
                     {
                         "object_id": "RACK-2",
-                        "final_position": {"kind": "RACK_POSITION", "location_code": "OUTLET"},
+                        "final_position": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                         "position_unknown": False,
                         "failure_code": None,
                         "arrival_face": "270",

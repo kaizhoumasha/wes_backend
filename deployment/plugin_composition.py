@@ -5,15 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from rough_sorter.application.business_blocker import RoughSorterBusinessBlocker
-from rough_sorter.application.factory import RoughSorterPluginFactFactory
-from rough_sorter.application.persistence import RoughSorterInitialExecutionCorrelator
-from rough_sorter.application.start_plan import RoughSorterStartPlanBuilder
-from rough_sorter.application.transport import RoughSorterTransportOutcomePublisher
-from rough_sorter.application.wms_follow_up import RoughSorterWmsFollowUpPlanner
-from rough_sorter.application.wms_recovery import RecoveryEventEvidenceRecorder, RecoveryEventHandler
-from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, build_handlers
-
 from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
@@ -41,7 +32,7 @@ class DeploymentRuntime:
     workline_start_service: WorkLineStartService
     workline_configuration_service: WorkLineConfigurationService
     transport_outcome_publisher: InstalledPluginTransportOutcomePublisher
-    wms_recovery_event_handler: RecoveryEventHandler
+    wms_recovery_event_handler: object | None
 
 
 def build_deployment_runtime(
@@ -50,31 +41,50 @@ def build_deployment_runtime(
     transport_runtime: TransportRuntime,
     device_command_service: DeviceCommandService,
     device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
+    enabled_plugin_keys: tuple[str, ...] = (),
 ) -> DeploymentRuntime:
     """Web/Celery 共用的部署期显式插件装配。"""
 
-    factory = RoughSorterPluginFactFactory(transport_repository=transport_runtime.repository)
-    rough_sorter_start_plan_builder = RoughSorterStartPlanBuilder(adapter_provider=device_adapter_provider)
-    rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher(session_factory=session_factory)
-    plugins = (
-        InstalledWorkLinePlugin(
-            display_name="粗分业务",
-            runtime_binding=PluginRuntimeBinding(
-                plugin_key=PLUGIN_KEY,
-                plugin_version=PLUGIN_VERSION,
-                handlers=build_handlers(),
-                fact_factory=factory,
-                initial_execution_correlator=RoughSorterInitialExecutionCorrelator(),
+    if len(set(enabled_plugin_keys)) != len(enabled_plugin_keys):
+        raise ValueError("duplicate enabled plugin keys")
+    unknown = set(enabled_plugin_keys) - {"rough_sorter"}
+    if unknown:
+        raise ValueError(f"unknown enabled plugins: {sorted(unknown)}")
+
+    plugins: tuple[InstalledWorkLinePlugin, ...] = ()
+    if "rough_sorter" in enabled_plugin_keys:
+        from rough_sorter.application.business_blocker import RoughSorterBusinessBlocker
+        from rough_sorter.application.factory import RoughSorterPluginFactFactory
+        from rough_sorter.application.persistence import RoughSorterInitialExecutionCorrelator
+        from rough_sorter.application.start_plan import RoughSorterStartPlanBuilder
+        from rough_sorter.application.transport import RoughSorterTransportOutcomePublisher
+        from rough_sorter.application.wms_follow_up import RoughSorterWmsFollowUpPlanner
+        from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, build_handlers
+
+        factory = RoughSorterPluginFactFactory(
+            transport_repository=transport_runtime.repository,
+            device_adapter_provider=device_adapter_provider,
+        )
+        rough_sorter_start_plan_builder = RoughSorterStartPlanBuilder(adapter_provider=device_adapter_provider)
+        rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher(session_factory=session_factory)
+        plugins = (
+            InstalledWorkLinePlugin(
+                display_name="粗分业务",
+                runtime_binding=PluginRuntimeBinding(
+                    plugin_key=PLUGIN_KEY,
+                    plugin_version=PLUGIN_VERSION,
+                    handlers=build_handlers(),
+                    fact_factory=factory,
+                    initial_execution_correlator=RoughSorterInitialExecutionCorrelator(),
+                ),
+                start_plan_builder=rough_sorter_start_plan_builder,
+                supported_line_types=(LineType.AUTO, LineType.MANUAL, LineType.HYBRID),
+                business_blocker=RoughSorterBusinessBlocker(),
+                device_roles=rough_sorter_start_plan_builder.device_roles,
+                wms_confirmation_follow_up_planner=RoughSorterWmsFollowUpPlanner(),
+                transport_outcome_publisher=rough_sorter_transport_outcome_publisher,
             ),
-            start_plan_builder=rough_sorter_start_plan_builder,
-            supported_line_types=(LineType.AUTO, LineType.MANUAL, LineType.HYBRID),
-            business_blocker=RoughSorterBusinessBlocker(),
-            compatibility_checker=rough_sorter_start_plan_builder.compatibility_incompatibility_reasons,
-            configuration_checker=rough_sorter_start_plan_builder.configuration_incompatibility_reasons,
-            wms_confirmation_follow_up_planner=RoughSorterWmsFollowUpPlanner(),
-            transport_outcome_publisher=rough_sorter_transport_outcome_publisher,
-        ),
-    )
+        )
     plugin_binding = StaticPluginBinding(tuple(plugin.runtime_binding for plugin in plugins))
     execution = build_execution_runtime(
         session_factory=session_factory,
@@ -86,6 +96,17 @@ def build_deployment_runtime(
         wms_confirmation_follow_up_planner=InstalledPluginWmsFollowUpPlanner(plugins),
         task_queue_gateway=task_queue_gateway,
     )
+    recovery_handler = None
+    if "rough_sorter" in enabled_plugin_keys:
+        from rough_sorter.application.wms_recovery import RecoveryEventEvidenceRecorder, RecoveryEventHandler
+
+        recovery_handler = RecoveryEventHandler(
+            RecoveryEventEvidenceRecorder(
+                session_factory,
+                evidence_service=execution.inbound_evidence_service,
+                task_queue_gateway=task_queue_gateway,
+            )
+        )
     return DeploymentRuntime(
         execution=execution,
         plugins=plugins,
@@ -95,13 +116,7 @@ def build_deployment_runtime(
             device_cache_invalidator=device_service,
         ),
         transport_outcome_publisher=InstalledPluginTransportOutcomePublisher(session_factory, plugins),
-        wms_recovery_event_handler=RecoveryEventHandler(
-            RecoveryEventEvidenceRecorder(
-                session_factory,
-                evidence_service=execution.inbound_evidence_service,
-                task_queue_gateway=task_queue_gateway,
-            )
-        ),
+        wms_recovery_event_handler=recovery_handler,
     )
 
 

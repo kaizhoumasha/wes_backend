@@ -151,14 +151,13 @@ START 只调用所选插件，并在事务内重新锁定 WorkLine、Device 和�
 设备发现抽屉把现有逐设备卡片改为紧凑表格。默认列为设备编码、名称、设备类型/ECS 角色、在线状态、运行状态、
 WES 接管状态和操作；展开行显示 `supported_commands`、`supported_events`、当前命令及差异原因。状态使用既有标签和文字，
 不使用彩色左边框卡片。移动端保留编码、名称、状态和操作，其他列通过横向滚动或展开行查看。
-逐台“接管”继续复用现有创建设备表单，自动带入 `device_code`、名称、Endpoint，并以 ECS `role` 作为可修改建议值；
-它不自动成为 WES `device_role` 的权威映射，管理员仍按插件职责确认。接管时不选择 WorkLine，也不增加多选或批量接口。
+逐台“接管”继续复用现有创建设备表单，自动带入 `device_code`、名称和 Endpoint。ECS `role` 只作为发现结果展示，
+不写入 Device 主数据；管理员在 WorkLine 插件配置中按插件声明的角色选择精确 `device_code`。接管时不选择 WorkLine，
+也不增加多选或批量接口。
 
-同一工作线允许存在多台相同 `device_role` 的设备。运行时以 `device_role` 选择职责范围，以全局唯一 `device_code` 精确选择设备；
-`role_index` 只用于展示和稳定排序，不承担路由身份，也不冻结到 Epoch。Epoch 保留已有 `(epoch, device_id)`、
-`(epoch, device_code)` 唯一约束，删除 `(epoch, device_role)` 唯一约束。宿主按 role 查询返回集合或要求同时提供 code，
-不得再返回任意一台；插件确实要求单设备职责时，由该插件显式校验集合恰好一项。所有摘要按 `(device_role, device_code)`
-稳定排序。这样即可表达 `SCAN_STATION` 下多台扫码设备，不增加 Slot 或关联实体。
+当前通用绑定合同是 `device_bindings: {device_role: device_code}`：每个插件角色绑定一台全局唯一设备，START 时把
+`(device_role, device_code)` 冻结到 Epoch。Device 主数据不保存 `device_role` 或 `role_index`；宿主和插件按冻结绑定精确路由，
+摘要按 `(device_role, device_code)` 稳定排序。若未来确需同角色多设备，应先修改插件合同和配置 Schema，本次不预留隐式集合语义。
 
 ECS 返回的 `device_type`、`role`、`supported_commands`、`supported_events`、mode、status 和在线状态保持 ECS 只读事实，
 不复制成 `Device` 正式字段，也不写入 `diagnostic_profile`。插件列表的初筛只使用 WES 静态 WorkLine/Device 拓扑；
@@ -361,7 +360,7 @@ CODE PATHS                                             USER FLOWS
   ├─ [PLAN→PG] WorkLine→Device 升序锁与 replace-all       ├─ [PLAN→E2E] 3 号线人工上架切人工拣料
   │   ├─ 两线争用同一未绑定设备                            ├─ [PLAN→E2E] blocker 阻止停用并可刷新
   │   └─ 任一步失败整笔回滚                                └─ [PLAN→E2E] 切换 3 号线不影响其他线
-  ├─ [PLAN→UNIT] role 返回集合，code 精确选择
+  ├─ [PLAN→UNIT] 插件 role 绑定并按 code 精确选择
   ├─ [PLAN→CONTRACT] ECS 按 Endpoint 一次读取
   ├─ [PLAN→PG] START: inactive/no Epoch → active + Epoch
   │   ├─ 同 request_id 重放
@@ -373,8 +372,8 @@ CODE PATHS                                             USER FLOWS
 LLM integration: 不涉及，无 eval。
 ```
 
-- 核心单元/API：插件对象完整性、Device CRUD 禁写归属、删除 activate 路由与权限、重复/未知 binding、同角色多设备集合、
-  `device_code` 精确选择、WorkLine 配置、START 选择与原 Epoch 路由。
+- 核心单元/API：插件对象完整性、Device CRUD 禁写归属和业务角色、删除 activate 路由与权限、重复/未知 binding、
+  插件角色完整绑定、`device_code` 精确选择、WorkLine 配置、START 选择与原 Epoch 路由。
 - PostgreSQL 集成：配置 replace-all 原子回滚、两线争用同一设备、active/Epoch 不变量、START 原子提交与并发重放、
   完整 blocker 矩阵、PickingTask 业务 blocker、停用关闭 Epoch，以及准入与停用竞争。
 - ECS 合同：同 Endpoint 多设备只请求一次，设备缺失、过期、离线、能力不匹配和部分 Endpoint 不可用均阻止 START。
@@ -458,7 +457,7 @@ LLM integration: 不涉及，无 eval。
 - 宿主、业务插件和 SDK 三个出口分别闭合，不互相借用绿灯。
 - WorkLine 只保存 `plugin_key`；Epoch 冻结精确版本和运行配置。
 - Device 只保存 WES 身份、唯一 WorkLine 归属和拓扑；ECS 硬件/运行信息保持实时只读。
-- 设备归属只从工作线业务配置写入；同角色多设备按 `device_role + device_code` 精确选择。
+- 设备归属只从工作线业务配置写入；插件角色在配置中绑定精确 `device_code`，并冻结到 Epoch。
 - Device 配置采用全集替换且不支持直接跨线迁移；两线并发争用同一设备时仅一个事务成功。
 - 保存草稿不产生部分成功；非重放 START 仅从 inactive/no Epoch 原子设置 active 并创建 Epoch，且不隐式关闭旧 Epoch。
 - `WorkLine.is_active=true` 与存在一个活动 Epoch 保持一致；迁移/发布前检查既有数据，不静默修复不一致状态。

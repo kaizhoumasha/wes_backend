@@ -210,7 +210,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 device_code=f"ARM-E2E-{suffix}",
                 device_name="DeviceCommand E2E Arm",
                 work_line_id=line.id,
-                device_role="ROBOT_ARM",
             )
             db.add(device)
             await db.flush()

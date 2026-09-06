@@ -72,7 +72,7 @@ TransportDebugRun（冻结配置和当前进度）
 - `CTU01 / RACK_MOVE`：允许 `RACK → RACK_POSITION`。
 - `CTU02 / RACK_ROTATE`：`position` 允许 `RACK`；其 `location_code` 必须与 `rack_id` 完全一致。
 - `CTU03 / RACK_MOVE`：允许 `RACK → ZONE`。
-- `target_face` 继续是非空不透明字符串。
+- `target_face` 继续是非空不透明字符串；仅 `CTU03` 可省略，让 RCS 自主确定返库朝向。
 
 既有精确位置边和其它模板约束保持不变。新增边必须按模板显式放行，不能把所有 `RACK`/`ZONE` 组合泛化为任意可用。
 
@@ -111,7 +111,7 @@ TransportDebugRun（冻结配置和当前进度）
 }
 ```
 
-全部选中料箱回架后返库；返库面固定为已确认的 `"90"`：
+全部选中料箱回架后返库；`CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向：
 
 ```json
 {
@@ -124,7 +124,6 @@ TransportDebugRun（冻结配置和当前进度）
     "kind": "ZONE",
     "location_code": "WH01"
   },
-  "target_face": "90",
   "rcs_template_id": "CTU03",
   "kind": "RACK_MOVE"
 }
@@ -138,7 +137,8 @@ WMS wire adapter 继续把旋转表达为其现有 wire 结构；当正式输入
 
 - `CTU01`：结果位置必须是 `KT16`，面值必须与当前组冻结值完全相等。
 - `CTU02`：结果位置必须仍是 `KT16`，面值必须与下一组冻结值完全相等。
-- `CTU03`：结果必须是 WMS 从 `WH01` 解析出的精确 `RACK_POSITION`，面值必须为 `"90"`。
+- `CTU03`：结果必须是 WMS 从 `WH01` 解析出的精确 `RACK_POSITION`，并携带非空的实际 `arrival_face`；
+  WES 不按请求目标面比较。
 
 若回调缺少精确位置、面值不一致、位置冲突或任务进入 `RECONCILING`，自动流程进入 `NEEDS_ATTENTION`，不创建下一任务。
 
@@ -169,7 +169,7 @@ WMS wire adapter 继续把旋转表达为其现有 wire 结构；当正式输入
 - `rack_out_template = CTU01`
 - `rack_rotate_template = CTU02`
 - `rack_return_template = CTU03`
-- `rack_return_face = "90"`
+- `rack_return_face = "90"`（保留既有快照结构；`CTU03` 构建请求时不使用）
 
 轮次启动后不能修改这些值。它们当前不是站点配置平台的一部分，避免为单一现场诊断引入额外抽象。
 
@@ -254,7 +254,8 @@ Device ingress 继续只负责中性地持久化 Evidence、去重和发布处�
 ### 6.5 旋转或返库
 
 - 若还有下一组：创建 `CTU02`，position 使用当前货架的 `RACK` 引用，`target_face` 原样使用下一组面值。成功且精确位置、面值校验通过后处理下一组。
-- 若没有下一组：创建 `CTU03`，source 使用当前货架的 `RACK` 引用，target 使用 `WH01` 的 `ZONE` 引用，`target_face` 固定为 `"90"`。成功且回调结果校验通过后，轮次进入 `COMPLETED` 并释放全局执行权。
+- 若没有下一组：创建 `CTU03`，source 使用当前货架的 `RACK` 引用，target 使用 `WH01` 的 `ZONE` 引用并省略
+  `target_face`。WMS/RCS 返回精确位置和非空实际 `arrival_face` 且结果校验通过后，轮次进入 `COMPLETED` 并释放全局执行权。
 
 ## 7. 失败、未知与人工处置
 

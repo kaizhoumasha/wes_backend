@@ -559,7 +559,6 @@ async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending
                     device_code=f"SAFETY-DEVICE-{run_id}-{index}",
                     device_name=f"Safety device {index}",
                     work_line_id=workline.id,
-                    device_role=f"SAFETY_ROLE_{index}",
                 )
                 db.add(device)
                 await db.flush()
@@ -567,7 +566,7 @@ async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending
                     line_run_epoch_id=epoch.id,
                     device_id=device.id,
                     device_code=device.device_code,
-                    device_role=device.device_role,
+                    device_role=f"SAFETY_ROLE_{index}",
                     endpoint_base_url="http://ecs-safety:8080",
                     contract_key="safety.contract",
                     contract_version="1.0",

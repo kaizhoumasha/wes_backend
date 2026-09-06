@@ -228,7 +228,6 @@ async def _seed_result_race(db) -> tuple[InboundEvidence, DeviceEventCommandBloc
         device_code=f"ARM-EVENT-BLOCK-{identity[:12]}",
         device_name="EVENT blocker arm",
         work_line_id=line.id,
-        device_role="ROBOT_ARM",
     )
     db.add(device)
     await db.flush()
@@ -249,7 +248,7 @@ async def _seed_result_race(db) -> tuple[InboundEvidence, DeviceEventCommandBloc
         line_run_epoch_id=epoch.id,
         device_id=device.id,
         device_code=device.device_code,
-        device_role=device.device_role,
+        device_role="ROBOT_ARM",
         endpoint_base_url="http://ecs-event-block:8080",
         contract_key="arm.pick",
         contract_version="2.0",

@@ -10,6 +10,8 @@ from sqlalchemy import JSON, CheckConstraint, Column, Index, UniqueConstraint, t
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+# 注册外键目标，不依赖 Web 或可选插件的导入顺序。
+from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.core.mixins import DataTableMixin, EnterpriseMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType

@@ -68,30 +68,40 @@ ENV PIP_INDEX_URL=${PYPI_INSTALL_MIRROR} \
 COPY pyproject.toml uv.lock ./
 COPY src/wes_plugin_sdk/pyproject.toml src/wes_plugin_sdk/pyproject.toml
 COPY src/wes_plugin_sdk/src src/wes_plugin_sdk/src
-COPY workline_plugins/rough_sorter/pyproject.toml workline_plugins/rough_sorter/pyproject.toml
-COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src
-COPY workline_plugins/manual_bin_processing/pyproject.toml workline_plugins/manual_bin_processing/pyproject.toml
-COPY workline_plugins/manual_bin_processing/src workline_plugins/manual_bin_processing/src
+
+# 从临时构建挂载筛选源码；未选择的业务源码不进入基础镜像层。
+FROM base AS source
+ARG WES_PLUGIN_EXTRAS=""
+RUN --mount=type=bind,target=/context \
+    cp -a /context/. /app/ && \
+    for extra in ${WES_PLUGIN_EXTRAS}; do \
+        case "$extra" in rough-sorter|manual-bin-processing) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
+    done && \
+    case " ${WES_PLUGIN_EXTRAS} " in *" rough-sorter "*) ;; *) rm -rf /app/workline_plugins/rough_sorter ;; esac && \
+    case " ${WES_PLUGIN_EXTRAS} " in *" manual-bin-processing "*) ;; *) rm -rf /app/workline_plugins/manual_bin_processing ;; esac
 
 # ============================================
 # Stage 2: Builder - 依赖安装
 # ============================================
 FROM base AS builder
+ARG WES_PLUGIN_EXTRAS=""
 
 # 使用固定摘要的官方工具镜像引入 uv，避免构建启动依赖 PyPI 下载自身。
 COPY --from=uv-tool /uv /usr/local/bin/uv
 
 # 创建虚拟环境并基于锁文件安装依赖
 RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=workline_plugins,target=/app/workline_plugins \
     uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
     # CI 镜像仅安装测试与质量检查必需依赖，避免把 basedpyright/nodejs-wheel-binaries 拉进来
-    uv sync --frozen --no-dev --extra dev --group ci --no-install-project --active
+    set --; for extra in ${WES_PLUGIN_EXTRAS}; do set -- "$@" --extra "$extra"; done; \
+    uv sync --frozen --no-dev --extra dev --group ci --no-install-project --active "$@"
 
 # ============================================
 # Stage 3: Development - 开发环境
 # ============================================
-FROM base AS development
+FROM source AS development
 
 # 复制虚拟环境
 COPY --from=builder /opt/venv /opt/venv
@@ -111,8 +121,7 @@ RUN pip install --no-cache-dir \
     # 性能测试
     locust
 
-# 复制项目文件
-COPY . .
+# 项目源码继承自已筛选的 source 阶段。
 
 # 提交元数据放在共享依赖层之后，避免每个 commit 都使 apt/uv 缓存失效。
 ARG WES_VCS_REVISION
@@ -129,7 +138,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
 # ============================================
 # Stage 4: Testing - 测试环境
 # ============================================
-FROM base AS testing
+FROM source AS testing
 
 # 复制虚拟环境
 COPY --from=builder /opt/venv /opt/venv
@@ -141,8 +150,7 @@ COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 # 激活虚拟环境
 ENV PATH="/app/.venv/bin:$PATH"
 
-# 复制项目文件
-COPY . .
+# 项目源码继承自已筛选的 source 阶段。
 
 # CI 与部署入口脚本
 RUN if [ -d /app/docker/test ]; then chmod +x /app/docker/test/*.sh; fi
@@ -181,9 +189,8 @@ RUN python -c 'import os; from pathlib import Path; from scripts.export_release_
     install -m 0644 /tmp/wes-release-provider/provided-permissions.json /validated/provided-permissions.json
 
 # Production 只从清理后的源码快照复制，避免 CI-only checker/fingerprints 出现在任何 runtime layer。
-FROM base AS production-source
+FROM source AS production-source
 
-COPY . /app
 RUN rm -rf /app/tools/release_checker && \
     rm -rf /app/reports/release-provider && \
     rm -rf /app/.agents

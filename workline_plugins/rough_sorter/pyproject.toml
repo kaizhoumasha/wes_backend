@@ -9,6 +9,9 @@ description = "Rough sorter business decisions and WES application integration"
 requires-python = ">=3.13"
 dependencies = ["wes-plugin-sdk==0.1.0"]
 
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
+
 [tool.uv.sources]
 wes-plugin-sdk = { path = "../../src/wes_plugin_sdk" }
 

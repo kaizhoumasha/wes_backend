@@ -1306,7 +1306,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/runtime/normalization/contracts/runtime_config.py"
 heavy_tests = []
-reviewed_content_sha256 = "f52738ed18ab76c62de7f566ec0690d213e9faa08be90d2d2055b1440013f618"
+reviewed_content_sha256 = "541122761e87bcfc7fc8ffe3fa5e493dc02f1cc402c5d7ac1651fdceb545c29f"
 
 [[mapping]]
 source_glob = "src/app/runtime/system_capabilities/__init__.py"
@@ -2316,3 +2316,18 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/core/mixins/primary_key.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
+
+# Device 业务角色删除：验证干净 schema 与工作线配置/启动事务。
+[[mapping]]
+source_glob = "migrations/versions/20260906_0426_627291489210_remove_device_business_roles.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+# 无调用者的 Device 业务角色拓扑桥已删除；rg 与图谱均确认无运行消费者。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/{topology_bridge.py,device_ordering.py}"
+heavy_tests = []
+
+# 只读安装边界验收脚本，在已构建的无插件制品中显式运行；不创建数据库或 Worker。
+[[mapping]]
+source_glob = "scripts/verify_core_plugin_installation.py"
+heavy_tests = []

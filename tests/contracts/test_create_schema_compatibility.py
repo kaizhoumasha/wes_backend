@@ -6,7 +6,6 @@ def test_device_create_keeps_static_diagnostic_profile_optional() -> None:
     payload = {
         "device_code": "DEV-CREATE-001",
         "device_name": "Create Device",
-        "device_role": "INPUT_ARM",
     }
 
     device = DeviceCreate.model_validate(payload)

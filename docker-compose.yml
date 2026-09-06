@@ -27,12 +27,14 @@ x-no-localhost-proxy: &no-localhost-proxy
   https_proxy: ""
 
 x-no-localhost-proxy-build-args: &no-localhost-proxy-build-args
+  WES_PLUGIN_EXTRAS: rough-sorter
   HTTP_PROXY: ""
   HTTPS_PROXY: ""
   http_proxy: ""
   https_proxy: ""
 
 x-wms-target-config: &wms-target-config
+  ENABLED_WORKLINE_PLUGINS: '["rough_sorter"]'
   WMS_BASE_URL: ${WMS_BASE_URL}
   TRANSPORT_SUBMIT_PATH: ${TRANSPORT_SUBMIT_PATH}
 

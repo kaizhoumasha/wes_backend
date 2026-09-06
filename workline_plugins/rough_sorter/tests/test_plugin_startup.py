@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from src.app.device.contracts import EcsDeviceMode, EcsDeviceState
+from src.app.device.ecs_adapter import EcsStatusUnavailableError
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
@@ -26,6 +27,7 @@ from src.app.workline.models.line_run_epoch import (
 )
 from src.core.uuid7 import is_uuid7
 from wes_plugin_sdk import (
+    CreateDeviceCommand,
     DeferExecution,
     DevicePosition,
     DeviceResultReadyFact,
@@ -41,9 +43,10 @@ from wes_plugin_sdk import (
 
 from rough_sorter.application.device_facts import completed_response
 from rough_sorter.application.factory import RoughSorterPluginFactFactory
-from rough_sorter.application.persistence import PersistedDeviceReadinessReader, RoughSorterInitialExecutionCorrelator
+from rough_sorter.application.persistence import LiveDeviceReadinessReader, RoughSorterInitialExecutionCorrelator
 from rough_sorter.application.transport import RoughSorterTransportOutcomePublisher
 from rough_sorter.handlers import (
+    AdmissionDecidedHandler,
     RecoveryDecidedHandler,
     ReplacementPlanDecidedHandler,
     TargetDecidedHandler,
@@ -66,8 +69,8 @@ def _device(role: str, device_id: int, contract_key: str) -> LineRunEpochDeviceB
         endpoint_base_url="http://ecs-plugin:8080",
         contract_key=contract_key,
         contract_version="1.0",
-        status_max_age_ms=1000,
-        command_timeout_ms=5000,
+        status_max_age_ms=10_000,
+        command_timeout_ms=30_000,
     )
 
 
@@ -271,30 +274,84 @@ class _Readiness:
         return True
 
 
+def _live_status(**overrides):
+    state = {
+        "is_online": True,
+        "mode": EcsDeviceMode.AUTO,
+        "status": EcsDeviceState.IDLE,
+        "current_command_code": None,
+        "updated_at": int(datetime.now(UTC).timestamp() * 1000),
+    }
+    state.update(overrides)
+    return SimpleNamespace(
+        device=SimpleNamespace(device_code="DEVICE-1"),
+        state=SimpleNamespace(**state),
+    )
+
+
+class _LiveProvider:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.endpoints = []
+        self.codes = []
+
+    async def get_adapter(self, endpoint):
+        self.endpoints.append(endpoint)
+        return self
+
+    async def fetch_status(self, code):
+        self.codes.append(code)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response() if callable(response) else response
+
+
 @pytest.mark.asyncio
-async def test_deferred_readiness_uses_retry_processing_time() -> None:
-    status = DeviceStatusObservation(
-        device_code="DEVICE-1",
-        contract_key="rough_sorter.measurement_device",
-        contract_version="1.0",
-        mode="AUTO",
-        status="IDLE",
-        current_command_code=None,
-        device_timestamp=1_787_040_001_000,
-        received_at=NOW,
-        payload_digest="a" * 64,
-        raw_payload={},
+async def test_live_readiness_uses_response_time_and_refreshes_on_retry() -> None:
+    now = [1_000]
+
+    def response():
+        now[0] = 1_002
+        return _live_status(updated_at=1_002_000)
+
+    provider = _LiveProvider(_live_status(status=EcsDeviceState.RUNNING), response)
+    reader = LiveDeviceReadinessReader(
+        device_adapter_provider=provider, clock=lambda: datetime.fromtimestamp(now[0], UTC)
     )
-    repository = type("_Statuses", (), {"get_latest_for_device": lambda self, db, code: _async_value(status)})()
-    reader = PersistedDeviceReadinessReader(
-        repository=repository, clock=lambda: datetime.fromtimestamp(1_787_040_001.5, UTC)
+    binding = _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device")
+    assert not await reader.is_ready(object(), binding)
+    assert await reader.is_ready(object(), binding)
+    assert provider.codes == ["DEVICE-1", "DEVICE-1"]
+    assert provider.endpoints == [binding.endpoint_base_url] * 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["busy", "offline", "stale", "future", "error", "no_provider"])
+async def test_live_readiness_fails_closed(case: str) -> None:
+    response = _live_status(updated_at=1_000_000)
+    if case == "busy":
+        response.state.status = EcsDeviceState.RUNNING
+    elif case == "offline":
+        response.state.is_online = False
+    elif case == "stale":
+        response.state.updated_at = 989_999
+    elif case == "future":
+        response.state.updated_at = 1_000_001
+    elif case == "error":
+        response = EcsStatusUnavailableError("unavailable")
+    provider = None if case == "no_provider" else _LiveProvider(response)
+    reader = LiveDeviceReadinessReader(
+        device_adapter_provider=provider, clock=lambda: datetime.fromtimestamp(1_000, UTC)
     )
+    assert not await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
 
-    assert await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
 
-
-async def _async_value(value: object) -> object:
-    return value
+@pytest.mark.asyncio
+async def test_live_readiness_does_not_hide_programming_errors() -> None:
+    reader = LiveDeviceReadinessReader(device_adapter_provider=_LiveProvider(TypeError("bug")))
+    with pytest.raises(TypeError, match="bug"):
+        await reader.is_ready(object(), _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"))
 
 
 class _Commands:
@@ -353,7 +410,7 @@ class _RackPositions:
         self, db: object, *, workline_code: str, logic_location_code: str
     ) -> object | None:
         del db
-        assert (workline_code, logic_location_code) == ("ROUGH-LINE-1", "OUTLET-1")
+        assert (workline_code, logic_location_code) == ("ROUGH-LINE-1", "PIPELINE_OUTLET")
         return SimpleNamespace(position_code="RACK-WORK", logic_location_code=logic_location_code, enabled=True)
 
 
@@ -363,7 +420,7 @@ class _Placements:
     ) -> list[object]:
         del db
         assert (workline_code, position_code) == ("ROUGH-LINE-1", "RACK-WORK")
-        return [SimpleNamespace(rack_code="RACK-1", logic_location_code="OUTLET-1", placement_status="ARRIVED")]
+        return [SimpleNamespace(rack_code="RACK-1", logic_location_code="PIPELINE_OUTLET", placement_status="ARRIVED")]
 
 
 def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPluginFactFactory, EvidenceReadyFact]:
@@ -374,10 +431,10 @@ def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPlugin
         _device("PLACEMENT_DEVICE", 3, "rough_sorter.placement_device"),
     )
     positions = (
-        _position("MEASUREMENT_POSITION", "MEASUREMENT-1"),
-        _position("PIPELINE_INLET", "INLET-1"),
-        _position("PIPELINE_OUTLET", "OUTLET-1"),
-        _position("NG_POSITION", "NG-1"),
+        _position("MEASUREMENT_POSITION", "MEASUREMENT_POSITION"),
+        _position("PIPELINE_INLET", "PIPELINE_INLET"),
+        _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
+        _position("NG_POSITION", "NG_POSITION"),
     )
     epoch = LineRunEpoch(
         id=11,
@@ -425,7 +482,7 @@ def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPlugin
                 "thickness_mm": "1.2",
                 "shape_result": "PASS",
                 "position": {
-                    "location_id": "MEASUREMENT-1",
+                    "location_id": "MEASUREMENT_POSITION",
                     "location_type": "MEASUREMENT_POSITION",
                     "material_trace_id": "TRACE-21",
                 },
@@ -464,7 +521,7 @@ async def test_factory_builds_stable_scan_fact_from_same_transaction_snapshot() 
     assert first.runtime_snapshot.epoch.workline_code == "ROUGH-LINE-1"
     assert len(first.runtime_snapshot.epoch.position_bindings) == 4
     assert is_uuid7(first.request_operation_id)
-    assert first.source_position.location_id == "MEASUREMENT-1"
+    assert first.source_position.location_id == "MEASUREMENT_POSITION"
 
 
 @pytest.mark.asyncio
@@ -477,7 +534,24 @@ async def test_factory_rejects_epoch_digest_drift_before_building_plugin_fact() 
 
 @pytest.mark.asyncio
 async def test_factory_builds_admission_fact_from_confirmation_request_and_response_evidence() -> None:
-    factory, _ = _factory()
+    from deployment.plugin_composition import build_deployment_runtime
+
+    fixture, _ = _factory()
+    provider = _LiveProvider(_live_status(status=EcsDeviceState.RUNNING), _live_status)
+    runtime = build_deployment_runtime(
+        enabled_plugin_keys=("rough_sorter",),
+        device_adapter_provider=provider,
+        session_factory=object(),
+        transport_runtime=SimpleNamespace(
+            service=object(), repository=object(), client=object(), position_projection_service=object()
+        ),
+        device_command_service=object(),
+    )
+    factory = runtime.plugins[0].runtime_binding.fact_factory
+    factory._executions = fixture._executions
+    factory._epochs = fixture._epochs
+    factory._worklines = fixture._worklines
+    factory._evidences = fixture._evidences
     evidence = InboundEvidence(
         id=32,
         kind=InboundEvidenceKind.WMS_RESULT,
@@ -511,7 +585,7 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
             "data": {
                 "material_execution_id": "EXEC-21",
                 "material_trace_id": "TRACE-21",
-                "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT-1"},
+                "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT_POSITION"},
                 "six_in_one": {
                     "LotCode": "LOT",
                     "DateCode": "DATE",
@@ -534,16 +608,20 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
     )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
-    factory._device_readiness = _Readiness()  # type: ignore[attr-defined]
     base = WmsResultReadyFact("evidence:32", "32", "1.0", "EXEC-21", ADMISSION_OPERATION_ID)
 
+    waiting = await factory.build(object(), base)
+    assert waiting.device_ready is False
+    assert isinstance(AdmissionDecidedHandler()(waiting)[0], DeferExecution)
     fact = await factory.build(object(), base)
+    assert provider.codes == ["DEVICE-1", "DEVICE-1"]
+    assert isinstance(AdmissionDecidedHandler()(fact)[0], CreateDeviceCommand)
 
     assert fact.result.value == "ACCEPT"
     assert fact.pkg_id == "PKG-1"
     assert fact.inbound_admission_id == "ADM-1"
-    assert fact.source_position.location_id == "MEASUREMENT-1"
-    assert fact.next_position.location_id == "INLET-1"
+    assert fact.source_position.location_id == "MEASUREMENT_POSITION"
+    assert fact.next_position.location_id == "PIPELINE_INLET"
     assert fact.device_ready is True
 
 
@@ -598,7 +676,7 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
                 "material_trace_id": "TRACE-21",
                 "pkg_id": "PKG-1",
                 "inbound_admission_id": "ADM-1",
-                "source_position": {"type": "HANDOFF_POSITION", "location_code": "OUTLET-1"},
+                "source_position": {"type": "HANDOFF_POSITION", "location_code": "PIPELINE_OUTLET"},
                 "current_rack_id": "RACK-1",
             },
         },
@@ -654,7 +732,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
         params={
             "material_trace_id": "TRACE-21",
             "source": {
-                "location_id": "MEASUREMENT-1",
+                "location_id": "MEASUREMENT_POSITION",
                 "location_type": "MEASUREMENT_POSITION",
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
@@ -663,7 +741,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
                 "bin_cell_id": None,
             },
             "target": {
-                "location_id": "INLET-1",
+                "location_id": "PIPELINE_INLET",
                 "location_type": "PIPELINE_INLET",
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
@@ -693,7 +771,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
             "data": {
                 "material_trace_id": "TRACE-21",
                 "actual_position": {
-                    "location_id": "INLET-1",
+                    "location_id": "PIPELINE_INLET",
                     "location_type": "PIPELINE_INLET",
                     "material_trace_id": "TRACE-21",
                     "rack_id": None,
@@ -736,9 +814,9 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
     fact = await factory.build(object(), base)
 
     assert fact.step.value == "MEASUREMENT_TO_INLET"
-    assert fact.source_position.location_id == "MEASUREMENT-1"
-    assert fact.actual_position.location_id == "INLET-1"
-    assert fact.next_position.location_id == "OUTLET-1"
+    assert fact.source_position.location_id == "MEASUREMENT_POSITION"
+    assert fact.actual_position.location_id == "PIPELINE_INLET"
+    assert fact.next_position.location_id == "PIPELINE_OUTLET"
     assert fact.next_device_ready is True
 
 
@@ -761,7 +839,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
         params={
             "material_trace_id": "TRACE-21",
             "source": {
-                "location_id": "INLET-1",
+                "location_id": "PIPELINE_INLET",
                 "location_type": "PIPELINE_INLET",
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
@@ -770,7 +848,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
                 "bin_cell_id": None,
             },
             "target": {
-                "location_id": "OUTLET-1",
+                "location_id": "PIPELINE_OUTLET",
                 "location_type": "PIPELINE_OUTLET",
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
@@ -800,7 +878,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
             "data": {
                 "material_trace_id": "TRACE-21",
                 "actual_position": {
-                    "location_id": "OUTLET-1",
+                    "location_id": "PIPELINE_OUTLET",
                     "location_type": "PIPELINE_OUTLET",
                     "material_trace_id": "TRACE-21",
                     "rack_id": None,
@@ -868,7 +946,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
                 "shape_result": "PASS",
                 "line_run_epoch_id": "11",
                 "workline_code": "ROUGH-LINE-1",
-                "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT-1"},
+                "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT_POSITION"},
             },
         },
         deadline_at=NOW,
@@ -897,7 +975,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
         "material_trace_id": "TRACE-21",
         "pkg_id": "PKG-1",
         "inbound_admission_id": "ADM-1",
-        "source_position": {"type": "HANDOFF_POSITION", "location_code": "OUTLET-1"},
+        "source_position": {"type": "HANDOFF_POSITION", "location_code": "PIPELINE_OUTLET"},
         "current_rack_id": "RACK-1",
     }
 
@@ -921,14 +999,14 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
                 "rack_replacement_id": "REPLACE-1",
                 "old_loaded_rack": {
                     "rack_id": "RACK-1",
-                    "source": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                    "source": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                     "target": {"kind": "RACK_POSITION", "location_code": "BUFFER-OLD"},
                     "target_face": "90",
                 },
                 "new_empty_rack": {
                     "rack_id": "RACK-2",
                     "source": {"kind": "RACK_POSITION", "location_code": "BUFFER-NEW"},
-                    "target": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                    "target": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                     "target_face": "270",
                 },
             },
@@ -980,7 +1058,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         params={
             "material_trace_id": "TRACE-22",
             "source": {
-                "location_id": "OUTLET-1",
+                "location_id": "PIPELINE_OUTLET",
                 "location_type": "PIPELINE_OUTLET",
                 "material_trace_id": "TRACE-22",
             },
@@ -1079,7 +1157,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             "members": [
                 {
                     "object_id": "RACK-2",
-                    "final_position": {"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "PIPELINE_OUTLET"},
                     "position_unknown": False,
                     "failure_code": None,
                     "arrival_face": "270",
@@ -1116,7 +1194,9 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         ) -> list[object]:
             del db, workline_code, position_code
             self.calls += 1
-            return [SimpleNamespace(rack_code="RACK-2", logic_location_code="OUTLET-1", placement_status="ARRIVED")]
+            return [
+                SimpleNamespace(rack_code="RACK-2", logic_location_code="PIPELINE_OUTLET", placement_status="ARRIVED")
+            ]
 
     transport_task = SimpleNamespace(
         transport_task_id="TRANSPORT-NEW",
@@ -1127,7 +1207,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             "caller": {"workline_id": "7", "station_id": None},
             "rack_id": "RACK-2",
             "source": {"location_code": "BUFFER-NEW", "kind": "RACK_POSITION"},
-            "target": {"location_code": "OUTLET-1", "kind": "RACK_POSITION"},
+            "target": {"location_code": "PIPELINE_OUTLET", "kind": "RACK_POSITION"},
             "target_face": "270",
             "rcs_template_id": "CTU01",
             "kind": "RACK_MOVE",
@@ -1153,7 +1233,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
 
     assert transport_fact.rack_replacement_id == "REPLACE-1"
     assert transport_fact.rack_id == "RACK-2"
-    assert transport_fact.final_position.location_code == "OUTLET-1"
+    assert transport_fact.final_position.location_code == "PIPELINE_OUTLET"
     assert transport_fact.request_operation_id == "019d0000-0000-7000-8000-000000000041"
     assert projected_new_rack.calls == 0
 
@@ -1199,7 +1279,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
                     "material_trace_id": "TRACE-21",
                     "pkg_id": "PKG-1",
                     "inbound_admission_id": "ADM-1",
-                    "source_position": {"type": "HANDOFF_POSITION", "location_code": "OUTLET-1"},
+                    "source_position": {"type": "HANDOFF_POSITION", "location_code": "PIPELINE_OUTLET"},
                     "current_rack_id": "RACK-2",
                 },
             },
@@ -1260,7 +1340,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
         params={
             "material_trace_id": "TRACE-21",
             "source": {
-                "location_id": "OUTLET-1",
+                "location_id": "PIPELINE_OUTLET",
                 "location_type": "PIPELINE_OUTLET",
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
@@ -1393,7 +1473,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
     factory, _ = _factory()
     command_code = "019d0000-0000-7000-8000-000000000039"
     source_position = {
-        "location_id": "MEASUREMENT-1",
+        "location_id": "MEASUREMENT_POSITION",
         "location_type": "MEASUREMENT_POSITION",
         "material_trace_id": "TRACE-21",
         "rack_id": None,
@@ -1402,7 +1482,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
         "bin_cell_id": None,
     }
     target_position = {
-        "location_id": "NG-1",
+        "location_id": "NG_POSITION",
         "location_type": "NG_POSITION",
         "material_trace_id": "TRACE-21",
         "rack_id": None,
@@ -1465,7 +1545,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
             "data": {
                 "result": "REJECT",
                 "reason_code": "MATERIAL_REJECTED",
-                "ng_destination": {"type": "NG_POSITION", "location_code": "NG-1"},
+                "ng_destination": {"type": "NG_POSITION", "location_code": "NG_POSITION"},
             },
         },
         received_at=NOW,
@@ -1484,7 +1564,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
     fact = await factory.build(object(), base)
     assert fact.step.value == "MEASUREMENT_TO_NG"
     request_data = ng_placement_data(fact)
-    assert request_data["ng_position"] == {"type": "NG_POSITION", "location_code": "NG-1"}
+    assert request_data["ng_position"] == {"type": "NG_POSITION", "location_code": "NG_POSITION"}
     assert request_data["reason_code"] == "MATERIAL_REJECTED"
 
 
@@ -1544,7 +1624,7 @@ def test_only_static_composition_root_imports_plugin_without_mutable_registry() 
     assert "class RoughSorterStartPlanBuilder" in application_sources["start_plan.py"]
 
 
-def test_workspace_lock_and_image_explicitly_include_sdk_and_plugin() -> None:
+def test_workspace_and_image_make_rough_sorter_an_explicit_optional_install() -> None:
     from pathlib import Path
 
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
@@ -1555,7 +1635,15 @@ def test_workspace_lock_and_image_explicitly_include_sdk_and_plugin() -> None:
     assert 'name = "wes-rough-sorter-plugin"' in lock
     assert 'source = { directory = "workline_plugins/rough_sorter" }' in lock
     assert "COPY src/wes_plugin_sdk/src src/wes_plugin_sdk/src" in dockerfile
-    assert "COPY workline_plugins/rough_sorter/src workline_plugins/rough_sorter/src" in dockerfile
+    import tomllib
+
+    project = tomllib.loads(pyproject)["project"]
+    assert "wes-rough-sorter-plugin" not in project["dependencies"]
+    assert project["optional-dependencies"]["rough-sorter"] == ["wes-rough-sorter-plugin"]
+    assert 'ARG WES_PLUGIN_EXTRAS=""' in dockerfile
+    assert "source=workline_plugins,target=/app/workline_plugins" in dockerfile
+    assert 'set -- "$@" --extra "$extra"' in dockerfile
+    assert "rm -rf /app/workline_plugins/rough_sorter" in dockerfile
 
 
 class _Begin:
@@ -1610,7 +1698,7 @@ async def test_plugin_builds_complete_admission_data_from_same_db_snapshot() -> 
     }
     assert request_data["source_position"] == {
         "type": "HANDOFF_POSITION",
-        "location_code": "MEASUREMENT-1",
+        "location_code": "MEASUREMENT_POSITION",
     }
 
 
@@ -1736,7 +1824,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
         members=(
             TransportMemberOutcome(
                 object_id="RACK-2",
-                final_position=RackPosition("OUTLET-1"),
+                final_position=RackPosition("PIPELINE_OUTLET"),
                 arrival_face="270",
             ),
         ),
@@ -1801,7 +1889,7 @@ async def test_transport_publisher_confirms_unbound_debug_outcome() -> None:
         members=(
             TransportMemberOutcome(
                 object_id="RACK-DEBUG",
-                final_position=RackPosition("OUTLET-1"),
+                final_position=RackPosition("PIPELINE_OUTLET"),
                 arrival_face="90",
             ),
         ),
@@ -1832,7 +1920,7 @@ async def test_transport_publisher_still_rejects_unbound_business_outcome() -> N
         members=(
             TransportMemberOutcome(
                 object_id="RACK-2",
-                final_position=RackPosition("OUTLET-1"),
+                final_position=RackPosition("PIPELINE_OUTLET"),
                 arrival_face="90",
             ),
         ),
@@ -1944,7 +2032,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
         members=(
             TransportMemberOutcome(
                 object_id="RACK-2",
-                final_position=RackPosition("OUTLET-1"),
+                final_position=RackPosition("PIPELINE_OUTLET"),
                 arrival_face="270",
             ),
         ),
@@ -1967,7 +2055,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
         (
             "inbound.material.admission_decide@v1",
             ADMISSION_OPERATION_ID,
-            DevicePosition("MEASUREMENT-1", "MEASUREMENT_POSITION", "TRACE-21"),
+            DevicePosition("MEASUREMENT_POSITION", "MEASUREMENT_POSITION", "TRACE-21"),
             {
                 "material_execution_id": "EXEC-21",
                 "material_trace_id": "TRACE-21",
@@ -1983,18 +2071,18 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 "shape_result": "PASS",
                 "line_run_epoch_id": "11",
                 "workline_code": "ROUGH-LINE-1",
-                "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT-1"},
+                "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT_POSITION"},
             },
         ),
         (
             "inbound.material.ng_placement_report@v1",
             "019d0000-0000-7000-8000-000000000033",
-            DevicePosition("NG-1", "NG_POSITION", "TRACE-21"),
+            DevicePosition("NG_POSITION", "NG_POSITION", "TRACE-21"),
             {
                 "material_execution_id": "EXEC-21",
                 "material_trace_id": "TRACE-21",
                 "ng_evidence_id": "evidence:32",
-                "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
+                "ng_position": {"type": "NG_POSITION", "location_code": "NG_POSITION"},
                 "reason_code": "MEASUREMENT_REJECTED",
                 "business_context": "ROUGH_SORT_INBOUND",
             },
@@ -2025,7 +2113,7 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
                 "recovery_id": "RECOVERY-1",
                 "reconciling_evidence_id": "32",
                 "decision": "CONTINUE",
-                "authoritative_position": {"type": "MEASUREMENT_POSITION", "location_code": "MEASUREMENT-1"},
+                "authoritative_position": {"type": "MEASUREMENT_POSITION", "location_code": "MEASUREMENT_POSITION"},
                 "reason_code": "OPERATOR_VERIFIED",
             },
         },

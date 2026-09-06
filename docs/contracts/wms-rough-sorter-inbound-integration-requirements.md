@@ -36,15 +36,15 @@ WMS 公共 HTTP Client、公共信封与 Transport wire 分别引用 related 中
 | ECS | 设备动作、扫码测量事实、设备终态和物理位置事实 |
 | RCS | 货架路径、实际执行顺序、避让和共享工作位互锁 |
 
-每个 WorkLine 只绑定一个 ECS。插件键固定为 `rough_sorter`，每个 WorkLine 分别绑定三个一对一业务角色：
+插件键固定为 `rough_sorter`，每个 WorkLine 分别把三个一对一业务角色绑定到精确 `device_code`：
 
 - `MEASUREMENT_DEVICE`：入料、扫码与测量；
 - `TRANSFER_DEVICE`：从流水线入口输送到出口；
 - `PLACEMENT_DEVICE`：从流水线出口放入目标 Cell 或 WMS 指定 NG 位置。
 
-`device_code` 全厂唯一。角色、设备实例、Endpoint、合同版本、ECS/网关版本、时限和 WorkLine 的绑定必须进入当前
-`LineRunEpochDeviceBinding` 与 Epoch digest；活动 Epoch 内不得静默替换。供应商私有字段、坐标、错误和适配只存在于
-ECS/网关，不进入本合同、WES 核心或插件。
+`device_code` 全厂唯一，每台 Device 自带 Endpoint；三个设备可以共享或分别使用 ECS Endpoint。插件角色、设备实例、
+Endpoint、合同版本、ECS/网关版本、时限和 WorkLine 的绑定必须进入当前 `LineRunEpochDeviceBinding` 与 Epoch digest；
+活动 Epoch 内不得静默替换。供应商私有字段、坐标、错误和适配只存在于 ECS/网关，不进入本合同、WES 核心或插件。
 
 ## 3. 生命周期与并发
 

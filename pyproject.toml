@@ -35,8 +35,6 @@ dependencies = [
     "redis>=7.4.0",
     "pyyaml>=6.0.3",
     "wes-plugin-sdk",
-    "wes-rough-sorter-plugin",
-    "wes-manual-bin-processing-plugin",
 ]
 
 [tool.uv.sources]
@@ -45,6 +43,8 @@ wes-rough-sorter-plugin = { path = "workline_plugins/rough_sorter" }
 wes-manual-bin-processing-plugin = { path = "workline_plugins/manual_bin_processing" }
 
 [project.optional-dependencies]
+rough-sorter = ["wes-rough-sorter-plugin"]
+manual-bin-processing = ["wes-manual-bin-processing-plugin"]
 dev = [
     "aiosqlite>=0.20.0",
     "pytest>=9.0.3",

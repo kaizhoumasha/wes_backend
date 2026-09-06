@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0.0] - 2026-09-05
+
+### Changed
+
+- 工作线插件统一使用通用角色绑定和 Epoch 冻结配置，粗分插件按固定合同参数及实时设备状态执行，构建产物完整携带插件源码。
+- CTU03 货架回库允许省略 `target_face`，由 RCS 自主确定实际回库朝向；WMS 最终结果仍须返回实际非空 `arrival_face`。
+- 工作线插件配置与设备绑定 schema 直接收敛到当前未发布合同，并同步初始化、管理接口和测试夹具。
+
+### Fixed
+
+- 补齐执行确认模型依赖，并修正粗分插件闭环夹具与设备状态读取，避免使用陈旧快照持续等待。
+- WMS Mock 严格拒绝 CTU03 显式 `target_face: null`，只接受字段省略；同步 Transport 公共端口类型和权威合同。
+
+### Verification
+
+- QUALITY 通过：2618 passed、5 skipped；HEAVY selector 选中的 339 项通过。
+- 本版本完成仓库合同与实现收敛，不代表已部署、供应商一致性验收或现场业务验收。
+
 ## [0.31.5.0] - 2026-09-05
 
 ### Changed

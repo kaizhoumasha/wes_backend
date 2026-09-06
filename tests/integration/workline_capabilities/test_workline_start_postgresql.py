@@ -108,7 +108,6 @@ async def _seed_workline(session_factory: async_sessionmaker[AsyncSession], suff
             device_code=f"START-PG-DEVICE-{workline.id}",
             device_name=f"START PostgreSQL Device {suffix}",
             work_line_id=workline.id,
-            device_role="DEVICE_ROLE",
         )
         db.add(device)
         await db.flush()

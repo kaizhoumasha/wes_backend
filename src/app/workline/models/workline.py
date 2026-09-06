@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import JSON, Column, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
@@ -143,6 +143,15 @@ class WorkLineConfigurationResponse(BaseModel):
     device_codes: tuple[str, ...]
 
 
+class WorkLineDeviceRole(BaseModel):
+    """插件声明的设备角色；前端仅展示名称并选择实体设备。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    role_key: str = Field(min_length=1, max_length=100)
+    display_name: str = Field(min_length=1, max_length=100)
+
+
 class WorkLinePluginSummary(BaseModel):
     """部署清单中的业务插件及当前 WorkLine 兼容性。"""
 
@@ -150,6 +159,7 @@ class WorkLinePluginSummary(BaseModel):
     plugin_version: str
     display_name: str
     supported_line_types: tuple[LineType, ...]
+    device_roles: tuple[WorkLineDeviceRole, ...] = ()
     compatible: bool
     incompatibility_reasons: tuple[str, ...] = ()
 

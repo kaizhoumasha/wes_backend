@@ -213,6 +213,7 @@ class CeleryAsyncRuntime:
             else DeviceCommandService(session_factory=db_module.AsyncSessionLocal)
         )
         progress["execution_runtime"] = build_deployment_runtime(
+            enabled_plugin_keys=settings.ENABLED_WORKLINE_PLUGINS,
             session_factory=db_module.AsyncSessionLocal,
             transport_runtime=transport_runtime,
             device_command_service=device_command_service,

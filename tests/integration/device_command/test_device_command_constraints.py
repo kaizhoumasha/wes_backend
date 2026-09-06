@@ -44,7 +44,6 @@ async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpo
         device_code=f"ARM-DEVICE-COMMAND-CONSTRAINT-{identity}",
         device_name="DeviceCommand Arm",
         work_line_id=line.id,
-        device_role="ROBOT_ARM",
     )
     db.add(device)
     await db.flush()
@@ -65,7 +64,7 @@ async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpo
         line_run_epoch_id=epoch.id,
         device_id=device.id,
         device_code=device.device_code,
-        device_role=device.device_role,
+        device_role="ROBOT_ARM",
         endpoint_base_url="http://ecs-constraints:8080",
         contract_key="arm.pick",
         contract_version="2.0",
