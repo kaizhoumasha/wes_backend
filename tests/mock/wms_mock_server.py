@@ -487,8 +487,10 @@ def _valid_rack_data(data: dict[str, Any], kind: str) -> bool:
         or rack["rcs_template_id"] not in {"CTU01", "CTU02", "CTU03", "F01"}
     ):
         return False
-    target_face = rack.get("target_face")
-    if (rack["rcs_template_id"] != "CTU03" or target_face is not None) and not is_opaque_face(target_face):
+    if "target_face" not in rack:
+        if rack["rcs_template_id"] != "CTU03":
+            return False
+    elif not is_opaque_face(rack["target_face"]):
         return False
     source = _position(rack["source"], allowed_kinds={"RACK", "ZONE", "RACK_POSITION"})
     target = _position(rack["target"], allowed_kinds={"RACK", "ZONE", "RACK_POSITION"})

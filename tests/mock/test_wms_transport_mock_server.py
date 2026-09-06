@@ -415,6 +415,23 @@ def test_transport_submit_mock_rejects_omitted_target_face_outside_ctu03() -> No
     assert response.status_code == 422
 
 
+def test_transport_submit_mock_rejects_explicit_null_target_face_for_ctu03() -> None:
+    envelope = deepcopy(RACK_MOVE)
+    envelope["data"].update(
+        {
+            "source": {"kind": "RACK_POSITION", "location_code": "a"},
+            "target": {"kind": "ZONE", "location_code": "zone-1"},
+            "target_face": None,
+            "rcs_template_id": "CTU03",
+        }
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize("template", [RACK_MOVE, BIN_MOVE], ids=["target-face", "rack-face"])
 def test_transport_submit_mock_rejects_nul_face(template: dict[str, object]) -> None:
     envelope = deepcopy(template)

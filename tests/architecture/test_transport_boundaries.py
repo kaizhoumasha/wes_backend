@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import get_type_hints
 
 from src.app import transport
-from src.app.transport.contracts import TransportExecutionAuthority
+from src.app.transport.contracts import RackRotatePosition, TransportExecutionAuthority
 from src.app.transport.service import TransportService
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,7 +89,7 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
             "rack_id": str,
             "source": transport.RackMovePosition,
             "target": transport.RackMovePosition,
-            "target_face": str,
+            "target_face": str | None,
             "rcs_template_id": transport.RcsTemplateId,
             "execution_authority": TransportExecutionAuthority | None,
             "return": transport.TransportHandle,
@@ -98,7 +98,7 @@ def test_transport_public_api_exposes_only_stable_port_dtos_and_runtime() -> Non
             "client_request_id": str,
             "caller": transport.TransportCaller,
             "rack_id": str,
-            "position": transport.RackPosition,
+            "position": RackRotatePosition,
             "target_face": str,
             "rcs_template_id": transport.RcsTemplateId,
             "execution_authority": TransportExecutionAuthority | None,
