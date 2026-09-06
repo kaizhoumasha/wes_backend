@@ -607,7 +607,7 @@ absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从�
 前端进度和现场验证均不得参与或替代该门禁。
 
 **需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；Epoch/前端增量以
-`docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` 为真源；当前 RC 与外部验收状态以
+`docs/contracts/device-annexes/rough-sorter-device-contract.md` 为真源；当前 RC 与外部验收状态以
 `docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
 GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
 

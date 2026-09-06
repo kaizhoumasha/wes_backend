@@ -53,7 +53,7 @@ WorkLine 插件拥有业务结果到执行决定（Decision）的映射。供应
 
 | 清单 | 字段 |
 | --- | --- |
-| 位置 | 编码、角色、所属 WorkLine、容量、允许对象、上游、下游 |
+| 位置 | 命令约定的逻辑参数及作用域；对应物理点位由 ECS 解释 |
 | 设备 | 独立命令资源编码 `device_code`、设备类型、角色、所属 WorkLine、服务端点（Endpoint）、状态来源 |
 | 连接 | 上游、下游、物理方向、触发事件、执行设备 |
 | 故障 | 类型化错误、物理含义、影响对象、隔离范围、人工处理 |
@@ -165,14 +165,16 @@ Handler tuple；部署 Composition Root 显式导入该入口并注入核心侧 
 每个活动 `LineRunEpoch` 固定插件版本、配置版本和流程模式。切换插件、模式、角色绑定或物理拓扑前，必须清线并创建新
 Epoch。
 
-配置只保存现场事实：
+设备主数据只保存物理身份、归属、连接和展示信息，不保存插件业务角色。插件定义所需角色及能力，
+WorkLine 当前插件配置保存角色到实际 `device_code` 的绑定；同一设备切换插件后可承担不同业务职责。
+当前默认每个角色绑定一台设备，允许本线存在未参与设备，不预建多重绑定、角色 Runtime 或配置预案。
+当前合同见 `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md`。
 
-- 设备实例、统一 Endpoint、超时和标准角色绑定；
-- 设备角色、位置角色和实际物理拓扑；
-- 位置、队列容量和故障隔离范围；
-- 无法由约定推导的少量业务参数。
-
-配置不保存供应商协议选择、私有路径、字段别名或应用层认证分支。相同类型工作线只创建不同配置实例，不复制插件代码。
+工作线配置只保存 `device_bindings`，由通用界面将后端插件声明的角色绑定到本线实体设备。
+设备连接由设备管理维护，实时能力和状态来自 ECS。插件按明确的 ECS 约定处理位置与执行策略，
+不提供点位、版本信息或业务参数的专属配置表单。相同类型工作线复用插件代码，只改变设备绑定。
+ECS 的硬件 `role` 只作为能力描述，不能自动赋值为插件业务角色。Epoch/SDK 中的 `device_role` 继续表示冻结运行职责。
+不满足当前业务准入的事件记录错误并拒绝推进，复用已有证据和处理路径，不增加跨插件重投或自动恢复机制。
 
 ## 3. 目标文件结构
 
@@ -263,16 +265,23 @@ uv run ruff format --check .
 uv run ruff check .
 ```
 
-插件包含 `application/` 时，完整 FAST 从 WES 仓库根目录显式运行，使 Application 测试只复用根工作区的基础依赖：
+插件包含 `application/` 时，先在 WES 仓库根目录安装对应的可选 extra，再显式运行插件 FAST。
+后续命令使用 `--no-sync` 保留已选 extra；以当前粗分插件为例：
 
 ```bash
-WES_PLUGIN_DIR=workline_plugins/your_plugin_key
-uv run pytest "$WES_PLUGIN_DIR/tests" -q \
+uv sync --dev --extra rough-sorter
+WES_PLUGIN_DIR=workline_plugins/rough_sorter
+uv run --no-sync pytest "$WES_PLUGIN_DIR/tests" -q \
   --ignore="$WES_PLUGIN_DIR/tests/integration" \
   --ignore="$WES_PLUGIN_DIR/tests/e2e"
-uv run ruff format --check "$WES_PLUGIN_DIR"
-uv run ruff check "$WES_PLUGIN_DIR"
+uv run --no-sync ruff format --check "$WES_PLUGIN_DIR"
+uv run --no-sync ruff check "$WES_PLUGIN_DIR"
 ```
+
+基础安装不选择业务 extra，启动配置 `ENABLED_WORKLINE_PLUGINS` 默认为空。现场 Web 与所有 Worker 使用相同的
+`ENABLED_WORKLINE_PLUGINS='["rough_sorter"]'`；镜像构建选择 `WES_PLUGIN_EXTRAS=rough-sorter`。
+前端统一使用 `pnpm build`，不包含具体业务插件、专属表单或现场构建模式。
+这些配置只选择已安装能力，工作线自身仍通过业务装配选择插件及设备绑定。
 
 Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备。需要真实 PostgreSQL、HTTP、CALLBACK、故障或并发环境时，
 由插件自己的 integration/e2e 入口显式运行，并通过 WES 公共边界验收安装后的组合；这不会赋予纯 Decision 子层数据库或网络
@@ -280,7 +289,7 @@ Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备�
 
 ## 6. 交付检查
 
-- [ ] 所有现场设备和位置都有明确角色与配置。
+- [ ] 设备角色绑定明确；命令使用约定的逻辑位置参数，物理解释归 ECS。
 - [ ] 所有设备 Event、Command、ACK、CALLBACK 和错误语义都在获批设备合同附录中闭合。
 - [ ] 获批附录的合同版本、设备/ECS/固件、配置和 `LineRunEpoch` 绑定明确，行为变化不会在活动 Epoch 内静默切换。
 - [ ] 供应商实现已通过统一接口一致性验收。

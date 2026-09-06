@@ -70,8 +70,8 @@
 * **L2 - 控制中台 (This System - P9 WES)**:
   * **职责**:
     * **独立数据库 (Independent DB)**: 拥有私有的 PostgreSQL/Redis 实例，不依赖 L1 数据库。
-    * **执行插件 (Execution Plugin)**: 每条 WorkLine 通过显式注册的代码插件，把 WMS 封闭业务结果映射为本线设备等待、
-      发送、暂停、隔离和对账动作；插件不拥有业务规则。
+    * **执行插件 (Execution Plugin)**: 每条 WorkLine 通过显式装配的代码插件，把 WMS 封闭业务结果映射为本线设备等待、
+      发送、暂停、隔离和对账动作；插件拥有本地执行流程与角色职责，不拥有 WMS 的库存、分配和业务去向裁决。
     * **执行内核 (Execution Kernel)**: 接收插件返回的封闭 Decision，可靠创建设备命令、搬运任务或 WMS 确认义务；WMS 请求的
       业务 data 由插件一次性给出，内核只按共享 operation 合同校验、冻结和派发，不查询业务表补全 payload。
     * **对象投影 (Object Projection)**: 分别跟踪物料、料箱、位置、设备命令和外部义务，不使用一个通用任务状态机承载全部职责。
@@ -351,11 +351,15 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     * **层次归属**: `zone_code`, `work_line_id` (设备所属的区域和作业线；`work_line_id` 引用 WES WorkLine 主键)。
     * **用途说明**: 设备的功能描述 (如 "用来点货，绑定栈板发运送任务")。
   * 每个 Device 最多归属一条 WorkLine，归属只通过 WorkLine 配置一次性替换；设备通用 CRUD 不写 `work_line_id`。
-    插件声明通用设备角色，WorkLine 配置把每个角色绑定到精确 `device_code`，START 时把
-    `(device_role, device_code)` 冻结到 Epoch；Device 主数据不拥有业务角色。
+    Device 不保存插件业务角色；角色由插件定义，在 WorkLine 当前插件配置中绑定实际 `device_code`。
+    当前默认每个必需角色绑定一台设备，允许本线设备不参与当前插件；特殊多重关系仅在真实业务要求时扩展。
+    启动后的角色与设备关联冻结到 Epoch，运行时继续用 binding 的 `device_role + device_code` 精确定位。
 
 * **WorkLine 插件、启动与分拣机设备边界**:
   * WorkLine 保存当前选择的 `plugin_key` 和插件业务配置；部署制品提供显式、不可变的已安装插件 tuple，不扫描环境且不提供默认插件。
+  * 基础制品可以不安装业务插件并以空清单独立启动和测试；现场入口显式装配所需业务包。基础可靠性与具体插件业务分别验收。
+  * 角色归属与基础独立性的目标及当前实现差异以 `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md`
+    为准；该重构尚未实施，不能将本节目标描述当作当前代码完成证据。
   * Fact、WMS WAIT 后继和 Transport outcome 都按原执行身份引用的 Epoch 精确选择 `plugin_key + plugin_version`，不得按 WorkLine 当前选择或单一部署默认值回退。
   * START 是唯一启用入口。非重放 START 只接受停用且无活动 Epoch 的 WorkLine，并在一个事务内设置活动状态、冻结插件精确版本、配置和设备合同以及创建新 Epoch；不得隐式关闭旧 Epoch。
   * 停用必须在同一事务内确认 Transport、Bin/MaterialExecution、DeviceCommand、WMS 确认、evidence 和当前插件业务任务均已闭合，然后关闭活动 Epoch 并设置 WorkLine 停用。

@@ -2,7 +2,7 @@
 title: WMS / WES 自动出库 PickingTask 交互要求
 status: ReviewRequired
 created_at: 2026-08-07
-updated_at: 2026-09-04
+updated_at: 2026-09-05
 audience: WMS 与 WES 初级开发工程师、联调与测试人员
 scope: WMS/WES API、任务队列、异步资源计划、计划增量、逐盘决定、身份冲突、结果确认和任务状态确认
 related:
@@ -53,6 +53,7 @@ WMS 当前使用 .NET Framework 4.6。下面的建议按 C# 6 编写，不使用
 | 准备任务 | WES 已选中任务和工作线 | 收到 `outbound.picking_task.prepare@v1` 后返回 `PREPARE_ACCEPTED`，再开始计算货架和来源 | 保留这条工作线，等待 WMS 分批下发结果 |
 | 下发计划 | WMS 每算出一批可以执行的数据 | 按连续的 `plan_revision` 发送 `outbound.picking_task.plan_delta@v1` | 保存这一批数据并返回 `RECEIVED`，条件齐全的部分可以先执行 |
 | 搬运货架和 Bin | WMS 已给出来源和去向 | 不直接创建运输任务 | WES 根据已确认的位置创建 TransportTask |
+| 确认退料货架到位 | WMS/RCS 已发送确定成功的 Transport 结果 | 接收 WES 形成的退料货架到位事实，并更新当前任务的到位状态 | 保存实际位置，并可靠上报带业务语义的到位事实 |
 | 处理 Bin | 货架或 Bin 到达工作位置 | 根据 WES 请求返回本批 Bin、Cell 或退箱位置 | 按 WMS 返回结果执行 |
 | 处理料盘 | 料盘到达扫码台并完成扫码 | 决定目标 SLOT 或 NG 去向；收到放置结果后更新库存和位置 | 执行放置，再上报实际结果 |
 | 追加正常计划 | WMS 还有当前任务尚未发布的直接取料来源或五层来源货架面 | 发送更高 `plan_revision` 的计划 | WES 保存新增来源，已经接收的来源和 Bin 不被改写 |
@@ -223,6 +224,7 @@ WMS 不创建 TransportTask，也不向设备发送 DeviceCommand。
 | `outbound.picking_task.queue_changed@v1` | WMS 到 WES | WMS 调整尚未准备任务的队列信息 | `202 / RECEIVED` | §7.1 |
 | `outbound.picking_task.prepare@v1` | WES 到 WMS | WES 选中任务和候选 WorkLine | `202 / PREPARE_ACCEPTED`，随后接收计划增量 | §7.2 |
 | `outbound.picking_task.plan_delta@v1` | WMS 到 WES | WMS 形成一批资源或追加来源 | `202 / RECEIVED` | §8 |
+| `outbound.return_rack.arrival_report@v1` | WES 到 WMS | 退料货架已确定到达当前任务的 WorkLine 固定工作位 | `200 / RECORDED` | §9.1.1 |
 | `outbound.bin.inbound_batch@v1` | WES 到 WMS | 当前来源货架面到位、当前面无法为退箱 FIFO 形成可执行批次，且 CTU 和入料缓存有容量 | `200 / DECIDED`：`READY \| NO_BATCH \| RACK_FACE_DONE` | §9.2.1 |
 | `outbound.bin.return_batch@v1` | WES 到 WMS | `RETURN_BUFFER` 出现可退箱 Bin，且没有未结束 CTU 动作 | `200 / DECIDED`：`READY \| NO_BATCH` | §9.2.2 |
 | `workline.return_buffer.drain_rack_decide@v1`（候选，未获批） | WES 到 WMS | 停止或切换已请求，当前面持续 `NO_BATCH` 且需要为既有 FIFO 选择排空货架面 | 候选：`200 / DECIDED`：`READY \| WAIT` | 共同实施硬门禁 |
@@ -540,6 +542,63 @@ WES 出库业务模块必须把计划增量 `operation_id`、执行阶段、完�
 
 Transport 的接收、结果和 `UNKNOWN/RECONCILING` 对账遵循 Transport 履约合同。计划增量返回成功只表示 WES 已保存计划，不表示货架已经到位；WES 也不能根据 WMS
 业务计划伪造位置结果。
+
+#### 9.1.1 退料货架到位事实
+
+WMS/RCS 发送的 `transport.task.resulted@v1` 只表达通用搬运结果，不要求其 Transport Handler 判断货架业务类型。WES 出库业务模块根据
+已保存的计划增量和执行映射，确认一条成功结果属于当前 PickingTask 的退料货架进场后，向 WMS 发送：
+
+```json
+{
+  "operation_id": "019f3404-a100-7b01-8b01-000000000001",
+  "operation": "outbound.return_rack.arrival_report@v1",
+  "timestamp": 1786064400000,
+  "data": {
+    "task_id": "PICK-20260811-001",
+    "transport_task_id": "transport-8dd5c13c-28e0-40a9-b215-44f2ccbb155d",
+    "outcome_revision": 1,
+    "rack_id": "RETURN-RACK-01",
+    "final_position": {
+      "type": "RACK_POSITION",
+      "location_code": "OUTBOUND_SOURCE_WORK_01"
+    },
+    "arrival_face": "A"
+  }
+}
+```
+
+字段约束如下：
+
+| JSON Path | 必填 | 类型/生成方 | 说明和校验规则 |
+| --- | --- | --- | --- |
+| `data.task_id` | 是 | string / WMS 原值 | 当前 PickingTask；WMS 已保存的计划必须包含该退料货架 |
+| `data.transport_task_id` | 是 | string[1..80] / WES Transport | 产生本次到位事实的原 TransportTask |
+| `data.outcome_revision` | 是 | positive integer / WMS 原值 | 已应用的 `transport.task.resulted@v1` 结果版本 |
+| `data.rack_id` | 是 | string / WMS 原值 | 必须命中当前任务 `added_direct_picks[].source_locator.rack_id` |
+| `data.final_position` | 是 | `RACK_POSITION` / WMS Transport 结果原值 | 必须等于该 Transport 冻结的 WorkLine 退料货架目标工作位 |
+| `data.arrival_face` | 是 | code / WMS Transport 结果原值 | 必须等于该 Transport 已确认的实际到达面，并满足冻结目标面约束 |
+
+WES 只有在 `transport.task.resulted@v1` 已可靠保存并应用、`status=SUCCEEDED`，且 `rack_id + final_position + arrival_face` 与冻结
+Transport 目标完全一致时，才能形成这条上报。WES 在更新本地位置并确认该 Transport 的退料货架业务绑定时，使用现有
+`WmsConfirmation` 冻结 `operation_id` 和完整请求；不增加新的业务实体、通用状态同步或第二套 outbox。Transport 仅接纳、失败、位置未知、
+`UNKNOWN` 或 `RECONCILING` 时禁止发送到位事实。
+
+WMS 根据自己保存的计划和 Transport 结果校验 `task_id + transport_task_id + outcome_revision + rack_id`，在同一事务中保存事实并更新
+当前 PickingTask 的退料货架到位状态，然后返回：
+
+```json
+{
+  "operation_id": "019f3404-a100-7b01-8b01-000000000001",
+  "code": "RECORDED",
+  "timestamp": 1786064400100,
+  "data": {}
+}
+```
+
+相同 `operation_id` 和相同完整请求重放时，WMS 返回 `200 / DUPLICATE` 并复用第一次响应的 `timestamp + data`；同一 ID 内容漂移返回
+`409 / CONFLICT + IDEMPOTENCY_CONFLICT`。响应未知或 `503 / UNAVAILABLE` 时，WES 使用原身份和原内容重试。该上报不重复通用
+Transport 结果，也不阻止 WES 使用本地已确认到位的货架；但 WES 收到 `RECORDED | DUPLICATE` 前不得关闭这项对 WMS 的可靠确认义务，
+PickingTask 完成条件也必须等待该义务闭合。
 
 ### 9.2 CTU 入站和退箱
 
@@ -1697,12 +1756,13 @@ Transport 是独立的搬运能力，它不知道 PickingTask。Transport 请求
 WES 在创建 TransportTask 时，保存任务明细与 `transport_task_id` 的对应关系。WMS 已经保存 PickingTask 的来源分配、
 `inbound_batch` 和 `return_batch` 结果，可以根据这些数据以及 Transport 结果中的 `rack_id`、`container_id` 找到对应任务明细。
 
-WMS/RCS 本来就是 Transport 结果的产生方，所以 WES 不需要再向 WMS 上报一次 Transport 失败。WMS 也不需要向 WES 返回恢复方案。
-双方按下表处理：
+WMS/RCS 是 Transport 结果的产生方，所以 WES 不重复上报通用 Transport 成功或失败，WMS 也不需要向 WES 返回恢复方案。但是
+Transport Handler 不负责识别货架业务类型；成功结果被 WES 出库业务模块确认属于退料货架进场时，WES 必须按 §9.1.1 另行上报
+`outbound.return_rack.arrival_report@v1`，由 WMS 更新当前 PickingTask 的退料货架到位状态。双方按下表处理：
 
 | Transport 结果 | WES 怎么处理 | WMS 怎么处理 |
 | --- | --- | --- |
-| `SUCCEEDED` | 保存实际位置，继续当前任务 | 保存搬运结果，不需要额外操作 |
+| `SUCCEEDED` | 保存实际位置；属于退料货架进场时冻结并可靠发送到位事实，然后继续当前任务 | 保存通用搬运结果；收到退料货架到位事实后更新当前任务的到位状态 |
 | `REJECTED \| FAILED` | 根据每个货架或 Bin 的结果，结束确定失败的任务明细；已经成功和不受影响的明细继续执行 | 根据相同的搬运结果统计没有满足的需求，创建新的 PickingTask；不修改当前任务，也不通过当前任务的 `plan_delta` 补单 |
 | `UNKNOWN/RECONCILING` | 暂停受影响的任务明细和后续物理动作，保留相关资源 | 等待 RCS 后续确定结果或完成人工核对，再为同一 `transport_task_id` 发送更高版本的结果 |
 

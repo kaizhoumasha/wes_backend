@@ -121,8 +121,6 @@ API → Service → Repository → Database
   WES 冻结并执行可靠顺序，ECS/PLC 提供实际运动与位置事实；计划与现场冲突时以物理事实冻结对账。
 - `TransportTask` 与 `DeviceCommand` 是并行概念，不能用一个替代另一个。
 - 本项目尚未发布；除用户明确要求外，不新增 v2、别名、shim、双路径、兼容 wrapper、迁移式兼容或 no-op consumer。目标合同直接替换旧合同。
-- `src/app/wms_adapter/` 只拥有共享 WMS HTTP/JSON、严格 operation DTO/parser、可靠派发和统一 Event route；具体工作线的请求数据、
-  结果解释、因果恢复与业务顺序位于 `workline_plugins/<plugin_key>/`，不得通过默认 resolver 或 fallback 回流基础层。
 - 新增 WMS operation 按同一 `<domain_key>` 分别放入 `wms_adapter/<domain_key>/`（wire/OpenAPI/Adapter/Handler）和确有持久化需求时的
   `wms_integration/<domain_key>/`（model/Repository/Service/Composition），测试镜像相同域目录。Event route 保持唯一静态
   fail-closed；禁止新增平铺 operation 文件、兼容 import 或动态 registry。现有平铺 Inbound/Transport 仅是 `TODOS.md` 待迁移存量；
@@ -131,6 +129,21 @@ API → Service → Repository → Database
   `workline_plugins/` 是业务实现；`deployment/` 只负责显式关联已安装插件。`workline_plugins` 可依赖宿主基础端口和 SDK，宿主与 SDK
   均不得导入具体插件。SDK 不放数据库、HTTP、Celery、Repository、operation DTO 或工作线业务流程。
 - 设备供应商私有协议和实现不进入 WES 核心仓库。
+
+### 4.4 WES 与 WMS Operation 法则
+
+- 双方只通过已批准的 typed operation 交互；方向、字面量、Method、Path、严格 DTO、响应联合、错误码、幂等、重试和权威终态以当前
+  合同为准。禁止 generic `call`、动态 registry、默认 handler、业务 fallback 或猜测未批准字段。
+- 公共能力只实现一次：`WmsClient`/HTTP Transport 单次有界收发，`WmsConfirmation` 承接 WES→WMS 可靠义务，`InboundEvidence` 与唯一
+  Event route 承接 WMS→WES 可靠接收。operation 不得重建 HTTP、持久化、幂等、重试、并发领取或 outbox。
+- WES→WMS：插件决定触发时机并一次性给出完整业务 `data`；内核同事务冻结 `(operation, operation_id)`、规范化 payload、owner 和可靠
+  义务；Adapter 只校验固定合同、发送一次并翻译封闭响应，不拥有业务状态或重试循环。
+- WMS→WES：唯一 Event route 有界读取、校验公共信封并按 operation 静态选择严格 parser/handler；可识别 identity 后可靠保存首次接收或
+  拒绝，成功 ACK 晚于 evidence 提交。业务在接收提交后以独立事务异步应用；共享入口不得查询插件业务表或按当前插件/default owner 路由。
+- 公开幂等身份仅为 `(operation, operation_id)`；相同身份只能重放相同规范化 payload，内容漂移必须冲突。技术重试保留原身份和内容；
+  重新求值仅按合同使用新 identity。ACK 不代表业务应用、外部接纳或物理完成；未知状态保留原身份、证据和资源围栏直至权威闭合。
+- 新 operation 只增加同域 wire/OpenAPI 及该方向所需的 Adapter 或 Handler；业务数据、结果解释、因果恢复和顺序归插件。共享测试证明
+  wire/可靠机制，operation 测试验证接入差异，插件测试证明业务，禁止复制公共机制的完整测试矩阵。
 
 修改架构、共享合同或所有权边界前，必须读取对应架构/合同文档，不以历史测试为当前合同证据。
 

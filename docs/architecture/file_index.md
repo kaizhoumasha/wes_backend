@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-04
+**最后更新**：2026-09-05
 
 ## 1. 真源与入口
 
@@ -36,7 +36,6 @@
 | `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
 | `docs/integration/transport-joint-acceptance.md` | Transport 自动联调的单面/多面、恢复与现场分层验收清单；明确代码、部署、物理闭环和业务验收证据不可互相替代 |
-| `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
@@ -44,7 +43,8 @@
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
 | `docs/superpowers/specs/2026-09-03-outbound-picking-task-prepare-design.md` | `outbound.picking_task.prepare@v1` 单 WorkLine 原子领取、三 owner WmsConfirmation、可靠派发暗构建与生产激活门禁 |
-| `docs/superpowers/specs/2026-09-04-workline-plugin-selection-and-switching-design.md` | 已评审的工作线业务插件选择、瘦身 Epoch、仅空闲切换、单一插件清单及根目录收敛设计；覆盖四种分拣业务与后续退料/拆箱扩展 |
+| `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置及专属配置清理；工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
+| `docs/superpowers/plans/2026-09-05-prepare-plugin-ownership.md` | 从角色归属范围拆出的人工 prepare 业务 owner 迁出计划；独立 ReviewRequired，不是角色配置的先决条件 |
 | `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、Nginx/API/Beat admission closure 与维护态稳定静默门禁实施计划；Tasks 1–4 已在 Phase 10 分支完成并纳入候选镜像，Task 5 TEST Deploy 未执行 |
