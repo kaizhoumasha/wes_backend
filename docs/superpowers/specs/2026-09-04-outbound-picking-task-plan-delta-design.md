@@ -1,5 +1,15 @@
 # `outbound.picking_task.plan_delta@v1` 计划增量设计
 
+> 2026-09-06 料箱流程目标修订：料箱业务编码、全程 BinExecution 和 NG 出口上报的后续实施按
+> [料箱编码与扫码驱动流程 SPEC](2026-09-06-bin-code-and-station-driven-flow-design.md) 收敛。
+> 本文既有完成记录仅描述当时实现，不作为继续保留 NG 出口 operation 或 BinExecution 的依据；其余 Operation 任务仍有效。
+
+> 2026-09-06 执行目标修订（用户明确授权）：先将可运行 Operation 发布到联调服务器，供 WMS 调用并据此收敛合同。
+> 本文以下 T1-A 的“书面确认后方可编码/发布”门禁由此取代：T1-A 转为联合验收项，T1-B–T5、R4 和 R2-B1 可按本设计实现并验证后联调发布。
+> PENDING/503 原身份重试及修正 Evidence 受控应用后的 DUPLICATE 作为本次可执行合同；不宣称 WMS 已确认。
+> 数据迁移、事务/幂等、权限、真实 worker 验证和物理围栏仍有效；基础 Operation 发布不自动开启具体插件业务或设备动作。
+
+
 status: Approved（2026-09-06 基于当前 develop 的工程复审与独立外部复核通过；非 WMS 联合合同批准、代码实施或生产激活）
 created_at: 2026-09-04
 updated_at: 2026-09-06
@@ -40,8 +50,7 @@ WES 在已经可靠接收 PickingTask、冻结匹配的 WorkLine/Epoch，并取�
 
 T1-A 是不可绕过的 WMS 联合合同门禁，未通过时不得开始 T1-B 或任何模型、migration、Service 实施。R1 完成后，不重叠的
 plan_delta、typed Operation 和 prepare Policy 切片可以按第 13.1 节同步推进；R2-B1 只激活基础 Operation，R2-B2 才启用
-`manual_bin_processing` 的新业务触发。R2-0 要求
-`docs/superpowers/plans/2026-09-05-prepare-plugin-ownership.md` 按本轮 Coordinator/Policy 边界修订、完成独立工程评审并获批，未通过时不得实施 R2-A。
+`manual_bin_processing` 的新业务触发。R2-0 与 R2-A 已完成；当前 Coordinator/Policy 边界与实施状态见第 17 节。
 每条链在首个写操作前分别冻结文件与测试 owner；出现交叉文件时，
 由 owner 清单指定唯一写入方并串行合入，禁止两个切片同时改同一文件或共享执行路径。
 `src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py` 是跨链只读不变量：R2-A 不修改
@@ -49,7 +58,7 @@ plan_delta、typed Operation 和 prepare Policy 切片可以按第 13.1 节同�
 `WmsConfirmation` 响应证据形状。共享文件预先串行化：plan_delta 链先拥有 `models/__init__.py`、`repositories/__init__.py`、
 `services/__init__.py` 以及 `heavy-test-impact.toml` 中 `wms_adapter/outbound_picking/**`、`wms_integration/outbound_picking/**` 两行并完成 T5。
 R2-A 可同步修改独占文件，但不得同时修改这些共享行；T5 后 R2-A 必须基于该快照 rebase，再串行应用自身必要的导出和 mapping 变化，
-并刷新被触及的 owner 测试。R3 是 P1 基础能力迁移，不得与 plan_delta Service 共用写 owner；R1 先完成法规和全部合同的 ACK 模式标注，
+并刷新被触及的 owner 测试。本次 T1-A 外部阻塞期间按第 17 节将空闲共享路径串行移交 R2-A；后续 T5 基于该快照接续。R3 是 P1 基础能力迁移，不得与 plan_delta Service 共用写 owner；R1 先完成法规和全部合同的 ACK 模式标注，
 R3 再基于 R1 快照修改两个 Inbound 合同，禁止并行覆盖分类字段。
 
 ## 2. 合同边界
@@ -220,7 +229,8 @@ confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚�
 ## 5. 幂等、冲突与失败
 
 - 相同 `operation_id` 和相同完整正文重放：只有首次已成功应用的请求才返回 `DUPLICATE`，不重复创建成员；
-  `PENDING` 必须重新检查前置条件，已确定的冲突不得改报成功。
+  `PENDING` 必须重新检查前置条件；已确定的冲突不得由普通请求重试改报成功。唯一例外是下述 R4 受控对账已原子应用的修正 Evidence，
+  其原身份、原正文重放返回 `200 / DUPLICATE`，不得再次应用。
 - 相同 `operation_id` 但正文变化：返回 `CONFLICT`，保留首次证据和业务结果。
 - 当前 revision 使用新的 `operation_id`、但完整业务内容与已应用 revision 相同：保存本次 Evidence，返回
   `200 / DUPLICATE`，不重复应用；内容不同则进入 `RECONCILING`。
@@ -249,6 +259,13 @@ confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚�
   `outbound.picking_task.plan_delta@v1`、修正 Evidence 是当前严格期望的下一 revision，且当前阶段、冻结绑定和成员均无新冲突；随后在一个事务中
   应用修正计划、推进 `last_applied_plan_revision`/`last_plan_evidence_id`、清空 blocker 并记录审计。重复相同对账在修正 Evidence 已成为最后应用证据时
   返回既有成功结果；引用漂移、正文漂移、版本变化、终态或并发冲突均 fail closed。任务取消属于独立生命周期合同，不由 R4 提供。
+- R4 成功事务同时将修正 Evidence 从 `RECONCILING` 标记为 `APPLIED`，保留其首次拒绝记录和独立对账审计，不改写原始阻塞
+  Evidence 或冲突历史。此后 WMS 使用该修正请求的原 operation ID、原 timestamp 和原正文重试，优先按已应用事实返回
+  `200 / DUPLICATE`，timestamp 沿用该修正 Evidence 的首次接收时间；任务后来推进 revision、再次阻塞或结束均不改变此成功重放。
+  原身份改正文仍返回 `409 / IDEMPOTENCY_CONFLICT`，实际被拒绝的冲突正文不因另一份修正 Evidence 成功而变为成功。
+  若 blocker 引用原本已 `APPLIED` 的首次 Evidence，该 Evidence 的原始成功正文仍返回 `DUPLICATE`，不能因被 blocker 引用而改报拒绝。
+  对账尚未提交或已回滚时，修正请求仍返回首次 `409 / STATE_CONFLICT`。WMS 取得修正版本的明确成功 ACK 后才发布下一 revision。
+  这项恢复例外与等待语义一并纳入 T1-A 联合合同和 fixture；当前仅为 WES 已批准实施选择，不代表 WMS 已确认。
 - 数据库、事务或证据保存失败：不返回成功 ACK；调用方只能重试原 identity 和原正文。
 - 未获得匹配的权威结果前，不通过修改 revision、operation ID 或任务状态绕过冲突。
 
@@ -267,7 +284,8 @@ confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚�
 - data DTO 非法属于确定且终结的 wire 拒绝：保存完整规范化信封并把 Evidence 标记为 `IGNORED`，原样重放重新执行同一确定性 DTO 校验，
   返回首次 Evidence timestamp 和 `INVALID_DATA`；不新增 `REJECTED` 状态、字段、响应缓存或自关联 conflict。相同 operation ID 修改正文仍由
   Evidence 摘要冲突返回 `IDEMPOTENCY_CONFLICT`，修正正文必须换新 operation ID。
-- 其它确定领域拒绝的重放必须维持原拒绝原因。复用已有 `InboundEvidenceConflict.reason_code` 保存领域拒绝依据，
+- 除 R4 已原子应用的修正 Evidence 外，其它确定领域拒绝的重放必须维持原拒绝原因。修正 Evidence 的 `APPLIED` 判定优先于历史拒绝，
+  但不优先于原 identity 的正文冲突。复用已有 `InboundEvidenceConflict.reason_code` 保存领域拒绝依据，
   由该 operation 的 Service 调用现有 `InboundEvidenceService.record_conflict` 写入；对首次状态/引用/版本冲突可关联同一 Evidence 的载荷与摘要，
   不新增响应缓存表，不让共享 EvidenceService 理解 PickingTask 业务。后续错误不能覆盖首次拒绝语义。
 
@@ -456,7 +474,7 @@ typed Operation 生命周期
 R4 受控计划对账
   |-- G27 阻塞后收到修正 plan_delta             新 ID/严格下一 revision 保存 RECONCILING，不应用、不改 blocker
   |-- G28 授权、Evidence、版本或状态不匹配       fail closed，不修改计划、revision、blocker 或资源围栏
-  |-- G29 成功、重复与并发对账                  行锁内原子应用并清 blocker；相同 Evidence 重放幂等，竞争者不越过
+  |-- G29 成功、重复与并发对账                  行锁内原子应用并清 blocker；修正 Event 从首次 409 经对账提交后原样重试为 200
   `-- G30 零消费者/插件缺失                     基础计划可对账落库；新执行保持冻结，不切断已有可靠义务
 ```
 
@@ -477,7 +495,7 @@ R4 受控计划对账
 | G25 | `tests/architecture/test_plugin_sdk_boundary_guardrail.py`、WMS integration boundary guardrail、精确 `rg` | `CreateWmsConfirmation(operation, dict)`、`WmsInboundAdapter.dispatch(operation, dict)`、插件 operation 字符串分派和兼容 import 残留为零 |
 | G26 | R3 的逐测试 `MIGRATE / KEEP / DELETE` 清单及对应 owner | `test_inbound_adapter.py` 中 typed Adapter 专属断言迁移，WmsConfirmation 共享可靠性断言保留或精确迁移；承接绿灯前不删除旧测试 |
 | G27 | outbound picking Event/API 合同测试 | 阻塞后新的严格下一 revision 使用新 identity 保存 `RECONCILING` Evidence，不立即应用且不覆盖首次 blocker；修正正文重放/漂移继续遵守公共 identity 规则 |
-| G28–G29 | R4 Service 聚焦测试、`tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py` | 管理授权、两份 Evidence、任务/operation/revision/乐观锁版本与阶段逐项 fail closed；独立连接验证行锁、原子应用+清 blocker、提交失败回滚、相同修正 Evidence 重放和并发竞争 |
+| G28–G29 | R4 Service 聚焦测试、`tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py` | 管理授权、两份 Evidence、任务/operation/revision/乐观锁版本与阶段逐项 fail closed；独立连接验证行锁、原子应用+清 blocker+修正 Evidence APPLIED、提交失败回滚、相同修正 Evidence 重放和并发竞争；完整覆盖修正 Event 首次 409→管理对账提交→原 Event 200 DUPLICATE→下一 revision；后续推进/再次阻塞/终态仍重放成功，改正文仍 409，实际被拒绝的冲突正文保持拒绝、原本 APPLIED 的 blocker Evidence 原样重放仍成功，拒绝与对账历史不被覆盖 |
 | G30 | deployment composition、outbound picking Service 与插件执行门禁测试 | 零消费者或冻结插件缺失时仍可完成基础计划对账和持久化；不触发新的插件动作，已有在途结果仍可靠保存并保持围栏 |
 
 G18 必须覆盖实际进程根 `main.py`、`celery_worker.py` 和 `deployment/`；不能照抄只扫描 main/src/plugins 的旧 guardrail。
@@ -491,14 +509,14 @@ API 只通过 ASGI 测试，不打开浏览器或真实生产入口。已有动�
 
 ## 13. 实施与验证任务
 
-本轮仅评审文档，未执行以下任务。R1 是治理门禁，T0-A 是行为不变的公共入口结构修正，T0-B 是 issued 拒绝留证行为变更，
+以下为实施任务，当前进度与证据见第 17 节。R1 是治理门禁，T0-A 是行为不变的公共入口结构修正，T0-B 是 issued 拒绝留证行为变更，
 T1-A 是 WMS 联合合同硬门禁，T1-B–T5 是 outbound_picking 暗构建切片；R2 负责 prepare Coordinator/Policy 与分离激活，
 R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计划阻塞对账。按第 1.1 节四条依赖链实施；同步推进前先冻结各自 owner 清单，
 只允许不重叠切片并行，共享写状态或交叉文件必须由唯一 owner 串行完成。
 生产代码前遵守 Execution Lock：冻结 HEAD/dirty 指纹、生产符号/调用点、测试/fixture 所有者与 HEAVY mapping；
 按需 GitNexus upstream impact，索引不可用则明确降级为精确调用点分析。高风险实施按 TDD，禁止借评审自动提交或部署。
 
-- [ ] **R1（P1，法规门禁）— 固化 WMS Operation 基础能力与两类 ACK 提交模式**：修订 `AGENTS.md` §4.3/§4.4，先固定以下法规：
+- [x] **R1（P1，法规门禁）— 固化 WMS Operation 基础能力与两类 ACK 提交模式**：修订 `AGENTS.md` §4.3/§4.4，先固定以下法规：
   - Operation 与消费者解耦，允许零/一/多插件消费者；Operation 不按插件安装状态动态注册或注销。
   - 插件只通过单一 `wms_operations` facade 的固定 typed methods 创建无副作用 intent；typed outcome 后再进入插件；禁止公开 generic
     operation 字符串/裸 dict 入口。SDK 可承载 typed intent/outcome，宿主保留 wire、持久化、HTTP 和可靠生命周期。
@@ -517,7 +535,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
     Transport、recovery、manual completion、putaway reconciliation 及其它已声明入口，保证每项在所属合同恰有一种模式、无遗漏或重复，
     也不把现有异步路径误判为必须同步应用。再以 SDK/宿主/插件边界清单证明 typed intent/outcome 不把 HTTP、DB 或重试带入 SDK。
     R1 未闭合时四条实施链均不得继续。
-- [ ] **T0-A（P1）— 公共信封结构收敛，行为不变**：让唯一 Event route/`wire_common.py` 产出一次解析的公共信封，issued handler
+- [x] **T0-A（P1）— 公共信封结构收敛，行为不变**：让唯一 Event route/`wire_common.py` 产出一次解析的公共信封，issued handler
   改为消费该边界；只提取无状态 helper，不新增 Runtime、registry、默认业务 handler 或数据库 API 层。同时让 route、issued、transport
   handler 直接引用 `wire_common.MAX_WMS_EVENT_BODY_BYTES`，删除 transport 重复数值常量，不触及其解析流程。
   - 来源：2026-09-05 WMS Operation 法则复审；文件：现有 `v1/events.py`、`wire_common.py`、issued/transport handler 及其直接测试。
@@ -528,6 +546,10 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
   不与结构迁移合并，不新增共享状态或响应缓存。
   - 前置：核对出库合同 §7.1 与 R1 分类允许该拒绝留证；对 Event route、issued handler/service 运行强制 upstream impact，
     HIGH/CRITICAL 影响在修改前按 Execution Lock 报告。
+  - 规范化与切换门禁：issued 合法 DTO 同样使用 `model_dump(mode="json", exclude_none=True)`，避免合法省略 `not_before` 与非法显式
+    null 的摘要碰撞。旧实现曾自动补 null；目标库切换到 T0-B 前必须只读检查全部 issued Evidence 的完整 payload，证明不存在
+    `data.not_before = JSON null`，不得只检查活动任务或某一 apply_status。非零时停止该库切换并保留原 identity、payload、digest 和证据；
+    数据处置需独立决策，不得清库、重写摘要、换 ID 或引入兼容分支。未发布不等于没有历史数据，此门禁仅针对本次规范化规则切换。
   - 验证：明确把旧断言“422 且 recorder 未调用”改为“422 且 `IGNORED` 拒绝 Evidence 已提交”；增加真实 PostgreSQL 首次拒绝、
     原样重放保持首次 timestamp/原因、同 ID 改内容冲突、修正内容换新 ID 和提交失败无虚假 ACK。未知 operation 保持现有无状态 422，
     并断言不写 Evidence、不调用 operation handler；不得混入本任务建立未知 operation 持久化。issued handler 的 DTO 失败必须把
@@ -536,7 +558,9 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
   `PENDING + 503 / UNAVAILABLE + 原 operation ID/原正文重试`，并把唯一结论写入主合同和双方可执行 fixture。
   - 文件：`docs/contracts/wms-outbound-picking-task-integration-requirements.md` 对应公共 ACK 与 §8 小节、双方联合 fixture；不写生产代码。
   - 退出条件：WMS 书面确认、主合同无自相矛盾、联合 fixture 固定首次等待/原样重试/prepare 成功后接收/超期或确定冲突四类结果。
-    任一未满足即停止；若 WMS 不接受当前语义，先修改本设计并重新评审，不得开始 T1-B–T5。
+    同时联合确认 R4 修正 Evidence 在受控应用后原样重放返回 `200 / DUPLICATE` 的例外，并以 fixture 覆盖首次 409、对账提交/回滚、
+    原身份成功重放、正文漂移及下一 revision 发布；任一未满足即停止。若 WMS 不接受当前语义，先修改本设计并重新评审，不得开始 T1-B–T5。
+  - WES 待联合确认材料：[协议差异、响应示例与联合用例矩阵](../../integration/outbound-picking-plan-delta-joint-freeze.md)；尚未发送，不代表 WMS 确认或可执行 fixture 已完成。
 - [ ] **T1-B（P1，人工约 2h / Agent 约 30min）— typed wire 与 ACK**：仅在 T1-A 通过后，补完整 data DTO、独立 schema 和消费共享公共信封的 handler；不修改公开 schema。
   - 来源：D4、D9、D11；文件：`docs/contracts/wms-outbound-picking-task-integration-requirements.md`、`src/app/wms_adapter/outbound_picking/`。
   - 验证：G02–G03 聚焦测试；parser 的 typed/validation-error 联合均保留公共信封并进入 recorder/service，handler 不短路非法 data；
@@ -563,31 +587,29 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 - [ ] **T5（P1，人工约 2h / Agent 约 40min，不含环境等待）— 最终快照验证**：闭合 SQL 批次、解析边界、迁移及所选 HEAVY。
   - 来源：D10、D12–D14；文件：相关测试和 mapping；不增加独立 benchmark 服务或吞吐框架。
   - 验证：聚焦域测试、暗构建 guardrail、QUALITY、selector manifest 及迁移；记录指纹与未验证边界。
-- [ ] **R2-0（P1，评审门禁）— prepare 专项计划获批**：对
-  `docs/superpowers/plans/2026-09-05-prepare-plugin-ownership.md` 先按本轮结论修订为“宿主可靠事务 Coordinator + 插件无副作用 typed Policy”，
-  再完成独立工程评审并取得明确批准；该文件当前为 `ReviewRequired`，
-  `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` 只作为相邻角色/基础装配边界参考，不能替代 prepare 专项计划。
+- [x] **R2-0（P1，评审门禁）— prepare 专项计划获批**：专项计划已按本轮结论修订为“宿主可靠事务 Coordinator + 插件无副作用 typed Policy”，
+  再完成独立工程评审并取得明确批准；当前所有权边界与实施记录见第 17 节，
+  `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` 只作为相邻角色/基础装配边界参考，不能替代本计划的 prepare 所有权约束。
   - 退出条件：专项计划状态、Coordinator/Policy typed 端口、生产/测试 owner、事务与可靠性边界、暗构建守卫和 HEAVY mapping 均评审闭合；
     显式确认 `picking_task_confirmation_owner.py` 的公开签名、confirmation→PickingTask 锁语义及 `WmsConfirmation` 响应证据形状保持不变；
     未通过不得开始 R2-A。
-- [ ] **R2-A（P1）— prepare 业务所有权收敛**：仅在 R2-0 通过后，按
-  `docs/superpowers/plans/2026-09-05-prepare-plugin-ownership.md` 保留宿主 `PickingTaskPrepareCoordinator`：统一拥有事务、锁顺序、
+- [x] **R2-A（P1）— prepare 业务所有权收敛**：仅在 R2-0 通过后，按第 17 节保留宿主 `PickingTaskPrepareCoordinator`：统一拥有事务、锁顺序、
   PickingTask 绑定、`WmsConfirmationLifecycleService`、typed prepare intent 落库和提交后唤醒；将人工插件键、flow mode、WorkLine 准入、
   候选任务选择规则迁入 `workline_plugins/manual_bin_processing/` 的无副作用 Policy。
-  - 文件：该所有权计划限定的宿主、插件、deployment 和测试 owner；Policy 只接收 Coordinator 提供的事实快照并返回 typed 选择结果，
+  - 文件：第 17 节限定的宿主、插件、deployment 和测试 owner；Policy 只接收 Coordinator 提供的事实快照并返回 typed 选择结果，
     不访问 Repository、数据库、HTTP 或队列；不得扩大为 WMS 全域搬迁或通用任务调度器。
     `picking_task_confirmation_owner.py` 及其锁/响应证据合同为只读边界，不属于 R2-A 修改范围。
   - 并行边界：可与 plan_delta 暗构建链同步推进独占文件；上述三个域 `__init__.py` 和两条 HEAVY glob 行由 plan_delta 链先写至 T5，
-    R2-A 不在并行阶段改写。T5 后 R2-A 基于其最终快照 rebase，再串行完成自身导出与 mapping 增量并刷新相应测试。
+    R2-A 不在并行阶段改写。本次无 T5 并行写入，按第 17 节串行移交并完成导出、mapping 与验证；后续 T5 以该快照接续。
   - 验证：插件测试证明人工 Policy，核心测试证明 Coordinator 事务、锁、typed prepare intent、可靠义务和提交后唤醒；旧宿主业务常量及
     `claim_next_manual` 直接调用残留为零，但共享 Coordinator 与 Repository 能力继续保留。
-- [ ] **R3-A（P1，基础能力）— 建立 typed `wms_operations` 全生命周期**：在 SDK 定义无副作用 typed intent/outcome 与单一 facade 的固定方法；
+- [x] **R3-A（P1，基础能力）— 建立 typed `wms_operations` 全生命周期**：在 SDK 定义无副作用 typed intent/outcome 与单一 facade 的固定方法；
   宿主将 typed intent 适配到现有 `WmsConfirmationLifecycleService`，Adapter 解析封闭 wire 响应，Fact Factory 从可靠 Evidence 构造 typed outcome。
   - 文件：`src/wes_plugin_sdk/`、WMS confirmation applier/fact owner、`wms_adapter/<domain_key>/`、deployment 静态 composition 和边界 guardrail。
     SDK 不含 HTTP、数据库、Repository、OpenAPI wire DTO、重试或恢复；内核私有通用 envelope 不对插件导出。
   - 验证：G19–G24；一个插件节点组合多个 intent、多个插件复用同一 method、零消费者装配、冻结插件缺失时保存响应并围栏对账；
     每个 operation 只验证 typed 接入差异，不复制共享可靠性矩阵。
-- [ ] **R3-B（P1）— 迁移既有 WES→WMS operation 并关闭 generic 入口**：消费 `TODOS.md` 中已有迁移项，将五个
+- [x] **R3-B（P1）— 迁移既有 WES→WMS operation 并关闭 generic 入口**：消费 `TODOS.md` 中已有迁移项，将五个
   `inbound.material/source_rack.*` operation 及 prepare 按域接入 `wms_operations.<fixed_typed_method>`，请求和结果全生命周期 typed；删除公开
   `CreateWmsConfirmation(operation, dict)`、`WmsInboundAdapter.dispatch(operation, dict)`、插件字符串分派、旧平铺 import 和所有兼容路径。
   - 文件：SDK、`wms_adapter/inbound_material/`、`wms_adapter/outbound_picking/`、rough_sorter/manual_bin_processing 调用点、deployment、镜像合同、
@@ -602,7 +624,8 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
     `POST /api/v1/outbound-picking/tasks/{task_id}/plan-blockers/{blocking_evidence_id}/apply-correction` 接收修正 Evidence ID、预期任务版本和有界审计原因，
     不接收任意 operation 或裸计划正文。
   - 事务：Service 在 PickingTask 行锁内验证 blocker、两份 Evidence、任务、operation、严格下一 revision、当前阶段/绑定与预期版本；一次性应用修正成员，
-    更新 revision/last Evidence、清空 blocker 并写审计。相同 Evidence 的已成功重放返回既有结果；任何引用/正文/版本漂移、终态、并发冲突或提交失败均
+    更新 revision/last Evidence、将修正 Evidence 标记 APPLIED、清空 blocker 并写审计。管理请求成功重放按第 5 节的最后应用证据条件判断；
+    WMS 原修正 Event 的成功重放按 APPLIED 判定，独立于后续 revision/阶段，并保留首次拒绝历史。任何引用/正文/版本漂移、终态、并发冲突或提交失败均
     fail closed。插件缺失不阻止基础计划恢复，但继续禁止新插件动作；任务取消由独立生命周期合同处理。
   - 范围：只处理 plan_delta 阻塞；不新增通用对账平台、动态动作 registry、关闭任务能力或直接数据库运维流程。
   - 验证：G27–G30。R4 未通过不得开始 R2-B1。
@@ -752,6 +775,258 @@ D1–D47 与测试 G01–G30 均已转为本设计的实施要求。没有新增
 当前外部复核由独立 Codex 子 Agent 只读执行，报告的 4 个 P1 与已批准架构项一致，新增 1 个 P2 测试 owner 问题已按 D46 闭合；
 未允许 reviewer 修改文件、运行测试、QUALITY、HEAVY、migration 或 Git 操作。
 
+## 15. 首个实施切片进度（2026-09-06）
+
+用户已授权修复评审意见并开始实施。基线 `develop@bf98b4fee7824ff9da073d962bacf663a1e82a91`，开始时工作区干净；
+当时只完成 R1 和 T0-A 的代码及聚焦验证，T0-A 总验收复选框保留未完成。T0-B、T1-A–T5、R2–R4 尚未实施，不能把本节作为总计划完成证据。
+
+- R1：公共合同定义 `ack_mode / ack_commit_facts`，五份所属合同为 8 个 WMS→WES operation 标注唯一模式；AGENTS 同步 SDK typed
+  intent/outcome、零/一/多消费者与两类 ACK 提交规则。分类不改变 wire，也不代表联合合同或生产激活获批。
+- P2 修复：R4 修正 Evidence 在受控事务提交后变为 `APPLIED`，原 Event 重试返回 `DUPLICATE`；保留拒绝历史，明确原本成功的
+  blocker Evidence 不能被改报拒绝。联合 fixture 要求加入 T1-A/G29，WMS 确认仍未取得。
+- T0-A：共享 `parse_wms_event_envelope` 保留一次严格 JSON 解析结果；issued handler 消费该结果，runtime 缺席也不重复解析。
+  route 与 Transport handler 直接引用共享正文上限；issued DTO 拒绝、recorder、摘要和事务语义保持不变。
+- 变更清单：生产仅 `wire_common.py`、`v1/events.py`、`outbound_picking/event_handler.py`、`transport_event_handler.py`；
+  直接测试为 `tests/api/test_wms_events.py`、`tests/contracts/wms_adapter/outbound_picking/test_event_handler.py` 和
+  `tests/contracts/wms_adapter/test_transport_event_handler.py`。删除的 handler 正文错误测试由共享 ASGI 坏 JSON/坏 identity 和已有 413
+  上限测试承接。HEAVY 的 `wms_adapter/v1/**` 增加已有 issued PostgreSQL owner；无 migration、生成 DTO 或新的公开 operation。
+- GitNexus：刷新 stale 索引一次；`receive_wms_event / _extract_operation` 为 LOW，issued `handle` 为 MEDIUM；动态 route→handler
+  调用和 composition/测试消费者用精确引用补齐。索引工具生成的超范围 AGENTS/CLAUDE 改动已移除。
+- RED：正常 issued 和 runtime 缺席路径均出现 decoder `2 != 1`；GREEN：API + outbound picking 域 + Transport handler 共 140 项通过。
+  另执行 Inbound wire、严格 JSON、prepare 暗构建守卫、WMS 边界守卫和 selector 合同，共 198 项通过、1 项失败。
+- 失败为基线已有 `test_prepare_has_no_production_activation_or_execution_reverse_import`：`wms_confirmation.py:14` 为注册外键目标
+  导入 PickingTask，违反该守卫。失败源文件及守卫均与 HEAD 字节一致，本切片没有修改或放宽其断言；后续需闭合该架构矛盾。
+- 定向 Ruff 与 `git diff --check` 通过；selector 成功选出 6 个 HEAVY 文件，但尚未执行真实 HEAVY。未执行完整 QUALITY、提交、推送、部署或 WMS 联调。
+  可执行快照（上述 4 个生产文件、3 个测试文件及 mapping，路径排序后以 NUL 分隔路径和内容）的 SHA-256 为
+  `180711c4bbb648bf8e3531156f76354eb40a2de45339784396f1504065fe3cc5`。
+- 独立只读代码评审未发现 T0-A 可操作缺陷；对账文档措辞已按反馈限定实际拒绝正文。当前只有聚焦证据，不是 `MERGE READY`。
+
+## 16. 继续实施与验证（2026-09-06）
+
+用户确认继续后，完成 T0-B 代码、T0-A 架构守卫闭环及对应验证。仍以 `develop@bf98b4fee7824ff9da073d962bacf663a1e82a91`
+为基线；本节取代第 15 节的当前状态，不代表整个 plan_delta 总计划完成。
+
+- T0-B：可识别 identity 的非法 issued data 经 typed invalid receipt 进入原 Service，复用 `InboundEvidenceService.accept` 保存完整请求为
+  `WMS_EVENT + IGNORED`，提交后返回 422。原样拒绝重放保留首次 timestamp，同 ID 内容漂移为 409，提交失败为 503 且事务回滚。
+  合法 DTO 使用 `exclude_none=True`，非法显式 null 保留在原始请求中，避免与合法省略字段发生摘要碰撞。
+- 架构闭环：PickingTask 的外键目标注册从 execution model 移至中立 deployment composition；测试 schema fixture 显式注册该模型。
+  冷启动仍能解析字符串外键，且不导入 prepare Service；原反向依赖/暗构建守卫保持原断言并通过。
+- 测试所有权：T0-B 的薄接入由既有 issued handler 合同测试负责；并发拒绝重放、真实提交/回滚、修正与摘要漂移由既有
+  `tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py` 负责。新增 2 项 PostgreSQL 测试后该文件 7 项通过；
+  API、outbound 域、WMS confirmation 与架构守卫聚焦集合 121 项通过。无新增 migration、公开 operation、Celery 注册或插件激活。
+- 独立只读评审闭环了规范化切换风险：目标库必须满足 T0-B 的历史 null Evidence 零记录门禁。当前未检查任何目标运行库，
+  临时库的成功验证不能替代此门禁；T0-B 代码已完成，但总验收复选框仍保留未完成。
+- QUALITY：`./scripts/git-quality-gate.sh --profile quality` 通过，FAST 为 2621 passed、5 skipped；跳过项为既有 4 个外部 signature
+  用例和 1 个容器层检查。Ruff、Bandit、脚本与拓扑门禁均通过。额外定向 basedpyright 发现 2 个 HEAD 已有类型问题
+  （prepare 响应查询 key 与 issued task_type 类型），未将其记为通过，也未扩面修改。
+- HEAVY 过程：首轮 140 passed、1 failed，为 schema 测试固定旧 head；仅更新 `HEAD_REVISION` 至现有 `627291489210`，全部 schema
+  断言保留，定向 PostgreSQL 验证通过。复跑时旧临时逻辑库残留 `rough_sorter / ACTIVE` Epoch，真实 worker 启动守卫按合同拒绝启动；
+  诊断捕获 `ActiveLineRunEpochExistsError`，未放宽守卫。随后在同一独占临时 PostgreSQL 实例创建干净逻辑库并从空库迁移至 head。
+- 最终 HEAVY：干净逻辑库上执行 `uv run scripts/run_selected_heavy_tests.py reports/plan-delta-t0-heavy-manifest.txt
+  reports/plan-delta-t0-heavy-clean.xml`，17 个选中文件共 141 passed、0 skipped（93.57s），真实 broker/worker/HTTP/数据库路径通过；
+  日志为 `reports/plan-delta-t0-heavy-clean.log`。仅 schema 测试常量修正不触及 QUALITY 覆盖内容，复用已有 QUALITY 证据；最终 Ruff 和 diff 检查通过。
+- 最终可执行快照 SHA-256：`274aa1d57cd0f2187e9beb39884252895e1d565486f44514a232fd6459f359c1`；按 `src / tests / scripts / deployment`
+  与 HEAVY mapping 的所有变更路径排序，逐项以 NUL 分隔路径和文件内容。环境 Python 3.13.14、独占 Timescale PostgreSQL 与 Redis 8；
+  精确环境、文件清单和 selector 的 17 文件 manifest 记录在本地 `reports/plan-delta-t0-snapshot.json` 与 `reports/plan-delta-t0-heavy-manifest.txt`。
+- 下一退出门禁仍是 T1-A：WMS 书面确认、联合合同修订和可执行联合 fixture 尚未齐全，不开始 T1-B–T5。R2–R4 尚未实施；
+  未 Commit、Push、PR、Merge、Deploy 或执行 WMS/现场验收。
+
+## 17. 持续授权下的 R3 与 R2-A 实施（2026-09-06）
+
+用户已明确后续不再分阶段确认。本节取代第 16 节的当前状态；基线仍为
+`develop@bf98b4fee7824ff9da073d962bacf663a1e82a91`，全部修改留在工作区，未提交。
+
+- R3-A/R3-B：SDK 提供六个固定 typed method 与不可变 intent/outcome；既有五个 inbound operation 和 prepare 通过同一 facade
+  声明意图。宿主负责严格 wire 转换与持久化，rough_sorter 的结果解释、WAIT follow-up 和恢复消费 typed 数据。
+  删除公开 generic intent/Adapter 和旧平铺 import；宿主私有 `WmsConfirmationAdapter` 仅桥接既有持久化信封与域 Adapter。
+  Decision 摘要直接采用固定 typed Intent 标识与 dataclass 字段，不保留旧 generic 摘要桥接；确认身份、可靠重试、冻结 owner 和物理围栏保持不变。
+- R2-0/R2-A：专项计划独立评审 CLEAR；`PickingTaskPrepareCoordinator` 保留事务、锁、任务绑定和可靠义务，显式注入
+  无副作用 `ManualPickingPreparePolicy`。事实 Repository 只读不可变事实，候选 SQL 保留有界过滤、顺序与 SKIP LOCKED。
+  核心测试注入 SDK stub Policy，人工规则由插件测试拥有；confirmation owner 签名、锁语义与响应证据边界保持不变。
+- 串行所有权调整：T1-A 未取得外部证据，T5 未启动，因此将原预留给 T5 的空闲导出和 mapping 路径串行移交 R2-A。
+  R3 SDK owner 完成后才接续 prepare 端口；同一文件始终只有一个写 owner。未来 T5 基于本快照接续，不覆盖 R2-A 增量。
+  此调整只解决写入顺序，不解除 T1-A、R4 或生产激活门禁。
+- 测试所有权：typed 承接先通过，再迁移旧 generic 断言；原共享 WmsConfirmation 测试保留。
+  补齐多 Operation 组合、双插件复用、零消费者装配和冻结插件缺失围栏测试；插件测试不进入核心 selector。
+  无新增 schema/migration、prepare route/OpenAPI 激活、Celery 注册或 manual_bin_processing 消费启动。
+- 聚焦验证：组合核心集合 632 passed，rough_sorter FAST 167 passed，manual Policy 20 passed；插件 basedpyright 无错误。
+  最终独立只读代码评审 CLEAR，新增双插件/零消费者覆盖闭合评审意见。
+- 最终 QUALITY：`./scripts/git-quality-gate.sh --profile quality` 通过，FAST 2641 passed、5 skipped；跳过项为既有四个外部
+  signature 用例和一个容器层检查。Ruff、Bandit、脚本、拓扑和速度预算通过。日志：`reports/wms-typed-quality-complete.log`。
+- 最终核心 HEAVY：selector 的 18 文件 manifest 在独占临时 PostgreSQL/Redis、干净逻辑库和真实 worker 上执行，
+  143 passed、0 skipped（102.76s）；独立 rough_sorter PostgreSQL 6 passed。两个逻辑库均从空库迁移至 `627291489210`。
+  证据为 `reports/wms-typed-heavy-manifest.txt`、`reports/wms-typed-heavy.log`、`reports/wms-typed-plugin-postgresql.log`。
+  后续仅补测试断言和人类文档，未改变该 HEAVY 覆盖的生产输入；QUALITY 已在最后测试快照刷新。
+- 最终可执行快照 SHA-256：`f60db4c03dbe6b85c73bd8452f03209b340755d67c75635fde0f79f69fd07aa9`，
+  路径清单及环境见 `reports/wms-typed-final-snapshot.json`。`git diff --check` 通过。
+- 未验证边界：rough_sorter 容器业务 E2E 因现有镜像来源 revision 过旧，在镜像前置检查失败；未伪造标签或放宽测试。
+  核心真实 worker HEAVY 与插件 PostgreSQL 通过不能替代该容器业务闭环或现场验收。
+- T0-B 目标运行库的历史 null Evidence 检查仍未执行；T1-A 的 WMS 书面确认、联合合同与可执行 fixture 仍未齐全，
+  因此 T1-B–T5、R4、R2-B1/B2 未实施。当前不是整个计划完成、生产激活或 MERGE READY；未 Commit、Push、PR、Merge、Deploy。
+
+## 18. Operation 联调发布切片（2026-09-06）
+
+用户已明确持续授权实施和联调服务器发布，要求以代码和联调推进双方合同收敛，不再逐阶段确认。此前 §15–17 的阻塞与未实施状态是历史快照；
+T1-A 现为 WMS 联合验收项，不阻塞 T1-B–T5、R4 和 R2-B1 的实施及独立联调部署。R2-B2 工作线业务启动另列范围。
+
+- T1-B–T5：严格 plan_delta DTO、静态 Event route、共享 Evidence 接收、原子计划/成员/版本提交、冲突阻塞和成功重放已实现。
+- R4：超级管理员对账 API 与现有审计服务已接通；锁定 correction Evidence 后锁任务，管理重放校验当前状态和版本，WMS 已成功 Event 仍永久重放成功。
+- R2-B1：零插件组合根接通 issued、plan_delta 与 prepare Adapter/owner；复用现有 WMS fulfillment worker，不新增 operation 运行时或重试基础设施。
+- 数据库 revision `864351b8d0c6` 使用标准 `pgcrypto` 摘要索引支持有界请求内的长 face，保留原文精确比较；查询/写入按 250 个候选分批。
+  downgrade 保留共享 extension。任务版本复用既有 `increment_version()`，不另建并发机制。
+- 聚焦 PostgreSQL、ASGI、真实 worker 以及修复闭环已通过；完整 QUALITY：2719 passed、5 skipped，profile passed；最终选中 HEAVY：176 passed、0 skipped。
+  使用项目固定 PostgreSQL 17.10 / TimescaleDB 2.27.1 镜像，空库到 head 迁移及 Alembic schema check 已通过。证据在 `reports/operation-quality-final.log`、
+  `reports/plan-delta-activation-heavy-final.log`、`reports/plan-delta-pinned-migration.log`。
+- 唯一主 Review 与后续修复闭环结论 CLEAR。部署配置另做只读评审，使用独立项目、DB、Redis 和端口，明确禁用具体工作线插件。
+- 当前发布制品源码树 `21f6101dcda81b9aa01b56d5db1c22a750678d23`，基于 `bf98b4fee7824ff9da073d962bacf663a1e82a91` 未提交树构建，标签明确 `dirty-worktree`。
+  本段属于构建后的人类文档更新，不改变镜像中的可执行树。未 Commit、Push、PR 或 Merge。
+- 已部署至 `http://10.24.199.219:8003`，实际 HTTP、持久化、worker、重启和静态资源验收通过；详见
+  [联调交付记录](../../integration/operation-integration-delivery-2026-09-06.md)。WMS 联合接受、真实 prepare 正向联调和具体工作线启动尚未完成。
+
+## 19. face 长度收敛与联调升级（2026-09-06）
+
+用户将 rack_face、target_face、arrival_face 及相关字段限定为 10 个字符以内，覆盖 §18 的长 face 方案。
+
+- SDK、严格 DTO、Transport／WMS OpenAPI 和相关消费者统一为非空 1–10 个 Unicode 字符，保留原值，不 trim、截断或数值转换。
+- 新 revision `3d040b37c049` 在锁定相关表并确认历史数据合法后，将六个字段改为 `VARCHAR(10)`；不修改已部署的历史迁移。
+  来源唯一索引改为原文字段索引，查询保持精确比较和既有分批；共享 pgcrypto extension 仅为历史迁移保留。
+- 主 Review CLEAR；QUALITY 2759 passed、5 skipped，干净环境 HEAVY 323 passed、0 skipped，聚焦 PostgreSQL／迁移 34 passed。
+- 源码树 `ab43c0bae996a1238346ca650493a59626275c37` 已部署至独立 8003 联调实例；仍明确标记 dirty-worktree，未 Commit／Push／Merge。
+  备份后完成迁移并重建四个应用进程，六个字段实际为 VARCHAR(10)，原数据库／Redis 与旧现场实例保持不变。
+- 实际 10 字符通过 wire 校验、11 字符返回 422；历史请求完整重放响应及首次接收时间保持一致。
+  详见 [联调交付记录](../../integration/operation-integration-delivery-2026-09-06.md)。WMS 联合验收仍需双方实际联调完成。
+
+## 20. R2-B2 生命周期围栏前置切片（2026-09-06）
+
+R2-B2 尚未整体完成。当前切片先修复宿主 PickingTask owner 的停用围栏，不将插件骨架描述为可启动业务。
+
+- 已复现：prepare 得到 PREPARE_ACCEPTED、确认完成后，任务仍为 PREPARING，但旧 WorkLine 摘要漏掉任务，导致停用错误关闭 Epoch。
+- WorkLine 统一未完成负载摘要纳入 PREPARING／EXECUTING 或带 plan blocker 的 PickingTask；picking-owned 未完成 WmsConfirmation
+  与既有 material owner 一起计数。查询保持单条 SQL、准确数量与原身份样本，不引入插件判断、新状态或重试设施。
+- START、配置更新／删除、停用与 prepare 准入继续复用该摘要；停用沿用 WorkLine → Epoch lifecycle fence，随后关闭 Epoch，未复制检查路径。
+- 正常完成且无 blocker 的任务不阻塞；未绑定 QUEUED、其他工作线任务不污染；完成后的计划 blocker 与未闭合确认仍保留围栏。
+- 真实 PostgreSQL 并发用例通过 pg_blocking_pids 证明停用等待绑定事务提交后读取新任务并拒绝关闭；原 WorkLine／Epoch／任务绑定保持不变。
+- 代码与部署准备评审 CLEAR；QUALITY 2759 passed、5 skipped；本轮精确 selector 的四文件 HEAVY 15 passed、0 skipped。
+  证据：`reports/r2b2-stop-red.log`、`reports/r2b2-quality.log`、`reports/r2b2-heavy.log`、`reports/r2b2-concurrent-stop.log`。
+- 源码树 `72c7c62e564d49209a005a798dd82df4b0361775` 已部署至 8003，历史 issued／plan_delta 重放与 Transport 查询通过，无新增 migration。详细发布证据以 [联调交付记录](../../integration/operation-integration-delivery-2026-09-06.md) 为准。
+- 后续仍需人工插件 START builder、固定 handler、事实/后继装配及其生命周期验收。不能复用自动出库字段或编造设备/位置绑定补齐人工语义；
+  未批准的停线排空 operation 保持 BLOCKED。真实 prepare 联调需 WMS decisions 地址、认证与可用任务／工作线身份；这不阻碍本切片交付。
+
+## 21. WMS Operation 优先实施：queue_changed（2026-09-06）
+
+用户调整推进顺序：先实现 WMS Operation，随后统一安排联调服务器核实与验证。本轮不继续人工插件激活，也不要求当前提供现场配置。
+
+- 新增 `outbound.picking_task.queue_changed@v1`，补齐 issued → queue_changed → prepare → plan_delta 的队列入口。
+- 复用主合同 §7.1 的严格 DTO：连续 queue_revision，仅 QUEUED，dispatch_sequence／not_before 至少提供一项；省略保持原值，null 禁止，明确 0 可解除最早领取时间限制。
+- 复用 InboundEvidence、冲突记录、已有任务身份／优先序锁和任务行锁；队列字段及版本同事务提交。无新实体、migration、operation 运行时或插件依赖。
+- 保持成功 identity 永久重放、首次拒绝原因重放和同 identity 正文漂移冲突；与 issued 的优先序竞争由同一围栏处理，prepare 领取由任务行锁串行化。
+- 严格 parser／Handler、唯一静态 Event route、OpenAPI 与组合根已接通。部署和 WMS 联合验收仍待后续统一执行。
+- 当前源码快照 `05f1a9e4e64d2b3df0648b670ecf0277fb51bd3d` 独立实施评审 CLEAR；聚焦 FAST 409 passed，QUALITY 2812 passed、5 skipped，精确 selector 的 11 文件 HEAVY 58 passed、0 skipped。
+- PostgreSQL 回归覆盖队列修改、幂等／拒绝重放、并发优先序竞争、状态拒绝、提交失败整体回滚及真实 ASGI 到数据库链路；HEAVY 同时覆盖 issued、prepare、plan_delta 和 Transport。
+- 证据：`reports/queue-changed-evidence.json`、`reports/queue-quality.log`、`reports/queue-heavy.log`；本轮未部署、未执行远端验证。
+
+## 22. WMS Operation 优先实施：退料货架到位上报（2026-09-06）
+
+按主合同 §9.1.1 实现 `outbound.return_rack.arrival_report@v1` 的宿主能力，固定发送至 WMS `POST /api/v1/wes/facts`。
+
+- 完整 typed intent、严格 wire 与封闭响应已接入静态 WmsConfirmation Adapter；`arrival_face` 保持 1–10 字符。
+- 复用 WmsClient 单次发送和 WmsConfirmation 的事务、原身份重试、响应 Evidence 与确认闭合；未新增业务实体或 migration。
+- PickingTask 的到位事实确认义务在 PREPARING、EXECUTING、EXECUTION_COMPLETED 中仍可派发，不以任务推进或 Epoch 关闭代替 WMS 确认；prepare 保持原 PREPARING owner 约束。
+- 本切片只实现 operation 基础能力及既有可靠义务派发。插件仍须依据真实 Transport 成功结果、冻结目标和计划绑定，在业务事务中创建到位上报；本轮未接入该业务触发，不能据此声称物理到位流程完成。
+- 本地真实 PostgreSQL／Redis／worker／HTTP 验证覆盖零插件既有义务派发、503 后原身份原正文重试及响应 Evidence 闭合。部署及 WMS 联合验证后续统一执行。
+- 独立评审 CLEAR；最终 QUALITY 2888 passed、5 skipped；精确 selector 的 13 文件 HEAVY 83 passed、0 skipped，包含 issued／queue_changed／prepare／plan_delta／Transport 回归。
+- 当前 18 文件快照与证据见 `reports/arrival-snapshot.json`、`reports/arrival-evidence.json`、`reports/arrival-quality.log`、`reports/arrival-heavy.log`。未提交、未部署、未访问联调服务器。
+
+## 23. 未提交内容评审修复（2026-09-06）
+
+- plan_delta 的 rack_id／slot_id 与公共业务编号正则统一，面向字段继续保持 1–10 个 Unicode 字符；避免计划接收的编号在到位上报中被拒绝。
+- plan_delta／queue_changed 的 timestamp 与公共合同统一为非负 int64，OpenAPI 同步；issued 本轮未修改。
+- prepare 与 arrival_report 复用单次有界收发检查及派发结果类型，各自保留固定路径、严格 parser 和业务响应解释；不新增动态 registry。
+- plan_delta／queue_changed 复用纯 ACK 拼装与封闭映射，各自 parser、recorder 和业务事务保持独立。
+- 4 项评审意见已闭环，独立复核 CLEAR。修复范围和当前内容指纹见 `reports/review-fix-scope.json`、`reports/review-fix-snapshot.json`；最终验证见 `reports/review-fix-evidence.json`。本轮不提交或部署。
+
+## 24. WMS Operation 优先实施：入站批次（2026-09-06）
+
+本切片按主合同 §9.2.1 补齐 `outbound.bin.inbound_batch@v1` 的宿主 operation 能力，固定调用 WMS `POST /api/v1/wes/decisions`。
+
+- 请求冻结 task_id、rack_id、rack_face 和 1–4 的 max_bin_count；面向字段保持 Unicode 1–10 字符。
+- 封闭响应为 READY、NO_BATCH、RACK_FACE_DONE；READY 必须满足请求数量、来源 rack/face 与成员唯一性。
+- 复用已有单次有界收发、PickingTask-owned WmsConfirmation、响应 Evidence 与可靠派发。NO_BATCH 是本次请求的确定业务结果，等待时间保存在响应中，不触发 MaterialExecution 后继调度。
+- 插件仍负责来源面真实到位、CTU/缓存容量、退箱优先级、跨批次成员历史及后续 Transport；本轮不接入业务调度，不部署或访问联调服务器。
+- 聚焦验证 586 passed；最终 QUALITY 2980 passed、5 skipped；精确 selector 的 13 文件 HEAVY 71 passed、0 skipped。真实 PostgreSQL／Redis／worker／HTTP 验证确认 NO_BATCH 和 RACK_FACE_DONE 持久化响应 Evidence 并闭合义务，不产生自动重复请求。
+- 独立评审 CLEAR，当前 17 文件快照无漂移，无关既有改动保持原指纹。范围与验证记录见 `reports/batch-scope.json`、`reports/batch-snapshot.json`、`reports/batch-evidence.json`；未提交、未部署，WMS 联合验证后续统一安排。
+
+## 25. Operation 公共能力精简（2026-09-06）
+
+- WMS Adapter 统一使用中立 `WmsDispatchCode`／`WmsDispatchResult` 与单次有界 `receive_json`，旧域内类型与路径直接移除；各 operation 保留封闭响应解释，Material WAIT 与 Picking NO_BATCH 的后继语义保持独立。
+- Picking 错误 DTO 和 face 类型复用，prepare 拒绝显式 null 与非法 JSON Pointer；响应序列化保留字段省略语义，Adapter→typed outcome 回归已覆盖。
+- 公共收发测试集中，三份真实 worker 测试共用数据库／HTTP／owner 装配；既有可靠派发测试迁至 `tests/runtime/execution/test_wms_confirmation_dispatch.py`，不保留旧路径或转发 import。
+- prepare 已完成过程计划移出项目归档，当前 Coordinator/Policy 边界仍以第 17 节为准，索引与引用已修正；硬件原始资料保持不变。
+- 本轮源码和测试净减少 227 行。独立评审及修复闭环 CLEAR；最终聚焦验证 854 passed，QUALITY 2990 passed、5 skipped，11 文件 HEAVY 63 passed、0 skipped。
+- 当前快照与证据见 `reports/compact-snapshot.json`、`reports/compact-evidence.json`。未提交、未部署，未执行联调服务器验证。
+
+## 26. 批次重复求值的持久化围栏修复（2026-09-06）
+
+- 继续实施前发现旧 `(picking_task_id, operation)` 唯一索引误将所有 Picking operation 限制为每任务一次，导致 inbound_batch 在 NO_BATCH 后使用新 identity 的合法请求落库失败；真实 PostgreSQL 已复现。
+- 迁移 `5d3e6e4df5be` 将任务唯一索引限定为 `outbound.picking_task.prepare@v1`；全局 `(operation, operation_id)` 唯一约束保持，prepare 仍不得为同一任务创建第二条义务，批次允许使用新 identity。
+- 本轮只修复既有 operation 的持久化阻塞。下一项 `outbound.bin.return_batch@v1` 的合同属于跨 PickingTask 的 Epoch FIFO，现有 WmsConfirmation 仅有 MaterialExecution／BinExecution／PickingTask owner，尚不能正确承载该义务。后续须先完成共享 Epoch owner 的模型、生命周期围栏、Evidence 与派发接入，禁止借用任意候选的 PickingTask 或复制一套可靠机制；本轮未实现 return_batch。
+- 新鲜临时 PostgreSQL 的批次及 prepare 唯一性回归通过；schema owner 验证新 HEAD／索引 predicate，并通过 `alembic check`。独立复评 CLEAR；最终 QUALITY 2992 passed、5 skipped，精确 7 文件 HEAVY 40 passed、0 skipped。
+- 快照与证据见 `reports/batch-repeat-snapshot.json`、`reports/batch-repeat-evidence.json`。未提交、未部署，联调服务器验证后续统一安排。
+
+## 27. WMS Operation 优先实施：Epoch 退箱批次（2026-09-06）
+
+- 已实现 `outbound.bin.return_batch@v1` 的 typed SDK、严格 wire、固定 Adapter 和可靠派发，调用 WMS `POST /api/v1/wes/decisions`。候选为 1–4 个连续编号且唯一的 Bin；READY 只接受候选 FIFO 前缀，目标必须匹配冻结 rack/face，储位不得重复；face 保持 1–10 字符。
+- 共享 WmsConfirmation 增加 Epoch owner，迁移 `5098dc1b2b63` 保持四类 owner 恰选一及公开 operation identity 唯一。创建、派发和响应处理均必须绑定活动 Epoch；关闭前必须排空业务及物理执行并闭合可靠义务。异常关闭后的义务保留原身份进入对账，禁止继续派发或转交新 Epoch。未闭合义务进入 Epoch 关闭、WorkLine 未完成负载与活动对象围栏。
+- 响应 Evidence 绑定 Epoch。READY／NO_BATCH 均结束本次义务，NO_BATCH 不进入 MaterialExecution 后继队列；未来重求值时机、真实 FIFO 候选、容量、Transport 及物理闭合由插件负责，本切片不实现业务触发。
+- inbound／return 复用 `BinBatchNoBatch`，旧 SDK 名称直接移除；Picking outcome 共用严格 JSON Pointer 校验。独立评审发现的 ORM 缓存竞争已通过双事务 RED→GREEN 修复，锁定读取刷新 Epoch 状态，禁止并发关闭后新建义务。
+- 独立复评 CLEAR；聚焦验证 762 passed，QUALITY 3018 passed、5 skipped。精确 selector 的 23 文件 HEAVY 145 passed、0 skipped，包含新鲜库迁移与 `alembic check`；证据见 `reports/return-evidence.json`，范围和源码指纹见 `reports/return-scope.json`、`reports/return-snapshot.json`。
+- 后续简化已移除 `require_active` 模式开关，所有 Epoch owner 校验统一要求 ACTIVE。正常 READY／NO_BATCH 使用真实 HTTP＋共享 service 验证；异常 CLOSED 由零插件真实 worker 验证拒绝发送。独立评审 CLEAR；本次 QUALITY 3017 passed、5 skipped，精确 15 文件 HEAVY 89 passed、0 skipped，证据见 `reports/epoch-simplify-evidence.json`。
+- 未提交、未部署、未访问联调服务器；后续统一安排 WMS 联合核实与验证。
+
+## 28. WMS Operation 优先实施：Bin 工作计划（2026-09-06）
+
+- 按主合同 §9.3 实现 `outbound.bin.work_plan@v1`：不可变 SDK intent/outcome、严格 wire、静态 Adapter 和 PickingTask owner 校验；固定调用 WMS `POST /api/v1/wes/decisions`，扫码时间原样冻结，不用发送时间替代。
+- `READY` 只接受非空且唯一的 Cell；`NO_WORK` 禁止附加业务字段；`WAIT` 保留等待参数并结束当前可靠义务，不进入 MaterialExecution 后继队列，也不自动生成新 identity。共享 HTTP、Evidence、重试与持久化机制保持复用，无新增模型或 migration。
+- 只允许已绑定 WorkLine/Epoch 的 EXECUTING PickingTask 派发。插件仍负责扫码触发、预期 Bin 匹配、最终计划唯一性、WORK_BUFFER FIFO、Cell 内 LIFO 和后续设备动作；本切片不能证明这些业务流程已经实现。
+- 主合同 §9.3 的 `bin_id` 字段表与同节正文统一：可识别但不匹配的 Bin 保存证据并冻结等待恢复，不自动进入退箱 FIFO。
+- TDD 已覆盖新增能力缺失到通过；聚焦回归 1157 passed，独立只读评审 CLEAR。最终 QUALITY 通过（FAST 3051 passed、5 skipped）；精确 selector 的 15 文件 HEAVY 77 passed、0 skipped，覆盖零插件真实 worker/HTTP 的三类结果持久化、既有 issued/prepare/plan_delta/Transport 回归。
+- 当前执行快照与验证记录见 `reports/work-plan-snapshot.json`、`reports/work-plan-evidence.json`、`reports/work-plan-quality.log`、`reports/work-plan-heavy.log`。未提交、未部署、未访问联调服务器；WMS 联合核实与插件业务验收后续统一安排。
+
+## 29. WMS Operation 优先实施：货架离场决策（2026-09-06）
+
+- 按主合同 §9.4 实现 `outbound.rack.departure_decide@v1`：不可变 SDK intent/outcome、严格 wire、静态 Adapter 和 PickingTask owner 校验；固定调用 WMS `POST /api/v1/wes/decisions`。请求不携带 rack_role，face 保持 1–10 字符，READY 的目的地必须不同于请求中的当前位置。
+- 允许 EXECUTING 和 EXECUTION_COMPLETED 任务请求离场，不重开任务。READY／WAIT 均结束本次可靠义务；WAIT 保留等待参数，后续新 identity 求值由插件触发，不进入 MaterialExecution 后继队列。
+- 复用共享 WmsConfirmation、HTTP、Evidence 和严格 RackPosition；arrival_report 的旧位置类直接移除，不保留别名或双通道。无新增模型或 migration。
+- 插件仍负责真实位置、未闭合设备动作／PUT／报告、CTU 与本地使用条件，以及 READY 后唯一 Transport 的创建和物理完成；本切片不实现业务触发，也不把 READY 当作搬运完成。
+- TDD 覆盖能力缺失与 owner 状态，聚焦回归 1198 passed。独立评审发现的共享持久化 HEAVY 消费者映射遗漏已修复，selector 回归 180 passed，复评 CLEAR。最终 QUALITY 通过（FAST 3092 passed、5 skipped）；最终门禁与快照记录见 `reports/departure-evidence.json`、`reports/departure-snapshot.json`。
+- 精确 selector 的 16 文件 HEAVY 80 passed、0 skipped，包含零插件真实 worker／HTTP 的 READY／WAIT 持久化、完成态任务离场，以及既有 issued／prepare／plan_delta／Transport 回归。映射修复前后本轮 manifest 与生产／HEAVY 资产未变，复用该有效执行证据。
+- 未提交、未部署、未访问联调服务器；WMS 联合核实与插件业务验收后续统一安排。
+
+## 30. WMS Operation 优先实施：出库物料决定（2026-09-06）
+
+- 按主合同 §10.2 实现 `outbound.material.decide@v1` 的不可变 SDK、严格 wire、静态 Adapter 和 EXECUTING PickingTask owner 接入，固定调用 WMS `POST /api/v1/wes/decisions`。
+- 来源为 `RACK_SLOT` 或 `BIN_CELL`，复用同域货架位置合同。出库六合一码保留 HHPN、MfrPN、Qty、DateCode、LotCode、PkgID 的 1–256 字符原文，不套用字段不同的入库六合一码，也不展开数量的 exponent 或解析日期。
+- ACCEPT 提供唯一 SLOT 和来源动作，物理准备省略／ROTATE／REPLACE 三选一；REPLACE 必须带旧架离场目的地。REJECT 的 Cell 不匹配固定 CLOSE；DirectPick 只允许 SOURCE_DONE 或 MATERIAL_REJECTED／CLOSE。非法分支、字段漂移和响应 identity 不匹配保留响应证据并进入对账。
+- ACCEPT／REJECT／WAIT 均闭合本次可靠义务；WAIT 不触发 MaterialExecution 后继调度。插件仍负责锁定来源匹配、扫码台单盘串行、同一盘最终决定唯一性、业务重求值，以及换面／换架／PUT／NG 动作和物理完成。
+- 聚焦回归 1268 passed；独立只读评审 CLEAR。最终 QUALITY 通过（FAST 3151 passed、5 skipped）；精确 selector 的 17 文件 HEAVY 83 passed、0 skipped，包含零插件真实 worker／HTTP 下 ACCEPT／REJECT／WAIT 的持久化闭合，以及既有 issued／prepare／plan_delta／Transport 回归。
+- 无新增数据库模型或 migration，无兼容入口。共享 WmsConfirmation、HTTP、响应 Evidence 与既有测试装配保持复用；当前切片验证记录见 `reports/material-evidence.json`，变更面与快照见 `reports/material-scope.json`、`reports/material-snapshot.json`。
+- 未提交、未部署、未访问联调服务器；WMS 联合核实与插件业务验收后续统一安排。
+
+## 31. WMS Operation 优先实施：确定空取决定（2026-09-06）
+
+- 按主合同 §12.2 实现 `outbound.source.empty_decide@v1` 的不可变 SDK、严格 wire、静态 Adapter 和 EXECUTING PickingTask owner 接入；固定调用 WMS `POST /api/v1/wes/decisions`。复用现有 `RACK_SLOT`／`BIN_CELL` 来源类型，原样冻结设备结果的 `observed_at`，不以发送时间替代。
+- 封闭结果为 RETRY／WAIT／SOURCE_DONE，禁止嵌入替代来源或分支外字段。三类业务决定均闭合当前可靠义务；业务 RETRY 不走 HTTP 技术重试，WAIT 的等待参数保存在结果中，不触发 MaterialExecution 后继调度。
+- 插件负责确定空取证据、锁定来源匹配、RETRY 后再取原位置、WAIT 后新 identity 求值，以及 SOURCE_DONE 后来源关闭与最终决定唯一性；不以请求成功或 ACK 证明设备无料，不新增空取状态机、资源锁或替代来源机制。
+- 聚焦回归 1316 passed，selector 196 passed；独立只读评审 CLEAR。最终 QUALITY 通过（FAST 3191 passed、5 skipped）；精确 18 文件 HEAVY 86 passed、0 skipped，覆盖零插件真实 worker／HTTP 的三结果持久化与无再次 HTTP／Transport／DeviceCommand，以及既有 issued／prepare／plan_delta／Transport 回归。
+- 无新增数据库模型、migration 或兼容入口。当前范围、源码指纹和验证记录见 `reports/empty-scope.json`、`reports/empty-snapshot.json`、`reports/empty-evidence.json`。
+- 未提交、未部署、未访问联调服务器；WMS 联合核实与插件业务验收后续统一安排。
+
+## 32. Operation 发布前收敛（2026-09-06）
+
+本次交付统一 WMS 料箱业务字段为 `bin_code`，移除 NG 出口上报及专属 owner/SDK/Adapter/测试。
+Transport 对外 `container_id` 与内部 BinExecution 暂不调整；完整生命周期退役按独立简化 SPEC 推进。
+旧 NG 实施过程已移出项目，不能复用其历史测试数量作为本次交付证据。最终验证以当前提交快照为准。
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
@@ -764,7 +1039,7 @@ D1–D47 与测试 G01–G30 均已转为本设计的实施要求。没有新增
 
 **CODEX:** 独立复核验证了 Operation/插件激活耦合、generic escape hatch、prepare 所有权倒置和永久阻塞风险；测试 owner 清理问题已补入 R3-B/G26。
 
-**VERDICT:** ENG + CODEX CLEARED（2026-09-06）。当前 develop 基线的 11 项发现均已转为实施要求；未执行生产代码、测试、migration、QUALITY、HEAVY、Commit、Push、Merge 或 Deploy。
+**VERDICT:** ENG + CODEX CLEARED（2026-09-06，设计评审时点）。当时 develop 基线的 11 项发现均已转为实施要求；该 verdict 仅证明计划通过评审，后续实施与验证见第 15–17 节。
 
 评审测试清单：`/Users/kaizhou/.gstack/projects/kaizhoumasha-wes_backend/kaizhou-develop-eng-review-test-plan-20260905-235824.md`。
 实施任务产物：`/Users/kaizhou/.gstack/projects/kaizhoumasha-wes_backend/tasks-eng-review-20260905-235824.jsonl`。

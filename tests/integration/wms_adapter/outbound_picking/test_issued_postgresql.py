@@ -9,6 +9,9 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
+from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.orm import Session
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus
 from src.app.execution.models.inbound_evidence import InboundEvidenceConflict
@@ -24,6 +27,80 @@ from src.app.wms_integration.outbound_picking.services import PickingTaskIssuedS
 from src.core.uuid7 import new_uuid7
 
 pytest_plugins = ("tests.integration.conftest",)
+
+
+@pytest.mark.asyncio
+async def test_invalid_issued_is_recorded_replayed_and_requires_new_identity_to_correct(integration_session_factory):
+    operation_id, corrected_id = new_uuid7(), new_uuid7()
+    task_id = f"PICK-{new_uuid7()}"
+    identities = [f"{PICKING_TASK_ISSUED_OPERATION}:{value}" for value in (operation_id, corrected_id)]
+    handler = PickingTaskIssuedHandler(PickingTaskIssuedService(integration_session_factory))
+    valid = _event(operation_id, task_id=task_id, dispatch_sequence=_dispatch_sequence()).model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    invalid = {**valid, "data": {**valid["data"], "not_before": None}}
+    try:
+        first, replay = await asyncio.gather(handler.handle(invalid), handler.handle(invalid))
+        assert first.http_status == replay.http_status == 422
+        assert first.body == replay.body
+        assert first.body["data"] == {"reason_code": "INVALID_DATA"}
+        async with integration_session_factory() as db:
+            evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.source_identity == identities[0]))
+            assert evidence.apply_status == InboundEvidenceApplyStatus.IGNORED
+            assert evidence.normalized_payload == invalid
+            assert (
+                await db.scalar(select(func.count()).select_from(PickingTask).where(PickingTask.task_id == task_id))
+                == 0
+            )
+        conflict = await handler.handle(valid)
+        assert conflict.http_status == 409
+        assert conflict.body["data"] == {"reason_code": "IDEMPOTENCY_CONFLICT"}
+        corrected = {**valid, "operation_id": corrected_id}
+        assert (await handler.handle(corrected)).http_status == 202
+        # Explicit null must not collide with the legal omitted field, in either order.
+        null_drift = await handler.handle({**invalid, "operation_id": corrected_id})
+        assert null_drift.http_status == 409
+        assert null_drift.body["data"] == {"reason_code": "IDEMPOTENCY_CONFLICT"}
+        assert (await handler.handle(corrected)).http_status == 200
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(InboundEvidenceConflict).where(InboundEvidenceConflict.source_identity.in_(identities))
+            )
+            await db.execute(delete(PickingTask).where(PickingTask.task_id == task_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.in_(identities)))
+
+
+@pytest.mark.asyncio
+async def test_invalid_issued_commit_failure_has_no_rejection_ack_or_evidence(integration_session_factory):
+    class RejectCommitSession(Session):
+        pass
+
+    @sqlalchemy_event.listens_for(RejectCommitSession, "before_commit")
+    def fail_commit(session):
+        session.flush()
+        raise RuntimeError("injected commit failure")
+
+    operation_id = new_uuid7()
+    identity = f"{PICKING_TASK_ISSUED_OPERATION}:{operation_id}"
+    invalid = _event(operation_id, task_id=f"PICK-{new_uuid7()}", dispatch_sequence=_dispatch_sequence()).model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    invalid["data"]["queue_revision"] = 2
+    failing_factory = async_sessionmaker(integration_session_factory.kw["bind"], sync_session_class=RejectCommitSession)
+    handler = PickingTaskIssuedHandler(PickingTaskIssuedService(failing_factory))
+    try:
+        response = await handler.handle(invalid)
+        assert response.http_status == 503
+        async with integration_session_factory() as db:
+            assert await db.scalar(select(InboundEvidence).where(InboundEvidence.source_identity == identity)) is None
+        retry = await PickingTaskIssuedHandler(PickingTaskIssuedService(integration_session_factory)).handle(invalid)
+        assert retry.http_status == 422
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity == identity))
 
 
 def _dispatch_sequence() -> int:

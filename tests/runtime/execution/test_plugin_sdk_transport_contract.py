@@ -79,12 +79,12 @@ def test_sdk_accepts_only_approved_rack_move_edges(source: object, target: objec
     assert decision.rcs_template_id is template
 
 
-@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 1000])
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_sdk_preserves_any_non_empty_face_string(face: str) -> None:
     assert _decision(TransportZonePosition("zone-1"), TransportRackPosition("work"), face=face).target_face == face
 
 
-@pytest.mark.parametrize("face", ["", "\x00", "\ud800", None, 90, True])
+@pytest.mark.parametrize("face", ["", "\x00", "\ud800", "x" * 11, "面" * 11, None, 90, True])
 def test_sdk_rejects_invalid_face(face: object) -> None:
     with pytest.raises((TypeError, ValueError), match="target_face"):
         _decision(TransportZonePosition("zone-1"), TransportRackPosition("work"), face=face)

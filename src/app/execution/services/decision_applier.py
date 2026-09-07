@@ -10,7 +10,6 @@ from wes_plugin_sdk import (
     CompleteExecution,
     CreateDeviceCommand,
     CreateTransportTask,
-    CreateWmsConfirmation,
     FactReference,
     PauseForReconciliation,
     TransportRackPosition,
@@ -18,13 +17,21 @@ from wes_plugin_sdk import (
     TransportZonePosition,
     Wait,
 )
+from wes_plugin_sdk.wms_types import (
+    AdmissionIntent,
+    InboundWmsIntent,
+    NgPlacementIntent,
+    PlacementIntent,
+    ReplacementPlanIntent,
+    TargetIntent,
+)
 
 from src.app.device.contracts import DeviceCommandRequest
+from src.app.execution.config import WMS_CONFIRMATION_DISPATCH_WINDOW
 from src.app.execution.models import InboundEvidence, MaterialExecution, TransportDecisionBinding
 from src.app.execution.models.material_execution import MaterialExecutionStatus
 from src.app.execution.repositories import transport_decision_binding_repository
 from src.app.execution.services.wms_confirmation_service import (
-    WMS_CONFIRMATION_DISPATCH_WINDOW,
     WmsConfirmationIdentityConflictResult,
 )
 from src.app.transport.contracts import (
@@ -35,7 +42,7 @@ from src.app.transport.contracts import (
     TransportExecutionAuthority,
     ZonePosition,
 )
-from src.app.wms_adapter.inbound_wire import parse_outbound_request
+from src.app.wms_adapter.inbound_material.typed import encode_request
 from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
@@ -103,7 +110,11 @@ class MaterialExecutionServicePort(Protocol):
 _DECISION_DISCRIMINATORS: dict[type[object], str] = {
     Wait: "WAIT",
     CreateDeviceCommand: "CREATE_DEVICE_COMMAND",
-    CreateWmsConfirmation: "CREATE_WMS_CONFIRMATION",
+    AdmissionIntent: "INBOUND_MATERIAL_ADMISSION_DECIDE",
+    TargetIntent: "INBOUND_MATERIAL_TARGET_DECIDE",
+    PlacementIntent: "INBOUND_MATERIAL_PLACEMENT_REPORT",
+    NgPlacementIntent: "INBOUND_MATERIAL_NG_PLACEMENT_REPORT",
+    ReplacementPlanIntent: "INBOUND_SOURCE_RACK_REPLACEMENT_PLAN_DECIDE",
     CreateTransportTask: "CREATE_TRANSPORT_TASK",
     PauseForReconciliation: "PAUSE_FOR_RECONCILIATION",
     CompleteExecution: "COMPLETE_EXECUTION",
@@ -213,7 +224,7 @@ class DecisionApplier:
             return
         if type(decision) is CreateDeviceCommand:
             await self._create_device_command(db, evidence, execution, ordinal, decision, now)
-        elif type(decision) is CreateWmsConfirmation:
+        elif isinstance(decision, InboundWmsIntent):
             await self._create_wms_confirmation(db, evidence, execution, decision, now)
         elif type(decision) is CreateTransportTask:
             await self._create_transport_task(db, evidence, execution, decision)
@@ -264,21 +275,14 @@ class DecisionApplier:
         db: object,
         evidence: InboundEvidence,
         execution: MaterialExecution,
-        decision: CreateWmsConfirmation,
+        decision: InboundWmsIntent,
         now: datetime,
     ) -> None:
         timestamp = int(timezone.to_utc(evidence.received_at).timestamp() * 1000)
-        request_payload = parse_outbound_request(
-            {
-                "operation": decision.operation,
-                "operation_id": decision.operation_id,
-                "timestamp": timestamp,
-                "data": decision.request_data,
-            }
-        ).model_dump(mode="json", exclude_none=True)
+        request_payload = encode_request(decision, timestamp=timestamp)
         result = await self._wms_confirmations.create_or_get(
             db,
-            operation=decision.operation,
+            operation=request_payload["operation"],
             operation_id=decision.operation_id,
             material_execution_id=cast("int", execution.id),
             request_payload=request_payload,

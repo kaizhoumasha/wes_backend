@@ -5,6 +5,15 @@ from enum import StrEnum
 
 from .decisions import DevicePosition
 from .validation import validate_required_text as _required
+from .wms_types import (
+    AdmissionOutcome,
+    NgPlacementOutcome,
+    PickingTaskPrepareOutcome,
+    PlacementOutcome,
+    ReplacementPlanOutcome,
+    TargetOutcome,
+    WmsOperationOutcome,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,10 +36,20 @@ class EvidenceReadyFact(FactReference):
 @dataclass(frozen=True, slots=True)
 class WmsResultReadyFact(FactReference):
     operation_id: str
+    outcome: WmsOperationOutcome
 
     def __post_init__(self) -> None:
         FactReference.__post_init__(self)
         _required(self.operation_id, "operation_id")
+        if type(self.outcome) not in (
+            AdmissionOutcome,
+            TargetOutcome,
+            ReplacementPlanOutcome,
+            PlacementOutcome,
+            NgPlacementOutcome,
+            PickingTaskPrepareOutcome,
+        ):
+            raise TypeError("outcome must be a typed WMS operation outcome")
 
 
 @dataclass(frozen=True, slots=True)

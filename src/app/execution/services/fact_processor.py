@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
-from wes_plugin_sdk import CreateWmsConfirmation, DeferExecution, FactReference
+from wes_plugin_sdk import DeferExecution, FactReference
+from wes_plugin_sdk.wms_types import InboundWmsIntent
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -188,7 +189,7 @@ class FactProcessor:
             evidence.decision_claim_expires_at = None
             evidence.decision_next_attempt_at = None
             await self._evidences.flush(db)
-            return any(type(decision) is CreateWmsConfirmation for decision in current_decisions)
+            return any(isinstance(decision, InboundWmsIntent) for decision in current_decisions)
 
     async def _record_failure(self, evidence_id: int, token: str) -> None:
         now = self._clock()

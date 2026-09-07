@@ -385,10 +385,10 @@ WES 固定保存实际发送的完整 UTF-8 JSON 请求体及其 `request_body_d
 
 ### 5.1 固定入口
 
-| 方向 | 方法与路径 | operation | 模式 |
-| --- | --- | --- | --- |
-| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.member_position_changed@v1` | 逐箱位置事实 + 持久化后 ACK |
-| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.resulted@v1` | 最终结果 + 持久化后 ACK |
+| 方向 | 方法与路径 | operation | `ack_mode` | `ack_commit_facts` |
+| --- | --- | --- | --- | --- |
+| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.member_position_changed@v1` | `EVIDENCE_ACCEPTED` | 消息收据与逐箱位置 Evidence |
+| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.resulted@v1` | `EVIDENCE_ACCEPTED` | 消息收据、结果版本身份与最终结果 Evidence |
 
 两类回调均复用 `docs/contracts/wms-async-callback-envelope-contract.md` 定义的 WMS 异步回调统一信封；本 Transport
 operation 另外固定 `256 KiB` Body 上限。
@@ -520,8 +520,8 @@ results[] {
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
 料箱任务不回传可由 `results[]` 推导的任务总状态；货架任务的顶层 `status` 就是唯一对象结果，不形成第二份聚合状态。
 
-`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是非空且不含 NUL 的 UTF-8 string。
-除 NUL 外不定义字符内容或长度限制；该边界保证值可进入 PostgreSQL `TEXT`，HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
+`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是长度 `1..10` 个 Unicode code point 且不含 NUL 的 UTF-8 string。
+持久化列使用 PostgreSQL `VARCHAR(10)`，超长值拒绝且不得截断；HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
 WES/WMS/RCS 对解析后的 string 原样传递，不做 trim、case folding、
 Unicode normalization、A/B 转换、角度计算或容差处理。CTU03 未指定 `target_face` 时记录实际 `arrival_face` 且不比较目标朝向；
 任何已指定的目标面都必须与 `arrival_face` 精确相等。缺少应有

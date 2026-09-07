@@ -16,15 +16,11 @@ from wes_plugin_sdk import (
     EvidenceReadyFact,
     FactReference,
     TransportRackPosition,
-    TransportRackReference,
     TransportResultReadyFact,
-    TransportZonePosition,
-    WmsResultReadyFact,
 )
 
 from rough_sorter.facts import (
     DeviceStep,
-    RackMoveLegPlan,
 )
 
 if TYPE_CHECKING:
@@ -60,10 +56,9 @@ def base_fact_for_persisted_evidence(
             material_trace_id=execution.material_trace_id,
         )
     if evidence.kind == InboundEvidenceKind.WMS_RESULT:
-        return WmsResultReadyFact(
-            **common,
-            operation_id=required_string(evidence.operation_id, "evidence.operation_id"),
-        )
+        from dataclasses import replace
+
+        return replace(FactBuilder().build(evidence, execution), fact_id=fact_id)
     if evidence.kind == InboundEvidenceKind.WMS_EVENT:
         return FactBuilder().build(evidence, execution)
     if evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT:
@@ -99,60 +94,12 @@ def bound_position(snapshot: Any, role: str, material_trace_id: str) -> DevicePo
     return DevicePosition(binding.location_id, binding.location_type, material_trace_id)
 
 
-def wire_position(value: object, material_trace_id: str, expected_type: str) -> DevicePosition:
-    if not isinstance(value, dict):
-        raise TypeError("WMS position 必须是对象")
-    wire_type = value.get("type")
-    if expected_type == "RACK_CELL":
-        if wire_type != "ONE_LAYER_BIN_CELL" or set(value) != {
-            "type",
-            "rack_id",
-            "rack_slot_code",
-            "bin_id",
-            "bin_cell_id",
-        }:
-            raise ValueError("WMS target_position 必须是严格 ONE_LAYER_BIN_CELL")
-        return DevicePosition(
-            location_id=required_string(value.get("bin_cell_id"), "bin_cell_id"),
-            location_type="RACK_CELL",
-            material_trace_id=material_trace_id,
-            rack_id=required_string(value.get("rack_id"), "rack_id"),
-            rack_slot_code=required_string(value.get("rack_slot_code"), "rack_slot_code"),
-            bin_id=required_string(value.get("bin_id"), "bin_id"),
-            bin_cell_id=required_string(value.get("bin_cell_id"), "bin_cell_id"),
-        )
-    expected_wire = "NG_POSITION" if expected_type == "NG_POSITION" else "HANDOFF_POSITION"
-    if wire_type != expected_wire or set(value) != {"type", "location_code"}:
-        raise ValueError(f"WMS position 必须是严格 {expected_wire}")
-    return DevicePosition(
-        location_id=required_string(value.get("location_code"), "location_code"),
-        location_type=expected_type,
-        material_trace_id=material_trace_id,
-    )
-
-
-def rack_move_plan(value: object) -> Any:
-    data = strict_object(value, {"rack_id", "source", "target", "target_face"}, "rack move plan")
-    source = strict_object(data["source"], {"kind", "location_code"}, "rack move source")
-    target = strict_object(data["target"], {"kind", "location_code"}, "rack move target")
-    position_types = {
-        "RACK": TransportRackReference,
-        "ZONE": TransportZonePosition,
-        "RACK_POSITION": TransportRackPosition,
-    }
-    source_type = position_types.get(source["kind"])
-    target_type = position_types.get(target["kind"])
-    if source_type is None or target_type is None:
-        raise ValueError("rack move source/target kind 非法")
-    target_face = data["target_face"]
-    if type(target_face) is not str or target_face == "":
-        raise ValueError("target_face 必须是非空 string")
-    return RackMoveLegPlan(
-        rack_id=required_string(data["rack_id"], "rack_id"),
-        source=source_type(required_string(source["location_code"], "source.location_code")),
-        target=target_type(required_string(target["location_code"], "target.location_code")),
-        target_face=target_face,
-    )
+def wire_position(value: DevicePosition, material_trace_id: str, expected_type: str) -> DevicePosition:
+    if not isinstance(value, DevicePosition):
+        raise TypeError("WMS position 必须是 typed DevicePosition")
+    if value.material_trace_id != material_trace_id or value.location_type != expected_type:
+        raise ValueError("WMS position identity/type 不匹配")
+    return value
 
 
 def transport_rack_position(value: object) -> TransportRackPosition:
@@ -176,12 +123,12 @@ def device_position(value: object, material_trace_id: str) -> DevicePosition:
 def command_position(value: object, material_trace_id: str) -> DevicePosition:
     data = strict_object(
         value,
-        {"location_id", "location_type", "material_trace_id", "rack_id", "rack_slot_code", "bin_id", "bin_cell_id"},
+        {"location_id", "location_type", "material_trace_id", "rack_id", "rack_slot_code", "bin_code", "bin_cell_id"},
         "DeviceCommand position",
     )
     if data["material_trace_id"] != material_trace_id:
         raise ValueError("DeviceCommand position trace 不匹配")
-    for field_name in ("rack_id", "rack_slot_code", "bin_id", "bin_cell_id"):
+    for field_name in ("rack_id", "rack_slot_code", "bin_code", "bin_cell_id"):
         item = data[field_name]
         if item is not None and (not isinstance(item, str) or not item.strip()):
             raise ValueError(f"DeviceCommand position {field_name} 非法")
@@ -191,7 +138,7 @@ def command_position(value: object, material_trace_id: str) -> DevicePosition:
         material_trace_id=material_trace_id,
         rack_id=cast("str | None", data["rack_id"]),
         rack_slot_code=cast("str | None", data["rack_slot_code"]),
-        bin_id=cast("str | None", data["bin_id"]),
+        bin_code=cast("str | None", data["bin_code"]),
         bin_cell_id=cast("str | None", data["bin_cell_id"]),
     )
 
@@ -247,12 +194,6 @@ def strict_object(value: object, keys: set[str], field_name: str) -> dict[str, A
 def required_string(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} 必须是非空字符串")
-    return value
-
-
-def positive_int(value: object, field_name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"{field_name} 必须是正整数")
     return value
 
 

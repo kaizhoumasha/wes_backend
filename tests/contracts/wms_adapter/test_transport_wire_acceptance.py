@@ -79,7 +79,7 @@ def _rack_result_data(**overrides: object) -> dict[str, object]:
     return data
 
 
-@pytest.mark.parametrize("arrival_face", ["270", "FACE@01", "面-1", " ", "x" * 1000])
+@pytest.mark.parametrize("arrival_face", ["270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_rack_callback_preserves_any_non_empty_face_string(arrival_face: str) -> None:
     envelope = _envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face))
 
@@ -88,7 +88,12 @@ def test_rack_callback_preserves_any_non_empty_face_string(arrival_face: str) ->
 
 @pytest.mark.parametrize(
     ("arrival_face", "expected_message"),
-    [("\x00", "arrival_face must not contain NUL"), ("\ud800", "arrival_face must be valid UTF-8")],
+    [
+        ("\x00", "arrival_face must not contain NUL"),
+        ("\ud800", "arrival_face must be valid UTF-8"),
+        ("x" * 11, "10"),
+        ("面" * 11, "10"),
+    ],
 )
 def test_rack_callback_rejects_invalid_face(arrival_face: str, expected_message: str) -> None:
     with pytest.raises(TransportContractError, match=expected_message):

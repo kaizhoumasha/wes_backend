@@ -108,3 +108,14 @@ def test_debug_run_contract_rejects_a_bin_selected_on_multiple_faces() -> None:
                 _group("270", _bin("BIN-1", "SLOT-2")),
             ),
         )
+
+
+@pytest.mark.parametrize("face", ["x" * 10, "面" * 10])
+def test_debug_face_group_accepts_ten_characters(face: str) -> None:
+    assert _group(face, _bin("BIN-1", "SLOT-1")).face == face
+
+
+@pytest.mark.parametrize("face", ["x" * 11, "面" * 11])
+def test_debug_face_group_rejects_eleven_characters(face: str) -> None:
+    with pytest.raises(ValueError, match="10"):
+        _group(face, _bin("BIN-1", "SLOT-1"))

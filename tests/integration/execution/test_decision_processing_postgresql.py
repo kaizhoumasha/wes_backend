@@ -67,6 +67,7 @@ from src.app.workline.models import (
     WorkLine,
 )
 from src.app.workline.models.workline import LineType
+from src.core.uuid7 import new_uuid7
 
 
 @pytest.mark.asyncio
@@ -687,7 +688,22 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.APPLIED,
         )
-        db.add_all([foundation, correlated])
+        plan_evidences = [
+            InboundEvidence(
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=f"CLAIM-PLAN-{identity}-{state.value}",
+                payload_digest="3" * 64,
+                normalized_payload={"data": {}},
+                operation="outbound.picking_task.plan_delta@v1",
+                operation_id=new_uuid7(),
+                received_at=now,
+                line_run_epoch_id=None,
+                material_execution_id=None,
+                apply_status=state,
+            )
+            for state in InboundEvidenceApplyStatus
+        ]
+        db.add_all([foundation, correlated, *plan_evidences])
         await db.flush()
         seed_id = seed.id
         execution_id = execution.id
@@ -709,6 +725,9 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             delete(InboundEvidence).where(
                 InboundEvidence.source_identity.in_([f"CLAIM-FOUNDATION-{identity}", f"CLAIM-CORRELATED-{identity}"])
             )
+        )
+        await db.execute(
+            delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"CLAIM-PLAN-{identity}-%"))
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == seed_id))

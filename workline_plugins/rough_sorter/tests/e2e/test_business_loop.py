@@ -264,7 +264,7 @@ class _WmsStubHandler(_JsonHandler):
                         "type": "ONE_LAYER_BIN_CELL",
                         "rack_id": self.state.assigned_target_rack_id,
                         "rack_slot_code": "SLOT-1",
-                        "bin_id": "BIN-1",
+                        "bin_code": "BIN-1",
                         "bin_cell_id": "CELL-1",
                     },
                     "placement_sequence": 1,

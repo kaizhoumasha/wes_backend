@@ -435,7 +435,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
             run.run_id,
             transport,
             storage_position="WH01-01",
-            arrival_face_override="RCS_SELECTED",
+            arrival_face_override="RCS_CHOSEN",
         )
         assert await service.advance_run(run.run_id) is True
         assert (await service.get_run(run.run_id)).status == "COMPLETED"

@@ -39,9 +39,6 @@ OUTBOUND_OPERATIONS = frozenset(
 )
 DECISION_OPERATIONS = frozenset({ADMISSION_OPERATION, TARGET_OPERATION, REPLACEMENT_PLAN_OPERATION})
 FACT_OPERATIONS = frozenset({PLACEMENT_OPERATION, NG_PLACEMENT_OPERATION})
-DECISION_PATH = "/api/v1/wes/decisions"
-FACT_PATH = "/api/v1/wes/facts"
-MAX_INBOUND_BODY_BYTES = 256 * 1024
 
 _DECIMAL_MM_PATTERN = r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
 
@@ -105,7 +102,7 @@ class OneLayerBinCell(_StrictModel):
     type: Literal["ONE_LAYER_BIN_CELL"]
     rack_id: Identifier
     rack_slot_code: Identifier
-    bin_id: Identifier
+    bin_code: Identifier
     bin_cell_id: Identifier
 
 
@@ -261,7 +258,7 @@ class RackMovePlan(_StrictModel):
     rack_id: Identifier
     source: RackMovePosition
     target: RackMovePosition
-    target_face: Annotated[str, Field(min_length=1, pattern=r"^[^\x00]+$")]
+    target_face: Annotated[str, Field(min_length=1, max_length=10, pattern=r"^[^\x00]+$")]
 
     @model_validator(mode="after")
     def validate_rack_reference_identity(self) -> RackMovePlan:
@@ -444,10 +441,7 @@ def _reject_explicit_null(value: Any, field_name: str) -> Any:
 __all__ = [
     "ADMISSION_OPERATION",
     "DECISION_OPERATIONS",
-    "DECISION_PATH",
     "FACT_OPERATIONS",
-    "FACT_PATH",
-    "MAX_INBOUND_BODY_BYTES",
     "NG_PLACEMENT_OPERATION",
     "OUTBOUND_OPERATIONS",
     "PLACEMENT_OPERATION",

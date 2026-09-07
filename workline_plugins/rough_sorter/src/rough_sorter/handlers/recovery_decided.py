@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from wes_plugin_sdk import (
+    AdmissionIntent,
     CompleteExecution,
     CreateDeviceCommand,
-    CreateWmsConfirmation,
     DeferExecution,
     EpochConfigurationSnapshot,
+    InboundWmsIntent,
+    NgPlacementIntent,
+    PlacementIntent,
+    ReplacementPlanIntent,
+    TargetIntent,
     handler,
 )
 
@@ -20,14 +25,11 @@ from rough_sorter.facts import (
 )
 from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
 
-_POSITION_WMS_OPERATIONS = {
-    "MEASUREMENT_POSITION": {"inbound.material.admission_decide@v1"},
-    "PIPELINE_OUTLET": {
-        "inbound.material.target_decide@v1",
-        "inbound.source_rack.replacement_plan_decide@v1",
-    },
-    "RACK_CELL": {"inbound.material.placement_report@v1"},
-    "NG_POSITION": {"inbound.material.ng_placement_report@v1"},
+_POSITION_WMS_INTENTS = {
+    "MEASUREMENT_POSITION": (AdmissionIntent,),
+    "PIPELINE_OUTLET": (TargetIntent, ReplacementPlanIntent),
+    "RACK_CELL": (PlacementIntent,),
+    "NG_POSITION": (NgPlacementIntent,),
 }
 
 _DEVICE_RECOVERY_TOPOLOGY = {
@@ -48,7 +50,7 @@ class RecoveryDecidedHandler:
     def __call__(
         self,
         fact: RecoveryDecidedFact,
-    ) -> tuple[CompleteExecution | CreateDeviceCommand | CreateWmsConfirmation | DeferExecution]:
+    ) -> tuple[CompleteExecution | CreateDeviceCommand | InboundWmsIntent | DeferExecution]:
         snapshot = fact.runtime_snapshot
         execution = require_execution(
             snapshot.execution,
@@ -84,19 +86,16 @@ class RecoveryDecidedHandler:
         raise TypeError("CONTINUE requires a typed continuation")
 
     @staticmethod
-    def _continue_wms(fact: RecoveryDecidedFact, continuation: RecoveryWmsContinuation) -> CreateWmsConfirmation:
+    def _continue_wms(fact: RecoveryDecidedFact, continuation: RecoveryWmsContinuation) -> InboundWmsIntent:
         position = fact.authoritative_position
-        if position is None or continuation.operation not in _POSITION_WMS_OPERATIONS.get(
-            position.location_type, set()
+        if position is None or not isinstance(
+            continuation.intent, _POSITION_WMS_INTENTS.get(position.location_type, ())
         ):
             raise ValueError("WMS continuation does not match authoritative position")
-        return CreateWmsConfirmation(
-            material_execution_id=fact.material_execution_id,
-            fact_id=fact.fact_id,
-            operation=continuation.operation,
-            operation_id=continuation.operation_id,
-            request_data=continuation.request_data,
-        )
+        intent = continuation.intent
+        if intent.material_execution_id != fact.material_execution_id or intent.fact_id != fact.fact_id:
+            raise ValueError("WMS continuation fact/execution identity mismatch")
+        return intent
 
     def _continue_device(
         self,

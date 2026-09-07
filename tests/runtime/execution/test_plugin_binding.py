@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 
 import pytest
-from wes_plugin_sdk import EvidenceReadyFact, FactReference, Wait, handler
+from wes_plugin_sdk import EvidenceReadyFact, FactReference, Wait, handler, wms_operations
+from wes_plugin_sdk.wms_types import ReplacementPlanIntent
 
 from src.app.execution.plugin_binding import (
     InitialExecutionDescriptor,
@@ -87,6 +88,41 @@ def test_static_binding_resolves_exact_plugin_version_and_fact_type() -> None:
         binding.resolve_handler("rough_sorter", "1.0.1", _fact())
     with pytest.raises(LookupError):
         binding.resolve_handler("rough_sorter", "1.0.0", _fact(version="2.0"))
+
+
+def test_two_static_plugins_reuse_one_typed_operation_without_a_default_consumer() -> None:
+    def consumer(operation_id: str):
+        @handler(fact_type=EvidenceReadyFact, name="request_plan", supported_versions=("1.0",))
+        def request(fact: EvidenceReadyFact) -> tuple[ReplacementPlanIntent]:
+            return (
+                wms_operations.inbound_source_rack_replacement_plan_decide(
+                    material_execution_id=fact.material_execution_id,
+                    fact_id=fact.fact_id,
+                    operation_id=operation_id,
+                    material_trace_id="TRACE-1",
+                    current_rack_id="RACK-1",
+                ),
+            )
+
+        return request
+
+    first = consumer("019f12d0-58d7-7b4d-a23a-1b90aa5d4472")
+    second = consumer("019f12d0-58d7-7b4d-a23a-1b90aa5d4473")
+    binding = StaticPluginBinding(
+        (
+            PluginRuntimeBinding("consumer_a", "1.0", (first,), _IdentityFactFactory()),
+            PluginRuntimeBinding("consumer_b", "1.0", (second,), _IdentityFactFactory()),
+        )
+    )
+    intents = tuple(binding.resolve_handler(key, "1.0", _fact())(_fact())[0] for key in ("consumer_a", "consumer_b"))
+    assert all(type(intent) is ReplacementPlanIntent for intent in intents)
+    assert [intent.operation_id for intent in intents] == [
+        "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+    ]
+    assert all(intent.material_execution_id == _fact().material_execution_id for intent in intents)
+    with pytest.raises(LookupError):
+        binding.resolve_handler("missing", "1.0", _fact())
 
 
 def test_static_binding_rejects_duplicate_fact_route() -> None:

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from src.app.execution.config import WMS_CONFIRMATION_BATCH_LIMIT
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime, run_async
 
 if TYPE_CHECKING:
     from src.app.execution.services import WmsConfirmationService
-
-_WMS_CONFIRMATION_BATCH_LIMIT = 100
 
 
 def _current_service() -> WmsConfirmationService:
@@ -21,9 +20,9 @@ def _current_service() -> WmsConfirmationService:
 
 
 @celery_app.task(name="src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch")
-def dispatch_wms_confirmations_batch(limit: int = 100) -> int:
-    if limit != _WMS_CONFIRMATION_BATCH_LIMIT:
-        raise ValueError(f"WMS confirmation batch limit must be {_WMS_CONFIRMATION_BATCH_LIMIT}")
+def dispatch_wms_confirmations_batch(limit: int = WMS_CONFIRMATION_BATCH_LIMIT) -> int:
+    if limit != WMS_CONFIRMATION_BATCH_LIMIT:
+        raise ValueError(f"WMS confirmation batch limit must be {WMS_CONFIRMATION_BATCH_LIMIT}")
 
     async def _dispatch() -> int:
         return await _current_service().dispatch_batch(limit=limit)

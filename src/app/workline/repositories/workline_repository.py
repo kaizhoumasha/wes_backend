@@ -18,6 +18,7 @@ from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfir
 from src.app.resource.models.resource import BinPlacement, BinPlacementStatus, RackPlacement, RackPlacementStatus
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
+from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.app.workline.models import WorkLine
 from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
 from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
@@ -89,7 +90,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         db: AsyncSession,
         workline_id: int,
     ) -> dict[str, Any]:
-        """以单条 SQL 返回七类 execution owner 的准确数量与每类稳定样本。"""
+        """以单条 SQL 返回八类 execution owner 的准确数量与每类稳定样本。"""
 
         epoch = cast("Any", LineRunEpoch).__table__.c
         material = cast("Any", MaterialExecution).__table__.c
@@ -98,6 +99,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         transport = cast("Any", TransportTask).__table__.c
         evidence = cast("Any", InboundEvidence).__table__.c
         confirmation = cast("Any", WmsConfirmation).__table__.c
+        picking = cast("Any", PickingTask).__table__.c
 
         predicates = {
             "line_run_epochs": and_(
@@ -145,16 +147,38 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                     evidence.apply_status == InboundEvidenceApplyStatus.APPLIED,
                     evidence.published_at.is_(None),
                     ~and_(
-                        evidence.kind == InboundEvidenceKind.DEVICE_RESULT,
                         evidence.material_execution_id.is_(None),
+                        or_(
+                            evidence.kind == InboundEvidenceKind.DEVICE_RESULT,
+                            and_(
+                                evidence.kind == InboundEvidenceKind.WMS_RESULT,
+                                evidence.id.in_(
+                                    select(confirmation.response_evidence_id).where(
+                                        confirmation.line_run_epoch_id == epoch.id,
+                                        confirmation.status == WmsConfirmationStatus.COMPLETED,
+                                    )
+                                ),
+                            ),
+                        ),
                     ),
                 ),
             ),
         )
         unfinished_confirmation = and_(
-            material.workline_id == workline_id,
-            confirmation.material_execution_id == material.id,
             confirmation.status != WmsConfirmationStatus.COMPLETED,
+            or_(
+                confirmation.material_execution_id.in_(select(material.id).where(material.workline_id == workline_id)),
+                confirmation.picking_task_id.in_(select(picking.id).where(picking.workline_id == workline_id)),
+                confirmation.line_run_epoch_id.in_(select(epoch.id).where(epoch.workline_id == workline_id)),
+            ),
+        )
+        # prepare 的确认完成不等于 PickingTask 闭合；计划阻塞也不能因任务阶段改变而解除围栏。
+        unfinished_picking = and_(
+            picking.workline_id == workline_id,
+            or_(
+                picking.status.in_((PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING)),
+                picking.plan_blocked_evidence_id.is_not(None),
+            ),
         )
 
         owner_union = union_all(
@@ -222,7 +246,16 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 confirmation.status,
                 confirmation.operation_id,
                 unfinished_confirmation,
-                from_models=(WmsConfirmation, MaterialExecution),
+                from_models=(WmsConfirmation,),
+            ),
+            self._sample_query(
+                8,
+                "picking_tasks",
+                "picking_task",
+                picking.id,
+                picking.status,
+                picking.task_id,
+                unfinished_picking,
             ),
         ).subquery("unfinished_owner_candidates")
         ranked = select(
@@ -254,6 +287,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             "transport_tasks",
             "inbound_evidences",
             "wms_confirmations",
+            "picking_tasks",
         )
         by_type = dict.fromkeys(owner_keys, 0)
         samples: dict[str, dict[str, str]] = {}
@@ -362,6 +396,17 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 confirmation.material_execution_id == material.id,
                 confirmation.status != WmsConfirmationStatus.COMPLETED,
                 from_models=(WmsConfirmation, MaterialExecution),
+            ),
+            self._active_object_query(
+                "WMS_CONFIRMATION",
+                confirmation.operation_id,
+                "WMS_CONFIRMATION",
+                confirmation.operation,
+                literal("wms_confirmation:") + sa_cast(confirmation.id, String),
+                epoch.workline_id == workline_id,
+                confirmation.line_run_epoch_id == epoch.id,
+                confirmation.status != WmsConfirmationStatus.COMPLETED,
+                from_models=(WmsConfirmation, LineRunEpoch),
             ),
             self._active_object_query(
                 "SAFETY_INCIDENT",

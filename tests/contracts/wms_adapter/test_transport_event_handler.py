@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES, TransportEventHandler
+from src.app.wms_adapter.transport_event_handler import TransportEventHandler
+from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES
 
 
 class FakeRecorder:
@@ -114,7 +115,7 @@ async def test_handler_rejects_oversized_or_non_closed_json_without_persisting()
     recorder = FakeRecorder()
     handler = TransportEventHandler(recorder)
 
-    oversized = await handler.handle(b"x" * (MAX_TRANSPORT_EVENT_BODY_BYTES + 1))
+    oversized = await handler.handle(b"x" * (MAX_WMS_EVENT_BODY_BYTES + 1))
     unknown = await handler.handle(
         _body(
             "transport.task.member_position_changed@v1",
@@ -145,11 +146,11 @@ async def test_handler_accepts_a_valid_body_at_exactly_256_kib() -> None:
             "milestone": "SOURCE_PICKED",
         },
     )
-    exact_body = body + b" " * (MAX_TRANSPORT_EVENT_BODY_BYTES - len(body))
+    exact_body = body + b" " * (MAX_WMS_EVENT_BODY_BYTES - len(body))
 
     response = await handler.handle(exact_body)
 
-    assert len(exact_body) == MAX_TRANSPORT_EVENT_BODY_BYTES
+    assert len(exact_body) == MAX_WMS_EVENT_BODY_BYTES
     assert response.http_status == 202
     assert recorder.calls[0]["operation_id"] == "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
 
@@ -386,7 +387,7 @@ async def test_preassociation_rejections_have_an_empty_body(raw_body: bytes) -> 
 
 @pytest.mark.asyncio
 async def test_oversized_preassociation_rejection_has_an_empty_body() -> None:
-    response = await TransportEventHandler(FakeRecorder()).handle(b"x" * (MAX_TRANSPORT_EVENT_BODY_BYTES + 1))
+    response = await TransportEventHandler(FakeRecorder()).handle(b"x" * (MAX_WMS_EVENT_BODY_BYTES + 1))
 
     assert (response.http_status, response.body) == (413, {})
 

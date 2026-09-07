@@ -8,6 +8,8 @@ from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from scripts import generate_legacy_matrix
 from scripts.generate_legacy_matrix import parse_entries
 
@@ -105,7 +107,7 @@ def test_retired_phase5_business_carriers_are_absent_from_generator_and_ledgers(
     assert ledger_paths.isdisjoint(retired_paths)
 
 
-def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> None:
+def test_completed_business_carriers_leave_matrix_but_keep_absence_evidence() -> None:
     rows = _matrix_rows()
     ledger_rows = _ledger_rows()
     phase4_carriers = [row for row in rows if row["phase4_carrier"].lower() == "true"]
@@ -118,15 +120,10 @@ def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> Non
         or not row["blocking_tests"]
     ]
 
-    assert phase4_carriers, "expected phase4 carriers in legacy-cleanup matrix"
     assert invalid_rows == []
-    matrix_by_entry_id = {row["entry_id"]: row for row in phase4_carriers}
-    ledger_by_entry_id = {row["entry_id"]: row for row in ledger_rows}
-    assert matrix_by_entry_id.keys() == ledger_by_entry_id.keys()
-    assert all(
-        matrix_by_entry_id[entry_id]["business_semantics"] == ledger_row["business_semantics"]
-        for entry_id, ledger_row in ledger_by_entry_id.items()
-    )
+    assert ledger_rows
+    assert {row["entry_id"] for row in phase4_carriers}.isdisjoint(row["entry_id"] for row in ledger_rows)
+    assert all(not (REPO_ROOT / row["relative_path"]).exists() for row in ledger_rows)
 
     unresolved_targets: list[str] = []
     for row in ledger_rows:
@@ -145,3 +142,45 @@ def test_business_carrier_rows_remain_auditable_before_business_cleanup() -> Non
             unresolved_targets.append(row["entry_id"])
 
     assert unresolved_targets == []
+
+
+def test_migrated_service_matrix_only_tracks_surviving_symbols(tmp_path: Path, monkeypatch) -> None:
+    legacy_path = "src/legacy.py"
+    impl_path = "src/current.py"
+    (tmp_path / "src").mkdir()
+    monkeypatch.setattr(generate_legacy_matrix, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(generate_legacy_matrix, "MIGRATED_SERVICE_IMPLS", {legacy_path: impl_path})
+    monkeypatch.setattr(
+        generate_legacy_matrix, "MIGRATED_SERVICE_SYMBOL_PROVENANCE", {legacy_path: ("Survivor", "Retired")}
+    )
+    rows = []
+    generate_legacy_matrix._add_migrated_service_entries(lambda *row: rows.append(row))
+    assert rows == []
+
+    (tmp_path / impl_path).write_text("class Survivor: pass\nclass NewHelper: pass\n", encoding="utf-8")
+    generate_legacy_matrix._add_migrated_service_entries(lambda *row: rows.append(row))
+    assert rows == [(legacy_path, "Survivor", "service", "workline")]
+
+    (tmp_path / legacy_path).write_text("class Retired: pass\n", encoding="utf-8")
+    rows.clear()
+    generate_legacy_matrix._add_migrated_service_entries(lambda *row: rows.append(row))
+    assert rows == [(legacy_path, "Survivor", "service", "workline"), (legacy_path, "Retired", "service", "workline")]
+
+    (tmp_path / impl_path).write_text("class Survivor:\n", encoding="utf-8")
+    with pytest.raises(SyntaxError):
+        generate_legacy_matrix._add_migrated_service_entries(lambda *row: rows.append(row))
+
+
+def test_guardrail_seeds_keep_migrated_models_and_drop_absent_sources(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(generate_legacy_matrix, "REPO_ROOT", tmp_path)
+    legacy_path = "src/app/workline/models/object_transition_event.py"
+    impl_path = tmp_path / "src/app/runtime/orchestration/models/object_transition_event.py"
+    seed = (legacy_path, "workline", "model", "跨域 session FK", "phase2", "MEDIUM")
+    entries = []
+    generate_legacy_matrix._add_guardrail_seed_entries(entries, set(), [seed])
+    assert entries == []
+
+    impl_path.parent.mkdir(parents=True)
+    impl_path.write_text("class ObjectTransitionEvent: pass\n", encoding="utf-8")
+    generate_legacy_matrix._add_guardrail_seed_entries(entries, set(), [seed])
+    assert [entry.relative_path for entry in entries] == [legacy_path]

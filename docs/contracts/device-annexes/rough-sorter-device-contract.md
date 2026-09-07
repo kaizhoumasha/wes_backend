@@ -116,7 +116,7 @@ Phase 8 只使用两个 `task_type`：
 | `location_type` | string | 是 | `MEASUREMENT_POSITION \| PIPELINE_INLET \| PIPELINE_OUTLET \| RACK_CELL \| NG_POSITION` |
 | `material_trace_id` | string | 是 | 必须与命令顶层 `params.material_trace_id` 一致 |
 
-`RACK_CELL` 还必须含 `rack_id + rack_slot_code + bin_id + bin_cell_id`，且与 WMS 当前目标决定一致。`NG_POSITION` 必须是 WMS
+`RACK_CELL` 还必须含 `rack_id + rack_slot_code + bin_code + bin_cell_id`，且与 WMS 当前目标决定一致。`NG_POSITION` 必须是 WMS
 当前业务拒绝指定且活动 Epoch 已批准的位置。设备坐标、供应商 `location_id` 别名和机械参数不得进入 WES 合同。
 
 ## 6. 自动事件闭集

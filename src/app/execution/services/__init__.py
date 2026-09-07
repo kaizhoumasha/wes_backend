@@ -29,7 +29,6 @@ from .position_projection_service import (
     position_projection_service,
 )
 from .wms_confirmation_service import (
-    WMS_CONFIRMATION_DISPATCH_WINDOW,
     WmsConfirmationAcceptance,
     WmsConfirmationFollowUp,
     WmsConfirmationFollowUpPlanner,
@@ -43,7 +42,6 @@ from .wms_confirmation_service import (
 )
 
 __all__ = [
-    "WMS_CONFIRMATION_DISPATCH_WINDOW",
     "ActiveBinExecutionExistsError",
     "ActiveMaterialExecutionExistsError",
     "BinExecutionNotActiveError",

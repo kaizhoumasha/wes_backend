@@ -131,7 +131,7 @@ WMS `ACCEPT` 后，插件按以下顺序创建既有 DeviceCommand：
 | `REJECT` | `reason_code`、`ng_destination` | 只有确定业务拒绝才进入指定 NG |
 | `WAIT` | `reason_code`、`retry_after_ms` | 料盘停留出口安全位；不自行选择 Cell |
 
-`target_position` 必须是唯一 `rack_id + rack_slot_code + bin_id + bin_cell_id`。WES 不预建、替换或本地计算 Cell。
+`target_position` 必须是唯一 `rack_id + rack_slot_code + bin_code + bin_cell_id`。WES 不预建、替换或本地计算 Cell。
 
 ## 8. placement、NG 与人工核验恢复
 
@@ -179,6 +179,14 @@ CALLBACK `FAILED` 或结果 `UNKNOWN` 不自动转 NG，统一进入 `RECONCILIN
 
 ### 8.3 `inbound.execution.recovery_decided@v1`
 
+| 合同字段 | 值 |
+| --- | --- |
+| `ack_mode` | `EVIDENCE_ACCEPTED` |
+| `ack_commit_facts` | 恢复消息 Evidence 及其接收身份；不包含人工决定的业务应用 |
+
+ACK 模式遵循[公共回调合同](wms-async-callback-envelope-contract.md#6-每个业务-operation-还要说明什么)。
+接收前的 execution/trace/evidence 围栏校验保持不变，恢复决定由后续事务应用，不能以 ACK 推断已恢复执行。
+
 WMS 人工核对业务主账与现场事实后，通过公共 WMS→WES 异步回调信封发送：
 
 | `data` 字段 | JSON 类型 | 必填 | 可空 | 约束 |
@@ -208,7 +216,7 @@ WES 只在 execution 仍为 `RECONCILING`，且公开 `reconciling_evidence_id` 
 
 | `type` | 完整字段 | JSON 类型 | 可空 | 约束 |
 | --- | --- | --- | --- | --- |
-| `ONE_LAYER_BIN_CELL` | `type`、`rack_id`、`rack_slot_code`、`bin_id`、`bin_cell_id` | 全部 string | 否 | 单层货架唯一目标 Cell |
+| `ONE_LAYER_BIN_CELL` | `type`、`rack_id`、`rack_slot_code`、`bin_code`、`bin_cell_id` | 全部 string | 否 | 单层货架唯一目标 Cell |
 | `HANDOFF_POSITION` | `type`、`location_code` | 全部 string | 否 | 当前 WorkLine 冻结的流水线/交接逻辑位置 |
 | `NG_POSITION` | `type`、`location_code` | 全部 string | 否 | WMS 指定且活动 Epoch 已批准的 NG 位置 |
 
@@ -233,7 +241,7 @@ new_empty_rack:  rack_id + source + target + target_face
 ```
 
 两个计划的 `source/target` 都使用 `kind + location_code`。`kind` 只允许 `RACK | ZONE | RACK_POSITION`，分别表示货架编号、区域编号和
-精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 使用 Transport 合同定义的普通非空 string。对于
+精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 使用 Transport 合同定义的 1–10 字符非空 string。对于
 `RACK` 目标，WMS/RCS
 按冻结货架编号和模板解析最终位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。回调统一返回精确
 `RACK_POSITION(location_code)`。

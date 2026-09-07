@@ -431,9 +431,9 @@ NG 按物理影响对象分为三层，不能把技术等待、资源不足或�
 Transport/PUT 结果未知都不是 NG。一次 Bin 读码不完整也不是 NG；只有按设备合同完成允许的读取重试，并明确确认“无法读出合法 Bin 编号”时，才是
 `BIN_CODE_UNREADABLE`。
 
-MATERIAL/CELL NG 继续使用单盘移动结果上报。WMS 根据前面的物料决定和 `source_locator` 判断影响范围。Bin 已确认到达 `NG_EXIT` 后统一使用
-`outbound.bin.ng_exit_report@v1`：`reason_code=SOURCE_CELL_MISMATCH` 只补充 CELL NG 后的 Bin 最终位置，不扩大业务影响范围；
-其他 Bin 原因才允许关闭或补充 BinWork。结果上报的 `operation_id` 用于重复提交保护，设备证据留在 WES；路由结果未知时不得上报。
+MATERIAL/CELL NG 继续使用单盘移动结果上报。WMS 根据前面的物料决定和 `source_locator` 判断影响范围。
+料箱 NG 使用插件独立分支记录原因及证据，通过 DeviceCommand 执行必要分流，不再提供出口上报 operation。
+正常业务退出不等待 WMS 人工业务完成，未决物理动作与资源继续按权威结果闭合。
 
 SCAN1 或 SCAN2 发现无法识别或明确需要隔离的 Bin 时，只隔离该物理 Bin 并告警，不得把预期 Bin 当成实际扫码身份，也不得直接
 关闭业务明细。WES 使用本次 `inbound_batch` 选中的 `expected_bin_id` 关联受影响来源；预期 Bin 后续实际到达 SCAN2 时，仍由

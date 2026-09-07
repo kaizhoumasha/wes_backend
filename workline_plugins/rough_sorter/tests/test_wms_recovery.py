@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from src.app.wms_adapter.inbound_wire import MAX_INBOUND_BODY_BYTES, RECOVERY_OPERATION
+from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
+from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES
 from src.utils.timezone import timezone
 
 from rough_sorter.application.wms_recovery import (
@@ -192,9 +193,9 @@ async def test_invalid_recovery_is_rejected_without_persistence() -> None:
 @pytest.mark.asyncio
 async def test_handler_enforces_preassociation_body_and_json_limits() -> None:
     recorder = _Recorder()
-    too_large = await RecoveryEventHandler(recorder).handle(b"x" * (MAX_INBOUND_BODY_BYTES + 1))
+    too_large = await RecoveryEventHandler(recorder).handle(b"x" * (MAX_WMS_EVENT_BODY_BYTES + 1))
     invalid_json = await RecoveryEventHandler(recorder).handle(b"{")
-    exact = _body() + b" " * (MAX_INBOUND_BODY_BYTES - len(_body()))
+    exact = _body() + b" " * (MAX_WMS_EVENT_BODY_BYTES - len(_body()))
     accepted = await RecoveryEventHandler(recorder).handle(exact)
 
     assert (too_large.http_status, too_large.body) == (413, {})

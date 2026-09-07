@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING, cast
 from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
-from src.app.wms_adapter.inbound_adapter import WmsInboundAdapter
+from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
+
+# Web/worker 组合根注册共享外键目标；不依赖具体插件是否安装或启用。
+from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
+from src.app.wms_integration.outbound_picking.services.picking_task_confirmation_owner import (
+    PickingTaskConfirmationOwnerService,
+)
+from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
 from src.app.workline.models.workline import LineType
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
@@ -92,9 +99,11 @@ def build_deployment_runtime(
         device_command_service=device_command_service,
         transport_service=transport_runtime.service,
         position_projection_service=transport_runtime.position_projection_service,
-        wms_confirmation_adapter=cast("WmsConfirmationAdapterPort", WmsInboundAdapter(transport_runtime.client)),
+        wms_confirmation_adapter=cast("WmsConfirmationAdapterPort", WmsConfirmationAdapter(transport_runtime.client)),
         wms_confirmation_follow_up_planner=InstalledPluginWmsFollowUpPlanner(plugins),
         task_queue_gateway=task_queue_gateway,
+        picking_task_owner=PickingTaskConfirmationOwnerService(),
+        epoch_owner=ReturnBatchOwnerService(),
     )
     recovery_handler = None
     if "rough_sorter" in enabled_plugin_keys:

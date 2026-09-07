@@ -3,19 +3,19 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from src.app.wms_adapter.inbound_wire import (
+from src.app.wms_adapter.inbound_material.wire import (
     ADMISSION_OPERATION,
-    DECISION_PATH,
-    FACT_PATH,
     NG_PLACEMENT_OPERATION,
     PLACEMENT_OPERATION,
     RECOVERY_OPERATION,
     REPLACEMENT_PLAN_OPERATION,
     TARGET_OPERATION,
+    RackMovePlan,
     parse_outbound_request,
     parse_outbound_response,
     parse_recovery_event,
 )
+from src.app.wms_adapter.wire_common import DECISION_PATH, FACT_PATH
 
 OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
 
@@ -33,7 +33,7 @@ def _cell() -> dict[str, str]:
         "type": "ONE_LAYER_BIN_CELL",
         "rack_id": "RACK-1",
         "rack_slot_code": "SLOT-1",
-        "bin_id": "BIN-1",
+        "bin_code": "BIN-1",
         "bin_cell_id": "CELL-1",
     }
 
@@ -371,7 +371,7 @@ def test_response_status_code_and_result_pairings_are_strict() -> None:
         )
 
 
-@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 1000])
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_replacement_response_preserves_broad_positions_and_any_non_empty_face(face: str) -> None:
     response = parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, _replacement_response(face))
 
@@ -380,7 +380,7 @@ def test_replacement_response_preserves_broad_positions_and_any_non_empty_face(f
     assert response.data.new_empty_rack.source.kind == "RACK"
 
 
-@pytest.mark.parametrize("face", ["", "\x00", "\ud800", None, 90, True])
+@pytest.mark.parametrize("face", ["", "\x00", "\ud800", "x" * 11, "面" * 11, None, 90, True])
 def test_replacement_response_rejects_invalid_face(face: object) -> None:
     with pytest.raises(ValidationError):
         parse_outbound_response(REPLACEMENT_PLAN_OPERATION, 200, _replacement_response(face))
@@ -437,3 +437,10 @@ def test_envelope_timestamp_is_positive_strict_integer(timestamp: object) -> Non
                 "timestamp": timestamp,
             }
         )
+
+
+def test_replacement_face_json_schema_publishes_character_limit():
+    schema = RackMovePlan.model_json_schema()["properties"]["target_face"]
+    assert schema["type"] == "string"
+    assert schema["minLength"] == 1
+    assert schema["maxLength"] == 10

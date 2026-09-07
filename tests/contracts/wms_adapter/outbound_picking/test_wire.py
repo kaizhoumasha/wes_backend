@@ -76,7 +76,7 @@ def test_picking_task_issued_parser_rejects_values_outside_the_approved_contract
         parse_picking_task_issued_event(payload)
 
 
-@pytest.mark.parametrize("field", ["workline_code", "transport_task_id", "bin_id"])
+@pytest.mark.parametrize("field", ["workline_code", "transport_task_id", "bin_code"])
 def test_picking_task_issued_parser_rejects_unapproved_business_fields(field: str) -> None:
     payload = deepcopy(_valid_event())
     data = payload["data"]

@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from .validation import freeze_json_object, validate_opaque_face, validate_persistable_text
+from .validation import validate_opaque_face, validate_persistable_text
 from .validation import validate_required_refs as _required_refs
 from .validation import validate_required_text as _required
+from .wms_types import InboundWmsIntent
 
 
 class TransportTaskType(StrEnum):
@@ -27,14 +28,14 @@ class DevicePosition:
     material_trace_id: str
     rack_id: str | None = None
     rack_slot_code: str | None = None
-    bin_id: str | None = None
+    bin_code: str | None = None
     bin_cell_id: str | None = None
 
     def __post_init__(self) -> None:
         _required(self.location_id, "location_id")
         _required(self.location_type, "location_type")
         _required(self.material_trace_id, "material_trace_id")
-        for field_name in ("rack_id", "rack_slot_code", "bin_id", "bin_cell_id"):
+        for field_name in ("rack_id", "rack_slot_code", "bin_code", "bin_cell_id"):
             value = getattr(self, field_name)
             if value is not None:
                 _required(value, field_name)
@@ -132,22 +133,6 @@ class CreateDeviceCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class CreateWmsConfirmation:
-    material_execution_id: str
-    fact_id: str
-    operation: str
-    operation_id: str
-    request_data: dict[str, object]
-
-    def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        _required(self.operation, "operation")
-        _required(self.operation_id, "operation_id")
-        object.__setattr__(self, "request_data", freeze_json_object(self.request_data, "request_data"))
-
-
-@dataclass(frozen=True, slots=True)
 class CreateTransportTask:
     material_execution_id: str
     fact_id: str
@@ -228,7 +213,7 @@ Decision = (
     Wait
     | DeferExecution
     | CreateDeviceCommand
-    | CreateWmsConfirmation
+    | InboundWmsIntent
     | CreateTransportTask
     | PauseForReconciliation
     | CompleteExecution

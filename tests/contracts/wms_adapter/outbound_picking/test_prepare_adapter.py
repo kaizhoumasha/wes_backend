@@ -6,12 +6,12 @@ import json
 import pytest
 
 from src.app.wms_adapter.client import WmsClient
+from src.app.wms_adapter.dispatch import WmsDispatchCode
 from src.app.wms_adapter.outbound_picking.adapter import (
     PickingTaskPrepareAdapter,
-    PickingTaskPrepareDispatchCode,
 )
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
-from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpFailureKind, OutboundHttpResult
+from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpResult
 
 OPERATION_ID = "019f3400-0e17-7d2a-b944-3cf7953804da"
 
@@ -74,7 +74,7 @@ async def test_prepare_adapter_sends_to_decision_path_and_accepts_only_prepare_a
 
     result = await _dispatch(transport)
 
-    assert result.code is PickingTaskPrepareDispatchCode.DETERMINATE
+    assert result.code is WmsDispatchCode.DETERMINATE
     assert result.response_result == "PREPARE_ACCEPTED"
     assert result.normalized_response == {
         "operation_id": OPERATION_ID,
@@ -99,27 +99,8 @@ async def test_prepare_adapter_maps_retry_and_determinate_failures(status: int, 
 
     result = await _dispatch(transport)
 
-    expected = PickingTaskPrepareDispatchCode.RETRY if status == 503 else PickingTaskPrepareDispatchCode.RECONCILING
+    expected = WmsDispatchCode.RETRY if status == 503 else WmsDispatchCode.RECONCILING
     assert result.code is expected
-
-
-@pytest.mark.asyncio
-async def test_prepare_adapter_preserves_not_sent_and_delivery_unknown() -> None:
-    not_sent = _Transport(
-        OutboundHttpResult(
-            delivery_state=OutboundHttpDeliveryState.NOT_SENT,
-            failure_kind=OutboundHttpFailureKind.CONNECT_ERROR,
-        )
-    )
-    unknown = _Transport(
-        OutboundHttpResult(
-            delivery_state=OutboundHttpDeliveryState.DELIVERY_UNKNOWN,
-            failure_kind=OutboundHttpFailureKind.READ_TIMEOUT,
-        )
-    )
-
-    assert (await _dispatch(not_sent)).code is PickingTaskPrepareDispatchCode.NOT_SENT
-    assert (await _dispatch(unknown)).code is PickingTaskPrepareDispatchCode.DELIVERY_UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -146,23 +127,23 @@ async def test_prepare_adapter_fails_closed_for_request_or_response_identity_mis
         request_digest="0" * 64,
     )
 
-    assert response_mismatch.code is PickingTaskPrepareDispatchCode.RECONCILING
-    assert digest_mismatch.code is PickingTaskPrepareDispatchCode.RECONCILING
+    assert response_mismatch.code is WmsDispatchCode.RECONCILING
+    assert digest_mismatch.code is WmsDispatchCode.RECONCILING
     assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio
-async def test_prepare_adapter_rejects_invalid_json_response_headers() -> None:
-    response = _response(
-        {"operation_id": OPERATION_ID, "code": "PREPARE_ACCEPTED", "timestamp": 2, "data": {}},
-        status=202,
-    )
-    response = OutboundHttpResult(
-        delivery_state=response.delivery_state,
-        status_code=response.status_code,
-        response_headers=(("Content-Type", "text/plain"),),
-        decoded_body=response.decoded_body,
-    )
-    result = await _dispatch(_Transport(response))
+async def test_rejected_response_without_field_path_round_trips_through_typed_outcome():
+    from src.app.wms_adapter.outbound_picking.typed import decode_outcome
 
-    assert result.code is PickingTaskPrepareDispatchCode.RECONCILING
+    response = {
+        "operation_id": OPERATION_ID,
+        "code": "REJECTED",
+        "timestamp": 2,
+        "data": {"reason_code": "INVALID_DATA"},
+    }
+    result = await _dispatch(_Transport(_response(response, status=422)))
+    assert result.normalized_response == response
+    outcome = decode_outcome(result.normalized_response)
+    assert outcome.result.reason_code == "INVALID_DATA"
+    assert outcome.result.field_path is None

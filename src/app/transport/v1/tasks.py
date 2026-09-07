@@ -43,6 +43,7 @@ _FACE = Annotated[
     StrictStr,
     Field(
         min_length=1,
+        max_length=10,
         pattern=r"^[^\x00]+$",
         description="Opaque non-empty face value without NUL; preserve exactly",
     ),

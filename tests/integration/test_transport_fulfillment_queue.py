@@ -7,12 +7,12 @@ import time
 import uuid
 
 import pytest
+import pytest_asyncio
 from celery.exceptions import TaskRevokedError
 from sqlalchemy import delete, select
 
-from src.app.execution.models import PositionProjection
 from src.app.transport.composition import build_transport_runtime
-from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot, TransportCaller
+from src.app.transport.contracts import RackPosition, TransportCaller
 from src.app.transport.models import (
     TransportCallbackReceipt,
     TransportEvidence,
@@ -22,13 +22,13 @@ from src.app.transport.models import (
 )
 from src.app.wms_adapter.transport_wire import RESULT_OPERATION
 from src.core.uuid7 import new_uuid7
+from tests.support.postgresql_heavy import migrated_database
 from tests.support.transport_broker import (
     MockWmsHttpServer,
     TransportBrokerWorker,
     close_transport_test_resources,
 )
 from tests.support.transport_callbacks import record_valid_callback
-from tests.support.transport_projections import confirm_rack_faces_with_sessions
 
 pytestmark = pytest.mark.integration
 
@@ -36,14 +36,19 @@ SUBMIT_TASK = "src.celery_app.tasks.transport.submit_transport_tasks_batch"
 EVIDENCE_TASK = "src.celery_app.tasks.transport.process_transport_evidence_batch"
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def queue_database(integration_guard):
+    async with migrated_database() as database:
+        yield database
+
+
 async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persisted_facts(
-    integration_session_factory,
+    queue_database,
 ) -> None:
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
-    database_url = os.environ["INTEGRATION_DATABASE_URL"]
+    database_url, integration_session_factory = queue_database
     task_ids: list[str] = []
     callback_operation_ids: list[str] = []
-    projection_object_ids: list[str] = []
     server: MockWmsHttpServer | None = None
     runtime = None
     worker: TransportBrokerWorker | None = None
@@ -51,7 +56,7 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
     primary_error: BaseException | None = None
 
     async def _cleanup_database() -> None:
-        if not task_ids and not projection_object_ids:
+        if not task_ids:
             return
         async with integration_session_factory.begin() as db:
             await db.execute(
@@ -60,7 +65,6 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
                 )
             )
             await db.execute(delete(TransportEvidence).where(TransportEvidence.transport_task_id.in_(task_ids)))
-            await db.execute(delete(PositionProjection).where(PositionProjection.object_id.in_(projection_object_ids)))
             await db.execute(
                 delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id.in_(task_ids))
             )
@@ -79,35 +83,24 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
         worker.start()
         suffix = uuid.uuid4().hex
         rack_ids = [f"rack-submit-{index}-{suffix}" for index in range(2)] + [f"rack-evidence-{suffix}"]
-        projection_object_ids.extend([*rack_ids, f"bin-evidence-{suffix}"])
-        await confirm_rack_faces_with_sessions(
-            integration_session_factory,
-            dict.fromkeys(rack_ids, "90"),
-        )
         for index in range(2):
-            handle = await runtime.service.move_bins(
+            handle = await runtime.service.move_rack(
                 new_uuid7(),
                 TransportCaller("TRANSPORT_QUEUE_TEST"),
-                (
-                    BinMove(
-                        f"bin-submit-{index}-{suffix}",
-                        RackBinSlot(rack_ids[index], "90", "1"),
-                        HandoffPosition(f"HANDOFF-{index}-{suffix}"),
-                    ),
-                ),
+                rack_ids[index],
+                RackPosition(f"SOURCE-{index}-{suffix}"),
+                RackPosition(f"HANDOFF-{index}-{suffix}"),
+                target_face="90",
             )
             task_ids.append(handle.transport_task_id)
 
-        evidence_handle = await runtime.service.move_bins(
+        evidence_handle = await runtime.service.move_rack(
             new_uuid7(),
             TransportCaller("TRANSPORT_QUEUE_TEST"),
-            (
-                BinMove(
-                    f"bin-evidence-{suffix}",
-                    RackBinSlot(rack_ids[2], "90", "1"),
-                    HandoffPosition(f"HANDOFF-EVIDENCE-{suffix}"),
-                ),
-            ),
+            rack_ids[2],
+            RackPosition(f"SOURCE-EVIDENCE-{suffix}"),
+            RackPosition(f"HANDOFF-EVIDENCE-{suffix}"),
+            target_face="90",
         )
         task_ids.append(evidence_handle.transport_task_id)
         evidence_operation_id = new_uuid7()
@@ -119,18 +112,15 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
             operation=RESULT_OPERATION,
             timestamp=1,
             payload={
-                "kind": "BIN_MOVE",
+                "kind": "RACK_MOVE",
                 "outcome_revision": 1,
-                "results": [
-                    {
-                        "container_id": f"bin-evidence-{suffix}",
-                        "status": "SUCCEEDED",
-                        "final_position": {
-                            "kind": "HANDOFF_POSITION",
-                            "location_code": f"HANDOFF-EVIDENCE-{suffix}",
-                        },
-                    }
-                ],
+                "rack_id": rack_ids[2],
+                "status": "SUCCEEDED",
+                "final_position": {
+                    "kind": "RACK_POSITION",
+                    "location_code": f"HANDOFF-EVIDENCE-{suffix}",
+                },
+                "arrival_face": "90",
             },
         )
 
@@ -172,10 +162,10 @@ async def test_slow_submit_drops_stale_scan_and_next_wakeups_process_all_persist
 
 
 async def test_real_worker_rejects_non_fixed_transport_batches_before_database_scan(
-    integration_guard: None,
+    queue_database,
 ) -> None:
     redis_url = os.environ["INTEGRATION_REDIS_URL"]
-    database_url = os.environ["INTEGRATION_DATABASE_URL"]
+    database_url, _sessions = queue_database
     worker: TransportBrokerWorker | None = None
     success = False
     primary_error: BaseException | None = None

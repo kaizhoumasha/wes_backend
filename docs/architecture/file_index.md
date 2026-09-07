@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-05
+**最后更新**：2026-09-06
 
 ## 1. 真源与入口
 
@@ -13,6 +13,7 @@
 | `CLAUDE.md` | Claude/GStack/Skill 行为入口 |
 | `GEMINI.md` | AGY/Antigravity/Gemini 入口 |
 | `README.md` | 项目概览与本地启动入口 |
+| [配置索引](../devops/configuration-index.md) | WMS Operation 及相关运行参数、固定约束的所属入口与生效方式 |
 | `main.py` | FastAPI 应用入口 |
 | `pyproject.toml` / `uv.lock` | Python、工具和测试配置真源 |
 | `Dockerfile` | development/testing/production 镜像构建 |
@@ -44,8 +45,8 @@
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
 | `docs/superpowers/specs/2026-09-03-outbound-picking-task-prepare-design.md` | `outbound.picking_task.prepare@v1` 单 WorkLine 原子领取、三 owner WmsConfirmation、可靠派发暗构建与生产激活门禁 |
 | `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置及专属配置清理；工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
-| `docs/superpowers/plans/2026-09-05-prepare-plugin-ownership.md` | 从角色归属范围拆出的人工 prepare 业务 owner 迁出计划；独立 ReviewRequired，不是角色配置的先决条件 |
 | `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁 |
+| `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | bin_code 统一、NG 分支独立、BinExecution 退役与站点必要关联的实施 SPEC；包含合同替换范围及物理事实门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、Nginx/API/Beat admission closure 与维护态稳定静默门禁实施计划；Tasks 1–4 已在 Phase 10 分支完成并纳入候选镜像，Task 5 TEST Deploy 未执行 |
 | `docs/superpowers/specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、按需详情、共享 SSE 与四类现场调试的前后端设计真源 |

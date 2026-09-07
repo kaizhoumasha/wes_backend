@@ -25,8 +25,8 @@ from src.app.execution.services import (
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
-from src.app.wms_adapter.inbound_adapter import InboundDispatchCode
-from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION
+from src.app.wms_adapter.dispatch import WmsDispatchCode
+from src.app.wms_adapter.inbound_material.wire import ADMISSION_OPERATION
 from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
 from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
@@ -267,13 +267,13 @@ class _DispatchAdapter:
             raise AssertionError("过期确认不得调用 HTTP")
         if kwargs["request_payload"]["data"]["workline_code"] == "UNKNOWN":
             return SimpleNamespace(
-                code=InboundDispatchCode.DELIVERY_UNKNOWN,
+                code=WmsDispatchCode.DELIVERY_UNKNOWN,
                 normalized_response=None,
                 response_result=None,
                 retry_after_ms=None,
             )
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": operation_id,
                 "code": "DECIDED",
@@ -306,7 +306,7 @@ class _ConflictDuringDispatchAdapter:
             )
         assert isinstance(conflict, WmsConfirmationIdentityConflictResult)
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": kwargs["operation_id"],
                 "code": "DECIDED",
@@ -321,7 +321,7 @@ class _ConflictDuringDispatchAdapter:
 class _WaitDispatchAdapter:
     async def dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": kwargs["operation_id"],
                 "code": "DECIDED",

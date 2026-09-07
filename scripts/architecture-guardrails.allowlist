@@ -16,22 +16,17 @@
 # 删除任意一行后, --mode enforced 必须对对应历史违规返回非零 (证明 enforcement 生效)
 
 # WMS_INTEGRATION_BOUNDARY: 跨域 WMS import (2 文件, drop_phase=phase2/phase5-tech)
-WMS_INTEGRATION_BOUNDARY|src/app/callback/services/callback_ingress_service.py|legacy WMS normalizer import, Phase 2 迁 runtime|2026-09-30|legacy:src/app/callback/services/callback_ingress_service.py:<file>|phase2
-WMS_INTEGRATION_BOUNDARY|src/app/workline/runtime_services.py|legacy runtime services 镜像 business identity bridge 引入 3 处 wms_integration import, 与 legacy runtime services 同源 phase5-tech 时消除|2026-09-30|legacy:src/workline_runtime/services.py:build_workline_runtime_services|phase5-tech
 
 # EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (resource/wms_integration, drop_phase=phase1)
 EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/projection_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_service.py:<file>|phase1
 EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/projection_integrity_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_integrity_service.py:<file>|phase1
 EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/relation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/relation_service.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/resource/services/smt_rack_bin_scheduling_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/smt_rack_bin_scheduling_service.py:<file>|phase1
 EXECUTION_CORRELATION_BOUNDARY|src/app/resource/models/resource.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/models/resource.py:<file>|phase1
-EXECUTION_CORRELATION_BOUNDARY|src/app/wms_integration/services/transport_contract.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/wms_integration/services/transport_contract.py:<file>|phase1
 
 # EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (workline runtime, drop_phase=phase2)
 EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/models/object_transition_event.py)|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
 EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/repositories/object_transition_event_repository.py)|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
 EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/services/inbox/object_transition_event_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/inbox/object_transition_event_service.py:<file>|phase2
-EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py|legacy session FK, Phase 2 迁 runtime (workline/services/runtime_reconciliation_service.py 已迁入 reconciliation/)|2026-09-30|legacy:src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py:<file>|phase2
 
 # CAPABILITY_FORBIDDEN_DEPENDENCY/CAPABILITY_IMPLEMENTATION_IMPORT: Phase 0 时 src/app/runtime/ 不存在, 预期 0 命中
 # workline 域 legacy capability import wms_integration/device services/models, Phase 2 迁 runtime 时消除。
@@ -39,12 +34,6 @@ EXECUTION_CORRELATION_BOUNDARY|src/app/runtime/orchestration/services/reconcilia
 CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py|批准的四账本只读 release read model，只读 ORM metadata，无 dispatch/write|2026-09-30|legacy:src/app/runtime/orchestration/repositories/release_operational_readiness_repository.py:ReleaseOperationalReadinessRepository|phase10
 CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/repositories/session_repository.py|legacy capability import device 实现, Phase 2 物理迁 runtime/orchestration/repositories 后保留|2026-09-30|legacy:src/app/workline/repositories/session_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
 CAPABILITY_IMPLEMENTATION_IMPORT|src/app/workline/repositories/workline_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/workline_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/intent/operation_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/intent/operation_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py|legacy capability import device 实现, Phase 2 迁 runtime (impl 已从 workline/services/ 迁入 reconciliation/)|2026-09-30|legacy:src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
-CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/trace/trace_query_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/trace/trace_query_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase2
 
 # LEGACY_RUNTIME_IMPORT: src.workline_runtime production import 严格型 (Phase 2 launch PR, §10.3 启动条件)
 # 唯一允许入口: src/app/runtime/orchestration/consumers/ (单点), tests/, migrations/

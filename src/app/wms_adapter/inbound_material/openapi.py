@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
+from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_RESPONSES
 
 _IDENTIFIER = {
@@ -48,12 +48,12 @@ _NG = _closed(
     {"type": {"type": "string", "enum": ["NG_POSITION"]}, "location_code": _IDENTIFIER},
 )
 _CELL = _closed(
-    ["type", "rack_id", "rack_slot_code", "bin_id", "bin_cell_id"],
+    ["type", "rack_id", "rack_slot_code", "bin_code", "bin_cell_id"],
     {
         "type": {"type": "string", "enum": ["ONE_LAYER_BIN_CELL"]},
         "rack_id": _IDENTIFIER,
         "rack_slot_code": _IDENTIFIER,
-        "bin_id": _IDENTIFIER,
+        "bin_code": _IDENTIFIER,
         "bin_cell_id": _IDENTIFIER,
     },
 )

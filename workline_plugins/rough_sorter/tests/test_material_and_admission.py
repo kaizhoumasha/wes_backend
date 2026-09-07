@@ -9,10 +9,11 @@ from conftest import (
     runtime_snapshot,
 )
 from wes_plugin_sdk import (
+    AdmissionIntent,
     CreateDeviceCommand,
-    CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
+    InboundWmsIntent,
     PauseForReconciliation,
     Wait,
 )
@@ -91,15 +92,12 @@ def test_complete_material_evidence_requests_admission_deterministically() -> No
     second = handler(fact)
 
     assert first == second
-    assert isinstance(first[0], CreateWmsConfirmation)
-    assert first[0].operation == "inbound.material.admission_decide@v1"
+    assert isinstance(first[0], InboundWmsIntent)
+    assert isinstance(first[0], AdmissionIntent)
     assert first[0].operation_id == fact.request_operation_id
-    assert first[0].request_data["material_execution_id"] == EXECUTION_ID
-    assert first[0].request_data["six_in_one"]["LotCode"] == fact.lot_code
-    assert first[0].request_data["source_position"] == {
-        "type": "HANDOFF_POSITION",
-        "location_code": "MEASUREMENT_POSITION",
-    }
+    assert first[0].material_execution_id == EXECUTION_ID
+    assert first[0].six_in_one.LotCode == fact.lot_code
+    assert first[0].source_position == fact.source_position
 
 
 @pytest.mark.parametrize("field", ["lot_code", "diameter_mm", "thickness_mm"])
@@ -112,7 +110,7 @@ def test_shape_failure_remains_measurement_fact_and_still_requests_wms_admission
     readers = _readers(("MEASUREMENT_POSITION", "MEASUREMENT_POSITION", TRACE_ID, False))
     decision = MaterialEvidenceReadyHandler(*readers)(_material_fact(shape_result=ShapeResult.FAIL))
 
-    assert isinstance(decision[0], CreateWmsConfirmation)
+    assert isinstance(decision[0], InboundWmsIntent)
 
 
 def test_plugin_accepts_nonblank_stable_operation_identity_without_revalidating_wms_wire() -> None:

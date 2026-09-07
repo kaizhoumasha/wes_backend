@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.services import InboundEvidenceConflictResult, InboundEvidenceService
 from src.app.wms_adapter.outbound_picking.event_handler import PickingTaskIssuedPersistenceResult
+from src.app.wms_adapter.outbound_picking.wire import PickingTaskIssuedInvalidData
 from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.wms_integration.outbound_picking.repositories import PickingTaskRepository, picking_task_repository
 from src.utils.timezone import timezone
@@ -33,12 +34,18 @@ class PickingTaskIssuedService:
 
     async def record(
         self,
-        envelope: PickingTaskIssuedEvent,
+        envelope: PickingTaskIssuedEvent | PickingTaskIssuedInvalidData,
         *,
         received_at: datetime,
     ) -> PickingTaskIssuedPersistenceResult:
-        source_identity = f"{envelope.operation}:{envelope.operation_id}"
-        payload = envelope.model_dump(mode="json")
+        invalid = isinstance(envelope, PickingTaskIssuedInvalidData)
+        payload = (
+            envelope.raw_envelope
+            if isinstance(envelope, PickingTaskIssuedInvalidData)
+            else envelope.model_dump(mode="json", exclude_none=True)
+        )
+        operation, operation_id = payload["operation"], payload["operation_id"]
+        source_identity = f"{operation}:{operation_id}"
         async with self._sessions.begin() as db:
             acceptance = await self._evidence.accept(
                 db,
@@ -46,11 +53,11 @@ class PickingTaskIssuedService:
                 source_identity=source_identity,
                 normalized_payload=payload,
                 received_at=received_at,
-                contract_key=envelope.operation,
+                contract_key=operation,
                 contract_version="1.0",
-                operation=envelope.operation,
-                operation_id=envelope.operation_id,
-                apply_status=InboundEvidenceApplyStatus.APPLIED,
+                operation=operation,
+                operation_id=operation_id,
+                apply_status=InboundEvidenceApplyStatus.IGNORED if invalid else InboundEvidenceApplyStatus.APPLIED,
             )
             if isinstance(acceptance, InboundEvidenceConflictResult):
                 return PickingTaskIssuedPersistenceResult(
@@ -59,6 +66,13 @@ class PickingTaskIssuedService:
                     reason_code="IDEMPOTENCY_CONFLICT",
                 )
             evidence = acceptance.evidence
+            if isinstance(envelope, PickingTaskIssuedInvalidData):
+                evidence.processed_at = evidence.received_at
+                return PickingTaskIssuedPersistenceResult(
+                    code="REJECTED",
+                    timestamp_ms=_timestamp_ms(evidence.received_at),
+                    reason_code="INVALID_DATA",
+                )
             if acceptance.duplicate:
                 if InboundEvidenceApplyStatus(evidence.apply_status) is InboundEvidenceApplyStatus.APPLIED:
                     return PickingTaskIssuedPersistenceResult(

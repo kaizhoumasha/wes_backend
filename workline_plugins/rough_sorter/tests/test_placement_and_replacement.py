@@ -11,7 +11,10 @@ from wes_plugin_sdk import (
     CreateTransportTask,
     DeferExecution,
     DevicePosition,
+    NgPlacementIntent,
     PauseForReconciliation,
+    PlacementIntent,
+    RackMovePlan,
     TransportRackPosition,
     TransportRcsTemplateId,
     TransportTaskType,
@@ -29,7 +32,6 @@ from rough_sorter.facts import (
     PlacementConfirmationStatus,
     PlacementReleaseEvidence,
     PlacementResponseResult,
-    RackMoveLegPlan,
     RackReleaseSnapshot,
     ReplacementPlanDecidedFact,
     ReplacementResult,
@@ -50,17 +52,23 @@ def _position(location_id: str, location_type: str, **ids: str) -> DevicePositio
     )
 
 
-@pytest.mark.parametrize(
-    ("target_face", "expected_message"),
-    [("\x00", "target_face must not contain NUL"), ("\ud800", "target_face must be valid UTF-8")],
-)
-def test_rack_move_leg_plan_rejects_invalid_face(target_face: str, expected_message: str) -> None:
-    with pytest.raises(ValueError, match=expected_message):
-        RackMoveLegPlan(
-            rack_id="rack-1",
-            source=TransportZonePosition("zone-1"),
-            target=TransportRackPosition("work-position"),
-            target_face=target_face,
+@pytest.mark.parametrize("stationary_leg", ["old_loaded_rack", "new_empty_rack"])
+def test_replacement_rejects_a_stationary_rack_plan(stationary_leg):
+    plans = {
+        "old_loaded_rack": RackMovePlan(
+            "rack-old", TransportRackPosition("work"), TransportRackPosition("buffer"), "A"
+        ),
+        "new_empty_rack": RackMovePlan("rack-new", TransportRackPosition("buffer"), TransportRackPosition("work"), "A"),
+    }
+    from dataclasses import replace
+
+    plans[stationary_leg] = replace(plans[stationary_leg], target=plans[stationary_leg].source)
+    with pytest.raises(ValueError, match="source and target must differ"):
+        _replacement_fact(
+            ReplacementResult.READY,
+            release_snapshot=_release_snapshot(closed=True),
+            rack_replacement_id="replacement-1",
+            **plans,
         )
 
 
@@ -146,7 +154,7 @@ def test_successful_cell_position_creates_placement_report() -> None:
         "RACK_CELL",
         rack_id="rack-current",
         rack_slot_code="slot-1",
-        bin_id="bin-1",
+        bin_code="bin-1",
         bin_cell_id="cell-1",
     )
     readers = _readers((cell.location_id, cell.location_type, TRACE_ID, False))
@@ -174,15 +182,9 @@ def test_successful_cell_position_creates_placement_report() -> None:
     )
 
     decision = DevicePositionConfirmedHandler(*readers)(fact)[0]
-    assert decision.operation == "inbound.material.placement_report@v1"
-    assert decision.request_data["command_code"] == "command-placement-1"
-    assert decision.request_data["target_position"] == {
-        "type": "ONE_LAYER_BIN_CELL",
-        "rack_id": "rack-current",
-        "rack_slot_code": "slot-1",
-        "bin_id": "bin-1",
-        "bin_cell_id": "cell-1",
-    }
+    assert isinstance(decision, PlacementIntent)
+    assert decision.command_code == "command-placement-1"
+    assert decision.target_position == fact.target_position
 
 
 def test_successful_ng_position_creates_ng_report() -> None:
@@ -210,9 +212,9 @@ def test_successful_ng_position_creates_ng_report() -> None:
     )
 
     decision = DevicePositionConfirmedHandler(*readers)(fact)[0]
-    assert decision.operation == "inbound.material.ng_placement_report@v1"
-    assert decision.request_data["ng_evidence_id"] == "ng-evidence-1"
-    assert decision.request_data["business_context"] == "ROUGH_SORT_INBOUND"
+    assert isinstance(decision, NgPlacementIntent)
+    assert decision.ng_evidence_id == "ng-evidence-1"
+    assert decision.business_context == "ROUGH_SORT_INBOUND"
 
 
 def test_recorded_or_duplicate_placement_is_the_only_automatic_close() -> None:
@@ -247,13 +249,13 @@ def test_open_release_gate_creates_no_rack_move_and_does_not_claim_recovery() ->
         ReplacementResult.READY,
         release_snapshot=_release_snapshot(closed=False),
         rack_replacement_id="replacement-1",
-        old_loaded_rack=RackMoveLegPlan(
+        old_loaded_rack=RackMovePlan(
             rack_id="rack-old",
             source=TransportRackPosition("work-position"),
             target=TransportRackPosition("old-buffer"),
             target_face="90",
         ),
-        new_empty_rack=RackMoveLegPlan(
+        new_empty_rack=RackMovePlan(
             rack_id="rack-new",
             source=TransportRackPosition("new-buffer"),
             target=TransportRackPosition("work-position"),
@@ -279,13 +281,13 @@ def test_active_placement_without_confirmation_defers_rack_release() -> None:
         ReplacementResult.READY,
         release_snapshot=_release_snapshot_without_confirmation(PlacementCommandStatus.ACKNOWLEDGED),
         rack_replacement_id="replacement-1",
-        old_loaded_rack=RackMoveLegPlan(
+        old_loaded_rack=RackMovePlan(
             rack_id="rack-old",
             source=TransportRackPosition("work-position"),
             target=TransportRackPosition("old-buffer"),
             target_face="90",
         ),
-        new_empty_rack=RackMoveLegPlan(
+        new_empty_rack=RackMovePlan(
             rack_id="rack-new",
             source=TransportRackPosition("new-buffer"),
             target=TransportRackPosition("work-position"),
@@ -313,13 +315,13 @@ def test_conflicting_placement_without_confirmation_pauses_rack_release(
         ReplacementResult.READY,
         release_snapshot=_release_snapshot_without_confirmation(command_status),
         rack_replacement_id="replacement-1",
-        old_loaded_rack=RackMoveLegPlan(
+        old_loaded_rack=RackMovePlan(
             rack_id="rack-old",
             source=TransportRackPosition("work-position"),
             target=TransportRackPosition("old-buffer"),
             target_face="90",
         ),
-        new_empty_rack=RackMoveLegPlan(
+        new_empty_rack=RackMovePlan(
             rack_id="rack-new",
             source=TransportRackPosition("new-buffer"),
             target=TransportRackPosition("work-position"),
@@ -338,13 +340,13 @@ def test_conflicting_placement_without_confirmation_pauses_rack_release(
 
 
 def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None:
-    old_plan = RackMoveLegPlan(
+    old_plan = RackMovePlan(
         rack_id="rack-old",
         source=TransportRackPosition("work-position"),
         target=TransportRackPosition("old-buffer"),
         target_face="90",
     )
-    new_plan = RackMoveLegPlan(
+    new_plan = RackMovePlan(
         rack_id="rack-new",
         source=TransportRackPosition("new-buffer"),
         target=TransportRackPosition("work-position"),
@@ -398,13 +400,13 @@ def test_closed_release_gate_creates_two_independent_stable_rack_moves() -> None
 
 
 def test_replacement_legs_preserve_broad_positions_and_explicit_templates() -> None:
-    old_plan = RackMoveLegPlan(
+    old_plan = RackMovePlan(
         rack_id="rack-old",
         source=TransportRackPosition("work-position"),
         target=TransportZonePosition("storage-zone"),
         target_face="FACE@01",
     )
-    new_plan = RackMoveLegPlan(
+    new_plan = RackMovePlan(
         rack_id="rack-new",
         source=TransportZonePosition("storage-zone"),
         target=TransportRackPosition("work-position"),

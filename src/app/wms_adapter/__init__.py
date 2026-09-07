@@ -10,7 +10,6 @@ if TYPE_CHECKING:
 
     from src.app.wms_adapter.client import WmsAccessResult, WmsClient
     from src.app.wms_adapter.factory import build_wms_client
-    from src.app.wms_adapter.inbound_adapter import WmsInboundAdapter
     from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
     from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
     from src.app.wms_adapter.transport_event_handler import TransportEventHandler, TransportEventResponse
@@ -22,7 +21,6 @@ _LAZY_EXPORTS = {
     "TransportEventResponse": ("src.app.wms_adapter.transport_event_handler", "TransportEventResponse"),
     "WmsAccessResult": ("src.app.wms_adapter.client", "WmsAccessResult"),
     "WmsClient": ("src.app.wms_adapter.client", "WmsClient"),
-    "WmsInboundAdapter": ("src.app.wms_adapter.inbound_adapter", "WmsInboundAdapter"),
     "WmsInboundAuthPolicy": ("src.app.wms_adapter.inbound_auth", "WmsInboundAuthPolicy"),
     "WmsTransportAdapter": ("src.app.wms_adapter.transport_adapter", "WmsTransportAdapter"),
     "build_wms_client": ("src.app.wms_adapter.factory", "build_wms_client"),
@@ -33,7 +31,6 @@ __all__ = [
     "TransportEventResponse",
     "WmsAccessResult",
     "WmsClient",
-    "WmsInboundAdapter",
     "WmsInboundAuthPolicy",
     "WmsTransportAdapter",
     "build_wms_client",

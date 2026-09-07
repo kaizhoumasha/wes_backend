@@ -117,7 +117,7 @@ reviewed_content_sha256 = "cbb3931e9f7c10d6631effa65f706b547df15789b2dc58390de9d
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "d1022903e02cd89baec2e84ff9a3e3a79ef0be1e4419602ec97b381ebc46791c"
+reviewed_content_sha256 = "1b9b597aaed1421543fead420d4a8c14b8d092178cf461a9a637443f3c339b26"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -278,8 +278,7 @@ reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
-heavy_tests = []
-reviewed_content_sha256 = "449ddba320a4141e2820dab6252de97d09f5ef241629486370ce0b7156d34978"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
@@ -293,13 +292,14 @@ source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"
 heavy_tests = [
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
     "tests/mock/test_wms_transport_mock_server.py",
 ]
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/facts.py"
-heavy_tests = []
-reviewed_content_sha256 = "72f16ac47121bbae1d35b2c3a269c6b508d8882b1f9bf22eb586008807dda71d"
+heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/handler.py"
@@ -399,6 +399,22 @@ source_glob = "src/celery_app/config.py"
 heavy_tests = [
     "tests/integration/test_celery_async_runtime_postgresql.py",
     "tests/integration/test_transport_fulfillment_queue.py",
+]
+
+[[mapping]]
+# WmsConfirmation 共享批量同时进入 Service、worker 和 Beat。
+source_glob = "src/app/execution/config.py"
+heavy_tests = [
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_transport_fulfillment_queue.py",
+    "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
 
 # WMS QUERY runtime 与共享执行 Port 由真实 prefork worker 启动与任务执行闭环承接。
@@ -814,12 +830,15 @@ heavy_tests = []
 # 粗分 wire、ACL 与 evidence-first handler 由独立 PostgreSQL 事务 owner 承接。
 
 [[mapping]]
-source_glob = "src/app/wms_adapter/{inbound_adapter.py,inbound_wire.py}"
+source_glob = "src/app/wms_adapter/inbound_material/{adapter.py,wire.py,typed.py,__init__.py}"
 heavy_tests = ["tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/wire_common.py"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py"]
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py","tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py"]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/inbound_event_handler.py"
@@ -831,7 +850,7 @@ heavy_tests = [
 # OpenAPI 片段不执行运行时逻辑，由同目录 FAST 合同唯一承接。
 
 [[mapping]]
-source_glob = "src/app/wms_adapter/inbound_openapi.py"
+source_glob = "src/app/wms_adapter/inbound_material/openapi.py"
 heavy_tests = []
 
 # Transport 公共入口和唯一生产组合根由真实 broker/worker/HTTP/PostgreSQL E2E 验收。
@@ -1073,7 +1092,7 @@ heavy_tests = ["tests/integration/device_command/test_device_command_constraints
 
 [[mapping]]
 source_glob = "src/app/workline/{epoch_activation.py,models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"
-heavy_tests = [
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
@@ -1086,7 +1105,8 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/execution/{__init__.py,composition.py,models/__init__.py,repositories/__init__.py,services/__init__.py}"
-heavy_tests = [
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
 ]
@@ -1130,7 +1150,8 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_confirmation_repository.py,services/wms_confirmation_service.py}"
-heavy_tests = [
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py","tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py","tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
@@ -1181,7 +1202,10 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "deployment/plugin_composition.py"
-heavy_tests = [
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
@@ -1201,11 +1225,21 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/wms_integration/outbound_picking/**"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
+
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py","tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py"]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/outbound_picking/**"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
+
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py","tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/workline/epoch_digest.py"
@@ -1324,7 +1358,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "docs/architecture/northbound-wms-operation-inventory.csv"
 heavy_tests = []
-reviewed_content_sha256 = "40fa42d65e232dccf1c846f965a969a2aac25164d19d3d8430acee39af2ec731"
+reviewed_content_sha256 = "c4ad13e49214e78b5f025b5a1a4783bff08af5dea73c1b213fd8b03bf0b9f1b8"
 
 # TIMER reconciliation 仅删除插件私有原因码分支；通用原因码由邻近 FAST 测试直接承接，无新增数据库边界。
 
@@ -1557,9 +1591,11 @@ heavy_tests = ["tests/integration/workline_capabilities/test_workline_start_post
 
 [[mapping]]
 source_glob = "src/app/workline/repositories/{__init__.py,plugin_binding_repository.py,workline_repository.py}"
-heavy_tests = [
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
 ]
 
 [[mapping]]
@@ -1685,6 +1721,12 @@ heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 [[mapping]]
 source_glob = "src/app/wms_adapter/v1/**"
 heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
+
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_issued_postgresql.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
@@ -1921,6 +1963,11 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/register.py"
 heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
+
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_transport_fastapi_lifespan.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
@@ -2296,7 +2343,7 @@ heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "
 
 [[mapping]]
 source_glob = "tests/support/postgresql_heavy.py"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py"]
 
 [[mapping]]
 source_glob = "{tests/support/postgresql_catalog.py,tests/integration/fixtures/initial_schema_old_chain_catalog.json,tests/integration/fixtures/initial_schema_final_manifest.json,tests/integration/fixtures/initial_schema_disposition.json,tests/integration/fixtures/initial_schema_transition_disposition.json}"
@@ -2331,3 +2378,55 @@ heavy_tests = []
 [[mapping]]
 source_glob = "scripts/verify_core_plugin_installation.py"
 heavy_tests = []
+
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/{wms_types.py,wms_operations.py,prepare_policy.py}"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/confirmation_adapter.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py","tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/e2e/transport/test_transport_production_wiring.py"]
+
+# 删除旧平铺模块的 diff 仍需选择其真实持久化 owner。
+[[mapping]]
+source_glob = "src/app/wms_adapter/{inbound_adapter.py,inbound_wire.py}"
+heavy_tests = ["tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/wms_adapter/inbound_openapi.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "migrations/versions/20260906_1526_864351b8d0c6_add_picking_task_plan_delta.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py","tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py", "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260906_1630_3d040b37c049_constrain_face_length_to_ten.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+]
+
+# WMS operation 共用单次收发及 Picking worker fixture 的直接消费者。
+[[mapping]]
+source_glob = "src/app/wms_adapter/dispatch.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
+
+[[mapping]]
+source_glob = "tests/integration/wms_adapter/outbound_picking/confirmation_support.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py","tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260907_0400_5d3e6e4df5be_scope_picking_confirmation_uniqueness_.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py","tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260907_0427_5098dc1b2b63_add_epoch_owner_to_wms_confirmation.py"
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py"]

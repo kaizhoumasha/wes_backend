@@ -2575,7 +2575,7 @@ WES 会在一个数据库事务中只选择一个下一动作。WMS 不需要为
   `outbound.bin.inbound_batch@v1`。
 
 `return_batch.return_candidates[]` 是本 Epoch 的跨任务 FIFO，每个候选增加本次请求内从 1 连续递增的 `sequence_no`。WMS 只为连续前缀分配目标，
-并在 `moves[]` 中原样返回 `sequence_no + bin_id`。每个目标必须位于请求中的当前 `rack_id + rack_face`，但不要求原货架、原面或原储位。顺序号只在当前
+并在 `moves[]` 中原样返回 `sequence_no + bin_code`。每个目标必须位于请求中的当前 `rack_id + rack_face`，但不要求原货架、原面或原储位。顺序号只在当前
 `operation_id` 内有效；新请求根据当时的队首候选重新从 1 编号。
 
 WMS 返回不超过 `max_bin_count` 的 Bin 和精确来源。WES 再选择本地入料位置，组成 Transport `BIN_MOVE`。WMS 返回 `READY` 只表示
@@ -2591,7 +2591,7 @@ WMS 返回不超过 `max_bin_count` 的 Bin 和精确来源。WES 再选择本�
 
 正常运行时只有新入站需求驱动货架切换。停止或切换已请求时，目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面；但候选 `workline.return_buffer.drain_rack_decide@v1` 的 operation 字面量、插件执行身份、请求事实、旧架离场去向、新架可靠来源/工作位/到达面和幂等规则尚未冻结，当前为 `ReviewRequired/BLOCKED`。获批前 WES 停止接纳新任务和新 Bin，Epoch 保持 `ACTIVE`，不创建货架切换或退箱 Transport；全部清场义务闭合后才关闭 Epoch。
 
-Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_id + scanned_at` 调用
+Bin 到达 SCAN2 并完成扫码后，WES 以 `task_id + bin_code + scanned_at` 调用
 `outbound.bin.work_plan@v1`。WMS 核对 Bin 后返回需要处理的 Cell。
 
 实际 Bin 可识别但不是 `inbound_batch` 选中的预期 Bin 时，WES 不调用 `work_plan`，保存预期/实际身份和位置证据；该 Bin 不进入 NG，
@@ -2612,17 +2612,16 @@ WMS 返回精确的目标货架、货架面和目标格。物理放置完成后�
 `task_id + source_locator + observed_at` 调用 `outbound.source.empty_decide@v1`。WMS 根据库存主账返回
 `RETRY`、`WAIT` 或 `SOURCE_DONE`。设备结果不确定时不能按空取处理。
 
-### Bin 到达 NG 出口
+### Bin NG 分支
 
-Bin 因条码无法识别、方向异常、CELL NG 后续路由或 WMS 明确业务 NG 而实际到达 NG 出口后，WES 调用
-`outbound.bin.ng_exit_report@v1`。WMS 记录实际 Bin、NG 原因、出口位置和设备发生时间。可识别但非预期 Bin 不调用本接口；
-各原因对应的必填字段以自动出库合同为准。
+插件判定 NG 后记录原因和证据并通过 DeviceCommand 执行必要分流；WMS 自行处理人工业务。
+不提供料箱 NG 出口上报 operation。正常退箱按退箱入口的实际扫码进入 FIFO，NG 不代替未决物理动作的闭合。
 
 ### 退箱、货架离场与任务完成
 
 | 场景 | WES 处理 | WMS 处理 |
 | --- | --- | --- |
-| 退箱 | 按本 Epoch 跨任务 FIFO 取不超过 CTU 空闲背篓数的队首候选，按本次请求从 1 设置 `sequence_no`，调用 `outbound.bin.return_batch@v1` | 在请求的当前 `rack_id + rack_face` 为连续前缀分配任意合格精确空位，并原样返回 `sequence_no + bin_id`；不返回换面或换架方案 |
+| 退箱 | 按本 Epoch 跨任务 FIFO 取不超过 CTU 空闲背篓数的队首候选，按本次请求从 1 设置 `sequence_no`，调用 `outbound.bin.return_batch@v1` | 在请求的当前 `rack_id + rack_face` 为连续前缀分配任意合格精确空位，并原样返回 `sequence_no + bin_code`；不返回换面或换架方案 |
 | 货架离场 | 调用 `outbound.rack.departure_decide@v1` | 返回下一目的地 `rack_destination` |
 | Transport 为 `UNKNOWN/RECONCILING` | 暂停受影响的任务明细，保留资源，不创建替代 TransportTask | 等待 RCS 的确定结果或完成人工核对，再发送同一 `transport_task_id` 的更高版本结果 |
 | Transport 确定失败 | 结束失败对象对应的任务明细；已经成功和不受影响的明细继续执行 | 根据自己已经掌握的 Transport 结果统计没有满足的需求，创建新的 PickingTask；不等待 WES 再次上报失败 |
@@ -2787,7 +2786,7 @@ operation = putaway.bin_exchange.movement_report@v1
 | 请求参数 | 来源 |
 | --- | --- |
 | `putaway_plan_id/exchange_execution_id` | `putaway_plan_id` 来自不可变上架来源计划；`exchange_execution_id` 来自当前满箱交换批次 |
-| `bin_id/movement_role/from_position/to_position` | 当前满箱交换批次确定的交换成员；`movement_role` 为满 Bin 入库或空 Bin 补到来源货架 |
+| `bin_code/movement_role/from_position/to_position` | 当前满箱交换批次确定的交换成员；`movement_role` 为满 Bin 入库或空 Bin 补到来源货架 |
 | `transport_task_id/transport_outcome_version/placed_at` | 搬运提交/搬运最终结果同一个 `BIN_EXCHANGE` 搬运任务及其确定成员结果和到位时间 |
 
 WMS 逐成员记录最终位置并返回 `RECORDED`。只有本批搬运最终结果全部成员成功且位置明确、全部 movement report 取得
@@ -2828,14 +2827,14 @@ operation = putaway.target_bin.supply_batch@v1
 | `ctu_free_slots` | CTU 当前可靠可用背篓位证据 |
 | `max_bins` | WES 计算 `min(预留投料位数, CTU 空位数)` |
 
-WMS 根据库存主账选择具有可分配 Cell 的具体 Bin，生成 `READY.bins[]`。每项包含 `bin_id`、五层货架来源和可用 Cell 简要信息。
+WMS 根据库存主账选择具有可分配 Cell 的具体 Bin，生成 `READY.bins[]`。每项包含 `bin_code`、五层货架来源和可用 Cell 简要信息。
 当前无批次或暂不能决定时生成 `NO_BATCH/WAIT`，不能返回未在主账确认的候选。
 
 WES 持久化 `READY` 后冻结精确 Bin 和交接位，再创建对应 `BIN_MOVE` TransportTask。该供给到 `HANDOFF_POSITION` 的场景不属于
 成功回架到冻结 `RACK_BIN_SLOT` 的强制逐箱前置条件；容器中间位置事件仍按是否有权威事实条件发送。提交、接纳、失败、位置未知和资源围栏均由
 TransportTask 负责，搬运最终成功前不创建 `BinExecution`。
 
-最终结果确认 Bin 成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结 `bin_id` 一致后，WES 创建唯一活动 `bin_execution_id`，再调用
+最终结果确认 Bin 成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结 `bin_code` 一致后，WES 创建唯一活动 `bin_execution_id`，再调用
 `putaway.target_bin.movement_report@v1` 报告 `movement_kind=SUPPLY_PLACED`。Bin 和来源来自供给响应，目标来自实际投料缓存位置，
 搬运身份来自最终结果。WMS 返回 `RECORDED` 后才允许进入 SCAN1。
 
@@ -2864,7 +2863,7 @@ operation = putaway.material.decide@v1
 | 计划 `pkg_id`、来源位置 | 上架来源计划中的来源成员和 WES 可靠位置投影 |
 | 当前可用目标 Bin 集合 | 仅包含目标 Bin 供给与到线已 `RECORDED`、Bin 路由与可用性决定得到 `AVAILABLE` 且尚未清退的实际 Bin 执行 |
 
-WMS 根据库存主账在请求集合内晚绑定精确 `bin_id + bin_cell_id`，生成 `ACCEPT + target_assignment_id + placement_sequence`；
+WMS 根据库存主账在请求集合内晚绑定精确 `bin_code + bin_cell_id`，生成 `ACCEPT + target_assignment_id + placement_sequence`；
 业务拒绝或暂不能决定时生成 `REJECT/WAIT`。
 
 不可逆 PUT 前，如果有明确证据证明目标无法执行，WES 调用 `putaway.material.target_recovery_decide@v1`。请求引用原来源、
@@ -2893,10 +2892,9 @@ WMS 只有在已有库存从来源 Cell 到目标 Cell 的迁移已经一致生�
 
 | 子场景与 operation | 请求参数及来源 | WMS 如何生成结果 |
 | --- | --- | --- |
-| 是否清退：`putaway.target_bin.clearance_decide@v1` | `putaway_execution_id/bin_execution_id/bin_id` 来自目标 Bin 供给与到线场景；最后 `placement_sequence` 来自已记录的目标分配与位置迁移事实；本地占用观察和触发原因来自 WES | 根据库存主账、剩余 Cell 和业务策略生成 `KEEP/RETURN/WAIT`；`RETURN` 只授权离开工作位，不分配货架目标 |
+| 是否清退：`putaway.target_bin.clearance_decide@v1` | `putaway_execution_id/bin_execution_id/bin_code` 来自目标 Bin 供给与到线场景；最后 `placement_sequence` 来自已记录的目标分配与位置迁移事实；本地占用观察和触发原因来自 WES | 根据库存主账、剩余 Cell 和业务策略生成 `KEEP/RETURN/WAIT`；`RETURN` 只授权离开工作位，不分配货架目标 |
 | 请求退回：`putaway.target_bin.return_batch@v1` | WorkLine/epoch 来自配置；`putaway_execution_id` 来自 WES 当前上架执行；当前 `rack_id+rack_face` 来自可靠到位事实；`return_buffer_bins[]` 是该上架执行 FIFO 的实际队首；CTU 空位来自可靠设备证据 | 在当前面为连续前缀分配任意合格精确空位，生成 `READY/NO_BATCH/WAIT`；不要求原货架面 |
 | 退回到位：`putaway.target_bin.movement_report@v1` | `movement_kind=RETURN_PLACED`；Bin 执行来自目标 Bin 供给与到线场景；目标来自退回决定；实际位置和 Transport 身份来自 `transport.task.resulted@v1` 最终结果 | Bin 全局位置已经一致记录后返回 `RECORDED/DUPLICATE`；WES 随后关闭 BinExecution 并释放管辖权 |
-| NG 出口：`putaway.target_bin.ng_exit_report@v1` | Bin/路由身份来自目标 Bin 供给与到线、Bin 路由与可用性决定场景；NG 原因来自 WMS 路由决定；`ng_evidence_id`、整线 NGZone 出口位置和发生时间来自 ECS/WES 到位证据 | NG 出口位置和处置已经一致记录后返回 `RECORDED/DUPLICATE`；BinExecution 保持活动直到人工扫码取走 |
 
 ### 上架完成、来源货架离场和人工对账
 
@@ -2933,7 +2931,7 @@ WMS 根据全局位置、货架业务状态和后续用途生成 `CLEAR_TO_DESTI
 #### 上架人工对账回调
 
 多对象位置或身份冲突经人工核对后，WMS 回调 `putaway.execution.reconciliation_decided@v1`。`reconciliation_id` 由 WMS 对账单
-生成；`putaway_plan_id` 引用上架来源计划；受影响执行身份来自暂停处理的对象范围；每个 `pkg_id/bin_id/rack_id` 的权威位置来自 WMS 主账和现场扫码
+生成；`putaway_plan_id` 引用上架来源计划；受影响执行身份来自暂停处理的对象范围；每个 `pkg_id/bin_code/rack_id` 的权威位置来自 WMS 主账和现场扫码
 确认；`CONTINUE/ABORT` 和原因来自人工审批结果。WES 返回接收确认后，只修正后续准入，不改写历史设备结果或搬运结果。
 
 业务 `COMPLETED` 不等于 WorkLine 已清线。货架最终搬运仍经过搬运提交和搬运最终结果；只有搬运、设备命令、WES 现场位置记录和业务义务分别完成后，

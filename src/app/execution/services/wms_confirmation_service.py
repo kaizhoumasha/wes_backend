@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from wes_plugin_sdk.wms_types import InboundWmsIntent
+
+from src.app.execution import config
 from src.app.execution.models.inbound_evidence import (
     InboundEvidenceApplyStatus,
     InboundEvidenceKind,
@@ -21,6 +24,7 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceConflictResult,
     InboundEvidenceService,
 )
+from src.app.wms_adapter.inbound_material.typed import encode_request
 from src.core.uuid7 import is_uuid7, new_uuid7
 from src.utils.canonical_json import canonical_json_bytes
 from src.utils.timezone import timezone
@@ -32,8 +36,6 @@ if TYPE_CHECKING:
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
-
-WMS_CONFIRMATION_DISPATCH_WINDOW = timedelta(seconds=30)
 
 
 class WmsConfirmationIdentityConflictError(ValueError):
@@ -81,12 +83,22 @@ class MaterialExecutionEpochRepositoryPort(Protocol):
 
 
 class PickingTaskConfirmationOwnerPort(Protocol):
-    async def validate_prepare_response_owner(
+    async def validate_response_owner(
         self,
         db: object,
         *,
         picking_task_id: int,
         operation: str,
+    ) -> bool: ...
+
+
+class EpochConfirmationOwnerPort(Protocol):
+    async def validate_owner(
+        self,
+        db: object,
+        *,
+        line_run_epoch_id: int,
+        request_payload: dict[str, Any],
     ) -> bool: ...
 
 
@@ -110,9 +122,7 @@ class WmsConfirmationAdapterPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class WmsConfirmationFollowUp:
-    operation: str
-    operation_id: str
-    request_payload: dict[str, object]
+    intent: InboundWmsIntent
     next_attempt_at: datetime
 
 
@@ -168,7 +178,9 @@ class WmsConfirmationLifecycleService:
         repository: WmsConfirmationRepositoryPort | None = None,
         *,
         execution_repository: MaterialExecutionEpochRepositoryPort | None = None,
+        epoch_owner: EpochConfirmationOwnerPort | None = None,
     ) -> None:
+        self._epoch_owner = epoch_owner
         self._repository: WmsConfirmationRepositoryPort = repository or wms_confirmation_repository
         self._executions = execution_repository or cast(
             "MaterialExecutionEpochRepositoryPort",
@@ -184,11 +196,12 @@ class WmsConfirmationLifecycleService:
         material_execution_id: int | None = None,
         bin_execution_id: int | None = None,
         picking_task_id: int | None = None,
+        line_run_epoch_id: int | None = None,
         request_payload: dict[str, Any],
         deadline_at: datetime,
         created_at: datetime,
     ) -> WmsConfirmationAcceptance | WmsConfirmationIdentityConflictResult:
-        owners = (material_execution_id, bin_execution_id, picking_task_id)
+        owners = (material_execution_id, bin_execution_id, picking_task_id, line_run_epoch_id)
         if sum(owner is not None for owner in owners) != 1:
             raise ValueError("WmsConfirmation 必须恰好一个 owner")
         if any(
@@ -205,11 +218,21 @@ class WmsConfirmationLifecycleService:
                 or existing.material_execution_id != material_execution_id
                 or existing.bin_execution_id != bin_execution_id
                 or existing.picking_task_id != picking_task_id
+                or existing.line_run_epoch_id != line_run_epoch_id
                 or existing.deadline_at != deadline_at
             ):
                 _ = await self.mark_reconciling(db, existing, changed_at=created_at)
                 return WmsConfirmationIdentityConflictResult(existing, f"{operation}:{operation_id}")
             return WmsConfirmationAcceptance(existing, duplicate=True)
+        if line_run_epoch_id is not None and (
+            self._epoch_owner is None
+            or not await self._epoch_owner.validate_owner(
+                db,
+                line_run_epoch_id=line_run_epoch_id,
+                request_payload=payload,
+            )
+        ):
+            raise ValueError("Epoch owner 不匹配或已关闭")
         confirmation = await self._repository.add(
             db,
             WmsConfirmation(
@@ -218,6 +241,7 @@ class WmsConfirmationLifecycleService:
                 material_execution_id=material_execution_id,
                 bin_execution_id=bin_execution_id,
                 picking_task_id=picking_task_id,
+                line_run_epoch_id=line_run_epoch_id,
                 request_digest=digest,
                 request_payload=payload,
                 deadline_at=deadline_at,
@@ -338,10 +362,11 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         evidence_service: InboundEvidenceService | None = None,
         execution_repository: MaterialExecutionEpochRepositoryPort | None = None,
         picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
+        epoch_owner: EpochConfirmationOwnerPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         follow_up_planner: WmsConfirmationFollowUpPlanner | None = None,
     ) -> None:
-        super().__init__(repository, execution_repository=execution_repository)
+        super().__init__(repository, execution_repository=execution_repository, epoch_owner=epoch_owner)
         self._sessions = session_factory
         self._adapter = adapter
         self._evidence = evidence_service or InboundEvidenceService()
@@ -349,14 +374,27 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         self._task_queue = task_queue_gateway
         self._follow_up_planner = follow_up_planner
 
-    async def dispatch_batch(self, *, limit: int = 100, now: datetime | None = None) -> int:
-        """短事务 claim 后逐条派发；单次最多处理 100 个可靠确认。"""
+    async def _validate_epoch_owner(self, db: object, confirmation: WmsConfirmation) -> bool:
+        return (
+            confirmation.line_run_epoch_id is not None
+            and self._epoch_owner is not None
+            and await self._epoch_owner.validate_owner(
+                db,
+                line_run_epoch_id=confirmation.line_run_epoch_id,
+                request_payload=confirmation.request_payload,
+            )
+        )
+
+    async def dispatch_batch(
+        self, *, limit: int = config.WMS_CONFIRMATION_BATCH_LIMIT, now: datetime | None = None
+    ) -> int:
+        """短事务 claim 后逐条派发；批量不超过执行能力配置上限。"""
 
         if self._sessions is None or self._adapter is None:
             raise RuntimeError("WmsConfirmation 派发尚未完成运行时装配")
         if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
             raise ValueError("limit 必须是正整数")
-        batch_limit = min(limit, 100)
+        batch_limit = min(limit, config.WMS_CONFIRMATION_BATCH_LIMIT)
         claimed_at = now if now is not None else timezone.now_for_db()
         claim_token = new_uuid7()
         async with self._sessions.begin() as db:
@@ -409,6 +447,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     confirmation.material_execution_id,
                     confirmation.bin_execution_id,
                     confirmation.picking_task_id,
+                    confirmation.line_run_epoch_id,
                 )
             )
             if owner_count != 1 or confirmation.bin_execution_id is not None:
@@ -416,13 +455,16 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 return
             if confirmation.picking_task_id is not None:
                 owner = self._picking_task_owner
-                if owner is None or not await owner.validate_prepare_response_owner(
+                if owner is None or not await owner.validate_response_owner(
                     db,
                     picking_task_id=confirmation.picking_task_id,
                     operation=confirmation.operation,
                 ):
                     _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
                     return
+            if confirmation.line_run_epoch_id is not None and not await self._validate_epoch_owner(db, confirmation):
+                _ = await self.mark_reconciling(db, confirmation, changed_at=checked_at)
+                return
             operation = confirmation.operation
             operation_id = confirmation.operation_id
             request_payload = dict(confirmation.request_payload)
@@ -446,6 +488,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                         confirmation.material_execution_id,
                         confirmation.bin_execution_id,
                         confirmation.picking_task_id,
+                        confirmation.line_run_epoch_id,
                     )
                 )
                 if owner_count != 1 or confirmation.bin_execution_id is not None:
@@ -467,7 +510,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     ):
                         raise ValueError("MaterialExecution 缺少有效 line_run_epoch_id")
                     wake_material_execution = True
-                else:
+                elif confirmation.line_run_epoch_id is None:
                     picking_task_id = confirmation.picking_task_id
                     owner = self._picking_task_owner
                     if (
@@ -475,7 +518,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                         or isinstance(picking_task_id, bool)
                         or picking_task_id <= 0
                         or owner is None
-                        or not await owner.validate_prepare_response_owner(
+                        or not await owner.validate_response_owner(
                             db,
                             picking_task_id=picking_task_id,
                             operation=operation,
@@ -483,6 +526,11 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                     ):
                         _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
                         return
+                else:
+                    if not await self._validate_epoch_owner(db, confirmation):
+                        _ = await self.mark_reconciling(db, confirmation, changed_at=changed_at)
+                        return
+                    line_run_epoch_id = confirmation.line_run_epoch_id
                 evidence_result = await self._evidence.accept(
                     db,
                     kind=InboundEvidenceKind.WMS_RESULT,
@@ -596,13 +644,16 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         if follow_up is None:
             _ = await self.mark_reconciling(db, confirmation, changed_at=received_at)
             return
+        request_payload = encode_request(
+            follow_up.intent, timestamp=int(timezone.to_utc(received_at).timestamp() * 1000)
+        )
         created = await self.create_or_get(
             db,
-            operation=follow_up.operation,
-            operation_id=follow_up.operation_id,
+            operation=request_payload["operation"],
+            operation_id=follow_up.intent.operation_id,
             material_execution_id=confirmation.material_execution_id,
-            request_payload=cast("dict[str, Any]", follow_up.request_payload),
-            deadline_at=follow_up.next_attempt_at + WMS_CONFIRMATION_DISPATCH_WINDOW,
+            request_payload=request_payload,
+            deadline_at=follow_up.next_attempt_at + config.WMS_CONFIRMATION_DISPATCH_WINDOW,
             created_at=received_at,
         )
         if isinstance(created, WmsConfirmationIdentityConflictResult):
@@ -620,13 +671,13 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         received_at: datetime,
     ) -> bool:
         try:
-            if type(follow_up) is not WmsConfirmationFollowUp or not isinstance(follow_up.request_payload, dict):
+            if type(follow_up) is not WmsConfirmationFollowUp or not isinstance(follow_up.intent, InboundWmsIntent):
                 return False
             original_timestamp = confirmation.request_payload.get("timestamp")
-            follow_up_timestamp = follow_up.request_payload.get("timestamp")
             expected_timestamp = int(timezone.to_utc(received_at).timestamp() * 1000)
+            request_payload = encode_request(follow_up.intent, timestamp=expected_timestamp)
             original_payload, _ = _immutable_request(confirmation.request_payload)
-            follow_up_payload, _ = _immutable_request(cast("dict[str, Any]", follow_up.request_payload))
+            follow_up_payload, _ = _immutable_request(request_payload)
             original_payload.pop("operation_id", None)
             original_payload.pop("timestamp", None)
             follow_up_payload.pop("operation_id", None)
@@ -635,14 +686,11 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
                 isinstance(original_timestamp, int)
                 and not isinstance(original_timestamp, bool)
                 and 0 < original_timestamp < expected_timestamp <= 2**63 - 1
-                and follow_up_timestamp == expected_timestamp
-                and follow_up.operation == confirmation.operation
-                and bool(follow_up.operation_id.strip())
-                and len(follow_up.operation_id) <= 160
-                and is_uuid7(follow_up.operation_id)
-                and follow_up.operation_id != confirmation.operation_id
-                and follow_up.request_payload.get("operation") == follow_up.operation
-                and follow_up.request_payload.get("operation_id") == follow_up.operation_id
+                and request_payload["operation"] == confirmation.operation
+                and bool(follow_up.intent.operation_id.strip())
+                and len(follow_up.intent.operation_id) <= 160
+                and is_uuid7(follow_up.intent.operation_id)
+                and follow_up.intent.operation_id != confirmation.operation_id
                 and follow_up_payload == original_payload
                 and follow_up.next_attempt_at == received_at + timedelta(milliseconds=retry_after_ms)
             )
@@ -659,7 +707,6 @@ def _required_id(confirmation: WmsConfirmation) -> int:
 wms_confirmation_service = WmsConfirmationService()
 
 __all__ = [
-    "WMS_CONFIRMATION_DISPATCH_WINDOW",
     "WmsConfirmationAcceptance",
     "WmsConfirmationFollowUp",
     "WmsConfirmationFollowUpPlanner",

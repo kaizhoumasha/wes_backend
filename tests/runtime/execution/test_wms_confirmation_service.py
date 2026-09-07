@@ -23,7 +23,9 @@ def test_confirmation_owner_foreign_key_resolves_in_a_fresh_process() -> None:
         [
             sys.executable,
             "-c",
+            "import sys; import deployment.plugin_composition; "
             "from src.app.execution.models.wms_confirmation import WmsConfirmation; "
+            "assert not any(name.split('.')[0] in {'rough_sorter', 'manual_bin_processing'} for name in sys.modules); "
             "fk = next(iter(WmsConfirmation.__table__.c.picking_task_id.foreign_keys)); "
             "assert fk.column.table.fullname == 'wes_biz.picking_tasks'",
         ],
@@ -257,3 +259,29 @@ async def test_lifecycle_rejects_missing_or_ambiguous_owner(owners: dict[str, in
             created_at=datetime(2026, 9, 4),
             **owners,
         )
+
+
+@pytest.mark.asyncio
+async def test_epoch_confirmation_requires_owner_validation_and_preserves_identity():
+    from unittest.mock import AsyncMock
+
+    owner = AsyncMock()
+    owner.validate_owner.return_value = True
+    repository = FakeWmsConfirmationRepository()
+    service = WmsConfirmationService(repository=repository, epoch_owner=owner)
+    now = datetime(2026, 8, 1)
+    kwargs = {
+        "operation": "outbound.bin.return_batch@v1",
+        "operation_id": "epoch-request",
+        "line_run_epoch_id": 71,
+        "request_payload": {"data": {}},
+        "deadline_at": now + timedelta(minutes=5),
+        "created_at": now,
+    }
+    first = await service.create_or_get(object(), **kwargs)
+    assert first.confirmation.line_run_epoch_id == 71
+    assert (await service.create_or_get(object(), **kwargs)).duplicate
+    assert owner.validate_owner.await_count == 1
+    owner.validate_owner.return_value = False
+    with pytest.raises(ValueError):
+        await service.create_or_get(object(), **(kwargs | {"operation_id": "other"}))

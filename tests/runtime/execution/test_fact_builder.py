@@ -14,6 +14,7 @@ from wes_plugin_sdk import (
     TransportResultReadyFact,
     WmsResultReadyFact,
 )
+from wes_plugin_sdk.wms_types import AdmissionAccepted, AdmissionOutcome
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -101,6 +102,12 @@ def test_wms_result_uses_validated_operation_identity() -> None:
             InboundEvidenceKind.WMS_RESULT,
             operation="inbound.material.admission_decide@v1",
             operation_id="019cd8ce-34b7-7000-8000-000000000001",
+            normalized_payload={
+                "operation_id": "019cd8ce-34b7-7000-8000-000000000001",
+                "code": "DECIDED",
+                "timestamp": 1,
+                "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
+            },
         ),
         _execution(),
     )
@@ -111,6 +118,7 @@ def test_wms_result_uses_validated_operation_identity() -> None:
         fact_version="1.0",
         material_execution_id="EXEC-001",
         operation_id="019cd8ce-34b7-7000-8000-000000000001",
+        outcome=AdmissionOutcome(AdmissionAccepted("PKG-1", "ADM-1")),
     )
 
 
@@ -230,7 +238,7 @@ def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() 
                 "type": "ONE_LAYER_BIN_CELL",
                 "rack_id": "RACK-1",
                 "rack_slot_code": "SLOT-1",
-                "bin_id": "BIN-1",
+                "bin_code": "BIN-1",
                 "bin_cell_id": "CELL-1",
             },
             (),
@@ -280,3 +288,9 @@ def test_unapplied_or_mismatched_evidence_fails_closed(
 ) -> None:
     with pytest.raises(ValueError):
         _builder().build(evidence, execution)
+
+
+@pytest.mark.parametrize("operation", ["outbound.picking_task.plan_delta@v1", "outbound.picking_task.issued@v1"])
+def test_plan_events_cannot_be_interpreted_as_material_recovery(operation: str) -> None:
+    with pytest.raises(ValueError, match="WMS_EVENT 只接受 recovery_decided"):
+        _builder().build(_evidence(InboundEvidenceKind.WMS_EVENT, operation=operation), _execution())

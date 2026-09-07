@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, CheckConstraint, Index, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, Index, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -18,6 +18,7 @@ class PositionProjection(EnterpriseMixin, DataTableMixin, table=True):
     __tablename__: ClassVar[str] = "position_projections"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
+        CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         CheckConstraint("object_type IN ('RACK', 'BIN')", name="position_projection_object_type_valid"),
         CheckConstraint(
             "(object_type = 'RACK' AND bin_execution_id IS NULL) OR "
@@ -42,7 +43,7 @@ class PositionProjection(EnterpriseMixin, DataTableMixin, table=True):
     )
     position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
-    arrival_face: str | None = Field(default=None, sa_type=Text)
+    arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     source_operation_id: str = Field(max_length=36)
     source_transport_task_id: str = Field(max_length=80)
 

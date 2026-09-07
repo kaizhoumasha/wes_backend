@@ -915,7 +915,7 @@ def test_phase10_prelock_registry_covers_frozen_categories_with_final_dispositio
     for category, actual_ids in actual_by_category.items():
         assert actual_ids <= _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY[category]
     assert actual_by_category["schema-deferred"] == _PHASE10_PRELOCK_ENTRY_IDS_BY_CATEGORY["schema-deferred"]
-    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 73
+    assert sum(len(entry_ids) for entry_ids in actual_by_category.values()) == 72
     assert not any(entry.classification_status == "pending-review" for entry in parse_entries())
 
 

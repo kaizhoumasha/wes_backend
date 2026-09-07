@@ -371,7 +371,17 @@ async def test_510056_debug_rack_routes_dispatch_exact_canonical_wire(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("face", "expected_status"),
-    [(" ", 202), ("", 422), ("\x00", 422), (90, 422), (True, 422)],
+    [
+        (" ", 202),
+        ("x" * 10, 202),
+        ("面" * 10, 202),
+        ("x" * 11, 422),
+        ("面" * 11, 422),
+        ("", 422),
+        ("\x00", 422),
+        (90, 422),
+        (True, 422),
+    ],
 )
 async def test_debug_rack_face_is_a_strict_non_empty_opaque_string(face: object, expected_status: int) -> None:
     runtime = _runtime()

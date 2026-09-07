@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from src.app.device.contracts import EcsCommandResult, EcsCommandResultValue
-from src.app.wms_adapter.inbound_wire import parse_outbound_response
+from src.app.wms_adapter.inbound_material.typed import decode_outcome
+from wes_plugin_sdk import AdmissionAccepted, MaterialRejected, TargetAssigned
 
 from rough_sorter.application.values import (
     COMMAND_SOURCE_PATTERN,
@@ -13,7 +14,6 @@ from rough_sorter.application.values import (
     command_position,
     device_binding,
     device_step,
-    positive_int,
     required_string,
     strict_object,
     validate_source_evidence_for_step,
@@ -46,7 +46,7 @@ async def completed_response(
     required_result: str,
     confirmations: WmsConfirmationRepositoryPort,
     evidences: EvidenceRepositoryPort,
-) -> dict[str, Any]:
+) -> AdmissionAccepted | TargetAssigned:
     if execution.id is None:
         raise ValueError("completed confirmation lookup requires persisted execution")
     records = await confirmations.list_for_execution(db, execution.id)
@@ -67,10 +67,12 @@ async def completed_response(
         or response_evidence.operation_id != matches[0].operation_id
     ):
         raise ValueError("completed confirmation response evidence correlation 不匹配")
-    response = parse_outbound_response(operation, 200, response_evidence.normalized_payload).model_dump(
-        mode="json", exclude_none=True
-    )
-    return cast("dict[str, Any]", response["data"])
+    result = decode_outcome(
+        operation, response_evidence.normalized_payload, material_trace_id=execution.material_trace_id
+    ).result
+    if not isinstance(result, (AdmissionAccepted, TargetAssigned)):
+        raise ValueError("completed confirmation requires admission ACCEPT or target ASSIGNED")
+    return result
 
 
 async def build_device_fact(
@@ -181,15 +183,15 @@ async def build_device_fact(
             confirmations=confirmations,
             evidences=evidences,
         )
-        if admission_data.get("result") != "ACCEPT":
+        if not isinstance(admission_data, AdmissionAccepted):
             raise ValueError("TRANSFER callback 缺少已完成 admission ACCEPT")
         return DevicePositionConfirmedFact(
             **common,
             outcome=DeviceOutcome.SUCCESS,
             actual_position=actual,
             request_operation_id=command.command_code,
-            pkg_id=required_string(admission_data.get("pkg_id"), "pkg_id"),
-            inbound_admission_id=required_string(admission_data.get("inbound_admission_id"), "inbound_admission_id"),
+            pkg_id=admission_data.pkg_id,
+            inbound_admission_id=admission_data.inbound_admission_id,
             current_rack_id=await current_rack_id(db, runtime),
         )
     if step is DeviceStep.PLACEMENT_TO_CELL:
@@ -209,9 +211,9 @@ async def build_device_fact(
             confirmations=confirmations,
             evidences=evidences,
         )
-        if admission_data.get("result") != "ACCEPT" or target_data.get("result") != "ASSIGNED":
+        if not isinstance(admission_data, AdmissionAccepted) or not isinstance(target_data, TargetAssigned):
             raise ValueError("placement callback 缺少已完成 admission/target 决定")
-        assigned_position = wire_position(target_data.get("target_position"), execution.material_trace_id, "RACK_CELL")
+        assigned_position = wire_position(target_data.target_position, execution.material_trace_id, "RACK_CELL")
         if assigned_position != target:
             raise ValueError("placement command target 与 WMS assignment 不匹配")
         return DevicePositionConfirmedFact(
@@ -219,22 +221,21 @@ async def build_device_fact(
             outcome=DeviceOutcome.SUCCESS,
             actual_position=actual,
             request_operation_id=command.command_code,
-            pkg_id=required_string(admission_data.get("pkg_id"), "pkg_id"),
-            inbound_admission_id=required_string(admission_data.get("inbound_admission_id"), "inbound_admission_id"),
-            target_assignment_id=required_string(target_data.get("target_assignment_id"), "target_assignment_id"),
-            placement_sequence=positive_int(target_data.get("placement_sequence"), "placement_sequence"),
+            pkg_id=admission_data.pkg_id,
+            inbound_admission_id=admission_data.inbound_admission_id,
+            target_assignment_id=target_data.target_assignment_id,
+            placement_sequence=target_data.placement_sequence,
             placed_at_ms=result.finish_time,
         )
     if step in {DeviceStep.MEASUREMENT_TO_NG, DeviceStep.PLACEMENT_TO_NG}:
-        source_response = parse_outbound_response(
+        source_data = decode_outcome(
             required_string(source_evidence.operation, "source evidence operation"),
-            200,
             source_evidence.normalized_payload,
-        ).model_dump(mode="json", exclude_none=True)
-        source_data = cast("dict[str, Any]", source_response["data"])
-        if source_data.get("result") != "REJECT":
+            material_trace_id=execution.material_trace_id,
+        ).result
+        if not isinstance(source_data, MaterialRejected):
             raise ValueError("NG callback source evidence 必须是 WMS REJECT")
-        destination = wire_position(source_data.get("ng_destination"), execution.material_trace_id, "NG_POSITION")
+        destination = wire_position(source_data.ng_destination, execution.material_trace_id, "NG_POSITION")
         if destination != target:
             raise ValueError("NG command target 与 WMS reject destination 不匹配")
         return DevicePositionConfirmedFact(
@@ -243,7 +244,7 @@ async def build_device_fact(
             actual_position=actual,
             request_operation_id=command.command_code,
             ng_evidence_id=str(evidence.id),
-            reason_code=required_string(source_data.get("reason_code"), "reason_code"),
+            reason_code=required_string(source_data.reason_code, "reason_code"),
         )
     raise ValueError(f"device result step 尚未装配: {step.value}")
 

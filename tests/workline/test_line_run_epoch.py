@@ -51,6 +51,9 @@ class FakeLineRunEpochRepository:
         self.active_epoch = epoch
         return epoch
 
+    async def has_unclosed_confirmations(self, _db: object, _line_run_epoch_id: int) -> bool:
+        return False
+
     async def close_epoch(self, _db: object, epoch: LineRunEpoch, *, closed_at: datetime) -> LineRunEpoch:
         self.calls.append(f"epoch-close:{epoch.id}")
         epoch.status = LineRunEpochStatus.CLOSED

@@ -241,6 +241,7 @@ class TransportMember(BaseMixin, table=True):
     __tablename__ = "transport_members"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
+        CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         UniqueConstraint("transport_task_id", "ordinal", name="ux_transport_members_task_ordinal"),
         UniqueConstraint("transport_task_id", "object_id", name="ux_transport_members_task_object"),
         {"schema": RUNTIME_SCHEMA},
@@ -261,7 +262,7 @@ class TransportMember(BaseMixin, table=True):
     final_position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
     failure_code: str | None = Field(default=None, max_length=120)
-    arrival_face: str | None = Field(default=None, sa_type=Text)
+    arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     last_operation_id: str | None = Field(default=None, max_length=36)
     updated_at: datetime
 
@@ -272,6 +273,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
     __tablename__ = "transport_debug_position_projections"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
+        CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         CheckConstraint(
             "object_type IN ('RACK', 'BIN')",
             name="transport_debug_position_projection_object_type_valid",
@@ -293,7 +295,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
     object_id: str = Field(max_length=100)
     position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
-    arrival_face: str | None = Field(default=None, sa_type=Text)
+    arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     source_operation_id: str = Field(max_length=36)
     source_transport_task_id: str = Field(
         foreign_key=f"{RUNTIME_SCHEMA}.transport_tasks.transport_task_id",

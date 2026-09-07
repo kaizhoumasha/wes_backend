@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
 from src.app.execution.models import WmsConfirmation
+from src.app.wms_adapter.inbound_material.typed import decode_request
 
 from rough_sorter.application.wms_follow_up import RoughSorterWmsFollowUpPlanner
 
@@ -53,13 +55,10 @@ async def test_wait_follow_up_uses_new_identity_and_preserves_canonical_request(
     )
 
     assert follow_up is not None
-    assert follow_up.operation == confirmation.operation
-    assert follow_up.operation_id == follow_up_operation_id
-    assert follow_up.request_payload == {
-        **confirmation.request_payload,
-        "operation_id": follow_up_operation_id,
-        "timestamp": 1_787_043_601_000,
-    }
+    assert follow_up.intent == replace(
+        decode_request(confirmation.request_payload, fact_id="wms-follow-up"),
+        operation_id=follow_up_operation_id,
+    )
     assert follow_up.next_attempt_at == received_at + timedelta(seconds=60)
 
 

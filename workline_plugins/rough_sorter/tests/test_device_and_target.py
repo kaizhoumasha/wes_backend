@@ -8,11 +8,14 @@ from conftest import (
 )
 from wes_plugin_sdk import (
     CreateDeviceCommand,
-    CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
+    InboundWmsIntent,
     PauseForReconciliation,
+    ReplacementPlanIntent,
+    TargetIntent,
     Wait,
+    wms_operations,
 )
 
 from rough_sorter.facts import (
@@ -128,17 +131,19 @@ def test_outlet_success_requests_target_cell_and_does_not_place_early() -> None:
 
     decision = DevicePositionConfirmedHandler(*readers)(fact)[0]
 
-    assert isinstance(decision, CreateWmsConfirmation)
-    assert decision.operation == "inbound.material.target_decide@v1"
+    assert isinstance(decision, InboundWmsIntent)
+    assert isinstance(decision, TargetIntent)
     assert decision.operation_id == fact.request_operation_id
-    assert decision.request_data == {
-        "material_execution_id": EXECUTION_ID,
-        "material_trace_id": TRACE_ID,
-        "pkg_id": "pkg-1",
-        "inbound_admission_id": "admission-1",
-        "source_position": {"type": "HANDOFF_POSITION", "location_code": "PIPELINE_OUTLET"},
-        "current_rack_id": "rack-current",
-    }
+    assert decision == wms_operations.inbound_material_target_decide(
+        fact_id=fact.fact_id,
+        operation_id=fact.request_operation_id,
+        material_execution_id=EXECUTION_ID,
+        material_trace_id=TRACE_ID,
+        pkg_id="pkg-1",
+        inbound_admission_id="admission-1",
+        source_position=fact.actual_position,
+        current_rack_id="rack-current",
+    )
 
 
 @pytest.mark.parametrize("step", [DeviceStep.MEASUREMENT_TO_NG, DeviceStep.PLACEMENT_TO_NG])
@@ -161,8 +166,8 @@ def test_ng_report_references_callback_evidence_once(step: DeviceStep) -> None:
 
     decision = DevicePositionConfirmedHandler()(fact)[0]
 
-    assert isinstance(decision, CreateWmsConfirmation)
-    assert decision.request_data["ng_evidence_id"] == "3"
+    assert isinstance(decision, InboundWmsIntent)
+    assert decision.ng_evidence_id == "3"
 
 
 @pytest.mark.parametrize(
@@ -266,7 +271,7 @@ def test_non_success_device_result_rejects_success_branch_fields(field_name: str
                     "RACK_CELL",
                     rack_id="rack-current",
                     rack_slot_code="slot-1",
-                    bin_id="bin-1",
+                    bin_code="bin-1",
                     bin_cell_id="cell-1",
                 ),
                 "actual_position": _position(
@@ -274,7 +279,7 @@ def test_non_success_device_result_rejects_success_branch_fields(field_name: str
                     "RACK_CELL",
                     rack_id="rack-current",
                     rack_slot_code="slot-1",
-                    bin_id="bin-1",
+                    bin_code="bin-1",
                     bin_cell_id="cell-1",
                 ),
                 "request_operation_id": "placement-operation",
@@ -340,7 +345,7 @@ def test_assigned_target_defers_when_placement_device_is_not_ready() -> None:
         "RACK_CELL",
         rack_id="rack-current",
         rack_slot_code="slot-1",
-        bin_id="bin-1",
+        bin_code="bin-1",
         bin_cell_id="cell-1",
     )
     fact = _target_fact(
@@ -369,7 +374,7 @@ def test_assigned_target_creates_placement_pick_and_put() -> None:
         "RACK_CELL",
         rack_id="rack-current",
         rack_slot_code="slot-1",
-        bin_id="bin-1",
+        bin_code="bin-1",
         bin_cell_id="cell-1",
     )
     readers = _readers(
@@ -408,7 +413,7 @@ def test_assigned_target_for_fenced_current_rack_reconciles_without_device_comma
             "RACK_CELL",
             rack_id="rack-current",
             rack_slot_code="slot-1",
-            bin_id="bin-1",
+            bin_code="bin-1",
             bin_cell_id="cell-1",
         ),
         target_assignment_id="assignment-1",
@@ -434,7 +439,7 @@ def test_assigned_target_for_different_actual_rack_reconciles_without_device_com
             "RACK_CELL",
             rack_id="rack-actual",
             rack_slot_code="slot-2",
-            bin_id="bin-2",
+            bin_code="bin-2",
             bin_cell_id="cell-2",
         ),
         target_assignment_id="assignment-2",
@@ -459,7 +464,7 @@ def test_placement_device_result_rejects_incomplete_rack_cell_identity() -> None
         "RACK_CELL",
         rack_id="rack-current",
         rack_slot_code="slot-1",
-        bin_id="bin-1",
+        bin_code="bin-1",
     )
 
     with pytest.raises(ValueError, match="RACK_CELL requires complete rack/bin identity"):
@@ -489,13 +494,15 @@ def test_no_available_cell_requests_stable_replacement_plan_without_device_comma
 
     decisions = TargetDecidedHandler(*readers)(fact)
 
-    assert decisions[0].operation == "inbound.source_rack.replacement_plan_decide@v1"
+    assert isinstance(decisions[0], ReplacementPlanIntent)
     assert decisions[0].operation_id == fact.request_operation_id
-    assert decisions[0].request_data == {
-        "material_execution_id": EXECUTION_ID,
-        "material_trace_id": TRACE_ID,
-        "current_rack_id": "rack-current",
-    }
+    assert decisions[0] == wms_operations.inbound_source_rack_replacement_plan_decide(
+        fact_id=fact.fact_id,
+        operation_id=fact.request_operation_id,
+        material_execution_id=EXECUTION_ID,
+        material_trace_id=TRACE_ID,
+        current_rack_id="rack-current",
+    )
     assert not any(isinstance(decision, CreateDeviceCommand) for decision in decisions)
 
 

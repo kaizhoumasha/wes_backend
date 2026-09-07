@@ -9,6 +9,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.execution.locks import epoch_lifecycle_lock_identity
+from src.app.execution.models.wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 from src.app.workline.models.line_run_epoch import (
     LineRunEpoch,
     LineRunEpochDeviceBinding,
@@ -132,8 +133,26 @@ class LineRunEpochRepository(BaseRepository[LineRunEpoch]):
 
     async def get_by_id_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> LineRunEpoch | None:
         columns = cast("Any", LineRunEpoch).__table__.c
-        result = await db.execute(select(LineRunEpoch).where(columns.id == line_run_epoch_id).with_for_update())
+        result = await db.execute(
+            select(LineRunEpoch)
+            .where(columns.id == line_run_epoch_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return result.scalar_one_or_none()
+
+    async def has_unclosed_confirmations(self, db: AsyncSession, line_run_epoch_id: int) -> bool:
+        columns = cast("Any", WmsConfirmation).__table__.c
+        return bool(
+            await db.scalar(
+                select(columns.id)
+                .where(
+                    columns.line_run_epoch_id == line_run_epoch_id,
+                    columns.status != WmsConfirmationStatus.COMPLETED,
+                )
+                .limit(1)
+            )
+        )
 
     async def close_epoch(
         self,

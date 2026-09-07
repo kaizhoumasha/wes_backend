@@ -23,13 +23,13 @@ from src.app.execution.services import (
     InboundEvidenceConflictResult,
     InboundEvidenceService,
 )
-from src.app.wms_adapter.inbound_wire import (
-    MAX_INBOUND_BODY_BYTES,
+from src.app.wms_adapter.inbound_material.wire import (
     RECOVERY_OPERATION,
     RecoveryEvent,
     parse_recovery_event,
 )
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
+from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES
 from src.core.uuid7 import is_uuid7
 from src.utils.timezone import timezone
 from wes_plugin_sdk.validation import is_persistable_text
@@ -183,7 +183,7 @@ class RecoveryEventHandler:
         self._recorder = recorder
 
     async def handle(self, raw_body: bytes) -> RecoveryEventResponse:  # noqa: PLR0911 - 入口按关联阶段明确拒绝。
-        if len(raw_body) > MAX_INBOUND_BODY_BYTES:
+        if len(raw_body) > MAX_WMS_EVENT_BODY_BYTES:
             return RecoveryEventResponse(413, {})
         try:
             raw_value = loads_transport_json(raw_body.decode("utf-8"))

@@ -22,6 +22,7 @@ from src.app.execution.models import (
     MaterialExecution,
     MaterialExecutionStatus,
 )
+from src.app.wms_adapter.inbound_material.typed import decode_outcome
 
 if TYPE_CHECKING:
     from src.app.workline.models import LineRunEpochPositionBinding
@@ -60,6 +61,11 @@ class FactBuilder:
             return WmsResultReadyFact(
                 **common,
                 operation_id=_required(evidence.operation_id, "operation_id"),
+                outcome=decode_outcome(
+                    _required(evidence.operation, "operation"),
+                    evidence.normalized_payload,
+                    material_trace_id=execution.material_trace_id,
+                ),
             )
         if kind is InboundEvidenceKind.TRANSPORT_RESULT:
             self._validate_transport_causal(evidence, execution, causal_evidence)
@@ -187,7 +193,7 @@ def _device_position(
         material_trace_id=material_trace_id,
         rack_id=value.get("rack_id") if isinstance(value.get("rack_id"), str) else None,
         rack_slot_code=value.get("rack_slot_code") if isinstance(value.get("rack_slot_code"), str) else None,
-        bin_id=value.get("bin_id") if isinstance(value.get("bin_id"), str) else None,
+        bin_code=value.get("bin_code") if isinstance(value.get("bin_code"), str) else None,
         bin_cell_id=value.get("bin_cell_id") if isinstance(value.get("bin_cell_id"), str) else None,
     )
 

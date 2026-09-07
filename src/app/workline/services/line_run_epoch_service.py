@@ -46,6 +46,8 @@ class LineRunEpochRepositoryPort(Protocol):
 
     async def close_epoch(self, db: Any, epoch: LineRunEpoch, *, closed_at: datetime) -> LineRunEpoch: ...
 
+    async def has_unclosed_confirmations(self, db: Any, line_run_epoch_id: int) -> bool: ...
+
 
 class UnclosedCommandRepositoryPort(Protocol):
     async def has_unclosed_for_epoch_for_update(self, db: Any, line_run_epoch_id: int) -> bool: ...
@@ -143,6 +145,8 @@ class LineRunEpochService:
             raise RuntimeError("活动 Epoch 缺少持久化主键")
         if await command_repository.has_unclosed_for_epoch_for_update(db, active_id):
             raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在 unclosed DeviceCommand")
+        if await self._repository.has_unclosed_confirmations(db, active_id):
+            raise ActiveLineRunEpochExistsError(f"Epoch {active.epoch_code} 仍存在未闭合 WMS 确认")
         await self._projections.delete_for_epoch(db, active_id)
         return await self._repository.close_epoch(db, active, closed_at=closed_at)
 

@@ -20,7 +20,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
 
     assert request_body["required"] is True
     request_variants = request_schema["oneOf"]
-    assert len(request_variants) == 4
+    assert len(request_variants) == 6
     assert all(variant["type"] == "object" for variant in request_variants)
     assert all(variant["additionalProperties"] is False for variant in request_variants)
     assert all(
@@ -31,12 +31,17 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         ["transport.task.resulted@v1"],
         ["inbound.execution.recovery_decided@v1"],
         ["outbound.picking_task.issued@v1"],
+        ["outbound.picking_task.plan_delta@v1"],
+        ["outbound.picking_task.queue_changed@v1"],
     ]
     for variant in request_variants:
         timestamp = variant["properties"]["timestamp"]
         assert timestamp["type"] == "integer"
         assert timestamp["format"] == "int64"
-        expected_minimum = 0 if variant["properties"]["operation"]["enum"][0].startswith("transport.") else 1
+        operation_name = variant["properties"]["operation"]["enum"][0]
+        expected_minimum = (
+            1 if operation_name in {"inbound.execution.recovery_decided@v1", "outbound.picking_task.issued@v1"} else 0
+        )
         assert timestamp["minimum"] == expected_minimum
         assert timestamp["maximum"] >= 2**63 - 1
         assert timestamp["description"] == "Unix 毫秒时间戳"
@@ -60,6 +65,17 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     assert picking_task_data["properties"]["task_type"]["enum"] == ["MANUAL", "AUTO"]
     assert picking_task_data["properties"]["queue_revision"]["minimum"] == 1
     assert picking_task_data["properties"]["queue_revision"]["maximum"] == 1
+    queue_data = request_variants[5]["properties"]["data"]
+    assert queue_data["required"] == ["task_id", "queue_revision"]
+    assert queue_data["additionalProperties"] is False
+    assert set(queue_data["properties"]) == {"task_id", "queue_revision", "dispatch_sequence", "not_before"}
+    assert queue_data["properties"]["queue_revision"]["type"] == "integer"
+    assert queue_data["properties"]["queue_revision"]["minimum"] == 2
+    # FastAPI 的 OpenAPI 模型将 maximum 序列化为 float。
+    assert queue_data["properties"]["queue_revision"]["maximum"] == float(2**63 - 1)
+    assert queue_data["properties"]["dispatch_sequence"]["minimum"] == 1
+    assert queue_data["properties"]["not_before"]["minimum"] == 0
+    assert queue_data["anyOf"] == [{"required": ["dispatch_sequence"]}, {"required": ["not_before"]}]
     assert set(operation["responses"]) == {"200", "202", "400", "401", "409", "413", "422", "503"}
     assert operation["responses"]["200"]["description"] == "相同 WMS event 已可靠持久化"
     assert operation["responses"]["202"]["description"] == "WMS event 已可靠持久化"
@@ -81,6 +97,11 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     for status_code in ("400", "401", "413"):
         assert "content" not in operation["responses"][status_code]
 
+    face_schemas = [
+        schema["properties"]["rack_face"]
+        for schema in _walk_schemas(request_schema)
+        if "rack_face" in schema.get("properties", {})
+    ]
     constrained_strings = [
         schema
         for schema in _walk_schemas(request_schema)
@@ -88,8 +109,9 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     ]
     assert constrained_strings
     for schema in constrained_strings:
-        if schema.get("description") == "Opaque non-empty face value without NUL; preserve exactly":
-            assert not {"enum", "maxLength", "allOf"} & set(schema)
+        if schema in face_schemas:
+            assert schema["maxLength"] == 10
+            assert not {"enum", "allOf"} & set(schema)
             assert re.search(schema["pattern"], "\x00") is None
             assert re.search(schema["pattern"], " ") is not None
             continue
@@ -113,6 +135,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         == {
             "type": "string",
             "minLength": 1,
+            "maxLength": 10,
             "pattern": "^[^\\u0000]+$",
             "description": "Opaque non-empty face value without NUL; preserve exactly",
         }

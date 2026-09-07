@@ -127,7 +127,8 @@ API → Service → Repository → Database
   工作线 Decision、结果解释、因果恢复和业务顺序仍由插件拥有。
 - 代码只有两个实现根和一个关联目录：`src/` 是宿主基础实现，其中 `src/wes_plugin_sdk/` 是可独立安装的公开基础 SPI/不可变合同；
   `workline_plugins/` 是业务实现；`deployment/` 只负责显式关联已安装插件。`workline_plugins` 可依赖宿主基础端口和 SDK，宿主与 SDK
-  均不得导入具体插件。SDK 不放数据库、HTTP、Celery、Repository、operation DTO 或工作线业务流程。
+  均不得导入具体插件。SDK 可承载无副作用的 typed WMS Operation intent/outcome 和纯 facade 合同；不放数据库、HTTP、Celery、
+  Repository、OpenAPI/wire DTO 或工作线业务流程。
 - 设备供应商私有协议和实现不进入 WES 核心仓库。
 
 ### 4.4 WES 与 WMS Operation 法则
@@ -136,16 +137,40 @@ API → Service → Repository → Database
   合同为准。禁止 generic `call`、动态 registry、默认 handler、业务 fallback 或猜测未批准字段。
 - 公共能力只实现一次：`WmsClient`/HTTP Transport 单次有界收发，`WmsConfirmation` 承接 WES→WMS 可靠义务，`InboundEvidence` 与唯一
   Event route 承接 WMS→WES 可靠接收。operation 不得重建 HTTP、持久化、幂等、重试、并发领取或 outbox。
+- Operation 基础能力与插件消费解耦，允许零/一/多消费者；插件安装状态不动态注册或注销 operation。插件缺席只禁止新业务触发，
+  既有可靠义务与迟到结果继续保存；冻结插件版本不可用时保留原身份、证据和资源围栏并进入对账，不回退默认消费者。
+- 插件只通过单一 `wms_operations` facade 的固定 typed methods 创建不可变 intent，不传任意 operation 字符串或裸 `dict`，不执行 I/O。
+  宿主可靠保存封闭响应后构造 typed outcome，交给冻结业务上下文对应的插件；插件不解析原始 JSON 或按 operation 字符串分派。
+  内核私有通用 envelope 不得作为 generic 构造入口重新导出；wire、事务、HTTP、领取、重试和恢复始终由宿主拥有。
 - WES→WMS：插件决定触发时机并一次性给出完整业务 `data`；内核同事务冻结 `(operation, operation_id)`、规范化 payload、owner 和可靠
   义务；Adapter 只校验固定合同、发送一次并翻译封闭响应，不拥有业务状态或重试循环。
 - WMS→WES：唯一 Event route 有界读取、校验公共信封并按 operation 静态选择严格 parser/handler；可识别 identity 后可靠保存首次接收或
-  拒绝，成功 ACK 晚于 evidence 提交。业务在接收提交后以独立事务异步应用；共享入口不得查询插件业务表或按当前插件/default owner 路由。
+  拒绝，成功 ACK 晚于 Evidence 提交。每个 operation 在所属合同显式声明唯一 ACK 模式，分类字段由公共回调合同定义：
+  业务事实构成接收成功时，Evidence 与该业务事实同事务提交后才返回 `RECEIVED`；Evidence 接收后异步应用时，Evidence 提交即可返回
+  接收 ACK，业务由后续独立事务/worker 应用。两类模式均在提交后才启动外部副作用；共享入口不得查询插件业务表或按当前插件/default owner 路由。
 - 公开幂等身份仅为 `(operation, operation_id)`；相同身份只能重放相同规范化 payload，内容漂移必须冲突。技术重试保留原身份和内容；
-  重新求值仅按合同使用新 identity。ACK 不代表业务应用、外部接纳或物理完成；未知状态保留原身份、证据和资源围栏直至权威闭合。
+  重新求值仅按合同使用新 identity。ACK 只证明所属合同声明的接收事实，不推定后续业务应用、外部接纳或物理完成；未知状态保留原身份、
+  证据和资源围栏直至权威闭合。
 - 新 operation 只增加同域 wire/OpenAPI 及该方向所需的 Adapter 或 Handler；业务数据、结果解释、因果恢复和顺序归插件。共享测试证明
   wire/可靠机制，operation 测试验证接入差异，插件测试证明业务，禁止复制公共机制的完整测试矩阵。
 
 修改架构、共享合同或所有权边界前，必须读取对应架构/合同文档，不以历史测试为当前合同证据。
+
+### 4.5 全业务流程的简化设计原则
+
+- 以已确认的业务需求和正常流程为依据，采用最简单、直接、易维护的实现；不因假设中的小概率事件预建长期机制。
+- 已有准入检查和生命周期约束能够排除的场景，不再设计另一套容错、恢复或跨上下文延续流程；违反约束时明确报错，复用已有证据与对账能力。
+- 尊重已确认的系统职责和事实来源；不重复实现其他系统负责的交互，不对已经足够的权威事实增加二次确认。
+- 复用已有基础能力，不提前增加模式开关、状态、抽象层或扩展框架；只有明确需求、合同要求或实际问题证明必要时才扩展。
+- 按语义确定唯一归属：同一规则的常量、值对象和校验由所属能力统一维护；不同业务不因值相同或结构相似就强行共用。
+  含义明确的一次性值可就地表达，不建立全仓常量中心。
+- 可调整参数通过所属能力的唯一配置入口管理，明确默认值、合法范围和生效时机；配置说明引用该入口，不另存一套默认值。
+  固定协议和领域不变量保留在代码合同中，不为避免修改代码而配置化；入口导航见 [配置索引](docs/devops/configuration-index.md)。
+- 类型转换止于必要边界：同一信任边界内，已验证的不可变类型直接使用，不重复拆装、复制模型或校验相同字段；
+  外部输入、持久化读取及跨对象业务关联仍按各自边界校验。
+- 替换以旧路径彻底退出为完成条件：一次性迁移宿主、SDK、插件、测试和工具中的全部消费者，删除旧定义、导出、别名、转换桥接，
+  以及由此失去用途的 helper 和 import；验证新路径后必须扫描残留，不能仅凭测试通过宣布收敛。
+- 简化不得削弱已明确的幂等、一致性和物理执行安全约束。具体业务约定放入对应合同，不将单一场景的实现选择推广为全局规则。
 
 ## 5. 变更分类与 TDD 边界
 
@@ -169,6 +194,7 @@ API → Service → Repository → Database
 详细目录规则以 `tests/README.md` 为准；以下为硬约束：
 
 - 默认 FAST 测试不得依赖真实数据库、HTTP、Celery、Redis 或容器。
+- 执行验证前确认实际配置和收集范围；快速回归不得因目录或配置差异意外启动重测试。
 - 禁止在 `tests/` 根目录新增 `test_*.py`；integration、e2e、resilience、load、mock 等重测试必须显式运行。
 - 同一行为只能有一个主要测试所有者。删除测试前先建立并通过承接测试；删除人类文档内容测试可标记 `NONE`。
 - 具体工作线/插件测试位于 `workline_plugins/<plugin_key>/tests/`；纯 Decision 层只依赖 SDK，插件应用层可依赖 `src` 基础端口。

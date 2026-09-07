@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from wes_plugin_sdk.validation import validate_opaque_face
+
 
 class TransportDebugRunStatus(StrEnum):
     RUNNING = "RUNNING"
@@ -51,6 +53,7 @@ class TransportDebugFaceGroup:
     def __post_init__(self) -> None:
         if not self.face.strip():
             raise ValueError("面值不能为空")
+        validate_opaque_face(self.face, "face")
         if not 1 <= len(self.bins) <= 4:
             raise ValueError("每个面必须选择 1～4 个料箱")
 

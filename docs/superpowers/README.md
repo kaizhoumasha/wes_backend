@@ -8,9 +8,10 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
+| `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | SPEC 已形成；未实施、未部署；设备事实缺口仅约束相关切片 |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置、基础独立性及专属配置清理 | 工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
-| `plans/2026-09-05-prepare-plugin-ownership.md` | 独立的人工 prepare 业务 owner 迁出 | ReviewRequired；从角色配置范围移除，尚未独立评审 |
+| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；prepare 所有权已收敛，插件业务触发和联合验收另行跟踪 |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、Epoch 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationFollowUp
-from src.app.wms_adapter.inbound_wire import parse_outbound_request
+from src.app.wms_adapter.inbound_material.typed import decode_request
 from src.core.uuid7 import new_uuid7
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -37,16 +37,11 @@ class RoughSorterWmsFollowUpPlanner:
         if not isinstance(retry_after_ms, int) or isinstance(retry_after_ms, bool) or retry_after_ms <= 0:
             return None
         operation_id = self._operation_id_factory()
-        request_payload = parse_outbound_request(confirmation.request_payload).model_dump(
-            mode="json",
-            exclude_none=True,
+        intent = replace(
+            decode_request(confirmation.request_payload, fact_id="wms-follow-up"), operation_id=operation_id
         )
-        request_payload["operation_id"] = operation_id
-        request_payload["timestamp"] = int(timezone.to_utc(received_at).timestamp() * 1000)
         return WmsConfirmationFollowUp(
-            operation=confirmation.operation,
-            operation_id=operation_id,
-            request_payload=request_payload,
+            intent=intent,
             next_attempt_at=received_at + timedelta(milliseconds=retry_after_ms),
         )
 

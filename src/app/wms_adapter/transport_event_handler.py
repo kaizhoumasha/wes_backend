@@ -12,10 +12,8 @@ from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
 from src.app.wms_adapter.transport_wire import UnsupportedTransportOperation, validate_callback_envelope
-from src.app.wms_adapter.wire_common import is_wire_operation, is_wire_operation_id
+from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES, is_wire_operation, is_wire_operation_id
 from src.utils.timezone import timezone
-
-MAX_TRANSPORT_EVENT_BODY_BYTES = 256 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +41,7 @@ class TransportEventHandler:
         self._recorder = recorder
 
     async def handle(self, raw_body: bytes) -> TransportEventResponse:
-        if len(raw_body) > MAX_TRANSPORT_EVENT_BODY_BYTES:
+        if len(raw_body) > MAX_WMS_EVENT_BODY_BYTES:
             return TransportEventResponse(413, {})
         raw_envelope, parsing_error = _decode_raw_envelope(raw_body)
         if parsing_error is not None:
@@ -132,7 +130,6 @@ def _rejection_message(envelope: dict[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
-    "MAX_TRANSPORT_EVENT_BODY_BYTES",
     "TransportEventHandler",
     "TransportEventResponse",
 ]

@@ -6,6 +6,8 @@
 
 from typing import Any
 
+from src.app.execution.config import WMS_CONFIRMATION_BATCH_LIMIT
+
 # ============================================
 # 定时任务配置 (Beat Schedule)
 # ============================================
@@ -77,7 +79,7 @@ beat_schedule: dict[str, dict[str, Any]] = {
     "dispatch-wms-confirmations-batch": {
         "task": "src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch",
         "schedule": 10.0,
-        "kwargs": {"limit": 100},
+        "kwargs": {"limit": WMS_CONFIRMATION_BATCH_LIMIT},
         "options": {"expires": 10.0},
     },
     "drain-safety-incidents-batch": {

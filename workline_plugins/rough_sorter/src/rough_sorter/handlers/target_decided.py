@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from wes_plugin_sdk import (
     CreateDeviceCommand,
-    CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
+    InboundWmsIntent,
     PauseForReconciliation,
     Wait,
     handler,
@@ -15,8 +15,6 @@ from wes_plugin_sdk import (
 from rough_sorter.facts import TargetDecidedFact, TargetResult
 from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
 from rough_sorter.wms_requests import replacement_plan_data
-
-REPLACEMENT_PLAN_OPERATION = "inbound.source_rack.replacement_plan_decide@v1"
 
 
 @handler(
@@ -28,7 +26,7 @@ class TargetDecidedHandler:
     def __call__(
         self,
         fact: TargetDecidedFact,
-    ) -> tuple[CreateDeviceCommand | CreateWmsConfirmation | DeferExecution | PauseForReconciliation | Wait]:
+    ) -> tuple[CreateDeviceCommand | InboundWmsIntent | DeferExecution | PauseForReconciliation | Wait]:
         snapshot = fact.runtime_snapshot
         execution = require_execution(
             snapshot.execution,
@@ -54,15 +52,7 @@ class TargetDecidedHandler:
                 ),
             )
         if fact.result is TargetResult.NO_AVAILABLE_CELL:
-            return (
-                CreateWmsConfirmation(
-                    material_execution_id=fact.material_execution_id,
-                    fact_id=fact.fact_id,
-                    operation=REPLACEMENT_PLAN_OPERATION,
-                    operation_id=fact.request_operation_id or "",
-                    request_data=replacement_plan_data(fact),
-                ),
-            )
+            return (replacement_plan_data(fact),)
         target = fact.target_position
         if target is None:
             raise ValueError("target action requires target_position")

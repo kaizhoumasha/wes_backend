@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
+from wes_plugin_sdk.prepare_policy import PrepareContext, PrepareRuntimeFacts, PrepareTaskType
 
 from src.app.device.models import Device, DeviceStatusObservation
 from src.app.execution.models import (
@@ -18,13 +19,12 @@ from src.app.execution.models import (
 )
 from src.app.execution.repositories import InboundEvidenceRepository
 from src.app.execution.services import WmsConfirmationService
-from src.app.wms_adapter.outbound_picking.adapter import PickingTaskPrepareDispatchCode
+from src.app.wms_adapter.dispatch import WmsDispatchCode
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services import (
     PickingTaskConfirmationOwnerService,
-    PickingTaskPrepareService,
+    PickingTaskPrepareCoordinator,
 )
-from src.app.wms_integration.outbound_picking.services.picking_task_prepare import MANUAL_PICKING_FLOW_MODE
 from src.app.workline.models import (
     LineRunEpoch,
     LineRunEpochDeviceBinding,
@@ -33,6 +33,8 @@ from src.app.workline.models import (
     WorkLine,
     WorkLineRunMode,
 )
+from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
+from src.core.exceptions import BusinessException
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
@@ -50,7 +52,7 @@ class _Queue:
 class _Adapter:
     async def dispatch(self, *, operation_id: str, **_kwargs: object) -> object:
         return SimpleNamespace(
-            code=PickingTaskPrepareDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": operation_id,
                 "code": "PREPARE_ACCEPTED",
@@ -83,7 +85,7 @@ async def _seed_ready_workline(db, *, now: datetime):  # type: ignore[no-untyped
         workline_id=workline.id,
         plugin_key="manual_bin_processing",
         plugin_version="0.1.0",
-        flow_mode=MANUAL_PICKING_FLOW_MODE,
+        flow_mode="MANUAL_BIN_PROCESSING",
         topology_digest="a" * 64,
         configuration_digest="b" * 64,
         configuration_snapshot_json={},
@@ -212,7 +214,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         }
 
     services = [
-        PickingTaskPrepareService(integration_session_factory, task_queue_gateway=queue)  # type: ignore[arg-type]
+        PickingTaskPrepareCoordinator(integration_session_factory, policy=_Policy(), task_queue_gateway=queue)  # type: ignore[arg-type]
         for _ in range(2)
     ]
     results = await asyncio.gather(
@@ -249,6 +251,18 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
     assert response_evidence.line_run_epoch_id is None
     assert response_evidence.material_execution_id is None
     assert queue.calls == 1
+
+    # WMS 已接纳 prepare，但任务仍在等待计划；完成的确认不能解除 Epoch 围栏。
+    async with integration_session_factory() as db:
+        line = await db.get(WorkLine, ids["workline"])
+        assert line is not None
+        with pytest.raises(BusinessException, match="未完成运行负载"):
+            await WorkLineConfigurationService(plugins=()).deactivate(db, workline_id=line.id, version=line.version)
+        await db.rollback()
+        persisted_epoch = await db.get(LineRunEpoch, ids["epoch"])
+        assert persisted_epoch is not None and persisted_epoch.status == "ACTIVE"
+        persisted_line = await db.get(WorkLine, ids["workline"])
+        assert persisted_line is not None and persisted_line.is_active
 
     async with integration_session_factory.begin() as db:
         claimed = await InboundEvidenceRepository().claim_decision_batch(
@@ -304,7 +318,9 @@ async def test_prepare_skip_locked_allows_only_one_workline_to_claim_one_task(
 
     results = await asyncio.gather(
         *(
-            PickingTaskPrepareService(integration_session_factory, task_queue_gateway=queue).prepare_next_for_workline(
+            PickingTaskPrepareCoordinator(
+                integration_session_factory, policy=_Policy(), task_queue_gateway=queue
+            ).prepare_next_for_workline(
                 workline_id,
                 now=now,
             )
@@ -383,8 +399,9 @@ async def test_prepare_rolls_back_task_binding_when_confirmation_creation_fails(
         )
         ids = (workline.id, epoch.id, device.id, task.id, task.issued_evidence_id)
 
-    service = PickingTaskPrepareService(
+    service = PickingTaskPrepareCoordinator(
         integration_session_factory,
+        policy=_Policy(),
         confirmation_service=_FailingConfirmations(),  # type: ignore[arg-type]
         task_queue_gateway=_Queue(),  # type: ignore[arg-type]
     )
@@ -413,3 +430,13 @@ async def test_prepare_rolls_back_task_binding_when_confirmation_creation_fails(
         await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == ids[1]))
         await db.execute(delete(Device).where(Device.id == ids[2]))
         await db.execute(delete(WorkLine).where(WorkLine.id == ids[0]))
+
+
+class _Policy:
+    """核心数据库测试只选择队列类型；人工准入由插件纯测试拥有。"""
+
+    def select_task_type(self, context: PrepareContext) -> PrepareTaskType:
+        return PrepareTaskType.MANUAL
+
+    def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
+        return True

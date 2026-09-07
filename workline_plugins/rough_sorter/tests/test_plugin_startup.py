@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from src.app.transport.contracts import (
     TransportOutcome,
     TransportOutcomeStatus,
 )
+from src.app.wms_adapter.inbound_material.typed import decode_outcome, encode_request
 from src.app.workline.epoch_digest import configuration_digest, topology_digest
 from src.app.workline.models.line_run_epoch import (
     LineRunEpoch,
@@ -220,7 +222,7 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
                         "type": "ONE_LAYER_BIN_CELL",
                         "rack_id": "R-1",
                         "rack_slot_code": "S-1",
-                        "bin_id": "B-1",
+                        "bin_code": "B-1",
                         "bin_cell_id": "C-1",
                     },
                     "placement_sequence": 1,
@@ -265,7 +267,9 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
         evidences=_Evidences(responses[0], responses[1]),
     )
 
-    assert data["result"] == "ASSIGNED"
+    from wes_plugin_sdk import TargetAssigned
+
+    assert isinstance(data, TargetAssigned)
 
 
 class _Readiness:
@@ -608,7 +612,14 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
     )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
-    base = WmsResultReadyFact("evidence:32", "32", "1.0", "EXEC-21", ADMISSION_OPERATION_ID)
+    base = WmsResultReadyFact(
+        "evidence:32",
+        "32",
+        "1.0",
+        "EXEC-21",
+        ADMISSION_OPERATION_ID,
+        decode_outcome(evidence.operation, evidence.normalized_payload, material_trace_id="TRACE-21"),
+    )
 
     waiting = await factory.build(object(), base)
     assert waiting.device_ready is False
@@ -645,7 +656,7 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
                     "type": "ONE_LAYER_BIN_CELL",
                     "rack_id": "RACK-1",
                     "rack_slot_code": "SLOT-1",
-                    "bin_id": "BIN-1",
+                    "bin_code": "BIN-1",
                     "bin_cell_id": "CELL-1",
                 },
                 "placement_sequence": 1,
@@ -691,7 +702,14 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     factory._device_readiness = _Readiness()  # type: ignore[attr-defined]
     rack_bindings = _RackBindings(fenced=True)
     factory._rack_replacement_bindings = rack_bindings  # type: ignore[attr-defined]
-    base = WmsResultReadyFact("evidence:33", "33", "1.0", "EXEC-21", TARGET_OPERATION_ID)
+    base = WmsResultReadyFact(
+        "evidence:33",
+        "33",
+        "1.0",
+        "EXEC-21",
+        TARGET_OPERATION_ID,
+        decode_outcome(evidence.operation, evidence.normalized_payload, material_trace_id="TRACE-21"),
+    )
 
     fact = await factory.build(object(), base)
 
@@ -737,7 +755,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
                 "rack_slot_code": None,
-                "bin_id": None,
+                "bin_code": None,
                 "bin_cell_id": None,
             },
             "target": {
@@ -746,7 +764,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
                 "rack_slot_code": None,
-                "bin_id": None,
+                "bin_code": None,
                 "bin_cell_id": None,
             },
         },
@@ -776,7 +794,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
                     "material_trace_id": "TRACE-21",
                     "rack_id": None,
                     "rack_slot_code": None,
-                    "bin_id": None,
+                    "bin_code": None,
                     "bin_cell_id": None,
                 },
             },
@@ -844,7 +862,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
                 "rack_slot_code": None,
-                "bin_id": None,
+                "bin_code": None,
                 "bin_cell_id": None,
             },
             "target": {
@@ -853,7 +871,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
                 "rack_slot_code": None,
-                "bin_id": None,
+                "bin_code": None,
                 "bin_cell_id": None,
             },
         },
@@ -883,7 +901,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
                     "material_trace_id": "TRACE-21",
                     "rack_id": None,
                     "rack_slot_code": None,
-                    "bin_id": None,
+                    "bin_code": None,
                     "bin_cell_id": None,
                 },
             },
@@ -970,7 +988,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
     assert fact.current_rack_id == "RACK-1"
     assert fact.request_operation_id == command_code
 
-    assert target_data(fact) == {
+    assert encode_request(target_data(fact), timestamp=1)["data"] == {
         "material_execution_id": "EXEC-21",
         "material_trace_id": "TRACE-21",
         "pkg_id": "PKG-1",
@@ -1068,7 +1086,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
                 "material_trace_id": "TRACE-22",
                 "rack_id": "RACK-1",
                 "rack_slot_code": "SLOT-99",
-                "bin_id": "BIN-99",
+                "bin_code": "BIN-99",
                 "bin_cell_id": "CELL-99",
             },
         },
@@ -1093,7 +1111,14 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
 
     fact = await factory.build(
         object(),
-        WmsResultReadyFact("evidence:36", "36", "1.0", "EXEC-21", operation_id),
+        WmsResultReadyFact(
+            "evidence:36",
+            "36",
+            "1.0",
+            "EXEC-21",
+            operation_id,
+            decode_outcome(evidence.operation, evidence.normalized_payload, material_trace_id="TRACE-21"),
+        ),
     )
 
     assert fact.result.value == "READY"
@@ -1322,7 +1347,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
         "material_trace_id": "TRACE-21",
         "rack_id": "RACK-1",
         "rack_slot_code": "SLOT-1",
-        "bin_id": "BIN-1",
+        "bin_code": "BIN-1",
         "bin_cell_id": "CELL-1",
     }
     command = DeviceCommand(
@@ -1345,7 +1370,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
                 "material_trace_id": "TRACE-21",
                 "rack_id": None,
                 "rack_slot_code": None,
-                "bin_id": None,
+                "bin_code": None,
                 "bin_cell_id": None,
             },
             "target": target,
@@ -1416,7 +1441,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
                     "type": "ONE_LAYER_BIN_CELL",
                     "rack_id": "RACK-1",
                     "rack_slot_code": "SLOT-1",
-                    "bin_id": "BIN-1",
+                    "bin_code": "BIN-1",
                     "bin_cell_id": "CELL-1",
                 },
                 "placement_sequence": 4,
@@ -1463,9 +1488,9 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
     fact = await factory.build(object(), base)
     assert fact.step.value == "PLACEMENT_TO_CELL"
     request_data = placement_data(fact)
-    assert request_data["target_assignment_id"] == "ASSIGN-1"
-    assert request_data["placement_sequence"] == 4
-    assert request_data["placed_at"] == 1_787_040_000_600
+    assert request_data.target_assignment_id == "ASSIGN-1"
+    assert request_data.placement_sequence == 4
+    assert request_data.placed_at == 1_787_040_000_600
 
 
 @pytest.mark.asyncio
@@ -1478,7 +1503,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
         "material_trace_id": "TRACE-21",
         "rack_id": None,
         "rack_slot_code": None,
-        "bin_id": None,
+        "bin_code": None,
         "bin_cell_id": None,
     }
     target_position = {
@@ -1487,7 +1512,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
         "material_trace_id": "TRACE-21",
         "rack_id": None,
         "rack_slot_code": None,
-        "bin_id": None,
+        "bin_code": None,
         "bin_cell_id": None,
     }
     command = DeviceCommand(
@@ -1564,8 +1589,8 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
     fact = await factory.build(object(), base)
     assert fact.step.value == "MEASUREMENT_TO_NG"
     request_data = ng_placement_data(fact)
-    assert request_data["ng_position"] == {"type": "NG_POSITION", "location_code": "NG_POSITION"}
-    assert request_data["reason_code"] == "MATERIAL_REJECTED"
+    assert request_data.ng_position == fact.target_position
+    assert request_data.reason_code == "MATERIAL_REJECTED"
 
 
 def test_core_application_does_not_import_concrete_rough_sorter_plugin() -> None:
@@ -1688,7 +1713,7 @@ async def test_plugin_builds_complete_admission_data_from_same_db_snapshot() -> 
     fact = await factory.build(object(), base)
     request_data = admission_data(fact)
 
-    assert request_data["six_in_one"] == {
+    assert asdict(request_data.six_in_one) == {
         "LotCode": "LOT",
         "DateCode": "DATE",
         "Qty": "1",
@@ -1696,10 +1721,7 @@ async def test_plugin_builds_complete_admission_data_from_same_db_snapshot() -> 
         "MfrPN": "MFR",
         "PONumber": "PO",
     }
-    assert request_data["source_position"] == {
-        "type": "HANDOFF_POSITION",
-        "location_code": "MEASUREMENT_POSITION",
-    }
+    assert request_data.source_position == fact.source_position
 
 
 @pytest.mark.asyncio
@@ -2174,10 +2196,10 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
 
     assert first.continuation == second.continuation
     assert first.reconciling_evidence_id == "32"
-    assert first.continuation.operation == operation
-    assert first.continuation.operation_id != operation_id
-    assert is_uuid7(first.continuation.operation_id)
-    assert first.continuation.request_data == request_data
+    assert encode_request(first.continuation.intent, timestamp=1)["operation"] == operation
+    assert first.continuation.intent.operation_id != operation_id
+    assert is_uuid7(first.continuation.intent.operation_id)
+    assert encode_request(first.continuation.intent, timestamp=1)["data"] == request_data
 
     class ConfirmationCreator:
         def __init__(self) -> None:

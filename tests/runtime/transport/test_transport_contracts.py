@@ -560,7 +560,7 @@ def test_move_rack_accepts_only_approved_position_and_template_edges(
     assert request.rcs_template_id is template
 
 
-@pytest.mark.parametrize("target_face", ["270", "FACE@01", "面-1", " ", "x" * 1000])
+@pytest.mark.parametrize("target_face", ["270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_face_values_are_opaque_non_empty_strings(target_face: str) -> None:
     request = MoveRackRequest(
         _REQUEST_ID,
@@ -578,7 +578,7 @@ def test_face_values_are_opaque_non_empty_strings(target_face: str) -> None:
 
 @pytest.mark.parametrize(
     ("invalid_face", "expected_message"),
-    [("\x00", "must not contain NUL"), ("\ud800", "must be valid UTF-8")],
+    [("\x00", "must not contain NUL"), ("\ud800", "must be valid UTF-8"), ("x" * 11, "10"), ("面" * 11, "10")],
 )
 @pytest.mark.parametrize(
     "factory",

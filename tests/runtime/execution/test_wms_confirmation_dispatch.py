@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -17,377 +18,24 @@ from src.app.execution.services import (
     WmsConfirmationService,
 )
 from src.app.wms_adapter.client import WmsClient
-from src.app.wms_adapter.inbound_adapter import InboundDispatchCode, WmsInboundAdapter
-from src.app.wms_adapter.inbound_wire import (
+from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
+from src.app.wms_adapter.dispatch import WmsDispatchCode
+from src.app.wms_adapter.inbound_material.typed import decode_request
+from src.app.wms_adapter.inbound_material.wire import (
     ADMISSION_OPERATION,
-    MAX_INBOUND_BODY_BYTES,
     NG_PLACEMENT_OPERATION,
     PLACEMENT_OPERATION,
 )
 from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpFailureKind, OutboundHttpResult
-
-OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4472"
-OTHER_OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4473"
-THIRD_OPERATION_ID = "019f12d0-58d7-7b4d-a23a-1b90aa5d4474"
-
-
-class _Transport:
-    def __init__(self, response: OutboundHttpResult) -> None:
-        self.response = response
-        self.requests = []
-
-    async def send(self, request):  # type: ignore[no-untyped-def]
-        self.requests.append(request)
-        return self.response
-
-    async def aclose(self) -> None:
-        return None
-
-
-def _request(operation: str = ADMISSION_OPERATION) -> dict[str, object]:
-    if operation == NG_PLACEMENT_OPERATION:
-        data = {
-            "material_execution_id": "EXEC-1",
-            "material_trace_id": "TRACE-1",
-            "ng_evidence_id": "EVIDENCE-1",
-            "ng_position": {"type": "NG_POSITION", "location_code": "NG-1"},
-            "reason_code": "BUSINESS_REJECT",
-            "business_context": "ROUGH_SORT_INBOUND",
-        }
-    elif operation == PLACEMENT_OPERATION:
-        data = {
-            "material_execution_id": "EXEC-1",
-            "material_trace_id": "TRACE-1",
-            "pkg_id": "PKG-1",
-            "inbound_admission_id": "ADM-1",
-            "target_assignment_id": "TARGET-1",
-            "target_position": {
-                "type": "ONE_LAYER_BIN_CELL",
-                "rack_id": "RACK-1",
-                "rack_slot_code": "SLOT-1",
-                "bin_id": "BIN-1",
-                "bin_cell_id": "CELL-1",
-            },
-            "placement_sequence": 1,
-            "command_code": "CMD-1",
-            "placed_at": 1,
-        }
-    else:
-        data = {
-            "material_execution_id": "EXEC-1",
-            "material_trace_id": "TRACE-1",
-            "six_in_one": {
-                "LotCode": "LOT",
-                "DateCode": "DATE",
-                "Qty": "1",
-                "ProductNo": "PN",
-                "MfrPN": "MFR",
-                "PONumber": "PO",
-            },
-            "measurements": {"diameter_mm": "1.000", "thickness_mm": "0.500"},
-            "shape_result": "PASS",
-            "line_run_epoch_id": "EPOCH-1",
-            "workline_code": "WL-1",
-            "source_position": {"type": "HANDOFF_POSITION", "location_code": "IN-1"},
-        }
-    return {"operation_id": OPERATION_ID, "operation": operation, "timestamp": 1, "data": data}
-
-
-def _digest(payload: dict[str, object]) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def _response(body: dict[str, object], *, status: int = 200) -> OutboundHttpResult:
-    return OutboundHttpResult(
-        delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
-        status_code=status,
-        response_headers=(("Content-Type", "application/json; charset=utf-8"),),
-        decoded_body=json.dumps(body, separators=(",", ":")).encode(),
-    )
-
-
-@pytest.mark.asyncio
-async def test_adapter_sends_decision_through_wms_client_and_returns_typed_evidence() -> None:
-    payload = _request()
-    transport = _Transport(
-        _response(
-            {
-                "operation_id": OPERATION_ID,
-                "code": "DECIDED",
-                "timestamp": 2,
-                "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
-            }
-        )
-    )
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert result.code is InboundDispatchCode.DETERMINATE
-    assert result.response_result == "ACCEPT"
-    assert result.normalized_response == {
-        "operation_id": OPERATION_ID,
-        "code": "DECIDED",
-        "timestamp": 2,
-        "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
-    }
-    assert transport.requests[0].path == "/api/v1/wes/decisions"
-
-
-@pytest.mark.asyncio
-async def test_adapter_returns_wait_as_determinate_business_result() -> None:
-    payload = _request()
-    transport = _Transport(
-        _response(
-            {
-                "operation_id": OPERATION_ID,
-                "code": "DECIDED",
-                "timestamp": 2,
-                "data": {"result": "WAIT", "reason_code": "CELL_PENDING", "retry_after_ms": 250},
-            }
-        )
-    )
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert result.code is InboundDispatchCode.DETERMINATE
-    assert result.response_result == "WAIT"
-    assert result.retry_after_ms == 250
-
-
-@pytest.mark.asyncio
-async def test_fact_uses_fact_path_and_recorded_is_determinate() -> None:
-    payload = _request(PLACEMENT_OPERATION)
-    transport = _Transport(_response({"operation_id": OPERATION_ID, "code": "RECORDED", "timestamp": 2, "data": {}}))
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=PLACEMENT_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert (result.code, result.response_result) == (InboundDispatchCode.DETERMINATE, "RECORDED")
-    assert transport.requests[0].path == "/api/v1/wes/facts"
-
-
-@pytest.mark.asyncio
-async def test_ng_fact_without_pkg_id_omits_the_optional_field_on_the_wire() -> None:
-    payload = _request(NG_PLACEMENT_OPERATION)
-    transport = _Transport(_response({"operation_id": OPERATION_ID, "code": "RECORDED", "timestamp": 2, "data": {}}))
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=NG_PLACEMENT_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert result.code is InboundDispatchCode.DETERMINATE
-    sent = json.loads(transport.requests[0].body)
-    assert "pkg_id" not in sent["data"]
-
-
-@pytest.mark.asyncio
-async def test_device_text_is_bounded_by_the_encoded_request_body_not_a_field_cap() -> None:
-    payload = _request()
-    encoded_one = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
-    lot_length = len("LOT") + MAX_INBOUND_BODY_BYTES - len(encoded_one)
-    payload["data"]["six_in_one"]["LotCode"] = "x" * lot_length  # type: ignore[index]
-    response = {
-        "operation_id": OPERATION_ID,
-        "code": "DECIDED",
-        "timestamp": 2,
-        "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
-    }
-    exact_transport = _Transport(_response(response))
-
-    exact = await WmsInboundAdapter(WmsClient(exact_transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert exact.code is InboundDispatchCode.DETERMINATE
-    assert len(exact_transport.requests[0].body) == MAX_INBOUND_BODY_BYTES
-
-    payload["data"]["six_in_one"]["LotCode"] += "x"  # type: ignore[index, operator]
-    oversized_transport = _Transport(_response(response))
-    oversized = await WmsInboundAdapter(WmsClient(oversized_transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert oversized.code is InboundDispatchCode.RECONCILING
-    assert oversized_transport.requests == []
-
-
-@pytest.mark.asyncio
-async def test_busy_is_retryable_but_invalid_or_conflicting_response_fails_closed() -> None:
-    payload = _request()
-    busy_transport = _Transport(
-        _response(
-            {
-                "operation_id": OPERATION_ID,
-                "code": "BUSY",
-                "timestamp": 2,
-                "data": {"retry_after_ms": 250},
-            },
-            status=429,
-        )
-    )
-    busy = await WmsInboundAdapter(WmsClient(busy_transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-    assert (busy.code, busy.retry_after_ms) == (InboundDispatchCode.RETRY, 250)
-
-    conflict_transport = _Transport(
-        _response(
-            {
-                "operation_id": OPERATION_ID,
-                "code": "CONFLICT",
-                "timestamp": 2,
-                "data": {"reason_code": "IDEMPOTENCY_CONFLICT"},
-            },
-            status=409,
-        )
-    )
-    conflict = await WmsInboundAdapter(WmsClient(conflict_transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-    assert conflict.code is InboundDispatchCode.RECONCILING
-
-
-@pytest.mark.asyncio
-async def test_delivery_unknown_and_request_identity_mismatch_never_become_business_wait() -> None:
-    payload = _request()
-    transport = _Transport(
-        OutboundHttpResult(
-            delivery_state=OutboundHttpDeliveryState.DELIVERY_UNKNOWN,
-            failure_kind=OutboundHttpFailureKind.READ_TIMEOUT,
-        )
-    )
-    unknown = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-    assert unknown.code is InboundDispatchCode.DELIVERY_UNKNOWN
-
-    mismatch = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest="0" * 64,
-    )
-    assert mismatch.code is InboundDispatchCode.RECONCILING
-    assert len(transport.requests) == 1
-
-
-@pytest.mark.asyncio
-async def test_preassociation_bad_request_response_fails_closed_without_retry() -> None:
-    payload = _request()
-    transport = _Transport(_response({}, status=400))
-    transport.response = OutboundHttpResult(
-        delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
-        status_code=400,
-        decoded_body=b"",
-    )
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert result.code is InboundDispatchCode.RECONCILING
-
-
-@pytest.mark.asyncio
-async def test_response_with_wrong_operation_id_is_reconciling_with_response_evidence() -> None:
-    payload = _request()
-    response_body = {
-        "operation_id": OTHER_OPERATION_ID,
-        "code": "DECIDED",
-        "timestamp": 2,
-        "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
-    }
-    transport = _Transport(_response(response_body))
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert result.code is InboundDispatchCode.RECONCILING
-    assert result.normalized_response == response_body
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["INVALID_DTO", "INVALID_HEADER", "INVALID_JSON", "INVALID_STATUS"])
-async def test_received_invalid_http_response_is_reconciling_and_never_retryable(case: str) -> None:
-    payload = _request()
-    valid_body = {
-        "operation_id": OPERATION_ID,
-        "code": "DECIDED",
-        "timestamp": 2,
-        "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
-    }
-    body = valid_body
-    status = 200
-    headers = (("Content-Type", "application/json; charset=utf-8"),)
-    decoded_body = json.dumps(body, separators=(",", ":")).encode()
-    if case == "INVALID_DTO":
-        body = {**valid_body, "data": {"result": "ACCEPT"}}
-        decoded_body = json.dumps(body, separators=(",", ":")).encode()
-    elif case == "INVALID_HEADER":
-        headers = (("Content-Type", "text/plain"),)
-    elif case == "INVALID_JSON":
-        decoded_body = b"{"
-    else:
-        status = 418
-    transport = _Transport(
-        OutboundHttpResult(
-            delivery_state=OutboundHttpDeliveryState.RESPONSE_RECEIVED,
-            status_code=status,
-            response_headers=headers,
-            decoded_body=decoded_body,
-        )
-    )
-
-    result = await WmsInboundAdapter(WmsClient(transport)).dispatch(
-        operation=ADMISSION_OPERATION,
-        operation_id=OPERATION_ID,
-        request_payload=payload,
-        request_digest=_digest(payload),
-    )
-
-    assert result.code is InboundDispatchCode.RECONCILING
-    assert result.normalized_response == (None if case == "INVALID_JSON" else body)
+from tests.contracts.wms_adapter.inbound_material.support import (
+    OPERATION_ID,
+    OTHER_OPERATION_ID,
+    THIRD_OPERATION_ID,
+    _digest,
+    _request,
+    _response,
+    _Transport,
+)
 
 
 class _Transaction(AbstractAsyncContextManager[object]):
@@ -527,7 +175,7 @@ class _PickingTaskOwner:
         self.valid = valid
         self.calls: list[tuple[object, int, str]] = []
 
-    async def validate_prepare_response_owner(
+    async def validate_response_owner(
         self,
         db: object,
         *,
@@ -554,15 +202,9 @@ class _FollowUpPlanner:
         if response_result != "WAIT":
             return None
         operation_id = next(self._operation_ids)
-        payload = {
-            **confirmation.request_payload,
-            "operation_id": operation_id,
-            "timestamp": int(received_at.timestamp() * 1000),
-        }
+
         return WmsConfirmationFollowUp(
-            operation=confirmation.operation,
-            operation_id=operation_id,
-            request_payload=payload,
+            intent=replace(decode_request(confirmation.request_payload, fact_id="wait"), operation_id=operation_id),
             next_attempt_at=received_at + timedelta(milliseconds=retry_after_ms),
         )
 
@@ -587,7 +229,7 @@ class _ConflictDuringDispatchAdapter:
         )
         assert isinstance(conflict, WmsConfirmationIdentityConflictResult)
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": kwargs["operation_id"],
                 "code": "DECIDED",
@@ -650,7 +292,7 @@ async def test_picking_prepare_response_uses_owner_port_and_never_enters_materia
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
-                code=InboundDispatchCode.DETERMINATE,
+                code=WmsDispatchCode.DETERMINATE,
                 normalized_response={
                     "operation_id": confirmation.operation_id,
                     "code": "PREPARE_ACCEPTED",
@@ -682,7 +324,7 @@ async def test_picking_prepare_is_not_sent_without_explicit_business_owner_port(
     repository = _ConfirmationRepository([confirmation])
     adapter = _Adapter(
         SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={},
             response_result="PREPARE_ACCEPTED",
             retry_after_ms=None,
@@ -710,7 +352,7 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
     evidence = _EvidenceService()
     adapter = _Adapter(
         SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": OPERATION_ID,
                 "code": "DECIDED",
@@ -762,7 +404,7 @@ async def test_confirmation_wait_renews_dispatch_window_for_max_delay_and_repeat
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
-                code=InboundDispatchCode.DETERMINATE,
+                code=WmsDispatchCode.DETERMINATE,
                 normalized_response={
                     "operation_id": confirmation.operation_id,
                     "code": "DECIDED",
@@ -811,7 +453,7 @@ async def test_confirmation_dispatch_rechecks_deadline_and_delivery_unknown_reus
     repository = _ConfirmationRepository([expired, retryable])
     adapter = _Adapter(
         SimpleNamespace(
-            code=InboundDispatchCode.DELIVERY_UNKNOWN,
+            code=WmsDispatchCode.DELIVERY_UNKNOWN,
             normalized_response=None,
             response_result=None,
             retry_after_ms=None,
@@ -855,7 +497,7 @@ async def test_confirmation_persists_received_json_object_before_marking_reconci
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
-                code=InboundDispatchCode.RECONCILING,
+                code=WmsDispatchCode.RECONCILING,
                 normalized_response=response_body,
                 response_result=None,
                 retry_after_ms=None,
@@ -884,7 +526,7 @@ async def test_wms_result_identity_conflict_keeps_execution_epoch_and_fails_clos
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
-                code=InboundDispatchCode.DETERMINATE,
+                code=WmsDispatchCode.DETERMINATE,
                 normalized_response={
                     "operation_id": confirmation.operation_id,
                     "code": "DECIDED",
@@ -919,7 +561,7 @@ async def test_wms_result_fails_closed_when_execution_epoch_cannot_be_resolved(e
         session_factory=_Sessions(),  # type: ignore[arg-type]
         adapter=_Adapter(
             SimpleNamespace(
-                code=InboundDispatchCode.RECONCILING,
+                code=WmsDispatchCode.RECONCILING,
                 normalized_response={
                     "operation_id": confirmation.operation_id,
                     "code": "DECIDED",

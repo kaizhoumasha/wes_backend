@@ -15,14 +15,57 @@ from wes_plugin_sdk import (
     TransportRcsTemplateId,
     TransportTaskType,
     Wait,
+    wms_operations,
 )
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+from src.utils.canonical_json import canonical_json_digest
 
 NOW = datetime(2026, 8, 17, 9, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_typed_wms_intents_freeze_separate_operations_with_the_same_execution_owner() -> None:
+    common = {"material_execution_id": "EXEC-1", "fact_id": "evidence:31", "material_trace_id": "TRACE-1"}
+    replacement = wms_operations.inbound_source_rack_replacement_plan_decide(
+        **common, operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472", current_rack_id="RACK-1"
+    )
+    target = wms_operations.inbound_material_target_decide(
+        **common,
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+        current_rack_id="RACK-1",
+        pkg_id="PKG-1",
+        inbound_admission_id="ADM-1",
+        source_position=DevicePosition("OUT-1", "PIPELINE_OUTLET", "TRACE-1"),
+    )
+    confirmations = _WmsConfirmations()
+    await _applier(wms_confirmation_service=confirmations).apply(
+        object(), _evidence(), _execution(), _fact(), (replacement, target)
+    )
+    assert [
+        (call["operation"], call["operation_id"], call["material_execution_id"]) for call in confirmations.calls
+    ] == [
+        ("inbound.source_rack.replacement_plan_decide@v1", replacement.operation_id, 21),
+        ("inbound.material.target_decide@v1", target.operation_id, 21),
+    ]
+    assert decision_digest((replacement,)) == canonical_json_digest(
+        [
+            {
+                "decision_type": "INBOUND_SOURCE_RACK_REPLACEMENT_PLAN_DECIDE",
+                "ordinal": 0,
+                "payload": {
+                    "material_execution_id": "EXEC-1",
+                    "fact_id": "evidence:31",
+                    "operation_id": replacement.operation_id,
+                    "material_trace_id": "TRACE-1",
+                    "current_rack_id": "RACK-1",
+                },
+            }
+        ]
+    )
 
 
 def _evidence() -> InboundEvidence:
@@ -195,7 +238,7 @@ async def test_create_device_command_resolves_frozen_role_and_builds_typed_param
             "material_trace_id": "TRACE-1",
             "rack_id": None,
             "rack_slot_code": None,
-            "bin_id": None,
+            "bin_code": None,
             "bin_cell_id": None,
         },
         "target": {
@@ -204,7 +247,7 @@ async def test_create_device_command_resolves_frozen_role_and_builds_typed_param
             "material_trace_id": "TRACE-1",
             "rack_id": None,
             "rack_slot_code": None,
-            "bin_id": None,
+            "bin_code": None,
             "bin_cell_id": None,
         },
     }

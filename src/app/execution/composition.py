@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from src.app.device.services import DeviceCommandService
     from src.app.execution.plugin_binding import StaticPluginBinding
     from src.app.execution.services.wms_confirmation_service import (
+        EpochConfirmationOwnerPort,
+        PickingTaskConfirmationOwnerPort,
         WmsConfirmationAdapterPort,
         WmsConfirmationFollowUpPlanner,
     )
@@ -56,6 +58,8 @@ def build_execution_runtime(
     wms_confirmation_adapter: WmsConfirmationAdapterPort,
     wms_confirmation_follow_up_planner: WmsConfirmationFollowUpPlanner | None,
     task_queue_gateway: TaskQueueGateway,
+    picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
+    epoch_owner: EpochConfirmationOwnerPort | None = None,
 ) -> ExecutionRuntime:
     """只组合已显式注入的插件/WMS typed adapter，不发现或导入具体插件。"""
 
@@ -78,6 +82,8 @@ def build_execution_runtime(
         evidence_service=evidence_service,
         task_queue_gateway=task_queue_gateway,
         follow_up_planner=wms_confirmation_follow_up_planner,
+        picking_task_owner=picking_task_owner,
+        epoch_owner=epoch_owner,
     )
     applier = DecisionApplier(
         device_command_service=device_command_service,

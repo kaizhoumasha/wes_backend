@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from wes_plugin_sdk import (
-    CreateWmsConfirmation,
+    InboundWmsIntent,
     PauseForReconciliation,
     handler,
 )
@@ -11,8 +11,6 @@ from wes_plugin_sdk import (
 from rough_sorter.facts import TransportOutcome, TransportOutcomePublishedFact
 from rough_sorter.handlers._guards import require_epoch, require_execution
 from rough_sorter.wms_requests import target_data
-
-TARGET_OPERATION = "inbound.material.target_decide@v1"
 
 
 @handler(
@@ -24,7 +22,7 @@ class TransportOutcomePublishedHandler:
     def __call__(
         self,
         fact: TransportOutcomePublishedFact,
-    ) -> tuple[CreateWmsConfirmation | PauseForReconciliation]:
+    ) -> tuple[InboundWmsIntent | PauseForReconciliation]:
         snapshot = fact.runtime_snapshot
         execution = require_execution(
             snapshot.execution,
@@ -63,15 +61,7 @@ class TransportOutcomePublishedHandler:
         source_position = fact.source_position
         if source_position is None:
             raise ValueError("NEW_IN success requires material source_position")
-        return (
-            CreateWmsConfirmation(
-                material_execution_id=fact.material_execution_id,
-                fact_id=fact.fact_id,
-                operation=TARGET_OPERATION,
-                operation_id=fact.request_operation_id or "",
-                request_data=target_data(fact),
-            ),
-        )
+        return (target_data(fact),)
 
 
 __all__ = ["TransportOutcomePublishedHandler"]

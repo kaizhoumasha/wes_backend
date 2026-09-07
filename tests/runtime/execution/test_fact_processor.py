@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from wes_plugin_sdk import (
-    CreateWmsConfirmation,
     DeferExecution,
     DeviceResultReadyFact,
     EvidenceReadyFact,
@@ -16,6 +15,7 @@ from wes_plugin_sdk import (
     RecoveryDecidedFact,
     Wait,
     handler,
+    wms_operations,
 )
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
@@ -289,14 +289,14 @@ def _handle_initial(fact: EvidenceReadyFact) -> tuple[Wait, ...]:
 
 
 @handler(fact_type=EvidenceReadyFact, name="wms", supported_versions=("1.0",))
-def _handle_wms(fact: EvidenceReadyFact) -> tuple[CreateWmsConfirmation, ...]:
+def _handle_wms(fact: EvidenceReadyFact) -> tuple[object, ...]:
     return (
-        CreateWmsConfirmation(
-            fact.material_execution_id,
-            fact.fact_id,
-            "test.workflow.confirm@v1",
-            "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
-            {"material_execution_id": fact.material_execution_id},
+        wms_operations.inbound_source_rack_replacement_plan_decide(
+            material_execution_id=fact.material_execution_id,
+            fact_id=fact.fact_id,
+            operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+            material_trace_id="TRACE-1",
+            current_rack_id="RACK-1",
         ),
     )
 
@@ -657,6 +657,56 @@ async def test_missing_initial_correlator_fails_closed_without_guessing_executio
 
     assert evidence.material_execution_id is None
     assert evidence.decision_next_attempt_at == datetime(2026, 8, 17, 10, 0, 1)
+
+
+@pytest.mark.asyncio
+async def test_missing_frozen_plugin_keeps_durable_wms_response_and_fences_execution() -> None:
+    payload = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4472",
+        "code": "DECIDED",
+        "timestamp": 1,
+        "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
+    }
+    evidence = _evidence(
+        kind=InboundEvidenceKind.WMS_RESULT,
+        material_execution_id=21,
+        decision_attempt_count=4,
+        operation="inbound.material.admission_decide@v1",
+        operation_id=payload["operation_id"],
+        normalized_payload=payload,
+    )
+    executions = _Executions()
+    executions.execution = MaterialExecution(
+        id=21,
+        execution_code="EXEC-1",
+        material_trace_id="TRACE-1",
+        workline_id=7,
+        line_run_epoch_id=11,
+        status=MaterialExecutionStatus.RUNNING,
+        last_transition_reason="INITIAL_EVIDENCE",
+        last_transition_evidence_id=30,
+        status_changed_at=NOW,
+    )
+    applier = _Applier()
+    processor = FactProcessor(
+        session_factory=_Sessions(),
+        plugin_binding=StaticPluginBinding(()),
+        decision_applier=applier,
+        evidence_repository=_Evidences(evidence),
+        execution_repository=executions,
+        epoch_repository=_Epochs(),
+        material_execution_service=_ExecutionService(executions),
+        clock=lambda: NOW,
+        token_factory=lambda: "claim-1",
+    )
+    assert await processor.process_batch() == 0
+    assert evidence.normalized_payload == payload
+    assert evidence.operation_id == payload["operation_id"]
+    assert evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING
+    assert evidence.published_at is None
+    assert executions.execution.line_run_epoch_id == 11
+    assert executions.execution.status == MaterialExecutionStatus.RECONCILING
+    assert applier.calls == []
 
 
 @pytest.mark.asyncio

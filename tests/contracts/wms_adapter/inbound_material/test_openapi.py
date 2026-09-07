@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from src.app.wms_adapter.inbound_openapi import RECOVERY_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
-from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
+from src.app.wms_adapter.inbound_material.openapi import RECOVERY_EVENT_REQUEST_SCHEMA, WMS_EVENT_RESPONSES
+from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
 
 
 def test_inbound_openapi_exposes_only_the_approved_recovery_operation() -> None:

@@ -50,6 +50,7 @@ _POSITION_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 100, "pa
 _FACE_SCHEMA = {
     "type": "string",
     "minLength": 1,
+    "maxLength": 10,
     "pattern": r"^[^\u0000]+$",
     "description": "Opaque non-empty face value without NUL; preserve exactly",
 }
