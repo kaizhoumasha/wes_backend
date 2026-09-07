@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 修复本机 EVENT_DEBUG 命令误用现场地址的问题，统一接入 ECS Mock，并补齐调试事件与扫描工位命令支持。
+
 - WMS HTTP 返回期间 owner 失效时仍保存响应 Evidence 并进入 RECONCILING，避免丢失已收到的结果。
 - Transport 结果发布共用宿主事务，避免单连接 worker 再次申请连接超时；任务锁保持至 Evidence 提交，提交后才唤醒插件执行。
 - START 接受合法初始 version=0，继续拒绝负数、布尔和旧 request_id；计划修正入口支持 task_id 中的斜杠。
@@ -29,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verification
 
-- QUALITY：FAST 3200 passed、5 skipped；核心 HEAVY selector 选中 56 个文件，517 passed、零跳过，干净数据库迁移至 93deacda8c9c。
+- Mock 增量：定向测试 229 passed；QUALITY FAST 3204 passed、5 skipped；增量 HEAVY 182 passed、零跳过。
+- 退役基线 QUALITY：FAST 3200 passed、5 skipped；核心 HEAVY selector 选中 56 个文件，517 passed、零跳过，干净数据库迁移至 93deacda8c9c。
 - 插件 FAST：rough_sorter 173 passed、manual_bin_processing 20 passed；rough_sorter PostgreSQL 7 passed；绑定当前代码提交的镜像 E2E 12 passed、零跳过。
 - 前端正式合同冻结按确认顺序在后端合并至干净 develop 后执行；S3B 站点等待/FIFO、部署和双方现场业务验收另行安排。
 
