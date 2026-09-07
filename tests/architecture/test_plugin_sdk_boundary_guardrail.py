@@ -79,7 +79,11 @@ def test_plugin_sdk_exposes_only_the_approved_fact_and_decision_categories() -> 
         "CompleteExecution",
         "CreateDeviceCommand",
         "CreateTransportTask",
-        "CreateWmsConfirmation",
+        "AdmissionIntent",
+        "TargetIntent",
+        "PlacementIntent",
+        "NgPlacementIntent",
+        "ReplacementPlanIntent",
         "DeferExecution",
         "PauseForReconciliation",
         "Wait",
@@ -122,7 +126,8 @@ def test_plugin_frozen_fact_subclass_can_carry_typed_decision_data() -> None:
     assert fact_reference is not None
 
     @dataclasses.dataclass(frozen=True, slots=True)
-    class BusinessResultFact(sdk.WmsResultReadyFact):
+    class BusinessResultFact(sdk.FactReference):
+        operation_id: str
         outcome: str
 
     @sdk.handler(fact_type=BusinessResultFact, name="business-result", supported_versions=("1.0",))
@@ -303,11 +308,11 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             target=target,
         )
     with pytest.raises(TypeError):
-        sdk.CreateWmsConfirmation(
+        sdk.wms_operations.inbound_source_rack_replacement_plan_decide(
             material_execution_id="execution-1",
             fact_id="fact-1",
-            operation="operation@v1",
             operation_id="operation-1",
+            operation="operation@v1",
             request_data=[("evidence", "evidence-1")],
         )
     with pytest.raises(TypeError):
@@ -350,8 +355,8 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         location_type="RACK_CELL",
     )
     with pytest.raises(TypeError):
-        sdk.EpochConfigurationSnapshot(
-            line_run_epoch_id="epoch-1",
+        sdk.WorkLineConfigurationSnapshot(
+            workline_id="workline-1",
             workline_code="line-1",
             plugin_key="plugin-1",
             plugin_version="1.0",
@@ -361,8 +366,8 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             position_bindings=(position_binding,),
         )
     with pytest.raises(TypeError):
-        sdk.EpochConfigurationSnapshot(
-            line_run_epoch_id="epoch-1",
+        sdk.WorkLineConfigurationSnapshot(
+            workline_id="workline-1",
             workline_code="line-1",
             plugin_key="plugin-1",
             plugin_version="1.0",
@@ -373,13 +378,11 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         )
 
     external_bindings = [binding]
-    snapshot = sdk.EpochConfigurationSnapshot(
-        line_run_epoch_id="epoch-1",
+    snapshot = sdk.WorkLineConfigurationSnapshot(
+        workline_id="workline-1",
         workline_code="line-1",
         plugin_key="plugin-1",
         plugin_version="1.0",
-        config_digest="config-digest",
-        topology_digest="topology-digest",
         device_bindings=tuple(external_bindings),
         position_bindings=(position_binding,),
     )
@@ -389,7 +392,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         source.location_id = "CHANGED"
 
 
-def test_epoch_device_bindings_allow_same_role_but_reject_duplicate_device_code() -> None:
+def test_workline_device_bindings_allow_same_role_but_reject_duplicate_device_code() -> None:
     sdk = _load_sdk()
     position = sdk.PositionBindingSnapshot(
         position_role="PIPELINE_INLET",
@@ -399,70 +402,27 @@ def test_epoch_device_bindings_allow_same_role_but_reject_duplicate_device_code(
     first = sdk.DeviceBindingSnapshot("PLUGIN_DEVICE", "device-1", "contract-1", "1.0")
     second = sdk.DeviceBindingSnapshot("PLUGIN_DEVICE", "device-2", "contract-1", "1.0")
 
-    snapshot = sdk.EpochConfigurationSnapshot(
-        "epoch-1", "line-1", "plugin-1", "1.0", "config-digest", "topology-digest", (first, second), (position,)
+    snapshot = sdk.WorkLineConfigurationSnapshot(
+        "workline-1", "line-1", "plugin-1", "1.0", (first, second), (position,)
     )
     assert snapshot.device_bindings == (first, second)
 
     with pytest.raises(ValueError, match="duplicate device codes"):
-        sdk.EpochConfigurationSnapshot(
-            "epoch-1",
+        sdk.WorkLineConfigurationSnapshot(
+            "workline-1",
             "line-1",
             "plugin-1",
             "1.0",
-            "config-digest",
-            "topology-digest",
             (first, sdk.DeviceBindingSnapshot("OTHER_ROLE", "device-1", "contract-2", "1.0")),
             (position,),
         )
 
 
-def test_wms_confirmation_snapshots_nested_request_data() -> None:
+def test_plugin_sdk_has_no_generic_wms_construction_escape_hatch() -> None:
     sdk = _load_sdk()
-    request_data = {
-        "material_execution_id": "execution-1",
-        "evidence": {"ids": ["evidence-1"]},
-    }
-    decision = sdk.CreateWmsConfirmation(
-        material_execution_id="execution-1",
-        fact_id="fact-1",
-        operation="operation@v1",
-        operation_id="operation-1",
-        request_data=request_data,
-    )
-
-    request_data["material_execution_id"] = "changed"
-    request_data["evidence"]["ids"].append("evidence-2")
-    with pytest.raises(TypeError):
-        decision.request_data["material_execution_id"] = "changed"
-    with pytest.raises(TypeError):
-        decision.request_data["evidence"]["ids"].append("evidence-3")
-
-    assert decision.request_data == {
-        "material_execution_id": "execution-1",
-        "evidence": {"ids": ["evidence-1"]},
-    }
-
-
-@pytest.mark.parametrize(
-    "request_data",
-    (
-        {1: "non-string-key"},
-        {"unsupported": object()},
-        {"non_finite": float("nan")},
-    ),
-)
-def test_wms_confirmation_rejects_non_json_request_data(request_data: dict[object, object]) -> None:
-    sdk = _load_sdk()
-
-    with pytest.raises((TypeError, ValueError)):
-        sdk.CreateWmsConfirmation(
-            material_execution_id="execution-1",
-            fact_id="fact-1",
-            operation="operation@v1",
-            operation_id="operation-1",
-            request_data=request_data,
-        )
+    assert not hasattr(sdk, "CreateWmsConfirmation")
+    for intent in get_args(sdk.InboundWmsIntent):
+        assert not {"operation", "request_data"}.intersection(field.name for field in dataclasses.fields(intent))
 
 
 def test_plugin_sdk_exposes_typed_frozen_runtime_snapshots() -> None:
@@ -470,7 +430,7 @@ def test_plugin_sdk_exposes_typed_frozen_runtime_snapshots() -> None:
     execution = sdk.ExecutionSnapshot(
         material_execution_id="execution-1",
         material_trace_id="trace-1",
-        line_run_epoch_id="epoch-1",
+        workline_id="workline-1",
         lifecycle=sdk.ExecutionLifecycle.RUNNING,
         version=2,
     )

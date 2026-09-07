@@ -1,19 +1,17 @@
 """WorkLine START API 的事务与响应合同。"""
 
-from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
+from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
-    WorkLineStartIdempotencyConflictError,
     WorkLineStartInvalidStateError,
     WorkLineStartNotFoundError,
-    WorkLineStartResult,
+    WorkLineStartVersionConflictError,
 )
 from src.app.workline.v1 import operation as operation_api
 from src.core import rbac
@@ -39,31 +37,28 @@ class Db:
 
 
 class StartService:
-    def __init__(self, result: WorkLineStartResult | Exception) -> None:
+    def __init__(self, result: WorkLine | Exception) -> None:
         self.result = result
-        self.calls: list[tuple[int, str]] = []
+        self.calls: list[tuple[int, int]] = []
 
-    async def start(self, _db: object, *, workline_id: int, request_id: str) -> WorkLineStartResult:
-        self.calls.append((workline_id, request_id))
+    async def start(self, _db: object, *, workline_id: int, version: int) -> WorkLine:
+        self.calls.append((workline_id, version))
         if isinstance(self.result, Exception):
             raise self.result
         return self.result
 
 
-def _epoch(*, status: LineRunEpochStatus = LineRunEpochStatus.ACTIVE) -> LineRunEpoch:
-    return LineRunEpoch(
-        id=31,
-        epoch_code="REQUEST-1",
-        workline_id=7,
+def _line() -> WorkLine:
+    return WorkLine(
+        id=7,
+        line_code="WL-7",
+        line_name="line",
+        line_type=LineType.AUTO,
+        version=4,
+        is_active=True,
         plugin_key="example_plugin",
         plugin_version="1.0",
         flow_mode="GENERIC_FLOW",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        status=status,
-        started_at=datetime(2026, 8, 19, 9),
-        closed_at=datetime(2026, 8, 19, 10) if status is LineRunEpochStatus.CLOSED else None,
     )
 
 
@@ -99,31 +94,27 @@ def test_start_openapi_declares_success_and_runtime_failure_contracts_separately
         }
 
 
-def test_start_request_is_closed_and_normalizes_stable_identity() -> None:
-    payload = operation_api.WorkLineStartRequest(request_id="  REQUEST-1  ")
-    assert payload.request_id == "REQUEST-1"
-    with pytest.raises(ValueError):
-        operation_api.WorkLineStartRequest(request_id=" ")
-    with pytest.raises(ValueError):
-        operation_api.WorkLineStartRequest(request_id="x" * 101)
-    with pytest.raises(ValueError):
-        operation_api.WorkLineStartRequest(request_id="REQUEST-1", trace_id="legacy")
+def test_start_request_is_closed_and_uses_version() -> None:
+    assert operation_api.WorkLineStartRequest(version=0).version == 0
+    assert operation_api.WorkLineStartRequest(version=3).version == 3
+    for invalid in (
+        {"request_id": "REQUEST-1"},
+        {"version": 3, "request_id": "REQUEST-1"},
+        {"version": True},
+        {"version": -1},
+    ):
+        with pytest.raises(ValueError):
+            operation_api.WorkLineStartRequest(**invalid)
 
 
 @pytest.mark.asyncio
-async def test_start_commits_once_and_returns_target_epoch() -> None:
-    service = StartService(
-        WorkLineStartResult(
-            epoch=_epoch(),
-            current_workline_runtime_status="READY",
-            created=True,
-        )
-    )
+async def test_start_commits_once_and_returns_current_workline() -> None:
+    service = StartService(_line())
     db = Db()
 
     body = await operation_api.start_workline(
         workline_id=7,
-        payload=operation_api.WorkLineStartRequest(request_id="REQUEST-1"),
+        payload=operation_api.WorkLineStartRequest(version=3),
         request=_request(service),  # type: ignore[arg-type]
         response=Response(),
         db=db,  # type: ignore[arg-type]
@@ -131,32 +122,27 @@ async def test_start_commits_once_and_returns_target_epoch() -> None:
     )
 
     assert db.commits == 1
-    assert service.calls == [(7, "REQUEST-1")]
+    assert service.calls == [(7, 3)]
     assert body["code"] == "1000"
     assert body["data"] == {
-        "line_run_epoch_id": 31,
-        "epoch_code": "REQUEST-1",
         "workline_id": 7,
+        "version": 4,
         "plugin_key": "example_plugin",
         "plugin_version": "1.0",
         "flow_mode": "GENERIC_FLOW",
-        "epoch_status": "ACTIVE",
-        "epoch_started_at": "2026-08-19T09:00:00",
-        "epoch_closed_at": None,
-        "current_workline_runtime_status": "READY",
-        "created": True,
+        "is_active": True,
     }
 
 
 @pytest.mark.asyncio
 async def test_start_commit_failure_rolls_back() -> None:
-    service = StartService(WorkLineStartResult(_epoch(), "READY", True))
+    service = StartService(_line())
     db = Db(commit_error=RuntimeError("commit failed"))
 
     with pytest.raises(RuntimeError, match="commit failed"):
         await operation_api.start_workline(
             workline_id=7,
-            payload=operation_api.WorkLineStartRequest(request_id="REQUEST-1"),
+            payload=operation_api.WorkLineStartRequest(version=3),
             request=_request(service),  # type: ignore[arg-type]
             response=Response(),
             db=db,  # type: ignore[arg-type]
@@ -174,7 +160,7 @@ async def test_start_service_missing_returns_503_without_commit() -> None:
 
     body = await operation_api.start_workline(
         workline_id=7,
-        payload=operation_api.WorkLineStartRequest(request_id="REQUEST-1"),
+        payload=operation_api.WorkLineStartRequest(version=3),
         request=_request(None),  # type: ignore[arg-type]
         response=http_response,
         db=db,  # type: ignore[arg-type]
@@ -193,7 +179,7 @@ async def test_start_service_missing_returns_503_without_commit() -> None:
         (WorkLineStartNotFoundError("missing"), 404, "3000", "WORKLINE_NOT_FOUND"),
         (WorkLineStartInvalidStateError("not stopped"), 409, "3012", "INVALID_STATE"),
         (WorkLineStartConfigurationError("bad config"), 409, "3012", "CONFIGURATION_INVALID"),
-        (WorkLineStartIdempotencyConflictError("owned elsewhere"), 409, "3012", "IDEMPOTENCY_CONFLICT"),
+        (WorkLineStartVersionConflictError("owned elsewhere"), 409, "3012", "VERSION_CONFLICT"),
     ],
 )
 async def test_start_maps_domain_failures_to_stable_http_reason(
@@ -207,7 +193,7 @@ async def test_start_maps_domain_failures_to_stable_http_reason(
 
     body = await operation_api.start_workline(
         workline_id=7,
-        payload=operation_api.WorkLineStartRequest(request_id="REQUEST-1"),
+        payload=operation_api.WorkLineStartRequest(version=3),
         request=_request(StartService(error)),  # type: ignore[arg-type]
         response=http_response,
         db=db,  # type: ignore[arg-type]
@@ -244,12 +230,11 @@ def _asgi_app(
     return app
 
 
-def test_start_asgi_contract_enforces_auth_permission_and_closed_replay_wire(
+def test_start_asgi_contract_enforces_auth_permission_and_version_wire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = "/api/v1/workline/operations/worklines/7/start"
-    closed = _epoch(status=LineRunEpochStatus.CLOSED)
-    service = StartService(WorkLineStartResult(closed, None, False))
+    service = StartService(_line())
 
     unauthenticated = _asgi_app(
         monkeypatch,
@@ -259,7 +244,7 @@ def test_start_asgi_contract_enforces_auth_permission_and_closed_replay_wire(
         authenticated=False,
     )
     with TestClient(unauthenticated) as client:
-        unauthorized = client.post(path, json={"request_id": "REQUEST-1"})
+        unauthorized = client.post(path, json={"version": 3})
     assert unauthorized.status_code == 401
 
     permissions: set[str] = set()
@@ -271,24 +256,19 @@ def test_start_asgi_contract_enforces_auth_permission_and_closed_replay_wire(
         authenticated=True,
     )
     with TestClient(authorized) as client:
-        forbidden = client.post(path, json={"request_id": "REQUEST-1"})
+        forbidden = client.post(path, json={"version": 3})
         permissions.add("biz:workline:start")
-        replay = client.post(path, json={"request_id": " REQUEST-1 "})
+        replay = client.post(path, json={"version": 3})
 
     assert forbidden.status_code == 403
     assert replay.status_code == 200
     assert replay.json()["data"] == {
-        "line_run_epoch_id": 31,
-        "epoch_code": "REQUEST-1",
         "workline_id": 7,
+        "version": 4,
         "plugin_key": "example_plugin",
         "plugin_version": "1.0",
         "flow_mode": "GENERIC_FLOW",
-        "epoch_status": "CLOSED",
-        "epoch_started_at": "2026-08-19T09:00:00",
-        "epoch_closed_at": "2026-08-19T10:00:00",
-        "current_workline_runtime_status": None,
-        "created": False,
+        "is_active": True,
     }
 
 
@@ -304,7 +284,7 @@ def test_start_asgi_contract_serializes_stable_error_reason(monkeypatch: pytest.
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/workline/operations/worklines/7/start",
-            json={"request_id": "REQUEST-ERROR"},
+            json={"version": 3},
         )
 
     assert response.status_code == 409
@@ -312,23 +292,10 @@ def test_start_asgi_contract_serializes_stable_error_reason(monkeypatch: pytest.
     assert response.json()["data"] == {"reason": "INVALID_STATE"}
 
 
-def test_start_asgi_closed_replay_returns_current_ready_projection(monkeypatch: pytest.MonkeyPatch) -> None:
-    service = StartService(WorkLineStartResult(_epoch(status=LineRunEpochStatus.CLOSED), "READY", False))
-    app = _asgi_app(
-        monkeypatch,
-        db=Db(),
-        service=service,
-        permissions={"biz:workline:start"},
-        authenticated=True,
-    )
-
+def test_start_asgi_rejects_retired_request_identity(monkeypatch):
+    service = StartService(_line())
+    app = _asgi_app(monkeypatch, db=Db(), service=service, permissions={"biz:workline:start"}, authenticated=True)
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/workline/operations/worklines/7/start",
-            json={"request_id": "REQUEST-1"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["epoch_status"] == "CLOSED"
-    assert response.json()["data"]["current_workline_runtime_status"] == "READY"
-    assert response.json()["data"]["created"] is False
+        response = client.post("/api/v1/workline/operations/worklines/7/start", json={"request_id": "REQUEST-1"})
+    assert response.status_code == 422
+    assert service.calls == []

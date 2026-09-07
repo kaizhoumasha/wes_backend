@@ -25,10 +25,9 @@ from src.app.execution.services import (
     WmsConfirmationIdentityConflictResult,
     WmsConfirmationService,
 )
-from src.app.wms_adapter.inbound_adapter import InboundDispatchCode
-from src.app.wms_adapter.inbound_wire import ADMISSION_OPERATION
+from src.app.wms_adapter.dispatch import WmsDispatchCode
+from src.app.wms_adapter.inbound_material.wire import ADMISSION_OPERATION
 from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
-from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 
@@ -44,26 +43,17 @@ async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-d
     )
     db.add(line)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"{PREFIX}EPOCH-{identity}",
-        workline_id=line.id,
-        plugin_key="rough_sorter",
-        plugin_version="1.0.0",
-        flow_mode="ROUGH_SORT_INBOUND",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=datetime(2026, 8, 16),
-    )
-    db.add(epoch)
-    await db.flush()
+    line.plugin_key = "rough_sorter"
+    line.plugin_version = "1.0.0"
+    line.flow_mode = "ROUGH_SORT_INBOUND"
+    line.is_active = True
     evidence = InboundEvidence(
         kind=InboundEvidenceKind.DEVICE_EVENT,
         source_identity=f"{PREFIX}SCAN-{identity}",
         payload_digest="c" * 64,
         normalized_payload={"source_event_id": f"{PREFIX}SCAN-{identity}"},
         received_at=datetime(2026, 8, 16),
-        line_run_epoch_id=epoch.id,
+        workline_id=line.id,
         device_code=f"{PREFIX}DEVICE-{identity}",
     )
     db.add(evidence)
@@ -72,7 +62,6 @@ async def _seed_execution(db) -> MaterialExecution:  # type: ignore[no-untyped-d
         execution_code=f"{PREFIX}EXEC-{identity}",
         material_trace_id=f"{PREFIX}TRACE-{identity}",
         workline_id=line.id,
-        line_run_epoch_id=epoch.id,
         admission_received_at=evidence.received_at,
         admission_evidence_id=evidence.id,
         status=MaterialExecutionStatus.CREATED,
@@ -95,7 +84,7 @@ async def _seed_following_execution(db, head: MaterialExecution) -> MaterialExec
         payload_digest="d" * 64,
         normalized_payload={"source_event_id": f"{PREFIX}SCAN-{identity}"},
         received_at=head.admission_received_at + timedelta(seconds=1),
-        line_run_epoch_id=head.line_run_epoch_id,
+        workline_id=head.workline_id,
         device_code=f"{PREFIX}DEVICE-{identity}",
     )
     db.add(evidence)
@@ -104,7 +93,6 @@ async def _seed_following_execution(db, head: MaterialExecution) -> MaterialExec
         execution_code=f"{PREFIX}EXEC-{identity}",
         material_trace_id=f"{PREFIX}TRACE-{identity}",
         workline_id=head.workline_id,
-        line_run_epoch_id=head.line_run_epoch_id,
         admission_received_at=evidence.received_at,
         admission_evidence_id=evidence.id,
         status=MaterialExecutionStatus.CREATED,
@@ -137,7 +125,6 @@ def _request(operation_id: str, execution_code: str) -> dict[str, object]:
             },
             "measurements": {"diameter_mm": "1.000", "thickness_mm": "0.500"},
             "shape_result": "PASS",
-            "line_run_epoch_id": "EPOCH-1",
             "workline_code": "WL-1",
             "source_position": {"type": "HANDOFF_POSITION", "location_code": "IN-1"},
         },
@@ -158,7 +145,6 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
             InboundEvidence.material_execution_id.in_(execution_ids),
         ]
         evidence_ids = tuple((await db.scalars(select(InboundEvidence.id).where(or_(*evidence_filters)))).all())
-        epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like(f"{PREFIX}%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like(f"{PREFIX}%"))
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id.in_(execution_ids)))
         await db.execute(
@@ -166,7 +152,6 @@ async def cleanup_rows(integration_session_factory):  # type: ignore[no-untyped-
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_(epoch_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
 
 
@@ -267,13 +252,13 @@ class _DispatchAdapter:
             raise AssertionError("过期确认不得调用 HTTP")
         if kwargs["request_payload"]["data"]["workline_code"] == "UNKNOWN":
             return SimpleNamespace(
-                code=InboundDispatchCode.DELIVERY_UNKNOWN,
+                code=WmsDispatchCode.DELIVERY_UNKNOWN,
                 normalized_response=None,
                 response_result=None,
                 retry_after_ms=None,
             )
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": operation_id,
                 "code": "DECIDED",
@@ -306,7 +291,7 @@ class _ConflictDuringDispatchAdapter:
             )
         assert isinstance(conflict, WmsConfirmationIdentityConflictResult)
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": kwargs["operation_id"],
                 "code": "DECIDED",
@@ -321,7 +306,7 @@ class _ConflictDuringDispatchAdapter:
 class _WaitDispatchAdapter:
     async def dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
         return SimpleNamespace(
-            code=InboundDispatchCode.DETERMINATE,
+            code=WmsDispatchCode.DETERMINATE,
             normalized_response={
                 "operation_id": kwargs["operation_id"],
                 "code": "DECIDED",
@@ -341,7 +326,7 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
     ids: dict[str, int] = {}
     async with integration_session_factory.begin() as db:
         execution = await _seed_execution(db)
-        epoch_id = execution.line_run_epoch_id
+        workline_id = execution.workline_id
         for name, deadline in {
             "COMPLETE": now + timedelta(minutes=5),
             "EXPIRED": now,
@@ -380,7 +365,7 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
         assert completed.response_evidence_id is not None
         response_evidence = await db.get(InboundEvidence, completed.response_evidence_id)
         assert response_evidence is not None
-        assert response_evidence.line_run_epoch_id == epoch_id
+        assert response_evidence.workline_id == workline_id
         assert response_evidence.material_execution_id == completed.material_execution_id
         claimed = await InboundEvidenceRepository().claim_decision_batch(
             db,

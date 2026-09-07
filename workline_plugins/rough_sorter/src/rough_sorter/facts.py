@@ -9,18 +9,25 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
 from wes_plugin_sdk import (
+    AdmissionIntent,
     DevicePosition,
     DeviceResultReadyFact,
-    EpochConfigurationSnapshot,
     EvidenceReadyFact,
     ExecutionSnapshot,
+    FactReference,
+    InboundWmsIntent,
+    NgPlacementIntent,
+    PlacementIntent,
+    RackMovePlan,
     RecoveryDecision,
+    ReplacementPlanIntent,
+    TargetIntent,
     TransportRackMovePosition,
     TransportRackPosition,
     TransportRackReference,
     TransportResultReadyFact,
     TransportZonePosition,
-    WmsResultReadyFact,
+    WorkLineConfigurationSnapshot,
 )
 from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
@@ -119,13 +126,13 @@ class TransportOutcome(StrEnum):
 @dataclass(frozen=True, slots=True)
 class RoughSorterRuntimeSnapshot:
     execution: ExecutionSnapshot
-    epoch: EpochConfigurationSnapshot
+    workline: WorkLineConfigurationSnapshot
 
     def __post_init__(self) -> None:
-        if type(self.execution) is not ExecutionSnapshot or type(self.epoch) is not EpochConfigurationSnapshot:
+        if type(self.execution) is not ExecutionSnapshot or type(self.workline) is not WorkLineConfigurationSnapshot:
             raise TypeError("runtime snapshot requires exact SDK snapshot values")
-        if self.execution.line_run_epoch_id != self.epoch.line_run_epoch_id:
-            raise ValueError("execution and Epoch snapshots do not match")
+        if self.execution.workline_id != self.workline.workline_id:
+            raise ValueError("execution and WorkLine snapshots do not match")
 
 
 def _operation_id(value: str, field_name: str) -> None:
@@ -153,7 +160,7 @@ def _position(value: DevicePosition, field_name: str, *, location_type: str, mat
 
 
 def _position_identity(value: DevicePosition, field_name: str) -> None:
-    rack_identity = (value.rack_id, value.rack_slot_code, value.bin_id, value.bin_cell_id)
+    rack_identity = (value.rack_id, value.rack_slot_code, value.bin_code, value.bin_cell_id)
     if value.location_type == "RACK_CELL" and not all(rack_identity):
         raise ValueError("RACK_CELL requires complete rack/bin identity")
     if value.location_type != "RACK_CELL" and any(rack_identity):
@@ -185,7 +192,7 @@ def _runtime_snapshot(
 class MaterialEvidenceReadyFact(EvidenceReadyFact):
     runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
-    line_run_epoch_id: str
+    workline_id: str
     workline_code: str
     lot_code: str
     date_code: str
@@ -208,7 +215,7 @@ class MaterialEvidenceReadyFact(EvidenceReadyFact):
         )
         for field_name in (
             "material_trace_id",
-            "line_run_epoch_id",
+            "workline_id",
             "workline_code",
             "lot_code",
             "date_code",
@@ -232,7 +239,8 @@ class MaterialEvidenceReadyFact(EvidenceReadyFact):
 
 
 @dataclass(frozen=True, slots=True)
-class AdmissionDecidedFact(WmsResultReadyFact):
+class AdmissionDecidedFact(FactReference):
+    operation_id: str
     runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     result: AdmissionResult
@@ -244,7 +252,8 @@ class AdmissionDecidedFact(WmsResultReadyFact):
     next_position: DevicePosition | None = None
 
     def __post_init__(self) -> None:
-        WmsResultReadyFact.__post_init__(self)
+        FactReference.__post_init__(self)
+        _operation_id(self.operation_id, "operation_id")
         _runtime_snapshot(
             self.runtime_snapshot,
             material_execution_id=self.material_execution_id,
@@ -469,7 +478,8 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
 
 
 @dataclass(frozen=True, slots=True)
-class TargetDecidedFact(WmsResultReadyFact):
+class TargetDecidedFact(FactReference):
+    operation_id: str
     runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     result: TargetResult
@@ -485,7 +495,8 @@ class TargetDecidedFact(WmsResultReadyFact):
     request_operation_id: str | None = None
 
     def __post_init__(self) -> None:
-        WmsResultReadyFact.__post_init__(self)
+        FactReference.__post_init__(self)
+        _operation_id(self.operation_id, "operation_id")
         _runtime_snapshot(
             self.runtime_snapshot,
             material_execution_id=self.material_execution_id,
@@ -561,7 +572,8 @@ class TargetDecidedFact(WmsResultReadyFact):
 
 
 @dataclass(frozen=True, slots=True)
-class PlacementCompletedFact(WmsResultReadyFact):
+class PlacementCompletedFact(FactReference):
+    operation_id: str
     runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     kind: CompletionKind
@@ -570,7 +582,8 @@ class PlacementCompletedFact(WmsResultReadyFact):
     reason_code: str | None = None
 
     def __post_init__(self) -> None:
-        WmsResultReadyFact.__post_init__(self)
+        FactReference.__post_init__(self)
+        _operation_id(self.operation_id, "operation_id")
         _runtime_snapshot(
             self.runtime_snapshot,
             material_execution_id=self.material_execution_id,
@@ -584,23 +597,6 @@ class PlacementCompletedFact(WmsResultReadyFact):
             _required(self.reason_code or "", "reason_code")
         elif self.reason_code is not None:
             raise ValueError("recorded completion must not include reason_code")
-
-
-@dataclass(frozen=True, slots=True)
-class RackMoveLegPlan:
-    rack_id: str
-    source: TransportRackMovePosition
-    target: TransportRackMovePosition
-    target_face: str
-
-    def __post_init__(self) -> None:
-        _required(self.rack_id, "rack_id")
-        position_types = (TransportRackReference, TransportZonePosition, TransportRackPosition)
-        if type(self.source) not in position_types or type(self.target) not in position_types:
-            raise TypeError("source and target must be TransportRackMovePosition values")
-        if self.source == self.target:
-            raise ValueError("source and target must differ")
-        validate_opaque_face(self.target_face, "target_face")
 
 
 @dataclass(frozen=True, slots=True)
@@ -686,19 +682,21 @@ class RackReleaseSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class ReplacementPlanDecidedFact(WmsResultReadyFact):
+class ReplacementPlanDecidedFact(FactReference):
+    operation_id: str
     runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
     result: ReplacementResult
     current_rack_id: str
     release_snapshot: RackReleaseSnapshot | None = None
     rack_replacement_id: str | None = None
-    old_loaded_rack: RackMoveLegPlan | None = None
-    new_empty_rack: RackMoveLegPlan | None = None
+    old_loaded_rack: RackMovePlan | None = None
+    new_empty_rack: RackMovePlan | None = None
     reason_code: str | None = None
 
     def __post_init__(self) -> None:
-        WmsResultReadyFact.__post_init__(self)
+        FactReference.__post_init__(self)
+        _operation_id(self.operation_id, "operation_id")
         _runtime_snapshot(
             self.runtime_snapshot,
             material_execution_id=self.material_execution_id,
@@ -717,8 +715,11 @@ class ReplacementPlanDecidedFact(WmsResultReadyFact):
 
     def _require_ready(self) -> None:
         _required(self.rack_replacement_id or "", "rack_replacement_id")
-        if type(self.old_loaded_rack) is not RackMoveLegPlan or type(self.new_empty_rack) is not RackMoveLegPlan:
+        if type(self.old_loaded_rack) is not RackMovePlan or type(self.new_empty_rack) is not RackMovePlan:
             raise TypeError("READY requires typed old and new rack plans")
+        for plan in (self.old_loaded_rack, self.new_empty_rack):
+            if plan.source == plan.target:
+                raise ValueError("source and target must differ")
         if self.old_loaded_rack.rack_id != self.current_rack_id:
             raise ValueError("old_loaded_rack must match current_rack_id")
         if self.old_loaded_rack.rack_id == self.new_empty_rack.rack_id:
@@ -803,27 +804,15 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
         _required(self.inbound_admission_id or "", "inbound_admission_id")
 
 
-_RECOVERY_WMS_OPERATIONS = {
-    "inbound.material.admission_decide@v1",
-    "inbound.material.target_decide@v1",
-    "inbound.material.placement_report@v1",
-    "inbound.material.ng_placement_report@v1",
-    "inbound.source_rack.replacement_plan_decide@v1",
-}
-
-
 @dataclass(frozen=True, slots=True)
 class RecoveryWmsContinuation:
-    operation: str
-    operation_id: str
-    request_data: dict[str, object]
+    intent: InboundWmsIntent
 
     def __post_init__(self) -> None:
-        if self.operation not in _RECOVERY_WMS_OPERATIONS:
-            raise ValueError("unsupported recovery WMS operation")
-        _operation_id(self.operation_id, "operation_id")
-        if type(self.request_data) is not dict:
-            raise TypeError("request_data must be a dict")
+        if not isinstance(
+            self.intent, (AdmissionIntent, TargetIntent, PlacementIntent, NgPlacementIntent, ReplacementPlanIntent)
+        ):
+            raise TypeError("recovery requires a typed WMS intent")
 
 
 @dataclass(frozen=True, slots=True)
@@ -905,7 +894,6 @@ __all__ = [
     "PlacementConfirmationStatus",
     "PlacementReleaseEvidence",
     "PlacementResponseResult",
-    "RackMoveLegPlan",
     "RackReleaseSnapshot",
     "RecoveryContinuation",
     "RecoveryDecidedFact",

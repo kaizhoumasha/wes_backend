@@ -14,6 +14,7 @@ from wes_plugin_sdk import (
     TransportResultReadyFact,
     WmsResultReadyFact,
 )
+from wes_plugin_sdk.wms_types import AdmissionAccepted, AdmissionOutcome
 
 from src.app.execution.models import (
     InboundEvidence,
@@ -22,7 +23,7 @@ from src.app.execution.models import (
     MaterialExecution,
     MaterialExecutionStatus,
 )
-from src.app.workline.models import LineRunEpochPositionBinding
+from src.app.workline.activation import WorkLinePositionBinding
 
 
 def _builder():
@@ -36,7 +37,6 @@ def _execution() -> MaterialExecution:
         execution_code="EXEC-001",
         material_trace_id="TRACE-001",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.RUNNING,
         last_transition_reason="SCAN_ACCEPTED",
         last_transition_evidence_id=30,
@@ -52,7 +52,7 @@ def _evidence(kind: InboundEvidenceKind, **changes: object) -> InboundEvidence:
         "payload_digest": "a" * 64,
         "normalized_payload": {"data": {}},
         "received_at": datetime(2026, 8, 17),
-        "line_run_epoch_id": 11,
+        "workline_id": 7,
         "material_execution_id": 21,
         "contract_key": "rough_sorter.measurement_device",
         "contract_version": "1.0",
@@ -101,6 +101,12 @@ def test_wms_result_uses_validated_operation_identity() -> None:
             InboundEvidenceKind.WMS_RESULT,
             operation="inbound.material.admission_decide@v1",
             operation_id="019cd8ce-34b7-7000-8000-000000000001",
+            normalized_payload={
+                "operation_id": "019cd8ce-34b7-7000-8000-000000000001",
+                "code": "DECIDED",
+                "timestamp": 1,
+                "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
+            },
         ),
         _execution(),
     )
@@ -111,6 +117,7 @@ def test_wms_result_uses_validated_operation_identity() -> None:
         fact_version="1.0",
         material_execution_id="EXEC-001",
         operation_id="019cd8ce-34b7-7000-8000-000000000001",
+        outcome=AdmissionOutcome(AdmissionAccepted("PKG-1", "ADM-1")),
     )
 
 
@@ -216,8 +223,7 @@ def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() 
         (
             {"type": "HANDOFF_POSITION", "location_code": "OUTLET-1"},
             (
-                LineRunEpochPositionBinding(
-                    line_run_epoch_id=11,
+                WorkLinePositionBinding(
                     position_role="PIPELINE_OUTLET",
                     location_id="OUTLET-1",
                     location_type="PIPELINE_OUTLET",
@@ -230,7 +236,7 @@ def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() 
                 "type": "ONE_LAYER_BIN_CELL",
                 "rack_id": "RACK-1",
                 "rack_slot_code": "SLOT-1",
-                "bin_id": "BIN-1",
+                "bin_code": "BIN-1",
                 "bin_cell_id": "CELL-1",
             },
             (),
@@ -239,7 +245,7 @@ def test_single_recovery_fact_requires_the_current_reconciling_evidence_fence() 
     ],
 )
 def test_recovery_position_is_normalized_before_plugin_dispatch(
-    wire_position: dict[str, str], bindings: tuple[LineRunEpochPositionBinding, ...], expected_type: str
+    wire_position: dict[str, str], bindings: tuple[WorkLinePositionBinding, ...], expected_type: str
 ) -> None:
     execution = _execution()
     execution.status = MaterialExecutionStatus.RECONCILING
@@ -271,7 +277,7 @@ def test_recovery_position_is_normalized_before_plugin_dispatch(
     [
         (_evidence(InboundEvidenceKind.DEVICE_EVENT, apply_status=InboundEvidenceApplyStatus.PENDING), _execution()),
         (_evidence(InboundEvidenceKind.DEVICE_EVENT, material_execution_id=22), _execution()),
-        (_evidence(InboundEvidenceKind.DEVICE_EVENT, line_run_epoch_id=12), _execution()),
+        (_evidence(InboundEvidenceKind.DEVICE_EVENT, workline_id=12), _execution()),
     ],
 )
 def test_unapplied_or_mismatched_evidence_fails_closed(
@@ -280,3 +286,9 @@ def test_unapplied_or_mismatched_evidence_fails_closed(
 ) -> None:
     with pytest.raises(ValueError):
         _builder().build(evidence, execution)
+
+
+@pytest.mark.parametrize("operation", ["outbound.picking_task.plan_delta@v1", "outbound.picking_task.issued@v1"])
+def test_plan_events_cannot_be_interpreted_as_material_recovery(operation: str) -> None:
+    with pytest.raises(ValueError, match="WMS_EVENT 只接受 recovery_decided"):
+        _builder().build(_evidence(InboundEvidenceKind.WMS_EVENT, operation=operation), _execution())

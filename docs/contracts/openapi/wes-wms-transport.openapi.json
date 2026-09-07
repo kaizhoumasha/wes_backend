@@ -157,6 +157,7 @@
                                       "rack_face": {
                                         "type": "string",
                                         "minLength": 1,
+                                        "maxLength": 10,
                                         "pattern": "^[^\\u0000]+$",
                                         "description": "Opaque non-empty face value without NUL; preserve exactly"
                                       },
@@ -297,6 +298,7 @@
                               "arrival_face": {
                                 "type": "string",
                                 "minLength": 1,
+                                "maxLength": 10,
                                 "pattern": "^[^\\u0000]+$",
                                 "description": "Opaque non-empty face value without NUL; preserve exactly"
                               }
@@ -380,6 +382,7 @@
                               "arrival_face": {
                                 "type": "string",
                                 "minLength": 1,
+                                "maxLength": 10,
                                 "pattern": "^[^\\u0000]+$",
                                 "description": "Opaque non-empty face value without NUL; preserve exactly"
                               }
@@ -525,6 +528,7 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
+                                                  "maxLength": 10,
                                                   "pattern": "^[^\\u0000]+$",
                                                   "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
@@ -611,6 +615,7 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
+                                                  "maxLength": 10,
                                                   "pattern": "^[^\\u0000]+$",
                                                   "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
@@ -783,6 +788,7 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
+                                                  "maxLength": 10,
                                                   "pattern": "^[^\\u0000]+$",
                                                   "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },
@@ -869,6 +875,7 @@
                                                 "rack_face": {
                                                   "type": "string",
                                                   "minLength": 1,
+                                                  "maxLength": 10,
                                                   "pattern": "^[^\\u0000]+$",
                                                   "description": "Opaque non-empty face value without NUL; preserve exactly"
                                                 },

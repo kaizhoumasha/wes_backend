@@ -12,10 +12,10 @@ from src.app.workline.models.start import WorkLineStartErrorResponse, WorkLineSt
 from src.app.workline.services import workline_safety_service
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
-    WorkLineStartIdempotencyConflictError,
     WorkLineStartInvalidStateError,
     WorkLineStartNotFoundError,
     WorkLineStartService,
+    WorkLineStartVersionConflictError,
 )
 from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
@@ -79,12 +79,12 @@ def _workline_start_error_response(
 
 @router.post(
     "/worklines/{workline_id}/start",
-    summary="[biz:workline:start] 启动 WorkLine 并激活运行代际",
+    summary="[biz:workline:start] 启动 WorkLine 当前插件",
     response_model=ResponseSchemaModel[WorkLineStartResponse | WorkLineStartErrorResponse],
     responses={
-        200: {"model": ResponseSchemaModel[WorkLineStartResponse], "description": "START 成功或幂等 replay 成功"},
+        200: {"model": ResponseSchemaModel[WorkLineStartResponse], "description": "START 成功"},
         404: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "WorkLine 不存在"},
-        409: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "START 状态或幂等身份冲突"},
+        409: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "START 状态或版本冲突"},
         503: {"model": ResponseSchemaModel[WorkLineStartErrorResponse], "description": "START 服务不可用"},
     },
     status_code=status.HTTP_200_OK,
@@ -98,7 +98,7 @@ async def start_workline(
     db: AsyncSessionDep,
     cache: CacheDep,
 ) -> WorkLineStartApiResponse:
-    """在一个事务内 replay 或创建完整 LineRunEpoch。"""
+    """在同一事务内校验版本并启动当前插件。"""
 
     service_candidate = getattr(request.app.state, "workline_start_service", None)
     if service_candidate is None:
@@ -118,7 +118,7 @@ async def start_workline(
             result = await service.start(
                 uow.session,
                 workline_id=workline_id,
-                request_id=payload.request_id,
+                version=payload.version,
             )
             await uow.commit()
         from src.app.workline.services.workline_service import workline_service
@@ -131,12 +131,12 @@ async def start_workline(
             code=ResourceErrorCode.NOT_FOUND,
             reason="WORKLINE_NOT_FOUND",
         )
-    except WorkLineStartIdempotencyConflictError as exc:
+    except WorkLineStartVersionConflictError as exc:
         return _workline_start_error_response(
             response,
             exc,
             code=ResourceErrorCode.CONFLICT,
-            reason="IDEMPOTENCY_CONFLICT",
+            reason="VERSION_CONFLICT",
         )
     except WorkLineStartInvalidStateError as exc:
         return _workline_start_error_response(
@@ -153,23 +153,15 @@ async def start_workline(
             reason="CONFIGURATION_INVALID",
         )
 
-    if result is None:
-        raise RuntimeError("START 未返回运行代际")
-    epoch = result.epoch
-    if epoch.id is None:
-        raise RuntimeError("START 返回的运行代际缺少持久化主键")
+    if result is None or result.id is None:
+        raise RuntimeError("START 未返回持久化 WorkLine")
     data = WorkLineStartResponse(
-        line_run_epoch_id=epoch.id,
-        epoch_code=epoch.epoch_code,
-        workline_id=epoch.workline_id,
-        plugin_key=epoch.plugin_key,
-        plugin_version=epoch.plugin_version,
-        flow_mode=epoch.flow_mode,
-        epoch_status=enum_value(epoch.status),
-        epoch_started_at=epoch.started_at,
-        epoch_closed_at=epoch.closed_at,
-        current_workline_runtime_status=result.current_workline_runtime_status,
-        created=result.created,
+        workline_id=result.id,
+        version=result.version,
+        plugin_key=result.plugin_key,
+        plugin_version=result.plugin_version,
+        flow_mode=result.flow_mode,
+        is_active=result.is_active,
     )
     return cast(
         "ResponseSchemaModel[WorkLineStartResponse]", response_builder.success(data=data.model_dump(mode="json"))

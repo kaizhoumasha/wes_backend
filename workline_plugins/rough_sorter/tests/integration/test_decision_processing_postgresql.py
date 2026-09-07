@@ -44,15 +44,8 @@ from src.app.transport.contracts import (
 
 # WmsConfirmation 的可空外键仍需在独立插件测试进程中注册目标表。
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
-from src.app.workline.epoch_digest import configuration_digest, topology_digest
-from src.app.workline.models import (
-    LineRunEpoch,
-    LineRunEpochDeviceBinding,
-    LineRunEpochPositionBinding,
-    LineRunEpochStatus,
-    WorkLine,
-)
-from src.app.workline.models.workline import LineType
+from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
+from src.app.workline.models.workline import LineType, WorkLine
 from wes_plugin_sdk import (
     TransportResultReadyFact,
     Wait,
@@ -65,7 +58,24 @@ from rough_sorter.application.wms_facts import rack_release_snapshot
 pytest_plugins = ("tests.integration.conftest",)
 
 
-async def _claim_epoch(db: Any, identity: str, now: datetime) -> tuple[WorkLine, LineRunEpoch]:
+def _publish(line, devices, positions=()):
+    from dataclasses import asdict
+
+    line.config = {"device_bindings": {item.device_role: item.device_code for item in devices}}
+    line.device_contracts = {
+        item.device_code: {
+            key: value
+            for key, value in asdict(item).items()
+            if key not in {"device_code", "device_role", "workline_id"}
+        }
+        for item in devices
+    }
+    line.position_bindings = {
+        item.position_role: {"location_id": item.location_id, "location_type": item.location_type} for item in positions
+    }
+
+
+async def _claim_workline(db: Any, identity: str, now: datetime) -> WorkLine:
     suffix = identity.rsplit("-", maxsplit=1)[-1][:12]
     line = WorkLine(
         line_code=f"CL-{suffix}",
@@ -74,20 +84,12 @@ async def _claim_epoch(db: Any, identity: str, now: datetime) -> tuple[WorkLine,
     )
     db.add(line)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"CE-{suffix}",
-        workline_id=line.id,
-        plugin_key="rough_sorter",
-        plugin_version="1.0.0",
-        flow_mode="ROUGH_SORT_INBOUND",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=now,
-    )
-    db.add(epoch)
+    line.plugin_key = "rough_sorter"
+    line.plugin_version = "1.0.0"
+    line.flow_mode = "ROUGH_SORT_INBOUND"
+    line.is_active = True
     await db.flush()
-    return line, epoch
+    return line
 
 
 @pytest.mark.asyncio
@@ -133,23 +135,14 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
         ]
         db.add_all(devices)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code=f"ROUGH-EPOCH-{identity[:12]}",
-            workline_id=line.id,
-            plugin_key="rough_sorter",
-            plugin_version="1.0.0",
-            flow_mode="ROUGH_SORT_INBOUND",
-            topology_digest="0" * 64,
-            configuration_digest=configuration_digest("rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND", {}),
-            configuration_snapshot_json={},
-            status=LineRunEpochStatus.ACTIVE,
-            started_at=now,
-        )
-        db.add(epoch)
+        line.plugin_key = "rough_sorter"
+        line.plugin_version = "1.0.0"
+        line.flow_mode = "ROUGH_SORT_INBOUND"
+        line.is_active = True
         await db.flush()
         device_bindings = [
-            LineRunEpochDeviceBinding(
-                line_run_epoch_id=epoch.id,
+            WorkLineDeviceBinding(
+                workline_id=line.id,
                 device_id=device.id,
                 device_code=device.device_code,
                 device_role=role,
@@ -162,17 +155,15 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
             for device, (role, contract) in zip(devices, roles, strict=True)
         ]
         position_bindings = [
-            LineRunEpochPositionBinding(
-                line_run_epoch_id=epoch.id,
+            WorkLinePositionBinding(
                 position_role=role,
                 location_id=location_id,
                 location_type=role,
             )
             for role, location_id in position_values
         ]
-        db.add_all([*device_bindings, *position_bindings])
+        _publish(line, device_bindings, position_bindings)
         await db.flush()
-        epoch.topology_digest = topology_digest(device_bindings, position_bindings)
         evidence = InboundEvidence(
             kind=InboundEvidenceKind.DEVICE_EVENT,
             source_identity=f"ROUGH-SCAN-{identity}",
@@ -199,7 +190,7 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
                 },
             },
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=line.id,
             device_code=devices[0].device_code,
             contract_key="rough_sorter.measurement_device",
             contract_version="1.0",
@@ -209,7 +200,6 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
         await db.flush()
         evidence_id = evidence.id
         line_id = line.id
-        epoch_id = epoch.id
         device_ids = tuple(device.id for device in devices)
 
     from src.core.task_queue_gateway import task_queue_gateway
@@ -248,13 +238,6 @@ async def test_concrete_rough_sorter_composition_correlates_first_scan_in_the_cl
         await db.flush()
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution.id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence_id))
-        await db.execute(
-            delete(LineRunEpochPositionBinding).where(LineRunEpochPositionBinding.line_run_epoch_id == epoch_id)
-        )
-        await db.execute(
-            delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.line_run_epoch_id == epoch_id)
-        )
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(Device).where(Device.id.in_(device_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
@@ -282,22 +265,13 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
         )
         db.add(device)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code=f"RELEASE-EPOCH-{identity[:12]}",
-            workline_id=line.id,
-            plugin_key="rough_sorter",
-            plugin_version="1.0.0",
-            flow_mode="ROUGH_SORT_INBOUND",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            status=LineRunEpochStatus.ACTIVE,
-            started_at=now,
-        )
-        db.add(epoch)
+        line.plugin_key = "rough_sorter"
+        line.plugin_version = "1.0.0"
+        line.flow_mode = "ROUGH_SORT_INBOUND"
+        line.is_active = True
         await db.flush()
-        binding = LineRunEpochDeviceBinding(
-            line_run_epoch_id=epoch.id,
+        binding = WorkLineDeviceBinding(
+            workline_id=line.id,
             device_id=device.id,
             device_code=device.device_code,
             device_role="PLACEMENT_DEVICE",
@@ -307,7 +281,7 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
             status_max_age_ms=10_000,
             command_timeout_ms=30_000,
         )
-        db.add(binding)
+        _publish(line, (binding,))
         seeds = [
             InboundEvidence(
                 kind=InboundEvidenceKind.DEVICE_EVENT,
@@ -315,7 +289,7 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
                 payload_digest=str(ordinal) * 64,
                 normalized_payload={"data": {}},
                 received_at=now,
-                line_run_epoch_id=epoch.id,
+                workline_id=line.id,
                 device_code=device.device_code,
                 contract_version="1.0",
                 apply_status=InboundEvidenceApplyStatus.IGNORED,
@@ -329,7 +303,6 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
                 execution_code=f"RELEASE-EXEC-{ordinal}-{identity}",
                 material_trace_id=f"RELEASE-TRACE-{ordinal}-{identity}",
                 workline_id=line.id,
-                line_run_epoch_id=epoch.id,
                 admission_received_at=now,
                 admission_evidence_id=seed.id,
                 last_transition_reason="INITIAL_EVIDENCE",
@@ -343,8 +316,10 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
         command = DeviceCommand(
             command_code=command_code,
             device_code=device.device_code,
-            device_binding_id=binding.id,
-            line_run_epoch_id=epoch.id,
+            endpoint_base_url=binding.endpoint_base_url,
+            status_max_age_ms=binding.status_max_age_ms,
+            command_timeout_ms=binding.command_timeout_ms,
+            workline_id=line.id,
             execution_ref_type="PLUGIN_DECISION",
             execution_ref_id=f"evidence:{seeds[1].id}:execution:{executions[1].id}:CREATE_DEVICE_COMMAND:0",
             material_execution_id=executions[1].id,
@@ -364,7 +339,7 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
                     "material_trace_id": executions[1].material_trace_id,
                     "rack_id": "RACK-1",
                     "rack_slot_code": "SLOT-1",
-                    "bin_id": "BIN-1",
+                    "bin_code": "BIN-1",
                     "bin_cell_id": "CELL-1",
                 },
             },
@@ -377,8 +352,6 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
         execution_ids = tuple(execution.id for execution in executions)
         seed_ids = tuple(seed.id for seed in seeds)
         line_id = line.id
-        epoch_id = epoch.id
-        binding_id = binding.id
         device_id = device.id
 
         snapshot = await rack_release_snapshot(
@@ -396,8 +369,6 @@ async def test_postgresql_rack_release_snapshot_includes_cross_execution_placeme
         await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
-        await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(Device).where(Device.id == device_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
@@ -429,22 +400,13 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
         )
         db.add(device)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code=f"RACK-FENCE-EPOCH-{identity[:12]}",
-            workline_id=line.id,
-            plugin_key="rough_sorter",
-            plugin_version="1.0.0",
-            flow_mode="ROUGH_SORT_INBOUND",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            status=LineRunEpochStatus.ACTIVE,
-            started_at=now,
-        )
-        db.add(epoch)
+        line.plugin_key = "rough_sorter"
+        line.plugin_version = "1.0.0"
+        line.flow_mode = "ROUGH_SORT_INBOUND"
+        line.is_active = True
         await db.flush()
-        device_binding = LineRunEpochDeviceBinding(
-            line_run_epoch_id=epoch.id,
+        device_binding = WorkLineDeviceBinding(
+            workline_id=line.id,
             device_id=device.id,
             device_code=device.device_code,
             device_role="PLACEMENT_DEVICE",
@@ -454,7 +416,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
             status_max_age_ms=10_000,
             command_timeout_ms=30_000,
         )
-        db.add(device_binding)
+        _publish(line, (device_binding,))
         seeds = [
             InboundEvidence(
                 kind=InboundEvidenceKind.WMS_RESULT,
@@ -462,7 +424,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 payload_digest=str(ordinal) * 64,
                 normalized_payload={"data": {}},
                 received_at=now,
-                line_run_epoch_id=epoch.id,
+                workline_id=line.id,
                 operation="inbound.material.target_decide@v1",
                 operation_id=f"RACK-FENCE-OP-{ordinal}-{identity}",
                 contract_version="1.0",
@@ -477,7 +439,6 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 execution_code=f"RACK-FENCE-EXEC-{ordinal}-{identity}",
                 material_trace_id=f"RACK-FENCE-TRACE-{ordinal}-{identity}",
                 workline_id=line.id,
-                line_run_epoch_id=epoch.id,
                 admission_received_at=now,
                 admission_evidence_id=seed.id,
                 last_transition_reason="INITIAL_EVIDENCE",
@@ -494,8 +455,6 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
         line_id = line.id
         device_id = device.id
         device_code = device.device_code
-        epoch_id = epoch.id
-        binding_id = device_binding.id
         seed_ids = tuple(seed.id for seed in seeds)
         execution_ids = tuple(execution.id for execution in executions)
         target_trace_id = executions[0].material_trace_id
@@ -506,12 +465,12 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 contender_started.set()
             await transport_decision_binding_repository.lock_resource_fence(
                 db,
-                line_run_epoch_id=epoch_id,
+                workline_id=line_id,
                 resource_fence_id=rack_id,
             )
             fence = await transport_decision_binding_repository.get_by_resource_step_for_update(
                 db,
-                line_run_epoch_id=epoch_id,
+                workline_id=line_id,
                 resource_fence_id=rack_id,
                 step="OLD_OUT",
             )
@@ -522,8 +481,10 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 DeviceCommand(
                     command_code=command_code,
                     device_code=device_code,
-                    device_binding_id=binding_id,
-                    line_run_epoch_id=epoch_id,
+                    endpoint_base_url=device_binding.endpoint_base_url,
+                    status_max_age_ms=device_binding.status_max_age_ms,
+                    command_timeout_ms=device_binding.command_timeout_ms,
+                    workline_id=line_id,
                     execution_ref_type="PLUGIN_DECISION",
                     execution_ref_id=f"evidence:{seed_ids[0]}:execution:{execution_ids[0]}:CREATE_DEVICE_COMMAND:{suffix}",
                     material_execution_id=execution_ids[0],
@@ -543,7 +504,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                             "material_trace_id": target_trace_id,
                             "rack_id": rack_id,
                             "rack_slot_code": f"SLOT-{suffix}",
-                            "bin_id": f"BIN-{suffix}",
+                            "bin_code": f"BIN-{suffix}",
                             "bin_cell_id": f"CELL-{suffix}",
                         },
                     },
@@ -564,12 +525,12 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 contender_started.set()
             await transport_decision_binding_repository.lock_resource_fence(
                 db,
-                line_run_epoch_id=epoch_id,
+                workline_id=line_id,
                 resource_fence_id="RACK-1",
             )
-            commands = await device_command_repository.list_for_epoch_for_update(
+            commands = await device_command_repository.list_for_workline_for_update(
                 db,
-                line_run_epoch_id=epoch_id,
+                workline_id=line_id,
             )
             active_statuses = {
                 CommandStatus.PENDING,
@@ -590,7 +551,7 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
                 TransportDecisionBinding(
                     correlation_id=f"REPLACE-{identity}",
                     step="OLD_OUT",
-                    line_run_epoch_id=epoch_id,
+                    workline_id=line_id,
                     resource_fence_id="RACK-1",
                     client_request_id=f"019d0000-0000-7000-8001-{identity[:12]}",
                     source_evidence_id=seed_ids[1],
@@ -632,22 +593,20 @@ async def test_postgresql_rack_fence_serializes_replacement_and_late_target_acro
         commands = list(
             (
                 await db.execute(
-                    select(DeviceCommand).where(DeviceCommand.line_run_epoch_id == epoch_id).order_by(DeviceCommand.id)
+                    select(DeviceCommand).where(DeviceCommand.workline_id == line_id).order_by(DeviceCommand.id)
                 )
             ).scalars()
         )
         r1_commands = [command for command in commands if command.params["target"]["rack_id"] == "RACK-1"]
         assert len(r1_commands) == (0 if first_owner == "replacement" else 1)
         assert [command.params["target"]["rack_id"] for command in commands][-1] == "RACK-2"
-        await db.execute(delete(DeviceCommand).where(DeviceCommand.line_run_epoch_id == epoch_id))
-        await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.line_run_epoch_id == epoch_id))
+        await db.execute(delete(DeviceCommand).where(DeviceCommand.workline_id == line_id))
+        await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))
         await db.execute(
             update(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)).values(material_execution_id=None)
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(seed_ids)))
-        await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(Device).where(Device.id == device_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
@@ -660,14 +619,14 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
     now = datetime(2026, 8, 18, 12)
     client_request_id = "019d0000-0000-7000-8000-000000000142"
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, f"PUBLISHER-LOCK-{identity}", now)
+        line = await _claim_workline(db, f"PUBLISHER-LOCK-{identity}", now)
         source = InboundEvidence(
             kind=InboundEvidenceKind.WMS_RESULT,
             source_identity=f"PUBLISHER-LOCK-SOURCE-{identity}",
             payload_digest="a" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=line.id,
             operation="inbound.source_rack.replacement_plan_decide@v1",
             operation_id=f"PUBLISHER-LOCK-OP-{identity}",
             contract_version="1.0",
@@ -679,7 +638,6 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
             execution_code=f"PUBLISHER-LOCK-EXEC-{identity}",
             material_trace_id=f"PUBLISHER-LOCK-TRACE-{identity}",
             workline_id=line.id,
-            line_run_epoch_id=epoch.id,
             admission_received_at=now,
             admission_evidence_id=source.id,
             last_transition_reason="INITIAL_EVIDENCE",
@@ -692,7 +650,7 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
         binding = TransportDecisionBinding(
             correlation_id=f"PUBLISHER-LOCK-REPLACE-{identity}",
             step="NEW_IN",
-            line_run_epoch_id=epoch.id,
+            workline_id=line.id,
             resource_fence_id="RACK-1",
             client_request_id=client_request_id,
             source_evidence_id=source.id,
@@ -700,7 +658,6 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
         db.add(binding)
         await db.flush()
         line_id = line.id
-        epoch_id = epoch.id
         source_id = source.id
         execution_id = execution.id
 
@@ -729,7 +686,6 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
     owner = asyncio.create_task(drift_binding_in_execution_first_order())
     await owner_locked_execution.wait()
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=integration_session_factory,
         evidence_service=SignallingEvidenceService(),  # type: ignore[arg-type]
     )
     outcome = TransportOutcome(
@@ -747,7 +703,12 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
             ),
         ),
     )
-    publishing = asyncio.create_task(publisher.publish(outcome))
+
+    async def publish():
+        async with integration_session_factory.begin() as db:
+            return await publisher.publish(db, outcome)
+
+    publishing = asyncio.create_task(publish())
     await asyncio.wait_for(owner, timeout=5)
     with pytest.raises(ValueError, match="binding correlation drift"):
         await asyncio.wait_for(publishing, timeout=5)
@@ -770,7 +731,6 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
 
@@ -783,14 +743,14 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
     client_request_id = "019d0000-0000-7000-8000-" + identity[:12]
     transport_task_id = f"TRANSPORT-LOCK-{identity}"
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, f"PUBLISHER-FACT-{identity}", now)
+        line = await _claim_workline(db, f"PUBLISHER-FACT-{identity}", now)
         source = InboundEvidence(
             kind=InboundEvidenceKind.WMS_RESULT,
             source_identity=f"PUBLISHER-FACT-SOURCE-{identity}",
             payload_digest="a" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=line.id,
             operation="inbound.source_rack.replacement_plan_decide@v1",
             operation_id=f"PUBLISHER-FACT-OP-{identity}",
             contract_version="1.0",
@@ -802,7 +762,6 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
             execution_code=f"PUBLISHER-FACT-EXEC-{identity}",
             material_trace_id=f"PUBLISHER-FACT-TRACE-{identity}",
             workline_id=line.id,
-            line_run_epoch_id=epoch.id,
             admission_received_at=now,
             admission_evidence_id=source.id,
             last_transition_reason="INITIAL_EVIDENCE",
@@ -815,7 +774,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
         binding = TransportDecisionBinding(
             correlation_id=f"PUBLISHER-FACT-REPLACE-{identity}",
             step="NEW_IN",
-            line_run_epoch_id=epoch.id,
+            workline_id=line.id,
             resource_fence_id="RACK-1",
             client_request_id=client_request_id,
             source_evidence_id=source.id,
@@ -858,7 +817,7 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
                 ],
             },
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=line.id,
             material_execution_id=execution.id,
             transport_task_id=transport_task_id,
             contract_key="rough_sorter.transport_outcome",
@@ -867,7 +826,6 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
         )
         outcome_evidence_id = accepted.evidence.id
         line_id = line.id
-        epoch_id = epoch.id
         source_id = source.id
         execution_id = execution.id
 
@@ -920,10 +878,6 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
             self.calls += 1
             return "applied"
 
-    class Queue:
-        def enqueue_execution_facts(self) -> None:
-            return None
-
     applier = RecordingApplier()
     processor = FactProcessor(
         session_factory=integration_session_factory,
@@ -943,14 +897,17 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
         token_factory=lambda: f"claim-{identity}",
     )
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=integration_session_factory,
         evidence_service=InboundEvidenceService(repository=PublisherEvidenceRepository()),  # type: ignore[arg-type]
-        queue_gateway=Queue(),  # type: ignore[arg-type]
     )
 
     processing = asyncio.create_task(processor.process_batch(limit=1))
     await asyncio.wait_for(processor_holds_outcome.wait(), timeout=5)
-    publishing = asyncio.create_task(publisher.publish(outcome))
+
+    async def publish():
+        async with integration_session_factory.begin() as db:
+            return await publisher.publish(db, outcome)
+
+    publishing = asyncio.create_task(publish())
     await asyncio.wait_for(publisher_waiting_outcome.wait(), timeout=5)
     release_processor.set()
     assert await asyncio.wait_for(processing, timeout=5) == 1
@@ -979,5 +936,103 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == source_id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_postgresql_current_arrival_excludes_history_but_keeps_pending_old_out(integration_session_factory):
+    from src.app.transport.models import TransportTask
+
+    identity = uuid4().hex
+    now = datetime(2026, 9, 6, 12)
+    async with integration_session_factory.begin() as db:
+        line = await _claim_workline(db, identity, now)
+        line_id = line.id
+        source = InboundEvidence(
+            kind=InboundEvidenceKind.WMS_RESULT,
+            source_identity=identity,
+            payload_digest="a" * 64,
+            normalized_payload={},
+            received_at=now,
+            workline_id=line_id,
+            operation="inbound.material.target_decide@v1",
+            operation_id=identity,
+            contract_version="1.0",
+            apply_status=InboundEvidenceApplyStatus.IGNORED,
+        )
+        db.add(source)
+        await db.flush()
+        task_ids = []
+        for ordinal, status in enumerate(("SUCCEEDED", "SUCCEEDED", "PENDING")):
+            client_id = f"{identity}-{ordinal}"
+            task_id = f"OLD-{client_id}"
+            task_ids.append(task_id)
+            db.add(
+                TransportTask(
+                    transport_task_id=task_id,
+                    client_request_id=client_id,
+                    request_digest="a" * 64,
+                    kind="RACK_MOVE",
+                    caller_json={"workline_id": str(line_id)},
+                    request_json={},
+                    submit_operation_id=str(uuid4()),
+                    submit_timestamp_ms=1,
+                    submit_request_body="{}",
+                    submit_request_body_digest="a" * 64,
+                    status=status,
+                    authority_workline_id=line_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                TransportDecisionBinding(
+                    correlation_id=client_id,
+                    step="OLD_OUT",
+                    workline_id=line_id,
+                    resource_fence_id=identity,
+                    client_request_id=client_id,
+                    source_evidence_id=source.id,
+                )
+            )
+    try:
+        async with integration_session_factory.begin() as db:
+
+            async def fence(source_task_id):
+                return await transport_decision_binding_repository.get_by_resource_step_for_update(
+                    db,
+                    workline_id=line_id,
+                    resource_fence_id=identity,
+                    step="OLD_OUT",
+                    exclude_task_statuses=("SUCCEEDED",),
+                    retain_transport_task_id=source_task_id,
+                )
+
+            # A proven new arrival cannot release a newer unresolved departure.
+            current = await fence("NEW-ARRIVAL")
+            assert current.client_request_id == f"{identity}-2"
+            await db.execute(
+                update(TransportTask).where(TransportTask.transport_task_id == task_ids[2]).values(status="SUCCEEDED")
+            )
+            assert await fence("NEW-ARRIVAL") is None
+            # The current projection's own departure is never treated as old history.
+            current = await fence(task_ids[2])
+            assert current.client_request_id == f"{identity}-2"
+            assert (
+                len(
+                    (
+                        await db.execute(
+                            select(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                == 3
+            )
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))
+            await db.execute(delete(TransportTask).where(TransportTask.authority_workline_id == line_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.workline_id == line_id))
+            await db.execute(delete(WorkLine).where(WorkLine.id == line_id))

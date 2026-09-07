@@ -17,8 +17,6 @@ from src.app.device.services.device_command_admission import (
     ensure_runtime_admissible,
     ensure_status_fresh,
 )
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
@@ -27,6 +25,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from src.app.workline.activation import WorkLineDeviceBinding
 
 
 class DispatchCommandRepositoryPort(Protocol):
@@ -47,12 +47,6 @@ class DispatchCommandRepositoryPort(Protocol):
     async def mark_late_ack_reconciling(self, db: object, command: DeviceCommand, *, acknowledged_at: datetime): ...
 
 
-class DispatchEpochRepositoryPort(Protocol):
-    async def get_binding_for_dispatch(
-        self, db: object, *, line_run_epoch_id: int, device_code: str
-    ) -> LineRunEpochDeviceBinding | None: ...
-
-
 class ObservationRepositoryPort(Protocol):
     async def add_status_observation(self, db: object, observation: DeviceStatusObservation): ...
 
@@ -64,8 +58,7 @@ class EndpointAdapterProviderPort(Protocol):
 @dataclass(frozen=True, slots=True)
 class _FrozenDispatchContext:
     device_code: str
-    line_run_epoch_id: int | None
-    device_binding_id: int | None
+    workline_id: int | None
     endpoint_base_url: str
     contract_key: str
     contract_version: str
@@ -81,14 +74,12 @@ class DeviceDispatchService:
         session_factory: async_sessionmaker[AsyncSession],
         adapter_provider: EndpointAdapterProviderPort,
         command_repository: DispatchCommandRepositoryPort | None = None,
-        epoch_repository: DispatchEpochRepositoryPort | None = None,
         observation_repository: ObservationRepositoryPort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
     ) -> None:
         self._sessions = session_factory
         self._adapter_provider = adapter_provider
         self._commands = command_repository or device_command_repository
-        self._epochs = epoch_repository or line_run_epoch_repository
         self._observations = observation_repository or device_status_observation_repository
         self._clock = clock
 
@@ -116,30 +107,23 @@ class DeviceDispatchService:
                     return True
                 dispatch_context = _FrozenDispatchContext(
                     device_code=command.device_code,
-                    line_run_epoch_id=None,
-                    device_binding_id=None,
+                    workline_id=None,
                     endpoint_base_url=command.endpoint_base_url,
                     contract_key=command.contract_key,
                     contract_version=command.contract_version,
                     status_max_age_ms=None,
                 )
             else:
-                binding = await self._epochs.get_binding_for_dispatch(
-                    db,
-                    line_run_epoch_id=command.line_run_epoch_id,
-                    device_code=device_code,
-                )
-                if binding is None:
-                    await self._commands.mark_reconciling(db, command, reason="EPOCH_BINDING_UNAVAILABLE")
+                if command.endpoint_base_url is None or command.status_max_age_ms is None:
+                    await self._commands.mark_reconciling(db, command, reason="COMMAND_CONTRACT_UNAVAILABLE")
                     return True
                 dispatch_context = _FrozenDispatchContext(
-                    device_code=binding.device_code,
-                    line_run_epoch_id=binding.line_run_epoch_id,
-                    device_binding_id=binding.id,
-                    endpoint_base_url=binding.endpoint_base_url,
-                    contract_key=binding.contract_key,
-                    contract_version=binding.contract_version,
-                    status_max_age_ms=binding.status_max_age_ms,
+                    device_code=command.device_code,
+                    workline_id=command.workline_id,
+                    endpoint_base_url=command.endpoint_base_url,
+                    contract_key=command.contract_key,
+                    contract_version=command.contract_version,
+                    status_max_age_ms=command.status_max_age_ms,
                 )
 
         try:
@@ -285,7 +269,7 @@ class DeviceDispatchService:
     def ensure_admissible(
         *,
         command: DeviceCommand,
-        binding: LineRunEpochDeviceBinding | _FrozenDispatchContext,
+        binding: WorkLineDeviceBinding | _FrozenDispatchContext,
         status: EcsDeviceStatus,
         observed_at: datetime,
     ) -> None:
@@ -294,8 +278,7 @@ class DeviceDispatchService:
             if isinstance(binding, _FrozenDispatchContext)
             else _FrozenDispatchContext(
                 device_code=binding.device_code,
-                line_run_epoch_id=binding.line_run_epoch_id,
-                device_binding_id=binding.id,
+                workline_id=binding.workline_id,
                 endpoint_base_url=binding.endpoint_base_url,
                 contract_key=binding.contract_key,
                 contract_version=binding.contract_version,
@@ -305,8 +288,7 @@ class DeviceDispatchService:
         if status.device.device_code != command.device_code or context.device_code != command.device_code:
             raise DeviceCommandAdmissionError("DEVICE_IDENTITY_MISMATCH")
         if (
-            command.device_binding_id != context.device_binding_id
-            or command.line_run_epoch_id != context.line_run_epoch_id
+            command.workline_id != context.workline_id
             or command.contract_key != context.contract_key
             or command.contract_version != context.contract_version
         ):

@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.32.0.0
+**Version**: 0.33.0.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -56,7 +56,6 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [WES 出库操作顶层设计](docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md)：评审中的 `PickingTask` 分批计划、不可逆执行和安全取消业务设计；当前不构成实施授权。
 - [WMS / WES 自动入库与上架交互要求](docs/contracts/wms-inbound-putaway-integration-requirements.md)：Phase 13 满箱交换和自动上架的业务合同评审真源；当前为 `ReviewRequired`，不代表已实施。
 - [WES 架构收敛十四阶段总控](docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md)：Phase 6–11 已完成；最新 backend `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree `46d568d1`，frontend 联调部署 revision 为 `a6c3193f`。Transport 0.3 WES 实现已 `ALIGNED`；510056 backend/frontend canonical consumer 已交付，本轮已由操作员确认直接录入值进入真实 WMS/RCS、`SCAN12` 驱动料箱回架并触发最终 `CTU03`，以及刷新或重新登录后仍可恢复终态步骤历史。该确认不替代 release evidence、部署验收或业务 owner 签署；其它 `EVENT_DEBUG` 对账状态仍须按各自证据独立判断。Phase 8 分层证据见[粗分机后端开发验收与现场边界状态](docs/integration/rough-sorter-joint-acceptance.md)。
-- [粗分机 WorkLine Epoch 激活与多 Endpoint 派发计划](docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md)：后端工程包 1–4 已完成并提交；前端 Device、WorkLine 配置与 START 操作按独立合同冻结门禁待实施。
 - [WORKLINE 业务插件二次开发指南](docs/plugin_development_guide.md)：最小插件 SPI、封闭 Decision 与独立插件包交付约定。
 - [WMS 北向交互合同](docs/contracts/wms-northbound-interaction-contract.md)：定义共享 Client 与后续新增具体 WMS API 的开发标准；业务结果由 WMS 给出，搬运与 RCS 状态归 Phase 4。
 - [AGV/CTU 通用搬运能力合同](docs/contracts/transport-fulfillment-contract.md)：定义四类搬运请求、同步接纳 ACK、成员位置事实、异步最终结果、幂等和对账边界；Phase 6 已接入唯一生产路由、API/Celery 生命周期和可靠队列，当前唯一生产业务 producer 是粗分换架 `OLD_OUT/NEW_IN`。

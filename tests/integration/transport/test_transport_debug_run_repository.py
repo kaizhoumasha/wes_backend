@@ -484,7 +484,7 @@ async def test_committed_scan12_conflict_fences_dispatch_before_run_scanner_upda
         setup_db.add(evidence)
         await setup_db.flush()
         assert evidence.id is not None
-        step.observed_bins_json = [{"bin_id": "BIN-1", "evidence_id": evidence.id, "source_event_id": source_id}]
+        step.observed_bins_json = [{"bin_code": "BIN-1", "evidence_id": evidence.id, "source_event_id": source_id}]
         await repository.add_run(setup_db, run, step)
         setup_db.add(
             InboundEvidenceConflict(

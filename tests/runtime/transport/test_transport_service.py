@@ -5,6 +5,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -12,6 +13,8 @@ from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.execution.models import PositionProjection
+from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
+from src.app.execution.services.position_projection_service import PositionProjectionService
 from src.app.transport.contracts import (
     BinExchangePair,
     BinMove,
@@ -161,9 +164,17 @@ class DelayedNotSentProvider:
 
 
 @pytest.fixture
-def service(db_engine: object) -> TransportService:
+def service(db_engine: object, monkeypatch: pytest.MonkeyPatch) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    return TransportService(sessions, TransportRepository(), FakeProvider())
+    projections = PositionProjectionRepository()
+    # SQLite FAST 保留真实准入查询；PostgreSQL 对象锁由集成测试验证。
+    monkeypatch.setattr(projections, "lock_projection", AsyncMock())
+    return TransportService(
+        sessions,
+        TransportRepository(),
+        FakeProvider(),
+        position_projections=PositionProjectionService(repository=projections),
+    )
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -559,13 +570,12 @@ async def test_four_public_methods_create_one_reliable_task_each(
     ]
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id="rack-5",
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="90",
                 source_operation_id="seed",
@@ -613,7 +623,7 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         handle = await service.move_rack_in_session(
             db,
             request_id,
@@ -624,7 +634,6 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
             "90",
             execution_authority=TransportExecutionAuthority(
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
             ),
         )
         persisted = await db.scalar(select(TransportTask).where(TransportTask.client_request_id == request_id))
@@ -632,8 +641,6 @@ async def test_move_rack_can_join_a_caller_owned_transaction(
     assert persisted is not None
     assert persisted.transport_task_id == handle.transport_task_id
     assert persisted.authority_workline_id == workline_id
-    assert persisted.authority_line_run_epoch_id == line_run_epoch_id
-    assert persisted.authority_bin_execution_id is None
 
 
 @pytest.mark.asyncio
@@ -645,7 +652,7 @@ async def test_same_client_request_with_changed_execution_authority_conflicts(
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         await service.move_rack_in_session(
             db,
             request_id,
@@ -656,7 +663,6 @@ async def test_same_client_request_with_changed_execution_authority_conflicts(
             "90",
             execution_authority=TransportExecutionAuthority(
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
             ),
         )
 
@@ -714,7 +720,7 @@ async def test_exchange_idempotency_ignores_pair_order_and_left_right_orientatio
         ),
     )
     equivalent = tuple(
-        BinExchangePair(pair.right_bin_id, pair.right_location, pair.left_bin_id, pair.left_location)
+        BinExchangePair(pair.right_bin_code, pair.right_location, pair.left_bin_code, pair.left_location)
         for pair in reversed(pairs)
     )
 
@@ -732,13 +738,12 @@ async def test_rotate_retry_returns_original_handle_after_projection_reaches_tar
     request_id = new_uuid7()
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id="rack-rotate-idempotent",
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="90",
                 source_operation_id="seed",

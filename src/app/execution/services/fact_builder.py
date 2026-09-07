@@ -22,9 +22,10 @@ from src.app.execution.models import (
     MaterialExecution,
     MaterialExecutionStatus,
 )
+from src.app.wms_adapter.inbound_material.typed import decode_outcome
 
 if TYPE_CHECKING:
-    from src.app.workline.models import LineRunEpochPositionBinding
+    from src.app.workline.models import WorkLinePositionBinding
 
 
 class FactBuilder:
@@ -36,7 +37,7 @@ class FactBuilder:
         execution: MaterialExecution,
         *,
         causal_evidence: InboundEvidence | None = None,
-        position_bindings: tuple[LineRunEpochPositionBinding, ...] = (),
+        position_bindings: tuple[WorkLinePositionBinding, ...] = (),
     ) -> FactReference:
         self._validate_correlations(evidence, execution)
         fact_id = f"evidence:{evidence.id}"
@@ -60,6 +61,11 @@ class FactBuilder:
             return WmsResultReadyFact(
                 **common,
                 operation_id=_required(evidence.operation_id, "operation_id"),
+                outcome=decode_outcome(
+                    _required(evidence.operation, "operation"),
+                    evidence.normalized_payload,
+                    material_trace_id=execution.material_trace_id,
+                ),
             )
         if kind is InboundEvidenceKind.TRANSPORT_RESULT:
             self._validate_transport_causal(evidence, execution, causal_evidence)
@@ -76,7 +82,7 @@ class FactBuilder:
         evidence: InboundEvidence,
         execution: MaterialExecution,
         common: dict[str, str],
-        position_bindings: tuple[LineRunEpochPositionBinding, ...],
+        position_bindings: tuple[WorkLinePositionBinding, ...],
     ) -> RecoveryDecidedFact:
         if evidence.operation != "inbound.execution.recovery_decided@v1":
             raise ValueError("WMS_EVENT 只接受 recovery_decided operation")
@@ -142,8 +148,8 @@ class FactBuilder:
             raise ValueError("Fact 只能由已完成基础处理的 evidence 构建")
         if evidence.material_execution_id != execution.id:
             raise ValueError("evidence 与 MaterialExecution 关联不匹配")
-        if evidence.line_run_epoch_id != execution.line_run_epoch_id:
-            raise ValueError("evidence 与 MaterialExecution Epoch 不匹配")
+        if evidence.workline_id != execution.workline_id:
+            raise ValueError("evidence 与 MaterialExecution WorkLine 不匹配")
 
 
 def _required(value: str | None, field_name: str) -> str:
@@ -165,7 +171,7 @@ def _required_string(value: object, field_name: str) -> str:
 def _device_position(
     value: object,
     material_trace_id: str,
-    position_bindings: tuple[LineRunEpochPositionBinding, ...],
+    position_bindings: tuple[WorkLinePositionBinding, ...],
 ) -> DevicePosition | None:
     if value is None:
         return None
@@ -179,7 +185,7 @@ def _device_position(
     else:
         matches = tuple(binding for binding in position_bindings if binding.location_id == location_id)
         if len(matches) != 1:
-            raise ValueError("authoritative HANDOFF_POSITION must match one active Epoch position binding")
+            raise ValueError("authoritative HANDOFF_POSITION must match one active WorkLine position binding")
         location_type = matches[0].location_type
     return DevicePosition(
         location_id=location_id,
@@ -187,7 +193,7 @@ def _device_position(
         material_trace_id=material_trace_id,
         rack_id=value.get("rack_id") if isinstance(value.get("rack_id"), str) else None,
         rack_slot_code=value.get("rack_slot_code") if isinstance(value.get("rack_slot_code"), str) else None,
-        bin_id=value.get("bin_id") if isinstance(value.get("bin_id"), str) else None,
+        bin_code=value.get("bin_code") if isinstance(value.get("bin_code"), str) else None,
         bin_cell_id=value.get("bin_cell_id") if isinstance(value.get("bin_cell_id"), str) else None,
     )
 

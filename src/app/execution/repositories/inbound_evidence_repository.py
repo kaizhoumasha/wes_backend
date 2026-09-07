@@ -14,7 +14,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceConflict,
     InboundEvidenceKind,
 )
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
+from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
 
@@ -143,14 +143,14 @@ class InboundEvidenceRepository(BaseRepository[InboundEvidence]):
         columns = cast("Any", InboundEvidence).__table__.c
         earlier_transport_outcomes = InboundEvidence.__table__.alias("earlier_transport_outcomes")
         earlier_columns = earlier_transport_outcomes.c
-        epoch_columns = cast("Any", LineRunEpoch).__table__.c
+        workline_columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(InboundEvidence)
-            .join(LineRunEpoch, columns.line_run_epoch_id == epoch_columns.id)
+            .join(WorkLine, columns.workline_id == workline_columns.id)
             .where(
                 columns.apply_status == InboundEvidenceApplyStatus.APPLIED,
                 columns.published_at.is_(None),
-                epoch_columns.status == LineRunEpochStatus.ACTIVE,
+                workline_columns.is_active.is_(True),
                 not_(
                     and_(
                         columns.kind == InboundEvidenceKind.DEVICE_RESULT,

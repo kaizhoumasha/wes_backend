@@ -17,17 +17,27 @@ from src.app.transport.contracts import (
     TransportIngressDisposition,
 )
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
-from src.app.wms_adapter.inbound_openapi import (
+from src.app.wms_adapter.inbound_material.openapi import (
     RECOVERY_EVENT_REQUEST_SCHEMA,
     WMS_EVENT_RESPONSES,
 )
-from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
-from src.app.wms_adapter.outbound_picking.openapi import PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA
+from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
+from src.app.wms_adapter.outbound_picking.openapi import (
+    PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
+    PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
+    PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
+)
+from src.app.wms_adapter.outbound_picking.plan_delta_wire import PICKING_TASK_PLAN_DELTA_OPERATION
+from src.app.wms_adapter.outbound_picking.queue_changed_wire import PICKING_TASK_QUEUE_CHANGED_OPERATION
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_ISSUED_OPERATION
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
-from src.app.wms_adapter.transport_event_handler import MAX_TRANSPORT_EVENT_BODY_BYTES
 from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA
-from src.app.wms_adapter.wire_common import is_wire_operation, is_wire_operation_id
+from src.app.wms_adapter.wire_common import (
+    MAX_WMS_EVENT_BODY_BYTES,
+    is_wire_operation,
+    is_wire_operation_id,
+    parse_wms_event_envelope,
+)
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -42,6 +52,8 @@ WMS_EVENT_REQUEST_SCHEMA = {
         *TRANSPORT_EVENT_REQUEST_SCHEMA["oneOf"],
         RECOVERY_EVENT_REQUEST_SCHEMA,
         PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
+        PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
+        PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
     ]
 }
 WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
@@ -50,7 +62,7 @@ WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
 async def _read_bounded_body(request: Request) -> tuple[bytes | None, int]:
     body = bytearray()
     async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_TRANSPORT_EVENT_BODY_BYTES:
+        if len(body) + len(chunk) > MAX_WMS_EVENT_BODY_BYTES:
             return None, len(body) + len(chunk)
         body.extend(chunk)
     raw_body = bytes(body)
@@ -307,7 +319,9 @@ async def receive_wms_event(request: Request) -> Response:
         )
         return Response(status_code=401)
 
-    operation = _extract_operation(raw_body)
+    envelope = parse_wms_event_envelope(raw_body)
+    operation = envelope.get("operation") if envelope is not None else None
+    operation = operation if isinstance(operation, str) else None
     is_transport_event = operation in {TRANSPORT_POSITION_OPERATION, TRANSPORT_RESULT_OPERATION}
     if operation == RECOVERY_OPERATION:
         handler = getattr(request.app.state, "wms_recovery_event_handler", None)
@@ -324,10 +338,22 @@ async def receive_wms_event(request: Request) -> Response:
             )
             return response
         result = await handler.handle(raw_body)
-    elif operation == PICKING_TASK_ISSUED_OPERATION:
-        handler = getattr(request.app.state, "wms_picking_task_issued_handler", None)
+    elif operation in {
+        PICKING_TASK_ISSUED_OPERATION,
+        PICKING_TASK_PLAN_DELTA_OPERATION,
+        PICKING_TASK_QUEUE_CHANGED_OPERATION,
+    }:
+        if operation == PICKING_TASK_ISSUED_OPERATION:
+            handler = getattr(request.app.state, "wms_picking_task_issued_handler", None)
+        elif operation == PICKING_TASK_PLAN_DELTA_OPERATION:
+            handler = getattr(request.app.state, "wms_picking_task_plan_delta_handler", None)
+        else:
+            handler = getattr(request.app.state, "wms_picking_task_queue_changed_handler", None)
         if handler is None:
-            response = _unavailable_ack(raw_body)
+            operation_id = envelope.get("operation_id") if envelope is not None else None
+            response = (
+                _unavailable_response(operation_id) if is_wire_operation_id(operation_id) else Response(status_code=400)
+            )
             await _publish_wms_ingress_attempt(
                 request,
                 request_id=request_id,
@@ -338,7 +364,7 @@ async def receive_wms_event(request: Request) -> Response:
                 error_code="PICKING_TASK_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
             )
             return response
-        result = await handler.handle(raw_body)
+        result = await handler.handle(envelope)
     elif is_transport_event:
         runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
         if runtime is None:
@@ -371,7 +397,7 @@ async def receive_wms_event(request: Request) -> Response:
             error_code="UNSUPPORTED_OPERATION" if response.status_code == 422 else "INVALID_ENVELOPE",
         )
         return response
-    # Evidence 已持久化后先应答 WMS；Celery 唤醒只是加速提示，失败时由 Beat 兜底扫描。
+    # 各 operation 已完成其 ACK 事务；Transport 的 Celery 唤醒仅加速应用，失败由 Beat 扫描恢复。
     background = (
         BackgroundTask(_enqueue_transport_evidence)
         if is_transport_event and result.body.get("code") in {"RECEIVED", "DUPLICATE"}
@@ -400,18 +426,6 @@ async def receive_wms_event(request: Request) -> Response:
             ),
         )
     return response
-
-
-def _extract_operation(raw_body: bytes) -> str | None:
-    try:
-        value = loads_transport_json(raw_body.decode("utf-8"))
-    except (UnicodeDecodeError, StrictJsonError):
-        return None
-    if not isinstance(value, dict):
-        return None
-    envelope = cast("dict[str, Any]", value)
-    operation = envelope.get("operation")
-    return operation if isinstance(operation, str) else None
 
 
 __all__ = ["router"]

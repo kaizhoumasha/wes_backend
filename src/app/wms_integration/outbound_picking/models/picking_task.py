@@ -32,6 +32,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     __tablename__: ClassVar[str] = "picking_tasks"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
+        CheckConstraint("target_rack_face IS NULL OR length(target_rack_face) >= 1", name="target_rack_face_nonempty"),
         CheckConstraint(
             "status IN ('QUEUED', 'PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED')",
             name="picking_task_status_valid",
@@ -45,10 +46,18 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
             name="picking_task_not_before_nonnegative",
         ),
         CheckConstraint(
-            "(status = 'QUEUED' AND workline_id IS NULL AND line_run_epoch_id IS NULL) OR "
+            "(status = 'QUEUED' AND workline_id IS NULL) OR "
             "(status IN ('PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED') "
-            "AND workline_id IS NOT NULL AND line_run_epoch_id IS NOT NULL)",
+            "AND workline_id IS NOT NULL)",
             name="picking_task_binding_matches_status",
+        ),
+        CheckConstraint("last_applied_plan_revision >= 0", name="picking_task_plan_revision_nonnegative"),
+        CheckConstraint(
+            "(last_applied_plan_revision = 0 AND target_rack_id IS NULL AND target_rack_face IS NULL "
+            "AND initial_plan_evidence_id IS NULL AND last_plan_evidence_id IS NULL) OR "
+            "(last_applied_plan_revision > 0 AND target_rack_id IS NOT NULL AND target_rack_face IS NOT NULL "
+            "AND initial_plan_evidence_id IS NOT NULL AND last_plan_evidence_id IS NOT NULL)",
+            name="picking_task_plan_initial_consistent",
         ),
         UniqueConstraint("task_id", name="ux_picking_tasks_task_id"),
         UniqueConstraint("issued_evidence_id", name="ux_picking_tasks_issued_evidence"),
@@ -104,10 +113,20 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         foreign_key="wes_biz.work_lines.id",
         index=True,
     )
-    line_run_epoch_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.line_run_epochs.id",
-        index=True,
+
+    last_applied_plan_revision: int = Field(
+        default=0, ge=0, sa_type=BigInteger, sa_column_kwargs={"server_default": "0"}
+    )
+    target_rack_id: str | None = Field(default=None, max_length=100)
+    target_rack_face: str | None = Field(default=None, min_length=1, max_length=10)
+    initial_plan_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    last_plan_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
+    )
+    plan_blocked_evidence_id: int | None = Field(
+        default=None, foreign_key="wes_biz.inbound_evidences.id", sa_type=SQL_COMPAT_BIGINT
     )
 
 

@@ -19,7 +19,7 @@ class DeviceCommandRequest:
     """后续业务插件创建命令时使用的唯一应用端口请求。"""
 
     device_code: str
-    line_run_epoch_id: int
+    workline_id: int
     execution_ref_type: str
     execution_ref_id: str
     material_execution_id: int | None

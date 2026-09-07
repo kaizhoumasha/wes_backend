@@ -13,7 +13,7 @@ def test_binding_identity_uses_only_neutral_decision_fields() -> None:
     binding = binding_type(
         correlation_id="operation-001",
         step="PRIMARY_MOVE",
-        line_run_epoch_id=11,
+        workline_id=11,
         resource_fence_id="resource-001",
         client_request_id="019cd8ce-34b7-7000-8000-000000000001",
         source_evidence_id=31,
@@ -31,18 +31,18 @@ def test_binding_metadata_scopes_decision_identity_without_business_cardinality(
     constraints = {constraint.name: constraint for constraint in table.constraints}
 
     assert set(constraints) >= {
-        "fk_transport_decision_bindings_epoch",
+        "fk_transport_decision_bindings_workline",
         "ux_transport_decision_bindings_decision_identity",
         "ux_transport_decision_bindings_client_request_id",
     }
     assert [column.name for column in constraints["ux_transport_decision_bindings_decision_identity"].columns] == [
-        "line_run_epoch_id",
+        "workline_id",
         "correlation_id",
         "step",
     ]
-    assert "ux_transport_decision_bindings_epoch_resource_step" not in constraints
+    assert "ux_transport_decision_bindings_workline_resource_step" not in constraints
     assert {index.name for index in table.indexes} >= {
-        "ix_wes_biz_transport_decision_bindings_epoch_resource",
+        "ix_wes_biz_transport_decision_bindings_workline_resource",
     }
     assert all("OLD_OUT" not in str(getattr(constraint, "sqltext", "")) for constraint in table.constraints)
 

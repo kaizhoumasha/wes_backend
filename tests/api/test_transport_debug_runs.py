@@ -42,7 +42,7 @@ def _snapshot(*, run_id: str = "debug-run-1", face: str = " 90 ") -> TransportDe
         current_phase=TransportDebugRunPhase.RACK_TO_STATION,
         current_step=None,
         steps=(),
-        observed_bin_ids=(),
+        observed_bin_codes=(),
         attention_code=None,
         attention_detail=None,
         can_abort=False,
@@ -102,7 +102,7 @@ def _payload(*, face: str = " 90 ") -> dict[str, object]:
         "face_groups": [
             {
                 "face": face,
-                "bins": [{"bin_id": "A000001922", "slot_id": "510056A3F2C101"}],
+                "bins": [{"bin_code": "A000001922", "slot_id": "510056A3F2C101"}],
             }
         ],
     }

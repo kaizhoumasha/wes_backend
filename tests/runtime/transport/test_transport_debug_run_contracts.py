@@ -12,8 +12,8 @@ from src.app.transport.debug_run_contracts import (
 )
 
 
-def _bin(bin_id: str, slot_id: str) -> TransportDebugBinSelection:
-    return TransportDebugBinSelection(bin_id=bin_id, slot_id=slot_id)
+def _bin(bin_code: str, slot_id: str) -> TransportDebugBinSelection:
+    return TransportDebugBinSelection(bin_code=bin_code, slot_id=slot_id)
 
 
 def _group(face: str, *bins: TransportDebugBinSelection) -> TransportDebugFaceGroup:
@@ -51,7 +51,7 @@ def test_debug_run_contract_preserves_face_strings_exactly() -> None:
 
 
 @pytest.mark.parametrize(
-    ("rack_id", "bin_id", "slot_id", "message"),
+    ("rack_id", "bin_code", "slot_id", "message"),
     [
         (" ", "BIN-1", "SLOT-1", "货架编码"),
         ("RACK-1", " ", "SLOT-1", "料箱编码"),
@@ -60,14 +60,14 @@ def test_debug_run_contract_preserves_face_strings_exactly() -> None:
 )
 def test_debug_run_contract_rejects_incomplete_operator_input(
     rack_id: str,
-    bin_id: str,
+    bin_code: str,
     slot_id: str,
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
         CreateTransportDebugRun(
             rack_id=rack_id,
-            face_groups=(_group("90", _bin(bin_id, slot_id)),),
+            face_groups=(_group("90", _bin(bin_code, slot_id)),),
         )
 
 
@@ -108,3 +108,14 @@ def test_debug_run_contract_rejects_a_bin_selected_on_multiple_faces() -> None:
                 _group("270", _bin("BIN-1", "SLOT-2")),
             ),
         )
+
+
+@pytest.mark.parametrize("face", ["x" * 10, "面" * 10])
+def test_debug_face_group_accepts_ten_characters(face: str) -> None:
+    assert _group(face, _bin("BIN-1", "SLOT-1")).face == face
+
+
+@pytest.mark.parametrize("face", ["x" * 11, "面" * 11])
+def test_debug_face_group_rejects_eleven_characters(face: str) -> None:
+    with pytest.raises(ValueError, match="10"):
+        _group(face, _bin("BIN-1", "SLOT-1"))

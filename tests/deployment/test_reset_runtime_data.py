@@ -115,7 +115,7 @@ def test_runtime_targets_use_explicit_schema_identity_and_exclude_retired_schema
         ("wes_biz", "line_run_epochs"),
         ("wes_biz", "line_run_epoch_device_bindings"),
         ("wes_biz", "line_run_epoch_position_bindings"),
-    }.issubset(identities)
+    }.isdisjoint(identities)
     assert identities.isdisjoint(
         {
             ("wes_biz", "ng_return_items"),

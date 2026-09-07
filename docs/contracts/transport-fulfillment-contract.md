@@ -124,7 +124,7 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 一次包含一个或多个 `BinMove`：
 
 ```text
-BinMove = bin_id + source + target
+BinMove = bin_code + source + target
 ```
 
 来源和目标只能是 `RACK_BIN_SLOT` 或 `HANDOFF_POSITION`，且至少一端是 `RACK_BIN_SLOT`。单次成员数固定为 `1..4`，对应 CTU
@@ -143,7 +143,7 @@ BinMove = bin_id + source + target
 一次包含 1～2 个 `BinExchangePair`：
 
 ```text
-BinExchangePair = left_bin_id + left_location + right_bin_id + right_location
+BinExchangePair = left_bin_code + left_location + right_bin_code + right_location
 ```
 
 每个交换对的结果是 left bin 到 right location、right bin 到 left location。必须满足：
@@ -172,7 +172,7 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 | 全部方法 | 标识为空、位置类型或必填字段不符合闭集 |
 | `move_rack()` | 来源与目标相同、来源/目标不属于 `RACK \| ZONE \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、非 CTU03 的 `target_face` 不是非空 string，或模板不在闭集 |
 | `rotate_rack()` | 位置不是 `RACK \| RACK_POSITION`、`RACK.location_code` 与外层 `rack_id` 不同、`target_face` 不是非空 string、精确当前位置或当前面未知、目标面等于当前面，或模板不在闭集 |
-| `move_bins()` | 成员数不在 `1..4`、重复 `bin_id`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT`，或同一 `rack_id` 混用不同面 token |
+| `move_bins()` | 成员数不在 `1..4`、重复 `bin_code`、单成员来源与目标相同、重复使用 `RACK_BIN_SLOT`，或同一 `rack_id` 混用不同面 token |
 | `exchange_bins()` | 交换对数量不是 1～2、料箱或储位重复、位置不是 `RACK_BIN_SLOT`、涉及超过两个工作面组、同一货架混面，或不能展开为 1～2 个互不重叠的二元闭环 |
 
 多个成员可以使用同一个 `HANDOFF_POSITION`；其容量和排队规则仍由 WMS/工作线插件决定。
@@ -187,7 +187,7 @@ Phase 4 只校验搬运合同，不判断空箱、满箱、容量、业务资格
 | `RACK_BIN_SLOT` | `rack_id + rack_face + slot_id` | WMS 货架、货架面与储位主数据 | 料箱所在货架储位；`rack_face` 为不透明 string token |
 | `HANDOFF_POSITION` | `location_code` | WES 静态工作线拓扑和位置投影 | 滚筒线入料口、出料口等 CTU 交接位置 |
 
-位置联合不得退化为未声明的任意字符串，不得引入供应商 DTO，也不得从 `bin_id` 反推位置。
+位置联合不得退化为未声明的任意字符串，不得引入供应商 DTO，也不得从 `bin_code` 反推位置。
 
 ## 4. WMS 提交合同
 
@@ -301,7 +301,7 @@ Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要
 自身权威主数据和可信 RCS 状态再次校验。WMS 无法取得可信精确位置或当前面时返回 `503 / UNAVAILABLE`，确认 `target_face` 等于当前面时返回
 `409 / CONFLICT`，两种情况都不得调用 RCS。
 
-`BinMove.bin_id` 与 `BinExchangePair` 是 WES 内部领域结构；Adapter 形成接口契约时统一输出 `container_id` 和显式 `source + target`。
+`BinMove.bin_code` 与 `BinExchangePair` 是 WES 内部领域结构；Adapter 形成接口契约时统一输出 `container_id` 和显式 `source + target`。
 `BIN_EXCHANGE` 不发送 `exchange_pairs`、left/right 角色或执行顺序。料箱业务载荷数组按 `container_id` 升序输出，该顺序不代表
 CTU 物理动作顺序。
 
@@ -352,8 +352,8 @@ WMS 必须原子保存 `operation + operation_id`、`transport_task_id`、首次
 WES 固定保存实际发送的完整 UTF-8 JSON 请求体及其 `request_body_digest`，后续重提必须发送同一字节串，不得重新序列化，
 也不得加入 HTTP Header、连接信息等单次访问元数据。相同身份不同消息必须稳定冲突。
 
-活动资源冲突的最小范围为：同一 `rack_id` 或同一内部 `bin_id` 已绑定另一未闭合任务。接口契约 `container_id` 在 Adapter 边界映射为
-对应内部 `bin_id`。`RACK_BIN_SLOT` 的精确身份 `rack_id + rack_face + slot_id` 用于请求内位置唯一性、成员目标校验和结果匹配，
+活动资源冲突的最小范围为：同一 `rack_id` 或同一内部 `bin_code` 已绑定另一未闭合任务。接口契约 `container_id` 在 Adapter 边界映射为
+对应内部 `bin_code`。`RACK_BIN_SLOT` 的精确身份 `rack_id + rack_face + slot_id` 用于请求内位置唯一性、成员目标校验和结果匹配，
 不另建活动资源绑定；其所在 `rack_id` 已整体互斥。`HANDOFF_POSITION` 允许由多个任务引用，不能仅因 `location_code` 相同就冲突。
 资源只在前一任务取得确定终态或经人工对账关闭后解除。
 
@@ -385,10 +385,10 @@ WES 固定保存实际发送的完整 UTF-8 JSON 请求体及其 `request_body_d
 
 ### 5.1 固定入口
 
-| 方向 | 方法与路径 | operation | 模式 |
-| --- | --- | --- | --- |
-| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.member_position_changed@v1` | 逐箱位置事实 + 持久化后 ACK |
-| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.resulted@v1` | 最终结果 + 持久化后 ACK |
+| 方向 | 方法与路径 | operation | `ack_mode` | `ack_commit_facts` |
+| --- | --- | --- | --- | --- |
+| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.member_position_changed@v1` | `EVIDENCE_ACCEPTED` | 消息收据与逐箱位置 Evidence |
+| WMS → WES | `POST {{WES_BASE_URL}}/api/v1/wms/events` | `transport.task.resulted@v1` | `EVIDENCE_ACCEPTED` | 消息收据、结果版本身份与最终结果 Evidence |
 
 两类回调均复用 `docs/contracts/wms-async-callback-envelope-contract.md` 定义的 WMS 异步回调统一信封；本 Transport
 operation 另外固定 `256 KiB` Body 上限。
@@ -444,7 +444,7 @@ final_position?   # TARGET_PLACED 时必填，且必须等于冻结目标；只�
 ```
 
 `SOURCE_PICKED` 与 `POSITION_UNKNOWN` 禁止携带 `final_position`。接口契约 `container_id` 在 Adapter 边界映射到冻结成员的内部
-`bin_id`；`transport.task.member_position_changed@v1` 不接受 `bin_id` 别名。
+`bin_code`；`transport.task.member_position_changed@v1` 不接受 `bin_code` 或旧 `bin_id` 别名。
 
 每个回调顶层 `operation_id` 遵循 WMS 异步回调统一信封，由 WMS 为该位置事实首次生成 UUIDv7，重试时保持原值，并通过
 `transport_task_id` 关联原 TransportTask。位置事实是独立交互，不沿用 submit `operation_id`。
@@ -520,8 +520,8 @@ results[] {
 `FAILED`；任一对象位置未知时是 `UNKNOWN/RECONCILING`。Phase 4 不把部分成功包装成整体成功，也不根据业务价值修改聚合规则。
 料箱任务不回传可由 `results[]` 推导的任务总状态；货架任务的顶层 `status` 就是唯一对象结果，不形成第二份聚合状态。
 
-`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是非空且不含 NUL 的 UTF-8 string。
-除 NUL 外不定义字符内容或长度限制；该边界保证值可进入 PostgreSQL `TEXT`，HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
+`rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是长度 `1..10` 个 Unicode code point 且不含 NUL 的 UTF-8 string。
+持久化列使用 PostgreSQL `VARCHAR(10)`，超长值拒绝且不得截断；HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
 WES/WMS/RCS 对解析后的 string 原样传递，不做 trim、case folding、
 Unicode normalization、A/B 转换、角度计算或容差处理。CTU03 未指定 `target_face` 时记录实际 `arrival_face` 且不比较目标朝向；
 任何已指定的目标面都必须与 `arrival_face` 精确相等。缺少应有
@@ -629,7 +629,7 @@ WES 本地运维观察接口可以按 `transport_task_id` 返回任务当前状�
 不属于 WMS/RCS 状态查询、物理完成证明或业务验收。
 
 同一货架或料箱最多属于一个非终态任务。Bin 任务必须绑定每个成员来源和目标 `RACK_BIN_SLOT` 中出现的全部不同 `rack_id`，
-同时绑定被搬运的每个内部 `bin_id`；Adapter 接收的接口契约`container_id` 必须先解析为该冻结成员身份。这样可以防止 AGV 搬架与
+同时绑定被搬运的每个内部 `bin_code`；Adapter 接收的接口契约`container_id` 必须先解析为该冻结成员身份。这样可以防止 AGV 搬架与
 CTU 在该架取箱或放箱并发。资源键先去重、稳定排序后在一个事务中取得；
 只有 `REJECTED / SUCCEEDED / FAILED` 的确定终态事务释放绑定；`RECONCILING` 即使已向插件发布 `UNKNOWN` 也必须继续保持绑定，
 直到匹配的权威确定结果完成消歧。唯一例外是第 1 节定义的联调定向清理：事务锁定任务后，按 `transport_task_id` 删除完整本地链路，

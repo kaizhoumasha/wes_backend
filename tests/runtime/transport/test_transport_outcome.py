@@ -907,13 +907,12 @@ async def test_rotate_success_requires_the_frozen_target_face(
 ) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id="rack-face",
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                 position_unknown=False,
                 arrival_face="90",

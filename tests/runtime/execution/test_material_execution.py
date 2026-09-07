@@ -51,13 +51,12 @@ class FakeMaterialExecutionRepository:
         _db: object,
         *,
         workline_id: int,
-        line_run_epoch_id: int,
     ) -> MaterialExecution | None:
         candidates = [
             execution
             for execution in self.executions
             if execution.workline_id == workline_id
-            and execution.line_run_epoch_id == line_run_epoch_id
+            and execution.workline_id == workline_id
             and execution.status != MaterialExecutionStatus.CLOSED
         ]
         return min(
@@ -85,7 +84,6 @@ async def _create(service: MaterialExecutionService, *, execution_code: str = "E
         execution_code=execution_code,
         material_trace_id="TRACE-MATERIAL-001",
         workline_id=1,
-        line_run_epoch_id=11,
         changed_at=datetime(2026, 8, 16),
         reason_code="SCAN_ACCEPTED",
         evidence_id=101,
@@ -123,7 +121,6 @@ async def test_fifo_head_cannot_be_skipped_by_later_active_material() -> None:
         execution_code="EXEC-LATER",
         material_trace_id="TRACE-MATERIAL-002",
         workline_id=1,
-        line_run_epoch_id=11,
         changed_at=datetime(2026, 8, 16, 0, 1),
         reason_code="SCAN_ACCEPTED",
         evidence_id=102,
@@ -163,7 +160,6 @@ async def test_initial_evidence_correlation_reuses_only_the_same_frozen_executio
         "execution_code": "EXEC-INITIAL",
         "material_trace_id": "TRACE-INITIAL",
         "workline_id": 1,
-        "line_run_epoch_id": 11,
         "changed_at": datetime(2026, 8, 17),
         "evidence_id": 101,
     }
@@ -275,7 +271,6 @@ def test_all_approved_transition_edges_are_available(current: str, target: str) 
         execution_code=f"EXEC-{current}-{target}",
         material_trace_id=f"TRACE-{current}-{target}",
         workline_id=1,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus(current),
         last_transition_reason="SETUP",
         last_transition_evidence_id=101,
@@ -309,7 +304,6 @@ def test_unapproved_transition_edges_are_rejected(current: str, target: str) -> 
         execution_code=f"EXEC-{current}-{target}",
         material_trace_id=f"TRACE-{current}-{target}",
         workline_id=1,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus(current),
         last_transition_reason="SETUP",
         last_transition_evidence_id=101,

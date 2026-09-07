@@ -43,8 +43,7 @@ from src.app.execution.services.inbound_evidence_service import (
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
+from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
@@ -54,6 +53,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.workline.activation import WorkLineDeviceBinding
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
@@ -70,6 +70,10 @@ class _DeviceEvidenceRejectedError(ValueError):
     """已持久化但 HTTP 拒绝的 evidence，并保留诊断关联。"""
 
     receipt: DeviceEvidenceReceipt | None = None
+
+
+class DeviceEventNotAdmittedError(_DeviceEvidenceRejectedError):
+    """非调试事件缺少活动工作线准入。"""
 
 
 class DeviceEvidenceConflictError(_DeviceEvidenceRejectedError):
@@ -166,8 +170,8 @@ class EvidenceAuditServicePort(Protocol):
     async def create_audit_log(self, db: object, **values: object) -> object: ...
 
 
-class EvidenceEpochRepositoryPort(Protocol):
-    async def get_active_binding_for_device(self, db: object, device_code: str) -> LineRunEpochDeviceBinding | None: ...
+class EvidenceWorkLineRepositoryPort(Protocol):
+    async def get_active_binding_for_device(self, db: object, device_code: str) -> WorkLineDeviceBinding | None: ...
 
     async def get_by_id(self, db: object, id: int) -> object | None: ...
 
@@ -199,7 +203,7 @@ class DeviceEvidenceService:
         inbound_evidence_service: InboundEvidenceService | None = None,
         processing_repository: EvidenceProcessingRepositoryPort | None = None,
         command_repository: EvidenceCommandRepositoryPort | None = None,
-        epoch_repository: EvidenceEpochRepositoryPort | None = None,
+        workline_repository: EvidenceWorkLineRepositoryPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         event_publisher: EventPublisherPort | None = None,
         event_debug_command_service: EventDebugCommandServicePort | None = None,
@@ -212,7 +216,7 @@ class DeviceEvidenceService:
         self._ingress = inbound_evidence_service or default_inbound_evidence_service
         self._processing = processing_repository or inbound_evidence_repository
         self._commands = command_repository or device_command_repository
-        self._epochs = epoch_repository or line_run_epoch_repository
+        self._worklines = workline_repository or WorkLineRepository()
         self._task_queue = task_queue_gateway
         self._event_publisher = event_publisher
         self._event_debug_commands = event_debug_command_service
@@ -256,7 +260,7 @@ class DeviceEvidenceService:
                 source_identity=result.source_event_id,
                 normalized_payload=payload,
                 received_at=timezone.now_for_db(),
-                line_run_epoch_id=command.line_run_epoch_id,
+                workline_id=command.workline_id,
                 material_execution_id=command.material_execution_id,
                 device_code=result.device_code,
                 command_code=result.command_code if rejection is None else None,
@@ -287,7 +291,7 @@ class DeviceEvidenceService:
         async with self._sessions.begin() as db:
             source_identity = _event_source_identity(report)
             existing = await self._processing.get_by_source_identity_for_update(db, source_identity)
-            binding = await self._epochs.get_active_binding_for_device(db, report.device_code)
+            binding = await self._worklines.get_active_binding_for_device(db, report.device_code)
             contract_key = (
                 existing.contract_key
                 if existing is not None and existing.contract_key is not None
@@ -309,23 +313,29 @@ class DeviceEvidenceService:
                 contract_version=contract_version,
             )
             payload = event.model_dump(mode="json", exclude_unset=True)
+            if not report.is_debug and (
+                (existing is None and binding is None) or (existing is not None and existing.workline_id is None)
+            ):
+                rejection = DeviceEventNotAdmittedError("WORKLINE_NOT_ACTIVE")
             accepted = await self._ingress.accept(
                 db,
                 kind=InboundEvidenceKind.DEVICE_EVENT,
                 source_identity=event.source_event_id,
                 normalized_payload=payload,
                 received_at=timezone.now_for_db(),
-                line_run_epoch_id=(
-                    existing.line_run_epoch_id
+                workline_id=(
+                    existing.workline_id
                     if existing is not None
-                    else binding.line_run_epoch_id
+                    else binding.workline_id
                     if binding is not None
                     else None
                 ),
                 device_code=event.device_code,
                 contract_key=event.contract_key,
                 contract_version=event.contract_version,
-                apply_status=InboundEvidenceApplyStatus.PENDING,
+                apply_status=InboundEvidenceApplyStatus.PENDING
+                if rejection is None
+                else InboundEvidenceApplyStatus.IGNORED,
                 digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE,
             )
             if isinstance(accepted, InboundEvidenceConflictResult):
@@ -334,6 +344,8 @@ class DeviceEvidenceService:
                 rejection.receipt = receipt
             else:
                 receipt = _receipt(accepted.evidence, duplicate=accepted.duplicate, trace_id=event.trace_id)
+                if rejection is not None:
+                    rejection.receipt = receipt
         if rejection is not None:
             raise rejection
         if receipt is None:
@@ -498,7 +510,7 @@ class DeviceEvidenceService:
                 command = await self._commands.get_by_command_code(db, evidence.command_code, for_update=True)
                 if (
                     command is None
-                    or evidence.line_run_epoch_id != command.line_run_epoch_id
+                    or evidence.workline_id != command.workline_id
                     or command.status
                     not in {
                         CommandStatus.DISPATCHING,
@@ -539,12 +551,10 @@ class DeviceEvidenceService:
         evidence: InboundEvidence,
         processed_at: datetime,
     ) -> bool:
-        epoch = (
-            await self._epochs.get_by_id(db, evidence.line_run_epoch_id)
-            if evidence.line_run_epoch_id is not None
-            else None
+        workline = (
+            await self._worklines.get_by_id(db, evidence.workline_id) if evidence.workline_id is not None else None
         )
-        workline_id = getattr(epoch, "workline_id", None)
+        workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int) or evidence.id is None:
             await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
             return False

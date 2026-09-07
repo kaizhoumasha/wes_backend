@@ -4,15 +4,33 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.wms_adapter.inbound_wire import parse_outbound_request, parse_outbound_response
+from src.app.wms_adapter.inbound_material.typed import decode_request
+from wes_plugin_sdk import (
+    AdmissionAccepted,
+    AdmissionIntent,
+    AdmissionOutcome,
+    FactRecorded,
+    InboundWmsIntent,
+    MaterialRejected,
+    NgPlacementIntent,
+    NgPlacementOutcome,
+    NoAvailableCell,
+    OperationWait,
+    PlacementIntent,
+    PlacementOutcome,
+    ReplacementPlanIntent,
+    ReplacementPlanOutcome,
+    ReplacementReady,
+    TargetAssigned,
+    TargetIntent,
+    TargetOutcome,
+)
 
 from rough_sorter.application.values import (
     bound_position,
     command_position,
     device_binding,
     position_binding,
-    positive_int,
-    rack_move_plan,
     required_string,
     wire_position,
 )
@@ -41,18 +59,15 @@ if TYPE_CHECKING:
     from rough_sorter.application.persistence import (
         DeviceCommandRepositoryPort,
         DeviceReadinessReader,
-        EpochRepositoryPort,
         EvidenceRepositoryPort,
         RackReplacementBindingRepositoryPort,
         WmsConfirmationRepositoryPort,
+        WorkLineRepositoryPort,
     )
 
 
-def validate_wms_execution(data: dict[str, Any], execution: MaterialExecution) -> None:
-    if (
-        data.get("material_execution_id") != execution.execution_code
-        or data.get("material_trace_id") != execution.material_trace_id
-    ):
+def validate_wms_execution(data: InboundWmsIntent, execution: MaterialExecution) -> None:
+    if data.material_execution_id != execution.execution_code or data.material_trace_id != execution.material_trace_id:
         raise ValueError("WMS request execution identity 不匹配")
 
 
@@ -64,12 +79,15 @@ async def build_wms_fact(
     execution: MaterialExecution,
     runtime: Any,
     evidences: EvidenceRepositoryPort,
-    epochs: EpochRepositoryPort,
+    worklines: WorkLineRepositoryPort,
     confirmations: WmsConfirmationRepositoryPort,
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
     rack_bindings: RackReplacementBindingRepositoryPort,
     current_rack_id: Any,
+    transport_tasks: Any,
+    position_projections: Any,
+    rack_positions: Any,
 ) -> Any:
     operation = required_string(evidence.operation, "evidence.operation")
     operation_id = required_string(evidence.operation_id, "evidence.operation_id")
@@ -82,10 +100,10 @@ async def build_wms_fact(
         or confirmation.response_evidence_id != evidence.id
     ):
         raise ValueError("WMS confirmation/evidence correlation 不匹配")
-    request = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)
-    if request.get("operation") != operation or request.get("operation_id") != operation_id:
+    request = decode_request(confirmation.request_payload, fact_id=fact.fact_id)
+    if request.operation_id != operation_id:
         raise ValueError("WMS confirmation request identity 不匹配")
-    if operation == "inbound.material.admission_decide@v1":
+    if isinstance(request, AdmissionIntent):
         return await build_admission_fact(
             db=db,
             fact=fact,
@@ -93,10 +111,10 @@ async def build_wms_fact(
             execution=execution,
             runtime=runtime,
             request=request,
-            epochs=epochs,
+            worklines=worklines,
             readiness=readiness,
         )
-    if operation == "inbound.material.target_decide@v1":
+    if isinstance(request, TargetIntent):
         return await build_target_fact(
             db=db,
             fact=fact,
@@ -104,15 +122,18 @@ async def build_wms_fact(
             execution=execution,
             runtime=runtime,
             request=request,
-            epochs=epochs,
+            worklines=worklines,
             readiness=readiness,
             rack_bindings=rack_bindings,
+            transport_tasks=transport_tasks,
+            position_projections=position_projections,
+            rack_positions=rack_positions,
         )
-    if operation in {"inbound.material.placement_report@v1", "inbound.material.ng_placement_report@v1"}:
+    if isinstance(request, (PlacementIntent, NgPlacementIntent)):
         return build_completion_fact(
             fact=fact, evidence=evidence, execution=execution, runtime=runtime, request=request
         )
-    if operation == "inbound.source_rack.replacement_plan_decide@v1":
+    if isinstance(request, ReplacementPlanIntent):
         return await build_replacement_fact(
             db=db,
             fact=fact,
@@ -135,24 +156,30 @@ async def build_admission_fact(
     evidence: InboundEvidence,
     execution: MaterialExecution,
     runtime: Any,
-    request: dict[str, Any],
-    epochs: EpochRepositoryPort,
+    request: AdmissionIntent,
+    worklines: WorkLineRepositoryPort,
     readiness: DeviceReadinessReader,
 ) -> Any:
-    request_data = cast("dict[str, Any]", request["data"])
-    validate_wms_execution(request_data, execution)
-    source = wire_position(request_data["source_position"], execution.material_trace_id, "MEASUREMENT_POSITION")
+    validate_wms_execution(request, execution)
+    source = wire_position(request.source_position, execution.material_trace_id, "MEASUREMENT_POSITION")
     if source.location_id != position_binding(runtime, "MEASUREMENT_POSITION").location_id:
-        raise ValueError("admission source position 与 Epoch binding 不匹配")
-    response = parse_outbound_response(
-        "inbound.material.admission_decide@v1", 200, evidence.normalized_payload
-    ).model_dump(mode="json", exclude_none=True)
-    response_data = cast("dict[str, Any]", response["data"])
-    result = AdmissionResult(required_string(response_data.get("result"), "admission.result"))
+        raise ValueError("admission source position 与 WorkLine binding 不匹配")
+    if not isinstance(request, AdmissionIntent) or not isinstance(fact.outcome, AdmissionOutcome):
+        raise ValueError("admission typed request/outcome mismatch")
+    response_data = fact.outcome.result
+    result = (
+        AdmissionResult.ACCEPT
+        if isinstance(response_data, AdmissionAccepted)
+        else AdmissionResult.REJECT
+        if isinstance(response_data, MaterialRejected)
+        else AdmissionResult.WAIT
+    )
+    if not isinstance(response_data, (AdmissionAccepted, MaterialRejected, OperationWait)):
+        raise ValueError("admission outcome is not an applicable business result")
     binding = device_binding(runtime, "MEASUREMENT_DEVICE")
-    persisted = await epochs.get_binding_by_role_and_code_for_update(
+    persisted = await worklines.get_binding_by_role_and_code_for_update(
         db,
-        line_run_epoch_id=execution.line_run_epoch_id,
+        workline_id=execution.workline_id,
         device_role=binding.device_role,
         device_code=binding.device_code,
     )
@@ -171,23 +198,23 @@ async def build_admission_fact(
         "source_position": source,
         "device_ready": device_ready,
     }
-    if result is AdmissionResult.ACCEPT:
+    if isinstance(response_data, AdmissionAccepted):
         return AdmissionDecidedFact(
             **common,
-            pkg_id=required_string(response_data.get("pkg_id"), "pkg_id"),
-            inbound_admission_id=required_string(response_data.get("inbound_admission_id"), "inbound_admission_id"),
+            pkg_id=response_data.pkg_id,
+            inbound_admission_id=response_data.inbound_admission_id,
             next_position=bound_position(runtime, "PIPELINE_INLET", execution.material_trace_id),
         )
-    if result is AdmissionResult.REJECT:
-        destination = wire_position(response_data.get("ng_destination"), execution.material_trace_id, "NG_POSITION")
+    if isinstance(response_data, MaterialRejected):
+        destination = wire_position(response_data.ng_destination, execution.material_trace_id, "NG_POSITION")
         if destination.location_id != position_binding(runtime, "NG_POSITION").location_id:
-            raise ValueError("WMS NG destination 与 Epoch binding 不匹配")
+            raise ValueError("WMS NG destination 与 WorkLine binding 不匹配")
         return AdmissionDecidedFact(
             **common,
-            reason_code=required_string(response_data.get("reason_code"), "reason_code"),
+            reason_code=response_data.reason_code,
             next_position=destination,
         )
-    return AdmissionDecidedFact(**common, reason_code=required_string(response_data.get("reason_code"), "reason_code"))
+    return AdmissionDecidedFact(**common, reason_code=response_data.reason_code)
 
 
 def build_completion_fact(
@@ -196,25 +223,29 @@ def build_completion_fact(
     evidence: InboundEvidence,
     execution: MaterialExecution,
     runtime: Any,
-    request: dict[str, Any],
+    request: PlacementIntent | NgPlacementIntent,
 ) -> Any:
-    request_data = cast("dict[str, Any]", request["data"])
-    validate_wms_execution(request_data, execution)
-    response = parse_outbound_response(
-        required_string(evidence.operation, "evidence.operation"), 200, evidence.normalized_payload
-    ).model_dump(mode="json", exclude_none=True)
-    result = CompletionResult(required_string(response.get("code"), "completion code"))
-    if evidence.operation == "inbound.material.placement_report@v1":
-        target = wire_position(request_data.get("target_position"), execution.material_trace_id, "RACK_CELL")
+    validate_wms_execution(request, execution)
+    if not isinstance(fact.outcome, (PlacementOutcome, NgPlacementOutcome)) or not isinstance(
+        fact.outcome.result, FactRecorded
+    ):
+        raise ValueError("completion outcome is not a recorded business fact")
+    if (isinstance(request, PlacementIntent) and not isinstance(fact.outcome, PlacementOutcome)) or (
+        isinstance(request, NgPlacementIntent) and not isinstance(fact.outcome, NgPlacementOutcome)
+    ):
+        raise ValueError("completion typed request/outcome mismatch")
+    result = CompletionResult.DUPLICATE if fact.outcome.result.duplicate else CompletionResult.RECORDED
+    if isinstance(request, PlacementIntent):
+        target = wire_position(request.target_position, execution.material_trace_id, "RACK_CELL")
         affected = (
-            required_string(request_data.get("command_code"), "command_code"),
+            request.command_code,
             required_string(target.rack_id, "rack_id"),
             required_string(target.bin_cell_id, "bin_cell_id"),
         )
         kind = CompletionKind.PLACEMENT
     else:
-        destination = wire_position(request_data.get("ng_position"), execution.material_trace_id, "NG_POSITION")
-        affected = (required_string(request_data.get("ng_evidence_id"), "ng_evidence_id"), destination.location_id)
+        destination = wire_position(request.ng_position, execution.material_trace_id, "NG_POSITION")
+        affected = (request.ng_evidence_id, destination.location_id)
         kind = CompletionKind.NG_PLACEMENT
     return PlacementCompletedFact(
         fact_id=fact.fact_id,
@@ -237,22 +268,22 @@ async def build_replacement_fact(
     evidence: InboundEvidence,
     execution: MaterialExecution,
     runtime: Any,
-    request: dict[str, Any],
+    request: ReplacementPlanIntent,
     commands: DeviceCommandRepositoryPort,
     confirmations: WmsConfirmationRepositoryPort,
     rack_bindings: RackReplacementBindingRepositoryPort,
     current_rack_id: Any,
 ) -> Any:
-    request_data = cast("dict[str, Any]", request["data"])
-    validate_wms_execution(request_data, execution)
-    rack_id = required_string(request_data.get("current_rack_id"), "current_rack_id")
+    validate_wms_execution(request, execution)
+    rack_id = request.current_rack_id
     if rack_id != await current_rack_id(db, runtime):
         raise ValueError("replacement request current rack 与 projection 不匹配")
-    response = parse_outbound_response(
-        "inbound.source_rack.replacement_plan_decide@v1", 200, evidence.normalized_payload
-    ).model_dump(mode="json", exclude_none=True)
-    response_data = cast("dict[str, Any]", response["data"])
-    result = ReplacementResult(required_string(response_data.get("result"), "replacement.result"))
+    if not isinstance(request, ReplacementPlanIntent) or not isinstance(fact.outcome, ReplacementPlanOutcome):
+        raise ValueError("replacement typed request/outcome mismatch")
+    response_data = fact.outcome.result
+    if not isinstance(response_data, (ReplacementReady, OperationWait)):
+        raise ValueError("replacement outcome is not an applicable business result")
+    result = ReplacementResult.READY if isinstance(response_data, ReplacementReady) else ReplacementResult.WAIT
     common: dict[str, Any] = {
         "fact_id": fact.fact_id,
         "evidence_id": fact.evidence_id,
@@ -264,13 +295,11 @@ async def build_replacement_fact(
         "result": result,
         "current_rack_id": rack_id,
     }
-    if result is not ReplacementResult.READY:
-        return ReplacementPlanDecidedFact(
-            **common, reason_code=required_string(response_data.get("reason_code"), "reason_code")
-        )
+    if isinstance(response_data, OperationWait):
+        return ReplacementPlanDecidedFact(**common, reason_code=response_data.reason_code)
     await rack_bindings.lock_resource_fence(
         db,
-        line_run_epoch_id=execution.line_run_epoch_id,
+        workline_id=execution.workline_id,
         resource_fence_id=rack_id,
     )
     release = await rack_release_snapshot(
@@ -283,9 +312,9 @@ async def build_replacement_fact(
     return ReplacementPlanDecidedFact(
         **common,
         release_snapshot=release,
-        rack_replacement_id=required_string(response_data.get("rack_replacement_id"), "rack_replacement_id"),
-        old_loaded_rack=rack_move_plan(response_data.get("old_loaded_rack")),
-        new_empty_rack=rack_move_plan(response_data.get("new_empty_rack")),
+        rack_replacement_id=response_data.rack_replacement_id,
+        old_loaded_rack=response_data.old_loaded_rack,
+        new_empty_rack=response_data.new_empty_rack,
     )
 
 
@@ -299,7 +328,7 @@ async def rack_release_snapshot(
 ) -> Any:
     if execution.id is None:
         raise ValueError("rack release requires persisted execution")
-    command_records = await commands.list_for_epoch_for_update(db, line_run_epoch_id=execution.line_run_epoch_id)
+    command_records = await commands.list_for_workline_for_update(db, workline_id=execution.workline_id)
     rack_commands: list[Any] = []
     for command in command_records:
         if command.task_type != "PICK_AND_PUT":
@@ -321,10 +350,10 @@ async def rack_release_snapshot(
     for confirmation in confirmation_records:
         if confirmation.operation != "inbound.material.placement_report@v1":
             continue
-        request = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)
-        command_code = required_string(
-            cast("dict[str, Any]", request["data"]).get("command_code"), "placement command_code"
-        )
+        request = decode_request(confirmation.request_payload, fact_id="rack-release")
+        if not isinstance(request, PlacementIntent):
+            raise ValueError("placement confirmation request type mismatch")
+        command_code = request.command_code
         if command_code in placement_confirmations:
             raise ValueError("duplicate placement confirmation command correlation")
         placement_confirmations[command_code] = confirmation
@@ -378,42 +407,83 @@ async def build_target_fact(
     evidence: InboundEvidence,
     execution: MaterialExecution,
     runtime: Any,
-    request: dict[str, Any],
-    epochs: EpochRepositoryPort,
+    request: TargetIntent,
+    worklines: WorkLineRepositoryPort,
     readiness: DeviceReadinessReader,
     rack_bindings: RackReplacementBindingRepositoryPort,
+    transport_tasks: Any,
+    position_projections: Any,
+    rack_positions: Any,
 ) -> Any:
-    request_data = cast("dict[str, Any]", request["data"])
-    validate_wms_execution(request_data, execution)
-    source = wire_position(request_data["source_position"], execution.material_trace_id, "PIPELINE_OUTLET")
+    validate_wms_execution(request, execution)
+    source = wire_position(request.source_position, execution.material_trace_id, "PIPELINE_OUTLET")
     if source.location_id != position_binding(runtime, "PIPELINE_OUTLET").location_id:
-        raise ValueError("target source position 与 Epoch binding 不匹配")
-    rack_id = required_string(request_data.get("current_rack_id"), "current_rack_id")
-    response = parse_outbound_response(
-        "inbound.material.target_decide@v1", 200, evidence.normalized_payload
-    ).model_dump(mode="json", exclude_none=True)
-    response_data = cast("dict[str, Any]", response["data"])
-    result = TargetResult(required_string(response_data.get("result"), "target.result"))
+        raise ValueError("target source position 与 WorkLine binding 不匹配")
+    rack_id = request.current_rack_id
+    if not isinstance(request, TargetIntent) or not isinstance(fact.outcome, TargetOutcome):
+        raise ValueError("target typed request/outcome mismatch")
+    response_data = fact.outcome.result
+    if not isinstance(response_data, (TargetAssigned, NoAvailableCell, MaterialRejected, OperationWait)):
+        raise ValueError("target outcome is not an applicable business result")
+    result = (
+        TargetResult.ASSIGNED
+        if isinstance(response_data, TargetAssigned)
+        else TargetResult.NO_AVAILABLE_CELL
+        if isinstance(response_data, NoAvailableCell)
+        else TargetResult.REJECT
+        if isinstance(response_data, MaterialRejected)
+        else TargetResult.WAIT
+    )
     current_rack_fenced = False
-    if result is TargetResult.ASSIGNED:
+    if isinstance(response_data, TargetAssigned):
         await rack_bindings.lock_resource_fence(
             db,
-            line_run_epoch_id=execution.line_run_epoch_id,
+            workline_id=execution.workline_id,
             resource_fence_id=rack_id,
         )
+        # Only a matching current physical arrival supersedes completed historical moves.
+        projection = await position_projections.get(db, "RACK", rack_id)
+        current_arrival = False
+        if (
+            projection is not None
+            and not projection.position_unknown
+            and projection.workline_id == execution.workline_id
+        ):
+            rack_position = await rack_positions.get_by_workline_logic_location(
+                db, workline_code=runtime.workline.workline_code, logic_location_code=source.location_id
+            )
+            arrival = await transport_tasks.get_task(db, projection.source_transport_task_id)
+            expected_position = (
+                {"kind": "RACK_POSITION", "location_code": rack_position.position_code}
+                if rack_position is not None
+                else None
+            )
+            current_arrival = (
+                rack_position is not None
+                and rack_position.enabled
+                and projection.position_json == expected_position
+                and arrival is not None
+                and arrival.status == "SUCCEEDED"
+                and arrival.kind == "RACK_MOVE"
+                and arrival.authority_workline_id == execution.workline_id
+                and arrival.request_json.get("rack_id") == rack_id
+                and arrival.request_json.get("target") == expected_position
+            )
         current_rack_fenced = (
             await rack_bindings.get_by_resource_step_for_update(
                 db,
-                line_run_epoch_id=execution.line_run_epoch_id,
+                workline_id=execution.workline_id,
                 resource_fence_id=rack_id,
                 step="OLD_OUT",
+                exclude_task_statuses=("SUCCEEDED",) if current_arrival else (),
+                retain_transport_task_id=projection.source_transport_task_id if current_arrival else None,
             )
             is not None
         )
     binding = device_binding(runtime, "PLACEMENT_DEVICE")
-    persisted = await epochs.get_binding_by_role_and_code_for_update(
+    persisted = await worklines.get_binding_by_role_and_code_for_update(
         db,
-        line_run_epoch_id=execution.line_run_epoch_id,
+        workline_id=execution.workline_id,
         device_role=binding.device_role,
         device_code=binding.device_code,
     )
@@ -434,31 +504,31 @@ async def build_target_fact(
         "current_rack_fenced": current_rack_fenced,
         "device_ready": device_ready,
     }
-    if result is TargetResult.ASSIGNED:
-        target = wire_position(response_data.get("target_position"), execution.material_trace_id, "RACK_CELL")
+    if isinstance(response_data, TargetAssigned):
+        target = wire_position(response_data.target_position, execution.material_trace_id, "RACK_CELL")
         return TargetDecidedFact(
             **common,
             target_position=target,
-            target_assignment_id=required_string(response_data.get("target_assignment_id"), "target_assignment_id"),
-            placement_sequence=positive_int(response_data.get("placement_sequence"), "placement_sequence"),
-            expected_height_mm=required_string(response_data.get("expected_height_mm"), "expected_height_mm"),
+            target_assignment_id=response_data.target_assignment_id,
+            placement_sequence=response_data.placement_sequence,
+            expected_height_mm=response_data.expected_height_mm,
         )
-    if result is TargetResult.NO_AVAILABLE_CELL:
+    if isinstance(response_data, NoAvailableCell):
         return TargetDecidedFact(
             **common,
-            reason_code=required_string(response_data.get("reason_code"), "reason_code"),
+            reason_code=response_data.reason_code,
             request_operation_id=fact.operation_id,
         )
-    if result is TargetResult.REJECT:
-        destination = wire_position(response_data.get("ng_destination"), execution.material_trace_id, "NG_POSITION")
+    if isinstance(response_data, MaterialRejected):
+        destination = wire_position(response_data.ng_destination, execution.material_trace_id, "NG_POSITION")
         if destination.location_id != position_binding(runtime, "NG_POSITION").location_id:
-            raise ValueError("target reject NG destination 与 Epoch binding 不匹配")
+            raise ValueError("target reject NG destination 与 WorkLine binding 不匹配")
         return TargetDecidedFact(
             **common,
             target_position=destination,
-            reason_code=required_string(response_data.get("reason_code"), "reason_code"),
+            reason_code=response_data.reason_code,
         )
-    return TargetDecidedFact(**common, reason_code=required_string(response_data.get("reason_code"), "reason_code"))
+    return TargetDecidedFact(**common, reason_code=response_data.reason_code)
 
 
 __all__ = ["build_wms_fact"]

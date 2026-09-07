@@ -123,6 +123,9 @@ class _RotationProjectionPort:
         self.release = asyncio.Event()
         self._delegate = PositionProjectionService()
 
+    async def admit_transport_member(self, db: AsyncSession, **kwargs: object) -> None:
+        await self._delegate.admit_transport_member(db, **kwargs)
+
     async def get_current(
         self,
         db: AsyncSession,
@@ -824,13 +827,12 @@ async def test_result_updates_existing_projection_source_transport_task_id(
     )
     rack_id = f"rack-projection-source-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id=rack_id,
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
                 position_unknown=False,
                 arrival_face="90",
@@ -848,7 +850,6 @@ async def test_result_updates_existing_projection_source_transport_task_id(
         "90",
         execution_authority=TransportExecutionAuthority(
             workline_id=workline_id,
-            line_run_epoch_id=line_run_epoch_id,
         ),
     )
     operation_id = new_uuid7()
@@ -1006,13 +1007,12 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
     )
     rack_id = f"rack-rotate-race-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id=rack_id,
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "SOURCE"},
                 position_unknown=False,
                 arrival_face="90",
@@ -1021,7 +1021,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
                 updated_at=timezone.now_for_db(),
             )
         )
-    authority = TransportExecutionAuthority(workline_id=workline_id, line_run_epoch_id=line_run_epoch_id)
+    authority = TransportExecutionAuthority(workline_id=workline_id)
     move_handle = await service.move_rack(
         new_uuid7(),
         TransportCaller("INTEGRATION"),

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.wms_integration.outbound_picking.repositories import PickingWorklineEligibilityRepository
+from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
+from src.app.wms_integration.outbound_picking.repositories import PickingWorklineFactsRepository
 
 
 class _Db:
@@ -16,15 +18,15 @@ class _Db:
         return next(self.results)
 
 
-class _Epochs:
+class _Worklines:
     def __init__(self, *, bindings: list[object] | None = None, positions: list[object] | None = None) -> None:
         self.bindings = bindings if bindings is not None else [_binding()]
         self.positions = positions if positions is not None else [SimpleNamespace(position_role="POINT2")]
 
-    async def list_bindings(self, _db: object, _epoch_id: int) -> list[object]:
+    async def list_bindings(self, _db: object, _workline_id: int) -> list[object]:
         return self.bindings
 
-    async def list_position_bindings(self, _db: object, _epoch_id: int) -> list[object]:
+    async def list_position_bindings(self, _db: object, _workline_id: int) -> list[object]:
         return self.positions
 
 
@@ -59,70 +61,43 @@ def _observation(**changes: object) -> object:
 
 
 @pytest.mark.asyncio
-async def test_eligibility_requires_bindings_fresh_idle_devices_and_clear_positions() -> None:
-    repository = PickingWorklineEligibilityRepository(
-        epoch_repository=_Epochs(),  # type: ignore[arg-type]
-        observation_repository=_Observations(),  # type: ignore[arg-type]
+async def test_repository_returns_immutable_facts_without_applying_business_policy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        PositionProjectionRepository, "get_active_workline_summary", AsyncMock(return_value={"count": 1})
     )
-
-    assert await repository.is_ready(
-        _Db(False, False),  # type: ignore[arg-type]
+    repository = PickingWorklineFactsRepository(
+        workline_repository=_Worklines(),  # type: ignore[arg-type]
+        observation_repository=_Observations(_observation(mode="MANUAL")),  # type: ignore[arg-type]
+    )
+    facts = await repository.read_facts(
+        _Db(True),
         workline_id=7,
-        line_run_epoch_id=21,
-        now=datetime(2026, 9, 4),
     )
+    assert facts.has_active_incident is True
+    assert facts.has_position_bindings is True
+    assert facts.has_positioned_object is True
+    assert isinstance(facts.devices, tuple)
+    assert len(facts.devices) == 1
+    assert facts.devices[0].mode == "MANUAL"
+    assert facts.devices[0].contract_key == "manual.conveyor"
+    assert facts.devices[0].received_at == datetime(2026, 9, 4)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "observation",
-    [
-        None,
-        _observation(contract_key="other"),
-        _observation(contract_version="2.0"),
-        _observation(received_at=datetime(2026, 9, 4) - timedelta(seconds=6)),
-        _observation(mode="MANUAL"),
-        _observation(status="BUSY"),
-        _observation(current_command_code="CMD-1"),
-    ],
-)
-async def test_eligibility_fails_closed_for_missing_or_invalid_device_fact(observation: object | None) -> None:
+async def test_repository_preserves_missing_device_observation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        PositionProjectionRepository, "get_active_workline_summary", AsyncMock(return_value={"count": 0})
+    )
     observations = _Observations()
-    observations.observation = observation
-    repository = PickingWorklineEligibilityRepository(
-        epoch_repository=_Epochs(),  # type: ignore[arg-type]
+    observations.observation = None
+    repository = PickingWorklineFactsRepository(
+        workline_repository=_Worklines(),  # type: ignore[arg-type]
         observation_repository=observations,  # type: ignore[arg-type]
     )
-
-    assert not await repository.is_ready(
-        _Db(False),  # type: ignore[arg-type]
+    facts = await repository.read_facts(
+        _Db(False),
         workline_id=7,
-        line_run_epoch_id=21,
-        now=datetime(2026, 9, 4),
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("db", "epochs"),
-    [
-        (_Db(True), _Epochs()),
-        (_Db(False), _Epochs(bindings=[])),
-        (_Db(False), _Epochs(positions=[])),
-        (_Db(False, True), _Epochs()),
-    ],
-)
-async def test_eligibility_fails_closed_for_safety_missing_topology_or_positioned_object(
-    db: _Db, epochs: _Epochs
-) -> None:
-    repository = PickingWorklineEligibilityRepository(
-        epoch_repository=epochs,  # type: ignore[arg-type]
-        observation_repository=_Observations(),  # type: ignore[arg-type]
-    )
-
-    assert not await repository.is_ready(
-        db,  # type: ignore[arg-type]
-        workline_id=7,
-        line_run_epoch_id=21,
-        now=datetime(2026, 9, 4),
-    )
+    assert facts.has_positioned_object is False
+    assert facts.devices[0].observed_contract_key is None
+    assert facts.devices[0].received_at is None

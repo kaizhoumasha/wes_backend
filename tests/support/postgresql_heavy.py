@@ -16,9 +16,15 @@ from uuid import uuid4
 
 import asyncpg
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from src.database.schema_conf import get_schema_search_path
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAFE_DATABASE_PREFIX = "wes_tmp_heavy_"
@@ -537,6 +543,22 @@ async def temporary_database(
         raise HeavyHarnessError("cleanup", "PostgreSQL 临时数据库清理失败", cleanup_diagnostics=diagnostics)
 
 
+@asynccontextmanager
+async def migrated_database() -> AsyncIterator[tuple[str, async_sessionmaker[AsyncSession]]]:
+    """提供干净的当前 schema 与会话工厂，不继承其他测试的活动 Epoch。"""
+    async with temporary_database() as (_database, url):
+        run_alembic("upgrade", "head", database_url=url)
+        engine = create_async_engine(
+            url,
+            poolclass=NullPool,
+            connect_args={"server_settings": {"search_path": get_schema_search_path()}},
+        )
+        try:
+            yield url, async_sessionmaker(engine, expire_on_commit=False)
+        finally:
+            await engine.dispose()
+
+
 def run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[str]:
     """让 Alembic 明确连接临时数据库。"""
 
@@ -561,6 +583,7 @@ __all__ = [
     "baseline_generation_database",
     "connect",
     "database_url",
+    "migrated_database",
     "preflight",
     "run_alembic",
     "temporary_database",

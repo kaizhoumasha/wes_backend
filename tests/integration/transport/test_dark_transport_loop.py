@@ -104,23 +104,22 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
     caller = TransportCaller("DARK_LINE", "STATION_A")
     rack_id = f"rack-move-{suffix}"
     rotate_rack_id = f"rack-rotate-{suffix}"
-    moved_bin_id = f"bin-move-{suffix}"
+    moved_bin_code = f"bin-move-{suffix}"
     move_source_rack = f"rack-bin-source-{suffix}"
     exchange_left_rack = f"rack-exchange-left-{suffix}"
     exchange_right_rack = f"rack-exchange-right-{suffix}"
-    exchange_bin_ids = [f"bin-exchange-{index}-{suffix}" for index in range(4)]
+    exchange_bin_codes = [f"bin-exchange-{index}-{suffix}" for index in range(4)]
     task_ids: list[str] = []
     callback_operation_ids: list[str] = []
 
     async with integration_session_factory.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add_all(
             [
                 PositionProjection(
                     object_type="RACK",
                     object_id=position_rack_id,
                     workline_id=workline_id,
-                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "RACK_WAIT"},
                     arrival_face="90",
                     source_operation_id=new_uuid7(),
@@ -134,7 +133,6 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     object_type="RACK",
                     object_id=rotate_rack_id,
                     workline_id=workline_id,
-                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "ROTATE_POINT"},
                     arrival_face="90",
                     source_operation_id=new_uuid7(),
@@ -153,22 +151,22 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
         bin_handle = await service.move_bins(
             new_uuid7(),
             caller,
-            (BinMove(moved_bin_id, RackBinSlot(move_source_rack, "90", "1"), HandoffPosition("ROLLER_IN")),),
+            (BinMove(moved_bin_code, RackBinSlot(move_source_rack, "90", "1"), HandoffPosition("ROLLER_IN")),),
         )
         exchange_handle = await service.exchange_bins(
             new_uuid7(),
             caller,
             (
                 BinExchangePair(
-                    exchange_bin_ids[0],
+                    exchange_bin_codes[0],
                     RackBinSlot(exchange_left_rack, "90", "1"),
-                    exchange_bin_ids[1],
+                    exchange_bin_codes[1],
                     RackBinSlot(exchange_right_rack, "90", "1"),
                 ),
                 BinExchangePair(
-                    exchange_bin_ids[2],
+                    exchange_bin_codes[2],
                     RackBinSlot(exchange_left_rack, "90", "2"),
-                    exchange_bin_ids[3],
+                    exchange_bin_codes[3],
                     RackBinSlot(exchange_right_rack, "90", "2"),
                 ),
             ),
@@ -207,7 +205,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     "outcome_revision": 1,
                     "results": [
                         {
-                            "container_id": moved_bin_id,
+                            "container_id": moved_bin_code,
                             "status": "SUCCEEDED",
                             "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
                         }
@@ -221,7 +219,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                     "outcome_revision": 1,
                     "results": [
                         {
-                            "container_id": exchange_bin_ids[0],
+                            "container_id": exchange_bin_codes[0],
                             "status": "SUCCEEDED",
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
@@ -231,7 +229,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             },
                         },
                         {
-                            "container_id": exchange_bin_ids[1],
+                            "container_id": exchange_bin_codes[1],
                             "status": "SUCCEEDED",
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
@@ -241,7 +239,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             },
                         },
                         {
-                            "container_id": exchange_bin_ids[2],
+                            "container_id": exchange_bin_codes[2],
                             "status": "SUCCEEDED",
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
@@ -251,7 +249,7 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             },
                         },
                         {
-                            "container_id": exchange_bin_ids[3],
+                            "container_id": exchange_bin_codes[3],
                             "status": "SUCCEEDED",
                             "final_position": {
                                 "kind": "RACK_BIN_SLOT",
@@ -328,8 +326,8 @@ async def test_dark_composition_runs_four_methods_through_the_explicit_closed_lo
                             move_source_rack,
                             exchange_left_rack,
                             exchange_right_rack,
-                            moved_bin_id,
-                            *exchange_bin_ids,
+                            moved_bin_code,
+                            *exchange_bin_codes,
                         ]
                     )
                 )

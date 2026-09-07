@@ -154,7 +154,9 @@ async def test_builder_reads_devices_once_and_each_ecs_endpoint_once() -> None:
         "1.0.0",
         "ROUGH_SORT_INBOUND",
     )
-    assert plan.configuration_snapshot == _rough_sorter_configuration()
+    assert {item.device_role: item.device_code for item in plan.device_bindings} == _rough_sorter_configuration()[
+        "device_bindings"
+    ]
     assert [(item.device_role, item.endpoint_base_url) for item in plan.device_bindings] == [
         ("MEASUREMENT_DEVICE", "http://ecs-a:8080"),
         ("TRANSFER_DEVICE", "http://ecs-a:8080"),
@@ -203,8 +205,13 @@ async def test_builder_keeps_workline_device_and_endpoint_state_isolated_across_
         (102, "DEVICE-102", "http://other-ecs:8081"),
         (103, "DEVICE-103", "http://shared-ecs:8080"),
     ]
-    assert first_plan.configuration_snapshot == _rough_sorter_configuration()
-    assert second_plan.configuration_snapshot["device_bindings"]["MEASUREMENT_DEVICE"] == "DEVICE-101"
+    assert {item.device_role: item.device_code for item in first_plan.device_bindings} == _rough_sorter_configuration()[
+        "device_bindings"
+    ]
+    assert (
+        next(item.device_code for item in second_plan.device_bindings if item.device_role == "MEASUREMENT_DEVICE")
+        == "DEVICE-101"
+    )
     assert {binding.location_id for binding in first_plan.position_bindings} == {
         "MEASUREMENT_POSITION",
         "PIPELINE_INLET",

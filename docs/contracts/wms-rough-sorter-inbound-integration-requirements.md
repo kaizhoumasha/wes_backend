@@ -43,8 +43,8 @@ WMS 公共 HTTP Client、公共信封与 Transport wire 分别引用 related 中
 - `PLACEMENT_DEVICE`：从流水线出口放入目标 Cell 或 WMS 指定 NG 位置。
 
 `device_code` 全厂唯一，每台 Device 自带 Endpoint；三个设备可以共享或分别使用 ECS Endpoint。插件角色、设备实例、
-Endpoint、合同版本、ECS/网关版本、时限和 WorkLine 的绑定必须进入当前 `LineRunEpochDeviceBinding` 与 Epoch digest；
-活动 Epoch 内不得静默替换。供应商私有字段、坐标、错误和适配只存在于 ECS/网关，不进入本合同、WES 核心或插件。
+Endpoint、合同版本和时限由 WorkLine 当前配置承接，设备命令冻结执行必需的目标及合同；运行期间不得静默替换插件或绑定。
+停用和切换前须完成系统义务收敛及现场物理清线，不新增运行代际或清线确认记录。供应商私有字段、坐标、错误和适配只存在于 ECS/网关，不进入本合同、WES 核心或插件。
 
 ## 3. 生命周期与并发
 
@@ -99,7 +99,7 @@ WES 只有在 `SCAN_COMPLETED` 包含并可靠保存以下完整事实后才请�
 - 六合一码 `LotCode`、`DateCode`、`Qty`、`ProductNo`、`MfrPN`、`PONumber`；
 - `diameter_mm`、`thickness_mm`；
 - `shape_result = PASS | FAIL`；
-- 当前可靠位置、`line_run_epoch_id` 与 `workline_code`。
+- 当前可靠位置与 `workline_code`。
 
 `inbound.material.admission_decide@v1` 请求携带上述冻结证据和 `material_execution_id`。WMS 在准入中完成 GRN 绑定与业务校验，
 但不得分配目标 Cell：
@@ -131,7 +131,7 @@ WMS `ACCEPT` 后，插件按以下顺序创建既有 DeviceCommand：
 | `REJECT` | `reason_code`、`ng_destination` | 只有确定业务拒绝才进入指定 NG |
 | `WAIT` | `reason_code`、`retry_after_ms` | 料盘停留出口安全位；不自行选择 Cell |
 
-`target_position` 必须是唯一 `rack_id + rack_slot_code + bin_id + bin_cell_id`。WES 不预建、替换或本地计算 Cell。
+`target_position` 必须是唯一 `rack_id + rack_slot_code + bin_code + bin_cell_id`。WES 不预建、替换或本地计算 Cell。
 
 ## 8. placement、NG 与人工核验恢复
 
@@ -179,6 +179,14 @@ CALLBACK `FAILED` 或结果 `UNKNOWN` 不自动转 NG，统一进入 `RECONCILIN
 
 ### 8.3 `inbound.execution.recovery_decided@v1`
 
+| 合同字段 | 值 |
+| --- | --- |
+| `ack_mode` | `EVIDENCE_ACCEPTED` |
+| `ack_commit_facts` | 恢复消息 Evidence 及其接收身份；不包含人工决定的业务应用 |
+
+ACK 模式遵循[公共回调合同](wms-async-callback-envelope-contract.md#6-每个业务-operation-还要说明什么)。
+接收前的 execution/trace/evidence 围栏校验保持不变，恢复决定由后续事务应用，不能以 ACK 推断已恢复执行。
+
 WMS 人工核对业务主账与现场事实后，通过公共 WMS→WES 异步回调信封发送：
 
 | `data` 字段 | JSON 类型 | 必填 | 可空 | 约束 |
@@ -208,9 +216,9 @@ WES 只在 execution 仍为 `RECONCILING`，且公开 `reconciling_evidence_id` 
 
 | `type` | 完整字段 | JSON 类型 | 可空 | 约束 |
 | --- | --- | --- | --- | --- |
-| `ONE_LAYER_BIN_CELL` | `type`、`rack_id`、`rack_slot_code`、`bin_id`、`bin_cell_id` | 全部 string | 否 | 单层货架唯一目标 Cell |
+| `ONE_LAYER_BIN_CELL` | `type`、`rack_id`、`rack_slot_code`、`bin_code`、`bin_cell_id` | 全部 string | 否 | 单层货架唯一目标 Cell |
 | `HANDOFF_POSITION` | `type`、`location_code` | 全部 string | 否 | 当前 WorkLine 冻结的流水线/交接逻辑位置 |
-| `NG_POSITION` | `type`、`location_code` | 全部 string | 否 | WMS 指定且活动 Epoch 已批准的 NG 位置 |
+| `NG_POSITION` | `type`、`location_code` | 全部 string | 否 | WMS 指定且当前 WorkLine 配置的 NG 位置 |
 
 ## 9. 单层货架更换与两个 TransportTask
 
@@ -233,7 +241,7 @@ new_empty_rack:  rack_id + source + target + target_face
 ```
 
 两个计划的 `source/target` 都使用 `kind + location_code`。`kind` 只允许 `RACK | ZONE | RACK_POSITION`，分别表示货架编号、区域编号和
-精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 使用 Transport 合同定义的普通非空 string。对于
+精确地码。`RACK.location_code` 必须等于计划中的 `rack_id`，`target_face` 使用 Transport 合同定义的 1–10 字符非空 string。对于
 `RACK` 目标，WMS/RCS
 按冻结货架编号和模板解析最终位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。回调统一返回精确
 `RACK_POSITION(location_code)`。

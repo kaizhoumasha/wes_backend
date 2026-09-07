@@ -1,13 +1,13 @@
 -- 初始化单成功路径前置环境：静态 WorkLine/Device 主数据，以及 STOPPED 投影。
--- direct SQL 只设置前置条件；Epoch 与 bindings 必须由受保护公开 START 创建。
+-- direct SQL 只设置前置条件；当前插件执行合同必须由受保护公开 START 发布。
 BEGIN;
 
 INSERT INTO wes_biz.work_lines (
     id, version, created_at, is_deleted, line_code, line_name, line_type, is_active, plugin_key,
-    config, runtime_config_json, diagnostic_profile, run_mode
+    config, runtime_config_json, diagnostic_profile, run_mode, device_contracts, position_bindings
 ) VALUES (
     9001, 0, '__NOW__', false, 'RS-E2E-LINE', 'Rough sorter E2E', 'AUTO', false, 'rough_sorter',
-    '__ROUGH_SORTER_CONFIG__'::json, '{}', '{}', 'AUTO'
+    '__ROUGH_SORTER_CONFIG__'::json, '{}', '{}', 'AUTO', '{}', '{}'
 );
 
 INSERT INTO wes_biz.devices (

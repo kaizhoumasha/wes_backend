@@ -48,13 +48,13 @@ def _run(*, phase: str = "RACK_TO_STATION", group_index: int = 0) -> TransportDe
                 {
                     "face": " 90 ",
                     "bins": [
-                        {"bin_id": "A000001922", "slot_id": "510056A3F2C101"},
-                        {"bin_id": "A000002653", "slot_id": "510056A3F2C102"},
+                        {"bin_code": "A000001922", "slot_id": "510056A3F2C101"},
+                        {"bin_code": "A000002653", "slot_id": "510056A3F2C102"},
                     ],
                 },
                 {
                     "face": "270",
-                    "bins": [{"bin_id": "A000003001", "slot_id": "510056A2F2C101"}],
+                    "bins": [{"bin_code": "A000003001", "slot_id": "510056A2F2C101"}],
                 },
             ],
             "storage_zone": "WH01",
@@ -308,7 +308,7 @@ def test_evaluate_bin_return_accepts_formal_result_without_arrival_face() -> Non
             transport_task_id="transport-1",
             ordinal=ordinal,
             object_type="BIN",
-            object_id=move.bin_id,
+            object_id=move.bin_code,
             source_json={"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
             target_json={
                 "kind": "RACK_BIN_SLOT",

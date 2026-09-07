@@ -8,7 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.execution.models import PositionProjection
-from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
 from src.utils.timezone import timezone
 
@@ -26,7 +25,7 @@ async def confirm_rack_faces_with_sessions(
     rack_faces: dict[str, str],
 ) -> None:
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         for rack_id, rack_face in rack_faces.items():
             projection = await db.scalar(
                 select(PositionProjection).where(
@@ -40,7 +39,6 @@ async def confirm_rack_faces_with_sessions(
                         object_type="RACK",
                         object_id=rack_id,
                         workline_id=workline_id,
-                        line_run_epoch_id=line_run_epoch_id,
                         position_json={"kind": "RACK_POSITION", "location_code": f"STORAGE-{rack_id}"},
                         arrival_face=rack_face,
                         source_operation_id="test-confirmed-rack-face",
@@ -61,42 +59,29 @@ async def ensure_projection_authority_with_sessions(
     from src.app.transport.contracts import TransportExecutionAuthority
 
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
     return TransportExecutionAuthority(
         workline_id=workline_id,
-        line_run_epoch_id=line_run_epoch_id,
     )
 
 
-async def ensure_projection_authority(db: AsyncSession) -> tuple[int, int]:
+async def ensure_projection_authority(db: AsyncSession) -> int:
     line = await db.scalar(select(WorkLine).where(WorkLine.line_code == "TRANSPORT-PROJECTION-TEST"))
     if line is None:
         line = WorkLine(
             line_code="TRANSPORT-PROJECTION-TEST",
             line_name="Transport projection test authority",
             line_type=LineType.AUTO,
-        )
-        db.add(line)
-        await db.flush()
-    epoch = await db.scalar(select(LineRunEpoch).where(LineRunEpoch.epoch_code == "TRANSPORT-PROJECTION-TEST-EPOCH"))
-    if epoch is None:
-        epoch = LineRunEpoch(
-            epoch_code="TRANSPORT-PROJECTION-TEST-EPOCH",
-            workline_id=line.id,
-            # 生产 worker 会校验所有 ACTIVE Epoch 均绑定当前部署中的精确插件版本。
+            is_active=True,
             plugin_key="rough_sorter",
             plugin_version="1.0.0",
             flow_mode="TRANSPORT_TEST",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            started_at=timezone.now_for_db(),
         )
-        db.add(epoch)
+        db.add(line)
         await db.flush()
-    if line.id is None or epoch.id is None:
+    if line.id is None:
         raise RuntimeError("test projection authority was not persisted")
-    return line.id, epoch.id
+    return line.id
 
 
 __all__ = [

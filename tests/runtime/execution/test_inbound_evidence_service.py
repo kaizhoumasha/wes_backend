@@ -92,7 +92,7 @@ async def test_same_source_identity_with_different_digest_records_conflict() -> 
         normalized_payload={"source_event_id": "SCAN-001", "data": {"shape_result": "PASS"}},
         received_at=datetime(2026, 8, 16),
         device_code="MEASURE-01",
-        line_run_epoch_id=11,
+        workline_id=11,
     )
 
     conflict_result = await service.accept(
@@ -102,7 +102,7 @@ async def test_same_source_identity_with_different_digest_records_conflict() -> 
         normalized_payload={"source_event_id": "SCAN-001", "data": {"shape_result": "FAIL"}},
         received_at=datetime(2026, 8, 16, 0, 1),
         device_code="MEASURE-01",
-        line_run_epoch_id=11,
+        workline_id=11,
     )
 
     assert isinstance(conflict_result, InboundEvidenceConflictResult)
@@ -168,7 +168,7 @@ async def test_transport_evidence_requires_frozen_task_and_version_identity() ->
         source_identity="transport:TRANSPORT-1:outcome:2",
         normalized_payload={"transport_task_id": "TRANSPORT-1", "outcome_version": 2, "status": "SUCCEEDED"},
         received_at=datetime(2026, 8, 17),
-        line_run_epoch_id=11,
+        workline_id=11,
         material_execution_id=21,
         transport_task_id="TRANSPORT-1",
         contract_key="transport.outcome",

@@ -18,14 +18,14 @@ class ExecutionLifecycle(StrEnum):
 class ExecutionSnapshot:
     material_execution_id: str
     material_trace_id: str
-    line_run_epoch_id: str
+    workline_id: str
     lifecycle: ExecutionLifecycle
     version: int
 
     def __post_init__(self) -> None:
         _required(self.material_execution_id, "material_execution_id")
         _required(self.material_trace_id, "material_trace_id")
-        _required(self.line_run_epoch_id, "line_run_epoch_id")
+        _required(self.workline_id, "workline_id")
         if not isinstance(self.lifecycle, ExecutionLifecycle):
             raise ValueError("lifecycle must be an ExecutionLifecycle")  # noqa: TRY004 - stable SDK contract.
         if not isinstance(self.version, int) or isinstance(self.version, bool) or self.version < 0:
@@ -56,24 +56,20 @@ class PositionBindingSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class EpochConfigurationSnapshot:
-    line_run_epoch_id: str
+class WorkLineConfigurationSnapshot:
+    workline_id: str
     workline_code: str
     plugin_key: str
     plugin_version: str
-    config_digest: str
-    topology_digest: str
     device_bindings: tuple[DeviceBindingSnapshot, ...]
     position_bindings: tuple[PositionBindingSnapshot, ...]
 
     def __post_init__(self) -> None:
         for field_name in (
-            "line_run_epoch_id",
+            "workline_id",
             "workline_code",
             "plugin_key",
             "plugin_version",
-            "config_digest",
-            "topology_digest",
         ):
             _required(getattr(self, field_name), field_name)
         if type(self.device_bindings) is not tuple:

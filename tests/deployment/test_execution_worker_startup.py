@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.app.transport.composition import build_transport_runtime
-from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
+from src.app.workline.services.workline_start_service import WorkLineStartConfigurationError, WorkLineStartService
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime
 from src.celery_app.config import beat_schedule, task_routes
@@ -330,10 +330,10 @@ def test_device_command_worker_readiness_requires_child_probe_after_parent_ready
 
 
 @pytest.mark.asyncio
-async def test_execution_worker_gate_allows_no_active_epoch() -> None:
-    repository = type("_EpochRepository", (), {"list_active_plugin_identities": AsyncMock(return_value=[])})()
+async def test_execution_worker_gate_allows_no_active_workline() -> None:
+    repository = type("_WorkLineRepository", (), {"list_active_plugin_identities": AsyncMock(return_value=[])})()
 
-    await LineRunEpochService(repository=repository).assert_execution_worker_startable(object(), plugins=())
+    await WorkLineStartService(workline_repository=repository, plugins=()).assert_execution_worker_startable(object())
 
 
 def test_actual_worker_queues_reads_work_controller_sender_app() -> None:
@@ -433,12 +433,12 @@ def test_execution_worker_child_startup_rejects_unfrozen_queues(monkeypatch) -> 
         app_module.on_worker_process_init()
 
 
-def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) -> None:
+def test_execution_worker_child_startup_rejects_workline_gate_failure(monkeypatch) -> None:
     from celery.exceptions import WorkerTerminate
 
     from src.celery_app import app as app_module
 
-    gate = AsyncMock(side_effect=ActiveLineRunEpochExistsError("active epoch"))
+    gate = AsyncMock(side_effect=WorkLineStartConfigurationError("active workline"))
     initialize = MagicMock()
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
@@ -454,7 +454,7 @@ def test_execution_worker_child_startup_rejects_epoch_gate_failure(monkeypatch) 
     gate.assert_awaited_once_with()
 
 
-def test_execution_worker_child_startup_allows_epoch_gate_success(monkeypatch) -> None:
+def test_execution_worker_child_startup_allows_workline_gate_success(monkeypatch) -> None:
     from src.celery_app import app as app_module
 
     gate = AsyncMock()
@@ -471,7 +471,7 @@ def test_execution_worker_child_startup_allows_epoch_gate_success(monkeypatch) -
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="Celery production prefork requires POSIX fork")
-def test_replacement_execution_worker_child_does_not_repeat_epoch_restart_gate_across_forks(monkeypatch) -> None:
+def test_replacement_execution_worker_child_does_not_repeat_workline_restart_gate_across_forks(monkeypatch) -> None:
     from src.celery_app import app as app_module
 
     gate_calls = Value("i", 0)
@@ -503,7 +503,7 @@ def test_replacement_execution_worker_child_does_not_repeat_epoch_restart_gate_a
     assert gate_calls.value == 1
 
 
-def test_fulfillment_child_runs_execution_epoch_gate(monkeypatch) -> None:
+def test_fulfillment_child_runs_execution_workline_gate(monkeypatch) -> None:
     from src.celery_app import app as app_module
 
     initialize = MagicMock()

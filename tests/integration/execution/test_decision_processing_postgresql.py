@@ -58,15 +58,9 @@ from src.app.transport.contracts import (
 from src.app.transport.models import TransportTask
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
-from src.app.workline.epoch_digest import configuration_digest, topology_digest
-from src.app.workline.models import (
-    LineRunEpoch,
-    LineRunEpochDeviceBinding,
-    LineRunEpochPositionBinding,
-    LineRunEpochStatus,
-    WorkLine,
-)
+from src.app.workline.models import WorkLine
 from src.app.workline.models.workline import LineType
+from src.core.uuid7 import new_uuid7
 
 
 @pytest.mark.asyncio
@@ -90,7 +84,7 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
             "fk_device_commands_material_execution_id_material_executions",
             "ux_transport_decision_bindings_decision_identity",
             "ux_transport_decision_bindings_client_request_id",
-            "fk_transport_decision_bindings_epoch",
+            "fk_transport_decision_bindings_workline",
             *transport_constraint_names,
         }
         names = set(
@@ -126,7 +120,7 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
                         "names": [
                             "ix_inbound_evidences_transport_task",
                             "ix_wes_biz_inbound_evidences_transport_task_id",
-                            "ix_wes_biz_transport_decision_bindings_epoch_resource",
+                            "ix_wes_biz_transport_decision_bindings_workline_resource",
                         ],
                     },
                 )
@@ -136,7 +130,7 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
     assert transport_indexes == {
         "ix_inbound_evidences_transport_task",
         "ix_wes_biz_inbound_evidences_transport_task_id",
-        "ix_wes_biz_transport_decision_bindings_epoch_resource",
+        "ix_wes_biz_transport_decision_bindings_workline_resource",
     }
 
     async with integration_session_factory() as db:
@@ -187,23 +181,23 @@ async def test_specialized_unique_constraints_are_installed(integration_session_
 
 
 @pytest.mark.asyncio
-async def test_transport_decision_identity_is_epoch_scoped_without_resource_cardinality(
+async def test_transport_decision_identity_is_workline_scoped_without_resource_cardinality(
     integration_session_factory,
 ) -> None:
     identity = uuid4().hex
     now = datetime(2026, 8, 18, 8)
     async with integration_session_factory.begin() as db:
-        first_line, first_epoch = await _claim_epoch(db, f"FIRST-{identity}", now)
-        second_line, second_epoch = await _claim_epoch(db, f"SECOND-{identity}", now)
+        first_workline = await _claim_workline(db, f"FIRST-{identity}", now)
+        second_workline = await _claim_workline(db, f"SECOND-{identity}", now)
         first_source = _claim_evidence(
             f"BINDING-FIRST-{identity}",
             received_at=now,
-            line_run_epoch_id=first_epoch.id,
+            workline_id=first_workline.id,
         )
         second_source = _claim_evidence(
             f"BINDING-SECOND-{identity}",
             received_at=now,
-            line_run_epoch_id=second_epoch.id,
+            workline_id=second_workline.id,
         )
         db.add_all([first_source, second_source])
         await db.flush()
@@ -212,7 +206,7 @@ async def test_transport_decision_identity_is_epoch_scoped_without_resource_card
                 TransportDecisionBinding(
                     correlation_id=f"CORRELATION-A-{identity}",
                     step="MOVE_IN",
-                    line_run_epoch_id=first_epoch.id,
+                    workline_id=first_workline.id,
                     resource_fence_id="SHARED-STATION",
                     client_request_id=f"REQUEST-A-{identity}",
                     source_evidence_id=first_source.id,
@@ -220,7 +214,7 @@ async def test_transport_decision_identity_is_epoch_scoped_without_resource_card
                 TransportDecisionBinding(
                     correlation_id=f"CORRELATION-B-{identity}",
                     step="MOVE_IN",
-                    line_run_epoch_id=first_epoch.id,
+                    workline_id=first_workline.id,
                     resource_fence_id="SHARED-STATION",
                     client_request_id=f"REQUEST-B-{identity}",
                     source_evidence_id=first_source.id,
@@ -228,7 +222,7 @@ async def test_transport_decision_identity_is_epoch_scoped_without_resource_card
                 TransportDecisionBinding(
                     correlation_id=f"CORRELATION-A-{identity}",
                     step="MOVE_IN",
-                    line_run_epoch_id=second_epoch.id,
+                    workline_id=second_workline.id,
                     resource_fence_id="SHARED-STATION",
                     client_request_id=f"REQUEST-C-{identity}",
                     source_evidence_id=second_source.id,
@@ -252,8 +246,7 @@ async def test_transport_decision_identity_is_epoch_scoped_without_resource_card
     async with integration_session_factory.begin() as db:
         await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.id.in_(binding_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_([first_source.id, second_source.id])))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_([first_epoch.id, second_epoch.id])))
-        await db.execute(delete(WorkLine).where(WorkLine.id.in_([first_line.id, second_line.id])))
+        await db.execute(delete(WorkLine).where(WorkLine.id.in_([first_workline.id, second_workline.id])))
 
 
 @pytest.mark.asyncio
@@ -266,41 +259,32 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
     client_request_id = "019cd8ce-34b7-7000-8000-" + identity[:12]
     now = datetime(2026, 8, 17)
     async with integration_session_factory.begin() as db:
-        line = WorkLine(line_code=line_code, line_name="Decision atomic", line_type=LineType.AUTO)
-        db.add(line)
+        workline = WorkLine(line_code=line_code, line_name="Decision atomic", line_type=LineType.AUTO)
+        db.add(workline)
         await db.flush()
         device = Device(
             device_code=f"DEVICE-{identity}",
             device_name="Decision transfer",
-            work_line_id=line.id,
+            work_line_id=workline.id,
         )
         db.add(device)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code=f"EPOCH-{identity}",
-            workline_id=line.id,
-            plugin_key="test_plugin",
-            plugin_version="1.0.0",
-            flow_mode="TEST_FLOW",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            started_at=now,
-        )
-        db.add(epoch)
+        workline.is_active = True
+        workline.plugin_key = "test_plugin"
+        workline.plugin_version = "1.0.0"
+        workline.flow_mode = "TEST_FLOW"
         await db.flush()
-        binding = LineRunEpochDeviceBinding(
-            line_run_epoch_id=epoch.id,
-            device_id=device.id,
-            device_code=device.device_code,
-            device_role="TRANSFER_DEVICE",
-            endpoint_base_url="http://ecs-decision:8080",
-            contract_key="test.transfer",
-            contract_version="1.0",
-            status_max_age_ms=1_000,
-            command_timeout_ms=5_000,
-        )
-        db.add(binding)
+        workline.config = {"device_bindings": {"TRANSFER_DEVICE": device.device_code}}
+        workline.device_contracts = {
+            device.device_code: {
+                "device_id": device.id,
+                "endpoint_base_url": "http://ecs-decision:8080",
+                "contract_key": "test.transfer",
+                "contract_version": "1.0",
+                "status_max_age_ms": 1_000,
+                "command_timeout_ms": 5_000,
+            }
+        }
         await db.flush()
         evidence = InboundEvidence(
             kind=InboundEvidenceKind.DEVICE_EVENT,
@@ -308,7 +292,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             payload_digest="c" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             device_code=f"DEVICE-{identity}",
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.APPLIED,
@@ -318,8 +302,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
         execution = MaterialExecution(
             execution_code=f"EXEC-{identity}",
             material_trace_id=f"TRACE-{identity}",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             admission_received_at=now,
             admission_evidence_id=evidence.id,
             last_transition_reason="INITIAL_EVIDENCE",
@@ -331,10 +314,8 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
         evidence.material_execution_id = execution.id
         evidence_id = evidence.id
         execution_id = execution.id
-        epoch_id = epoch.id
-        binding_id = binding.id
         device_id = device.id
-        line_id = line.id
+        line_id = workline.id
 
     applier = DecisionApplier(
         device_command_service=DeviceCommandService(session_factory=integration_session_factory, clock=lambda: now),
@@ -423,8 +404,6 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == evidence_id))
-        await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(Device).where(Device.id == device_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
@@ -437,7 +416,7 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
     now = datetime(2026, 8, 18, 11)
     client_request_id = "019d0000-0000-7000-8000-000000000141"
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, f"BINDING-CORRELATION-{identity}", now)
+        workline = await _claim_workline(db, f"BINDING-CORRELATION-{identity}", now)
         sources = [
             InboundEvidence(
                 kind=InboundEvidenceKind.WMS_RESULT,
@@ -445,7 +424,7 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
                 payload_digest=str(ordinal) * 64,
                 normalized_payload={"data": {}},
                 received_at=now,
-                line_run_epoch_id=epoch.id,
+                workline_id=workline.id,
                 operation="test.workflow.source@v1",
                 operation_id=f"BINDING-CORRELATION-OP-{ordinal}-{identity}",
                 contract_version="1.0",
@@ -459,8 +438,7 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
             MaterialExecution(
                 execution_code=f"BINDING-CORRELATION-EXEC-{ordinal}-{identity}",
                 material_trace_id=f"BINDING-CORRELATION-TRACE-{ordinal}-{identity}",
-                workline_id=line.id,
-                line_run_epoch_id=epoch.id,
+                workline_id=workline.id,
                 admission_received_at=now,
                 admission_evidence_id=source.id,
                 last_transition_reason="INITIAL_EVIDENCE",
@@ -476,15 +454,14 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
         binding = TransportDecisionBinding(
             correlation_id=f"FLOW-{identity}",
             step="MOVE_IN",
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             resource_fence_id="RACK-1",
             client_request_id=client_request_id,
             source_evidence_id=sources[0].id,
         )
         db.add(binding)
         await db.flush()
-        line_id = line.id
-        epoch_id = epoch.id
+        line_id = workline.id
         source_ids = tuple(source.id for source in sources)
         execution_ids = tuple(execution.id for execution in executions)
 
@@ -542,7 +519,6 @@ async def test_postgresql_decision_applier_rejects_existing_transport_binding_fr
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(source_ids)))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
 
@@ -550,7 +526,7 @@ def _claim_evidence(
     identity: str,
     *,
     received_at: datetime,
-    line_run_epoch_id: int,
+    workline_id: int,
     apply_status: InboundEvidenceApplyStatus = InboundEvidenceApplyStatus.APPLIED,
     next_attempt_at: datetime | None = None,
 ) -> InboundEvidence:
@@ -560,7 +536,7 @@ def _claim_evidence(
         payload_digest="e" * 64,
         normalized_payload={"data": {}},
         received_at=received_at,
-        line_run_epoch_id=line_run_epoch_id,
+        workline_id=workline_id,
         device_code="CLAIM-DEVICE",
         contract_version="1.0",
         apply_status=apply_status,
@@ -568,44 +544,34 @@ def _claim_evidence(
     )
 
 
-async def _claim_epoch(db, identity: str, now: datetime) -> tuple[WorkLine, LineRunEpoch]:
+async def _claim_workline(db, identity: str, now: datetime) -> WorkLine:
     suffix = hashlib.sha256(identity.encode()).hexdigest()[:12]
-    line = WorkLine(
+    workline = WorkLine(
         line_code=f"CL-{suffix}",
         line_name="Decision claim",
         line_type=LineType.AUTO,
     )
-    db.add(line)
+    db.add(workline)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"CE-{suffix}",
-        workline_id=line.id,
-        plugin_key="test_plugin",
-        plugin_version="1.0.0",
-        flow_mode="TEST_FLOW",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=now,
-    )
-    db.add(epoch)
+    workline.is_active = True
+    workline.plugin_key = "test_plugin"
+    workline.plugin_version = "1.0.0"
+    workline.flow_mode = "TEST_FLOW"
     await db.flush()
-    return line, epoch
+    return workline
 
 
-async def _cleanup_claim_epoch(
+async def _cleanup_claim_workline(
     integration_session_factory,
     *,
     source_identity_prefix: str,
-    epoch: LineRunEpoch,
-    line: WorkLine,
+    workline: WorkLine,
 ) -> None:
     async with integration_session_factory.begin() as db:
         await db.execute(
             delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{source_identity_prefix}%"))
         )
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-        await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
+        await db.execute(delete(WorkLine).where(WorkLine.id == workline.id))
 
 
 @pytest.mark.asyncio
@@ -615,25 +581,17 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
     identity = uuid4().hex
     now = datetime(2026, 8, 17, 12)
     async with integration_session_factory.begin() as db:
-        line = WorkLine(
+        workline = WorkLine(
             line_code=f"CLAIM-RESULT-{identity}",
             line_name="Decision result claim",
             line_type=LineType.AUTO,
         )
-        db.add(line)
+        db.add(workline)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code=f"EPOCH-RESULT-{identity}",
-            workline_id=line.id,
-            plugin_key="test_plugin",
-            plugin_version="1.0.0",
-            flow_mode="TEST_FLOW",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            started_at=now,
-        )
-        db.add(epoch)
+        workline.is_active = True
+        workline.plugin_key = "test_plugin"
+        workline.plugin_version = "1.0.0"
+        workline.flow_mode = "TEST_FLOW"
         await db.flush()
         seed = InboundEvidence(
             kind=InboundEvidenceKind.DEVICE_EVENT,
@@ -641,7 +599,7 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             payload_digest="f" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             device_code="CLAIM-DEVICE",
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.IGNORED,
@@ -651,8 +609,7 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
         execution = MaterialExecution(
             execution_code=f"CLAIM-EXEC-{identity}",
             material_trace_id=f"CLAIM-TRACE-{identity}",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             admission_received_at=now,
             admission_evidence_id=seed.id,
             last_transition_reason="INITIAL_EVIDENCE",
@@ -667,7 +624,7 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             payload_digest="1" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=None,
             device_code="CLAIM-DEVICE",
             command_code=f"CLAIM-CMD-FOUNDATION-{identity}",
@@ -680,19 +637,33 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
             payload_digest="2" * 64,
             normalized_payload={"data": {}},
             received_at=now + timedelta(microseconds=1),
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             device_code="CLAIM-DEVICE",
             command_code=f"CLAIM-CMD-CORRELATED-{identity}",
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.APPLIED,
         )
-        db.add_all([foundation, correlated])
+        plan_evidences = [
+            InboundEvidence(
+                kind=InboundEvidenceKind.WMS_EVENT,
+                source_identity=f"CLAIM-PLAN-{identity}-{state.value}",
+                payload_digest="3" * 64,
+                normalized_payload={"data": {}},
+                operation="outbound.picking_task.plan_delta@v1",
+                operation_id=new_uuid7(),
+                received_at=now,
+                workline_id=None,
+                material_execution_id=None,
+                apply_status=state,
+            )
+            for state in InboundEvidenceApplyStatus
+        ]
+        db.add_all([foundation, correlated, *plan_evidences])
         await db.flush()
         seed_id = seed.id
         execution_id = execution.id
-        epoch_id = epoch.id
-        line_id = line.id
+        line_id = workline.id
 
     async with integration_session_factory.begin() as db:
         claimed = await inbound_evidence_repository.claim_decision_batch(
@@ -710,9 +681,11 @@ async def test_postgresql_decision_claim_skips_foundation_result_and_keeps_corre
                 InboundEvidence.source_identity.in_([f"CLAIM-FOUNDATION-{identity}", f"CLAIM-CORRELATED-{identity}"])
             )
         )
+        await db.execute(
+            delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"CLAIM-PLAN-{identity}-%"))
+        )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id == seed_id))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
 
@@ -724,11 +697,11 @@ async def test_postgresql_decision_claim_skip_locked_does_not_reissue_to_second_
     now = datetime(2026, 8, 17, 12)
     prefix = f"CLAIM-SKIP-{identity}"
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, identity, now)
+        workline = await _claim_workline(db, identity, now)
         db.add_all(
             [
-                _claim_evidence(f"{prefix}-1", received_at=now, line_run_epoch_id=epoch.id),
-                _claim_evidence(f"{prefix}-2", received_at=now + timedelta(microseconds=1), line_run_epoch_id=epoch.id),
+                _claim_evidence(f"{prefix}-1", received_at=now, workline_id=workline.id),
+                _claim_evidence(f"{prefix}-2", received_at=now + timedelta(microseconds=1), workline_id=workline.id),
             ]
         )
 
@@ -756,11 +729,10 @@ async def test_postgresql_decision_claim_skip_locked_does_not_reissue_to_second_
     finally:
         await first_session.close()
         await second_session.close()
-        await _cleanup_claim_epoch(
+        await _cleanup_claim_workline(
             integration_session_factory,
             source_identity_prefix=prefix,
-            epoch=epoch,
-            line=line,
+            workline=workline,
         )
 
 
@@ -772,14 +744,14 @@ async def test_postgresql_transport_outcomes_are_claimed_in_unknown_causal_order
     now = datetime(2026, 8, 17, 12)
     prefix = f"CLAIM-TRANSPORT-ORDER-{identity}"
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, identity, now)
+        workline = await _claim_workline(db, identity, now)
         seed = InboundEvidence(
             kind=InboundEvidenceKind.DEVICE_EVENT,
             source_identity=f"{prefix}-SEED",
             payload_digest="1" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             device_code="CLAIM-DEVICE",
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.IGNORED,
@@ -789,8 +761,7 @@ async def test_postgresql_transport_outcomes_are_claimed_in_unknown_causal_order
         execution = MaterialExecution(
             execution_code=f"{prefix}-EXEC",
             material_trace_id=f"{prefix}-TRACE",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             admission_received_at=now,
             admission_evidence_id=seed.id,
             last_transition_reason="INITIAL_EVIDENCE",
@@ -806,7 +777,7 @@ async def test_postgresql_transport_outcomes_are_claimed_in_unknown_causal_order
             payload_digest="2" * 64,
             normalized_payload={"transport_task_id": task_id, "outcome_version": 1, "status": "UNKNOWN"},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             transport_task_id=task_id,
             contract_version="1.0",
@@ -818,7 +789,7 @@ async def test_postgresql_transport_outcomes_are_claimed_in_unknown_causal_order
             payload_digest="3" * 64,
             normalized_payload={"transport_task_id": task_id, "outcome_version": 2, "status": "SUCCEEDED"},
             received_at=now + timedelta(microseconds=1),
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             transport_task_id=task_id,
             contract_version="1.0",
@@ -860,8 +831,7 @@ async def test_postgresql_transport_outcomes_are_claimed_in_unknown_causal_order
             await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{prefix}%")))
-            await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-            await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
+            await db.execute(delete(WorkLine).where(WorkLine.id == workline.id))
 
 
 @pytest.mark.asyncio
@@ -872,14 +842,14 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
     now = datetime(2026, 8, 17, 12)
     prefix = f"CLAIM-TRANSPORT-PERSIST-ONLY-{identity}"
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, identity, now)
+        workline = await _claim_workline(db, identity, now)
         seed = InboundEvidence(
             kind=InboundEvidenceKind.DEVICE_EVENT,
             source_identity=f"{prefix}-SEED",
             payload_digest="1" * 64,
             normalized_payload={"data": {}},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             device_code="CLAIM-DEVICE",
             contract_version="1.0",
             apply_status=InboundEvidenceApplyStatus.IGNORED,
@@ -889,8 +859,7 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
         execution = MaterialExecution(
             execution_code=f"{prefix}-EXEC",
             material_trace_id=f"{prefix}-TRACE",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             admission_received_at=now,
             admission_evidence_id=seed.id,
             last_transition_reason="INITIAL_EVIDENCE",
@@ -906,7 +875,7 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
             payload_digest="2" * 64,
             normalized_payload={"transport_task_id": task_id, "outcome_version": 1, "status": "UNKNOWN"},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             transport_task_id=task_id,
             contract_version="1.0",
@@ -924,7 +893,7 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
             payload_digest="3" * 64,
             normalized_payload={"transport_task_id": task_id, "outcome_version": 2, "status": "UNKNOWN"},
             received_at=now + timedelta(microseconds=1),
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             transport_task_id=task_id,
             contract_version="1.0",
@@ -936,7 +905,7 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
             payload_digest="4" * 64,
             normalized_payload={"transport_task_id": task_id, "outcome_version": 3, "status": "SUCCEEDED"},
             received_at=now + timedelta(microseconds=2),
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             transport_task_id=task_id,
             contract_version="1.0",
@@ -978,8 +947,7 @@ async def test_postgresql_persist_only_unknown_does_not_block_later_determinate_
             await db.execute(delete(MaterialExecution).where(MaterialExecution.id == execution_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.source_identity.like(f"{prefix}%")))
-            await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch.id))
-            await db.execute(delete(WorkLine).where(WorkLine.id == line.id))
+            await db.execute(delete(WorkLine).where(WorkLine.id == workline.id))
 
 
 @pytest.mark.asyncio
@@ -989,8 +957,8 @@ async def test_postgresql_decision_claim_respects_live_lease_and_recovers_expire
     identity = f"CLAIM-LEASE-{uuid4().hex}"
     now = datetime(2026, 8, 17, 12)
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, identity, now)
-        db.add(_claim_evidence(identity, received_at=now, line_run_epoch_id=epoch.id))
+        workline = await _claim_workline(db, identity, now)
+        db.add(_claim_evidence(identity, received_at=now, workline_id=workline.id))
 
     try:
         async with integration_session_factory.begin() as db:
@@ -1024,11 +992,10 @@ async def test_postgresql_decision_claim_respects_live_lease_and_recovers_expire
             assert [item.source_identity for item in recovered] == [identity]
             assert recovered[0].decision_attempt_count == 0
     finally:
-        await _cleanup_claim_epoch(
+        await _cleanup_claim_workline(
             integration_session_factory,
             source_identity_prefix=identity,
-            epoch=epoch,
-            line=line,
+            workline=workline,
         )
 
 
@@ -1040,31 +1007,31 @@ async def test_postgresql_decision_claim_filters_status_and_backoff_and_caps_fif
     prefix = f"CLAIM-FIFO-{identity}"
     now = datetime(2026, 8, 17, 12)
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, identity, now)
+        workline = await _claim_workline(db, identity, now)
     eligible = [
         _claim_evidence(
             f"{prefix}-eligible-{ordinal:03d}",
             received_at=now + timedelta(microseconds=ordinal),
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
         )
         for ordinal in range(100)
     ]
     pending = _claim_evidence(
         f"{prefix}-pending",
         received_at=now - timedelta(seconds=2),
-        line_run_epoch_id=epoch.id,
+        workline_id=workline.id,
         apply_status=InboundEvidenceApplyStatus.PENDING,
     )
     future = _claim_evidence(
         f"{prefix}-future",
         received_at=now - timedelta(seconds=1),
-        line_run_epoch_id=epoch.id,
+        workline_id=workline.id,
         next_attempt_at=now + timedelta(minutes=1),
     )
     deferred = _claim_evidence(
         f"{prefix}-deferred",
         received_at=now - timedelta(seconds=3),
-        line_run_epoch_id=epoch.id,
+        workline_id=workline.id,
         next_attempt_at=now,
     )
     async with integration_session_factory.begin() as db:
@@ -1093,23 +1060,21 @@ async def test_postgresql_decision_claim_filters_status_and_backoff_and_caps_fif
             )
             assert [item.source_identity for item in rotated] == [f"{prefix}-deferred"]
     finally:
-        await _cleanup_claim_epoch(
+        await _cleanup_claim_workline(
             integration_session_factory,
             source_identity_prefix=prefix,
-            epoch=epoch,
-            line=line,
+            workline=workline,
         )
 
 
 @pytest.mark.asyncio
-async def test_postgresql_decision_claim_never_claims_a_closed_epoch(integration_session_factory) -> None:
+async def test_postgresql_decision_claim_never_claims_an_inactive_workline(integration_session_factory) -> None:
     identity = uuid4().hex
     now = datetime(2026, 8, 17, 12)
     async with integration_session_factory.begin() as db:
-        line, epoch = await _claim_epoch(db, identity, now)
-        epoch.status = "CLOSED"
-        epoch.closed_at = now
-        evidence = _claim_evidence(f"CLAIM-CLOSED-{identity}", received_at=now, line_run_epoch_id=epoch.id)
+        workline = await _claim_workline(db, identity, now)
+        workline.is_active = False
+        evidence = _claim_evidence(f"CLAIM-CLOSED-{identity}", received_at=now, workline_id=workline.id)
         db.add(evidence)
 
     try:
@@ -1123,9 +1088,124 @@ async def test_postgresql_decision_claim_never_claims_a_closed_epoch(integration
             )
             assert claimed == []
     finally:
-        await _cleanup_claim_epoch(
+        await _cleanup_claim_workline(
             integration_session_factory,
             source_identity_prefix=f"CLAIM-CLOSED-{identity}",
-            epoch=epoch,
-            line=line,
+            workline=workline,
         )
+
+
+@pytest.mark.asyncio
+async def test_postgresql_overlapping_outcome_publishers_hold_switch_gate(integration_session_factory) -> None:
+    from src.app.workline.installed_plugin import InstalledWorkLinePlugin
+    from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher
+    from src.app.workline.repositories.workline_repository import workline_repository
+
+    identity = uuid4().hex
+    now = datetime(2026, 9, 6, 12)
+    entered, release, switched = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async with integration_session_factory.begin() as db:
+        line = await _claim_workline(db, identity, now)
+        line_id = line.id
+        source = _claim_evidence(
+            identity, received_at=now, workline_id=line_id, apply_status=InboundEvidenceApplyStatus.IGNORED
+        )
+        db.add(source)
+        await db.flush()
+        task = TransportTask(
+            transport_task_id=f"PUBLISH-{identity}",
+            client_request_id=identity,
+            request_digest="a" * 64,
+            kind="RACK_MOVE",
+            caller_json={"workline_id": str(line_id)},
+            request_json={},
+            submit_operation_id=str(uuid4()),
+            submit_timestamp_ms=1,
+            submit_request_body="{}",
+            submit_request_body_digest="a" * 64,
+            status="SUCCEEDED",
+            authority_workline_id=line_id,
+            outcome_version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(task)
+        db.add(
+            TransportDecisionBinding(
+                correlation_id=identity,
+                step="MOVE",
+                workline_id=line_id,
+                resource_fence_id=identity,
+                client_request_id=identity,
+                source_evidence_id=source.id,
+            )
+        )
+        task_id = task.transport_task_id
+    calls = []
+
+    class Publisher:
+        async def publish(self, db, outcome):
+            calls.append(outcome)
+            if len(calls) == 1:
+                entered.set()
+                await release.wait()
+            # The plugin reads its original owner through the host transaction.
+            current = await workline_repository.get_by_id(db, line_id)
+            assert current.plugin_version == "1.0.0"
+
+    plugin = InstalledWorkLinePlugin(
+        display_name="Test",
+        runtime_binding=PluginRuntimeBinding(
+            plugin_key="test_plugin", plugin_version="1.0.0", handlers=(), fact_factory=object()
+        ),
+        start_plan_builder=object(),
+        supported_line_types=(LineType.AUTO,),
+        transport_outcome_publisher=Publisher(),
+    )
+    router = InstalledPluginTransportOutcomePublisher(integration_session_factory, (plugin,))
+    outcome = TransportOutcome(
+        transport_task_id=task_id,
+        client_request_id=identity,
+        outcome_version=1,
+        caller=TransportCaller(workline_id=str(line_id)),
+        status=TransportOutcomeStatus.SUCCEEDED,
+        reason_code=None,
+        members=(),
+    )
+
+    async def second_publisher_and_switch():
+        await router.publish(outcome)
+        async with integration_session_factory.begin() as db:
+            task = await TransportRepository().get_task(db, task_id, for_update=True)
+            task.published_outcome_version = 1
+        async with integration_session_factory.begin() as db:
+            current = await workline_repository.get_for_update(db, line_id)
+            summary = await workline_repository.get_unfinished_workload_summary(db, line_id)
+            assert not any(summary["by_type"].values())
+            current.is_active = False
+            current.plugin_version = "2.0.0"
+        switched.set()
+
+    first = asyncio.create_task(router.publish(outcome))
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        second = asyncio.create_task(second_publisher_and_switch())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(switched.wait(), 0.2)
+        async with integration_session_factory() as db:
+            summary = await workline_repository.get_unfinished_workload_summary(db, line_id)
+            assert summary["by_type"]["transport_tasks"] == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), 5)
+        assert switched.is_set()
+        await router.publish(outcome)  # Closed replay must not resolve version 2.
+        assert len(calls) == 2
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, *([second] if second else []), return_exceptions=True), 5)
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(TransportDecisionBinding).where(TransportDecisionBinding.workline_id == line_id))
+            await db.execute(delete(TransportTask).where(TransportTask.authority_workline_id == line_id))
+            await db.execute(delete(InboundEvidence).where(InboundEvidence.workline_id == line_id))
+            await db.execute(delete(WorkLine).where(WorkLine.id == line_id))

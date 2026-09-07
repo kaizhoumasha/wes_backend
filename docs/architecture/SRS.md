@@ -70,8 +70,8 @@
 * **L2 - 控制中台 (This System - P9 WES)**:
   * **职责**:
     * **独立数据库 (Independent DB)**: 拥有私有的 PostgreSQL/Redis 实例，不依赖 L1 数据库。
-    * **执行插件 (Execution Plugin)**: 每条 WorkLine 通过显式注册的代码插件，把 WMS 封闭业务结果映射为本线设备等待、
-      发送、暂停、隔离和对账动作；插件不拥有业务规则。
+    * **执行插件 (Execution Plugin)**: 每条 WorkLine 通过显式装配的代码插件，把 WMS 封闭业务结果映射为本线设备等待、
+      发送、暂停、隔离和对账动作；插件拥有本地执行流程与角色职责，不拥有 WMS 的库存、分配和业务去向裁决。
     * **执行内核 (Execution Kernel)**: 接收插件返回的封闭 Decision，可靠创建设备命令、搬运任务或 WMS 确认义务；WMS 请求的
       业务 data 由插件一次性给出，内核只按共享 operation 合同校验、冻结和派发，不查询业务表补全 payload。
     * **对象投影 (Object Projection)**: 分别跟踪物料、料箱、位置、设备命令和外部义务，不使用一个通用任务状态机承载全部职责。
@@ -143,7 +143,7 @@ WES 需在上线前完成以下 "物理-数字" 映射的初始化：
 * **执行映射**: 从 WMS 获取其权威的物理箱号 (Bin ID)、货架 (Rack ID) 与地码 (Location Code) 绑定事实，
   只投影当前 WorkLine 执行所需的关系；WES 不建立全局货架或容器主数据。
 * **基础策略输入**: 从 WMS 获取其权威的供应商物料尺寸/厚度事实，保存工作线执行所需的最小版本化投影并绑定到
-  `LineRunEpoch`，作为装箱算法输入；WES 不成为该主数据的权威所有者。
+  WorkLine 当前配置，作为装箱算法输入；WES 不成为该主数据的权威所有者。
 
 #### 3.1.2 货架类型定义 (Rack Type Definitions)
 
@@ -331,7 +331,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 * **状态监控**: 所有供应商实现统一设备状态查询，顶层返回 `devices` 数组，每项分为只用于诊断的 `device` 元数据和用于准入的
   `state`。运行模式映射为共享 `mode`，运行状态映射为共享 `status`；维护态属于 `mode=MAINTENANCE`，不得混入 `status`。
   业务命令只有条目身份一致、`is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令且 `updated_at` 未过期时才准入。
-  `contract_key`、`contract_version` 由活动 `LineRunEpoch` 与命令在 WES 内部冻结，不要求 Status 返回；无业务
+  `contract_key`、`contract_version` 由 WorkLine 当前绑定及命令自身在 WES 内部确定并冻结，不要求 Status 返回；无业务
   `MANUAL_DEBUG` 联调命令从受权限控制的 Swagger 请求冻结局域网 Endpoint，使用 WES 固定内部合同元数据；它不使用业务
   binding 或状态新鲜度合同，但必须在创建前和实际发送前校验实时 Status、活动命令与 `supported_commands`。
   `contract_key`、`contract_version` 和回调幂等身份不进入白皮书 1.1 外部 wire。
@@ -351,14 +351,24 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
     * **层次归属**: `zone_code`, `work_line_id` (设备所属的区域和作业线；`work_line_id` 引用 WES WorkLine 主键)。
     * **用途说明**: 设备的功能描述 (如 "用来点货，绑定栈板发运送任务")。
   * 每个 Device 最多归属一条 WorkLine，归属只通过 WorkLine 配置一次性替换；设备通用 CRUD 不写 `work_line_id`。
-    插件声明通用设备角色，WorkLine 配置把每个角色绑定到精确 `device_code`，START 时把
-    `(device_role, device_code)` 冻结到 Epoch；Device 主数据不拥有业务角色。
+    Device 不保存插件业务角色；角色由插件定义，在 WorkLine 当前插件配置中绑定实际 `device_code`。
+    当前默认每个必需角色绑定一台设备，允许本线设备不参与当前插件；特殊多重关系仅在真实业务要求时扩展。
+    运行期间保持 WorkLine 的角色与设备关联不变，按 `device_role + device_code` 精确定位；命令自行冻结必要执行合同。
 
 * **WorkLine 插件、启动与分拣机设备边界**:
   * WorkLine 保存当前选择的 `plugin_key` 和插件业务配置；部署制品提供显式、不可变的已安装插件 tuple，不扫描环境且不提供默认插件。
-  * Fact、WMS WAIT 后继和 Transport outcome 都按原执行身份引用的 Epoch 精确选择 `plugin_key + plugin_version`，不得按 WorkLine 当前选择或单一部署默认值回退。
-  * START 是唯一启用入口。非重放 START 只接受停用且无活动 Epoch 的 WorkLine，并在一个事务内设置活动状态、冻结插件精确版本、配置和设备合同以及创建新 Epoch；不得隐式关闭旧 Epoch。
-  * 停用必须在同一事务内确认 Transport、Bin/MaterialExecution、DeviceCommand、WMS 确认、evidence 和当前插件业务任务均已闭合，然后关闭活动 Epoch 并设置 WorkLine 停用。
+  * 基础制品可以不安装业务插件并以空清单独立启动和测试；现场入口显式装配所需业务包。基础可靠性与具体插件业务分别验收。
+  * WorkLine 生命周期与料箱关联替换按 `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md`
+    验收；本节表达目标约束，实际实现及验证进度以该 SPEC 的实施记录为准。
+  * Fact、WMS WAIT 后继和 Transport outcome 保留原请求/执行身份，由所属 WorkLine 当前精确 `plugin_key + plugin_version` 处理；
+    原义务未闭合时禁止停用和切换。已闭合消息重投返回原幂等结果，不重新驱动插件；违反准入的输入保存拒绝证据并报错，不建立跨插件接管机制。
+  * START 是唯一启用入口，请求携带当前 WorkLine `version`。同一 WorkLine 锁和事务内检查版本、停用状态及准入条件，设置活动状态并推进版本；
+    旧版本返回 `409`，不新增 request_id 或独立运行实体。客户端响应丢失或冲突后重读状态，不自动刷新版本再发启动。
+  * 现场工作人员完成停料及物理清线后，系统在同一事务内检查 MaterialExecution、DeviceCommand、Transport、WMS 确认、待应用 Evidence、
+    插件业务等待/FIFO 及有效位置占用；全部闭合才允许停用，再次检查通过才允许切换配置。未决、领取中或未知状态均阻塞。
+    不新增清线确认表、字段、接口、确认人/时间记录或自动排空编排；数据库事务不等待现场操作。
+  * WorkLine 保存当前精确插件版本、配置及必要设备/位置绑定，运行期间禁止修改。DeviceCommand 和 Transport 保存自身身份、不可变请求和必要执行参数，
+    不复制整份 WorkLine 配置。进程重启不生成新业务身份或自动更换插件版本。
   * START 进入 READY/待机状态只表示可以开始接收业务需求；不表示已有货架到位，也不表示立即开始分拣。
   * 分拣机只有 `SOURCE_ARM` 和 `TARGET_ARM` 两个机械臂，不存在 NG 专用机械臂；NG 放置动作由 `TARGET_ARM` 完成，目标设备角色仍是 `ROLE_SORTING_TARGET_ARM`。
   * 分拣作业启动必须同时满足业务需求、WorkLine READY、Station 业务 lease 空闲、单层货架 active 执行快照或 WMS 到位/授权回调；具体设备命令下发前再按设备角色执行实时准入。
@@ -391,7 +401,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   * 核心通用生命周期为 `PENDING / DISPATCHING / ACKNOWLEDGED / RECONCILING / SUCCEEDED / FAILED / TIMED_OUT`。
   * `ACKNOWLEDGED` 只代表请求被厂商接纳；只有匹配当前命令的最终 CALLBACK 才能进入 `SUCCEEDED`/`FAILED`。
   * 业务完成、失败、等待和取消语义来自 WMS 封闭结果；插件只维护本地执行状态，不与 `DeviceCommand` 状态合并。
-  * `MANUAL_DEBUG` 只用于无业务现场联调，不关联 `LineRunEpoch`、设备主数据或执行对象；其 CALLBACK 只闭合命令与 evidence，
+  * `MANUAL_DEBUG` 只用于无业务现场联调，不关联业务 WorkLine、设备主数据或执行对象；其 CALLBACK 只闭合命令与 evidence，
     不触发 WorkLine 或插件业务推进。
   * 所有状态变化保留时间、来源、关联和诊断证据，支持查询与审计。
 
@@ -432,7 +442,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 * **场景**: 已完成粗分入库的单层货架，先执行获批的满箱交换，再把剩余料盘迁移到五层货架目标 Bin/Cell。该阶段只
   迁移权威位置，不重复 GRN 绑定或入库确认。
 * **执行任务驱动**: 自动上架不新增 WMS `InboundTask`。WMS 根据冻结货架快照生成 `putaway_plan_id`，WES 在已激活
-  `automatic_putaway` 的 WorkLine/Epoch 中创建 `putaway_execution_id`；两者共同形成一次执行任务边界。目标五层货架、实际空 Bin 和
+  `automatic_putaway` 的 WorkLine 中创建 `putaway_execution_id`；两者共同形成一次执行任务边界。目标五层货架、实际空 Bin 和
   精确交换对按货架面、按执行批次晚绑定。WES 不按本地 `Usage`、空格数或等待时长改判，也不得预建后续批次。
 * **满箱交换**: WMS 每次决定同面 1～2 对精确成员和最终储位，WES 只通过 Transport Port 原子提交该批全部成员。当前面
   需要两对而目标货架只有一个合格空 Bin 时，禁止缩成一对；优先更换能完整覆盖当前面且尽量覆盖剩余面的五层货架，没有合格
@@ -441,12 +451,12 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   记录并完成主账更新后才闭环。若另一面
   仍需交换，WMS 重新计算后，WES 分别完成所需来源货架和目标货架换面，确认所有 `RACK_ROTATE` 成功且到达面正确，再创建下一面
   的新交换任务。需要换目标货架时，同样先完成旧架搬离和新架到位，再重新计算。
-* **目标 Bin 供退**: WMS 只供给库存主账中存在可分配 Cell 的 Bin。正常 Bin 离开工作位后进入本次 `putaway_execution_id` 的 `RETURN_BUFFER` FIFO；WMS 为连续前缀分配当前 CTU 工作位货架面的任意合格精确空位，
-  不要求原货架面。当前面无合格空位时 Bin 等待，不转 NG 或冲突；正常运行时只有新供给需求驱动换面、换架。停止或切换已请求时停止新任务和新 Bin，Epoch 保持 `ACTIVE`；目标合同允许 WMS 为排空既有 FIFO 选择货架面，但共同排空货架面决定 wire 尚未获批，当前路径为 `ReviewRequired/BLOCKED`，不得创建货架切换或退料 Transport。全部清场义务闭合后再关闭 Epoch。WES 只按现场缓存和 CTU 物理容量限流，不推断库存可用性。
-* **Bin 执行管辖**: WMS 冻结精确供给 Bin 后，WES 先创建 `TransportTask`；提交、接纳、失败和位置未知均由该搬运对象负责。
-  只有 `transport.task.resulted@v1` 最终结果确认 Bin 成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结 `bin_id` 一致后，WES 才创建
-  `BinExecution`。正常 Bin 只有可靠回到当前工作线五层货架精确位置且 WMS 已记录主账后才释放；NG Bin进入整线 `NGZone` 后由人工
-  扫码取走并释放。下次供给必须使用 WMS 最新主账创建新的执行，禁止复用旧位置投影。
+* **目标 Bin 供退**: WMS 只供给库存主账中存在可分配 Cell 的 Bin。正常 Bin 离开工作位后进入当前 WorkLine 物理缓存的 `RETURN_BUFFER` FIFO；WMS 为连续前缀分配当前 CTU 工作位货架面的任意合格精确空位，
+  不要求原货架面。当前面无合格空位时 Bin 等待，不转 NG 或冲突；正常运行时只有新供给需求驱动换面、换架。停用或切换前由工作人员按现场流程停料，WorkLine 保持原插件及配置；目标合同允许 WMS 为排空既有 FIFO 选择货架面，但共同排空货架面决定 wire 尚未获批，当前路径为 `ReviewRequired/BLOCKED`，不得创建货架切换或退料 Transport。全部系统义务及有效占用闭合且现场物理清线后才允许停用或切换。WES 只按现场缓存和 CTU 物理容量限流，不推断库存可用性。
+* **Bin 物理准入**: WMS 冻结精确供给 Bin 后，WES 在 WorkLine 准入、对象锁和资源校验通过后创建 TransportTask；提交、接纳、失败和位置未知由原搬运对象负责。
+  最终结果确认 Bin 成功到达冻结 HANDOFF_POSITION 且现场实扫 `bin_code` 匹配后，才允许该成员进入线内业务；不建立全程料箱执行实体。
+  正常退箱的 FIFO 退出依据匹配成员的权威物理结果，WMS 位置报告独立可靠闭合。NG 立即结束正常业务，未决物理动作及有效占用继续可靠闭合，
+  不新增 NG 出口报告或以人工取走作为正常业务完成门禁。下次供给使用当前 WMS 决定与新 Transport 成员，旧投影或条码不能单独授权。
 * **机械臂执行**: SCAN1 承接 WMS 业务路由，SCAN2 只确认当前 Bin 是否可服务。北向机械臂从冻结来源取盘并复扫，WMS
   晚绑定精确目标 Cell，南向机械臂可靠 PUT 后形成位置 Fact；身份不符、位置未知或不可逆动作结果未知时冻结对账。
 * **业务完成**: 正常料盘只有在可靠 PUT 且 WMS 接纳位置 Fact 后才完成；Material NG、可靠空取和满箱交换按各自明确终态闭合。
@@ -476,10 +486,10 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    不同时创建多条指向 CTU 工作位的货架任务。计划应用、缓存变化、重试到期或 Transport 得到确定结果后，自动出库业务模块都在事务中
    重新判断一个下一动作；Transport 基础能力不理解这个业务循环。
    当前面能为 `RETURN_BUFFER` FIFO 队首形成可执行批次时，优先调用 `outbound.bin.return_batch@v1`。候选按本次请求从 1 设置 `sequence_no`；WMS 为连续前缀
-   分配当前 `rack_id + rack_face` 的任意合格精确空位，并原样返回 `sequence_no + bin_id`。当前面无合格空位时返回 `NO_BATCH`，候选留在 FIFO，不转 NG 或 `STATE_CONFLICT`；无资源冲突的新入站需求可以推动换面或换架。
+   分配当前 `rack_id + rack_face` 的任意合格精确空位，并原样返回 `sequence_no + bin_code`。当前面无合格空位时返回 `NO_BATCH`，候选留在 FIFO，不转 NG 或 `STATE_CONFLICT`；无资源冲突的新入站需求可以推动换面或换架。
    没有可执行退箱批次时，WES 计算 CTU 空闲背篓数和入料缓存空闲数的较小值，再通过 `outbound.bin.inbound_batch@v1` 请求 WMS 选择
-   `bin_id + source_locator`，补充本地目标并生成 `BIN_MOVE`。WMS `READY` 不是批次完成；只有 Transport 最终成功、实扫身份匹配并创建
-   `BinExecution` 后才重新判断。`RACK_FACE_DONE` 只关闭当前面的后续选 Bin 资格；CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
+   `bin_code + source_locator`，补充本地目标并生成 `BIN_MOVE`。WMS `READY` 不是批次完成；只有 Transport 最终成功、实扫身份匹配并创建
+   当前工位关联后才重新判断。`RACK_FACE_DONE` 只关闭当前面的后续选 Bin 资格；CTU 不携带 Bin、没有未结束搬运或位置未知后，WES 可从
    计划中选择下一来源面，同架下一面使用
    `RACK_ROTATE`，不同货架严格按
    旧架移出、新架移入的顺序切换。CTU 非空、搬运未完成、位置未知，或存在以当前面为冻结目标的退箱决定时，禁止换面和换架；已可靠进入 `RETURN_BUFFER` 且尚未冻结目标的 Bin 可跨面等待，不再锁定原来源面。
@@ -500,8 +510,8 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    撤销 `inbound_batch` 已选中的 Bin，也不能用当前任务的后续计划替换空取、NG 或 Transport 确定失败的任务明细。
    Bin 到达 SCAN2 时由 `work_plan` 返回 `READY | NO_WORK | WAIT`；`READY.cell_ids[]` 首次接收后不可撤销、删减或改写。
 8. Transport 为 `UNKNOWN/RECONCILING` 时，只暂停受影响的任务明细。WES 等待同一 `transport_task_id` 的更高版本结果或人工核对。
-   Transport 确定失败时，WES 结束失败对象对应的业务任务明细，其他明细继续。尚未到达工作线的 Bin 不创建 `BinExecution`；既有
-   `BinExecution` 的退回搬运失败时继续保留该执行，后续按确定位置人工处置，只有位置未知才由 Transport 保持 `RECONCILING`。
+   Transport 确定失败时，WES 结束失败对象对应的业务任务明细，其他明细继续。尚未到达工作线的 Bin 不推进线内业务；
+   退回搬运失败时继续保留原搬运成员与位置证据，后续按确定位置人工处置，只有位置未知才由 Transport 保持 `RECONCILING`。
    WMS/RCS 产生并发送 Transport 结果，所以 WMS 可以直接
    统计没有满足的需求并创建新的 PickingTask。双方不增加 Transport 失败上报或 PickingTask 恢复接口，Transport 请求也不增加
    `task_id`。
@@ -519,11 +529,11 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 1. WMS 使用已有且全局唯一的 `task_id` 和不可变 `task_type=MANUAL` 发布人工任务，不增加人工业务键或独立任务实体；WES 只从已激活 `manual_bin_processing` 的人工 WorkLine 中选线。
 2. Task 驱动货架面和 Bin 入站。WMS 选择确定 Bin，WES 依据 CTU、缓存和当前工作位货架状态执行 Transport；入站 Bin 需求是正常运行时换面或换架的唯一触发。
 3. Bin 到达人工工作位后，WES 以扫码和位置证据报告物理到位；操作员通过 WMS PDA 将物料正确放入 Bin 或从 Bin 拣出。WES 不接收物料子任务、不判断人工业务类型。
-4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 Epoch 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。
+4. WMS 持久化物料子任务结果和 Bin 级释放决定。收到正常释放后，Bin 进入本 WorkLine 的跨任务 `RETURN_BUFFER` FIFO；原任务完成或取消不删除该物理义务。
 5. 退料 Bin 不返回原货架面。WMS 根据当前工作位 `rack_id + rack_face` 为 FIFO 连续前缀原子预留精确 `slot_id`；WES 只执行 `BIN_MOVE`。退料 Bin 不为自己触发换面或换架。
-6. 物料正确放入 Bin 或从 Bin 拣出后，WMS 才确认对应子任务完成；全部应完成子任务完成且不再追加后，WMS 才确认业务任务完成。两者都不等待 Bin 回到货架，Bin 回库、未知 Transport 和 Epoch 清场由各自物理生命周期继续闭合。
+6. 物料正确放入 Bin 或从 Bin 拣出后，WMS 才确认对应子任务完成；全部应完成子任务完成且不再追加后，WMS 才确认业务任务完成。两者都不等待 Bin 回到货架，Bin 回库、未知 Transport 和 WorkLine 清场由各自物理生命周期继续闭合。
 7. 实际 Bin 可识别但与本批预期 Bin 不同时，实际 Bin 不进入人工业务或 NG；WES 保存预期/实际身份和位置证据，将其冻结在当前安全位置，等待独立恢复 wire 获批。预期 Bin 仍未完成。
-8. WMS 不可用时停止新的 Task/Bin 推进，复用 Session `WAITING_EXTERNAL` 和 Outbox 可靠重试；不新增 WorkLine 状态，Epoch 保持 `ACTIVE`。WES 进程重启时校验活动 Epoch 的插件精确版本仍在部署清单中，再从持久化证据恢复可靠处理；未知物理结果不得换身份盲目重发。
+8. WMS 不可用时停止新的 Task/Bin 推进，复用 Session `WAITING_EXTERNAL` 和 Outbox 可靠重试；不新增 WorkLine 状态，WorkLine 保持原插件及配置。WES 进程重启时校验启用 WorkLine 的插件精确版本仍在部署清单中，再从持久化证据恢复可靠处理；未知物理结果不得换身份盲目重发。
 
 人工分拣的完整流程、分段驱动、容量背压、跨任务退料和实施门禁以
 `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` 第 20 节为准。具体 wire 合同尚未获批，不复用自动出库必填的机械臂、Cell、料盘或目标货架字段。
@@ -552,7 +562,6 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   | 对象 | 需求职责 |
   | --- | --- |
   | `MaterialExecution` | 保存单个完整料盘或可执行物料单位的业务推进证据 |
-  | `BinExecution` | 保存已经可靠到达工作线的单个料箱，从入线、滚筒线和工作位推进，直到正常回库或 NGZone 人工接管的执行证据 |
   | `DeviceCommand` | 保存 ECS 命令、ACK、CALLBACK、deadline 和幂等事实 |
   | `TransportTask` | 保存 WMS 转发搬运请求、批次状态和终态中的成员最终事实 |
   | `WmsConfirmation` | 保存需要可靠提交的 WMS 业务确认义务 |
@@ -561,7 +570,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
   当前投影可以更新，但命令、外部义务、终态和对账证据必须按审计要求保留；不得在执行结束时整体删除或压缩成一个通用任务记录。
   `PositionProjection` 只表达 WES 活动管辖期内由可靠证据支撑的位置、队列或占用，不是 WMS 全局 Bin 位置镜像。Transport 已接纳但
-  尚无最终结果时，其任务和资源绑定按位置未知处理；`BinExecution` 关闭后保留历史证据，但旧投影不再具有当前权威性。
+  尚无最终结果时，其任务和资源绑定按位置未知处理；业务关闭不删除有效占用，后续动作发生后旧位置不再代表当前位置；本线绑定位置内或 UNKNOWN 继续阻塞清线，确定在绑定位置外则不计为本线占用。
 * **与现有 WMS 的协同机制 (Coordination with Existing WMS)**:
 
   **1. 库存查询 (Inventory Query)：**
@@ -593,7 +602,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
   * **场景**: 物理动作失败 (如: AGV 故障、装箱失败)。
   * **流程**:
-    1. WES 根据权威失败证据更新对应 `MaterialExecution`、`BinExecution`、`DeviceCommand` 或 `TransportTask`；结果未知时保持对象级暂停，不伪造失败终态。
+    1. WES 根据权威失败证据更新对应 `MaterialExecution`、`DeviceCommand` 或 `TransportTask`；结果未知时保持对象级暂停，不伪造失败终态。
     2. WES 向 WMS 提交预留释放或异常处置需求，等待 WMS 确认、拒绝或人工授权。
     3. WES 保存异常原因、时间、关联对象和外部回执，供告警与对账追踪。
 
@@ -617,7 +626,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
 #### 3.4.3 对象级执行协调 (Object-Level Execution Coordination)
 
-* **职责**: 上游 WMS 结果是业务权威；具体 WorkLine 插件校验其关联和物理可执行性后映射为封闭执行 Decision，核心分别推进 `MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask` 和 `WmsConfirmation`。
+* **职责**: 上游 WMS 结果是业务权威；具体 WorkLine 插件校验其关联和物理可执行性后映射为封闭执行 Decision，核心分别推进 `MaterialExecution`、`DeviceCommand`、`TransportTask` 和 `WmsConfirmation`。
 * **生命周期所有权**: 不建立统一 Task 状态机。每类执行对象只拥有自身状态、幂等键、终态证据和恢复规则，禁止用一个通用状态覆盖设备命令、搬运履约和 WMS 确认。
 * **依赖表达**: 依赖通过明确的对象关联、权威终态证据和投影准入条件表达，不建设可配置 DAG、通用步骤表或跨工作线任务引擎。
 * **并发边界**: 核心执行对象级准入，并强制每个独立命令资源 `device_code` 最多一个活动命令；不同 `device_code` 之间允许对象级流水并行。
@@ -626,7 +635,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   及实际机械顺序。真实区域容量、AGV 拥堵、运输并发、车辆路径规划和避让由 WMS/RCS 判断，WES 不接管 RCS 调度。
 * **通信恢复**: 未发生 WES 进程重启时，未决可靠对象取得权威终态证据、WMS 返回新的有效业务结果并重新通过对象级
   执行准入后，插件可以继续映射执行；不保存通用 Step checkpoint，也不从步骤号继续执行。
-* **重启恢复**: WES 进程重启后校验每个活动 `LineRunEpoch` 的 `plugin_key + plugin_version` 与部署清单精确匹配，再从持久化
+* **重启恢复**: WES 进程重启后校验每个启用 WorkLine 的 `plugin_key + plugin_version` 与部署清单精确匹配，再从持久化
   evidence、执行对象和 outbox 恢复可靠处理。可能已被设备或搬运系统接纳但结果未知的动作保留原身份并进入对账，禁止盲目重发。
 
 ---
@@ -804,7 +813,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 * **场景**: 未发生 WES 进程重启的通信中断，以及进程重启、设备故障或紧急停机。
 * **WES 机制**:
   1. **事实记录 (Evidence Persistence)**:
-     * 每个关键边界分别保存 `MaterialExecution`/`BinExecution` 状态、位置投影、设备命令、外部义务和原始输入证据。
+     * 每个关键边界分别保存物料执行或插件当前工位状态、位置投影、设备命令、外部义务和原始输入证据。
      * 示例: “已扫描 PKG、尚未形成箱位 Decision”由物料执行证据和位置投影表达，不创建通用 Task checkpoint。
   2. **通信恢复策略 (Communication Recovery Strategy)**:
      * **禁止推测重放**: WES 直连 ECS 命令和提交给 WMS 的搬运/交换需求均复用原可靠对象身份；结果未知时不得自动重复执行。
@@ -812,19 +821,19 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
        确认物理世界与持久化证据一致。
      * **继续执行**: 未发生 WES 进程重启、证据闭合、取得 WMS 新的有效业务结果且对象级准入通过后，由对应
        WorkLine 插件映射下一步执行 Decision，不使用通用 Task Engine 从步骤号恢复。
-  3. **进程重启清线 (Process Restart Clearance)**:
-     * WES 进程重启后停止工作线新对象接纳，保留全部证据，并把未明确终态的在途对象标记为需要现场清线。
-     * 迟到 CALLBACK 继续保存，但不得在原 `LineRunEpoch` 自动恢复物理编排、重新下发命令或猜测现场位置。
-     * 操作员完成清线并确认后创建新的 `LineRunEpoch`，新对象只能从该 epoch 开始执行。
-  4. **人工确认机制**:
-     * 通信恢复时若对象状态不明确（如 AGV 位置未知），创建带关联证据的人工对账事项；人工决议审计落库后
-       才能重新判定。进程重启场景始终执行现场清线和新 epoch，不以状态查询替代清线。
+  3. **进程重启恢复 (Process Restart Recovery)**:
+     * 校验各启用 WorkLine 的精确插件版本可用，从持久化请求、命令和 Evidence 恢复可靠处理，不创建新的运行身份。
+     * 迟到 CALLBACK 继续按原命令关联保存；结果未知时不推测成功、不换身份重发或猜测现场位置。
+     * 需要切换插件时，先按现场流程停料清线，并满足 WorkLine 系统收敛检查，之后才允许停用、修改配置和重新启动。
+  4. **人工对账**:
+     * 对象状态不明确时沿用已有对账和证据能力，保留原身份和资源围栏；匹配的权威事实闭合后才重新判断准入。
+     * 物理清线由现场工作人员最终确认，不增加清线确认记录或软件审批流程。
 
 #### 3.7.2 独立人工线 (Dedicated Manual WorkLine)
 
 * 人工线是固定无机械臂的 WorkLine，不是自动线的降级模式。
 * 自动线故障、ECS 离线或紧急情况只停止受影响的自动执行并保留证据；WES 不在该线激活人工插件，不通过缺失设备角色或可空字段继续执行。
-* 若业务需要后续人工处理，WMS 在原自动执行按物理边界确定收口后，按正常任务入口发布给独立人工线；不会热切同一 Epoch 或迁移已接管的物理对象。
+* 若业务需要后续人工处理，WMS 在原自动执行按物理边界确定收口后，按正常任务入口发布给独立人工线；不会热切同一运行中的 WorkLine 插件或迁移已接管的物理对象。
 * PDA 只访问 WMS。来源物料、来源储位、目标 Bin/料格、人工扫描和库存事务由 WMS 授权并持久化；WES 只提供货架/Bin 位置事实与搬运能力。
 
 #### 3.7.3 通信异常、未知结果与恢复 (Communication Failure, Unknown Result and Recovery)
@@ -847,7 +856,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
   **2. 对象级暂停与告警 (Object-Scoped Hold and Alert)：**
 
-  * 通信异常只暂停与未决命令、搬运任务或确认义务关联的 `MaterialExecution`/`BinExecution`，不得无依据暂停整条工作线。
+  * 通信异常只暂停与未决命令、搬运任务或确认义务关联的物料执行或当前工位动作，不得无依据暂停整条工作线。
   * 自动出库任务中，物理结果未知只阻止依赖该结果的对象、设备和位置继续执行；它关联尚未完成的业务成员时，PickingTask
     保持执行中。PickingTask 已完成后的退箱或货架离场结果未知只保留相关资源绑定和告警，不回退任务，也不连带无资源依赖的对象、
     其他任务或工作线。
@@ -940,7 +949,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
 
   **1. 执行状态查询 (Execution State Query)：**
 
-  * 按 `MaterialExecution`、`BinExecution`、`DeviceCommand`、`TransportTask` 或 WMS 业务关联键查询当前状态、位置、未决义务和诊断证据。
+  * 按 `MaterialExecution`、`DeviceCommand`、`TransportTask` 或 WMS 业务关联键查询当前状态、位置、未决义务和诊断证据。
   * 查询合同必须使用明确版本的 DTO；不得把不同执行对象压缩为一个含糊的通用 `task_id/status` 结构。
 
   **2. 业务输入接口 (Business Input)：**
@@ -1026,6 +1035,6 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
    的物理终态；对应库存业务只有在 WMS 事务提交成功后才形成业务确认终态。WMS 暂时失败时，WES 保留物理事实
    和 `WmsConfirmation` 待确认义务，不得把已发生动作改写为未完成或自动重放未知结果。
 3. **可观测性 (Observability)**: 提供独立的 Prometheus/Grafana 监控接口，重点监控 **WMS 接口延迟**、设备在线率及任务积压。
-4. **故障恢复 (Failure Recovery)**: 不要求 WES 本地持久化库存主账缓存。系统重启后，WES 使用自身保存的
-   执行事实、单层货架 active 执行快照、运行投影和回调证据进行诊断与现场清线；查询 WMS 和现场设备状态只用于
-   对账和闭合证据，不恢复原执行上下文。操作员确认清线后创建新的 `LineRunEpoch`。
+4. **故障恢复 (Failure Recovery)**: 不要求 WES 本地持久化库存主账缓存。系统重启后校验启用 WorkLine 的精确插件版本，
+   从原请求、命令、执行事实和 Evidence 恢复可靠处理。结果未知时保留原身份与资源围栏，查询 WMS 和现场设备状态用于对账，
+   不猜测物理位置或另换身份重发。只有系统收敛且现场人员确认物理清线后才允许停用和切换 WorkLine 插件。

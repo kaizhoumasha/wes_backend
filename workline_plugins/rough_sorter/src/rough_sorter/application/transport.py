@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -17,17 +16,10 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceService,
 )
 from src.app.transport.contracts import TRANSPORT_DEBUG_CALLER_WORKLINE_ID, TransportOutcome, TransportOutcomeStatus
-from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from src.app.execution.models import InboundEvidence, MaterialExecution, TransportDecisionBinding
-
-logger = logging.getLogger(__name__)
-
-
-class SessionFactoryPort(Protocol):
-    def begin(self) -> Any: ...
 
 
 class BindingRepositoryPort(Protocol):
@@ -54,88 +46,72 @@ class RoughSorterTransportOutcomePublisher:
     def __init__(
         self,
         *,
-        session_factory: SessionFactoryPort,
         binding_repository: BindingRepositoryPort = transport_decision_binding_repository,
         evidence_repository: EvidenceRepositoryPort = inbound_evidence_repository,
         execution_repository: ExecutionRepositoryPort = material_execution_repository,
         evidence_service: InboundEvidenceService | None = None,
-        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
-        self._sessions = session_factory
         self._bindings = binding_repository
         self._evidences = evidence_repository
         self._executions = execution_repository
         self._evidence_service = evidence_service or InboundEvidenceService()
-        self._queue = queue_gateway
 
-    async def publish(self, outcome: TransportOutcome) -> None:
-        should_wake = False
-        async with self._sessions.begin() as db:
-            binding_hint = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
-            if binding_hint is None:
-                if outcome.caller.workline_id == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
-                    return
-                raise LookupError("Transport outcome 缺少换架 business binding")
-            if binding_hint.step not in {"OLD_OUT", "NEW_IN"}:
-                raise ValueError("粗分 Transport binding step 非法")
-            binding_correlation = _binding_correlation(binding_hint, outcome.client_request_id)
-            source_hint = await self._evidences.get_by_id_without_lock(db, binding_hint.source_evidence_id)
-            if source_hint is None:
-                raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
-            source_correlation = _source_correlation(source_hint)
-            accepted = None
-            if binding_hint.step == "NEW_IN":
-                accepted = await self._evidence_service.accept(
-                    db,
-                    kind=InboundEvidenceKind.TRANSPORT_RESULT,
-                    source_identity=f"transport:{outcome.transport_task_id}:outcome:{outcome.outcome_version}",
-                    normalized_payload=_outcome_payload(outcome),
-                    received_at=timezone.now_for_db(),
-                    line_run_epoch_id=source_correlation[3],
-                    material_execution_id=source_correlation[2],
-                    transport_task_id=outcome.transport_task_id,
-                    contract_key="rough_sorter.transport_outcome",
-                    contract_version="1.0",
-                    apply_status=InboundEvidenceApplyStatus.APPLIED,
-                )
-                if isinstance(accepted, InboundEvidenceConflictResult):
-                    raise accepted.to_exception()
-            execution = await self._executions.get_by_id_for_update(db, source_correlation[2])
-            binding = await self._bindings.get_by_client_request_id_for_update(db, outcome.client_request_id)
-            if binding is None or _binding_correlation(binding, outcome.client_request_id) != binding_correlation:
-                raise ValueError("Transport binding correlation drift")
-            source = await self._evidences.get_by_id_for_update(db, binding.source_evidence_id)
-            if source is None or _source_correlation(source) != source_correlation:
-                raise ValueError("Transport source evidence correlation drift")
-            if (
-                execution is None
-                or execution.id is None
-                or execution.line_run_epoch_id != source.line_run_epoch_id
-                or outcome.caller.workline_id != str(execution.workline_id)
-            ):
-                raise ValueError("Transport outcome 与 source execution correlation 不匹配")
-            if binding.step == "OLD_OUT":
-                return
-            if accepted is None:
-                raise RuntimeError("NEW_IN Transport outcome 缺少 evidence acceptance")
-            if (
-                not accepted.duplicate
-                and execution.status == MaterialExecutionStatus.RECONCILING
-                and outcome.status is TransportOutcomeStatus.UNKNOWN
-            ):
-                accepted.evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
-            should_wake = accepted.evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
-        if should_wake:
-            try:
-                self._queue.enqueue_execution_facts()
-            except Exception:
-                logger.exception(
-                    "rough_sorter.transport.execution_wake_failed",
-                    extra={
-                        "event": "rough_sorter.transport.execution_wake_failed",
-                        "transport_task_id": outcome.transport_task_id,
-                    },
-                )
+    async def publish(self, db: Any, outcome: TransportOutcome) -> bool:
+        """保存结果并返回是否需要宿主在提交后唤醒执行处理。"""
+        binding_hint = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
+        if binding_hint is None:
+            if outcome.caller.workline_id == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
+                return False
+            raise LookupError("Transport outcome 缺少换架 business binding")
+        if binding_hint.step not in {"OLD_OUT", "NEW_IN"}:
+            raise ValueError("粗分 Transport binding step 非法")
+        binding_correlation = _binding_correlation(binding_hint, outcome.client_request_id)
+        source_hint = await self._evidences.get_by_id_without_lock(db, binding_hint.source_evidence_id)
+        if source_hint is None:
+            raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
+        source_correlation = _source_correlation(source_hint)
+        accepted = None
+        if binding_hint.step == "NEW_IN":
+            accepted = await self._evidence_service.accept(
+                db,
+                kind=InboundEvidenceKind.TRANSPORT_RESULT,
+                source_identity=f"transport:{outcome.transport_task_id}:outcome:{outcome.outcome_version}",
+                normalized_payload=_outcome_payload(outcome),
+                received_at=timezone.now_for_db(),
+                workline_id=source_correlation[3],
+                material_execution_id=source_correlation[2],
+                transport_task_id=outcome.transport_task_id,
+                contract_key="rough_sorter.transport_outcome",
+                contract_version="1.0",
+                apply_status=InboundEvidenceApplyStatus.APPLIED,
+            )
+            if isinstance(accepted, InboundEvidenceConflictResult):
+                raise accepted.to_exception()
+        execution = await self._executions.get_by_id_for_update(db, source_correlation[2])
+        binding = await self._bindings.get_by_client_request_id_for_update(db, outcome.client_request_id)
+        if binding is None or _binding_correlation(binding, outcome.client_request_id) != binding_correlation:
+            raise ValueError("Transport binding correlation drift")
+        source = await self._evidences.get_by_id_for_update(db, binding.source_evidence_id)
+        if source is None or _source_correlation(source) != source_correlation:
+            raise ValueError("Transport source evidence correlation drift")
+        if (
+            execution is None
+            or execution.id is None
+            or execution.workline_id != source.workline_id
+            or outcome.caller.workline_id != str(execution.workline_id)
+        ):
+            raise ValueError("Transport outcome 与 source execution correlation 不匹配")
+        if binding.step == "OLD_OUT":
+            return False
+        if accepted is None:
+            raise RuntimeError("NEW_IN Transport outcome 缺少 evidence acceptance")
+        if (
+            not accepted.duplicate
+            and execution.status == MaterialExecutionStatus.RECONCILING
+            and outcome.status is TransportOutcomeStatus.UNKNOWN
+        ):
+            accepted.evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
+        return accepted.evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
 
 
 def _binding_correlation(
@@ -149,7 +125,7 @@ def _binding_correlation(
         binding.version,
         binding.step,
         binding.source_evidence_id,
-        binding.line_run_epoch_id,
+        binding.workline_id,
         binding.resource_fence_id,
         binding.client_request_id,
     )
@@ -159,7 +135,7 @@ def _source_correlation(source: InboundEvidence) -> tuple[int, int, int, int, st
     if (
         source.id is None
         or source.material_execution_id is None
-        or source.line_run_epoch_id is None
+        or source.workline_id is None
         or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
     ):
         raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
@@ -167,7 +143,7 @@ def _source_correlation(source: InboundEvidence) -> tuple[int, int, int, int, st
         source.id,
         source.version,
         source.material_execution_id,
-        source.line_run_epoch_id,
+        source.workline_id,
         source.operation,
     )
 

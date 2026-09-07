@@ -10,13 +10,12 @@ from src.app.device.contracts import EcsDeviceStatus
 from src.app.device.models.command import DeviceCommand
 from src.app.device.services.device_command_admission import DeviceCommandAdmissionError
 from src.app.device.services.device_dispatch_service import DeviceDispatchService
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 
 
-def _binding() -> LineRunEpochDeviceBinding:
-    return LineRunEpochDeviceBinding(
-        id=21,
-        line_run_epoch_id=11,
+def _binding() -> WorkLineDeviceBinding:
+    return WorkLineDeviceBinding(
+        workline_id=11,
         device_id=7,
         device_code="ARM-01",
         device_role="PLACEMENT_DEVICE",
@@ -33,8 +32,7 @@ def _command() -> DeviceCommand:
     return DeviceCommand(
         command_code="CMD-001",
         device_code="ARM-01",
-        line_run_epoch_id=11,
-        device_binding_id=21,
+        workline_id=11,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
         material_execution_id=21,

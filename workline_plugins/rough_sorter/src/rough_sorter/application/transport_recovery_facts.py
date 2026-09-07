@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from src.app.execution.models import InboundEvidenceKind
@@ -14,17 +14,23 @@ from src.app.transport.contracts import (
     TransportCaller,
     ZonePosition,
 )
-from src.app.wms_adapter.inbound_wire import parse_outbound_request, parse_outbound_response
+from src.app.wms_adapter.inbound_material.typed import decode_outcome, decode_request
 from src.utils.timezone import timezone
 from wes_plugin_sdk import (
-    RecoveryDecidedFact as BaseRecoveryDecidedFact,
-)
-from wes_plugin_sdk import (
+    AdmissionAccepted,
+    MaterialRejected,
     RecoveryDecision,
+    ReplacementPlanIntent,
+    ReplacementReady,
+    TargetAssigned,
     TransportRackPosition,
     TransportRackReference,
     TransportResultReadyFact,
     TransportZonePosition,
+    wms_operations,
+)
+from wes_plugin_sdk import (
+    RecoveryDecidedFact as BaseRecoveryDecidedFact,
 )
 
 from rough_sorter.application.device_facts import completed_response
@@ -35,7 +41,6 @@ from rough_sorter.application.values import (
     command_position,
     device_step,
     position_binding,
-    rack_move_plan,
     required_position,
     required_string,
     stable_operation_id,
@@ -53,7 +58,6 @@ from rough_sorter.facts import (
     TransportOutcome,
     TransportOutcomePublishedFact,
 )
-from rough_sorter.wms_requests import wms_position
 
 if TYPE_CHECKING:
     from src.app.execution.models import InboundEvidence, MaterialExecution
@@ -62,12 +66,12 @@ if TYPE_CHECKING:
     from rough_sorter.application.persistence import (
         DeviceCommandRepositoryPort,
         DeviceReadinessReader,
-        EpochRepositoryPort,
         EvidenceRepositoryPort,
         RackPlacementRepositoryPort,
         RackPositionRepositoryPort,
         RackReplacementBindingRepositoryPort,
         WmsConfirmationRepositoryPort,
+        WorkLineRepositoryPort,
     )
 
 
@@ -92,12 +96,12 @@ async def current_rack_id(
 ) -> str:
     outlet = position_binding(runtime, "PIPELINE_OUTLET")
     rack_position = await rack_positions.get_by_workline_logic_location(
-        db, workline_code=runtime.epoch.workline_code, logic_location_code=outlet.location_id
+        db, workline_code=runtime.workline.workline_code, logic_location_code=outlet.location_id
     )
     if rack_position is None or not rack_position.enabled:
         raise ValueError("PIPELINE_OUTLET 未精确关联 enabled WorklineRackPosition")
     placements = await rack_placements.list_active_by_workline_position(
-        db, workline_code=runtime.epoch.workline_code, position_code=rack_position.position_code
+        db, workline_code=runtime.workline.workline_code, position_code=rack_position.position_code
     )
     if len(placements) != 1:
         raise ValueError("PIPELINE_OUTLET current rack missing or ambiguous")
@@ -129,13 +133,13 @@ async def build_transport_fact(
     binding = await bindings.get_by_client_request_id_for_update(db, client_request_id)
     if binding is None or binding.step != "NEW_IN":
         raise ValueError("material Transport fact 只接受持久 NEW_IN binding")
-    if binding.line_run_epoch_id != execution.line_run_epoch_id:
-        raise ValueError("NEW_IN binding Epoch correlation 不匹配")
+    if binding.workline_id != execution.workline_id:
+        raise ValueError("NEW_IN binding WorkLine correlation 不匹配")
     source = await evidences.get_by_id_for_update(db, binding.source_evidence_id)
     if (
         source is None
         or source.material_execution_id != execution.id
-        or source.line_run_epoch_id != execution.line_run_epoch_id
+        or source.workline_id != execution.workline_id
         or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
     ):
         raise ValueError("NEW_IN binding source evidence correlation 不匹配")
@@ -147,25 +151,26 @@ async def build_transport_fact(
         or confirmation.response_evidence_id != source.id
     ):
         raise ValueError("NEW_IN source confirmation correlation 不匹配")
-    request = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)
-    if request.get("operation") != source.operation or request.get("operation_id") != source_operation_id:
+    request = decode_request(confirmation.request_payload, fact_id=fact.fact_id)
+    if not isinstance(request, ReplacementPlanIntent) or request.operation_id != source_operation_id:
         raise ValueError("NEW_IN source confirmation identity 不匹配")
-    request_data = cast("dict[str, Any]", request["data"])
-    validate_wms_execution(request_data, execution)
-    if required_string(request_data.get("current_rack_id"), "current_rack_id") != binding.resource_fence_id:
+    validate_wms_execution(request, execution)
+    if request.current_rack_id != binding.resource_fence_id:
         raise ValueError("NEW_IN binding current rack identity 不匹配")
-    response = parse_outbound_response(source.operation, 200, source.normalized_payload).model_dump(
-        mode="json", exclude_none=True
-    )
-    response_data = cast("dict[str, Any]", response["data"])
-    if required_string(response_data.get("result"), "replacement.result") != "READY":
+    response_data = decode_outcome(
+        source.operation, source.normalized_payload, material_trace_id=execution.material_trace_id
+    ).result
+    if not isinstance(response_data, ReplacementReady):
         raise ValueError("NEW_IN source evidence 未冻结 READY replacement plan")
-    if required_string(response_data.get("rack_replacement_id"), "rack_replacement_id") != binding.correlation_id:
+    if response_data.rack_replacement_id != binding.correlation_id:
         raise ValueError("NEW_IN binding replacement identity 不匹配")
-    old_plan = rack_move_plan(response_data.get("old_loaded_rack"))
+    for rack_plan in (response_data.old_loaded_rack, response_data.new_empty_rack):
+        if rack_plan.source == rack_plan.target:
+            raise ValueError("source and target must differ")
+    old_plan = response_data.old_loaded_rack
     if old_plan.rack_id != binding.resource_fence_id:
         raise ValueError("NEW_IN binding old rack identity 不匹配")
-    plan = rack_move_plan(response_data.get("new_empty_rack"))
+    plan = response_data.new_empty_rack
     transport_task = await transport_tasks.get_task_by_client_request(cast("Any", db), client_request_id)
     source_position = _core_rack_move_position(plan.source)
     target_position = _core_rack_move_position(plan.target)
@@ -231,7 +236,7 @@ async def build_transport_fact(
         confirmations=confirmations,
         evidences=evidences,
     )
-    if admission.get("result") != "ACCEPT":
+    if not isinstance(admission, AdmissionAccepted):
         raise ValueError("NEW_IN target request 缺少已完成 admission ACCEPT")
     arrival_face = member.get("arrival_face")
     if type(arrival_face) is not str or arrival_face == "":
@@ -243,8 +248,8 @@ async def build_transport_fact(
         actual_rack_id=required_string(member.get("object_id"), "object_id"),
         source_position=bound_position(runtime, "PIPELINE_OUTLET", execution.material_trace_id),
         request_operation_id=client_request_id,
-        pkg_id=required_string(admission.get("pkg_id"), "pkg_id"),
-        inbound_admission_id=required_string(admission.get("inbound_admission_id"), "inbound_admission_id"),
+        pkg_id=required_string(admission.pkg_id, "pkg_id"),
+        inbound_admission_id=required_string(admission.inbound_admission_id, "inbound_admission_id"),
     )
 
 
@@ -256,7 +261,7 @@ async def build_recovery_fact(
     execution: MaterialExecution,
     runtime: Any,
     evidences: EvidenceRepositoryPort,
-    epochs: EpochRepositoryPort,
+    worklines: WorkLineRepositoryPort,
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
     confirmations: WmsConfirmationRepositoryPort,
@@ -270,11 +275,7 @@ async def build_recovery_fact(
         raise TypeError("recovery evidence.data 缺失")
     causal_id = canonical_evidence_id(data.get("reconciling_evidence_id"), "reconciling_evidence_id")
     causal = await evidences.get_by_id_for_update(db, causal_id)
-    if (
-        causal is None
-        or causal.material_execution_id != execution.id
-        or causal.line_run_epoch_id != execution.line_run_epoch_id
-    ):
+    if causal is None or causal.material_execution_id != execution.id or causal.workline_id != execution.workline_id:
         raise ValueError("recovery causal evidence correlation 不匹配")
     common: dict[str, Any] = {
         "fact_id": fact.fact_id,
@@ -301,17 +302,11 @@ async def build_recovery_fact(
         )
         if confirmation is None or confirmation.material_execution_id != execution.id:
             raise ValueError("Recovery causal WMS confirmation correlation 不匹配")
-        request_data = parse_outbound_request(confirmation.request_payload).model_dump(mode="json", exclude_none=True)[
-            "data"
-        ]
-        return RecoveryDecidedFact(
-            **common,
-            continuation=RecoveryWmsContinuation(
-                operation=operation,
-                operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
-                request_data=request_data,
-            ),
+        intent = replace(
+            decode_request(confirmation.request_payload, fact_id=fact.fact_id),
+            operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
         )
+        return RecoveryDecidedFact(**common, continuation=RecoveryWmsContinuation(intent=intent))
     if causal.kind == InboundEvidenceKind.DEVICE_RESULT:
         command_code = required_string(causal.command_code, "causal.command_code")
         command = await commands.get_by_command_code(db, command_code, for_update=True)
@@ -322,9 +317,9 @@ async def build_recovery_fact(
         target = command_position(params["target"], execution.material_trace_id)
         step, role = device_step(command.task_type, source, target)
         if authoritative == source:
-            binding = await epochs.get_binding_by_role_and_code_for_update(
+            binding = await worklines.get_binding_by_role_and_code_for_update(
                 db,
-                line_run_epoch_id=execution.line_run_epoch_id,
+                workline_id=execution.workline_id,
                 device_role=role,
                 device_code=command.device_code,
             )
@@ -342,19 +337,17 @@ async def build_recovery_fact(
             )
         if authoritative != target:
             raise ValueError("authoritative position 不在 causal command frozen topology")
-        operation = {
-            DeviceStep.TRANSFER_TO_OUTLET: "inbound.material.target_decide@v1",
-            DeviceStep.PLACEMENT_TO_CELL: "inbound.material.placement_report@v1",
-            DeviceStep.MEASUREMENT_TO_NG: "inbound.material.ng_placement_report@v1",
-            DeviceStep.PLACEMENT_TO_NG: "inbound.material.ng_placement_report@v1",
-        }.get(step)
-        if operation is None:
+        if step not in (
+            DeviceStep.TRANSFER_TO_OUTLET,
+            DeviceStep.PLACEMENT_TO_CELL,
+            DeviceStep.MEASUREMENT_TO_NG,
+            DeviceStep.PLACEMENT_TO_NG,
+        ):
             return RecoveryDecidedFact(
                 **common,
                 continuation=RecoveryDeferContinuation(reason_code="RECOVERY_NEXT_DEVICE_REBUILD_REQUIRED"),
             )
-        request_data: dict[str, Any]
-        if operation == "inbound.material.target_decide@v1":
+        if step is DeviceStep.TRANSFER_TO_OUTLET:
             admission = await completed_response(
                 db=db,
                 execution=execution,
@@ -363,20 +356,21 @@ async def build_recovery_fact(
                 confirmations=confirmations,
                 evidences=evidences,
             )
-            request_data = {
-                "material_execution_id": execution.execution_code,
-                "material_trace_id": execution.material_trace_id,
-                "pkg_id": admission.get("pkg_id"),
-                "inbound_admission_id": admission.get("inbound_admission_id"),
-                "source_position": wms_position(target),
-                "current_rack_id": await current_rack_id(
-                    db=db,
-                    runtime=runtime,
-                    rack_positions=rack_positions,
-                    rack_placements=rack_placements,
+            if not isinstance(admission, AdmissionAccepted):
+                raise ValueError("recovery requires admission ACCEPT")
+            intent = wms_operations.inbound_material_target_decide(
+                material_execution_id=execution.execution_code,
+                fact_id=fact.fact_id,
+                material_trace_id=execution.material_trace_id,
+                operation_id=stable_operation_id(evidence, "recovery:inbound.material.target_decide@v1"),
+                pkg_id=admission.pkg_id,
+                inbound_admission_id=admission.inbound_admission_id,
+                source_position=target,
+                current_rack_id=await current_rack_id(
+                    db=db, runtime=runtime, rack_positions=rack_positions, rack_placements=rack_placements
                 ),
-            }
-        elif operation == "inbound.material.placement_report@v1":
+            )
+        elif step is DeviceStep.PLACEMENT_TO_CELL:
             admission = await completed_response(
                 db=db,
                 execution=execution,
@@ -393,17 +387,21 @@ async def build_recovery_fact(
                 confirmations=confirmations,
                 evidences=evidences,
             )
-            request_data = {
-                "material_execution_id": execution.execution_code,
-                "material_trace_id": execution.material_trace_id,
-                "pkg_id": admission.get("pkg_id"),
-                "inbound_admission_id": admission.get("inbound_admission_id"),
-                "target_assignment_id": assigned.get("target_assignment_id"),
-                "target_position": wms_position(target),
-                "placement_sequence": assigned.get("placement_sequence"),
-                "command_code": command.command_code,
-                "placed_at": int(timezone.to_utc(evidence.received_at).timestamp() * 1000),
-            }
+            if not isinstance(admission, AdmissionAccepted) or not isinstance(assigned, TargetAssigned):
+                raise ValueError("recovery requires admission ACCEPT and target ASSIGNED")
+            intent = wms_operations.inbound_material_placement_report(
+                material_execution_id=execution.execution_code,
+                fact_id=fact.fact_id,
+                material_trace_id=execution.material_trace_id,
+                operation_id=stable_operation_id(evidence, "recovery:inbound.material.placement_report@v1"),
+                pkg_id=admission.pkg_id,
+                inbound_admission_id=admission.inbound_admission_id,
+                target_assignment_id=assigned.target_assignment_id,
+                target_position=target,
+                placement_sequence=assigned.placement_sequence,
+                command_code=command.command_code,
+                placed_at=int(timezone.to_utc(evidence.received_at).timestamp() * 1000),
+            )
         else:
             source_match = COMMAND_SOURCE_PATTERN.fullmatch(command.execution_ref_id)
             source_evidence = (
@@ -413,28 +411,24 @@ async def build_recovery_fact(
             )
             if source_evidence is None:
                 raise ValueError("Recovery NG command source evidence missing")
-            source_response = parse_outbound_response(
+            source_data = decode_outcome(
                 required_string(source_evidence.operation, "source.operation"),
-                200,
                 source_evidence.normalized_payload,
-            ).model_dump(mode="json", exclude_none=True)
-            source_data = cast("dict[str, Any]", source_response["data"])
-            request_data = {
-                "material_execution_id": execution.execution_code,
-                "material_trace_id": execution.material_trace_id,
-                "ng_evidence_id": str(causal.id),
-                "ng_position": wms_position(target),
-                "reason_code": source_data.get("reason_code"),
-                "business_context": "ROUGH_SORT_INBOUND",
-            }
-        return RecoveryDecidedFact(
-            **common,
-            continuation=RecoveryWmsContinuation(
-                operation=operation,
-                operation_id=stable_operation_id(evidence, f"recovery:{operation}"),
-                request_data=request_data,
-            ),
-        )
+                material_trace_id=execution.material_trace_id,
+            ).result
+            if not isinstance(source_data, MaterialRejected):
+                raise ValueError("recovery NG source requires material rejection")
+            intent = wms_operations.inbound_material_ng_placement_report(
+                material_execution_id=execution.execution_code,
+                fact_id=fact.fact_id,
+                material_trace_id=execution.material_trace_id,
+                operation_id=stable_operation_id(evidence, "recovery:inbound.material.ng_placement_report@v1"),
+                ng_evidence_id=str(causal.id),
+                ng_position=target,
+                reason_code=source_data.reason_code,
+                business_context="ROUGH_SORT_INBOUND",
+            )
+        return RecoveryDecidedFact(**common, continuation=RecoveryWmsContinuation(intent=intent))
     return RecoveryDecidedFact(
         **common, continuation=RecoveryDeferContinuation(reason_code="RECOVERY_CAUSAL_FACT_NOT_ACTIONABLE")
     )

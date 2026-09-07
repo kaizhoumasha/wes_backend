@@ -35,7 +35,7 @@ async def test_recovery_reuses_same_task_and_creates_only_next_step(integration_
         rack_id="510056",
         configuration_json={
             "rack_id": "510056",
-            "face_groups": [{"face": "90", "bins": [{"bin_id": "A", "slot_id": "S"}]}],
+            "face_groups": [{"face": "90", "bins": [{"bin_code": "A", "slot_id": "S"}]}],
             "storage_zone": "WH01",
             "workstation": "KT16",
             "infeed_position": "CNV0301",

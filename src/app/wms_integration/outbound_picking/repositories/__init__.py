@@ -1,14 +1,16 @@
 """WMS PickingTask Repository 导出。"""
 
 from .picking_task_repository import PickingTaskRepository, picking_task_repository
+from .plan_delta_repository import PickingTaskPlanDeltaRepository
 from .prepare_eligibility_repository import (
-    PickingWorklineEligibilityRepository,
-    picking_workline_eligibility_repository,
+    PickingWorklineFactsRepository,
+    picking_workline_facts_repository,
 )
 
 __all__ = [
+    "PickingTaskPlanDeltaRepository",
     "PickingTaskRepository",
-    "PickingWorklineEligibilityRepository",
+    "PickingWorklineFactsRepository",
     "picking_task_repository",
-    "picking_workline_eligibility_repository",
+    "picking_workline_facts_repository",
 ]

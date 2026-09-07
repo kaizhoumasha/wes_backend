@@ -190,6 +190,7 @@ def _workline(**changes: object) -> object:
         "is_active": False,
         "line_type": LineType.AUTO,
         "plugin_key": None,
+        "plugin_version": None,
         "config": {},
     }
     values.update(changes)
@@ -212,30 +213,6 @@ class _Device:
 
 def _device(code: str, owner: int | None) -> _Device:
     return _Device(code, owner)
-
-
-class _Epochs:
-    def __init__(self, active: object | None) -> None:
-        self.active = active
-        self.locked: list[int] = []
-
-    async def get_active_for_workline(self, _db: object, _workline_id: int) -> object | None:
-        return self.active
-
-    async def lock_epoch_lifecycle(self, _db: object, epoch_id: int) -> None:
-        self.locked.append(epoch_id)
-
-    async def get_active_for_workline_for_update(self, _db: object, _workline_id: int) -> object | None:
-        return self.active
-
-
-class _EpochService:
-    def __init__(self) -> None:
-        self.closed: list[int] = []
-
-    async def close_active_epoch(self, _db: object, **kwargs: object) -> object:
-        self.closed.append(int(kwargs["workline_id"]))
-        return SimpleNamespace(id=31)
 
 
 class _Blocker:
@@ -263,18 +240,23 @@ def test_workline_generic_update_does_not_own_plugin_configuration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workline_generic_service_rejects_plugin_configuration_without_api_validation() -> None:
+@pytest.mark.parametrize(
+    "field", ["plugin_key", "plugin_version", "flow_mode", "device_contracts", "position_bindings"]
+)
+async def test_workline_generic_service_rejects_plugin_configuration_without_api_validation(field: str) -> None:
     with pytest.raises(BusinessException, match="工作线配置操作"):
-        await WorkLineService().update(object(), 7, {"version": 3, "plugin_key": "example_plugin"})  # type: ignore[arg-type]
+        await WorkLineService().update(object(), 7, {"version": 3, field: "changed"})  # type: ignore[arg-type]
 
     with pytest.raises(BusinessException, match="工作线配置操作"):
-        await WorkLineService().create(object(), {"plugin_key": "example_plugin"})  # type: ignore[arg-type]
+        await WorkLineService().create(object(), {field: "changed"})  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
 async def test_save_configuration_replaces_the_complete_device_set_and_commits_once() -> None:
     db = _Db()
-    worklines = _WorkLines(_workline())
+    worklines = _WorkLines(
+        _workline(plugin_version="old", flow_mode="OLD", device_contracts={"D-1": {}}, position_bindings={"OLD": {}})
+    )
     bound = _device("D-1", 7)
     selected = _device("D-2", None)
     service = WorkLineConfigurationService(
@@ -298,7 +280,15 @@ async def test_save_configuration_replaces_the_complete_device_set_and_commits_o
     assert bound.version == 1
     assert selected.version == 1
     assert worklines.updates == [
-        {"plugin_key": "example_plugin", "config": {"device_bindings": {"SCAN": "D-2"}}, "version": 3}
+        {
+            "plugin_key": "example_plugin",
+            "plugin_version": None,
+            "flow_mode": None,
+            "device_contracts": {},
+            "position_bindings": {},
+            "config": {"device_bindings": {"SCAN": "D-2"}},
+            "version": 3,
+        }
     ]
     assert result.device_codes == ("D-2",)
     assert db.commits == 1
@@ -549,25 +539,19 @@ async def test_save_configuration_is_blocked_by_active_safety_incident() -> None
 
 
 @pytest.mark.asyncio
-async def test_deactivate_closes_the_active_epoch_and_workline_in_one_commit() -> None:
+async def test_deactivate_updates_workline_in_one_commit() -> None:
     db = _Db()
     worklines = _WorkLines(_workline(is_active=True, plugin_key="example_plugin"))
-    epoch_service = _EpochService()
     service = WorkLineConfigurationService(
         plugins=(_plugin(blocker=_Blocker(0)),),
         workline_repository=worklines,
         device_repository=_Devices([]),
-        epoch_repository=_Epochs(SimpleNamespace(id=31, epoch_code="E-31")),
-        epoch_service=epoch_service,
-        command_repository=object(),
         safety_repository=_Safety(),
-        clock=lambda: object(),
     )
 
     result = await service.deactivate(db, workline_id=7, version=3)
 
     assert result.is_active is False
-    assert epoch_service.closed == [7]
     assert worklines.inactive_writes == 1
     assert db.commits == 1
 
@@ -579,9 +563,6 @@ async def test_deactivate_is_blocked_by_the_current_plugins_business_tasks() -> 
         plugins=(_plugin(blocker=_Blocker(1)),),
         workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
         device_repository=_Devices([]),
-        epoch_repository=_Epochs(SimpleNamespace(id=31, epoch_code="E-31")),
-        epoch_service=_EpochService(),
-        command_repository=object(),
         safety_repository=_Safety(),
     )
 
@@ -598,9 +579,6 @@ async def test_deactivate_is_blocked_by_active_safety_incident() -> None:
         plugins=(_plugin(),),
         workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
         device_repository=_Devices([]),
-        epoch_repository=_Epochs(SimpleNamespace(id=31, epoch_code="E-31")),
-        epoch_service=_EpochService(),
-        command_repository=object(),
         safety_repository=_Safety(SimpleNamespace(id=9)),
     )
 
@@ -608,3 +586,27 @@ async def test_deactivate_is_blocked_by_active_safety_incident() -> None:
         await service.deactivate(db, workline_id=7, version=3)
 
     assert db.commits == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["save", "deactivate"])
+async def test_missing_selected_plugin_version_blocks_lifecycle_before_business_check(action: str) -> None:
+    db = _Db()
+    worklines = _WorkLines(
+        _workline(plugin_key="example_plugin", plugin_version="unavailable", is_active=action == "deactivate")
+    )
+    blocker = SimpleNamespace(get_unfinished_workload_summary=AsyncMock())
+    service = WorkLineConfigurationService(
+        plugins=(_plugin(blocker=blocker),),
+        workline_repository=worklines,
+        device_repository=_Devices([]),
+        safety_repository=_Safety(),
+    )
+    with pytest.raises(BusinessException):
+        if action == "deactivate":
+            await service.deactivate(db, workline_id=7, version=3)
+        else:
+            await service.save(db, workline_id=7, version=3, plugin_key=None, config={}, device_codes=())
+    blocker.get_unfinished_workload_summary.assert_not_awaited()
+    assert worklines.updates == []
+    assert worklines.inactive_writes == db.commits == 0

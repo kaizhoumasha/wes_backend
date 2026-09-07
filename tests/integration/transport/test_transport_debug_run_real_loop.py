@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import delete, select
 
 from src.app.device.contracts import EcsDeviceEventReport
+from src.app.device.models.device import Device
 from src.app.device.services.device_evidence_service import DeviceEvidenceService
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceConflict
 from src.app.transport import composition as transport_composition
@@ -40,6 +41,7 @@ from src.app.transport.models import (
     TransportTask,
 )
 from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERATION
+from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.transport_callbacks import record_valid_callback
@@ -101,7 +103,7 @@ def _callback_payload(
     phase: TransportDebugRunPhase,
     *,
     rack_id: str,
-    bin_id: str,
+    bin_code: str,
     face: str,
     slot_id: str,
 ) -> dict[str, Any]:
@@ -120,7 +122,7 @@ def _callback_payload(
             "outcome_revision": 1,
             "results": [
                 {
-                    "container_id": bin_id,
+                    "container_id": bin_code,
                     "status": "SUCCEEDED",
                     "final_position": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
                 }
@@ -132,7 +134,7 @@ def _callback_payload(
             "outcome_revision": 1,
             "results": [
                 {
-                    "container_id": bin_id,
+                    "container_id": bin_code,
                     "status": "SUCCEEDED",
                     "final_position": {
                         "kind": "RACK_BIN_SLOT",
@@ -161,7 +163,7 @@ async def _complete_transport_step(
     client: _AcceptedClient,
     run_id: str,
     rack_id: str,
-    bin_id: str,
+    bin_code: str,
     face: str,
     slot_id: str,
     callback_operation_ids: list[str],
@@ -187,7 +189,7 @@ async def _complete_transport_step(
     payload = _callback_payload(
         phase,
         rack_id=rack_id,
-        bin_id=bin_id,
+        bin_code=bin_code,
         face=face,
         slot_id=slot_id,
     )
@@ -206,13 +208,14 @@ async def _complete_transport_step(
         assert early == {
             "http_status": 409,
             "code": "CONFLICT",
-            "timestamp": callback_timestamp,
+            "timestamp": early["timestamp"],
             "data": {
                 "transport_task_id": transport_task_id,
                 "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
             },
         }
-        assert (await debug_run_service.get_run(run_id)).observed_bin_ids == ()
+        assert callback_timestamp <= early["timestamp"] <= int(timezone.now_utc().timestamp() * 1000)
+        assert (await debug_run_service.get_run(run_id)).observed_bin_codes == ()
         results = payload["results"]
         assert isinstance(results, list)
         for result in results:
@@ -236,7 +239,7 @@ async def _complete_transport_step(
         assert await debug_run_service.advance_run(run_id) is True
         progress = await debug_run_service.get_run(run_id)
         assert progress.current_phase is TransportDebugRunPhase.BINS_TO_RACK
-        assert progress.observed_bin_ids == tuple(result["container_id"] for result in results)
+        assert progress.observed_bin_codes == tuple(result["container_id"] for result in results)
 
     received = await record_valid_callback(
         runtime.service,
@@ -334,16 +337,44 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
 
     suffix = uuid.uuid4().hex
     rack_id = f"rack-real-loop-{suffix}"
-    bin_id = f"bin-real-loop-{suffix}"
+    bin_code = f"bin-real-loop-{suffix}"
     slot_id = f"slot-real-loop-{suffix}"
     face = "90"
     client = _AcceptedClient()
     callback_operation_ids: list[str] = []
     inbound_evidence_ids: list[int] = []
     runtime: TransportRuntime | None = None
+    scan_workline_id: int | None = None
     monkeypatch.setattr(factory, "build_wms_client", lambda **_kwargs: client)
 
     try:
+        async with integration_session_factory.begin() as db:
+            line = WorkLine(
+                line_code=f"SCAN12-{suffix[:12]}",
+                line_name="Transport callback scan admission",
+                line_type=LineType.AUTO,
+                is_active=True,
+                plugin_key="transport_test",
+                plugin_version="1.0.0",
+                flow_mode="TEST",
+                config={"device_bindings": {"SCAN": "SCAN12"}},
+            )
+            db.add(line)
+            await db.flush()
+            scan_workline_id = line.id
+            scanner = Device(device_code="SCAN12", device_name="SCAN12", work_line_id=line.id)
+            db.add(scanner)
+            await db.flush()
+            line.device_contracts = {
+                "SCAN12": {
+                    "device_id": scanner.id,
+                    "endpoint_base_url": "http://ecs-test:8080",
+                    "contract_key": "scanner.scan",
+                    "contract_version": "1.0",
+                    "status_max_age_ms": 1000,
+                    "command_timeout_ms": 30000,
+                }
+            }
         runtime = await transport_composition.build_transport_runtime(
             wms_base_url="http://wms.example",
             transport_submit_path="/api/v1/wes/transport-requests",
@@ -360,7 +391,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             face_groups=(
                 TransportDebugFaceGroup(
                     face=face,
-                    bins=(TransportDebugBinSelection(bin_id=bin_id, slot_id=slot_id),),
+                    bins=(TransportDebugBinSelection(bin_code=bin_code, slot_id=slot_id),),
                 ),
             ),
         )
@@ -372,7 +403,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             client=client,
             run_id=run.run_id,
             rack_id=rack_id,
-            bin_id=bin_id,
+            bin_code=bin_code,
             face=face,
             slot_id=slot_id,
             callback_operation_ids=callback_operation_ids,
@@ -384,7 +415,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             client=client,
             run_id=run.run_id,
             rack_id=rack_id,
-            bin_id=bin_id,
+            bin_code=bin_code,
             face=face,
             slot_id=slot_id,
             callback_operation_ids=callback_operation_ids,
@@ -405,7 +436,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
                     "device_code": "SCAN12",
                     "event_type": "SCAN_COMPLETED",
                     "timestamp": event_timestamp,
-                    "data": {"barcode": bin_id},
+                    "data": {"barcode": bin_code},
                 }
             )
         )
@@ -426,7 +457,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             client=client,
             run_id=run.run_id,
             rack_id=rack_id,
-            bin_id=bin_id,
+            bin_code=bin_code,
             face=face,
             slot_id=slot_id,
             callback_operation_ids=callback_operation_ids,
@@ -440,7 +471,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             client=client,
             run_id=run.run_id,
             rack_id=rack_id,
-            bin_id=bin_id,
+            bin_code=bin_code,
             face=face,
             slot_id=slot_id,
             callback_operation_ids=callback_operation_ids,
@@ -462,6 +493,10 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             callback_operation_ids=callback_operation_ids,
             inbound_evidence_ids=inbound_evidence_ids,
         )
+        if scan_workline_id is not None:
+            async with integration_session_factory.begin() as db:
+                await db.execute(delete(Device).where(Device.work_line_id == scan_workline_id))
+                await db.execute(delete(WorkLine).where(WorkLine.id == scan_workline_id))
 
 
 async def test_existing_rack_task_prevents_auto_run_creation_atomically(
@@ -501,7 +536,7 @@ async def test_existing_rack_task_prevents_auto_run_creation_atomically(
             face_groups=(
                 TransportDebugFaceGroup(
                     face="90",
-                    bins=(TransportDebugBinSelection(bin_id="BIN-1", slot_id="SLOT-1"),),
+                    bins=(TransportDebugBinSelection(bin_code="BIN-1", slot_id="SLOT-1"),),
                 ),
             ),
         )
@@ -550,7 +585,7 @@ async def test_concurrent_rack_task_and_auto_run_have_exactly_one_owner(
             face_groups=(
                 TransportDebugFaceGroup(
                     face="90",
-                    bins=(TransportDebugBinSelection(bin_id="BIN-1", slot_id="SLOT-1"),),
+                    bins=(TransportDebugBinSelection(bin_code="BIN-1", slot_id="SLOT-1"),),
                 ),
             ),
         )

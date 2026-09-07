@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0.0] - 2026-09-07
+
+### Added
+
+- 新增出库 PickingTask 的 issued、prepare、plan_delta、queue_changed 及计划阻塞人工修正入口，补齐货架到位、料箱入线/退箱、作业计划、离站、物料判断和源位清空 Operation。
+
+### Changed
+
+- WMS Operation 统一为固定 typed 门面，宿主复用 WmsConfirmation 与 InboundEvidence 承担可靠收发，插件负责业务决定。
+- 退役 BinExecution / LineRunEpoch；WorkLine 当前配置、乐观锁 START 与已有可靠任务承接执行职责，SDK、插件、设备证据与 Transport 调用点同步收敛。
+- WMS 与内部 Transport 料箱字段统一为 bin_code；外部 container_id 保持合同含义，朝向最多 10 字符，移除 ng_exit_report。
+- 新增退役迁移 93deacda8c9c；仅在执行数据满足清空前置条件时删除旧结构，保留历史迁移链。
+
+### Fixed
+
+- 修复本机 EVENT_DEBUG 命令误用现场地址的问题，统一接入 ECS Mock，并补齐调试事件与扫描工位命令支持。
+
+- WMS HTTP 返回期间 owner 失效时仍保存响应 Evidence 并进入 RECONCILING，避免丢失已收到的结果。
+- Transport 结果发布共用宿主事务，避免单连接 worker 再次申请连接超时；任务锁保持至 Evidence 提交，提交后才唤醒插件执行。
+- START 接受合法初始 version=0，继续拒绝负数、布尔和旧 request_id；计划修正入口支持 task_id 中的斜杠。
+- Swagger 使用本地静态资源并支持 OAuth 跳转；本机 API/worker 热更新包含 SDK 源码路径，插件开发指南同步当前门面。
+
+### Verification
+
+- Mock 增量：定向测试 229 passed；QUALITY FAST 3204 passed、5 skipped；增量 HEAVY 182 passed、零跳过。
+- 退役基线 QUALITY：FAST 3200 passed、5 skipped；核心 HEAVY selector 选中 56 个文件，517 passed、零跳过，干净数据库迁移至 93deacda8c9c。
+- 插件 FAST：rough_sorter 173 passed、manual_bin_processing 20 passed；rough_sorter PostgreSQL 7 passed；绑定当前代码提交的镜像 E2E 12 passed、零跳过。
+- 前端正式合同冻结按确认顺序在后端合并至干净 develop 后执行；S3B 站点等待/FIFO、部署和双方现场业务验收另行安排。
+
 ## [0.32.0.0] - 2026-09-05
 
 ### Changed

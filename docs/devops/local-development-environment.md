@@ -87,6 +87,8 @@ Celery/Beat按 Python 文件内容计算指纹，不依赖秒级修改时间；�
 并复用现有 typed operation fixture；`check` 会实际调用代表性的 query 与 effect。8011端口的 Transport Mock保持独立，不承载WMS业务Provider接口。
 两者都只用于本机合同调试，不得复制为 TEST/生产 Provider 配置。
 
+本机编排将 `DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL` 指向 `http://mock_ecs:8010`。ECS Mock 支持显式发送 `is_debug=true`，并提供 `STATION_SCAN12` 的 `SCAN_COMPLETED` / `MOVE_FORWARD` 联调能力；命令创建时冻结目标地址，后续配置变更不影响既有命令。
+
 ## 7. 快速排障顺序
 
 ```bash

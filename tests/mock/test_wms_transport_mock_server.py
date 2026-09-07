@@ -393,7 +393,7 @@ def test_transport_submit_mock_rejects_rotation_for_a_different_rack_reference()
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 1000])
+@pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_transport_submit_mock_preserves_any_non_empty_face_string(face: str) -> None:
     envelope = deepcopy(RACK_MOVE)
     envelope["data"]["target_face"] = face
@@ -1110,3 +1110,12 @@ def test_transport_final_result_cannot_rewrite_a_position_confirmed_by_target_pl
         conflict = client.post("/api/v1/wes/transport-requests", json=conflicting)
 
     assert conflict.status_code == 409
+
+
+@pytest.mark.parametrize("face", ["x" * 11, "面" * 11])
+def test_transport_submit_mock_rejects_face_over_ten_characters(face: str) -> None:
+    envelope = deepcopy(RACK_MOVE)
+    envelope["data"]["target_face"] = face
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/transport-requests", json=envelope)
+    assert response.status_code == 422

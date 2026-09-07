@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from wes_plugin_sdk.validation import validate_opaque_face
+
 
 class TransportDebugRunStatus(StrEnum):
     RUNNING = "RUNNING"
@@ -33,11 +35,11 @@ class TransportDebugRunStepStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TransportDebugBinSelection:
-    bin_id: str
+    bin_code: str
     slot_id: str
 
     def __post_init__(self) -> None:
-        if not self.bin_id.strip():
+        if not self.bin_code.strip():
             raise ValueError("料箱编码不能为空")
         if not self.slot_id.strip():
             raise ValueError("原货架槽位不能为空")
@@ -51,6 +53,7 @@ class TransportDebugFaceGroup:
     def __post_init__(self) -> None:
         if not self.face.strip():
             raise ValueError("面值不能为空")
+        validate_opaque_face(self.face, "face")
         if not 1 <= len(self.bins) <= 4:
             raise ValueError("每个面必须选择 1～4 个料箱")
 
@@ -67,15 +70,15 @@ class CreateTransportDebugRun:
             raise ValueError("至少选择一个货架面")
 
         faces: set[str] = set()
-        bin_ids: set[str] = set()
+        bin_codes: set[str] = set()
         for group in self.face_groups:
             if group.face in faces:
                 raise ValueError(f"重复面值: {group.face}")
             faces.add(group.face)
             for selection in group.bins:
-                if selection.bin_id in bin_ids:
-                    raise ValueError(f"重复料箱: {selection.bin_id}")
-                bin_ids.add(selection.bin_id)
+                if selection.bin_code in bin_codes:
+                    raise ValueError(f"重复料箱: {selection.bin_code}")
+                bin_codes.add(selection.bin_code)
 
 
 __all__ = [

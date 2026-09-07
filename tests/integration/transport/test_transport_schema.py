@@ -4,7 +4,8 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import BigInteger, Text, text
+from sqlalchemy import BigInteger, delete, text
+from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import PositionProjection
@@ -31,26 +32,27 @@ async def test_transport_result_revision_columns_use_signed_64_bit_storage() -> 
     assert isinstance(TransportEvidence.__table__.c.outcome_revision.type, BigInteger)
 
 
-async def test_transport_face_columns_use_nullable_text_without_content_constraint(
+async def test_transport_face_columns_use_nullable_varchar_ten(
     integration_db_session: AsyncSession,
 ) -> None:
-    assert isinstance(TransportMember.__table__.c.arrival_face.type, Text)
-    assert isinstance(TransportDebugPositionProjection.__table__.c.arrival_face.type, Text)
-    assert isinstance(PositionProjection.__table__.c.arrival_face.type, Text)
+    assert TransportMember.__table__.c.arrival_face.type.compile(dialect=postgresql_dialect()) == "VARCHAR(10)"
+    assert TransportMember.__table__.c.arrival_face.type.length == 10
+    assert TransportDebugPositionProjection.__table__.c.arrival_face.type.length == 10
+    assert PositionProjection.__table__.c.arrival_face.type.length == 10
 
     columns = await integration_db_session.execute(
         text(
-            "SELECT table_schema, table_name, data_type, is_nullable FROM information_schema.columns "
+            "SELECT table_schema, table_name, data_type, is_nullable, character_maximum_length FROM information_schema.columns "
             "WHERE column_name = 'arrival_face' AND "
             "((table_schema = 'wes_runtime' AND table_name = 'transport_members') OR "
             "(table_schema = 'wes_runtime' AND table_name = 'transport_debug_position_projections') OR "
             "(table_schema = 'wes_biz' AND table_name = 'position_projections'))"
         )
     )
-    assert {(row[0], row[1], row[2], row[3]) for row in columns} == {
-        ("wes_runtime", "transport_members", "text", "YES"),
-        ("wes_runtime", "transport_debug_position_projections", "text", "YES"),
-        ("wes_biz", "position_projections", "text", "YES"),
+    assert {(row[0], row[1], row[2], row[3], row[4]) for row in columns} == {
+        ("wes_runtime", "transport_members", "character varying", "YES", 10),
+        ("wes_runtime", "transport_debug_position_projections", "character varying", "YES", 10),
+        ("wes_biz", "position_projections", "character varying", "YES", 10),
     }
     constraints = await integration_db_session.execute(
         text(
@@ -63,14 +65,14 @@ async def test_transport_face_columns_use_nullable_text_without_content_constrai
             "AND c.contype = 'c'"
         )
     )
-    assert all("arrival_face" not in row[0] for row in constraints)
+    assert sum("arrival_face" in row[0] for row in constraints) == 3
 
     suffix = uuid.uuid4().hex
     now = timezone.now_for_db()
     task = _task(f"transport-face-{suffix}", f"request-face-{suffix}", "f" * 64, now)
     integration_db_session.add(task)
     await integration_db_session.flush()
-    faces = (None, "90", "270", "FACE@01", "面-1", " ", "x" * 1000)
+    faces = (None, "90", "270", "FACE@01", "面-1", " ", "面" * 10)
     integration_db_session.add_all(
         TransportMember(
             transport_task_id=task.transport_task_id,
@@ -200,8 +202,6 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
         ("wes_runtime", "transport_tasks", "submit_request_body_digest"),
         ("wes_runtime", "transport_tasks", "request_digest"),
         ("wes_runtime", "transport_tasks", "authority_workline_id"),
-        ("wes_runtime", "transport_tasks", "authority_line_run_epoch_id"),
-        ("wes_runtime", "transport_tasks", "authority_bin_execution_id"),
         ("wes_runtime", "transport_callback_receipts", "message_digest"),
         ("wes_runtime", "transport_evidence", "operation_id"),
         ("wes_runtime", "transport_evidence", "event_timestamp_ms"),
@@ -214,6 +214,8 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
         ("wes_biz", "position_projections", "source_transport_task_id"),
     } <= columns.keys()
     assert {
+        ("wes_runtime", "transport_tasks", "authority_line_run_epoch_id"),
+        ("wes_runtime", "transport_tasks", "authority_bin_execution_id"),
         ("wes_runtime", "transport_evidence", "event_id"),
         ("wes_runtime", "transport_evidence", "payload_digest"),
         ("wes_runtime", "transport_tasks", "payload_digest"),
@@ -325,3 +327,59 @@ async def test_callback_receipt_identity_is_unique_for_valid_and_rejected_messag
     with pytest.raises(IntegrityError):
         await integration_db_session.flush()
     await integration_db_session.rollback()
+
+
+@pytest.mark.parametrize("invalid_face", ["x" * 11, ""])
+async def test_face_migration_rejects_invalid_history_without_truncation(invalid_face):
+    from subprocess import CalledProcessError
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from tests.support.postgresql_heavy import run_alembic, temporary_database
+
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "864351b8d0c6", database_url=database_url)
+        engine = create_async_engine(database_url)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            now = timezone.now_for_db()
+            task_id = f"face-migration-{uuid.uuid4().hex}"
+            async with factory.begin() as db:
+                db.add(_task(task_id, f"req-{uuid.uuid4().hex}", "f" * 64, now))
+                await db.flush()
+                db.add(
+                    TransportDebugPositionProjection(
+                        object_type="RACK",
+                        object_id="MIGRATION-RACK",
+                        position_json=None,
+                        position_unknown=True,
+                        arrival_face=invalid_face,
+                        source_operation_id=new_uuid7(),
+                        source_transport_task_id=task_id,
+                        updated_at=now,
+                    )
+                )
+            with pytest.raises(CalledProcessError) as failure:
+                run_alembic("upgrade", "head", database_url=database_url)
+            assert "face length preflight failed" in (failure.value.stderr or "")
+            async with factory.begin() as db:
+                stored = await db.scalar(
+                    text(
+                        "SELECT arrival_face FROM wes_runtime.transport_debug_position_projections WHERE object_id = :object_id"
+                    ),
+                    {"object_id": "MIGRATION-RACK"},
+                )
+                assert stored == invalid_face
+                assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "864351b8d0c6"
+                await db.execute(
+                    text("DELETE FROM wes_runtime.transport_debug_position_projections WHERE object_id = :object_id"),
+                    {"object_id": "MIGRATION-RACK"},
+                )
+                # 旧 face 迁移的故障数据已验证；后续退役迁移只接纳空执行基线。
+                await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
+            run_alembic("upgrade", "head", database_url=database_url)
+            run_alembic("downgrade", "864351b8d0c6", database_url=database_url)
+            run_alembic("upgrade", "head", database_url=database_url)
+            run_alembic("check", database_url=database_url)
+        finally:
+            await engine.dispose()

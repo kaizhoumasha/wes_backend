@@ -19,12 +19,12 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         ForeignKeyConstraint(
-            ["line_run_epoch_id"],
-            ["wes_biz.line_run_epochs.id"],
-            name="fk_transport_decision_bindings_epoch",
+            ["workline_id"],
+            ["wes_biz.work_lines.id"],
+            name="fk_transport_decision_bindings_workline",
         ),
         UniqueConstraint(
-            "line_run_epoch_id",
+            "workline_id",
             "correlation_id",
             "step",
             name="ux_transport_decision_bindings_decision_identity",
@@ -34,8 +34,8 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
             name="ux_transport_decision_bindings_client_request_id",
         ),
         Index(
-            "ix_wes_biz_transport_decision_bindings_epoch_resource",
-            "line_run_epoch_id",
+            "ix_wes_biz_transport_decision_bindings_workline_resource",
+            "workline_id",
             "resource_fence_id",
         ),
         {"schema": SchemaType.BIZ.value},
@@ -43,7 +43,7 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
 
     correlation_id: str = Field(min_length=1, max_length=160)
     step: str = Field(min_length=1, max_length=80)
-    line_run_epoch_id: int = Field(sa_type=SQL_COMPAT_BIGINT)
+    workline_id: int = Field(sa_type=SQL_COMPAT_BIGINT)
     resource_fence_id: str = Field(min_length=1, max_length=160)
     client_request_id: str = Field(min_length=1, max_length=120)
     source_evidence_id: int = Field(
@@ -54,11 +54,11 @@ class TransportDecisionBinding(EnterpriseMixin, DataTableMixin, table=True):
 
     @property
     def decision_identity(self) -> tuple[int, str, str]:
-        return self.line_run_epoch_id, self.correlation_id, self.step
+        return self.workline_id, self.correlation_id, self.step
 
     @property
     def resource_fence_identity(self) -> tuple[int, str]:
-        return self.line_run_epoch_id, self.resource_fence_id
+        return self.workline_id, self.resource_fence_id
 
 
 __all__ = ["TransportDecisionBinding"]

@@ -8,13 +8,15 @@ from conftest import (
 )
 from wes_plugin_sdk import (
     CompleteExecution,
-    CreateWmsConfirmation,
     DeferExecution,
     DevicePosition,
     ExecutionLifecycle,
+    InboundWmsIntent,
     PauseForReconciliation,
+    TargetIntent,
     TransportRackPosition,
     TransportZonePosition,
+    wms_operations,
 )
 
 from rough_sorter.facts import (
@@ -102,13 +104,10 @@ def test_new_rack_matching_success_retries_target_without_waiting_for_old_rack()
     )
 
     decision = _transport_handler()(fact)[0]
-    assert decision.operation == "inbound.material.target_decide@v1"
+    assert isinstance(decision, TargetIntent)
     assert decision.operation_id == "stable-target-request-after-new-rack"
-    assert decision.request_data["current_rack_id"] == "rack-new"
-    assert decision.request_data["source_position"] == {
-        "type": "HANDOFF_POSITION",
-        "location_code": "PIPELINE_OUTLET",
-    }
+    assert decision.current_rack_id == "rack-new"
+    assert decision.source_position == _outlet()
 
 
 def test_new_rack_broad_zone_target_accepts_concrete_position_without_zone_inference() -> None:
@@ -127,7 +126,7 @@ def test_new_rack_broad_zone_target_accepts_concrete_position_without_zone_infer
 
     decisions = _transport_handler()(fact)
 
-    assert isinstance(decisions[0], CreateWmsConfirmation)
+    assert isinstance(decisions[0], InboundWmsIntent)
 
 
 @pytest.mark.parametrize("outcome", [TransportOutcome.SUCCEEDED, TransportOutcome.FAILED])
@@ -155,7 +154,7 @@ def test_determinate_new_rack_outcome_can_cross_verified_unknown_reconciling_fen
     decisions = _transport_handler()(fact)
 
     if outcome is TransportOutcome.SUCCEEDED:
-        assert isinstance(decisions[0], CreateWmsConfirmation)
+        assert isinstance(decisions[0], InboundWmsIntent)
     else:
         assert decisions == (
             PauseForReconciliation(
@@ -190,7 +189,7 @@ def test_new_rack_success_with_wrong_actual_rack_reconciles_without_requesting_t
             affected_resource_ids=("rack-new", "rack-unplanned"),
         ),
     )
-    assert not any(isinstance(decision, CreateWmsConfirmation) for decision in decisions)
+    assert not any(isinstance(decision, InboundWmsIntent) for decision in decisions)
 
 
 @pytest.mark.parametrize(
@@ -226,7 +225,7 @@ def test_new_rack_success_with_wrong_position_or_face_reconciles_without_request
             affected_resource_ids=("rack-new",),
         ),
     )
-    assert not any(isinstance(decision, CreateWmsConfirmation) for decision in decisions)
+    assert not any(isinstance(decision, InboundWmsIntent) for decision in decisions)
 
 
 @pytest.mark.parametrize("outcome", [TransportOutcome.FAILED, TransportOutcome.UNKNOWN])
@@ -243,7 +242,7 @@ def test_new_rack_failure_or_unknown_blocks_target_and_reconciles(outcome: Trans
             affected_resource_ids=("rack-new",),
         ),
     )
-    assert not any(isinstance(decision, CreateWmsConfirmation) for decision in decisions)
+    assert not any(isinstance(decision, InboundWmsIntent) for decision in decisions)
 
 
 @pytest.mark.parametrize(
@@ -343,7 +342,7 @@ def test_recovery_authoritative_position_rejects_incomplete_rack_cell_identity()
         material_trace_id=TRACE_ID,
         rack_id="rack-current",
         rack_slot_code="slot-1",
-        bin_id="bin-1",
+        bin_code="bin-1",
     )
 
     with pytest.raises(ValueError, match="RACK_CELL requires complete rack/bin identity"):
@@ -368,7 +367,7 @@ def test_recovery_device_continuation_rejects_non_rack_position_with_bin_identit
         location_id="PIPELINE_INLET",
         location_type="PIPELINE_INLET",
         material_trace_id=TRACE_ID,
-        bin_id="bin-must-not-be-here",
+        bin_code="bin-must-not-be-here",
     )
 
     with pytest.raises(ValueError, match="non-RACK_CELL"):
@@ -388,7 +387,7 @@ def test_recovery_device_continuation_rejects_incomplete_rack_cell_identity() ->
         material_trace_id=TRACE_ID,
         rack_id="rack-current",
         rack_slot_code="slot-1",
-        bin_id="bin-1",
+        bin_code="bin-1",
     )
 
     with pytest.raises(ValueError, match="RACK_CELL requires complete rack/bin identity"):
@@ -403,9 +402,16 @@ def test_recovery_device_continuation_rejects_incomplete_rack_cell_identity() ->
 
 def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> None:
     continuation = RecoveryWmsContinuation(
-        operation="inbound.material.target_decide@v1",
-        operation_id="stable-reconciled-target-request",
-        request_data={"material_execution_id": EXECUTION_ID},
+        intent=wms_operations.inbound_material_target_decide(
+            material_execution_id=EXECUTION_ID,
+            fact_id="recovery:continue",
+            material_trace_id=TRACE_ID,
+            operation_id="stable-reconciled-target-request",
+            pkg_id="pkg",
+            inbound_admission_id="admission",
+            source_position=_outlet(),
+            current_rack_id="rack-current",
+        )
     )
     fact = RecoveryDecidedFact(
         runtime_snapshot=runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),
@@ -426,19 +432,7 @@ def test_recovery_continue_uses_typed_continuation_and_is_deterministic() -> Non
     first = handler(fact)
     second = handler(fact)
 
-    assert (
-        first
-        == second
-        == (
-            CreateWmsConfirmation(
-                material_execution_id=EXECUTION_ID,
-                fact_id=fact.fact_id,
-                operation=continuation.operation,
-                operation_id=continuation.operation_id,
-                request_data=continuation.request_data,
-            ),
-        )
-    )
+    assert first == second == (continuation.intent,)
 
 
 def test_recovery_continue_can_wait_for_the_next_topology_device() -> None:
@@ -519,9 +513,16 @@ def test_recovery_continue_requires_authoritative_position() -> None:
             authoritative_position=None,
             reconciling_evidence_id="causal-unknown-evidence",
             continuation=RecoveryWmsContinuation(
-                operation="inbound.material.target_decide@v1",
-                operation_id="stable-target-request",
-                request_data={"material_execution_id": EXECUTION_ID},
+                intent=wms_operations.inbound_material_target_decide(
+                    material_execution_id=EXECUTION_ID,
+                    fact_id="recovery:continue",
+                    material_trace_id=TRACE_ID,
+                    operation_id="stable-target-request",
+                    pkg_id="pkg",
+                    inbound_admission_id="admission",
+                    source_position=_outlet(),
+                    current_rack_id="rack-current",
+                )
             ),
         )
 
@@ -546,9 +547,16 @@ def test_recovery_continue_requires_typed_continuation() -> None:
 
 def test_recovery_abort_forbids_continuation_and_self_causal_identity() -> None:
     continuation = RecoveryWmsContinuation(
-        operation="inbound.material.target_decide@v1",
-        operation_id="new-target-operation",
-        request_data={"material_execution_id": EXECUTION_ID},
+        intent=wms_operations.inbound_material_target_decide(
+            material_execution_id=EXECUTION_ID,
+            fact_id="recovery:continue",
+            material_trace_id=TRACE_ID,
+            operation_id="new-target-operation",
+            pkg_id="pkg",
+            inbound_admission_id="admission",
+            source_position=_outlet(),
+            current_rack_id="rack-current",
+        )
     )
     values = {
         "runtime_snapshot": runtime_snapshot(lifecycle=ExecutionLifecycle.RECONCILING),

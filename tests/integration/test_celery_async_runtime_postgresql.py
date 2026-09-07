@@ -516,7 +516,6 @@ async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending
 
     from src.app.device.models.command import CommandStatus, DeviceCommand
     from src.app.device.models.device import Device
-    from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
     from src.app.workline.models.safety import WorklineSafetyIncident
     from src.app.workline.models.workline import LineType, WorkLine
 
@@ -538,19 +537,6 @@ async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending
             )
             db.add(workline)
             await db.flush()
-            epoch = LineRunEpoch(
-                epoch_code=f"SAFETY-EPOCH-{run_id}",
-                workline_id=workline.id,
-                plugin_key="rough_sorter",
-                plugin_version="1.0.0",
-                flow_mode="ROUGH_SORT_INBOUND",
-                topology_digest="d" * 64,
-                configuration_digest="e" * 64,
-                configuration_snapshot_json={},
-                started_at=occurred_at,
-            )
-            db.add(epoch)
-            await db.flush()
             incident = WorklineSafetyIncident(workline_id=workline.id)
             db.add(incident)
             await db.flush()
@@ -562,25 +548,14 @@ async def _seed_safety_drain_scenario(database_url: str, run_id: str, *, pending
                 )
                 db.add(device)
                 await db.flush()
-                binding = LineRunEpochDeviceBinding(
-                    line_run_epoch_id=epoch.id,
-                    device_id=device.id,
-                    device_code=device.device_code,
-                    device_role=f"SAFETY_ROLE_{index}",
-                    endpoint_base_url="http://ecs-safety:8080",
-                    contract_key="safety.contract",
-                    contract_version="1.0",
-                    status_max_age_ms=1_000,
-                    command_timeout_ms=5_000,
-                )
-                db.add(binding)
-                await db.flush()
                 db.add(
                     DeviceCommand(
                         command_code=f"SAFETY-COMMAND-{run_id}-{index}",
                         device_code=device.device_code,
-                        device_binding_id=binding.id,
-                        line_run_epoch_id=epoch.id,
+                        workline_id=workline.id,
+                        endpoint_base_url="http://ecs-safety:8080",
+                        command_timeout_ms=5_000,
+                        status_max_age_ms=1_000,
                         execution_ref_type="SAFETY_TEST",
                         execution_ref_id=f"{run_id}-{index}",
                         contract_key="safety.contract",
@@ -613,8 +588,7 @@ def _safety_drain_state(database_url: str, incident_id: int) -> tuple[str, int, 
             commands = await connection.fetch(
                 "SELECT command.command_code, command.status, command.failure_code "
                 "FROM wes_biz.device_commands AS command "
-                "JOIN wes_biz.line_run_epochs AS epoch ON epoch.id = command.line_run_epoch_id "
-                "WHERE epoch.workline_id = $1 ORDER BY command.command_code",
+                "WHERE command.workline_id = $1 ORDER BY command.command_code",
                 incident["workline_id"],
             )
             evidence = cast("dict[str, object]", json.loads(incident["evidence_json"]))
@@ -1290,6 +1264,8 @@ def test_quit_countdown_retry_is_recovered_with_idempotent_final_state(prefork_s
             "countdown retry first attempt",
         )
         first_attempt_seen = time.monotonic()
+        # 数据库提交早于 self.retry；本场景必须在 countdown 已发布后发送 QUIT。
+        _wait_until(lambda: result.state == "RETRY", TASK_TIMEOUT, "countdown retry published")
         shutdown_started = time.monotonic()
         first.stop(shutdown_signal=signal.SIGQUIT, cleanup_redis=False)
         shutdown_elapsed = time.monotonic() - shutdown_started

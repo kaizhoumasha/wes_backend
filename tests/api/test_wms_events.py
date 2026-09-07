@@ -13,12 +13,12 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from src.app.wms_adapter.inbound_wire import RECOVERY_OPERATION
+from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_ISSUED_OPERATION
 from src.app.wms_adapter.transport_event_handler import (
-    MAX_TRANSPORT_EVENT_BODY_BYTES,
     TransportEventResponse,
 )
+from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES
 
 TRANSPORT_BODY = (
     b'{"operation_id":"01988ef1-4d2a-7000-8000-000000000001",'
@@ -68,7 +68,7 @@ async def test_oversized_stream_stops_at_the_boundary_before_auth_json_or_handle
     publisher = SimpleNamespace(publish_to=AsyncMock(return_value=True))
     app = _route_app(module, handler, policy, publisher=publisher)
     messages = [
-        {"type": "http.request", "body": b"x" * MAX_TRANSPORT_EVENT_BODY_BYTES, "more_body": True},
+        {"type": "http.request", "body": b"x" * MAX_WMS_EVENT_BODY_BYTES, "more_body": True},
         {"type": "http.request", "body": b"y", "more_body": True},
         {"type": "http.request", "body": b"trailing-must-not-be-read", "more_body": False},
     ]
@@ -111,7 +111,7 @@ async def test_oversized_stream_stops_at_the_boundary_before_auth_json_or_handle
     channel, event_type, payload = publisher.publish_to.await_args.args
     assert (channel, event_type) == ("wms:inbound:stream", "wms_ingress.attempted")
     assert payload["error_code"] == "BODY_TOO_LARGE"
-    assert payload["observed_body_bytes"] == MAX_TRANSPORT_EVENT_BODY_BYTES + 1
+    assert payload["observed_body_bytes"] == MAX_WMS_EVENT_BODY_BYTES + 1
 
 
 @pytest.mark.parametrize(
@@ -721,9 +721,57 @@ def test_shared_wms_event_route_dispatches_picking_task_issued_to_the_exact_busi
     assert response.status_code == http_status
     assert response.json()["code"] == code
     assert response.json()["data"] == data
-    issued_handler.assert_awaited_once_with(raw_body)
+    issued_handler.assert_awaited_once_with(json.loads(raw_body))
     recovery_handler.assert_not_awaited()
     transport_handler.assert_not_awaited()
+
+
+@pytest.mark.parametrize("runtime_present", [True, False])
+def test_issued_ingress_parses_json_once_with_real_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_present: bool,
+) -> None:
+    from src.app.wms_adapter import strict_json
+    from src.app.wms_adapter.outbound_picking.event_handler import (
+        PickingTaskIssuedHandler,
+        PickingTaskIssuedPersistenceResult,
+    )
+
+    module = _events_module()
+    # Count the actual decoder, including aliases imported by route and handler.
+    decode = MagicMock(wraps=strict_json.json.loads)
+    monkeypatch.setattr(strict_json.json, "loads", decode)
+    recorder = SimpleNamespace(record=AsyncMock(return_value=PickingTaskIssuedPersistenceResult("RECEIVED", 1)))
+    app = _route_app(module, AsyncMock(), _none_policy(module))
+    app.state.wms_picking_task_issued_handler = PickingTaskIssuedHandler(recorder) if runtime_present else None
+    payload = {
+        "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+        "operation": PICKING_TASK_ISSUED_OPERATION,
+        "timestamp": 1786060800000,
+        "data": {"task_id": "PICK-ONCE", "task_type": "MANUAL", "queue_revision": 1, "dispatch_sequence": 1},
+    }
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", json=payload)
+    assert response.status_code == (202 if runtime_present else 503)
+    assert decode.call_count == 1
+    assert recorder.record.await_count == int(runtime_present)
+
+
+@pytest.mark.parametrize(
+    "body", [b"not-json", b'{"operation_id":"invalid","operation":"outbound.picking_task.issued@v1"}']
+)
+def test_issued_ingress_rejects_before_identity_without_calling_handler(body: bytes) -> None:
+    from src.app.wms_adapter.outbound_picking.event_handler import PickingTaskIssuedHandler
+
+    module = _events_module()
+    recorder = SimpleNamespace(record=AsyncMock())
+    app = _route_app(module, AsyncMock(), _none_policy(module))
+    app.state.wms_picking_task_issued_handler = PickingTaskIssuedHandler(recorder)
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+    assert response.content == b""
+    recorder.record.assert_not_awaited()
 
 
 def test_shared_wms_event_route_returns_unavailable_when_picking_task_runtime_is_missing() -> None:
@@ -831,3 +879,72 @@ def test_shared_wms_event_route_publishes_recovery_runtime_unavailable() -> None
     assert payload["error_code"] == "RECOVERY_RUNTIME_UNAVAILABLE"
     assert payload["observed_body_bytes"] == len(raw_body)
     assert "operation_id" not in payload
+
+
+@pytest.mark.parametrize("runtime_present", [True, False])
+@pytest.mark.parametrize("event_name", ["plan_delta", "queue_changed"])
+def test_picking_task_route_is_static_and_independent_of_plugins(runtime_present: bool, event_name: str) -> None:
+    module = _events_module()
+    transport_handler = AsyncMock()
+    app = _route_app(module, transport_handler, _none_policy(module))
+    operation_id = "019f3400-0e17-7d2a-b944-3cf7953804da"
+    payload = {
+        "operation_id": operation_id,
+        "operation": f"outbound.picking_task.{event_name}@v1",
+        "timestamp": 1,
+        "data": {},
+    }
+    handler = AsyncMock(
+        return_value=TransportEventResponse(
+            http_status=202, body={"operation_id": operation_id, "code": "RECEIVED", "timestamp": 2, "data": {}}
+        )
+    )
+    setattr(
+        app.state,
+        f"wms_picking_task_{event_name}_handler",
+        SimpleNamespace(handle=handler) if runtime_present else None,
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", json=payload)
+    assert response.status_code == (202 if runtime_present else 503)
+    assert response.json()["code"] == ("RECEIVED" if runtime_present else "UNAVAILABLE")
+    if runtime_present:
+        handler.assert_awaited_once_with(payload)
+    else:
+        handler.assert_not_awaited()
+    transport_handler.assert_not_awaited()
+    assert f"outbound.picking_task.{event_name}@v1" in json.dumps(app.openapi())
+
+
+@pytest.mark.parametrize("runtime_present", [True, False])
+def test_queue_changed_ingress_parses_json_once_with_real_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime_present: bool,
+) -> None:
+    from src.app.wms_adapter import strict_json
+    from src.app.wms_adapter.outbound_picking.queue_changed_event_handler import (
+        PickingTaskQueueChangedHandler,
+        PickingTaskQueueChangedPersistenceResult,
+    )
+
+    module = _events_module()
+    decode = MagicMock(wraps=strict_json.json.loads)
+    monkeypatch.setattr(strict_json.json, "loads", decode)
+    recorder = SimpleNamespace(record=AsyncMock(return_value=PickingTaskQueueChangedPersistenceResult("RECEIVED", 1)))
+    app = _route_app(module, AsyncMock(), _none_policy(module))
+    app.state.wms_picking_task_queue_changed_handler = (
+        PickingTaskQueueChangedHandler(recorder) if runtime_present else None
+    )
+    payload = {
+        "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+        "operation": "outbound.picking_task.queue_changed@v1",
+        "timestamp": 1,
+        "data": {"task_id": "PICK-ONCE", "queue_revision": 2, "not_before": 0},
+    }
+    with TestClient(app) as client:
+        response = client.post("/api/v1/wms/events", json=payload)
+    assert response.status_code == (202 if runtime_present else 503)
+    assert decode.call_count == 1
+    assert recorder.record.await_count == int(runtime_present)
+    if runtime_present:
+        assert recorder.record.await_args.args[0].data.not_before == 0

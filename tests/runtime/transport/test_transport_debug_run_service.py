@@ -204,7 +204,7 @@ async def test_create_run_freezes_exact_operator_input_and_first_step_identity()
     assert run.configuration_json["face_groups"] == [
         {
             "face": " 90 ",
-            "bins": [{"bin_id": "A000001922", "slot_id": "510056A3F2C101"}],
+            "bins": [{"bin_code": "A000001922", "slot_id": "510056A3F2C101"}],
         }
     ]
     assert (step.phase, step.status, step.group_index) == ("RACK_TO_STATION", "WAITING", 0)

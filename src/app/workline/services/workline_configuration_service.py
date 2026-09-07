@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from src.app.device.repositories.command_repository import device_command_repository
 from src.app.device.repositories.device_repository import device_repository
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin, parse_device_bindings, resolve_installed_plugin
 from src.app.workline.models.workline import (
@@ -14,14 +13,11 @@ from src.app.workline.models.workline import (
     WorkLineConfigurationStatus,
     WorkLinePluginSummary,
 )
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
-from src.app.workline.services.line_run_epoch_service import LineRunEpochService
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BusinessException
 from src.utils.device_cache import workline_device_cache
-from src.utils.timezone import timezone
 
 
 class WorkLineConfigurationRepositoryPort(Protocol):
@@ -46,18 +42,6 @@ class DeviceConfigurationRepositoryPort(Protocol):
     ) -> list[Any]: ...
 
     async def get_by_work_line_id(self, db: Any, workline_id: int) -> list[Any]: ...
-
-
-class EpochConfigurationRepositoryPort(Protocol):
-    async def get_active_for_workline(self, db: Any, workline_id: int) -> Any | None: ...
-
-    async def lock_epoch_lifecycle(self, db: Any, epoch_id: int) -> None: ...
-
-    async def get_active_for_workline_for_update(self, db: Any, workline_id: int) -> Any | None: ...
-
-
-class EpochClosingServicePort(Protocol):
-    async def close_active_epoch(self, db: Any, **kwargs: Any) -> Any | None: ...
 
 
 class SafetyConfigurationRepositoryPort(Protocol):
@@ -93,26 +77,16 @@ class WorkLineConfigurationService:
         device_repository: DeviceConfigurationRepositoryPort = cast(
             "DeviceConfigurationRepositoryPort", device_repository
         ),
-        epoch_repository: EpochConfigurationRepositoryPort = cast(
-            "EpochConfigurationRepositoryPort", line_run_epoch_repository
-        ),
-        epoch_service: EpochClosingServicePort | None = None,
-        command_repository: Any = device_command_repository,
         safety_repository: SafetyConfigurationRepositoryPort = cast(
             "SafetyConfigurationRepositoryPort", workline_safety_incident_repository
         ),
         device_cache_invalidator: CacheInvalidatorPort | None = None,
-        clock: Any = timezone.now_for_db,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
         self._devices = device_repository
-        self._epochs = epoch_repository
-        self._epoch_service = epoch_service or LineRunEpochService(repository=cast("Any", epoch_repository))
-        self._commands = command_repository
         self._safety = safety_repository
         self._device_cache_invalidator = device_cache_invalidator
-        self._clock = clock
 
     async def save(
         self,
@@ -189,7 +163,15 @@ class WorkLineConfigurationService:
         updated = await self._worklines.update(
             db,
             workline_id,
-            {"plugin_key": normalized_plugin_key, "config": dict(config), "version": version},
+            {
+                "plugin_key": normalized_plugin_key,
+                "plugin_version": None,
+                "flow_mode": None,
+                "device_contracts": {},
+                "position_bindings": {},
+                "config": dict(config),
+                "version": version,
+            },
         )
         if updated is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
@@ -326,30 +308,14 @@ class WorkLineConfigurationService:
         if workline is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
         WorkLineService._assert_version(workline, workline_id, version)
-        active_epoch = await self._epochs.get_active_for_workline(db, workline_id)
         if not bool(workline.is_active):
-            if active_epoch is not None:
-                raise BusinessException(message="停用 WorkLine 仍存在 ACTIVE Epoch")
             return workline
-        if active_epoch is None:
-            raise BusinessException(message="已启用 WorkLine 缺少 ACTIVE Epoch")
-        if active_epoch.id is None:
-            raise BusinessException(message="ACTIVE Epoch 缺少持久化主键")
-        expected_epoch_id = active_epoch.id
-        await self._epochs.lock_epoch_lifecycle(db, expected_epoch_id)
-        active_epoch = await self._epochs.get_active_for_workline_for_update(db, workline_id)
-        if active_epoch is None or active_epoch.id != expected_epoch_id:
-            raise BusinessException(message="ACTIVE Epoch 在停用事务中发生变化")
 
         if await self._safety.get_active_for_workline(db, workline_id) is not None:
             raise BusinessException(message="存在 active safety incident，不能停用作业线")
 
         workload = await self._worklines.get_unfinished_workload_summary(db, workline_id)
-        common_blockers = [
-            owner_type
-            for owner_type, blocked in workload["by_type"].items()
-            if owner_type != "line_run_epochs" and bool(blocked)
-        ]
+        common_blockers = [owner_type for owner_type, blocked in workload["by_type"].items() if bool(blocked)]
         if common_blockers:
             raise BusinessException(
                 message=f"存在未完成运行负载，不能停用作业线: {workload.get('sample')}",
@@ -358,14 +324,6 @@ class WorkLineConfigurationService:
 
         await self._assert_no_plugin_workload(db, workline, action="停用作业线")
 
-        closed = await self._epoch_service.close_active_epoch(
-            db,
-            workline_id=workline_id,
-            closed_at=self._clock(),
-            command_repository=self._commands,
-        )
-        if closed is None:
-            raise BusinessException(message="ACTIVE Epoch 在停用事务中发生变化")
         updated = await self._worklines.set_inactive_for_deactivate(db, workline)
         await db.flush()
         try:
@@ -407,6 +365,8 @@ class WorkLineConfigurationService:
             raise BusinessException(message=str(exc)) from exc
         except ValueError as exc:
             raise BusinessException(message=str(exc)) from exc
+        if workline.plugin_version is not None and installed.plugin_version != workline.plugin_version:
+            raise BusinessException(message=f"未安装当前业务插件版本: {workline.plugin_key}@{workline.plugin_version}")
         if installed.business_blocker is None:
             return
         business = await installed.business_blocker.get_unfinished_workload_summary(db, workline.id)

@@ -141,3 +141,25 @@ def test_prepare_response_parser_accepts_only_the_approved_http_code_pairs(
 def test_prepare_response_parser_rejects_unapproved_response_shapes(status: int, body: dict[str, object]) -> None:
     with pytest.raises((ValidationError, ValueError)):
         parse_picking_task_prepare_response(status, body)
+
+
+@pytest.mark.parametrize("code", [None, 202, True, [], {}])
+def test_prepare_response_parser_rejects_nonstring_code(code: object) -> None:
+    with pytest.raises(ValueError, match="HTTP status 与 prepare response code 不匹配"):
+        parse_picking_task_prepare_response(
+            202, {"operation_id": _request()["operation_id"], "code": code, "timestamp": 2, "data": {}}
+        )
+
+
+@pytest.mark.parametrize("field_path", [None, "/data/bad~2", "/data/bad~"])
+def test_prepare_rejected_requires_valid_nonnull_json_pointer(field_path: object) -> None:
+    with pytest.raises(ValidationError):
+        parse_picking_task_prepare_response(
+            422,
+            {
+                "operation_id": _request()["operation_id"],
+                "code": "REJECTED",
+                "timestamp": 2,
+                "data": {"reason_code": "INVALID_DATA", "field_path": field_path},
+            },
+        )

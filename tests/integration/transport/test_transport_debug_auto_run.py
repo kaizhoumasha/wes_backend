@@ -126,7 +126,7 @@ def _request_members(request: TransportRequest) -> list[tuple[str, str, object, 
         frozen_position = RackPosition("KT16") if isinstance(request.position, RackReference) else request.position
         return [("RACK", request.rack_id, frozen_position, frozen_position)]
     assert isinstance(request, MoveBinsRequest)
-    return [("BIN", move.bin_id, move.source, move.target) for move in request.moves]
+    return [("BIN", move.bin_code, move.source, move.target) for move in request.moves]
 
 
 def _service(session_factory: Any, transport: _PersistingTransport) -> TransportDebugRunService:
@@ -145,7 +145,7 @@ def _configuration(suffix: str, *, faces: tuple[str, ...]) -> tuple[str, CreateT
             face=face,
             bins=tuple(
                 TransportDebugBinSelection(
-                    bin_id=f"bin-{suffix}-{group_index}-{bin_index}",
+                    bin_code=f"bin-{suffix}-{group_index}-{bin_index}",
                     slot_id=f"slot-{group_index}-{bin_index}",
                 )
                 for bin_index in range(1, 5 if group_index == 0 else 2)
@@ -160,7 +160,7 @@ async def _persist_scan12(
     session_factory: Any,
     *,
     source_event_id: str,
-    bin_id: str,
+    bin_code: str,
     timestamp_ms: int,
     device_code: str = "SCAN12",
     apply_status: InboundEvidenceApplyStatus = InboundEvidenceApplyStatus.APPLIED,
@@ -179,7 +179,7 @@ async def _persist_scan12(
                     "timestamp": timestamp_ms,
                     "source_event_id": source_event_id,
                     "is_debug": True,
-                    "data": {"barcode": bin_id},
+                    "data": {"barcode": bin_code},
                 },
                 received_at=timezone.now_for_db(),
                 device_code=device_code,
@@ -329,7 +329,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
     await _persist_scan12(
         integration_session_factory,
         source_event_id=f"{source_prefix}-old",
-        bin_id=request.face_groups[0].bins[0].bin_id,
+        bin_code=request.face_groups[0].bins[0].bin_code,
         timestamp_ms=int(timezone.now_utc().timestamp() * 1000),
     )
     try:
@@ -367,15 +367,15 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
 
             scan_wait = await service.get_run(run.run_id)
             assert scan_wait.current_phase == "WAIT_SCAN12"
-            assert scan_wait.observed_bin_ids == ()
+            assert scan_wait.observed_bin_codes == ()
             assert scan_wait.current_step is not None and scan_wait.current_step.evidence_not_before_ms is not None
             scan_timestamp = scan_wait.current_step.evidence_not_before_ms
             for bin_index, selection in enumerate(group.bins):
-                scanned_bin_id = f"{selection.bin_id}-{'ABCD'[bin_index % 4]}"
+                scanned_bin_code = f"{selection.bin_code}-{'ABCD'[bin_index % 4]}"
                 await _persist_scan12(
                     integration_session_factory,
                     source_event_id=f"{source_prefix}-g{group_index}-scan{bin_index}",
-                    bin_id=scanned_bin_id,
+                    bin_code=scanned_bin_code,
                     timestamp_ms=scan_timestamp,
                     device_code="STATION_SCAN12",
                 )
@@ -383,7 +383,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
                     await _persist_scan12(
                         integration_session_factory,
                         source_event_id=f"{source_prefix}-g{group_index}-duplicate",
-                        bin_id=scanned_bin_id,
+                        bin_code=scanned_bin_code,
                         timestamp_ms=scan_timestamp,
                     )
             assert await service.advance_run(run.run_id) is True
@@ -394,10 +394,10 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
             assert isinstance(to_rack, MoveBinsRequest)
             assert {move.source.location_code for move in to_rack.moves} == {"CNV0302"}  # type: ignore[attr-defined]
             assert {
-                (move.bin_id, move.target.rack_face, move.target.slot_id)
+                (move.bin_code, move.target.rack_face, move.target.slot_id)
                 for move in to_rack.moves
                 if isinstance(move.target, RackBinSlot)
-            } == {(selection.bin_id, group.face, selection.slot_id) for selection in group.bins}
+            } == {(selection.bin_code, group.face, selection.slot_id) for selection in group.bins}
             assert all(
                 not isinstance(created_request, MoveRackRequest)
                 or created_request.rcs_template_id is not RcsTemplateId.CTU03
@@ -414,7 +414,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
                 assert await service.advance_run(run.run_id) is True
                 partial = await service.get_run(run.run_id)
                 assert partial.current_phase == "BINS_TO_RACK"
-                assert partial.observed_bin_ids == (group.bins[0].bin_id,)
+                assert partial.observed_bin_codes == (group.bins[0].bin_code,)
                 assert len(transport.created) == created_count
             await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
             assert await service.advance_run(run.run_id) is True
@@ -435,7 +435,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
             run.run_id,
             transport,
             storage_position="WH01-01",
-            arrival_face_override="RCS_SELECTED",
+            arrival_face_override="RCS_CHOSEN",
         )
         assert await service.advance_run(run.run_id) is True
         assert (await service.get_run(run.run_id)).status == "COMPLETED"
@@ -608,7 +608,7 @@ async def test_reconciling_scan12_evidence_stops_before_bin_return(
         await _persist_scan12(
             integration_session_factory,
             source_event_id=f"{source_prefix}-reconciling",
-            bin_id=request.face_groups[0].bins[0].bin_id,
+            bin_code=request.face_groups[0].bins[0].bin_code,
             timestamp_ms=snapshot.current_step.evidence_not_before_ms,
             apply_status=InboundEvidenceApplyStatus.RECONCILING,
         )
@@ -639,7 +639,7 @@ async def test_conflicting_scan12_evidence_stops_before_bin_return(
             await _persist_scan12(
                 integration_session_factory,
                 source_event_id=f"{source_prefix}-{bin_index}",
-                bin_id=selection.bin_id,
+                bin_code=selection.bin_code,
                 timestamp_ms=snapshot.current_step.evidence_not_before_ms,
             )
         async with integration_session_factory.begin() as db:
@@ -684,7 +684,7 @@ async def test_late_scan12_conflict_stops_after_bin_return_task_is_bound(
             await _persist_scan12(
                 integration_session_factory,
                 source_event_id=f"{source_prefix}-{bin_index}",
-                bin_id=selection.bin_id,
+                bin_code=selection.bin_code,
                 timestamp_ms=snapshot.current_step.evidence_not_before_ms,
             )
         assert await service.advance_run(run.run_id) is True

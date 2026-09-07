@@ -1,4 +1,4 @@
-"""插件专属后续处理必须按原 Epoch 精确路由。"""
+"""插件专属后续处理必须按原 WorkLine 精确路由。"""
 
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -42,7 +42,7 @@ class _OutcomePublisher:
     def __init__(self) -> None:
         self.outcomes: list[object] = []
 
-    async def publish(self, outcome: object) -> None:
+    async def publish(self, db: object, outcome: object) -> None:
         self.outcomes.append(outcome)
 
 
@@ -67,8 +67,8 @@ async def test_wms_follow_up_uses_the_original_executions_exact_epoch_plugin() -
     planner = _FollowUpPlanner()
     router = InstalledPluginWmsFollowUpPlanner(
         (_plugin(version="1.0", planner=planner),),
-        execution_repository=_Repository(SimpleNamespace(line_run_epoch_id=31)),  # type: ignore[arg-type]
-        epoch_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
+        execution_repository=_Repository(SimpleNamespace(workline_id=31)),  # type: ignore[arg-type]
+        workline_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
     )
 
     result = await router.plan(
@@ -86,13 +86,23 @@ async def test_wms_follow_up_uses_the_original_executions_exact_epoch_plugin() -
 @pytest.mark.asyncio
 async def test_transport_outcome_uses_the_binding_epochs_exact_plugin() -> None:
     publisher = _OutcomePublisher()
+    tasks = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
+    tasks.get_task.return_value = SimpleNamespace(
+        transport_task_id="TASK-1", client_request_id="REQUEST-1", published_outcome_version=0
+    )
     router = InstalledPluginTransportOutcomePublisher(
         _Sessions(),
         (_plugin(version="1.0", publisher=publisher),),
-        binding_repository=_Repository(SimpleNamespace(line_run_epoch_id=31)),  # type: ignore[arg-type]
-        epoch_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
+        transport_repository=tasks,
+        binding_repository=_Repository(SimpleNamespace(workline_id=31)),  # type: ignore[arg-type]
+        workline_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
     )
-    outcome = SimpleNamespace(client_request_id="REQUEST-1", caller=SimpleNamespace(workline_id="7"))
+    outcome = SimpleNamespace(
+        client_request_id="REQUEST-1",
+        transport_task_id="TASK-1",
+        outcome_version=1,
+        caller=SimpleNamespace(workline_id="7"),
+    )
 
     await router.publish(outcome)  # type: ignore[arg-type]
 
@@ -101,13 +111,180 @@ async def test_transport_outcome_uses_the_binding_epochs_exact_plugin() -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_specific_continuation_does_not_fall_back_to_another_version() -> None:
+    tasks = __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock()
+    tasks.get_task.return_value = SimpleNamespace(
+        transport_task_id="TASK-1", client_request_id="REQUEST-1", published_outcome_version=0
+    )
     router = InstalledPluginTransportOutcomePublisher(
         _Sessions(),
         (_plugin(version="2.0", publisher=_OutcomePublisher()),),
-        binding_repository=_Repository(SimpleNamespace(line_run_epoch_id=31)),  # type: ignore[arg-type]
-        epoch_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
+        transport_repository=tasks,
+        binding_repository=_Repository(SimpleNamespace(workline_id=31)),  # type: ignore[arg-type]
+        workline_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),  # type: ignore[arg-type]
     )
-    outcome = SimpleNamespace(client_request_id="REQUEST-1", caller=SimpleNamespace(workline_id="7"))
+    outcome = SimpleNamespace(
+        client_request_id="REQUEST-1",
+        transport_task_id="TASK-1",
+        outcome_version=1,
+        caller=SimpleNamespace(workline_id="7"),
+    )
 
     with pytest.raises(LookupError, match=r"example@1\.0"):
         await router.publish(outcome)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_closed_transport_replay_does_not_resolve_current_plugin():
+    from unittest.mock import AsyncMock
+
+    tasks = AsyncMock()
+    tasks.get_task.return_value = SimpleNamespace(
+        transport_task_id="TASK-1", client_request_id="REQUEST-1", published_outcome_version=2
+    )
+    worklines = AsyncMock()
+    router = InstalledPluginTransportOutcomePublisher(
+        _Sessions(), (), transport_repository=tasks, workline_repository=worklines
+    )
+    await router.publish(
+        SimpleNamespace(
+            client_request_id="REQUEST-1",
+            transport_task_id="TASK-1",
+            outcome_version=2,
+            caller=SimpleNamespace(workline_id="7"),
+        )
+    )
+    worklines.get_by_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_publishers_cannot_finish_after_workline_switch():
+    import asyncio
+    from contextlib import asynccontextmanager
+    from copy import copy
+
+    task_lock = asyncio.Lock()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    switched = asyncio.Event()
+    row = SimpleNamespace(transport_task_id="TASK-1", client_request_id="REQUEST-1", published_outcome_version=0)
+    line = SimpleNamespace(plugin_key="example", plugin_version="1.0")
+
+    class Sessions:
+        @asynccontextmanager
+        async def begin(self):
+            tx = SimpleNamespace(locked=False)
+            try:
+                yield tx
+            finally:
+                if tx.locked:
+                    task_lock.release()
+
+    class Tasks:
+        async def get_task_by_client_request(self, db, client_request_id):
+            return copy(row)
+
+        async def get_task(self, db, task_id, *, for_update=False):
+            if for_update:
+                await task_lock.acquire()
+                db.locked = True
+            return copy(row)
+
+    class Publisher:
+        def __init__(self):
+            self.calls = []
+
+        async def publish(self, db, outcome):
+            first = not self.calls
+            self.calls.append(line.plugin_version)
+            if first:
+                entered.set()
+                await release.wait()
+            assert line.plugin_version == "1.0", "old publication continued after plugin switch"
+
+    publisher = Publisher()
+    sessions = Sessions()
+    tasks = Tasks()
+    router = InstalledPluginTransportOutcomePublisher(
+        sessions,
+        (_plugin(version="1.0", publisher=publisher),),
+        transport_repository=tasks,
+        binding_repository=_Repository(SimpleNamespace(workline_id=7)),
+        workline_repository=_Repository(line),
+    )
+    outcome = SimpleNamespace(
+        transport_task_id="TASK-1",
+        client_request_id="REQUEST-1",
+        outcome_version=1,
+        caller=SimpleNamespace(workline_id="7"),
+    )
+
+    async def worker():
+        await router.publish(outcome)
+        async with sessions.begin() as db:
+            await tasks.get_task(db, "TASK-1", for_update=True)
+            row.published_outcome_version = 1
+        # Current stop gate admits switching only after publication is durable.
+        if row.published_outcome_version == 1:
+            line.plugin_version = "2.0"
+            switched.set()
+
+    first = asyncio.create_task(router.publish(outcome))
+    await asyncio.wait_for(entered.wait(), 1)
+    second = asyncio.create_task(worker())
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(switched.wait(), 0.05)
+    finally:
+        release.set()
+        results = await asyncio.gather(first, second, return_exceptions=True)
+    assert results == [None, None]
+    assert publisher.calls == ["1.0", "1.0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_transport_plugin_shares_transaction_and_wakes_only_after_commit(commit_fails):
+    from unittest.mock import AsyncMock, Mock
+
+    tx = object()
+    events = []
+
+    class Sessions:
+        @asynccontextmanager
+        async def begin(self):
+            yield tx
+            if commit_fails:
+                raise RuntimeError("commit failed")
+            events.append("commit")
+
+    async def persist(db, outcome):
+        assert db is tx
+        events.append("persist")
+        return True
+
+    publisher = SimpleNamespace(publish=AsyncMock(side_effect=persist))
+    queue = SimpleNamespace(enqueue_execution_facts=Mock(side_effect=lambda: events.append("wake")))
+    tasks = AsyncMock()
+    tasks.get_task.return_value = SimpleNamespace(client_request_id="REQUEST-1", published_outcome_version=0)
+    router = InstalledPluginTransportOutcomePublisher(
+        Sessions(),
+        (_plugin(version="1.0", publisher=publisher),),
+        transport_repository=tasks,
+        binding_repository=_Repository(SimpleNamespace(workline_id=31)),
+        workline_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),
+        queue_gateway=queue,
+    )
+    outcome = SimpleNamespace(
+        transport_task_id="TASK-1",
+        client_request_id="REQUEST-1",
+        outcome_version=1,
+        caller=SimpleNamespace(workline_id="31"),
+    )
+    if commit_fails:
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await router.publish(outcome)
+        assert events == ["persist"]
+        queue.enqueue_execution_facts.assert_not_called()
+    else:
+        await router.publish(outcome)
+        assert events == ["persist", "commit", "wake"]

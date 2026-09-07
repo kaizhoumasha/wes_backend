@@ -6,17 +6,17 @@ import asyncio
 from datetime import datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.app.device.models.device import Device
+from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
+from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochPositionBinding, LineRunEpochStatus
 from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.core.exceptions import BusinessException
@@ -182,35 +182,15 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                     db.add(workline)
                     await db.flush()
                     assert workline.id is not None
-                    epoch = LineRunEpoch(
-                        epoch_code="CONFIG-PG-PROJECTION-BLOCKER-EPOCH",
-                        workline_id=workline.id,
-                        plugin_key="postgresql_test",
-                        plugin_version="1.0",
-                        flow_mode="ROUGH_SORT_INBOUND",
-                        topology_digest="a" * 64,
-                        configuration_digest="b" * 64,
-                        configuration_snapshot_json={},
-                        started_at=datetime(2026, 9, 5),
-                    )
-                    db.add(epoch)
-                    await db.flush()
-                    assert epoch.id is not None
-                    db.add(
-                        LineRunEpochPositionBinding(
-                            line_run_epoch_id=epoch.id,
-                            position_role="PIPELINE_OUTLET",
-                            location_id="OUTLET-1",
-                            location_type="PIPELINE_OUTLET",
-                        )
-                    )
+                    workline.position_bindings = {
+                        "PIPELINE_OUTLET": {"location_id": "OUTLET-1", "location_type": "PIPELINE_OUTLET"}
+                    }
                     db.add_all(
                         [
                             PositionProjection(
                                 object_type="RACK",
                                 object_id="RACK-ON-LINE",
                                 workline_id=workline.id,
-                                line_run_epoch_id=epoch.id,
                                 position_json={"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
                                 position_unknown=False,
                                 source_operation_id="019d0000-0000-7000-8000-000000000001",
@@ -220,7 +200,6 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                                 object_type="RACK",
                                 object_id="RACK-OUTSIDE",
                                 workline_id=workline.id,
-                                line_run_epoch_id=epoch.id,
                                 position_json={"kind": "RACK_POSITION", "location_code": "STORAGE-1"},
                                 position_unknown=False,
                                 source_operation_id="019d0000-0000-7000-8000-000000000002",
@@ -230,7 +209,6 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                                 object_type="RACK",
                                 object_id="RACK-UNKNOWN",
                                 workline_id=workline.id,
-                                line_run_epoch_id=epoch.id,
                                 position_json=None,
                                 position_unknown=True,
                                 source_operation_id="019d0000-0000-7000-8000-000000000003",
@@ -261,7 +239,7 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
     asyncio.run(scenario())
 
 
-def test_task_admission_and_deactivate_share_workline_then_epoch_lock_order() -> None:
+def test_task_admission_and_deactivate_share_workline_lock() -> None:
     class _BusinessBlocker:
         def __init__(self) -> None:
             self.active = False
@@ -293,33 +271,14 @@ def test_task_admission_and_deactivate_share_workline_then_epoch_lock_order() ->
                     db.add(workline)
                     await db.flush()
                     assert workline.id is not None
-                    epoch = LineRunEpoch(
-                        epoch_code="CONFIG-PG-LOCK-ORDER-EPOCH",
-                        workline_id=workline.id,
-                        plugin_key="postgresql_test",
-                        plugin_version="1.0",
-                        flow_mode="MANUAL_PICKING",
-                        topology_digest="a" * 64,
-                        configuration_digest="b" * 64,
-                        configuration_snapshot_json={},
-                        started_at=datetime(2026, 9, 5),
-                    )
-                    db.add(epoch)
-                    await db.flush()
                     workline_id = workline.id
                     workline_version = workline.version
 
                 async def admit_task() -> None:
                     worklines = WorkLineRepository()
-                    epochs = LineRunEpochRepository()
                     async with sessions.begin() as db:
                         locked_workline = await worklines.get_for_update(db, workline_id)
                         assert locked_workline is not None and locked_workline.is_active
-                        active = await epochs.get_active_for_workline(db, workline_id)
-                        assert active is not None and active.id is not None
-                        await epochs.lock_epoch_lifecycle(db, active.id)
-                        locked_epoch = await epochs.get_active_for_workline_for_update(db, workline_id)
-                        assert locked_epoch is not None and locked_epoch.id == active.id
                         admitted_with_locks.set()
                         await release_admission.wait()
                         blocker.active = True
@@ -362,12 +321,122 @@ def test_task_admission_and_deactivate_share_workline_then_epoch_lock_order() ->
                 assert "ADMISSION-1" in deactivation_result
                 async with sessions() as db:
                     persisted_workline = await db.get(WorkLine, workline_id)
-                    persisted_epoch = await db.scalar(
-                        select(LineRunEpoch).where(LineRunEpoch.workline_id == workline_id)
-                    )
                     assert persisted_workline is not None and persisted_workline.is_active
-                    assert persisted_epoch is not None and persisted_epoch.status == LineRunEpochStatus.ACTIVE
             finally:
+                await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> None:
+    async def scenario() -> None:
+        async with temporary_database() as (_database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            engine = create_async_engine(database_url, pool_pre_ping=True)
+            sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            binding_ready = asyncio.Event()
+            release_binding = asyncio.Event()
+            deactivate_connected = asyncio.Event()
+            backend_pids: dict[str, int] = {}
+            running: list[asyncio.Task] = []
+            now = datetime(2026, 9, 6)
+            try:
+                async with sessions.begin() as db:
+                    workline = WorkLine(
+                        line_code="CONFIG-PG-PICKING-FENCE",
+                        line_name="Picking lifecycle fence",
+                        line_type=LineType.AUTO,
+                        run_mode=WorkLineRunMode.AUTO,
+                        plugin_key="postgresql_test",
+                        is_active=True,
+                    )
+                    db.add(workline)
+                    await db.flush()
+                    evidence = InboundEvidence(
+                        kind=InboundEvidenceKind.WMS_EVENT,
+                        source_identity="CONFIG-PG-PICKING-FENCE-ISSUED",
+                        operation="outbound.picking_task.issued@v1",
+                        operation_id="019d0000-0000-7000-8000-000000000011",
+                        payload_digest="c" * 64,
+                        normalized_payload={"data": {}},
+                        received_at=now,
+                        apply_status=InboundEvidenceApplyStatus.APPLIED,
+                        processed_at=now,
+                    )
+                    db.add(evidence)
+                    await db.flush()
+                    task = PickingTask(
+                        task_id="CONFIG-PG-PICKING-FENCE-TASK",
+                        task_type=PickingTaskType.AUTO,
+                        queue_revision=1,
+                        dispatch_sequence=1,
+                        issued_at_ms=1,
+                        issued_evidence_id=evidence.id,
+                    )
+                    db.add(task)
+                    await db.flush()
+                    workline_id, workline_version, task_id = (
+                        workline.id,
+                        workline.version,
+                        task.id,
+                    )
+
+                async def bind_task() -> None:
+                    async with sessions.begin() as db:
+                        backend_pids["binding"] = await db.scalar(text("SELECT pg_backend_pid()"))
+                        locked_line = await WorkLineRepository().get_for_update(db, workline_id)
+                        assert locked_line is not None and locked_line.is_active
+                        locked_task = await db.get(PickingTask, task_id, with_for_update=True)
+                        assert locked_task is not None
+                        locked_task.status = PickingTaskStatus.PREPARING
+                        locked_task.workline_id = workline_id
+                        await db.flush()
+                        binding_ready.set()
+                        await release_binding.wait()
+
+                async def deactivate() -> BusinessException:
+                    async with sessions() as db:
+                        backend_pids["deactivate"] = await db.scalar(text("SELECT pg_backend_pid()"))
+                        deactivate_connected.set()
+                        try:
+                            with pytest.raises(BusinessException) as rejected:
+                                await WorkLineConfigurationService(plugins=(_plugin(),)).deactivate(
+                                    db, workline_id=workline_id, version=workline_version
+                                )
+                            return rejected.value
+                        finally:
+                            await db.rollback()
+
+                running.append(asyncio.create_task(bind_task()))
+                await asyncio.wait_for(binding_ready.wait(), timeout=5)
+                running.append(asyncio.create_task(deactivate()))
+                await asyncio.wait_for(deactivate_connected.wait(), timeout=5)
+                async with asyncio.timeout(5), sessions() as observer:
+                    while True:
+                        blockers = await observer.scalar(
+                            text("SELECT pg_blocking_pids(:pid)"), {"pid": backend_pids["deactivate"]}
+                        )
+                        if backend_pids["binding"] in blockers:
+                            break
+                        assert not running[1].done(), "deactivate 未等待 PickingTask 绑定事务的 WorkLine 锁"
+                        await asyncio.sleep(0.01)
+                release_binding.set()
+                _, rejection = await asyncio.wait_for(asyncio.gather(*running), timeout=5)
+                workload = rejection.detail["workload"]
+                assert workload["by_type"]["picking_tasks"] == 1
+                assert workload["samples"]["picking_tasks"]["identity"] == "CONFIG-PG-PICKING-FENCE-TASK"
+                async with sessions() as db:
+                    persisted_line = await db.get(WorkLine, workline_id)
+                    persisted_task = await db.get(PickingTask, task_id)
+                    assert persisted_line is not None and persisted_line.is_active
+                    assert persisted_task is not None and persisted_task.status == PickingTaskStatus.PREPARING
+                    assert persisted_task.workline_id == workline_id
+            finally:
+                release_binding.set()
+                for pending in running:
+                    if not pending.done():
+                        pending.cancel()
+                await asyncio.gather(*running, return_exceptions=True)
                 await engine.dispose()
 
     asyncio.run(scenario())

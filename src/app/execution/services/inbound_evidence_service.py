@@ -90,7 +90,7 @@ class InboundEvidenceService:
         source_identity: str,
         normalized_payload: dict[str, Any],
         received_at: datetime,
-        line_run_epoch_id: int | None = None,
+        workline_id: int | None = None,
         material_execution_id: int | None = None,
         transport_task_id: str | None = None,
         device_code: str | None = None,
@@ -134,7 +134,7 @@ class InboundEvidenceService:
         if existing is not None:
             correlations = (
                 kind,
-                line_run_epoch_id,
+                workline_id,
                 material_execution_id,
                 transport_task_id,
                 device_code,
@@ -146,7 +146,7 @@ class InboundEvidenceService:
             )
             existing_correlations = (
                 existing.kind,
-                existing.line_run_epoch_id,
+                existing.workline_id,
                 existing.material_execution_id,
                 existing.transport_task_id,
                 existing.device_code,
@@ -193,7 +193,7 @@ class InboundEvidenceService:
                 payload_digest=digest,
                 normalized_payload=payload,
                 received_at=received_at,
-                line_run_epoch_id=line_run_epoch_id,
+                workline_id=workline_id,
                 material_execution_id=material_execution_id,
                 transport_task_id=transport_task_id,
                 device_code=device_code,

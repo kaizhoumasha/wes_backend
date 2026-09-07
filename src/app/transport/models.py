@@ -10,7 +10,6 @@ from sqlmodel import Field
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.core.mixins.base import BaseMixin
-from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 RUNTIME_SCHEMA = SchemaType.RUNTIME.value
@@ -40,12 +39,6 @@ class TransportTask(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_TASK_STATUS_CHECK, name="transport_task_status_valid"),
-        CheckConstraint(
-            "(authority_workline_id IS NULL AND authority_line_run_epoch_id IS NULL "
-            "AND authority_bin_execution_id IS NULL) OR "
-            "(authority_workline_id IS NOT NULL AND authority_line_run_epoch_id IS NOT NULL)",
-            name="transport_execution_authority_all_or_none",
-        ),
         CheckConstraint(
             f"submit_attempt_count BETWEEN 0 AND {MAX_SUBMIT_ATTEMPTS}",
             name="transport_submit_attempt_count_valid",
@@ -102,12 +95,6 @@ class TransportTask(BaseMixin, table=True):
     status: str = Field(default="PENDING", max_length=20)
     reason_code: str | None = Field(default=None, max_length=120)
     authority_workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
-    authority_line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id")
-    authority_bin_execution_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.bin_executions.id",
-        sa_type=SQL_COMPAT_BIGINT,
-    )
 
     submit_attempt_count: int = Field(default=0)
     next_submit_at: datetime | None = Field(default=None)
@@ -241,6 +228,7 @@ class TransportMember(BaseMixin, table=True):
     __tablename__ = "transport_members"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
+        CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         UniqueConstraint("transport_task_id", "ordinal", name="ux_transport_members_task_ordinal"),
         UniqueConstraint("transport_task_id", "object_id", name="ux_transport_members_task_object"),
         {"schema": RUNTIME_SCHEMA},
@@ -261,7 +249,7 @@ class TransportMember(BaseMixin, table=True):
     final_position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
     failure_code: str | None = Field(default=None, max_length=120)
-    arrival_face: str | None = Field(default=None, sa_type=Text)
+    arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     last_operation_id: str | None = Field(default=None, max_length=36)
     updated_at: datetime
 
@@ -272,6 +260,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
     __tablename__ = "transport_debug_position_projections"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
+        CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         CheckConstraint(
             "object_type IN ('RACK', 'BIN')",
             name="transport_debug_position_projection_object_type_valid",
@@ -293,7 +282,7 @@ class TransportDebugPositionProjection(BaseMixin, table=True):
     object_id: str = Field(max_length=100)
     position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
-    arrival_face: str | None = Field(default=None, sa_type=Text)
+    arrival_face: str | None = Field(default=None, min_length=1, max_length=10)
     source_operation_id: str = Field(max_length=36)
     source_transport_task_id: str = Field(
         foreign_key=f"{RUNTIME_SCHEMA}.transport_tasks.transport_task_id",

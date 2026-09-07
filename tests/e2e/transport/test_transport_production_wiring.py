@@ -145,7 +145,7 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
                     "data": {
                         "moves": [
                             {
-                                "bin_id": object_id,
+                                "bin_code": object_id,
                                 "source": {
                                     "kind": "RACK_BIN_SLOT",
                                     "rack_id": rack_id,

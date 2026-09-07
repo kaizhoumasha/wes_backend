@@ -63,6 +63,7 @@ class WorkLineBase(WorkLineEditableBase):
 
     plugin_key: str | None = Field(default=None, min_length=1, max_length=100, index=True, description="业务插件标识")
     config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="当前业务插件配置")
+    plugin_version: str | None = Field(default=None, max_length=50, description="当前已校验的精确插件版本")
 
 
 class WorkLine(WorkLineBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, table=True):
@@ -72,6 +73,10 @@ class WorkLine(WorkLineBase, EnterpriseMixin, SoftDeleteMixin, DataTableMixin, t
     __schema__ = SchemaType.BIZ.value
 
     is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
+
+    flow_mode: str | None = Field(default=None, max_length=100)
+    device_contracts: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    position_bindings: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
     @property
     def resolved_runtime_config(self) -> dict[str, Any]:

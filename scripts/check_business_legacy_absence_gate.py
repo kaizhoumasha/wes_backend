@@ -273,10 +273,9 @@ def _ledger_identity_failures(
         failures.append(f"{LEDGER_PATH}:duplicate entry_id")
     if sorted(ledger_ids) != ledger_ids:
         failures.append(f"{LEDGER_PATH}:entry_id not ASCII sorted")
-    if set(ledger_ids) != set(matrix_by_id):
+    if not set(matrix_by_id).issubset(ledger_ids):
         missing = sorted(set(matrix_by_id) - set(ledger_ids))
-        extra = sorted(set(ledger_ids) - set(matrix_by_id))
-        failures.append(f"{LEDGER_PATH}:entry_id set mismatch missing={missing[:5]} extra={extra[:5]}")
+        failures.append(f"{LEDGER_PATH}:missing active matrix entries={missing[:5]}")
     return failures
 
 
@@ -404,14 +403,21 @@ def _row_alias_failures(row: dict[str, str]) -> list[str]:
 
 def _ledger_row_failures(
     row: dict[str, str],
-    matrix_row: dict[str, str],
+    matrix_row: dict[str, str] | None,
     tracked_files: set[str],
     repo_root: Path,
     *,
     mode: str,
 ) -> list[str]:
     failures: list[str] = []
-    failures.extend(_row_matrix_failures(row, matrix_row))
+    if matrix_row is not None:
+        failures.extend(_row_matrix_failures(row, matrix_row))
+    else:
+        # 退出当前矩阵的历史证据仍须满足完成门禁，不能通过删除矩阵行隐藏未完成项。
+        mode = "final"
+        completed_dispositions = STRICT_DISPOSITIONS | {"already-removed"}
+        if row["tracked_state"] != "already-removed" or row["cleanup_disposition"] not in completed_dispositions:
+            failures.append(f"{row['entry_id']}:only completed cleanup may leave the active matrix")
     failures.extend(_row_enum_failures(row))
     failures.extend(_row_state_failures(row, tracked_files, repo_root))
     failures.extend(_row_target_failures(row))
@@ -439,8 +445,6 @@ def validate_ledger(repo_root: Path, *, mode: str) -> GateResult:
 
     for row in ledger_rows:
         matrix_row = matrix_by_id.get(row["entry_id"])
-        if matrix_row is None:
-            continue
         failures.extend(_ledger_row_failures(row, matrix_row, tracked_files, repo_root, mode=mode))
 
     failures.extend(strict_reference_violations(repo_root, ledger_rows))

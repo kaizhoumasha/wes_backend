@@ -42,6 +42,7 @@ _FACE = Annotated[
     StrictStr,
     Field(
         min_length=1,
+        max_length=10,
         pattern=r"^[^\x00]+$",
         description="Opaque non-empty face value without NUL; preserve exactly",
     ),
@@ -55,7 +56,7 @@ class _StrictApiModel(BaseModel):
 
 
 class TransportDebugRunBinRequest(_StrictApiModel):
-    bin_id: _TEXT
+    bin_code: _TEXT
     slot_id: _TEXT
 
 
@@ -82,12 +83,12 @@ class AbortTransportDebugRunRequest(_StrictApiModel):
 
 
 class TransportDebugRunBinResponse(_StrictApiModel):
-    bin_id: str
+    bin_code: str
     slot_id: str
 
 
 class TransportDebugRunFaceGroupResponse(_StrictApiModel):
-    face: str
+    face: _FACE
     bins: list[TransportDebugRunBinResponse]
 
 
@@ -100,7 +101,7 @@ class TransportDebugRunStepResponse(_StrictApiModel):
     transport_task_id: str | None
     evidence_high_watermark: int | None
     evidence_not_before_ms: int | None
-    observed_bin_ids: list[str]
+    observed_bin_codes: list[str]
     reason_code: str | None
     created_at: str
     updated_at: str
@@ -115,7 +116,7 @@ class TransportDebugRunResponse(_StrictApiModel):
     current_phase: TransportDebugRunPhase
     current_step: TransportDebugRunStepResponse | None
     steps: list[TransportDebugRunStepResponse]
-    observed_bin_ids: list[str]
+    observed_bin_codes: list[str]
     attention_code: str | None
     attention_detail: str | None
     can_abort: bool
@@ -169,7 +170,9 @@ def _domain_request(payload: CreateTransportDebugRunRequest) -> CreateTransportD
         face_groups=tuple(
             TransportDebugFaceGroup(
                 face=group.face,
-                bins=tuple(TransportDebugBinSelection(bin_id=item.bin_id, slot_id=item.slot_id) for item in group.bins),
+                bins=tuple(
+                    TransportDebugBinSelection(bin_code=item.bin_code, slot_id=item.slot_id) for item in group.bins
+                ),
             )
             for group in payload.face_groups
         ),

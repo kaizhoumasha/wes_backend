@@ -21,6 +21,7 @@ from src.app.device.contracts import (
     EcsDeviceEventReport,
 )
 from src.app.device.services.device_evidence_service import (
+    DeviceEventNotAdmittedError,
     DeviceEvidenceConflictError,
     DeviceResultConflictError,
     DeviceResultOutOfOrderError,
@@ -237,6 +238,8 @@ def _ack(_receipt: DeviceEvidenceReceipt) -> EcsCallbackAck:
 def _as_ingress_rejection(error: Exception) -> EcsCallbackRejection | None:
     if isinstance(error, EcsCallbackRejection):
         return error
+    if isinstance(error, DeviceEventNotAdmittedError):
+        return EcsCallbackRejection(409, "WORKLINE_NOT_ACTIVE")
     if isinstance(error, UnknownDeviceCommandError):
         return EcsCallbackRejection(404, "COMMAND_NOT_FOUND")
     if isinstance(error, DeviceResultOutOfOrderError):

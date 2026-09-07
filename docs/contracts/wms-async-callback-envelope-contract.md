@@ -2,7 +2,7 @@
 title: WMS 异步回调公共消息格式
 status: Approved
 created_at: 2026-08-09
-updated_at: 2026-08-18
+updated_at: 2026-09-06
 scope: WMS 到 WES 的异步业务事件回调及同步接收应答
 system_stage: pre_release
 migration_strategy: direct_replacement
@@ -22,7 +22,7 @@ WMS 通过以下入口向 WES 发送异步业务事件：
 POST {{WES_BASE_URL}}/api/v1/wms/events
 ```
 
-本文只规定所有 WMS 回调共用的四个 JSON 字段、WES 的同步响应格式，以及请求大小上限。每个业务 operation 的 `data` 字段和
+本文规定所有 WMS 回调共用的四个 JSON 字段、WES 的同步响应格式、ACK 提交模式，以及请求大小上限。每个业务 operation 的 `data` 字段和
 业务结果由对应业务合同规定。
 
 WES 到 WMS 的业务请求和结果上报不使用本接口。Transport 结果由 WMS 回调 WES 时，仍使用本文格式。
@@ -84,7 +84,7 @@ data
 
 WES 用 `operation + operation_id` 判断是不是重复消息，并比较完整请求内容：
 
-- `operation + operation_id` 相同，请求内容也相同：返回 `DUPLICATE`。
+- `operation + operation_id` 相同，请求内容也相同且此前成功接收：返回 `DUPLICATE`。
 - `operation + operation_id` 相同，但请求内容不同：返回 `CONFLICT`。
 - `operation` 不同时，即使 `operation_id` 相同，也按两条不同消息处理。业务上的前后关系由 `task_id`、`transport_task_id` 等字段表示。
 
@@ -108,7 +108,9 @@ data
 }
 ```
 
-WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返回 `DUPLICATE`，并继续使用第一次响应的 `timestamp + data`。
+WES 第一次保存响应时写入 `timestamp`。此前成功接收的相同请求再次到达时返回 `DUPLICATE`，并继续使用第一次响应的
+`timestamp + data`。已持久化的确定拒绝原样重放仍返回原拒绝，不能仅因身份已存在改报成功；所属业务合同明确规定的受控恢复例外
+按其成功证据与 ACK 优先级处理。临时拒绝是否允许原请求重试仍由所属合同规定。
 
 | 字段 | 生成方与用途 |
 | --- | --- |
@@ -120,7 +122,7 @@ WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返�
 | HTTP / `code` | 含义 |
 | --- | --- |
 | `202 / RECEIVED` | 首次成功保存，WMS 可以结束本次提交 |
-| `200 / DUPLICATE` | 这条消息以前已经保存且内容相同，或 operation 专属合同定义的相同业务版本已经保存 |
+| `200 / DUPLICATE` | 这条消息以前已成功接收且内容相同，或 operation 专属合同定义的相同业务版本已经成功保存 |
 | `409 / CONFLICT` | 相同消息 ID 对应的内容不同，或者业务数据与已保存内容冲突 |
 | `400`，空响应体 | 请求不是合法 JSON，或无法提取合法 `operation_id`；尚未建立消息关联 |
 | `413`，空响应体 | 原始 Body 超过共享入口 `256 KiB` 上限，在解码前拒绝；尚未建立消息关联 |
@@ -133,7 +135,8 @@ WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返�
 
 ## 5. 收到响应后怎么处理
 
-`RECEIVED` 只表示 WES 已经保存回调，不表示业务处理、运输或设备动作已经完成。如果某个业务还要返回异步执行结果，
+`RECEIVED` 表示 WES 已提交该 operation 的 `ack_commit_facts`，其范围由第 6 节的 ACK 模式和所属合同确定；不表示后续业务流程、
+运输或设备动作已经完成。如果某个业务还要返回异步执行结果，
 对应业务合同会定义另一条结果回调。结果回调必须使用新的 `operation_id`，再通过业务字段关联原请求。
 
 收到 `UNAVAILABLE`，或者没有收到明确响应时，WMS 使用原 `operation_id` 和原请求内容重试。
@@ -145,6 +148,24 @@ WES 第一次保存响应时写入 `timestamp`。相同请求再次到达时返�
 `409 / CONFLICT`。同一 `operation + operation_id` 对应不同完整消息的公共冲突规则不变。
 
 ## 6. 每个业务 operation 还要说明什么
+
+每个 WMS→WES operation 必须在所属合同唯一声明 `ack_mode` 和 `ack_commit_facts`。这两个字段仅用于描述合同，
+不进入请求或响应 JSON，不新增运行时 enum、registry 或按插件安装状态变化的 operation 清单。
+
+| 合同字段 | 约束 |
+| --- | --- |
+| `ack_mode` | 只能选择 `BUSINESS_FACT_COMMITTED` 或 `EVIDENCE_ACCEPTED` 中的一种 |
+| `ack_commit_facts` | 明确首次成功 ACK 前必须提交的 Evidence，以及同事务内必须保存的业务事实或接收身份事实 |
+
+| `ack_mode` | 首次成功 ACK 的提交边界 | 后续处理 |
+| --- | --- | --- |
+| `BUSINESS_FACT_COMMITTED` | Evidence 与 `ack_commit_facts` 列出的业务事实同事务提交后才返回 `202 / RECEIVED` | 已提交事实可供后续执行；后续业务流程仍按所属合同推进 |
+| `EVIDENCE_ACCEPTED` | Evidence 及所属合同要求的接收身份事实提交后即可返回 `202 / RECEIVED` | 业务事实由后续独立事务或 worker 应用；ACK 不保证已应用 |
+
+两类模式均只在事务提交后启动 Transport、DeviceCommand 或其它外部副作用；提交失败不得返回成功 ACK。
+分类不改变所属合同的现有 wire、拒绝码、重放规则或接收前校验，尤其不能把异步应用路径改成同步业务应用。
+Evidence 内部状态名称不能替代本分类，判定依据是成功 ACK 前实际提交了哪些事实。
+已声明合同的分类也不代表对应入口已实现、激活或通过 WMS 联合验收。
 
 每个异步回调 operation 必须在自己的业务合同中写清楚：
 

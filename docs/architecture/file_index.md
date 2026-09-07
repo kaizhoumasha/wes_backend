@@ -3,7 +3,7 @@
 > 本索引只记录当前工作区的稳定入口和目录职责，不复制完整文件树。历史变更由 Git 与项目外
 > `../archive_docs/wes_backend/` 保存；实时文件以 `rg --files` 为准。
 
-**最后更新**：2026-09-04
+**最后更新**：2026-09-06
 
 ## 1. 真源与入口
 
@@ -13,6 +13,7 @@
 | `CLAUDE.md` | Claude/GStack/Skill 行为入口 |
 | `GEMINI.md` | AGY/Antigravity/Gemini 入口 |
 | `README.md` | 项目概览与本地启动入口 |
+| [配置索引](../devops/configuration-index.md) | WMS Operation 及相关运行参数、固定约束的所属入口与生效方式 |
 | `main.py` | FastAPI 应用入口 |
 | `pyproject.toml` / `uv.lock` | Python、工具和测试配置真源 |
 | `Dockerfile` | development/testing/production 镜像构建 |
@@ -36,7 +37,6 @@
 | `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
 | `docs/integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与供应商/现场边界的唯一当前状态真源 |
 | `docs/integration/transport-joint-acceptance.md` | Transport 自动联调的单面/多面、恢复与现场分层验收清单；明确代码、部署、物理闭环和业务验收证据不可互相替代 |
-| `docs/superpowers/plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源；后端工程包 1–4 已提交，前端按独立计划推进 |
 | `docs/superpowers/plans/2026-07-31-wes-test-semantics-and-weight-convergence.md` | 测试语义、所有权和重量治理计划 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本、真实恢复演练与恢复手册实施入口 |
 | `docs/superpowers/plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固计划 |
@@ -44,8 +44,9 @@
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
 | `docs/superpowers/specs/2026-09-03-outbound-picking-task-prepare-design.md` | `outbound.picking_task.prepare@v1` 单 WorkLine 原子领取、三 owner WmsConfirmation、可靠派发暗构建与生产激活门禁 |
-| `docs/superpowers/specs/2026-09-04-workline-plugin-selection-and-switching-design.md` | 已评审的工作线业务插件选择、瘦身 Epoch、仅空闲切换、单一插件清单及根目录收敛设计；覆盖四种分拣业务与后续退料/拆箱扩展 |
+| `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置及专属配置清理；工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
 | `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁 |
+| `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | bin_code 统一、NG 分支独立、BinExecution/LineRunEpoch 退役、WorkLine 当前插件与站点必要关联的实施 SPEC；包含合同替换范围及物理事实门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
 | `docs/superpowers/plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、Nginx/API/Beat admission closure 与维护态稳定静默门禁实施计划；Tasks 1–4 已在 Phase 10 分支完成并纳入候选镜像，Task 5 TEST Deploy 未执行 |
 | `docs/superpowers/specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、按需详情、共享 SSE 与四类现场调试的前后端设计真源 |
@@ -55,7 +56,7 @@
 | `docs/contracts/wms-northbound-interaction-contract.md` | Phase 3 WMS HTTP Client 使用合同；定义共享访问标准和后续业务 API 开发步骤，不定义具体 wire |
 | `docs/contracts/wms-async-callback-envelope-contract.md` | WMS → WES 异步回调统一信封与持久化后接收 ACK；不定义 operation 专属 DTO 或其他方向交互 |
 | `docs/contracts/transport-fulfillment-contract.md` | Phase 4 TransportTask、冻结提交请求、WMS 转发提交 ACK、持久化 callback receipt、成员位置事实与异步终态评审基线 |
-| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；正常 Bin 通过 Epoch 级 `return_batch` FIFO 回库，可识别但非预期 Bin 冻结并等待独立恢复 wire；停线排空货架面决定 wire 未获批 |
+| `docs/contracts/wms-outbound-picking-task-integration-requirements.md` | WMS/WES 自动出库严格交互评审基线；正常 Bin 通过 WorkLine 物理缓存的 `return_batch` FIFO 回库，可识别但非预期 Bin 冻结并等待独立恢复 wire；停线排空货架面决定 wire 未获批 |
 | `docs/contracts/wms-manual-outbound-picking-integration-requirements.md` | Phase 12 人工出库拣料线（Line3）评审基线；point2 按实际 Bin 请求人工任务准入，WMS 完成决定授权释放，WES 回报异步应用状态；PDA 归属 WMS，不在 WES 集成范围 |
 | `docs/contracts/wms-rough-sorter-inbound-integration-requirements.md` | Phase 8 粗分逐盘入库的获批业务合同；目标 Cell 晚绑定、五态生命周期和两个既有 `RACK_MOVE` 的唯一真源 |
 | `docs/contracts/wms-inbound-putaway-integration-requirements.md` | Phase 13 自动上架的满箱交换、执行任务、机械臂执行、业务完成、执行级 Bin 回流、独立清场、严格 DTO 与联调评审基线；停线排空货架面决定 wire 未获批，当前为 `ReviewRequired` |
@@ -99,7 +100,7 @@ API → Service → Repository → Database
 | `src/app/transport/v1/debug_runs.py` | `/api/v1/transport/debug-runs` 创建、列表、详情、SSE 与 abort 接口；API 只调用 Service |
 | `migrations/versions/20260903_1143_8f3c61e57a90_增加_transport_自动联调轮次.py` | 自动联调 run/step 表、活动轮次唯一约束、步骤幂等身份及 claim 索引 |
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
-| `src/app/workline/models/line_run_epoch.py` | 工作线连续可信运行代际及设备合同绑定；不拥有业务任务生命周期 |
+| `src/app/workline/activation.py` | WorkLine 当前设备/位置绑定和启动计划的纯值合同；不建立独立运行实体 |
 | `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层；新增 operation 按 `<domain_key>/` 组织严格 DTO/parser、OpenAPI 和 Adapter/Event Handler，统一 Event route 静态分发并拒绝未知 operation |
 | `src/app/wms_integration/` | 使用与 Adapter 相同的 `<domain_key>/` 承载 operation 所需的本地模型、Repository、事务 Service 与组合根；旧 Provider/Profile/Manifest/query/effect/status 通用运行时已退役 |
 | `src/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata 与合同内生校验；不得包含宿主实现、WMS operation DTO 或具体工作线业务 |
@@ -153,7 +154,7 @@ tests/integration/wms_adapter/<domain_key>/
 | `scripts/export_release_provider.py` | 从后端唯一真源确定性导出 provider OpenAPI、provided permissions 与生产输入指纹 |
 | `scripts/verify_wms_northbound_feasibility.py` | 通过公开 HTTP 面验证 provider-local WMS Transport 搬运提交合同；不替代真实 WMS 或现场验收 |
 | `docs/runbooks/transport-operations.md` | Transport 本地 API、结构化日志与 PostgreSQL 事实的诊断入口；联调环境支持按 `transport_task_id` 定向清理完整本地链路 |
-| `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 Epoch fencing 的只读诊断入口 |
+| `docs/runbooks/device-command-operations.md` | DeviceCommand、设备 evidence、状态观察与 WorkLine 准入 的只读诊断入口 |
 | `docs/devops/rocky-linux-server-inspection.md` | 现场服务器现状只读采集表；不执行安装、配置修改或服务重启 |
 | `docs/devops/rocky-linux-server-initialization.md` | 检查通过后的 Docker、TimescaleDB/PostgreSQL 与 Redis 基础支撑环境初始化手册；不代表业务系统已部署或验收 |
 | `docs/devops/prod-release-deploy.md` | 生产独立 release orchestrator 的 scope、FAST/FULL、兼容报告、维护态和恢复 Runbook |

@@ -16,7 +16,7 @@ operations:
   wms.master_data.list_locations@v1: {path: /api/wms/master-data/locations}
   wms.master_data.get_rack@v1: {path: "/api/wms/master-data/racks/{rack_id}"}
   wms.master_data.list_racks@v1: {path: /api/wms/master-data/racks}
-  wms.master_data.get_bin@v1: {path: "/api/wms/master-data/bins/{bin_id}"}
+  wms.master_data.get_bin@v1: {path: "/api/wms/master-data/bins/{bin_code}"}
   wms.document.get_grn@v1: {path: "/api/wms/documents/grns/{grn_id}"}
   wms.document.list_grn_packages@v1: {path: "/api/wms/documents/grns/{grn_id}/packages"}
   wms.document.get_pick_order@v1: {path: "/api/wms/documents/pick-orders/{pick_order_id}"}

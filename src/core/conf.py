@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     WMS_BASE_URL: str = "http://localhost:8011"
     TRANSPORT_SUBMIT_PATH: str = "/api/v1/wes/transport-requests"
 
+    # EVENT_DEBUG 新建命令冻结此地址；Docker 开发编排显式指向 ECS Mock。
+    DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL: str = "http://10.24.209.26:8080"
+
     # ==================== 日志配置 ====================
 
     LOG_LEVEL: str = "INFO"

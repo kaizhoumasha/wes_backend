@@ -107,9 +107,7 @@ EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST = (
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST = "tests/integration/execution/test_decision_processing_postgresql.py"
-LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST = (
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py"
-)
+WORKLINE_START_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_workline_start_postgresql.py"
 WMS_INBOUND_CONFIRMATION_HEAVY_TEST = "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
@@ -130,8 +128,6 @@ SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
 )
 PLUGIN_SDK_REVIEWED_NONE_PATHS = (
     "src/wes_plugin_sdk/pyproject.toml",
-    "src/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py",
-    "src/wes_plugin_sdk/src/wes_plugin_sdk/facts.py",
     "src/wes_plugin_sdk/src/wes_plugin_sdk/handler.py",
 )
 RUNTIME_TEXT_REVIEWED_NONE_PATHS = (
@@ -517,6 +513,10 @@ def test_deployment_start_composition_is_candidate_with_explicit_heavy_owners() 
         "tests/e2e/transport/test_transport_production_wiring.py",
         "tests/integration/execution/test_decision_processing_postgresql.py",
         "tests/integration/test_celery_async_runtime_postgresql.py",
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+        "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
+        "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
@@ -545,6 +545,74 @@ def test_plugin_sdk_assets_are_exact_reviewed_none_mappings() -> None:
         assert select_heavy_tests([changed_path], config, repo_root=REPO_ROOT) == []
 
 
+@pytest.mark.parametrize(
+    "filename", ["__init__.py", "facts.py", "wms_types.py", "wms_operations.py", "prepare_policy.py"]
+)
+def test_plugin_sdk_wms_values_select_real_persistence_owners(filename: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    expected = [
+        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+        "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+    ]
+    if filename in {"wms_types.py", "wms_operations.py", "prepare_policy.py"}:
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py")
+    if filename != "facts.py":
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py")
+    if filename != "facts.py":
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py")
+    assert select_heavy_tests([f"src/wes_plugin_sdk/src/wes_plugin_sdk/{filename}"], config) == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/execution/composition.py",
+        "src/app/execution/config.py",
+        "src/app/execution/models/wms_confirmation.py",
+        "src/app/execution/services/wms_confirmation_service.py",
+        "src/app/workline/repositories/workline_repository.py",
+        "src/app/workline/repositories/line_run_epoch_repository.py",
+        "src/app/workline/services/line_run_epoch_service.py",
+        "src/app/wms_adapter/confirmation_adapter.py",
+        "src/app/wms_adapter/outbound_picking/return_batch_wire.py",
+        "src/app/wms_adapter/outbound_picking/return_batch_adapter.py",
+        "src/app/wms_adapter/outbound_picking/return_batch_typed.py",
+        "src/app/wms_integration/outbound_picking/services/return_batch_owner.py",
+        "tests/integration/wms_adapter/outbound_picking/confirmation_support.py",
+        "migrations/versions/20260907_0427_5098dc1b2b63_add_epoch_owner_to_wms_confirmation.py",
+        "migrations/versions/20260907_1118_93deacda8c9c_retire_bin_execution_and_line_run_epoch.py",
+    ],
+)
+def test_epoch_confirmation_paths_select_return_batch_owner(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert (
+        "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py"
+        in select_heavy_tests([changed_path], config)
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/execution/models/wms_confirmation.py",
+        "src/app/execution/repositories/wms_confirmation_repository.py",
+        "src/app/execution/services/wms_confirmation_service.py",
+    ],
+)
+def test_shared_confirmation_paths_select_departure_owner(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+
+    assert "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py" in select_heavy_tests(
+        [changed_path], config
+    )
+
+
 def test_plugin_sdk_transport_decisions_select_real_transport_and_execution_owners() -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
 
@@ -555,6 +623,8 @@ def test_plugin_sdk_transport_decisions_select_real_transport_and_execution_owne
     assert select_heavy_tests(["src/wes_plugin_sdk/src/wes_plugin_sdk/validation.py"], config) == [
         TRANSPORT_PRODUCTION_WIRING_E2E_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+        "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
         WMS_MOCK_SERVER_HEAVY_TEST,
     ]
     assert select_heavy_tests(["src/wes_plugin_sdk/src/wes_plugin_sdk/protocols.py"], config) == [
@@ -655,7 +725,7 @@ def test_device_endpoint_paths_select_exact_runtime_and_schema_owners(changed_pa
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
-        LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
+        WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
     if changed_path.startswith("migrations/versions/"):
         expected = [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
@@ -704,7 +774,14 @@ def test_event_command_block_schema_paths_select_postgresql_owner(changed_path: 
             [
                 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
                 EXECUTION_CONSTRAINTS_HEAVY_TEST,
+                "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+                "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py",
+                "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
+                "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py",
                 PICKING_TASK_PREPARE_HEAVY_TEST,
+                "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+                "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+                "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py",
                 WMS_INBOUND_CONFIRMATION_HEAVY_TEST,
             ],
         ),
@@ -727,7 +804,7 @@ def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
         EXECUTION_CONSTRAINTS_HEAVY_TEST,
-        LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
+        "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
 
@@ -1205,6 +1282,11 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         PICKING_TASK_PREPARE_REVISION_PATH,
         WORKLINE_PLUGIN_REVISION_PATH,
         DEVICE_ROLE_REMOVAL_REVISION_PATH,
+        "migrations/versions/20260906_1526_864351b8d0c6_add_picking_task_plan_delta.py",
+        "migrations/versions/20260906_1630_3d040b37c049_constrain_face_length_to_ten.py",
+        "migrations/versions/20260907_0400_5d3e6e4df5be_scope_picking_confirmation_uniqueness_.py",
+        "migrations/versions/20260907_0427_5098dc1b2b63_add_epoch_owner_to_wms_confirmation.py",
+        "migrations/versions/20260907_1118_93deacda8c9c_retire_bin_execution_and_line_run_epoch.py",
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (
@@ -1227,11 +1309,23 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     )
     assert revision_mappings[6].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
-        "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     )
     assert revision_mappings[7].heavy_tests == revision_mappings[6].heavy_tests
+    assert revision_mappings[8].heavy_tests == (
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+        PICKING_TASK_SCHEMA_HEAVY_TEST,
+    )
+    assert revision_mappings[9].heavy_tests == (
+        DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
+        INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
+        TRANSPORT_SCHEMA_HEAVY_TEST,
+        "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
+        PICKING_TASK_SCHEMA_HEAVY_TEST,
+    )
     assert select_heavy_tests([DEVICE_ROLE_REMOVAL_REVISION_PATH], config, repo_root=REPO_ROOT) == sorted(
         revision_mappings[7].heavy_tests
     )
@@ -1315,3 +1409,63 @@ def test_quality_gate_does_not_advertise_a_duplicate_full_profile() -> None:
     assert "run_full_profile" not in quality_gate
     assert "full      Run the quality profile plus the full pytest suite." not in quality_gate
     assert "full)" not in quality_gate
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/app/wms_adapter/outbound_picking/queue_changed_wire.py",
+        "src/app/wms_adapter/outbound_picking/queue_changed_event_handler.py",
+        "src/app/wms_integration/outbound_picking/services/picking_task_queue_changed.py",
+        "src/app/wms_integration/outbound_picking/repositories/picking_task_repository.py",
+        "src/app/wms_adapter/v1/events.py",
+        "src/register.py",
+    ],
+)
+def test_queue_changed_paths_include_queue_transaction_owner(path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py" in select_heavy_tests(
+        [path], config
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/execution/models/wms_confirmation.py",
+        "src/app/execution/repositories/wms_confirmation_repository.py",
+        "src/app/execution/services/wms_confirmation_service.py",
+        "src/app/wms_adapter/outbound_picking/material_decide_wire.py",
+        "src/app/wms_adapter/outbound_picking/material_decide_typed.py",
+        "src/app/wms_adapter/outbound_picking/material_decide_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
+        "src/app/wms_adapter/confirmation_adapter.py",
+    ],
+)
+def test_material_decide_paths_select_production_wiring(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert (
+        "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py"
+        in select_heavy_tests([changed_path], config)
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/execution/models/wms_confirmation.py",
+        "src/app/execution/repositories/wms_confirmation_repository.py",
+        "src/app/execution/services/wms_confirmation_service.py",
+        "src/app/wms_adapter/outbound_picking/source_empty_wire.py",
+        "src/app/wms_adapter/outbound_picking/source_empty_typed.py",
+        "src/app/wms_adapter/outbound_picking/source_empty_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
+        "src/app/wms_adapter/confirmation_adapter.py",
+    ],
+)
+def test_source_empty_paths_select_production_wiring(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert (
+        "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py"
+        in select_heavy_tests([changed_path], config)
+    )

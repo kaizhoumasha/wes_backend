@@ -10,8 +10,6 @@ from sqlalchemy import JSON, CheckConstraint, Column, Index, UniqueConstraint, t
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
-# 注册外键目标，不依赖 Web 或可选插件的导入顺序。
-from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.core.mixins import DataTableMixin, EnterpriseMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
@@ -37,18 +35,18 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
         CheckConstraint("attempt_count >= 0", name="wms_confirmation_attempt_count_nonnegative"),
         CheckConstraint(
             "(CASE WHEN material_execution_id IS NOT NULL THEN 1 ELSE 0 END + "
-            "CASE WHEN bin_execution_id IS NOT NULL THEN 1 ELSE 0 END + "
-            "CASE WHEN picking_task_id IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            "CASE WHEN picking_task_id IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN workline_id IS NOT NULL THEN 1 ELSE 0 END) = 1",
             name="wms_confirmation_exactly_one_owner",
         ),
         UniqueConstraint("operation", "operation_id", name="ux_wms_confirmations_operation_identity"),
         Index(
-            "ux_wms_confirmations_picking_task_operation",
+            "ux_wms_confirmations_picking_task_prepare",
             "picking_task_id",
             "operation",
             unique=True,
-            postgresql_where=text("picking_task_id IS NOT NULL"),
-            sqlite_where=text("picking_task_id IS NOT NULL"),
+            postgresql_where=text("picking_task_id IS NOT NULL AND operation = 'outbound.picking_task.prepare@v1'"),
+            sqlite_where=text("picking_task_id IS NOT NULL AND operation = 'outbound.picking_task.prepare@v1'"),
         ),
         Index(
             "ix_wms_confirmations_dispatch_eligible",
@@ -69,15 +67,15 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
         foreign_key="wes_biz.material_executions.id",
         index=True,
     )
-    bin_execution_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.bin_executions.id",
-        index=True,
-        sa_type=SQL_COMPAT_BIGINT,
-    )
     picking_task_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.picking_tasks.id",
+        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
+    )
+    workline_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.work_lines.id",
         index=True,
         sa_type=SQL_COMPAT_BIGINT,
     )

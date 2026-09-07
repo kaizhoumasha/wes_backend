@@ -3,6 +3,7 @@
 
 按 P0-002 规范对每个入口赋 entry_type / current_owner / business_semantics /
 strategy / drop_phase / risk。发现命令对齐 SPEC §Proposed Change 的入口粒度。
+当前矩阵不重建已完成清理的历史入口；业务完成证据由 absence ledger 继续校验。
 
 用法: uv run python scripts/generate_legacy_matrix.py
 产出: docs/architecture/legacy-cleanup-matrix.csv + 汇总统计到 stdout
@@ -320,9 +321,7 @@ MIGRATED_SERVICE_SYMBOL_PROVENANCE: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Business legacy cleanup 会把旧 WorkLine domain 业务合同迁入
-# runtime/capabilities/material_flow/contracts。matrix 必须继续按 legacy entry_id 记账,
-# 否则文件删除后 audit trace 会误以为业务承载项已经消失。
+# 已完成的业务迁移由 absence ledger 保留防回流证据；当前矩阵仅在旧入口存在时使用此目标映射。
 MIGRATED_DOMAIN_IMPLS = {
     "src/app/workline/domain/contracts/six_in_one.py": "src/app/runtime/capabilities/material_flow/contracts/six_in_one.py",
     "src/app/workline/domain/material_identity.py": "src/app/runtime/capabilities/material_flow/contracts/material_identity.py",
@@ -1772,9 +1771,9 @@ PHASE10_PRELOCK_SPECS: tuple[Phase10PrelockSpec, ...] = (
         "WmsInboundAdapter",
         "service",
         "wms_adapter",
-        "retain",
-        "src/app/wms_adapter/inbound_adapter.py",
-        "WmsInboundAdapter",
+        "switch",
+        "src/app/wms_adapter/inbound_material/adapter.py",
+        "InboundMaterialAdapter",
         "tests/contracts/wms_adapter/",
         "HIGH",
     ),
@@ -2671,10 +2670,9 @@ def _exported_symbols_from_all(path: Path) -> list[str]:
 
 
 def _defined_symbols_from_python(path: Path) -> list[str]:
-    try:
-        module = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError):
+    if not path.exists():
         return []
+    module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
     return [
         node.name for node in module.body if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
@@ -3100,18 +3098,21 @@ def _add_migrated_service_entries(add: Callable[[str, str, str, str], None]) -> 
     if set(MIGRATED_SERVICE_SYMBOL_PROVENANCE) != set(MIGRATED_SERVICE_IMPLS):
         raise RuntimeError("migrated service symbol provenance must cover every legacy service path")
     for legacy_path, symbols in MIGRATED_SERVICE_SYMBOL_PROVENANCE.items():
+        existing_symbols = set(_defined_symbols_from_python(REPO_ROOT / legacy_path)) | set(
+            _defined_symbols_from_python(REPO_ROOT / MIGRATED_SERVICE_IMPLS[legacy_path])
+        )
         for symbol in symbols:
-            add(legacy_path, symbol, "service", "workline")
-
-
-def _add_migrated_domain_entries(add: Callable[[str, str, str, str], None]) -> None:
-    for legacy_path, impl_path in MIGRATED_DOMAIN_IMPLS.items():
-        for symbol in _defined_symbols_from_python(REPO_ROOT / impl_path):
-            add(legacy_path, symbol, "domain_object", "workline")
+            if symbol in existing_symbols:
+                add(legacy_path, symbol, "service", "workline")
 
 
 def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths: list[SeedPath]) -> None:
     for path, owner, etype, bs, phase, risk in seed_paths:
+        effective_path = MIGRATED_SERVICE_IMPLS.get(path, MIGRATED_REPOSITORIES.get(path, path))
+        if path == "src/app/workline/models/object_transition_event.py":
+            effective_path = "src/app/runtime/orchestration/models/object_transition_event.py"
+        if not (REPO_ROOT / path).exists() and not (REPO_ROOT / effective_path).exists():
+            continue
         sym = GUARDRAIL_SEED_SYMBOLS.get(path)
         if sym is None:
             guardrail_rule = next(
@@ -3235,10 +3236,6 @@ def parse_entries() -> list[Entry]:
         m = re.match(r"([^:]+):(\d+):(?:class |def |async def )([A-Za-z_][A-Za-z0-9_]*)", line)
         if m:
             add(m.group(1), m.group(3), "domain_object", "workline")
-
-    # 5b. Business legacy cleanup 后,已迁入 material-flow contracts/services 的 domain
-    # 符号仍按 legacy path 进入 matrix,保证 audit trace 与 ledger 稳定。
-    _add_migrated_domain_entries(add)
 
     # 6. workline_runtime + workline_plugins (class + def)
     for line in git_grep(

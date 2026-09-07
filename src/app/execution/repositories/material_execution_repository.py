@@ -47,16 +47,15 @@ class MaterialExecutionRepository(BaseRepository[MaterialExecution]):
         db: AsyncSession,
         *,
         workline_id: int,
-        line_run_epoch_id: int,
     ) -> MaterialExecution | None:
-        """锁定同一 WorkLine/Epoch 中不可越过的最早活动物料。"""
+        """锁定同一 WorkLine/WorkLine 中不可越过的最早活动物料。"""
 
         columns = cast("Any", MaterialExecution).__table__.c
         result = await db.execute(
             select(MaterialExecution)
             .where(
                 columns.workline_id == workline_id,
-                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.workline_id == workline_id,
                 columns.status != MaterialExecutionStatus.CLOSED,
                 columns.admission_received_at.is_not(None),
                 columns.admission_evidence_id.is_not(None),

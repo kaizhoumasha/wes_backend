@@ -312,7 +312,7 @@ def _extract_bin_mounts(post_exchange_relations: Mapping[str, Any]) -> list[dict
             continue
         rack_code = coerce_optional_str(item.get("rack_code")) or default_rack_code
         rack_slot_code = coerce_optional_str(item.get("rack_slot_code")) or coerce_optional_str(item.get("slot_code"))
-        bin_code = coerce_optional_str(item.get("bin_code")) or coerce_optional_str(item.get("bin_id"))
+        bin_code = coerce_optional_str(item.get("bin_code"))
         if rack_code is None or rack_slot_code is None or bin_code is None:
             continue
         mounts.append(

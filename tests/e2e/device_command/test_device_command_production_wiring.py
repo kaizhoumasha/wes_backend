@@ -16,7 +16,7 @@ from src.app.device.models.device import Device
 from src.app.device.models.evidence import DeviceStatusObservation
 from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -113,10 +113,9 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
             evidence = await db.scalar(select(InboundEvidence).where(InboundEvidence.command_code == command_code))
 
         assert command is not None and command.status == CommandStatus.SUCCEEDED
-        assert command.line_run_epoch_id is None
-        assert command.device_binding_id is None
+        assert command.workline_id is None
         assert command.material_execution_id is None
-        assert evidence is not None and evidence.line_run_epoch_id is None
+        assert evidence is not None and evidence.workline_id is None
         assert evidence.material_execution_id is None
         assert snapshot.callback is not None and snapshot.callback.result == "SUCCESS"
         assert ecs_server.status_requests == [f"ARM-E2E-MANUAL-{suffix}", f"ARM-E2E-MANUAL-{suffix}"]
@@ -167,8 +166,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
     suffix = uuid4().hex[:12]
     line_id: int | None = None
     device_id: int | None = None
-    epoch_id: int | None = None
-    binding_id: int | None = None
     command_code: str | None = None
     callback_server: WesCallbackServer | None = None
     ecs_server: UniformEcsServer | None = None
@@ -187,10 +184,6 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 )
                 await db.execute(delete(DeviceCommand).where(DeviceCommand.command_code == command_code))
                 await db.execute(delete(InboundEvidence).where(InboundEvidence.command_code == command_code))
-            if binding_id is not None:
-                await db.execute(delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.id == binding_id))
-            if epoch_id is not None:
-                await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
             if device_id is not None:
                 await db.execute(delete(Device).where(Device.id == device_id))
             if line_id is not None:
@@ -225,22 +218,13 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
         assert line_id is not None
         assert device_id is not None
         async with integration_session_factory.begin() as db:
-            epoch = LineRunEpoch(
-                epoch_code=f"EPOCH-E2E-{suffix}",
-                workline_id=line_id,
-                plugin_key="device_command_test",
-                plugin_version="1.0.0",
-                flow_mode="TEST",
-                topology_digest="a" * 64,
-                configuration_digest="b" * 64,
-                configuration_snapshot_json={},
-                started_at=timezone.now_for_db(),
-            )
-            db.add(epoch)
-            await db.flush()
-            epoch_id = epoch.id
-            binding = LineRunEpochDeviceBinding(
-                line_run_epoch_id=epoch.id,
+            workline = await db.get(WorkLine, line_id)
+            workline.plugin_key = "device_command_test"
+            workline.plugin_version = "1.0.0"
+            workline.flow_mode = "TEST"
+            workline.is_active = True
+            binding = WorkLineDeviceBinding(
+                workline_id=workline.id,
                 device_id=device_id,
                 device_code=f"ARM-E2E-{suffix}",
                 device_role="ROBOT_ARM",
@@ -250,14 +234,23 @@ async def test_real_broker_ecs_callback_worker_and_postgresql_close_command(
                 status_max_age_ms=30_000,
                 command_timeout_ms=30_000,
             )
-            db.add(binding)
+            workline.config = {"device_bindings": {binding.device_role: binding.device_code}}
+            workline.device_contracts = {
+                binding.device_code: {
+                    "device_id": binding.device_id,
+                    "endpoint_base_url": binding.endpoint_base_url,
+                    "contract_key": binding.contract_key,
+                    "contract_version": binding.contract_version,
+                    "status_max_age_ms": binding.status_max_age_ms,
+                    "command_timeout_ms": binding.command_timeout_ms,
+                }
+            }
             await db.flush()
-            binding_id = binding.id
 
         handle = await DeviceCommandService(session_factory=integration_session_factory).create_command(
             DeviceCommandRequest(
                 device_code=f"ARM-E2E-{suffix}",
-                line_run_epoch_id=epoch_id,
+                workline_id=line_id,
                 execution_ref_type="E2E_EXECUTION",
                 execution_ref_id=f"EXEC-{suffix}",
                 material_execution_id=None,

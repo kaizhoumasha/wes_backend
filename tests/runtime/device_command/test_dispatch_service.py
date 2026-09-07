@@ -10,7 +10,6 @@ import pytest
 from src.app.device.contracts import EcsDeviceStatus, EcsSubmitDisposition, EcsSubmitResult
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_dispatch_service import DeviceDispatchService
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
 
 
 class FakeBegin(AbstractAsyncContextManager[object]):
@@ -74,21 +73,6 @@ class FakeCommandRepository:
         command.reconciliation_reason = "ACK_AFTER_DEADLINE"
         command.transition_to(CommandStatus.RECONCILING)
         command.claim_token = None
-
-
-class FakeEpochRepository:
-    def __init__(self, binding: LineRunEpochDeviceBinding | None, events: list[str] | None = None) -> None:
-        self.binding = binding
-        self.events = events
-
-    async def get_binding_for_dispatch(self, _db, *, line_run_epoch_id, device_code):
-        if self.events is not None:
-            self.events.append("binding")
-        if self.binding is None:
-            return None
-        if (line_run_epoch_id, device_code) == (self.binding.line_run_epoch_id, self.binding.device_code):
-            return self.binding
-        return None
 
 
 class FakeObservationRepository:
@@ -168,8 +152,10 @@ def _command() -> DeviceCommand:
         id=31,
         command_code="CMD-001",
         device_code="ARM-01",
-        line_run_epoch_id=11,
-        device_binding_id=21,
+        workline_id=11,
+        endpoint_base_url="http://ecs-dispatch:8080",
+        command_timeout_ms=30_000,
+        status_max_age_ms=1_000,
         execution_ref_type="TEST",
         execution_ref_id="EXEC-001",
         material_execution_id=None,
@@ -180,21 +166,6 @@ def _command() -> DeviceCommand:
         payload_digest="a" * 64,
         deadline_at=now + timedelta(minutes=1),
         created_at=now,
-    )
-
-
-def _binding() -> LineRunEpochDeviceBinding:
-    return LineRunEpochDeviceBinding(
-        id=21,
-        line_run_epoch_id=11,
-        device_id=7,
-        device_code="ARM-01",
-        device_role="PLACEMENT_DEVICE",
-        endpoint_base_url="http://ecs-dispatch:8080",
-        contract_key="arm.pick",
-        contract_version="2.0",
-        status_max_age_ms=1_000,
-        command_timeout_ms=30_000,
     )
 
 
@@ -217,7 +188,6 @@ async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expect
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding(), events),  # type: ignore[arg-type]
         observation_repository=observations,  # type: ignore[arg-type]
         adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -230,25 +200,22 @@ async def test_dispatch_result_is_fenced_into_reliable_state(disposition, expect
     assert [item["command_code"] for item in adapter.submitted] == ["CMD-001"]
     assert len(observations.created) == 1
     assert provider.requested == ["http://ecs-dispatch:8080"]
-    assert events[:2] == ["binding", "provider"]
+    assert events == ["provider"]
 
 
 @pytest.mark.asyncio
 async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_lookup() -> None:
     command = _command()
     command.execution_ref_type = "MANUAL_DEBUG"
-    command.line_run_epoch_id = None
-    command.device_binding_id = None
+    command.workline_id = None
     object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
     object.__setattr__(command, "command_timeout_ms", 30_000)
     adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     provider = FakeAdapterProvider(adapter)
-    epoch_repository = FakeEpochRepository(None)
     observations = FakeObservationRepository()
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=epoch_repository,  # type: ignore[arg-type]
         observation_repository=observations,  # type: ignore[arg-type]
         adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -277,8 +244,7 @@ async def test_manual_debug_dispatch_uses_frozen_command_endpoint_without_epoch_
 async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
     command = _command()
     command.execution_ref_type = "MANUAL_DEBUG"
-    command.line_run_epoch_id = None
-    command.device_binding_id = None
+    command.workline_id = None
     object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
     object.__setattr__(command, "command_timeout_ms", 30_000)
     adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
@@ -291,7 +257,6 @@ async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -307,15 +272,13 @@ async def test_manual_debug_unsupported_task_is_failed_before_submit() -> None:
 async def test_manual_debug_status_failure_is_retryable_without_submit() -> None:
     command = _command()
     command.execution_ref_type = "MANUAL_DEBUG"
-    command.line_run_epoch_id = None
-    command.device_binding_id = None
+    command.workline_id = None
     object.__setattr__(command, "endpoint_base_url", "http://ecs-mock:8080")
     object.__setattr__(command, "command_timeout_ms", 30_000)
     adapter = UnavailableStatusAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -330,15 +293,13 @@ async def test_manual_debug_status_failure_is_retryable_without_submit() -> None
 async def test_event_debug_status_failure_is_terminal_without_delayed_retry() -> None:
     command = _command()
     command.execution_ref_type = "EVENT_DEBUG"
-    command.line_run_epoch_id = None
-    command.device_binding_id = None
+    command.workline_id = None
     object.__setattr__(command, "endpoint_base_url", "http://10.24.209.26:8080")
     object.__setattr__(command, "command_timeout_ms", 30_000)
     adapter = UnavailableStatusAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -354,15 +315,13 @@ async def test_event_debug_status_failure_is_terminal_without_delayed_retry() ->
 async def test_event_debug_retryable_rejection_is_terminal_without_delayed_retry() -> None:
     command = _command()
     command.execution_ref_type = "EVENT_DEBUG"
-    command.line_run_epoch_id = None
-    command.device_binding_id = None
+    command.workline_id = None
     object.__setattr__(command, "endpoint_base_url", "http://10.24.209.26:8080")
     object.__setattr__(command, "command_timeout_ms", 30_000)
     adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED))
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(None),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13, 0, 0, 0, 500_000),
@@ -375,17 +334,17 @@ async def test_event_debug_retryable_rejection_is_terminal_without_delayed_retry
 
 @pytest.mark.asyncio
 async def test_missing_or_invalid_binding_endpoint_never_reaches_http() -> None:
-    for binding, provider_error in (
+    for endpoint, provider_error in (
         (None, None),
-        (_binding(), ValueError("invalid endpoint")),
+        ("http://ecs-dispatch:8080", ValueError("invalid endpoint")),
     ):
         command = _command()
+        command.endpoint_base_url = endpoint
         adapter = FakeAdapter(EcsSubmitResult(EcsSubmitDisposition.ACKNOWLEDGED))
         provider = FakeAdapterProvider(adapter, error=provider_error)
         service = DeviceDispatchService(
             session_factory=FakeSessions(),  # type: ignore[arg-type]
             command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-            epoch_repository=FakeEpochRepository(binding),  # type: ignore[arg-type]
             observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
             adapter_provider=provider,  # type: ignore[arg-type]
         )
@@ -403,7 +362,6 @@ async def test_status_probe_failure_returns_to_pending_because_command_was_not_s
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
     )
@@ -420,7 +378,6 @@ async def test_command_crossing_deadline_during_status_probe_is_timed_out_before
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=lambda: command.deadline_at,
@@ -439,7 +396,6 @@ async def test_command_crossing_deadline_after_admission_is_timed_out_at_final_s
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter([command.deadline_at - timedelta(microseconds=1), command.deadline_at]).__next__,
@@ -457,7 +413,6 @@ async def test_retryable_response_uses_retry_after_delay() -> None:
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter(
@@ -483,7 +438,6 @@ async def test_huge_retry_after_is_fenced_by_command_deadline() -> None:
     service = DeviceDispatchService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(command),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(_binding()),  # type: ignore[arg-type]
         observation_repository=FakeObservationRepository(),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(adapter),  # type: ignore[arg-type]
         clock=iter([datetime(2026, 8, 13, 0, 0, 0, 500_000), response_at, response_at, response_at]).__next__,
@@ -503,7 +457,6 @@ async def test_ack_received_after_deadline_enters_reconciliation_with_response_t
     service = DeviceDispatchService(
         session_factory=FakeSessions(),
         command_repository=FakeCommandRepository(command),
-        epoch_repository=FakeEpochRepository(_binding()),
         observation_repository=FakeObservationRepository(),
         adapter_provider=FakeAdapterProvider(adapter),
         clock=iter(

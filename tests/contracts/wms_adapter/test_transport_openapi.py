@@ -52,7 +52,8 @@ def test_transport_openapi_models_faces_as_opaque_non_empty_strings_without_nul(
     assert schemas
     assert all(schema["type"] == "string" and schema["minLength"] == 1 for schema in schemas)
     assert all(schema["pattern"] == "^[^\\u0000]+$" for schema in schemas)
-    assert all({"enum", "maxLength", "format"}.isdisjoint(schema) for schema in schemas)
+    assert all(schema["maxLength"] == 10 for schema in schemas)
+    assert all({"enum", "format"}.isdisjoint(schema) for schema in schemas)
 
 
 def test_transport_openapi_closes_bin_result_member_counts_by_kind() -> None:

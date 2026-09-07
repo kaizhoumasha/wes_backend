@@ -89,7 +89,7 @@ class DeviceCommandRequestData(BaseMixin):
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     device_code: str = Field(min_length=1, max_length=100)
-    line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id")
+    workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
     execution_ref_type: str = Field(min_length=1, max_length=50)
     execution_ref_id: str = Field(min_length=1, max_length=120)
     material_execution_id: int | None = Field(foreign_key="wes_biz.material_executions.id", index=True)
@@ -101,6 +101,7 @@ class DeviceCommandRequestData(BaseMixin):
     trace_id: str | None = Field(default=None, max_length=100)
     endpoint_base_url: str | None = Field(default=None, max_length=255)
     command_timeout_ms: int | None = Field(default=None, gt=0)
+    status_max_age_ms: int | None = Field(default=None, gt=0)
     execution_reason: str | None = Field(default=None, max_length=500)
 
     @field_validator(
@@ -181,13 +182,11 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         ),
         CheckConstraint("attempt_count >= 0", name="device_command_attempt_count_nonnegative"),
         CheckConstraint(
-            "((execution_ref_type IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND line_run_epoch_id IS NULL "
-            "AND device_binding_id IS NULL AND material_execution_id IS NULL "
-            "AND endpoint_base_url IS NOT NULL "
-            "AND command_timeout_ms IS NOT NULL) OR "
-            "(execution_ref_type NOT IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND line_run_epoch_id IS NOT NULL "
-            "AND device_binding_id IS NOT NULL AND endpoint_base_url IS NULL "
-            "AND command_timeout_ms IS NULL))",
+            "endpoint_base_url IS NOT NULL AND command_timeout_ms IS NOT NULL AND "
+            "((execution_ref_type IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND workline_id IS NULL "
+            "AND material_execution_id IS NULL) OR "
+            "(execution_ref_type NOT IN ('MANUAL_DEBUG', 'EVENT_DEBUG') AND workline_id IS NOT NULL "
+            "AND status_max_age_ms IS NOT NULL AND status_max_age_ms > 0))",
             name="device_command_execution_context_complete",
         ),
         CheckConstraint(
@@ -217,7 +216,7 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
         ),
         Index("ix_device_commands_dispatch_claim", "status", "next_attempt_at", "id"),
         UniqueConstraint(
-            "line_run_epoch_id",
+            "workline_id",
             "device_code",
             "execution_ref_type",
             "execution_ref_id",
@@ -241,11 +240,6 @@ class DeviceCommand(DeviceCommandRequestData, EnterpriseMixin, DataTableMixin, t
     )
 
     command_code: str = Field(min_length=1, max_length=100)
-    device_binding_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.line_run_epoch_device_bindings.id",
-        index=True,
-    )
     payload_digest: str = Field(min_length=64, max_length=64)
     status: CommandStatus = Field(
         default=CommandStatus.PENDING,

@@ -10,7 +10,6 @@ from wes_plugin_sdk import (
     CompleteExecution,
     CreateDeviceCommand,
     CreateTransportTask,
-    CreateWmsConfirmation,
     FactReference,
     PauseForReconciliation,
     TransportRackPosition,
@@ -18,13 +17,21 @@ from wes_plugin_sdk import (
     TransportZonePosition,
     Wait,
 )
+from wes_plugin_sdk.wms_types import (
+    AdmissionIntent,
+    InboundWmsIntent,
+    NgPlacementIntent,
+    PlacementIntent,
+    ReplacementPlanIntent,
+    TargetIntent,
+)
 
 from src.app.device.contracts import DeviceCommandRequest
+from src.app.execution.config import WMS_CONFIRMATION_DISPATCH_WINDOW
 from src.app.execution.models import InboundEvidence, MaterialExecution, TransportDecisionBinding
 from src.app.execution.models.material_execution import MaterialExecutionStatus
 from src.app.execution.repositories import transport_decision_binding_repository
 from src.app.execution.services.wms_confirmation_service import (
-    WMS_CONFIRMATION_DISPATCH_WINDOW,
     WmsConfirmationIdentityConflictResult,
 )
 from src.app.transport.contracts import (
@@ -35,25 +42,25 @@ from src.app.transport.contracts import (
     TransportExecutionAuthority,
     ZonePosition,
 )
-from src.app.wms_adapter.inbound_wire import parse_outbound_request
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
+from src.app.wms_adapter.inbound_material.typed import encode_request
+from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+    from src.app.workline.activation import WorkLineDeviceBinding
 
 
-class EpochRepositoryPort(Protocol):
+class WorkLineRepositoryPort(Protocol):
     async def get_binding_by_role_and_code_for_update(
         self,
         db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         device_role: str,
         device_code: str,
-    ) -> LineRunEpochDeviceBinding | None: ...
+    ) -> WorkLineDeviceBinding | None: ...
 
 
 class DeviceCommandServicePort(Protocol):
@@ -65,13 +72,13 @@ class WmsConfirmationServicePort(Protocol):
 
 
 class TransportBindingRepositoryPort(Protocol):
-    async def lock_resource_fence(self, db: object, *, line_run_epoch_id: int, resource_fence_id: str) -> None: ...
+    async def lock_resource_fence(self, db: object, *, workline_id: int, resource_fence_id: str) -> None: ...
 
     async def lock_decision_identity(
         self,
         db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         correlation_id: str,
         step: str,
     ) -> None: ...
@@ -80,7 +87,7 @@ class TransportBindingRepositoryPort(Protocol):
         self,
         db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         correlation_id: str,
         step: str,
     ) -> TransportDecisionBinding | None: ...
@@ -103,7 +110,11 @@ class MaterialExecutionServicePort(Protocol):
 _DECISION_DISCRIMINATORS: dict[type[object], str] = {
     Wait: "WAIT",
     CreateDeviceCommand: "CREATE_DEVICE_COMMAND",
-    CreateWmsConfirmation: "CREATE_WMS_CONFIRMATION",
+    AdmissionIntent: "INBOUND_MATERIAL_ADMISSION_DECIDE",
+    TargetIntent: "INBOUND_MATERIAL_TARGET_DECIDE",
+    PlacementIntent: "INBOUND_MATERIAL_PLACEMENT_REPORT",
+    NgPlacementIntent: "INBOUND_MATERIAL_NG_PLACEMENT_REPORT",
+    ReplacementPlanIntent: "INBOUND_SOURCE_RACK_REPLACEMENT_PLAN_DECIDE",
     CreateTransportTask: "CREATE_TRANSPORT_TASK",
     PauseForReconciliation: "PAUSE_FOR_RECONCILIATION",
     CompleteExecution: "COMPLETE_EXECUTION",
@@ -132,7 +143,7 @@ class DecisionApplier:
     def __init__(
         self,
         *,
-        epoch_repository: EpochRepositoryPort | None = None,
+        workline_repository: WorkLineRepositoryPort | None = None,
         device_command_service: DeviceCommandServicePort,
         wms_confirmation_service: WmsConfirmationServicePort,
         transport_binding_repository: TransportBindingRepositoryPort | None = None,
@@ -141,7 +152,7 @@ class DecisionApplier:
         clock: Any = timezone.now_for_db,
         uuid_factory: Any = new_uuid7,
     ) -> None:
-        self._epochs: EpochRepositoryPort = epoch_repository or line_run_epoch_repository
+        self._worklines: WorkLineRepositoryPort = workline_repository or WorkLineRepository()
         self._device_commands = device_command_service
         self._wms_confirmations = wms_confirmation_service
         self._transport_bindings: TransportBindingRepositoryPort = (
@@ -213,7 +224,7 @@ class DecisionApplier:
             return
         if type(decision) is CreateDeviceCommand:
             await self._create_device_command(db, evidence, execution, ordinal, decision, now)
-        elif type(decision) is CreateWmsConfirmation:
+        elif isinstance(decision, InboundWmsIntent):
             await self._create_wms_confirmation(db, evidence, execution, decision, now)
         elif type(decision) is CreateTransportTask:
             await self._create_transport_task(db, evidence, execution, decision)
@@ -230,14 +241,14 @@ class DecisionApplier:
         decision: CreateDeviceCommand,
         now: datetime,
     ) -> None:
-        binding = await self._epochs.get_binding_by_role_and_code_for_update(
+        binding = await self._worklines.get_binding_by_role_and_code_for_update(
             db,
-            line_run_epoch_id=execution.line_run_epoch_id,
+            workline_id=execution.workline_id,
             device_role=decision.device_role,
             device_code=decision.device_code,
         )
         if binding is None:
-            raise LookupError(f"Epoch 未绑定指定设备: {decision.device_role}/{decision.device_code}")
+            raise LookupError(f"WorkLine 未绑定指定设备: {decision.device_role}/{decision.device_code}")
         params = {
             "material_trace_id": decision.material_trace_id,
             "source": asdict(decision.source),
@@ -247,7 +258,7 @@ class DecisionApplier:
             db,
             DeviceCommandRequest(
                 device_code=binding.device_code,
-                line_run_epoch_id=execution.line_run_epoch_id,
+                workline_id=execution.workline_id,
                 execution_ref_type="PLUGIN_DECISION",
                 execution_ref_id=(f"evidence:{evidence.id}:execution:{execution.id}:CREATE_DEVICE_COMMAND:{ordinal}"),
                 material_execution_id=cast("int", execution.id),
@@ -264,21 +275,14 @@ class DecisionApplier:
         db: object,
         evidence: InboundEvidence,
         execution: MaterialExecution,
-        decision: CreateWmsConfirmation,
+        decision: InboundWmsIntent,
         now: datetime,
     ) -> None:
         timestamp = int(timezone.to_utc(evidence.received_at).timestamp() * 1000)
-        request_payload = parse_outbound_request(
-            {
-                "operation": decision.operation,
-                "operation_id": decision.operation_id,
-                "timestamp": timestamp,
-                "data": decision.request_data,
-            }
-        ).model_dump(mode="json", exclude_none=True)
+        request_payload = encode_request(decision, timestamp=timestamp)
         result = await self._wms_confirmations.create_or_get(
             db,
-            operation=decision.operation,
+            operation=request_payload["operation"],
             operation_id=decision.operation_id,
             material_execution_id=cast("int", execution.id),
             request_payload=request_payload,
@@ -298,18 +302,18 @@ class DecisionApplier:
         step = decision.step
         await self._transport_bindings.lock_resource_fence(
             db,
-            line_run_epoch_id=execution.line_run_epoch_id,
+            workline_id=execution.workline_id,
             resource_fence_id=decision.resource_fence_id,
         )
         await self._transport_bindings.lock_decision_identity(
             db,
-            line_run_epoch_id=execution.line_run_epoch_id,
+            workline_id=execution.workline_id,
             correlation_id=decision.correlation_id,
             step=step,
         )
         binding = await self._transport_bindings.get_by_decision_identity_for_update(
             db,
-            line_run_epoch_id=execution.line_run_epoch_id,
+            workline_id=execution.workline_id,
             correlation_id=decision.correlation_id,
             step=step,
         )
@@ -319,14 +323,14 @@ class DecisionApplier:
                 TransportDecisionBinding(
                     correlation_id=decision.correlation_id,
                     step=step,
-                    line_run_epoch_id=execution.line_run_epoch_id,
+                    workline_id=execution.workline_id,
                     resource_fence_id=decision.resource_fence_id,
                     client_request_id=self._uuid_factory(),
                     source_evidence_id=cast("int", evidence.id),
                 ),
             )
         elif (
-            binding.line_run_epoch_id != execution.line_run_epoch_id
+            binding.workline_id != execution.workline_id
             or binding.resource_fence_id != decision.resource_fence_id
             or binding.source_evidence_id != evidence.id
         ):
@@ -358,7 +362,6 @@ class DecisionApplier:
             rcs_template_id=RcsTemplateId(decision.rcs_template_id.value),
             execution_authority=TransportExecutionAuthority(
                 workline_id=execution.workline_id,
-                line_run_epoch_id=execution.line_run_epoch_id,
             ),
         )
 

@@ -8,7 +8,10 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
+| `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | 部分实施：WMS bin_code 与 NG 出口 operation 清理已纳入 Operation 基线；内部 Transport 改名与 BinExecution 退役待实施，未部署 |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
+| `specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置、基础独立性及专属配置清理 | 工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
+| `specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | WMS Operation 实施与 prepare Coordinator/Policy 当前边界 | 持续实施；prepare 所有权已收敛，插件业务触发和联合验收另行跟踪 |
 | `specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构主真源 | Approved |
 | `specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 自动出库 `PickingTask` 与人工分拣 Bin 流转设计；Task 入站、PDA/WMS 物料业务、Epoch 级跨任务 FIFO 和物理清场边界 | ReviewRequired |
 | `specs/2026-08-14-wes-wms-transport-dto-design.md` | WES-WMS Transport DTO 直接替换目标设计和实施验收基线 | Approved；WES 本地代码、OpenAPI 和行为测试为 `ALIGNED`，不代表 WMS 实现、联调或现场验收完成 |
@@ -24,7 +27,6 @@
 | `plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段收敛总控 | In progress；Phase 1–11 已完成并包含在当前 backend 联调部署中；Phase 12 Task 0–1 已具备 Bootstrap 启动条件，Task 2–7 在人工合同冻结且开发环境验证通过前不得开始；Phase 13–14 未开始；当前运行门禁为 `BLOCK`，不等于现场验收完成 |
 | `plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 | In progress；治理分支已从 `gitlab/develop@f51677b6` 建立 |
 | `../integration/rough-sorter-joint-acceptance.md` | Phase 8 后端 RC、不可变镜像证据与外部验收边界的唯一当前状态真源 | 后端 RC CLOSED；供应商与现场联合验收 NOT RUN |
-| `plans/2026-08-19-rough-sorter-workline-epoch-activation.md` | WorkLine Epoch 激活与多 Endpoint 派发增量实施真源 | 后端工程包 1–4 已合入 `develop@bda2079d`；前端按独立仓库计划推进，不阻塞后端 RC |
 | `plans/2026-08-18-wes-onsite-data-recovery.md` | PostgreSQL 小时级备份、异机副本和同版本恢复演练 | Gated；实施未开始，现场异机目标与外部成功监控未提供前不得宣称灾难恢复闭环 |
 | `plans/2026-08-18-wes-onsite-runtime-hardening.md` | Beat、Redis、Nginx 与 PostgreSQL 现场运行约束的独立加固 | Planned；按可独立审核/回滚切片实施，不承担数据恢复或业务验收 |
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
@@ -35,6 +37,9 @@
 | `plans/2026-08-26-transport-integration-diagnostics.md` | 运输接入诊断的风险匹配实施切片、验证和现场交接入口 | Implemented and merged；仓内验证已完成并已部署联调；现场交接与验收未执行 |
 
 ## 项目外历史归档
+
+- `../archive_docs/wes_backend/2026-08-19-rough-sorter-workline-epoch-activation.md`
+- `../archive_docs/wes_backend/docs/superpowers/specs/2026-09-04-workline-plugin-selection-and-switching-design.md`
 
 以下文档已完成或已由当前设计取代，仅在项目外保留完整
 历史内容：

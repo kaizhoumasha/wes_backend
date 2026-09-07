@@ -26,7 +26,7 @@ class Scan12EvidenceEvaluation:
     disposition: Scan12EvidenceDisposition
     evidence_id: int | None = None
     source_event_id: str | None = None
-    bin_id: str | None = None
+    bin_code: str | None = None
     reason_code: str | None = None
 
 
@@ -59,13 +59,13 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
     barcode = event.data.get("barcode")
     if not isinstance(barcode, str) or not barcode:
         return _attention(evidence_id, "INVALID_BARCODE", source_event_id=event.source_event_id)
-    bin_id = _match_selected_bin_id(barcode, selected_bins)
-    if bin_id is None:
+    bin_code = _match_selected_bin_code(barcode, selected_bins)
+    if bin_code is None:
         return _ignore(
             evidence_id,
             "UNSELECTED_BIN",
             source_event_id=event.source_event_id,
-            bin_id=barcode,
+            bin_code=barcode,
         )
     apply_result = _evaluate_apply_status(evidence, evidence_id, event.source_event_id)
     if apply_result is not None:
@@ -74,11 +74,11 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
         disposition=Scan12EvidenceDisposition.MATCH,
         evidence_id=evidence_id,
         source_event_id=event.source_event_id,
-        bin_id=bin_id,
+        bin_code=bin_code,
     )
 
 
-def _match_selected_bin_id(barcode: str, selected_bins: frozenset[str]) -> str | None:
+def _match_selected_bin_code(barcode: str, selected_bins: frozenset[str]) -> str | None:
     if barcode in selected_bins:
         return barcode
     if len(barcode) > 2 and barcode[-2:] in _SCAN12_DIRECTION_SUFFIXES:
@@ -148,13 +148,13 @@ def _ignore(
     reason_code: str,
     *,
     source_event_id: str | None = None,
-    bin_id: str | None = None,
+    bin_code: str | None = None,
 ) -> Scan12EvidenceEvaluation:
     return Scan12EvidenceEvaluation(
         disposition=Scan12EvidenceDisposition.IGNORE,
         evidence_id=evidence_id,
         source_event_id=source_event_id,
-        bin_id=bin_id,
+        bin_code=bin_code,
         reason_code=reason_code,
     )
 

@@ -29,7 +29,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceKind,
 )
 from src.app.execution.repositories.inbound_evidence_repository import InboundEvidenceRepository
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
 
 
@@ -180,8 +180,7 @@ async def _seed_blocked_event(db) -> tuple[InboundEvidence, DeviceEventCommandBl
     command = DeviceCommand(
         command_code=f"CMD-EVENT-BLOCK-{identity[:12]}",
         device_code=device_code,
-        line_run_epoch_id=None,
-        device_binding_id=None,
+        workline_id=None,
         execution_ref_type="EVENT_DEBUG",
         execution_ref_id=source_event_id,
         material_execution_id=None,
@@ -231,21 +230,12 @@ async def _seed_result_race(db) -> tuple[InboundEvidence, DeviceEventCommandBloc
     )
     db.add(device)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"EPOCH-EVENT-BLOCK-{identity[:12]}",
+    line.plugin_key = "event_block_test"
+    line.plugin_version = "1.0.0"
+    line.flow_mode = "TEST"
+    line.is_active = True
+    binding = WorkLineDeviceBinding(
         workline_id=line.id,
-        plugin_key="event_block_test",
-        plugin_version="1.0.0",
-        flow_mode="TEST",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=datetime(2026, 8, 27, 9, 0),
-    )
-    db.add(epoch)
-    await db.flush()
-    binding = LineRunEpochDeviceBinding(
-        line_run_epoch_id=epoch.id,
         device_id=device.id,
         device_code=device.device_code,
         device_role="ROBOT_ARM",
@@ -255,7 +245,17 @@ async def _seed_result_race(db) -> tuple[InboundEvidence, DeviceEventCommandBloc
         status_max_age_ms=5_000,
         command_timeout_ms=30_000,
     )
-    db.add(binding)
+    line.config = {"device_bindings": {binding.device_role: binding.device_code}}
+    line.device_contracts = {
+        binding.device_code: {
+            "device_id": binding.device_id,
+            "endpoint_base_url": binding.endpoint_base_url,
+            "contract_key": binding.contract_key,
+            "contract_version": binding.contract_version,
+            "status_max_age_ms": binding.status_max_age_ms,
+            "command_timeout_ms": binding.command_timeout_ms,
+        }
+    }
     await db.flush()
     source_event_id = f"EVENT:{identity}"
     evidence = InboundEvidence(
@@ -275,7 +275,7 @@ async def _seed_result_race(db) -> tuple[InboundEvidence, DeviceEventCommandBloc
             }
         ).model_dump(mode="json", exclude_unset=True),
         received_at=datetime(2026, 8, 27, 10, 0),
-        line_run_epoch_id=epoch.id,
+        workline_id=line.id,
         device_code=device.device_code,
         contract_key=binding.contract_key,
         contract_version=binding.contract_version,
@@ -287,8 +287,10 @@ async def _seed_result_race(db) -> tuple[InboundEvidence, DeviceEventCommandBloc
     command = DeviceCommand(
         command_code=f"CMD-EVENT-BLOCK-{identity[:12]}",
         device_code=device.device_code,
-        line_run_epoch_id=epoch.id,
-        device_binding_id=binding.id,
+        workline_id=line.id,
+        endpoint_base_url=binding.endpoint_base_url,
+        status_max_age_ms=binding.status_max_age_ms,
+        command_timeout_ms=binding.command_timeout_ms,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id=f"EXEC-{identity}",
         material_execution_id=None,
@@ -378,16 +380,11 @@ async def cleanup_event_block_reconciliation_rows(integration_session_factory):
     yield
     async with integration_session_factory.begin() as db:
         evidence_ids = select(InboundEvidence.id).where(InboundEvidence.device_code.like("ARM-EVENT-BLOCK-%"))
-        epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like("EPOCH-EVENT-BLOCK-%"))
         device_ids = select(Device.id).where(Device.device_code.like("ARM-EVENT-BLOCK-%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like("LINE-EVENT-BLOCK-%"))
         await db.execute(delete(DeviceEventCommandBlock).where(DeviceEventCommandBlock.evidence_id.in_(evidence_ids)))
         await db.execute(delete(DeviceCommand).where(DeviceCommand.device_code.like("ARM-EVENT-BLOCK-%")))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
-        await db.execute(
-            delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.line_run_epoch_id.in_(epoch_ids))
-        )
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_(epoch_ids)))
         await db.execute(delete(Device).where(Device.id.in_(device_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
 
@@ -617,8 +614,7 @@ async def test_postgresql_old_block_id_cannot_reprocess_new_blocker_generation(i
         active_command = DeviceCommand(
             command_code=f"CMD-ACTIVE-{uuid4().hex[:12]}",
             device_code=device_code,
-            line_run_epoch_id=None,
-            device_binding_id=None,
+            workline_id=None,
             execution_ref_type="MANUAL_DEBUG",
             execution_ref_id=f"MANUAL:{uuid4().hex}",
             material_execution_id=None,

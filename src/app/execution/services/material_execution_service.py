@@ -18,7 +18,7 @@ class InitialExecutionCorrelationConflictError(ValueError):
 
 
 class MaterialExecutionFifoBlockedError(ValueError):
-    """请求物料不是当前 WorkLine/Epoch 不可越过的 FIFO 队头。"""
+    """请求物料不是当前 WorkLine/WorkLine 不可越过的 FIFO 队头。"""
 
 
 class MaterialExecutionRepositoryPort(Protocol):
@@ -37,7 +37,6 @@ class MaterialExecutionRepositoryPort(Protocol):
         db: object,
         *,
         workline_id: int,
-        line_run_epoch_id: int,
     ) -> MaterialExecution | None: ...
 
     async def flush(self, db: object) -> None: ...
@@ -63,7 +62,6 @@ class MaterialExecutionService:
         execution_code: str,
         material_trace_id: str,
         workline_id: int,
-        line_run_epoch_id: int,
         changed_at: datetime,
         reason_code: str,
         evidence_id: int,
@@ -81,7 +79,6 @@ class MaterialExecutionService:
                 execution_code=execution_code,
                 material_trace_id=material_trace_id,
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 admission_received_at=changed_at,
                 admission_evidence_id=evidence_id,
                 last_transition_reason=reason,
@@ -97,18 +94,13 @@ class MaterialExecutionService:
         execution_code: str,
         material_trace_id: str,
         workline_id: int,
-        line_run_epoch_id: int,
         changed_at: datetime,
         evidence_id: int,
     ) -> MaterialExecution:
         await self._repository.lock_material_trace(db, material_trace_id)
         active = await self._repository.get_active_by_trace_for_update(db, material_trace_id)
         if active is not None:
-            if (
-                active.execution_code != execution_code
-                or active.workline_id != workline_id
-                or active.line_run_epoch_id != line_run_epoch_id
-            ):
+            if active.execution_code != execution_code or active.workline_id != workline_id:
                 raise InitialExecutionCorrelationConflictError(material_trace_id)
             return active
         return await self._repository.add(
@@ -117,7 +109,6 @@ class MaterialExecutionService:
                 execution_code=execution_code,
                 material_trace_id=material_trace_id,
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 admission_received_at=changed_at,
                 admission_evidence_id=evidence_id,
                 last_transition_reason="INITIAL_EVIDENCE",
@@ -134,10 +125,9 @@ class MaterialExecutionService:
         head = await self._repository.get_admission_head_for_update(
             db,
             workline_id=execution.workline_id,
-            line_run_epoch_id=execution.line_run_epoch_id,
         )
         if head is None:
-            raise MaterialExecutionFifoBlockedError("当前 WorkLine/Epoch 不存在可推进的 FIFO 队头")
+            raise MaterialExecutionFifoBlockedError("当前 WorkLine/WorkLine 不存在可推进的 FIFO 队头")
         if head.id != execution.id:
             raise MaterialExecutionFifoBlockedError(
                 f"MaterialExecution {execution.execution_code} 不得越过 FIFO 队头 {head.execution_code}"

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select, text
 
+from src.app.execution.models import InboundEvidenceConflict
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.database.base_repository import BaseRepository
 
@@ -52,6 +53,36 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
             .with_for_update()
         )
 
+    async def queued_sequence_is_occupied(
+        self, db: AsyncSession, dispatch_sequence: int, *, excluding_task_id: int
+    ) -> bool:
+        # 调用方已持有目标优先序 advisory lock；不锁其他任务行，避免两个任务互换优先序形成环锁。
+        columns = cast("Any", PickingTask).__table__.c
+        return (
+            await db.scalar(
+                select(columns.id)
+                .where(
+                    columns.status == PickingTaskStatus.QUEUED,
+                    columns.dispatch_sequence == dispatch_sequence,
+                    columns.id != excluding_task_id,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    async def first_queue_rejection(self, db: AsyncSession, evidence_id: int) -> str | None:
+        columns = InboundEvidenceConflict.__table__.c
+        return await db.scalar(
+            select(columns.reason_code)
+            .where(
+                columns.first_evidence_id == evidence_id,
+                columns.reason_code.in_(("REVISION_CONFLICT", "STATE_CONFLICT", "REFERENCE_CONFLICT")),
+            )
+            .order_by(columns.id)
+            .limit(1)
+        )
+
     async def add(self, db: AsyncSession, task: PickingTask) -> PickingTask:
         db.add(task)
         await db.flush()
@@ -69,13 +100,15 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         )
         return task_id is not None
 
-    async def claim_next_manual(self, db: AsyncSession, *, now_ms: int) -> PickingTask | None:
+    async def claim_next_queued(
+        self, db: AsyncSession, *, task_type: PickingTaskType, now_ms: int
+    ) -> PickingTask | None:
         columns = cast("Any", PickingTask).__table__.c
         return await db.scalar(
             select(PickingTask)
             .where(
                 columns.status == PickingTaskStatus.QUEUED,
-                columns.task_type == PickingTaskType.MANUAL,
+                columns.task_type == task_type,
                 or_(columns.not_before_ms.is_(None), columns.not_before_ms <= now_ms),
             )
             .order_by(columns.dispatch_sequence, columns.id)

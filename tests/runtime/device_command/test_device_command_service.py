@@ -24,7 +24,7 @@ from src.app.execution.models.inbound_evidence import (
     InboundEvidenceApplyStatus,
     InboundEvidenceKind,
 )
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 
 
 class FakeBegin(AbstractAsyncContextManager[object]):
@@ -62,7 +62,7 @@ class FakeCommandRepository:
         self,
         _db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         device_code: str,
         execution_ref_type: str,
         execution_ref_id: str,
@@ -71,7 +71,7 @@ class FakeCommandRepository:
             (
                 command
                 for command in self.created
-                if command.line_run_epoch_id == line_run_epoch_id
+                if command.workline_id == workline_id
                 and command.device_code == device_code
                 and command.execution_ref_type == execution_ref_type
                 and command.execution_ref_id == execution_ref_id
@@ -110,18 +110,21 @@ class FakeCommandRepository:
         return next((command for command in self.created if command.command_code == command_code), None)
 
 
-class FakeEpochRepository:
-    def __init__(self, bindings: dict[tuple[int, str], LineRunEpochDeviceBinding]) -> None:
+class FakeWorkLineRepository:
+    def __init__(self, bindings: dict[tuple[int, str], WorkLineDeviceBinding]) -> None:
         self.bindings = bindings
+
+    async def get_for_update(self, db, workline_id):
+        return None
 
     async def get_binding_for_command_creation(
         self,
         _db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         device_code: str,
-    ) -> LineRunEpochDeviceBinding | None:
-        return self.bindings.get((line_run_epoch_id, device_code))
+    ) -> WorkLineDeviceBinding | None:
+        return self.bindings.get((workline_id, device_code))
 
 
 class FakeEvidenceRepository:
@@ -191,10 +194,9 @@ class FakeAdapterProvider:
         return self.adapter
 
 
-def _binding(device_code: str = "ARM-01") -> LineRunEpochDeviceBinding:
-    return LineRunEpochDeviceBinding(
-        id=21,
-        line_run_epoch_id=11,
+def _binding(device_code: str = "ARM-01") -> WorkLineDeviceBinding:
+    return WorkLineDeviceBinding(
+        workline_id=11,
         device_id=7,
         device_code=device_code,
         device_role="PLACEMENT_DEVICE",
@@ -209,7 +211,7 @@ def _binding(device_code: str = "ARM-01") -> LineRunEpochDeviceBinding:
 def _request(device_code: str = "ARM-01") -> DeviceCommandRequest:
     return DeviceCommandRequest(
         device_code=device_code,
-        line_run_epoch_id=11,
+        workline_id=11,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
         material_execution_id=21,
@@ -222,15 +224,15 @@ def _request(device_code: str = "ARM-01") -> DeviceCommandRequest:
     )
 
 
-def _service(*bindings: LineRunEpochDeviceBinding) -> tuple[DeviceCommandService, FakeCommandRepository]:
+def _service(*bindings: WorkLineDeviceBinding) -> tuple[DeviceCommandService, FakeCommandRepository]:
     command_repository = FakeCommandRepository()
-    epoch_repository = FakeEpochRepository(
-        {(binding.line_run_epoch_id, binding.device_code): binding for binding in bindings}
+    workline_repository = FakeWorkLineRepository(
+        {(binding.workline_id, binding.device_code): binding for binding in bindings}
     )
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=command_repository,  # type: ignore[arg-type]
-        epoch_repository=epoch_repository,  # type: ignore[arg-type]
+        workline_repository=workline_repository,  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
     )
@@ -245,7 +247,7 @@ async def test_same_session_creation_does_not_open_an_independent_transaction() 
     service = DeviceCommandService(
         session_factory=session_factory,  # type: ignore[arg-type]
         command_repository=command_repository,  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository({(binding.line_run_epoch_id, binding.device_code): binding}),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository({(binding.workline_id, binding.device_code): binding}),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
     )
 
@@ -360,8 +362,7 @@ async def test_manual_debug_command_freezes_endpoint_without_epoch_or_device_mas
     assert handle.command_code == command.command_code
     assert command.execution_ref_type == "MANUAL_DEBUG"
     assert command.execution_ref_id == "019f12d0-58d7-7b4d-a23a-1b90aa5d4471"
-    assert command.line_run_epoch_id is None
-    assert command.device_binding_id is None
+    assert command.workline_id is None
     assert command.material_execution_id is None
     assert command.endpoint_base_url == "http://ecs-mock:8080"
     assert command.command_timeout_ms == 30_000
@@ -378,7 +379,7 @@ async def test_manual_debug_idempotency_includes_endpoint_and_command_contract()
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=repository,  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository({}),  # type: ignore[arg-type]
         evidence_repository=FakeEvidenceRepository(None),  # type: ignore[arg-type]
         adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
@@ -463,7 +464,7 @@ async def test_manual_debug_snapshot_reads_normalized_callback_evidence() -> Non
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=command_repository,  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository({}),  # type: ignore[arg-type]
         evidence_repository=FakeEvidenceRepository(evidence),  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
@@ -508,7 +509,7 @@ async def test_manual_debug_preflight_returns_all_devices_with_runtime_rejection
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository({}),  # type: ignore[arg-type]
         evidence_repository=FakeEvidenceRepository(None),  # type: ignore[arg-type]
         adapter_provider=provider,  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 13),
@@ -524,12 +525,17 @@ async def test_manual_debug_preflight_returns_all_devices_with_runtime_rejection
 
 
 @pytest.mark.asyncio
-async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_business_binding() -> None:
+async def test_event_debug_command_uses_configured_endpoint_and_event_data_without_business_binding(
+    monkeypatch,
+) -> None:
+    from src.core.conf import settings
+
+    monkeypatch.setattr(settings, "DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL", "http://mock_ecs:8010")
     repository = FakeCommandRepository()
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=repository,  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository({}),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 25),
     )
     source_identity = "EVENT:" + "a" * 64
@@ -572,7 +578,7 @@ async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_bu
     assert handle.command_code == command.command_code
     assert command.execution_ref_type == "EVENT_DEBUG"
     assert command.execution_ref_id == evidence.source_identity
-    assert command.endpoint_base_url == "http://10.24.209.26:8080"
+    assert command.endpoint_base_url == "http://mock_ecs:8010"
     assert command.command_timeout_ms == 30_000
     assert command.task_type == "MOVE_FORWARD"
     assert command.params == evidence.normalized_payload["data"]
@@ -587,8 +593,7 @@ async def test_event_debug_command_records_existing_command_without_creating_pla
         id=41,
         command_code="CMD-OLD-001",
         device_code="STATION_SCAN11",
-        line_run_epoch_id=11,
-        device_binding_id=21,
+        workline_id=11,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-OLD-001",
         material_execution_id=31,
@@ -605,7 +610,7 @@ async def test_event_debug_command_records_existing_command_without_creating_pla
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         command_repository=repository,  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository({}),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository({}),  # type: ignore[arg-type]
         clock=lambda: datetime(2026, 8, 25),
     )
     evidence = InboundEvidence(

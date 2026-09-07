@@ -74,9 +74,9 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     fresh_preview = await service.converge_authorization(app, db, dry_run=True)
                     assert fresh_preview.roles == {"created": 5, "updated": 0, "skipped": 0}
                     # 设备联调入口仅由超级管理员依赖保护，不进入普通 RBAC 权限目录。
-                    assert fresh_preview.permissions.created == 149
+                    assert fresh_preview.permissions.created == 156
                     assert fresh_preview.role_permissions == {
-                        "added": 386,
+                        "added": 403,
                         "removed": 0,
                         "skipped": 0,
                         "roles_processed": 5,
@@ -124,11 +124,11 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     for role_id, permission_id in (await db.execute(select(role_permission))).all():
                         actual_role_permissions[role_names_by_id[role_id]].add(permission_names_by_id[permission_id])
                     assert {role_name: len(names) for role_name, names in actual_role_permissions.items()} == {
-                        "系统管理员": 149,
+                        "系统管理员": 156,
                         "管理员": 34,
-                        "运营人员": 100,
+                        "运营人员": 105,
                         "财务人员": 3,
-                        "普通用户": 100,
+                        "普通用户": 105,
                     }
                     assert actual_role_permissions["系统管理员"] == expected_permission_names
                     assert actual_role_permissions["财务人员"] == {
@@ -140,6 +140,11 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                         "admin:permission:ancestors",
                         "biz:workline:active-objects",
                         "biz:workline:configuration-status",
+                        "biz:workline:available-plugins",
+                        "ops:transport-debug-run:group",
+                        "ops:transport-debug-run:list",
+                        "ops:transport-debug-run:read",
+                        "ops:transport-debug-run:stream",
                     }
                     assert current_read_permissions <= actual_role_permissions["运营人员"]
                     assert current_read_permissions <= actual_role_permissions["普通用户"]
@@ -148,6 +153,14 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     assert "ops:device:debug-create" not in actual_role_permissions["普通用户"]
                     assert "biz:workline:update" not in actual_role_permissions["运营人员"]
                     assert "biz:workline:update" not in actual_role_permissions["普通用户"]
+                    for role_name in ("运营人员", "普通用户"):
+                        assert actual_role_permissions[role_name].isdisjoint(
+                            {
+                                "biz:workline:configure",
+                                "ops:transport-debug-run:start",
+                                "ops:transport-debug-run:abort",
+                            }
+                        )
 
                     permission_count = await _count(db, Permission)
                     role_permission_count = await _count(db, role_permission)
@@ -157,7 +170,7 @@ def test_fresh_bootstrap_rolls_back_atomically_converges_exactly_and_is_idempote
                     assert new_permission_preview.role_permissions == {
                         "added": 4,
                         "removed": 0,
-                        "skipped": 386,
+                        "skipped": 403,
                         "roles_processed": 5,
                     }
                     assert await _count(db, Permission) == permission_count

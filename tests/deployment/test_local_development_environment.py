@@ -13,6 +13,12 @@ def _compose(name: str) -> dict:
     return yaml.safe_load((BACKEND_ROOT / name).read_text(encoding="utf-8"))
 
 
+@pytest.mark.parametrize("service", ["api", "celery", "celery-wms-fulfillment", "celery_beat"])
+def test_local_event_debug_commands_target_mock_ecs(service: str) -> None:
+    environment = _compose("docker-compose.frontend.yml")["services"][service]["environment"]
+    assert environment["DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL"] == "http://mock_ecs:8010"
+
+
 def _run_development_check(
     tmp_path: Path,
     *,
@@ -502,3 +508,11 @@ def test_development_seed_contract_is_dev_only_and_contains_no_business_facts() 
         "库存",
     ):
         assert forbidden not in seed_source
+
+
+@pytest.mark.parametrize("service", ["api", "celery", "celery-wms-fulfillment", "celery_beat"])
+def test_development_processes_import_sdk_from_mounted_source(service: str) -> None:
+    config = _compose("docker-compose.frontend.yml")["services"][service]
+    entries = config.get("environment", {}).get("PYTHONPATH", "").split(":")
+    assert "/app/src/wes_plugin_sdk/src" in entries
+    assert "/app" in entries

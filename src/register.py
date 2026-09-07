@@ -51,6 +51,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.task_queue_gateway = task_queue_gateway
         _app.state.wms_recovery_event_handler = None
         _app.state.wms_picking_task_issued_handler = None
+        _app.state.wms_picking_task_plan_delta_handler = None
+        _app.state.wms_picking_task_queue_changed_handler = None
         _app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
         await init_db()
         if db_module.AsyncSessionLocal is None:
@@ -98,6 +100,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         )
         _app.state.outbound_picking_runtime = outbound_picking_runtime
         _app.state.wms_picking_task_issued_handler = outbound_picking_runtime.picking_task_issued_handler
+        _app.state.wms_picking_task_plan_delta_handler = outbound_picking_runtime.picking_task_plan_delta_handler
+        _app.state.wms_picking_task_queue_changed_handler = outbound_picking_runtime.picking_task_queue_changed_handler
         await init_redis()
 
         # 初始化系统健康状态缓存（乐观初始化，后续由 health_check 任务纠正）
@@ -128,6 +132,8 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
         _app.state.wms_recovery_event_handler = None
         _app.state.outbound_picking_runtime = None
         _app.state.wms_picking_task_issued_handler = None
+        _app.state.wms_picking_task_plan_delta_handler = None
+        _app.state.wms_picking_task_queue_changed_handler = None
         cleanup_errors: list[BaseException] = []
         if transport_runtime is not None:
             try:
@@ -208,6 +214,7 @@ def register_routers(app: FastAPI) -> None:
     from src.app.sys import router_v1 as sys_router
     from src.app.transport.v1 import router as transport_router
     from src.app.wms_adapter import router_v1 as wms_adapter_router
+    from src.app.wms_integration.outbound_picking.v1.plan_correction import router as picking_plan_router
     from src.app.workline import router_v1 as workline_router
 
     app.include_router(auth_router, prefix=settings.API_PATH)
@@ -220,6 +227,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
+    app.include_router(picking_plan_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)
 
 
@@ -329,10 +337,12 @@ def create_app() -> FastAPI:
         return get_swagger_ui_html(
             openapi_url=openapi_url,
             title=f"{app.title} - Swagger UI",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            oauth2_redirect_url=f"{settings.DOCS_URL}/oauth2-redirect",
             swagger_js_url=swagger_js_url,
             swagger_css_url=swagger_css_url,
+            swagger_favicon_url="",
             swagger_ui_parameters={
+                "validatorUrl": None,
                 "docExpansion": "none",
                 "defaultModelsExpandDepth": 0,
                 "persistAuthorization": True,

@@ -30,7 +30,7 @@ from src.app.execution.services import (
 )
 from src.app.transport.models import TransportEvidence, TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import WorkLine
 from src.utils.timezone import timezone
 
@@ -112,7 +112,7 @@ def build_representative_distribution(rows_per_table: int = 10_000) -> Represent
     return RepresentativeDistribution(terminal, wait_drain, block, invalid)
 
 
-async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRunEpochDeviceBinding, MaterialExecution]:
+async def _seed_bound_execution(db: AsyncSession) -> tuple[WorkLine, WorkLineDeviceBinding, MaterialExecution]:
     identity = uuid4().hex
     now = timezone.now_for_db()
     line = WorkLine(line_code=f"READINESS-{identity[:12]}", line_name="Release readiness", line_type="AUTO")
@@ -125,17 +125,10 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRun
     )
     db.add(device)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"READINESS-EPOCH-{identity[:12]}",
-        workline_id=line.id,
-        plugin_key="readiness_test",
-        plugin_version="1.0.0",
-        flow_mode="TEST",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=now,
-    )
+    line.is_active = True
+    line.plugin_key = "readiness_test"
+    line.plugin_version = "1.0.0"
+    line.flow_mode = "TEST"
     admission = InboundEvidence(
         kind="WMS_EVENT",
         source_identity=f"readiness-admission:{identity}",
@@ -149,10 +142,10 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRun
         published_at=now,
         decision_digest="d" * 64,
     )
-    db.add_all((epoch, admission))
+    db.add(admission)
     await db.flush()
-    binding = LineRunEpochDeviceBinding(
-        line_run_epoch_id=epoch.id,
+    binding = WorkLineDeviceBinding(
+        workline_id=line.id,
         device_id=device.id,
         device_code=device.device_code,
         device_role="TEST",
@@ -166,7 +159,6 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRun
         execution_code=f"READINESS-EXEC-{identity[:12]}",
         material_trace_id=f"READINESS-MATERIAL-{identity[:12]}",
         workline_id=line.id,
-        line_run_epoch_id=epoch.id,
         admission_received_at=now,
         admission_evidence_id=admission.id,
         status="RUNNING",
@@ -174,9 +166,20 @@ async def _seed_bound_execution(db: AsyncSession) -> tuple[LineRunEpoch, LineRun
         last_transition_evidence_id=admission.id,
         status_changed_at=now,
     )
-    db.add_all((binding, execution))
+    line.config = {"device_bindings": {binding.device_role: binding.device_code}}
+    line.device_contracts = {
+        binding.device_code: {
+            "device_id": binding.device_id,
+            "endpoint_base_url": binding.endpoint_base_url,
+            "contract_key": binding.contract_key,
+            "contract_version": binding.contract_version,
+            "status_max_age_ms": binding.status_max_age_ms,
+            "command_timeout_ms": binding.command_timeout_ms,
+        }
+    }
+    db.add(execution)
     await db.flush()
-    return epoch, binding, execution
+    return line, binding, execution
 
 
 async def _drop_status_check_and_update(db: AsyncSession, scenario: Scenario, row_id: int) -> None:
@@ -199,15 +202,17 @@ async def _drop_status_check_and_update(db: AsyncSession, scenario: Scenario, ro
 
 
 async def _seed_scenario(db: AsyncSession, scenario: Scenario) -> None:
-    epoch, binding, execution = await _seed_bound_execution(db)
+    workline, binding, execution = await _seed_bound_execution(db)
     now = timezone.now_for_db()
     identity = uuid4().hex
     if scenario.ledger == "device":
         row = DeviceCommand(
             command_code=f"READINESS-CMD-{identity[:12]}",
             device_code=binding.device_code,
-            line_run_epoch_id=epoch.id,
-            device_binding_id=binding.id,
+            workline_id=workline.id,
+            endpoint_base_url=binding.endpoint_base_url,
+            command_timeout_ms=binding.command_timeout_ms,
+            status_max_age_ms=binding.status_max_age_ms,
             execution_ref_type="TEST_EXECUTION",
             execution_ref_id=identity,
             material_execution_id=execution.id,
@@ -254,7 +259,7 @@ async def _seed_scenario(db: AsyncSession, scenario: Scenario) -> None:
             payload_digest="5" * 64,
             normalized_payload={},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id if scenario.shape == "bound" else None,
             device_code=binding.device_code if kind == "DEVICE_RESULT" else None,
             command_code=f"READINESS-CMD-{identity[:12]}" if kind == "DEVICE_RESULT" else None,
@@ -354,12 +359,14 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
     identity = uuid4().hex
     now = timezone.now_for_db()
     async with integration_session_factory.begin() as db:
-        epoch, binding, execution = await _seed_bound_execution(db)
+        workline, binding, execution = await _seed_bound_execution(db)
         command = DeviceCommand(
             command_code=f"READINESS-CMD-{identity[:12]}",
             device_code=binding.device_code,
-            line_run_epoch_id=epoch.id,
-            device_binding_id=binding.id,
+            workline_id=workline.id,
+            endpoint_base_url=binding.endpoint_base_url,
+            command_timeout_ms=binding.command_timeout_ms,
+            status_max_age_ms=binding.status_max_age_ms,
             execution_ref_type="TEST_EXECUTION",
             execution_ref_id=identity,
             material_execution_id=execution.id,
@@ -377,9 +384,7 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
         command_id = command.id
         execution_id = execution.id
         admission_evidence_id = execution.admission_evidence_id
-        binding_id = binding.id
         device_id = binding.device_id
-        epoch_id = epoch.id
         line_id = execution.workline_id
 
     repository_module, _service_module = _contract_modules()
@@ -396,7 +401,7 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
             payload_digest="9" * 64,
             normalized_payload={},
             received_at=now,
-            line_run_epoch_id=epoch_id,
+            workline_id=line_id,
             material_execution_id=execution_id,
             device_code=persisted_command.device_code,
             command_code=persisted_command.command_code,
@@ -518,7 +523,7 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
             payload_digest="f" * 64,
             normalized_payload={},
             received_at=now,
-            line_run_epoch_id=epoch_id,
+            workline_id=line_id,
             material_execution_id=execution_id,
             operation=persisted_confirmation.operation,
             operation_id=persisted_confirmation.operation_id,
@@ -601,11 +606,7 @@ async def test_committed_device_transport_and_wms_handoffs_have_no_cleared_snaps
             text("DELETE FROM wes_biz.inbound_evidences WHERE id = :id"), {"id": diagnostic_result_id}
         )
         await cleanup.execute(text("DELETE FROM wes_biz.material_executions WHERE id = :id"), {"id": execution_id})
-        await cleanup.execute(
-            text("DELETE FROM wes_biz.line_run_epoch_device_bindings WHERE id = :id"), {"id": binding_id}
-        )
         await cleanup.execute(text("DELETE FROM wes_biz.devices WHERE id = :id"), {"id": device_id})
-        await cleanup.execute(text("DELETE FROM wes_biz.line_run_epochs WHERE id = :id"), {"id": epoch_id})
         await cleanup.execute(
             text("DELETE FROM wes_biz.inbound_evidences WHERE id = :id"), {"id": admission_evidence_id}
         )
@@ -619,14 +620,14 @@ async def test_fact_processor_creates_device_command_with_published_evidence_ato
     identity = uuid4().hex
     now = timezone.now_for_db()
     async with integration_session_factory.begin() as db:
-        epoch, binding, execution = await _seed_bound_execution(db)
+        workline, binding, execution = await _seed_bound_execution(db)
         evidence = InboundEvidence(
             kind="DEVICE_EVENT",
             source_identity=f"readiness-fact:{identity}",
             payload_digest="4" * 64,
             normalized_payload={},
             received_at=now,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
             material_execution_id=execution.id,
             device_code=binding.device_code,
             contract_version="1.0",
@@ -638,9 +639,7 @@ async def test_fact_processor_creates_device_command_with_published_evidence_ato
         evidence_id = evidence.id
         execution_id = execution.id
         admission_evidence_id = execution.admission_evidence_id
-        binding_id = binding.id
         device_id = binding.device_id
-        epoch_id = epoch.id
         line_id = execution.workline_id
 
     repository_module, _service_module = _contract_modules()
@@ -759,11 +758,7 @@ async def test_fact_processor_creates_device_command_with_published_evidence_ato
         )
         await cleanup.execute(text("DELETE FROM wes_biz.inbound_evidences WHERE id = :id"), {"id": evidence_id})
         await cleanup.execute(text("DELETE FROM wes_biz.material_executions WHERE id = :id"), {"id": execution_id})
-        await cleanup.execute(
-            text("DELETE FROM wes_biz.line_run_epoch_device_bindings WHERE id = :id"), {"id": binding_id}
-        )
         await cleanup.execute(text("DELETE FROM wes_biz.devices WHERE id = :id"), {"id": device_id})
-        await cleanup.execute(text("DELETE FROM wes_biz.line_run_epochs WHERE id = :id"), {"id": epoch_id})
         await cleanup.execute(
             text("DELETE FROM wes_biz.inbound_evidences WHERE id = :id"), {"id": admission_evidence_id}
         )

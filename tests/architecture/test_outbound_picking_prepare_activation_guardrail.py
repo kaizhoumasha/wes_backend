@@ -1,4 +1,4 @@
-"""outbound PickingTask prepare 暗构建不得被生产入口提前激活。"""
+"""基础 prepare Adapter 可静态装配；业务 Coordinator 不得被核心或插件偷偷激活。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PREPARE_SYMBOLS = {"PickingTaskPrepareAdapter", "PickingTaskPrepareService"}
+PREPARE_SYMBOLS = {"PickingTaskPrepareCoordinator"}
 ALLOWED_PREFIXES = (
     "src/app/wms_adapter/outbound_picking/",
     "src/app/wms_integration/outbound_picking/",
@@ -46,24 +46,24 @@ def _activation_references(source: str, *, filename: str) -> list[str]:
 def test_alias_import_and_indirect_construction_fixture_are_detected() -> None:
     references = _activation_references(
         "from src.app.wms_integration.outbound_picking.services import "
-        "PickingTaskPrepareService as Builder\nBuilder(factory, task_queue_gateway=queue)\n",
+        "PickingTaskPrepareCoordinator as Builder\nBuilder(factory, task_queue_gateway=queue)\n",
         filename="fixture.py",
     )
 
     assert references == [
-        "fixture.py:1:import:PickingTaskPrepareService",
+        "fixture.py:1:import:PickingTaskPrepareCoordinator",
         "fixture.py:2:construct:Builder",
     ]
 
     module_references = _activation_references(
         "import src.app.wms_integration.outbound_picking.services as picking\n"
-        "picking.PickingTaskPrepareService(factory, task_queue_gateway=queue)\n",
+        "picking.PickingTaskPrepareCoordinator(factory, task_queue_gateway=queue)\n",
         filename="module_fixture.py",
     )
-    assert module_references == ["module_fixture.py:2:construct:picking.PickingTaskPrepareService"]
+    assert module_references == ["module_fixture.py:2:construct:picking.PickingTaskPrepareCoordinator"]
 
 
-def test_prepare_has_no_production_activation_or_execution_reverse_import() -> None:
+def test_prepare_consumer_has_no_production_activation_or_execution_reverse_import() -> None:
     violations: list[str] = []
     roots = [REPO_ROOT / "main.py", *(REPO_ROOT / root_name for root_name in ("src", "workline_plugins"))]
     for root in roots:

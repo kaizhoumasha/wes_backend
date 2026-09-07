@@ -12,8 +12,6 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import (
-    BinExecution,
-    BinExecutionStatus,
     InboundEvidence,
     InboundEvidenceConflict,
     InboundEvidenceKind,
@@ -22,10 +20,8 @@ from src.app.execution.models import (
     PositionProjection,
     WmsConfirmation,
 )
-from src.app.execution.repositories.bin_execution_repository import BinExecutionRepository
 from src.app.execution.repositories.material_execution_repository import MaterialExecutionRepository
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
-from src.app.execution.services.bin_execution_service import ActiveBinExecutionExistsError, BinExecutionService
 from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceIdentityConflictError,
     InboundEvidenceService,
@@ -41,45 +37,37 @@ from src.app.execution.services.wms_confirmation_service import (
 )
 from src.app.transport.contracts import TransportExecutionAuthority
 from src.app.wms_integration.outbound_picking.models import PickingTask as _PickingTask
-from src.app.workline.models.line_run_epoch import LineRunEpoch
 from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.repositories import WorkLineRepository
+from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
+from src.core.exceptions import BusinessException
 
 PREFIX = "EXECUTION-CONSTRAINT-"
 
 
-async def _seed_epoch(db) -> tuple[WorkLine, LineRunEpoch, str]:
+async def _seed_workline(db) -> tuple[WorkLine, str]:
     identity = uuid4().hex
-    line = WorkLine(
+    workline = WorkLine(
         line_code=f"{PREFIX}LINE-{identity[:20]}",
         line_name="Execution constraints",
         line_type=LineType.AUTO,
     )
-    db.add(line)
+    db.add(workline)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"{PREFIX}EPOCH-{identity}",
-        workline_id=line.id,
-        plugin_key="rough_sorter",
-        plugin_version="1.0.0",
-        flow_mode="ROUGH_SORT_INBOUND",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=datetime(2026, 8, 16),
-    )
-    db.add(epoch)
+    workline.is_active = True
+    workline.position_bindings = {"HANDOFF": {"location_id": "H1", "location_type": "HANDOFF_POSITION"}}
     await db.flush()
-    return line, epoch, identity
+    return workline, identity
 
 
-async def _seed_creation_evidence(db, epoch: LineRunEpoch, identity: str) -> InboundEvidence:
+async def _seed_creation_evidence(db, workline: WorkLine, identity: str) -> InboundEvidence:
     evidence = InboundEvidence(
         kind=InboundEvidenceKind.DEVICE_EVENT,
         source_identity=f"{PREFIX}SCAN-{identity}",
         payload_digest="1" * 64,
         normalized_payload={"source_event_id": f"{PREFIX}SCAN-{identity}"},
         received_at=datetime(2026, 8, 16),
-        line_run_epoch_id=epoch.id,
+        workline_id=workline.id,
         device_code=f"{PREFIX}MEASUREMENT-{identity}",
     )
     db.add(evidence)
@@ -88,8 +76,7 @@ async def _seed_creation_evidence(db, epoch: LineRunEpoch, identity: str) -> Inb
 
 
 def _execution(
-    line: WorkLine,
-    epoch: LineRunEpoch,
+    workline: WorkLine,
     identity: str,
     *,
     evidence_id: int,
@@ -97,8 +84,7 @@ def _execution(
     return MaterialExecution(
         execution_code=f"{PREFIX}MATERIAL-{identity}",
         material_trace_id=f"{PREFIX}TRACE-{identity}",
-        workline_id=line.id,
-        line_run_epoch_id=epoch.id,
+        workline_id=workline.id,
         admission_received_at=datetime(2026, 8, 16),
         admission_evidence_id=evidence_id,
         status=MaterialExecutionStatus.CREATED,
@@ -113,22 +99,18 @@ async def cleanup_execution_constraint_rows(integration_session_factory):
     yield
     async with integration_session_factory.begin() as db:
         execution_ids = select(MaterialExecution.id).where(MaterialExecution.execution_code.like(f"{PREFIX}%"))
-        bin_execution_ids = select(BinExecution.id).where(BinExecution.execution_code.like(f"{PREFIX}%"))
         evidence_ids = select(InboundEvidence.id).where(InboundEvidence.source_identity.like(f"{PREFIX}%"))
-        epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like(f"{PREFIX}%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like(f"{PREFIX}%"))
         await db.execute(delete(WmsConfirmation).where(WmsConfirmation.material_execution_id.in_(execution_ids)))
         await db.execute(
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
         )
-        await db.execute(delete(PositionProjection).where(PositionProjection.bin_execution_id.in_(bin_execution_ids)))
-        await db.execute(delete(BinExecution).where(BinExecution.id.in_(bin_execution_ids)))
+        await db.execute(delete(PositionProjection).where(PositionProjection.workline_id.in_(line_ids)))
         await db.execute(
             update(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)).values(material_execution_id=None)
         )
         await db.execute(delete(MaterialExecution).where(MaterialExecution.id.in_(execution_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_(epoch_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
 
 
@@ -137,13 +119,12 @@ async def test_postgresql_allows_only_one_active_execution_per_material_trace(
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        first_evidence = await _seed_creation_evidence(db, epoch, identity)
-        second_evidence = await _seed_creation_evidence(db, epoch, f"SECOND-{identity}")
-        first = _execution(line, epoch, identity, evidence_id=first_evidence.id)
+        workline, identity = await _seed_workline(db)
+        first_evidence = await _seed_creation_evidence(db, workline, identity)
+        second_evidence = await _seed_creation_evidence(db, workline, f"SECOND-{identity}")
+        first = _execution(workline, identity, evidence_id=first_evidence.id)
         second = _execution(
-            line,
-            epoch,
+            workline,
             f"SECOND-{identity}",
             evidence_id=second_evidence.id,
         )
@@ -160,20 +141,19 @@ async def test_postgresql_fifo_head_keeps_retrying_earlier_material_ahead_of_lat
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        first_evidence = await _seed_creation_evidence(db, epoch, identity)
-        second_evidence = await _seed_creation_evidence(db, epoch, f"SECOND-{identity}")
-        first = _execution(line, epoch, identity, evidence_id=first_evidence.id)
+        workline, identity = await _seed_workline(db)
+        first_evidence = await _seed_creation_evidence(db, workline, identity)
+        second_evidence = await _seed_creation_evidence(db, workline, f"SECOND-{identity}")
+        first = _execution(workline, identity, evidence_id=first_evidence.id)
         first.status = MaterialExecutionStatus.RECONCILING
-        second = _execution(line, epoch, f"SECOND-{identity}", evidence_id=second_evidence.id)
+        second = _execution(workline, f"SECOND-{identity}", evidence_id=second_evidence.id)
         second.admission_received_at = datetime(2026, 8, 16, 0, 1)
         db.add_all([first, second])
         await db.flush()
 
         head = await MaterialExecutionRepository().get_admission_head_for_update(
             db,
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
+            workline_id=workline.id,
         )
 
         assert head is not None
@@ -181,245 +161,156 @@ async def test_postgresql_fifo_head_keeps_retrying_earlier_material_ahead_of_lat
         assert head.status == MaterialExecutionStatus.RECONCILING
 
 
+def _projection(workline_id: int, object_id: str) -> PositionProjection:
+    return PositionProjection(
+        object_type="BIN",
+        object_id=object_id,
+        workline_id=workline_id,
+        position_json={"kind": "HANDOFF_POSITION", "location_code": "H1"},
+        source_operation_id="019d0000-0000-7000-8000-000000000001",
+        source_transport_task_id=f"{PREFIX}TRANSPORT-{object_id}",
+        updated_at=datetime(2026, 8, 28),
+    )
+
+
+async def _apply_projection(service, db, line_id: int, object_id: str, *, unknown=False):
+    return await service.apply_transport_result(
+        db,
+        authority=TransportExecutionAuthority(workline_id=line_id),
+        object_type="BIN",
+        object_id=object_id,
+        position=None if unknown else {"kind": "HANDOFF_POSITION", "location_code": "H1"},
+        position_unknown=unknown,
+        arrival_face=None,
+        operation_id="019d0000-0000-7000-8000-000000000001",
+        transport_task_id=f"{PREFIX}TRANSPORT-{object_id}",
+        updated_at=datetime(2026, 8, 28),
+    )
+
+
 @pytest.mark.asyncio
-async def test_postgresql_allows_only_one_active_bin_execution_per_bin(
-    integration_session_factory,
-) -> None:
+async def test_postgresql_allows_only_one_current_projection_per_bin(integration_session_factory) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        first = BinExecution(
-            execution_code=f"{PREFIX}BIN-{identity}",
-            bin_id=f"{PREFIX}BIN-OBJECT-{identity}",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            status=BinExecutionStatus.ACTIVE,
-            started_at=datetime(2026, 8, 28),
-        )
-        second = BinExecution(
-            execution_code=f"{PREFIX}BIN-SECOND-{identity}",
-            bin_id=first.bin_id,
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            status=BinExecutionStatus.ACTIVE,
-            started_at=datetime(2026, 8, 28, 0, 1),
-        )
-        db.add(first)
+        workline, identity = await _seed_workline(db)
+        db.add(_projection(workline.id, identity))
         await db.flush()
-        db.add(second)
+        db.add(_projection(workline.id, identity))
         with pytest.raises(IntegrityError):
             await db.flush()
 
 
 @pytest.mark.asyncio
-async def test_postgresql_position_projection_requires_bin_authority_only_for_bins(
-    integration_session_factory,
-) -> None:
+async def test_postgresql_bin_projection_uses_workline_and_transport_identity(integration_session_factory) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        execution = BinExecution(
-            execution_code=f"{PREFIX}BIN-{identity}",
-            bin_id=f"{PREFIX}BIN-OBJECT-{identity}",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            started_at=datetime(2026, 8, 28),
-        )
-        db.add(execution)
-        await db.flush()
-        db.add(
-            PositionProjection(
-                object_type="BIN",
-                object_id=execution.bin_id,
-                workline_id=line.id,
-                line_run_epoch_id=epoch.id,
-                bin_execution_id=None,
-                position_json={"kind": "HANDOFF_POSITION", "location_code": "H1"},
-                source_operation_id="019d0000-0000-7000-8000-000000000001",
-                source_transport_task_id=f"{PREFIX}TRANSPORT-{identity}",
-                updated_at=datetime(2026, 8, 28),
-            )
-        )
-        with pytest.raises(IntegrityError):
-            await db.flush()
+        workline, identity = await _seed_workline(db)
+        projection = await _apply_projection(PositionProjectionService(), db, workline.id, identity)
+        assert projection.workline_id == workline.id
+        assert projection.object_id == identity
+        assert projection.source_transport_task_id == f"{PREFIX}TRANSPORT-{identity}"
+        assert projection.source_operation_id == "019d0000-0000-7000-8000-000000000001"
 
 
 @pytest.mark.asyncio
-async def test_postgresql_concurrent_bin_create_serializes_to_one_active_owner(
+async def test_postgresql_concurrent_bin_projection_admission_keeps_one_workline_owner(
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        line_id = line.id
-        epoch_id = epoch.id
-    service = BinExecutionService(repository=BinExecutionRepository())
+        first, identity = await _seed_workline(db)
+        second, _ = await _seed_workline(db)
+        line_ids = (first.id, second.id)
 
-    async def create(ordinal: int):
+    async def apply(line_id):
         try:
             async with integration_session_factory.begin() as db:
-                return await service.create(
-                    db,
-                    execution_code=f"{PREFIX}BIN-RACE-{identity}-{ordinal}",
-                    bin_id=f"{PREFIX}BIN-RACE-OBJECT-{identity}",
-                    workline_id=line_id,
-                    line_run_epoch_id=epoch_id,
-                    started_at=datetime(2026, 8, 28, 0, ordinal),
-                )
-        except ActiveBinExecutionExistsError as exc:
-            return exc
+                return await _apply_projection(PositionProjectionService(), db, line_id, identity)
+        except PositionProjectionAuthorityError as error:
+            return error
 
-    results = await asyncio.gather(create(1), create(2))
-
-    assert sum(isinstance(result, BinExecution) for result in results) == 1
-    assert sum(isinstance(result, ActiveBinExecutionExistsError) for result in results) == 1
+    results = await asyncio.gather(*(apply(line_id) for line_id in line_ids))
+    assert sum(isinstance(result, PositionProjection) for result in results) == 1
+    assert sum(isinstance(result, PositionProjectionAuthorityError) for result in results) == 1
 
 
 @pytest.mark.asyncio
-async def test_postgresql_projection_update_then_bin_close_cannot_resurrect_current_projection(
-    integration_session_factory,
-) -> None:
+async def test_postgresql_unknown_projection_blocks_waiting_workline_deactivation(integration_session_factory) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        execution = BinExecution(
-            execution_code=f"{PREFIX}BIN-UPDATE-CLOSE-{identity}",
-            bin_id=f"{PREFIX}BIN-UPDATE-CLOSE-OBJECT-{identity}",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            started_at=datetime(2026, 8, 28),
-        )
-        db.add(execution)
-        await db.flush()
-        execution_id = execution.id
-        bin_id = execution.bin_id
-        authority = TransportExecutionAuthority(
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            bin_execution_id=execution.id,
-        )
-
-    epoch_locked = asyncio.Event()
-    release_update = asyncio.Event()
+        workline, identity = await _seed_workline(db)
+        line_id = workline.id
+    locked, release = asyncio.Event(), asyncio.Event()
 
     class BlockingProjectionRepository(PositionProjectionRepository):
-        async def lock_epoch_lifecycle(self, db, line_run_epoch_id: int) -> None:
-            await super().lock_epoch_lifecycle(db, line_run_epoch_id)
-            epoch_locked.set()
-            await release_update.wait()
+        async def get_workline_for_update(self, db, workline_id):
+            line = await super().get_workline_for_update(db, workline_id)
+            locked.set()
+            await release.wait()
+            return line
 
-    projection_service = PositionProjectionService(repository=BlockingProjectionRepository())
-
-    async def update_projection() -> None:
+    async def apply():
         async with integration_session_factory.begin() as db:
-            await projection_service.apply_transport_result(
+            await _apply_projection(
+                PositionProjectionService(repository=BlockingProjectionRepository()),
                 db,
-                authority=authority,
-                object_type="BIN",
-                object_id=bin_id,
-                position={"kind": "HANDOFF_POSITION", "location_code": "H1"},
-                position_unknown=False,
-                arrival_face=None,
-                operation_id="019d0000-0000-7000-8000-000000000002",
-                transport_task_id=f"{PREFIX}TRANSPORT-{identity}",
-                updated_at=datetime(2026, 8, 28, 0, 1),
+                line_id,
+                identity,
+                unknown=True,
             )
 
-    async def close_execution() -> None:
+    async def deactivate():
         async with integration_session_factory.begin() as db:
-            current = await db.get(BinExecution, execution_id)
-            assert current is not None
-            await BinExecutionService().close(db, current, closed_at=datetime(2026, 8, 28, 0, 2))
+            current = await db.get(WorkLine, line_id)
+            await WorkLineConfigurationService(plugins=()).deactivate(db, workline_id=line_id, version=current.version)
 
-    updating = asyncio.create_task(update_projection())
-    await asyncio.wait_for(epoch_locked.wait(), timeout=5)
-    closing = asyncio.create_task(close_execution())
-    done, _ = await asyncio.wait({closing}, timeout=0.1)
+    applying = asyncio.create_task(apply())
+    await asyncio.wait_for(locked.wait(), timeout=5)
+    deactivating = asyncio.create_task(deactivate())
+    done, _ = await asyncio.wait({deactivating}, timeout=0.1)
     assert done == set()
-    release_update.set()
-    await asyncio.gather(updating, closing)
-
+    release.set()
+    await applying
+    with pytest.raises(BusinessException, match="未完成运行负载"):
+        await deactivating
     async with integration_session_factory() as db:
-        closed = await db.get(BinExecution, execution_id)
-        projection = await db.scalar(
-            select(PositionProjection).where(
-                PositionProjection.object_type == "BIN",
-                PositionProjection.object_id == bin_id,
-            )
-        )
-    assert closed is not None and closed.status == BinExecutionStatus.CLOSED
-    assert projection is None
+        assert (await db.get(WorkLine, line_id)).is_active
+        projection = await PositionProjectionRepository().get(db, "BIN", identity)
+        assert projection.position_unknown
+        assert projection.source_transport_task_id == f"{PREFIX}TRANSPORT-{identity}"
 
 
 @pytest.mark.asyncio
-async def test_postgresql_bin_close_rejects_a_stale_projection_writer(
-    integration_session_factory,
-) -> None:
+async def test_postgresql_workline_deactivation_rejects_waiting_projection_writer(integration_session_factory) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        execution = BinExecution(
-            execution_code=f"{PREFIX}BIN-CLOSE-UPDATE-{identity}",
-            bin_id=f"{PREFIX}BIN-CLOSE-UPDATE-OBJECT-{identity}",
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            started_at=datetime(2026, 8, 28),
-        )
-        db.add(execution)
-        await db.flush()
-        execution_id = execution.id
-        bin_id = execution.bin_id
-        authority = TransportExecutionAuthority(
-            workline_id=line.id,
-            line_run_epoch_id=epoch.id,
-            bin_execution_id=execution.id,
-        )
+        workline, identity = await _seed_workline(db)
+        line_id, version = workline.id, workline.version
+    locked, release = asyncio.Event(), asyncio.Event()
 
-    epoch_locked = asyncio.Event()
-    release_close = asyncio.Event()
+    class BlockingWorkLineRepository(WorkLineRepository):
+        async def get_for_update(self, db, workline_id):
+            line = await super().get_for_update(db, workline_id)
+            locked.set()
+            await release.wait()
+            return line
 
-    class BlockingBinExecutionRepository(BinExecutionRepository):
-        async def lock_epoch_lifecycle(self, db, line_run_epoch_id: int) -> None:
-            await super().lock_epoch_lifecycle(db, line_run_epoch_id)
-            epoch_locked.set()
-            await release_close.wait()
-
-    close_service = BinExecutionService(repository=BlockingBinExecutionRepository())
-
-    async def close_execution() -> None:
-        async with integration_session_factory.begin() as db:
-            current = await db.get(BinExecution, execution_id)
-            assert current is not None
-            await close_service.close(db, current, closed_at=datetime(2026, 8, 28, 0, 1))
-
-    async def update_projection() -> None:
-        async with integration_session_factory.begin() as db:
-            await PositionProjectionService().apply_transport_result(
-                db,
-                authority=authority,
-                object_type="BIN",
-                object_id=bin_id,
-                position={"kind": "HANDOFF_POSITION", "location_code": "H1"},
-                position_unknown=False,
-                arrival_face=None,
-                operation_id="019d0000-0000-7000-8000-000000000003",
-                transport_task_id=f"{PREFIX}TRANSPORT-{identity}",
-                updated_at=datetime(2026, 8, 28, 0, 2),
+    async def deactivate():
+        async with integration_session_factory() as db:
+            await WorkLineConfigurationService(plugins=(), workline_repository=BlockingWorkLineRepository()).deactivate(
+                db, workline_id=line_id, version=version
             )
 
-    closing = asyncio.create_task(close_execution())
-    await asyncio.wait_for(epoch_locked.wait(), timeout=5)
-    updating = asyncio.create_task(update_projection())
-    done, _ = await asyncio.wait({updating}, timeout=0.1)
+    async def apply():
+        async with integration_session_factory.begin() as db:
+            await _apply_projection(PositionProjectionService(), db, line_id, identity)
+
+    deactivating = asyncio.create_task(deactivate())
+    await asyncio.wait_for(locked.wait(), timeout=5)
+    applying = asyncio.create_task(apply())
+    done, _ = await asyncio.wait({applying}, timeout=0.1)
     assert done == set()
-    release_close.set()
-    await closing
+    release.set()
+    await deactivating
     with pytest.raises(PositionProjectionAuthorityError):
-        await updating
-
+        await applying
     async with integration_session_factory() as db:
-        projection = await db.scalar(
-            select(PositionProjection).where(
-                PositionProjection.object_type == "BIN",
-                PositionProjection.object_id == bin_id,
-            )
-        )
-    assert projection is None
+        assert await PositionProjectionRepository().get(db, "BIN", identity) is None
 
 
 @pytest.mark.asyncio
@@ -427,9 +318,9 @@ async def test_postgresql_freezes_inbound_source_and_wms_operation_identity(
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        creation_evidence = await _seed_creation_evidence(db, epoch, identity)
-        execution = _execution(line, epoch, identity, evidence_id=creation_evidence.id)
+        workline, identity = await _seed_workline(db)
+        creation_evidence = await _seed_creation_evidence(db, workline, identity)
+        execution = _execution(workline, identity, evidence_id=creation_evidence.id)
         db.add(execution)
         await db.flush()
         source_identity = f"{PREFIX}WMS-RESULT-{identity}"
@@ -466,9 +357,9 @@ async def test_postgresql_wms_confirmation_identity_is_operation_plus_operation_
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        creation_evidence = await _seed_creation_evidence(db, epoch, identity)
-        execution = _execution(line, epoch, identity, evidence_id=creation_evidence.id)
+        workline, identity = await _seed_workline(db)
+        creation_evidence = await _seed_creation_evidence(db, workline, identity)
+        execution = _execution(workline, identity, evidence_id=creation_evidence.id)
         db.add(execution)
         await db.flush()
         operation_id = f"{PREFIX}OP-{identity}"
@@ -615,9 +506,9 @@ async def test_wms_identity_conflict_commits_reconciling_before_error_mapping(
 ) -> None:
     service = WmsConfirmationService()
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        creation_evidence = await _seed_creation_evidence(db, epoch, identity)
-        execution = _execution(line, epoch, identity, evidence_id=creation_evidence.id)
+        workline, identity = await _seed_workline(db)
+        creation_evidence = await _seed_creation_evidence(db, workline, identity)
+        execution = _execution(workline, identity, evidence_id=creation_evidence.id)
         db.add(execution)
         await db.flush()
         accepted = await service.create_or_get(
@@ -655,9 +546,9 @@ async def test_wms_response_conflict_commits_reconciling_before_error_mapping(
 ) -> None:
     service = WmsConfirmationService()
     async with integration_session_factory.begin() as db:
-        line, epoch, identity = await _seed_epoch(db)
-        creation_evidence = await _seed_creation_evidence(db, epoch, identity)
-        execution = _execution(line, epoch, identity, evidence_id=creation_evidence.id)
+        workline, identity = await _seed_workline(db)
+        creation_evidence = await _seed_creation_evidence(db, workline, identity)
+        execution = _execution(workline, identity, evidence_id=creation_evidence.id)
         db.add(execution)
         await db.flush()
         operation = f"{PREFIX}WMS-OP"

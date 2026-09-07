@@ -5,9 +5,12 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
+
 from scripts.check_business_legacy_absence_gate import (
     LEDGER_HEADER,
     STRICT_DISPOSITIONS,
+    _ledger_row_failures,
     _row_final_gate_failures,
     validate_ledger,
 )
@@ -29,7 +32,7 @@ def test_business_legacy_absence_ledger_passes_draft_gate() -> None:
     assert result.valid, result.details
 
 
-def test_business_legacy_absence_ledger_header_and_entry_set_match_matrix() -> None:
+def test_business_legacy_absence_ledger_covers_active_matrix() -> None:
     with LEDGER_PATH.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         assert tuple(reader.fieldnames or ()) == LEDGER_HEADER
@@ -38,7 +41,25 @@ def test_business_legacy_absence_ledger_header_and_entry_set_match_matrix() -> N
     matrix_rows = [row for row in _rows(MATRIX_PATH) if row[MATERIAL_FLOW_CARRIER_FIELD] == "True"]
 
     assert [row["entry_id"] for row in ledger_rows] == sorted(row["entry_id"] for row in ledger_rows)
-    assert {row["entry_id"] for row in ledger_rows} == {row["entry_id"] for row in matrix_rows}
+    assert {row["entry_id"] for row in matrix_rows} <= {row["entry_id"] for row in ledger_rows}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cleanup_disposition", "pending"),
+        ("semantic_status", "semantics-unverified"),
+        ("reference_scan_status", "pending"),
+        ("target_capability_status", "blocked"),
+        ("delete_commit", "pending-current-pr"),
+        ("tracked_state", "active-source"),
+    ],
+)
+def test_removing_matrix_row_cannot_hide_incomplete_cleanup(field: str, value: str) -> None:
+    row = _rows(LEDGER_PATH)[0]
+    row[field] = value
+    failures = _ledger_row_failures(row, None, set(), REPO_ROOT, mode="draft")
+    assert failures
 
 
 def test_business_legacy_absence_ledger_tracks_current_surface_states() -> None:

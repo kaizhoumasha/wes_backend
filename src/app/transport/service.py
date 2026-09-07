@@ -153,6 +153,8 @@ class TransportEventPublisher(Protocol):
 
 
 class PositionProjectionPort(Protocol):
+    async def admit_transport_member(self, db: object, **kwargs: object) -> None: ...
+
     async def get_current(
         self,
         db: object,
@@ -1051,12 +1053,6 @@ class TransportService:
             submit_request_body=frozen_request_body.decode("utf-8"),
             submit_request_body_digest=request_body_digest(frozen_request_body),
             authority_workline_id=(execution_authority.workline_id if execution_authority is not None else None),
-            authority_line_run_epoch_id=(
-                execution_authority.line_run_epoch_id if execution_authority is not None else None
-            ),
-            authority_bin_execution_id=(
-                execution_authority.bin_execution_id if execution_authority is not None else None
-            ),
             created_at=now,
             updated_at=now,
         )
@@ -1073,6 +1069,15 @@ class TransportService:
         existing = await self._repository.get_task_by_client_request(db, request.client_request_id)
         if existing is not None:
             return _idempotent_handle(existing, request_digest)
+        if execution_authority is not None:
+            for member in sorted(members, key=lambda item: (item.object_type, item.object_id)):
+                await self._position_projections.admit_transport_member(
+                    db,
+                    authority=execution_authority,
+                    object_type=member.object_type,
+                    object_id=member.object_id,
+                    source=member.source_json,
+                )
         if not allow_active_debug_run:
             for rack_id in sorted(
                 resource_id for resource_type, resource_id in _resource_keys(request) if resource_type == "RACK"
@@ -1526,13 +1531,13 @@ def _members_for(request: TransportRequest, task_id: str, now: Any) -> list[Tran
     elif isinstance(request, RotateRackRequest):
         specs.append(("RACK", request.rack_id, request.position, request.position))
     elif isinstance(request, MoveBinsRequest):
-        specs.extend(("BIN", move.bin_id, move.source, move.target) for move in request.moves)
+        specs.extend(("BIN", move.bin_code, move.source, move.target) for move in request.moves)
     else:
         for pair in request.exchange_pairs:
             specs.extend(
                 (
-                    ("BIN", pair.left_bin_id, pair.left_location, pair.right_location),
-                    ("BIN", pair.right_bin_id, pair.right_location, pair.left_location),
+                    ("BIN", pair.left_bin_code, pair.left_location, pair.right_location),
+                    ("BIN", pair.right_bin_code, pair.right_location, pair.left_location),
                 )
             )
     return [
@@ -1556,17 +1561,17 @@ def _resource_keys(request: TransportRequest) -> set[tuple[str, str]]:
         return resources
     moves: list[tuple[str, object, object]] = []
     if isinstance(request, MoveBinsRequest):
-        moves.extend((move.bin_id, move.source, move.target) for move in request.moves)
+        moves.extend((move.bin_code, move.source, move.target) for move in request.moves)
     else:
         for pair in request.exchange_pairs:
             moves.extend(
                 (
-                    (pair.left_bin_id, pair.left_location, pair.right_location),
-                    (pair.right_bin_id, pair.right_location, pair.left_location),
+                    (pair.left_bin_code, pair.left_location, pair.right_location),
+                    (pair.right_bin_code, pair.right_location, pair.left_location),
                 )
             )
-    for bin_id, source, target in moves:
-        resources.add(("BIN", bin_id))
+    for bin_code, source, target in moves:
+        resources.add(("BIN", bin_code))
         for position in (source, target):
             if isinstance(position, RackBinSlot):
                 resources.add(("RACK", position.rack_id))
@@ -1598,7 +1603,7 @@ def _debug_frozen_targets(task: TransportTask) -> list[dict[str, Any]]:
     if task.kind == TransportTaskKind.BIN_MOVE.value:
         return [
             {
-                "object_id": move["bin_id"],
+                "object_id": move["bin_code"],
                 "target": move["target"],
                 "arrival_face": move["target"].get("rack_face"),
             }
@@ -1637,7 +1642,7 @@ def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebug
         expected_moves = {
             TransportDebugStep.BINS_TO_INFEED: [
                 {
-                    "bin_id": bin_id,
+                    "bin_code": bin_code,
                     "source": {
                         "kind": "RACK_BIN_SLOT",
                         "rack_id": "510056",
@@ -1646,11 +1651,11 @@ def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebug
                     },
                     "target": {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
                 }
-                for bin_id, slot_id in rack_slots
+                for bin_code, slot_id in rack_slots
             ],
             TransportDebugStep.BINS_TO_RACK: [
                 {
-                    "bin_id": bin_id,
+                    "bin_code": bin_code,
                     "source": {"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
                     "target": {
                         "kind": "RACK_BIN_SLOT",
@@ -1659,7 +1664,7 @@ def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebug
                         "slot_id": slot_id,
                     },
                 }
-                for bin_id, slot_id in rack_slots
+                for bin_code, slot_id in rack_slots
             ],
         }.get(step)
         return expected_moves is not None and request.get("moves") == expected_moves
@@ -1683,12 +1688,10 @@ def _request_digest(
 def _execution_authority_from_task(task: TransportTask) -> TransportExecutionAuthority | None:
     if task.authority_workline_id is None:
         return None
-    if task.authority_line_run_epoch_id is None:
+    if task.authority_workline_id is None:
         raise RuntimeError("persisted TransportTask has incomplete execution authority")
     return TransportExecutionAuthority(
         workline_id=task.authority_workline_id,
-        line_run_epoch_id=task.authority_line_run_epoch_id,
-        bin_execution_id=task.authority_bin_execution_id,
     )
 
 

@@ -25,13 +25,14 @@ from src.app.device.services.device_evidence_service import (
     DeviceEvidenceService,
 )
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceConflict
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import LineType, WorkLine
-from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
-from src.app.workline.services.line_run_epoch_service import ActiveLineRunEpochExistsError, LineRunEpochService
+from src.app.workline.repositories.workline_repository import WorkLineRepository
+from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
+from src.core.exceptions import BusinessException
 
 
-async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpochDeviceBinding]:
+async def _seed_topology(db) -> tuple[WorkLine, Device, WorkLineDeviceBinding]:
     identity = uuid4().hex[:12]
     line = WorkLine(
         line_code=f"LINE-DEVICE-COMMAND-CONSTRAINT-{identity}",
@@ -47,41 +48,44 @@ async def _seed_topology(db) -> tuple[WorkLine, Device, LineRunEpoch, LineRunEpo
     )
     db.add(device)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{identity}",
+    line.plugin_key = "device_command_test"
+    line.plugin_version = "1.0.0"
+    line.flow_mode = "TEST"
+    line.is_active = True
+    line.config = {"device_bindings": {"ROBOT_ARM": device.device_code}}
+    binding = WorkLineDeviceBinding(
         workline_id=line.id,
-        plugin_key="device_command_test",
-        plugin_version="1.0.0",
-        flow_mode="TEST",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        started_at=datetime(2026, 8, 13),
-    )
-    db.add(epoch)
-    await db.flush()
-    binding = LineRunEpochDeviceBinding(
-        line_run_epoch_id=epoch.id,
         device_id=device.id,
         device_code=device.device_code,
         device_role="ROBOT_ARM",
         endpoint_base_url="http://ecs-constraints:8080",
         contract_key="arm.pick",
         contract_version="2.0",
-        status_max_age_ms=1_000,
-        command_timeout_ms=30_000,
+        status_max_age_ms=1000,
+        command_timeout_ms=30000,
     )
-    db.add(binding)
+    line.device_contracts = {
+        device.device_code: {
+            "device_id": device.id,
+            "endpoint_base_url": binding.endpoint_base_url,
+            "contract_key": binding.contract_key,
+            "contract_version": binding.contract_version,
+            "status_max_age_ms": binding.status_max_age_ms,
+            "command_timeout_ms": binding.command_timeout_ms,
+        }
+    }
     await db.flush()
-    return line, device, epoch, binding
+    return line, device, binding
 
 
-def _command(binding: LineRunEpochDeviceBinding, code: str, status: CommandStatus) -> DeviceCommand:
+def _command(binding: WorkLineDeviceBinding, code: str, status: CommandStatus) -> DeviceCommand:
     return DeviceCommand(
         command_code=code,
         device_code=binding.device_code,
-        line_run_epoch_id=binding.line_run_epoch_id,
-        device_binding_id=binding.id,
+        workline_id=binding.workline_id,
+        endpoint_base_url=binding.endpoint_base_url,
+        command_timeout_ms=binding.command_timeout_ms,
+        status_max_age_ms=binding.status_max_age_ms,
         execution_ref_type="TEST_EXECUTION",
         execution_ref_id=code,
         material_execution_id=None,
@@ -99,8 +103,7 @@ def _manual_command(identity: str, code: str, status: CommandStatus = CommandSta
     return DeviceCommand(
         command_code=code,
         device_code=f"RS-MOCK-PLACEMENT-{identity[-8:]}",
-        line_run_epoch_id=None,
-        device_binding_id=None,
+        workline_id=None,
         execution_ref_type="MANUAL_DEBUG",
         execution_ref_id=identity,
         material_execution_id=None,
@@ -122,8 +125,7 @@ def _event_debug_command(identity: str, code: str, status: CommandStatus = Comma
     return DeviceCommand(
         command_code=code,
         device_code=f"STATION-SCAN-{identity[-8:]}",
-        line_run_epoch_id=None,
-        device_binding_id=None,
+        workline_id=None,
         execution_ref_type="EVENT_DEBUG",
         execution_ref_id=identity,
         material_execution_id=None,
@@ -150,7 +152,7 @@ def _event(device_code: str, *, marker: str) -> EcsDeviceEventReport:
     )
 
 
-class _StaticEventEpochRepository:
+class _StaticEventWorkLineRepository:
     def __init__(self, binding: SimpleNamespace) -> None:
         self._binding = binding
 
@@ -158,7 +160,7 @@ class _StaticEventEpochRepository:
         return self._binding
 
 
-class _BlockingEventEpochRepository(_StaticEventEpochRepository):
+class _BlockingEventWorkLineRepository(_StaticEventWorkLineRepository):
     def __init__(self, binding: SimpleNamespace, *, reached: asyncio.Event, release: asyncio.Event) -> None:
         super().__init__(binding)
         self._reached = reached
@@ -214,8 +216,7 @@ async def cleanup_device_command_constraint_rows(integration_session_factory):
     yield
 
     async with integration_session_factory.begin() as db:
-        evidence_ids = select(InboundEvidence.id).where(InboundEvidence.device_code.like("ARM-DEVICE-COMMAND-EVENT-%"))
-        epoch_ids = select(LineRunEpoch.id).where(LineRunEpoch.epoch_code.like("EPOCH-DEVICE-COMMAND-CONSTRAINT-%"))
+        evidence_ids = select(InboundEvidence.id).where(InboundEvidence.device_code.like("ARM-DEVICE-COMMAND-%"))
         device_ids = select(Device.id).where(Device.device_code.like("ARM-DEVICE-COMMAND-CONSTRAINT-%"))
         line_ids = select(WorkLine.id).where(WorkLine.line_code.like("LINE-DEVICE-COMMAND-CONSTRAINT-%"))
         await db.execute(
@@ -227,12 +228,8 @@ async def cleanup_device_command_constraint_rows(integration_session_factory):
                 DeviceCommand.execution_ref_id.like("DEVICE-COMMAND-CONSTRAINT-%"),
             )
         )
-        await db.execute(delete(DeviceCommand).where(DeviceCommand.line_run_epoch_id.in_(epoch_ids)))
+        await db.execute(delete(DeviceCommand).where(DeviceCommand.workline_id.in_(line_ids)))
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidence_ids)))
-        await db.execute(
-            delete(LineRunEpochDeviceBinding).where(LineRunEpochDeviceBinding.line_run_epoch_id.in_(epoch_ids))
-        )
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id.in_(epoch_ids)))
         await db.execute(delete(Device).where(Device.id.in_(device_ids)))
         await db.execute(delete(WorkLine).where(WorkLine.id.in_(line_ids)))
 
@@ -242,7 +239,7 @@ async def test_postgresql_execution_identity_remains_unique_after_terminal_closu
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        _, _, _, binding = await _seed_topology(db)
+        _, _, binding = await _seed_topology(db)
         identity = uuid4().hex
         first = _command(binding, f"CMD-{identity}-1", CommandStatus.SUCCEEDED)
         second = _command(binding, f"CMD-{identity}-2", CommandStatus.PENDING)
@@ -255,7 +252,7 @@ async def test_postgresql_execution_identity_remains_unique_after_terminal_closu
 
 
 @pytest.mark.asyncio
-async def test_postgresql_accepts_complete_manual_debug_command_without_epoch_or_device_master(
+async def test_postgresql_accepts_complete_manual_debug_command_without_workline_or_device_master(
     integration_session_factory,
 ) -> None:
     identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
@@ -265,8 +262,7 @@ async def test_postgresql_accepts_complete_manual_debug_command_without_epoch_or
         await db.flush()
 
         assert command.id is not None
-        assert command.line_run_epoch_id is None
-        assert command.device_binding_id is None
+        assert command.workline_id is None
 
 
 @pytest.mark.asyncio
@@ -314,7 +310,7 @@ async def test_postgresql_rejects_incomplete_manual_debug_audit(
 @pytest.mark.asyncio
 async def test_postgresql_rejects_reason_on_non_manual_command(integration_session_factory) -> None:
     async with integration_session_factory.begin() as db:
-        _, _, _, binding = await _seed_topology(db)
+        _, _, binding = await _seed_topology(db)
         command = _command(binding, f"CMD-{uuid4().hex}", CommandStatus.PENDING)
         command.execution_reason = "不允许"
         db.add(command)
@@ -323,7 +319,7 @@ async def test_postgresql_rejects_reason_on_non_manual_command(integration_sessi
 
 
 @pytest.mark.asyncio
-async def test_postgresql_accepts_event_debug_command_without_epoch_or_creator(integration_session_factory) -> None:
+async def test_postgresql_accepts_event_debug_command_without_workline_or_creator(integration_session_factory) -> None:
     identity = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
     async with integration_session_factory.begin() as db:
         command = _event_debug_command(identity, f"CMD-{uuid4().hex}")
@@ -331,7 +327,7 @@ async def test_postgresql_accepts_event_debug_command_without_epoch_or_creator(i
         await db.flush()
 
         assert command.id is not None
-        assert command.line_run_epoch_id is None
+        assert command.workline_id is None
         assert command.created_by is None
 
 
@@ -353,7 +349,7 @@ async def test_postgresql_rejects_incomplete_event_debug_audit(
 
 
 @pytest.mark.asyncio
-async def test_postgresql_event_debug_identity_remains_unique_without_epoch(integration_session_factory) -> None:
+async def test_postgresql_event_debug_identity_remains_unique_without_workline(integration_session_factory) -> None:
     identity = f"DEVICE-COMMAND-CONSTRAINT-EVENT-{uuid4().hex}"
     async with integration_session_factory.begin() as db:
         first = _event_debug_command(identity, f"CMD-{uuid4().hex}-1", CommandStatus.SUCCEEDED)
@@ -367,7 +363,7 @@ async def test_postgresql_event_debug_identity_remains_unique_without_epoch(inte
 
 
 @pytest.mark.asyncio
-async def test_postgresql_manual_debug_identity_remains_unique_without_epoch(integration_session_factory) -> None:
+async def test_postgresql_manual_debug_identity_remains_unique_without_workline(integration_session_factory) -> None:
     identity = f"DEVICE-COMMAND-CONSTRAINT-MANUAL-{uuid4().hex}"
     async with integration_session_factory.begin() as db:
         first = _manual_command(identity, f"CMD-{uuid4().hex}-1", CommandStatus.SUCCEEDED)
@@ -559,7 +555,9 @@ async def test_postgresql_concurrent_manual_debug_different_identities_report_de
 async def test_postgresql_concurrent_same_event_returns_one_duplicate(
     integration_session_factory,
 ) -> None:
-    device_code = f"ARM-DEVICE-COMMAND-EVENT-{uuid4().hex[:12]}"
+    async with integration_session_factory.begin() as db:
+        _, device, _ = await _seed_topology(db)
+        device_code = device.device_code
     event = _event(device_code, marker="SAME")
     first_service = DeviceEvidenceService(session_factory=integration_session_factory)
     second_service = DeviceEvidenceService(session_factory=integration_session_factory)
@@ -578,20 +576,20 @@ async def test_postgresql_same_event_remains_duplicate_when_binding_contract_swi
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        _, _, first_epoch, _ = await _seed_topology(db)
-        _, _, second_epoch, _ = await _seed_topology(db)
-    assert first_epoch.id is not None
-    assert second_epoch.id is not None
+        first_line, _, _ = await _seed_topology(db)
+        second_line, _, _ = await _seed_topology(db)
+    assert first_line.id is not None
+    assert second_line.id is not None
 
     device_code = f"ARM-DEVICE-COMMAND-EVENT-{uuid4().hex[:12]}"
     event = _event(device_code, marker="EPOCH-SWITCH")
     first_binding = SimpleNamespace(
-        line_run_epoch_id=first_epoch.id,
+        workline_id=first_line.id,
         contract_key="arm.pick",
         contract_version="2.0",
     )
     second_binding = SimpleNamespace(
-        line_run_epoch_id=second_epoch.id,
+        workline_id=second_line.id,
         contract_key="arm.pick",
         contract_version="3.0",
     )
@@ -599,11 +597,11 @@ async def test_postgresql_same_event_remains_duplicate_when_binding_contract_swi
     release = asyncio.Event()
     first_service = DeviceEvidenceService(
         session_factory=integration_session_factory,
-        epoch_repository=_BlockingEventEpochRepository(first_binding, reached=reached, release=release),  # type: ignore[arg-type]
+        workline_repository=_BlockingEventWorkLineRepository(first_binding, reached=reached, release=release),  # type: ignore[arg-type]
     )
     second_service = DeviceEvidenceService(
         session_factory=integration_session_factory,
-        epoch_repository=_StaticEventEpochRepository(second_binding),  # type: ignore[arg-type]
+        workline_repository=_StaticEventWorkLineRepository(second_binding),  # type: ignore[arg-type]
     )
 
     first_task = asyncio.create_task(first_service.accept_event(event))
@@ -633,7 +631,7 @@ async def test_postgresql_same_event_remains_duplicate_when_binding_contract_swi
             .scalars()
             .all()
         )
-    assert evidence.line_run_epoch_id == second_epoch.id
+    assert evidence.workline_id == second_line.id
     assert evidence.contract_version == "3.0"
     assert conflicts == []
 
@@ -642,7 +640,9 @@ async def test_postgresql_same_event_remains_duplicate_when_binding_contract_swi
 async def test_postgresql_concurrent_distinct_event_payloads_persist_independently(
     integration_session_factory,
 ) -> None:
-    device_code = f"ARM-DEVICE-COMMAND-EVENT-{uuid4().hex[:12]}"
+    async with integration_session_factory.begin() as db:
+        _, device, _ = await _seed_topology(db)
+        device_code = device.device_code
     first_service = DeviceEvidenceService(session_factory=integration_session_factory)
     second_service = DeviceEvidenceService(session_factory=integration_session_factory)
 
@@ -677,182 +677,69 @@ async def test_postgresql_concurrent_distinct_event_payloads_persist_independent
 
 
 @pytest.mark.asyncio
-async def test_postgresql_rejects_second_active_epoch(integration_session_factory) -> None:
-    async with integration_session_factory.begin() as db:
-        line, _, _, _ = await _seed_topology(db)
-        db.add(
-            LineRunEpoch(
-                epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{uuid4().hex[:12]}",
-                workline_id=line.id,
-                plugin_key="device_command_test",
-                plugin_version="1.0.0",
-                flow_mode="TEST",
-                topology_digest="c" * 64,
-                configuration_digest="d" * 64,
-                configuration_snapshot_json={},
-                started_at=datetime(2026, 8, 13),
-            )
-        )
-        with pytest.raises(IntegrityError):
-            await db.flush()
-
-
-@pytest.mark.asyncio
-async def test_postgresql_closed_epoch_releases_active_generation_slot(integration_session_factory) -> None:
-    async with integration_session_factory.begin() as db:
-        line, _, first, _ = await _seed_topology(db)
-        closed_at = datetime(2026, 8, 13, 0, 1)
-        closed = await LineRunEpochService().close_active_epoch(
-            db, workline_id=line.id, closed_at=closed_at, command_repository=device_command_repository
-        )
-        second = LineRunEpoch(
-            epoch_code=f"EPOCH-DEVICE-COMMAND-CONSTRAINT-{uuid4().hex[:12]}",
-            workline_id=line.id,
-            plugin_key="device_command_test",
-            plugin_version="1.0.1",
-            flow_mode="TEST",
-            topology_digest="c" * 64,
-            configuration_digest="d" * 64,
-            configuration_snapshot_json={},
-            started_at=closed_at,
-        )
-        db.add(second)
-        await db.flush()
-
-        assert closed is first
-        assert first.closed_at == closed_at
-        assert second.id is not None
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [CommandStatus.ACKNOWLEDGED, CommandStatus.RECONCILING])
-async def test_postgresql_unclosed_result_states_block_epoch_close(
+async def test_postgresql_unclosed_result_states_block_workline_close(
     integration_session_factory,
     status: CommandStatus,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        line, _, epoch, binding = await _seed_topology(db)
+        line, _, binding = await _seed_topology(db)
         db.add(_command(binding, f"CMD-{uuid4().hex}", status))
         await db.flush()
 
-        with pytest.raises(ActiveLineRunEpochExistsError, match="unclosed DeviceCommand"):
-            await LineRunEpochService().close_active_epoch(
-                db,
-                workline_id=line.id,
-                closed_at=datetime(2026, 8, 13, 0, 1),
-                command_repository=device_command_repository,
-            )
+        with pytest.raises(BusinessException):
+            await WorkLineConfigurationService(
+                plugins=(
+                    SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),
+                )
+            ).deactivate(db, workline_id=line.id, version=line.version)
 
-        assert epoch.status == "ACTIVE"
+        assert line.is_active
 
 
 @pytest.mark.asyncio
-async def test_postgresql_epoch_close_waits_for_concurrent_result_terminal_transition(
-    integration_session_factory,
-) -> None:
+async def test_postgresql_stop_rejects_pending_terminal_result_then_allows_after_commit(integration_session_factory):
     async with integration_session_factory.begin() as db:
-        line, _, epoch, binding = await _seed_topology(db)
+        line, _, binding = await _seed_topology(db)
         command = _command(binding, f"CMD-{uuid4().hex}", CommandStatus.ACKNOWLEDGED)
         db.add(command)
-        await db.flush()
-        command_code = command.command_code
-
-    result_holds_command = asyncio.Event()
-    release_result = asyncio.Event()
-
-    async def settle_result() -> None:
-        async with integration_session_factory.begin() as db:
-            locked = await device_command_repository.get_by_command_code(db, command_code, for_update=True)
-            assert locked is not None
-            result_holds_command.set()
-            await release_result.wait()
-            locked.transition_to(CommandStatus.SUCCEEDED)
-
-    result_task = asyncio.create_task(settle_result())
-    await asyncio.wait_for(result_holds_command.wait(), timeout=2)
-    close_backend_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-
-    async def close_epoch() -> LineRunEpoch | None:
-        async with integration_session_factory.begin() as db:
-            backend_pid = await db.scalar(text("SELECT pg_backend_pid()"))
-            assert isinstance(backend_pid, int)
-            close_backend_pid.set_result(backend_pid)
-            return await LineRunEpochService().close_active_epoch(
-                db,
-                workline_id=line.id,
-                closed_at=datetime(2026, 8, 13, 0, 1),
-                command_repository=device_command_repository,
-            )
-
-    close_task = asyncio.create_task(close_epoch())
-    backend_pid = await asyncio.wait_for(close_backend_pid, timeout=2)
-    try:
-        lock_wait_deadline = asyncio.get_running_loop().time() + 10
-        last_wait_state: dict[str, object] | None = None
-        async with integration_session_factory() as observer_db:
-            while True:
-                wait_state = (
-                    (
-                        await observer_db.execute(
-                            text(
-                                "SELECT state, wait_event_type, wait_event "
-                                "FROM pg_stat_activity WHERE pid = :backend_pid"
-                            ),
-                            {"backend_pid": backend_pid},
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+    async with integration_session_factory() as db:
+        with pytest.raises(BusinessException):
+            await WorkLineConfigurationService(
+                plugins=(
+                    SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),
                 )
-                last_wait_state = dict(wait_state) if wait_state is not None else None
-                if last_wait_state is not None and last_wait_state["wait_event_type"] == "Lock":
-                    break
-                if close_task.done():
-                    pytest.fail(
-                        "epoch close completed before PostgreSQL command-row lock wait; "
-                        f"last_wait_state={last_wait_state!r}, exception={close_task.exception()!r}"
-                    )
-                if asyncio.get_running_loop().time() >= lock_wait_deadline:
-                    pytest.fail(
-                        "epoch close did not enter PostgreSQL lock wait before deadline; "
-                        f"last_wait_state={last_wait_state!r}"
-                    )
-                await observer_db.rollback()
-                await asyncio.sleep(0.01)
-
-        assert last_wait_state is not None
-        assert last_wait_state["state"] == "active"
-        assert not close_task.done()
-    finally:
-        release_result.set()
-    await asyncio.wait_for(result_task, timeout=2)
-    closed = await asyncio.wait_for(close_task, timeout=2)
-
-    assert closed is not None
-    assert closed.id == epoch.id
-    assert closed.status == "CLOSED"
+            ).deactivate(db, workline_id=line.id, version=line.version)
+    async with integration_session_factory.begin() as db:
+        persisted = await device_command_repository.get_by_command_code(db, command.command_code, for_update=True)
+        persisted.transition_to(CommandStatus.SUCCEEDED)
+    async with integration_session_factory() as db:
+        stopped = await WorkLineConfigurationService(
+            plugins=(SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),)
+        ).deactivate(db, workline_id=line.id, version=line.version)
+        assert not stopped.is_active
 
 
 @pytest.mark.asyncio
-async def test_postgresql_create_and_close_serialize_on_epoch(integration_session_factory) -> None:
-    creation_holds_epoch = asyncio.Event()
+async def test_postgresql_create_and_close_serialize_on_workline(integration_session_factory) -> None:
+    creation_holds_workline = asyncio.Event()
     release_creation = asyncio.Event()
 
-    class PausingEpochRepository(LineRunEpochRepository):
-        async def get_binding_for_command_creation(self, db, *, line_run_epoch_id, device_code):
+    class PausingWorkLineRepository(WorkLineRepository):
+        async def get_binding_for_command_creation(self, db, *, workline_id, device_code):
             binding = await super().get_binding_for_command_creation(
-                db, line_run_epoch_id=line_run_epoch_id, device_code=device_code
+                db, workline_id=workline_id, device_code=device_code
             )
-            creation_holds_epoch.set()
+            creation_holds_workline.set()
             await release_creation.wait()
             return binding
 
     async with integration_session_factory.begin() as db:
-        line, _, epoch, binding = await _seed_topology(db)
+        line, _, binding = await _seed_topology(db)
 
     request = DeviceCommandRequest(
         device_code=binding.device_code,
-        line_run_epoch_id=epoch.id,
+        workline_id=line.id,
         execution_ref_type="TEST_EXECUTION",
         execution_ref_id=f"EXEC-{uuid4().hex}",
         material_execution_id=None,
@@ -864,62 +751,61 @@ async def test_postgresql_create_and_close_serialize_on_epoch(integration_sessio
     )
     command_service = DeviceCommandService(
         session_factory=integration_session_factory,
-        epoch_repository=PausingEpochRepository(),
+        workline_repository=PausingWorkLineRepository(),
         clock=lambda: datetime(2026, 8, 13),
     )
 
     create_task = asyncio.create_task(command_service.create_command(request))
-    await asyncio.wait_for(creation_holds_epoch.wait(), timeout=2)
+    await asyncio.wait_for(creation_holds_workline.wait(), timeout=2)
 
-    async def close_epoch():
+    async def close_workline():
         async with integration_session_factory.begin() as db:
-            return await LineRunEpochService().close_active_epoch(
-                db,
-                workline_id=line.id,
-                closed_at=datetime(2026, 8, 13, 0, 1),
-                command_repository=device_command_repository,
-            )
+            return await WorkLineConfigurationService(
+                plugins=(
+                    SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),
+                )
+            ).deactivate(db, workline_id=line.id, version=line.version)
 
-    close_task = asyncio.create_task(close_epoch())
+    close_task = asyncio.create_task(close_workline())
     await asyncio.sleep(0.05)
     assert not close_task.done()
     release_creation.set()
     await asyncio.wait_for(create_task, timeout=2)
-    with pytest.raises(ActiveLineRunEpochExistsError, match="unclosed DeviceCommand"):
+    with pytest.raises(BusinessException):
         await asyncio.wait_for(close_task, timeout=2)
 
     async with integration_session_factory() as db:
-        persisted_epoch = await db.get(LineRunEpoch, epoch.id)
-        assert persisted_epoch.status == "ACTIVE"
+        persisted_workline = await db.get(WorkLine, line.id)
+        assert persisted_workline.is_active
 
 
 @pytest.mark.asyncio
-async def test_postgresql_dispatch_binding_read_does_not_wait_for_creation_lock(integration_session_factory) -> None:
-    repository = LineRunEpochRepository()
+async def test_postgresql_command_frozen_contract_read_does_not_wait_for_workline_lock(integration_session_factory):
     async with integration_session_factory.begin() as db:
-        _, _, epoch, binding = await _seed_topology(db)
-
+        line, _, binding = await _seed_topology(db)
+        command = _command(binding, f"CMD-{uuid4().hex}", CommandStatus.PENDING)
+        db.add(command)
     lock_acquired = asyncio.Event()
     release_lock = asyncio.Event()
 
-    async def hold_creation_lock() -> None:
+    async def hold_line():
         async with integration_session_factory.begin() as db:
-            await repository.get_binding_for_command_creation(
-                db, line_run_epoch_id=epoch.id, device_code=binding.device_code
-            )
+            await WorkLineRepository().get_for_update(db, line.id)
             lock_acquired.set()
             await release_lock.wait()
 
-    holder = asyncio.create_task(hold_creation_lock())
+    holder = asyncio.create_task(hold_line())
     await asyncio.wait_for(lock_acquired.wait(), timeout=2)
-    async with integration_session_factory.begin() as db:
-        dispatch_binding = await asyncio.wait_for(
-            repository.get_binding_for_dispatch(db, line_run_epoch_id=epoch.id, device_code=binding.device_code),
-            timeout=1,
-        )
-    release_lock.set()
-    await holder
-    assert dispatch_binding.id == binding.id
+    try:
+        async with integration_session_factory() as db:
+            frozen = await asyncio.wait_for(
+                device_command_repository.get_by_command_code(db, command.command_code), timeout=1
+            )
+            assert frozen.endpoint_base_url == binding.endpoint_base_url
+            assert frozen.command_timeout_ms == binding.command_timeout_ms
+    finally:
+        release_lock.set()
+        await holder
 
 
 @pytest.mark.asyncio
@@ -937,7 +823,7 @@ async def test_postgresql_unclosed_statuses_hold_single_device_slot(
     status: CommandStatus,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        _, _, _, binding = await _seed_topology(db)
+        _, _, binding = await _seed_topology(db)
         identity = uuid4().hex
         db.add(_command(binding, f"CMD-{identity}-1", status))
         await db.flush()
@@ -953,7 +839,7 @@ async def test_postgresql_terminal_statuses_release_device_slot(
     status: CommandStatus,
 ) -> None:
     async with integration_session_factory.begin() as db:
-        _, _, _, binding = await _seed_topology(db)
+        _, _, binding = await _seed_topology(db)
         identity = uuid4().hex
         db.add(_command(binding, f"CMD-{identity}-1", status))
         db.add(_command(binding, f"CMD-{identity}-2", CommandStatus.PENDING))

@@ -8,7 +8,7 @@ import pytest
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "b42147d0d086"
+HEAD_REVISION = "93deacda8c9c"
 
 
 @pytest.mark.asyncio
@@ -47,6 +47,14 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
                     """
                 )
             }
+            workline_owner_column = await connection.fetchrow(
+                """
+                SELECT data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'wes_biz' AND table_name = 'wms_confirmations'
+                  AND column_name = 'workline_id'
+                """
+            )
             confirmation_constraints = {
                 row["constraint_name"]: row["definition"]
                 for row in await connection.fetch(
@@ -72,7 +80,7 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
             await connection.close()
         run_alembic("check", database_url=database_url)
 
-    assert [tuple(row) for row in columns][-10:] == [
+    assert [tuple(row) for row in columns][-15:] == [
         ("task_id", "character varying", "NO"),
         ("task_type", "character varying", "NO"),
         ("status", "character varying", "NO"),
@@ -82,7 +90,12 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
         ("issued_at_ms", "bigint", "NO"),
         ("issued_evidence_id", "bigint", "NO"),
         ("workline_id", "integer", "YES"),
-        ("line_run_epoch_id", "integer", "YES"),
+        ("last_applied_plan_revision", "bigint", "NO"),
+        ("target_rack_id", "character varying", "YES"),
+        ("target_rack_face", "character varying", "YES"),
+        ("initial_plan_evidence_id", "bigint", "YES"),
+        ("last_plan_evidence_id", "bigint", "YES"),
+        ("plan_blocked_evidence_id", "bigint", "YES"),
     ]
     assert {
         "ux_picking_tasks_task_id",
@@ -111,8 +124,21 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
     assert "WHERE" in index_definition and "status" in index_definition and "QUEUED" in index_definition
     assert "ck_picking_tasks_picking_task_binding_matches_status" in constraints
     assert "fk_picking_tasks_workline_id_work_lines" in constraints
-    assert "fk_picking_tasks_line_run_epoch_id_line_run_epochs" in constraints
+    assert "fk_picking_tasks_line_run_epoch_id_line_run_epochs" not in constraints
     assert "ck_wms_confirmations_wms_confirmation_exactly_one_owner" in confirmation_constraints
-    assert "fk_wms_confirmations_bin_execution_id_bin_executions" in confirmation_constraints
+    assert "fk_wms_confirmations_bin_execution_id_bin_executions" not in confirmation_constraints
     assert "fk_wms_confirmations_picking_task_id_picking_tasks" in confirmation_constraints
-    assert "ux_wms_confirmations_picking_task_operation" in confirmation_indexes
+    assert "ux_wms_confirmations_picking_task_operation" not in confirmation_indexes
+    definition = confirmation_indexes["ux_wms_confirmations_picking_task_prepare"]
+    assert "UNIQUE INDEX" in definition
+    assert "picking_task_id IS NOT NULL" in definition
+    assert "outbound.picking_task.prepare@v1" in definition
+    assert tuple(workline_owner_column) == ("bigint", "YES")
+    assert confirmation_constraints["fk_wms_confirmations_workline_id_work_lines"] == (
+        "FOREIGN KEY (workline_id) REFERENCES wes_biz.work_lines(id)"
+    )
+    owner_check = confirmation_constraints["ck_wms_confirmations_wms_confirmation_exactly_one_owner"]
+    for owner in ("material_execution_id", "picking_task_id", "workline_id"):
+        assert f"{owner} IS NOT NULL" in owner_check
+    assert "= 1" in owner_check
+    assert "ix_wes_biz_wms_confirmations_workline_id" in confirmation_indexes

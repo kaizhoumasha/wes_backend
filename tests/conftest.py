@@ -12,6 +12,9 @@ from sqlmodel import SQLModel
 
 # 注册 WorklineSession 元数据：runtime_inbox 在 SQLite 中通过外键引用它。
 from src.app.runtime.orchestration.models.session import WorklineSession
+
+# schema fixture 负责组合外键目标，execution 模型不反向导入业务域。
+from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.database.sqlite_schema import configure_sqlite_schemas
 
 # 使用内存数据库进行测试

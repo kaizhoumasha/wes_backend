@@ -1,105 +1,6 @@
 """核心与工作线插件共享的稳定值合同校验。"""
 
-import math
-from typing import Never, SupportsIndex, TypeGuard, cast
-
-
-class _FrozenDict(dict[str, object]):
-    @staticmethod
-    def _reject_mutation() -> Never:
-        raise TypeError("frozen JSON object cannot be mutated")
-
-    def __setitem__(self, _key: str, _value: object) -> Never:
-        self._reject_mutation()
-
-    def __delitem__(self, _key: str) -> Never:
-        self._reject_mutation()
-
-    def clear(self) -> Never:
-        self._reject_mutation()
-
-    def pop(self, _key: str, _default: object = None) -> Never:
-        self._reject_mutation()
-
-    def popitem(self) -> Never:
-        self._reject_mutation()
-
-    def setdefault(self, _key: str, _default: object = None) -> Never:
-        self._reject_mutation()
-
-    def update(self, *_args: object, **_kwargs: object) -> Never:
-        self._reject_mutation()
-
-    def __ior__(self, _value: object) -> Never:
-        self._reject_mutation()
-
-
-class _FrozenList(list[object]):
-    @staticmethod
-    def _reject_mutation() -> Never:
-        raise TypeError("frozen JSON array cannot be mutated")
-
-    def __setitem__(self, _key: SupportsIndex | slice, _value: object) -> Never:
-        self._reject_mutation()
-
-    def __delitem__(self, _key: SupportsIndex | slice) -> Never:
-        self._reject_mutation()
-
-    def __iadd__(self, _value: object) -> Never:
-        self._reject_mutation()
-
-    def __imul__(self, _value: object) -> Never:
-        self._reject_mutation()
-
-    def append(self, _value: object) -> Never:
-        self._reject_mutation()
-
-    def clear(self) -> Never:
-        self._reject_mutation()
-
-    def extend(self, _value: object) -> Never:
-        self._reject_mutation()
-
-    def insert(self, _index: SupportsIndex, _value: object) -> Never:
-        self._reject_mutation()
-
-    def pop(self, _index: SupportsIndex = -1) -> Never:
-        self._reject_mutation()
-
-    def remove(self, _value: object) -> Never:
-        self._reject_mutation()
-
-    def reverse(self) -> Never:
-        self._reject_mutation()
-
-    def sort(self, *, key: object = None, reverse: bool = False) -> Never:
-        del key, reverse
-        self._reject_mutation()
-
-
-def freeze_json_object(value: object, field_name: str) -> dict[str, object]:
-    """校验 JSON object 并递归冻结，阻止 Decision 构造后的别名修改。"""
-
-    if type(value) is not dict:
-        raise TypeError(f"{field_name} must be a dict")
-    return cast("dict[str, object]", _freeze_json_value(value, field_name))
-
-
-def _freeze_json_value(value: object, field_name: str) -> object:
-    if type(value) is dict:
-        frozen: dict[str, object] = {}
-        for key, nested in value.items():
-            if type(key) is not str:
-                raise TypeError(f"{field_name} keys must be strings")
-            frozen[key] = _freeze_json_value(nested, field_name)
-        return _FrozenDict(frozen)
-    if type(value) is list:
-        return _FrozenList(_freeze_json_value(item, field_name) for item in value)
-    if type(value) is float and not math.isfinite(value):
-        raise ValueError(f"{field_name} must not contain non-finite numbers")
-    if value is None or type(value) in {str, int, float, bool}:
-        return value
-    raise TypeError(f"{field_name} must contain only JSON values")
+from typing import TypeGuard
 
 
 def validate_required_text(
@@ -145,10 +46,10 @@ def validate_opaque_face(
     *,
     error_type: type[ValueError] = ValueError,
 ) -> None:
-    """校验不解释内容的 face 字符串，同时保留调用边界的异常类型。"""
+    """校验 1–10 字符的 opaque face，同时保留原文及调用边界异常类型。"""
     if type(value) is not str or value == "":
         raise error_type(f"{field_name} must be a non-empty string")
-    _validate_nul_length_utf8(value, field_name, max_length=None, error_type=error_type)
+    _validate_nul_length_utf8(value, field_name, max_length=10, error_type=error_type)
 
 
 def _validate_nul_length_utf8(
@@ -187,7 +88,6 @@ def is_persistable_text(value: object, max_length: int) -> TypeGuard[str]:
 
 
 __all__ = (
-    "freeze_json_object",
     "is_opaque_face",
     "is_persistable_text",
     "validate_opaque_face",

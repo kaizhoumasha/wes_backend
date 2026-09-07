@@ -128,7 +128,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     normalized_payload: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
     received_at: datetime
 
-    line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id", index=True)
+    workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id", index=True)
     material_execution_id: int | None = Field(default=None, foreign_key="wes_biz.material_executions.id", index=True)
     transport_task_id: str | None = Field(default=None, max_length=120, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)
