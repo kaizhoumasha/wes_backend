@@ -1144,15 +1144,14 @@ async def test_postgresql_overlapping_outcome_publishers_hold_switch_gate(integr
     calls = []
 
     class Publisher:
-        async def publish(self, outcome):
+        async def publish(self, db, outcome):
             calls.append(outcome)
             if len(calls) == 1:
                 entered.set()
                 await release.wait()
-            # A separate plugin transaction must be able to read its original owner.
-            async with integration_session_factory() as db:
-                current = await workline_repository.get_by_id(db, line_id)
-                assert current.plugin_version == "1.0.0"
+            # The plugin reads its original owner through the host transaction.
+            current = await workline_repository.get_by_id(db, line_id)
+            assert current.plugin_version == "1.0.0"
 
     plugin = InstalledWorkLinePlugin(
         display_name="Test",

@@ -686,7 +686,6 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
     owner = asyncio.create_task(drift_binding_in_execution_first_order())
     await owner_locked_execution.wait()
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=integration_session_factory,
         evidence_service=SignallingEvidenceService(),  # type: ignore[arg-type]
     )
     outcome = TransportOutcome(
@@ -704,7 +703,12 @@ async def test_postgresql_transport_publisher_revalidates_after_accept_first_con
             ),
         ),
     )
-    publishing = asyncio.create_task(publisher.publish(outcome))
+
+    async def publish():
+        async with integration_session_factory.begin() as db:
+            return await publisher.publish(db, outcome)
+
+    publishing = asyncio.create_task(publish())
     await asyncio.wait_for(owner, timeout=5)
     with pytest.raises(ValueError, match="binding correlation drift"):
         await asyncio.wait_for(publishing, timeout=5)
@@ -874,10 +878,6 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
             self.calls += 1
             return "applied"
 
-    class Queue:
-        def enqueue_execution_facts(self) -> None:
-            return None
-
     applier = RecordingApplier()
     processor = FactProcessor(
         session_factory=integration_session_factory,
@@ -897,14 +897,17 @@ async def test_postgresql_duplicate_transport_publisher_and_fact_processor_share
         token_factory=lambda: f"claim-{identity}",
     )
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=integration_session_factory,
         evidence_service=InboundEvidenceService(repository=PublisherEvidenceRepository()),  # type: ignore[arg-type]
-        queue_gateway=Queue(),  # type: ignore[arg-type]
     )
 
     processing = asyncio.create_task(processor.process_batch(limit=1))
     await asyncio.wait_for(processor_holds_outcome.wait(), timeout=5)
-    publishing = asyncio.create_task(publisher.publish(outcome))
+
+    async def publish():
+        async with integration_session_factory.begin() as db:
+            return await publisher.publish(db, outcome)
+
+    publishing = asyncio.create_task(publish())
     await asyncio.wait_for(publisher_waiting_outcome.wait(), timeout=5)
     release_processor.set()
     assert await asyncio.wait_for(processing, timeout=5) == 1

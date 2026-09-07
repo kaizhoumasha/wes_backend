@@ -73,7 +73,7 @@ def build_deployment_runtime(
             device_adapter_provider=device_adapter_provider,
         )
         rough_sorter_start_plan_builder = RoughSorterStartPlanBuilder(adapter_provider=device_adapter_provider)
-        rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher(session_factory=session_factory)
+        rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher()
         plugins = (
             InstalledWorkLinePlugin(
                 display_name="粗分业务",

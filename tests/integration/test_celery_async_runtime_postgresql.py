@@ -1264,6 +1264,8 @@ def test_quit_countdown_retry_is_recovered_with_idempotent_final_state(prefork_s
             "countdown retry first attempt",
         )
         first_attempt_seen = time.monotonic()
+        # 数据库提交早于 self.retry；本场景必须在 countdown 已发布后发送 QUIT。
+        _wait_until(lambda: result.state == "RETRY", TASK_TIMEOUT, "countdown retry published")
         shutdown_started = time.monotonic()
         first.stop(shutdown_signal=signal.SIGQUIT, cleanup_redis=False)
         shutdown_elapsed = time.monotonic() - shutdown_started

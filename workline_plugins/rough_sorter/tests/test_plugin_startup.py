@@ -1762,7 +1762,7 @@ async def test_plugin_builds_complete_admission_data_from_same_db_snapshot() -> 
         ),
     ],
 )
-async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
+async def test_transport_publisher_maps_only_new_in_and_returns_wake_intent(
     outcome_status: TransportOutcomeStatus,
     execution_status: MaterialExecutionStatus,
     expected_apply_status: InboundEvidenceApplyStatus,
@@ -1849,17 +1849,11 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
                 duplicate=False,
             )
 
-    class Queue:
-        def enqueue_execution_facts(self) -> None:
-            events.append("wake")
-
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=Sessions(),  # type: ignore[arg-type]
         binding_repository=Bindings(),  # type: ignore[arg-type]
         evidence_repository=EvidenceRepo(),  # type: ignore[arg-type]
         execution_repository=ExecutionRepo(),  # type: ignore[arg-type]
         evidence_service=EvidenceService(),  # type: ignore[arg-type]
-        queue_gateway=Queue(),  # type: ignore[arg-type]
     )
     outcome = TransportOutcome(
         transport_task_id="TRANSPORT-1",
@@ -1877,7 +1871,8 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
         ),
     )
 
-    await publisher.publish(outcome)
+    async with Sessions().begin() as db:
+        wake = await publisher.publish(db, outcome)
 
     expected_events = [
         "begin",
@@ -1889,8 +1884,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
         "source-lock",
         "commit",
     ]
-    if should_wake:
-        expected_events.append("wake")
+    assert wake is should_wake
     assert events == expected_events
     assert accepted_evidence.apply_status == expected_apply_status
 
@@ -1923,7 +1917,6 @@ async def test_transport_publisher_confirms_unbound_debug_outcome() -> None:
             events.append("binding-read")
 
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=Sessions(),  # type: ignore[arg-type]
         binding_repository=Bindings(),  # type: ignore[arg-type]
     )
     outcome = TransportOutcome(
@@ -1942,7 +1935,8 @@ async def test_transport_publisher_confirms_unbound_debug_outcome() -> None:
         ),
     )
 
-    await publisher.publish(outcome)
+    async with Sessions().begin() as db:
+        assert await publisher.publish(db, outcome) is False
 
     assert events == ["begin", "binding-read", "commit"]
 
@@ -1954,7 +1948,6 @@ async def test_transport_publisher_still_rejects_unbound_business_outcome() -> N
             del db, client_request_id
 
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=_Sessions(object()),
         binding_repository=Bindings(),  # type: ignore[arg-type]
     )
     outcome = TransportOutcome(
@@ -1974,7 +1967,7 @@ async def test_transport_publisher_still_rejects_unbound_business_outcome() -> N
     )
 
     with pytest.raises(LookupError, match="缺少换架 business binding"):
-        await publisher.publish(outcome)
+        await publisher.publish(object(), outcome)
 
 
 @pytest.mark.asyncio
@@ -2063,7 +2056,6 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
             )
 
     publisher = RoughSorterTransportOutcomePublisher(
-        session_factory=Sessions(),  # type: ignore[arg-type]
         binding_repository=Bindings(),  # type: ignore[arg-type]
         evidence_repository=EvidenceRepo(),  # type: ignore[arg-type]
         execution_repository=ExecutionRepo(),  # type: ignore[arg-type]
@@ -2086,7 +2078,8 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
     )
 
     with pytest.raises(ValueError, match=f"Transport {drift}.*drift"):
-        await publisher.publish(outcome)
+        async with Sessions().begin() as db:
+            await publisher.publish(db, outcome)
 
     expected_events = ["accepted", "execution-lock", "binding-lock"]
     if drift == "source":

@@ -42,7 +42,7 @@ class _OutcomePublisher:
     def __init__(self) -> None:
         self.outcomes: list[object] = []
 
-    async def publish(self, outcome: object) -> None:
+    async def publish(self, db: object, outcome: object) -> None:
         self.outcomes.append(outcome)
 
 
@@ -193,7 +193,7 @@ async def test_overlapping_publishers_cannot_finish_after_workline_switch():
         def __init__(self):
             self.calls = []
 
-        async def publish(self, outcome):
+        async def publish(self, db, outcome):
             first = not self.calls
             self.calls.append(line.plugin_version)
             if first:
@@ -239,3 +239,52 @@ async def test_overlapping_publishers_cannot_finish_after_workline_switch():
         results = await asyncio.gather(first, second, return_exceptions=True)
     assert results == [None, None]
     assert publisher.calls == ["1.0", "1.0"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_transport_plugin_shares_transaction_and_wakes_only_after_commit(commit_fails):
+    from unittest.mock import AsyncMock, Mock
+
+    tx = object()
+    events = []
+
+    class Sessions:
+        @asynccontextmanager
+        async def begin(self):
+            yield tx
+            if commit_fails:
+                raise RuntimeError("commit failed")
+            events.append("commit")
+
+    async def persist(db, outcome):
+        assert db is tx
+        events.append("persist")
+        return True
+
+    publisher = SimpleNamespace(publish=AsyncMock(side_effect=persist))
+    queue = SimpleNamespace(enqueue_execution_facts=Mock(side_effect=lambda: events.append("wake")))
+    tasks = AsyncMock()
+    tasks.get_task.return_value = SimpleNamespace(client_request_id="REQUEST-1", published_outcome_version=0)
+    router = InstalledPluginTransportOutcomePublisher(
+        Sessions(),
+        (_plugin(version="1.0", publisher=publisher),),
+        transport_repository=tasks,
+        binding_repository=_Repository(SimpleNamespace(workline_id=31)),
+        workline_repository=_Repository(SimpleNamespace(plugin_key="example", plugin_version="1.0")),
+        queue_gateway=queue,
+    )
+    outcome = SimpleNamespace(
+        transport_task_id="TASK-1",
+        client_request_id="REQUEST-1",
+        outcome_version=1,
+        caller=SimpleNamespace(workline_id="31"),
+    )
+    if commit_fails:
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await router.publish(outcome)
+        assert events == ["persist"]
+        queue.enqueue_execution_facts.assert_not_called()
+    else:
+        await router.publish(outcome)
+        assert events == ["persist", "commit", "wake"]

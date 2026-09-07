@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.execution.repositories.material_execution_repository import material_execution_repository
@@ -10,6 +11,9 @@ from src.app.transport.contracts import TRANSPORT_DEBUG_CALLER_WORKLINE_ID
 from src.app.transport.repository import TransportRepository
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin, resolve_installed_plugin_version
 from src.app.workline.repositories.workline_repository import workline_repository
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -91,7 +95,9 @@ class InstalledPluginTransportOutcomePublisher:
             "TransportBindingRepositoryPort", transport_decision_binding_repository
         ),
         workline_repository: WorkLineRepositoryPort = cast("WorkLineRepositoryPort", workline_repository),
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
+        self._queue = queue_gateway
         self._sessions = session_factory
         self._plugins = plugins
         self._tasks = transport_repository or TransportRepository()
@@ -119,9 +125,17 @@ class InstalledPluginTransportOutcomePublisher:
                 raise LookupError(
                     f"plugin has no Transport outcome publisher: {plugin.plugin_key}@{plugin.plugin_version}"
                 )
-            # Unpublished outcome blocks WorkLine switching. Keep the task row locked
-            # until the plugin transaction commits; competing leases cannot mark it published early.
-            await publisher.publish(outcome)
+            # Share the transaction: workers have one database connection. Keep the task
+            # locked through evidence commit so another publisher cannot admit a plugin switch.
+            should_wake = await publisher.publish(db, outcome)
+        if should_wake:
+            try:
+                self._queue.enqueue_execution_facts()
+            except Exception:
+                logger.exception(
+                    "transport.execution_wake_failed",
+                    extra={"transport_task_id": outcome.transport_task_id},
+                )
 
 
 __all__ = ["InstalledPluginTransportOutcomePublisher", "InstalledPluginWmsFollowUpPlanner"]
