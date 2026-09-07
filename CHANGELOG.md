@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0.0] - 2026-09-06
+
+### Added
+
+- 新增出库 PickingTask 的 issued、prepare、plan_delta、queue_changed 及计划阻塞人工修正入口，补齐货架到位、料箱入线/退箱、作业计划、离站、物料判断和源位清空 Operation。
+- 新增 PickingTask、prepare policy 与 Epoch confirmation owner 的数据库迁移，支持基础能力独立运行及插件显式装配。
+
+### Changed
+
+- WMS Operation 统一为固定 typed 门面，宿主复用 WmsConfirmation 与 InboundEvidence 承担可靠收发，插件负责业务决定。
+- WMS 料箱业务字段与 SDK 位置合同统一使用 bin_code；朝向字段限定为最多 10 字符，移除 ng_exit_report 及关联实现和测试。
+- 同步 SDK、粗分/人工处理插件调用点、合同和测试所有权，记录后续站点驱动流程 SPEC。
+
+### Fixed
+
+- 计划修正接口支持合法 task_id 中的斜杠；核心队列实库测试隔离插件 Epoch，授权初始化回归同步当前权限目录并保持普通角色写权限限制。
+
+### Verification
+
+- QUALITY 通过：FAST 3194 passed、5 skipped；HEAVY selector 选中的 55 个文件共 516 项通过、零跳过，并完成干净数据库迁移。
+- 本版本为仓库 Operation 基线；完整 BinExecution 退役、联调服务器部署及双方业务验收另行安排。
+
 ## [0.32.0.0] - 2026-09-05
 
 ### Changed
