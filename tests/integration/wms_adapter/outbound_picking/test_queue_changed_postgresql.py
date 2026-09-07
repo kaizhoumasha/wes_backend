@@ -17,7 +17,7 @@ from src.app.wms_adapter.outbound_picking.wire import PickingTaskIssuedEvent
 from src.app.wms_integration.outbound_picking.models import PickingTask
 from src.app.wms_integration.outbound_picking.services.picking_task_issued import PickingTaskIssuedService
 from src.app.wms_integration.outbound_picking.services.picking_task_queue_changed import PickingTaskQueueChangedService
-from src.app.workline.models import LineRunEpoch, LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
@@ -190,23 +190,10 @@ async def test_claimed_task_rejects_new_queue_update_but_replays_accepted_identi
         )
         db.add(line)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code="QUEUE-EPOCH",
-            workline_id=line.id,
-            plugin_key="test_stub",
-            plugin_version="1",
-            flow_mode="TEST",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            started_at=NOW,
-        )
-        db.add(epoch)
         await db.flush()
         task = await db.scalar(select(PickingTask).with_for_update())
         task.status = status
         task.workline_id = line.id
-        task.line_run_epoch_id = epoch.id
     duplicate = await service.record(accepted_event, received_at=datetime(2026, 9, 7))
     assert (duplicate.code, duplicate.timestamp_ms) == ("DUPLICATE", accepted.timestamp_ms)
     rejected_event = changed(revision=3, dispatch_sequence=80)

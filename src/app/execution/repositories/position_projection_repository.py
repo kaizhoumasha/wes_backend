@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, func, or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
-from src.app.execution.locks import epoch_lifecycle_lock_identity, position_projection_lock_identity
-from src.app.execution.models.bin_execution import BinExecution
+from src.app.execution.locks import position_projection_lock_identity
 from src.app.execution.models.position_projection import PositionProjection
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochPositionBinding
+from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
 
@@ -18,19 +17,16 @@ class PositionProjectionRepository(BaseRepository[PositionProjection]):
     def __init__(self) -> None:
         super().__init__(PositionProjection)
 
-    async def lock_epoch_lifecycle(self, db: AsyncSession, line_run_epoch_id: int) -> None:
-        await db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
-            {"identity": epoch_lifecycle_lock_identity(line_run_epoch_id)},
-        )
+    async def get_workline_for_update(self, db: AsyncSession, workline_id: int) -> WorkLine | None:
+        from src.app.workline.repositories.workline_repository import workline_repository
 
-    async def get_epoch_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> LineRunEpoch | None:
-        columns = cast("Any", LineRunEpoch).__table__.c
-        return await db.scalar(select(LineRunEpoch).where(columns.id == line_run_epoch_id).with_for_update())
+        return await workline_repository.get_for_update(db, workline_id)
 
-    async def get_bin_execution_for_update(self, db: AsyncSession, bin_execution_id: int) -> BinExecution | None:
-        columns = cast("Any", BinExecution).__table__.c
-        return await db.scalar(select(BinExecution).where(columns.id == bin_execution_id).with_for_update())
+    async def is_workline_position(self, db: AsyncSession, workline_id: int, position: dict[str, Any] | None) -> bool:
+        line = await db.get(WorkLine, workline_id)
+        if line is None or position is None:
+            return False
+        return position.get("location_code") in {binding["location_id"] for binding in line.position_bindings.values()}
 
     async def lock_projection(self, db: AsyncSession, object_type: str, object_id: str) -> None:
         await db.execute(
@@ -62,26 +58,15 @@ class PositionProjectionRepository(BaseRepository[PositionProjection]):
         db.add(projection)
         return projection
 
-    async def delete_for_bin_execution(self, db: AsyncSession, bin_execution_id: int) -> None:
-        columns = cast("Any", PositionProjection).__table__.c
-        await db.execute(delete(PositionProjection).where(columns.bin_execution_id == bin_execution_id))
-
-    async def delete_for_epoch(self, db: AsyncSession, line_run_epoch_id: int) -> None:
-        columns = cast("Any", PositionProjection).__table__.c
-        await db.execute(delete(PositionProjection).where(columns.line_run_epoch_id == line_run_epoch_id))
-
     async def get_active_workline_summary(self, db: AsyncSession, workline_id: int) -> dict[str, Any]:
         """汇总仍在本线绑定位置或位置未知的 current projection。"""
 
         columns = cast("Any", PositionProjection).__table__.c
-        bindings = cast("Any", LineRunEpochPositionBinding).__table__.c
-        location_code = columns.position_json["location_code"].as_string()
-        at_bound_position = exists(
-            select(1).where(
-                bindings.line_run_epoch_id == columns.line_run_epoch_id,
-                bindings.location_id == location_code,
-            )
+        line = await db.get(WorkLine, workline_id)
+        locations = (
+            tuple(binding["location_id"] for binding in line.position_bindings.values()) if line is not None else ()
         )
+        at_bound_position = columns.position_json["location_code"].as_string().in_(locations)
         result = await db.execute(
             select(PositionProjection, func.count().over().label("owner_count"))
             .where(

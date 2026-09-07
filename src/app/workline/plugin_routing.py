@@ -1,4 +1,4 @@
-"""按持久化 Epoch 精确选择插件专属的后续处理。"""
+"""按持久化 WorkLine 精确选择插件专属的后续处理。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from src.app.execution.repositories.material_execution_repository import material_execution_repository
 from src.app.execution.repositories.transport_decision_binding_repository import transport_decision_binding_repository
 from src.app.transport.contracts import TRANSPORT_DEBUG_CALLER_WORKLINE_ID
+from src.app.transport.repository import TransportRepository
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin, resolve_installed_plugin_version
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
+from src.app.workline.repositories.workline_repository import workline_repository
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -18,8 +19,8 @@ if TYPE_CHECKING:
     from src.app.transport.contracts import TransportOutcome
 
 
-class EpochRepositoryPort(Protocol):
-    async def get_by_id(self, db: Any, epoch_id: int) -> Any | None: ...
+class WorkLineRepositoryPort(Protocol):
+    async def get_by_id(self, db: Any, workline_id: int) -> Any | None: ...
 
 
 class MaterialExecutionRepositoryPort(Protocol):
@@ -31,7 +32,7 @@ class TransportBindingRepositoryPort(Protocol):
 
 
 class InstalledPluginWmsFollowUpPlanner:
-    """从 WMS confirmation 的原 execution/Epoch 选择后继规划器。"""
+    """从 WMS confirmation 的原 execution/WorkLine 选择后继规划器。"""
 
     def __init__(
         self,
@@ -40,11 +41,11 @@ class InstalledPluginWmsFollowUpPlanner:
         execution_repository: MaterialExecutionRepositoryPort = cast(
             "MaterialExecutionRepositoryPort", material_execution_repository
         ),
-        epoch_repository: EpochRepositoryPort = cast("EpochRepositoryPort", line_run_epoch_repository),
+        workline_repository: WorkLineRepositoryPort = cast("WorkLineRepositoryPort", workline_repository),
     ) -> None:
         self._plugins = plugins
         self._executions = execution_repository
-        self._epochs = epoch_repository
+        self._worklines = workline_repository
 
     async def plan(
         self,
@@ -61,10 +62,10 @@ class InstalledPluginWmsFollowUpPlanner:
         execution = await self._executions.get_by_id(db, execution_id)
         if execution is None:
             raise LookupError("WMS follow-up MaterialExecution 不存在")
-        epoch = await self._epochs.get_by_id(db, execution.line_run_epoch_id)
-        if epoch is None:
-            raise LookupError("WMS follow-up Epoch 不存在")
-        plugin = resolve_installed_plugin_version(self._plugins, epoch.plugin_key, epoch.plugin_version)
+        workline = await self._worklines.get_by_id(db, execution.workline_id)
+        if workline is None:
+            raise LookupError("WMS follow-up WorkLine 不存在")
+        plugin = resolve_installed_plugin_version(self._plugins, workline.plugin_key, workline.plugin_version)
         planner = plugin.wms_confirmation_follow_up_planner
         if planner is None:
             raise LookupError(f"plugin has no WMS follow-up planner: {plugin.plugin_key}@{plugin.plugin_version}")
@@ -78,40 +79,49 @@ class InstalledPluginWmsFollowUpPlanner:
 
 
 class InstalledPluginTransportOutcomePublisher:
-    """从 Transport binding 的原 Epoch 选择 outcome publisher。"""
+    """从 Transport binding 的原 WorkLine 选择 outcome publisher。"""
 
     def __init__(
         self,
         session_factory: Any,
         plugins: tuple[InstalledWorkLinePlugin, ...],
         *,
+        transport_repository: TransportRepository | None = None,
         binding_repository: TransportBindingRepositoryPort = cast(
             "TransportBindingRepositoryPort", transport_decision_binding_repository
         ),
-        epoch_repository: EpochRepositoryPort = cast("EpochRepositoryPort", line_run_epoch_repository),
+        workline_repository: WorkLineRepositoryPort = cast("WorkLineRepositoryPort", workline_repository),
     ) -> None:
         self._sessions = session_factory
         self._plugins = plugins
+        self._tasks = transport_repository or TransportRepository()
         self._bindings = binding_repository
-        self._epochs = epoch_repository
+        self._worklines = workline_repository
 
     async def publish(self, outcome: TransportOutcome) -> None:
         if outcome.caller.workline_id == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
             return
         async with self._sessions.begin() as db:
+            task = await self._tasks.get_task(db, outcome.transport_task_id, for_update=True)
+            if task is None or task.client_request_id != outcome.client_request_id:
+                raise LookupError("Transport outcome 缺少匹配原任务")
+            if task.published_outcome_version >= outcome.outcome_version:
+                return
             binding = await self._bindings.get_by_client_request_id(db, outcome.client_request_id)
             if binding is None:
                 raise LookupError("Transport outcome 缺少业务 binding")
-            epoch = await self._epochs.get_by_id(db, binding.line_run_epoch_id)
-            if epoch is None:
-                raise LookupError("Transport outcome Epoch 不存在")
-            plugin = resolve_installed_plugin_version(self._plugins, epoch.plugin_key, epoch.plugin_version)
+            workline = await self._worklines.get_by_id(db, binding.workline_id)
+            if workline is None:
+                raise LookupError("Transport outcome WorkLine 不存在")
+            plugin = resolve_installed_plugin_version(self._plugins, workline.plugin_key, workline.plugin_version)
             publisher = plugin.transport_outcome_publisher
             if publisher is None:
                 raise LookupError(
                     f"plugin has no Transport outcome publisher: {plugin.plugin_key}@{plugin.plugin_version}"
                 )
-        await publisher.publish(outcome)
+            # Unpublished outcome blocks WorkLine switching. Keep the task row locked
+            # until the plugin transaction commits; competing leases cannot mark it published early.
+            await publisher.publish(outcome)
 
 
 __all__ = ["InstalledPluginTransportOutcomePublisher", "InstalledPluginWmsFollowUpPlanner"]

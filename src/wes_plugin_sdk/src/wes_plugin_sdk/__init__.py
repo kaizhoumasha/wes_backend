@@ -30,10 +30,10 @@ from .facts import (
 from .handler import HandlerMetadata, handler
 from .protocols import (
     DeviceBindingSnapshot,
-    EpochConfigurationSnapshot,
     ExecutionLifecycle,
     ExecutionSnapshot,
     PositionBindingSnapshot,
+    WorkLineConfigurationSnapshot,
 )
 from .wms_types import (
     AdmissionAccepted,
@@ -134,7 +134,6 @@ __all__ = (
     "DeviceBindingSnapshot",
     "DevicePosition",
     "DeviceResultReadyFact",
-    "EpochConfigurationSnapshot",
     "EvidenceReadyFact",
     "ExecutionLifecycle",
     "ExecutionSnapshot",
@@ -203,6 +202,7 @@ __all__ = (
     "WmsOperationIntent",
     "WmsOperationOutcome",
     "WmsResultReadyFact",
+    "WorkLineConfigurationSnapshot",
     "handler",
     "wms_operations",
 )

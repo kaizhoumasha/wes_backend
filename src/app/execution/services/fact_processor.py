@@ -22,14 +22,14 @@ from src.app.execution.repositories import inbound_evidence_repository, material
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.execution.services.fact_builder import FactBuilder
 from src.app.execution.services.material_execution_service import MaterialExecutionService
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
+from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import AsyncContextManager, Callable
 
     from src.app.execution.plugin_binding import StaticPluginBinding
+    from src.app.workline.models.workline import WorkLine
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
@@ -60,10 +60,10 @@ class ExecutionRepositoryPort(Protocol):
     ) -> MaterialExecution | None: ...
 
 
-class EpochRepositoryPort(Protocol):
-    async def get_by_id_for_update(self, db: object, line_run_epoch_id: int) -> LineRunEpoch | None: ...
+class WorkLineRepositoryPort(Protocol):
+    async def get_for_update(self, db: object, workline_id: int) -> WorkLine | None: ...
 
-    async def list_position_bindings(self, db: object, line_run_epoch_id: int) -> list[object]: ...
+    async def list_position_bindings(self, db: object, workline_id: int) -> list[object]: ...
 
 
 class InitialExecutionServicePort(Protocol):
@@ -93,7 +93,7 @@ class FactProcessor:
         decision_applier: DecisionApplier,
         evidence_repository: EvidenceRepositoryPort | None = None,
         execution_repository: ExecutionRepositoryPort | None = None,
-        epoch_repository: EpochRepositoryPort | None = None,
+        workline_repository: WorkLineRepositoryPort | None = None,
         material_execution_service: InitialExecutionServicePort | None = None,
         fact_builder: FactBuilder | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
@@ -105,7 +105,7 @@ class FactProcessor:
         self._applier = decision_applier
         self._evidences = evidence_repository or cast("EvidenceRepositoryPort", inbound_evidence_repository)
         self._executions = execution_repository or cast("ExecutionRepositoryPort", material_execution_repository)
-        self._epochs = epoch_repository or cast("EpochRepositoryPort", line_run_epoch_repository)
+        self._worklines = workline_repository or cast("WorkLineRepositoryPort", WorkLineRepository())
         self._execution_service = material_execution_service or cast(
             "InitialExecutionServicePort", MaterialExecutionService()
         )
@@ -278,25 +278,25 @@ class FactProcessor:
             raise RuntimeError("Decision claim is missing or expired")
         return evidence
 
-    async def _load_epoch(self, db: object, evidence: InboundEvidence) -> LineRunEpoch:
-        if evidence.line_run_epoch_id is None:
-            raise ValueError("evidence 缺少 line_run_epoch_id")
-        epoch = await self._epochs.get_by_id_for_update(db, evidence.line_run_epoch_id)
-        if epoch is None or epoch.status != LineRunEpochStatus.ACTIVE:
-            raise ValueError("evidence 未关联活动 LineRunEpoch")
-        return epoch
+    async def _load_workline(self, db: object, evidence: InboundEvidence) -> WorkLine:
+        if evidence.workline_id is None:
+            raise ValueError("evidence 缺少 workline_id")
+        workline = await self._worklines.get_for_update(db, evidence.workline_id)
+        if workline is None or not workline.is_active:
+            raise ValueError("evidence 未关联活动 WorkLine")
+        return workline
 
-    async def _load_epoch_for_execution(self, db: object, execution: MaterialExecution) -> LineRunEpoch:
-        epoch = await self._epochs.get_by_id_for_update(db, execution.line_run_epoch_id)
-        if epoch is None or epoch.status != LineRunEpochStatus.ACTIVE:
-            raise ValueError("execution 未关联活动 LineRunEpoch")
-        return epoch
+    async def _load_workline_for_execution(self, db: object, execution: MaterialExecution) -> WorkLine:
+        workline = await self._worklines.get_for_update(db, execution.workline_id)
+        if workline is None or not workline.is_active:
+            raise ValueError("execution 未关联活动 WorkLine")
+        return workline
 
-    async def _restore_epoch_from_execution(self, db: object, evidence: InboundEvidence) -> None:
-        if evidence.line_run_epoch_id is not None or evidence.material_execution_id is None:
+    async def _restore_workline_from_execution(self, db: object, evidence: InboundEvidence) -> None:
+        if evidence.workline_id is not None or evidence.material_execution_id is None:
             return
         execution = await self._load_execution(db, evidence)
-        evidence.line_run_epoch_id = execution.line_run_epoch_id
+        evidence.workline_id = execution.workline_id
         await self._evidences.flush(db)
 
     async def _load_execution(self, db: object, evidence: InboundEvidence) -> MaterialExecution:
@@ -307,8 +307,8 @@ class FactProcessor:
             raise LookupError("MaterialExecution 不存在")
         return execution
 
-    async def _augment_fact(self, db: object, epoch: LineRunEpoch, base_fact: FactReference) -> FactReference:
-        factory = self._plugins.resolve_fact_factory(epoch.plugin_key, epoch.plugin_version)
+    async def _augment_fact(self, db: object, workline: WorkLine, base_fact: FactReference) -> FactReference:
+        factory = self._plugins.resolve_fact_factory(workline.plugin_key, workline.plugin_version)
         fact = await factory.build(db, base_fact)
         if not isinstance(fact, FactReference):
             raise TypeError("PluginFactFactory must return FactReference")
@@ -327,9 +327,9 @@ class FactProcessor:
         evidence: InboundEvidence,
         now: datetime,
     ) -> tuple[_PreparedFact, ...]:
-        await self._restore_epoch_from_execution(db, evidence)
-        epoch = await self._load_epoch(db, evidence)
-        execution = await self._load_or_correlate_execution(db, evidence, epoch, now)
+        await self._restore_workline_from_execution(db, evidence)
+        workline = await self._load_workline(db, evidence)
+        execution = await self._load_or_correlate_execution(db, evidence, workline, now)
         causal_evidence = None
         if (
             evidence.kind == InboundEvidenceKind.TRANSPORT_RESULT
@@ -337,13 +337,13 @@ class FactProcessor:
         ):
             causal_evidence = await self._evidences.get_by_id_for_update(db, execution.last_transition_evidence_id)
         position_bindings = (
-            tuple(await self._epochs.list_position_bindings(db, epoch.id))
+            tuple(await self._worklines.list_position_bindings(db, workline.id))
             if evidence.kind == InboundEvidenceKind.WMS_EVENT
             else ()
         )
         fact = await self._augment_fact(
             db,
-            epoch,
+            workline,
             self._fact_builder.build(
                 evidence,
                 execution,
@@ -351,7 +351,7 @@ class FactProcessor:
                 position_bindings=position_bindings,
             ),
         )
-        return (_PreparedFact(fact, epoch.plugin_key, epoch.plugin_version, execution),)
+        return (_PreparedFact(fact, workline.plugin_key, workline.plugin_version, execution),)
 
     async def _transition_all_executions(
         self,
@@ -380,14 +380,14 @@ class FactProcessor:
         self,
         db: object,
         evidence: InboundEvidence,
-        epoch: LineRunEpoch,
+        workline: WorkLine,
         now: datetime,
     ) -> MaterialExecution:
         if evidence.material_execution_id is not None:
             return await self._load_execution(db, evidence)
         if evidence.kind != InboundEvidenceKind.DEVICE_EVENT:
             raise ValueError(f"{InboundEvidenceKind(evidence.kind).value} evidence 缺少 material_execution_id")
-        correlator = self._plugins.resolve_initial_execution_correlator(epoch.plugin_key, epoch.plugin_version)
+        correlator = self._plugins.resolve_initial_execution_correlator(workline.plugin_key, workline.plugin_version)
         descriptor = await correlator.correlate(db, str(evidence.id))
         if descriptor is None:
             raise ValueError("initial evidence cannot be correlated")
@@ -395,8 +395,7 @@ class FactProcessor:
             db,
             execution_code=descriptor.execution_code,
             material_trace_id=descriptor.material_trace_id,
-            workline_id=epoch.workline_id,
-            line_run_epoch_id=cast("int", epoch.id),
+            workline_id=workline.id,
             changed_at=now,
             evidence_id=cast("int", evidence.id),
         )

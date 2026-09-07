@@ -16,7 +16,7 @@ from src.app.wms_integration.outbound_picking.services.picking_task_confirmation
 )
 async def test_arrival_obligation_survives_business_progress(state, accepted):
     repository = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1, line_run_epoch_id=2))
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
     )
     service = PickingTaskConfirmationOwnerService(repository)
     assert (
@@ -33,7 +33,7 @@ async def test_arrival_obligation_survives_business_progress(state, accepted):
 )
 async def test_prepare_retains_existing_owner_state_contract(state, accepted):
     repository = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1, line_run_epoch_id=2))
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
     )
     service = PickingTaskConfirmationOwnerService(repository)
     assert (
@@ -63,7 +63,7 @@ async def test_unknown_operation_does_not_query_owner():
 )
 async def test_departure_remains_available_after_business_completion(state, accepted):
     repository = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1, line_run_epoch_id=2))
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
     )
     assert (
         await PickingTaskConfirmationOwnerService(repository).validate_response_owner(
@@ -88,7 +88,7 @@ async def test_departure_remains_available_after_business_completion(state, acce
 )
 async def test_picking_decisions_require_executing_owner(state, accepted, operation):
     repository = SimpleNamespace(
-        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1, line_run_epoch_id=2))
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
     )
     assert (
         await PickingTaskConfirmationOwnerService(repository).validate_response_owner(

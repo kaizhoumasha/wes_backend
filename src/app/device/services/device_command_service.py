@@ -40,10 +40,7 @@ from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEv
 from src.app.execution.repositories.inbound_evidence_repository import inbound_evidence_repository
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding  # noqa: TC001
-from src.app.workline.repositories.line_run_epoch_repository import (
-    line_run_epoch_repository,
-)
+from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
@@ -53,13 +50,15 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.workline.activation import WorkLineDeviceBinding
+
 
 class DeviceNotFoundError(LookupError):
-    """活动 Epoch 中未绑定目标设备。"""
+    """活动 WorkLine 中未绑定目标设备。"""
 
 
 class DeviceContractMismatchError(ValueError):
-    """请求合同与 Epoch 冻结合同不一致。"""
+    """请求合同与 WorkLine 冻结合同不一致。"""
 
 
 class DeviceCommandCapacityError(RuntimeError):
@@ -71,7 +70,7 @@ class DeviceCommandIdentityConflictError(ValueError):
 
 
 class DeviceCommandDeadlineError(ValueError):
-    """请求截止时间不符合 Epoch 冻结设备合同。"""
+    """请求截止时间不符合 WorkLine 冻结设备合同。"""
 
 
 class DeviceCommandNotFoundError(LookupError):
@@ -95,7 +94,7 @@ class CommandRepositoryPort(Protocol):
         self,
         db: object,
         *,
-        line_run_epoch_id: int | None,
+        workline_id: int | None,
         device_code: str,
         execution_ref_type: str,
         execution_ref_id: str,
@@ -122,22 +121,24 @@ class CommandRepositoryPort(Protocol):
     async def claim_next_reconcilable(self, db: object, *, now: datetime) -> DeviceCommand | None: ...
 
 
-class EpochRepositoryPort(Protocol):
+class WorkLineRepositoryPort(Protocol):
+    async def get_for_update(self, db: object, workline_id: int) -> object | None: ...
+
     async def get_binding_for_command_creation(
         self,
         db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         device_code: str,
-    ) -> LineRunEpochDeviceBinding | None: ...
+    ) -> WorkLineDeviceBinding | None: ...
 
     async def get_binding_for_dispatch(
         self,
         db: object,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         device_code: str,
-    ) -> LineRunEpochDeviceBinding | None: ...
+    ) -> WorkLineDeviceBinding | None: ...
 
 
 class EvidenceRepositoryPort(Protocol):
@@ -195,7 +196,7 @@ class DeviceCommandService:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         command_repository: CommandRepositoryPort | None = None,
-        epoch_repository: EpochRepositoryPort | None = None,
+        workline_repository: WorkLineRepositoryPort | None = None,
         evidence_repository: EvidenceRepositoryPort | None = None,
         adapter_provider: ManualDebugAdapterProviderPort | None = None,
         event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
@@ -204,7 +205,7 @@ class DeviceCommandService:
     ) -> None:
         self._sessions = session_factory
         self._commands = command_repository or device_command_repository
-        self._epochs = epoch_repository or line_run_epoch_repository
+        self._worklines = workline_repository or WorkLineRepository()
         self._evidences = evidence_repository or inbound_evidence_repository
         self._adapter_provider = adapter_provider
         self._event_command_blocks = event_command_block_repository or device_event_command_block_repository
@@ -240,20 +241,12 @@ class DeviceCommandService:
         validated = DeviceCommandRequestData.model_validate(asdict(request))
         if validated.deadline_at.tzinfo is not None:
             raise DeviceCommandDeadlineError("deadline_at 必须是数据库合同要求的 naive UTC")
+        await self._worklines.get_for_update(db, validated.workline_id)
         await self._commands.lock_creation_for_device(db, validated.device_code)
-        binding = await self._epochs.get_binding_for_command_creation(
-            db,
-            line_run_epoch_id=validated.line_run_epoch_id,
-            device_code=validated.device_code,
-        )
-        if binding is None or binding.id is None:
-            raise DeviceNotFoundError(validated.device_code)
-        if binding.contract_key != validated.contract_key or binding.contract_version != validated.contract_version:
-            raise DeviceContractMismatchError(validated.device_code)
         payload_digest = _command_payload_digest(validated)
         same_identity = await self._commands.get_by_execution_ref_for_update(
             db,
-            line_run_epoch_id=validated.line_run_epoch_id,
+            workline_id=validated.workline_id,
             device_code=validated.device_code,
             execution_ref_type=validated.execution_ref_type,
             execution_ref_id=validated.execution_ref_id,
@@ -265,6 +258,15 @@ class DeviceCommandService:
                 command_code=same_identity.command_code,
                 status=CommandStatus(same_identity.status),
             )
+        binding = await self._worklines.get_binding_for_command_creation(
+            db,
+            workline_id=validated.workline_id,
+            device_code=validated.device_code,
+        )
+        if binding is None:
+            raise DeviceNotFoundError(validated.device_code)
+        if binding.contract_key != validated.contract_key or binding.contract_version != validated.contract_version:
+            raise DeviceContractMismatchError(validated.device_code)
         now = self._clock()
         if validated.deadline_at <= now or validated.deadline_at > now + timedelta(
             milliseconds=binding.command_timeout_ms
@@ -276,8 +278,10 @@ class DeviceCommandService:
         command = DeviceCommand(
             command_code=new_uuid7(),
             device_code=validated.device_code,
-            line_run_epoch_id=validated.line_run_epoch_id,
-            device_binding_id=binding.id,
+            workline_id=validated.workline_id,
+            endpoint_base_url=binding.endpoint_base_url,
+            command_timeout_ms=binding.command_timeout_ms,
+            status_max_age_ms=binding.status_max_age_ms,
             execution_ref_type=validated.execution_ref_type,
             execution_ref_id=validated.execution_ref_id,
             material_execution_id=validated.material_execution_id,
@@ -309,7 +313,7 @@ class DeviceCommandService:
         execution_reason: str,
         created_by: int,
     ) -> DeviceCommandHandle:
-        """创建不依赖 WorkLine/Epoch 的供应商联调命令。"""
+        """创建不依赖 WorkLine/WorkLine 的供应商联调命令。"""
 
         endpoint = validate_device_endpoint_base_url(endpoint_base_url)
         now = self._clock()
@@ -320,7 +324,7 @@ class DeviceCommandService:
         validated = DeviceCommandRequestData.model_validate(
             {
                 "device_code": device_code,
-                "line_run_epoch_id": None,
+                "workline_id": None,
                 "execution_ref_type": MANUAL_DEBUG_REF_TYPE,
                 "execution_ref_id": client_request_id,
                 "material_execution_id": None,
@@ -386,8 +390,7 @@ class DeviceCommandService:
             command = DeviceCommand(
                 command_code=new_uuid7(),
                 device_code=validated.device_code,
-                line_run_epoch_id=None,
-                device_binding_id=None,
+                workline_id=None,
                 execution_ref_type=MANUAL_DEBUG_REF_TYPE,
                 execution_ref_id=validated.execution_ref_id,
                 material_execution_id=None,
@@ -423,7 +426,7 @@ class DeviceCommandService:
         validated = DeviceCommandRequestData.model_validate(
             {
                 "device_code": event.device_code,
-                "line_run_epoch_id": None,
+                "workline_id": None,
                 "execution_ref_type": EVENT_DEBUG_REF_TYPE,
                 "execution_ref_id": evidence.source_identity,
                 "material_execution_id": None,
@@ -442,7 +445,7 @@ class DeviceCommandService:
         await self._commands.lock_creation_for_device(db, validated.device_code)
         same_identity = await self._commands.get_by_execution_ref_for_update(
             db,
-            line_run_epoch_id=None,
+            workline_id=None,
             device_code=validated.device_code,
             execution_ref_type=EVENT_DEBUG_REF_TYPE,
             execution_ref_id=validated.execution_ref_id,
@@ -468,8 +471,7 @@ class DeviceCommandService:
         command = DeviceCommand(
             command_code=new_uuid7(),
             device_code=validated.device_code,
-            line_run_epoch_id=None,
-            device_binding_id=None,
+            workline_id=None,
             execution_ref_type=EVENT_DEBUG_REF_TYPE,
             execution_ref_id=validated.execution_ref_id,
             material_execution_id=None,
@@ -652,19 +654,14 @@ class DeviceCommandService:
                 raise DeviceCommandManualReconciliationConflictError("blocker 指向的命令不存在")
             if not _is_delivery_unknown_reconciling(command):
                 raise DeviceCommandManualReconciliationConflictError("命令不是 DELIVERY_UNKNOWN 对账态")
-            if command.execution_ref_type in DIAGNOSTIC_REF_TYPES or command.line_run_epoch_id is None:
+            if command.execution_ref_type in DIAGNOSTIC_REF_TYPES or command.workline_id is None:
                 raise DeviceCommandManualReconciliationConflictError("诊断命令没有冻结的新鲜度合同")
             if await self._evidences.get_device_result_for_command(db, command.command_code) is not None:
                 raise DeviceCommandManualReconciliationConflictError("阻塞命令已有 DEVICE_RESULT")
-            binding = await self._epochs.get_binding_for_dispatch(
-                db,
-                line_run_epoch_id=command.line_run_epoch_id,
-                device_code=command.device_code,
-            )
-            if binding is None or binding.status_max_age_ms <= 0:
-                raise DeviceCommandManualReconciliationConflictError("冻结设备 binding 不可解析")
+            if command.status_max_age_ms is None or command.status_max_age_ms <= 0 or command.endpoint_base_url is None:
+                raise DeviceCommandManualReconciliationConflictError("命令缺少冻结设备合同")
             try:
-                endpoint = validate_device_endpoint_base_url(binding.endpoint_base_url)
+                endpoint = validate_device_endpoint_base_url(command.endpoint_base_url)
             except ValueError as error:
                 raise DeviceCommandManualReconciliationConflictError("冻结设备 Endpoint 不可解析") from error
             return _ManualReconciliationTarget(
@@ -675,7 +672,7 @@ class DeviceCommandService:
                 command_version=command.version,
                 device_code=command.device_code,
                 endpoint_base_url=endpoint,
-                status_max_age_ms=binding.status_max_age_ms,
+                status_max_age_ms=command.status_max_age_ms,
             )
 
     async def _manual_debug_adapter(self, endpoint_base_url: str) -> ManualDebugAdapterPort:

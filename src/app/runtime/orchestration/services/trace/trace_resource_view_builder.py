@@ -19,7 +19,6 @@ _RACK_FIELDS = ("rack_id", "rack_code", "rack_kind", "rack_type")
 _BIN_FIELDS = (
     "rack_slot_code",
     "rack_slot_location_code",
-    "bin_id",
     "bin_code",
     "bin_type",
     "bin_orientation_code",

@@ -46,9 +46,9 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
             name="picking_task_not_before_nonnegative",
         ),
         CheckConstraint(
-            "(status = 'QUEUED' AND workline_id IS NULL AND line_run_epoch_id IS NULL) OR "
+            "(status = 'QUEUED' AND workline_id IS NULL) OR "
             "(status IN ('PREPARING', 'EXECUTING', 'EXECUTION_COMPLETED') "
-            "AND workline_id IS NOT NULL AND line_run_epoch_id IS NOT NULL)",
+            "AND workline_id IS NOT NULL)",
             name="picking_task_binding_matches_status",
         ),
         CheckConstraint("last_applied_plan_revision >= 0", name="picking_task_plan_revision_nonnegative"),
@@ -111,11 +111,6 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
     workline_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.work_lines.id",
-        index=True,
-    )
-    line_run_epoch_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.line_run_epochs.id",
         index=True,
     )
 

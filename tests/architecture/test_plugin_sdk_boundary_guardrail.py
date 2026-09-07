@@ -355,8 +355,8 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         location_type="RACK_CELL",
     )
     with pytest.raises(TypeError):
-        sdk.EpochConfigurationSnapshot(
-            line_run_epoch_id="epoch-1",
+        sdk.WorkLineConfigurationSnapshot(
+            workline_id="workline-1",
             workline_code="line-1",
             plugin_key="plugin-1",
             plugin_version="1.0",
@@ -366,8 +366,8 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
             position_bindings=(position_binding,),
         )
     with pytest.raises(TypeError):
-        sdk.EpochConfigurationSnapshot(
-            line_run_epoch_id="epoch-1",
+        sdk.WorkLineConfigurationSnapshot(
+            workline_id="workline-1",
             workline_code="line-1",
             plugin_key="plugin-1",
             plugin_version="1.0",
@@ -378,13 +378,11 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         )
 
     external_bindings = [binding]
-    snapshot = sdk.EpochConfigurationSnapshot(
-        line_run_epoch_id="epoch-1",
+    snapshot = sdk.WorkLineConfigurationSnapshot(
+        workline_id="workline-1",
         workline_code="line-1",
         plugin_key="plugin-1",
         plugin_version="1.0",
-        config_digest="config-digest",
-        topology_digest="topology-digest",
         device_bindings=tuple(external_bindings),
         position_bindings=(position_binding,),
     )
@@ -394,7 +392,7 @@ def test_tuple_fields_and_nested_values_reject_mutable_or_duck_typed_inputs() ->
         source.location_id = "CHANGED"
 
 
-def test_epoch_device_bindings_allow_same_role_but_reject_duplicate_device_code() -> None:
+def test_workline_device_bindings_allow_same_role_but_reject_duplicate_device_code() -> None:
     sdk = _load_sdk()
     position = sdk.PositionBindingSnapshot(
         position_role="PIPELINE_INLET",
@@ -404,19 +402,17 @@ def test_epoch_device_bindings_allow_same_role_but_reject_duplicate_device_code(
     first = sdk.DeviceBindingSnapshot("PLUGIN_DEVICE", "device-1", "contract-1", "1.0")
     second = sdk.DeviceBindingSnapshot("PLUGIN_DEVICE", "device-2", "contract-1", "1.0")
 
-    snapshot = sdk.EpochConfigurationSnapshot(
-        "epoch-1", "line-1", "plugin-1", "1.0", "config-digest", "topology-digest", (first, second), (position,)
+    snapshot = sdk.WorkLineConfigurationSnapshot(
+        "workline-1", "line-1", "plugin-1", "1.0", (first, second), (position,)
     )
     assert snapshot.device_bindings == (first, second)
 
     with pytest.raises(ValueError, match="duplicate device codes"):
-        sdk.EpochConfigurationSnapshot(
-            "epoch-1",
+        sdk.WorkLineConfigurationSnapshot(
+            "workline-1",
             "line-1",
             "plugin-1",
             "1.0",
-            "config-digest",
-            "topology-digest",
             (first, sdk.DeviceBindingSnapshot("OTHER_ROLE", "device-1", "contract-2", "1.0")),
             (position,),
         )
@@ -434,7 +430,7 @@ def test_plugin_sdk_exposes_typed_frozen_runtime_snapshots() -> None:
     execution = sdk.ExecutionSnapshot(
         material_execution_id="execution-1",
         material_trace_id="trace-1",
-        line_run_epoch_id="epoch-1",
+        workline_id="workline-1",
         lifecycle=sdk.ExecutionLifecycle.RUNNING,
         version=2,
     )

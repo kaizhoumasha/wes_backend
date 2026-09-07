@@ -38,8 +38,7 @@ def _command(status: CommandStatus) -> DeviceCommand:
         id=31,
         command_code="CMD-001",
         device_code="ARM-01",
-        line_run_epoch_id=11,
-        device_binding_id=21,
+        workline_id=11,
         execution_ref_type="TEST",
         execution_ref_id="EXEC-001",
         material_execution_id=None,
@@ -69,7 +68,7 @@ async def test_reconcile_one_distinguishes_not_sent_from_delivery_unknown(initia
     service = DeviceCommandService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeRepository(command),  # type: ignore[arg-type]
-        epoch_repository=object(),  # type: ignore[arg-type]
+        workline_repository=object(),  # type: ignore[arg-type]
     )
 
     assert await service.reconcile_one(now=datetime(2026, 8, 13)) is True
@@ -82,7 +81,7 @@ async def test_reconcile_one_stops_on_empty_scan() -> None:
     service = DeviceCommandService(
         session_factory=FakeSessions(),  # type: ignore[arg-type]
         command_repository=FakeRepository(None),  # type: ignore[arg-type]
-        epoch_repository=object(),  # type: ignore[arg-type]
+        workline_repository=object(),  # type: ignore[arg-type]
     )
 
     assert await service.reconcile_one(now=datetime(2026, 8, 13)) is False

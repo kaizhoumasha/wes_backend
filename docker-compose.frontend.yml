@@ -1,14 +1,26 @@
 services:
   api:
+    environment:
+      # 开发进程使用挂载的 SDK，与宿主源码保持一致。
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_api
 
   celery:
+    environment:
+      # 开发进程使用挂载的 SDK，与宿主源码保持一致。
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery
 
   celery-wms-fulfillment:
+    environment:
+      # 开发进程使用挂载的 SDK，与宿主源码保持一致。
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery_wms_fulfillment
 
   celery_beat:
+    environment:
+      # 开发进程使用挂载的 SDK，与宿主源码保持一致。
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
     container_name: ${COMPOSE_PROJECT_NAME:-wes_backend_dev}_celery_beat
 
   db:

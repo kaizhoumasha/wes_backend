@@ -34,7 +34,6 @@ from src.app.device.models import (  # noqa: F401
     DeviceStatusObservation,
 )
 from src.app.execution.models import (  # noqa: F401
-    BinExecution,
     InboundEvidence,
     InboundEvidenceConflict,
     MaterialExecution,
@@ -75,8 +74,6 @@ from src.app.transport.models import (  # noqa: F401
 )
 from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa: F401
 from src.app.workline.models import (  # noqa: F401
-    LineRunEpoch,
-    LineRunEpochDeviceBinding,
     WorkLine,
 )
 

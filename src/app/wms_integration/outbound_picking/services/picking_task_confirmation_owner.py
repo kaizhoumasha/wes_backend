@@ -55,8 +55,8 @@ class PickingTaskConfirmationOwnerService:
             and PickingTaskStatus(task.status) in allowed_states
             and isinstance(task.workline_id, int)
             and task.workline_id > 0
-            and isinstance(task.line_run_epoch_id, int)
-            and task.line_run_epoch_id > 0
+            and isinstance(task.workline_id, int)
+            and task.workline_id > 0
         )
 
 

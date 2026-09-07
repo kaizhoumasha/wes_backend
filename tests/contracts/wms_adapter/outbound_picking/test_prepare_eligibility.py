@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
 from src.app.wms_integration.outbound_picking.repositories import PickingWorklineFactsRepository
 
 
@@ -16,15 +18,15 @@ class _Db:
         return next(self.results)
 
 
-class _Epochs:
+class _Worklines:
     def __init__(self, *, bindings: list[object] | None = None, positions: list[object] | None = None) -> None:
         self.bindings = bindings if bindings is not None else [_binding()]
         self.positions = positions if positions is not None else [SimpleNamespace(position_role="POINT2")]
 
-    async def list_bindings(self, _db: object, _epoch_id: int) -> list[object]:
+    async def list_bindings(self, _db: object, _workline_id: int) -> list[object]:
         return self.bindings
 
-    async def list_position_bindings(self, _db: object, _epoch_id: int) -> list[object]:
+    async def list_position_bindings(self, _db: object, _workline_id: int) -> list[object]:
         return self.positions
 
 
@@ -59,15 +61,17 @@ def _observation(**changes: object) -> object:
 
 
 @pytest.mark.asyncio
-async def test_repository_returns_immutable_facts_without_applying_business_policy() -> None:
+async def test_repository_returns_immutable_facts_without_applying_business_policy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        PositionProjectionRepository, "get_active_workline_summary", AsyncMock(return_value={"count": 1})
+    )
     repository = PickingWorklineFactsRepository(
-        epoch_repository=_Epochs(),  # type: ignore[arg-type]
+        workline_repository=_Worklines(),  # type: ignore[arg-type]
         observation_repository=_Observations(_observation(mode="MANUAL")),  # type: ignore[arg-type]
     )
     facts = await repository.read_facts(
-        _Db(True, True),
+        _Db(True),
         workline_id=7,
-        line_run_epoch_id=21,  # type: ignore[arg-type]
     )
     assert facts.has_active_incident is True
     assert facts.has_position_bindings is True
@@ -80,17 +84,20 @@ async def test_repository_returns_immutable_facts_without_applying_business_poli
 
 
 @pytest.mark.asyncio
-async def test_repository_preserves_missing_device_observation() -> None:
+async def test_repository_preserves_missing_device_observation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        PositionProjectionRepository, "get_active_workline_summary", AsyncMock(return_value={"count": 0})
+    )
     observations = _Observations()
     observations.observation = None
     repository = PickingWorklineFactsRepository(
-        epoch_repository=_Epochs(),  # type: ignore[arg-type]
+        workline_repository=_Worklines(),  # type: ignore[arg-type]
         observation_repository=observations,  # type: ignore[arg-type]
     )
     facts = await repository.read_facts(
-        _Db(False, False),
+        _Db(False),
         workline_id=7,
-        line_run_epoch_id=21,  # type: ignore[arg-type]
     )
+    assert facts.has_positioned_object is False
     assert facts.devices[0].observed_contract_key is None
     assert facts.devices[0].received_at is None

@@ -93,7 +93,7 @@ class TransportDebugRunStepSnapshot:
     transport_task_id: str | None
     evidence_high_watermark: int | None
     evidence_not_before_ms: int | None
-    observed_bin_ids: tuple[str, ...]
+    observed_bin_codes: tuple[str, ...]
     reason_code: str | None
     created_at: str
     updated_at: str
@@ -109,7 +109,7 @@ class TransportDebugRunSnapshot:
     current_phase: TransportDebugRunPhase
     current_step: TransportDebugRunStepSnapshot | None
     steps: tuple[TransportDebugRunStepSnapshot, ...]
-    observed_bin_ids: tuple[str, ...]
+    observed_bin_codes: tuple[str, ...]
     attention_code: str | None
     attention_detail: str | None
     can_abort: bool
@@ -489,13 +489,15 @@ class TransportDebugRunService:
         if step.evidence_high_watermark is None or step.evidence_not_before_ms is None:
             return self._set_attention(run, step, "EVIDENCE_BOUNDARY_MISSING", now)
         group = _frozen_face_groups(run.configuration_json)[run.current_group_index]
-        selected_bins = frozenset(selection.bin_id for selection in group.bins)
+        selected_bins = frozenset(selection.bin_code for selection in group.bins)
         observed = list(step.observed_bins_json)
         observed_bins = {
-            item.get("bin_id") for item in observed if isinstance(item, dict) and isinstance(item.get("bin_id"), str)
+            item.get("bin_code")
+            for item in observed
+            if isinstance(item, dict) and isinstance(item.get("bin_code"), str)
         }
         source_events = {
-            item.get("source_event_id"): item.get("bin_id")
+            item.get("source_event_id"): item.get("bin_code")
             for item in observed
             if isinstance(item, dict) and isinstance(item.get("source_event_id"), str)
         }
@@ -532,22 +534,22 @@ class TransportDebugRunService:
                     return self._set_attention(run, step, "EVIDENCE_ID_MISSING", now)
                 if evaluation.disposition is not Scan12EvidenceDisposition.MATCH:
                     continue
-                if evaluation.bin_id is None or evaluation.source_event_id is None:
+                if evaluation.bin_code is None or evaluation.source_event_id is None:
                     return self._set_attention(run, step, "EVIDENCE_MATCH_INVALID", now)
                 prior_bin = source_events.get(evaluation.source_event_id)
-                if prior_bin is not None and prior_bin != evaluation.bin_id:
+                if prior_bin is not None and prior_bin != evaluation.bin_code:
                     return self._set_attention(run, step, "EVIDENCE_SOURCE_EVENT_CONFLICT", now)
-                if prior_bin is not None or evaluation.bin_id in observed_bins:
+                if prior_bin is not None or evaluation.bin_code in observed_bins:
                     continue
                 observed.append(
                     {
-                        "bin_id": evaluation.bin_id,
+                        "bin_code": evaluation.bin_code,
                         "evidence_id": evaluation.evidence_id,
                         "source_event_id": evaluation.source_event_id,
                     }
                 )
-                observed_bins.add(evaluation.bin_id)
-                source_events[evaluation.source_event_id] = evaluation.bin_id
+                observed_bins.add(evaluation.bin_code)
+                source_events[evaluation.source_event_id] = evaluation.bin_code
                 changed = True
             if len(evidences) < _EVIDENCE_PAGE_SIZE:
                 break
@@ -647,13 +649,13 @@ class TransportDebugRunService:
         groups = _frozen_face_groups(run.configuration_json)
         if group_index < 0 or group_index >= len(groups):
             return False
-        members_by_bin_id = {member.object_id: member for member in members if member.object_type == "BIN"}
+        members_by_bin_code = {member.object_id: member for member in members if member.object_type == "BIN"}
         group = groups[group_index]
         observed = [
-            {"bin_id": selection.bin_id}
+            {"bin_code": selection.bin_code}
             for selection in group.bins
             if (
-                (member := members_by_bin_id.get(selection.bin_id)) is not None
+                (member := members_by_bin_code.get(selection.bin_code)) is not None
                 and not member.position_unknown
                 and member.target_json
                 == {
@@ -726,7 +728,7 @@ class TransportDebugRunService:
             current_phase=TransportDebugRunPhase(run.current_phase),
             current_step=step_snapshot,
             steps=step_snapshots,
-            observed_bin_ids=step_snapshot.observed_bin_ids if step_snapshot is not None else (),
+            observed_bin_codes=step_snapshot.observed_bin_codes if step_snapshot is not None else (),
             attention_code=run.attention_code,
             attention_detail=run.attention_detail,
             can_abort=await self._can_abort(db, run),
@@ -791,7 +793,7 @@ def _freeze_configuration(request: CreateTransportDebugRun) -> dict[str, object]
         "face_groups": [
             {
                 "face": group.face,
-                "bins": [{"bin_id": item.bin_id, "slot_id": item.slot_id} for item in group.bins],
+                "bins": [{"bin_code": item.bin_code, "slot_id": item.slot_id} for item in group.bins],
             }
             for group in request.face_groups
         ],
@@ -847,11 +849,11 @@ def _frozen_face_groups(configuration: dict[str, object]) -> tuple[TransportDebu
         for raw_bin in raw_bins:
             if (
                 not isinstance(raw_bin, dict)
-                or not isinstance(raw_bin.get("bin_id"), str)
+                or not isinstance(raw_bin.get("bin_code"), str)
                 or not isinstance(raw_bin.get("slot_id"), str)
             ):
                 raise TransportDebugRunContractError("frozen bin is invalid")
-            bins.append(TransportDebugBinSelection(raw_bin["bin_id"], raw_bin["slot_id"]))
+            bins.append(TransportDebugBinSelection(raw_bin["bin_code"], raw_bin["slot_id"]))
         groups.append(TransportDebugFaceGroup(raw_group["face"], tuple(bins)))
     return tuple(groups)
 
@@ -865,9 +867,9 @@ def _configuration_text(configuration: dict[str, object], key: str) -> str:
 
 def _step_snapshot(step: TransportDebugRunStep) -> TransportDebugRunStepSnapshot:
     observed = step.observed_bins_json if isinstance(step.observed_bins_json, list) else []
-    bin_ids = tuple(
+    bin_codes = tuple(
         dict.fromkeys(
-            item["bin_id"] for item in observed if isinstance(item, dict) and isinstance(item.get("bin_id"), str)
+            item["bin_code"] for item in observed if isinstance(item, dict) and isinstance(item.get("bin_code"), str)
         )
     )
     return TransportDebugRunStepSnapshot(
@@ -879,7 +881,7 @@ def _step_snapshot(step: TransportDebugRunStep) -> TransportDebugRunStepSnapshot
         transport_task_id=step.transport_task_id,
         evidence_high_watermark=step.evidence_high_watermark,
         evidence_not_before_ms=step.evidence_not_before_ms,
-        observed_bin_ids=bin_ids,
+        observed_bin_codes=bin_codes,
         reason_code=step.reason_code,
         created_at=_utc_iso(step.created_at),
         updated_at=_utc_iso(step.updated_at),

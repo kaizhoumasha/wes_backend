@@ -27,7 +27,7 @@ from src.app.wms_integration.outbound_picking.services.picking_task_plan_delta i
     PickingTaskPlanDeltaService,
     PlanCorrectionConflictError,
 )
-from src.app.workline.models import LineRunEpoch, LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.core.uuid7 import new_uuid7
 
 pytest_plugins = ("tests.integration.conftest",)
@@ -66,18 +66,6 @@ async def prepared(integration_session_factory):
         )
         db.add(line)
         await db.flush()
-        epoch = LineRunEpoch(
-            epoch_code=task_name,
-            workline_id=line.id,
-            plugin_key="test_stub",
-            plugin_version="1",
-            flow_mode="TEST",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            started_at=NOW,
-        )
-        db.add(epoch)
         issued = await InboundEvidenceService().accept(
             db,
             kind=InboundEvidenceKind.WMS_EVENT,
@@ -98,7 +86,6 @@ async def prepared(integration_session_factory):
             issued_at_ms=1,
             issued_evidence_id=issued.evidence.id,
             workline_id=line.id,
-            line_run_epoch_id=epoch.id,
         )
         db.add(task)
         await db.flush()
@@ -132,10 +119,10 @@ async def prepared(integration_session_factory):
         )
         db.add(confirmation)
         await db.flush()
-        ids = task.id, line.id, epoch.id, response.evidence.id, issued.evidence.id, confirmation.id
+        ids = task.id, line.id, response.evidence.id, issued.evidence.id, confirmation.id
     yield task_name, ids
     async with factory.begin() as db:
-        task_id, line_id, epoch_id, response_id, issued_id, confirmation_id = ids
+        task_id, line_id, response_id, issued_id, confirmation_id = ids
         evidences = [
             *list(
                 (
@@ -158,7 +145,6 @@ async def prepared(integration_session_factory):
             delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidences))
         )
         await db.execute(delete(InboundEvidence).where(InboundEvidence.id.in_(evidences)))
-        await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == epoch_id))
         await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
 
 
@@ -184,7 +170,7 @@ async def test_concurrent_revision_replay_and_business_duplicate(integration_ses
         assert task.last_applied_plan_revision == 1
         assert task.initial_plan_evidence_id == task.last_plan_evidence_id == members[0].source_evidence_id
         evidence = await db.get(InboundEvidence, task.last_plan_evidence_id)
-        assert evidence.line_run_epoch_id is evidence.material_execution_id is evidence.transport_task_id is None
+        assert evidence.workline_id is evidence.material_execution_id is evidence.transport_task_id is None
 
 
 async def test_pending_retry_only_applies_after_persisted_prepare(integration_session_factory, prepared):
@@ -193,14 +179,14 @@ async def test_pending_retry_only_applies_after_persisted_prepare(integration_se
     first = _event(task_name)
     async with integration_session_factory.begin() as db:
         await db.execute(
-            update(WmsConfirmation).where(WmsConfirmation.id == ids[5]).values(status=WmsConfirmationStatus.DISPATCHING)
+            update(WmsConfirmation).where(WmsConfirmation.id == ids[4]).values(status=WmsConfirmationStatus.DISPATCHING)
         )
     assert (await service.record(first, received_at=NOW)).code == "UNAVAILABLE"
     async with integration_session_factory.begin() as db:
         task = await db.get(PickingTask, ids[0])
         assert task.last_applied_plan_revision == 0 and task.plan_blocked_evidence_id is None
         await db.execute(
-            update(WmsConfirmation).where(WmsConfirmation.id == ids[5]).values(status=WmsConfirmationStatus.COMPLETED)
+            update(WmsConfirmation).where(WmsConfirmation.id == ids[4]).values(status=WmsConfirmationStatus.COMPLETED)
         )
     assert (await service.record(first, received_at=NOW)).code == "RECEIVED"
 
@@ -354,7 +340,7 @@ async def test_correction_rejects_changed_preconditions(integration_session_fact
     if changed == "version":
         args["expected_version"] += 1
     elif changed == "blocker":
-        args["blocked_evidence_id"] = ids[4]
+        args["blocked_evidence_id"] = ids[3]
     elif changed == "revision":
         args["correction_evidence_id"] = args["blocked_evidence_id"]
     else:
@@ -443,7 +429,7 @@ async def test_commit_failure_never_acknowledges_success(integration_session_fac
 async def test_prepare_confirmation_lock_is_not_reacquired_after_task_lock(integration_session_factory, prepared):
     task_name, ids = prepared
     async with integration_session_factory.begin() as owner_transaction:
-        await owner_transaction.scalar(select(WmsConfirmation).where(WmsConfirmation.id == ids[5]).with_for_update())
+        await owner_transaction.scalar(select(WmsConfirmation).where(WmsConfirmation.id == ids[4]).with_for_update())
         result = await asyncio.wait_for(
             PickingTaskPlanDeltaService(integration_session_factory).record(_event(task_name), received_at=NOW),
             timeout=2,

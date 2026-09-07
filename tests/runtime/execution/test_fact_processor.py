@@ -28,7 +28,8 @@ from src.app.execution.plugin_binding import (
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
 from src.app.execution.services.fact_processor import FactProcessor
 from src.app.execution.services.material_execution_service import MaterialExecutionService
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochPositionBinding, LineRunEpochStatus
+from src.app.workline.activation import WorkLinePositionBinding
+from src.app.workline.models.workline import WorkLine
 
 NOW = datetime(2026, 8, 17, 10, 0, 0)
 
@@ -84,33 +85,28 @@ class _Evidences:
         del db
 
 
-class _Epochs:
+class _WorkLines:
     def __init__(self) -> None:
-        self.epoch = LineRunEpoch(
-            id=11,
-            epoch_code="EPOCH-1",
-            workline_id=7,
+        self.workline = WorkLine(
+            id=7,
+            line_code="LINE-1",
+            line_name="Line",
+            line_type="AUTO",
+            is_active=True,
             plugin_key="rough_sorter",
             plugin_version="1.0.0",
             flow_mode="AUTO",
-            topology_digest="a" * 64,
-            configuration_digest="b" * 64,
-            configuration_snapshot_json={},
-            status=LineRunEpochStatus.ACTIVE,
-            started_at=NOW,
         )
 
-    async def get_by_id_for_update(self, db: object, line_run_epoch_id: int) -> LineRunEpoch | None:
-        del db
-        return self.epoch if line_run_epoch_id == 11 else None
+    async def get_for_update(self, db: object, workline_id: int) -> WorkLine | None:
+        return self.workline if workline_id == 7 else None
 
-    async def list_position_bindings(self, db: object, line_run_epoch_id: int) -> list[LineRunEpochPositionBinding]:
+    async def list_position_bindings(self, db: object, workline_id: int) -> list[WorkLinePositionBinding]:
         del db
-        if line_run_epoch_id != 11:
+        if workline_id != 7:
             return []
         return [
-            LineRunEpochPositionBinding(
-                line_run_epoch_id=11,
+            WorkLinePositionBinding(
                 position_role="PIPELINE_OUTLET",
                 location_id="LINE-OUT",
                 location_type="PIPELINE_OUTLET",
@@ -155,7 +151,6 @@ class _ExecutionService:
                 execution_code=kwargs["execution_code"],
                 material_trace_id=kwargs["material_trace_id"],
                 workline_id=kwargs["workline_id"],
-                line_run_epoch_id=kwargs["line_run_epoch_id"],
                 status=MaterialExecutionStatus.CREATED,
                 last_transition_reason="INITIAL_EVIDENCE",
                 last_transition_evidence_id=kwargs["evidence_id"],
@@ -359,7 +354,7 @@ def _evidence(**changes: object) -> InboundEvidence:
         "payload_digest": "c" * 64,
         "normalized_payload": {"data": {}},
         "received_at": NOW,
-        "line_run_epoch_id": 11,
+        "workline_id": 7,
         "contract_version": "1.0",
         "apply_status": InboundEvidenceApplyStatus.APPLIED,
     }
@@ -393,7 +388,6 @@ def _recovery_continuation_processor(
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.RECONCILING,
         last_transition_reason="TRANSPORT_UNKNOWN",
         last_transition_evidence_id=30,
@@ -407,7 +401,7 @@ def _recovery_continuation_processor(
         decision_applier=applier,
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=_ExecutionService(executions),
         clock=lambda: NOW,
         token_factory=lambda: "claim-recovery-continuation",
@@ -446,7 +440,7 @@ def _processor(
         decision_applier=decision_applier,
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=service,
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
@@ -474,7 +468,7 @@ def _changing_processor(
     )
     service = _ExecutionService(executions)
     applier = DecisionApplier(
-        epoch_repository=object(),  # type: ignore[arg-type]
+        workline_repository=object(),  # type: ignore[arg-type]
         device_command_service=object(),  # type: ignore[arg-type]
         wms_confirmation_service=object(),  # type: ignore[arg-type]
         transport_binding_repository=object(),  # type: ignore[arg-type]
@@ -488,7 +482,7 @@ def _changing_processor(
         decision_applier=applier,
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=service,
         clock=lambda: NOW,
         token_factory=lambda: "claim-changing",
@@ -549,7 +543,7 @@ async def test_decision_digest_is_flushed_before_populate_existing_can_reload_th
         decision_applier=applier,
         evidence_repository=evidences,
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=service,
         clock=lambda: NOW,
         token_factory=lambda: "claim-autoflush-disabled",
@@ -681,7 +675,6 @@ async def test_missing_frozen_plugin_keeps_durable_wms_response_and_fences_execu
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.RUNNING,
         last_transition_reason="INITIAL_EVIDENCE",
         last_transition_evidence_id=30,
@@ -694,7 +687,7 @@ async def test_missing_frozen_plugin_keeps_durable_wms_response_and_fences_execu
         decision_applier=applier,
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=_ExecutionService(executions),
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
@@ -704,7 +697,7 @@ async def test_missing_frozen_plugin_keeps_durable_wms_response_and_fences_execu
     assert evidence.operation_id == payload["operation_id"]
     assert evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING
     assert evidence.published_at is None
-    assert executions.execution.line_run_epoch_id == 11
+    assert executions.execution.workline_id == 7
     assert executions.execution.status == MaterialExecutionStatus.RECONCILING
     assert applier.calls == []
 
@@ -723,7 +716,6 @@ async def test_device_result_uses_command_frozen_execution_without_calling_initi
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.RUNNING,
         last_transition_reason="COMMAND_CREATED",
         last_transition_evidence_id=30,
@@ -737,7 +729,7 @@ async def test_device_result_uses_command_frozen_execution_without_calling_initi
         decision_applier=applier,
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=_ExecutionService(executions),
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
@@ -790,7 +782,6 @@ async def test_exhausted_application_keeps_closed_execution_terminal_and_reconci
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.CLOSED,
         last_transition_reason="PLACEMENT_RECORDED",
         last_transition_evidence_id=30,
@@ -804,7 +795,7 @@ async def test_exhausted_application_keeps_closed_execution_terminal_and_reconci
         decision_applier=_Applier(),
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=execution_service,
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
@@ -827,7 +818,6 @@ async def test_digest_conflict_keeps_closed_execution_terminal_and_reconciles_ev
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.CLOSED,
         last_transition_reason="PLACEMENT_RECORDED",
         last_transition_evidence_id=30,
@@ -841,7 +831,7 @@ async def test_digest_conflict_keeps_closed_execution_terminal_and_reconciles_ev
         decision_applier=_Applier(),
         evidence_repository=_Evidences(evidence),
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=execution_service,
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
@@ -881,7 +871,6 @@ async def test_recovery_fact_targets_exactly_one_execution() -> None:
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.RECONCILING,
         last_transition_reason="UNKNOWN",
         last_transition_evidence_id=30,
@@ -904,7 +893,7 @@ async def test_recovery_fact_targets_exactly_one_execution() -> None:
         decision_applier=applier,
         evidence_repository=evidence_repo,
         execution_repository=executions,
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=_ExecutionService(executions),
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",
@@ -973,7 +962,7 @@ async def test_determinate_pause_refreshes_reconciling_fence_before_late_recover
     repository = _ExecutionFlushRepository()
     transition_times = iter((NOW + timedelta(seconds=1), NOW + timedelta(seconds=2)))
     pause_applier = DecisionApplier(
-        epoch_repository=object(),
+        workline_repository=object(),
         device_command_service=object(),
         wms_confirmation_service=object(),
         transport_binding_repository=object(),
@@ -1022,7 +1011,7 @@ async def test_failure_recording_error_does_not_abort_remaining_claimed_evidence
         decision_applier=_Applier(),
         evidence_repository=_ClaimOnlyRepository(),
         execution_repository=_Executions(),
-        epoch_repository=_Epochs(),
+        workline_repository=_WorkLines(),
         material_execution_service=_ExecutionService(_Executions()),
         clock=lambda: NOW,
         token_factory=lambda: "claim-1",

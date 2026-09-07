@@ -56,7 +56,7 @@ async def test_unknown_batch_is_corrected_by_higher_version_and_only_latest_unpu
         "outcome_revision": 2,
         "results": [
             {
-                "container_id": move.bin_id,
+                "container_id": move.bin_code,
                 "status": "SUCCEEDED",
                 "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
             }

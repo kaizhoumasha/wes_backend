@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 from conftest import (
-    EPOCH_ID,
     EXECUTION_ID,
     TRACE_ID,
     WORKLINE_CODE,
+    WORKLINE_ID,
     runtime_snapshot,
 )
 from wes_plugin_sdk import (
@@ -48,7 +48,7 @@ def _material_fact(**overrides: object) -> MaterialEvidenceReadyFact:
         "fact_version": "1.0",
         "material_execution_id": EXECUTION_ID,
         "material_trace_id": TRACE_ID,
-        "line_run_epoch_id": EPOCH_ID,
+        "workline_id": WORKLINE_ID,
         "workline_code": WORKLINE_CODE,
         "lot_code": "LOT-1",
         "date_code": "20260817",

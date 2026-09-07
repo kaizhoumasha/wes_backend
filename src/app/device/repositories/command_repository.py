@@ -9,7 +9,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.workline.models.line_run_epoch import LineRunEpoch
+from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
 _UNCLOSED_STATUSES = (
@@ -71,12 +71,12 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         )
         return result.scalar_one_or_none()
 
-    async def has_unclosed_for_epoch_for_update(self, db: AsyncSession, line_run_epoch_id: int) -> bool:
+    async def has_unclosed_for_workline_for_update(self, db: AsyncSession, workline_id: int) -> bool:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
             select(columns.id)
             .where(
-                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.workline_id == workline_id,
                 columns.status.in_(_UNCLOSED_STATUSES),
             )
             .limit(1)
@@ -88,7 +88,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         self,
         db: AsyncSession,
         *,
-        line_run_epoch_id: int | None,
+        workline_id: int | None,
         device_code: str,
         execution_ref_type: str,
         execution_ref_id: str,
@@ -97,7 +97,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(
             select(DeviceCommand)
             .where(
-                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.workline_id == workline_id,
                 columns.device_code == device_code,
                 columns.execution_ref_type == execution_ref_type,
                 columns.execution_ref_id == execution_ref_id,
@@ -131,30 +131,30 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         self,
         db: AsyncSession,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
         material_execution_id: int,
     ) -> list[DeviceCommand]:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
             select(DeviceCommand)
             .where(
-                columns.line_run_epoch_id == line_run_epoch_id,
+                columns.workline_id == workline_id,
                 columns.material_execution_id == material_execution_id,
             )
             .order_by(columns.created_at, columns.id)
         )
         return list(result.scalars())
 
-    async def list_for_epoch_for_update(
+    async def list_for_workline_for_update(
         self,
         db: AsyncSession,
         *,
-        line_run_epoch_id: int,
+        workline_id: int,
     ) -> list[DeviceCommand]:
         columns = cast("Any", DeviceCommand).__table__.c
         result = await db.execute(
             select(DeviceCommand)
-            .where(columns.line_run_epoch_id == line_run_epoch_id)
+            .where(columns.workline_id == workline_id)
             .order_by(columns.created_at, columns.id)
             .with_for_update()
         )
@@ -311,12 +311,12 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         """急停只关闭尚未发送的命令；已可能触发物理动作的命令继续占槽。"""
 
         command_columns = cast("Any", DeviceCommand).__table__.c
-        epoch_columns = cast("Any", LineRunEpoch).__table__.c
+        workline_columns = cast("Any", WorkLine).__table__.c
         result = await db.execute(
             select(DeviceCommand)
-            .join(LineRunEpoch, epoch_columns.id == command_columns.line_run_epoch_id)
+            .join(WorkLine, workline_columns.id == command_columns.workline_id)
             .where(
-                epoch_columns.workline_id == workline_id,
+                workline_columns.id == workline_id,
                 command_columns.status == CommandStatus.PENDING,
             )
             .order_by(command_columns.id)

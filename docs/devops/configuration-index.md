@@ -9,15 +9,15 @@
 | --- | --- | --- |
 | WMS 地址、Transport 提交路由 | [Settings](../../src/core/conf.py) 的 `WMS_BASE_URL`、`TRANSPORT_SUBMIT_PATH` | 环境提供值，启动时校验并冻结；重启使用它们的 API/worker 进程后生效。合法形式见 [Transport 合同](../contracts/transport-fulfillment-contract.md) |
 | 启用的已安装插件 | [Settings](../../src/core/conf.py) 的 `ENABLED_WORKLINE_PLUGINS`；[部署关联](../../deployment/plugin_composition.py) | 由部署显式关联并在启动时生效；不能通过配置自动安装插件或绕过工作线切换检查 |
-| 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；经准入检查后用于新运行上下文，由 [Epoch Service](../../src/app/workline/services/line_run_epoch_service.py) 冻结 |
+| 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；运行期间禁止修改；[START Service](../../src/app/workline/services/workline_start_service.py) 校验并保存 WorkLine 当前精确插件版本及必要执行合同 |
 | WmsConfirmation 周期派发调度 | [Celery 配置](../../src/celery_app/config.py) 的 `beat_schedule` 对应任务条目 | 当前是代码配置，修改调度后重启 Beat；任务参数仍须满足 worker 和 Service 的约束，不可仅放大调度参数绕过批量上限 |
 
 宿主 `Settings` 的读取优先级为进程环境变量、运行时 `.env`、代码默认值；进程内缓存读取结果，不提供热更新。
 部署 profile 和编排负责提供值，不应在另一份 Python 配置中重复维护默认值。核实生效值时需检查目标进程的实际环境，不能只看 `.env` 文件。
 本地环境的生成、启动和重建使用 [本地开发环境说明](local-development-environment.md) 的既有入口。
 
-插件业务参数由插件声明和解释，经工作线配置流程进入 Epoch；宿主环境配置不得依赖具体插件业务字段。
-配置变更不改写已冻结的请求正文、幂等身份、可靠义务期限或既有 Epoch。
+插件业务参数由插件声明和解释，经工作线配置流程进入 WorkLine；宿主环境配置不得依赖具体插件业务字段。
+工作线完全收敛清线并停用后才能修改运行配置；配置变更不改写已冻结的请求正文、幂等身份或可靠义务期限。
 
 ## 2. 固定合同：修改前同步核对合同与消费者
 

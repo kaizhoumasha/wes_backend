@@ -20,13 +20,8 @@ from src.app.transport.contracts import (
     TransportOutcomeStatus,
 )
 from src.app.wms_adapter.inbound_material.typed import decode_outcome, encode_request
-from src.app.workline.epoch_digest import configuration_digest, topology_digest
-from src.app.workline.models.line_run_epoch import (
-    LineRunEpoch,
-    LineRunEpochDeviceBinding,
-    LineRunEpochPositionBinding,
-    LineRunEpochStatus,
-)
+from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
+from src.app.workline.models.workline import WorkLine
 from src.core.uuid7 import is_uuid7
 from wes_plugin_sdk import (
     CreateDeviceCommand,
@@ -61,10 +56,9 @@ ADMISSION_OPERATION_ID = "019d0000-0000-7000-8000-000000000031"
 TARGET_OPERATION_ID = "019d0000-0000-7000-8000-000000000032"
 
 
-def _device(role: str, device_id: int, contract_key: str) -> LineRunEpochDeviceBinding:
-    return LineRunEpochDeviceBinding(
-        id=device_id,
-        line_run_epoch_id=11,
+def _device(role: str, device_id: int, contract_key: str) -> WorkLineDeviceBinding:
+    return WorkLineDeviceBinding(
+        workline_id=7,
         device_id=device_id,
         device_code=f"DEVICE-{device_id}",
         device_role=role,
@@ -76,9 +70,8 @@ def _device(role: str, device_id: int, contract_key: str) -> LineRunEpochDeviceB
     )
 
 
-def _position(role: str, location_id: str) -> LineRunEpochPositionBinding:
-    return LineRunEpochPositionBinding(
-        line_run_epoch_id=11,
+def _position(role: str, location_id: str) -> WorkLinePositionBinding:
+    return WorkLinePositionBinding(
         position_role=role,
         location_id=location_id,
         location_type=role,
@@ -104,43 +97,37 @@ class _Executions:
         return self.execution if code == self.execution.execution_code else None
 
 
-class _Epochs:
+class _WorkLines:
     def __init__(
         self,
-        epoch: LineRunEpoch,
-        devices: tuple[LineRunEpochDeviceBinding, ...],
-        positions: tuple[LineRunEpochPositionBinding, ...],
+        workline: WorkLine,
+        devices: tuple[WorkLineDeviceBinding, ...],
+        positions: tuple[WorkLinePositionBinding, ...],
     ) -> None:
-        self.epoch = epoch
+        self.workline = workline
         self.devices = devices
         self.positions = positions
 
-    async def get_by_id_for_update(self, db: object, epoch_id: int) -> LineRunEpoch | None:
+    async def get_for_update(self, db: object, workline_id: int) -> WorkLine | None:
         del db
-        return self.epoch if epoch_id == self.epoch.id else None
+        return self.workline if workline_id == self.workline.id else None
 
-    async def list_bindings(self, db: object, epoch_id: int) -> list[LineRunEpochDeviceBinding]:
-        del db, epoch_id
+    async def list_bindings(self, db: object, workline_id: int) -> list[WorkLineDeviceBinding]:
+        del db, workline_id
         return list(self.devices)
 
-    async def list_position_bindings(self, db: object, epoch_id: int) -> list[LineRunEpochPositionBinding]:
-        del db, epoch_id
+    async def list_position_bindings(self, db: object, workline_id: int) -> list[WorkLinePositionBinding]:
+        del db, workline_id
         return list(self.positions)
 
     async def get_binding_by_role_and_code_for_update(
-        self, db: object, *, line_run_epoch_id: int, device_role: str, device_code: str
-    ) -> LineRunEpochDeviceBinding | None:
-        del db, line_run_epoch_id
+        self, db: object, *, workline_id: int, device_role: str, device_code: str
+    ) -> WorkLineDeviceBinding | None:
+        del db, workline_id
         return next(
             (item for item in self.devices if item.device_role == device_role and item.device_code == device_code),
             None,
         )
-
-
-class _Worklines:
-    async def get_by_id(self, db: object, id: int, **kwargs: object) -> object | None:
-        del db, kwargs
-        return SimpleNamespace(id=id, line_code="ROUGH-LINE-1")
 
 
 class _Confirmations:
@@ -179,7 +166,6 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
         execution_code="EXEC-21",
         material_trace_id="TRACE-21",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.RUNNING,
         last_transition_reason="RUNNING",
         last_transition_evidence_id=31,
@@ -198,7 +184,7 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
                 "data": {"result": "NO_AVAILABLE_CELL"},
             },
             received_at=NOW,
-            line_run_epoch_id=11,
+            workline_id=7,
             material_execution_id=21,
             contract_key=operation,
             contract_version="1.0",
@@ -230,7 +216,7 @@ async def test_completed_response_selects_required_terminal_result_after_retry_d
                 },
             },
             received_at=NOW,
-            line_run_epoch_id=11,
+            workline_id=7,
             material_execution_id=21,
             contract_key=operation,
             contract_version="1.0",
@@ -369,18 +355,18 @@ class _Commands:
         return next((item for item in self.commands if command_code == item.command_code), None)
 
     async def list_for_material_execution(
-        self, db: object, *, line_run_epoch_id: int, material_execution_id: int
+        self, db: object, *, workline_id: int, material_execution_id: int
     ) -> list[DeviceCommand]:
         del db
         return [
             item
             for item in self.commands
-            if item.line_run_epoch_id == line_run_epoch_id and item.material_execution_id == material_execution_id
+            if item.workline_id == workline_id and item.material_execution_id == material_execution_id
         ]
 
-    async def list_for_epoch_for_update(self, db: object, *, line_run_epoch_id: int) -> list[DeviceCommand]:
+    async def list_for_workline_for_update(self, db: object, *, workline_id: int) -> list[DeviceCommand]:
         del db
-        return [item for item in self.commands if item.line_run_epoch_id == line_run_epoch_id]
+        return [item for item in self.commands if item.workline_id == workline_id]
 
 
 class _RackBindings:
@@ -389,21 +375,32 @@ class _RackBindings:
         self.events = events
         self.locked: list[tuple[int, str]] = []
 
-    async def lock_resource_fence(self, db: object, *, line_run_epoch_id: int, resource_fence_id: str) -> None:
+    async def lock_resource_fence(self, db: object, *, workline_id: int, resource_fence_id: str) -> None:
         del db
-        self.locked.append((line_run_epoch_id, resource_fence_id))
+        self.locked.append((workline_id, resource_fence_id))
         if self.events is not None:
             self.events.append("rack-fence-lock")
 
-    async def get_by_resource_step_for_update(
-        self, db: object, *, line_run_epoch_id: int, resource_fence_id: str, step: str
+    async def get_by_resource_step_for_update(  # noqa: PLR0913
+        self,
+        db: object,
+        *,
+        workline_id: int,
+        resource_fence_id: str,
+        step: str,
+        exclude_task_statuses: tuple[str, ...] = (),
+        retain_transport_task_id: str | None = None,
     ) -> object | None:
         del db
         assert step == "OLD_OUT"
-        if not self.fenced:
+        if not self.fenced or (
+            exclude_task_statuses
+            and getattr(self, "all_old_out_succeeded", False)
+            and retain_transport_task_id != "OLD-OUT-CURRENT"
+        ):
             return None
         return SimpleNamespace(
-            line_run_epoch_id=line_run_epoch_id,
+            workline_id=workline_id,
             resource_fence_id=resource_fence_id,
             step=step,
         )
@@ -427,8 +424,7 @@ class _Placements:
         return [SimpleNamespace(rack_code="RACK-1", logic_location_code="PIPELINE_OUTLET", placement_status="ARRIVED")]
 
 
-def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPluginFactFactory, EvidenceReadyFact]:
-    configuration_snapshot = {"deployment": "ROUGH-SORTER-TEST"}
+def _factory(*, active: bool = True) -> tuple[RoughSorterPluginFactFactory, EvidenceReadyFact]:
     devices = (
         _device("MEASUREMENT_DEVICE", 1, "rough_sorter.measurement_device"),
         _device("TRANSFER_DEVICE", 2, "rough_sorter.transfer_device"),
@@ -440,27 +436,21 @@ def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPlugin
         _position("PIPELINE_OUTLET", "PIPELINE_OUTLET"),
         _position("NG_POSITION", "NG_POSITION"),
     )
-    epoch = LineRunEpoch(
-        id=11,
-        epoch_code="EPOCH-11",
-        workline_id=7,
+    workline = WorkLine(
+        id=7,
+        line_code="ROUGH-LINE-1",
+        line_name="Rough",
+        line_type="AUTO",
         plugin_key="rough_sorter",
         plugin_version="1.0.0",
         flow_mode="ROUGH_SORT_INBOUND",
-        topology_digest=topology_override or topology_digest(devices, positions),
-        configuration_digest=configuration_digest(
-            "rough_sorter", "1.0.0", "ROUGH_SORT_INBOUND", configuration_snapshot
-        ),
-        configuration_snapshot_json=configuration_snapshot,
-        status=LineRunEpochStatus.ACTIVE,
-        started_at=NOW,
+        is_active=active,
     )
     execution = MaterialExecution(
         id=21,
         execution_code="EXEC-21",
         material_trace_id="TRACE-21",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.CREATED,
         last_transition_reason="INITIAL_EVIDENCE",
         last_transition_evidence_id=31,
@@ -493,7 +483,7 @@ def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPlugin
             },
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         device_code="DEVICE-1",
         contract_key="rough_sorter.measurement_device",
@@ -505,8 +495,7 @@ def _factory(*, topology_override: str | None = None) -> tuple[RoughSorterPlugin
         RoughSorterPluginFactFactory(
             evidence_repository=_Evidences(evidence),
             execution_repository=_Executions(execution),
-            epoch_repository=_Epochs(epoch, devices, positions),
-            workline_repository=_Worklines(),
+            workline_repository=_WorkLines(workline, devices, positions),
         ),
         base,
     )
@@ -522,17 +511,17 @@ async def test_factory_builds_stable_scan_fact_from_same_transaction_snapshot() 
 
     assert first == second
     assert first.runtime_snapshot.execution.material_execution_id == "EXEC-21"
-    assert first.runtime_snapshot.epoch.workline_code == "ROUGH-LINE-1"
-    assert len(first.runtime_snapshot.epoch.position_bindings) == 4
+    assert first.runtime_snapshot.workline.workline_code == "ROUGH-LINE-1"
+    assert len(first.runtime_snapshot.workline.position_bindings) == 4
     assert is_uuid7(first.request_operation_id)
     assert first.source_position.location_id == "MEASUREMENT_POSITION"
 
 
 @pytest.mark.asyncio
-async def test_factory_rejects_epoch_digest_drift_before_building_plugin_fact() -> None:
-    factory, base = _factory(topology_override="f" * 64)
+async def test_factory_rejects_stopped_workline_before_building_plugin_fact() -> None:
+    factory, base = _factory(active=False)
 
-    with pytest.raises(ValueError, match="topology digest"):
+    with pytest.raises(ValueError, match="WorkLine"):
         await factory.build(object(), base)
 
 
@@ -553,7 +542,6 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
     )
     factory = runtime.plugins[0].runtime_binding.fact_factory
     factory._executions = fixture._executions
-    factory._epochs = fixture._epochs
     factory._worklines = fixture._worklines
     factory._evidences = fixture._evidences
     evidence = InboundEvidence(
@@ -568,7 +556,7 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
             "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.admission_decide@v1",
         contract_version="1.0",
@@ -600,7 +588,6 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
                 },
                 "measurements": {"diameter_mm": "12.5", "thickness_mm": "1.2"},
                 "shape_result": "PASS",
-                "line_run_epoch_id": "11",
                 "workline_code": "ROUGH-LINE-1",
             },
         },
@@ -637,7 +624,19 @@ async def test_factory_builds_admission_fact_from_confirmation_request_and_respo
 
 
 @pytest.mark.asyncio
-async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell() -> None:
+@pytest.mark.parametrize(
+    ("arrival", "all_old_succeeded"),
+    [
+        (False, False),
+        (True, True),
+        (True, False),
+        ("outside", True),
+        ("unknown", True),
+        ("foreign", True),
+        ("same_departure", True),
+    ],
+)
+async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(arrival, all_old_succeeded) -> None:
     factory, _ = _factory()
     operation = "inbound.material.target_decide@v1"
     evidence = InboundEvidence(
@@ -664,7 +663,7 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
             },
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key=operation,
         contract_version="1.0",
@@ -700,7 +699,38 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
     factory._device_readiness = _Readiness()  # type: ignore[attr-defined]
+    from unittest.mock import AsyncMock
+
     rack_bindings = _RackBindings(fenced=True)
+    rack_bindings.all_old_out_succeeded = all_old_succeeded
+    factory._rack_positions = _RackPositions()
+    factory._position_projections = AsyncMock()
+    factory._position_projections.get.return_value = (
+        SimpleNamespace(
+            workline_id=7,
+            position_unknown=False,
+            position_json={"kind": "RACK_POSITION", "location_code": "RACK-WORK"},
+            source_transport_task_id="ARRIVAL-2",
+        )
+        if arrival
+        else None
+    )
+    if arrival == "outside":
+        factory._position_projections.get.return_value.position_json = {"kind": "ZONE", "location_code": "BUFFER"}
+    if arrival == "unknown":
+        factory._position_projections.get.return_value.position_unknown = True
+    if arrival == "foreign":
+        factory._position_projections.get.return_value.workline_id = 8
+    if arrival == "same_departure":
+        factory._position_projections.get.return_value.source_transport_task_id = "OLD-OUT-CURRENT"
+    factory._transport_tasks = AsyncMock()
+    factory._transport_tasks.get_task.return_value = SimpleNamespace(
+        transport_task_id="ARRIVAL-2",
+        authority_workline_id=7,
+        status="SUCCEEDED",
+        kind="RACK_MOVE",
+        request_json={"rack_id": "RACK-1", "target": {"kind": "RACK_POSITION", "location_code": "RACK-WORK"}},
+    )
     factory._rack_replacement_bindings = rack_bindings  # type: ignore[attr-defined]
     base = WmsResultReadyFact(
         "evidence:33",
@@ -719,16 +749,17 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
     assert fact.target_assignment_id == "ASSIGN-1"
     assert fact.placement_sequence == 1
     assert fact.device_ready is True
-    assert fact.current_rack_fenced is True
-    assert rack_bindings.locked == [(11, "RACK-1")]
-    assert TargetDecidedHandler()(fact) == (
-        PauseForReconciliation(
-            material_execution_id="EXEC-21",
-            fact_id="evidence:33",
-            reason_code="CURRENT_RACK_ALREADY_REPLACED",
-            affected_resource_ids=("RACK-1",),
-        ),
-    )
+    assert fact.current_rack_fenced is (not (arrival is True and all_old_succeeded))
+    assert rack_bindings.locked == [(7, "RACK-1")]
+    if not (arrival is True and all_old_succeeded):
+        assert TargetDecidedHandler()(fact) == (
+            PauseForReconciliation(
+                material_execution_id="EXEC-21",
+                fact_id="evidence:33",
+                reason_code="CURRENT_RACK_ALREADY_REPLACED",
+                affected_resource_ids=("RACK-1",),
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -739,8 +770,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
         id=61,
         command_code=command_code,
         device_code="DEVICE-1",
-        device_binding_id=1,
-        line_run_epoch_id=11,
+        workline_id=7,
         execution_ref_type="PLUGIN_DECISION",
         execution_ref_id="evidence:32:execution:21:CREATE_DEVICE_COMMAND:0",
         material_execution_id=21,
@@ -801,7 +831,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
             "error_detail": None,
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         device_code="DEVICE-1",
         command_code=command_code,
@@ -817,7 +847,7 @@ async def test_factory_rebuilds_measurement_callback_from_command_source_evidenc
         payload_digest="2" * 64,
         normalized_payload={"operation_id": ADMISSION_OPERATION_ID, "code": "DECIDED", "data": {"result": "ACCEPT"}},
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.admission_decide@v1",
         contract_version="1.0",
@@ -846,8 +876,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
         id=62,
         command_code=command_code,
         device_code="DEVICE-2",
-        device_binding_id=2,
-        line_run_epoch_id=11,
+        workline_id=7,
         execution_ref_type="PLUGIN_DECISION",
         execution_ref_id="evidence:34:execution:21:CREATE_DEVICE_COMMAND:0",
         material_execution_id=21,
@@ -908,7 +937,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
             "error_detail": None,
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         device_code="DEVICE-2",
         command_code=command_code,
@@ -931,7 +960,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
             "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.admission_decide@v1",
         contract_version="1.0",
@@ -962,7 +991,6 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
                 },
                 "measurements": {"diameter_mm": "1", "thickness_mm": "1"},
                 "shape_result": "PASS",
-                "line_run_epoch_id": "11",
                 "workline_code": "ROUGH-LINE-1",
                 "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT_POSITION"},
             },
@@ -1030,7 +1058,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             },
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key=operation,
         contract_version="1.0",
@@ -1065,8 +1093,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
         id=99,
         command_code=placement_command_code,
         device_code="DEVICE-3",
-        device_binding_id=3,
-        line_run_epoch_id=11,
+        workline_id=7,
         execution_ref_type="PLUGIN_DECISION",
         execution_ref_id="evidence:98:execution:22:CREATE_DEVICE_COMMAND:0",
         material_execution_id=22,
@@ -1101,9 +1128,9 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     events: list[str] = []
 
     class Commands(_Commands):
-        async def list_for_epoch_for_update(self, db: object, *, line_run_epoch_id: int) -> list[DeviceCommand]:
+        async def list_for_workline_for_update(self, db: object, *, workline_id: int) -> list[DeviceCommand]:
             events.append("release-snapshot")
-            return await super().list_for_epoch_for_update(db, line_run_epoch_id=line_run_epoch_id)
+            return await super().list_for_workline_for_update(db, workline_id=workline_id)
 
     rack_bindings = _RackBindings(events=events)
     factory._commands = Commands(placement_command)  # type: ignore[attr-defined]
@@ -1126,7 +1153,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     assert tuple(item.command_code for item in fact.release_snapshot.placements) == (placement_command_code,)
     assert fact.release_snapshot.placements[0].confirmation_status.value == "ABSENT"
     assert fact.release_snapshot.placements[0].confirmation_operation_id is None
-    assert rack_bindings.locked == [(11, "RACK-1")]
+    assert rack_bindings.locked == [(7, "RACK-1")]
     assert events == ["rack-fence-lock", "release-snapshot"]
     assert ReplacementPlanDecidedHandler()(fact) == (
         DeferExecution("EXEC-21", "evidence:36", "RACK_RELEASE_GATE_NOT_CLOSED"),
@@ -1146,7 +1173,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.admission_decide@v1",
         contract_version="1.0",
@@ -1190,7 +1217,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
             ],
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         transport_task_id="TRANSPORT-NEW",
         contract_key="rough_sorter.transport_outcome",
@@ -1206,7 +1233,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
                 step="NEW_IN",
                 source_evidence_id=36,
                 correlation_id="REPLACE-1",
-                line_run_epoch_id=11,
+                workline_id=7,
                 resource_fence_id="RACK-1",
             )
 
@@ -1354,8 +1381,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
         id=63,
         command_code=command_code,
         device_code="DEVICE-3",
-        device_binding_id=3,
-        line_run_epoch_id=11,
+        workline_id=7,
         execution_ref_type="PLUGIN_DECISION",
         execution_ref_id="evidence:33:execution:21:CREATE_DEVICE_COMMAND:0",
         material_execution_id=21,
@@ -1397,7 +1423,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
             "error_detail": None,
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         device_code="DEVICE-3",
         command_code=command_code,
@@ -1417,7 +1443,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
             "data": {"result": "ACCEPT", "pkg_id": "PKG-1", "inbound_admission_id": "ADM-1"},
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.admission_decide@v1",
         contract_version="1.0",
@@ -1449,7 +1475,7 @@ async def test_factory_rebuilds_placement_callback_and_resolver_uses_frozen_assi
             },
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.target_decide@v1",
         contract_version="1.0",
@@ -1519,8 +1545,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
         id=64,
         command_code=command_code,
         device_code="DEVICE-1",
-        device_binding_id=1,
-        line_run_epoch_id=11,
+        workline_id=7,
         execution_ref_type="PLUGIN_DECISION",
         execution_ref_id="evidence:32:execution:21:CREATE_DEVICE_COMMAND:0",
         material_execution_id=21,
@@ -1550,7 +1575,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
             "error_detail": None,
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         device_code="DEVICE-1",
         command_code=command_code,
@@ -1574,7 +1599,7 @@ async def test_factory_rebuilds_ng_callback_from_rejected_causal_response() -> N
             },
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.material.admission_decide@v1",
         contract_version="1.0",
@@ -1768,7 +1793,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
                 version=2,
                 step="NEW_IN",
                 source_evidence_id=40,
-                line_run_epoch_id=11,
+                workline_id=7,
                 resource_fence_id="RACK-1",
                 client_request_id=client_request_id,
             )
@@ -1781,7 +1806,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
                 version=2,
                 step="NEW_IN",
                 source_evidence_id=40,
-                line_run_epoch_id=11,
+                workline_id=7,
                 resource_fence_id="RACK-1",
                 client_request_id=client_request_id,
             )
@@ -1794,7 +1819,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
                 id=40,
                 version=3,
                 material_execution_id=21,
-                line_run_epoch_id=11,
+                workline_id=7,
                 operation="inbound.source_rack.replacement_plan_decide@v1",
             )
 
@@ -1805,7 +1830,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
                 id=40,
                 version=3,
                 material_execution_id=21,
-                line_run_epoch_id=11,
+                workline_id=7,
                 operation="inbound.source_rack.replacement_plan_decide@v1",
             )
 
@@ -1813,7 +1838,7 @@ async def test_transport_publisher_maps_only_new_in_and_wakes_after_commit(
         async def get_by_id_for_update(self, db: object, execution_id: int) -> object:
             del db, execution_id
             events.append("execution-lock")
-            return SimpleNamespace(id=21, line_run_epoch_id=11, workline_id=7, status=execution_status)
+            return SimpleNamespace(id=21, workline_id=7, status=execution_status)
 
     class EvidenceService:
         async def accept(self, db: object, **values: object) -> object:
@@ -1982,7 +2007,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 version=2,
                 step="NEW_IN",
                 source_evidence_id=40,
-                line_run_epoch_id=11,
+                workline_id=7,
                 resource_fence_id="RACK-1",
                 client_request_id=client_request_id,
             )
@@ -1995,7 +2020,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 version=3 if drift == "binding" else 2,
                 step="NEW_IN",
                 source_evidence_id=41 if drift == "binding" else 40,
-                line_run_epoch_id=11,
+                workline_id=7,
                 resource_fence_id="RACK-1",
                 client_request_id=client_request_id,
             )
@@ -2007,7 +2032,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 id=40,
                 version=3,
                 material_execution_id=21,
-                line_run_epoch_id=11,
+                workline_id=7,
                 operation="inbound.source_rack.replacement_plan_decide@v1",
             )
 
@@ -2018,7 +2043,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 id=40,
                 version=4,
                 material_execution_id=21,
-                line_run_epoch_id=11,
+                workline_id=7,
                 operation="inbound.source_rack.replacement_plan_decide@v1",
             )
 
@@ -2026,7 +2051,7 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
         async def get_by_id_for_update(self, db: object, execution_id: int) -> object:
             del db, execution_id
             events.append("execution-lock")
-            return SimpleNamespace(id=21, line_run_epoch_id=11, workline_id=7, status="HOLD")
+            return SimpleNamespace(id=21, workline_id=7, status="HOLD")
 
     class EvidenceService:
         async def accept(self, db: object, **values: object) -> object:
@@ -2091,7 +2116,6 @@ async def test_transport_publisher_revalidates_correlation_after_execution_lock(
                 },
                 "measurements": {"diameter_mm": "1", "thickness_mm": "1"},
                 "shape_result": "PASS",
-                "line_run_epoch_id": "11",
                 "workline_code": "ROUGH-LINE-1",
                 "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT_POSITION"},
             },
@@ -2140,7 +2164,7 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
             },
         },
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key="inbound.execution.recovery_decided@v1",
         contract_version="1.0",
@@ -2155,7 +2179,7 @@ async def test_factory_builds_recovery_wms_continuation_from_verified_causal_evi
         payload_digest="2" * 64,
         normalized_payload={"operation_id": operation_id, "code": "RECONCILING", "data": {}},
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_key=operation,
         contract_version="1.0",

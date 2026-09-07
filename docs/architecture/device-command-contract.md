@@ -36,11 +36,11 @@ related:
 
 1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；业务命令下发前确认目标状态条目身份一致、
    `is_online=true`、`mode=AUTO`、`status=IDLE`、无活动命令，且 `updated_at` 未超过冻结的允许年龄。合同身份只由 WES
-   命令与活动 `LineRunEpoch` binding 冻结，不要求 Status 返回。诊断命令在实际发送前查询目标 ECS Status，并额外要求
+   命令创建时从 WorkLine 当前绑定取得并冻结，不要求 Status 返回。诊断命令在实际发送前查询目标 ECS Status，并额外要求
    `task_type` 位于非空 `supported_commands`；`MANUAL_DEBUG` 创建前还执行同样的预检，任一准入失败都不得发送 Command。
 2. 在任何外部调用前持久化 `DeviceCommand` 及其幂等、关联和截止时间事实。
 3. 同步 ACK 只表示设备接纳，不表示物理动作完成。
-4. 只有匹配当前业务命令及其冻结 `LineRunEpoch` 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG` 和
+4. 只有匹配原业务命令、WorkLine 及具体执行关联 的最终 CALLBACK 才能推进物理位置和具体执行对象；`MANUAL_DEBUG` 和
    `EVENT_DEBUG` CALLBACK 只闭合命令与 evidence，不进入业务 Decision。
 5. `command_code` 最多绑定一个已接纳终态结果；WES 内部使用 `RESULT:{command_code}` 作为结果身份。重复 CALLBACK 不重复推进，
    同一身份对应不同载荷时拒绝并保留冲突证据。
@@ -56,7 +56,7 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 
 最终 `DeviceCommand` 只保存执行可靠性所需的内部事实：
 
-- 稳定命令身份、目标设备，以及业务命令冻结的 `LineRunEpoch` 和当前具体执行对象关联；
+- 稳定命令身份、目标设备，以及业务命令所属 WorkLine 和具体执行对象关联；
 - 已按统一接口和设备合同附录验证的命令载荷（payload）不可变快照，包含 `contract_key` 和 `contract_version`；
 - 载荷摘要（payload digest）、截止时间、下发尝试和最终结果证据；
 - `PENDING / DISPATCHING / ACKNOWLEDGED / RECONCILING / SUCCEEDED / FAILED / TIMED_OUT` 通用生命周期；
@@ -69,7 +69,7 @@ WES 不拆解供应商长命令，不解释 ECS 内部步骤，也不实现设�
 现场供应商联调只能由超级用户通过诊断 API 创建 `execution_ref_type="MANUAL_DEBUG"` 命令。该命令：
 
 - 必须以 `client_request_id` 作为幂等身份，并直接指定 `device_code`；
-- 不关联 `LineRunEpoch`、设备 binding 或 `MaterialExecution`；
+- 不关联业务 WorkLine 绑定或 `MaterialExecution`；
 - `POST /api/v1/device/commands/debug/preflight` 复用统一 ECS Adapter 枚举全部状态；创建接口接收
   `client_request_id`、`endpoint_base_url`、`device_code`、`timeout`、`task_type`、`params` 和审计 `reason`；
   WES 在命令记录中冻结规范化后的局域网 Endpoint、固定内部合同元数据、超时、`reason` 和 `created_by`；
@@ -96,7 +96,7 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 
 blocker 查询返回检测时的旧命令状态与对账原因、当前命令状态和不可变 `block_id`。匹配原 `command_code` 的 Result Callback 仍是闭合旧命令的首选路径。只有 blocker 指向、仍为 `RECONCILING / DELIVERY_UNKNOWN`、且冻结 binding 能提供状态新鲜度合同的业务命令，才允许超级用户在实时证明设备在线、`AUTO / IDLE`、无当前命令且状态未过期后，将旧命令闭合为 `FAILED / MANUAL_RECONCILIATION_DEVICE_IDLE`。该操作不伪造 Result 或成功终态；已接纳但尚未应用的 Result 优先，必须拒绝人工闭合。未冻结状态新鲜度合同的诊断命令只能由 Result Callback 闭合。
 
-旧命令终态不会自动重放 EVENT。超级用户只能携带 GET blocker 返回的当前 `block_id` 显式重处理；锁内确认该 blocker 仍是 latest `BLOCKED`、旧命令已终态且设备没有其它未终态命令后，才可将原 evidence 重置为 `PENDING`。重处理不改写 EVENT 身份、载荷、摘要或 Epoch 绑定；旧 `block_id` 不得作用于后续新 blocker。人工闭合和重处理的状态变化与审计必须同事务成功或回滚。
+旧命令终态不会自动重放 EVENT。超级用户只能携带 GET blocker 返回的当前 `block_id` 显式重处理；锁内确认该 blocker 仍是 latest `BLOCKED`、旧命令已终态且设备没有其它未终态命令后，才可将原 evidence 重置为 `PENDING`。重处理不改写 EVENT 身份、载荷、摘要或原业务关联；旧 `block_id` 不得作用于后续新 blocker。人工闭合和重处理的状态变化与审计必须同事务成功或回滚。
 
 ACK 与命令创建属于两个异步执行路径，WES 不承诺 ECS 在 worker 启动前已经读取到 ACK 字节。
 
@@ -143,7 +143,7 @@ Result/Event HTTP 尝试及 evidence `APPLIED/RECONCILING` 更新，不持久化
 具体工作线插件只决定：
 
 - 当前有效 WMS 业务结果和执行证据是否允许创建命令；
-- 命令关联哪个 `MaterialExecution`、`BinExecution` 或其他具体对象；
+- 命令关联哪个 `MaterialExecution`、任务或插件当前工位动作；
 - 已批准 `task_type` 需要哪些逻辑业务参数；
 - CALLBACK 后如何按 WMS 结果返回下一条命令、结束、NG 执行或对象级暂停中的封闭执行决定。
 

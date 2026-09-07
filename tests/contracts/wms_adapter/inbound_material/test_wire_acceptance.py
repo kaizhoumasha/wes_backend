@@ -52,7 +52,6 @@ def _admission_data() -> dict[str, object]:
         },
         "measurements": {"diameter_mm": "12.345", "thickness_mm": "0.500"},
         "shape_result": "PASS",
-        "line_run_epoch_id": "EPOCH-1",
         "workline_code": "WL-1",
         "source_position": _handoff(),
     }
@@ -117,7 +116,6 @@ def test_admission_request_is_strict_and_preserves_measurement_strings() -> None
                 },
                 "measurements": {"diameter_mm": "12.345", "thickness_mm": "0.500"},
                 "shape_result": "PASS",
-                "line_run_epoch_id": "EPOCH-1",
                 "workline_code": "WL-1",
                 "source_position": _handoff(),
             },
@@ -246,7 +244,6 @@ def test_identifier_constraints_follow_the_authoritative_field_owners() -> None:
                 },
                 "measurements": {"diameter_mm": "12.345", "thickness_mm": "0.500"},
                 "shape_result": "PASS",
-                "line_run_epoch_id": "运行批次" * 40,
                 "workline_code": "粗分工作线" * 30,
                 "source_position": _handoff("入口位置" * 30),
             },
@@ -260,7 +257,7 @@ def test_identifier_constraints_follow_the_authoritative_field_owners() -> None:
         with pytest.raises(ValidationError):
             parse_outbound_request(invalid)
 
-    for field, value in (("workline_code", "   "), ("line_run_epoch_id", "EPOCH\x00BAD")):
+    for field, value in (("workline_code", "   "), ("workline_code", "WL\x00BAD")):
         invalid = request.model_dump(mode="json")
         invalid["data"][field] = value
         with pytest.raises(ValidationError):
@@ -444,3 +441,10 @@ def test_replacement_face_json_schema_publishes_character_limit():
     assert schema["type"] == "string"
     assert schema["minLength"] == 1
     assert schema["maxLength"] == 10
+
+
+def test_admission_rejects_retired_epoch_field():
+    data = _admission_data()
+    data["line_run_epoch_id"] = "EPOCH-1"
+    with pytest.raises(ValidationError):
+        parse_outbound_request(_envelope(ADMISSION_OPERATION, data))

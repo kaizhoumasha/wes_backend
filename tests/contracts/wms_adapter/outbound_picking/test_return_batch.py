@@ -18,7 +18,6 @@ def request():
         "timestamp": 1,
         "data": {
             "workline_code": "LINE-1",
-            "line_run_epoch_id": "EPOCH-1",
             "rack_id": "RACK-1",
             "rack_face": "A",
             "return_candidates": [
@@ -110,7 +109,6 @@ def test_return_batch_sdk_roundtrip_and_immutable_candidates():
     intent = wms_operations.outbound_bin_return_batch(
         operation_id=OPERATION_ID,
         workline_code="LINE-1",
-        line_run_epoch_id="EPOCH-1",
         rack_id="RACK-1",
         rack_face="A",
         return_candidates=(
@@ -170,31 +168,30 @@ async def test_adapter_enforces_frozen_prefix_and_closes_no_batch(invalid_prefix
     [
         ("active", True),
         ("closed", False),
-        ("wrong_epoch", False),
         ("wrong_line", False),
         ("missing", False),
     ],
 )
-async def test_epoch_owner_matches_frozen_wire_identity(case, expected):
+async def test_workline_owner_matches_frozen_wire_identity(case, expected):
     from types import SimpleNamespace
 
     from src.app.wms_integration.outbound_picking.services import ReturnBatchOwnerService
-    from src.app.workline.models.line_run_epoch import LineRunEpochStatus
 
-    epoch = SimpleNamespace(workline_id=7, epoch_code="EPOCH-1", status=LineRunEpochStatus.ACTIVE)
-    workline = SimpleNamespace(id=7, line_code="LINE-1")
+    workline = SimpleNamespace(id=7, line_code="LINE-1", is_active=True)
     if case == "closed":
-        epoch.status = LineRunEpochStatus.CLOSED
-    elif case == "wrong_epoch":
-        epoch.epoch_code = "OTHER"
+        workline.is_active = False
     elif case == "wrong_line":
         workline.line_code = "OTHER"
     elif case == "missing":
-        epoch = None
-    epochs = AsyncMock()
-    epochs.get_by_id.return_value = epoch
-    epochs.get_by_id_for_update.return_value = epoch
+        workline = None
     worklines = AsyncMock()
     worklines.get_for_update.return_value = workline
-    owner = ReturnBatchOwnerService(epochs=epochs, worklines=worklines)
-    assert await owner.validate_owner(object(), line_run_epoch_id=71, request_payload=request()) is expected
+    owner = ReturnBatchOwnerService(worklines=worklines)
+    assert await owner.validate_owner(object(), workline_id=7, request_payload=request()) is expected
+
+
+def test_return_batch_rejects_retired_epoch_wire_field():
+    body = request()
+    body["data"]["line_run_epoch_id"] = "EPOCH-1"
+    with pytest.raises(ValueError):
+        parse_bin_return_batch_request(body)

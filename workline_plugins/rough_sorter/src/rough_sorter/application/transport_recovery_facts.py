@@ -66,12 +66,12 @@ if TYPE_CHECKING:
     from rough_sorter.application.persistence import (
         DeviceCommandRepositoryPort,
         DeviceReadinessReader,
-        EpochRepositoryPort,
         EvidenceRepositoryPort,
         RackPlacementRepositoryPort,
         RackPositionRepositoryPort,
         RackReplacementBindingRepositoryPort,
         WmsConfirmationRepositoryPort,
+        WorkLineRepositoryPort,
     )
 
 
@@ -96,12 +96,12 @@ async def current_rack_id(
 ) -> str:
     outlet = position_binding(runtime, "PIPELINE_OUTLET")
     rack_position = await rack_positions.get_by_workline_logic_location(
-        db, workline_code=runtime.epoch.workline_code, logic_location_code=outlet.location_id
+        db, workline_code=runtime.workline.workline_code, logic_location_code=outlet.location_id
     )
     if rack_position is None or not rack_position.enabled:
         raise ValueError("PIPELINE_OUTLET 未精确关联 enabled WorklineRackPosition")
     placements = await rack_placements.list_active_by_workline_position(
-        db, workline_code=runtime.epoch.workline_code, position_code=rack_position.position_code
+        db, workline_code=runtime.workline.workline_code, position_code=rack_position.position_code
     )
     if len(placements) != 1:
         raise ValueError("PIPELINE_OUTLET current rack missing or ambiguous")
@@ -133,13 +133,13 @@ async def build_transport_fact(
     binding = await bindings.get_by_client_request_id_for_update(db, client_request_id)
     if binding is None or binding.step != "NEW_IN":
         raise ValueError("material Transport fact 只接受持久 NEW_IN binding")
-    if binding.line_run_epoch_id != execution.line_run_epoch_id:
-        raise ValueError("NEW_IN binding Epoch correlation 不匹配")
+    if binding.workline_id != execution.workline_id:
+        raise ValueError("NEW_IN binding WorkLine correlation 不匹配")
     source = await evidences.get_by_id_for_update(db, binding.source_evidence_id)
     if (
         source is None
         or source.material_execution_id != execution.id
-        or source.line_run_epoch_id != execution.line_run_epoch_id
+        or source.workline_id != execution.workline_id
         or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
     ):
         raise ValueError("NEW_IN binding source evidence correlation 不匹配")
@@ -261,7 +261,7 @@ async def build_recovery_fact(
     execution: MaterialExecution,
     runtime: Any,
     evidences: EvidenceRepositoryPort,
-    epochs: EpochRepositoryPort,
+    worklines: WorkLineRepositoryPort,
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
     confirmations: WmsConfirmationRepositoryPort,
@@ -275,11 +275,7 @@ async def build_recovery_fact(
         raise TypeError("recovery evidence.data 缺失")
     causal_id = canonical_evidence_id(data.get("reconciling_evidence_id"), "reconciling_evidence_id")
     causal = await evidences.get_by_id_for_update(db, causal_id)
-    if (
-        causal is None
-        or causal.material_execution_id != execution.id
-        or causal.line_run_epoch_id != execution.line_run_epoch_id
-    ):
+    if causal is None or causal.material_execution_id != execution.id or causal.workline_id != execution.workline_id:
         raise ValueError("recovery causal evidence correlation 不匹配")
     common: dict[str, Any] = {
         "fact_id": fact.fact_id,
@@ -321,9 +317,9 @@ async def build_recovery_fact(
         target = command_position(params["target"], execution.material_trace_id)
         step, role = device_step(command.task_type, source, target)
         if authoritative == source:
-            binding = await epochs.get_binding_by_role_and_code_for_update(
+            binding = await worklines.get_binding_by_role_and_code_for_update(
                 db,
-                line_run_epoch_id=execution.line_run_epoch_id,
+                workline_id=execution.workline_id,
                 device_role=role,
                 device_code=command.device_code,
             )

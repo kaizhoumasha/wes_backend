@@ -8,7 +8,7 @@ from wes_plugin_sdk import (
 )
 
 from rough_sorter.facts import MaterialEvidenceReadyFact
-from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.handlers._guards import require_execution, require_workline
 from rough_sorter.wms_requests import admission_data
 
 
@@ -25,9 +25,9 @@ class MaterialEvidenceReadyHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        if execution.line_run_epoch_id != fact.line_run_epoch_id:
-            raise ValueError("execution Epoch does not match scan Fact")
-        require_epoch(snapshot.epoch, line_run_epoch_id=fact.line_run_epoch_id, workline_code=fact.workline_code)
+        if execution.workline_id != fact.workline_id:
+            raise ValueError("execution WorkLine does not match scan Fact")
+        require_workline(snapshot.workline, workline_id=fact.workline_id, workline_code=fact.workline_code)
         return (admission_data(fact),)
 
 

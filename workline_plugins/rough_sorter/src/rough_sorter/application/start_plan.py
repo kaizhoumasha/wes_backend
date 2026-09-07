@@ -1,4 +1,4 @@
-"""粗分机业务配置到通用 Epoch 激活计划的翻译。"""
+"""粗分机业务配置到通用 WorkLine 激活计划的翻译。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.device.contracts import EcsDeviceMode, EcsDeviceState
 from src.app.device.repositories.device_repository import device_repository
-from src.app.workline.epoch_activation import (
-    LineRunEpochDeviceBindingInput,
-    LineRunEpochPositionBindingInput,
-    WorkLineEpochActivationPlan,
+from src.app.workline.activation import (
+    WorkLineActivationPlan,
+    WorkLineDeviceBinding,
+    WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import parse_device_bindings
 from src.app.workline.models.workline import WorkLineDeviceRole
@@ -67,7 +67,7 @@ class RoughSorterStartPlanBuilder:
         self._adapter_provider = adapter_provider
         self._clock = clock
 
-    async def build(self, db: Any, workline: Any) -> WorkLineEpochActivationPlan:
+    async def build(self, db: Any, workline: Any) -> WorkLineActivationPlan:
         try:
             bindings = parse_device_bindings(workline.config, self.device_roles)
         except ValueError as exc:
@@ -75,14 +75,15 @@ class RoughSorterStartPlanBuilder:
 
         devices = await self._devices.get_by_work_line_id_for_update(db, workline.id)
         by_code = {device.device_code: device for device in devices if not device.is_deleted}
-        device_bindings: list[LineRunEpochDeviceBindingInput] = []
+        device_bindings: list[WorkLineDeviceBinding] = []
         for role, contract_key in ROLE_CONTRACTS.items():
             device = by_code.get(bindings[role])
             if device is None or not device.is_active or device.id is None or not device.endpoint_base_url:
                 raise WorkLineStartConfigurationError(f"{role} 缺少本线启用设备或 Endpoint")
             try:
                 device_bindings.append(
-                    LineRunEpochDeviceBindingInput(
+                    WorkLineDeviceBinding(
+                        workline_id=workline.id,
                         device_id=device.id,
                         device_code=device.device_code,
                         device_role=role,
@@ -98,14 +99,13 @@ class RoughSorterStartPlanBuilder:
 
         await self._validate_live_devices(tuple(device_bindings))
 
-        return WorkLineEpochActivationPlan(
+        return WorkLineActivationPlan(
             plugin_key=PLUGIN_KEY,
             plugin_version=PLUGIN_VERSION,
             flow_mode="ROUGH_SORT_INBOUND",
-            configuration_snapshot={"device_bindings": dict(bindings)},
             device_bindings=tuple(device_bindings),
             position_bindings=tuple(
-                LineRunEpochPositionBindingInput(
+                WorkLinePositionBinding(
                     position_role=role,
                     location_id=role,
                     location_type=role,
@@ -114,10 +114,10 @@ class RoughSorterStartPlanBuilder:
             ),
         )
 
-    async def _validate_live_devices(self, bindings: tuple[LineRunEpochDeviceBindingInput, ...]) -> None:
+    async def _validate_live_devices(self, bindings: tuple[WorkLineDeviceBinding, ...]) -> None:
         if self._adapter_provider is None:
             raise WorkLineStartConfigurationError("ECS 实时状态检查不可用")
-        by_endpoint: dict[str, list[LineRunEpochDeviceBindingInput]] = {}
+        by_endpoint: dict[str, list[WorkLineDeviceBinding]] = {}
         for binding in bindings:
             by_endpoint.setdefault(binding.endpoint_base_url, []).append(binding)
         for endpoint, endpoint_bindings in sorted(by_endpoint.items()):
@@ -136,7 +136,7 @@ class RoughSorterStartPlanBuilder:
     @staticmethod
     def _validate_live_device(
         endpoint: str,
-        binding: LineRunEpochDeviceBindingInput,
+        binding: WorkLineDeviceBinding,
         status: EcsDeviceStatus | None,
         now_ms: int,
     ) -> None:

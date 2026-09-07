@@ -10,7 +10,6 @@ from sqlmodel import Field
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS
 from src.core.mixins.base import BaseMixin
-from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 RUNTIME_SCHEMA = SchemaType.RUNTIME.value
@@ -40,12 +39,6 @@ class TransportTask(BaseMixin, table=True):
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         CheckConstraint(_TASK_STATUS_CHECK, name="transport_task_status_valid"),
-        CheckConstraint(
-            "(authority_workline_id IS NULL AND authority_line_run_epoch_id IS NULL "
-            "AND authority_bin_execution_id IS NULL) OR "
-            "(authority_workline_id IS NOT NULL AND authority_line_run_epoch_id IS NOT NULL)",
-            name="transport_execution_authority_all_or_none",
-        ),
         CheckConstraint(
             f"submit_attempt_count BETWEEN 0 AND {MAX_SUBMIT_ATTEMPTS}",
             name="transport_submit_attempt_count_valid",
@@ -102,12 +95,6 @@ class TransportTask(BaseMixin, table=True):
     status: str = Field(default="PENDING", max_length=20)
     reason_code: str | None = Field(default=None, max_length=120)
     authority_workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
-    authority_line_run_epoch_id: int | None = Field(default=None, foreign_key="wes_biz.line_run_epochs.id")
-    authority_bin_execution_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.bin_executions.id",
-        sa_type=SQL_COMPAT_BIGINT,
-    )
 
     submit_attempt_count: int = Field(default=0)
     next_submit_at: datetime | None = Field(default=None)

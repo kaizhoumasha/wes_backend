@@ -134,17 +134,10 @@ class TransportExecutionAuthority:
     """只在 WES 内部冻结的执行 authority，不进入北向 Transport wire。"""
 
     workline_id: int
-    line_run_epoch_id: int
-    bin_execution_id: int | None = None
 
     def __post_init__(self) -> None:
-        for field_name, value in (
-            ("workline_id", self.workline_id),
-            ("line_run_epoch_id", self.line_run_epoch_id),
-            ("bin_execution_id", self.bin_execution_id),
-        ):
-            if value is not None and (type(value) is not int or value <= 0):
-                raise ValueError(f"{field_name} must be a positive integer")
+        if type(self.workline_id) is not int or self.workline_id <= 0:
+            raise ValueError("workline_id must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,12 +198,12 @@ type TransportPosition = RackPosition | RackBinSlot | HandoffPosition
 
 @dataclass(frozen=True, slots=True)
 class BinMove:
-    bin_id: str
+    bin_code: str
     source: RackBinSlot | HandoffPosition
     target: RackBinSlot | HandoffPosition
 
     def __post_init__(self) -> None:
-        require_transport_text(self.bin_id, "bin_id", max_length=100)
+        require_transport_text(self.bin_code, "bin_code", max_length=100)
         if type(self.source) not in {RackBinSlot, HandoffPosition} or type(self.target) not in {
             RackBinSlot,
             HandoffPosition,
@@ -224,17 +217,17 @@ class BinMove:
 
 @dataclass(frozen=True, slots=True)
 class BinExchangePair:
-    left_bin_id: str
+    left_bin_code: str
     left_location: RackBinSlot
-    right_bin_id: str
+    right_bin_code: str
     right_location: RackBinSlot
 
     def __post_init__(self) -> None:
-        require_transport_text(self.left_bin_id, "left_bin_id", max_length=100)
-        require_transport_text(self.right_bin_id, "right_bin_id", max_length=100)
+        require_transport_text(self.left_bin_code, "left_bin_code", max_length=100)
+        require_transport_text(self.right_bin_code, "right_bin_code", max_length=100)
         if type(self.left_location) is not RackBinSlot or type(self.right_location) is not RackBinSlot:
             raise TransportContractError("exchange positions must be rack bin slots")
-        if self.left_bin_id == self.right_bin_id:
+        if self.left_bin_code == self.right_bin_code:
             raise TransportContractError("exchange bins must differ")
         if self.left_location == self.right_location:
             raise TransportContractError("exchange positions must differ")
@@ -317,7 +310,7 @@ class MoveBinsRequest:
         _validate_request_identity(self.client_request_id, self.caller)
         if not 1 <= len(self.moves) <= 4:
             raise TransportContractError("moves must contain 1..4 members")
-        _reject_duplicates((move.bin_id for move in self.moves), "bin_id")
+        _reject_duplicates((move.bin_code for move in self.moves), "bin_code")
         slots = [
             position
             for move in self.moves
@@ -340,8 +333,8 @@ class ExchangeBinsRequest:
         if not 1 <= len(self.exchange_pairs) <= 2:
             raise TransportContractError("exchange_pairs must contain 1..2 pairs")
         _reject_duplicates(
-            (bin_id for pair in self.exchange_pairs for bin_id in (pair.left_bin_id, pair.right_bin_id)),
-            "bin_id",
+            (bin_code for pair in self.exchange_pairs for bin_code in (pair.left_bin_code, pair.right_bin_code)),
+            "bin_code",
         )
         _reject_duplicates(
             (

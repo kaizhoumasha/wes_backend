@@ -6,14 +6,14 @@ from wes_plugin_sdk import (
     CreateDeviceCommand,
     DeferExecution,
     DevicePosition,
-    EpochConfigurationSnapshot,
     InboundWmsIntent,
     PauseForReconciliation,
+    WorkLineConfigurationSnapshot,
     handler,
 )
 
 from rough_sorter.facts import DeviceOutcome, DevicePositionConfirmedFact, DeviceStep
-from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
+from rough_sorter.handlers._guards import require_device_binding, require_execution, require_workline
 from rough_sorter.wms_requests import ng_placement_data, placement_data, target_data
 
 
@@ -33,7 +33,7 @@ class DevicePositionConfirmedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        epoch = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        workline = require_workline(snapshot.workline, workline_id=execution.workline_id)
         if fact.outcome is not DeviceOutcome.SUCCESS:
             return (
                 PauseForReconciliation(
@@ -52,7 +52,7 @@ class DevicePositionConfirmedHandler:
         if actual_position is None:
             raise ValueError("successful device result requires actual_position")
         if fact.step is DeviceStep.MEASUREMENT_TO_INLET:
-            return self._move_to_outlet(fact, epoch)
+            return self._move_to_outlet(fact, workline)
         if fact.step is DeviceStep.TRANSFER_TO_OUTLET:
             return (target_data(fact),)
         if fact.step is DeviceStep.PLACEMENT_TO_CELL:
@@ -62,7 +62,7 @@ class DevicePositionConfirmedHandler:
     def _move_to_outlet(
         self,
         fact: DevicePositionConfirmedFact,
-        epoch: EpochConfigurationSnapshot,
+        workline: WorkLineConfigurationSnapshot,
     ) -> tuple[CreateDeviceCommand | DeferExecution]:
         if not fact.next_device_ready:
             return (
@@ -81,7 +81,7 @@ class DevicePositionConfirmedHandler:
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 device_role="TRANSFER_DEVICE",
-                device_code=require_device_binding(epoch, "TRANSFER_DEVICE").device_code,
+                device_code=require_device_binding(workline, "TRANSFER_DEVICE").device_code,
                 task_type="MOVE_FORWARD",
                 material_trace_id=fact.material_trace_id,
                 source=actual_position,

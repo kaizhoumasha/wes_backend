@@ -132,7 +132,6 @@ class AdmissionRequestData(_StrictModel):
     six_in_one: SixInOne
     measurements: Measurements
     shape_result: Literal["PASS", "FAIL"]
-    line_run_epoch_id: Identifier
     workline_code: Identifier
     source_position: HandoffPosition
 

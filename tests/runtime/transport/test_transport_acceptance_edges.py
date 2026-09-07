@@ -200,13 +200,12 @@ async def test_rotate_requires_a_confirmed_current_position_and_opposite_face(db
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id="rack-rotate",
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "ROTATE"},
                 arrival_face="90",
                 source_operation_id="seed",
@@ -829,13 +828,12 @@ async def test_bin_move_requires_a_confirmed_matching_rack_face(db_engine: objec
 
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add(
             PositionProjection(
                 object_type="RACK",
                 object_id="rack-face",
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "STORAGE"},
                 arrival_face="270",
                 source_operation_id="seed",
@@ -1076,7 +1074,7 @@ async def test_debug_reset_preserves_another_task_projection_when_operation_id_i
     now = timezone.now_for_db()
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add_all(
             [
                 TransportEvidence(
@@ -1106,7 +1104,6 @@ async def test_debug_reset_preserves_another_task_projection_when_operation_id_i
                     object_type="RACK",
                     object_id="rack-reset-collision-keep",
                     workline_id=workline_id,
-                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "B"},
                     source_operation_id=operation_id,
                     source_transport_task_id=keep.transport_task_id,

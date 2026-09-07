@@ -56,7 +56,7 @@ def test_scan12_accepts_processed_device_evidence(apply_status: InboundEvidenceA
     evaluation = _evaluate(_evidence(apply_status=apply_status))
 
     assert evaluation.disposition is Scan12EvidenceDisposition.MATCH
-    assert evaluation.bin_id == "A000001922"
+    assert evaluation.bin_code == "A000001922"
     assert evaluation.evidence_id == 101
     assert evaluation.source_event_id == "SCAN12-EVENT-101"
     assert evaluation.reason_code is None
@@ -74,7 +74,7 @@ def test_scan12_accepts_onsite_station_device_code() -> None:
     evaluation = _evaluate(evidence)
 
     assert evaluation.disposition is Scan12EvidenceDisposition.MATCH
-    assert evaluation.bin_id == "A000001922"
+    assert evaluation.bin_code == "A000001922"
 
 
 @pytest.mark.parametrize("direction", ["A", "B", "C", "D"])
@@ -89,7 +89,7 @@ def test_scan12_matches_selected_bin_after_removing_direction_suffix(direction: 
     evaluation = _evaluate(evidence)
 
     assert evaluation.disposition is Scan12EvidenceDisposition.MATCH
-    assert evaluation.bin_id == "A000001922"
+    assert evaluation.bin_code == "A000001922"
     assert evidence.normalized_payload["data"] == {"barcode": f"A000001922-{direction}"}
 
 

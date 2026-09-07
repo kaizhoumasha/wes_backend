@@ -32,9 +32,9 @@ if TYPE_CHECKING:
     from rough_sorter.application.persistence import (
         DeviceCommandRepositoryPort,
         DeviceReadinessReader,
-        EpochRepositoryPort,
         EvidenceRepositoryPort,
         WmsConfirmationRepositoryPort,
+        WorkLineRepositoryPort,
     )
 
 
@@ -83,7 +83,7 @@ async def build_device_fact(
     execution: MaterialExecution,
     runtime: Any,
     evidences: EvidenceRepositoryPort,
-    epochs: EpochRepositoryPort,
+    worklines: WorkLineRepositoryPort,
     confirmations: WmsConfirmationRepositoryPort,
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
@@ -94,7 +94,7 @@ async def build_device_fact(
         command is None
         or command.id is None
         or command.material_execution_id != execution.id
-        or command.line_run_epoch_id != execution.line_run_epoch_id
+        or command.workline_id != execution.workline_id
         or command.device_code != fact.device_code
         or command.result_evidence_id != evidence.id
         or evidence.command_code != command.command_code
@@ -107,7 +107,7 @@ async def build_device_fact(
     if (
         source_evidence is None
         or source_evidence.material_execution_id != execution.id
-        or source_evidence.line_run_epoch_id != execution.line_run_epoch_id
+        or source_evidence.workline_id != execution.workline_id
     ):
         raise ValueError("DeviceCommand source evidence correlation 不匹配")
     params = command.params
@@ -124,7 +124,7 @@ async def build_device_fact(
         or binding.contract_key != command.contract_key
         or binding.contract_version != command.contract_version
     ):
-        raise ValueError("DeviceCommand 与 Epoch device binding 不匹配")
+        raise ValueError("DeviceCommand 与 WorkLine device binding 不匹配")
     validate_source_evidence_for_step(source_evidence, step)
     result = EcsCommandResult.model_validate(evidence.normalized_payload)
     if (
@@ -159,9 +159,9 @@ async def build_device_fact(
         raise ValueError("device result actual_position 与 frozen command target 不匹配")
     if step is DeviceStep.MEASUREMENT_TO_INLET:
         transfer_binding = device_binding(runtime, "TRANSFER_DEVICE")
-        transfer = await epochs.get_binding_by_role_and_code_for_update(
+        transfer = await worklines.get_binding_by_role_and_code_for_update(
             db,
-            line_run_epoch_id=execution.line_run_epoch_id,
+            workline_id=execution.workline_id,
             device_role=transfer_binding.device_role,
             device_code=transfer_binding.device_code,
         )

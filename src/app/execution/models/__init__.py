@@ -1,6 +1,5 @@
 """Execution 核心模型导出。"""
 
-from .bin_execution import BinExecution, BinExecutionStatus
 from .inbound_evidence import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
@@ -17,8 +16,6 @@ from .transport_decision_binding import TransportDecisionBinding
 from .wms_confirmation import WmsConfirmation, WmsConfirmationStatus
 
 __all__ = [
-    "BinExecution",
-    "BinExecutionStatus",
     "InboundEvidence",
     "InboundEvidenceApplyStatus",
     "InboundEvidenceConflict",

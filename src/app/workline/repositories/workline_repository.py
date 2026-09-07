@@ -7,7 +7,6 @@ from sqlalchemy import cast as sa_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.execution.models.bin_execution import BinExecution, BinExecutionStatus
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
     InboundEvidenceApplyStatus,
@@ -19,9 +18,9 @@ from src.app.resource.models.resource import BinPlacement, BinPlacementStatus, R
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
-from src.app.workline.models import WorkLine
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochStatus
+from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
 from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
+from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
 
@@ -85,16 +84,85 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         await db.flush()
         return workline
 
+    async def list_active_plugin_identities(self, db: AsyncSession) -> list[tuple[str, str]]:
+        columns = cast("Any", WorkLine).__table__.c
+        result = await db.execute(
+            select(columns.plugin_key, columns.plugin_version)
+            .where(columns.is_active.is_(True), columns.is_deleted.is_(False))
+            .distinct()
+        )
+        return list(result.tuples())
+
+    async def list_bindings(self, db: AsyncSession, workline_id: int) -> list[WorkLineDeviceBinding]:
+        line = await self.get_for_update(db, workline_id)
+        if line is None:
+            return []
+        contracts = line.device_contracts
+        return [
+            WorkLineDeviceBinding(workline_id=workline_id, device_role=role, device_code=code, **contracts[code])
+            for role, code in sorted(line.config.get("device_bindings", {}).items())
+            if code in contracts
+        ]
+
+    async def list_position_bindings(self, db: AsyncSession, workline_id: int) -> list[WorkLinePositionBinding]:
+        line = await self.get_for_update(db, workline_id)
+        if line is None:
+            return []
+        return [
+            WorkLinePositionBinding(position_role=role, **position)
+            for role, position in sorted(line.position_bindings.items())
+        ]
+
+    async def get_binding_for_command_creation(
+        self, db: AsyncSession, *, workline_id: int, device_code: str
+    ) -> WorkLineDeviceBinding | None:
+        line = await self.get_for_update(db, workline_id)
+        if line is None or not line.is_active:
+            return None
+        return next(
+            (binding for binding in await self.list_bindings(db, workline_id) if binding.device_code == device_code),
+            None,
+        )
+
+    async def list_bindings_by_role_for_update(
+        self, db: AsyncSession, *, workline_id: int, device_role: str
+    ) -> list[WorkLineDeviceBinding]:
+        return [binding for binding in await self.list_bindings(db, workline_id) if binding.device_role == device_role]
+
+    async def get_binding_by_role_and_code_for_update(
+        self, db: AsyncSession, *, workline_id: int, device_role: str, device_code: str
+    ) -> WorkLineDeviceBinding | None:
+        return next(
+            (
+                binding
+                for binding in await self.list_bindings_by_role_for_update(
+                    db, workline_id=workline_id, device_role=device_role
+                )
+                if binding.device_code == device_code
+            ),
+            None,
+        )
+
+    async def get_active_binding_for_device(self, db: AsyncSession, device_code: str) -> WorkLineDeviceBinding | None:
+        from src.app.device.models.device import Device
+
+        devices = cast("Any", Device).__table__.c
+        workline_id = await db.scalar(
+            select(devices.work_line_id).where(devices.device_code == device_code, devices.is_deleted.is_(False))
+        )
+        if workline_id is None:
+            return None
+        return await self.get_binding_for_command_creation(db, workline_id=workline_id, device_code=device_code)
+
     async def get_unfinished_workload_summary(
         self,
         db: AsyncSession,
         workline_id: int,
     ) -> dict[str, Any]:
-        """以单条 SQL 返回八类 execution owner 的准确数量与每类稳定样本。"""
+        """返回未闭合可靠义务与本线实际占用的数量和稳定样本。"""
 
-        epoch = cast("Any", LineRunEpoch).__table__.c
+        workline = cast("Any", WorkLine).__table__.c
         material = cast("Any", MaterialExecution).__table__.c
-        bin_execution = cast("Any", BinExecution).__table__.c
         command = cast("Any", DeviceCommand).__table__.c
         transport = cast("Any", TransportTask).__table__.c
         evidence = cast("Any", InboundEvidence).__table__.c
@@ -102,32 +170,23 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         picking = cast("Any", PickingTask).__table__.c
 
         predicates = {
-            "line_run_epochs": and_(
-                epoch.workline_id == workline_id,
-                epoch.status == LineRunEpochStatus.ACTIVE,
-            ),
             "material_executions": and_(
                 material.workline_id == workline_id,
                 material.status != MaterialExecutionStatus.CLOSED,
             ),
-            "bin_executions": and_(
-                bin_execution.workline_id == workline_id,
-                bin_execution.status == BinExecutionStatus.ACTIVE,
-            ),
             "transport_tasks": and_(
                 transport.authority_workline_id == workline_id,
-                transport.status.in_(
-                    (
-                        TransportTaskStatus.PENDING,
-                        TransportTaskStatus.ACCEPTED,
-                        TransportTaskStatus.RECONCILING,
-                    )
+                or_(
+                    transport.status.in_(
+                        (TransportTaskStatus.PENDING, TransportTaskStatus.ACCEPTED, TransportTaskStatus.RECONCILING)
+                    ),
+                    transport.outcome_version > transport.published_outcome_version,
                 ),
             ),
         }
         unclosed_command = and_(
-            epoch.workline_id == workline_id,
-            command.line_run_epoch_id == epoch.id,
+            workline.id == workline_id,
+            command.workline_id == workline.id,
             command.status.in_(
                 (
                     CommandStatus.PENDING,
@@ -138,8 +197,8 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             ),
         )
         blocking_evidence = and_(
-            epoch.workline_id == workline_id,
-            evidence.line_run_epoch_id == epoch.id,
+            workline.id == workline_id,
+            evidence.workline_id == workline.id,
             or_(
                 evidence.apply_status == InboundEvidenceApplyStatus.PENDING,
                 evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING,
@@ -154,7 +213,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                                 evidence.kind == InboundEvidenceKind.WMS_RESULT,
                                 evidence.id.in_(
                                     select(confirmation.response_evidence_id).where(
-                                        confirmation.line_run_epoch_id == epoch.id,
+                                        confirmation.workline_id == workline.id,
                                         confirmation.status == WmsConfirmationStatus.COMPLETED,
                                     )
                                 ),
@@ -169,7 +228,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             or_(
                 confirmation.material_execution_id.in_(select(material.id).where(material.workline_id == workline_id)),
                 confirmation.picking_task_id.in_(select(picking.id).where(picking.workline_id == workline_id)),
-                confirmation.line_run_epoch_id.in_(select(epoch.id).where(epoch.workline_id == workline_id)),
+                confirmation.workline_id.in_(select(workline.id).where(workline.id == workline_id)),
             ),
         )
         # prepare 的确认完成不等于 PickingTask 闭合；计划阻塞也不能因任务阶段改变而解除围栏。
@@ -183,15 +242,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
 
         owner_union = union_all(
             self._sample_query(
-                1,
-                "line_run_epochs",
-                "line_run_epoch",
-                epoch.id,
-                epoch.status,
-                epoch.epoch_code,
-                predicates["line_run_epochs"],
-            ),
-            self._sample_query(
                 2,
                 "material_executions",
                 "material_execution",
@@ -201,15 +251,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 predicates["material_executions"],
             ),
             self._sample_query(
-                3,
-                "bin_executions",
-                "bin_execution",
-                bin_execution.id,
-                bin_execution.status,
-                bin_execution.execution_code,
-                predicates["bin_executions"],
-            ),
-            self._sample_query(
                 4,
                 "device_commands",
                 "device_command",
@@ -217,7 +258,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 command.status,
                 command.command_code,
                 unclosed_command,
-                from_models=(DeviceCommand, LineRunEpoch),
+                from_models=(DeviceCommand, WorkLine),
             ),
             self._sample_query(
                 5,
@@ -236,7 +277,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 evidence.apply_status,
                 evidence.source_identity,
                 blocking_evidence,
-                from_models=(InboundEvidence, LineRunEpoch),
+                from_models=(InboundEvidence, WorkLine),
             ),
             self._sample_query(
                 7,
@@ -280,9 +321,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         )
         rows = (await db.execute(statement)).all()
         owner_keys = (
-            "line_run_epochs",
             "material_executions",
-            "bin_executions",
             "device_commands",
             "transport_tasks",
             "inbound_evidences",
@@ -299,6 +338,12 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 "status": row.status,
                 "identity": row.identity,
             }
+        from src.app.execution.repositories.position_projection_repository import position_projection_repository
+
+        positions = await position_projection_repository.get_active_workline_summary(db, workline_id)
+        by_type["position_projections"] = positions["count"]
+        if positions["sample"] is not None:
+            samples["position_projections"] = positions["sample"]
         return {
             "count": sum(by_type.values()),
             "sample": next(iter(samples.values()), None),
@@ -315,9 +360,8 @@ class WorkLineRepository(BaseRepository[WorkLine]):
     ) -> list[dict[str, Any]]:
         """聚合 target owners，供 WorkLine active-object API 只读投影。"""
 
-        epoch = cast("Any", LineRunEpoch).__table__.c
+        workline = cast("Any", WorkLine).__table__.c
         material = cast("Any", MaterialExecution).__table__.c
-        bin_execution = cast("Any", BinExecution).__table__.c
         command = cast("Any", DeviceCommand).__table__.c
         transport = cast("Any", TransportTask).__table__.c
         confirmation = cast("Any", WmsConfirmation).__table__.c
@@ -326,15 +370,6 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         rack_placement = cast("Any", RackPlacement).__table__.c
 
         target_rows = union_all(
-            self._active_object_query(
-                "LINE_RUN_EPOCH",
-                epoch.epoch_code,
-                "LINE_RUN_EPOCH",
-                epoch.status,
-                literal("line_run_epoch:") + sa_cast(epoch.id, String),
-                epoch.workline_id == workline_id,
-                epoch.status == LineRunEpochStatus.ACTIVE,
-            ),
             self._active_object_query(
                 "MATERIAL_EXECUTION",
                 material.material_trace_id,
@@ -345,22 +380,13 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 material.status != MaterialExecutionStatus.CLOSED,
             ),
             self._active_object_query(
-                "BIN_EXECUTION",
-                bin_execution.bin_id,
-                "BIN_EXECUTION",
-                bin_execution.execution_code,
-                literal("bin_execution:") + sa_cast(bin_execution.id, String),
-                bin_execution.workline_id == workline_id,
-                bin_execution.status == BinExecutionStatus.ACTIVE,
-            ),
-            self._active_object_query(
                 "DEVICE_COMMAND",
                 command.command_code,
                 "DEVICE_COMMAND",
                 command.device_code,
                 literal("device_command:") + sa_cast(command.id, String),
-                epoch.workline_id == workline_id,
-                command.line_run_epoch_id == epoch.id,
+                workline.id == workline_id,
+                command.workline_id == workline.id,
                 command.status.in_(
                     (
                         CommandStatus.PENDING,
@@ -369,7 +395,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                         CommandStatus.RECONCILING,
                     )
                 ),
-                from_models=(DeviceCommand, LineRunEpoch),
+                from_models=(DeviceCommand, WorkLine),
             ),
             self._active_object_query(
                 "TRANSPORT_TASK",
@@ -403,10 +429,10 @@ class WorkLineRepository(BaseRepository[WorkLine]):
                 "WMS_CONFIRMATION",
                 confirmation.operation,
                 literal("wms_confirmation:") + sa_cast(confirmation.id, String),
-                epoch.workline_id == workline_id,
-                confirmation.line_run_epoch_id == epoch.id,
+                workline.id == workline_id,
+                confirmation.workline_id == workline.id,
                 confirmation.status != WmsConfirmationStatus.COMPLETED,
-                from_models=(WmsConfirmation, LineRunEpoch),
+                from_models=(WmsConfirmation, WorkLine),
             ),
             self._active_object_query(
                 "SAFETY_INCIDENT",

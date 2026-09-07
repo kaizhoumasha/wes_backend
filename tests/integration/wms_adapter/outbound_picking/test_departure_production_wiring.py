@@ -82,7 +82,7 @@ async def test_departure_persists_decision_without_reopening_task_or_starting_tr
             assert evidence.operation_id == operation_id
             assert evidence.normalized_payload["data"] == data
             assert evidence.material_execution_id is None
-            assert evidence.line_run_epoch_id is None
+            assert evidence.workline_id is None
             assert (await db.get(PickingTask, task.id)).status == state
             assert await db.scalar(select(func.count()).select_from(WmsConfirmation)) == 1
             assert await db.scalar(select(func.count()).select_from(TransportTask)) == 0

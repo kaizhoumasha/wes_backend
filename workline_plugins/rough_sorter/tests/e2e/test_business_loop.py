@@ -401,15 +401,19 @@ def _start_workline(stack: _DockerStack, api_url: str) -> None:
     access_token = login["data"]["access_token"]
     result = _json_request(
         f"{api_url}/api/v1/workline/operations/worklines/9001/start",
-        {"request_id": "RS-E2E-START-001"},
+        {"version": 0},
         headers={"authorization": f"Bearer {access_token}"},
     )
     assert result["code"] == "1000"
-    assert result["data"]["created"] is True
+    assert result["data"]["is_active"] is True
+    assert result["data"]["version"] == 1
     assert result["data"]["plugin_key"] == "rough_sorter"
-    assert stack.query("SELECT count(*) FROM wes_biz.line_run_epochs") == "1"
-    assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_device_bindings") == "3"
-    assert stack.query("SELECT count(*) FROM wes_biz.line_run_epoch_position_bindings") == "4"
+    assert (
+        stack.query("SELECT count(*) FROM wes_biz.work_lines, json_object_keys(device_contracts) WHERE id=9001") == "3"
+    )
+    assert (
+        stack.query("SELECT count(*) FROM wes_biz.work_lines, json_object_keys(position_bindings) WHERE id=9001") == "4"
+    )
     # START 要求清线; 启动后再建立本场景的货架已到位前提。
     stack.query("""
         INSERT INTO wes_biz.resource_rack_placements (
@@ -884,7 +888,7 @@ def test_ecs_status_timestamp_is_recent_past_despite_one_millisecond_sampling_sk
     assert 0 < wes_observed_at_ms - status_timestamp_ms <= 10_000
 
 
-def test_render_seed_contains_static_configuration_but_no_epoch_placeholders() -> None:
+def test_render_seed_contains_static_configuration_but_no_runtime_contract_placeholders() -> None:
     rendered = _render_seed(18080)
 
     assert "__ROUGH_SORTER_CONFIG__" not in rendered

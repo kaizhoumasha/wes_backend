@@ -27,7 +27,6 @@ def test_fixed_facade_creates_independent_immutable_intents() -> None:
         six_in_one=SixInOne("lot", "date", "1", "product", "pn", "po"),
         measurements=Measurements("1.20", "0"),
         shape_result="PASS",
-        line_run_epoch_id="epoch",
         workline_code="line",
         source_position=source,
     )

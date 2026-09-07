@@ -62,7 +62,7 @@ _ALLOWED_TRANSITIONS: dict[MaterialExecutionStatus, frozenset[MaterialExecutionS
 
 
 class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
-    """一个 material trace 在一个 Epoch 内的通用执行证据。"""
+    """一个 material trace 在一个 WorkLine 内的通用执行证据。"""
 
     __tablename__: ClassVar[str] = "material_executions"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
@@ -95,11 +95,10 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
             postgresql_where=text("status <> 'CLOSED'"),
             sqlite_where=text("status <> 'CLOSED'"),
         ),
-        Index("ix_material_executions_epoch_status", "line_run_epoch_id", "status", "id"),
+        Index("ix_material_executions_workline_status", "workline_id", "status", "id"),
         Index(
             "ix_material_executions_active_fifo",
             "workline_id",
-            "line_run_epoch_id",
             "admission_received_at",
             "admission_evidence_id",
             "id",
@@ -112,7 +111,6 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
     execution_code: str = Field(min_length=1, max_length=120)
     material_trace_id: str = Field(min_length=1, max_length=160, index=True)
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True)
-    line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
     admission_received_at: datetime | None = Field(default=None)
     admission_evidence_id: int | None = Field(
         default=None,

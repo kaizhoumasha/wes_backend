@@ -85,9 +85,6 @@ RUNTIME_TABLES: tuple[TableTarget, ...] = (
         for table in (
             "callback_logs",
             "device_commands",
-            "line_run_epoch_device_bindings",
-            "line_run_epoch_position_bindings",
-            "line_run_epochs",
             "resource_bin_cell_occupancies",
             "resource_bin_content_snapshot_items",
             "resource_bin_content_snapshots",
@@ -424,7 +421,7 @@ async def reset_runtime_data(
             joined = ", ".join(_qualified(target) for target in targets)
             await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
 
-            # WorkLine runtime 投影回到 STOPPED，等待新的 START 激活 Epoch。
+            # WorkLine runtime 投影回到 STOPPED，等待 START 校验并启用当前配置。
             wl_result = await db.execute(
                 text(
                     "INSERT INTO wes_runtime.workline_runtime_status_projections ("

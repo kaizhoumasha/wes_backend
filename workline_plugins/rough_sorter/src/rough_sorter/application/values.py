@@ -70,9 +70,9 @@ def base_fact_for_persisted_evidence(
 
 
 def position_binding(snapshot: Any, role: str) -> Any:
-    matches = tuple(item for item in snapshot.epoch.position_bindings if item.position_role == role)
+    matches = tuple(item for item in snapshot.workline.position_bindings if item.position_role == role)
     if len(matches) != 1:
-        raise ValueError(f"Epoch position role {role} missing or ambiguous")
+        raise ValueError(f"WorkLine position role {role} missing or ambiguous")
     return matches[0]
 
 
@@ -83,9 +83,9 @@ def required_position(value: DevicePosition | None, field_name: str) -> DevicePo
 
 
 def device_binding(snapshot: Any, role: str) -> Any:
-    matches = tuple(item for item in snapshot.epoch.device_bindings if item.device_role == role)
+    matches = tuple(item for item in snapshot.workline.device_bindings if item.device_role == role)
     if len(matches) != 1:
-        raise ValueError(f"Epoch device role {role} missing or ambiguous")
+        raise ValueError(f"WorkLine device role {role} missing or ambiguous")
     return matches[0]
 
 

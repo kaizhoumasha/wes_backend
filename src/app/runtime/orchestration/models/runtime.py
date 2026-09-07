@@ -189,8 +189,7 @@ class TraceCommandItem(BaseModel):
     command_code: str
     device_code: str
     trace_id: str | None = None
-    line_run_epoch_id: int
-    device_binding_id: int
+    workline_id: int
     execution_ref_type: str
     execution_ref_id: str
     contract_key: str
@@ -600,7 +599,6 @@ class RuntimeActiveBinRackCellView(BaseModel):
 class RuntimeActiveBinRackBinView(BaseModel):
     rack_slot_code: str | None = None
     rack_slot_location_code: str | None = None
-    bin_id: str | int | None = None
     bin_code: str | None = None
     bin_type: str | None = None
     bin_orientation_code: str | None = None

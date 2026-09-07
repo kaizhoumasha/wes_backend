@@ -13,8 +13,7 @@ from sqlalchemy import delete
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind, WmsConfirmation
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskType
-from src.app.workline.models import LineRunEpoch, LineType, WorkLine
-from src.app.workline.models.line_run_epoch import LineRunEpochStatus
+from src.app.workline.models import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 from tests.support.postgresql_heavy import migrated_database
@@ -23,7 +22,7 @@ from tests.support.transport_broker import MockWmsHttpServer, TransportBrokerWor
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def confirmation_database(integration_guard):
-    # 零插件 worker 的启动检查读取全部活动 Epoch，不能继承其他领域的测试业务现场。
+    # 零插件 worker 的启动检查读取全部活动 WorkLine，不能继承其他领域的测试业务现场。
     async with migrated_database() as database:
         yield database
 
@@ -72,20 +71,6 @@ async def seed_picking_owner(db, *, operation_id, issued_operation_id, task_key,
     db.add(workline)
     await db.flush()
     workline_id = workline.id
-    epoch = LineRunEpoch(
-        epoch_code=f"WMS-EPOCH-{operation_id}",
-        workline_id=workline_id,
-        plugin_key="manual_bin_processing",
-        plugin_version="0.1.0",
-        flow_mode="MANUAL_BIN_PROCESSING",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        # 已关闭 Epoch 的可靠义务仍需派发；活动但缺插件的 Epoch 会正确阻止 worker 启动。
-        status=LineRunEpochStatus.CLOSED,
-        started_at=now,
-        closed_at=now,
-    )
     issued = InboundEvidence(
         kind=InboundEvidenceKind.WMS_EVENT,
         source_identity=f"outbound.picking_task.issued@v1:{issued_operation_id}",
@@ -97,9 +82,9 @@ async def seed_picking_owner(db, *, operation_id, issued_operation_id, task_key,
         processed_at=now,
         apply_status=InboundEvidenceApplyStatus.APPLIED,
     )
-    db.add_all((epoch, issued))
+    db.add(issued)
     await db.flush()
-    epoch_id, issued_evidence_id = epoch.id, issued.id
+    issued_evidence_id = issued.id
     task = PickingTask(
         task_id=task_key,
         task_type=PickingTaskType.MANUAL,
@@ -109,7 +94,6 @@ async def seed_picking_owner(db, *, operation_id, issued_operation_id, task_key,
         issued_at_ms=1,
         issued_evidence_id=issued_evidence_id,
         workline_id=workline_id,
-        line_run_epoch_id=epoch_id,
     )
     db.add(task)
     await db.flush()
@@ -139,8 +123,6 @@ async def picking_confirmation_worker(database, *, server, status):
             await db.execute(
                 delete(InboundEvidence).where(InboundEvidence.operation_id.in_((operation_id, issued_operation_id)))
             )
-            if task is not None:
-                await db.execute(delete(LineRunEpoch).where(LineRunEpoch.id == task.line_run_epoch_id))
             if workline is not None:
                 await db.execute(delete(WorkLine).where(WorkLine.id == workline.id))
 

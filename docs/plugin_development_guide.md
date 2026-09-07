@@ -78,7 +78,7 @@ WorkLine 插件拥有业务结果到执行决定（Decision）的映射。供应
 | Error | 标准语义、供应商原始证据、隔离范围、人工处理 |
 | Idempotency | 稳定身份与规范化载荷不可变绑定、重复命令、重复回调、命令终态冲突和安全修正行为 |
 | Timing | ACK 超时、预计完成时间、回调时间来源、时钟同步与允许偏差、人工对账窗口 |
-| 版本绑定（version binding） | `contract_key`、附录版本、设备实例、ECS/网关或固件版本、配置版本和 `LineRunEpoch` |
+| 版本绑定（version binding） | `contract_key`、附录版本、设备实例、ECS/网关或固件版本、WorkLine 当前配置及命令冻结合同 |
 
 必须区分：
 
@@ -92,7 +92,7 @@ HTTP 请求送达
 （envelope）、身份或 ACK/CALLBACK 语义。
 
 附录中任何会改变 wire 行为的字段、结果、错误、时限、ECS/网关或固件变化都必须先批准新版本并重新执行一致性验收。
-活动 `LineRunEpoch` 不得切换附录版本；必须停止新接纳，闭合或人工清理活动对象，再绑定新附录、配置和插件版本创建新 Epoch。
+活动工作线不得静默切换附录版本；必须停止新接纳、闭合既有可靠义务并确认物理清线，再更新 WorkLine 配置并重新启动。
 
 ### 2.3 建立业务结果到执行动作映射表
 
@@ -114,7 +114,7 @@ HTTP 请求送达
 Handler 只接收：
 
 - 已按统一接口和设备合同附录校验的类型化输入；
-- 当前 `LineRunEpoch` 和对象执行的只读事实；
+- 当前 WorkLine 和对象执行的只读事实；
 - `ProjectionReader` 返回的位置、队列和设备投影；
 - 对应业务模块返回的同步、封闭 WMS 业务结果；
 - 决定工厂（Decision Factory）。
@@ -144,8 +144,8 @@ Handler 只返回以下封闭 Decision 类别；具体 SDK 使用可判别类型
 普通 WMS 业务事件不能终结 `TransportTask`；成员位置事实只更新位置投影，只有通过 Transport evidence 应用端口校验并
 持久化的异步终态才能终结任务。
 
-`CreateWmsConfirmation` 的 `request_data` 由插件按 operation 的获批严格 DTO 一次性构造，并在 Decision 创建时递归冻结；
-核心只校验、持久化和可靠派发，不回查业务表补全请求。`CreateTransportTask` 使用 `correlation_id + step` 冻结插件决定身份，
+插件通过 `wms_operations` 的固定 typed methods 一次性提供完整业务数据并创建不可变 intent；
+宿主负责 wire 校验、持久化和可靠派发，不回查业务表补全请求。`CreateTransportTask` 使用 `correlation_id + step` 冻结插件决定身份，
 并以 `resource_fence_id` 标识资源围栏；核心不再暴露具体工作线的 `TransportLeg` 或其它业务命名。
 
 一个 Handler 不等待整条工作线执行完成。
@@ -162,8 +162,8 @@ Handler tuple；部署 Composition Root 显式导入该入口并注入核心侧 
 - 支持的工作线流程模式；
 - Handler 的设备角色、输入类型和适用流程。
 
-每个活动 `LineRunEpoch` 固定插件版本、配置版本和流程模式。切换插件、模式、角色绑定或物理拓扑前，必须清线并创建新
-Epoch。
+WorkLine 保存当前插件及配置。切换插件、模式、角色绑定或物理拓扑前，必须停用工作线、闭合既有可靠义务并由工作人员确认物理清线；
+不再创建 `LineRunEpoch`。
 
 设备主数据只保存物理身份、归属、连接和展示信息，不保存插件业务角色。插件定义所需角色及能力，
 WorkLine 当前插件配置保存角色到实际 `device_code` 的绑定；同一设备切换插件后可承担不同业务职责。
@@ -173,7 +173,7 @@ WorkLine 当前插件配置保存角色到实际 `device_code` 的绑定；同�
 工作线配置只保存 `device_bindings`，由通用界面将后端插件声明的角色绑定到本线实体设备。
 设备连接由设备管理维护，实时能力和状态来自 ECS。插件按明确的 ECS 约定处理位置与执行策略，
 不提供点位、版本信息或业务参数的专属配置表单。相同类型工作线复用插件代码，只改变设备绑定。
-ECS 的硬件 `role` 只作为能力描述，不能自动赋值为插件业务角色。Epoch/SDK 中的 `device_role` 继续表示冻结运行职责。
+ECS 的硬件 `role` 只作为能力描述，不能自动赋值为插件业务角色。WorkLine 配置和 SDK 中的 `device_role` 表示插件业务职责。
 不满足当前业务准入的事件记录错误并拒绝推进，复用已有证据和处理路径，不增加跨插件重投或自动恢复机制。
 
 ## 3. 目标文件结构
@@ -252,7 +252,7 @@ Handler 与核心端口；插件 Application 在核心提供的当前事务中�
 | 部署级端到端验收 | 安装后的插件经 WES 公共入口、真实持久化、HTTP/CALLBACK、故障和多对象并发形成闭环 |
 | 架构边界 | Handler 不依赖数据库、Repository、HTTP、Celery、Service Locator 或全局容器 |
 
-入站持久化与幂等、通用命令证据、`LineRunEpoch` fencing 等 WES 基础能力由核心测试证明；SDK 测试夹具只证明公共 SPI/SDK
+入站持久化与幂等、通用命令证据、WorkLine 准入及可靠对象资源围栏等 WES 基础能力由核心测试证明；SDK 测试夹具只证明公共 SPI/SDK
 接线；供应商一致性验收只证明外部实现符合协议；插件纯逻辑测试只证明 WMS 结果到执行 Decision 的映射；部署级端到端验收
 证明安装组合能够闭环。各层不得相互替代或复制。
 
@@ -291,7 +291,7 @@ Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备�
 
 - [ ] 设备角色绑定明确；命令使用约定的逻辑位置参数，物理解释归 ECS。
 - [ ] 所有设备 Event、Command、ACK、CALLBACK 和错误语义都在获批设备合同附录中闭合。
-- [ ] 获批附录的合同版本、设备/ECS/固件、配置和 `LineRunEpoch` 绑定明确，行为变化不会在活动 Epoch 内静默切换。
+- [ ] 获批附录的合同版本、设备/ECS/固件及 WorkLine 配置绑定明确，行为变化不会在活动工作线内静默切换。
 - [ ] 供应商实现已通过统一接口一致性验收。
 - [ ] 每个业务场景都有 WMS 封闭结果、执行映射表、Handler 和成功/失败测试。
 - [ ] 插件只处理类型化输入，只返回封闭 Decision。
@@ -299,7 +299,7 @@ Handler 测试不得启动真实 PostgreSQL、HTTP、Celery 或供应商设备�
 - [ ] 业务 Application 子层只复用核心基础端口和事务边界，没有复制可靠性、数据库、HTTP 或任务队列基础能力。
 - [ ] WMS 业务 NG、设备故障、依赖暂停和人工清线语义明确分离，插件不本地改判。
 - [ ] WMS 不可用只阻止新的依赖型决定；既有命令、回调、确认义务和运输任务保留身份并按各自生命周期闭环。
-- [ ] 插件版本、配置版本和流程模式固定在 `LineRunEpoch`。
+- [ ] 插件及流程配置由 WorkLine 保存，变更受停用、可靠义务闭合和物理清线约束。
 - [ ] 插件代码、测试和 fixture 位于同一个 `workline_plugins/<plugin_key>/` 独立包。
 - [ ] 核心、供应商一致性和插件验收分别通过，未互相替代。
 - [ ] 插件纯逻辑、SDK 测试夹具和部署级端到端验收边界明确，Handler 未因集成测试取得数据库或网络依赖。

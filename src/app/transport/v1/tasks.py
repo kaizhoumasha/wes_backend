@@ -120,7 +120,7 @@ class _RackRotateData(_StrictApiModel):
 
 
 class _BinMoveMember(_StrictApiModel):
-    bin_id: _TEXT
+    bin_code: _TEXT
     source: _BinPosition
     target: _BinPosition
 
@@ -130,9 +130,9 @@ class _BinMoveData(_StrictApiModel):
 
 
 class _BinExchangePair(_StrictApiModel):
-    left_bin_id: _TEXT
+    left_bin_code: _TEXT
     left_location: _RackBinSlot
-    right_bin_id: _TEXT
+    right_bin_code: _TEXT
     right_location: _RackBinSlot
 
 
@@ -284,7 +284,7 @@ _OPENAPI_EXAMPLES = {
             "data": {
                 "moves": [
                     {
-                        "bin_id": "BIN-01",
+                        "bin_code": "BIN-01",
                         "source": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": "RACK-01",
@@ -306,14 +306,14 @@ _OPENAPI_EXAMPLES = {
             "data": {
                 "exchange_pairs": [
                     {
-                        "left_bin_id": "BIN-01",
+                        "left_bin_code": "BIN-01",
                         "left_location": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": "RACK-01",
                             "rack_face": "90",
                             "slot_id": "SLOT-01",
                         },
-                        "right_bin_id": "BIN-02",
+                        "right_bin_code": "BIN-02",
                         "right_location": {
                             "kind": "RACK_BIN_SLOT",
                             "rack_id": "RACK-02",
@@ -391,7 +391,7 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
     if isinstance(payload, _BinMoveDebugTask):
         moves = tuple(
             BinMove(
-                bin_id=move.bin_id,
+                bin_code=move.bin_code,
                 source=_bin_position(move.source),
                 target=_bin_position(move.target),
             )
@@ -400,9 +400,9 @@ async def _dispatch_debug_task(payload: _DebugTransportTaskRequest, runtime: Any
         return await runtime.service.move_bins_for_debug(payload.client_request_id, caller, moves)
     pairs = tuple(
         BinExchangePair(
-            left_bin_id=pair.left_bin_id,
+            left_bin_code=pair.left_bin_code,
             left_location=_rack_bin_slot(pair.left_location),
-            right_bin_id=pair.right_bin_id,
+            right_bin_code=pair.right_bin_code,
             right_location=_rack_bin_slot(pair.right_location),
         )
         for pair in payload.data.exchange_pairs

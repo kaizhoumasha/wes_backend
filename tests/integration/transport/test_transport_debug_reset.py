@@ -199,7 +199,7 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
     operation_id = new_uuid7()
     now = timezone.now_for_db()
     async with integration_session_factory.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         task = await db.scalar(
             select(TransportTask).where(TransportTask.transport_task_id == task_id).with_for_update()
         )
@@ -238,7 +238,6 @@ async def test_debug_reset_deletes_diagnostic_aggregate_but_preserves_core_proje
                 object_type="RACK",
                 object_id=f"rack-reset-ineligible-{suffix}",
                 workline_id=workline_id,
-                line_run_epoch_id=line_run_epoch_id,
                 position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
                 position_unknown=False,
                 arrival_face="A",
@@ -320,7 +319,7 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
     operation_id = str(new_uuid7())
     now = timezone.now_for_db()
     async with integration_session_factory.begin() as db:
-        workline_id, line_run_epoch_id = await ensure_projection_authority(db)
+        workline_id = await ensure_projection_authority(db)
         db.add_all(
             [
                 TransportEvidence(
@@ -350,7 +349,6 @@ async def test_debug_reset_does_not_delete_another_task_projection_when_operatio
                     object_type="RACK",
                     object_id=f"rack-reset-collision-keep-{suffix}",
                     workline_id=workline_id,
-                    line_run_epoch_id=line_run_epoch_id,
                     position_json={"kind": "RACK_POSITION", "location_code": "TARGET"},
                     position_unknown=False,
                     arrival_face="A",

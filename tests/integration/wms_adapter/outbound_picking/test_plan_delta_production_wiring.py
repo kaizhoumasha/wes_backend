@@ -39,7 +39,7 @@ async def test_static_route_commits_plan_then_replays_with_no_plugin(integration
             assert task.last_applied_plan_revision == 1
             evidence = await db.get(InboundEvidence, task.last_plan_evidence_id)
             assert evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
-            assert evidence.line_run_epoch_id is None
+            assert evidence.workline_id is None
         duplicate = await client.post("/api/v1/wms/events", json=payload)
         assert duplicate.status_code == 200
         assert duplicate.json()["code"] == "DUPLICATE"

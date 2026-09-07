@@ -23,27 +23,6 @@ class _Sessions:
         yield object()
 
 
-class _Epochs:
-    def __init__(self, epoch, order: list[str]):  # type: ignore[no-untyped-def]
-        self.epoch = epoch
-        self.calls: list[str] = []
-        self.order = order
-
-    async def get_active_for_workline(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
-        self.calls.append("read_epoch")
-        self.order.append("read_epoch")
-        return self.epoch
-
-    async def lock_epoch_lifecycle(self, _db: object, _epoch_id: int) -> None:
-        self.calls.append("lock_lifecycle")
-        self.order.append("lock_lifecycle")
-
-    async def get_active_for_workline_for_update(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
-        self.calls.append("lock_epoch")
-        self.order.append("lock_epoch")
-        return self.epoch
-
-
 class _Worklines:
     def __init__(self, workline, order: list[str]):  # type: ignore[no-untyped-def]
         self.workline = workline
@@ -57,12 +36,10 @@ class _Worklines:
 
     async def get_unfinished_workload_summary(self, _db: object, _workline_id: int):  # type: ignore[no-untyped-def]
         return {
-            "count": 1,
+            "count": 0,
             "sample": None,
             "by_type": {
-                "line_run_epochs": True,
                 "material_executions": False,
-                "bin_executions": False,
                 "device_commands": False,
                 "transport_tasks": False,
                 "inbound_evidences": False,
@@ -83,7 +60,7 @@ class _Facts:
     def __init__(self, ready: bool = True) -> None:
         self.ready = ready
 
-    async def read_facts(self, _db: object, *, workline_id: int, line_run_epoch_id: int) -> PrepareRuntimeFacts:
+    async def read_facts(self, _db: object, *, workline_id: int) -> PrepareRuntimeFacts:
         return PrepareRuntimeFacts(not self.ready, True, (), False)
 
 
@@ -151,35 +128,25 @@ def _task() -> PickingTask:
 def _service(
     *,
     task: PickingTask | None = None,
-    epoch: object | None = None,
     workline: object | None = None,
     ready: bool = True,
     queue: _Queue | None = None,
     policy: _Policy | None = None,
-) -> tuple[PickingTaskPrepareCoordinator, _Epochs, _Worklines, _Tasks, _Confirmations, _Queue]:
-    epoch_value = (
-        epoch
-        if epoch is not None
-        else SimpleNamespace(
-            id=21,
-            workline_id=7,
-            plugin_key="manual_bin_processing",
-            flow_mode="MANUAL_BIN_PROCESSING",
-        )
-    )
+) -> tuple[PickingTaskPrepareCoordinator, _Worklines, _Tasks, _Confirmations, _Queue]:
     workline_value = (
         workline
         if workline is not None
         else SimpleNamespace(
             id=7,
             line_code="LINE-1",
+            plugin_key="manual_bin_processing",
+            flow_mode="MANUAL_BIN_PROCESSING",
             is_active=True,
             line_type=LineType.MANUAL,
             run_mode=WorkLineRunMode.AUTO,
         )
     )
     lock_order: list[str] = []
-    epochs = _Epochs(epoch_value, lock_order)
     worklines = _Worklines(workline_value, lock_order)
     tasks = _Tasks(task if task is not None else _task())
     confirmations = _Confirmations()
@@ -188,14 +155,12 @@ def _service(
         PickingTaskPrepareCoordinator(
             _Sessions(),  # type: ignore[arg-type]
             policy=policy or _Policy(),
-            epoch_repository=epochs,  # type: ignore[arg-type]
             workline_repository=worklines,  # type: ignore[arg-type]
             facts_repository=_Facts(ready),  # type: ignore[arg-type]
             task_repository=tasks,  # type: ignore[arg-type]
             confirmation_service=confirmations,  # type: ignore[arg-type]
             task_queue_gateway=queue_value,  # type: ignore[arg-type]
         ),
-        epochs,
         worklines,
         tasks,
         confirmations,
@@ -205,7 +170,7 @@ def _service(
 
 @pytest.mark.asyncio
 async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_order() -> None:
-    service, epochs, worklines, tasks, confirmations, queue = _service()
+    service, worklines, tasks, confirmations, queue = _service()
 
     result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
 
@@ -214,12 +179,11 @@ async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_o
     assert result.task is tasks.task
     assert tasks.task is not None
     assert PickingTaskStatus(tasks.task.status) is PickingTaskStatus.PREPARING
-    assert (tasks.task.workline_id, tasks.task.line_run_epoch_id) == (7, 21)
+    assert tasks.task.workline_id == 7
     assert tasks.flushed is True
     assert tasks.claimed_type is PickingTaskType.MANUAL
-    assert epochs.calls == ["read_epoch", "lock_lifecycle", "lock_epoch"]
     assert worklines.calls == ["lock_workline"]
-    assert worklines.order == ["lock_workline", "read_epoch", "lock_lifecycle", "lock_epoch"]
+    assert worklines.order == ["lock_workline"]
     assert confirmations.kwargs is not None
     assert confirmations.kwargs["picking_task_id"] == 31
     assert confirmations.kwargs["request_payload"]["data"] == {  # type: ignore[index]
@@ -232,7 +196,7 @@ async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_o
 @pytest.mark.asyncio
 async def test_prepare_keeps_persisted_obligation_when_immediate_enqueue_fails() -> None:
     queue = _Queue(fail=True)
-    service, _epochs, _worklines, tasks, _confirmations, _queue = _service(queue=queue)
+    service, _worklines, tasks, _confirmations, _queue = _service(queue=queue)
 
     result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
 
@@ -245,7 +209,6 @@ async def test_prepare_keeps_persisted_obligation_when_immediate_enqueue_fails()
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
-        ({"epoch": SimpleNamespace(id=None)}, PickingTaskPrepareNoopReason.NO_ACTIVE_EPOCH),
         (
             {"workline": SimpleNamespace(id=7, is_active=False)},
             PickingTaskPrepareNoopReason.WORKLINE_NOT_READY,
@@ -257,7 +220,7 @@ async def test_prepare_keeps_persisted_obligation_when_immediate_enqueue_fails()
 async def test_prepare_noop_never_creates_confirmation_or_enqueues(
     overrides: dict[str, object], reason: PickingTaskPrepareNoopReason
 ) -> None:
-    service, _epochs, _worklines, tasks, confirmations, queue = _service(**overrides)  # type: ignore[arg-type]
+    service, _worklines, tasks, confirmations, queue = _service(**overrides)  # type: ignore[arg-type]
     if "task" in overrides and overrides["task"] is None:
         tasks.task = None
 
@@ -265,6 +228,17 @@ async def test_prepare_noop_never_creates_confirmation_or_enqueues(
 
     assert result.prepared is False
     assert result.reason is reason
+    assert confirmations.kwargs is None
+    assert queue.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_workline_cannot_claim_or_create_prepare_obligation() -> None:
+    service, worklines, tasks, confirmations, queue = _service()
+    worklines.workline = None
+    result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
+    assert result.reason is PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
+    assert tasks.claimed_type is None
     assert confirmations.kwargs is None
     assert queue.calls == 0
 
@@ -281,10 +255,17 @@ async def test_coordinator_uses_injected_policy_without_manual_context_rules() -
             assert context.plugin_key == "another_plugin"
             return PrepareTaskType.AUTO
 
-    service, _, _, tasks, _, _ = _service(
+    service, _, tasks, _, _ = _service(
         policy=AutoPolicy(),
-        epoch=SimpleNamespace(id=21, plugin_key="another_plugin", flow_mode="OTHER"),
-        workline=SimpleNamespace(id=7, line_code="LINE-1", is_active=True, line_type="AUTO", run_mode="AUTO"),
+        workline=SimpleNamespace(
+            id=7,
+            line_code="LINE-1",
+            is_active=True,
+            line_type="AUTO",
+            run_mode="AUTO",
+            plugin_key="another_plugin",
+            flow_mode="OTHER",
+        ),
     )
     tasks.task.task_type = PickingTaskType.AUTO
     result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))

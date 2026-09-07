@@ -6,6 +6,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -137,7 +138,7 @@ _DEFAULT_EXECUTION = object()
 
 class _ExecutionRepository:
     def __init__(self, execution: object | None = _DEFAULT_EXECUTION) -> None:
-        self.execution = SimpleNamespace(id=21, line_run_epoch_id=11) if execution is _DEFAULT_EXECUTION else execution
+        self.execution = SimpleNamespace(id=21, workline_id=11) if execution is _DEFAULT_EXECUTION else execution
         self.calls = []
 
     async def get_by_id(self, db, execution_id):  # type: ignore[no-untyped-def]
@@ -310,11 +311,58 @@ async def test_picking_prepare_response_uses_owner_port_and_never_enters_materia
 
     assert await service.dispatch_batch(now=now) == 1
     assert confirmation.status == WmsConfirmationStatus.COMPLETED
-    assert evidence.calls[0]["line_run_epoch_id"] is None
+    assert evidence.calls[0]["workline_id"] is None
     assert evidence.calls[0]["material_execution_id"] is None
     assert owner.calls[0][1:] == (31, "outbound.picking_task.prepare@v1")
     assert execution_repository.calls == []
     assert queue.execution_wakes == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_kind", ["picking_task", "workline"])
+async def test_received_response_is_preserved_when_owner_changes_during_http(owner_kind: str) -> None:
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    if owner_kind == "workline":
+        confirmation.picking_task_id = None
+        confirmation.workline_id = 11
+        confirmation.operation = "outbound.bin.return_batch@v1"
+    else:
+        confirmation.operation = "outbound.material.decide@v1"
+    confirmation.request_payload["operation"] = confirmation.operation
+    confirmation.request_digest = _digest(confirmation.request_payload)
+    response = {"operation_id": confirmation.operation_id, "code": "DECIDED", "data": {"result": "WAIT"}}
+    evidence = _EvidenceService()
+    queue = _TaskQueue()
+    owner = SimpleNamespace(
+        validate_response_owner=AsyncMock(side_effect=[True, False]),
+        validate_owner=AsyncMock(side_effect=[True, False]),
+    )
+    service = WmsConfirmationService(
+        repository=_ConfirmationRepository([confirmation]),
+        session_factory=_Sessions(),  # type: ignore[arg-type]
+        adapter=_Adapter(
+            SimpleNamespace(
+                code=WmsDispatchCode.DETERMINATE,
+                normalized_response=response,
+                response_result="WAIT",
+                retry_after_ms=None,
+            )
+        ),
+        evidence_service=evidence,  # type: ignore[arg-type]
+        picking_task_owner=owner,
+        workline_owner=owner,
+        task_queue_gateway=queue,  # type: ignore[arg-type]
+    )
+
+    assert await service.dispatch_batch(now=now) == 1
+    assert [call["normalized_payload"] for call in evidence.calls] == [response]
+    assert evidence.calls[0]["apply_status"] == InboundEvidenceApplyStatus.RECONCILING
+    assert evidence.calls[0]["source_identity"] == f"{confirmation.operation}:{confirmation.operation_id}"
+    assert confirmation.status == WmsConfirmationStatus.RECONCILING
+    assert confirmation.completed_at is None
+    assert confirmation.retry_eligible is False
+    assert queue.execution_wakes == queue.wms_wakes == 0
 
 
 @pytest.mark.asyncio
@@ -379,7 +427,7 @@ async def test_confirmation_dispatch_batch_is_bounded_and_completes_only_after_r
     assert processed == 100
     assert len(adapter.calls) == len(evidence.calls) == 100
     assert all(call["apply_status"] is InboundEvidenceApplyStatus.APPLIED for call in evidence.calls)
-    assert all(call["line_run_epoch_id"] == 11 for call in evidence.calls)
+    assert all(call["workline_id"] == 11 for call in evidence.calls)
     assert all(call["contract_key"] == ADMISSION_OPERATION for call in evidence.calls)
     assert all(
         read_db is evidence_db
@@ -509,7 +557,7 @@ async def test_confirmation_persists_received_json_object_before_marking_reconci
     assert await service.dispatch_batch(now=now) == 1
     assert confirmation.status == WmsConfirmationStatus.RECONCILING
     assert [call["normalized_payload"] for call in evidence.calls] == [response_body]
-    assert [call["line_run_epoch_id"] for call in evidence.calls] == [11]
+    assert [call["workline_id"] for call in evidence.calls] == [11]
 
 
 @pytest.mark.asyncio
@@ -543,12 +591,12 @@ async def test_wms_result_identity_conflict_keeps_execution_epoch_and_fails_clos
     assert await service.dispatch_batch(now=now) == 1
     assert confirmation.status == WmsConfirmationStatus.RECONCILING
     assert confirmation.response_evidence_id is None
-    assert evidence.calls[0]["line_run_epoch_id"] == 11
+    assert evidence.calls[0]["workline_id"] == 11
     assert execution_repository.calls[0][1] == confirmation.material_execution_id
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("execution", [None, SimpleNamespace(id=21, line_run_epoch_id=None)])
+@pytest.mark.parametrize("execution", [None, SimpleNamespace(id=21, workline_id=None)])
 async def test_wms_result_fails_closed_when_execution_epoch_cannot_be_resolved(execution: object | None) -> None:
     now = datetime(2026, 8, 16, tzinfo=UTC)
     confirmation = _confirmation(1, now)
@@ -575,7 +623,7 @@ async def test_wms_result_fails_closed_when_execution_epoch_cannot_be_resolved(e
         evidence_service=evidence,  # type: ignore[arg-type]
     )
 
-    with pytest.raises((LookupError, ValueError), match=r"MaterialExecution|line_run_epoch_id"):
+    with pytest.raises((LookupError, ValueError), match=r"MaterialExecution|workline_id"):
         await service.dispatch_batch(now=now)
     assert evidence.calls == []
 

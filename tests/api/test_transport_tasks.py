@@ -129,7 +129,7 @@ def _valid_payload(kind: str) -> dict[str, object]:
             "data": {
                 "moves": [
                     {
-                        "bin_id": "BIN-01",
+                        "bin_code": "BIN-01",
                         "source": _rack_slot("RACK-01", "SLOT-01"),
                         "target": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-01"},
                     }
@@ -142,9 +142,9 @@ def _valid_payload(kind: str) -> dict[str, object]:
             "data": {
                 "exchange_pairs": [
                     {
-                        "left_bin_id": "BIN-01",
+                        "left_bin_code": "BIN-01",
                         "left_location": _rack_slot("RACK-01", "SLOT-01"),
-                        "right_bin_id": "BIN-02",
+                        "right_bin_code": "BIN-02",
                         "right_location": _rack_slot("RACK-02", "SLOT-01"),
                     }
                 ]
@@ -576,7 +576,7 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
             "kind": "BIN_MOVE",
             "moves": [
                 {
-                    "bin_id": "BIN-01",
+                    "bin_code": "BIN-01",
                     "source": _rack_slot("RACK-01", "SLOT-01"),
                     "target": {"kind": "HANDOFF_POSITION", "location_code": "HANDOFF-01"},
                 }
@@ -746,3 +746,19 @@ async def test_debug_ctu03_accepts_omitted_target_face() -> None:
         response = await client.post("/api/v1/transport/debug-tasks", json=payload)
     assert response.status_code == 202
     assert runtime.port.move_rack.await_args.args[5] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,field,old_field", [("BIN_MOVE", "bin_code", "bin_id"), ("BIN_EXCHANGE", "left_bin_code", "left_bin_id")]
+)
+async def test_debug_task_rejects_old_bin_identity_fields(kind: str, field: str, old_field: str) -> None:
+    runtime = _runtime()
+    payload = _valid_payload(kind)
+    members = payload["data"]["moves" if kind == "BIN_MOVE" else "exchange_pairs"]
+    members[0][old_field] = members[0].pop(field)
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        response = await client.post("/api/v1/transport/debug-tasks", json=payload)
+    assert response.status_code == 422
+    assert runtime.service.move_bins_for_debug.await_count == 0
+    assert runtime.service.exchange_bins_for_debug.await_count == 0

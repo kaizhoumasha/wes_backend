@@ -16,9 +16,7 @@ from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochPositionBinding, LineRunEpochStatus
 from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.repositories.line_run_epoch_repository import LineRunEpochRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.core.exceptions import BusinessException
@@ -184,35 +182,15 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                     db.add(workline)
                     await db.flush()
                     assert workline.id is not None
-                    epoch = LineRunEpoch(
-                        epoch_code="CONFIG-PG-PROJECTION-BLOCKER-EPOCH",
-                        workline_id=workline.id,
-                        plugin_key="postgresql_test",
-                        plugin_version="1.0",
-                        flow_mode="ROUGH_SORT_INBOUND",
-                        topology_digest="a" * 64,
-                        configuration_digest="b" * 64,
-                        configuration_snapshot_json={},
-                        started_at=datetime(2026, 9, 5),
-                    )
-                    db.add(epoch)
-                    await db.flush()
-                    assert epoch.id is not None
-                    db.add(
-                        LineRunEpochPositionBinding(
-                            line_run_epoch_id=epoch.id,
-                            position_role="PIPELINE_OUTLET",
-                            location_id="OUTLET-1",
-                            location_type="PIPELINE_OUTLET",
-                        )
-                    )
+                    workline.position_bindings = {
+                        "PIPELINE_OUTLET": {"location_id": "OUTLET-1", "location_type": "PIPELINE_OUTLET"}
+                    }
                     db.add_all(
                         [
                             PositionProjection(
                                 object_type="RACK",
                                 object_id="RACK-ON-LINE",
                                 workline_id=workline.id,
-                                line_run_epoch_id=epoch.id,
                                 position_json={"kind": "RACK_POSITION", "location_code": "OUTLET-1"},
                                 position_unknown=False,
                                 source_operation_id="019d0000-0000-7000-8000-000000000001",
@@ -222,7 +200,6 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                                 object_type="RACK",
                                 object_id="RACK-OUTSIDE",
                                 workline_id=workline.id,
-                                line_run_epoch_id=epoch.id,
                                 position_json={"kind": "RACK_POSITION", "location_code": "STORAGE-1"},
                                 position_unknown=False,
                                 source_operation_id="019d0000-0000-7000-8000-000000000002",
@@ -232,7 +209,6 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
                                 object_type="RACK",
                                 object_id="RACK-UNKNOWN",
                                 workline_id=workline.id,
-                                line_run_epoch_id=epoch.id,
                                 position_json=None,
                                 position_unknown=True,
                                 source_operation_id="019d0000-0000-7000-8000-000000000003",
@@ -263,7 +239,7 @@ def test_position_projection_blocker_reports_workline_positions_and_unknown_only
     asyncio.run(scenario())
 
 
-def test_task_admission_and_deactivate_share_workline_then_epoch_lock_order() -> None:
+def test_task_admission_and_deactivate_share_workline_lock() -> None:
     class _BusinessBlocker:
         def __init__(self) -> None:
             self.active = False
@@ -295,33 +271,14 @@ def test_task_admission_and_deactivate_share_workline_then_epoch_lock_order() ->
                     db.add(workline)
                     await db.flush()
                     assert workline.id is not None
-                    epoch = LineRunEpoch(
-                        epoch_code="CONFIG-PG-LOCK-ORDER-EPOCH",
-                        workline_id=workline.id,
-                        plugin_key="postgresql_test",
-                        plugin_version="1.0",
-                        flow_mode="MANUAL_PICKING",
-                        topology_digest="a" * 64,
-                        configuration_digest="b" * 64,
-                        configuration_snapshot_json={},
-                        started_at=datetime(2026, 9, 5),
-                    )
-                    db.add(epoch)
-                    await db.flush()
                     workline_id = workline.id
                     workline_version = workline.version
 
                 async def admit_task() -> None:
                     worklines = WorkLineRepository()
-                    epochs = LineRunEpochRepository()
                     async with sessions.begin() as db:
                         locked_workline = await worklines.get_for_update(db, workline_id)
                         assert locked_workline is not None and locked_workline.is_active
-                        active = await epochs.get_active_for_workline(db, workline_id)
-                        assert active is not None and active.id is not None
-                        await epochs.lock_epoch_lifecycle(db, active.id)
-                        locked_epoch = await epochs.get_active_for_workline_for_update(db, workline_id)
-                        assert locked_epoch is not None and locked_epoch.id == active.id
                         admitted_with_locks.set()
                         await release_admission.wait()
                         blocker.active = True
@@ -364,11 +321,7 @@ def test_task_admission_and_deactivate_share_workline_then_epoch_lock_order() ->
                 assert "ADMISSION-1" in deactivation_result
                 async with sessions() as db:
                     persisted_workline = await db.get(WorkLine, workline_id)
-                    persisted_epoch = await db.scalar(
-                        select(LineRunEpoch).where(LineRunEpoch.workline_id == workline_id)
-                    )
                     assert persisted_workline is not None and persisted_workline.is_active
-                    assert persisted_epoch is not None and persisted_epoch.status == LineRunEpochStatus.ACTIVE
             finally:
                 await engine.dispose()
 
@@ -399,17 +352,6 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                     )
                     db.add(workline)
                     await db.flush()
-                    epoch = LineRunEpoch(
-                        epoch_code="CONFIG-PG-PICKING-FENCE-EPOCH",
-                        workline_id=workline.id,
-                        plugin_key="postgresql_test",
-                        plugin_version="1.0",
-                        flow_mode="GENERIC",
-                        topology_digest="a" * 64,
-                        configuration_digest="b" * 64,
-                        configuration_snapshot_json={},
-                        started_at=now,
-                    )
                     evidence = InboundEvidence(
                         kind=InboundEvidenceKind.WMS_EVENT,
                         source_identity="CONFIG-PG-PICKING-FENCE-ISSUED",
@@ -421,7 +363,7 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                         apply_status=InboundEvidenceApplyStatus.APPLIED,
                         processed_at=now,
                     )
-                    db.add_all([epoch, evidence])
+                    db.add(evidence)
                     await db.flush()
                     task = PickingTask(
                         task_id="CONFIG-PG-PICKING-FENCE-TASK",
@@ -433,10 +375,9 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                     )
                     db.add(task)
                     await db.flush()
-                    workline_id, workline_version, epoch_id, task_id = (
+                    workline_id, workline_version, task_id = (
                         workline.id,
                         workline.version,
-                        epoch.id,
                         task.id,
                     )
 
@@ -445,15 +386,10 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                         backend_pids["binding"] = await db.scalar(text("SELECT pg_backend_pid()"))
                         locked_line = await WorkLineRepository().get_for_update(db, workline_id)
                         assert locked_line is not None and locked_line.is_active
-                        epochs = LineRunEpochRepository()
-                        await epochs.lock_epoch_lifecycle(db, epoch_id)
-                        locked_epoch = await epochs.get_active_for_workline_for_update(db, workline_id)
-                        assert locked_epoch is not None and locked_epoch.id == epoch_id
                         locked_task = await db.get(PickingTask, task_id, with_for_update=True)
                         assert locked_task is not None
                         locked_task.status = PickingTaskStatus.PREPARING
                         locked_task.workline_id = workline_id
-                        locked_task.line_run_epoch_id = epoch_id
                         await db.flush()
                         binding_ready.set()
                         await release_binding.wait()
@@ -491,13 +427,10 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                 assert workload["samples"]["picking_tasks"]["identity"] == "CONFIG-PG-PICKING-FENCE-TASK"
                 async with sessions() as db:
                     persisted_line = await db.get(WorkLine, workline_id)
-                    persisted_epoch = await db.get(LineRunEpoch, epoch_id)
                     persisted_task = await db.get(PickingTask, task_id)
                     assert persisted_line is not None and persisted_line.is_active
-                    assert persisted_epoch is not None and persisted_epoch.status == LineRunEpochStatus.ACTIVE
                     assert persisted_task is not None and persisted_task.status == PickingTaskStatus.PREPARING
                     assert persisted_task.workline_id == workline_id
-                    assert persisted_task.line_run_epoch_id == epoch_id
             finally:
                 release_binding.set()
                 for pending in running:

@@ -66,7 +66,7 @@ class _Executions:
                 id=21,
                 execution_code="EXEC-1",
                 material_trace_id="TRACE-1",
-                line_run_epoch_id=11,
+                workline_id=11,
                 status="RECONCILING",
                 last_transition_evidence_id=30,
             ),
@@ -82,7 +82,7 @@ class _CausalEvidences:
         del db
         if evidence_id != 30:
             return None
-        return SimpleNamespace(id=30, material_execution_id=21, line_run_epoch_id=11)
+        return SimpleNamespace(id=30, material_execution_id=21, workline_id=11)
 
 
 class _TaskQueue:

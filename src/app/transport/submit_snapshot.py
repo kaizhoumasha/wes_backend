@@ -42,7 +42,7 @@ def build_submit_data(request: TransportRequest, transport_task_id: str) -> dict
     if isinstance(request, MoveBinsRequest):
         moves = [
             {
-                "container_id": move.bin_id,
+                "container_id": move.bin_code,
                 "source": _json_value(move.source),
                 "target": _json_value(move.target),
             }
@@ -55,12 +55,12 @@ def build_submit_data(request: TransportRequest, transport_task_id: str) -> dict
             for pair in request.exchange_pairs
             for move in (
                 {
-                    "container_id": pair.left_bin_id,
+                    "container_id": pair.left_bin_code,
                     "source": _json_value(pair.left_location),
                     "target": _json_value(pair.right_location),
                 },
                 {
-                    "container_id": pair.right_bin_id,
+                    "container_id": pair.right_bin_code,
                     "source": _json_value(pair.right_location),
                     "target": _json_value(pair.left_location),
                 },

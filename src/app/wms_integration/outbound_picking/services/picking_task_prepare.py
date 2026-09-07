@@ -25,9 +25,7 @@ from src.app.wms_integration.outbound_picking.repositories import (
     picking_workline_facts_repository,
 )
 from src.app.workline.repositories import (
-    LineRunEpochRepository,
     WorkLineRepository,
-    line_run_epoch_repository,
 )
 from src.app.workline.repositories import (
     workline_repository as default_workline_repository,
@@ -47,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 
 class PickingTaskPrepareNoopReason(StrEnum):
-    NO_ACTIVE_EPOCH = "NO_ACTIVE_EPOCH"
     WORKLINE_NOT_READY = "WORKLINE_NOT_READY"
     NO_ELIGIBLE_TASK = "NO_ELIGIBLE_TASK"
 
@@ -65,14 +62,13 @@ class ConfirmationLifecyclePort(Protocol):
 
 
 class PickingTaskPrepareCoordinator:
-    """在一个事务内冻结 WorkLine/Epoch/任务并创建可靠 prepare 义务。"""
+    """在一个事务内冻结 WorkLine/WorkLine/任务并创建可靠 prepare 义务。"""
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
         policy: PickingTaskPreparePolicy,
-        epoch_repository: LineRunEpochRepository | None = None,
         workline_repository: WorkLineRepository | None = None,
         facts_repository: PickingWorklineFactsRepository | None = None,
         task_repository: PickingTaskRepository | None = None,
@@ -81,7 +77,6 @@ class PickingTaskPrepareCoordinator:
     ) -> None:
         self._policy = policy
         self._sessions = session_factory
-        self._epochs = epoch_repository or line_run_epoch_repository
         self._worklines = workline_repository or default_workline_repository
         self._facts = facts_repository or picking_workline_facts_repository
         self._tasks = task_repository or picking_task_repository
@@ -102,21 +97,15 @@ class PickingTaskPrepareCoordinator:
         prepared: PickingTaskPrepareResult
         async with self._sessions.begin() as db:
             workline = await self._worklines.get_for_update(db, workline_id)
-            epoch = await self._epochs.get_active_for_workline(db, workline_id)
-            epoch_id = getattr(epoch, "id", None)
-            if not isinstance(epoch_id, int) or isinstance(epoch_id, bool) or epoch_id <= 0:
-                return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.NO_ACTIVE_EPOCH)
-            await self._epochs.lock_epoch_lifecycle(db, epoch_id)
-            locked_epoch = await self._epochs.get_active_for_workline_for_update(db, workline_id)
-            if workline is None or locked_epoch is None or locked_epoch.id != epoch_id:
+            if workline is None or not workline.is_active:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task_type = self._policy.select_task_type(
                 PrepareContext(
                     getattr(workline, "is_active", False) is True,
                     getattr(workline, "line_type", None),
                     getattr(workline, "run_mode", None),
-                    getattr(locked_epoch, "plugin_key", None),
-                    getattr(locked_epoch, "flow_mode", None),
+                    getattr(workline, "plugin_key", None),
+                    getattr(workline, "flow_mode", None),
                 )
             )
             if task_type is None:
@@ -130,7 +119,7 @@ class PickingTaskPrepareCoordinator:
             )
             if task is None:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK)
-            if not await self._runtime_context_ready(db, workline_id, epoch_id, current):
+            if not await self._runtime_context_ready(db, workline_id, current):
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task_id = getattr(task, "id", None)
             line_code = getattr(workline, "line_code", None)
@@ -145,7 +134,6 @@ class PickingTaskPrepareCoordinator:
             request = encode_request(intent, timestamp=_timestamp_ms(current))
             task.status = PickingTaskStatus.PREPARING
             task.workline_id = workline_id
-            task.line_run_epoch_id = epoch_id
             await self._tasks.flush(db)
             acceptance = await self._confirmations.create_or_get(
                 db,
@@ -169,16 +157,18 @@ class PickingTaskPrepareCoordinator:
         self,
         db: Any,
         workline_id: int,
-        epoch_id: int,
         now: datetime,
     ) -> bool:
         summary = await self._worklines.get_unfinished_workload_summary(db, workline_id)
         by_type = summary.get("by_type") if isinstance(summary, dict) else None
-        if not isinstance(by_type, dict) or by_type.get("line_run_epochs") != 1:
+        if not isinstance(by_type, dict):
             return False
-        if any(bool(blocked) for owner, blocked in by_type.items() if owner != "line_run_epochs"):
+        if any(by_type.values()):
             return False
-        facts = await self._facts.read_facts(db, workline_id=workline_id, line_run_epoch_id=epoch_id)
+        facts = await self._facts.read_facts(
+            db,
+            workline_id=workline_id,
+        )
         return self._policy.is_ready(facts, now=now)
 
 

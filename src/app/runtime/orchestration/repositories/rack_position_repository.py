@@ -64,7 +64,7 @@ class WorklineRackPositionRepository(BaseRepository[WorklineRackPosition]):
         workline_code: str,
         logic_location_code: str,
     ) -> WorklineRackPosition | None:
-        """按 Epoch 冻结逻辑位置精确解析一个工作位；重复配置失败关闭。"""
+        """按 WorkLine 冻结逻辑位置精确解析一个工作位；重复配置失败关闭。"""
 
         columns = cast("Any", WorklineRackPosition).__table__.c
         result = await db.execute(

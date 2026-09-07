@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.app.device.repositories.command_repository import device_command_repository
 from src.app.execution.repositories import inbound_evidence_repository, material_execution_repository
+from src.app.execution.repositories.position_projection_repository import position_projection_repository
 from src.app.execution.repositories.transport_decision_binding_repository import (
     transport_decision_binding_repository,
 )
@@ -13,14 +14,10 @@ from src.app.execution.repositories.wms_confirmation_repository import wms_confi
 from src.app.resource.repositories import rack_placement_repository
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
 from src.app.transport.repository import TransportRepository
-from src.app.workline.epoch_digest import configuration_digest, topology_digest
-from src.app.workline.models.line_run_epoch import LineRunEpochStatus
-from src.app.workline.repositories.line_run_epoch_repository import line_run_epoch_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 from wes_plugin_sdk import (
     DeviceBindingSnapshot,
     DeviceResultReadyFact,
-    EpochConfigurationSnapshot,
     EvidenceReadyFact,
     ExecutionLifecycle,
     ExecutionSnapshot,
@@ -28,6 +25,7 @@ from wes_plugin_sdk import (
     PositionBindingSnapshot,
     TransportResultReadyFact,
     WmsResultReadyFact,
+    WorkLineConfigurationSnapshot,
 )
 from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
@@ -37,7 +35,6 @@ from rough_sorter.application.device_facts import build_device_fact
 from rough_sorter.application.persistence import (
     DeviceCommandRepositoryPort,
     DeviceReadinessReader,
-    EpochRepositoryPort,
     EvidenceRepositoryPort,
     ExecutionRepositoryPort,
     LiveDeviceReadinessReader,
@@ -71,7 +68,7 @@ from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, POSITION_ROLES
 if TYPE_CHECKING:
     from src.app.device.composition import DeviceEndpointAdapterProvider
     from src.app.execution.models import InboundEvidence, MaterialExecution
-    from src.app.workline.models import LineRunEpochDeviceBinding, LineRunEpochPositionBinding
+    from src.app.workline.activation import WorkLineDeviceBinding, WorkLinePositionBinding
 
 
 class RoughSorterPluginFactFactory:
@@ -82,7 +79,6 @@ class RoughSorterPluginFactFactory:
         *,
         evidence_repository: EvidenceRepositoryPort = inbound_evidence_repository,
         execution_repository: ExecutionRepositoryPort = material_execution_repository,
-        epoch_repository: EpochRepositoryPort = line_run_epoch_repository,
         workline_repository: WorkLineRepositoryPort = workline_repository,
         wms_confirmation_repository: WmsConfirmationRepositoryPort = wms_confirmation_repository,
         device_readiness_reader: DeviceReadinessReader | None = None,
@@ -94,10 +90,10 @@ class RoughSorterPluginFactFactory:
             transport_decision_binding_repository
         ),
         transport_repository: TransportRepository | None = None,
+        position_repository=position_projection_repository,
     ) -> None:
         self._evidences = evidence_repository
         self._executions = execution_repository
-        self._epochs = epoch_repository
         self._worklines = workline_repository
         self._wms_confirmations = wms_confirmation_repository
         self._device_readiness = device_readiness_reader or LiveDeviceReadinessReader(
@@ -108,13 +104,14 @@ class RoughSorterPluginFactFactory:
         self._rack_placements = rack_placement_repository
         self._rack_replacement_bindings = rack_replacement_binding_repository
         self._transport_tasks = transport_repository or TransportRepository()
+        self._position_projections = position_repository
 
     async def build(self, db: object, fact: FactReference) -> FactReference:
         evidence = await self._load_evidence(db, fact.evidence_id)
         execution = await self._executions.get_by_execution_code_for_update(db, fact.material_execution_id)
         if execution is None or execution.id is None:
             raise LookupError("MaterialExecution 不存在或未持久化")
-        if evidence.material_execution_id != execution.id or evidence.line_run_epoch_id != execution.line_run_epoch_id:
+        if evidence.material_execution_id != execution.id or evidence.workline_id != execution.workline_id:
             raise ValueError("Fact evidence 与 execution correlation 不匹配")
         runtime = await self._runtime_snapshot(db, execution)
         if type(fact) is EvidenceReadyFact:
@@ -127,11 +124,14 @@ class RoughSorterPluginFactFactory:
                 execution=execution,
                 runtime=runtime,
                 evidences=self._evidences,
-                epochs=self._epochs,
+                worklines=self._worklines,
                 confirmations=self._wms_confirmations,
                 commands=self._commands,
                 readiness=self._device_readiness,
                 rack_bindings=self._rack_replacement_bindings,
+                transport_tasks=self._transport_tasks,
+                position_projections=self._position_projections,
+                rack_positions=self._rack_positions,
                 current_rack_id=self._current_rack_id,
             )
         if type(fact) is DeviceResultReadyFact:
@@ -142,7 +142,7 @@ class RoughSorterPluginFactFactory:
                 execution=execution,
                 runtime=runtime,
                 evidences=self._evidences,
-                epochs=self._epochs,
+                worklines=self._worklines,
                 confirmations=self._wms_confirmations,
                 commands=self._commands,
                 readiness=self._device_readiness,
@@ -168,7 +168,7 @@ class RoughSorterPluginFactFactory:
                 execution=execution,
                 runtime=runtime,
                 evidences=self._evidences,
-                epochs=self._epochs,
+                worklines=self._worklines,
                 commands=self._commands,
                 readiness=self._device_readiness,
                 confirmations=self._wms_confirmations,
@@ -186,41 +186,27 @@ class RoughSorterPluginFactFactory:
         return evidence
 
     async def _runtime_snapshot(self, db: object, execution: MaterialExecution) -> Any:
-        epoch = await self._epochs.get_by_id_for_update(db, execution.line_run_epoch_id)
-        if epoch is None or epoch.id is None or epoch.status != LineRunEpochStatus.ACTIVE:
-            raise ValueError("execution 未关联活动 Epoch")
-        if epoch.plugin_key != PLUGIN_KEY or epoch.plugin_version != PLUGIN_VERSION:
-            raise ValueError("Epoch plugin identity 与 rough sorter deployment 不匹配")
-        devices = tuple(await self._epochs.list_bindings(db, epoch.id))
-        positions = tuple(await self._epochs.list_position_bindings(db, epoch.id))
+        workline = await self._worklines.get_for_update(db, execution.workline_id)
+        if workline is None or workline.id is None or not workline.is_active:
+            raise ValueError("execution 未关联活动 WorkLine")
+        if workline.plugin_key != PLUGIN_KEY or workline.plugin_version != PLUGIN_VERSION:
+            raise ValueError("WorkLine plugin identity 与 rough sorter deployment 不匹配")
+        devices = tuple(await self._worklines.list_bindings(db, workline.id))
+        positions = tuple(await self._worklines.list_position_bindings(db, workline.id))
         self._validate_bindings(devices, positions)
-        if epoch.configuration_digest != configuration_digest(
-            epoch.plugin_key,
-            epoch.plugin_version,
-            epoch.flow_mode,
-            epoch.configuration_snapshot_json,
-        ):
-            raise ValueError("Epoch configuration digest drift")
-        if epoch.topology_digest != topology_digest(devices, positions):
-            raise ValueError("Epoch topology digest drift")
-        workline = await self._worklines.get_by_id(db, epoch.workline_id)
-        if workline is None or getattr(workline, "id", None) != execution.workline_id:
-            raise ValueError("Epoch/execution WorkLine identity 不匹配")
         return RoughSorterRuntimeSnapshot(
             execution=ExecutionSnapshot(
                 material_execution_id=execution.execution_code,
                 material_trace_id=execution.material_trace_id,
-                line_run_epoch_id=str(epoch.id),
+                workline_id=str(workline.id),
                 lifecycle=ExecutionLifecycle(execution.status),
                 version=execution.version,
             ),
-            epoch=EpochConfigurationSnapshot(
-                line_run_epoch_id=str(epoch.id),
-                workline_code=required_string(getattr(workline, "line_code", None), "workline.line_code"),
-                plugin_key=epoch.plugin_key,
-                plugin_version=epoch.plugin_version,
-                config_digest=epoch.configuration_digest,
-                topology_digest=epoch.topology_digest,
+            workline=WorkLineConfigurationSnapshot(
+                workline_id=str(workline.id),
+                workline_code=required_string(workline.line_code, "workline.line_code"),
+                plugin_key=workline.plugin_key,
+                plugin_version=workline.plugin_version,
                 device_bindings=tuple(
                     DeviceBindingSnapshot(
                         device_role=item.device_role,
@@ -243,18 +229,18 @@ class RoughSorterPluginFactFactory:
 
     def _validate_bindings(
         self,
-        devices: tuple[LineRunEpochDeviceBinding, ...],
-        positions: tuple[LineRunEpochPositionBinding, ...],
+        devices: tuple[WorkLineDeviceBinding, ...],
+        positions: tuple[WorkLinePositionBinding, ...],
     ) -> None:
         if (
             len(devices) != len(ROLE_CONTRACTS)
             or {item.device_role: item.contract_key for item in devices} != ROLE_CONTRACTS
         ):
-            raise ValueError("rough sorter Epoch 必须精确绑定三个设备角色与合同")
+            raise ValueError("rough sorter WorkLine 必须精确绑定三个设备角色与合同")
         if any(item.contract_version != "1.0" for item in devices):
             raise ValueError("rough sorter device contract_version 必须固定为 1.0")
         if {item.position_role for item in positions} != set(POSITION_ROLES) or len(positions) != len(POSITION_ROLES):
-            raise ValueError("rough sorter Epoch 必须精确绑定四个位置角色")
+            raise ValueError("rough sorter WorkLine 必须精确绑定四个位置角色")
         if any(item.location_type != item.position_role for item in positions):
             raise ValueError("rough sorter position binding type 与 role 不匹配")
 
@@ -283,7 +269,7 @@ class RoughSorterPluginFactFactory:
         position = device_position(data["position"], execution.material_trace_id)
         expected = position_binding(runtime, "MEASUREMENT_POSITION")
         if position.location_id != expected.location_id or position.location_type != expected.location_type:
-            raise ValueError("SCAN position 与 Epoch measurement binding 不匹配")
+            raise ValueError("SCAN position 与 WorkLine measurement binding 不匹配")
         return MaterialEvidenceReadyFact(
             fact_id=fact.fact_id,
             evidence_id=fact.evidence_id,
@@ -291,8 +277,8 @@ class RoughSorterPluginFactFactory:
             material_execution_id=fact.material_execution_id,
             runtime_snapshot=runtime,
             material_trace_id=required_string(data["material_trace_id"], "material_trace_id"),
-            line_run_epoch_id=runtime.epoch.line_run_epoch_id,
-            workline_code=runtime.epoch.workline_code,
+            workline_id=runtime.workline.workline_id,
+            workline_code=runtime.workline.workline_code,
             lot_code=required_string(data["LotCode"], "LotCode"),
             date_code=required_string(data["DateCode"], "DateCode"),
             qty=required_string(data["Qty"], "Qty"),

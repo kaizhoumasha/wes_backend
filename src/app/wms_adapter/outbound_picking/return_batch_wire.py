@@ -32,7 +32,6 @@ class ReturnCandidate(StrictWireModel):
 
 class BinReturnBatchData(StrictWireModel):
     workline_code: Identifier
-    line_run_epoch_id: Identifier
     rack_id: Identifier
     rack_face: RackFaceText
     return_candidates: Annotated[list[ReturnCandidate], Field(min_length=1, max_length=4)]

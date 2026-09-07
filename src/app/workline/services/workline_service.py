@@ -29,7 +29,9 @@ _BLOCKER = "BLOCKER"
 _FAIL = "FAIL"
 _OK = "PASS"
 _ACTIVE_CONFIGURATION_FIELDS = frozenset({"line_code", "runtime_config_json", "run_mode", "line_type"})
-_PLUGIN_CONFIGURATION_FIELDS = frozenset({"plugin_key", "config"})
+_PLUGIN_CONFIGURATION_FIELDS = frozenset(
+    {"plugin_key", "config", "plugin_version", "flow_mode", "device_contracts", "position_bindings"}
+)
 
 
 class WorkLineService(BaseService[WorkLine, WorkLineRepository]):

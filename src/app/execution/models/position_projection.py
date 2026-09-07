@@ -8,7 +8,6 @@ from sqlalchemy import JSON, CheckConstraint, Index, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
-from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 
@@ -20,13 +19,8 @@ class PositionProjection(EnterpriseMixin, DataTableMixin, table=True):
     __table_args__ = (
         CheckConstraint("arrival_face IS NULL OR length(arrival_face) >= 1", name="arrival_face_nonempty"),
         CheckConstraint("object_type IN ('RACK', 'BIN')", name="position_projection_object_type_valid"),
-        CheckConstraint(
-            "(object_type = 'RACK' AND bin_execution_id IS NULL) OR "
-            "(object_type = 'BIN' AND bin_execution_id IS NOT NULL)",
-            name="position_projection_bin_authority_valid",
-        ),
         UniqueConstraint("object_type", "object_id", name="ux_position_projection_object"),
-        Index("ix_position_projection_epoch", "line_run_epoch_id", "id"),
+        Index("ix_position_projection_workline", "workline_id", "id"),
         Index("ix_position_projection_source_task", "source_transport_task_id"),
         {"schema": SchemaType.BIZ.value},
     )
@@ -34,13 +28,6 @@ class PositionProjection(EnterpriseMixin, DataTableMixin, table=True):
     object_type: str = Field(max_length=10)
     object_id: str = Field(max_length=100)
     workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True)
-    line_run_epoch_id: int = Field(foreign_key="wes_biz.line_run_epochs.id", index=True)
-    bin_execution_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.bin_executions.id",
-        sa_type=SQL_COMPAT_BIGINT,
-        index=True,
-    )
     position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
     arrival_face: str | None = Field(default=None, min_length=1, max_length=10)

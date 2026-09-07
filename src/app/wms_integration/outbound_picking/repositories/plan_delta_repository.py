@@ -12,7 +12,7 @@ from src.app.execution.models import InboundEvidence, InboundEvidenceConflict, W
 from src.app.sys.models.audit_log import AuditLog
 from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import DirectPickExecution, PickingTaskBinSourceRack
-from src.app.workline.models import LineRunEpoch, WorkLine
+from src.app.workline.models import WorkLine
 
 MEMBER_BATCH_SIZE = 250
 
@@ -46,9 +46,7 @@ class PickingTaskPlanDeltaRepository:
             .limit(1)
         )
 
-    async def prepare_context(
-        self, db: AsyncSession, task: Any
-    ) -> tuple[list[WmsConfirmation], WorkLine | None, LineRunEpoch | None]:
+    async def prepare_context(self, db: AsyncSession, task: Any) -> tuple[list[WmsConfirmation], WorkLine | None]:
         columns = WmsConfirmation.__table__.c
         confirmations = list(
             (
@@ -60,8 +58,7 @@ class PickingTaskPlanDeltaRepository:
             ).all()
         )
         line = await db.get(WorkLine, task.workline_id) if task.workline_id else None
-        epoch = await db.get(LineRunEpoch, task.line_run_epoch_id) if task.line_run_epoch_id else None
-        return confirmations, line, epoch
+        return confirmations, line
 
     async def source_identities(
         self,

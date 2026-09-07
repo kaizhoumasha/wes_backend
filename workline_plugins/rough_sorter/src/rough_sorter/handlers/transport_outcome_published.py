@@ -9,7 +9,7 @@ from wes_plugin_sdk import (
 )
 
 from rough_sorter.facts import TransportOutcome, TransportOutcomePublishedFact
-from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.handlers._guards import require_execution, require_workline
 from rough_sorter.wms_requests import target_data
 
 
@@ -30,7 +30,7 @@ class TransportOutcomePublishedHandler:
             material_trace_id=fact.material_trace_id,
             allow_reconciling=True,
         )
-        require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        require_workline(snapshot.workline, workline_id=execution.workline_id)
         if fact.outcome is not TransportOutcome.SUCCEEDED:
             return (
                 PauseForReconciliation(

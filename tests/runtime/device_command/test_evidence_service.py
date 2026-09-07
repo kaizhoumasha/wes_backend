@@ -20,6 +20,7 @@ from src.app.device.models.event_command_block import (
     DeviceEventCommandBlockStatus,
 )
 from src.app.device.services.device_evidence_service import (
+    DeviceEventNotAdmittedError,
     DeviceEvidenceConflictError,
     DeviceEvidenceService,
     DeviceResultConflictError,
@@ -225,19 +226,19 @@ class FakeAuditService:
         return object()
 
 
-class FakeEpochRepository:
-    def __init__(self, event_epoch_id: int | None = None, *, workline_id: int = 7) -> None:
-        self.event_epoch_id = event_epoch_id
+class FakeWorkLineRepository:
+    def __init__(self, event_workline_id: int | None = None, *, workline_id: int = 7) -> None:
+        self.event_workline_id = event_workline_id
         self.workline_id = workline_id
 
     async def get_active_binding_for_device(self, _db: object, device_code: str):
-        if self.event_epoch_id is None:
+        if self.event_workline_id is None:
             return None
         return type(
             "Binding",
             (),
             {
-                "line_run_epoch_id": self.event_epoch_id,
+                "workline_id": self.event_workline_id,
                 "device_code": device_code,
                 "contract_key": "arm.pick",
                 "contract_version": "2.0",
@@ -245,9 +246,9 @@ class FakeEpochRepository:
         )()
 
     async def get_by_id(self, _db: object, id: int):
-        if self.event_epoch_id != id:
+        if self.event_workline_id != id:
             return None
-        return type("Epoch", (), {"id": id, "workline_id": self.workline_id})()
+        return type("WorkLine", (), {"id": id, "workline_id": self.workline_id})()
 
 
 class FakeTaskQueue:
@@ -332,8 +333,7 @@ def _command() -> DeviceCommand:
         id=31,
         command_code="CMD-001",
         device_code="ARM-01",
-        line_run_epoch_id=11,
-        device_binding_id=21,
+        workline_id=11,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
         material_execution_id=21,
@@ -376,7 +376,7 @@ def _event(**overrides: object) -> EcsDeviceEventReport:
 def _service(
     command: DeviceCommand | None,
     *,
-    event_epoch_id: int | None = None,
+    event_workline_id: int | None = 11,
     task_queue: FakeTaskQueue | None = None,
     publisher: FakePublisher | None = None,
     event_debug_commands: FakeEventDebugCommandService | None = None,
@@ -393,7 +393,7 @@ def _service(
             inbound_evidence_service=InboundEvidenceService(repository=evidences),
             processing_repository=evidences,  # type: ignore[arg-type]
             command_repository=command_repository or FakeCommandRepository(command),  # type: ignore[arg-type]
-            epoch_repository=FakeEpochRepository(event_epoch_id),  # type: ignore[arg-type]
+            workline_repository=FakeWorkLineRepository(event_workline_id),  # type: ignore[arg-type]
             task_queue_gateway=task_queue,  # type: ignore[arg-type]
             event_publisher=publisher,  # type: ignore[arg-type]
             event_debug_command_service=event_debug_commands,  # type: ignore[arg-type]
@@ -431,7 +431,7 @@ async def test_ingress_writes_only_through_inbound_evidence_application() -> Non
         inbound_evidence_service=InboundEvidenceService(repository=application_repository),
         processing_repository=processing_repository,  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(_command()),  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(),  # type: ignore[arg-type]
+        workline_repository=FakeWorkLineRepository(),  # type: ignore[arg-type]
     )
 
     receipt = await service.accept_result(_result())
@@ -484,7 +484,7 @@ async def test_unknown_command_can_be_retried_after_command_appears() -> None:
     accepted = repository.evidences[receipt.source_event_id]
     assert accepted.apply_status == "PENDING"
     assert accepted.command_code == "CMD-001"
-    assert accepted.line_run_epoch_id == 11
+    assert accepted.workline_id == 11
 
 
 @pytest.mark.asyncio
@@ -496,7 +496,7 @@ async def test_result_identity_mismatch_is_frozen_before_rejection() -> None:
 
     rejected = repository.evidences["RESULT:CMD-001"]
     assert rejected.apply_status == "IGNORED"
-    assert rejected.line_run_epoch_id == 11
+    assert rejected.workline_id == 11
     assert mismatch.value.receipt == DeviceEvidenceReceipt(
         evidence_id=rejected.id,
         source_event_id="RESULT:CMD-001",
@@ -547,16 +547,13 @@ async def test_result_before_dispatch_fences_command_and_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_freezes_nullable_epoch_on_first_observation() -> None:
-    service, repository = _service(None)
-
-    receipt = await service.accept_event(_event())
-
-    assert repository.evidences[receipt.source_event_id].line_run_epoch_id is None
-    assert repository.identity_locks == [receipt.source_event_id]
-    assert receipt.source_event_id.startswith("EVENT:")
-    assert repository.evidences[receipt.source_event_id].contract_key == "third_party_integration"
-    assert repository.evidences[receipt.source_event_id].contract_version == "1.1"
+async def test_new_unbound_business_event_is_recorded_and_rejected() -> None:
+    service, repository = _service(None, event_workline_id=None)
+    with pytest.raises(DeviceEventNotAdmittedError):
+        await service.accept_event(_event())
+    evidence = next(iter(repository.evidences.values()))
+    assert evidence.workline_id is None
+    assert evidence.apply_status == InboundEvidenceApplyStatus.IGNORED
 
 
 @pytest.mark.asyncio
@@ -580,7 +577,7 @@ async def test_debug_event_creates_command_without_waking_business_processing() 
     debug_commands = FakeEventDebugCommandService()
     service, repository = _service(
         None,
-        event_epoch_id=11,
+        event_workline_id=11,
         task_queue=queue,
         publisher=publisher,
         event_debug_commands=debug_commands,
@@ -591,7 +588,7 @@ async def test_debug_event_creates_command_without_waking_business_processing() 
 
     evidence = repository.evidences[receipt.source_event_id]
     assert evidence.apply_status == "IGNORED"
-    assert evidence.line_run_epoch_id == 11
+    assert evidence.workline_id == 11
     assert debug_commands.evidences == [evidence]
     assert queue.execution_wakes == 0
     assert queue.device_command_wakes == 1
@@ -755,7 +752,7 @@ async def test_estop_event_routes_once_to_safety_after_durable_evidence() -> Non
     safety = FakeSafetyService()
     service, repository = _service(
         None,
-        event_epoch_id=11,
+        event_workline_id=11,
         task_queue=queue,
         safety_service=safety,
     )
@@ -767,7 +764,7 @@ async def test_estop_event_routes_once_to_safety_after_durable_evidence() -> Non
     assert evidence.apply_status == "APPLIED"
     assert safety.calls == [
         {
-            "workline_id": 7,
+            "workline_id": 11,
             "source_evidence_id": evidence.id,
             "trigger_payload": evidence.normalized_payload,
         }
@@ -778,30 +775,30 @@ async def test_estop_event_routes_once_to_safety_after_durable_evidence() -> Non
 
 @pytest.mark.asyncio
 async def test_event_freezes_active_epoch_when_contract_matches() -> None:
-    service, repository = _service(None, event_epoch_id=11)
+    service, repository = _service(None, event_workline_id=11)
 
     receipt = await service.accept_event(_event())
 
-    assert repository.evidences[receipt.source_event_id].line_run_epoch_id == 11
+    assert repository.evidences[receipt.source_event_id].workline_id == 11
 
 
 @pytest.mark.asyncio
 async def test_accepted_event_retry_after_epoch_switch_reuses_frozen_evidence() -> None:
-    service, repository = _service(None, event_epoch_id=11)
+    service, repository = _service(None, event_workline_id=11)
     first = await service.accept_event(_event())
 
-    service._epochs.event_epoch_id = 12
+    service._worklines.event_workline_id = 12
     duplicate = await service.accept_event(_event())
 
     assert duplicate.evidence_id == first.evidence_id
     assert duplicate.duplicate is True
-    assert repository.evidences[duplicate.source_event_id].line_run_epoch_id == 11
+    assert repository.evidences[duplicate.source_event_id].workline_id == 11
     assert repository.conflicts == []
 
 
 @pytest.mark.asyncio
 async def test_processed_debug_event_retry_after_epoch_switch_reuses_frozen_evidence() -> None:
-    epochs = FakeEpochRepository(event_epoch_id=11)
+    epochs = FakeWorkLineRepository(event_workline_id=11)
     evidences = FakeEvidenceRepository()
     debug_commands = FakeEventDebugCommandService()
     service = DeviceEvidenceService(
@@ -809,19 +806,19 @@ async def test_processed_debug_event_retry_after_epoch_switch_reuses_frozen_evid
         inbound_evidence_service=InboundEvidenceService(repository=evidences),
         processing_repository=evidences,  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(None),  # type: ignore[arg-type]
-        epoch_repository=epochs,  # type: ignore[arg-type]
+        workline_repository=epochs,  # type: ignore[arg-type]
         event_debug_command_service=debug_commands,
     )
     event = _event(is_debug=True)
     first = await service.accept_event(event)
     assert await service.process_one() is True
 
-    epochs.event_epoch_id = 12
+    epochs.event_workline_id = 12
     duplicate = await service.accept_event(event)
 
     assert duplicate.evidence_id == first.evidence_id
     assert duplicate.duplicate is True
-    assert evidences.evidences[first.source_event_id].line_run_epoch_id == 11
+    assert evidences.evidences[first.source_event_id].workline_id == 11
     assert evidences.conflicts == []
     assert len(debug_commands.evidences) == 1
 
@@ -832,6 +829,7 @@ async def _blocked_debug_event_fixture(
     unclosed: DeviceCommand | None = None,
 ) -> tuple[
     DeviceEvidenceService,
+    DeviceEventNotAdmittedError,
     FakeEvidenceRepository,
     FakeEventCommandBlockRepository,
     FakeCommandRepository,
@@ -940,7 +938,7 @@ async def test_reprocess_terminal_blocker_requeues_original_evidence_without_imm
         evidence.source_identity,
         evidence.payload_digest,
         evidence.normalized_payload.copy(),
-        evidence.line_run_epoch_id,
+        evidence.workline_id,
         evidence.contract_key,
         evidence.contract_version,
     )
@@ -965,7 +963,7 @@ async def test_reprocess_terminal_blocker_requeues_original_evidence_without_imm
         evidence.source_identity,
         evidence.payload_digest,
         evidence.normalized_payload,
-        evidence.line_run_epoch_id,
+        evidence.workline_id,
         evidence.contract_key,
         evidence.contract_version,
     ) == frozen
@@ -1050,37 +1048,37 @@ async def test_reprocess_rejects_unreliable_blocking_command(failure: str) -> No
 
 @pytest.mark.asyncio
 async def test_event_contract_metadata_uses_active_wes_binding() -> None:
-    service, repository = _service(None, event_epoch_id=11)
+    service, repository = _service(None, event_workline_id=11)
 
     receipt = await service.accept_event(_event())
 
     accepted = repository.evidences[receipt.source_event_id]
     assert accepted.apply_status == "PENDING"
-    assert accepted.line_run_epoch_id == 11
+    assert accepted.workline_id == 11
     assert accepted.contract_key == "arm.pick"
     assert accepted.contract_version == "2.0"
 
 
 @pytest.mark.asyncio
 async def test_same_event_payload_remains_idempotent_after_original_epoch_closes() -> None:
-    epochs = FakeEpochRepository(event_epoch_id=11)
+    epochs = FakeWorkLineRepository(event_workline_id=11)
     evidences = FakeEvidenceRepository()
     service = DeviceEvidenceService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
         inbound_evidence_service=InboundEvidenceService(repository=evidences),
         processing_repository=evidences,  # type: ignore[arg-type]
         command_repository=FakeCommandRepository(None),  # type: ignore[arg-type]
-        epoch_repository=epochs,  # type: ignore[arg-type]
+        workline_repository=epochs,  # type: ignore[arg-type]
     )
     event = _event()
     first = await service.accept_event(event)
 
-    epochs.event_epoch_id = None
+    epochs.event_workline_id = None
     duplicate = await service.accept_event(event)
 
     assert duplicate.evidence_id == first.evidence_id
     assert duplicate.duplicate is True
-    assert evidences.evidences[first.source_event_id].line_run_epoch_id == 11
+    assert evidences.evidences[first.source_event_id].workline_id == 11
     assert evidences.evidences[first.source_event_id].contract_key == "arm.pick"
     assert evidences.evidences[first.source_event_id].contract_version == "2.0"
 

@@ -37,7 +37,6 @@ async def test_wait_follow_up_uses_new_identity_and_preserves_canonical_request(
                 },
                 "measurements": {"diameter_mm": "1", "thickness_mm": "1"},
                 "shape_result": "PASS",
-                "line_run_epoch_id": "11",
                 "workline_code": "ROUGH-LINE-1",
                 "source_position": {"type": "HANDOFF_POSITION", "location_code": "MEASUREMENT_POSITION"},
             },

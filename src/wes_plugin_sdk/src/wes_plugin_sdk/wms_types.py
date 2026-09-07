@@ -79,7 +79,6 @@ class AdmissionIntent(_MaterialIntent):
     six_in_one: SixInOne
     measurements: Measurements
     shape_result: Literal["PASS", "FAIL"]
-    line_run_epoch_id: str
     workline_code: str
     source_position: DevicePosition
 
@@ -89,7 +88,6 @@ class AdmissionIntent(_MaterialIntent):
             raise TypeError("admission requires typed SixInOne and Measurements")
         if self.shape_result not in ("PASS", "FAIL"):
             raise ValueError("shape_result must be PASS or FAIL")
-        _required(self.line_run_epoch_id, "line_run_epoch_id")
         _required(self.workline_code, "workline_code")
         _position(self.source_position, "MEASUREMENT_POSITION", self.material_trace_id)
 
@@ -277,14 +275,13 @@ class BinReturnCandidate:
 class BinReturnBatchIntent:
     operation_id: str
     workline_code: str
-    line_run_epoch_id: str
     rack_id: str
     rack_face: str
     return_candidates: tuple[BinReturnCandidate, ...]
 
     def __post_init__(self) -> None:
         _required(self.operation_id, "operation_id")
-        for name in ("workline_code", "line_run_epoch_id", "rack_id"):
+        for name in ("workline_code", "rack_id"):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
         validate_opaque_face(self.rack_face, "rack_face")

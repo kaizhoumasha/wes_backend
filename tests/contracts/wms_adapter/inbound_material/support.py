@@ -66,7 +66,6 @@ def _request(operation: str = ADMISSION_OPERATION) -> dict[str, object]:
             },
             "measurements": {"diameter_mm": "1.000", "thickness_mm": "0.500"},
             "shape_result": "PASS",
-            "line_run_epoch_id": "EPOCH-1",
             "workline_code": "WL-1",
             "source_position": {"type": "HANDOFF_POSITION", "location_code": "IN-1"},
         }

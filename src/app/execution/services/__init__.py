@@ -1,11 +1,5 @@
 """Execution 应用服务导出。"""
 
-from .bin_execution_service import (
-    ActiveBinExecutionExistsError,
-    BinExecutionNotActiveError,
-    BinExecutionService,
-    bin_execution_service,
-)
 from .decision_applier import DecisionApplier, decision_digest
 from .fact_builder import FactBuilder
 from .fact_processor import FactProcessor
@@ -42,10 +36,7 @@ from .wms_confirmation_service import (
 )
 
 __all__ = [
-    "ActiveBinExecutionExistsError",
     "ActiveMaterialExecutionExistsError",
-    "BinExecutionNotActiveError",
-    "BinExecutionService",
     "DecisionApplier",
     "FactBuilder",
     "FactProcessor",
@@ -67,7 +58,6 @@ __all__ = [
     "WmsConfirmationResponseConflictError",
     "WmsConfirmationResponseConflictResult",
     "WmsConfirmationService",
-    "bin_execution_service",
     "decision_digest",
     "inbound_evidence_service",
     "material_execution_service",

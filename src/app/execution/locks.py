@@ -14,21 +14,11 @@ def build_advisory_lock_identity(namespace: str, *parts: object) -> str:
     return _SEPARATOR.join(values)
 
 
-def epoch_lifecycle_lock_identity(line_run_epoch_id: int) -> str:
-    return build_advisory_lock_identity("epoch-lifecycle", line_run_epoch_id)
-
-
-def bin_execution_lock_identity(bin_id: str) -> str:
-    return build_advisory_lock_identity("bin-execution", bin_id)
-
-
 def position_projection_lock_identity(object_type: str, object_id: str) -> str:
     return build_advisory_lock_identity("position-projection", object_type, object_id)
 
 
 __all__ = [
-    "bin_execution_lock_identity",
     "build_advisory_lock_identity",
-    "epoch_lifecycle_lock_identity",
     "position_projection_lock_identity",
 ]

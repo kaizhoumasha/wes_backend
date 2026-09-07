@@ -91,7 +91,7 @@ class RoughSorterTransportOutcomePublisher:
                     source_identity=f"transport:{outcome.transport_task_id}:outcome:{outcome.outcome_version}",
                     normalized_payload=_outcome_payload(outcome),
                     received_at=timezone.now_for_db(),
-                    line_run_epoch_id=source_correlation[3],
+                    workline_id=source_correlation[3],
                     material_execution_id=source_correlation[2],
                     transport_task_id=outcome.transport_task_id,
                     contract_key="rough_sorter.transport_outcome",
@@ -110,7 +110,7 @@ class RoughSorterTransportOutcomePublisher:
             if (
                 execution is None
                 or execution.id is None
-                or execution.line_run_epoch_id != source.line_run_epoch_id
+                or execution.workline_id != source.workline_id
                 or outcome.caller.workline_id != str(execution.workline_id)
             ):
                 raise ValueError("Transport outcome 与 source execution correlation 不匹配")
@@ -149,7 +149,7 @@ def _binding_correlation(
         binding.version,
         binding.step,
         binding.source_evidence_id,
-        binding.line_run_epoch_id,
+        binding.workline_id,
         binding.resource_fence_id,
         binding.client_request_id,
     )
@@ -159,7 +159,7 @@ def _source_correlation(source: InboundEvidence) -> tuple[int, int, int, int, st
     if (
         source.id is None
         or source.material_execution_id is None
-        or source.line_run_epoch_id is None
+        or source.workline_id is None
         or source.operation != "inbound.source_rack.replacement_plan_decide@v1"
     ):
         raise ValueError("NEW_IN binding source evidence 不可用于 material correlation")
@@ -167,7 +167,7 @@ def _source_correlation(source: InboundEvidence) -> tuple[int, int, int, int, st
         source.id,
         source.version,
         source.material_execution_id,
-        source.line_run_epoch_id,
+        source.workline_id,
         source.operation,
     )
 

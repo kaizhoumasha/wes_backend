@@ -43,8 +43,8 @@ WMS 公共 HTTP Client、公共信封与 Transport wire 分别引用 related 中
 - `PLACEMENT_DEVICE`：从流水线出口放入目标 Cell 或 WMS 指定 NG 位置。
 
 `device_code` 全厂唯一，每台 Device 自带 Endpoint；三个设备可以共享或分别使用 ECS Endpoint。插件角色、设备实例、
-Endpoint、合同版本、ECS/网关版本、时限和 WorkLine 的绑定必须进入当前 `LineRunEpochDeviceBinding` 与 Epoch digest；
-活动 Epoch 内不得静默替换。供应商私有字段、坐标、错误和适配只存在于 ECS/网关，不进入本合同、WES 核心或插件。
+Endpoint、合同版本和时限由 WorkLine 当前配置承接，设备命令冻结执行必需的目标及合同；运行期间不得静默替换插件或绑定。
+停用和切换前须完成系统义务收敛及现场物理清线，不新增运行代际或清线确认记录。供应商私有字段、坐标、错误和适配只存在于 ECS/网关，不进入本合同、WES 核心或插件。
 
 ## 3. 生命周期与并发
 
@@ -99,7 +99,7 @@ WES 只有在 `SCAN_COMPLETED` 包含并可靠保存以下完整事实后才请�
 - 六合一码 `LotCode`、`DateCode`、`Qty`、`ProductNo`、`MfrPN`、`PONumber`；
 - `diameter_mm`、`thickness_mm`；
 - `shape_result = PASS | FAIL`；
-- 当前可靠位置、`line_run_epoch_id` 与 `workline_code`。
+- 当前可靠位置与 `workline_code`。
 
 `inbound.material.admission_decide@v1` 请求携带上述冻结证据和 `material_execution_id`。WMS 在准入中完成 GRN 绑定与业务校验，
 但不得分配目标 Cell：
@@ -218,7 +218,7 @@ WES 只在 execution 仍为 `RECONCILING`，且公开 `reconciling_evidence_id` 
 | --- | --- | --- | --- | --- |
 | `ONE_LAYER_BIN_CELL` | `type`、`rack_id`、`rack_slot_code`、`bin_code`、`bin_cell_id` | 全部 string | 否 | 单层货架唯一目标 Cell |
 | `HANDOFF_POSITION` | `type`、`location_code` | 全部 string | 否 | 当前 WorkLine 冻结的流水线/交接逻辑位置 |
-| `NG_POSITION` | `type`、`location_code` | 全部 string | 否 | WMS 指定且活动 Epoch 已批准的 NG 位置 |
+| `NG_POSITION` | `type`、`location_code` | 全部 string | 否 | WMS 指定且当前 WorkLine 配置的 NG 位置 |
 
 ## 9. 单层货架更换与两个 TransportTask
 

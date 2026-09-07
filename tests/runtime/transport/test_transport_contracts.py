@@ -739,3 +739,20 @@ def test_ctu03_does_not_require_target_face() -> None:
         RcsTemplateId.CTU03,
     )
     assert explicit_request.target_face == "270"
+
+
+def test_bin_code_is_preserved_in_external_container_id() -> None:
+    from src.app.transport.submit_snapshot import build_submit_data
+
+    request = MoveBinsRequest(
+        "0197f300-0000-7000-8000-000000000040",
+        TransportCaller("line", "station"),
+        (BinMove(bin_code="000a/B-01", source=RackBinSlot("rack", "90", "1"), target=HandoffPosition("IN")),),
+    )
+    assert build_submit_data(request, "transport-code")["moves"] == [
+        {
+            "container_id": "000a/B-01",
+            "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack", "rack_face": "90", "slot_id": "1"},
+            "target": {"kind": "HANDOFF_POSITION", "location_code": "IN"},
+        }
+    ]

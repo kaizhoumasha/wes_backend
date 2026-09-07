@@ -11,8 +11,6 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "LineRunEpochService": ("line_run_epoch_service", "LineRunEpochService"),
-    "line_run_epoch_service": ("line_run_epoch_service", "line_run_epoch_service"),
     "WorkLinePlaneService": ("plane_service", "WorkLinePlaneService"),
     "workline_plane_service": ("plane_service", "workline_plane_service"),
     "WorkLineConfigurationService": ("workline_configuration_service", "WorkLineConfigurationService"),
@@ -27,14 +25,12 @@ _EXPORTS = {
 
 
 __all__ = [
-    "LineRunEpochService",
     "WorkLineConfigurationService",
     "WorkLinePlaneService",
     "WorkLineSafetyBlocked",
     "WorkLineSafetyService",
     "WorkLineService",
     "WorklineDiagnosticService",
-    "line_run_epoch_service",
     "workline_diagnostic_service",
     "workline_plane_service",
     "workline_safety_service",

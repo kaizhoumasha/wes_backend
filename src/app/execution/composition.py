@@ -6,15 +6,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.app.execution.repositories import (
-    BinExecutionRepository,
     InboundEvidenceRepository,
     MaterialExecutionRepository,
-    PositionProjectionRepository,
     TransportDecisionBindingRepository,
     WmsConfirmationRepository,
 )
 from src.app.execution.services import (
-    BinExecutionService,
     DecisionApplier,
     FactProcessor,
     InboundEvidenceService,
@@ -29,10 +26,10 @@ if TYPE_CHECKING:
     from src.app.device.services import DeviceCommandService
     from src.app.execution.plugin_binding import StaticPluginBinding
     from src.app.execution.services.wms_confirmation_service import (
-        EpochConfirmationOwnerPort,
         PickingTaskConfirmationOwnerPort,
         WmsConfirmationAdapterPort,
         WmsConfirmationFollowUpPlanner,
+        WorkLineConfirmationOwnerPort,
     )
     from src.app.transport.service import TransportService
     from src.core.task_queue_gateway import TaskQueueGateway
@@ -40,7 +37,6 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionRuntime:
-    bin_execution_service: BinExecutionService
     material_execution_service: MaterialExecutionService
     position_projection_service: PositionProjectionService
     inbound_evidence_service: InboundEvidenceService
@@ -59,21 +55,15 @@ def build_execution_runtime(
     wms_confirmation_follow_up_planner: WmsConfirmationFollowUpPlanner | None,
     task_queue_gateway: TaskQueueGateway,
     picking_task_owner: PickingTaskConfirmationOwnerPort | None = None,
-    epoch_owner: EpochConfirmationOwnerPort | None = None,
+    workline_owner: WorkLineConfirmationOwnerPort | None = None,
 ) -> ExecutionRuntime:
     """只组合已显式注入的插件/WMS typed adapter，不发现或导入具体插件。"""
 
     material_repository = MaterialExecutionRepository()
-    bin_execution_repository = BinExecutionRepository()
-    position_projection_repository = PositionProjectionRepository()
     evidence_repository = InboundEvidenceRepository()
     confirmation_repository = WmsConfirmationRepository()
     transport_binding_repository = TransportDecisionBindingRepository()
     material_service = MaterialExecutionService(repository=material_repository)
-    bin_execution_service = BinExecutionService(
-        repository=bin_execution_repository,
-        projection_repository=position_projection_repository,
-    )
     evidence_service = InboundEvidenceService(repository=evidence_repository)
     confirmation_service = WmsConfirmationService(
         repository=confirmation_repository,
@@ -83,7 +73,7 @@ def build_execution_runtime(
         task_queue_gateway=task_queue_gateway,
         follow_up_planner=wms_confirmation_follow_up_planner,
         picking_task_owner=picking_task_owner,
-        epoch_owner=epoch_owner,
+        workline_owner=workline_owner,
     )
     applier = DecisionApplier(
         device_command_service=device_command_service,
@@ -93,7 +83,6 @@ def build_execution_runtime(
         material_execution_service=material_service,
     )
     return ExecutionRuntime(
-        bin_execution_service=bin_execution_service,
         material_execution_service=material_service,
         position_projection_service=position_projection_service,
         inbound_evidence_service=evidence_service,

@@ -21,7 +21,7 @@ def _current_processor() -> FactProcessor:
 
 
 async def assert_execution_worker_startable() -> None:
-    from src.app.workline.services.line_run_epoch_service import LineRunEpochService
+    from src.app.workline.services.workline_start_service import WorkLineStartService
     from src.database import db as db_module
 
     if db_module.AsyncSessionLocal is None:
@@ -30,7 +30,7 @@ async def assert_execution_worker_startable() -> None:
     if runtime is None:
         raise RuntimeError("Execution runtime is unavailable for execution worker startup")
     async with db_module.AsyncSessionLocal() as db:
-        await LineRunEpochService().assert_execution_worker_startable(db, plugins=runtime.plugins)
+        await WorkLineStartService(plugins=runtime.plugins).assert_execution_worker_startable(db)
 
 
 @celery_app.task(name="src.celery_app.tasks.execution.process_execution_facts_batch")

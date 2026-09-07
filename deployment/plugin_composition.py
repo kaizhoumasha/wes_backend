@@ -103,7 +103,7 @@ def build_deployment_runtime(
         wms_confirmation_follow_up_planner=InstalledPluginWmsFollowUpPlanner(plugins),
         task_queue_gateway=task_queue_gateway,
         picking_task_owner=PickingTaskConfirmationOwnerService(),
-        epoch_owner=ReturnBatchOwnerService(),
+        workline_owner=ReturnBatchOwnerService(),
     )
     recovery_handler = None
     if "rough_sorter" in enabled_plugin_keys:

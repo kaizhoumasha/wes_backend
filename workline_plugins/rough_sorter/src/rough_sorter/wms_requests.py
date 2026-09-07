@@ -39,7 +39,6 @@ def admission_data(fact: MaterialEvidenceReadyFact) -> AdmissionIntent:
         ),
         measurements=Measurements(diameter_mm=fact.diameter_mm, thickness_mm=fact.thickness_mm),
         shape_result=fact.shape_result.value,
-        line_run_epoch_id=fact.line_run_epoch_id,
         workline_code=fact.workline_code,
         source_position=fact.source_position,
     )

@@ -89,7 +89,7 @@ def resolve_installed_plugin_version(
     plugin_key: str,
     plugin_version: str,
 ) -> InstalledWorkLinePlugin:
-    """按 Epoch 冻结的完整插件身份精确选择，不回退到当前版本。"""
+    """按 WorkLine 冻结的完整插件身份精确选择，不回退到当前版本。"""
 
     plugin = resolve_installed_plugin(plugins, plugin_key)
     if plugin.plugin_version != plugin_version:

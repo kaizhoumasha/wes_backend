@@ -20,7 +20,7 @@ from rough_sorter.facts import (
     ReplacementResult,
     TransportLeg,
 )
-from rough_sorter.handlers._guards import require_epoch, require_execution
+from rough_sorter.handlers._guards import require_execution, require_workline
 
 
 @handler(
@@ -39,7 +39,7 @@ class ReplacementPlanDecidedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        _ = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        _ = require_workline(snapshot.workline, workline_id=execution.workline_id)
         if fact.result is ReplacementResult.WAIT:
             return (
                 Wait(

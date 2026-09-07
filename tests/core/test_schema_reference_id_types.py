@@ -13,15 +13,12 @@ from src.app.resource.models import (
     ResourceStateEvent,
 )
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding, LineRunEpochPositionBinding
 from src.app.workline.models.safety import WorklineSafetyIncident
 
 
 def test_reference_and_evidence_ids_compile_to_postgresql_bigint() -> None:
     columns = (
-        LineRunEpochDeviceBinding.__table__.c.line_run_epoch_id,
-        LineRunEpochPositionBinding.__table__.c.line_run_epoch_id,
-        TransportDecisionBinding.__table__.c.line_run_epoch_id,
+        TransportDecisionBinding.__table__.c.workline_id,
         BinContentSnapshot.__table__.c.source_session_id,
         BinMaterialMount.__table__.c.writeback_evidence_id,
         BinPlacement.__table__.c.workline_id,

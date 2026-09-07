@@ -125,7 +125,7 @@ class RecoveryEventEvidenceRecorder:
                 source_identity=source_identity,
                 normalized_payload=payload,
                 received_at=received_at,
-                line_run_epoch_id=execution.line_run_epoch_id,
+                workline_id=execution.workline_id,
                 material_execution_id=execution.id,
                 contract_key=envelope.operation,
                 contract_version="1.0",
@@ -173,7 +173,7 @@ class RecoveryEventEvidenceRecorder:
             or causal is None
             or getattr(causal, "id", None) != causal_id
             or getattr(causal, "material_execution_id", None) != execution.id
-            or getattr(causal, "line_run_epoch_id", None) != execution.line_run_epoch_id
+            or getattr(causal, "workline_id", None) != execution.workline_id
         ):
             raise RecoveryEventCorrelationError(reconciling_evidence_id)
 

@@ -10,13 +10,12 @@ import pytest
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.execution.models import (
-    BinExecution,
-    BinExecutionStatus,
     InboundEvidence,
     InboundEvidenceApplyStatus,
     InboundEvidenceKind,
     MaterialExecution,
     MaterialExecutionStatus,
+    PositionProjection,
     WmsConfirmation,
 )
 from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
@@ -25,7 +24,6 @@ from src.app.resource.repositories import bin_placement_repository, rack_placeme
 from src.app.transport.contracts import TransportTaskStatus
 from src.app.transport.models import TransportTask
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
-from src.app.workline.models.line_run_epoch import LineRunEpoch, LineRunEpochDeviceBinding, LineRunEpochStatus
 from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.workline_repository import WorkLineRepository
@@ -34,7 +32,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal_rows(
+async def test_snapshot_reports_execution_owners_and_positions_and_excludes_terminal_rows(
     integration_session_factory,
 ) -> None:
     identity = uuid4().hex
@@ -49,19 +47,6 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             )
             db.add(line)
             await db.flush()
-            epoch = LineRunEpoch(
-                epoch_code=f"UNFINISHED-EPOCH-{identity}",
-                workline_id=line.id,
-                plugin_key="snapshot_test",
-                plugin_version="1.0",
-                flow_mode="GENERIC",
-                topology_digest="a" * 64,
-                configuration_digest="b" * 64,
-                configuration_snapshot_json={},
-                started_at=now,
-            )
-            db.add(epoch)
-            await db.flush()
             device = Device(
                 device_code=f"SNAPSHOT-DEVICE-{identity[:16]}",
                 device_name="Snapshot device",
@@ -69,27 +54,14 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             )
             db.add(device)
             await db.flush()
-            binding = LineRunEpochDeviceBinding(
-                line_run_epoch_id=epoch.id,
-                device_id=device.id,
-                device_code=device.device_code,
-                device_role="SNAPSHOT_DEVICE",
-                endpoint_base_url="http://snapshot-device:8080",
-                contract_key="snapshot.contract",
-                contract_version="1.0",
-                status_max_age_ms=1_000,
-                command_timeout_ms=5_000,
-            )
-            db.add(binding)
-            await db.flush()
             evidence = InboundEvidence(
                 kind=InboundEvidenceKind.DEVICE_EVENT,
                 source_identity=f"UNFINISHED-EVIDENCE-{identity}",
                 payload_digest="c" * 64,
                 normalized_payload={"data": {}},
                 received_at=now,
-                line_run_epoch_id=epoch.id,
                 device_code=device.device_code,
+                workline_id=line.id,
                 apply_status=InboundEvidenceApplyStatus.PENDING,
             )
             db.add(evidence)
@@ -98,27 +70,30 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 execution_code=f"UNFINISHED-MATERIAL-{identity}",
                 material_trace_id=f"UNFINISHED-TRACE-{identity}",
                 workline_id=line.id,
-                line_run_epoch_id=epoch.id,
                 admission_received_at=evidence.received_at,
                 admission_evidence_id=evidence.id,
                 last_transition_reason="INITIAL_EVIDENCE",
                 last_transition_evidence_id=evidence.id,
                 status_changed_at=now,
             )
-            bin_execution = BinExecution(
-                execution_code=f"UNFINISHED-BIN-{identity}",
-                bin_id=f"BIN-{identity}",
+            projection = PositionProjection(
+                object_type="BIN",
+                object_id=f"BIN-{identity}",
                 workline_id=line.id,
-                line_run_epoch_id=epoch.id,
-                started_at=now,
+                position_json=None,
+                position_unknown=True,
+                source_operation_id=str(uuid4()),
+                source_transport_task_id=f"MOVE-{identity}",
             )
-            db.add_all([material, bin_execution])
+            db.add_all([material, projection])
             await db.flush()
             command = DeviceCommand(
                 command_code=f"UNFINISHED-COMMAND-{identity}",
                 device_code=device.device_code,
-                device_binding_id=binding.id,
-                line_run_epoch_id=epoch.id,
+                endpoint_base_url="http://snapshot-device:8080",
+                command_timeout_ms=5000,
+                status_max_age_ms=1000,
+                workline_id=line.id,
                 execution_ref_type="MATERIAL_EXECUTION",
                 execution_ref_id=str(material.id),
                 material_execution_id=material.id,
@@ -141,8 +116,6 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 submit_request_body="{}",
                 submit_request_body_digest="f" * 64,
                 authority_workline_id=line.id,
-                authority_line_run_epoch_id=epoch.id,
-                authority_bin_execution_id=bin_execution.id,
                 created_at=now,
                 updated_at=now,
             )
@@ -156,7 +129,7 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             )
             incident = WorklineSafetyIncident(workline_id=line.id)
             bin_placement = BinPlacement(
-                bin_code=bin_execution.bin_id,
+                bin_code=projection.object_id,
                 position_type="WORKLINE_POSITION",
                 position_code="TARGET-BIN-POSITION",
                 workline_id=line.id,
@@ -181,21 +154,20 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             summary = await repository.get_unfinished_workload_summary(db, line.id)
 
             assert summary["by_type"] == {
-                "line_run_epochs": 1,
                 "material_executions": 1,
-                "bin_executions": 1,
                 "device_commands": 1,
                 "transport_tasks": 1,
                 "inbound_evidences": 1,
                 "wms_confirmations": 1,
                 "picking_tasks": 0,
+                "position_projections": 1,
             }
-            assert summary["count"] == 7
+            assert summary["count"] == 6
             assert summary["sample"] == {
-                "type": "line_run_epoch",
-                "id": str(epoch.id),
-                "status": "ACTIVE",
-                "identity": epoch.epoch_code,
+                "type": "material_execution",
+                "id": str(material.id),
+                "status": "CREATED",
+                "identity": material.execution_code,
             }
             assert summary["samples"]["transport_tasks"] == {
                 "type": "transport_task",
@@ -247,9 +219,7 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             await db.flush()
             active_objects = await repository.list_target_active_object_facts(db, workline_id=line.id)
             assert {(row["object_type"], row["object_key"]) for row in active_objects} == {
-                ("LINE_RUN_EPOCH", epoch.epoch_code),
                 ("MATERIAL_EXECUTION", material.material_trace_id),
-                ("BIN_EXECUTION", bin_execution.bin_id),
                 ("DEVICE_COMMAND", command.command_code),
                 ("TRANSPORT_TASK", transport.transport_task_id),
                 ("WMS_CONFIRMATION", confirmation.operation_id),
@@ -258,9 +228,7 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 ("RACK_RESOURCE", rack_placement.rack_code),
             }
             assert {row["owner_kind"] for row in active_objects} == {
-                "LINE_RUN_EPOCH",
                 "MATERIAL_EXECUTION",
-                "BIN_EXECUTION",
                 "DEVICE_COMMAND",
                 "TRANSPORT_TASK",
                 "WMS_CONFIRMATION",
@@ -269,12 +237,10 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 "RACK_PLACEMENT",
             }
 
-            epoch.status = LineRunEpochStatus.CLOSED
-            epoch.closed_at = now
             material.status = MaterialExecutionStatus.CLOSED
             material.closed_at = now
-            bin_execution.status = BinExecutionStatus.CLOSED
-            bin_execution.closed_at = now
+            projection.position_unknown = False
+            projection.position_json = {"kind": "HANDOFF", "location_code": "OUTSIDE"}
             command.status = CommandStatus.SUCCEEDED
             command.completed_at = now
             transport.status = TransportTaskStatus.SUCCEEDED
@@ -300,8 +266,6 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 submit_request_body="{}",
                 submit_request_body_digest="3" * 64,
                 authority_workline_id=line.id,
-                authority_line_run_epoch_id=epoch.id,
-                authority_bin_execution_id=bin_execution.id,
                 created_at=now,
                 updated_at=now,
             )
@@ -322,13 +286,6 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 assert current["by_type"][owner] == 1
                 assert not any(value for name, value in current["by_type"].items() if name != owner)
 
-            epoch.status = LineRunEpochStatus.ACTIVE
-            epoch.closed_at = None
-            await db.flush()
-            await assert_only("line_run_epochs")
-            epoch.status = LineRunEpochStatus.CLOSED
-            epoch.closed_at = now
-
             for state in (value for value in MaterialExecutionStatus if value is not MaterialExecutionStatus.CLOSED):
                 material.status = state
                 material.closed_at = None
@@ -337,12 +294,12 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
             material.status = MaterialExecutionStatus.CLOSED
             material.closed_at = now
 
-            bin_execution.status = BinExecutionStatus.ACTIVE
-            bin_execution.closed_at = None
+            projection.position_unknown = True
+            projection.position_json = None
             await db.flush()
-            await assert_only("bin_executions")
-            bin_execution.status = BinExecutionStatus.CLOSED
-            bin_execution.closed_at = now
+            await assert_only("position_projections")
+            projection.position_unknown = False
+            projection.position_json = {"kind": "HANDOFF", "location_code": "OUTSIDE"}
 
             for state in (
                 CommandStatus.PENDING,
@@ -366,6 +323,13 @@ async def test_snapshot_reports_all_seven_execution_owners_and_excludes_terminal
                 await db.flush()
                 await assert_only("transport_tasks")
             transport.status = TransportTaskStatus.SUCCEEDED
+            transport.outcome_version = 1
+            transport.published_outcome_version = 0
+            await db.flush()
+            await assert_only("transport_tasks")
+            transport.published_outcome_version = 1
+            await db.flush()
+            assert (await repository.get_unfinished_workload_summary(db, line.id))["count"] == 0
 
             for state in (InboundEvidenceApplyStatus.PENDING, InboundEvidenceApplyStatus.RECONCILING):
                 evidence.apply_status = state
@@ -409,21 +373,6 @@ async def test_unbound_applied_device_result_is_diagnostic_not_unfinished_owner(
             )
             db.add(line)
             await db.flush()
-            epoch = LineRunEpoch(
-                epoch_code=f"DIAGNOSTIC-EPOCH-{identity}",
-                workline_id=line.id,
-                plugin_key="snapshot_test",
-                plugin_version="1.0",
-                flow_mode="GENERIC",
-                topology_digest="a" * 64,
-                configuration_digest="b" * 64,
-                configuration_snapshot_json={},
-                status=LineRunEpochStatus.CLOSED,
-                started_at=now,
-                closed_at=now,
-            )
-            db.add(epoch)
-            await db.flush()
             db.add(
                 InboundEvidence(
                     kind=InboundEvidenceKind.DEVICE_RESULT,
@@ -431,7 +380,7 @@ async def test_unbound_applied_device_result_is_diagnostic_not_unfinished_owner(
                     payload_digest="c" * 64,
                     normalized_payload={"data": {}},
                     received_at=now,
-                    line_run_epoch_id=epoch.id,
+                    workline_id=line.id,
                     device_code="SNAPSHOT-DEVICE",
                     command_code=f"DIAGNOSTIC-COMMAND-{identity}",
                     apply_status=InboundEvidenceApplyStatus.APPLIED,
@@ -457,19 +406,6 @@ async def _seed_picking_snapshot(db, *, now: datetime):  # type: ignore[no-untyp
     )
     db.add(line)
     await db.flush()
-    epoch = LineRunEpoch(
-        epoch_code=f"PICKING-SNAPSHOT-EPOCH-{identity}",
-        workline_id=line.id,
-        plugin_key="snapshot_test",
-        plugin_version="1.0",
-        flow_mode="GENERIC",
-        topology_digest="a" * 64,
-        configuration_digest="b" * 64,
-        configuration_snapshot_json={},
-        status=LineRunEpochStatus.CLOSED,
-        started_at=now,
-        closed_at=now,
-    )
     evidence = InboundEvidence(
         kind=InboundEvidenceKind.WMS_EVENT,
         source_identity=f"PICKING-SNAPSHOT-EVIDENCE-{identity}",
@@ -481,7 +417,7 @@ async def _seed_picking_snapshot(db, *, now: datetime):  # type: ignore[no-untyp
         apply_status=InboundEvidenceApplyStatus.APPLIED,
         processed_at=now,
     )
-    db.add_all([epoch, evidence])
+    db.add(evidence)
     await db.flush()
     task = PickingTask(
         task_id=f"PICKING-SNAPSHOT-TASK-{identity}",
@@ -492,11 +428,10 @@ async def _seed_picking_snapshot(db, *, now: datetime):  # type: ignore[no-untyp
         issued_at_ms=1,
         issued_evidence_id=evidence.id,
         workline_id=line.id,
-        line_run_epoch_id=epoch.id,
     )
     db.add(task)
     await db.flush()
-    return line, epoch, task, evidence
+    return line, task, evidence
 
 
 @pytest.mark.asyncio
@@ -505,8 +440,8 @@ async def test_picking_snapshot_counts_bound_active_and_blocked_tasks_only(integ
     async with integration_session_factory() as db:
         transaction = await db.begin()
         try:
-            line, _, task, evidence = await _seed_picking_snapshot(db, now=now)
-            other_line, _, other_task, _ = await _seed_picking_snapshot(db, now=now)
+            line, task, evidence = await _seed_picking_snapshot(db, now=now)
+            other_line, other_task, _ = await _seed_picking_snapshot(db, now=now)
             other_task.status = PickingTaskStatus.PREPARING
             await db.flush()
             repository = WorkLineRepository()
@@ -535,7 +470,6 @@ async def test_picking_snapshot_counts_bound_active_and_blocked_tasks_only(integ
                     assert summary["sample"] is None
             task.status = PickingTaskStatus.QUEUED
             task.workline_id = None
-            task.line_run_epoch_id = None
             task.plan_blocked_evidence_id = None
             await db.flush()
             assert (await repository.get_unfinished_workload_summary(db, line.id))["count"] == 0
@@ -554,8 +488,8 @@ async def test_picking_confirmation_snapshot_needs_no_material_owner_and_counts_
     async with integration_session_factory() as db:
         transaction = await db.begin()
         try:
-            line, _, task, _ = await _seed_picking_snapshot(db, now=now)
-            _, _, other_task, _ = await _seed_picking_snapshot(db, now=now)
+            line, task, _ = await _seed_picking_snapshot(db, now=now)
+            _, other_task, _ = await _seed_picking_snapshot(db, now=now)
             confirmation = WmsConfirmation(
                 operation="outbound.picking_task.prepare@v1",
                 operation_id=uuid4().hex,

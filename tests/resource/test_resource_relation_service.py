@@ -283,3 +283,26 @@ async def test_record_empty_rack_verified_conflict_returns_reconciling_without_o
     assert result.reason_code == "RACK_BIN_SLOT_CONFLICT"
     assert state_events.created[0]["resource_code"] == "RACK-ECS-001"
     assert bin_mounts.created == []
+
+
+@pytest.mark.asyncio
+async def test_empty_rack_old_bin_id_does_not_create_mounts() -> None:
+    from src.app.resource.services import ResourceProjectionStatus, ResourceRelationService
+
+    state_events = RecordingStateEventRepo()
+    bin_mounts = RecordingBinMountRepo()
+    service = ResourceRelationService(state_event_repo=state_events, rack_bin_mount_repo=bin_mounts)
+    mounts = [{"rack_slot_code": f"A0{i}", "bin_id": f"BIN-ECS-00{i}"} for i in range(1, 5)]
+
+    result = await service.record_empty_rack_verified(
+        object(),
+        rack_code="RACK-ECS-001",
+        bin_mounts=mounts,
+        source_event_id="old-bin-field",
+        occurred_at=datetime(2026, 9, 6, 12, 0, 0),
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    assert result.reason_code == "EMPTY_RACK_BIN_MOUNTS_INVALID"
+    assert state_events.created[0]["payload_json"]["bin_mounts"] == mounts
+    assert bin_mounts.created == []

@@ -235,7 +235,7 @@ async def test_lifecycle_accepts_exactly_one_picking_task_owner() -> None:
 
     assert result.confirmation.picking_task_id == 31
     assert result.confirmation.material_execution_id is None
-    assert result.confirmation.bin_execution_id is None
+    assert result.confirmation.workline_id is None
 
 
 @pytest.mark.asyncio
@@ -268,18 +268,18 @@ async def test_epoch_confirmation_requires_owner_validation_and_preserves_identi
     owner = AsyncMock()
     owner.validate_owner.return_value = True
     repository = FakeWmsConfirmationRepository()
-    service = WmsConfirmationService(repository=repository, epoch_owner=owner)
+    service = WmsConfirmationService(repository=repository, workline_owner=owner)
     now = datetime(2026, 8, 1)
     kwargs = {
         "operation": "outbound.bin.return_batch@v1",
-        "operation_id": "epoch-request",
-        "line_run_epoch_id": 71,
+        "operation_id": "workline-request",
+        "workline_id": 71,
         "request_payload": {"data": {}},
         "deadline_at": now + timedelta(minutes=5),
         "created_at": now,
     }
     first = await service.create_or_get(object(), **kwargs)
-    assert first.confirmation.line_run_epoch_id == 71
+    assert first.confirmation.workline_id == 71
     assert (await service.create_or_get(object(), **kwargs)).duplicate
     assert owner.validate_owner.await_count == 1
     owner.validate_owner.return_value = False

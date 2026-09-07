@@ -155,10 +155,10 @@ class PickingTaskPlanDeltaService:
             return "REVISION_CONFLICT"
         if (data.plan_revision == 1) != (task.status == PickingTaskStatus.PREPARING):
             return "STATE_CONFLICT"
-        confirmations, line, epoch = await self._plans.prepare_context(db, task)
-        if len(confirmations) != 1 or line is None or epoch is None or epoch.workline_id != task.workline_id:
+        confirmations, line = await self._plans.prepare_context(db, task)
+        if len(confirmations) != 1 or line is None or line.id != task.workline_id:
             return "REFERENCE_CONFLICT"
-        if epoch.status != "ACTIVE":
+        if not line.is_active:
             return "STATE_CONFLICT"
         confirmation = confirmations[0]
         request = confirmation.request_payload

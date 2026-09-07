@@ -68,9 +68,9 @@ def build_debug_transport_request(
         for selection in _bins(group):
             rack_slot = RackBinSlot(rack_id, face, _text(selection, "slot_id"))
             if phase is TransportDebugRunPhase.BINS_TO_INFEED:
-                moves.append(BinMove(_text(selection, "bin_id"), rack_slot, infeed))
+                moves.append(BinMove(_text(selection, "bin_code"), rack_slot, infeed))
             else:
-                moves.append(BinMove(_text(selection, "bin_id"), outfeed, rack_slot))
+                moves.append(BinMove(_text(selection, "bin_code"), outfeed, rack_slot))
         return MoveBinsRequest(step.client_request_id, _CALLER, tuple(moves))
     if phase is TransportDebugRunPhase.ROTATE_TO_NEXT_FACE:
         return RotateRackRequest(
@@ -156,7 +156,7 @@ def _members_match(  # noqa: PLR0911 - closed request kinds use separate exact-r
     configuration: dict[str, object],
 ) -> bool:
     if isinstance(request, MoveBinsRequest):
-        expected = {move.bin_id: move for move in request.moves}
+        expected = {move.bin_code: move for move in request.moves}
         if len(members) != len(expected) or len({member.object_id for member in members}) != len(members):
             return False
         for member in members:

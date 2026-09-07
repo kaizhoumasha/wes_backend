@@ -117,7 +117,8 @@ reviewed_content_sha256 = "cbb3931e9f7c10d6631effa65f706b547df15789b2dc58390de9d
 [[mapping]]
 source_glob = "docs/architecture/legacy-cleanup-matrix.csv"
 heavy_tests = []
-reviewed_content_sha256 = "1b9b597aaed1421543fead420d4a8c14b8d092178cf461a9a637443f3c339b26"
+# 由生成器删除已退出 Epoch 符号并同步 START 版本错误；17 项矩阵 FAST 通过。
+reviewed_content_sha256 = "d597d0ad6576817448fb897b14bff3c1eb899aee3c40d14a9cfbeeee80fc4c60"
 
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/models/operation.py"
@@ -509,7 +510,7 @@ heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
 [[mapping]]
@@ -643,7 +644,7 @@ source_glob = "src/app/device/{models/device.py,repositories/device_repository.p
 heavy_tests = [
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
 ]
 
@@ -1091,13 +1092,14 @@ source_glob = "migrations/env.py"
 heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/transport/test_transport_schema.py"]
 
 [[mapping]]
-source_glob = "src/app/workline/{epoch_activation.py,models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+# WorkLine 当前激活合同承接旧 Epoch；旧路径保留用于选择本次删除差异的验证。
+source_glob = "src/app/workline/{activation.py,epoch_activation.py,models/line_run_epoch.py,repositories/line_run_epoch_repository.py,services/line_run_epoch_service.py}"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
@@ -1246,7 +1248,7 @@ source_glob = "src/app/workline/epoch_digest.py"
 heavy_tests = [
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
 
 [[mapping]]
@@ -1309,7 +1311,8 @@ reviewed_content_sha256 = "1bcf01665e0aae0e94f75871d98c72eafc021b5163676e5e234b5
 [[mapping]]
 source_glob = "src/app/resource/services/relation_service.py"
 heavy_tests = []
-reviewed_content_sha256 = "2dc4358ee7c82b2ad0b1b758ee4956e99f2caf0bddcf0f3ebd87418778716511"
+# 仅删除 bin_id 输入别名；无新增持久化路径，FAST 验证旧字段保留事实但不生成挂载。
+reviewed_content_sha256 = "fb2d86241479a62bd630796c5468e7bcb6f350a80fe4f515ea086a6822c1c40a"
 
 [[mapping]]
 source_glob = "src/app/sys/services/audit_service.py"
@@ -2047,6 +2050,11 @@ heavy_tests = []
 source_glob = "src/app/resource/services/active_rack_snapshot_service.py"
 heavy_tests = []
 
+# 纯 Trace 资源 DTO 投影；当前无生产调用者，仅静态导出，无数据库或 worker 行为。
+[[mapping]]
+source_glob = "src/app/runtime/orchestration/services/trace/trace_resource_view_builder.py"
+heavy_tests = []
+
 [[mapping]]
 source_glob = "src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py"
 heavy_tests = []
@@ -2248,7 +2256,38 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "{tests/integration/conftest.py,tests/support/runtime_inbox_postgresql.py}"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_base_repository_crud.py",
+    "tests/integration/test_base_repository_hooks.py",
+    "tests/integration/test_celery_async_runtime.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_celery_prefork_harness_cleanup.py",
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/test_optimistic_lock.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+    "tests/integration/test_release_operational_readiness_postgresql.py",
+    "tests/integration/test_reset_runtime_data_postgresql.py",
+    "tests/integration/test_runtime_production_closure_contract.py",
+    "tests/integration/test_transport_broker_harness_cleanup.py",
+    "tests/integration/test_transport_fastapi_lifespan.py",
+    "tests/integration/test_transport_fulfillment_queue.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/transport/test_transport_debug_reset.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+]
 
 # Phase 10 Task 5 retired HEAVY support/test assets.
 
@@ -2339,11 +2378,57 @@ heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "
 
 [[mapping]]
 source_glob = "migrations/versions/20260905_1102_b42147d0d086_添加工作线插件选择并放开同角色设备.py"
-heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "tests/support/postgresql_heavy.py"
-heavy_tests = ["tests/integration/device_command/test_device_command_constraints.py", "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/execution/test_execution_constraints.py", "tests/integration/test_authorization_bootstrap_postgresql.py", "tests/integration/test_base_repository_crud.py", "tests/integration/test_base_repository_hooks.py", "tests/integration/test_celery_async_runtime.py", "tests/integration/test_celery_async_runtime_postgresql.py", "tests/integration/test_celery_prefork_harness_cleanup.py", "tests/integration/test_dev_seed_initial_data_postgresql.py", "tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/test_optimistic_lock.py", "tests/integration/test_permission_catalog_sync_postgresql.py", "tests/integration/test_release_operational_readiness_postgresql.py", "tests/integration/test_reset_runtime_data_postgresql.py", "tests/integration/test_runtime_production_closure_contract.py", "tests/integration/test_transport_broker_harness_cleanup.py", "tests/integration/test_transport_fastapi_lifespan.py", "tests/integration/test_transport_fulfillment_queue.py", "tests/integration/test_wms_northbound_feasibility_probe.py", "tests/integration/transport/test_dark_transport_loop.py", "tests/integration/transport/test_transport_debug_reset.py", "tests/integration/transport/test_transport_evidence_transaction.py", "tests/integration/transport/test_transport_repository.py", "tests/integration/transport/test_transport_schema.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/test_transport_callback_receipts.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py"]
+heavy_tests = [
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+    "tests/integration/test_base_repository_crud.py",
+    "tests/integration/test_base_repository_hooks.py",
+    "tests/integration/test_celery_async_runtime.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+    "tests/integration/test_celery_prefork_harness_cleanup.py",
+    "tests/integration/test_dev_seed_initial_data_postgresql.py",
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/test_optimistic_lock.py",
+    "tests/integration/test_permission_catalog_sync_postgresql.py",
+    "tests/integration/test_release_operational_readiness_postgresql.py",
+    "tests/integration/test_reset_runtime_data_postgresql.py",
+    "tests/integration/test_runtime_production_closure_contract.py",
+    "tests/integration/test_transport_broker_harness_cleanup.py",
+    "tests/integration/test_transport_fastapi_lifespan.py",
+    "tests/integration/test_transport_fulfillment_queue.py",
+    "tests/integration/test_wms_northbound_feasibility_probe.py",
+    "tests/integration/transport/test_dark_transport_loop.py",
+    "tests/integration/transport/test_transport_debug_reset.py",
+    "tests/integration/transport/test_transport_evidence_transaction.py",
+    "tests/integration/transport/test_transport_repository.py",
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py",
+    "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py",
+]
 
 [[mapping]]
 source_glob = "{tests/support/postgresql_catalog.py,tests/integration/fixtures/initial_schema_old_chain_catalog.json,tests/integration/fixtures/initial_schema_final_manifest.json,tests/integration/fixtures/initial_schema_disposition.json,tests/integration/fixtures/initial_schema_transition_disposition.json}"
@@ -2367,7 +2452,11 @@ heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 # Device 业务角色删除：验证干净 schema 与工作线配置/启动事务。
 [[mapping]]
 source_glob = "migrations/versions/20260906_0426_627291489210_remove_device_business_roles.py"
-heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+]
 
 # 无调用者的 Device 业务角色拓扑桥已删除；rg 与图谱均确认无运行消费者。
 [[mapping]]
@@ -2430,3 +2519,20 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py","
 [[mapping]]
 source_glob = "migrations/versions/20260907_0427_5098dc1b2b63_add_epoch_owner_to_wms_confirmation.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_schema.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py"]
+
+# 删除运行代际和箱执行结构；验证新 schema、证据保护及实际持久化消费者。
+[[mapping]]
+source_glob = "migrations/versions/20260907_1118_93deacda8c9c_retire_bin_execution_and_line_run_epoch.py"
+heavy_tests = [
+    "tests/integration/workline_capabilities/test_workline_retirement_schema_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
+    "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
+    "tests/integration/execution/test_execution_constraints.py",
+    "tests/integration/execution/test_decision_processing_postgresql.py",
+    "tests/integration/transport/test_transport_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+]

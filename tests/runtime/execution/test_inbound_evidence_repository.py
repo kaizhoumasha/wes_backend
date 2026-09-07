@@ -64,7 +64,7 @@ async def test_decision_claim_and_partial_index_exclude_foundation_device_result
     exclusion = "NOT (wes_biz.inbound_evidences.kind = 'DEVICE_RESULT' AND "
     assert exclusion in sql
     assert "wes_biz.inbound_evidences.material_execution_id IS NULL" in sql
-    assert "wes_biz.line_run_epochs.status = 'ACTIVE'" in sql
+    assert "wes_biz.work_lines.is_active IS true" in sql
     assert "inbound_evidences.decision_next_attempt_at IS NULL" in sql
     assert "FOR UPDATE OF inbound_evidences SKIP LOCKED" in sql
 

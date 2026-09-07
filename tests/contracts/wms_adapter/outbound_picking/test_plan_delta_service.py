@@ -62,7 +62,6 @@ def setup_service(status=Status.PENDING):
         task_type="MANUAL",
         status="PREPARING",
         workline_id=2,
-        line_run_epoch_id=3,
         queue_revision=1,
         dispatch_sequence=1,
         issued_at_ms=1,
@@ -99,8 +98,7 @@ def setup_service(status=Status.PENDING):
         prepare_context=AsyncMock(
             return_value=(
                 [confirmation],
-                SimpleNamespace(line_code="L"),
-                SimpleNamespace(workline_id=2, status="ACTIVE"),
+                SimpleNamespace(id=2, line_code="L", is_active=True),
             )
         ),
         get_evidence=AsyncMock(return_value=response),
@@ -243,9 +241,9 @@ async def test_unknown_task_does_not_create_or_block_another_task():
     assert task.plan_blocked_evidence_id is None
 
 
-async def test_closed_epoch_cannot_admit_new_revision():
+async def test_inactive_workline_cannot_admit_new_revision():
     service, _, _, _ = setup_service()
-    service._plans.prepare_context.return_value[2].status = "CLOSED"
+    service._plans.prepare_context.return_value[1].is_active = False
     assert (await service.record(event(), received_at=NOW)).reason_code == "STATE_CONFLICT"
 
 

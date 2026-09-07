@@ -21,7 +21,7 @@ from wes_plugin_sdk import (
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.services.decision_applier import DecisionApplier, decision_digest
-from src.app.workline.models.line_run_epoch import LineRunEpochDeviceBinding
+from src.app.workline.activation import WorkLineDeviceBinding
 from src.utils.canonical_json import canonical_json_digest
 
 NOW = datetime(2026, 8, 17, 9, 0, 0)
@@ -76,7 +76,7 @@ def _evidence() -> InboundEvidence:
         payload_digest="a" * 64,
         normalized_payload={"data": {}},
         received_at=NOW,
-        line_run_epoch_id=11,
+        workline_id=7,
         material_execution_id=21,
         contract_version="1.0",
         apply_status=InboundEvidenceApplyStatus.APPLIED,
@@ -89,7 +89,6 @@ def _execution() -> MaterialExecution:
         execution_code="EXEC-1",
         material_trace_id="TRACE-1",
         workline_id=7,
-        line_run_epoch_id=11,
         status=MaterialExecutionStatus.CREATED,
         last_transition_reason="INITIAL_EVIDENCE",
         last_transition_evidence_id=31,
@@ -106,19 +105,18 @@ def _fact() -> EvidenceReadyFact:
     )
 
 
-class _Epochs:
+class _WorkLines:
     async def get_binding_by_role_and_code_for_update(
         self, db: object, **kwargs: object
-    ) -> LineRunEpochDeviceBinding | None:
+    ) -> WorkLineDeviceBinding | None:
         del db
         assert kwargs == {
-            "line_run_epoch_id": 11,
+            "workline_id": 7,
             "device_role": "TRANSFER_DEVICE",
             "device_code": "TRANSFER-1",
         }
-        return LineRunEpochDeviceBinding(
-            id=41,
-            line_run_epoch_id=11,
+        return WorkLineDeviceBinding(
+            workline_id=7,
             device_id=5,
             device_code="TRANSFER-1",
             device_role="TRANSFER_DEVICE",
@@ -158,15 +156,15 @@ class _TransportBindings:
 
     async def lock_decision_identity(self, db: object, **kwargs: object) -> None:
         del db
-        self.locked.append((int(kwargs["line_run_epoch_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
+        self.locked.append((int(kwargs["workline_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
 
     async def get_by_decision_identity_for_update(self, db: object, **kwargs: object) -> object | None:
         del db
-        return self.bindings.get((int(kwargs["line_run_epoch_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
+        return self.bindings.get((int(kwargs["workline_id"]), str(kwargs["correlation_id"]), str(kwargs["step"])))
 
-    async def lock_resource_fence(self, db: object, *, line_run_epoch_id: int, resource_fence_id: str) -> None:
+    async def lock_resource_fence(self, db: object, *, workline_id: int, resource_fence_id: str) -> None:
         del db
-        self.resource_locks.append((line_run_epoch_id, resource_fence_id))
+        self.resource_locks.append((workline_id, resource_fence_id))
 
     async def add(self, db: object, binding: object) -> object:
         del db
@@ -199,7 +197,7 @@ class _Executions:
 
 def _applier(**overrides: object) -> DecisionApplier:
     dependencies = {
-        "epoch_repository": _Epochs(),
+        "workline_repository": _WorkLines(),
         "device_command_service": _DeviceCommands(),
         "wms_confirmation_service": _WmsConfirmations(),
         "transport_binding_repository": _TransportBindings(),
@@ -323,35 +321,34 @@ async def test_create_transport_task_persists_scoped_decision_mapping_before_tra
 
     await applier.apply(object(), _evidence(), _execution(), _fact(), (decision,))
 
-    binding = transport_bindings.bindings[(11, "REPLACE-1", "PRIMARY_MOVE")]
-    assert binding.line_run_epoch_id == 11
+    binding = transport_bindings.bindings[(7, "REPLACE-1", "PRIMARY_MOVE")]
+    assert binding.workline_id == 7
     assert binding.resource_fence_id == "RACK-CURRENT"
-    assert transport_bindings.locked == [(11, "REPLACE-1", "PRIMARY_MOVE")]
-    assert transport_bindings.resource_locks == [(11, "RACK-CURRENT")]
+    assert transport_bindings.locked == [(7, "REPLACE-1", "PRIMARY_MOVE")]
+    assert transport_bindings.resource_locks == [(7, "RACK-CURRENT")]
     assert transport.calls[0]["client_request_id"] == binding.client_request_id
     assert transport.calls[0]["rack_id"] == "RACK-CURRENT"
     assert transport.calls[0]["caller"].workline_id == "7"
     assert transport.calls[0]["execution_authority"].workline_id == 7
-    assert transport.calls[0]["execution_authority"].line_run_epoch_id == 11
-    assert transport.calls[0]["execution_authority"].bin_execution_id is None
+    assert transport.calls[0]["execution_authority"].workline_id == 7
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mismatch", ["line_run_epoch_id", "resource_fence_id", "source_evidence_id"])
+@pytest.mark.parametrize("mismatch", ["workline_id", "resource_fence_id", "source_evidence_id"])
 async def test_create_transport_task_rejects_existing_binding_correlation_drift(mismatch: str) -> None:
     transport_bindings = _TransportBindings()
     transport = _Transport()
     persisted = {
-        "line_run_epoch_id": 11,
+        "workline_id": 7,
         "resource_fence_id": "RACK-CURRENT",
         "source_evidence_id": 31,
     }
     persisted[mismatch] = {
-        "line_run_epoch_id": 12,
+        "workline_id": 12,
         "resource_fence_id": "RACK-OTHER",
         "source_evidence_id": 32,
     }[mismatch]
-    transport_bindings.bindings[(11, "REPLACE-1", "OLD_OUT")] = SimpleNamespace(
+    transport_bindings.bindings[(7, "REPLACE-1", "OLD_OUT")] = SimpleNamespace(
         correlation_id="REPLACE-1",
         step="OLD_OUT",
         client_request_id="019cd8ce-34b7-7000-8000-000000000099",

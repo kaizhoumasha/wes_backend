@@ -12,22 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.app.device.models.device import Device
 from src.app.execution.plugin_binding import PluginRuntimeBinding
-from src.app.workline.epoch_activation import (
-    LineRunEpochDeviceBindingInput,
-    LineRunEpochPositionBindingInput,
-    WorkLineEpochActivationPlan,
+from src.app.workline.activation import (
+    WorkLineActivationPlan,
+    WorkLineDeviceBinding,
+    WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.line_run_epoch import (
-    LineRunEpoch,
-    LineRunEpochDeviceBinding,
-    LineRunEpochPositionBinding,
-    LineRunEpochStatus,
-)
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.workline_start_service import (
-    WorkLineStartIdempotencyConflictError,
     WorkLineStartService,
+    WorkLineStartVersionConflictError,
 )
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
@@ -48,17 +42,17 @@ class Builder:
     device_by_workline: dict[int, int]
     calls: list[int] = field(default_factory=list)
 
-    async def build(self, _db: object, workline: WorkLine) -> WorkLineEpochActivationPlan:
+    async def build(self, _db: object, workline: WorkLine) -> WorkLineActivationPlan:
         assert workline.id is not None
         self.calls.append(workline.id)
         device_id = self.device_by_workline[workline.id]
-        return WorkLineEpochActivationPlan(
+        return WorkLineActivationPlan(
             plugin_key="postgresql_test",
             plugin_version="1.0",
             flow_mode="GENERIC_FLOW",
-            configuration_snapshot={"workline_id": workline.id},
             device_bindings=(
-                LineRunEpochDeviceBindingInput(
+                WorkLineDeviceBinding(
+                    workline_id=workline.id,
                     device_id=device_id,
                     device_code=f"START-PG-DEVICE-{workline.id}",
                     device_role="DEVICE_ROLE",
@@ -70,7 +64,7 @@ class Builder:
                 ),
             ),
             position_bindings=(
-                LineRunEpochPositionBindingInput(
+                WorkLinePositionBinding(
                     position_role="INPUT_POSITION",
                     location_id=f"LOCATION-{workline.id}",
                     location_type="RACK_CELL",
@@ -112,183 +106,60 @@ async def _seed_workline(session_factory: async_sessionmaker[AsyncSession], suff
         db.add(device)
         await db.flush()
         assert device.id is not None
+        workline.config = {"device_bindings": {"DEVICE_ROLE": device.device_code}}
+        await db.flush()
         return workline.id, device.id
 
 
-def test_workline_start_is_atomic_replay_first_and_serialized_by_request_identity() -> None:
+def test_workline_start_publishes_current_contract_and_serializes_version() -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
             engine = create_async_engine(database_url, pool_pre_ping=True)
-            session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
             try:
-                async with session_factory() as db:
+                line_id, device_id = await _seed_workline(sessions, "CONCURRENT")
+                builder = Builder({line_id: device_id})
+                service = WorkLineStartService(plugins=(_plugin(builder),))
+
+                async def start():
+                    async with sessions.begin() as db:
+                        return await service.start(db, workline_id=line_id, version=0)
+
+                results = await asyncio.gather(start(), start(), return_exceptions=True)
+                assert sum(isinstance(result, WorkLine) for result in results) == 1
+                assert sum(isinstance(result, WorkLineStartVersionConflictError) for result in results) == 1
+                assert builder.calls == [line_id]
+                async with sessions() as db:
+                    persisted = await db.get(WorkLine, line_id)
+                    assert persisted.is_active and persisted.version == 1
+                    assert persisted.plugin_version == "1.0"
+                    assert persisted.flow_mode == "GENERIC_FLOW"
+                    assert persisted.config == {"device_bindings": {"DEVICE_ROLE": f"START-PG-DEVICE-{line_id}"}}
+                    assert persisted.device_contracts[f"START-PG-DEVICE-{line_id}"]["device_id"] == device_id
+                    assert persisted.position_bindings == {
+                        "INPUT_POSITION": {"location_id": f"LOCATION-{line_id}", "location_type": "RACK_CELL"}
+                    }
                     columns = set(
                         await db.scalars(
                             text(
-                                "SELECT column_name FROM information_schema.columns "
-                                "WHERE table_schema = 'wes_biz' AND table_name = 'work_lines'"
+                                "SELECT column_name FROM information_schema.columns WHERE table_schema='wes_biz' AND table_name='work_lines'"
                             )
                         )
                     )
-                assert RETIRED_COLUMNS.isdisjoint(columns)
-
-                workline_id, device_id = await _seed_workline(session_factory, "LIFECYCLE")
-                builder = Builder({workline_id: device_id})
-                service = WorkLineStartService(plugins=(_plugin(builder),))
-
-                async with session_factory.begin() as db:
-                    started = await service.start(db, workline_id=workline_id, request_id="START-PG-LIFECYCLE")
-                assert started.created is True
-                assert started.current_workline_runtime_status == "READY"
-
-                async with session_factory.begin() as db:
-                    epoch = await db.scalar(
-                        select(LineRunEpoch).where(LineRunEpoch.epoch_code == "START-PG-LIFECYCLE").with_for_update()
-                    )
-                    workline = await db.get(WorkLine, workline_id, with_for_update=True)
-                    assert epoch is not None and workline is not None
-                    epoch.status = LineRunEpochStatus.CLOSED
-                    epoch.closed_at = datetime(2026, 8, 19, 12)
-                    workline.is_deleted = True
-
-                async with session_factory.begin() as db:
-                    replay = await service.start(db, workline_id=workline_id, request_id="START-PG-LIFECYCLE")
-                assert replay.created is False
-                assert replay.epoch.status == LineRunEpochStatus.CLOSED.value
-                assert builder.calls == [workline_id]
-
-                rollback_line_id, rollback_device_id = await _seed_workline(session_factory, "ROLLBACK")
-                rollback_builder = Builder({rollback_line_id: rollback_device_id})
+                    assert RETIRED_COLUMNS.isdisjoint(columns)
+                rollback_id, rollback_device = await _seed_workline(sessions, "ROLLBACK")
+                rollback_builder = Builder({rollback_id: rollback_device})
                 rollback_service = WorkLineStartService(plugins=(_plugin(rollback_builder),))
-                with pytest.raises(RuntimeError, match="rollback marker"):
-                    async with session_factory.begin() as db:
-                        await rollback_service.start(
-                            db,
-                            workline_id=rollback_line_id,
-                            request_id="START-PG-ROLLBACK",
-                        )
-                        raise RuntimeError("rollback marker")
-                async with session_factory() as db:
-                    assert (
-                        await db.scalar(select(LineRunEpoch).where(LineRunEpoch.epoch_code == "START-PG-ROLLBACK"))
-                        is None
-                    )
-                    assert (await db.scalar(select(func.count()).select_from(LineRunEpochDeviceBinding))) == 1
-                    assert (await db.scalar(select(func.count()).select_from(LineRunEpochPositionBinding))) == 1
-
-                serial_line_id, serial_device_id = await _seed_workline(session_factory, "SERIAL")
-                serial_builder = Builder({serial_line_id: serial_device_id})
-                serial_service = WorkLineStartService(plugins=(_plugin(serial_builder),))
-
-                async def wait_for_lock(backend_pid: int, task: asyncio.Task[object]) -> None:
-                    deadline = asyncio.get_running_loop().time() + 10
-                    last_wait_state: dict[str, object] | None = None
-                    async with session_factory() as observer_db:
-                        while True:
-                            wait_state = (
-                                (
-                                    await observer_db.execute(
-                                        text(
-                                            "SELECT state, wait_event_type, wait_event "
-                                            "FROM pg_stat_activity WHERE pid = :backend_pid"
-                                        ),
-                                        {"backend_pid": backend_pid},
-                                    )
-                                )
-                                .mappings()
-                                .one_or_none()
-                            )
-                            last_wait_state = dict(wait_state) if wait_state is not None else None
-                            if last_wait_state is not None and last_wait_state["wait_event_type"] == "Lock":
-                                return
-                            if task.done():
-                                pytest.fail(
-                                    "competing START completed before PostgreSQL lock wait; "
-                                    f"last_wait_state={last_wait_state!r}, exception={task.exception()!r}"
-                                )
-                            if asyncio.get_running_loop().time() >= deadline:
-                                pytest.fail(
-                                    "competing START did not enter PostgreSQL lock wait before deadline; "
-                                    f"last_wait_state={last_wait_state!r}"
-                                )
-                            await observer_db.rollback()
-                            await asyncio.sleep(0.01)
-
-                async with session_factory() as first_db:
-                    await first_db.begin()
-                    first_serial = await serial_service.start(
-                        first_db,
-                        workline_id=serial_line_id,
-                        request_id="START-PG-SERIAL",
-                    )
-                    second_serial_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-
-                    async def second_same_line_start() -> bool:
-                        async with session_factory.begin() as db:
-                            backend_pid = await db.scalar(text("SELECT pg_backend_pid()"))
-                            assert isinstance(backend_pid, int)
-                            second_serial_pid.set_result(backend_pid)
-                            result = await serial_service.start(
-                                db,
-                                workline_id=serial_line_id,
-                                request_id="START-PG-SERIAL",
-                            )
-                            return result.created
-
-                    second_serial_task = asyncio.create_task(second_same_line_start())
-                    await wait_for_lock(
-                        await asyncio.wait_for(second_serial_pid, timeout=2),
-                        second_serial_task,
-                    )
-                    assert not second_serial_task.done()
-                    await first_db.commit()
-                    second_serial = await asyncio.wait_for(second_serial_task, timeout=2)
-
-                assert sorted([first_serial.created, second_serial]) == [False, True]
-                assert serial_builder.calls == [serial_line_id]
-
-                left_id, left_device_id = await _seed_workline(session_factory, "CONFLICT-LEFT")
-                right_id, right_device_id = await _seed_workline(session_factory, "CONFLICT-RIGHT")
-                conflict_builder = Builder({left_id: left_device_id, right_id: right_device_id})
-                conflict_service = WorkLineStartService(plugins=(_plugin(conflict_builder),))
-
-                async with session_factory() as first_db:
-                    await first_db.begin()
-                    first_conflict = await conflict_service.start(
-                        first_db,
-                        workline_id=left_id,
-                        request_id="START-PG-CONFLICT",
-                    )
-                    second_conflict_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-
-                    async def second_cross_line_start() -> str:
-                        async with session_factory.begin() as db:
-                            backend_pid = await db.scalar(text("SELECT pg_backend_pid()"))
-                            assert isinstance(backend_pid, int)
-                            second_conflict_pid.set_result(backend_pid)
-                            try:
-                                result = await conflict_service.start(
-                                    db,
-                                    workline_id=right_id,
-                                    request_id="START-PG-CONFLICT",
-                                )
-                            except WorkLineStartIdempotencyConflictError:
-                                return "CONFLICT"
-                            return "CREATED" if result.created else "REPLAY"
-
-                    second_conflict_task = asyncio.create_task(second_cross_line_start())
-                    await wait_for_lock(
-                        await asyncio.wait_for(second_conflict_pid, timeout=2),
-                        second_conflict_task,
-                    )
-                    assert not second_conflict_task.done()
-                    await first_db.commit()
-                    second_conflict = await asyncio.wait_for(second_conflict_task, timeout=2)
-
-                outcomes = ["CREATED" if first_conflict.created else "REPLAY", second_conflict]
-                assert sorted(outcomes) == ["CONFLICT", "CREATED"]
-                assert len(conflict_builder.calls) == 1
+                with pytest.raises(RuntimeError, match="abort transaction"):
+                    async with sessions.begin() as db:
+                        await rollback_service.start(db, workline_id=rollback_id, version=0)
+                        raise RuntimeError("abort transaction")
+                async with sessions() as db:
+                    untouched = await db.get(WorkLine, rollback_id)
+                    assert not untouched.is_active and untouched.version == 0
+                    assert untouched.plugin_version is None
+                    assert untouched.device_contracts == {} and untouched.position_bindings == {}
             finally:
                 await engine.dispose()
 

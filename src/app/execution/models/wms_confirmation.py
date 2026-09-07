@@ -35,9 +35,8 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
         CheckConstraint("attempt_count >= 0", name="wms_confirmation_attempt_count_nonnegative"),
         CheckConstraint(
             "(CASE WHEN material_execution_id IS NOT NULL THEN 1 ELSE 0 END + "
-            "CASE WHEN bin_execution_id IS NOT NULL THEN 1 ELSE 0 END + "
             "CASE WHEN picking_task_id IS NOT NULL THEN 1 ELSE 0 END + "
-            "CASE WHEN line_run_epoch_id IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            "CASE WHEN workline_id IS NOT NULL THEN 1 ELSE 0 END) = 1",
             name="wms_confirmation_exactly_one_owner",
         ),
         UniqueConstraint("operation", "operation_id", name="ux_wms_confirmations_operation_identity"),
@@ -68,21 +67,15 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
         foreign_key="wes_biz.material_executions.id",
         index=True,
     )
-    bin_execution_id: int | None = Field(
-        default=None,
-        foreign_key="wes_biz.bin_executions.id",
-        index=True,
-        sa_type=SQL_COMPAT_BIGINT,
-    )
     picking_task_id: int | None = Field(
         default=None,
         foreign_key="wes_biz.picking_tasks.id",
         index=True,
         sa_type=SQL_COMPAT_BIGINT,
     )
-    line_run_epoch_id: int | None = Field(
+    workline_id: int | None = Field(
         default=None,
-        foreign_key="wes_biz.line_run_epochs.id",
+        foreign_key="wes_biz.work_lines.id",
         index=True,
         sa_type=SQL_COMPAT_BIGINT,
     )

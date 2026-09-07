@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     )
     from src.app.resource.models import RackPlacement
     from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
-    from src.app.workline.models import LineRunEpoch, LineRunEpochDeviceBinding, LineRunEpochPositionBinding, WorkLine
+    from src.app.workline.models import WorkLine, WorkLineDeviceBinding, WorkLinePositionBinding
 
 
 class EvidenceRepositoryPort(Protocol):
@@ -41,20 +41,16 @@ class ExecutionRepositoryPort(Protocol):
     async def get_by_execution_code_for_update(self, db: Any, execution_code: str) -> MaterialExecution | None: ...
 
 
-class EpochRepositoryPort(Protocol):
-    async def get_by_id_for_update(self, db: Any, line_run_epoch_id: int) -> LineRunEpoch | None: ...
+class WorkLineRepositoryPort(Protocol):
+    async def get_for_update(self, db: Any, workline_id: int) -> WorkLine | None: ...
 
-    async def list_bindings(self, db: Any, line_run_epoch_id: int) -> list[LineRunEpochDeviceBinding]: ...
+    async def list_bindings(self, db: Any, workline_id: int) -> list[WorkLineDeviceBinding]: ...
 
-    async def list_position_bindings(self, db: Any, line_run_epoch_id: int) -> list[LineRunEpochPositionBinding]: ...
+    async def list_position_bindings(self, db: Any, workline_id: int) -> list[WorkLinePositionBinding]: ...
 
     async def get_binding_by_role_and_code_for_update(
-        self, db: Any, *, line_run_epoch_id: int, device_role: str, device_code: str
-    ) -> LineRunEpochDeviceBinding | None: ...
-
-
-class WorkLineRepositoryPort(Protocol):
-    async def get_by_id(self, db: Any, id: int) -> WorkLine | None: ...
+        self, db: Any, *, workline_id: int, device_role: str, device_code: str
+    ) -> WorkLineDeviceBinding | None: ...
 
 
 class WmsConfirmationRepositoryPort(Protocol):
@@ -82,10 +78,17 @@ class RackPlacementRepositoryPort(Protocol):
 
 
 class RackReplacementBindingRepositoryPort(Protocol):
-    async def lock_resource_fence(self, db: Any, *, line_run_epoch_id: int, resource_fence_id: str) -> None: ...
+    async def lock_resource_fence(self, db: Any, *, workline_id: int, resource_fence_id: str) -> None: ...
 
     async def get_by_resource_step_for_update(
-        self, db: Any, *, line_run_epoch_id: int, resource_fence_id: str, step: str
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        resource_fence_id: str,
+        step: str,
+        exclude_task_statuses: tuple[str, ...] = (),
+        retain_transport_task_id: str | None = None,
     ) -> TransportDecisionBinding | None: ...
 
     async def get_by_client_request_id_for_update(
@@ -99,17 +102,17 @@ class DeviceCommandRepositoryPort(Protocol):
     ) -> DeviceCommand | None: ...
 
     async def list_for_material_execution(
-        self, db: Any, *, line_run_epoch_id: int, material_execution_id: int
+        self, db: Any, *, workline_id: int, material_execution_id: int
     ) -> list[DeviceCommand]: ...
 
-    async def list_for_epoch_for_update(self, db: Any, *, line_run_epoch_id: int) -> list[DeviceCommand]: ...
+    async def list_for_workline_for_update(self, db: Any, *, workline_id: int) -> list[DeviceCommand]: ...
 
 
 class DeviceReadinessReader(Protocol):
     async def is_ready(
         self,
         db: Any,
-        binding: LineRunEpochDeviceBinding,
+        binding: WorkLineDeviceBinding,
     ) -> bool: ...
 
 
@@ -124,7 +127,7 @@ class LiveDeviceReadinessReader:
         self._provider = device_adapter_provider
         self._clock = clock
 
-    async def is_ready(self, db: object, binding: LineRunEpochDeviceBinding) -> bool:
+    async def is_ready(self, db: object, binding: WorkLineDeviceBinding) -> bool:
         if self._provider is None:
             return False
         try:
@@ -157,7 +160,7 @@ class RoughSorterInitialExecutionCorrelator:
         if (
             evidence.kind != InboundEvidenceKind.DEVICE_EVENT
             or evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
-            or evidence.line_run_epoch_id is None
+            or evidence.workline_id is None
             or evidence.normalized_payload.get("event_type") != "SCAN_COMPLETED"
         ):
             raise ValueError("initial execution 只能关联已应用的 SCAN_COMPLETED")
@@ -165,7 +168,7 @@ class RoughSorterInitialExecutionCorrelator:
         if not isinstance(data, dict):
             raise TypeError("SCAN_COMPLETED.data 缺失")
         material_trace_id = _required_string(data.get("material_trace_id"), "material_trace_id")
-        digest = hashlib.sha256(f"{evidence.line_run_epoch_id}:{material_trace_id}".encode()).hexdigest()
+        digest = hashlib.sha256(f"{evidence.workline_id}:{material_trace_id}".encode()).hexdigest()
         return InitialExecutionDescriptor(
             material_trace_id=material_trace_id,
             execution_code=f"rough-sorter-{digest}",
@@ -181,7 +184,6 @@ def _required_string(value: object, field_name: str) -> str:
 __all__ = [
     "DeviceCommandRepositoryPort",
     "DeviceReadinessReader",
-    "EpochRepositoryPort",
     "EvidenceRepositoryPort",
     "ExecutionRepositoryPort",
     "LiveDeviceReadinessReader",
@@ -190,5 +192,6 @@ __all__ = [
     "RackReplacementBindingRepositoryPort",
     "RoughSorterInitialExecutionCorrelator",
     "WmsConfirmationRepositoryPort",
+    "WorkLineRepositoryPort",
     "WorkLineRepositoryPort",
 ]

@@ -12,7 +12,6 @@ from wes_plugin_sdk import (
     AdmissionIntent,
     DevicePosition,
     DeviceResultReadyFact,
-    EpochConfigurationSnapshot,
     EvidenceReadyFact,
     ExecutionSnapshot,
     FactReference,
@@ -28,6 +27,7 @@ from wes_plugin_sdk import (
     TransportRackReference,
     TransportResultReadyFact,
     TransportZonePosition,
+    WorkLineConfigurationSnapshot,
 )
 from wes_plugin_sdk import (
     RecoveryDecidedFact as BaseRecoveryDecidedFact,
@@ -126,13 +126,13 @@ class TransportOutcome(StrEnum):
 @dataclass(frozen=True, slots=True)
 class RoughSorterRuntimeSnapshot:
     execution: ExecutionSnapshot
-    epoch: EpochConfigurationSnapshot
+    workline: WorkLineConfigurationSnapshot
 
     def __post_init__(self) -> None:
-        if type(self.execution) is not ExecutionSnapshot or type(self.epoch) is not EpochConfigurationSnapshot:
+        if type(self.execution) is not ExecutionSnapshot or type(self.workline) is not WorkLineConfigurationSnapshot:
             raise TypeError("runtime snapshot requires exact SDK snapshot values")
-        if self.execution.line_run_epoch_id != self.epoch.line_run_epoch_id:
-            raise ValueError("execution and Epoch snapshots do not match")
+        if self.execution.workline_id != self.workline.workline_id:
+            raise ValueError("execution and WorkLine snapshots do not match")
 
 
 def _operation_id(value: str, field_name: str) -> None:
@@ -192,7 +192,7 @@ def _runtime_snapshot(
 class MaterialEvidenceReadyFact(EvidenceReadyFact):
     runtime_snapshot: RoughSorterRuntimeSnapshot
     material_trace_id: str
-    line_run_epoch_id: str
+    workline_id: str
     workline_code: str
     lot_code: str
     date_code: str
@@ -215,7 +215,7 @@ class MaterialEvidenceReadyFact(EvidenceReadyFact):
         )
         for field_name in (
             "material_trace_id",
-            "line_run_epoch_id",
+            "workline_id",
             "workline_code",
             "lot_code",
             "date_code",

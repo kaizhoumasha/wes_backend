@@ -15,7 +15,6 @@ def encode_request(intent: sdk.BinReturnBatchIntent, *, timestamp: int) -> dict:
             "timestamp": timestamp,
             "data": {
                 "workline_code": intent.workline_code,
-                "line_run_epoch_id": intent.line_run_epoch_id,
                 "rack_id": intent.rack_id,
                 "rack_face": intent.rack_face,
                 "return_candidates": [

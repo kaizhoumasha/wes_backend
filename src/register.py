@@ -337,10 +337,12 @@ def create_app() -> FastAPI:
         return get_swagger_ui_html(
             openapi_url=openapi_url,
             title=f"{app.title} - Swagger UI",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            oauth2_redirect_url=f"{settings.DOCS_URL}/oauth2-redirect",
             swagger_js_url=swagger_js_url,
             swagger_css_url=swagger_css_url,
+            swagger_favicon_url="",
             swagger_ui_parameters={
+                "validatorUrl": None,
                 "docExpansion": "none",
                 "defaultModelsExpandDepth": 0,
                 "persistAuthorization": True,

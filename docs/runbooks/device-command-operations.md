@@ -3,7 +3,7 @@
 > 本 Runbook 以配置、日志、受限对账 API 和 PostgreSQL 持久事实为准；不得直接改表、伪造 CALLBACK、释放设备槽位或换 `command_code` 重放。
 
 适用对象位于 `wes_biz` schema：`device_commands`、`device_status_observations`、`inbound_evidences`、
-`inbound_evidence_conflicts`、`device_event_command_blocks`、`line_run_epochs` 和 `line_run_epoch_device_bindings`。供应商私有协议、PLC 互锁、现场机械安全和
+`inbound_evidence_conflicts`、`device_event_command_blocks`、`work_lines`。供应商私有协议、PLC 互锁、现场机械安全和
 业务 Decision 不属于本 Runbook；发现这类问题应分别交给 ECS/PLC、供应商一致性、Phase 8 `rough_sorter` 或 Phase 12/13 插件 owner。
 
 ## 启动配置与 worker
@@ -17,7 +17,7 @@ API 和 Celery 子进程启动时必须同时取得以下环境配置，缺失�
 | `DEVICE_COMMAND_QUEUE` | 固定为 `device-command` |
 
 `Device.endpoint_base_url` 不是进程启动配置，静态主数据允许为空。参与业务运行的必需角色 Device 必须在公开 START 前配置有效的
-局域网 HTTP origin；START 将规范化后的值冻结到 Epoch binding，派发只读取该冻结值。
+局域网 HTTP origin；START 校验并保存 WorkLine 当前设备合同；命令创建时冻结必要值，派发读取原命令的合同。
 
 `device-command` worker 必须消费三个固定任务：
 
@@ -32,10 +32,10 @@ Beat 只发送固定上限 100 的数据库扫描任务，不携带命令或 evi
 1. 记录 `command_code`、`device_code`、`source_identity`、`trace_id` 和时间窗口；不得记录完整 Payload、凭据或 claim token。
 2. 查 `device_commands`，确认命令状态、deadline、claim、失败码和对账原因。
 3. 查同一命令的状态观察与 evidence；ACK 只表示接纳，只有匹配的 RESULT evidence 可以形成物理终态。
-4. 查命令冻结的 `LineRunEpoch` 和设备合同绑定，确认当前证据没有跨 Epoch 或合同版本。
+4. 查原命令的 WorkLine、执行关联和设备合同，确认当前证据匹配原命令。
 5. 只有数据库事实与 ECS/现场事实一致时才关闭问题。不得根据“worker 已执行”推测设备已完成。
 
-`MANUAL_DEBUG` 不关联 `LineRunEpoch`、设备 binding 或业务执行对象；应改为核对命令冻结的 Endpoint、审计原因、创建人和两次
+`MANUAL_DEBUG` 不关联业务 WorkLine 绑定或执行对象；应改为核对命令冻结的 Endpoint、审计原因、创建人和两次
 实时 Status 准入。超级用户 SSE 只展示连接期间的 best-effort callback 尝试与 evidence 更新，不提供历史回放，也不能替代数据库事实。
 
 以下示例在只读 `psql` 会话执行：
@@ -68,7 +68,7 @@ LIMIT 100;
 
 处理原则：
 
-- `PENDING`：业务命令核对活动 Epoch、设备绑定和下一次准入时间；`MANUAL_DEBUG` 核对冻结 Endpoint 与审计字段；
+- `PENDING`：业务命令核对所属 WorkLine 准入、原设备合同和下一次准入时间；`MANUAL_DEBUG` 核对冻结 Endpoint 与审计字段；
   不要直接触发 HTTP。
 - `DISPATCHING` 且 claim 过期：delivery 可能未知，只能交给对账扫描，不能换 identity 重发。
 - `ACKNOWLEDGED` 且 deadline 过期：等待匹配 CALLBACK 或权威现场证据；ACK 不能当成功。
@@ -96,7 +96,7 @@ WHERE command_code = :'command_code'
 ORDER BY received_at DESC, id DESC;
 ```
 
-业务命令只有新鲜的 `AUTO + IDLE`、无活动设备命令，且合同身份匹配活动 Epoch 时才可发送。`MANUAL_DEBUG` 不使用业务
+业务命令只有新鲜的 `AUTO + IDLE`、无活动设备命令，且命令所属 WorkLine 准入有效且合同匹配 时才可发送。`MANUAL_DEBUG` 不使用业务
 binding 或状态新鲜度合同，但创建前和发送前都必须满足身份匹配、在线、`AUTO + IDLE`、无活动命令，且 `task_type` 位于非空
 `supported_commands`。供应商状态字段转换错误应在 ECS/网关修复，不得在 WES 增加供应商别名或 fallback。
 
@@ -110,7 +110,7 @@ SELECT
     device_code,
     contract_key,
     contract_version,
-    line_run_epoch_id,
+    workline_id,
     apply_status,
     received_at,
     processed_at
@@ -147,39 +147,36 @@ ORDER BY received_at ASC, id ASC;
 GET /api/v1/device/evidences/{source_event_id}/blocker
 ```
 
-响应中的 `block_id` 和两个固定操作路径是不可变因果令牌。只有原命令为 `RECONCILING / DELIVERY_UNKNOWN`、冻结 binding 可提供
+响应中的 `block_id` 和两个固定操作路径是不可变因果令牌。只有原命令为 `RECONCILING / DELIVERY_UNKNOWN`、原命令保存的执行合同可提供
 Endpoint 与状态新鲜度合同、实时 ECS Status 证明同一设备 `AUTO + IDLE`，且没有已持久化 Result 时，才可按响应路径调用
 `reconcile-device-idle`。该操作将原命令闭合为 `FAILED / MANUAL_RECONCILIATION_DEVICE_IDLE`，不伪造 Result 或物理成功。
 
 原命令终态且设备没有其它未闭合命令后，可按响应路径调用 `reprocess`。`202` 只表示原 evidence 以相同
-`source_event_id`、payload、digest、Epoch 与合同身份重新进入 `PENDING`；它不表示新命令已创建、ECS 已接纳或物理动作完成。
+`source_event_id`、payload、digest、WorkLine 与合同身份重新进入 `PENDING`；它不表示新命令已创建、ECS 已接纳或物理动作完成。
 不得手工改写 blocker/evidence，也不得绕过 `block_id` 重放。
 
-## Epoch fencing
+## WorkLine 准入与命令关联
 
 ```sql
 SELECT
-    e.epoch_code,
-    e.status AS epoch_status,
-    e.started_at,
-    e.closed_at,
-    b.device_code,
-    b.contract_key,
-    b.contract_version,
-    b.status_max_age_ms,
-    b.command_timeout_ms
-FROM wes_biz.line_run_epochs AS e
-JOIN wes_biz.line_run_epoch_device_bindings AS b
-  ON b.line_run_epoch_id = e.id
-WHERE e.id = (
-    SELECT line_run_epoch_id
-    FROM wes_biz.device_commands
-    WHERE command_code = :'command_code'
-);
+    c.command_code,
+    c.workline_id,
+    c.device_code,
+    c.contract_key,
+    c.contract_version,
+    w.line_code,
+    w.is_active,
+    w.version,
+    w.plugin_key,
+    w.plugin_version
+FROM wes_biz.device_commands AS c
+LEFT JOIN wes_biz.work_lines AS w ON w.id = c.workline_id
+WHERE c.command_code = :'command_code';
 ```
 
-旧 Epoch 或合同不匹配 evidence 不得绑定当前运行代际。若真实现场合同已经变化，应先关闭旧 Epoch 并按获批配置建立新 Epoch；
-不能原地改绑定或让核心猜测供应商版本。
+命令可靠重试以原命令保存的目标和执行合同为准；WorkLine 当前配置不冒充历史命令配置。未闭合命令、待应用 Evidence、
+Transport、WMS 义务或有效占用存在时，系统拒绝停用和插件切换。现场人员完成停料及物理清线、系统检查通过后才能修改配置。
+违反准入的事件保存拒绝证据并报错，不将原业务交给新插件，也不新增清线确认记录。
 
 ## 升级与回归检查
 

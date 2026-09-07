@@ -44,7 +44,7 @@
 | `tests/api_auth/` | API application、开放接口授权与缓存测试 |
 | `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
 | `tests/utils/` | 工具函数、时间、请求解析测试 |
-| `tests/workline/` | WorkLine 静态身份、物理拓扑、配置校验和 `LineRunEpoch` 等通用能力 |
+| `tests/workline/` | WorkLine 身份、物理拓扑、配置校验和启动/停用等通用能力 |
 | `tests/runtime/` | 与具体插件无关的最小执行对象、投影、可靠性和诊断能力 |
 | `tests/architecture/` | 架构、依赖方向、缺席与测试拓扑合同；QUALITY 显式运行 |
 | `tests/scripts/` | 脚本行为合同；QUALITY 显式运行 |

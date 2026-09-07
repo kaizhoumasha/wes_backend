@@ -40,7 +40,7 @@ async def test_abort_persists_release_without_deleting_step(
         rack_id="510056",
         configuration_json={
             "rack_id": "510056",
-            "face_groups": [{"face": "90", "bins": [{"bin_id": "A", "slot_id": "S"}]}],
+            "face_groups": [{"face": "90", "bins": [{"bin_code": "A", "slot_id": "S"}]}],
         },
         current_group_index=0,
         current_phase="WAIT_SCAN12",

@@ -104,7 +104,7 @@ def _cell_index(cell: Mapping[str, Any]) -> str | None:
 
 
 def _bin_code(cell: Mapping[str, Any]) -> str | None:
-    return _text_or_none(cell.get("bin_code")) or _text_or_none(cell.get("bin_id"))
+    return _text_or_none(cell.get("bin_code"))
 
 
 def _slot_code(cell: Mapping[str, Any]) -> str | None:
@@ -335,7 +335,6 @@ class SmtActiveRackSnapshotService:
                         "rack_code": rack_code,
                         "rack_slot_code": slot_code,
                         "rack_slot_location_code": f"{rack_code}-1{slot_code}-0",
-                        "bin_id": bin_code,
                         "bin_code": bin_code,
                         "bin_type": bin_type,
                         "bin_cell_location": f"{bin_code}-{cell_index}",
@@ -444,7 +443,6 @@ class SmtActiveRackSnapshotService:
 
             cell["status"] = _text_or_none(getattr(occupancy, "occupancy_status", None)) or "OCCUPIED"
             cell["bin_code"] = bin_code
-            cell["bin_id"] = bin_code
             cell["bin_cell_index"] = cell_index
             cell["DateCode"] = getattr(occupancy, "date_code", None)
             cell["LotCode"] = getattr(occupancy, "lot_code", None)
@@ -481,7 +479,6 @@ class SmtActiveRackSnapshotService:
             cell.pop(field, None)
         cell["status"] = status
         cell["bin_code"] = bin_code
-        cell["bin_id"] = bin_code
         cell["bin_cell_index"] = cell_index
         if capacity_depth_mm is not None:
             cell["capacity_depth_mm"] = capacity_depth_mm

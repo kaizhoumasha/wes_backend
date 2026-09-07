@@ -94,18 +94,6 @@ class FakeBlockRepository:
         return self.latest
 
 
-class FakeEpochRepository:
-    def __init__(self, binding: object | None) -> None:
-        self.binding = binding
-
-    async def get_binding_for_dispatch(self, _db: object, *, line_run_epoch_id: int, device_code: str):
-        if self.binding is None:
-            return None
-        assert self.binding.line_run_epoch_id == line_run_epoch_id
-        assert self.binding.device_code == device_code
-        return self.binding
-
-
 class FakeAdapter:
     def __init__(self, status: EcsDeviceStatus, *, before_return=None, error: Exception | None = None) -> None:
         self.status = status
@@ -147,8 +135,7 @@ def _command() -> DeviceCommand:
         id=31,
         command_code="CMD-DELIVERY-UNKNOWN-001",
         device_code="ARM-01",
-        line_run_epoch_id=11,
-        device_binding_id=21,
+        workline_id=11,
         execution_ref_type="MATERIAL_EXECUTION",
         execution_ref_id="EXEC-001",
         material_execution_id=None,
@@ -213,7 +200,7 @@ def _service(
     )
     actual_binding = (
         SimpleNamespace(
-            line_run_epoch_id=11,
+            workline_id=11,
             device_code="ARM-01",
             endpoint_base_url="http://ecs-mock:8080",
             status_max_age_ms=5_000,
@@ -221,6 +208,8 @@ def _service(
         if binding is _DEFAULT_BINDING
         else binding
     )
+    actual_command.endpoint_base_url = getattr(actual_binding, "endpoint_base_url", None)
+    object.__setattr__(actual_command, "status_max_age_ms", getattr(actual_binding, "status_max_age_ms", None))
     actual_adapter = adapter or FakeAdapter(_status())
     audit_service = audit or FakeAuditService()
     evidence_repo = FakeEvidenceRepository(actual_evidence, result=result)
@@ -228,7 +217,6 @@ def _service(
     service = DeviceCommandService(
         session_factory=FakeSessions(actual_command),  # type: ignore[arg-type]
         command_repository=command_repo,  # type: ignore[arg-type]
-        epoch_repository=FakeEpochRepository(actual_binding),  # type: ignore[arg-type]
         evidence_repository=evidence_repo,  # type: ignore[arg-type]
         adapter_provider=FakeAdapterProvider(actual_adapter),  # type: ignore[arg-type]
         event_command_block_repository=FakeBlockRepository(actual_block, latest=latest),  # type: ignore[arg-type]
@@ -327,7 +315,7 @@ async def test_manual_reconciliation_rejects_missing_or_mismatched_blocking_comm
         pytest.param(None, id="binding-missing"),
         pytest.param(
             SimpleNamespace(
-                line_run_epoch_id=11,
+                workline_id=11,
                 device_code="ARM-01",
                 endpoint_base_url="http://ecs-mock:8080",
                 status_max_age_ms=0,
@@ -336,7 +324,7 @@ async def test_manual_reconciliation_rejects_missing_or_mismatched_blocking_comm
         ),
         pytest.param(
             SimpleNamespace(
-                line_run_epoch_id=11,
+                workline_id=11,
                 device_code="ARM-01",
                 endpoint_base_url="https://ecs-mock:8080",
                 status_max_age_ms=5_000,
@@ -348,7 +336,7 @@ async def test_manual_reconciliation_rejects_missing_or_mismatched_blocking_comm
 async def test_manual_reconciliation_rejects_unresolvable_frozen_binding(binding) -> None:
     service, command, adapter, _evidence_repo, _audit = _service(binding=binding)
 
-    with pytest.raises(DeviceCommandManualReconciliationConflictError, match="不可解析"):
+    with pytest.raises(DeviceCommandManualReconciliationConflictError, match=r"冻结设备合同|不可解析"):
         await service.reconcile_delivery_unknown_as_device_idle(
             source_event_id="EVENT-001", block_id=51, reason="确认空闲", actor_id=42
         )
@@ -392,7 +380,7 @@ async def test_manual_reconciliation_rejects_invalid_causal_state_before_ecs(mut
 async def test_manual_reconciliation_diagnostic_command_fails_closed() -> None:
     command = _command()
     command.execution_ref_type = "EVENT_DEBUG"
-    command.line_run_epoch_id = None
+    command.workline_id = None
     service, command, adapter, _evidence_repo, _audit = _service(command=command)
 
     with pytest.raises(DeviceCommandManualReconciliationConflictError):

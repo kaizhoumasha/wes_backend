@@ -13,7 +13,7 @@ from wes_plugin_sdk import (
 )
 
 from rough_sorter.facts import TargetDecidedFact, TargetResult
-from rough_sorter.handlers._guards import require_device_binding, require_epoch, require_execution
+from rough_sorter.handlers._guards import require_device_binding, require_execution, require_workline
 from rough_sorter.wms_requests import replacement_plan_data
 
 
@@ -33,7 +33,7 @@ class TargetDecidedHandler:
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,
         )
-        epoch = require_epoch(snapshot.epoch, line_run_epoch_id=execution.line_run_epoch_id)
+        workline = require_workline(snapshot.workline, workline_id=execution.workline_id)
         if fact.result is TargetResult.WAIT:
             return (
                 Wait(
@@ -72,7 +72,7 @@ class TargetDecidedHandler:
                 material_execution_id=fact.material_execution_id,
                 fact_id=fact.fact_id,
                 device_role="PLACEMENT_DEVICE",
-                device_code=require_device_binding(epoch, "PLACEMENT_DEVICE").device_code,
+                device_code=require_device_binding(workline, "PLACEMENT_DEVICE").device_code,
                 task_type="PICK_AND_PUT",
                 material_trace_id=fact.material_trace_id,
                 source=fact.source_position,

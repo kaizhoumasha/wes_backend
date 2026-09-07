@@ -1,62 +1,62 @@
-"""活动 execution authority 下的 current position projection 服务。"""
+"""WorkLine 准入与匹配 Transport 物理结果驱动当前位置。"""
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from src.app.execution.models.bin_execution import BinExecutionStatus
 from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.repositories.position_projection_repository import position_projection_repository
-from src.app.workline.models.line_run_epoch import LineRunEpochStatus
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from src.app.transport.contracts import TransportExecutionAuthority
 
 
 class PositionProjectionAuthorityError(ValueError):
-    """冻结 authority 与活动执行或目标对象不匹配。"""
-
-
-class PositionProjectionRepositoryPort(Protocol):
-    async def lock_epoch_lifecycle(self, db: object, line_run_epoch_id: int) -> None: ...
-
-    async def get_epoch_for_update(self, db: object, line_run_epoch_id: int) -> object | None: ...
-
-    async def get_bin_execution_for_update(self, db: object, bin_execution_id: int) -> object | None: ...
-
-    async def lock_projection(self, db: object, object_type: str, object_id: str) -> None: ...
-
-    async def get(
-        self, db: object, object_type: str, object_id: str, *, for_update: bool = False
-    ) -> PositionProjection | None: ...
-
-    async def get_for_update(self, db: object, object_type: str, object_id: str) -> PositionProjection | None: ...
-
-    async def add(self, db: object, projection: PositionProjection) -> PositionProjection: ...
-
-    async def delete_for_epoch(self, db: object, line_run_epoch_id: int) -> None: ...
-
-    async def flush(self, db: object) -> None: ...
+    """工作线或对象资源不允许该动作。"""
 
 
 class PositionProjectionService:
-    def __init__(self, *, repository: PositionProjectionRepositoryPort = position_projection_repository) -> None:
+    def __init__(self, *, repository=position_projection_repository) -> None:
         self._repository = repository
 
-    async def get_current(
-        self,
-        db: object,
-        object_type: str,
-        object_id: str,
-        *,
-        for_update: bool = False,
-    ) -> PositionProjection | None:
+    async def get_current(self, db, object_type, object_id, *, for_update=False):
         return await self._repository.get(db, object_type, object_id, for_update=for_update)
+
+    async def _lock_authorized_object(self, db, authority, object_type, object_id):
+        if object_type not in {"RACK", "BIN"}:
+            raise PositionProjectionAuthorityError("unsupported projection object_type")
+        line = await self._repository.get_workline_for_update(db, authority.workline_id)
+        if line is None or not line.is_active:
+            raise PositionProjectionAuthorityError("transport authority requires active WorkLine")
+        await self._repository.lock_projection(db, object_type, object_id)
+        projection = await self._repository.get_for_update(db, object_type, object_id)
+        if (
+            projection is not None
+            and projection.workline_id != authority.workline_id
+            and (
+                projection.position_unknown
+                or await self._repository.is_workline_position(db, projection.workline_id, projection.position_json)
+            )
+        ):
+            raise PositionProjectionAuthorityError("object occupies another WorkLine")
+        return projection
+
+    async def admit_transport_member(self, db, *, authority, object_type, object_id, source):
+        """在可发送义务持久化前验证当前准入，沿用对象锁阻止并行动作。"""
+        projection = await self._lock_authorized_object(db, authority, object_type, object_id)
+        if projection is None:
+            return
+        if projection.position_unknown:
+            raise PositionProjectionAuthorityError("object position is unknown")
+        rack_reference = source.get("kind") == "RACK" and source.get("location_code") == object_id
+        if not rack_reference and projection.position_json != source:
+            raise PositionProjectionAuthorityError("transport source does not match current position")
 
     async def apply_transport_result(
         self,
-        db: object,
+        db,
         *,
         authority: TransportExecutionAuthority | None,
         object_type: str,
@@ -67,34 +67,10 @@ class PositionProjectionService:
         operation_id: str,
         transport_task_id: str,
         updated_at: datetime,
-    ) -> PositionProjection | None:
+    ):
         if authority is None:
             return None
-        if object_type not in {"RACK", "BIN"}:
-            raise PositionProjectionAuthorityError(f"unsupported projection object_type: {object_type}")
-        if (object_type == "BIN") != (authority.bin_execution_id is not None):
-            raise PositionProjectionAuthorityError("BIN projection requires bin execution authority only")
-
-        await self._repository.lock_epoch_lifecycle(db, authority.line_run_epoch_id)
-        epoch = await self._repository.get_epoch_for_update(db, authority.line_run_epoch_id)
-        self._assert_active_epoch(epoch, authority)
-
-        bin_execution = None
-        if authority.bin_execution_id is not None:
-            bin_execution = await self._repository.get_bin_execution_for_update(db, authority.bin_execution_id)
-            self._assert_active_bin(bin_execution, authority, object_id)
-
-        await self._repository.lock_projection(db, object_type, object_id)
-        projection = await self._repository.get_for_update(db, object_type, object_id)
-
-        # advisory/row locks are held until transaction end; the explicit recheck guards future
-        # repository changes.
-        epoch = await self._repository.get_epoch_for_update(db, authority.line_run_epoch_id)
-        self._assert_active_epoch(epoch, authority)
-        if authority.bin_execution_id is not None:
-            bin_execution = await self._repository.get_bin_execution_for_update(db, authority.bin_execution_id)
-            self._assert_active_bin(bin_execution, authority, object_id)
-
+        projection = await self._lock_authorized_object(db, authority, object_type, object_id)
         if projection is None:
             projection = await self._repository.add(
                 db,
@@ -102,20 +78,12 @@ class PositionProjectionService:
                     object_type=object_type,
                     object_id=object_id,
                     workline_id=authority.workline_id,
-                    line_run_epoch_id=authority.line_run_epoch_id,
-                    bin_execution_id=authority.bin_execution_id,
                     source_operation_id=operation_id,
                     source_transport_task_id=transport_task_id,
                     updated_at=updated_at,
                 ),
             )
-        elif (
-            projection.workline_id != authority.workline_id
-            or projection.line_run_epoch_id != authority.line_run_epoch_id
-            or projection.bin_execution_id != authority.bin_execution_id
-        ):
-            raise PositionProjectionAuthorityError("current projection belongs to a different execution authority")
-
+        projection.workline_id = authority.workline_id
         projection.position_json = position
         projection.position_unknown = position_unknown
         projection.arrival_face = arrival_face
@@ -125,42 +93,5 @@ class PositionProjectionService:
         await self._repository.flush(db)
         return projection
 
-    async def delete_for_epoch(self, db: object, line_run_epoch_id: int) -> None:
-        await self._repository.lock_epoch_lifecycle(db, line_run_epoch_id)
-        await self._repository.delete_for_epoch(db, line_run_epoch_id)
-        await self._repository.flush(db)
-
-    @staticmethod
-    def _assert_active_epoch(epoch: object | None, authority: TransportExecutionAuthority) -> None:
-        if (
-            epoch is None
-            or getattr(epoch, "status", None) != LineRunEpochStatus.ACTIVE
-            or getattr(epoch, "workline_id", None) != authority.workline_id
-        ):
-            raise PositionProjectionAuthorityError("transport authority does not reference an active matching Epoch")
-
-    @staticmethod
-    def _assert_active_bin(
-        execution: object | None,
-        authority: TransportExecutionAuthority,
-        object_id: str,
-    ) -> None:
-        if (
-            execution is None
-            or getattr(execution, "status", None) != BinExecutionStatus.ACTIVE
-            or getattr(execution, "bin_id", None) != object_id
-            or getattr(execution, "workline_id", None) != authority.workline_id
-            or getattr(execution, "line_run_epoch_id", None) != authority.line_run_epoch_id
-        ):
-            raise PositionProjectionAuthorityError(
-                "transport authority does not reference the active matching BinExecution"
-            )
-
 
 position_projection_service = PositionProjectionService()
-
-__all__ = [
-    "PositionProjectionAuthorityError",
-    "PositionProjectionService",
-    "position_projection_service",
-]

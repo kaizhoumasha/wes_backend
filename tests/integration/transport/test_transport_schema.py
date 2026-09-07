@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import BigInteger, text
+from sqlalchemy import BigInteger, delete, text
 from sqlalchemy.dialects.postgresql import dialect as postgresql_dialect
 from sqlalchemy.exc import IntegrityError
 
@@ -202,8 +202,6 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
         ("wes_runtime", "transport_tasks", "submit_request_body_digest"),
         ("wes_runtime", "transport_tasks", "request_digest"),
         ("wes_runtime", "transport_tasks", "authority_workline_id"),
-        ("wes_runtime", "transport_tasks", "authority_line_run_epoch_id"),
-        ("wes_runtime", "transport_tasks", "authority_bin_execution_id"),
         ("wes_runtime", "transport_callback_receipts", "message_digest"),
         ("wes_runtime", "transport_evidence", "operation_id"),
         ("wes_runtime", "transport_evidence", "event_timestamp_ms"),
@@ -216,6 +214,8 @@ async def test_transport_schema_contains_final_wire_identity_and_execution_autho
         ("wes_biz", "position_projections", "source_transport_task_id"),
     } <= columns.keys()
     assert {
+        ("wes_runtime", "transport_tasks", "authority_line_run_epoch_id"),
+        ("wes_runtime", "transport_tasks", "authority_bin_execution_id"),
         ("wes_runtime", "transport_evidence", "event_id"),
         ("wes_runtime", "transport_evidence", "payload_digest"),
         ("wes_runtime", "transport_tasks", "payload_digest"),
@@ -375,6 +375,8 @@ async def test_face_migration_rejects_invalid_history_without_truncation(invalid
                     text("DELETE FROM wes_runtime.transport_debug_position_projections WHERE object_id = :object_id"),
                     {"object_id": "MIGRATION-RACK"},
                 )
+                # 旧 face 迁移的故障数据已验证；后续退役迁移只接纳空执行基线。
+                await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == task_id))
             run_alembic("upgrade", "head", database_url=database_url)
             run_alembic("downgrade", "864351b8d0c6", database_url=database_url)
             run_alembic("upgrade", "head", database_url=database_url)

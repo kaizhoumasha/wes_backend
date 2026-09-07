@@ -268,8 +268,8 @@ def _harness(
                 {
                     "face": "90",
                     "bins": [
-                        {"bin_id": "A000001922", "slot_id": "SLOT-01"},
-                        {"bin_id": "A000002653", "slot_id": "SLOT-02"},
+                        {"bin_code": "A000001922", "slot_id": "SLOT-01"},
+                        {"bin_code": "A000002653", "slot_id": "SLOT-02"},
                     ],
                 }
             ],
@@ -342,7 +342,7 @@ async def test_bin_move_uses_frozen_operator_input_without_resource_mounts() -> 
 async def test_rotation_rechecks_the_previous_face_before_moving_to_the_next_group() -> None:
     service, repository, transport = _harness(phase="ROTATE_TO_NEXT_FACE")
     repository.run.configuration_json["face_groups"].append(
-        {"face": "270", "bins": [{"bin_id": "A000003001", "slot_id": "SLOT-03"}]}
+        {"face": "270", "bins": [{"bin_code": "A000003001", "slot_id": "SLOT-03"}]}
     )
     repository.run.current_group_index = 1
     repository.steps[0].group_index = 1
@@ -355,7 +355,7 @@ async def test_rotation_rechecks_the_previous_face_before_moving_to_the_next_gro
 async def test_rack_return_rechecks_the_last_selected_face() -> None:
     service, repository, transport = _harness(phase="RACK_TO_STORAGE")
     repository.run.configuration_json["face_groups"].append(
-        {"face": "270", "bins": [{"bin_id": "A000003001", "slot_id": "SLOT-03"}]}
+        {"face": "270", "bins": [{"bin_code": "A000003001", "slot_id": "SLOT-03"}]}
     )
     repository.run.current_group_index = 1
     repository.steps[0].group_index = 1
@@ -518,7 +518,7 @@ async def test_bin_return_reports_only_exactly_confirmed_members_before_aggregat
     assert await service.advance_run("debug-run-1") is True
     partial = await service.get_run("debug-run-1")
     assert partial.current_phase == "BINS_TO_RACK"
-    assert partial.observed_bin_ids == ("A000001922",)
+    assert partial.observed_bin_codes == ("A000001922",)
     assert partial.current_step is not None and partial.current_step.status == "WAITING"
     assert len(repository.steps) == 1
     assert transport.calls == []
@@ -526,7 +526,7 @@ async def test_bin_return_reports_only_exactly_confirmed_members_before_aggregat
     repository.members["transport-1"][1].status = "SUCCEEDED"
     repository.members["transport-1"][1].final_position_json = repository.members["transport-1"][1].target_json
     assert await service.advance_run("debug-run-1") is True
-    assert (await service.get_run("debug-run-1")).observed_bin_ids == ("A000001922", "A000002653")
+    assert (await service.get_run("debug-run-1")).observed_bin_codes == ("A000001922", "A000002653")
     assert len(repository.steps) == 1
 
     repository.tasks["transport-1"].status = "SUCCEEDED"
@@ -549,7 +549,7 @@ async def test_bin_return_does_not_count_wrong_target_or_unknown_position_as_con
     repository.members["transport-1"] = [member]
 
     assert await service.advance_run("debug-run-1") is False
-    assert (await service.get_run("debug-run-1")).observed_bin_ids == ()
+    assert (await service.get_run("debug-run-1")).observed_bin_codes == ()
     assert repository.run.current_phase == "BINS_TO_RACK"
     assert len(repository.steps) == 1
 
@@ -559,7 +559,7 @@ async def test_bin_return_does_not_count_wrong_target_or_unknown_position_as_con
     repository.tasks["transport-1"].reason_code = "TRANSPORT_POSITION_UNKNOWN"
     assert await service.advance_run("debug-run-1") is True
     unknown = await service.get_run("debug-run-1")
-    assert unknown.observed_bin_ids == ()
+    assert unknown.observed_bin_codes == ()
     assert unknown.current_phase == "BINS_TO_RACK"
     assert unknown.status == "NEEDS_ATTENTION"
     assert unknown.attention_code == "TRANSPORT_POSITION_UNKNOWN"
@@ -579,7 +579,7 @@ async def test_scan12_uses_set_semantics_and_advances_only_after_every_selected_
 
     assert await service.advance_run("debug-run-1") is True
     snapshot = await service.get_run("debug-run-1")
-    assert snapshot.observed_bin_ids == ("A000001922",)
+    assert snapshot.observed_bin_codes == ("A000001922",)
     assert snapshot.current_phase == "WAIT_SCAN12"
     assert repository.steps[0].observed_bins_json[0]["evidence_id"] == 101
 
@@ -587,7 +587,7 @@ async def test_scan12_uses_set_semantics_and_advances_only_after_every_selected_
     assert await service.advance_run("debug-run-1") is True
     snapshot = await service.get_run("debug-run-1")
     assert snapshot.current_phase == "BINS_TO_RACK"
-    assert snapshot.observed_bin_ids == ()
+    assert snapshot.observed_bin_codes == ()
     assert snapshot.current_step is not None and snapshot.current_step.client_request_id is not None
 
 
@@ -604,7 +604,7 @@ async def test_scan12_pending_selected_evidence_waits_without_advancing_cursor()
     pending.apply_status = InboundEvidenceApplyStatus.APPLIED
     assert await service.advance_run("debug-run-1") is True
     assert repository.steps[0].evidence_high_watermark == 100
-    assert {item["bin_id"] for item in repository.steps[0].observed_bins_json} == {
+    assert {item["bin_code"] for item in repository.steps[0].observed_bins_json} == {
         "A000001922",
         "A000002653",
     }
@@ -621,7 +621,7 @@ async def test_scan12_pages_past_full_irrelevant_page_without_moving_boundary() 
     assert repository.steps[0].evidence_high_watermark == 100
     assert repository.steps[0].observed_bins_json == [
         {
-            "bin_id": "A000001922",
+            "bin_code": "A000001922",
             "evidence_id": 1101,
             "source_event_id": "EVENT-A",
         }
@@ -691,8 +691,8 @@ async def test_scan12_conflict_freezes_before_bin_return_step_is_created() -> No
 async def test_late_scan12_conflict_is_rechecked_before_creating_bin_return_transport() -> None:
     service, repository, transport = _harness(phase="BINS_TO_RACK", status="PENDING")
     repository.steps[0].observed_bins_json = [
-        {"bin_id": "A000001922", "evidence_id": 101, "source_event_id": "EVENT-A"},
-        {"bin_id": "A000002653", "evidence_id": 102, "source_event_id": "EVENT-B"},
+        {"bin_code": "A000001922", "evidence_id": 101, "source_event_id": "EVENT-A"},
+        {"bin_code": "A000002653", "evidence_id": 102, "source_event_id": "EVENT-B"},
     ]
     repository.conflicting_evidence_ids.add(101)
 
@@ -715,8 +715,8 @@ async def test_rack_workstation_drift_blocks_the_next_physical_task() -> None:
 async def test_late_scan12_conflict_is_rechecked_after_bin_return_transport_is_bound() -> None:
     service, repository, _ = _harness(phase="BINS_TO_RACK", status="WAITING", task_id="transport-1")
     repository.steps[0].observed_bins_json = [
-        {"bin_id": "A000001922", "evidence_id": 101, "source_event_id": "EVENT-A"},
-        {"bin_id": "A000002653", "evidence_id": 102, "source_event_id": "EVENT-B"},
+        {"bin_code": "A000001922", "evidence_id": 101, "source_event_id": "EVENT-A"},
+        {"bin_code": "A000002653", "evidence_id": 102, "source_event_id": "EVENT-B"},
     ]
     repository.tasks["transport-1"] = _task("transport-1", CLIENT_IDS[0], "BIN_MOVE")
     repository.conflicting_evidence_ids.add(101)

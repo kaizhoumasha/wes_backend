@@ -107,9 +107,7 @@ EVENT_COMMAND_BLOCK_RECONCILIATION_HEAVY_TEST = (
 DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST = "tests/e2e/device_command/test_device_command_production_wiring.py"
 EXECUTION_CONSTRAINTS_HEAVY_TEST = "tests/integration/execution/test_execution_constraints.py"
 DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST = "tests/integration/execution/test_decision_processing_postgresql.py"
-LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST = (
-    "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py"
-)
+WORKLINE_START_POSTGRESQL_HEAVY_TEST = "tests/integration/workline_capabilities/test_workline_start_postgresql.py"
 WMS_INBOUND_CONFIRMATION_HEAVY_TEST = "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"
 WMS_RACK_SUPPLY_SCHEMA_HEAVY_TEST = "tests/integration/workline_capabilities/test_wms_rack_supply_schema_postgresql.py"
 SHARED_FAST_DB_FIXTURE_HEAVY_TESTS = (
@@ -587,6 +585,7 @@ def test_plugin_sdk_wms_values_select_real_persistence_owners(filename: str) -> 
         "src/app/wms_integration/outbound_picking/services/return_batch_owner.py",
         "tests/integration/wms_adapter/outbound_picking/confirmation_support.py",
         "migrations/versions/20260907_0427_5098dc1b2b63_add_epoch_owner_to_wms_confirmation.py",
+        "migrations/versions/20260907_1118_93deacda8c9c_retire_bin_execution_and_line_run_epoch.py",
     ],
 )
 def test_epoch_confirmation_paths_select_return_batch_owner(changed_path: str) -> None:
@@ -726,7 +725,7 @@ def test_device_endpoint_paths_select_exact_runtime_and_schema_owners(changed_pa
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
-        LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
+        WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
     if changed_path.startswith("migrations/versions/"):
         expected = [INITIAL_SCHEMA_BASELINE_HEAVY_TEST]
@@ -806,7 +805,6 @@ def test_line_run_epoch_changes_select_role_uniqueness_owner() -> None:
         DECISION_PROCESSING_POSTGRESQL_HEAVY_TEST,
         EXECUTION_CONSTRAINTS_HEAVY_TEST,
         "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
-        LINE_RUN_EPOCH_ACTIVATION_POSTGRESQL_HEAVY_TEST,
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     ]
 
@@ -1288,6 +1286,7 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
         "migrations/versions/20260906_1630_3d040b37c049_constrain_face_length_to_ten.py",
         "migrations/versions/20260907_0400_5d3e6e4df5be_scope_picking_confirmation_uniqueness_.py",
         "migrations/versions/20260907_0427_5098dc1b2b63_add_epoch_owner_to_wms_confirmation.py",
+        "migrations/versions/20260907_1118_93deacda8c9c_retire_bin_execution_and_line_run_epoch.py",
     ]
     assert revision_mappings[0].heavy_tests == (INITIAL_SCHEMA_BASELINE_HEAVY_TEST,)
     assert revision_mappings[1].heavy_tests == (
@@ -1310,7 +1309,6 @@ def test_initial_schema_revision_mapping_is_exact_after_tombstone_cleanup() -> N
     )
     assert revision_mappings[6].heavy_tests == (
         INITIAL_SCHEMA_BASELINE_HEAVY_TEST,
-        "tests/integration/workline_capabilities/test_line_run_epoch_activation_postgresql.py",
         "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
         WORKLINE_START_POSTGRESQL_HEAVY_TEST,
     )

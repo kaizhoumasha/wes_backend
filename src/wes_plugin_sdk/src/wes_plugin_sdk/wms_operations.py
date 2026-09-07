@@ -39,7 +39,6 @@ def inbound_material_admission_decide(
     six_in_one: SixInOne,
     measurements: Measurements,
     shape_result: Literal["PASS", "FAIL"],
-    line_run_epoch_id: str,
     workline_code: str,
     source_position: DevicePosition,
 ) -> AdmissionIntent:
@@ -51,7 +50,6 @@ def inbound_material_admission_decide(
         six_in_one=six_in_one,
         measurements=measurements,
         shape_result=shape_result,
-        line_run_epoch_id=line_run_epoch_id,
         workline_code=workline_code,
         source_position=source_position,
     )
@@ -227,7 +225,6 @@ def outbound_bin_return_batch(
     *,
     operation_id: str,
     workline_code: str,
-    line_run_epoch_id: str,
     rack_id: str,
     rack_face: str,
     return_candidates: tuple[BinReturnCandidate, ...],
@@ -235,7 +232,6 @@ def outbound_bin_return_batch(
     return BinReturnBatchIntent(
         operation_id=operation_id,
         workline_code=workline_code,
-        line_run_epoch_id=line_run_epoch_id,
         rack_id=rack_id,
         rack_face=rack_face,
         return_candidates=return_candidates,

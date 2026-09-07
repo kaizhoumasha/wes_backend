@@ -17,7 +17,6 @@ def test_admission_typed_round_trip_keeps_wire_identity_and_device_text() -> Non
         six_in_one=SixInOne(" LOT ", "DATE", "1", "PN", "MFR", "PO"),
         measurements=Measurements("1.000", "0.500"),
         shape_result="PASS",
-        line_run_epoch_id="EPOCH-1",
         workline_code="WL-1",
         source_position=DevicePosition("IN-1", "MEASUREMENT_POSITION", "TRACE-1"),
     )

@@ -78,7 +78,7 @@ async def test_empty_decision_persists_without_automatic_reissue_or_device_actio
             assert evidence.operation_id == operation_id
             assert evidence.normalized_payload["data"] == data
             assert evidence.material_execution_id is None
-            assert evidence.line_run_epoch_id is None
+            assert evidence.workline_id is None
             assert (await db.get(PickingTask, task.id)).status == PickingTaskStatus.EXECUTING
             assert await db.scalar(select(func.count()).select_from(WmsConfirmation)) == 1
             assert await db.scalar(select(func.count()).select_from(TransportTask)) == 0

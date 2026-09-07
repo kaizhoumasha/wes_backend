@@ -1,14 +1,15 @@
-"""LineRunEpoch 创建前即可形成的稳定激活输入。"""
+"""WorkLine 当前配置的纯激活值。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.app.device.endpoint import validate_device_endpoint_base_url
 
 
 @dataclass(frozen=True, slots=True)
-class LineRunEpochDeviceBindingInput:
+class WorkLineDeviceBinding:
     """设备数据库身份与冻结派发不变量。"""
 
+    workline_id: int = field(kw_only=True)
     device_id: int
     device_code: str
     device_role: str
@@ -27,8 +28,8 @@ class LineRunEpochDeviceBindingInput:
 
 
 @dataclass(frozen=True, slots=True)
-class LineRunEpochPositionBindingInput:
-    """不依赖父 Epoch ID 的静态位置拓扑。"""
+class WorkLinePositionBinding:
+    """工作线当前静态位置拓扑。"""
 
     position_role: str
     location_id: str
@@ -36,19 +37,18 @@ class LineRunEpochPositionBindingInput:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkLineEpochActivationPlan:
+class WorkLineActivationPlan:
     """业务 builder 翻译后交给通用 START 的完整激活计划。"""
 
     plugin_key: str
     plugin_version: str
     flow_mode: str
-    configuration_snapshot: dict[str, object]
-    device_bindings: tuple[LineRunEpochDeviceBindingInput, ...]
-    position_bindings: tuple[LineRunEpochPositionBindingInput, ...]
+    device_bindings: tuple[WorkLineDeviceBinding, ...]
+    position_bindings: tuple[WorkLinePositionBinding, ...]
 
 
 __all__ = [
-    "LineRunEpochDeviceBindingInput",
-    "LineRunEpochPositionBindingInput",
-    "WorkLineEpochActivationPlan",
+    "WorkLineActivationPlan",
+    "WorkLineDeviceBinding",
+    "WorkLinePositionBinding",
 ]
