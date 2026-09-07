@@ -12,12 +12,16 @@ from src.app.wms_adapter.outbound_picking.arrival_report_adapter import (
     ReturnRackArrivalReportAdapter,
 )
 from src.app.wms_adapter.outbound_picking.arrival_report_wire import RETURN_RACK_ARRIVAL_REPORT_OPERATION
+from src.app.wms_adapter.outbound_picking.completion_confirm_adapter import CompletionConfirmAdapter
+from src.app.wms_adapter.outbound_picking.completion_confirm_wire import COMPLETION_CONFIRM_OPERATION
 from src.app.wms_adapter.outbound_picking.departure_adapter import RackDepartureAdapter
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_adapter import BinInboundBatchAdapter
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.material_decide_adapter import PickingMaterialDecideAdapter
 from src.app.wms_adapter.outbound_picking.material_decide_wire import MATERIAL_DECIDE_OPERATION
+from src.app.wms_adapter.outbound_picking.movement_report_adapter import MaterialMovementReportAdapter
+from src.app.wms_adapter.outbound_picking.movement_report_wire import MATERIAL_MOVEMENT_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.return_batch_adapter import BinReturnBatchAdapter
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.source_empty_adapter import SourceEmptyAdapter
@@ -42,7 +46,9 @@ class WmsConfirmationAdapter:
         self._work_plan = BinWorkPlanAdapter(client)
         self._departure = RackDepartureAdapter(client)
         self._material_decide = PickingMaterialDecideAdapter(client)
+        self._movement_report = MaterialMovementReportAdapter(client)
         self._source_empty = SourceEmptyAdapter(client)
+        self._completion_confirm = CompletionConfirmAdapter(client)
 
     async def dispatch(
         self,
@@ -59,7 +65,9 @@ class WmsConfirmationAdapter:
             | BinWorkPlanAdapter
             | RackDepartureAdapter
             | PickingMaterialDecideAdapter
+            | CompletionConfirmAdapter
             | SourceEmptyAdapter
+            | MaterialMovementReportAdapter
         )
         if operation == BIN_RETURN_BATCH_OPERATION:
             return await self._return_batch.dispatch(
@@ -68,7 +76,11 @@ class WmsConfirmationAdapter:
                 request_payload=request_payload,
                 request_digest=request_digest,
             )
-        if operation == SOURCE_EMPTY_OPERATION:
+        if operation == MATERIAL_MOVEMENT_REPORT_OPERATION:
+            adapter = self._movement_report
+        elif operation == COMPLETION_CONFIRM_OPERATION:
+            adapter = self._completion_confirm
+        elif operation == SOURCE_EMPTY_OPERATION:
             adapter = self._source_empty
         elif operation == MATERIAL_DECIDE_OPERATION:
             adapter = self._material_decide

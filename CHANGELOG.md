@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1.0] - 2026-09-07
+
+### Added
+
+- 补齐物料放置/NG 结果上报与 PickingTask 完成确认 Operation，复用 typed 门面和 WmsConfirmation 可靠收发能力。
+
+### Changed
+
+- Swagger 展开 10 个 WES→WMS Operation 的正常业务响应；WMS Event 请求示例增至 7 个，覆盖全部 6 个入站 Operation，并提供方向说明及 PickingTask 联调流程。
+
+### Verification
+
+- QUALITY FAST：3275 passed、5 skipped；最终 HEAVY：183 passed、零跳过。
+- Swagger/API 聚焦回归：65 passed；真实浏览器验证 7 个请求示例及对应成功响应示例。
+- 无数据库迁移；插件业务触发、部署及真实 WMS 联合验收不在本次交付范围。
+
 ## [0.33.0.0] - 2026-09-07
 
 ### Added

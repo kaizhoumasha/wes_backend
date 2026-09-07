@@ -568,6 +568,73 @@ class SourceEmptyWait:
         _positive(self.retry_after_ms, "retry_after_ms", 60000)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CompletionConfirmIntent:
+    operation_id: str
+    task_id: str
+    last_applied_plan_revision: int
+
+    def __post_init__(self) -> None:
+        _ = _required(self.operation_id, "operation_id")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.task_id, "task_id")) is None:
+            raise ValueError("task_id must be a business identifier")
+        if type(self.last_applied_plan_revision) is not int or not 0 <= self.last_applied_plan_revision <= 2**63 - 1:
+            raise ValueError("last_applied_plan_revision must be nonnegative int64")
+
+
+@dataclass(frozen=True, slots=True)
+class PickingTaskCompleted:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class PickingTaskPlanRevisionStale:
+    current_plan_revision: int
+
+    def __post_init__(self) -> None:
+        _positive(self.current_plan_revision, "current_plan_revision", 2**63 - 1)
+
+
+@dataclass(frozen=True, slots=True)
+class PickingTaskBusinessInProgress:
+    retry_after_ms: int
+
+    def __post_init__(self) -> None:
+        _positive(self.retry_after_ms, "retry_after_ms", 60000)
+
+
+@dataclass(frozen=True, slots=True)
+class PickingNgZone:
+    zone_code: str
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.zone_code, "zone_code")) is None:
+            raise ValueError("zone_code must be a business identifier")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MaterialMovementReportIntent:
+    operation_id: str
+    task_id: str
+    source_locator: PickingRackSlot | PickingBinCell
+    pkg_id: str
+    to_locator: PickingRackSlot | PickingNgZone
+    occurred_at: int
+
+    def __post_init__(self) -> None:
+        _ = _required(self.operation_id, "operation_id")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.task_id, "task_id")) is None:
+            raise ValueError("task_id must be a business identifier")
+        if type(self.source_locator) not in (PickingRackSlot, PickingBinCell):
+            raise TypeError("source_locator requires PickingRackSlot or PickingBinCell")
+        if type(self.to_locator) not in (PickingRackSlot, PickingNgZone):
+            raise TypeError("to_locator requires PickingRackSlot or PickingNgZone")
+        if type(self.pkg_id) is not str or not 1 <= len(self.pkg_id) <= 256:
+            raise ValueError("pkg_id must be original scan text of 1..256 characters")
+        if type(self.occurred_at) is not int or not 0 <= self.occurred_at <= 2**63 - 1:
+            raise ValueError("occurred_at must be nonnegative int64 milliseconds")
+
+
 InboundWmsIntent = AdmissionIntent | TargetIntent | PlacementIntent | NgPlacementIntent | ReplacementPlanIntent
 WmsOperationIntent = (
     InboundWmsIntent
@@ -578,7 +645,9 @@ WmsOperationIntent = (
     | BinWorkPlanIntent
     | RackDepartureIntent
     | PickingMaterialIntent
+    | CompletionConfirmIntent
     | SourceEmptyIntent
+    | MaterialMovementReportIntent
 )
 
 
@@ -808,6 +877,18 @@ class ReturnRackArrivalReportOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class MaterialMovementReportOutcome:
+    result: FactRecorded | OperationRejected | OperationConflict | OperationUnavailable
+
+    def __post_init__(self) -> None:
+        if type(self.result) not in (FactRecorded, OperationRejected, OperationConflict, OperationUnavailable):
+            raise TypeError("movement outcome requires an approved typed result")
+        if type(self.result) is OperationConflict and self.result.reason_code == "POSITION_CONFLICT":
+            raise ValueError("POSITION_CONFLICT is not approved for movement report")
+        _picking_rejection_pointer(self.result)
+
+
+@dataclass(frozen=True, slots=True)
 class BinInboundBatchOutcome:
     result: (
         BinInboundBatchReady
@@ -947,6 +1028,32 @@ class SourceEmptyOutcome:
         _picking_rejection_pointer(self.result)
 
 
+@dataclass(frozen=True, slots=True)
+class CompletionConfirmOutcome:
+    result: (
+        PickingTaskCompleted
+        | PickingTaskPlanRevisionStale
+        | PickingTaskBusinessInProgress
+        | OperationRejected
+        | OperationConflict
+        | OperationUnavailable
+    )
+
+    def __post_init__(self) -> None:
+        if type(self.result) not in (
+            PickingTaskCompleted,
+            PickingTaskPlanRevisionStale,
+            PickingTaskBusinessInProgress,
+            OperationRejected,
+            OperationConflict,
+            OperationUnavailable,
+        ):
+            raise TypeError("completion confirm requires an approved result")
+        if type(self.result) is OperationConflict and self.result.reason_code == "POSITION_CONFLICT":
+            raise ValueError("POSITION_CONFLICT is not approved for completion confirm")
+        _picking_rejection_pointer(self.result)
+
+
 WmsOperationOutcome = (
     AdmissionOutcome
     | TargetOutcome
@@ -960,5 +1067,7 @@ WmsOperationOutcome = (
     | BinWorkPlanOutcome
     | RackDepartureOutcome
     | PickingMaterialOutcome
+    | CompletionConfirmOutcome
     | SourceEmptyOutcome
+    | MaterialMovementReportOutcome
 )

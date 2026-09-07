@@ -558,6 +558,7 @@ def test_plugin_sdk_wms_values_select_real_persistence_owners(filename: str) -> 
         expected.append("tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py")
     if filename != "facts.py":
         expected.append("tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py")
     if filename != "facts.py":
         expected.append("tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py")
@@ -565,6 +566,7 @@ def test_plugin_sdk_wms_values_select_real_persistence_owners(filename: str) -> 
         expected.append("tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py")
         expected.append("tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py")
+        expected.append("tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py")
     assert select_heavy_tests([f"src/wes_plugin_sdk/src/wes_plugin_sdk/{filename}"], config) == sorted(expected)
 
 
@@ -776,8 +778,10 @@ def test_event_command_block_schema_paths_select_postgresql_owner(changed_path: 
                 EXECUTION_CONSTRAINTS_HEAVY_TEST,
                 "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
                 "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py",
+                "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py",
                 "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
                 "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py",
+                "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py",
                 PICKING_TASK_PREPARE_HEAVY_TEST,
                 "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
                 "tests/integration/wms_adapter/outbound_picking/test_schema.py",
@@ -1467,5 +1471,28 @@ def test_source_empty_paths_select_production_wiring(changed_path: str) -> None:
     config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
     assert (
         "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py"
+        in select_heavy_tests([changed_path], config)
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_path",
+    [
+        "src/app/execution/models/wms_confirmation.py",
+        "src/app/execution/repositories/wms_confirmation_repository.py",
+        "src/app/execution/services/wms_confirmation_service.py",
+        "src/app/wms_adapter/outbound_picking/movement_report_wire.py",
+        "src/app/wms_adapter/outbound_picking/movement_report_typed.py",
+        "src/app/wms_adapter/outbound_picking/movement_report_adapter.py",
+        "src/app/wms_integration/outbound_picking/services/picking_task_confirmation_owner.py",
+        "src/app/wms_adapter/confirmation_adapter.py",
+        "src/wes_plugin_sdk/src/wes_plugin_sdk/wms_types.py",
+        "tests/integration/wms_adapter/outbound_picking/confirmation_support.py",
+    ],
+)
+def test_movement_report_dependencies_select_production_wiring(changed_path: str) -> None:
+    config = load_config(REPO_ROOT / "docs/architecture/heavy-test-impact.toml")
+    assert (
+        "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py"
         in select_heavy_tests([changed_path], config)
     )

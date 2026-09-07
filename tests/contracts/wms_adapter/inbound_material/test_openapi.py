@@ -60,3 +60,26 @@ def test_shared_event_responses_include_inbound_empty_ack_and_invalid_data_witho
         reason for variant in rejected_data["oneOf"] for reason in variant["properties"]["reason_code"]["enum"]
     }
     assert reason_codes == {"INVALID_EVIDENCE", "INVALID_DATA", "UNSUPPORTED_OPERATION"}
+
+
+def test_shared_event_schema_accepts_picking_conflict_ack_without_widening_transport() -> None:
+    from src.app.wms_adapter.outbound_picking.response_wire import ConflictResponse
+    from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_RESPONSES
+
+    media = WMS_EVENT_RESPONSES[409]["content"]["application/json"]
+    variants = media["schema"]["properties"]["data"]["oneOf"]
+    picking_variants = [variant for variant in variants if variant["required"] == ["reason_code"]]
+    assert len(picking_variants) == 1
+    assert picking_variants[0]["additionalProperties"] is False
+    assert set(picking_variants[0]["properties"]["reason_code"]["enum"]) == {
+        "IDEMPOTENCY_CONFLICT",
+        "STATE_CONFLICT",
+        "REVISION_CONFLICT",
+        "REFERENCE_CONFLICT",
+    }
+    example = media["examples"]["picking_task"]["value"]
+    assert ConflictResponse.model_validate(example).data.reason_code == "IDEMPOTENCY_CONFLICT"
+    transport_variants = TRANSPORT_EVENT_RESPONSES[409]["content"]["application/json"]["schema"]["properties"]["data"][
+        "oneOf"
+    ]
+    assert all(variant["required"] != ["reason_code"] for variant in transport_variants)
