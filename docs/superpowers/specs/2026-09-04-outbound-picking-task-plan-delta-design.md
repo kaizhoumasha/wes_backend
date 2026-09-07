@@ -1034,7 +1034,7 @@ Transport 对外 `container_id` 与内部 BinExecution 暂不调整；完整生�
 - `RECORDED | DUPLICATE` 闭合本次可靠义务；未知响应和 `UNAVAILABLE` 复用现有同身份、同正文重试，冲突或非法响应保留证据并进入对账。既有 PickingTask-owned 放置事实义务允许在 EXECUTING／EXECUTION_COMPLETED 阶段派发，不重开任务。
 - 插件仍负责匹配前序最终物料决定与设备 `SUCCEEDED` 证据、创建报告及确认后的来源／容量释放；本切片不实现这些业务触发，不把 WMS ACK 当作设备完成。无新增模型、migration、worker 或兼容入口。
 - RED→GREEN 与聚焦回归 1295 passed；独立只读评审 CLEAR。最终 QUALITY 通过（FAST 3241 passed、5 skipped）；精确 selector 的 19 文件 HEAVY 89 passed、0 skipped，覆盖正常 PUT／NG 的零插件真实 worker／HTTP、响应 Evidence 持久化、任务阶段保持及无重复发送。
-- GitNexus 增量分析失败且目标 impact 不可用，本轮以精确调用点、直接／间接测试及 HEAVY owner 完成影响核对。快照和证据见 `reports/movement-snapshot.json`、`reports/movement-evidence.json`。未提交、未部署、未访问联调服务器；WMS 联合验收与插件业务实施另行推进。
+- GitNexus 增量分析失败且目标 impact 不可用，本轮以精确调用点、直接／间接测试及 HEAVY owner 完成影响核对。快照和证据见 `reports/movement-snapshot.json`、`reports/movement-evidence.json`。代码已随 `32f32783` 提交并推送，版本为 `0.33.1.0`；未部署、未访问联调服务器，WMS 联合验收与插件业务实施另行推进。
 
 ## 34. WMS Operation 继续实施：PickingTask 完成确认（2026-09-07）
 
@@ -1043,7 +1043,8 @@ Transport 对外 `container_id` 与内部 BinExecution 暂不调整；完整生�
 - PickingTask owner 允许 PREPARING／EXECUTING；插件负责检查 prepare 成功与首批等待期限、本地业务义务闭合、无待应用计划及必须的物理结果确认。基础 Adapter 不扫描历史结果、不推进任务状态、不释放物理资源。
 - Swagger 显示正常 COMPLETED 完整响应，等待和错误说明保持简要。无新增数据库模型、migration、worker 或兼容入口。
 - RED→GREEN：新增合同测试 30 passed；聚焦领域回归 1329 passed，selector 排序期望修正后 207 passed。独立只读 Review CLEAR；最终 QUALITY 通过（FAST 3275 passed、5 skipped），20 文件 HEAVY 95 passed、0 skipped，覆盖两种任务阶段下三个业务结果的真实 worker／HTTP／Evidence 持久化及无重复派发。
-- GitNexus 找不到当前符号，已使用精确调用点、测试 owner 和 mapping 核对。快照与证据记录在 reports/completion-snapshot.json、reports/completion-evidence.json。未提交、未部署，插件业务触发与 WMS 联合验收不在本切片。
+- GitNexus 找不到当前符号，已使用精确调用点、测试 owner 和 mapping 核对。快照与证据记录在 reports/completion-snapshot.json、reports/completion-evidence.json。代码已随 `32f32783` 提交并推送，版本为 `0.33.1.0`；未部署，插件业务触发与 WMS 联合验收不在本切片。
+- 本次 Ship 最终快照：QUALITY FAST 3275 passed、5 skipped；23 文件 HEAVY 183 passed、0 skipped；Swagger/API 聚焦回归 65 passed，独立审查 CLEAR。Swagger 的 7 个入站请求示例覆盖全部 6 种 Operation，并展示 10 种出站 Operation 的正常业务响应；真实浏览器已逐项验证示例切换，未向共享联调库发送模拟物理事实。最终日志见 `reports/ship-code-commit.log`、`reports/ship-heavy.log` 和 `reports/qa-report-localhost-8001-2026-09-07.md`。
 
 ## GSTACK REVIEW REPORT
 
