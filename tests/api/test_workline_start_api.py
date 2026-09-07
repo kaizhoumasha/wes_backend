@@ -95,12 +95,13 @@ def test_start_openapi_declares_success_and_runtime_failure_contracts_separately
 
 
 def test_start_request_is_closed_and_uses_version() -> None:
+    assert operation_api.WorkLineStartRequest(version=0).version == 0
     assert operation_api.WorkLineStartRequest(version=3).version == 3
     for invalid in (
         {"request_id": "REQUEST-1"},
         {"version": 3, "request_id": "REQUEST-1"},
         {"version": True},
-        {"version": 0},
+        {"version": -1},
     ):
         with pytest.raises(ValueError):
             operation_api.WorkLineStartRequest(**invalid)

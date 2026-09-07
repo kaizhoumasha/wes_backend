@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class WorkLineStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: int = Field(strict=True, ge=1)
+    version: int = Field(strict=True, ge=0)
 
 
 class WorkLineStartResponse(BaseModel):

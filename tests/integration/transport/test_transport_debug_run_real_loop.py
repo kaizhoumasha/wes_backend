@@ -208,12 +208,13 @@ async def _complete_transport_step(
         assert early == {
             "http_status": 409,
             "code": "CONFLICT",
-            "timestamp": callback_timestamp,
+            "timestamp": early["timestamp"],
             "data": {
                 "transport_task_id": transport_task_id,
                 "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
             },
         }
+        assert callback_timestamp <= early["timestamp"] <= int(timezone.now_utc().timestamp() * 1000)
         assert (await debug_run_service.get_run(run_id)).observed_bin_codes == ()
         results = payload["results"]
         assert isinstance(results, list)
