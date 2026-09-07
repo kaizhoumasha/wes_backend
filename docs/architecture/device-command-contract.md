@@ -87,7 +87,7 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
   WorkLine/业务 Decision，不表示联调命令失败；
 - 使用 EVENT 内部稳定身份作为命令幂等身份，重复 EVENT 最多创建一条命令；
 - 同设备已有未终态 `DeviceCommand` 时，不创建失败占位命令，不访问 ECS；evidence 进入 `RECONCILING`，并持久化指向旧命令的 blocker 因果事实；
-- 联调期间目标固定为 `http://10.24.209.26:8080/`，固定超时 `30000ms`，固定任务类型 `MOVE_FORWARD`，并将 EVENT `data`
+- 联调目标由 `Settings.DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL` 指定，新建命令时校验并冻结；Docker 本机开发编排明确指向 ECS Mock，配置变化不改写旧命令。固定超时 `30000ms`，固定任务类型 `MOVE_FORWARD`，并将 EVENT `data`
   原样作为 `params`；
 - 复用既有 DeviceCommand、统一 ECS Adapter、worker、运行态准入、CALLBACK 和 evidence；Status 未声明支持
   `MOVE_FORWARD`、设备不在线、非 `AUTO / IDLE`、存在 `current_command_code` 或其它当前准入失败时，已创建的联调命令直接闭合为失败，不排队等待设备后续可用；

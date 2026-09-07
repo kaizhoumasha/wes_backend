@@ -7,6 +7,7 @@
 
 | 调整内容 | 唯一所属入口 | 生效方式与边界 |
 | --- | --- | --- |
+| EVENT_DEBUG 命令接入地址 | [Settings](../../src/core/conf.py) 的 `DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL` | 重启使用该配置的 API/worker 后生效；新建命令使用既有设备地址校验并冻结，旧命令不变。Docker 本机开发编排指向 ECS Mock |
 | WMS 地址、Transport 提交路由 | [Settings](../../src/core/conf.py) 的 `WMS_BASE_URL`、`TRANSPORT_SUBMIT_PATH` | 环境提供值，启动时校验并冻结；重启使用它们的 API/worker 进程后生效。合法形式见 [Transport 合同](../contracts/transport-fulfillment-contract.md) |
 | 启用的已安装插件 | [Settings](../../src/core/conf.py) 的 `ENABLED_WORKLINE_PLUGINS`；[部署关联](../../deployment/plugin_composition.py) | 由部署显式关联并在启动时生效；不能通过配置自动安装插件或绕过工作线切换检查 |
 | 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；运行期间禁止修改；[START Service](../../src/app/workline/services/workline_start_service.py) 校验并保存 WorkLine 当前精确插件版本及必要执行合同 |

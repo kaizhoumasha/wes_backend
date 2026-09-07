@@ -525,7 +525,12 @@ async def test_manual_debug_preflight_returns_all_devices_with_runtime_rejection
 
 
 @pytest.mark.asyncio
-async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_business_binding() -> None:
+async def test_event_debug_command_uses_configured_endpoint_and_event_data_without_business_binding(
+    monkeypatch,
+) -> None:
+    from src.core.conf import settings
+
+    monkeypatch.setattr(settings, "DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL", "http://mock_ecs:8010")
     repository = FakeCommandRepository()
     service = DeviceCommandService(
         session_factory=FakeSessionFactory(),  # type: ignore[arg-type]
@@ -573,7 +578,7 @@ async def test_event_debug_command_uses_fixed_endpoint_and_event_data_without_bu
     assert handle.command_code == command.command_code
     assert command.execution_ref_type == "EVENT_DEBUG"
     assert command.execution_ref_id == evidence.source_identity
-    assert command.endpoint_base_url == "http://10.24.209.26:8080"
+    assert command.endpoint_base_url == "http://mock_ecs:8010"
     assert command.command_timeout_ms == 30_000
     assert command.task_type == "MOVE_FORWARD"
     assert command.params == evidence.normalized_payload["data"]

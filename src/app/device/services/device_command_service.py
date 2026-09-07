@@ -41,6 +41,7 @@ from src.app.execution.repositories.inbound_evidence_repository import inbound_e
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.repositories.workline_repository import WorkLineRepository
+from src.core.conf import settings
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
@@ -172,7 +173,6 @@ class ManualDebugAdapterProviderPort(Protocol):
 
 
 _EVENT_DEBUG_COMMAND_TIMEOUT_MS = 30_000
-_EVENT_DEBUG_ENDPOINT = "http://10.24.209.26:8080"
 _MANUAL_RECONCILIATION_FAILURE_CODE = "MANUAL_RECONCILIATION_DEVICE_IDLE"
 
 
@@ -436,7 +436,7 @@ class DeviceCommandService:
                 "params": event.data,
                 "deadline_at": now + timedelta(milliseconds=_EVENT_DEBUG_COMMAND_TIMEOUT_MS),
                 "trace_id": event.trace_id,
-                "endpoint_base_url": _EVENT_DEBUG_ENDPOINT,
+                "endpoint_base_url": validate_device_endpoint_base_url(settings.DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL),
                 "command_timeout_ms": _EVENT_DEBUG_COMMAND_TIMEOUT_MS,
                 "execution_reason": f"ECS_EVENT_DEBUG:{evidence.source_identity}",
             }

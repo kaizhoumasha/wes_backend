@@ -86,6 +86,7 @@ class MockEventRequest(BaseModel):
 
     device_code: str = Field(min_length=1, description="设备编码")
     event_type: str = Field(min_length=1, description="事件类型")
+    is_debug: bool | None = Field(default=None, strict=True, description="显式触发 WES 调试命令")
     timestamp: StrictInt | None = Field(
         default=None,
         description="Unix Epoch 毫秒事件时间。Swagger 调试可不传，Mock 会按发送时刻自动补齐",

@@ -143,7 +143,8 @@ def test_ecs_mock_supports_rough_sorter_placement_command(monkeypatch) -> None:
     assert callback["data"]["accepted_params"] == {"target_code": "OUTLET-1"}
 
 
-def test_ecs_mock_supports_first_onsite_scanner_command(monkeypatch) -> None:
+@pytest.mark.parametrize("device_code", ["STATION_SCAN1", "STATION_SCAN12"])
+def test_ecs_mock_supports_scanner_command(monkeypatch, device_code) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", 0)
 
@@ -153,7 +154,7 @@ def test_ecs_mock_supports_first_onsite_scanner_command(monkeypatch) -> None:
             json=_command_payload(
                 "CMD-STATION-SCAN1-001",
                 task_type="MOVE_FORWARD",
-                device_code="STATION_SCAN1",
+                device_code=device_code,
                 params={
                     "source": {
                         "location_id": "STATION_SCAN1",
@@ -165,7 +166,7 @@ def test_ecs_mock_supports_first_onsite_scanner_command(monkeypatch) -> None:
 
     assert response.status_code == 200
     callback = CapturingAsyncClient.requests[0]["json"]
-    assert callback["device_code"] == "STATION_SCAN1"
+    assert callback["device_code"] == device_code
     assert callback["result"] == "SUCCESS"
 
 
@@ -485,9 +486,11 @@ def test_ecs_mock_lists_received_commands_latest_first(monkeypatch) -> None:
     ]
 
 
-def test_ecs_mock_event_callbacks_preserve_device_defined_data(monkeypatch) -> None:
+@pytest.mark.parametrize("debug_fields", [{}, {"is_debug": True}])
+def test_ecs_mock_event_callbacks_preserve_device_defined_data(monkeypatch, debug_fields) -> None:
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
     payload = {
+        **debug_fields,
         "device_code": "CAMERA-CONVEYOR-01",
         "event_type": "SCAN_COMPLETED",
         "timestamp": 1_780_183_463_000,

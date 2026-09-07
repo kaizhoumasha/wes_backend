@@ -22,6 +22,16 @@ class MockEcsDevice:
 
 
 MOCK_ECS_DEVICES: dict[str, MockEcsDevice] = {
+    "STATION_SCAN12": MockEcsDevice(
+        device_code="STATION_SCAN12",
+        device_name="自动联调出料扫描工位",
+        device_type="SCANNER",
+        role="SCAN_STATION",
+        contract_key="third_party_integration",
+        contract_version="1.1",
+        supported_commands=("MOVE_FORWARD",),
+        supported_events=("SCAN_COMPLETED",),
+    ),
     "CAMERA-CONVEYOR-01": MockEcsDevice(
         device_code="CAMERA-CONVEYOR-01",
         device_name="流水线识别点摄像头",
