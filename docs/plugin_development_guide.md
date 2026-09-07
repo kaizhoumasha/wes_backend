@@ -215,6 +215,9 @@ Handler 按稳定业务触发拆分，而不是按物理 `EVENT`、`COMMAND`、`
 Handler 与核心端口；插件 Application 在核心提供的当前事务中构造类型化 Fact，Handler 只消费该不可变快照。核心只消费
 `PluginFactFactory` 抽象，不导入具体插件。
 
+Transport 结果 publisher 的插件 Application 接收宿主传入的 `db`，在同一事务保存 Evidence 并返回唤醒意图；不得另开 Session 或直接 enqueue。
+宿主持有任务行锁直到 Evidence 提交，并在提交后唤醒执行处理，避免嵌套连接占用及结果发布竞态。
+
 供应商一致性验收是对外部 ECS/网关实现的验收，不与 WorkLine 插件同包，也不进入核心业务测试。
 
 ## 4. 开发硬规则

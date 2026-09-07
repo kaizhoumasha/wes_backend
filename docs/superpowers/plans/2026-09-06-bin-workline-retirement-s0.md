@@ -1,6 +1,6 @@
 # BinExecution / Epoch 退役 S0 范围清单
 
-状态：用户已确认的 START、设备派发/证据、执行处理、WMS owner、Transport 和 rough_sorter 核心迁移已实施；独立代码评审、标准 QUALITY/HEAVY 通过。前端正式同步、插件镜像端到端验证及 QUIT 间歇问题尚未全部闭合。
+状态：用户已确认的 START、设备派发/证据、执行处理、WMS owner、Transport 和 rough_sorter 核心迁移已实施；最终代码评审、QUALITY、核心 HEAVY、迁移及插件镜像端到端验证通过，已进入后端 PR #211。前端正式冻结等待后端合并后的 clean develop；S3B、部署及现场验收仍为后续边界。
 实施输入：[SPEC](../specs/2026-09-06-bin-code-and-station-driven-flow-design.md)。
 后端 HEAD：`8b00a0cb2e21a9e13dee7ee2a9f5da270bce9fba`；SPEC SHA-256：`0816e35ca83376a731ffa235d4256e7374ad45c11f590529ffe1be343fbd903b`。
 初始 staged diff SHA-256：`ef88ea520c24106776f4c29255662d42d3ac3639c64ef4d4194f93a475087e65`；当时仅 SPEC 已暂存。实施开始时用户已暂存本清单及 SPEC，实施未改写 index。
@@ -370,23 +370,29 @@ S3A 共享 SDK、schema、composition，由同一实施 owner 顺序修改，主
 - [x] CRITICAL 影响范围确认；实际改动方法的 impact 或当前精确调用链记录按内聚切片维护。
 - [x] 上述两个已实现 WMS wire 的逐项目标合同已冻结；站点事实和入库跨执行 FIFO 仅门禁 S3B。
 - [x] 按直接测试导入和 fixture/helper 闭合各内聚切片消费者，并完成独立断言语义审阅。
-- [ ] 新/删文件最终 HEAVY mapping、迁移链、前端生成类型和必需真实 worker 验证按最终快照执行。
+- [x] 新/删文件最终 HEAVY mapping、迁移链及必需真实 worker 验证按最终快照执行。
+- [ ] 后端 PR 合并并取得 clean develop 后，执行前端正式 `contract:freeze` 和生成类型同步。
 
 S1 后端 Transport 箱码切片聚焦验证 414 passed；前端 S1 + START 在真实候选合同下 94 tests passed、type check 通过，后续 START 配置调整的相关 16 项再次通过。
 前端正式冻结要求后端 clean develop，当前条件未满足；候选补丁仅作开发验证，未改写正式来源记录，不代表前后端已正式同步。
 资源快照与验空挂载已去掉 bin_id 别名，资源域 46 passed。
 独立评审发现的历史 OLD_OUT 围栏和结果发布竞态已修复；同一 reviewer 完成意见闭环与当前完整快照复核，无新增可行动代码问题。
-真实 PostgreSQL 结果发布并发回归 1 passed，rough_sorter 持久化测试 7 passed；插件及路由 FAST 178 passed。
-首轮 HEAVY 的 5 项失败已定位并修复，其中退箱 owner 行锁读取改为刷新缓存，相关数据库及 worker 回归 7 passed；最终 QUALITY 已通过，FAST 3191 passed、5 skipped。
-最终标准 HEAVY 在干净逻辑库执行 48 个文件，383 passed、零跳过；staged selector 与验证使用的冻结清单完全一致。
-验证期间检测到暂存区已扩充为整体变更；可执行内容与评审快照一致，保留当前暂存状态。未执行 Commit、Push 或部署。
+最终生产提交：`176971bab862cdbcd65d3f04ac7fa7f1a3c7087b`，源码树：`4aaf8fb413d5dbbbbf7a78969a0f68c2673b9709`。本节记录最终证据，前文初始清单及指纹保留原值。
+WMS HTTP 返回时 owner 已失效的结果仍保存 Evidence 并进入 `RECONCILING`；START 接受合法初始 `version: 0`。
+Transport 结果 publisher 复用宿主 `db`，避免 worker 单连接池内二次申请连接超时；任务行锁保持到 Evidence 同事务提交，提交后才 enqueue。
 
-测试环境：同一专属 PostgreSQL/Redis Compose 项目内使用独立逻辑库。重复使用原测试库曾因活动测试 WorkLine 残留导致零插件 worker 拒绝启动；干净逻辑库的 4 项对应 worker 回归已全部通过。未放宽启动校验或修改生产代码。
-FAST 的 5 项跳过分别为 4 项需真实 API 凭据的签名检查及 1 项需预构建生产镜像的检查；不作为已验证证据。
+| 最终验证 | 结果 | 本机证据 |
+| --- | --- | --- |
+| QUALITY | 3200 passed、5 skipped，门禁通过 | `/tmp/wes-ship-publisher-commit-20260907.log` |
+| 核心 HEAVY | 最终 selector 56 个文件，517 passed、零跳过 | `/tmp/wes-ship-heavy-complete-20260907.log` |
+| 迁移 | 新鲜空库从 base 完整升级到 `93deacda8c9c` 成功 | 专属 PostgreSQL 干净逻辑库 |
+| 插件 FAST | rough_sorter 173 passed；manual_bin_processing 20 passed | 插件各自 FAST 入口 |
+| rough_sorter PostgreSQL | 7 passed | `/tmp/wes-ship-plugin-pg-publisher-20260907.log` |
+| rough_sorter 镜像 E2E | 两个独立组 10 + 2 = 12 passed、零跳过；镜像 `wes-backend:ship-176971bab862` 绑定上述生产提交及源码树 | `/tmp/wes-ship-plugin-e2e-complete-a-20260907.log`、`/tmp/wes-ship-plugin-e2e-complete-b-20260907.log`；`reports/rough-sorter-e2e.xml` |
+| 独立 Review | CLEAR，无待处理 finding | `/tmp/wes-ship-review-20260907.md` |
 
-额外观察：QUIT 后 countdown retry 接管场景曾出现两次 Worker 20 秒未退出；独立模块 8 项、带诊断整组 383 项及最后移除诊断的标准整组 383 项随后通过。
-该测试、PreforkWorker、Celery 退出实现和依赖锁文件与实施 HEAD 一致；尚未定位间歇超时原因，不宣称已修复。
-本轮没有放宽停机时限、删除预取前退出覆盖或修改生产停机机制。
+测试环境：专属 PostgreSQL/Redis Compose 项目使用独立逻辑库；核心与插件验收分开运行。FAST 的 5 项跳过分别为 4 项需真实 API 凭据的签名检查及 1 项需预构建生产镜像的检查，不作为通过证据。
+QUIT countdown retry 间歇问题复现后，测试补齐了 `RETRY` 状态前置条件；原退出时限、同 task id 接管及幂等终态断言保留，最终真实 worker 验证通过。此次修改的是测试前置条件，生产 Celery 信号与停机机制未改动。
 
-正式交付剩余边界：前端 `scripts/lib/backend-checkout.ts` 要求后端是干净的 `develop`；rough_sorter 镜像端到端测试要求镜像标识匹配真实 HEAD 及源码树。
-候选前端补丁已完成开发验证，但尚未正式冻结；本轮没有伪造来源记录或镜像标签，也没有运行供应商或现场验收。
+本机 ASGI/浏览器已验证 Swagger、WorkLine 空页和 Transport diagnostics smoke。测试镜像另观察到 Loguru 文件轮转 `OSError 22`，不在本次修复范围；不据此宣称所有日志无误。
+正式交付剩余边界：前端 `scripts/lib/backend-checkout.ts` 要求后端是干净的 `develop`；用户已确认先交付后端 PR，再执行前端正式 `contract:freeze`。候选前端补丁只完成开发验证，尚未正式冻结；S3B 站点等待/FIFO 仍为后续业务。本轮尚未 Merge、Deploy、供应商一致性或现场业务验收，本机测试与 smoke 不替代这些验收。
