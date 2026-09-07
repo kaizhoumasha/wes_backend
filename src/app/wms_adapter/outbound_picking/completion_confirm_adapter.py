@@ -1,0 +1,55 @@
+"""完成确认单次派发；非完成决定仍闭合当前可靠义务。"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from src.app.wms_adapter.dispatch import WmsDispatchCode, WmsDispatchResult, receive_json
+from src.app.wms_adapter.outbound_picking.completion_confirm_wire import (
+    COMPLETION_CONFIRM_OPERATION,
+    parse_completion_confirm_request,
+    parse_completion_confirm_response,
+)
+from src.app.wms_adapter.wire_common import DECISION_PATH
+from src.utils.canonical_json import canonical_json_digest
+
+if TYPE_CHECKING:
+    from src.app.wms_adapter.client import WmsClient
+
+
+class CompletionConfirmAdapter:
+    def __init__(self, client: WmsClient) -> None:
+        self._client = client
+
+    async def dispatch(
+        self, *, operation: str, operation_id: str, request_payload: dict[str, Any], request_digest: str
+    ) -> WmsDispatchResult:
+        try:
+            request = parse_completion_confirm_request(request_payload)
+        except (ValueError, TypeError):
+            return WmsDispatchResult(WmsDispatchCode.RECONCILING)
+        if (
+            operation != COMPLETION_CONFIRM_OPERATION
+            or request.operation_id != operation_id
+            or canonical_json_digest(request_payload) != request_digest
+        ):
+            return WmsDispatchResult(WmsDispatchCode.RECONCILING)
+        access = await receive_json(self._client, DECISION_PATH, request.model_dump(mode="json"))
+        if isinstance(access, WmsDispatchResult):
+            return access
+        try:
+            response = parse_completion_confirm_response(access.status_code or 0, access.json_body, request=request)
+        except (ValueError, TypeError):
+            return WmsDispatchResult(
+                WmsDispatchCode.RECONCILING,
+                normalized_response=dict(access.json_body) if isinstance(access.json_body, dict) else None,
+            )
+        normalized = response.model_dump(mode="json", exclude_unset=True)
+        if response.code == "DECIDED":
+            return WmsDispatchResult(
+                WmsDispatchCode.DETERMINATE, normalized_response=normalized, response_result=response.data.result
+            )
+        return WmsDispatchResult(
+            WmsDispatchCode.RETRY if response.code == "UNAVAILABLE" else WmsDispatchCode.RECONCILING,
+            normalized_response=normalized,
+        )

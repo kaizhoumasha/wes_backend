@@ -1027,6 +1027,24 @@ R2-B2 尚未整体完成。当前切片先修复宿主 PickingTask owner 的停�
 Transport 对外 `container_id` 与内部 BinExecution 暂不调整；完整生命周期退役按独立简化 SPEC 推进。
 旧 NG 实施过程已移出项目，不能复用其历史测试数量作为本次交付证据。最终验证以当前提交快照为准。
 
+## 33. WMS Operation 继续实施：单盘放置结果（2026-09-07）
+
+- 基于 `develop@cdbc63f0`，按主合同 §12.4–12.5 实现 `outbound.material.movement_report@v1` 的不可变 SDK intent/outcome、固定 facade、严格 wire 和静态 Adapter，调用 WMS `POST /api/v1/wes/facts`。
+- 来源复用 `RACK_SLOT | BIN_CELL`，去向为 `RACK_SLOT | NG_ZONE`；`PkgID` 保持 1–256 字符扫码原文，`occurred_at` 保持设备完成时间。禁止附加六合一码、设备命令编号或重复业务异常分类。
+- `RECORDED | DUPLICATE` 闭合本次可靠义务；未知响应和 `UNAVAILABLE` 复用现有同身份、同正文重试，冲突或非法响应保留证据并进入对账。既有 PickingTask-owned 放置事实义务允许在 EXECUTING／EXECUTION_COMPLETED 阶段派发，不重开任务。
+- 插件仍负责匹配前序最终物料决定与设备 `SUCCEEDED` 证据、创建报告及确认后的来源／容量释放；本切片不实现这些业务触发，不把 WMS ACK 当作设备完成。无新增模型、migration、worker 或兼容入口。
+- RED→GREEN 与聚焦回归 1295 passed；独立只读评审 CLEAR。最终 QUALITY 通过（FAST 3241 passed、5 skipped）；精确 selector 的 19 文件 HEAVY 89 passed、0 skipped，覆盖正常 PUT／NG 的零插件真实 worker／HTTP、响应 Evidence 持久化、任务阶段保持及无重复发送。
+- GitNexus 增量分析失败且目标 impact 不可用，本轮以精确调用点、直接／间接测试及 HEAVY owner 完成影响核对。快照和证据见 `reports/movement-snapshot.json`、`reports/movement-evidence.json`。未提交、未部署、未访问联调服务器；WMS 联合验收与插件业务实施另行推进。
+
+## 34. WMS Operation 继续实施：PickingTask 完成确认（2026-09-07）
+
+- 按主合同 §13 接入 outbound.picking_task.completion_confirm@v1：严格请求、三个封闭业务结果、不可变 SDK intent/outcome、固定 facade 与静态 Adapter，复用 WMS decisions 端点和 WmsConfirmation 可靠机制。
+- 请求携带 task_id 和 last_applied_plan_revision，允许尚无计划的 revision 0。PLAN_REVISION_STALE 必须携带高于请求的 current_plan_revision；三个业务结果均结束当前可靠义务，重求值使用新 identity。
+- PickingTask owner 允许 PREPARING／EXECUTING；插件负责检查 prepare 成功与首批等待期限、本地业务义务闭合、无待应用计划及必须的物理结果确认。基础 Adapter 不扫描历史结果、不推进任务状态、不释放物理资源。
+- Swagger 显示正常 COMPLETED 完整响应，等待和错误说明保持简要。无新增数据库模型、migration、worker 或兼容入口。
+- RED→GREEN：新增合同测试 30 passed；聚焦领域回归 1329 passed，selector 排序期望修正后 207 passed。独立只读 Review CLEAR；最终 QUALITY 通过（FAST 3275 passed、5 skipped），20 文件 HEAVY 95 passed、0 skipped，覆盖两种任务阶段下三个业务结果的真实 worker／HTTP／Evidence 持久化及无重复派发。
+- GitNexus 找不到当前符号，已使用精确调用点、测试 owner 和 mapping 核对。快照与证据记录在 reports/completion-snapshot.json、reports/completion-evidence.json。未提交、未部署，插件业务触发与 WMS 联合验收不在本切片。
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |

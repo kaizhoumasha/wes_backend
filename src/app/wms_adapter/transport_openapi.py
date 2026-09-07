@@ -325,3 +325,42 @@ __all__ = [
     "TRANSPORT_EVENT_RESPONSES",
     "build_transport_openapi_document",
 ]
+
+
+TRANSPORT_EVENT_EXAMPLES = {
+    "05_transport_position": {
+        "summary": "5. Transport 成员已取起",
+        "description": "使用 WES 已创建的 transport_task_id 和该任务的 container_id；仅在已取得真实取起事实后发送。",
+        "value": {
+            "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804df",
+            "operation": "transport.task.member_position_changed@v1",
+            "timestamp": 1786060804000,
+            "data": {
+                "transport_task_id": "transport-SWAGGER-001",
+                "container_id": "BIN-001",
+                "milestone": "SOURCE_PICKED",
+            },
+        },
+    },
+    "06_transport_result": {
+        "summary": "6. Transport 搬运成功",
+        "description": "使用已有 BIN_MOVE 任务与其成员，final_position 必须匹配冻结目标和真实完成事实。",
+        "value": {
+            "operation_id": "019f3400-0e17-7d2a-b944-3cf7953804e0",
+            "operation": "transport.task.resulted@v1",
+            "timestamp": 1786060805000,
+            "data": {
+                "transport_task_id": "transport-SWAGGER-001",
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": "BIN-001",
+                        "status": "SUCCEEDED",
+                        "final_position": {"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"},
+                    }
+                ],
+            },
+        },
+    },
+}

@@ -10,10 +10,13 @@ from .wms_types import (
     BinReturnBatchIntent,
     BinReturnCandidate,
     BinWorkPlanIntent,
+    CompletionConfirmIntent,
+    MaterialMovementReportIntent,
     Measurements,
     NgPlacementIntent,
     PickingBinCell,
     PickingMaterialIntent,
+    PickingNgZone,
     PickingRackSlot,
     PickingSixInOne,
     PickingTaskPrepareIntent,
@@ -267,4 +270,36 @@ def outbound_source_empty_decide(
         task_id=task_id,
         source_locator=source_locator,
         observed_at=observed_at,
+    )
+
+
+def outbound_material_movement_report(
+    *,
+    operation_id: str,
+    task_id: str,
+    source_locator: PickingRackSlot | PickingBinCell,
+    pkg_id: str,
+    to_locator: PickingRackSlot | PickingNgZone,
+    occurred_at: int,
+) -> MaterialMovementReportIntent:
+    return MaterialMovementReportIntent(
+        operation_id=operation_id,
+        task_id=task_id,
+        source_locator=source_locator,
+        pkg_id=pkg_id,
+        to_locator=to_locator,
+        occurred_at=occurred_at,
+    )
+
+
+def outbound_picking_task_completion_confirm(
+    *,
+    operation_id: str,
+    task_id: str,
+    last_applied_plan_revision: int,
+) -> CompletionConfirmIntent:
+    return CompletionConfirmIntent(
+        operation_id=operation_id,
+        task_id=task_id,
+        last_applied_plan_revision=last_applied_plan_revision,
     )

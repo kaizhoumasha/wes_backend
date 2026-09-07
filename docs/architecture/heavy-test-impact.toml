@@ -279,7 +279,7 @@ reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/decisions.py"
@@ -411,7 +411,7 @@ heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",
     "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py",
-    "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
@@ -1152,8 +1152,8 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/execution/{models/wms_confirmation.py,repositories/wms_confirmation_repository.py,services/wms_confirmation_service.py}"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py","tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py","tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
-    "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_schema.py","tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py","tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
     "tests/integration/execution/test_execution_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
@@ -1227,7 +1227,7 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/wms_integration/outbound_picking/**"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -1236,7 +1236,7 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/outbound_picking/**"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -2418,7 +2418,7 @@ heavy_tests = [
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
     "tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
-    "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py",
@@ -2426,7 +2426,7 @@ heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
-    "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py",
 ]
 
@@ -2470,11 +2470,11 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/{wms_types.py,wms_operations.py,prepare_policy.py}"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py"]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/confirmation_adapter.py"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py","tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py", "tests/e2e/transport/test_transport_production_wiring.py"]
@@ -2506,11 +2506,11 @@ heavy_tests = [
 # WMS operation 共用单次收发及 Picking worker fixture 的直接消费者。
 [[mapping]]
 source_glob = "src/app/wms_adapter/dispatch.py"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
 
 [[mapping]]
 source_glob = "tests/integration/wms_adapter/outbound_picking/confirmation_support.py"
-heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py","tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py"]
+heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_batch_confirmation_postgresql.py","tests/integration/wms_adapter/outbound_picking/test_prepare_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py"]
 
 [[mapping]]
 source_glob = "migrations/versions/20260907_0400_5d3e6e4df5be_scope_picking_confirmation_uniqueness_.py"

@@ -19,6 +19,7 @@ from src.app.transport.contracts import (
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.inbound_material.openapi import (
     RECOVERY_EVENT_REQUEST_SCHEMA,
+    WMS_EVENT_EXAMPLES,
     WMS_EVENT_RESPONSES,
 )
 from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
@@ -26,6 +27,7 @@ from src.app.wms_adapter.outbound_picking.openapi import (
     PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
+    PICKING_TASK_TEST_GUIDE,
 )
 from src.app.wms_adapter.outbound_picking.plan_delta_wire import PICKING_TASK_PLAN_DELTA_OPERATION
 from src.app.wms_adapter.outbound_picking.queue_changed_wire import PICKING_TASK_QUEUE_CHANGED_OPERATION
@@ -271,11 +273,13 @@ def _disposition(code: object, status_code: int) -> TransportIngressDisposition:
 
 @router.post(
     "/events",
+    summary="WMS 事件接收与 PickingTask 联调流程",
+    description=PICKING_TASK_TEST_GUIDE,
     responses=WMS_EVENT_RESPONSES,
     openapi_extra={
         "requestBody": {
             "required": True,
-            "content": {"application/json": {"schema": WMS_EVENT_REQUEST_SCHEMA}},
+            "content": {"application/json": {"schema": WMS_EVENT_REQUEST_SCHEMA, "examples": WMS_EVENT_EXAMPLES}},
         }
     },
 )
