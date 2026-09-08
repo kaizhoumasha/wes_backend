@@ -20,6 +20,8 @@ from src.core.rbac import require_superuser
 from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
 
 if TYPE_CHECKING:
+    from fastapi.openapi.models import Example
+
     from src.app.device.contracts import DeviceCommandHandle, ManualDebugDeviceCommandSnapshot
 
 router = APIRouter(tags=["DeviceCommand 联调"])
@@ -116,7 +118,7 @@ class ManualDebugCommandServicePort(Protocol):
     async def get_command_snapshot(self, command_code: str) -> ManualDebugDeviceCommandSnapshot: ...
 
 
-_OPENAPI_EXAMPLES = {
+_OPENAPI_EXAMPLES: dict[str, Example] = {
     "onsite_station_scan1_move_forward": {
         "summary": "现场扫描工位前进联调",
         "value": {

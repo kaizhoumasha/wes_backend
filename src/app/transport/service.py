@@ -13,7 +13,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from sqlalchemy.exc import IntegrityError
 from wes_plugin_sdk.validation import is_persistable_text
@@ -83,6 +83,9 @@ from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from _typeshed import DataclassInstance
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.transport.contracts import TransportOutcomePublisher, TransportProviderPort
@@ -163,7 +166,15 @@ class TransportEventPublisher(Protocol):
 
 
 class PositionProjectionPort(Protocol):
-    async def admit_transport_member(self, db: object, **kwargs: object) -> None: ...
+    async def admit_transport_member(
+        self,
+        db: AsyncSession,
+        *,
+        authority: TransportExecutionAuthority,
+        object_type: str,
+        object_id: str,
+        source: dict[str, Any],
+    ) -> None: ...
 
     async def get_current(
         self,
@@ -174,7 +185,20 @@ class PositionProjectionPort(Protocol):
         for_update: bool = False,
     ) -> object | None: ...
 
-    async def apply_transport_result(self, db: object, **kwargs: object) -> object | None: ...
+    async def apply_transport_result(
+        self,
+        db: AsyncSession,
+        *,
+        authority: TransportExecutionAuthority | None,
+        object_type: str,
+        object_id: str,
+        position: dict[str, Any] | None,
+        position_unknown: bool,
+        arrival_face: str | None,
+        operation_id: str,
+        transport_task_id: str,
+        updated_at: datetime,
+    ) -> object | None: ...
 
 
 class TransportDebugRunGuardPort(Protocol):
@@ -419,7 +443,7 @@ class TransportService:
 
         task_id = _validated_transport_task_id(transport_task_id)
         async with self._sessions.begin() as db:
-            await self._build_debug_reset_preview(db, task_id, for_update=True)
+            _ = await self._build_debug_reset_preview(db, task_id, for_update=True)
             if await self._debug_run_guard.is_task_linked_to_active_run(db, task_id):
                 raise TransportContractError("active transport debug run task cannot be reset")
             if confirmation is not None:
@@ -503,7 +527,7 @@ class TransportService:
             raise TransportContractError("operator confirmation step does not match Transport task kind")
         if not _debug_step_matches_frozen_request(task, confirmation.step):
             raise TransportContractError("operator confirmation step does not match frozen Transport request")
-        await audit_log_service.create_audit_log(
+        _ = await audit_log_service.create_audit_log(
             db,
             method="POST",
             title="确认 Transport 联调物理步骤",
@@ -666,7 +690,7 @@ class TransportService:
             finally:
                 if diagnostics is not None and not cancelled:
                     with suppress(Exception):
-                        await diagnostics.finish(observation)
+                        _ = await diagnostics.finish(observation)
 
             async with self._sessions.begin() as db:
                 current = await self._repository.get_task(db, task_id, for_update=True)
@@ -794,24 +818,23 @@ class TransportService:
                         reason_code=task.reason_code,
                     )
                     processed += 1
-                if update_event is not None and self._task_queue is not None:
+                if self._task_queue is not None:
                     defer_wakeup(db, self._task_queue.enqueue_transport_debug)
                     defer_wakeup(db, self._task_queue.enqueue_transport_outcomes)
-            if update_event is not None:
-                try:
-                    await self._event_publisher.publish_to(
-                        TRANSPORT_EVIDENCE_STREAM_CHANNEL,
-                        "transport_evidence.updated",
-                        update_event.model_dump(mode="json"),
-                    )
-                except Exception:
-                    logger.exception(
-                        "transport.evidence.event_publish_failed",
-                        extra={
-                            "event": "transport.evidence.event_publish_failed",
-                            "evidence_id": update_event.evidence_id,
-                        },
-                    )
+            try:
+                _ = await self._event_publisher.publish_to(
+                    TRANSPORT_EVIDENCE_STREAM_CHANNEL,
+                    "transport_evidence.updated",
+                    update_event.model_dump(mode="json"),
+                )
+            except Exception:
+                logger.exception(
+                    "transport.evidence.event_publish_failed",
+                    extra={
+                        "event": "transport.evidence.event_publish_failed",
+                        "evidence_id": update_event.evidence_id,
+                    },
+                )
         return processed
 
     async def record_callback(
@@ -823,8 +846,8 @@ class TransportService:
         payload: dict[str, Any] | None,
         rejection_reason_code: str | None,
     ) -> dict[str, Any]:
-        require_transport_text(operation_id, "operation_id", max_length=36)
-        require_transport_text(operation, "operation", max_length=80)
+        _ = require_transport_text(operation_id, "operation_id", max_length=36)
+        _ = require_transport_text(operation, "operation", max_length=80)
         encoded = canonical_callback_json(message).encode("utf-8")
         message_digest = hashlib.sha256(encoded).hexdigest()
         now = timezone.now_for_db()
@@ -832,7 +855,7 @@ class TransportService:
         transport_task_id = _associated_transport_task_id(message)
         if payload is not None:
             transport_task_id = payload["transport_task_id"]
-            require_transport_text(transport_task_id, "transport_task_id", max_length=80)
+            _ = require_transport_text(transport_task_id, "transport_task_id", max_length=80)
         outcome_revision = _source_outcome_revision(operation, payload) if payload is not None else None
         if rejection_reason_code is not None:
             ack_data = {"reason_code": rejection_reason_code}
@@ -870,7 +893,7 @@ class TransportService:
                 if payload is None or transport_task_id is None:
                     raise RuntimeError("validated callback is missing transport_task_id")
                 # 与 submit 写回锁同一任务行，使未提交 evidence 在确定性拒绝判断前可见。
-                await self._repository.get_task(db, transport_task_id, for_update=True)
+                _ = await self._repository.get_task(db, transport_task_id, for_update=True)
                 if outcome_revision is not None:
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -1215,7 +1238,7 @@ class TransportService:
         updated_at: datetime,
     ) -> None:
         if task.caller_json.get("workline_id") == TRANSPORT_DEBUG_CALLER_WORKLINE_ID:
-            await self._repository.apply_debug_position_projection(
+            _ = await self._repository.apply_debug_position_projection(
                 db,
                 object_type=member.object_type,
                 object_id=member.object_id,
@@ -1227,7 +1250,7 @@ class TransportService:
                 updated_at=updated_at,
             )
             return
-        await self._position_projections.apply_transport_result(
+        _ = await self._position_projections.apply_transport_result(
             db,
             authority=_execution_authority_from_task(task),
             object_type=member.object_type,
@@ -1454,7 +1477,9 @@ class TransportService:
                 for item in external_results
                 if isinstance(item, dict)
             ]
-        results = {item.get("object_id"): item for item in raw_results if isinstance(item, dict)}
+        results: dict[object, dict[str, Any]] = {
+            item.get("object_id"): item for item in raw_results if isinstance(item, dict)
+        }
         if set(results) != {member.object_id for member in members} or len(results) != len(raw_results):
             raise TransportContractError("result members differ from frozen task")
         if task.status == TransportTaskStatus.REJECTED.value:
@@ -1733,8 +1758,6 @@ def _request_digest(
 def _execution_authority_from_task(task: TransportTask) -> TransportExecutionAuthority | None:
     if task.authority_workline_id is None:
         return None
-    if task.authority_workline_id is None:
-        raise RuntimeError("persisted TransportTask has incomplete execution authority")
     return TransportExecutionAuthority(
         workline_id=task.authority_workline_id,
     )
@@ -1758,7 +1781,7 @@ def _matches_submit_snapshot(
 
 
 def _json_value(value: object) -> Any:
-    raw = asdict(value) if hasattr(value, "__dataclass_fields__") else value
+    raw = asdict(cast("DataclassInstance", value)) if hasattr(value, "__dataclass_fields__") else value
     return json.loads(json.dumps(raw, ensure_ascii=False, separators=(",", ":")))
 
 
@@ -1845,9 +1868,9 @@ def _evidence_update_event(
         operation=evidence.operation,
         transport_task_id=evidence.transport_task_id,
         outcome_revision=evidence.outcome_revision,
-        status=evidence.status,
+        status=cast("Literal['APPLIED', 'CONFLICT']", evidence.status),
         conflict_code=evidence.conflict_code,
-        task_status=task_status,
+        task_status=cast("TransportTaskStatus | None", task_status),
         reason_code=reason_code,
         processed_at=_utc_z(evidence.processed_at),
     )
@@ -1911,7 +1934,7 @@ def _position_matches_member_type(member: TransportMember, position: object) -> 
 def _validate_result_frozen_identity(
     task: TransportTask,
     members: list[TransportMember],
-    results: dict[object, dict[str, Any]],
+    results: Mapping[object, dict[str, Any]],
 ) -> None:
     for member in members:
         result = results[member.object_id]
@@ -2090,7 +2113,7 @@ def _successful_rack_slot_result_members(
         for item in results
         if isinstance(item, dict)
     ]
-    result_by_member_id = {item.get("object_id"): item for item in raw_results}
+    result_by_member_id: dict[object, dict[str, Any]] = {item.get("object_id"): item for item in raw_results}
     if set(result_by_member_id) != {member.object_id for member in members} or len(result_by_member_id) != len(
         raw_results
     ):

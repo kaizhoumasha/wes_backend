@@ -52,8 +52,8 @@ def _validate_position_data(value: object) -> dict[str, Any]:
         "position data",
         optional={"final_position"},
     )
-    require_transport_text(data["transport_task_id"], "transport_task_id", max_length=80)
-    require_transport_text(data["container_id"], "container_id", max_length=100)
+    _ = require_transport_text(data["transport_task_id"], "transport_task_id", max_length=80)
+    _ = require_transport_text(data["container_id"], "container_id", max_length=100)
     milestone = data["milestone"]
     if milestone not in {"SOURCE_PICKED", "TARGET_PLACED", "POSITION_UNKNOWN"}:
         raise TransportContractError("invalid position milestone")
@@ -83,7 +83,7 @@ def _validate_result_data(value: object) -> dict[str, Any]:
         )
     else:
         data = _strict_dict(value, {"transport_task_id", "kind", "outcome_revision", "results"}, "result data")
-    require_transport_text(data["transport_task_id"], "transport_task_id", max_length=80)
+    _ = require_transport_text(data["transport_task_id"], "transport_task_id", max_length=80)
     outcome_revision = data["outcome_revision"]
     if (
         not isinstance(outcome_revision, int)
@@ -92,7 +92,7 @@ def _validate_result_data(value: object) -> dict[str, Any]:
     ):
         raise TransportContractError("outcome_revision must be a positive integer within signed 64-bit range")
     if kind in {"RACK_MOVE", "RACK_ROTATE"}:
-        _validate_member_result(
+        _ = _validate_member_result(
             {
                 key: data[key]
                 for key in ("rack_id", "status", "final_position", "position_unknown", "failure_code", "arrival_face")
@@ -131,7 +131,7 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
         "member result",
         optional={"final_position", "position_unknown", "failure_code", "arrival_face"},
     )
-    require_transport_text(result[id_field], id_field, max_length=100)
+    _ = require_transport_text(result[id_field], id_field, max_length=100)
     status = result["status"]
     if status not in {"SUCCEEDED", "FAILED"}:
         raise TransportContractError("invalid member result status")
@@ -171,17 +171,17 @@ def _validate_position(value: object) -> dict[str, Any]:
     kind = value["kind"]
     if kind == "RACK_POSITION":
         position = _strict_dict(value, {"kind", "location_code"}, "rack position")
-        require_transport_text(position["location_code"], "location_code", max_length=100)
+        _ = require_transport_text(position["location_code"], "location_code", max_length=100)
         return position
     if kind == "RACK_BIN_SLOT":
         position = _strict_dict(value, {"kind", "rack_id", "rack_face", "slot_id"}, "rack bin slot")
-        require_transport_text(position["rack_id"], "rack_id", max_length=100)
+        _ = require_transport_text(position["rack_id"], "rack_id", max_length=100)
         validate_opaque_face(position["rack_face"], "rack_face", error_type=TransportContractError)
-        require_transport_text(position["slot_id"], "slot_id", max_length=100)
+        _ = require_transport_text(position["slot_id"], "slot_id", max_length=100)
         return position
     if kind == "HANDOFF_POSITION":
         position = _strict_dict(value, {"kind", "location_code"}, "handoff position")
-        require_transport_text(position["location_code"], "location_code", max_length=100)
+        _ = require_transport_text(position["location_code"], "location_code", max_length=100)
         return position
     raise TransportContractError("invalid position kind")
 

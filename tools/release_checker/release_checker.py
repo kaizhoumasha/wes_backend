@@ -118,7 +118,7 @@ def _read_json(path: Path) -> tuple[bytes, dict[str, Any]]:
 
 
 def _require_exact_fields(value: Mapping[str, Any], expected: frozenset[str], subject: str) -> None:
-    if set(value) != expected:
+    if frozenset(value) != expected:
         raise ArtifactValidationError(f"{subject} has unknown or missing fields")
 
 
@@ -135,7 +135,7 @@ def _require_sha256(value: Any, subject: str) -> str:
 
 
 def _validate_openapi(value: dict[str, Any], subject: str) -> None:
-    _require_nonempty_string(value.get("openapi"), f"{subject}.openapi")
+    _ = _require_nonempty_string(value.get("openapi"), f"{subject}.openapi")
     if not isinstance(value.get("paths"), dict):
         raise ArtifactValidationError(f"{subject}.paths must be an object")
     _validate_internal_refs(value, subject)
@@ -199,7 +199,7 @@ def _validate_provided_permissions(value: dict[str, Any]) -> frozenset[str]:
     names: set[str] = set()
     order: list[tuple[str, str, str, str]] = []
     for item in permissions:
-        if not isinstance(item, dict) or set(item) != PROVIDED_PERMISSION_FIELDS:
+        if not isinstance(item, dict) or frozenset(item) != PROVIDED_PERMISSION_FIELDS:
             raise ArtifactValidationError("provided permission fields are invalid")
         if not all(isinstance(field, str) and field for field in item.values()):
             raise ArtifactValidationError("provided permission fields must be non-empty strings")
@@ -406,10 +406,10 @@ def run_oasdiff(
         work_dir = Path(directory)
         consumer_path = work_dir / "consumer-baseline.json"
         provider_path = work_dir / "selected-provider.json"
-        consumer_path.write_bytes(
+        _ = consumer_path.write_bytes(
             canonical_json_bytes(project_selected_operations(consumer_openapi, required_operations))
         )
-        provider_path.write_bytes(
+        _ = provider_path.write_bytes(
             canonical_json_bytes(project_selected_operations(provider_openapi, required_operations))
         )
         try:
@@ -483,7 +483,7 @@ FULL_REASON_NAMES = {
 def _validate_image_facts(value: Any, *, frontend: bool) -> dict[str, str]:
     fields = FRONTEND_FACT_FIELDS if frontend else BACKEND_FACT_FIELDS
     subject = "frontend" if frontend else "backend"
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or frozenset(value) != fields:
         raise ArtifactValidationError(f"{subject} fingerprint fields are invalid")
     result: dict[str, str] = {}
     for key in fields - {"expected_schema_head"}:
@@ -677,7 +677,7 @@ def build_compatibility_report(
     findings: Sequence[Finding],
     approval_reason: str | None = None,
 ) -> dict[str, Any]:
-    _require_nonempty_string(release_id, "release_id")
+    _ = _require_nonempty_string(release_id, "release_id")
     if deploy_scope not in {"FRONTEND", "BACKEND", "BOTH"}:
         raise ArtifactValidationError("deploy_scope enum is invalid")
     candidate, current = _validate_digest_maps(deploy_scope, dict(candidate_digests), dict(current_digests))
@@ -724,11 +724,11 @@ def _canonical_json_without_lf(value: Any) -> bytes:
 
 
 def validate_compatibility_report(report: Mapping[str, Any]) -> None:  # noqa: PLR0912
-    if set(report) != REPORT_FIELDS:
+    if frozenset(report) != REPORT_FIELDS:
         raise ArtifactValidationError("compatibility report fields are invalid")
     if report["kind"] != "wes.release.compatibility-report.v1":
         raise ArtifactValidationError("compatibility report kind is invalid")
-    _require_nonempty_string(report["release_id"], "release_id")
+    _ = _require_nonempty_string(report["release_id"], "release_id")
     deploy_scope = report["deploy_scope"]
     if deploy_scope not in {"FRONTEND", "BACKEND", "BOTH"}:
         raise ArtifactValidationError("deploy_scope enum is invalid")
@@ -746,7 +746,7 @@ def validate_compatibility_report(report: Mapping[str, Any]) -> None:  # noqa: P
         if not isinstance(values, dict) or set(values) != fields:
             raise ArtifactValidationError(f"{side} artifact hash fields are invalid")
         for key, value in values.items():
-            _require_sha256(value, f"{side}.{key}")
+            _ = _require_sha256(value, f"{side}.{key}")
     if report["auto_mode"] not in {"FAST", "FULL"} or report["effective_mode"] not in {"FAST", "FULL"}:
         raise ArtifactValidationError("release mode enum is invalid")
     if report["auto_mode"] == "FULL" and report["effective_mode"] != "FULL":
@@ -761,7 +761,7 @@ def validate_compatibility_report(report: Mapping[str, Any]) -> None:  # noqa: P
         raise ArtifactValidationError("compatibility fields are invalid")
     if compatibility["status"] not in {"PASS", "WARN", "ERR"}:
         raise ArtifactValidationError("compatibility status enum is invalid")
-    _require_sha256(compatibility["diff_hash"], "compatibility.diff_hash")
+    _ = _require_sha256(compatibility["diff_hash"], "compatibility.diff_hash")
     finding_documents = compatibility["findings"]
     if not isinstance(finding_documents, list):
         raise ArtifactValidationError("compatibility findings must be an array")
@@ -772,7 +772,7 @@ def validate_compatibility_report(report: Mapping[str, Any]) -> None:  # noqa: P
         if item["severity"] not in {"WARN", "ERR"}:
             raise ArtifactValidationError("compatibility finding severity is invalid")
         for field in ("code", "location", "message"):
-            _require_nonempty_string(item[field], f"finding.{field}")
+            _ = _require_nonempty_string(item[field], f"finding.{field}")
         finding_order.append((item["severity"], item["code"], item["location"], item["message"]))
     if finding_order != sorted(finding_order):
         raise ArtifactValidationError("compatibility findings must be sorted")
@@ -803,7 +803,7 @@ def validate_compatibility_report(report: Mapping[str, Any]) -> None:  # noqa: P
             or approval["diff_hash"] != compatibility["diff_hash"]
         ):
             raise ArtifactValidationError("approval binding is invalid")
-        _require_nonempty_string(approval["reason"], "approval reason")
+        _ = _require_nonempty_string(approval["reason"], "approval reason")
     state = report["pre_cutover_state"]
     if state not in {"READY", "PRE_CUTOVER_ABORTED"}:
         raise ArtifactValidationError("pre_cutover_state enum is invalid")
@@ -825,10 +825,10 @@ def _write_report_atomically(path: Path, report: Mapping[str, Any]) -> None:
             mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
         ) as stream:
             temporary = Path(stream.name)
-            stream.write(raw)
+            _ = stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+        _ = temporary.replace(path)
         temporary = None
     finally:
         if temporary is not None:
@@ -837,20 +837,20 @@ def _write_report_atomically(path: Path, report: Mapping[str, Any]) -> None:
 
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Check one selected frontend/backend release pair")
-    parser.add_argument("--frontend-dir", required=True, type=Path)
-    parser.add_argument("--backend-dir", required=True, type=Path)
-    parser.add_argument("--frontend-labels", required=True, type=Path)
-    parser.add_argument("--backend-labels", required=True, type=Path)
-    parser.add_argument("--current-fingerprints", type=Path)
-    parser.add_argument("--effective-facts", required=True, type=Path)
-    parser.add_argument("--release-id", required=True)
-    parser.add_argument("--deploy-scope", required=True, choices=("FRONTEND", "BACKEND", "BOTH"))
-    parser.add_argument("--candidate-digests", required=True, type=Path)
-    parser.add_argument("--current-digests", required=True, type=Path)
-    parser.add_argument("--checker-digest", required=True)
-    parser.add_argument("--force-full", action="store_true")
-    parser.add_argument("--warn-approval-reason")
-    parser.add_argument("--output", required=True, type=Path)
+    _ = parser.add_argument("--frontend-dir", required=True, type=Path)
+    _ = parser.add_argument("--backend-dir", required=True, type=Path)
+    _ = parser.add_argument("--frontend-labels", required=True, type=Path)
+    _ = parser.add_argument("--backend-labels", required=True, type=Path)
+    _ = parser.add_argument("--current-fingerprints", type=Path)
+    _ = parser.add_argument("--effective-facts", required=True, type=Path)
+    _ = parser.add_argument("--release-id", required=True)
+    _ = parser.add_argument("--deploy-scope", required=True, choices=("FRONTEND", "BACKEND", "BOTH"))
+    _ = parser.add_argument("--candidate-digests", required=True, type=Path)
+    _ = parser.add_argument("--current-digests", required=True, type=Path)
+    _ = parser.add_argument("--checker-digest", required=True)
+    _ = parser.add_argument("--force-full", action="store_true")
+    _ = parser.add_argument("--warn-approval-reason")
+    _ = parser.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -871,7 +871,7 @@ def main(
     if args.current_fingerprints is not None:
         try:
             current_evidence = _read_json_object(args.current_fingerprints)
-            _validate_current_evidence(current_evidence)
+            _ = _validate_current_evidence(current_evidence)
         except (ArtifactValidationError, OSError):
             current_evidence = None
     findings: list[Finding] = []

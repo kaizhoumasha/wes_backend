@@ -127,9 +127,9 @@ class TransportCaller:
     station_id: str | None = None
 
     def __post_init__(self) -> None:
-        require_transport_text(self.workline_id, "workline_id")
+        _ = require_transport_text(self.workline_id, "workline_id")
         if self.station_id is not None:
-            require_transport_text(self.station_id, "station_id")
+            _ = require_transport_text(self.station_id, "station_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +149,7 @@ class RackPosition:
     kind: str = field(default="RACK_POSITION", init=False)
 
     def __post_init__(self) -> None:
-        require_transport_text(self.location_code, "location_code", max_length=100)
+        _ = require_transport_text(self.location_code, "location_code", max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +158,7 @@ class RackReference:
     kind: str = field(default="RACK", init=False)
 
     def __post_init__(self) -> None:
-        require_transport_text(self.location_code, "location_code", max_length=100)
+        _ = require_transport_text(self.location_code, "location_code", max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +167,7 @@ class ZonePosition:
     kind: str = field(default="ZONE", init=False)
 
     def __post_init__(self) -> None:
-        require_transport_text(self.location_code, "location_code", max_length=100)
+        _ = require_transport_text(self.location_code, "location_code", max_length=100)
 
 
 type RackMovePosition = RackReference | ZonePosition | RackPosition
@@ -182,9 +182,9 @@ class RackBinSlot:
     kind: str = field(default="RACK_BIN_SLOT", init=False)
 
     def __post_init__(self) -> None:
-        require_transport_text(self.rack_id, "rack_id", max_length=100)
+        _ = require_transport_text(self.rack_id, "rack_id", max_length=100)
         validate_opaque_face(self.rack_face, "rack_face", error_type=TransportContractError)
-        require_transport_text(self.slot_id, "slot_id", max_length=100)
+        _ = require_transport_text(self.slot_id, "slot_id", max_length=100)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +193,7 @@ class HandoffPosition:
     kind: str = field(default="HANDOFF_POSITION", init=False)
 
     def __post_init__(self) -> None:
-        require_transport_text(self.location_code, "location_code", max_length=100)
+        _ = require_transport_text(self.location_code, "location_code", max_length=100)
 
 
 type TransportPosition = RackPosition | RackBinSlot | HandoffPosition
@@ -206,7 +206,7 @@ class BinMove:
     target: RackBinSlot | HandoffPosition
 
     def __post_init__(self) -> None:
-        require_transport_text(self.bin_code, "bin_code", max_length=100)
+        _ = require_transport_text(self.bin_code, "bin_code", max_length=100)
         if type(self.source) not in {RackBinSlot, HandoffPosition} or type(self.target) not in {
             RackBinSlot,
             HandoffPosition,
@@ -226,8 +226,8 @@ class BinExchangePair:
     right_location: RackBinSlot
 
     def __post_init__(self) -> None:
-        require_transport_text(self.left_bin_code, "left_bin_code", max_length=100)
-        require_transport_text(self.right_bin_code, "right_bin_code", max_length=100)
+        _ = require_transport_text(self.left_bin_code, "left_bin_code", max_length=100)
+        _ = require_transport_text(self.right_bin_code, "right_bin_code", max_length=100)
         if type(self.left_location) is not RackBinSlot or type(self.right_location) is not RackBinSlot:
             raise TransportContractError("exchange positions must be rack bin slots")
         if self.left_bin_code == self.right_bin_code:
@@ -249,7 +249,7 @@ class MoveRackRequest:
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id, self.caller)
-        require_transport_text(self.rack_id, "rack_id", max_length=100)
+        _ = require_transport_text(self.rack_id, "rack_id", max_length=100)
         allowed_types = {RackReference, ZonePosition, RackPosition}
         if type(self.source) not in allowed_types or type(self.target) not in allowed_types:
             raise TransportContractError("rack source and target must be rack move positions")
@@ -292,7 +292,7 @@ class RotateRackRequest:
 
     def __post_init__(self) -> None:
         _validate_request_identity(self.client_request_id, self.caller)
-        require_transport_text(self.rack_id, "rack_id", max_length=100)
+        _ = require_transport_text(self.rack_id, "rack_id", max_length=100)
         if type(self.position) not in {RackReference, RackPosition}:
             raise TransportContractError("rack rotation position must be a rack reference or rack position")
         if type(self.position) is RackReference and self.position.location_code != self.rack_id:
@@ -369,8 +369,8 @@ class TransportHandle:
     client_request_id: str
 
     def __post_init__(self) -> None:
-        require_transport_text(self.transport_task_id, "transport_task_id")
-        require_transport_text(self.client_request_id, "client_request_id")
+        _ = require_transport_text(self.transport_task_id, "transport_task_id")
+        _ = require_transport_text(self.client_request_id, "client_request_id")
 
 
 class TransportPort(Protocol):
@@ -427,7 +427,7 @@ class TransportMemberOutcome:
     arrival_face: str | None = None
 
     def __post_init__(self) -> None:
-        require_transport_text(self.object_id, "object_id")
+        _ = require_transport_text(self.object_id, "object_id")
         if self.arrival_face is not None:
             validate_opaque_face(self.arrival_face, "arrival_face", error_type=TransportContractError)
         if (self.final_position is None) == (self.position_unknown is False):
@@ -445,8 +445,8 @@ class TransportOutcome:
     members: tuple[TransportMemberOutcome, ...]
 
     def __post_init__(self) -> None:
-        require_transport_text(self.transport_task_id, "transport_task_id")
-        require_transport_text(self.client_request_id, "client_request_id")
+        _ = require_transport_text(self.transport_task_id, "transport_task_id")
+        _ = require_transport_text(self.client_request_id, "client_request_id")
         if self.outcome_version < 1:
             raise TransportContractError("outcome_version must be positive")
 
@@ -475,7 +475,7 @@ class TransportOutcomePublisher(Protocol):
 
 
 def _validate_request_identity(client_request_id: str, caller: TransportCaller) -> None:
-    require_transport_text(client_request_id, "client_request_id", max_length=120)
+    _ = require_transport_text(client_request_id, "client_request_id", max_length=120)
     if not is_uuid7(client_request_id):
         raise TransportContractError("client_request_id must be a UUIDv7")
     if type(caller) is not TransportCaller:

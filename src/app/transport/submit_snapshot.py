@@ -5,7 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 from src.app.transport.contracts import (
     ExchangeBinsRequest,
@@ -97,7 +100,7 @@ def request_body_digest(request_body: bytes) -> str:
     return hashlib.sha256(request_body).hexdigest()
 
 
-def _json_value(value: object) -> dict[str, Any]:
+def _json_value(value: DataclassInstance) -> dict[str, Any]:
     return json.loads(json.dumps(asdict(value), ensure_ascii=False, separators=(",", ":")))
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -193,12 +193,14 @@ def _parse_finite_float(value: str) -> float:
 
 
 def _parse_transport_float(value: str) -> _PreservedJsonFloat:
-    _parse_finite_float(value)
+    _ = _parse_finite_float(value)
     try:
         decimal_value = Decimal(value)
     except InvalidOperation as error:
         raise ValueError("JSON number must be a decimal") from error
-    _, digits, exponent = decimal_value.as_tuple()
+    _, digits, raw_exponent = decimal_value.as_tuple()
+    # 上方有限数校验排除了 Decimal 的 NaN/Infinity exponent 标记。
+    exponent = cast("int", raw_exponent)
     coefficient = int("".join(str(digit) for digit in digits)) if digits else 0
     if coefficient == 0:
         return _PreservedJsonFloat(value)

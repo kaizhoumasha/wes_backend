@@ -29,7 +29,7 @@ class PositionProjectionRepository(BaseRepository[PositionProjection]):
         return position.get("location_code") in {binding["location_id"] for binding in line.position_bindings.values()}
 
     async def lock_projection(self, db: AsyncSession, object_type: str, object_id: str) -> None:
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": position_projection_lock_identity(object_type, object_id)},
         )

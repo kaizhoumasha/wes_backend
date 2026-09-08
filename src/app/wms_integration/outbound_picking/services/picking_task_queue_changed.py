@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from src.app.execution.models import InboundEvidenceApplyStatus as Status
 from src.app.execution.models import InboundEvidenceKind
@@ -70,7 +70,7 @@ class PickingTaskQueueChangedService:
                 if evidence.apply_status == Status.APPLIED:
                     return self._result(evidence, "DUPLICATE")
                 if evidence.apply_status == Status.RECONCILING:
-                    reason = await self._tasks.first_queue_rejection(db, evidence.id)
+                    reason = await self._tasks.first_queue_rejection(db, cast("int", evidence.id))
                     if reason is None:
                         raise RuntimeError("队列拒绝缺少首次原因")
                     return self._result(evidence, "CONFLICT", reason)
@@ -93,11 +93,13 @@ class PickingTaskQueueChangedService:
                 and (data.not_before is None or data.not_before == task.not_before_ms)
             ) or (
                 data.dispatch_sequence is not None
-                and await self._tasks.queued_sequence_is_occupied(db, data.dispatch_sequence, excluding_task_id=task.id)
+                and await self._tasks.queued_sequence_is_occupied(
+                    db, data.dispatch_sequence, excluding_task_id=cast("int", task.id)
+                )
             ):
                 reason = "STATE_CONFLICT"
             if reason is not None:
-                await self._evidence.record_conflict(
+                _ = await self._evidence.record_conflict(
                     db,
                     first=evidence,
                     source_identity=evidence.source_identity,

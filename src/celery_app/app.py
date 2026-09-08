@@ -82,7 +82,7 @@ def on_worker_init(sender: Any | None = None, **kwargs: Any) -> None:
     try:
         from src.app.wms_diagnostics.config import diagnostics_config
 
-        diagnostics_config()
+        _ = diagnostics_config()
     except Exception as exc:
         raise WorkerTerminate("worker diagnostics configuration rejected") from exc
     try:

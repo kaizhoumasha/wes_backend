@@ -47,7 +47,7 @@ class WmsCallbackReceiptService:
             "response_body": response_body.decode("utf-8", errors="replace"),
         }
         async with sessions() as db:
-            await callback_log_service.log_callback(
+            _ = await callback_log_service.log_callback(
                 db,
                 callback_type="wms_event",
                 subject_code="WMS",

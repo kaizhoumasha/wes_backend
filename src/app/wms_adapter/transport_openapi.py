@@ -185,7 +185,7 @@ def _rack_result_data_schema() -> dict[str, object]:
                 ["transport_task_id", "kind", "outcome_revision", *variant["required"]],
                 {**common_properties, **variant["properties"]},
             )
-            for variant in member_schema["oneOf"]
+            for variant in cast("list[dict[str, Any]]", member_schema["oneOf"])
         ]
     }
 
@@ -251,9 +251,9 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
-_CONFLICT_DATA_SCHEMA = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
+_CONFLICT_DATA_SCHEMA: dict[str, object] = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
 _REASON_CODE_SCHEMA = {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}
-_REASON_DATA_SCHEMA = {
+_REASON_DATA_SCHEMA: dict[str, object] = {
     "oneOf": [
         _closed_object(["reason_code"], {"reason_code": _REASON_CODE_SCHEMA}),
         _closed_object(

@@ -28,7 +28,7 @@ class DeviceIngressHistoryService:
     async def record_attempt(self, attempt: DeviceIngressAttempt) -> None:
         # 使用独立会话，CallbackLogService 的 commit 不得影响 Evidence 接收事务。
         async with self._sessions() as db:
-            await self._logs.log_callback(
+            _ = await self._logs.log_callback(
                 db,
                 callback_type=DEVICE_INGRESS_CALLBACK_TYPE,
                 subject_code="DEVICE_INGRESS",

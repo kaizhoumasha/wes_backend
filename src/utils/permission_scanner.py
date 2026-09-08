@@ -191,7 +191,7 @@ def _build_group_payloads(scanned_perms: list[dict[str, Any]]) -> list[dict[str,
 
 
 def _validate_scanned_permission(permission: dict[str, Any]) -> None:
-    if set(permission) != _PERMISSION_LEAF_FIELD_SET:
+    if frozenset(permission) != _PERMISSION_LEAF_FIELD_SET:
         raise PermissionCatalogError(f"权限叶子字段集合无效: `{permission.get('name')}`")
 
     permission_name = permission["name"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, delete, func, or_, select, update
+from sqlmodel import col
 
 from src.app.transport.contracts import MAX_SUBMIT_ATTEMPTS, TRANSPORT_POSITION_OPERATION
 from src.app.transport.models import (
@@ -30,7 +31,7 @@ class TransportRepository:
         db: AsyncSession,
         client_request_id: str,
     ) -> TransportTask | None:
-        return await db.scalar(select(TransportTask).where(TransportTask.client_request_id == client_request_id))
+        return await db.scalar(select(TransportTask).where(col(TransportTask.client_request_id) == client_request_id))
 
     async def get_task(
         self,
@@ -39,7 +40,7 @@ class TransportRepository:
         *,
         for_update: bool = False,
     ) -> TransportTask | None:
-        statement = select(TransportTask).where(TransportTask.transport_task_id == transport_task_id)
+        statement = select(TransportTask).where(col(TransportTask.transport_task_id) == transport_task_id)
         if for_update:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return await db.scalar(statement)
@@ -47,8 +48,8 @@ class TransportRepository:
     async def list_members(self, db: AsyncSession, transport_task_id: str) -> list[TransportMember]:
         result = await db.scalars(
             select(TransportMember)
-            .where(TransportMember.transport_task_id == transport_task_id)
-            .order_by(TransportMember.ordinal.asc(), TransportMember.id.asc())
+            .where(col(TransportMember.transport_task_id) == transport_task_id)
+            .order_by(col(TransportMember.ordinal).asc(), col(TransportMember.id).asc())
         )
         return list(result)
 
@@ -61,8 +62,8 @@ class TransportRepository:
         for_update: bool = False,
     ) -> TransportDebugPositionProjection | None:
         statement = select(TransportDebugPositionProjection).where(
-            TransportDebugPositionProjection.object_type == object_type,
-            TransportDebugPositionProjection.object_id == object_id,
+            col(TransportDebugPositionProjection.object_type) == object_type,
+            col(TransportDebugPositionProjection.object_id) == object_id,
         )
         if for_update:
             statement = statement.with_for_update()
@@ -110,34 +111,36 @@ class TransportRepository:
         callback_receipt_count = await db.scalar(
             select(func.count())
             .select_from(TransportCallbackReceipt)
-            .where(TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id)
+            .where(
+                col(TransportCallbackReceipt.response_data_json)["transport_task_id"].as_string() == transport_task_id
+            )
         )
         evidence_count = await db.scalar(
             select(func.count())
             .select_from(TransportEvidence)
-            .where(TransportEvidence.transport_task_id == transport_task_id)
+            .where(col(TransportEvidence.transport_task_id) == transport_task_id)
         )
         position_projection_count = await db.scalar(
             select(func.count())
             .select_from(TransportDebugPositionProjection)
-            .where(TransportDebugPositionProjection.source_transport_task_id == transport_task_id)
+            .where(col(TransportDebugPositionProjection.source_transport_task_id) == transport_task_id)
         )
         member_count = await db.scalar(
             select(func.count())
             .select_from(TransportMember)
-            .where(TransportMember.transport_task_id == transport_task_id)
+            .where(col(TransportMember.transport_task_id) == transport_task_id)
         )
         binding_count = await db.scalar(
             select(func.count())
             .select_from(TransportResourceBinding)
-            .where(TransportResourceBinding.transport_task_id == transport_task_id)
+            .where(col(TransportResourceBinding.transport_task_id) == transport_task_id)
         )
         active_binding_count = await db.scalar(
             select(func.count())
             .select_from(TransportResourceBinding)
             .where(
-                TransportResourceBinding.transport_task_id == transport_task_id,
-                TransportResourceBinding.released_at.is_(None),
+                col(TransportResourceBinding.transport_task_id) == transport_task_id,
+                col(TransportResourceBinding.released_at).is_(None),
             )
         )
         return (
@@ -158,24 +161,24 @@ class TransportRepository:
 
         position_projections = await db.execute(
             delete(TransportDebugPositionProjection).where(
-                TransportDebugPositionProjection.source_transport_task_id == transport_task_id
+                col(TransportDebugPositionProjection.source_transport_task_id) == transport_task_id
             )
         )
         receipts = await db.execute(
             delete(TransportCallbackReceipt).where(
-                TransportCallbackReceipt.response_data_json["transport_task_id"].as_string() == transport_task_id
+                col(TransportCallbackReceipt.response_data_json)["transport_task_id"].as_string() == transport_task_id
             )
         )
         evidence = await db.execute(
-            delete(TransportEvidence).where(TransportEvidence.transport_task_id == transport_task_id)
+            delete(TransportEvidence).where(col(TransportEvidence.transport_task_id) == transport_task_id)
         )
         bindings = await db.execute(
-            delete(TransportResourceBinding).where(TransportResourceBinding.transport_task_id == transport_task_id)
+            delete(TransportResourceBinding).where(col(TransportResourceBinding.transport_task_id) == transport_task_id)
         )
         members = await db.execute(
-            delete(TransportMember).where(TransportMember.transport_task_id == transport_task_id)
+            delete(TransportMember).where(col(TransportMember.transport_task_id) == transport_task_id)
         )
-        tasks = await db.execute(delete(TransportTask).where(TransportTask.transport_task_id == transport_task_id))
+        tasks = await db.execute(delete(TransportTask).where(col(TransportTask.transport_task_id) == transport_task_id))
         return (
             int(receipts.rowcount or 0),
             int(evidence.rowcount or 0),
@@ -210,21 +213,21 @@ class TransportRepository:
         excluded_task_ids: set[str] | None = None,
     ) -> TransportTask | None:
         predicates = [
-            TransportTask.status == "PENDING",
-            TransportTask.submit_attempt_count < MAX_SUBMIT_ATTEMPTS,
-            TransportTask.send_started_at.is_(None),
-            or_(TransportTask.next_submit_at.is_(None), TransportTask.next_submit_at <= now),
-            or_(TransportTask.submit_claim_until.is_(None), TransportTask.submit_claim_until < now),
+            col(TransportTask.status) == "PENDING",
+            col(TransportTask.submit_attempt_count) < MAX_SUBMIT_ATTEMPTS,
+            col(TransportTask.send_started_at).is_(None),
+            or_(col(TransportTask.next_submit_at).is_(None), col(TransportTask.next_submit_at) <= now),
+            or_(col(TransportTask.submit_claim_until).is_(None), col(TransportTask.submit_claim_until) < now),
         ]
         if excluded_task_ids:
-            predicates.append(TransportTask.transport_task_id.not_in(excluded_task_ids))
+            predicates.append(col(TransportTask.transport_task_id).not_in(excluded_task_ids))
         statement = (
             select(TransportTask)
             .where(*predicates)
             .order_by(
-                TransportTask.next_submit_at.is_not(None).asc(),
-                TransportTask.next_submit_at.asc(),
-                TransportTask.id.asc(),
+                col(TransportTask.next_submit_at).is_not(None).asc(),
+                col(TransportTask.next_submit_at).asc(),
+                col(TransportTask.id).asc(),
             )
             .limit(1)
             .with_for_update(skip_locked=True)
@@ -260,11 +263,11 @@ class TransportRepository:
             await db.scalars(
                 select(TransportTask)
                 .where(
-                    TransportTask.status == "ACCEPTED",
-                    TransportTask.result_deadline_at.is_not(None),
-                    TransportTask.result_deadline_at <= now,
+                    col(TransportTask.status) == "ACCEPTED",
+                    col(TransportTask.result_deadline_at).is_not(None),
+                    col(TransportTask.result_deadline_at) <= now,
                 )
-                .order_by(TransportTask.result_deadline_at.asc(), TransportTask.id.asc())
+                .order_by(col(TransportTask.result_deadline_at).asc(), col(TransportTask.id).asc())
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )
@@ -281,12 +284,12 @@ class TransportRepository:
             await db.scalars(
                 select(TransportTask)
                 .where(
-                    TransportTask.status == "PENDING",
-                    TransportTask.send_started_at.is_not(None),
-                    TransportTask.submit_claim_until.is_not(None),
-                    TransportTask.submit_claim_until < now,
+                    col(TransportTask.status) == "PENDING",
+                    col(TransportTask.send_started_at).is_not(None),
+                    col(TransportTask.submit_claim_until).is_not(None),
+                    col(TransportTask.submit_claim_until) < now,
                 )
-                .order_by(TransportTask.submit_claim_until.asc(), TransportTask.id.asc())
+                .order_by(col(TransportTask.submit_claim_until).asc(), col(TransportTask.id).asc())
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )
@@ -305,11 +308,11 @@ class TransportRepository:
             await db.scalars(
                 select(TransportTask)
                 .where(
-                    TransportTask.outcome_version > TransportTask.published_outcome_version,
-                    TransportTask.outcome_json.is_not(None),
-                    or_(TransportTask.outcome_claim_until.is_(None), TransportTask.outcome_claim_until < now),
+                    col(TransportTask.outcome_version) > col(TransportTask.published_outcome_version),
+                    col(TransportTask.outcome_json).is_not(None),
+                    or_(col(TransportTask.outcome_claim_until).is_(None), col(TransportTask.outcome_claim_until) < now),
                 )
-                .order_by(TransportTask.updated_at.asc(), TransportTask.id.asc())
+                .order_by(col(TransportTask.updated_at).asc(), col(TransportTask.id).asc())
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )
@@ -321,11 +324,11 @@ class TransportRepository:
         return tasks
 
     async def release_bindings(self, db: AsyncSession, transport_task_id: str, *, now: datetime) -> None:
-        await db.execute(
+        _ = await db.execute(
             update(TransportResourceBinding)
             .where(
-                TransportResourceBinding.transport_task_id == transport_task_id,
-                TransportResourceBinding.released_at.is_(None),
+                col(TransportResourceBinding.transport_task_id) == transport_task_id,
+                col(TransportResourceBinding.released_at).is_(None),
             )
             .values(released_at=now)
         )
@@ -347,8 +350,8 @@ class TransportRepository:
         for_update: bool = False,
     ) -> TransportCallbackReceipt | None:
         statement = select(TransportCallbackReceipt).where(
-            TransportCallbackReceipt.operation == operation,
-            TransportCallbackReceipt.operation_id == operation_id,
+            col(TransportCallbackReceipt.operation) == operation,
+            col(TransportCallbackReceipt.operation_id) == operation_id,
         )
         if for_update:
             statement = statement.with_for_update()
@@ -363,8 +366,8 @@ class TransportRepository:
         for_update: bool = False,
     ) -> TransportEvidence | None:
         statement = select(TransportEvidence).where(
-            TransportEvidence.operation == operation,
-            TransportEvidence.operation_id == operation_id,
+            col(TransportEvidence.operation) == operation,
+            col(TransportEvidence.operation_id) == operation_id,
         )
         if for_update:
             statement = statement.with_for_update()
@@ -379,8 +382,8 @@ class TransportRepository:
         for_update: bool = False,
     ) -> TransportEvidence | None:
         statement = select(TransportEvidence).where(
-            TransportEvidence.transport_task_id == transport_task_id,
-            TransportEvidence.outcome_revision == outcome_revision,
+            col(TransportEvidence.transport_task_id) == transport_task_id,
+            col(TransportEvidence.outcome_revision) == outcome_revision,
         )
         if for_update:
             statement = statement.with_for_update()
@@ -393,9 +396,9 @@ class TransportRepository:
     ) -> list[TransportEvidence]:
         result = await db.scalars(
             select(TransportEvidence).where(
-                TransportEvidence.transport_task_id == transport_task_id,
-                TransportEvidence.operation == TRANSPORT_POSITION_OPERATION,
-                TransportEvidence.status == "APPLIED",
+                col(TransportEvidence.transport_task_id) == transport_task_id,
+                col(TransportEvidence.operation) == TRANSPORT_POSITION_OPERATION,
+                col(TransportEvidence.status) == "APPLIED",
             )
         )
         return list(result)
@@ -406,16 +409,16 @@ class TransportRepository:
         transport_task_id: str,
     ) -> tuple[TransportTask, TransportEvidence | None] | None:
         latest_evidence_id = (
-            select(TransportEvidence.id)
-            .where(TransportEvidence.transport_task_id == transport_task_id)
-            .order_by(TransportEvidence.received_at.desc(), TransportEvidence.id.desc())
+            select(col(TransportEvidence.id))
+            .where(col(TransportEvidence.transport_task_id) == transport_task_id)
+            .order_by(col(TransportEvidence.received_at).desc(), col(TransportEvidence.id).desc())
             .limit(1)
             .scalar_subquery()
         )
         result = await db.execute(
             select(TransportTask, TransportEvidence)
-            .outerjoin(TransportEvidence, TransportEvidence.id == latest_evidence_id)
-            .where(TransportTask.transport_task_id == transport_task_id)
+            .outerjoin(TransportEvidence, col(TransportEvidence.id) == latest_evidence_id)
+            .where(col(TransportTask.transport_task_id) == transport_task_id)
         )
         row = result.one_or_none()
         return None if row is None else (row[0], row[1])
@@ -431,36 +434,38 @@ class TransportRepository:
         status: str | None,
     ) -> list[tuple[TransportTask, TransportEvidence | None]]:
         latest_evidence_id = (
-            select(TransportEvidence.id)
-            .where(TransportEvidence.transport_task_id == TransportTask.transport_task_id)
-            .order_by(TransportEvidence.received_at.desc(), TransportEvidence.id.desc())
+            select(col(TransportEvidence.id))
+            .where(col(TransportEvidence.transport_task_id) == col(TransportTask.transport_task_id))
+            .order_by(col(TransportEvidence.received_at).desc(), col(TransportEvidence.id).desc())
             .limit(1)
             .correlate(TransportTask)
             .scalar_subquery()
         )
         statement = select(TransportTask, TransportEvidence).outerjoin(
             TransportEvidence,
-            TransportEvidence.id == latest_evidence_id,
+            col(TransportEvidence.id) == latest_evidence_id,
         )
         if cursor_created_at is not None and cursor_id is not None:
             statement = statement.where(
                 or_(
-                    TransportTask.created_at < cursor_created_at,
-                    and_(TransportTask.created_at == cursor_created_at, TransportTask.id < cursor_id),
+                    col(TransportTask.created_at) < cursor_created_at,
+                    and_(col(TransportTask.created_at) == cursor_created_at, col(TransportTask.id) < cursor_id),
                 )
             )
         if kind is not None:
-            statement = statement.where(TransportTask.kind == kind)
+            statement = statement.where(col(TransportTask.kind) == kind)
         if status is not None:
-            statement = statement.where(TransportTask.status == status)
+            statement = statement.where(col(TransportTask.status) == status)
         result = await db.execute(
-            statement.order_by(TransportTask.created_at.desc(), TransportTask.id.desc()).limit(limit)
+            statement.order_by(col(TransportTask.created_at).desc(), col(TransportTask.id).desc()).limit(limit)
         )
         return [(row[0], row[1]) for row in result.all()]
 
     async def has_evidence(self, db: AsyncSession, transport_task_id: str) -> bool:
         evidence_id = await db.scalar(
-            select(TransportEvidence.id).where(TransportEvidence.transport_task_id == transport_task_id).limit(1)
+            select(col(TransportEvidence.id))
+            .where(col(TransportEvidence.transport_task_id) == transport_task_id)
+            .limit(1)
         )
         return evidence_id is not None
 
@@ -471,7 +476,7 @@ class TransportRepository:
         *,
         for_update: bool = False,
     ) -> TransportEvidence | None:
-        statement = select(TransportEvidence).where(TransportEvidence.id == evidence_id)
+        statement = select(TransportEvidence).where(col(TransportEvidence.id) == evidence_id)
         if for_update:
             statement = statement.with_for_update().execution_options(populate_existing=True)
         return await db.scalar(statement)
@@ -489,10 +494,10 @@ class TransportRepository:
             await db.scalars(
                 select(TransportEvidence)
                 .where(
-                    TransportEvidence.status == "PENDING",
-                    or_(TransportEvidence.claim_until.is_(None), TransportEvidence.claim_until < now),
+                    col(TransportEvidence.status) == "PENDING",
+                    or_(col(TransportEvidence.claim_until).is_(None), col(TransportEvidence.claim_until) < now),
                 )
-                .order_by(TransportEvidence.received_at.asc(), TransportEvidence.id.asc())
+                .order_by(col(TransportEvidence.received_at).asc(), col(TransportEvidence.id).asc())
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )

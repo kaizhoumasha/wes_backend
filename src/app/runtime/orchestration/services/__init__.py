@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 _MODULE_EXPORTS = {
     "session_hold_mutation_service": (
@@ -13,7 +13,14 @@ _MODULE_EXPORTS = {
     ),
 }
 _EXPORTS = {name: module for module, names in _MODULE_EXPORTS.items() for name in names}
-__all__ = sorted(_EXPORTS)  # noqa: PLE0605 - lazy export 表由模块映射生成，不能静态重复维护。
+if TYPE_CHECKING:
+    from .session_hold_mutation_service import (
+        SessionHoldMutationService,
+        StaleSessionPrecondition,
+        session_hold_mutation_service,
+    )
+
+__all__ = ["SessionHoldMutationService", "StaleSessionPrecondition", "session_hold_mutation_service"]
 
 
 def __getattr__(name: str) -> Any:

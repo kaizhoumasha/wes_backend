@@ -32,13 +32,13 @@ class DevicePosition:
     bin_cell_id: str | None = None
 
     def __post_init__(self) -> None:
-        _required(self.location_id, "location_id")
-        _required(self.location_type, "location_type")
-        _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.location_id, "location_id")
+        _ = _required(self.location_type, "location_type")
+        _ = _required(self.material_trace_id, "material_trace_id")
         for field_name in ("rack_id", "rack_slot_code", "bin_code", "bin_cell_id"):
             value = getattr(self, field_name)
             if value is not None:
-                _required(value, field_name)
+                _ = _required(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +47,7 @@ class TransportRackPosition:
     kind: Literal["RACK_POSITION"] = "RACK_POSITION"
 
     def __post_init__(self) -> None:
-        _required(self.location_code, "location_code")
+        _ = _required(self.location_code, "location_code")
         if self.kind != "RACK_POSITION":
             raise ValueError("kind must be RACK_POSITION")
 
@@ -58,7 +58,7 @@ class TransportRackReference:
     kind: Literal["RACK"] = "RACK"
 
     def __post_init__(self) -> None:
-        _required(self.location_code, "location_code")
+        _ = _required(self.location_code, "location_code")
         if self.kind != "RACK":
             raise ValueError("kind must be RACK")
 
@@ -69,7 +69,7 @@ class TransportZonePosition:
     kind: Literal["ZONE"] = "ZONE"
 
     def __post_init__(self) -> None:
-        _required(self.location_code, "location_code")
+        _ = _required(self.location_code, "location_code")
         if self.kind != "ZONE":
             raise ValueError("kind must be ZONE")
 
@@ -78,9 +78,9 @@ type TransportRackMovePosition = TransportRackReference | TransportZonePosition 
 
 
 def _validate_reasoned_execution_decision(material_execution_id: str, fact_id: str, reason_code: str) -> None:
-    _required(material_execution_id, "material_execution_id")
-    _required(fact_id, "fact_id")
-    _required(reason_code, "reason_code")
+    _ = _required(material_execution_id, "material_execution_id")
+    _ = _required(fact_id, "fact_id")
+    _ = _required(reason_code, "reason_code")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,12 +115,12 @@ class CreateDeviceCommand:
     target: DevicePosition
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        _required(self.device_role, "device_role")
-        _required(self.device_code, "device_code")
-        _required(self.task_type, "task_type")
-        _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.material_execution_id, "material_execution_id")
+        _ = _required(self.fact_id, "fact_id")
+        _ = _required(self.device_role, "device_role")
+        _ = _required(self.device_code, "device_code")
+        _ = _required(self.task_type, "task_type")
+        _ = _required(self.material_trace_id, "material_trace_id")
         if type(self.source) is not DevicePosition or type(self.target) is not DevicePosition:
             raise TypeError("source and target must be DevicePosition values")
         if (
@@ -147,12 +147,12 @@ class CreateTransportTask:
     rcs_template_id: TransportRcsTemplateId
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.fact_id, "fact_id")
-        validate_persistable_text(self.correlation_id, "correlation_id", max_length=160)
-        validate_persistable_text(self.step, "step", max_length=80)
-        validate_persistable_text(self.resource_fence_id, "resource_fence_id", max_length=160)
-        _required(self.rack_id, "rack_id")
+        _ = _required(self.material_execution_id, "material_execution_id")
+        _ = _required(self.fact_id, "fact_id")
+        _ = validate_persistable_text(self.correlation_id, "correlation_id", max_length=160)
+        _ = validate_persistable_text(self.step, "step", max_length=80)
+        _ = validate_persistable_text(self.resource_fence_id, "resource_fence_id", max_length=160)
+        _ = _required(self.rack_id, "rack_id")
         if type(self.task_type) is not TransportTaskType or self.task_type is not TransportTaskType.RACK_MOVE:
             raise ValueError("task_type must be RACK_MOVE")
         position_types = {TransportRackReference, TransportZonePosition, TransportRackPosition}

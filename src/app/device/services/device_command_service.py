@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeGuard, cast
 
 from src.app.device.contracts import (
     DeviceCommandCallbackSnapshot,
@@ -89,13 +89,13 @@ class DeviceCommandManualReconciliationConflictError(RuntimeError):
 
 
 class CommandRepositoryPort(Protocol):
-    async def lock_creation_for_device(self, db: object, device_code: str) -> None: ...
+    async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None: ...
 
-    async def lock_manual_debug_identity(self, db: object, client_request_id: str) -> None: ...
+    async def lock_manual_debug_identity(self, db: AsyncSession, client_request_id: str) -> None: ...
 
     async def get_by_execution_ref_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int | None,
         device_code: str,
@@ -103,33 +103,33 @@ class CommandRepositoryPort(Protocol):
         execution_ref_id: str,
     ) -> DeviceCommand | None: ...
 
-    async def get_unclosed_for_device_for_update(self, db: object, device_code: str) -> DeviceCommand | None: ...
+    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> DeviceCommand | None: ...
 
     async def get_manual_debug_by_client_request_id_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         client_request_id: str,
     ) -> DeviceCommand | None: ...
 
-    async def add(self, db: object, command: DeviceCommand) -> DeviceCommand: ...
+    async def add(self, db: AsyncSession, command: DeviceCommand) -> DeviceCommand: ...
 
     async def get_by_command_code(
         self,
-        db: object,
+        db: AsyncSession,
         command_code: str,
         *,
         for_update: bool = False,
     ) -> DeviceCommand | None: ...
 
-    async def claim_next_reconcilable(self, db: object, *, now: datetime) -> DeviceCommand | None: ...
+    async def claim_next_reconcilable(self, db: AsyncSession, *, now: datetime) -> DeviceCommand | None: ...
 
 
 class WorkLineRepositoryPort(Protocol):
-    async def get_for_update(self, db: object, workline_id: int) -> object | None: ...
+    async def get_for_update(self, db: AsyncSession, workline_id: int) -> object | None: ...
 
     async def get_binding_for_command_creation(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
         device_code: str,
@@ -137,7 +137,7 @@ class WorkLineRepositoryPort(Protocol):
 
     async def get_binding_for_dispatch(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
         device_code: str,
@@ -147,21 +147,21 @@ class WorkLineRepositoryPort(Protocol):
 class EvidenceRepositoryPort(Protocol):
     async def get_by_source_identity_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         source_identity: str,
     ) -> InboundEvidence | None: ...
 
-    async def get_device_result_for_command(self, db: object, command_code: str) -> InboundEvidence | None: ...
+    async def get_device_result_for_command(self, db: AsyncSession, command_code: str) -> InboundEvidence | None: ...
 
 
 class EventCommandBlockRepositoryPort(Protocol):
-    async def get_by_id_for_update(self, db: object, *, block_id: int, evidence_id: int): ...
+    async def get_by_id_for_update(self, db: AsyncSession, *, block_id: int, evidence_id: int): ...
 
-    async def get_latest_for_evidence(self, db: object, *, evidence_id: int): ...
+    async def get_latest_for_evidence(self, db: AsyncSession, *, evidence_id: int): ...
 
 
 class AuditServicePort(Protocol):
-    async def create_audit_log(self, db: object, **values: object) -> object: ...
+    async def create_audit_log(self, db: AsyncSession, **values: object) -> object: ...
 
 
 class ManualDebugAdapterPort(Protocol):
@@ -239,18 +239,18 @@ class DeviceCommandService:
         async with self._sessions.begin() as db:
             return await self.create_command_in_session(db, request)
 
-    async def create_command_in_session(self, db: object, request: DeviceCommandRequest) -> DeviceCommandHandle:
+    async def create_command_in_session(self, db: AsyncSession, request: DeviceCommandRequest) -> DeviceCommandHandle:
         """在调用方事务中创建命令；只持久化，并登记事务提交后的派发唤醒。"""
 
         validated = DeviceCommandRequestData.model_validate(asdict(request))
         if validated.deadline_at.tzinfo is not None:
             raise DeviceCommandDeadlineError("deadline_at 必须是数据库合同要求的 naive UTC")
-        await self._worklines.get_for_update(db, validated.workline_id)
+        _ = await self._worklines.get_for_update(db, cast("int", validated.workline_id))
         await self._commands.lock_creation_for_device(db, validated.device_code)
         payload_digest = _command_payload_digest(validated)
         same_identity = await self._commands.get_by_execution_ref_for_update(
             db,
-            workline_id=validated.workline_id,
+            workline_id=cast("int", validated.workline_id),
             device_code=validated.device_code,
             execution_ref_type=validated.execution_ref_type,
             execution_ref_id=validated.execution_ref_id,
@@ -264,7 +264,7 @@ class DeviceCommandService:
             )
         binding = await self._worklines.get_binding_for_command_creation(
             db,
-            workline_id=validated.workline_id,
+            workline_id=cast("int", validated.workline_id),
             device_code=validated.device_code,
         )
         if binding is None:
@@ -282,7 +282,7 @@ class DeviceCommandService:
         command = DeviceCommand(
             command_code=new_uuid7(),
             device_code=validated.device_code,
-            workline_id=validated.workline_id,
+            workline_id=cast("int", validated.workline_id),
             endpoint_base_url=binding.endpoint_base_url,
             command_timeout_ms=binding.command_timeout_ms,
             status_max_age_ms=binding.status_max_age_ms,
@@ -421,7 +421,7 @@ class DeviceCommandService:
 
     async def create_event_debug_command_in_session(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         evidence: InboundEvidence,
     ) -> EventDebugCommandReady | EventDebugCommandBlocked:
@@ -603,7 +603,7 @@ class DeviceCommandService:
             command.failure_code = _MANUAL_RECONCILIATION_FAILURE_CODE
             command.transition_to(CommandStatus.FAILED)
             state = status.state
-            await self._audit.create_audit_log(
+            _ = await self._audit.create_audit_log(
                 db,
                 method="POST",
                 title="人工闭合 DELIVERY_UNKNOWN DeviceCommand",
@@ -765,7 +765,7 @@ def _is_delivery_unknown_reconciling(command: DeviceCommand) -> bool:
 def _matches_manual_reconciliation_target(
     command: DeviceCommand | None,
     target: _ManualReconciliationTarget,
-) -> bool:
+) -> TypeGuard[DeviceCommand]:
     return (
         command is not None
         and command.id == target.command_id

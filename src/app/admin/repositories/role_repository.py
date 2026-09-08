@@ -48,7 +48,7 @@ class RoleRepository(BaseRepository[Role]):
     ) -> None:
         """精确应用一个角色的权限关联差量并 flush。"""
         if added_permission_ids:
-            await db.execute(
+            _ = await db.execute(
                 insert(role_permission),
                 [
                     {"role_id": role_id, "permission_id": permission_id}
@@ -56,7 +56,7 @@ class RoleRepository(BaseRepository[Role]):
                 ],
             )
         if removed_permission_ids:
-            await db.execute(
+            _ = await db.execute(
                 delete(role_permission).where(
                     role_permission.c.role_id == role_id,
                     role_permission.c.permission_id.in_(removed_permission_ids),

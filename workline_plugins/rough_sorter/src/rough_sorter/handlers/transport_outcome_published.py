@@ -30,7 +30,7 @@ class TransportOutcomePublishedHandler:
             material_trace_id=fact.material_trace_id,
             allow_reconciling=True,
         )
-        require_workline(snapshot.workline, workline_id=execution.workline_id)
+        _ = require_workline(snapshot.workline, workline_id=execution.workline_id)
         if fact.outcome is not TransportOutcome.SUCCEEDED:
             return (
                 PauseForReconciliation(

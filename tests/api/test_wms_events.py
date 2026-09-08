@@ -1029,8 +1029,11 @@ def test_queue_changed_ingress_parses_json_once_with_real_handler(
         (503, {"code": "UNAVAILABLE"}),
     ],
 )
-def test_every_wms_response_is_receipted_before_return(status: int, body: dict[str, Any]) -> None:
+def test_every_wms_response_is_receipted_before_return(
+    monkeypatch: pytest.MonkeyPatch, status: int, body: dict[str, Any]
+) -> None:
     module = _events_module()
+    monkeypatch.setattr(module.task_queue_gateway, "enqueue_transport_evidence", MagicMock())
     app = _route_app(module, AsyncMock(return_value=TransportEventResponse(status, body)), _none_policy(module))
     with TestClient(app) as client:
         response = client.post(

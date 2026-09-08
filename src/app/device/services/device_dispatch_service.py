@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from src.app.device.contracts import EcsDeviceStatus, EcsSubmitDisposition
 from src.app.device.ecs_adapter import EcsAdapter  # noqa: TC001
@@ -170,7 +170,7 @@ class DeviceDispatchService:
             if command is None:
                 return True
             if not diagnostic:
-                await self._observations.add_status_observation(
+                _ = await self._observations.add_status_observation(
                     db,
                     _status_observation(command, status, observed_at),
                 )
@@ -322,7 +322,17 @@ def _status_observation(
     )
 
 
-def _submit_snapshot(command: DeviceCommand) -> dict[str, object]:
+class _SubmitSnapshot(TypedDict):
+    device_code: str
+    command_code: str
+    task_type: str
+    priority: int
+    timeout_ms: int
+    timestamp: int
+    params: dict[str, Any]
+
+
+def _submit_snapshot(command: DeviceCommand) -> _SubmitSnapshot:
     created_at = command.created_at.replace(tzinfo=UTC)
     timeout_ms = command.command_timeout_ms
     if timeout_ms is None:

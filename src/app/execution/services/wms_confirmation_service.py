@@ -51,20 +51,20 @@ class WmsConfirmationResponseConflictError(ValueError):
 
 
 class WmsConfirmationRepositoryPort(Protocol):
-    async def lock_identity(self, db: object, operation: str, operation_id: str) -> None: ...
+    async def lock_identity(self, db: AsyncSession, operation: str, operation_id: str) -> None: ...
 
     async def get_by_identity_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         operation: str,
         operation_id: str,
     ) -> WmsConfirmation | None: ...
 
-    async def add(self, db: object, confirmation: WmsConfirmation) -> WmsConfirmation: ...
+    async def add(self, db: AsyncSession, confirmation: WmsConfirmation) -> WmsConfirmation: ...
 
     async def claim_eligible(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         now: datetime,
         claim_token: str,
@@ -74,22 +74,22 @@ class WmsConfirmationRepositoryPort(Protocol):
 
     async def get_claimed_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation_id: int,
         claim_token: str,
     ) -> WmsConfirmation | None: ...
 
-    async def flush(self, db: object) -> None: ...
+    async def flush(self, db: AsyncSession) -> None: ...
 
 
 class MaterialExecutionWorkLineRepositoryPort(Protocol):
-    async def get_by_id(self, db: object, execution_id: int) -> MaterialExecution | None: ...
+    async def get_by_id(self, db: AsyncSession, execution_id: int) -> MaterialExecution | None: ...
 
 
 class PickingTaskConfirmationOwnerPort(Protocol):
     async def validate_response_owner(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         picking_task_id: int,
         operation: str,
@@ -99,7 +99,7 @@ class PickingTaskConfirmationOwnerPort(Protocol):
 class WorkLineConfirmationOwnerPort(Protocol):
     async def validate_owner(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
         request_payload: dict[str, Any],
@@ -134,7 +134,7 @@ class WmsConfirmationFollowUp:
 class WmsConfirmationFollowUpPlanner(Protocol):
     async def plan(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation: WmsConfirmation,
         *,
         response_result: str,
@@ -194,7 +194,7 @@ class WmsConfirmationLifecycleService:
 
     async def create_or_get(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         operation: str,
         operation_id: str,
@@ -254,7 +254,7 @@ class WmsConfirmationLifecycleService:
 
     async def mark_dispatching(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation: WmsConfirmation,
         *,
         claim_token: str,
@@ -276,7 +276,7 @@ class WmsConfirmationLifecycleService:
 
     async def record_delivery_unknown(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation: WmsConfirmation,
         *,
         retry_eligible: bool,
@@ -301,7 +301,7 @@ class WmsConfirmationLifecycleService:
 
     async def complete(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation: WmsConfirmation,
         *,
         response_evidence_id: int,
@@ -336,7 +336,7 @@ class WmsConfirmationLifecycleService:
 
     async def mark_reconciling(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation: WmsConfirmation,
         *,
         changed_at: datetime,
@@ -378,7 +378,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         self._follow_up_planner = follow_up_planner
         self._diagnostics = diagnostics
 
-    async def _validate_workline_owner(self, db: object, confirmation: WmsConfirmation) -> bool:
+    async def _validate_workline_owner(self, db: AsyncSession, confirmation: WmsConfirmation) -> bool:
         return (
             confirmation.workline_id is not None
             and self._workline_owner is not None
@@ -504,7 +504,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         finally:
             if diagnostics is not None and not cancelled:
                 with suppress(Exception):
-                    await diagnostics.finish(observation)
+                    _ = await diagnostics.finish(observation)
         changed_at = now if now is not None else timezone.now_for_db()
         async with self._execution_wake_transaction(sessions) as (db, wake_execution):
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)
@@ -633,7 +633,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
 
     async def _create_follow_up(
         self,
-        db: object,
+        db: AsyncSession,
         confirmation: WmsConfirmation,
         *,
         response_result: str,

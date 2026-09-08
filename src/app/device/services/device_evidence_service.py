@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.device.contracts import (
     DeviceEvidenceReceipt,
@@ -100,52 +100,52 @@ class EventCommandBlockConflictError(RuntimeError):
 class EvidenceProcessingRepositoryPort(Protocol):
     async def get_by_source_identity(
         self,
-        db: object,
+        db: AsyncSession,
         source_identity: str,
     ) -> InboundEvidence | None: ...
 
     async def get_by_source_identity_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         source_identity: str,
     ) -> InboundEvidence | None: ...
 
     async def claim_next_pending(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         kinds: tuple[InboundEvidenceKind, ...],
     ) -> InboundEvidence | None: ...
 
-    async def mark_applied(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
+    async def mark_applied(self, db: AsyncSession, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
-    async def mark_ignored(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
+    async def mark_ignored(self, db: AsyncSession, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
-    async def mark_reconciling(self, db: object, evidence: InboundEvidence, *, processed_at: object) -> None: ...
+    async def mark_reconciling(self, db: AsyncSession, evidence: InboundEvidence, *, processed_at: object) -> None: ...
 
-    async def requeue_reconciling(self, db: object, evidence: InboundEvidence) -> None: ...
+    async def requeue_reconciling(self, db: AsyncSession, evidence: InboundEvidence) -> None: ...
 
 
 class EvidenceCommandRepositoryPort(Protocol):
-    async def lock_creation_for_device(self, db: object, device_code: str) -> None: ...
+    async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None: ...
 
     async def get_by_command_code(
         self,
-        db: object,
+        db: AsyncSession,
         command_code: str,
         *,
         for_update: bool = False,
     ) -> DeviceCommand | None: ...
 
-    async def get_unclosed_for_device_for_update(self, db: object, device_code: str) -> DeviceCommand | None: ...
+    async def get_unclosed_for_device_for_update(self, db: AsyncSession, device_code: str) -> DeviceCommand | None: ...
 
 
 class EventCommandBlockRepositoryPort(Protocol):
-    async def add_block(self, db: object, block: DeviceEventCommandBlock) -> DeviceEventCommandBlock: ...
+    async def add_block(self, db: AsyncSession, block: DeviceEventCommandBlock) -> DeviceEventCommandBlock: ...
 
     async def get_by_id_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         block_id: int,
         evidence_id: int,
@@ -153,14 +153,14 @@ class EventCommandBlockRepositoryPort(Protocol):
 
     async def get_latest_for_evidence(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         evidence_id: int,
     ) -> DeviceEventCommandBlock | None: ...
 
     async def mark_requeued(
         self,
-        db: object,
+        db: AsyncSession,
         block: DeviceEventCommandBlock,
         *,
         requeued_at: datetime,
@@ -168,17 +168,28 @@ class EventCommandBlockRepositoryPort(Protocol):
 
 
 class EvidenceAuditServicePort(Protocol):
-    async def create_audit_log(self, db: object, **values: object) -> object: ...
+    async def create_audit_log(self, db: AsyncSession, **values: object) -> object: ...
 
 
 class EvidenceWorkLineRepositoryPort(Protocol):
-    async def get_active_binding_for_device(self, db: object, device_code: str) -> WorkLineDeviceBinding | None: ...
+    async def get_active_binding_for_device(
+        self, db: AsyncSession, device_code: str
+    ) -> WorkLineDeviceBinding | None: ...
 
-    async def get_by_id(self, db: object, id: int) -> object | None: ...
+    async def get_by_id(self, db: AsyncSession, id: int) -> object | None: ...
 
 
 class SafetyServicePort(Protocol):
-    async def handle_estop(self, db: object, **values: object) -> object: ...
+    async def handle_estop(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        source_evidence_id: int | None = None,
+        source_device_id: int | None = None,
+        source_command_id: int | None = None,
+        trigger_payload: dict[str, Any] | None = None,
+    ) -> object: ...
 
 
 class EventPublisherPort(Protocol):
@@ -188,7 +199,7 @@ class EventPublisherPort(Protocol):
 class EventDebugCommandServicePort(Protocol):
     async def create_event_debug_command_in_session(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         evidence: InboundEvidence,
     ) -> EventDebugCommandReady | EventDebugCommandBlocked: ...
@@ -284,8 +295,6 @@ class DeviceEvidenceService:
                 defer_wakeup(db, self._task_queue.enqueue_device_evidence)
         if rejection is not None:
             raise rejection
-        if receipt is None:
-            raise RuntimeError("result evidence ingress 未产生确定结果")
         return receipt
 
     async def accept_event(self, report: EcsDeviceEventReport) -> DeviceEvidenceReceipt:
@@ -353,8 +362,6 @@ class DeviceEvidenceService:
                 defer_wakeup(db, self._task_queue.enqueue_device_evidence)
         if rejection is not None:
             raise rejection
-        if receipt is None:
-            raise RuntimeError("event evidence ingress 未产生确定结果")
         return receipt
 
     async def get_event_command_block(self, source_event_id: str) -> EventCommandBlockSnapshot:
@@ -426,7 +433,7 @@ class DeviceEvidenceService:
 
             await self._event_command_blocks.mark_requeued(db, block, requeued_at=now)
             await self._processing.requeue_reconciling(db, evidence)
-            await self._audit.create_audit_log(
+            _ = await self._audit.create_audit_log(
                 db,
                 method="POST",
                 title="显式重处理被阻塞 Device EVENT",
@@ -486,7 +493,7 @@ class DeviceEvidenceService:
                             if isinstance(outcome, EventDebugCommandBlocked):
                                 if evidence.id is None or evidence.device_code is None:
                                     raise RuntimeError("EVENT blocker 缺少持久化 evidence 身份")
-                                await self._event_command_blocks.add_block(
+                                _ = await self._event_command_blocks.add_block(
                                     db,
                                     DeviceEventCommandBlock(
                                         evidence_id=evidence.id,
@@ -553,7 +560,7 @@ class DeviceEvidenceService:
 
     async def _apply_estop_event(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         evidence: InboundEvidence,
         processed_at: datetime,
@@ -565,7 +572,7 @@ class DeviceEvidenceService:
         if not isinstance(workline_id, int) or evidence.id is None:
             await self._processing.mark_reconciling(db, evidence, processed_at=processed_at)
             return False
-        await self._safety.handle_estop(
+        _ = await self._safety.handle_estop(
             db,
             workline_id=workline_id,
             source_evidence_id=evidence.id,

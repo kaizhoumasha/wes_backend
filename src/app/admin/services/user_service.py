@@ -136,7 +136,7 @@ class UserService(BaseService[User, UserRepository]):
 
     async def _invalidate_permissions_for_user(self, user_id: int) -> None:
         cache = get_cache()
-        await invalidate_user_permissions(cache, user_id)
+        _ = await invalidate_user_permissions(cache, user_id)
 
     async def reset_password(
         self,

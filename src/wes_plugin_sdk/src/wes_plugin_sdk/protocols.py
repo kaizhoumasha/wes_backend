@@ -23,9 +23,9 @@ class ExecutionSnapshot:
     version: int
 
     def __post_init__(self) -> None:
-        _required(self.material_execution_id, "material_execution_id")
-        _required(self.material_trace_id, "material_trace_id")
-        _required(self.workline_id, "workline_id")
+        _ = _required(self.material_execution_id, "material_execution_id")
+        _ = _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.workline_id, "workline_id")
         if not isinstance(self.lifecycle, ExecutionLifecycle):
             raise ValueError("lifecycle must be an ExecutionLifecycle")  # noqa: TRY004 - stable SDK contract.
         if not isinstance(self.version, int) or isinstance(self.version, bool) or self.version < 0:
@@ -41,7 +41,7 @@ class DeviceBindingSnapshot:
 
     def __post_init__(self) -> None:
         for field_name in ("device_role", "device_code", "contract_key", "contract_version"):
-            _required(getattr(self, field_name), field_name)
+            _ = _required(getattr(self, field_name), field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,7 +52,7 @@ class PositionBindingSnapshot:
 
     def __post_init__(self) -> None:
         for field_name in ("position_role", "location_id", "location_type"):
-            _required(getattr(self, field_name), field_name)
+            _ = _required(getattr(self, field_name), field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +71,7 @@ class WorkLineConfigurationSnapshot:
             "plugin_key",
             "plugin_version",
         ):
-            _required(getattr(self, field_name), field_name)
+            _ = _required(getattr(self, field_name), field_name)
         if type(self.device_bindings) is not tuple:
             raise TypeError("device_bindings must be a tuple")
         if not self.device_bindings:

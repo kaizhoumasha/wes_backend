@@ -15,8 +15,8 @@ class InitialExecutionDescriptor:
     execution_code: str
 
     def __post_init__(self) -> None:
-        _required(self.material_trace_id, "material_trace_id")
-        _required(self.execution_code, "execution_code")
+        _ = _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.execution_code, "execution_code")
 
 
 class InitialExecutionCorrelator(Protocol):
@@ -40,8 +40,8 @@ class PluginRuntimeBinding:
     initial_execution_correlator: InitialExecutionCorrelator | None = None
 
     def __post_init__(self) -> None:
-        _required(self.plugin_key, "plugin_key")
-        _required(self.plugin_version, "plugin_version")
+        _ = _required(self.plugin_key, "plugin_key")
+        _ = _required(self.plugin_version, "plugin_version")
         if type(self.handlers) is not tuple:
             raise TypeError("handlers must be a tuple")
 

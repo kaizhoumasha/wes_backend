@@ -15,7 +15,7 @@ from rough_sorter.handlers._guards import require_execution
 )
 class PlacementCompletedHandler:
     def __call__(self, fact: PlacementCompletedFact) -> tuple[CompleteExecution | PauseForReconciliation]:
-        require_execution(
+        _ = require_execution(
             fact.runtime_snapshot.execution,
             material_execution_id=fact.material_execution_id,
             material_trace_id=fact.material_trace_id,

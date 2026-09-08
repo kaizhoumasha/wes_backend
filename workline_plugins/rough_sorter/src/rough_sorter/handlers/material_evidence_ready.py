@@ -27,7 +27,7 @@ class MaterialEvidenceReadyHandler:
         )
         if execution.workline_id != fact.workline_id:
             raise ValueError("execution WorkLine does not match scan Fact")
-        require_workline(snapshot.workline, workline_id=fact.workline_id, workline_code=fact.workline_code)
+        _ = require_workline(snapshot.workline, workline_id=fact.workline_id, workline_code=fact.workline_code)
         return (admission_data(fact),)
 
 

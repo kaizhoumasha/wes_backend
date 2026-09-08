@@ -16,7 +16,7 @@ class MaterialExecutionRepository(BaseRepository[MaterialExecution]):
         super().__init__(MaterialExecution)
 
     async def lock_material_trace(self, db: AsyncSession, material_trace_id: str) -> None:
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:material_trace_id, 0))"),
             {"material_trace_id": material_trace_id},
         )

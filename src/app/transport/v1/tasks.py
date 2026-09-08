@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Self, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self, cast
+
+if TYPE_CHECKING:
+    from fastapi.openapi.models import Example
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StrictStr, StringConstraints, model_validator
@@ -245,7 +248,7 @@ class TransportTaskPageResponse(_StrictApiModel):
     next_cursor: str | None
 
 
-_OPENAPI_EXAMPLES = {
+_OPENAPI_EXAMPLES: dict[str, Example] = {
     "rack_move": {
         "summary": "移动货架",
         "value": {

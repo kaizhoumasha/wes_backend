@@ -35,6 +35,7 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationIdentityConflictResult,
 )
 from src.app.transport.contracts import (
+    RackMovePosition,
     RackPosition,
     RackReference,
     RcsTemplateId,
@@ -49,13 +50,15 @@ from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from src.app.workline.activation import WorkLineDeviceBinding
 
 
 class WorkLineRepositoryPort(Protocol):
     async def get_binding_by_role_and_code_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
         device_role: str,
@@ -64,19 +67,31 @@ class WorkLineRepositoryPort(Protocol):
 
 
 class DeviceCommandServicePort(Protocol):
-    async def create_command_in_session(self, db: object, request: DeviceCommandRequest) -> object: ...
+    async def create_command_in_session(self, db: AsyncSession, request: DeviceCommandRequest) -> object: ...
 
 
 class WmsConfirmationServicePort(Protocol):
-    async def create_or_get(self, db: object, **kwargs: object) -> object: ...
+    async def create_or_get(
+        self,
+        db: AsyncSession,
+        *,
+        operation: str,
+        operation_id: str,
+        material_execution_id: int | None = None,
+        picking_task_id: int | None = None,
+        workline_id: int | None = None,
+        request_payload: dict[str, Any],
+        deadline_at: datetime,
+        created_at: datetime,
+    ) -> object: ...
 
 
 class TransportBindingRepositoryPort(Protocol):
-    async def lock_resource_fence(self, db: object, *, workline_id: int, resource_fence_id: str) -> None: ...
+    async def lock_resource_fence(self, db: AsyncSession, *, workline_id: int, resource_fence_id: str) -> None: ...
 
     async def lock_decision_identity(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
         correlation_id: str,
@@ -85,7 +100,7 @@ class TransportBindingRepositoryPort(Protocol):
 
     async def get_by_decision_identity_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
         correlation_id: str,
@@ -94,17 +109,39 @@ class TransportBindingRepositoryPort(Protocol):
 
     async def add(
         self,
-        db: object,
+        db: AsyncSession,
         binding: TransportDecisionBinding,
     ) -> TransportDecisionBinding: ...
 
 
 class TransportServicePort(Protocol):
-    async def move_rack_in_session(self, db: object, **kwargs: object) -> object: ...
+    async def move_rack_in_session(
+        self,
+        db: AsyncSession,
+        client_request_id: str,
+        caller: TransportCaller,
+        rack_id: str,
+        source: RackMovePosition,
+        target: RackMovePosition,
+        target_face: str | None = None,
+        rcs_template_id: RcsTemplateId = RcsTemplateId.F01,
+        *,
+        execution_authority: TransportExecutionAuthority,
+    ) -> object: ...
 
 
 class MaterialExecutionServicePort(Protocol):
-    async def transition(self, db: object, execution: MaterialExecution, **kwargs: object) -> MaterialExecution: ...
+    async def transition(
+        self,
+        db: AsyncSession,
+        execution: MaterialExecution,
+        *,
+        target: MaterialExecutionStatus,
+        changed_at: datetime,
+        reason_code: str,
+        evidence_id: int,
+        refresh_reconciliation_fence: bool = False,
+    ) -> MaterialExecution: ...
 
 
 _DECISION_DISCRIMINATORS: dict[type[object], str] = {
@@ -165,7 +202,7 @@ class DecisionApplier:
 
     async def apply(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         execution: MaterialExecution,
         fact: FactReference,
@@ -198,7 +235,7 @@ class DecisionApplier:
 
     async def _apply_one(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         execution: MaterialExecution,
         ordinal: int,
@@ -234,7 +271,7 @@ class DecisionApplier:
 
     async def _create_device_command(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         execution: MaterialExecution,
         ordinal: int,
@@ -272,7 +309,7 @@ class DecisionApplier:
 
     async def _create_wms_confirmation(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         execution: MaterialExecution,
         decision: InboundWmsIntent,
@@ -294,7 +331,7 @@ class DecisionApplier:
 
     async def _create_transport_task(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         execution: MaterialExecution,
         decision: CreateTransportTask,
@@ -367,7 +404,7 @@ class DecisionApplier:
 
     async def _transition(
         self,
-        db: object,
+        db: AsyncSession,
         execution: MaterialExecution,
         evidence: InboundEvidence,
         target: MaterialExecutionStatus,

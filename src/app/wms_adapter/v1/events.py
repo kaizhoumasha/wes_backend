@@ -190,7 +190,7 @@ def _safe_diagnostic_text(value: object, *, max_length: int) -> str | None:
     if not isinstance(value, str) or len(value) > max_length:
         return None
     try:
-        value.encode("utf-8")
+        _ = value.encode("utf-8")
     except UnicodeEncodeError:
         return None
     return value
@@ -224,7 +224,7 @@ async def _publish_transport_ingress_attempt(
     )
     publisher = getattr(request.app.state, "transport_event_stream_service", event_stream_service)
     try:
-        await publisher.publish_to(
+        _ = await publisher.publish_to(
             TRANSPORT_EVIDENCE_STREAM_CHANNEL,
             "transport_ingress.attempted",
             event.model_dump(mode="json"),
@@ -249,7 +249,7 @@ async def _publish_wms_ingress_attempt(
 ) -> None:
     publisher = getattr(request.app.state, "wms_event_stream_service", event_stream_service)
     try:
-        await publisher.publish_to(
+        _ = await publisher.publish_to(
             WMS_INBOUND_STREAM_CHANNEL,
             "wms_ingress.attempted",
             {
@@ -317,7 +317,7 @@ async def receive_wms_event(request: Request) -> Response:
         # handler 的 ACK 事务已结束，避免在单连接池中持有业务事务再开日志事务。
         recorder = getattr(request.app.state, "wms_callback_receipt_service", wms_callback_receipt_service)
         try:
-            await recorder.record(
+            _ = await recorder.record(
                 request_id=request_id,
                 raw_body=getattr(request.state, "wms_receipt_body", b""),
                 observed_body_bytes=getattr(request.state, "wms_observed_body_bytes", 0),
@@ -353,7 +353,7 @@ async def receive_wms_event(request: Request) -> Response:
                 if response.status_code >= 500 or (response.status_code >= 400 and final_result.startswith("HTTP_"))
                 else None,
             )
-            await diagnostics.finish(observation)
+            _ = await diagnostics.finish(observation)
         except Exception:  # nosec B110
             pass  # 诊断失败不得影响原业务结果；取消异常不属于 Exception。
     return response

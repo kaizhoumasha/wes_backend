@@ -101,7 +101,7 @@ class _HttpxOutboundHttpTransport:
 
         try:
             async with asyncio.timeout_at(deadline):
-                await self._concurrency_limiter.acquire()
+                _ = await self._concurrency_limiter.acquire()
                 permit_acquired = True
                 outbound_request = self._client.build_request(
                     request.method.value,

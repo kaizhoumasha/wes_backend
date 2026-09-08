@@ -29,7 +29,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
     async def lock_creation_for_device(self, db: AsyncSession, device_code: str) -> None:
         """串行化同一设备的命令创建，覆盖尚无可锁记录的首次创建。"""
 
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_identity, 0))"),
             {"lock_identity": f"device-command:create:{device_code}"},
         )
@@ -37,7 +37,7 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
     async def lock_manual_debug_identity(self, db: AsyncSession, client_request_id: str) -> None:
         """串行化 MANUAL_DEBUG 幂等身份，覆盖跨设备的首次创建。"""
 
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_identity, 0))"),
             {"lock_identity": f"device-command:manual-debug:{client_request_id}"},
         )

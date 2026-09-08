@@ -6,7 +6,10 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -139,7 +142,7 @@ def _log_invalid_envelope(model: type[BaseModel], issues: tuple[EcsCallbackValid
     logger.warning(f"device.ingress.invalid_envelope model={model.__name__} issues={summary}")
 
 
-def _validation_issue(issue: dict[str, Any], payload: dict[str, Any]) -> EcsCallbackValidationIssue:
+def _validation_issue(issue: Mapping[str, Any], payload: dict[str, Any]) -> EcsCallbackValidationIssue:
     issue_type = issue["type"]
     location = issue["loc"]
     if issue_type == "extra_forbidden":
@@ -185,7 +188,7 @@ async def _decode_closed_body(request: Request, model: type[BaseModel]) -> _Deco
             parse_constant=_reject_non_standard_json_constant,
             parse_float=_parse_finite_json_float,
         )
-        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        _ = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     except (UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
         issues = (_invalid_json_issue(),)
         _log_invalid_envelope(model, issues)
@@ -315,7 +318,7 @@ async def _publish_attempt(
     )
     try:
         history = getattr(request.app.state, "device_ingress_history_service", device_ingress_history_service)
-        await history.record_attempt(attempt)
+        _ = await history.record_attempt(attempt)
     except Exception:
         logger.exception("device.ingress.attempt_persist_failed")
     try:
@@ -376,7 +379,7 @@ async def _handle_callback(
         )
         return _rejection_response(rejection)
 
-    if receipt is None or decoded is None:
+    if receipt is None:
         raise RuntimeError("callback evidence ingress 未产生确定结果")
     await _publish_attempt(
         request,

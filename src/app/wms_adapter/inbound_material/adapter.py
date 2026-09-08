@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -50,7 +50,7 @@ class InboundMaterialAdapter:
         access = await receive_json(self._client, path, request_payload, observation=observation)
         if isinstance(access, WmsDispatchResult):
             return access
-        received_json = dict(access.json_body)
+        received_json = dict(cast("dict[str, Any]", access.json_body))
         try:
             response = parse_outbound_response(
                 operation, access.status_code or 0, access.json_body, observation=observation
@@ -59,7 +59,7 @@ class InboundMaterialAdapter:
             return WmsDispatchResult(WmsDispatchCode.RECONCILING, normalized_response=received_json)
         normalized = response.model_dump(mode="json")
         if response.operation_id != operation_id:
-            observed_contract_error(
+            _ = observed_contract_error(
                 observation, "响应 operation_id 必须匹配请求", path=("operation_id",), expected_value=operation_id
             )
             return WmsDispatchResult(WmsDispatchCode.RECONCILING, normalized_response=normalized)

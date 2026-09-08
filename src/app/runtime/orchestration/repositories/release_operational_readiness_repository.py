@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Select, and_, func, not_, or_, select, text, true
+from sqlalchemy import ColumnElement, Select, and_, func, not_, or_, select, text, true
+from sqlmodel import col
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.execution.models.inbound_evidence import InboundEvidence, InboundEvidenceApplyStatus
@@ -41,7 +42,7 @@ class ReleaseOperationalReadinessCountSnapshot:
     wms_confirmation_invalid: int
 
 
-def _conditional_count(predicate: object, label: str):
+def _conditional_count(predicate: ColumnElement[bool], label: str):
     return func.count().filter(predicate).label(label)
 
 
@@ -61,28 +62,28 @@ class ReleaseOperationalReadinessRepository:
             CommandStatus.FAILED.value,
             CommandStatus.TIMED_OUT.value,
         )
-        device_known = DeviceCommand.status.in_(device_statuses)
+        device_known = col(DeviceCommand.status).in_(device_statuses)
         device_invalid = and_(
             device_known,
             or_(
                 and_(
-                    DeviceCommand.status.in_((*device_wait_statuses, CommandStatus.RECONCILING.value)),
-                    DeviceCommand.completed_at.is_not(None),
+                    col(DeviceCommand.status).in_((*device_wait_statuses, CommandStatus.RECONCILING.value)),
+                    col(DeviceCommand.completed_at).is_not(None),
                 ),
                 and_(
-                    DeviceCommand.status.in_(device_terminal_statuses),
-                    DeviceCommand.completed_at.is_(None),
+                    col(DeviceCommand.status).in_(device_terminal_statuses),
+                    col(DeviceCommand.completed_at).is_(None),
                 ),
             ),
         )
         device = (
             select(
                 _conditional_count(
-                    and_(DeviceCommand.status.in_(device_wait_statuses), not_(device_invalid)),
+                    and_(col(DeviceCommand.status).in_(device_wait_statuses), not_(device_invalid)),
                     "device_command_wait_drain",
                 ),
                 _conditional_count(
-                    and_(DeviceCommand.status == CommandStatus.RECONCILING.value, not_(device_invalid)),
+                    and_(col(DeviceCommand.status) == CommandStatus.RECONCILING.value, not_(device_invalid)),
                     "device_command_block",
                 ),
                 _conditional_count(not_(device_known), "device_command_unknown"),
@@ -93,19 +94,19 @@ class ReleaseOperationalReadinessRepository:
         )
 
         transport_statuses = tuple(status.value for status in TransportTaskStatus)
-        transport_known = TransportTask.status.in_(transport_statuses)
-        transport_gap = TransportTask.outcome_version > TransportTask.published_outcome_version
+        transport_known = col(TransportTask.status).in_(transport_statuses)
+        transport_gap = col(TransportTask.outcome_version) > col(TransportTask.published_outcome_version)
         transport_invalid = and_(
             transport_known,
             or_(
-                TransportTask.outcome_version < 0,
-                TransportTask.published_outcome_version < 0,
-                TransportTask.published_outcome_version > TransportTask.outcome_version,
+                col(TransportTask.outcome_version) < 0,
+                col(TransportTask.published_outcome_version) < 0,
+                col(TransportTask.published_outcome_version) > col(TransportTask.outcome_version),
                 and_(
                     transport_gap,
                     or_(
-                        TransportTask.outcome_json.is_(None),
-                        func.json_typeof(TransportTask.outcome_json) == "null",
+                        col(TransportTask.outcome_json).is_(None),
+                        func.json_typeof(col(TransportTask.outcome_json)) == "null",
                     ),
                 ),
             ),
@@ -116,9 +117,9 @@ class ReleaseOperationalReadinessRepository:
                     and_(
                         transport_known,
                         not_(transport_invalid),
-                        TransportTask.status != TransportTaskStatus.RECONCILING.value,
+                        col(TransportTask.status) != TransportTaskStatus.RECONCILING.value,
                         or_(
-                            TransportTask.status.in_(
+                            col(TransportTask.status).in_(
                                 (TransportTaskStatus.PENDING.value, TransportTaskStatus.ACCEPTED.value)
                             ),
                             transport_gap,
@@ -128,7 +129,7 @@ class ReleaseOperationalReadinessRepository:
                 ),
                 _conditional_count(
                     and_(
-                        TransportTask.status == TransportTaskStatus.RECONCILING.value,
+                        col(TransportTask.status) == TransportTaskStatus.RECONCILING.value,
                         not_(transport_invalid),
                     ),
                     "transport_task_block",
@@ -141,13 +142,15 @@ class ReleaseOperationalReadinessRepository:
         )
 
         inbound_statuses = tuple(status.value for status in InboundEvidenceApplyStatus)
-        inbound_known = InboundEvidence.apply_status.in_(inbound_statuses)
+        inbound_known = col(InboundEvidence.apply_status).in_(inbound_statuses)
         claim_identity_incomplete = or_(
             and_(
-                InboundEvidence.decision_claim_token.is_(None), InboundEvidence.decision_claim_expires_at.is_not(None)
+                col(InboundEvidence.decision_claim_token).is_(None),
+                col(InboundEvidence.decision_claim_expires_at).is_not(None),
             ),
             and_(
-                InboundEvidence.decision_claim_token.is_not(None), InboundEvidence.decision_claim_expires_at.is_(None)
+                col(InboundEvidence.decision_claim_token).is_not(None),
+                col(InboundEvidence.decision_claim_expires_at).is_(None),
             ),
         )
         inbound_invalid = and_(
@@ -155,22 +158,22 @@ class ReleaseOperationalReadinessRepository:
             or_(
                 claim_identity_incomplete,
                 and_(
-                    InboundEvidence.published_at.is_not(None),
+                    col(InboundEvidence.published_at).is_not(None),
                     or_(
-                        InboundEvidence.decision_digest.is_(None),
-                        InboundEvidence.decision_claim_token.is_not(None),
-                        InboundEvidence.decision_claim_expires_at.is_not(None),
+                        col(InboundEvidence.decision_digest).is_(None),
+                        col(InboundEvidence.decision_claim_token).is_not(None),
+                        col(InboundEvidence.decision_claim_expires_at).is_not(None),
                     ),
                 ),
             ),
         )
         inbound_claimable = and_(
-            InboundEvidence.apply_status == InboundEvidenceApplyStatus.APPLIED.value,
-            InboundEvidence.published_at.is_(None),
+            col(InboundEvidence.apply_status) == InboundEvidenceApplyStatus.APPLIED.value,
+            col(InboundEvidence.published_at).is_(None),
             not_(
                 and_(
-                    InboundEvidence.kind == "DEVICE_RESULT",
-                    InboundEvidence.material_execution_id.is_(None),
+                    col(InboundEvidence.kind) == "DEVICE_RESULT",
+                    col(InboundEvidence.material_execution_id).is_(None),
                 )
             ),
         )
@@ -180,7 +183,7 @@ class ReleaseOperationalReadinessRepository:
                     and_(
                         not_(inbound_invalid),
                         or_(
-                            InboundEvidence.apply_status == InboundEvidenceApplyStatus.PENDING.value,
+                            col(InboundEvidence.apply_status) == InboundEvidenceApplyStatus.PENDING.value,
                             inbound_claimable,
                         ),
                     ),
@@ -188,7 +191,7 @@ class ReleaseOperationalReadinessRepository:
                 ),
                 _conditional_count(
                     and_(
-                        InboundEvidence.apply_status == InboundEvidenceApplyStatus.RECONCILING.value,
+                        col(InboundEvidence.apply_status) == InboundEvidenceApplyStatus.RECONCILING.value,
                         not_(inbound_invalid),
                     ),
                     "inbound_evidence_block",
@@ -201,17 +204,17 @@ class ReleaseOperationalReadinessRepository:
         )
 
         wms_statuses = tuple(status.value for status in WmsConfirmationStatus)
-        wms_known = WmsConfirmation.status.in_(wms_statuses)
+        wms_known = col(WmsConfirmation.status).in_(wms_statuses)
         wms_invalid = and_(
             wms_known,
             or_(
                 and_(
-                    WmsConfirmation.status == WmsConfirmationStatus.COMPLETED.value,
-                    WmsConfirmation.completed_at.is_(None),
+                    col(WmsConfirmation.status) == WmsConfirmationStatus.COMPLETED.value,
+                    col(WmsConfirmation.completed_at).is_(None),
                 ),
                 and_(
-                    WmsConfirmation.status != WmsConfirmationStatus.COMPLETED.value,
-                    WmsConfirmation.completed_at.is_not(None),
+                    col(WmsConfirmation.status) != WmsConfirmationStatus.COMPLETED.value,
+                    col(WmsConfirmation.completed_at).is_not(None),
                 ),
             ),
         )
@@ -219,7 +222,7 @@ class ReleaseOperationalReadinessRepository:
             select(
                 _conditional_count(
                     and_(
-                        WmsConfirmation.status.in_(
+                        col(WmsConfirmation.status).in_(
                             (WmsConfirmationStatus.PENDING.value, WmsConfirmationStatus.DISPATCHING.value)
                         ),
                         not_(wms_invalid),
@@ -228,7 +231,7 @@ class ReleaseOperationalReadinessRepository:
                 ),
                 _conditional_count(
                     and_(
-                        WmsConfirmation.status == WmsConfirmationStatus.RECONCILING.value,
+                        col(WmsConfirmation.status) == WmsConfirmationStatus.RECONCILING.value,
                         not_(wms_invalid),
                     ),
                     "wms_confirmation_block",
@@ -244,7 +247,7 @@ class ReleaseOperationalReadinessRepository:
         return select(*device.c, *transport.c, *inbound.c, *wms.c).select_from(aggregate_snapshot)
 
     async def load_counts(self, db: AsyncSession) -> ReleaseOperationalReadinessCountSnapshot:
-        await db.execute(text(f"SET LOCAL statement_timeout = '{POSTGRESQL_STATEMENT_TIMEOUT}'"))
+        _ = await db.execute(text(f"SET LOCAL statement_timeout = '{POSTGRESQL_STATEMENT_TIMEOUT}'"))
         row = (await db.execute(self.build_statement())).one()._mapping
         return ReleaseOperationalReadinessCountSnapshot(
             **{field: int(row[field]) for field in ReleaseOperationalReadinessCountSnapshot.__dataclass_fields__}

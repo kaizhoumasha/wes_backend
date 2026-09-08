@@ -28,6 +28,8 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from collections.abc import AsyncContextManager, Callable
 
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from src.app.execution.plugin_binding import StaticPluginBinding
     from src.app.workline.models.workline import WorkLine
     from src.core.task_queue_gateway import TaskQueueGateway
@@ -41,39 +43,62 @@ _MAX_BACKOFF_SECONDS = 300
 
 
 class EvidenceRepositoryPort(Protocol):
-    async def claim_decision_batch(self, db: object, **kwargs: object) -> list[InboundEvidence]: ...
+    async def claim_decision_batch(
+        self, db: AsyncSession, *, now: datetime, claim_token: str, claim_expires_at: datetime, limit: int
+    ) -> list[InboundEvidence]: ...
 
-    async def get_decision_claim_for_update(self, db: object, **kwargs: object) -> InboundEvidence | None: ...
+    async def get_decision_claim_for_update(
+        self, db: AsyncSession, *, evidence_id: int, claim_token: str, now: datetime
+    ) -> InboundEvidence | None: ...
 
-    async def get_by_id_for_update(self, db: object, evidence_id: int) -> InboundEvidence | None: ...
+    async def get_by_id_for_update(self, db: AsyncSession, evidence_id: int) -> InboundEvidence | None: ...
 
-    async def flush(self, db: object) -> None: ...
+    async def flush(self, db: AsyncSession) -> None: ...
 
 
 class ExecutionRepositoryPort(Protocol):
-    async def get_by_id_for_update(self, db: object, execution_id: int) -> MaterialExecution | None: ...
+    async def get_by_id_for_update(self, db: AsyncSession, execution_id: int) -> MaterialExecution | None: ...
 
     async def get_by_execution_code_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         execution_code: str,
     ) -> MaterialExecution | None: ...
 
 
 class WorkLineRepositoryPort(Protocol):
-    async def get_for_update(self, db: object, workline_id: int) -> WorkLine | None: ...
+    async def get_for_update(self, db: AsyncSession, workline_id: int) -> WorkLine | None: ...
 
-    async def list_position_bindings(self, db: object, workline_id: int) -> list[object]: ...
+    async def list_position_bindings(self, db: AsyncSession, workline_id: int) -> list[object]: ...
 
 
 class InitialExecutionServicePort(Protocol):
-    async def create_or_get_for_initial_evidence(self, db: object, **kwargs: object) -> MaterialExecution: ...
+    async def create_or_get_for_initial_evidence(
+        self,
+        db: AsyncSession,
+        *,
+        execution_code: str,
+        material_trace_id: str,
+        workline_id: int,
+        changed_at: datetime,
+        evidence_id: int,
+    ) -> MaterialExecution: ...
 
-    async def transition(self, db: object, execution: MaterialExecution, **kwargs: object) -> MaterialExecution: ...
+    async def transition(
+        self,
+        db: AsyncSession,
+        execution: MaterialExecution,
+        *,
+        target: MaterialExecutionStatus,
+        changed_at: datetime,
+        reason_code: str,
+        evidence_id: int,
+        refresh_reconciliation_fence: bool = False,
+    ) -> MaterialExecution: ...
 
 
 class SessionFactoryPort(Protocol):
-    def begin(self) -> AsyncContextManager[object]: ...
+    def begin(self) -> AsyncContextManager[AsyncSession]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +253,7 @@ class FactProcessor:
 
     async def _hold_deferred(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         prepared: tuple[_PreparedFact, ...],
         decision: DeferExecution,
@@ -267,7 +292,7 @@ class FactProcessor:
             decision_groups.append(group)
         return decision_groups
 
-    async def _claimed(self, db: object, evidence_id: int, token: str, now: datetime) -> InboundEvidence:
+    async def _claimed(self, db: AsyncSession, evidence_id: int, token: str, now: datetime) -> InboundEvidence:
         evidence = await self._evidences.get_decision_claim_for_update(
             db,
             evidence_id=evidence_id,
@@ -278,7 +303,7 @@ class FactProcessor:
             raise RuntimeError("Decision claim is missing or expired")
         return evidence
 
-    async def _load_workline(self, db: object, evidence: InboundEvidence) -> WorkLine:
+    async def _load_workline(self, db: AsyncSession, evidence: InboundEvidence) -> WorkLine:
         if evidence.workline_id is None:
             raise ValueError("evidence 缺少 workline_id")
         workline = await self._worklines.get_for_update(db, evidence.workline_id)
@@ -286,20 +311,20 @@ class FactProcessor:
             raise ValueError("evidence 未关联活动 WorkLine")
         return workline
 
-    async def _load_workline_for_execution(self, db: object, execution: MaterialExecution) -> WorkLine:
+    async def _load_workline_for_execution(self, db: AsyncSession, execution: MaterialExecution) -> WorkLine:
         workline = await self._worklines.get_for_update(db, execution.workline_id)
         if workline is None or not workline.is_active:
             raise ValueError("execution 未关联活动 WorkLine")
         return workline
 
-    async def _restore_workline_from_execution(self, db: object, evidence: InboundEvidence) -> None:
+    async def _restore_workline_from_execution(self, db: AsyncSession, evidence: InboundEvidence) -> None:
         if evidence.workline_id is not None or evidence.material_execution_id is None:
             return
         execution = await self._load_execution(db, evidence)
         evidence.workline_id = execution.workline_id
         await self._evidences.flush(db)
 
-    async def _load_execution(self, db: object, evidence: InboundEvidence) -> MaterialExecution:
+    async def _load_execution(self, db: AsyncSession, evidence: InboundEvidence) -> MaterialExecution:
         if evidence.material_execution_id is None:
             raise ValueError("evidence 缺少 material_execution_id")
         execution = await self._executions.get_by_id_for_update(db, evidence.material_execution_id)
@@ -307,8 +332,10 @@ class FactProcessor:
             raise LookupError("MaterialExecution 不存在")
         return execution
 
-    async def _augment_fact(self, db: object, workline: WorkLine, base_fact: FactReference) -> FactReference:
-        factory = self._plugins.resolve_fact_factory(workline.plugin_key, workline.plugin_version)
+    async def _augment_fact(self, db: AsyncSession, workline: WorkLine, base_fact: FactReference) -> FactReference:
+        factory = self._plugins.resolve_fact_factory(
+            cast("str", workline.plugin_key), cast("str", workline.plugin_version)
+        )
         fact = await factory.build(db, base_fact)
         if not isinstance(fact, FactReference):
             raise TypeError("PluginFactFactory must return FactReference")
@@ -323,7 +350,7 @@ class FactProcessor:
 
     async def _prepare_facts_in_session(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         now: datetime,
     ) -> tuple[_PreparedFact, ...]:
@@ -337,7 +364,7 @@ class FactProcessor:
         ):
             causal_evidence = await self._evidences.get_by_id_for_update(db, execution.last_transition_evidence_id)
         position_bindings = (
-            tuple(await self._worklines.list_position_bindings(db, workline.id))
+            tuple(await self._worklines.list_position_bindings(db, cast("int", workline.id)))
             if evidence.kind == InboundEvidenceKind.WMS_EVENT
             else ()
         )
@@ -351,11 +378,11 @@ class FactProcessor:
                 position_bindings=position_bindings,
             ),
         )
-        return (_PreparedFact(fact, workline.plugin_key, workline.plugin_version, execution),)
+        return (_PreparedFact(fact, cast("str", workline.plugin_key), cast("str", workline.plugin_version), execution),)
 
     async def _transition_all_executions(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         changed_at: datetime,
         *,
@@ -378,7 +405,7 @@ class FactProcessor:
 
     async def _load_or_correlate_execution(
         self,
-        db: object,
+        db: AsyncSession,
         evidence: InboundEvidence,
         workline: WorkLine,
         now: datetime,
@@ -387,7 +414,9 @@ class FactProcessor:
             return await self._load_execution(db, evidence)
         if evidence.kind != InboundEvidenceKind.DEVICE_EVENT:
             raise ValueError(f"{InboundEvidenceKind(evidence.kind).value} evidence 缺少 material_execution_id")
-        correlator = self._plugins.resolve_initial_execution_correlator(workline.plugin_key, workline.plugin_version)
+        correlator = self._plugins.resolve_initial_execution_correlator(
+            cast("str", workline.plugin_key), cast("str", workline.plugin_version)
+        )
         descriptor = await correlator.correlate(db, str(evidence.id))
         if descriptor is None:
             raise ValueError("initial evidence cannot be correlated")
@@ -395,7 +424,7 @@ class FactProcessor:
             db,
             execution_code=descriptor.execution_code,
             material_trace_id=descriptor.material_trace_id,
-            workline_id=workline.id,
+            workline_id=cast("int", workline.id),
             changed_at=now,
             evidence_id=cast("int", evidence.id),
         )

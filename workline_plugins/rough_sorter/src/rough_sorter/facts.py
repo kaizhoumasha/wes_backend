@@ -136,11 +136,11 @@ class RoughSorterRuntimeSnapshot:
 
 
 def _operation_id(value: str, field_name: str) -> None:
-    _required(value, field_name)
+    _ = _required(value, field_name)
 
 
 def _millimeters(value: str, field_name: str) -> None:
-    _required(value, field_name)
+    _ = _required(value, field_name)
     try:
         parsed = Decimal(value)
     except InvalidOperation as exc:
@@ -224,7 +224,7 @@ class MaterialEvidenceReadyFact(EvidenceReadyFact):
             "mfr_pn",
             "po_number",
         ):
-            _required(getattr(self, field_name), field_name)
+            _ = _required(getattr(self, field_name), field_name)
         _millimeters(self.diameter_mm, "diameter_mm")
         _millimeters(self.thickness_mm, "thickness_mm")
         if type(self.shape_result) is not ShapeResult:
@@ -259,7 +259,7 @@ class AdmissionDecidedFact(FactReference):
             material_execution_id=self.material_execution_id,
             material_trace_id=self.material_trace_id,
         )
-        _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.material_trace_id, "material_trace_id")
         if type(self.result) is not AdmissionResult:
             raise ValueError("result must be an AdmissionResult")
         _position(
@@ -278,8 +278,8 @@ class AdmissionDecidedFact(FactReference):
             self._require_reason_only()
 
     def _require_accept(self) -> None:
-        _required(self.pkg_id or "", "pkg_id")
-        _required(self.inbound_admission_id or "", "inbound_admission_id")
+        _ = _required(self.pkg_id or "", "pkg_id")
+        _ = _required(self.inbound_admission_id or "", "inbound_admission_id")
         if self.next_position is None:
             raise ValueError("ACCEPT requires next_position")
         _position(
@@ -292,7 +292,7 @@ class AdmissionDecidedFact(FactReference):
             raise ValueError("ACCEPT must not include reason_code")
 
     def _require_reason_and_destination(self, location_type: str) -> None:
-        _required(self.reason_code or "", "reason_code")
+        _ = _required(self.reason_code or "", "reason_code")
         if self.next_position is None:
             raise ValueError(f"{self.result.value} requires next_position")
         _position(
@@ -305,7 +305,7 @@ class AdmissionDecidedFact(FactReference):
             raise ValueError(f"{self.result.value} must not include admission identity")
 
     def _require_reason_only(self) -> None:
-        _required(self.reason_code or "", "reason_code")
+        _ = _required(self.reason_code or "", "reason_code")
         if self.next_position is not None or self.pkg_id is not None or self.inbound_admission_id is not None:
             raise ValueError(f"{self.result.value} contains fields from another result branch")
 
@@ -365,7 +365,7 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
             material_trace_id=self.material_trace_id,
         )
         if self.outcome is not DeviceOutcome.SUCCESS:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
             _reject_present_fields(
                 "non-success device result",
                 (
@@ -422,9 +422,9 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
 
     def _require_target_request(self) -> None:
         _operation_id(self.request_operation_id or "", "request_operation_id")
-        _required(self.pkg_id or "", "pkg_id")
-        _required(self.inbound_admission_id or "", "inbound_admission_id")
-        _required(self.current_rack_id or "", "current_rack_id")
+        _ = _required(self.pkg_id or "", "pkg_id")
+        _ = _required(self.inbound_admission_id or "", "inbound_admission_id")
+        _ = _required(self.current_rack_id or "", "current_rack_id")
         _reject_present_fields(
             self.step.value,
             (
@@ -440,9 +440,9 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
 
     def _require_placement_report(self) -> None:
         _operation_id(self.request_operation_id or "", "request_operation_id")
-        _required(self.pkg_id or "", "pkg_id")
-        _required(self.inbound_admission_id or "", "inbound_admission_id")
-        _required(self.target_assignment_id or "", "target_assignment_id")
+        _ = _required(self.pkg_id or "", "pkg_id")
+        _ = _required(self.inbound_admission_id or "", "inbound_admission_id")
+        _ = _required(self.target_assignment_id or "", "target_assignment_id")
         if type(self.placement_sequence) is not int or self.placement_sequence <= 0:
             raise ValueError("placement_sequence must be a positive integer")
         if type(self.placed_at_ms) is not int or self.placed_at_ms <= 0:
@@ -460,8 +460,8 @@ class DevicePositionConfirmedFact(DeviceResultReadyFact):
 
     def _require_ng_report(self) -> None:
         _operation_id(self.request_operation_id or "", "request_operation_id")
-        _required(self.ng_evidence_id or "", "ng_evidence_id")
-        _required(self.reason_code or "", "reason_code")
+        _ = _required(self.ng_evidence_id or "", "ng_evidence_id")
+        _ = _required(self.reason_code or "", "reason_code")
         _reject_present_fields(
             self.step.value,
             (
@@ -502,8 +502,8 @@ class TargetDecidedFact(FactReference):
             material_execution_id=self.material_execution_id,
             material_trace_id=self.material_trace_id,
         )
-        _required(self.material_trace_id, "material_trace_id")
-        _required(self.current_rack_id, "current_rack_id")
+        _ = _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.current_rack_id, "current_rack_id")
         if type(self.result) is not TargetResult:
             raise ValueError("result must be a TargetResult")
         if type(self.current_rack_fenced) is not bool:
@@ -519,13 +519,13 @@ class TargetDecidedFact(FactReference):
         if self.result is TargetResult.ASSIGNED:
             self._require_assigned()
         elif self.result is TargetResult.NO_AVAILABLE_CELL:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
             _operation_id(self.request_operation_id or "", "request_operation_id")
             self._reject_target_fields(
                 ("target_position", "target_assignment_id", "placement_sequence", "expected_height_mm")
             )
         elif self.result is TargetResult.REJECT:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
             if self.target_position is None:
                 raise ValueError("REJECT requires target_position")
             _position(
@@ -538,7 +538,7 @@ class TargetDecidedFact(FactReference):
                 ("target_assignment_id", "placement_sequence", "expected_height_mm", "request_operation_id")
             )
         else:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
             self._reject_target_fields(
                 (
                     "target_position",
@@ -550,7 +550,7 @@ class TargetDecidedFact(FactReference):
             )
 
     def _require_assigned(self) -> None:
-        _required(self.target_assignment_id or "", "target_assignment_id")
+        _ = _required(self.target_assignment_id or "", "target_assignment_id")
         if self.target_position is None:
             raise ValueError("ASSIGNED requires target_position")
         _position(
@@ -589,12 +589,12 @@ class PlacementCompletedFact(FactReference):
             material_execution_id=self.material_execution_id,
             material_trace_id=self.material_trace_id,
         )
-        _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.material_trace_id, "material_trace_id")
         if type(self.kind) is not CompletionKind or type(self.result) is not CompletionResult:
             raise ValueError("kind and result must use placement completion enums")
         _required_refs(self.affected_resource_ids, "affected_resource_ids")
         if self.result is CompletionResult.RECONCILING:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
         elif self.reason_code is not None:
             raise ValueError("recorded completion must not include reason_code")
 
@@ -611,7 +611,7 @@ class PlacementReleaseEvidence:
     response_evidence_id: int | None
 
     def __post_init__(self) -> None:
-        _required(self.command_code, "command_code")
+        _ = _required(self.command_code, "command_code")
         if type(self.command_status) is not PlacementCommandStatus:
             raise TypeError("command_status must be a PlacementCommandStatus")
         if type(self.confirmation_status) is not PlacementConfirmationStatus:
@@ -628,7 +628,7 @@ class PlacementReleaseEvidence:
             ):
                 raise ValueError("ABSENT confirmation must not include confirmation or response identity")
         else:
-            _required(self.confirmation_operation_id or "", "confirmation_operation_id")
+            _ = _required(self.confirmation_operation_id or "", "confirmation_operation_id")
             if self.confirmation_operation != "inbound.material.placement_report@v1":
                 raise ValueError("release evidence must use placement_report operation")
         for value, field_name in (
@@ -669,7 +669,7 @@ class RackReleaseSnapshot:
     snapshot_ref: str
 
     def __post_init__(self) -> None:
-        _required(self.current_rack_id, "current_rack_id")
+        _ = _required(self.current_rack_id, "current_rack_id")
         if type(self.placements) is not tuple or any(
             type(item) is not PlacementReleaseEvidence for item in self.placements
         ):
@@ -702,19 +702,19 @@ class ReplacementPlanDecidedFact(FactReference):
             material_execution_id=self.material_execution_id,
             material_trace_id=self.material_trace_id,
         )
-        _required(self.material_trace_id, "material_trace_id")
-        _required(self.current_rack_id, "current_rack_id")
+        _ = _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.current_rack_id, "current_rack_id")
         if type(self.result) is not ReplacementResult:
             raise ValueError("result must be a ReplacementResult")
         if self.result is ReplacementResult.READY:
             self._require_ready()
         else:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
             if any((self.rack_replacement_id, self.old_loaded_rack, self.new_empty_rack, self.release_snapshot)):
                 raise ValueError(f"{self.result.value} must not include a rack move plan")
 
     def _require_ready(self) -> None:
-        _required(self.rack_replacement_id or "", "rack_replacement_id")
+        _ = _required(self.rack_replacement_id or "", "rack_replacement_id")
         if type(self.old_loaded_rack) is not RackMovePlan or type(self.new_empty_rack) is not RackMovePlan:
             raise TypeError("READY requires typed old and new rack plans")
         for plan in (self.old_loaded_rack, self.new_empty_rack):
@@ -759,7 +759,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             material_trace_id=self.material_trace_id,
         )
         for field_name in ("material_trace_id", "rack_replacement_id", "rack_id"):
-            _required(getattr(self, field_name), field_name)
+            _ = _required(getattr(self, field_name), field_name)
         if type(self.leg) is not TransportLeg or type(self.outcome) is not TransportOutcome:
             raise ValueError("leg and outcome must use transport enums")
         if self.leg is not TransportLeg.NEW_IN:
@@ -768,7 +768,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             raise TypeError("expected target must use an SDK transport position")
         validate_opaque_face(self.expected_face, "expected_face")
         if self.outcome is not TransportOutcome.SUCCEEDED:
-            _required(self.reason_code or "", "reason_code")
+            _ = _required(self.reason_code or "", "reason_code")
             _reject_present_fields(
                 "non-success transport result",
                 (
@@ -782,7 +782,7 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
                 ),
             )
             return
-        _required(self.actual_rack_id or "", "actual_rack_id")
+        _ = _required(self.actual_rack_id or "", "actual_rack_id")
         if type(self.final_position) is not TransportRackPosition:
             raise TypeError("successful transport outcome requires a typed final position")
         validate_opaque_face(self.arrival_face, "arrival_face")
@@ -800,8 +800,8 @@ class TransportOutcomePublishedFact(TransportResultReadyFact):
             material_trace_id=self.material_trace_id,
         )
         _operation_id(self.request_operation_id or "", "request_operation_id")
-        _required(self.pkg_id or "", "pkg_id")
-        _required(self.inbound_admission_id or "", "inbound_admission_id")
+        _ = _required(self.pkg_id or "", "pkg_id")
+        _ = _required(self.inbound_admission_id or "", "inbound_admission_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -824,8 +824,8 @@ class RecoveryDeviceContinuation:
     device_ready: bool
 
     def __post_init__(self) -> None:
-        _required(self.device_role, "device_role")
-        _required(self.task_type, "task_type")
+        _ = _required(self.device_role, "device_role")
+        _ = _required(self.task_type, "task_type")
         if type(self.source) is not DevicePosition or type(self.target) is not DevicePosition:
             raise TypeError("source and target must be DevicePosition values")
         _position_identity(self.source, "source")
@@ -841,7 +841,7 @@ class RecoveryDeferContinuation:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _required(self.reason_code, "reason_code")
+        _ = _required(self.reason_code, "reason_code")
 
 
 RecoveryContinuation = RecoveryWmsContinuation | RecoveryDeviceContinuation | RecoveryDeferContinuation
@@ -861,8 +861,8 @@ class RecoveryDecidedFact(BaseRecoveryDecidedFact):
             material_execution_id=self.material_execution_id,
             material_trace_id=self.material_trace_id,
         )
-        _required(self.material_trace_id, "material_trace_id")
-        _required(self.reconciling_evidence_id, "reconciling_evidence_id")
+        _ = _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.reconciling_evidence_id, "reconciling_evidence_id")
         if self.reconciling_evidence_id == self.evidence_id:
             raise ValueError("reconciling_evidence_id must reference prior causal evidence")
         if self.authoritative_position is not None:

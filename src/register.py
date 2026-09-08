@@ -31,7 +31,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
 
-    diagnostics_config()
+    _ = diagnostics_config()
     transport_runtime = None
     device_command_runtime = None
     deployment_runtime = None

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from src.app.execution.models.material_execution import MaterialExecution, MaterialExecutionStatus
 from src.app.execution.repositories.material_execution_repository import material_execution_repository
@@ -22,24 +26,24 @@ class MaterialExecutionFifoBlockedError(ValueError):
 
 
 class MaterialExecutionRepositoryPort(Protocol):
-    async def lock_material_trace(self, db: object, material_trace_id: str) -> None: ...
+    async def lock_material_trace(self, db: AsyncSession, material_trace_id: str) -> None: ...
 
     async def get_active_by_trace_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         material_trace_id: str,
     ) -> MaterialExecution | None: ...
 
-    async def add(self, db: object, execution: MaterialExecution) -> MaterialExecution: ...
+    async def add(self, db: AsyncSession, execution: MaterialExecution) -> MaterialExecution: ...
 
     async def get_admission_head_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         workline_id: int,
     ) -> MaterialExecution | None: ...
 
-    async def flush(self, db: object) -> None: ...
+    async def flush(self, db: AsyncSession) -> None: ...
 
 
 def _transition_evidence(reason_code: str, evidence_id: int) -> tuple[str, int]:
@@ -57,7 +61,7 @@ class MaterialExecutionService:
 
     async def create(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         execution_code: str,
         material_trace_id: str,
@@ -89,7 +93,7 @@ class MaterialExecutionService:
 
     async def create_or_get_for_initial_evidence(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         execution_code: str,
         material_trace_id: str,
@@ -117,7 +121,7 @@ class MaterialExecutionService:
             ),
         )
 
-    async def assert_fifo_head(self, db: object, execution: MaterialExecution) -> MaterialExecution:
+    async def assert_fifo_head(self, db: AsyncSession, execution: MaterialExecution) -> MaterialExecution:
         """在推进物料前锁定并验证发起方 admission 顺序。"""
 
         if execution.id is None:
@@ -136,7 +140,7 @@ class MaterialExecutionService:
 
     async def transition(
         self,
-        db: object,
+        db: AsyncSession,
         execution: MaterialExecution,
         *,
         target: MaterialExecutionStatus,

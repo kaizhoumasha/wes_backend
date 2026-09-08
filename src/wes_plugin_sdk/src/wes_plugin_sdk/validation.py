@@ -24,7 +24,7 @@ def validate_required_refs(values: tuple[str, ...], field_name: str) -> None:
     if len(values) != len(set(values)):
         raise ValueError(f"{field_name} must not contain duplicates")
     for value in values:
-        validate_required_text(value, field_name)
+        _ = validate_required_text(value, field_name)
 
 
 def validate_persistable_text(
@@ -64,7 +64,7 @@ def _validate_nul_length_utf8(
     if max_length is not None and len(value) > max_length:
         raise error_type(f"{field_name} exceeds {max_length} characters")
     try:
-        value.encode("utf-8")
+        _ = value.encode("utf-8")
     except UnicodeEncodeError as error:
         raise error_type(f"{field_name} must be valid UTF-8") from error
 
@@ -81,7 +81,7 @@ def is_opaque_face(value: object) -> TypeGuard[str]:
 def is_persistable_text(value: object, max_length: int) -> TypeGuard[str]:
     """返回值是否满足有长度上限的可持久化文本合同。"""
     try:
-        validate_persistable_text(value, "text", max_length=max_length)
+        _ = validate_persistable_text(value, "text", max_length=max_length)
     except ValueError:
         return False
     return True

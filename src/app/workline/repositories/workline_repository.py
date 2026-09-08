@@ -328,7 +328,7 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             "wms_confirmations",
             "picking_tasks",
         )
-        by_type = dict.fromkeys(owner_keys, 0)
+        by_type: dict[str, int] = dict.fromkeys(owner_keys, 0)
         samples: dict[str, dict[str, str]] = {}
         for row in rows:
             by_type[row.owner_key] = int(row.owner_count)

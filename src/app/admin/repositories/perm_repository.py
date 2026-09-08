@@ -5,6 +5,7 @@ from typing import Any, cast
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlmodel import col
 
 from src.app.admin.models import Permission, Role, User, role_permission, user_role
 from src.database.tree_repository import TreeRepository
@@ -28,7 +29,7 @@ class PermissionRepository(TreeRepository[Permission]):
 
     async def list_catalog_nodes(self, db: AsyncSession) -> list[Permission]:
         """加载权限目录同步所需的活动节点和回收站节点。"""
-        result = await db.execute(select(Permission).order_by(Permission.id))
+        result = await db.execute(select(Permission).order_by(col(Permission.id)))
         return list(result.scalars().all())
 
     async def collect_catalog_affected_ids(
@@ -212,7 +213,7 @@ class PermissionRepository(TreeRepository[Permission]):
         # 构建查询（保持与原有实现相同的结构）
         query = (
             select(Permission)
-            .join(api_app_permissions, api_app_permissions.c.permission_id == Permission.id)
+            .join(api_app_permissions, api_app_permissions.c.permission_id == col(Permission.id))
             .where(*where_clauses)
         )
 

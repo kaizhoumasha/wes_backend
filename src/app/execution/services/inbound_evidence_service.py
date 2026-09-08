@@ -6,7 +6,11 @@ import json
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from src.app.execution.models.inbound_evidence import (
     InboundEvidence,
@@ -28,19 +32,19 @@ class InboundEvidenceDigestPolicy(str, Enum):
 
 
 class InboundEvidenceRepositoryPort(Protocol):
-    async def lock_source_identity(self, db: object, source_identity: str) -> None: ...
+    async def lock_source_identity(self, db: AsyncSession, source_identity: str) -> None: ...
 
     async def get_by_source_identity_for_update(
         self,
-        db: object,
+        db: AsyncSession,
         source_identity: str,
     ) -> InboundEvidence | None: ...
 
-    async def add(self, db: object, evidence: InboundEvidence) -> InboundEvidence: ...
+    async def add(self, db: AsyncSession, evidence: InboundEvidence) -> InboundEvidence: ...
 
     async def add_conflict(
         self,
-        db: object,
+        db: AsyncSession,
         conflict: InboundEvidenceConflict,
     ) -> InboundEvidenceConflict: ...
 
@@ -84,7 +88,7 @@ class InboundEvidenceService:
 
     async def accept(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         kind: InboundEvidenceKind,
         source_identity: str,
@@ -209,7 +213,7 @@ class InboundEvidenceService:
 
     async def record_conflict(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         first: InboundEvidence,
         source_identity: str,
@@ -236,7 +240,7 @@ class InboundEvidenceService:
 
     async def _add_conflict(
         self,
-        db: object,
+        db: AsyncSession,
         *,
         first_evidence_id: int,
         source_identity: str,

@@ -176,7 +176,7 @@ class TransportDebugRunService:
         now = self._clock()
         run_id = f"debug-run-{new_uuid7()}"
         for group in request.face_groups:
-            sdk.wms_operations.outbound_bin_return_batch(
+            _ = sdk.wms_operations.outbound_bin_return_batch(
                 operation_id=new_uuid7(),
                 workline_code=request.workline_code,
                 rack_id=request.rack_id,
@@ -500,7 +500,7 @@ class TransportDebugRunService:
             queue = run.configuration_json.get("return_queues", {}).get(str(run.current_group_index), [])
             candidates = [code for code in queue if code not in returned]
             if not candidates:
-                self._set_attention(run, step, "DEBUG_RETURN_FIFO_MISSING", now)
+                _ = self._set_attention(run, step, "DEBUG_RETURN_FIFO_MISSING", now)
                 return "CHANGED"
             try:
                 await self._transport.assert_debug_rack_position_in_session(
@@ -510,7 +510,7 @@ class TransportDebugRunService:
                     group.face,
                 )
             except TransportContractError as error:
-                self._set_attention(run, step, "TRANSPORT_CONTRACT_REJECTED", now, str(error))
+                _ = self._set_attention(run, step, "TRANSPORT_CONTRACT_REJECTED", now, str(error))
                 return "CHANGED"
             operation_id = new_uuid7()
             intent = sdk.wms_operations.outbound_bin_return_batch(
@@ -523,7 +523,7 @@ class TransportDebugRunService:
                 ),
             )
             try:
-                await self._wms.create_or_get(
+                _ = await self._wms.create_or_get(
                     db,
                     operation=BIN_RETURN_BATCH_OPERATION,
                     operation_id=operation_id,
@@ -543,7 +543,7 @@ class TransportDebugRunService:
                 db, BIN_RETURN_BATCH_OPERATION, operation_id
             )
             if confirmation is None or confirmation.status == WmsConfirmationStatus.RECONCILING:
-                self._set_attention(run, step, "WMS_RETURN_RECONCILING", now)
+                _ = self._set_attention(run, step, "WMS_RETURN_RECONCILING", now)
                 return "CHANGED"
             if confirmation.status != WmsConfirmationStatus.COMPLETED:
                 return "WAIT"
@@ -555,14 +555,14 @@ class TransportDebugRunService:
             try:
                 if evidence is None:
                     raise ValueError("WMS return response evidence missing")
-                parse_bin_return_batch_response(
+                _ = parse_bin_return_batch_response(
                     200,
                     evidence.normalized_payload,
                     request=parse_bin_return_batch_request(confirmation.request_payload),
                 )
                 outcome = decode_outcome(evidence.normalized_payload).result
             except (ValueError, TypeError) as error:
-                self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now, str(error))
+                _ = self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now, str(error))
                 return "CHANGED"
             if isinstance(outcome, sdk.BinBatchNoBatch):
                 batch = {"retry_at": (now + timedelta(milliseconds=outcome.retry_after_ms)).isoformat()}
@@ -577,7 +577,7 @@ class TransportDebugRunService:
                     for move in outcome.moves
                 ]
             else:
-                self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now)
+                _ = self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now)
                 return "CHANGED"
         batches[str(step.ordinal)] = batch
         run.configuration_json = {**run.configuration_json, "return_batches": batches}
@@ -984,7 +984,7 @@ class TransportDebugRunService:
         tasks = await self._repository.list_transport_tasks(db, task_ids)
         for task_id, task in tasks.items():
             if task.status == TransportTaskStatus.PENDING.value:
-                await self._transport.finalize_unsent_debug_task_in_session(db, task_id)
+                _ = await self._transport.finalize_unsent_debug_task_in_session(db, task_id)
 
     async def _publish_update(self, payload: dict[str, object]) -> None:
         try:

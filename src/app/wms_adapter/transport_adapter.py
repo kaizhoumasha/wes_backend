@@ -197,7 +197,7 @@ def _persistable_reason_code(value: object) -> str | None:
     if not isinstance(value, str) or value not in _REJECTED_REASON_CODES:
         return None
     try:
-        value.encode("utf-8")
+        _ = value.encode("utf-8")
     except UnicodeEncodeError:
         return None
     return value

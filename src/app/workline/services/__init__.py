@@ -8,7 +8,20 @@
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .diagnosis_verdict_builder_service import DiagnosisVerdictBuilder as WorklineDiagnosticService
+    from .diagnosis_verdict_builder_service import diagnosis_verdict_builder as workline_diagnostic_service
+    from .plane_service import WorkLinePlaneService as WorkLinePlaneService
+    from .plane_service import workline_plane_service as workline_plane_service
+    from .safety_service import WorkLineSafetyBlocked as WorkLineSafetyBlocked
+    from .safety_service import WorkLineSafetyService as WorkLineSafetyService
+    from .safety_service import workline_safety_service as workline_safety_service
+    from .workline_configuration_service import WorkLineConfigurationService as WorkLineConfigurationService
+    from .workline_service import WorkLineService as WorkLineService
+    from .workline_service import workline_service as workline_service
+
 
 _EXPORTS = {
     "WorkLinePlaneService": ("plane_service", "WorkLinePlaneService"),

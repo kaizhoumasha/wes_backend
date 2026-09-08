@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from src.app.admin.repositories.perm_repository import PermissionRepository, permission_repository
 from src.app.admin.repositories.role_repository import RoleRepository, role_repository
@@ -149,7 +149,7 @@ class AuthorizationBootstrapService:
                 continue
             updated = await self.role_repo.update(
                 db,
-                role.id,
+                cast("int", role.id),
                 {"description": spec.description, "version": role.version},
             )
             if updated is None:

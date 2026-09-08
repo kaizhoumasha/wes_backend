@@ -129,7 +129,7 @@ class RoleService(BaseService[Role, RoleRepository]):
         if not user_ids:
             return
         cache = get_cache()
-        await invalidate_users_permissions(cache, user_ids)
+        _ = await invalidate_users_permissions(cache, user_ids)
 
 
 role_service = RoleService()

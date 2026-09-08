@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
-from typing import Any
+from typing import Any, cast
 
 from src.app.execution.models import InboundEvidenceApplyStatus as ApplyStatus
 from src.app.execution.models import InboundEvidenceKind, WmsConfirmationStatus
@@ -78,7 +78,7 @@ class PickingTaskPlanDeltaService:
                 if ApplyStatus(evidence.apply_status) is not ApplyStatus.IGNORED:
                     original = PickingTaskPlanDeltaEvent.model_validate(evidence.normalized_payload)
                     task = await self._tasks.get_by_task_id_for_update(db, original.data.task_id)
-                    self._block(task, evidence.id)
+                    self._block(task, cast("int", evidence.id))
                 return self._result(evidence, "CONFLICT", "IDEMPOTENCY_CONFLICT")
             if invalid:
                 evidence.processed_at = evidence.received_at
@@ -86,7 +86,7 @@ class PickingTaskPlanDeltaService:
             if ApplyStatus(evidence.apply_status) is ApplyStatus.APPLIED:
                 return self._result(evidence, "DUPLICATE")
             if ApplyStatus(evidence.apply_status) is ApplyStatus.RECONCILING:
-                reason = await self._plans.first_rejection(db, evidence.id)
+                reason = await self._plans.first_rejection(db, cast("int", evidence.id))
                 if reason is None:
                     raise RuntimeError("计划拒绝缺少首次 reason_code")
                 return self._result(evidence, "CONFLICT", reason)
@@ -121,7 +121,7 @@ class PickingTaskPlanDeltaService:
             task.increment_version()
 
     async def _reject(self, db: Any, task: Any, evidence: Any, reason: str, received_at: datetime) -> None:
-        await self._evidence.record_conflict(
+        _ = await self._evidence.record_conflict(
             db,
             first=evidence,
             source_identity=evidence.source_identity,
@@ -131,7 +131,7 @@ class PickingTaskPlanDeltaService:
         )
         evidence.apply_status = ApplyStatus.RECONCILING
         evidence.processed_at = received_at
-        self._block(task, evidence.id)
+        self._block(task, cast("int", evidence.id))
 
     async def validate_plan(  # noqa: PLR0911
         self, db: Any, task: Any, data: Any, *, received_at: datetime, correction: bool = False
@@ -221,7 +221,7 @@ class PickingTaskPlanDeltaService:
         task.last_plan_evidence_id = evidence.id
         evidence.apply_status = ApplyStatus.APPLIED
         evidence.processed_at = received_at
-        await self._plans.add_members(db, task.id, data, evidence.id)
+        _ = await self._plans.add_members(db, task.id, data, evidence.id)
 
     async def apply_correction(
         self,
@@ -267,7 +267,7 @@ class PickingTaskPlanDeltaService:
             if isinstance(accepted, InboundEvidenceConflictResult):
                 raise PlanCorrectionConflictError("修正 Evidence 内容冲突")
             correction = accepted.evidence
-            await self._plans.refresh_evidence(db, correction)
+            _ = await self._plans.refresh_evidence(db, correction)
             task = await self._tasks.get_by_task_id_for_update(db, task_id)
             blocker = await self._plans.get_evidence(db, blocked_evidence_id)
             if (
@@ -288,7 +288,7 @@ class PickingTaskPlanDeltaService:
                 if not await self._plans.correction_audited(db, audit_args):
                     raise PlanCorrectionConflictError("对账重放与首次审计不一致")
                 return PickingTaskPlanCorrectionResult(
-                    task.task_id, task.last_applied_plan_revision, task.version, correction.id
+                    task.task_id, task.last_applied_plan_revision, task.version, cast("int", correction.id)
                 )
             if (
                 task.plan_blocked_evidence_id != blocked_evidence_id
@@ -302,16 +302,16 @@ class PickingTaskPlanDeltaService:
             # 与计划字段一次 flush，成功对账仅推进一个乐观锁版本。
             task.plan_blocked_evidence_id = None
             await self.apply_plan(db, task, event.data, correction, received_at=received_at)
-            await self._audit.create_audit_log(
+            _ = await self._audit.create_audit_log(
                 db,
                 method="POST",
                 title="PickingTask 计划冲突对账",
                 path=f"/api/v1/outbound-picking/tasks/{task_id}/plan-blockers/{blocked_evidence_id}/apply-correction",
                 args=audit_args,
             )
-            await self._tasks.flush(db)
+            _ = await self._tasks.flush(db)
             return PickingTaskPlanCorrectionResult(
-                task.task_id, task.last_applied_plan_revision, task.version, correction.id
+                task.task_id, task.last_applied_plan_revision, task.version, cast("int", correction.id)
             )
 
 

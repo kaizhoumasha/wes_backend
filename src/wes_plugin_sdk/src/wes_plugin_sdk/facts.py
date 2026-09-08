@@ -25,7 +25,7 @@ class FactReference:
 
     def __post_init__(self) -> None:
         for field_name in ("fact_id", "evidence_id", "fact_version", "material_execution_id"):
-            _required(getattr(self, field_name), field_name)
+            _ = _required(getattr(self, field_name), field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +40,7 @@ class WmsResultReadyFact(FactReference):
 
     def __post_init__(self) -> None:
         FactReference.__post_init__(self)
-        _required(self.operation_id, "operation_id")
+        _ = _required(self.operation_id, "operation_id")
         if type(self.outcome) not in (
             AdmissionOutcome,
             TargetOutcome,
@@ -60,9 +60,9 @@ class DeviceResultReadyFact(FactReference):
 
     def __post_init__(self) -> None:
         FactReference.__post_init__(self)
-        _required(self.command_code, "command_code")
-        _required(self.device_code, "device_code")
-        _required(self.material_trace_id, "material_trace_id")
+        _ = _required(self.command_code, "command_code")
+        _ = _required(self.device_code, "device_code")
+        _ = _required(self.material_trace_id, "material_trace_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +71,7 @@ class TransportResultReadyFact(FactReference):
 
     def __post_init__(self) -> None:
         FactReference.__post_init__(self)
-        _required(self.transport_task_id, "transport_task_id")
+        _ = _required(self.transport_task_id, "transport_task_id")
 
 
 class RecoveryDecision(StrEnum):
@@ -88,8 +88,8 @@ class RecoveryDecidedFact(FactReference):
 
     def __post_init__(self) -> None:
         FactReference.__post_init__(self)
-        _required(self.recovery_id, "recovery_id")
-        _required(self.reason_code, "reason_code")
+        _ = _required(self.recovery_id, "recovery_id")
+        _ = _required(self.reason_code, "reason_code")
         if type(self.decision) is not RecoveryDecision:
             raise TypeError("decision must be a RecoveryDecision")
         if self.authoritative_position is not None and type(self.authoritative_position) is not DevicePosition:

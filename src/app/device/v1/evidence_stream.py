@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, StringConstraints, ValidationError
@@ -35,7 +38,7 @@ _COMMAND_TOKEN = Annotated[str, StringConstraints(min_length=1, max_length=160, 
 
 
 class EventStreamPort(Protocol):
-    def subscribe(self, channel: str, *, timeout_seconds: float): ...
+    def subscribe(self, channel: str, *, timeout_seconds: float) -> AsyncIterator[dict[str, Any] | None]: ...
 
 
 def _stream_service(request: Request) -> EventStreamPort:

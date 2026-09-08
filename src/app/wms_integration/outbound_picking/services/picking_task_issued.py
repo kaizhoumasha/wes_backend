@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from src.app.execution.models import InboundEvidenceApplyStatus, InboundEvidenceKind
 from src.app.execution.services import InboundEvidenceConflictResult, InboundEvidenceService
 from src.app.wms_adapter.outbound_picking.event_handler import PickingTaskIssuedPersistenceResult
 from src.app.wms_adapter.outbound_picking.wire import PickingTaskIssuedInvalidData
-from src.app.wms_integration.outbound_picking.models import PickingTask
+from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskType
 from src.app.wms_integration.outbound_picking.repositories import PickingTaskRepository, picking_task_repository
 from src.utils.timezone import timezone
 
@@ -103,11 +103,11 @@ class PickingTaskIssuedService:
                     timestamp_ms=_timestamp_ms(evidence.received_at),
                     reason_code="STATE_CONFLICT",
                 )
-            await self._tasks.add(
+            _ = await self._tasks.add(
                 db,
                 PickingTask(
                     task_id=envelope.data.task_id,
-                    task_type=envelope.data.task_type,
+                    task_type=cast("PickingTaskType", envelope.data.task_type),
                     queue_revision=envelope.data.queue_revision,
                     dispatch_sequence=envelope.data.dispatch_sequence,
                     not_before_ms=envelope.data.not_before,

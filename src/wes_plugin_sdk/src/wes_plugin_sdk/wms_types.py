@@ -35,7 +35,7 @@ def _position(value: DevicePosition, kind: str, trace: str | None = None) -> Non
         raise ValueError("position material_trace_id must match intent")
     if kind == "RACK_CELL":
         for name in ("rack_id", "rack_slot_code", "bin_code", "bin_cell_id"):
-            _required(getattr(value, name), name)
+            _ = _required(getattr(value, name), name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +49,7 @@ class SixInOne:
 
     def __post_init__(self) -> None:
         for name in ("LotCode", "DateCode", "Qty", "ProductNo", "MfrPN", "PONumber"):
-            _required(getattr(self, name), name)
+            _ = _required(getattr(self, name), name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +71,7 @@ class _MaterialIntent:
 
     def __post_init__(self) -> None:
         for name in ("material_execution_id", "fact_id", "operation_id", "material_trace_id"):
-            _required(getattr(self, name), name)
+            _ = _required(getattr(self, name), name)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -88,7 +88,7 @@ class AdmissionIntent(_MaterialIntent):
             raise TypeError("admission requires typed SixInOne and Measurements")
         if self.shape_result not in ("PASS", "FAIL"):
             raise ValueError("shape_result must be PASS or FAIL")
-        _required(self.workline_code, "workline_code")
+        _ = _required(self.workline_code, "workline_code")
         _position(self.source_position, "MEASUREMENT_POSITION", self.material_trace_id)
 
 
@@ -102,7 +102,7 @@ class TargetIntent(_MaterialIntent):
     def __post_init__(self) -> None:
         _MaterialIntent.__post_init__(self)
         for name in ("pkg_id", "inbound_admission_id", "current_rack_id"):
-            _required(getattr(self, name), name)
+            _ = _required(getattr(self, name), name)
         _position(self.source_position, "PIPELINE_OUTLET", self.material_trace_id)
 
 
@@ -119,7 +119,7 @@ class PlacementIntent(_MaterialIntent):
     def __post_init__(self) -> None:
         _MaterialIntent.__post_init__(self)
         for name in ("pkg_id", "inbound_admission_id", "target_assignment_id", "command_code"):
-            _required(getattr(self, name), name)
+            _ = _required(getattr(self, name), name)
         _position(self.target_position, "RACK_CELL", self.material_trace_id)
         _positive(self.placement_sequence, "placement_sequence")
         _positive(self.placed_at, "placed_at")
@@ -136,9 +136,9 @@ class NgPlacementIntent(_MaterialIntent):
     def __post_init__(self) -> None:
         _MaterialIntent.__post_init__(self)
         for name in ("ng_evidence_id", "reason_code", "business_context"):
-            _required(getattr(self, name), name)
+            _ = _required(getattr(self, name), name)
         if self.pkg_id is not None:
-            _required(self.pkg_id, "pkg_id")
+            _ = _required(self.pkg_id, "pkg_id")
         _position(self.ng_position, "NG_POSITION", self.material_trace_id)
 
 
@@ -148,7 +148,7 @@ class ReplacementPlanIntent(_MaterialIntent):
 
     def __post_init__(self) -> None:
         _MaterialIntent.__post_init__(self)
-        _required(self.current_rack_id, "current_rack_id")
+        _ = _required(self.current_rack_id, "current_rack_id")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -159,7 +159,7 @@ class PickingTaskPrepareIntent:
 
     def __post_init__(self) -> None:
         for name in ("operation_id", "task_id", "work_line_code"):
-            _required(getattr(self, name), name)
+            _ = _required(getattr(self, name), name)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -175,7 +175,7 @@ class ReturnRackArrivalReportIntent:
     def __post_init__(self) -> None:
         from .decisions import TransportRackPosition
 
-        _required(self.operation_id, "operation_id")
+        _ = _required(self.operation_id, "operation_id")
         for name in ("task_id", "rack_id", "transport_task_id"):
             value = _required(getattr(self, name), name)
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", value) is None:
@@ -199,7 +199,7 @@ class BinInboundBatchIntent:
     max_bin_count: int
 
     def __post_init__(self) -> None:
-        _required(self.operation_id, "operation_id")
+        _ = _required(self.operation_id, "operation_id")
         for name in ("task_id", "rack_id"):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
@@ -280,7 +280,7 @@ class BinReturnBatchIntent:
     return_candidates: tuple[BinReturnCandidate, ...]
 
     def __post_init__(self) -> None:
-        _required(self.operation_id, "operation_id")
+        _ = _required(self.operation_id, "operation_id")
         for name in ("workline_code", "rack_id"):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
@@ -331,7 +331,7 @@ class BinWorkPlanIntent:
     scanned_at: int
 
     def __post_init__(self) -> None:
-        _required(self.operation_id, "operation_id")
+        _ = _required(self.operation_id, "operation_id")
         for name in ("task_id", "bin_code"):
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(getattr(self, name), name)) is None:
                 raise ValueError(f"{name} must be a business identifier")
@@ -657,8 +657,8 @@ class AdmissionAccepted:
     inbound_admission_id: str
 
     def __post_init__(self) -> None:
-        _required(self.pkg_id, "pkg_id")
-        _required(self.inbound_admission_id, "inbound_admission_id")
+        _ = _required(self.pkg_id, "pkg_id")
+        _ = _required(self.inbound_admission_id, "inbound_admission_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -667,7 +667,7 @@ class MaterialRejected:
     ng_destination: DevicePosition
 
     def __post_init__(self) -> None:
-        _required(self.reason_code, "reason_code")
+        _ = _required(self.reason_code, "reason_code")
         _position(self.ng_destination, "NG_POSITION")
 
 
@@ -677,7 +677,7 @@ class OperationWait:
     retry_after_ms: int
 
     def __post_init__(self) -> None:
-        _required(self.reason_code, "reason_code")
+        _ = _required(self.reason_code, "reason_code")
         _positive(self.retry_after_ms, "retry_after_ms", 60000)
 
 
@@ -689,7 +689,7 @@ class TargetAssigned:
     expected_height_mm: str
 
     def __post_init__(self) -> None:
-        _required(self.target_assignment_id, "target_assignment_id")
+        _ = _required(self.target_assignment_id, "target_assignment_id")
         _position(self.target_position, "RACK_CELL")
         _positive(self.placement_sequence, "placement_sequence")
         _millimeters(self.expected_height_mm, "expected_height_mm")
@@ -700,7 +700,7 @@ class NoAvailableCell:
     reason_code: str
 
     def __post_init__(self) -> None:
-        _required(self.reason_code, "reason_code")
+        _ = _required(self.reason_code, "reason_code")
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,7 +713,7 @@ class RackMovePlan:
     def __post_init__(self) -> None:
         from .decisions import TransportRackPosition, TransportRackReference, TransportZonePosition
 
-        _required(self.rack_id, "rack_id")
+        _ = _required(self.rack_id, "rack_id")
         validate_opaque_face(self.target_face, "target_face")
         for position in (self.source, self.target):
             if type(position) not in (TransportRackPosition, TransportRackReference, TransportZonePosition):
@@ -729,7 +729,7 @@ class ReplacementReady:
     new_empty_rack: RackMovePlan
 
     def __post_init__(self) -> None:
-        _required(self.rack_replacement_id, "rack_replacement_id")
+        _ = _required(self.rack_replacement_id, "rack_replacement_id")
         if type(self.old_loaded_rack) is not RackMovePlan or type(self.new_empty_rack) is not RackMovePlan:
             raise TypeError("replacement requires typed RackMovePlan values")
 
@@ -757,7 +757,7 @@ class OperationRejected:
         if self.reason_code not in ("INVALID_ENVELOPE", "UNSUPPORTED_OPERATION", "INVALID_DATA"):
             raise ValueError("unapproved rejection reason")
         if self.field_path is not None:
-            _required(self.field_path, "field_path")
+            _ = _required(self.field_path, "field_path")
             if self.reason_code != "INVALID_DATA" or not self.field_path.startswith("/"):
                 raise ValueError("field_path requires INVALID_DATA and JSON Pointer")
 

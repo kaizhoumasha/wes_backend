@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from wes_plugin_sdk import DevicePosition, TransportRackPosition, TransportRackReference, TransportZonePosition
 from wes_plugin_sdk import wms_types as sdk
@@ -66,23 +66,27 @@ def decode_request(payload: object, *, fact_id: str) -> sdk.InboundWmsIntent:
 def decode_outcome(operation: str, payload: object, *, material_trace_id: str) -> sdk.WmsOperationOutcome:
     """读取已持久化响应；业务 Fact 永不携带原始 WMS JSON。"""
     code = payload.get("code") if isinstance(payload, dict) else None
-    status = {
-        "DECIDED": 200,
-        "RECORDED": 200,
-        "DUPLICATE": 200,
-        "REJECTED": 422,
-        "CONFLICT": 409,
-        "BUSY": 429,
-        "UNAVAILABLE": 503,
-    }.get(code)
+    status = (
+        {
+            "DECIDED": 200,
+            "RECORDED": 200,
+            "DUPLICATE": 200,
+            "REJECTED": 422,
+            "CONFLICT": 409,
+            "BUSY": 429,
+            "UNAVAILABLE": 503,
+        }.get(code)
+        if isinstance(code, str)
+        else None
+    )
     if status is None:
         raise ValueError("unsupported WMS response code")
     response = wire.parse_outbound_response(operation, status, payload)
     data = response.data
     if type(response) is wire.RejectedResponse:
-        result = sdk.OperationRejected(data.reason_code)
+        result = sdk.OperationRejected(response.data.reason_code)
     elif type(response) is wire.ConflictResponse:
-        result = sdk.OperationConflict(data.reason_code)
+        result = sdk.OperationConflict(response.data.reason_code)
     elif type(response) is wire.BusyResponse:
         result = sdk.OperationBusy(data.retry_after_ms)
     elif type(response) is wire.UnavailableResponse:
@@ -112,16 +116,42 @@ def decode_outcome(operation: str, payload: object, *, material_trace_id: str) -
         )
     else:
         raise ValueError("unsupported WMS result")
+    # parse_outbound_response 已按 operation 校验封闭结果联合。
     if operation == wire.ADMISSION_OPERATION:
-        return sdk.AdmissionOutcome(result)
+        return sdk.AdmissionOutcome(
+            cast(
+                "sdk.AdmissionAccepted | sdk.MaterialRejected | sdk.OperationWait | sdk.OperationRejected | sdk.OperationConflict | sdk.OperationBusy | sdk.OperationUnavailable",
+                result,
+            )
+        )
     if operation == wire.TARGET_OPERATION:
-        return sdk.TargetOutcome(result)
+        return sdk.TargetOutcome(
+            cast(
+                "sdk.TargetAssigned | sdk.NoAvailableCell | sdk.MaterialRejected | sdk.OperationWait | sdk.OperationRejected | sdk.OperationConflict | sdk.OperationBusy | sdk.OperationUnavailable",
+                result,
+            )
+        )
     if operation == wire.PLACEMENT_OPERATION:
-        return sdk.PlacementOutcome(result)
+        return sdk.PlacementOutcome(
+            cast(
+                "sdk.FactRecorded | sdk.OperationRejected | sdk.OperationConflict | sdk.OperationBusy | sdk.OperationUnavailable",
+                result,
+            )
+        )
     if operation == wire.NG_PLACEMENT_OPERATION:
-        return sdk.NgPlacementOutcome(result)
+        return sdk.NgPlacementOutcome(
+            cast(
+                "sdk.FactRecorded | sdk.OperationRejected | sdk.OperationConflict | sdk.OperationBusy | sdk.OperationUnavailable",
+                result,
+            )
+        )
     if operation == wire.REPLACEMENT_PLAN_OPERATION:
-        return sdk.ReplacementPlanOutcome(result)
+        return sdk.ReplacementPlanOutcome(
+            cast(
+                "sdk.ReplacementReady | sdk.OperationWait | sdk.OperationRejected | sdk.OperationConflict | sdk.OperationBusy | sdk.OperationUnavailable",
+                result,
+            )
+        )
     raise ValueError("unsupported inbound WMS operation")
 
 

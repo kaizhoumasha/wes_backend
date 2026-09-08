@@ -19,13 +19,13 @@ class PickingTaskRepository(BaseRepository[PickingTask]):
         super().__init__(PickingTask)
 
     async def lock_task_identity(self, db: AsyncSession, task_id: str) -> None:
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": f"picking-task:{task_id}"},
         )
 
     async def lock_dispatch_sequence(self, db: AsyncSession, dispatch_sequence: int) -> None:
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
             {"identity": f"picking-task-dispatch:{dispatch_sequence}"},
         )

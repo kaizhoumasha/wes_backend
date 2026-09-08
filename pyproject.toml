@@ -449,8 +449,10 @@ strict = [
 # 排除目录
 exclude = [
     ".git",
-    ".venv",
+    "**/.venv",
     ".claude",
+    ".superpowers",
+    "reports",
     "__pycache__",
     "*.egg-info",
     ".pytest_cache",
@@ -462,10 +464,15 @@ exclude = [
     "migrations",
     "node_modules",
     "scripts",
-    "tests",
+    "**/tests",
     "dist",
     "build",
 ]
 
 # 包含的额外路径
-extraPaths = ["src"]
+extraPaths = [
+    "src",
+    "src/wes_plugin_sdk/src",
+    "workline_plugins/manual_bin_processing/src",
+    "workline_plugins/rough_sorter/src",
+]

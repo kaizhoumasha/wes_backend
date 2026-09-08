@@ -66,7 +66,7 @@ class PickingTaskPrepareAdapter:
             )
         normalized = response.model_dump(mode="json", exclude_unset=True)
         if response.operation_id != operation_id:
-            observed_contract_error(
+            _ = observed_contract_error(
                 observation, "响应 operation_id 必须匹配请求", path=("operation_id",), expected_value=operation_id
             )
             return WmsDispatchResult(

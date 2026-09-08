@@ -8,7 +8,7 @@ import importlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -217,6 +217,7 @@ def test_transport_tasks_use_the_current_child_runtime_service_with_fixed_batch(
     runtime = SimpleNamespace(service=service)
     monkeypatch.setattr(module, "celery_async_runtime", SimpleNamespace(transport_runtime=runtime))
     monkeypatch.setattr(module, "run_async", lambda factory: asyncio.run(factory()))
+    monkeypatch.setattr(module, "task_queue_gateway", MagicMock())
 
     result = getattr(module, task_name).run(limit=100)
 
