@@ -73,6 +73,7 @@ class TransportDebugRunFaceGroupRequest(_StrictApiModel):
 
 
 class CreateTransportDebugRunRequest(_StrictApiModel):
+    workline_code: _TEXT
     rack_id: _TEXT
     face_groups: list[TransportDebugRunFaceGroupRequest] = Field(min_length=1)
 
@@ -107,7 +108,16 @@ class TransportDebugRunStepResponse(_StrictApiModel):
     updated_at: str
 
 
+class TransportDebugReturnedBinResponse(_StrictApiModel):
+    bin_code: str
+    rack_id: str
+    rack_face: _FACE
+    slot_id: str
+
+
 class TransportDebugRunResponse(_StrictApiModel):
+    workline_code: str
+    returned_bins: list[TransportDebugReturnedBinResponse]
     run_id: str
     status: TransportDebugRunStatus
     rack_id: str
@@ -166,6 +176,7 @@ def _stream_service(request: Request) -> EventStreamPort:
 
 def _domain_request(payload: CreateTransportDebugRunRequest) -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
+        workline_code=payload.workline_code,
         rack_id=payload.rack_id,
         face_groups=tuple(
             TransportDebugFaceGroup(

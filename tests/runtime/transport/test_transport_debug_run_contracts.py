@@ -40,6 +40,7 @@ def test_debug_run_contract_exposes_only_the_persisted_state_vocabulary() -> Non
 
 def test_debug_run_contract_preserves_face_strings_exactly() -> None:
     request = CreateTransportDebugRun(
+        workline_code="DEBUG-LINE",
         rack_id="510056",
         face_groups=(
             _group(" 90 ", _bin("A000001922", "510056A3F2C101")),
@@ -66,6 +67,7 @@ def test_debug_run_contract_rejects_incomplete_operator_input(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id=rack_id,
             face_groups=(_group("90", _bin(bin_code, slot_id)),),
         )
@@ -75,6 +77,7 @@ def test_debug_run_contract_rejects_incomplete_operator_input(
 def test_debug_run_contract_rejects_blank_faces(face: str) -> None:
     with pytest.raises(ValueError, match="面值"):
         CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id="510056",
             face_groups=(_group(face, _bin("A000001922", "510056A3F2C101")),),
         )
@@ -85,12 +88,13 @@ def test_debug_run_contract_limits_each_face_to_one_through_four_bins(size: int)
     bins = tuple(_bin(f"BIN-{index}", f"SLOT-{index}") for index in range(size))
 
     with pytest.raises(ValueError, match="1～4"):
-        CreateTransportDebugRun(rack_id="510056", face_groups=(_group("90", *bins),))
+        CreateTransportDebugRun(workline_code="DEBUG-LINE", rack_id="510056", face_groups=(_group("90", *bins),))
 
 
 def test_debug_run_contract_rejects_duplicate_raw_face_strings() -> None:
     with pytest.raises(ValueError, match="重复面值"):
         CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id="510056",
             face_groups=(
                 _group("90", _bin("BIN-1", "SLOT-1")),
@@ -102,6 +106,7 @@ def test_debug_run_contract_rejects_duplicate_raw_face_strings() -> None:
 def test_debug_run_contract_rejects_a_bin_selected_on_multiple_faces() -> None:
     with pytest.raises(ValueError, match="重复料箱"):
         CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id="510056",
             face_groups=(
                 _group("90", _bin("BIN-1", "SLOT-1")),

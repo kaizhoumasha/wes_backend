@@ -29,6 +29,8 @@ from src.register import register_exception, register_routers
 
 def _snapshot(*, run_id: str = "debug-run-1", face: str = " 90 ") -> TransportDebugRunSnapshot:
     return TransportDebugRunSnapshot(
+        workline_code="DEBUG-LINE",
+        returned_bins=(),
         run_id=run_id,
         status=TransportDebugRunStatus.RUNNING,
         rack_id="510056",
@@ -98,6 +100,7 @@ def _permission(route: APIRoute) -> list[str]:
 
 def _payload(*, face: str = " 90 ") -> dict[str, object]:
     return {
+        "workline_code": "DEBUG-LINE",
         "rack_id": "510056",
         "face_groups": [
             {
@@ -135,6 +138,8 @@ async def test_create_debug_run_preserves_face_and_passes_authenticated_actor() 
     assert response.status_code == 202
     assert response.json()["code"] == "1004"
     assert response.json()["data"]["face_groups"][0]["face"] == " 90 "
+    assert response.json()["data"]["workline_code"] == "DEBUG-LINE"
+    assert response.json()["data"]["returned_bins"] == []
     assert response.json()["data"]["steps"] == []
     request = service.create_run.await_args.args[0]
     assert request.face_groups[0].face == " 90 "
@@ -195,7 +200,15 @@ async def test_debug_run_api_maps_domain_failures_and_missing_runtime() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("payload", [_payload(face="   "), {**_payload(), "unexpected": True}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _payload(face="   "),
+        {**_payload(), "unexpected": True},
+        {key: value for key, value in _payload().items() if key != "workline_code"},
+        {**_payload(), "workline_code": "   "},
+    ],
+)
 async def test_debug_run_create_rejects_blank_face_and_unknown_fields_before_service(
     payload: dict[str, object],
 ) -> None:

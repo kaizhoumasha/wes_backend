@@ -4,6 +4,7 @@ from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import BigInteger
@@ -170,6 +171,7 @@ class _Transport:
 
 def _request(*, face: str = " 90 ", slot_id: str = "510056A3F2C101") -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
+        workline_code="DEBUG-LINE",
         rack_id="510056",
         face_groups=(
             TransportDebugFaceGroup(
@@ -191,6 +193,7 @@ def _service() -> tuple[TransportDebugRunService, _Repository, _Sessions, _Publi
         clock=lambda: NOW,
         event_publisher=publisher,
     )
+    service._worklines = SimpleNamespace(get_by_line_code=AsyncMock(return_value=SimpleNamespace(id=1, is_active=True)))
     return service, repository, sessions, publisher
 
 
@@ -261,6 +264,7 @@ async def test_get_run_returns_complete_step_history() -> None:
 async def test_create_run_accepts_operator_input_without_resource_mounts() -> None:
     service, _, _, _ = _service()
     input_request = CreateTransportDebugRun(
+        workline_code="DEBUG-LINE",
         rack_id="FIELD-RACK-07",
         face_groups=(
             TransportDebugFaceGroup(
@@ -442,3 +446,11 @@ def _transport_task(status: str) -> TransportTask:
         created_at=NOW,
         updated_at=NOW,
     )
+
+
+async def test_create_rejects_unknown_workline_before_transport_is_created() -> None:
+    service, repository, _, _ = _service()
+    service._worklines.get_by_line_code.return_value = None
+    with pytest.raises(TransportDebugRunContractError, match="工作线"):
+        await service.create_run(_request(), actor_id=7)
+    assert repository.runs == {}

@@ -14,12 +14,20 @@ from typing import Any, Literal
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from starlette.staticfiles import StaticFiles
 from wes_plugin_sdk.validation import is_opaque_face
 from wes_plugin_sdk.validation import is_persistable_text as _nonblank
 
 from src.app.transport.callback_json import canonical_callback_json
+from src.app.wms_adapter.outbound_picking.return_batch_wire import (
+    BIN_RETURN_BATCH_OPERATION,
+    BinReturnBatchRequest,
+    Identifier,
+    ReturnSource,
+    parse_bin_return_batch_request,
+    parse_bin_return_batch_response,
+)
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.core.uuid7 import is_uuid7
 from tests.mock.wms_transport_mock_openapi import (
@@ -33,6 +41,7 @@ from tests.mock.wms_transport_mock_openapi import (
     transport_submit_openapi_extra,
 )
 
+DECISION_PATH = "/api/v1/wes/decisions"
 TRANSPORT_PATH = "/api/v1/wes/transport-requests"
 WES_TRANSPORT_EVENT_URL = os.getenv("WES_TRANSPORT_EVENT_URL", "http://localhost:8001/api/v1/wms/events")
 BODY_LIMIT = 256 * 1024
@@ -52,6 +61,14 @@ class RackFaceConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rack_faces: dict[str, str]
+
+
+class BinHandoffArrival(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    bin_code: Identifier
+    source: ReturnSource
+    target: ReturnSource
 
 
 class TransportSubmissionSnapshot(BaseModel):
@@ -89,6 +106,10 @@ class TransportSubmissionStore:
         self._resource_tasks: dict[tuple[str, str], str] = {}
         self._rack_faces: dict[str, str] = {}
         self._next_mode: SubmitMode = "NORMAL"
+        self._bin_positions: dict[str, dict[str, Any]] = {}
+        self._bin_origin_slots: dict[str, str] = {}
+        self._known_slots: set[tuple[str, str, str]] = set()
+        self._return_reservations: dict[str, dict[str, Any]] = {}
 
     def reset(self) -> None:
         with self._lock:
@@ -101,6 +122,10 @@ class TransportSubmissionStore:
             self._resource_tasks.clear()
             self._rack_faces.clear()
             self._next_mode = "NORMAL"
+            self._bin_positions.clear()
+            self._bin_origin_slots.clear()
+            self._known_slots.clear()
+            self._return_reservations.clear()
 
     def configure_rack_faces(self, rack_faces: dict[str, str]) -> None:
         with self._lock:
@@ -135,7 +160,12 @@ class TransportSubmissionStore:
                 conflict_key = (operation, operation_id, digest)
                 response = self._conflicts.get(conflict_key)
                 if response is None:
-                    response = _ack(operation_id, "CONFLICT", transport_task_id)
+                    response = _ack(
+                        operation_id,
+                        "CONFLICT",
+                        transport_task_id,
+                        reason_code="IDEMPOTENCY_CONFLICT" if operation == BIN_RETURN_BATCH_OPERATION else None,
+                    )
                     self._conflicts[conflict_key] = response
                 return 409, deepcopy(response)
             if record.status_code == 202:
@@ -182,9 +212,99 @@ class TransportSubmissionStore:
                 snapshot,
             )
             if status_code == 202 and transport_task_id is not None:
+                for move in request.get("data", {}).get("moves", []):
+                    source = move["source"]
+                    self._bin_positions.setdefault(move["container_id"], deepcopy(source))
+                    if source["kind"] == "RACK_BIN_SLOT":
+                        self._known_slots.add((source["rack_id"], source["rack_face"], source["slot_id"]))
+                        self._bin_origin_slots[move["container_id"]] = source["slot_id"]
                 self._task_operations[transport_task_id] = operation_id
                 for resource in resources or set():
                     self._resource_tasks[resource] = transport_task_id
+
+    def _record_bin_position(self, bin_code: str, position: dict[str, Any]) -> None:
+        previous = self._bin_positions.get(bin_code)
+        self._bin_positions[bin_code] = deepcopy(position)
+        reserved = self._return_reservations.get(bin_code)
+        if reserved is not None and previous == reserved and reserved != position:
+            self._return_reservations.pop(bin_code)
+
+    def apply_handoff_arrival(self, arrival: BinHandoffArrival) -> bool:
+        with self._lock:
+            source = {"kind": "HANDOFF_POSITION", "location_code": arrival.source.location_code}
+            target = {"kind": "HANDOFF_POSITION", "location_code": arrival.target.location_code}
+            if ("BIN", arrival.bin_code) in self._resource_tasks:
+                return False
+            current = self._bin_positions.get(arrival.bin_code)
+            if current == target:
+                return True
+            if current != source:
+                return False
+            self._record_bin_position(arrival.bin_code, target)
+            return True
+
+    def decide_return_batch(self, envelope: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        with self._lock:
+            operation, operation_id = envelope["operation"], envelope["operation_id"]
+            digest = _message_digest(envelope)
+            existing = self.existing(operation, operation_id, digest, None)
+            if existing is not None:
+                return existing
+            parsed = None
+            try:
+                parsed = parse_bin_return_batch_request(envelope)
+            except ValidationError:
+                status = 422
+                reason = "INVALID_DATA" if operation == BIN_RETURN_BATCH_OPERATION else "UNSUPPORTED_OPERATION"
+                response = _ack(operation_id, "REJECTED", None, reason_code=reason)
+            else:
+                status = 200
+                response = _ack(operation_id, "DECIDED", None)
+                response["data"] = self._allocate_return_slots(parsed)
+            parse_bin_return_batch_response(status, response, request=parsed)
+            self.store(
+                operation=operation,
+                operation_id=operation_id,
+                transport_task_id=None,
+                request=envelope,
+                digest=digest,
+                status_code=status,
+                response=response,
+            )
+            return status, response
+
+    def _allocate_return_slots(self, request: BinReturnBatchRequest) -> dict[str, Any]:
+        # 只分配从已接受搬运 source 学到、且模拟回调已证明空出的槽位。
+        data = request.data
+        occupied = {
+            (p["rack_id"], p["rack_face"], p["slot_id"])
+            for p in [*self._bin_positions.values(), *self._return_reservations.values()]
+            if p["kind"] == "RACK_BIN_SLOT"
+        }
+        slots = sorted(
+            slot for rack, face, slot in self._known_slots - occupied if (rack, face) == (data.rack_id, data.rack_face)
+        )
+        moves = []
+        for candidate in data.return_candidates:
+            source = {"kind": "HANDOFF_POSITION", "location_code": candidate.source.location_code}
+            if (
+                not slots
+                or candidate.bin_code in self._return_reservations
+                or self._bin_positions.get(candidate.bin_code) != source
+            ):
+                break
+            origin = self._bin_origin_slots.get(candidate.bin_code)
+            next_candidate = data.return_candidates[candidate.sequence_no % len(data.return_candidates)]
+            preferred = self._bin_origin_slots.get(next_candidate.bin_code)
+            slot = preferred if preferred in slots else next((value for value in slots if value != origin), slots[0])
+            slots.remove(slot)
+            target = {"type": "RACK_BIN_SLOT", "rack_id": data.rack_id, "rack_face": data.rack_face, "slot_id": slot}
+            moves.append({"sequence_no": candidate.sequence_no, "bin_code": candidate.bin_code, "target": target})
+            self._return_reservations[candidate.bin_code] = {
+                "kind": "RACK_BIN_SLOT",
+                **{k: v for k, v in target.items() if k != "type"},
+            }
+        return {"result": "READY", "moves": moves} if moves else {"result": "NO_BATCH", "retry_after_ms": 1000}
 
     def _frozen_data(self, transport_task_id: str) -> dict[str, Any] | None:
         operation_id = self._task_operations.get(transport_task_id)
@@ -219,6 +339,8 @@ class TransportSubmissionStore:
             if "final_position" in existing and existing["final_position"] != final_position:
                 return
             member_facts[container_id] = {**existing, "final_position": deepcopy(final_position)}
+            if transport_task_id not in self._terminal_tasks:
+                self._record_bin_position(container_id, final_position)
 
     def apply_result(self, data: dict[str, object]) -> None:
         with self._lock:
@@ -249,6 +371,9 @@ class TransportSubmissionStore:
             self._task_outcome_revisions[transport_task_id] = outcome_revision
             if _result_has_unknown_position(data):
                 return
+            for bin_code, fact in member_facts.items():
+                if "final_position" in fact:
+                    self._record_bin_position(bin_code, fact["final_position"])
             if data.get("kind") in {"RACK_MOVE", "RACK_ROTATE"}:
                 rack_id = data["rack_id"]
                 arrival_face = data["arrival_face"]
@@ -263,7 +388,11 @@ class TransportSubmissionStore:
 
     def snapshots(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [deepcopy(record.snapshot) for record in self._records.values()]
+            return [
+                deepcopy(record.snapshot)
+                for (operation, _), record in self._records.items()
+                if operation != BIN_RETURN_BATCH_OPERATION
+            ]
 
 
 class FixedTransportBodyLimitMiddleware:
@@ -308,6 +437,7 @@ app.mount(
     name="swagger-ui",
 )
 app.add_middleware(FixedTransportBodyLimitMiddleware, submit_path=TRANSPORT_PATH)
+app.add_middleware(FixedTransportBodyLimitMiddleware, submit_path=DECISION_PATH)
 transport_submission_store = TransportSubmissionStore()
 
 
@@ -765,6 +895,31 @@ async def submit_transport(request: Request) -> Response:
         code="RECEIVED",
         resources=resources,
     )
+
+
+@app.post(DECISION_PATH, tags=[WMS_TRANSPORT_CONTRACT_TAG])
+async def decide_return_batch(request: Request) -> Response:
+    if (
+        not is_json_utf8_media_type(request.headers.get("content-type", ""))
+        or request.headers.get("content-encoding", "identity").casefold() != "identity"
+    ):
+        return Response(status_code=400)
+    try:
+        envelope = loads_transport_json((await request.body()).decode("utf-8"))
+    except (UnicodeDecodeError, StrictJsonError):
+        return Response(status_code=400)
+    if _valid_identity(envelope) is None:
+        return Response(status_code=400)
+    status, response = transport_submission_store.decide_return_batch(envelope)
+    return JSONResponse(status_code=status, content=response)
+
+
+@app.post("/debug/bin-handoff-arrivals", tags=[MOCK_DEBUG_TAG])
+async def debug_bin_handoff_arrival(request: BinHandoffArrival) -> Response:
+    """显式注入本机输送线到位事实；不由运输 ACK、延时或 WMS Decision 推定。"""
+    if not transport_submission_store.apply_handoff_arrival(request):
+        return JSONResponse(status_code=409, content={"detail": "Source position mismatch or transport still active"})
+    return JSONResponse(content={"recorded": True})
 
 
 @app.post("/debug/reset", tags=[MOCK_DEBUG_TAG])

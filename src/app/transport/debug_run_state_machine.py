@@ -65,7 +65,17 @@ def build_debug_transport_request(
         infeed = HandoffPosition(_text(configuration, "infeed_position"))
         outfeed = HandoffPosition(_text(configuration, "outfeed_position"))
         moves: list[BinMove] = []
-        for selection in _bins(group):
+        selections = _bins(group)
+        if phase is TransportDebugRunPhase.BINS_TO_RACK:
+            batch = configuration.get("return_batches", {}).get(str(step.ordinal), {})
+            selections = batch.get("moves")
+            if not isinstance(selections, list) or not selections:
+                raise TransportContractError("debug return allocation is missing")
+        for selection in selections:
+            if phase is TransportDebugRunPhase.BINS_TO_RACK and (
+                selection.get("rack_id") != rack_id or selection.get("rack_face") != face
+            ):
+                raise TransportContractError("debug return allocation rack or face mismatch")
             rack_slot = RackBinSlot(rack_id, face, _text(selection, "slot_id"))
             if phase is TransportDebugRunPhase.BINS_TO_INFEED:
                 moves.append(BinMove(_text(selection, "bin_code"), rack_slot, infeed))
@@ -111,6 +121,9 @@ def next_debug_step(
     if phase is TransportDebugRunPhase.WAIT_SCAN12:
         return TransportDebugRunPhase.BINS_TO_RACK.value, group_index
     if phase is TransportDebugRunPhase.BINS_TO_RACK:
+        returned = {item["bin_code"] for item in run.configuration_json.get("returned_bins", [])}
+        if any(item["bin_code"] not in returned for item in _bins(_group(run.configuration_json, group_index))):
+            return TransportDebugRunPhase.BINS_TO_RACK.value, group_index
         next_group = group_index + 1
         if next_group < len(_face_groups(run.configuration_json)):
             return TransportDebugRunPhase.ROTATE_TO_NEXT_FACE.value, next_group
