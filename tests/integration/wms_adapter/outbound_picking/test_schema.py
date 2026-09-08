@@ -8,7 +8,7 @@ import pytest
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "93deacda8c9c"
+HEAD_REVISION = "bebf575cca2b"
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
         ("not_before_ms", "bigint", "YES"),
         ("issued_at_ms", "bigint", "NO"),
         ("issued_evidence_id", "bigint", "NO"),
-        ("workline_id", "integer", "YES"),
+        ("workline_id", "bigint", "YES"),
         ("last_applied_plan_revision", "bigint", "NO"),
         ("target_rack_id", "character varying", "YES"),
         ("target_rack_face", "character varying", "YES"),

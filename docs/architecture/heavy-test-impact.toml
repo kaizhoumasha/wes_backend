@@ -649,6 +649,7 @@ reviewed_content_sha256 = "3541109d4e3d40bb41391979674083c1d60edaf2e3450b4affcba
 [[mapping]]
 source_glob = "src/app/device/{models/device.py,repositories/device_repository.py,v1/device.py}"
 heavy_tests = [
+    "tests/integration/device_command/test_device_topology_bigint_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
@@ -2558,6 +2559,13 @@ heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
 ]
 
+
+[[mapping]]
+source_glob = "migrations/versions/20260909_0319_bebf575cca2b_widen_device_topology_foreign_keys_to_.py"
+heavy_tests = [
+    "tests/integration/device_command/test_device_topology_bigint_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "tests/integration/transport/debug_return_support.py"

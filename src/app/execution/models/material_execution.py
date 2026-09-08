@@ -110,7 +110,7 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
 
     execution_code: str = Field(min_length=1, max_length=120)
     material_trace_id: str = Field(min_length=1, max_length=160, index=True)
-    workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True)
+    workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True, sa_type=SQL_COMPAT_BIGINT)
     admission_received_at: datetime | None = Field(default=None)
     admission_evidence_id: int | None = Field(
         default=None,

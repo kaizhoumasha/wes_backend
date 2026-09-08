@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, BigInteger, Column
 from sqlmodel import Field, Index, Relationship
 
 from src.app.device.endpoint import validate_device_endpoint_base_url
@@ -22,7 +22,7 @@ class DeviceBase(BaseMixin):
 
     device_code: str = Field(min_length=1, max_length=100, index=True, description="独立命令资源编码")
     device_name: str = Field(min_length=1, max_length=100, description="设备名称")
-    work_line_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
+    work_line_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id", sa_type=BigInteger)
     description: str | None = Field(default=None, max_length=500)
     is_active: bool = Field(default=True, description="是否允许进入新运行代际")
     sort_order: int = Field(default=0)
@@ -30,6 +30,7 @@ class DeviceBase(BaseMixin):
         default=None,
         foreign_key="wes_biz.devices.id",
         ondelete="SET NULL",
+        sa_type=BigInteger,
     )
     diagnostic_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     endpoint_base_url: DeviceEndpointBaseUrl | None = Field(default=None, max_length=255)

@@ -94,7 +94,7 @@ class TransportTask(BaseMixin, table=True):
     submit_request_body_digest: str = Field(max_length=64)
     status: str = Field(default="PENDING", max_length=20)
     reason_code: str | None = Field(default=None, max_length=120)
-    authority_workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id")
+    authority_workline_id: int | None = Field(default=None, foreign_key="wes_biz.work_lines.id", sa_type=BigInteger)
 
     submit_attempt_count: int = Field(default=0)
     next_submit_at: datetime | None = Field(default=None)
