@@ -9,6 +9,7 @@ from src.app.wms_adapter.outbound_picking.plan_delta_wire import PlanRackSlot
 from src.app.wms_adapter.outbound_picking.response_wire import ConflictResponse, RejectedResponse, UnavailableResponse
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
 from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, StrictWireModel
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 SOURCE_EMPTY_OPERATION = "outbound.source.empty_decide@v1"
 
@@ -56,18 +57,24 @@ _RESPONSE_ADAPTERS = {
 }
 
 
-def parse_source_empty_request(value: object) -> SourceEmptyRequest:
-    return SourceEmptyRequest.model_validate(value)
+def parse_source_empty_request(value: object, *, observation: WmsCallObservation | None = None) -> SourceEmptyRequest:
+    return validate_observed(SourceEmptyRequest, value, observation=observation, side="request")
 
 
 def parse_source_empty_response(
-    status_code: int, value: object, *, request: SourceEmptyRequest | None = None
+    status_code: int,
+    value: object,
+    *,
+    request: SourceEmptyRequest | None = None,
+    observation: WmsCallObservation | None = None,
 ) -> SourceEmptyResponse:
     code = value.get("code") if isinstance(value, dict) else None
     adapter = _RESPONSE_ADAPTERS.get((status_code, code)) if isinstance(code, str) else None
     if adapter is None:
-        raise ValueError("HTTP status 与 source empty response code 不匹配")
-    response = adapter.validate_python(value)
+        raise observed_contract_error(observation, "HTTP status 与 source empty response code 不匹配")
+    response = validate_observed(adapter, value, observation=observation, side="response")
     if request is not None and response.operation_id != request.operation_id:
-        raise ValueError("响应 operation_id 必须匹配请求")
+        raise observed_contract_error(
+            observation, "响应 operation_id 必须匹配请求", path=("operation_id",), expected_value=request.operation_id
+        )
     return response

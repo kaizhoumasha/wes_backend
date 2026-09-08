@@ -161,6 +161,27 @@ async def test_event_stream_subscription_does_not_discard_first_live_message() -
 
 
 @pytest.mark.asyncio
+async def test_subscription_failure_after_ready_ends_stream_instead_of_heartbeat() -> None:
+    from src.app.sys.services.event_stream_service import EventStreamService
+
+    pubsub = SimpleNamespace(
+        subscribe=AsyncMock(),
+        get_message=AsyncMock(side_effect=[{"type": "subscribe"}, ConnectionError("redis disconnected")]),
+        unsubscribe=AsyncMock(),
+        aclose=AsyncMock(),
+    )
+    with patch(
+        "src.app.sys.services.event_stream_service.get_redis", return_value=SimpleNamespace(pubsub=lambda: pubsub)
+    ):
+        subscription = EventStreamService().subscribe("generic:test", timeout_seconds=0.01)
+        assert await anext(subscription) is None
+        with pytest.raises(StopAsyncIteration):
+            await anext(subscription)
+    pubsub.unsubscribe.assert_awaited_once_with("generic:test")
+    pubsub.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_event_stream_subscription_never_reports_ready_without_subscribe_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

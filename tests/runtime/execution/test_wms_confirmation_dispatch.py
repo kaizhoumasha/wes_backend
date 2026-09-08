@@ -175,6 +175,37 @@ class _Adapter:
         return self.result
 
 
+async def test_diagnostics_observation_finishes_before_original_result_transaction() -> None:
+    from src.app.wms_adapter.dispatch import WmsDispatchResult
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+    confirmation = _picking_confirmation(1, now)
+    repository = _ConfirmationRepository([confirmation])
+    adapter = _Adapter(WmsDispatchResult(WmsDispatchCode.NOT_SENT))
+    observation = WmsCallObservation(direction="WES_TO_WMS")
+    diagnostics = SimpleNamespace(start=AsyncMock(return_value=observation), finish=AsyncMock())
+    states = []
+
+    async def finish(observed):
+        assert observed is observation
+        states.append(confirmation.status)
+
+    diagnostics.finish.side_effect = finish
+    service = WmsConfirmationService(
+        repository=repository,
+        session_factory=_Sessions(),
+        adapter=adapter,
+        picking_task_owner=_PickingTaskOwner(),
+        diagnostics=diagnostics,
+    )
+    assert await service.dispatch_batch(now=now) == 1
+    assert adapter.calls[0]["observation"] is observation
+    assert states == [WmsConfirmationStatus.DISPATCHING]
+    assert confirmation.status == WmsConfirmationStatus.PENDING
+    assert confirmation.next_attempt_at == now + timedelta(seconds=1)
+
+
 class _PickingTaskOwner:
     def __init__(self, valid: bool = True) -> None:
         self.valid = valid

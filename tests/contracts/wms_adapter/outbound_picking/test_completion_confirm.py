@@ -102,7 +102,11 @@ async def test_closed_results_end_obligation_without_technical_retry(data, kind,
     assert result.normalized_response == body
     assert type(decode_outcome(body).result) is getattr(sdk, kind)
     client.post.assert_awaited_once_with(
-        "/api/v1/wes/decisions", json=payload, max_request_body_bytes=262144, max_response_body_bytes=262144
+        "/api/v1/wes/decisions",
+        json=payload,
+        max_request_body_bytes=262144,
+        max_response_body_bytes=262144,
+        observation=None,
     )
 
 

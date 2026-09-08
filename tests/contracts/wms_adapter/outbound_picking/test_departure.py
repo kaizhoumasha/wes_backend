@@ -156,7 +156,11 @@ async def test_decisions_end_current_obligation_without_transport_or_automatic_r
     else:
         assert outcome.result.retry_after_ms == 60000
     client.post.assert_awaited_once_with(
-        "/api/v1/wes/decisions", json=request(), max_request_body_bytes=256 * 1024, max_response_body_bytes=256 * 1024
+        "/api/v1/wes/decisions",
+        json=request(),
+        max_request_body_bytes=256 * 1024,
+        max_response_body_bytes=256 * 1024,
+        observation=None,
     )
 
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0.0] - 2026-09-08
+
+### Added
+
+- 记录 WES 观察到的 WMS 双向请求/响应与实际合同校验结果，支持有界脱敏近期记录、字段差异查询和实时 SSE 观察。
+- 诊断查询、详情与实时流沿用现有只读 RBAC 权限；诊断失败不改变原 ACK、业务事务、发送次数、重试或物理执行事实。
+
+### Verification
+
+- 聚焦回归 1524 passed；最终 HEAVY 282 passed、零跳过，覆盖真实 PostgreSQL、Redis 与 Celery worker；近期记录四组边界负载查询 p95 均低于 100 ms。
+- 无数据库迁移；本次为后端交付，前端正式合同冻结、页面接入、浏览器与完整 SSE 到达延迟验收继续实施。未部署、未进行现场验收。
+
 ## [0.36.0.0] - 2026-09-07
 
 ### Added

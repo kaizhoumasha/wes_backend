@@ -125,6 +125,7 @@ async def test_work_plan_decisions_complete_obligation_without_automatic_followu
         json=payload,
         max_request_body_bytes=256 * 1024,
         max_response_body_bytes=256 * 1024,
+        observation=None,
     )
 
 

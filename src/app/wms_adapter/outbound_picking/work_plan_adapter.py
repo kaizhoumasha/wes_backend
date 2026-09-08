@@ -11,10 +11,12 @@ from src.app.wms_adapter.outbound_picking.work_plan_wire import (
     parse_bin_work_plan_response,
 )
 from src.app.wms_adapter.wire_common import DECISION_PATH
+from src.app.wms_diagnostics.observation import capture
 from src.utils.canonical_json import canonical_json_digest
 
 if TYPE_CHECKING:
     from src.app.wms_adapter.client import WmsClient
+    from src.app.wms_diagnostics.observation import WmsCallObservation
 
 
 class BinWorkPlanAdapter:
@@ -22,10 +24,16 @@ class BinWorkPlanAdapter:
         self._client = client
 
     async def dispatch(
-        self, *, operation: str, operation_id: str, request_payload: dict[str, Any], request_digest: str
+        self,
+        *,
+        operation: str,
+        operation_id: str,
+        request_payload: dict[str, Any],
+        request_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> WmsDispatchResult:
         try:
-            request = parse_bin_work_plan_request(request_payload)
+            request = parse_bin_work_plan_request(request_payload, observation=observation)
         except (ValueError, TypeError):
             return WmsDispatchResult(WmsDispatchCode.RECONCILING)
         if (
@@ -33,12 +41,17 @@ class BinWorkPlanAdapter:
             or request.operation_id != operation_id
             or canonical_json_digest(request_payload) != request_digest
         ):
+            capture(observation, error_code="FROZEN_REQUEST_MISMATCH")
             return WmsDispatchResult(WmsDispatchCode.RECONCILING)
-        access = await receive_json(self._client, DECISION_PATH, request.model_dump(mode="json"))
+        access = await receive_json(
+            self._client, DECISION_PATH, request.model_dump(mode="json"), observation=observation
+        )
         if isinstance(access, WmsDispatchResult):
             return access
         try:
-            response = parse_bin_work_plan_response(access.status_code or 0, access.json_body, request=request)
+            response = parse_bin_work_plan_response(
+                access.status_code or 0, access.json_body, request=request, observation=observation
+            )
         except (ValueError, TypeError):
             return WmsDispatchResult(
                 WmsDispatchCode.RECONCILING,

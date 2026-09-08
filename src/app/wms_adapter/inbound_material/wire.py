@@ -20,6 +20,7 @@ from src.app.wms_adapter.wire_common import (
 from src.app.wms_adapter.wire_common import (
     StrictWireModel as _StrictModel,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 ADMISSION_OPERATION = "inbound.material.admission_decide@v1"
 TARGET_OPERATION = "inbound.material.target_decide@v1"
@@ -384,47 +385,49 @@ class RecoveryEvent(_StrictModel):
     data: RecoveryData
 
 
-def parse_outbound_request(value: object) -> OutboundRequest:
+def parse_outbound_request(value: object, *, observation: WmsCallObservation | None = None) -> OutboundRequest:
     if not isinstance(value, dict):
         raise TypeError("WMS operation request 必须是 JSON object")
     envelope = cast("dict[str, Any]", value)
     operation = envelope.get("operation")
     if operation == ADMISSION_OPERATION:
-        return AdmissionRequest.model_validate(envelope)
+        return validate_observed(AdmissionRequest, envelope, observation=observation, side="request")
     if operation == TARGET_OPERATION:
-        return TargetRequest.model_validate(envelope)
+        return validate_observed(TargetRequest, envelope, observation=observation, side="request")
     if operation == PLACEMENT_OPERATION:
-        return PlacementRequest.model_validate(envelope)
+        return validate_observed(PlacementRequest, envelope, observation=observation, side="request")
     if operation == NG_PLACEMENT_OPERATION:
-        return NgPlacementRequest.model_validate(envelope)
+        return validate_observed(NgPlacementRequest, envelope, observation=observation, side="request")
     if operation == REPLACEMENT_PLAN_OPERATION:
-        return ReplacementPlanRequest.model_validate(envelope)
+        return validate_observed(ReplacementPlanRequest, envelope, observation=observation, side="request")
     raise ValueError("不支持的 WMS operation")
 
 
-def parse_outbound_response(operation: str, http_status: int, value: object) -> OutboundResponse:
+def parse_outbound_response(
+    operation: str, http_status: int, value: object, *, observation: WmsCallObservation | None = None
+) -> OutboundResponse:
     if isinstance(value, dict):
         envelope = cast("dict[str, Any]", value)
         code = envelope.get("code")
         if (http_status, code) == (422, "REJECTED"):
-            return RejectedResponse.model_validate(envelope)
+            return validate_observed(RejectedResponse, envelope, observation=observation, side="response")
         if (http_status, code) == (409, "CONFLICT"):
-            return ConflictResponse.model_validate(envelope)
+            return validate_observed(ConflictResponse, envelope, observation=observation, side="response")
         if (http_status, code) == (429, "BUSY"):
-            return BusyResponse.model_validate(envelope)
+            return validate_observed(BusyResponse, envelope, observation=observation, side="response")
         if (http_status, code) == (503, "UNAVAILABLE"):
-            return UnavailableResponse.model_validate(envelope)
+            return validate_observed(UnavailableResponse, envelope, observation=observation, side="response")
     if http_status != 200:
-        raise ValueError("HTTP status 与 WMS 响应 code 不匹配")
+        raise observed_contract_error(observation, "HTTP status 与 WMS 响应 code 不匹配")
     if operation == ADMISSION_OPERATION:
-        return AdmissionDecisionResponse.model_validate(value)
+        return validate_observed(AdmissionDecisionResponse, value, observation=observation, side="response")
     if operation == TARGET_OPERATION:
-        return TargetDecisionResponse.model_validate(value)
+        return validate_observed(TargetDecisionResponse, value, observation=observation, side="response")
     if operation == REPLACEMENT_PLAN_OPERATION:
-        return ReplacementDecisionResponse.model_validate(value)
+        return validate_observed(ReplacementDecisionResponse, value, observation=observation, side="response")
     if operation in FACT_OPERATIONS:
-        return FactResponse.model_validate(value)
-    raise ValueError("不支持的 WMS operation")
+        return validate_observed(FactResponse, value, observation=observation, side="response")
+    raise observed_contract_error(observation, "不支持的 WMS operation")
 
 
 def parse_recovery_event(value: object) -> RecoveryEvent:

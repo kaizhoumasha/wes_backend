@@ -16,6 +16,31 @@ from src.core.outbound_http import OutboundHttpDeliveryState, OutboundHttpResult
 OPERATION_ID = "019f3400-0e17-7d2a-b944-3cf7953804da"
 
 
+async def test_prepare_observation_uses_actual_response_branch_and_validation_error() -> None:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+
+    transport = _Transport(
+        _response(
+            {"operation_id": OPERATION_ID, "code": "PREPARE_ACCEPTED", "timestamp": "bad", "data": {}}, status=202
+        )
+    )
+    request = _request()
+    observation = WmsCallObservation(direction="WES_TO_WMS")
+    result = await PickingTaskPrepareAdapter(WmsClient(transport)).dispatch(
+        operation=PICKING_TASK_PREPARE_OPERATION,
+        operation_id=OPERATION_ID,
+        request_payload=request,
+        request_digest=_digest(request),
+        observation=observation,
+    )
+    assert result.code is WmsDispatchCode.RECONCILING
+    assert observation.request_validated is True
+    assert observation.response_validated is False
+    assert observation.response_errors[0]["loc"] == ("timestamp",)
+    assert observation.response_body is not None
+    assert len(transport.requests) == 1
+
+
 class _Transport:
     def __init__(self, response: OutboundHttpResult) -> None:
         self.response = response
@@ -105,6 +130,8 @@ async def test_prepare_adapter_maps_retry_and_determinate_failures(status: int, 
 
 @pytest.mark.asyncio
 async def test_prepare_adapter_fails_closed_for_request_or_response_identity_mismatch() -> None:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+
     transport = _Transport(
         _response(
             {
@@ -120,16 +147,19 @@ async def test_prepare_adapter_fails_closed_for_request_or_response_identity_mis
     payload = _request()
 
     response_mismatch = await _dispatch(transport)
+    observation = WmsCallObservation(direction="WES_TO_WMS")
     digest_mismatch = await adapter.dispatch(
         operation=PICKING_TASK_PREPARE_OPERATION,
         operation_id=OPERATION_ID,
         request_payload=payload,
         request_digest="0" * 64,
+        observation=observation,
     )
 
     assert response_mismatch.code is WmsDispatchCode.RECONCILING
     assert digest_mismatch.code is WmsDispatchCode.RECONCILING
     assert len(transport.requests) == 1
+    assert observation.error_code == "FROZEN_REQUEST_MISMATCH"
 
 
 @pytest.mark.asyncio

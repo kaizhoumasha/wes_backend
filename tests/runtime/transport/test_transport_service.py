@@ -68,6 +68,7 @@ class FakeProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         envelope = json.loads(request_body)
         self.calls.append(transport_task_id)
@@ -117,6 +118,7 @@ class ResultBeforeAckProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         assert self.service is not None
         message = {
@@ -157,6 +159,7 @@ class DelayedNotSentProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         self.started.set()
         await self.release.wait()

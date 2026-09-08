@@ -82,7 +82,11 @@ async def test_decided_closes_original_obligation_without_material_followup(data
     assert result.retry_after_ms is None
     assert result.normalized_response["data"] == data
     client.post.assert_awaited_once_with(
-        "/api/v1/wes/decisions", json=request(), max_request_body_bytes=256 * 1024, max_response_body_bytes=256 * 1024
+        "/api/v1/wes/decisions",
+        json=request(),
+        max_request_body_bytes=256 * 1024,
+        max_response_body_bytes=256 * 1024,
+        observation=None,
     )
 
 

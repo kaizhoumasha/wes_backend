@@ -11,8 +11,10 @@ from wes_plugin_sdk.validation import is_persistable_text as _is_persistable_tex
 from src.app.transport.callback_json import canonical_callback_json
 from src.app.transport.contracts import TransportContractError
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_transport_json
+from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_REQUEST_SCHEMA
 from src.app.wms_adapter.transport_wire import UnsupportedTransportOperation, validate_callback_envelope
 from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES, is_wire_operation, is_wire_operation_id
+from src.app.wms_diagnostics.observation import WmsCallObservation, capture
 from src.utils.timezone import timezone
 
 logger = logging.getLogger(__name__)
@@ -40,7 +42,8 @@ class TransportEventHandler:
     def __init__(self, recorder: _EvidenceRecorder) -> None:
         self._recorder = recorder
 
-    async def handle(self, raw_body: bytes) -> TransportEventResponse:
+    async def handle(self, raw_body: bytes, *, observation: WmsCallObservation | None = None) -> TransportEventResponse:
+        capture(observation, request_schema=TRANSPORT_EVENT_REQUEST_SCHEMA, contract_source=__name__)
         if len(raw_body) > MAX_WMS_EVENT_BODY_BYTES:
             return TransportEventResponse(413, {})
         raw_envelope, parsing_error = _decode_raw_envelope(raw_body)
@@ -54,10 +57,13 @@ class TransportEventHandler:
         rejection_reason_code: str | None = None
         try:
             envelope = validate_callback_envelope(raw_envelope)
+            capture(observation, request_validated=True, business_reference=envelope["data"].get("transport_task_id"))
         except UnsupportedTransportOperation:
             rejection_reason_code = "UNSUPPORTED_OPERATION"
         except TransportContractError:
             rejection_reason_code = "INVALID_EVIDENCE"
+        if rejection_reason_code is not None:
+            capture(observation, request_errors=({"loc": (), "type": rejection_reason_code},))
         message = _rejection_message(raw_envelope) if rejection_reason_code is not None else raw_envelope
         try:
             ack = await self._recorder.record_callback(

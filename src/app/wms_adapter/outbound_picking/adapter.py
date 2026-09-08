@@ -13,10 +13,12 @@ from src.app.wms_adapter.outbound_picking.wire import (
     parse_picking_task_prepare_response,
 )
 from src.app.wms_adapter.wire_common import DECISION_PATH
+from src.app.wms_diagnostics.observation import capture, observed_contract_error
 from src.utils.canonical_json import canonical_json_digest
 
 if TYPE_CHECKING:
     from src.app.wms_adapter.client import WmsClient
+    from src.app.wms_diagnostics.observation import WmsCallObservation
 
 
 class PickingTaskPrepareAdapter:
@@ -32,9 +34,10 @@ class PickingTaskPrepareAdapter:
         operation_id: str,
         request_payload: dict[str, Any],
         request_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> WmsDispatchResult:
         try:
-            request = parse_picking_task_prepare_request(request_payload)
+            request = parse_picking_task_prepare_request(request_payload, observation=observation)
         except (ValidationError, ValueError, TypeError):
             return WmsDispatchResult(WmsDispatchCode.RECONCILING)
         if (
@@ -43,14 +46,19 @@ class PickingTaskPrepareAdapter:
             or request.operation_id != operation_id
             or canonical_json_digest(request_payload) != request_digest
         ):
+            capture(observation, error_code="FROZEN_REQUEST_MISMATCH")
             return WmsDispatchResult(WmsDispatchCode.RECONCILING)
 
-        access = await receive_json(self._client, DECISION_PATH, request.model_dump(mode="json"))
+        access = await receive_json(
+            self._client, DECISION_PATH, request.model_dump(mode="json"), observation=observation
+        )
         if isinstance(access, WmsDispatchResult):
             return access
         received_json = dict(access.json_body) if isinstance(access.json_body, dict) else None
         try:
-            response = parse_picking_task_prepare_response(access.status_code or 0, access.json_body)
+            response = parse_picking_task_prepare_response(
+                access.status_code or 0, access.json_body, observation=observation
+            )
         except (ValidationError, ValueError, TypeError):
             return WmsDispatchResult(
                 WmsDispatchCode.RECONCILING,
@@ -58,6 +66,9 @@ class PickingTaskPrepareAdapter:
             )
         normalized = response.model_dump(mode="json", exclude_unset=True)
         if response.operation_id != operation_id:
+            observed_contract_error(
+                observation, "响应 operation_id 必须匹配请求", path=("operation_id",), expected_value=operation_id
+            )
             return WmsDispatchResult(
                 WmsDispatchCode.RECONCILING,
                 normalized_response=normalized,

@@ -26,6 +26,7 @@ class _UnusedProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation=None,
     ) -> object:
         raise AssertionError("callback receipt test must not submit")
 

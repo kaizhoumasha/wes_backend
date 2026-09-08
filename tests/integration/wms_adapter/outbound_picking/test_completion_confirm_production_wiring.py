@@ -1,8 +1,10 @@
 """零插件保存完成确认结果，不自动重发、完成任务或释放物理资源。"""
 
+import os
 from datetime import timedelta
 
 import pytest
+from redis.asyncio import Redis
 from sqlalchemy import func, select
 from wes_plugin_sdk import wms_operations
 
@@ -16,6 +18,9 @@ from src.app.execution.models import (
 from src.app.execution.services import WmsConfirmationService
 from src.app.transport.models import TransportTask
 from src.app.wms_adapter.outbound_picking.completion_confirm_typed import encode_request
+from src.app.wms_diagnostics.config import DiagnosticsConfig
+from src.app.wms_diagnostics.contracts import ExchangeQuery
+from src.app.wms_diagnostics.repository import DiagnosticsRepository
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus
 from src.utils.timezone import timezone
 from tests.integration.wms_adapter.outbound_picking.confirmation_support import (
@@ -88,3 +93,14 @@ async def test_completion_decision_persists_without_automatic_reissue_or_device_
             assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
         assert worker.result(worker.send(dispatch)) == 0
         assert server.requests == [{"path": "/api/v1/wes/decisions", "envelope": request}]
+        # 真实 worker 的技术观察与原可靠义务相互独立，但必须对应同一次请求。
+        async with Redis.from_url(os.environ["INTEGRATION_REDIS_URL"], decode_responses=True) as redis:
+            repository = DiagnosticsRepository(redis, DiagnosticsConfig())
+            page = await repository.list(ExchangeQuery(operation_id=operation_id))
+            assert len(page.items) == 1
+            detail = await repository.get(page.items[0].exchange_id)
+            assert detail is not None
+            assert detail.operation_id == operation_id
+            assert detail.result == data["result"]
+            assert detail.request.source == "WIRE"
+            assert detail.contract_status == "PASS"

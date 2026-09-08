@@ -381,6 +381,23 @@ def test_worker_init_freezes_actual_queues_when_declaration_matches(monkeypatch)
     assert app_module._frozen_worker_queues == frozenset({"default", "celery", "device-command"})
 
 
+def test_worker_init_rejects_invalid_diagnostic_budget_before_async_resources(monkeypatch) -> None:
+    from celery.exceptions import WorkerTerminate
+
+    from src.app.wms_diagnostics.config import diagnostics_config
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+    monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
+    monkeypatch.setenv("WMS_DIAGNOSTICS_BUDGET_MS", "0")
+    diagnostics_config.cache_clear()
+    try:
+        with pytest.raises(WorkerTerminate, match="diagnostics configuration rejected"):
+            app_module.on_worker_init(sender=_worker_sender("default", "celery", "device-command"))
+    finally:
+        diagnostics_config.cache_clear()
+
+
 def test_worker_init_rejects_environment_queue_drift(monkeypatch) -> None:
     from celery.exceptions import WorkerTerminate
 

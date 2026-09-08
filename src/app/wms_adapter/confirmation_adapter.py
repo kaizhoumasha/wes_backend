@@ -32,6 +32,7 @@ from src.app.wms_adapter.outbound_picking.work_plan_wire import BIN_WORK_PLAN_OP
 
 if TYPE_CHECKING:
     from src.app.wms_adapter.client import WmsClient
+    from src.app.wms_diagnostics.observation import WmsCallObservation
 
 
 class WmsConfirmationAdapter:
@@ -57,6 +58,7 @@ class WmsConfirmationAdapter:
         operation_id: str,
         request_payload: dict[str, Any],
         request_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> WmsDispatchResult:
         adapter: (
             BinInboundBatchAdapter
@@ -75,6 +77,7 @@ class WmsConfirmationAdapter:
                 operation_id=operation_id,
                 request_payload=request_payload,
                 request_digest=request_digest,
+                observation=observation,
             )
         if operation == MATERIAL_MOVEMENT_REPORT_OPERATION:
             adapter = self._movement_report
@@ -96,15 +99,16 @@ class WmsConfirmationAdapter:
             adapter = self._prepare
         else:
             try:
-                request = parse_outbound_request(request_payload)
+                request = parse_outbound_request(request_payload, observation=observation)
             except (ValueError, TypeError):
                 return WmsDispatchResult(WmsDispatchCode.RECONCILING)
             if request.operation != operation or request.operation_id != operation_id:
                 return WmsDispatchResult(WmsDispatchCode.RECONCILING)
-            return await self._inbound.send(request=request, request_digest=request_digest)
+            return await self._inbound.send(request=request, request_digest=request_digest, observation=observation)
         return await adapter.dispatch(
             operation=operation,
             operation_id=operation_id,
             request_payload=request_payload,
             request_digest=request_digest,
+            observation=observation,
         )

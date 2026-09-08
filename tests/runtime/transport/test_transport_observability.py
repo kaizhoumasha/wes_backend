@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -56,6 +57,7 @@ class _Provider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         self.started.set()
         await self.release.wait()
@@ -118,6 +120,28 @@ def _event(caplog: pytest.LogCaptureFixture, name: str) -> logging.LogRecord:
     assert "payload" not in record.__dict__
     assert "claim_token" not in record.__dict__
     return record
+
+
+async def test_diagnostics_failure_does_not_change_transport_submit(db_engine: object) -> None:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+
+    diagnostics = AsyncMock()
+    observation = WmsCallObservation(direction="WES_TO_WMS")
+    diagnostics.start.return_value = observation
+    diagnostics.finish.side_effect = ConnectionError("diagnostics offline")
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    provider = AsyncMock()
+    service = TransportService(sessions, TransportRepository(), provider, diagnostics=diagnostics)
+    task_id = await _create_task(service, "diagnostics", "rack-diagnostics")
+    provider.submit.return_value = TransportSubmitResult(TransportSubmitCode.RECEIVED, task_id)
+    assert await service.submit_pending_tasks(1) == 1
+    assert provider.submit.call_args.kwargs["observation"] is observation
+    diagnostics.finish.assert_awaited_once_with(observation)
+    assert observation.result == "RECEIVED"
+    async with sessions() as db:
+        task = await TransportRepository().get_task(db, task_id)
+        assert task is not None
+        assert task.status == "ACCEPTED"
 
 
 @pytest.mark.asyncio

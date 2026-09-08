@@ -69,6 +69,7 @@ class _RejectedProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         return TransportSubmitResult(
             TransportSubmitCode.REJECTED,

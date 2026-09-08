@@ -25,11 +25,13 @@ def register_logger() -> None:
 @asynccontextmanager
 async def register_init(_app: FastAPI) -> AsyncIterator[None]:
     """注册初始化"""
+    from src.app.wms_diagnostics.config import diagnostics_config
     from src.core.task_queue_gateway import task_queue_gateway
     from src.database import db as db_module
     from src.database.db import close_db, init_db
     from src.database.redis_client import close_redis, init_redis
 
+    diagnostics_config()
     transport_runtime = None
     device_command_runtime = None
     deployment_runtime = None
@@ -214,6 +216,7 @@ def register_routers(app: FastAPI) -> None:
     from src.app.sys import router_v1 as sys_router
     from src.app.transport.v1 import router as transport_router
     from src.app.wms_adapter import router_v1 as wms_adapter_router
+    from src.app.wms_diagnostics.v1 import router as wms_diagnostics_router
     from src.app.wms_integration.outbound_picking.v1.plan_correction import router as picking_plan_router
     from src.app.workline import router_v1 as workline_router
 
@@ -227,6 +230,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(api_auth_router, prefix=settings.API_PATH)
     app.include_router(callback_router, prefix=settings.API_PATH)
     app.include_router(wms_adapter_router, prefix=settings.API_PATH)
+    app.include_router(wms_diagnostics_router, prefix=settings.API_PATH)
     app.include_router(picking_plan_router, prefix=settings.API_PATH)
     app.include_router(transport_router, prefix=settings.API_PATH)
 

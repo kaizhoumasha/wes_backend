@@ -18,6 +18,7 @@ from src.app.wms_adapter.wire_common import (
     PositiveMilliseconds,
     StrictWireModel,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 PICKING_TASK_ISSUED_OPERATION = "outbound.picking_task.issued@v1"
 PICKING_TASK_PREPARE_OPERATION = "outbound.picking_task.prepare@v1"
@@ -62,10 +63,10 @@ class PickingTaskIssuedInvalidData:
 
 
 def parse_picking_task_issued_receipt(
-    value: dict[str, Any],
+    value: dict[str, Any], *, observation: WmsCallObservation | None = None
 ) -> PickingTaskIssuedEvent | PickingTaskIssuedInvalidData:
     try:
-        return parse_picking_task_issued_event(value)
+        return parse_picking_task_issued_event(value, observation=observation)
     except ValueError as error:
         return PickingTaskIssuedInvalidData(value, error)
 
@@ -129,20 +130,26 @@ _PREPARE_RESPONSE_ADAPTERS = {
 }
 
 
-def parse_picking_task_issued_event(value: object) -> PickingTaskIssuedEvent:
-    return PickingTaskIssuedEvent.model_validate(value)
+def parse_picking_task_issued_event(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> PickingTaskIssuedEvent:
+    return validate_observed(PickingTaskIssuedEvent, value, observation=observation, side="request")
 
 
-def parse_picking_task_prepare_request(value: object) -> PickingTaskPrepareRequest:
-    return PickingTaskPrepareRequest.model_validate(value)
+def parse_picking_task_prepare_request(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> PickingTaskPrepareRequest:
+    return validate_observed(PickingTaskPrepareRequest, value, observation=observation, side="request")
 
 
-def parse_picking_task_prepare_response(status_code: int, value: object) -> PickingTaskPrepareResponse:
+def parse_picking_task_prepare_response(
+    status_code: int, value: object, *, observation: WmsCallObservation | None = None
+) -> PickingTaskPrepareResponse:
     code = value.get("code") if isinstance(value, dict) else None
     adapter = _PREPARE_RESPONSE_ADAPTERS.get((status_code, code)) if isinstance(code, str) else None
     if adapter is None:
-        raise ValueError("HTTP status 与 prepare response code 不匹配")
-    return adapter.validate_python(value)
+        raise observed_contract_error(observation, "HTTP status 与 prepare response code 不匹配")
+    return validate_observed(adapter, value, observation=observation, side="response")
 
 
 __all__ = [

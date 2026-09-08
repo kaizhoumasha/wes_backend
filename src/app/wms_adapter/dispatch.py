@@ -7,6 +7,7 @@ from typing import Any
 from src.app.wms_adapter.client import OutboundHttpClosedError, WmsAccessResult, WmsClient, WmsRequestBodyTooLargeError
 from src.app.wms_adapter.strict_json import valid_json_response_headers
 from src.app.wms_adapter.wire_common import MAX_WMS_EVENT_BODY_BYTES
+from src.app.wms_diagnostics.observation import WmsCallObservation, capture
 from src.core.outbound_http import OutboundHttpDeliveryState
 
 
@@ -26,27 +27,38 @@ class WmsDispatchResult:
     retry_after_ms: int | None = None
 
 
-async def receive_json(client: WmsClient, path: str, payload: dict[str, Any]) -> WmsAccessResult | WmsDispatchResult:
+async def receive_json(
+    client: WmsClient, path: str, payload: dict[str, Any], *, observation: WmsCallObservation | None = None
+) -> WmsAccessResult | WmsDispatchResult:
     try:
         access = await client.post(
             path,
             json=payload,
+            observation=observation,
             max_request_body_bytes=MAX_WMS_EVENT_BODY_BYTES,
             max_response_body_bytes=MAX_WMS_EVENT_BODY_BYTES,
         )
     except WmsRequestBodyTooLargeError:
+        capture(observation, error_code="REQUEST_BODY_TOO_LARGE")
         return WmsDispatchResult(WmsDispatchCode.RECONCILING)
     except OutboundHttpClosedError:
+        capture(observation, error_code="TRANSPORT_CLOSED")
         return WmsDispatchResult(WmsDispatchCode.NOT_SENT)
     if access.delivery_state is OutboundHttpDeliveryState.NOT_SENT:
+        capture(observation, error_code=access.failure_kind.value if access.failure_kind else "NOT_SENT")
         return WmsDispatchResult(WmsDispatchCode.NOT_SENT)
     if access.delivery_state is not OutboundHttpDeliveryState.RESPONSE_RECEIVED:
+        capture(observation, error_code=access.failure_kind.value if access.failure_kind else "DELIVERY_UNKNOWN")
         return WmsDispatchResult(WmsDispatchCode.DELIVERY_UNKNOWN)
     if access.failure_kind is not None or not valid_json_response_headers(access.response_headers):
+        capture(
+            observation, error_code=access.failure_kind.value if access.failure_kind else "INVALID_RESPONSE_HEADERS"
+        )
         return WmsDispatchResult(
             WmsDispatchCode.RECONCILING,
             normalized_response=dict(access.json_body) if isinstance(access.json_body, dict) else None,
         )
     if access.json_failure is not None or not access.body_present or not isinstance(access.json_body, dict):
+        capture(observation, error_code=access.json_failure or "INVALID_RESPONSE_BODY")
         return WmsDispatchResult(WmsDispatchCode.RECONCILING)
     return access
