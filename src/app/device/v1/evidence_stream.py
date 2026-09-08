@@ -1,4 +1,4 @@
-"""超级用户专用的 device ingress live-only SSE。"""
+"""超级用户专用的 device ingress 历史与 live-only SSE。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,22 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, StringConstraints, ValidationError
 from starlette.responses import StreamingResponse
 
-from src.app.device.contracts import DeviceEvidenceUpdate, DeviceIngressAttempt, DeviceIngressKind
+from src.app.device.contracts import (
+    DeviceEvidenceUpdate,
+    DeviceIngressAttempt,
+    DeviceIngressHistoryPage,
+    DeviceIngressKind,
+)
+from src.app.device.services.device_ingress_history_service import device_ingress_history_service
 from src.app.execution.models.inbound_evidence import InboundEvidenceApplyStatus  # noqa: TC001
 from src.app.sys.services.event_stream_service import (
     DEVICE_EVIDENCE_STREAM_CHANNEL,
     event_stream_service,
 )
+from src.core.exceptions import ValidationException
 from src.core.logger import logger
 from src.core.rbac import require_superuser
+from src.core.response import ResponseSchemaModel, response_builder
 
 router = APIRouter(tags=["Device ingress diagnostics"])
 
@@ -62,6 +70,36 @@ def _matches_filters(
         and (command_code is None or getattr(event, "command_code", None) == command_code)
         and (apply_status is None or getattr(event, "apply_status", None) == apply_status.value)
     )
+
+
+@router.get(
+    "/evidences/history",
+    summary="查询设备 callback 近期历史与当前 Evidence 状态",
+    dependencies=[Depends(require_superuser)],
+    response_model=ResponseSchemaModel[DeviceIngressHistoryPage],
+)
+async def evidence_history(
+    request: Request,
+    device_code: _DEVICE_TOKEN | None = Query(default=None),
+    kind: DeviceIngressKind | None = Query(default=None),
+    command_code: _COMMAND_TOKEN | None = Query(default=None),
+    apply_status: InboundEvidenceApplyStatus | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=1024),
+) -> ResponseSchemaModel[DeviceIngressHistoryPage]:
+    service = getattr(request.app.state, "device_ingress_history_service", device_ingress_history_service)
+    try:
+        page = await service.list_history(
+            device_code=device_code,
+            kind=kind,
+            command_code=command_code,
+            apply_status=apply_status,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as error:
+        raise ValidationException(str(error), code="2004", status_code=400) from error
+    return cast("ResponseSchemaModel[DeviceIngressHistoryPage]", response_builder.success(data=page))
 
 
 @router.get(

@@ -332,7 +332,7 @@ class DeviceIngressAttempt(BaseModel):
 
 
 class DeviceEvidenceUpdate(BaseModel):
-    """device evidence 异步应用后的最终诊断快照。"""
+    """device evidence 当前诊断快照；未处理的历史记录没有 processed_at。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -343,7 +343,21 @@ class DeviceEvidenceUpdate(BaseModel):
     command_code: str | None = None
     event_type: str | None = None
     apply_status: str
-    processed_at: str
+    processed_at: str | None
+
+
+class DeviceIngressHistoryItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    row_key: str
+    recorded_at: str
+    attempt: DeviceIngressAttempt | None
+    latest_update: DeviceEvidenceUpdate | None
+
+
+class DeviceIngressHistoryPage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    items: list[DeviceIngressHistoryItem]
+    next_cursor: str | None
 
 
 __all__ = [
@@ -355,6 +369,8 @@ __all__ = [
     "DeviceEvidenceUpdate",
     "DeviceIngressAttempt",
     "DeviceIngressDisposition",
+    "DeviceIngressHistoryItem",
+    "DeviceIngressHistoryPage",
     "DeviceIngressKind",
     "EcsCallbackErrorDetail",
     "EcsCommandResult",

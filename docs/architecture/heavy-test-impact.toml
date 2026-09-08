@@ -517,6 +517,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/device/contracts.py"
 heavy_tests = [
+    "tests/integration/device_command/test_ingress_history_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
@@ -567,6 +568,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/device/repositories/__init__.py"
 heavy_tests = [
+    "tests/integration/device_command/test_ingress_history_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
@@ -591,6 +593,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/device/services/{__init__.py,device_command_admission.py,device_dispatch_service.py}"
 heavy_tests = [
+    "tests/integration/device_command/test_ingress_history_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
 ]
@@ -618,6 +621,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/device/v1/{__init__.py,command.py,ecs_callback.py,evidence_stream.py}"
 heavy_tests = [
+    "tests/integration/device_command/test_ingress_history_postgresql.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/test_authorization_bootstrap_postgresql.py",
 ]
@@ -2570,3 +2574,6 @@ heavy_tests = ["tests/integration/wms_adapter/test_transport_callback_receipts.p
 [[mapping]]
 source_glob = "src/core/transaction_wakeup.py"
 heavy_tests = ["tests/e2e/test_active_dispatch_wakeup.py"]
+[[mapping]]
+source_glob = "src/app/device/{repositories/ingress_history_repository.py,services/device_ingress_history_service.py}"
+heavy_tests = ["tests/integration/device_command/test_ingress_history_postgresql.py"]

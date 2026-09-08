@@ -167,6 +167,9 @@ class WesCallbackServer:
         app.state.device_evidence_service = DeviceEvidenceService(
             session_factory=session_factory, task_queue_gateway=task_queue_gateway
         )
+        from src.app.device.services.device_ingress_history_service import DeviceIngressHistoryService
+
+        app.state.device_ingress_history_service = DeviceIngressHistoryService(session_context=session_factory)
         app.include_router(ecs_callback_router, prefix="/api/v1/callback")
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
