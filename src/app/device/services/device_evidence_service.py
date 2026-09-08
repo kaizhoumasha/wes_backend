@@ -44,6 +44,7 @@ from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL
 from src.app.workline.repositories.workline_repository import WorkLineRepository
+from src.core.transaction_wakeup import defer_wakeup
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
 
@@ -279,6 +280,8 @@ class DeviceEvidenceService:
                 receipt = _receipt(accepted.evidence, duplicate=accepted.duplicate, trace_id=result.trace_id)
                 if rejection is not None:
                     rejection.receipt = receipt
+            if rejection is None and self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_device_evidence)
         if rejection is not None:
             raise rejection
         if receipt is None:
@@ -346,6 +349,8 @@ class DeviceEvidenceService:
                 receipt = _receipt(accepted.evidence, duplicate=accepted.duplicate, trace_id=event.trace_id)
                 if rejection is not None:
                     rejection.receipt = receipt
+            if rejection is None and self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_device_evidence)
         if rejection is not None:
             raise rejection
         if receipt is None:
@@ -447,7 +452,7 @@ class DeviceEvidenceService:
                 apply_status=InboundEvidenceApplyStatus.PENDING,
             )
 
-    async def process_one(self) -> bool:
+    async def process_one(self) -> bool:  # noqa: PLR0912 - closed evidence kinds and post-commit wake
         """异步完成设备 evidence 的基础验证，业务消费由 FactProcessor 承接。"""
 
         now = timezone.now_for_db()
@@ -534,6 +539,8 @@ class DeviceEvidenceService:
                     command.claim_expires_at = None
                     await self._processing.mark_applied(db, evidence, processed_at=now)
                     wake_execution = evidence.material_execution_id is not None
+            if self._task_queue is not None and evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
+                defer_wakeup(db, self._task_queue.enqueue_transport_debug)
             update = _evidence_update(evidence, processed_at=now, command_code=debug_command_code)
         if wake_device_commands:
             self._enqueue_device_commands()

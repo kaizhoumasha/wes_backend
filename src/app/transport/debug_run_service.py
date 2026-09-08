@@ -48,6 +48,7 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import (
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.repositories import WorkLineRepository
 from src.core.exceptions import NotFoundException
+from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
 
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
 
     from src.app.transport.debug_run_repository import TransportDebugRunRepository
     from src.app.transport.service import TransportService
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,7 @@ class TransportDebugRunService:
         *,
         clock: Callable[[], datetime] = timezone.now_for_db,
         event_publisher: TransportDebugRunEventPublisher = event_stream_service,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._worklines = WorkLineRepository()
         self._confirmations = WmsConfirmationRepository()
@@ -162,6 +165,7 @@ class TransportDebugRunService:
         self._transport = transport_service
         self._clock = clock
         self._event_publisher = event_publisher
+        self._task_queue = task_queue_gateway
 
     async def create_run(
         self,
@@ -408,6 +412,13 @@ class TransportDebugRunService:
                 run.claim_token = None
                 run.claim_until = None
                 if changed:
+                    if (
+                        self._task_queue is not None
+                        and run.status == TransportDebugRunStatus.RUNNING.value
+                        and step is not None
+                        and run.current_step_ordinal != step.ordinal
+                    ):
+                        defer_wakeup(db, self._task_queue.enqueue_transport_debug)
                     event_payload = _event_payload(run)
         except _TransportTaskIntegrityConflict:
             return await self._record_claimed_attention(
@@ -524,6 +535,8 @@ class TransportDebugRunService:
             except ValueError as error:
                 changed = self._set_attention(run, step, "WMS_RETURN_OWNER_INVALID", now, str(error))
                 return "CHANGED" if changed else "WAIT"
+            if self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_wms_confirmations)
             batch = {"operation_id": operation_id}
         else:
             confirmation = await self._confirmations.get_by_identity_for_update(

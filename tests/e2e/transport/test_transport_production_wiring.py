@@ -241,7 +241,14 @@ async def test_real_broker_route_worker_http_and_postgresql_converge_without_a_b
             terminal = await client.get(f"/api/v1/transport/tasks/{task_id}")
         assert terminal.json()["data"]["status"] == "SUCCEEDED"
         assert terminal.json()["data"]["latest_evidence"]["status"] == "APPLIED"
-        assert worker.result(worker.send(PUBLISH_TASK, kwargs={"limit": 100})) == 1
+        # Evidence worker 主动唤醒发布；无需等下一次 Beat 或手动派发。
+        async with asyncio.timeout(10):
+            while True:
+                async with integration_session_factory() as db:
+                    published = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == task_id))
+                if published is not None and published.published_outcome_version == published.outcome_version > 0:
+                    break
+                await asyncio.sleep(0.05)
         assert worker.result(worker.send(PUBLISH_TASK, kwargs={"limit": 100})) == 0
         assert len(server.requests) == 1
         assert server.requests[0]["path"] == "/api/WES/TransportRequests"

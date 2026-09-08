@@ -188,6 +188,8 @@ class CeleryAsyncRuntime:
         )
         progress["transport_runtime"] = transport_runtime
 
+        from src.core.task_queue_gateway import task_queue_gateway
+
         fulfillment_only = _configured_worker_queues() == frozenset({"wms-fulfillment"})
         if not fulfillment_only:
             from src.app.device.composition import (
@@ -196,8 +198,6 @@ class CeleryAsyncRuntime:
             )
 
             device_config = resolve_device_command_runtime_config()
-            from src.core.task_queue_gateway import task_queue_gateway
-
             progress["device_command_runtime"] = build_device_command_runtime(
                 session_factory=db_module.AsyncSessionLocal,
                 timeout_seconds=device_config.timeout_seconds,
@@ -210,7 +210,9 @@ class CeleryAsyncRuntime:
         device_command_service = (
             progress["device_command_runtime"].command_service
             if progress["device_command_runtime"] is not None
-            else DeviceCommandService(session_factory=db_module.AsyncSessionLocal)
+            else DeviceCommandService(
+                session_factory=db_module.AsyncSessionLocal, task_queue_gateway=task_queue_gateway
+            )
         )
         progress["execution_runtime"] = build_deployment_runtime(
             enabled_plugin_keys=settings.ENABLED_WORKLINE_PLUGINS,

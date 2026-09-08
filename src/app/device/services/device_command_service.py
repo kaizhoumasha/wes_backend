@@ -42,6 +42,7 @@ from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.conf import settings
+from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from src.app.workline.activation import WorkLineDeviceBinding
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 
 class DeviceNotFoundError(LookupError):
@@ -202,8 +204,10 @@ class DeviceCommandService:
         event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
         audit_service: AuditServicePort | None = None,
         clock: Callable[[], datetime] = timezone.now_for_db,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         self._sessions = session_factory
+        self._task_queue = task_queue_gateway
         self._commands = command_repository or device_command_repository
         self._worklines = workline_repository or WorkLineRepository()
         self._evidences = evidence_repository or inbound_evidence_repository
@@ -236,7 +240,7 @@ class DeviceCommandService:
             return await self.create_command_in_session(db, request)
 
     async def create_command_in_session(self, db: object, request: DeviceCommandRequest) -> DeviceCommandHandle:
-        """在调用方事务中创建命令；只持久化，不触发设备派发。"""
+        """在调用方事务中创建命令；只持久化，并登记事务提交后的派发唤醒。"""
 
         validated = DeviceCommandRequestData.model_validate(asdict(request))
         if validated.deadline_at.tzinfo is not None:
@@ -296,6 +300,8 @@ class DeviceCommandService:
             created_at=now,
         )
         persisted = await self._commands.add(db, command)
+        if self._task_queue is not None:
+            defer_wakeup(db, self._task_queue.enqueue_device_commands)
         return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
 
     async def create_manual_debug_command(
@@ -409,6 +415,8 @@ class DeviceCommandService:
                 created_by=created_by,
             )
             persisted = await self._commands.add(db, command)
+            if self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_device_commands)
         return DeviceCommandHandle(command_code=persisted.command_code, status=CommandStatus(persisted.status))
 
     async def create_event_debug_command_in_session(

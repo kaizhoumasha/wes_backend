@@ -259,12 +259,20 @@ class FakeTaskQueue:
         dispatch_error: Exception | None = None,
         calls: list[str] | None = None,
     ) -> None:
+        self.device_evidence_wakes = 0
+        self.transport_debug_wakes = 0
         self.execution_wakes = 0
         self.device_command_wakes = 0
         self.safety_drain_wakes = 0
         self.error = error
         self.dispatch_error = dispatch_error
         self.calls = calls
+
+    def enqueue_device_evidence(self) -> None:
+        self.device_evidence_wakes += 1
+
+    def enqueue_transport_debug(self) -> None:
+        self.transport_debug_wakes += 1
 
     def enqueue_execution_facts(self) -> None:
         self.execution_wakes += 1
@@ -1264,3 +1272,23 @@ async def test_device_evidence_worker_does_not_claim_wms_evidence() -> None:
 
     assert await service.process_one() is False
     assert repository.evidences["WMS-1"].apply_status == "PENDING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [False, True])
+async def test_device_ingress_wakes_processor_after_real_transaction_commit(result):
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from src.core import transaction_wakeup
+
+    service, _ = _service(_command())
+    service._sessions = async_sessionmaker()
+    service._task_queue = FakeTaskQueue()
+    if result:
+        await service.accept_result(_result())
+    else:
+        await service.accept_event(_event(is_debug=True))
+    await asyncio.gather(*tuple(transaction_wakeup._pending))
+    assert service._task_queue.device_evidence_wakes == 1

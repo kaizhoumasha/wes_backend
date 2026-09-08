@@ -410,7 +410,13 @@ async def test_transport_step_without_task_identity_fails_closed() -> None:
     assert repository.run.attention_code == "TRANSPORT_TASK_MISSING"
 
 
-async def test_succeeded_transport_creates_one_next_intent_with_evidence_boundary() -> None:
+async def test_succeeded_transport_creates_one_next_intent_with_evidence_boundary(monkeypatch) -> None:
+    from unittest.mock import Mock
+
+    from src.app.transport import debug_run_service as module
+
+    wake = Mock()
+    monkeypatch.setattr(module, "defer_wakeup", wake)
     service, repository, _ = _harness(task_id="transport-1", status="WAITING")
     repository.tasks["transport-1"] = _task("transport-1", CLIENT_IDS[0], "RACK_MOVE", status="SUCCEEDED")
     repository.members["transport-1"] = [
@@ -424,7 +430,9 @@ async def test_succeeded_transport_creates_one_next_intent_with_evidence_boundar
         )
     ]
 
+    service._task_queue = Mock()
     assert await service.advance_run("debug-run-1") is True
+    wake.assert_called_once_with(service._sessions.db, service._task_queue.enqueue_transport_debug)
 
     assert repository.steps[0].status == "SUCCEEDED"
     assert len(repository.steps) == 2
@@ -988,11 +996,16 @@ def _scan(
     )
 
 
-async def test_wms_return_request_persists_fifo_identity_without_transport_and_waits_on_restart() -> None:
+async def test_wms_return_request_persists_fifo_identity_without_transport_and_waits_on_restart(monkeypatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     service, repository, transport = _harness(phase="BINS_TO_RACK")
+    from unittest.mock import Mock
+
+    wake = Mock()
+    service._task_queue = Mock()
+    monkeypatch.setattr("src.app.transport.debug_run_service.defer_wakeup", wake)
     repository.run.configuration_json["return_batches"] = {}
     repository.run.configuration_json["return_queues"] = {"0": ["A000002653", "A000001922"]}
     service._wms = SimpleNamespace(create_or_get=AsyncMock())
@@ -1000,6 +1013,7 @@ async def test_wms_return_request_persists_fifo_identity_without_transport_and_w
         get_by_identity_for_update=AsyncMock(return_value=SimpleNamespace(status="PENDING"))
     )
     assert await service.advance_run("debug-run-1")
+    assert any(call.args[1] == service._task_queue.enqueue_wms_confirmations for call in wake.call_args_list)
     call = service._wms.create_or_get.call_args.kwargs
     assert call["workline_id"] == 1
     assert call["operation"] == "outbound.bin.return_batch@v1"

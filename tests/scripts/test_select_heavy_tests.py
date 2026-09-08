@@ -709,6 +709,7 @@ def test_core_composition_root_keeps_its_heavy_owners() -> None:
 
     assert select_heavy_tests(["src/app/device/composition.py"], config) == [
         DEVICE_COMMAND_PRODUCTION_WIRING_E2E_TEST,
+        "tests/e2e/test_active_dispatch_wakeup.py",
         DEVICE_COMMAND_CONSTRAINTS_HEAVY_TEST,
         CELERY_ASYNC_RUNTIME_POSTGRESQL_HEAVY_TEST,
     ]
@@ -1382,7 +1383,7 @@ def test_phase10_retired_heavy_assets_are_exact_none(changed_path: str) -> None:
     (
         (
             "src/app/transport/composition.py",
-            ["tests/e2e/transport/test_transport_production_wiring.py"],
+            ["tests/e2e/test_active_dispatch_wakeup.py", "tests/e2e/transport/test_transport_production_wiring.py"],
         ),
         (
             "src/app/wms_adapter/inbound_auth.py",
@@ -1397,7 +1398,10 @@ def test_phase10_retired_heavy_assets_are_exact_none(changed_path: str) -> None:
         ),
         (
             "tests/support/ecs_uniform_wire.py",
-            ["tests/e2e/device_command/test_device_command_production_wiring.py"],
+            [
+                "tests/e2e/device_command/test_device_command_production_wiring.py",
+                "tests/e2e/test_active_dispatch_wakeup.py",
+            ],
         ),
     ),
 )
