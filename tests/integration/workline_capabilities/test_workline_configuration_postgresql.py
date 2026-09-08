@@ -48,11 +48,13 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
             try:
                 async with sessions.begin() as db:
                     left = WorkLine(
+                        id=347454468883008,
                         line_code="CONFIG-PG-LEFT",
                         line_name="Configuration left",
                         line_type=LineType.AUTO,
                     )
                     right = WorkLine(
+                        id=347454468883009,
                         line_code="CONFIG-PG-RIGHT",
                         line_name="Configuration right",
                         line_type=LineType.AUTO,
@@ -66,6 +68,12 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     assert left.id is not None and right.id is not None
                     left_id, right_id = left.id, right.id
                     left_version, right_version = left.version, right.version
+                    # 大 ID 在尚未绑定设备时也必须能查询配置状态。
+                    status = await WorkLineConfigurationService(plugins=()).configuration_status(
+                        db, workline_id=left_id
+                    )
+                    assert status.workline_id == left_id
+                    assert not status.can_activate
 
                 ready = asyncio.Barrier(2)
 
@@ -97,6 +105,10 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     persisted = await db.scalar(select(Device).where(Device.device_code == "CONFIG-PG-DEVICE"))
                     assert persisted is not None
                     assert persisted.work_line_id in {left_id, right_id}
+                    status = await WorkLineConfigurationService(plugins=(_plugin(),)).configuration_status(
+                        db, workline_id=persisted.work_line_id
+                    )
+                    assert status.workline_id == persisted.work_line_id
             finally:
                 await engine.dispose()
 

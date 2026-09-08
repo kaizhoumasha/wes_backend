@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, CheckConstraint, Index, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Index, UniqueConstraint
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin, EnterpriseMixin
@@ -27,7 +27,7 @@ class PositionProjection(EnterpriseMixin, DataTableMixin, table=True):
 
     object_type: str = Field(max_length=10)
     object_id: str = Field(max_length=100)
-    workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True)
+    workline_id: int = Field(foreign_key="wes_biz.work_lines.id", index=True, sa_type=BigInteger)
     position_json: dict[str, Any] | None = Field(default=None, sa_type=JSON)
     position_unknown: bool = Field(default=False)
     arrival_face: str | None = Field(default=None, min_length=1, max_length=10)

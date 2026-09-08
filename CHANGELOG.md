@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.2.0] - 2026-09-08
+
+### Fixed
+
+- 将工作线配置查询和保存涉及的六个关联 ID 列迁移为 bigint，修复雪花 ID 超出 int32 导致的配置报错；保留外键、空值约束和设备删除行为。
+- 复用既有工作线配置测试覆盖大 ID 的读取、保存和设备争用；保留必要的 PostgreSQL 迁移往返、溢出回滚与上游设备外键回归。
+
+### Verification
+
+- QUALITY FAST 3398 passed、5 skipped；领域回归 1300 passed；所选 HEAVY 211 passed，修正旧 Schema 期望后失败的 1 项重跑通过。
+- 数据库迁移 head 为 `bebf575cca2b`；需维护窗口备份、迁移并重启全部后端进程。
+
 ## [0.37.1.0] - 2026-09-08
 
 ### Fixed

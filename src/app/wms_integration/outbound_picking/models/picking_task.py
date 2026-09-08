@@ -112,6 +112,7 @@ class PickingTask(EnterpriseMixin, DataTableMixin, table=True):
         default=None,
         foreign_key="wes_biz.work_lines.id",
         index=True,
+        sa_type=SQL_COMPAT_BIGINT,
     )
 
     last_applied_plan_revision: int = Field(
