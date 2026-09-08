@@ -402,9 +402,10 @@ operation 另外固定 `256 KiB` Body 上限。
 | operation | 同步 `422 / REJECTED` | 同步 `409 / CONFLICT` | 接纳后异步 `evidence=CONFLICT` |
 | --- | --- | --- | --- |
 | `transport.task.member_position_changed@v1` | 已知 operation 的信封或 DTO 结构非法，`reason_code=INVALID_EVIDENCE`；未知 operation 使用 `UNSUPPORTED_OPERATION` | 同身份不同消息信封 | 未知任务、`container_id` 不属于冻结成员、位置与冻结任务或已接纳事实矛盾 |
-| `transport.task.resulted@v1` | 已知 operation 的信封或 DTO 结构非法，`reason_code=INVALID_EVIDENCE`；未知 operation 使用 `UNSUPPORTED_OPERATION` | 同身份不同消息信封，或同任务同 `outcome_revision` 内容不同；对完整且身份有效的成功回架结果，若任何冻结目标为 `RACK_BIN_SLOT` 的 BIN 成员尚无已 `APPLIED` 的精确目标 `TARGET_PLACED`，临时返回 `data={transport_task_id, reason_code=MEMBER_POSITION_EVIDENCE_PENDING}` | 未知任务、`rack_id/container_id` 与冻结对象不匹配、与已接纳终态矛盾 |
+| `transport.task.resulted@v1` | 已知 operation 的信封或 DTO 结构非法，`reason_code=INVALID_EVIDENCE`；未知 operation 使用 `UNSUPPORTED_OPERATION` | 同身份不同消息信封，或同任务同 `outcome_revision` 内容不同 | 未知任务、`rack_id/container_id` 与冻结对象不匹配、与已接纳终态矛盾 |
 
-`202 | 200` 只用于可靠接纳；`400 | 413` 是预关联失败；`503` 只表示当前无法可靠持久化且未接纳。ACK 前只做
+`202 | 200` 只用于可靠接纳；`400 | 413` 是预关联失败；回调 `503` 表示无法给出可靠 ACK，协议收据或 Evidence 可能已提交。
+WMS 必须保留原消息身份与完整内容重试，不得据此推断未接纳。ACK 前只做
 信封、DTO、消息幂等校验，以及搬运最终结果的 `transport_task_id + outcome_revision` 版本身份登记；不在 HTTP 请求内应用任务状态。
 未知任务或与既有任务事实冲突的结构合法 evidence 先返回 `202`，再异步标记 `CONFLICT` 并保留
 诊断事实；不能把它伪装成可修正 DTO 的 `422`，也不能以 `503` 要求自动重提。
@@ -416,11 +417,15 @@ WMS 收到 `401` 时必须保留原消息、停止热重试并告警，待配置
 `409 / CONFLICT` 的 `data` 仅在首次冻结消息已解析出合法 `transport_task_id` 时包含该字段；首次消息缺失或使用非法任务 ID 时
 固定为空对象，不得从发生冲突的后续消息猜测关联任务。
 
-上述 `MEMBER_POSITION_EVIDENCE_PENDING` 是唯一可重试的 `409`：它只适用于完整、身份有效的成功 BIN 回架结果，并且发生在创建
-callback receipt 或 Transport evidence 之前，因此该次临时尝试不保存 receipt/evidence，也不结束任务或释放资源绑定。WMS 必须等待每个
-所需逐箱事件均取得成功 ACK 后，即可原样重试同一个 `operation_id`、`timestamp`、`outcome_revision` 和完整 body。若 WES 仍返回该临时
-`409`，WMS 必须继续保留同一冻结消息的发送义务并按既有重试策略重试；是否已 `APPLIED` 只由 WES 内部判断。双方不得为此新增查询、
-轮询或缓存接口，WMS 也不得新建消息身份、刷新时间戳、改写结果或推断已完成。其余 `409 / CONFLICT` 仍是确定冲突，按既有对账规则处理。
+合法的成功 BIN 回架结果即使早于前置位置 Evidence 应用，也原子保存 callback receipt 和 `PENDING` Evidence，并返回
+`202 / RECEIVED`。WMS 不负责观察内部 `APPLIED` 状态，也无需为此重发结果。后台只有在所有所需精确目标 `TARGET_PLACED`
+均已应用后才完成任务并释放资源；等待期间让出一次领取租约（30 秒），由既有后台扫描重试，避免阻塞后到的位置事件。
+前置证据一直缺失时仍保留结果与资源围栏，按既有任务超时机制进入对账；不得以等待时间替代位置事实。
+
+共享 `/api/v1/wms/events` 的每次请求均在返回响应前，通过现有 `callback_logs` 保存请求级收据，包括成功、重复、冲突、
+非法 JSON/UTF-8、错误请求头、超限、认证失败、运行时不可用和处理异常。原始字节以 Base64 保存，最多保留 64 KiB 并明确标记截断；
+非法请求头也先进行有界原文捕获，再按原语义拒绝。收据记录响应体、HTTP 状态和请求 ID，不覆盖 Transport 首份幂等收据。
+收据写入失败时输出错误日志并返回 `503` 和 `Retry-After: 1`；数据库本身不可用时不能承诺数据库收据已保存。
 
 首版不规定 WMS 在取得权威证据后多少毫秒内形成容器中间位置事件/搬运最终结果，只验收消息最终可靠形成和送达。现场 SOP 必须填写 RCS 无结果告警阈值、
 责任人和通知渠道；该运维阈值不是 DTO 字段，也不能把普通 timeout 转换为权威位置或终态。
@@ -503,10 +508,9 @@ results[] {
 - `BIN_EXCHANGE` 部分完成时仍完整报告全部容器的已知位置，不得伪造整体回滚。
 
 对成功回架的 BIN 成员，WMS/RCS 的固定顺序是：先为每个冻结目标为 `RACK_BIN_SLOT` 的完成成员形成并转发精确目标
-`TARGET_PLACED`；每条事件取得成功 ACK 后，即可发送完整 `transport.task.resulted@v1`。若完整结果先到，或事件虽已接纳但尚未应用，WES 返回
-`409 / CONFLICT`，`data` 为 `transport_task_id` 和 `reason_code=MEMBER_POSITION_EVIDENCE_PENDING`；该临时尝试没有 callback receipt
-或 Transport evidence。WMS 保留并按既有重试策略重试完全相同的 `operation_id`、`timestamp`、`outcome_revision` 和 body，由 WES 在每次
-重试时判断所需事件是否均已 `APPLIED`。此规则不改变 complete-snapshot、同版本 duplicate 或 revision-conflict 的既有判定。
+`TARGET_PLACED`；每条事件取得成功 ACK 后，即可发送完整 `transport.task.resulted@v1`。若结果先到，或位置事件已接纳但尚未应用，
+WES 保存结果并返回 `202 / RECEIVED`，后台等待所需精确位置 Evidence 后继续处理。此规则不改变 complete-snapshot、
+同版本 duplicate 或 revision-conflict 的既有判定。
 
 所有搬运最终结果 DTO 中，`final_position` 与字面量 `position_unknown=true` 必须严格二选一。`position_unknown=false`、两者同时提供或两者
 都缺少均无效。缺少成员、增加成员、目标不一致或事实互相矛盾时不得接受为确定终态。接口契约 不再存在 `object_id`；内部
@@ -541,16 +545,13 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 2. 查询既有消息身份并比较完整消息：同身份不同消息信封在 DTO 校验前返回 `409 / CONFLICT`；同身份同消息信封按首次响应稳定
    重放，只有首次 `RECEIVED` 转为 `200 / DUPLICATE`；
 3. 只有首次出现的消息才校验信封其余字段、operation 和闭集 DTO。失败时原子保存消息身份、规范化摘要和首次
-   `422 / REJECTED`，不保存 Transport evidence；`503` 不建立幂等记录；
-4. 对完整且身份有效的成功 BIN 回架结果，在既有消息身份和同 `outcome_revision` duplicate/conflict 判定之后、创建 callback receipt 或
-   Transport evidence 之前，检查每个冻结目标为 `RACK_BIN_SLOT` 的成员是否已有已 `APPLIED` 的精确目标 `TARGET_PLACED`。任一缺失时返回
-   `409 / CONFLICT + {transport_task_id, reason_code=MEMBER_POSITION_EVIDENCE_PENDING}`，不保存 receipt/evidence；WMS 在所需事件均取得
-   成功 ACK 后即可用完全相同的消息重试，若仍 pending 则继续按既有策略重试，由 WES 判断内部应用状态。其它合法 DTO 原子保存消息身份、
-   规范化摘要和原始 Transport evidence；搬运最终结果同时登记
+   `422 / REJECTED`，不保存 Transport evidence；回调 `503` 不冻结为幂等响应，但可能已有先行提交的协议收据或 Evidence；
+4. 合法 DTO 原子保存消息身份、规范化摘要和原始 Transport evidence；前置位置尚未应用的完整成功 BIN 回架结果也先保存。
+   搬运最终结果同时登记
    `transport_task_id + outcome_revision + data 业务结果`。同一版本已存在相同 `data` 时返回 `200 / DUPLICATE`；存在不同 `data` 时
    返回 `409 / CONFLICT`。两种情况都保存当前消息身份及首次响应以便稳定重放，但不保存第二份 evidence；
 5. 首次 evidence 保存成功后返回 `202 / RECEIVED`；
-6. 异步锁定 `TransportTask`，校验不可变任务身份、对象和冻结成员；
+6. 异步锁定 `TransportTask`，校验不可变任务身份、对象和冻结成员；成功回架缺少已应用精确位置时保持 `PENDING` 并延后处理；
 7. 搬运最终结果只在 `outcome_revision` 高于已应用版本时，在同一事务更新任务、成员、位置投影、已应用接口契约版本、evidence 处理状态和待发布
    的内部 `outcome_version`；低版本标记已处理但不得回退投影；
 8. 后台有界领取未发布版本，在事务外交给 `TransportOutcomePublisher`，成功后记录已发布版本。

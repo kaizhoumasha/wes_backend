@@ -100,21 +100,11 @@ def test_transport_openapi_allows_conflict_without_an_associated_task() -> None:
     ]
 
 
-def test_transport_openapi_exposes_retryable_member_position_evidence_conflict() -> None:
+def test_transport_openapi_does_not_classify_pending_position_as_conflict() -> None:
     document = build_transport_openapi_document()
-    data_schema = document["paths"]["/api/v1/wms/events"]["post"]["responses"]["409"]["content"]["application/json"][
-        "schema"
-    ]["properties"]["data"]
-
-    assert {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["transport_task_id", "reason_code"],
-        "properties": {
-            "transport_task_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": r".*\S.*"},
-            "reason_code": {"type": "string", "enum": ["MEMBER_POSITION_EVIDENCE_PENDING"]},
-        },
-    } in data_schema["oneOf"]
+    responses = document["paths"]["/api/v1/wms/events"]["post"]["responses"]
+    assert "MEMBER_POSITION_EVIDENCE_PENDING" not in str(responses["409"])
+    assert "RECEIVED" in str(responses["202"])
 
 
 def _walk_schemas(schema: object):

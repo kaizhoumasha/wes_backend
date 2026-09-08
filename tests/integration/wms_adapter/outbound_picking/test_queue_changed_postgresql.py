@@ -254,6 +254,7 @@ async def test_public_route_commits_queue_update_without_any_plugin(sessions):
     from fastapi import FastAPI
 
     from src.app.wms_adapter import WmsInboundAuthPolicy
+    from src.app.wms_adapter.callback_receipt_service import WmsCallbackReceiptService
     from src.app.wms_integration.outbound_picking.composition import build_outbound_picking_runtime
     from src.register import register_routers
 
@@ -261,6 +262,7 @@ async def test_public_route_commits_queue_update_without_any_plugin(sessions):
     runtime = build_outbound_picking_runtime(session_factory=sessions)
     app = FastAPI()
     app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
+    app.state.wms_callback_receipt_service = WmsCallbackReceiptService(sessions)
     app.state.wms_picking_task_queue_changed_handler = runtime.picking_task_queue_changed_handler
     app.state.wms_event_stream_service = SimpleNamespace(publish_to=AsyncMock(return_value=True))
     register_routers(app)

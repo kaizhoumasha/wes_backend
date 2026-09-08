@@ -718,7 +718,11 @@ class TransportService:
                         if evidence.operation == TRANSPORT_POSITION_OPERATION:
                             await self._apply_position_evidence(db, task, evidence)
                         elif evidence.operation == TRANSPORT_RESULT_OPERATION:
-                            await self._apply_result_evidence(db, task, evidence)
+                            if not await self._apply_result_evidence(db, task, evidence):
+                                # 等待位置应用时让出领取机会，避免饿死后到位置。
+                                evidence.claim_token = None
+                                evidence.claim_until = timezone.now_for_db() + timedelta(seconds=_CLAIM_SECONDS)
+                                continue
                         else:
                             raise TransportContractError("unsupported evidence operation")
                     except TransportContractError:
@@ -821,7 +825,7 @@ class TransportService:
                 if payload is None or transport_task_id is None:
                     raise RuntimeError("validated callback is missing transport_task_id")
                 # 与 submit 写回锁同一任务行，使未提交 evidence 在确定性拒绝判断前可见。
-                task = await self._repository.get_task(db, transport_task_id, for_update=True)
+                await self._repository.get_task(db, transport_task_id, for_update=True)
                 if outcome_revision is not None:
                     revision_owner = await self._repository.get_evidence_by_outcome_revision(
                         db,
@@ -831,27 +835,6 @@ class TransportService:
                     )
                     if revision_owner is not None:
                         first_http_status, first_code = _revision_replay_disposition(revision_owner, payload)
-                if first_code == "RECEIVED" and task is not None:
-                    members = await self._repository.list_members(db, transport_task_id)
-                    required_members = _successful_rack_slot_result_members(task, payload, members)
-                    if required_members:
-                        applied_position_evidence = await self._repository.list_applied_position_evidence(
-                            db,
-                            transport_task_id,
-                        )
-                        if not _has_applied_exact_target_position_evidence(
-                            required_members,
-                            applied_position_evidence,
-                        ):
-                            return _callback_ack(
-                                409,
-                                "CONFLICT",
-                                ack_timestamp_ms,
-                                {
-                                    "transport_task_id": transport_task_id,
-                                    "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
-                                },
-                            )
                 await self._repository.add_callback_receipt(
                     db,
                     _callback_receipt(
@@ -1392,7 +1375,7 @@ class TransportService:
         db: AsyncSession,
         task: TransportTask,
         evidence: TransportEvidence,
-    ) -> None:
+    ) -> bool:
         payload = evidence.payload_json
         if payload.get("kind") != task.kind:
             raise TransportContractError("result kind differs from frozen task")
@@ -1429,9 +1412,18 @@ class TransportService:
         _validate_result_frozen_identity(task, members, results)
         outcome_revision = _applicable_outcome_revision(evidence, task)
         if outcome_revision is None:
-            return
+            return True
         if task.status in {TransportTaskStatus.SUCCEEDED.value, TransportTaskStatus.FAILED.value}:
             raise TransportContractError("result evidence cannot revise a definite terminal fact")
+
+        required_members = _successful_rack_slot_result_members(task, payload, members)
+        positions = (
+            await self._repository.list_applied_position_evidence(db, task.transport_task_id)
+            if required_members
+            else []
+        )
+        if required_members and not _has_applied_exact_target_position_evidence(required_members, positions):
+            return False
 
         now = timezone.now_for_db()
         validated_results: list[tuple[TransportMember, dict[str, Any], TransportMemberOutcome]] = []
@@ -1522,6 +1514,8 @@ class TransportService:
         )
         if task_status in {TransportTaskStatus.SUCCEEDED, TransportTaskStatus.FAILED}:
             await self._repository.release_bindings(db, task.transport_task_id, now=now)
+
+        return True
 
 
 def _members_for(request: TransportRequest, task_id: str, now: Any) -> list[TransportMember]:

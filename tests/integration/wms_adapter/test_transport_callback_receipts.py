@@ -229,3 +229,51 @@ async def test_callback_receipt_and_evidence_roll_back_in_one_transaction(
             )
         )
     assert (receipt_count, evidence_count) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    "raw,status",
+    [
+        (b"\xff\x00", 400),
+        (b'{"x":1,"x":2}', 400),
+        (b'{"operation_id":"019f12d0-58d7-7b4d-a23a-1b90aa5d4472","operation":"unknown@v1"}', 422),
+    ],
+    ids=["invalid-bytes", "duplicate-keys", "unsupported-operation"],
+)
+async def test_wms_http_ingress_persists_every_rejected_attempt_to_postgresql(
+    integration_session_factory,
+    raw: bytes,
+    status: int,
+) -> None:
+    import base64
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.app.callback.models import CallbackLog
+    from src.app.wms_adapter.callback_receipt_service import WmsCallbackReceiptService
+    from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
+    from src.app.wms_adapter.v1.events import router
+
+    app = FastAPI()
+    app.state.wms_inbound_auth_policy = WmsInboundAuthPolicy()
+    app.state.wms_callback_receipt_service = WmsCallbackReceiptService(integration_session_factory)
+    app.include_router(router, prefix="/api/v1/wms")
+    async with integration_session_factory() as db:
+        before = set(await db.scalars(select(CallbackLog.id)))
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for _ in range(2):
+                response = await client.post(
+                    "/api/v1/wms/events", content=raw, headers={"Content-Type": "application/json"}
+                )
+                assert response.status_code == status
+        async with integration_session_factory() as db:
+            logs = list(await db.scalars(select(CallbackLog).where(CallbackLog.id.not_in(before))))
+        assert len(logs) == 2
+        assert len({log.request_id for log in logs}) == 2
+        assert all(log.response_status == status for log in logs)
+        assert all(base64.b64decode(log.request_body["raw_body_base64"]) == raw for log in logs)
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(CallbackLog).where(CallbackLog.id.not_in(before)))

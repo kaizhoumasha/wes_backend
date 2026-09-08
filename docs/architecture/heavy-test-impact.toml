@@ -1727,6 +1727,7 @@ heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
 [[mapping]]
 source_glob = "src/app/wms_adapter/v1/**"
 heavy_tests = [
+    "tests/integration/wms_adapter/test_transport_callback_receipts.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -2548,3 +2549,8 @@ heavy_tests = [
     "tests/integration/transport/test_transport_debug_auto_run.py",
     "tests/integration/transport/test_transport_debug_run_real_loop.py",
 ]
+
+# WMS 请求级收据复用 CallbackLog，由真实 HTTP -> PostgreSQL 事务验证承接。
+[[mapping]]
+source_glob = "src/app/wms_adapter/callback_receipt_service.py"
+heavy_tests = ["tests/integration/wms_adapter/test_transport_callback_receipts.py"]
