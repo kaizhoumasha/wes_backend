@@ -385,3 +385,9 @@ Transport 的 submit/position/result 身份通过其已批准合同及 SDK 常�
 **VERDICT:** ENG CLEARED。当前设计与实施计划通过本轮工程评审；可按任务 1 冻结实施现场。仅文档检查完成，不代表代码已实现、测试通过、可合并、已部署或 WMS 联合验收通过。
 
 NO UNRESOLVED DECISIONS
+
+## 2026-09-08 后端合入与前端 QA 进展
+
+- 后端 PR #217 已按授权合入 develop，merge SHA `e19492ddc3931ad05a9a08404d4bbb8b28b0f6f0`；提交 hook QUALITY 通过，FAST 3398 passed、5 个既有 skip，完整所选 HEAVY 282 passed、零跳过；未部署。
+- 前端从该提交的干净 develop 冻结 canonical 并生成类型、Zod 与权限；三次生成器复跑 241 个文件无差异。控制台、近期记录、筛选、详情和菜单已落地，742 项测试、lint、build、contract:test、contract:verify、permission:verify 通过。真实浏览器和 SSE 延迟验证尚在执行，前端未提交或合入。
+- 独立本机环境发现 Mock 镜像漏包：共享 wire 新依赖观察类型，但镜像未复制该文件。修复限定于镜像 COPY、观察时钟延迟导入及对应打包测试/HEAVY 映射；没有重构 Service、改变 DTO 或引入宿主配置依赖。新增隔离导入回归先失败后通过，聚焦 25 passed、所选 HEAVY 145 passed、零跳过；真实镜像独立导入检查通过。该补丁走单独后端交付闭环，未把此前合入当作完整联调验收。

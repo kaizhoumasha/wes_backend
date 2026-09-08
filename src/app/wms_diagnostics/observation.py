@@ -6,7 +6,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from src.utils.timezone import timezone
+
+def _observed_at() -> str:
+    # 协议校验可独立加载；仅宿主创建当次观察时才需要运行时钟配置。
+    from src.utils.timezone import timezone
+
+    return timezone.now_utc().isoformat()
 
 
 @dataclass(slots=True)
@@ -15,7 +20,7 @@ class WmsCallObservation:
     operation: str | None = None
     operation_id: str | None = None
     attempt_id: str = field(default_factory=lambda: uuid4().hex)
-    observed_at: str = field(default_factory=lambda: timezone.now_utc().isoformat())
+    observed_at: str = field(default_factory=_observed_at)
     business_reference: str | None = None
     method: str = "POST"
     path: str | None = None
