@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
 from sqlalchemy import JSON, CheckConstraint, Column, Index
@@ -10,20 +9,11 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.app.resource.models import RackKind
+from src.app.workline.rack_position_role import WorklineRackPositionRole
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-
-
-class WorklineRackPositionRole(str, Enum):
-    """工作线停靠位角色。"""
-
-    SMT_CLASSIFIER_SINGLE_RACK_WORK = "SMT_CLASSIFIER_SINGLE_RACK_WORK"
-    SMT_RACK_EXCHANGE_AREA = "SMT_RACK_EXCHANGE_AREA"
-    SMT_SORTER_QUEUE = "SMT_SORTER_QUEUE"
-    SMT_SORTER_STATION = "SMT_SORTER_STATION"
-    SMT_EMPTY_RACK_AREA = "SMT_EMPTY_RACK_AREA"
 
 
 class WorklineRackPositionBase(BaseMixin):
@@ -52,6 +42,13 @@ class WorklineRackPositionBase(BaseMixin):
     capacity: int = Field(default=1, ge=1, description="该 workline 位置可同时容纳的 rack 数量")
     logic_location_code: str | None = Field(default=None, max_length=120, index=True, description="WES 逻辑位置")
     external_location_code: str | None = Field(default=None, max_length=120, index=True, description="外部地码证据")
+    device_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.devices.id",
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        description="关联物理设备，独立于业务插件角色",
+    )
     device_role: str | None = Field(default=None, max_length=100, index=True, description="关联设备角色")
     priority: int = Field(default=100, ge=0, description="候选优先级")
     enabled: bool = Field(default=True, index=True, description="是否启用")

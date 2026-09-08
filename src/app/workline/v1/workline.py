@@ -8,6 +8,8 @@ from src.app.workline.models import (
     PlaneSceneView,
     PlaneSnapshot,
     WorkLine,
+    WorkLineBaseConfigurationResponse,
+    WorkLineBaseConfigurationUpdate,
     WorkLineConfigurationResponse,
     WorkLineConfigurationStatus,
     WorkLineConfigurationUpdate,
@@ -110,7 +112,7 @@ async def get_workline_configuration_status(
 
 @router.put(
     "/work_lines/{id}/configuration",
-    summary="[biz:workline:configure] 保存业务插件配置与设备全集",
+    summary="[biz:workline:configure] 保存业务插件关联与角色配置",
     response_model=ResponseSchemaModel[WorkLineConfigurationResponse],
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:configure"))],
@@ -122,7 +124,7 @@ async def save_workline_configuration(
     id: int = Path(...),
     payload: WorkLineConfigurationUpdate = Body(...),
 ) -> ResponseSchemaModel[WorkLineConfigurationResponse]:
-    """在一个事务中替换插件配置和 Device 归属。"""
+    """仅替换插件关联，保持工作位和物理设备归属。"""
 
     service = getattr(request.app.state, "workline_configuration_service", None)
     if service is None:
@@ -137,22 +139,83 @@ async def save_workline_configuration(
             version=payload.version,
             plugin_key=payload.plugin_key,
             config=payload.config,
-            device_codes=payload.device_codes,
             cache=cache,
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[WorkLineConfigurationResponse]", _workline_value_error_response(exc))
     data = WorkLineConfigurationResponse(
-        workline_id=result.workline.id,
-        version=result.workline.version,
-        plugin_key=result.workline.plugin_key,
-        config=result.workline.config,
-        device_codes=result.device_codes,
+        workline_id=result.id,
+        version=result.version,
+        plugin_key=result.plugin_key,
+        config=result.config,
     )
     return cast(
         "ResponseSchemaModel[WorkLineConfigurationResponse]",
         response_builder.success(data=data),
     )
+
+
+@router.get(
+    "/work_lines/{id}/base-configuration",
+    summary="[biz:workline:base-configuration] 查询工作线基础配置",
+    response_model=ResponseSchemaModel[WorkLineBaseConfigurationResponse],
+    dependencies=[Depends(RequirePermission("biz:workline:base-configuration"))],
+)
+async def get_workline_base_configuration(
+    db: AsyncSessionDep,
+    request: Request,
+    id: int = Path(...),
+) -> ResponseSchemaModel[WorkLineBaseConfigurationResponse]:
+    service = getattr(request.app.state, "workline_configuration_service", None)
+    if service is None:
+        return cast(
+            "ResponseSchemaModel[WorkLineBaseConfigurationResponse]",
+            response_builder.fail(
+                code=ServerErrorCode.SERVICE_UNAVAILABLE,
+                message="工作线配置服务不可用",
+            ),
+        )
+    try:
+        result = await service.base_configuration(db, workline_id=id)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[WorkLineBaseConfigurationResponse]", _workline_value_error_response(exc))
+    return cast("ResponseSchemaModel[WorkLineBaseConfigurationResponse]", response_builder.success(data=result))
+
+
+@router.put(
+    "/work_lines/{id}/base-configuration",
+    summary="[biz:workline:configure-base] 保存工作位与物理设备基础配置",
+    response_model=ResponseSchemaModel[WorkLineBaseConfigurationResponse],
+    dependencies=[Depends(RequirePermission("biz:workline:configure-base"))],
+)
+async def save_workline_base_configuration(
+    db: AsyncSessionDep,
+    cache: CacheDep,
+    request: Request,
+    id: int = Path(...),
+    payload: WorkLineBaseConfigurationUpdate = Body(...),
+) -> ResponseSchemaModel[WorkLineBaseConfigurationResponse]:
+    service = getattr(request.app.state, "workline_configuration_service", None)
+    if service is None:
+        return cast(
+            "ResponseSchemaModel[WorkLineBaseConfigurationResponse]",
+            response_builder.fail(
+                code=ServerErrorCode.SERVICE_UNAVAILABLE,
+                message="工作线配置服务不可用",
+            ),
+        )
+    try:
+        result = await service.save_base(
+            db,
+            workline_id=id,
+            version=payload.version,
+            device_codes=payload.device_codes,
+            rack_positions=payload.rack_positions,
+            cache=cache,
+        )
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[WorkLineBaseConfigurationResponse]", _workline_value_error_response(exc))
+    return cast("ResponseSchemaModel[WorkLineBaseConfigurationResponse]", response_builder.success(data=result))
 
 
 @router.post(
