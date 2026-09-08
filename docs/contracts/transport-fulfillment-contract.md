@@ -373,7 +373,7 @@ WES 固定保存实际发送的完整 UTF-8 JSON 请求体及其 `request_body_d
 - 单次 HTTP 访问硬超时为 10 秒。每个任务最多实际发送 3 次，即 `submit_attempt_count` 只允许从 `0 → 1 → 2 → 3`；达到
   `3` 后不得再次进入发送开始事务。
 - 只有确认未送达的 `NOT_SENT` 和明确未接纳的 `503` 可以使用原 `operation_id + transport_task_id + request_body_digest` 重提；
-  两者固定等待 2 秒。Transport 合同不使用 HTTP `Retry-After`。
+  两者固定等待 2 秒。Transport 提交不使用 HTTP `Retry-After`。
 - 只有保存 `NOT_SENT` 或明确未接纳的 `503` 时，才在同一事务清除本次 `send_started_at` 并安排下一次固定重提；
   其他结果或进程崩溃不得清除该事实。
 - `DELIVERY_UNKNOWN` 永不自动重提；3 次发送预算耗尽后形成
