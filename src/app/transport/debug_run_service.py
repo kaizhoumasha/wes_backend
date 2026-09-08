@@ -5,12 +5,16 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol
 
+import wes_plugin_sdk as sdk
 from sqlalchemy.exc import IntegrityError
 
+from src.app.execution.models.wms_confirmation import WmsConfirmationStatus
+from src.app.execution.repositories import InboundEvidenceRepository, WmsConfirmationRepository
+from src.app.execution.services.wms_confirmation_service import WmsConfirmationLifecycleService
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.sys.services.event_stream_service import TRANSPORT_DEBUG_RUN_STREAM_CHANNEL, event_stream_service
 from src.app.transport.contracts import (
@@ -35,6 +39,14 @@ from src.app.transport.debug_run_state_machine import (
     next_debug_step,
 )
 from src.app.transport.models import TransportDebugRun, TransportDebugRunStep, TransportMember
+from src.app.wms_adapter.outbound_picking.return_batch_typed import decode_outcome, encode_request
+from src.app.wms_adapter.outbound_picking.return_batch_wire import (
+    BIN_RETURN_BATCH_OPERATION,
+    parse_bin_return_batch_request,
+    parse_bin_return_batch_response,
+)
+from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
+from src.app.workline.repositories import WorkLineRepository
 from src.core.exceptions import NotFoundException
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
@@ -59,6 +71,8 @@ _TERMINAL_TRANSPORT_STATUSES = {
 }
 _CLAIM_LEASE = timedelta(seconds=30)
 _RECOVERABLE_ATTENTION_CODES = {
+    "EVIDENCE_RECONCILING",
+    "WMS_RETURN_OWNER_INVALID",
     "TRANSPORT_RECONCILING",
     "TRANSPORT_DELIVERY_UNKNOWN",
     "TRANSPORT_POSITION_UNKNOWN",
@@ -101,6 +115,8 @@ class TransportDebugRunStepSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class TransportDebugRunSnapshot:
+    workline_code: str
+    returned_bins: tuple[dict[str, str], ...]
     run_id: str
     status: TransportDebugRunStatus
     rack_id: str
@@ -137,6 +153,10 @@ class TransportDebugRunService:
         clock: Callable[[], datetime] = timezone.now_for_db,
         event_publisher: TransportDebugRunEventPublisher = event_stream_service,
     ) -> None:
+        self._worklines = WorkLineRepository()
+        self._confirmations = WmsConfirmationRepository()
+        self._wms = WmsConfirmationLifecycleService(workline_owner=ReturnBatchOwnerService())
+        self._wms_evidence = InboundEvidenceRepository()
         self._sessions = session_factory
         self._repository = repository
         self._transport = transport_service
@@ -151,6 +171,16 @@ class TransportDebugRunService:
     ) -> TransportDebugRunSnapshot:
         now = self._clock()
         run_id = f"debug-run-{new_uuid7()}"
+        for group in request.face_groups:
+            sdk.wms_operations.outbound_bin_return_batch(
+                operation_id=new_uuid7(),
+                workline_code=request.workline_code,
+                rack_id=request.rack_id,
+                rack_face=group.face,
+                return_candidates=tuple(
+                    sdk.BinReturnCandidate(i, item.bin_code, "CNV0302") for i, item in enumerate(group.bins, 1)
+                ),
+            )
         configuration = _freeze_configuration(request)
         run = TransportDebugRun(
             run_id=run_id,
@@ -180,6 +210,10 @@ class TransportDebugRunService:
             async with self._sessions.begin() as db:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
+                workline = await self._worklines.get_by_line_code(db, request.workline_code)
+                if workline is None or not workline.is_active:
+                    raise TransportDebugRunContractError("工作线不存在或未启用")
+                configuration["workline_id"] = workline.id
                 first_request = build_debug_transport_request(run, first_step)
                 if first_request is None:
                     raise TransportDebugRunContractError("first debug step configuration is invalid")
@@ -247,6 +281,8 @@ class TransportDebugRunService:
                 raise NotFoundException(resource_type="TransportDebugRun", resource_id=run_id)
             if run.status != TransportDebugRunStatus.NEEDS_ATTENTION.value:
                 raise TransportDebugRunConflict("debug run must be NEEDS_ATTENTION before abort")
+            if await self._has_unresolved_wms_return(db, run):
+                raise TransportDebugRunConflict("unresolved WMS return allocation prevents abort")
             steps = await self._repository.list_steps(db, run_id)
             await self._finalize_provably_unsent_tasks(db, steps)
             if not await self._all_tasks_terminal(db, steps):
@@ -347,6 +383,22 @@ class TransportDebugRunService:
                     run.attention_code not in _RECOVERABLE_ATTENTION_CODES
                 ):
                     changed = False
+                elif (
+                    not run.configuration_json.get("workline_code")
+                    or type(run.configuration_json.get("workline_id")) is not int
+                    or (
+                        step.phase == TransportDebugRunPhase.BINS_TO_RACK.value
+                        and step.transport_task_id is not None
+                        and not run.configuration_json.get("return_batches", {}).get(str(step.ordinal), {}).get("moves")
+                    )
+                ):
+                    changed = self._set_attention(
+                        run,
+                        step,
+                        "DEBUG_RUN_CONFIGURATION_UPGRADE_REQUIRED",
+                        now,
+                        "旧轮次缺少冻结的工作线或 WMS 分配配置；保留执行身份和围栏，须核对原任务后人工处理",
+                    )
                 elif step.phase == TransportDebugRunPhase.WAIT_SCAN12.value:
                     changed = await self._advance_scan_wait(db, run, step, now)
                 elif step.transport_task_id is None:
@@ -376,12 +428,21 @@ class TransportDebugRunService:
         step: TransportDebugRunStep,
         now: datetime,
     ) -> bool:
-        if step.status != TransportDebugRunStepStatus.PENDING.value:
+        retry_owner_admission = (
+            step.phase == TransportDebugRunPhase.BINS_TO_RACK.value
+            and step.status == TransportDebugRunStepStatus.NEEDS_ATTENTION.value
+            and run.attention_code == "WMS_RETURN_OWNER_INVALID"
+        )
+        if step.status != TransportDebugRunStepStatus.PENDING.value and not retry_owner_admission:
             return self._set_attention(run, step, "TRANSPORT_TASK_MISSING", now)
         if step.phase == TransportDebugRunPhase.BINS_TO_RACK.value and await self._has_observed_evidence_conflict(
             db, step
         ):
             return self._set_attention(run, step, "EVIDENCE_SOURCE_EVENT_CONFLICT", now)
+        if step.phase == TransportDebugRunPhase.BINS_TO_RACK.value:
+            allocation = await self._prepare_return_batch(db, run, step, now)
+            if allocation != "READY":
+                return allocation != "WAIT"
         try:
             request = build_debug_transport_request(run, step)
         except (ValueError, TypeError) as error:
@@ -411,6 +472,111 @@ class TransportDebugRunService:
         step.updated_at = now
         self._touch(run, now)
         return True
+
+    async def _prepare_return_batch(self, db, run, step, now) -> str:  # noqa: PLR0911 - closed persisted allocation states
+        """在宿主事务中冻结 typed 请求；由公共 dispatcher 发送，这里只消费自己的可靠结果。"""
+        batches = dict(run.configuration_json.get("return_batches", {}))
+        batch = dict(batches.get(str(step.ordinal), {}))
+        if batch.get("moves"):
+            return "READY"
+        retry_at = batch.get("retry_at")
+        if retry_at is not None and now < datetime.fromisoformat(retry_at):
+            return "WAIT"
+        operation_id = batch.get("operation_id")
+        if operation_id is None:
+            group = _frozen_face_groups(run.configuration_json)[run.current_group_index]
+            returned = {item["bin_code"] for item in run.configuration_json.get("returned_bins", [])}
+            queue = run.configuration_json.get("return_queues", {}).get(str(run.current_group_index), [])
+            candidates = [code for code in queue if code not in returned]
+            if not candidates:
+                self._set_attention(run, step, "DEBUG_RETURN_FIFO_MISSING", now)
+                return "CHANGED"
+            try:
+                await self._transport.assert_debug_rack_position_in_session(
+                    db,
+                    run.rack_id,
+                    RackPosition(_configuration_text(run.configuration_json, "workstation")),
+                    group.face,
+                )
+            except TransportContractError as error:
+                self._set_attention(run, step, "TRANSPORT_CONTRACT_REJECTED", now, str(error))
+                return "CHANGED"
+            operation_id = new_uuid7()
+            intent = sdk.wms_operations.outbound_bin_return_batch(
+                operation_id=operation_id,
+                workline_code=_configuration_text(run.configuration_json, "workline_code"),
+                rack_id=run.rack_id,
+                rack_face=group.face,
+                return_candidates=tuple(
+                    sdk.BinReturnCandidate(i, code, "CNV0302") for i, code in enumerate(candidates, 1)
+                ),
+            )
+            try:
+                await self._wms.create_or_get(
+                    db,
+                    operation=BIN_RETURN_BATCH_OPERATION,
+                    operation_id=operation_id,
+                    workline_id=run.configuration_json["workline_id"],
+                    request_payload=encode_request(intent, timestamp=_ceil_unix_ms(now)),
+                    deadline_at=now + timedelta(minutes=30),
+                    created_at=now,
+                )
+            except ValueError as error:
+                changed = self._set_attention(run, step, "WMS_RETURN_OWNER_INVALID", now, str(error))
+                return "CHANGED" if changed else "WAIT"
+            batch = {"operation_id": operation_id}
+        else:
+            confirmation = await self._confirmations.get_by_identity_for_update(
+                db, BIN_RETURN_BATCH_OPERATION, operation_id
+            )
+            if confirmation is None or confirmation.status == WmsConfirmationStatus.RECONCILING:
+                self._set_attention(run, step, "WMS_RETURN_RECONCILING", now)
+                return "CHANGED"
+            if confirmation.status != WmsConfirmationStatus.COMPLETED:
+                return "WAIT"
+            evidence = (
+                await self._wms_evidence.get_by_id_without_lock(db, confirmation.response_evidence_id)
+                if confirmation.response_evidence_id is not None
+                else None
+            )
+            try:
+                if evidence is None:
+                    raise ValueError("WMS return response evidence missing")
+                parse_bin_return_batch_response(
+                    200,
+                    evidence.normalized_payload,
+                    request=parse_bin_return_batch_request(confirmation.request_payload),
+                )
+                outcome = decode_outcome(evidence.normalized_payload).result
+            except (ValueError, TypeError) as error:
+                self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now, str(error))
+                return "CHANGED"
+            if isinstance(outcome, sdk.BinBatchNoBatch):
+                batch = {"retry_at": (now + timedelta(milliseconds=outcome.retry_after_ms)).isoformat()}
+            elif isinstance(outcome, sdk.BinReturnBatchReady):
+                batch["moves"] = [
+                    {
+                        "bin_code": move.bin_code,
+                        "rack_id": move.target.rack_id,
+                        "rack_face": move.target.rack_face,
+                        "slot_id": move.target.slot_id,
+                    }
+                    for move in outcome.moves
+                ]
+            else:
+                self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now)
+                return "CHANGED"
+        batches[str(step.ordinal)] = batch
+        run.configuration_json = {**run.configuration_json, "return_batches": batches}
+        if run.attention_code == "WMS_RETURN_OWNER_INVALID":
+            run.status = TransportDebugRunStatus.RUNNING.value
+            run.attention_code = None
+            run.attention_detail = None
+            step.status = TransportDebugRunStepStatus.PENDING.value
+            step.reason_code = None
+            step.updated_at = now
+        self._touch(run, now)
+        return "CHANGED"
 
     async def _record_claimed_attention(
         self,
@@ -466,6 +632,17 @@ class TransportDebugRunService:
             return True
         if evaluation.disposition == "ATTENTION":
             return self._set_attention(run, step, evaluation.reason_code or "TRANSPORT_RECONCILING", now)
+        if step.phase == TransportDebugRunPhase.BINS_TO_RACK.value:
+            returned = list(run.configuration_json.get("returned_bins", []))
+            returned.extend(
+                {
+                    "bin_code": member.object_id,
+                    **{key: member.final_position_json[key] for key in ("rack_id", "rack_face", "slot_id")},
+                }
+                for member in members
+                if member.final_position_json is not None
+            )
+            run.configuration_json = {**run.configuration_json, "returned_bins": returned}
         step.status = TransportDebugRunStepStatus.SUCCEEDED.value
         step.reason_code = None
         step.updated_at = now
@@ -608,6 +785,10 @@ class TransportDebugRunService:
         elif next_phase == TransportDebugRunPhase.WAIT_SCAN12.value:
             high_watermark = completed_step.evidence_high_watermark
             not_before_ms = completed_step.evidence_not_before_ms
+        if completed_step.phase == TransportDebugRunPhase.WAIT_SCAN12.value:
+            queues = dict(run.configuration_json.get("return_queues", {}))
+            queues[str(next_group_index)] = [item["bin_code"] for item in completed_step.observed_bins_json]
+            run.configuration_json = {**run.configuration_json, "return_queues": queues}
         next_step = TransportDebugRunStep(
             run_id=run.run_id,
             ordinal=completed_step.ordinal + 1,
@@ -646,24 +827,20 @@ class TransportDebugRunService:
         group_index = step.group_index
         if group_index is None:
             return False
-        groups = _frozen_face_groups(run.configuration_json)
-        if group_index < 0 or group_index >= len(groups):
+        try:
+            request = build_debug_transport_request(run, step)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(request, MoveBinsRequest):
             return False
         members_by_bin_code = {member.object_id: member for member in members if member.object_type == "BIN"}
-        group = groups[group_index]
         observed = [
-            {"bin_code": selection.bin_code}
-            for selection in group.bins
+            {"bin_code": move.bin_code}
+            for move in request.moves
             if (
-                (member := members_by_bin_code.get(selection.bin_code)) is not None
+                (member := members_by_bin_code.get(move.bin_code)) is not None
                 and not member.position_unknown
-                and member.target_json
-                == {
-                    "kind": "RACK_BIN_SLOT",
-                    "rack_id": run.rack_id,
-                    "rack_face": group.face,
-                    "slot_id": selection.slot_id,
-                }
+                and member.target_json == asdict(move.target)
                 and member.final_position_json == member.target_json
             )
         ]
@@ -720,6 +897,8 @@ class TransportDebugRunService:
             None,
         )
         return TransportDebugRunSnapshot(
+            workline_code=str(run.configuration_json.get("workline_code", "")),
+            returned_bins=tuple(run.configuration_json.get("returned_bins", [])),
             run_id=run.run_id,
             status=TransportDebugRunStatus(run.status),
             rack_id=run.rack_id,
@@ -740,8 +919,22 @@ class TransportDebugRunService:
             updated_at=_utc_iso(run.updated_at),
         )
 
+    async def _has_unresolved_wms_return(self, db, run) -> bool:
+        for batch in run.configuration_json.get("return_batches", {}).values():
+            operation_id = batch.get("operation_id")
+            if operation_id is None or batch.get("moves"):
+                continue
+            confirmation = await self._confirmations.get_by_identity_for_update(
+                db, BIN_RETURN_BATCH_OPERATION, operation_id
+            )
+            if confirmation is None or confirmation.status != WmsConfirmationStatus.COMPLETED:
+                return True
+        return False
+
     async def _can_abort(self, db: AsyncSession, run: TransportDebugRun) -> bool:
         if run.status != TransportDebugRunStatus.NEEDS_ATTENTION.value:
+            return False
+        if await self._has_unresolved_wms_return(db, run):
             return False
         steps = await self._repository.list_steps(db, run.run_id)
         task_ids = [step.transport_task_id for step in steps if step.transport_task_id is not None]
@@ -789,6 +982,7 @@ class TransportDebugRunService:
 
 def _freeze_configuration(request: CreateTransportDebugRun) -> dict[str, object]:
     return {
+        "workline_code": request.workline_code,
         "rack_id": request.rack_id,
         "face_groups": [
             {

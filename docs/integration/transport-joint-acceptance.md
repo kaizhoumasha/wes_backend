@@ -12,7 +12,7 @@
 CTU01 货架搬出
   → 当前面 1..4 个料箱到 CNV0301
   → SCAN12 为当前面全部选中料箱提供扫码 Evidence
-  → 全部料箱从 CNV0302 回到冻结原 slot
+  → WMS 按 SCAN12 FIFO 分配目标，料箱分批从 CNV0302 回到冻结分配 slot
   → 若还有下一面，CTU02 旋转后重复当前面流程
   → 所有选中料箱回架后，CTU03 返回 WH01
 ```
@@ -28,15 +28,26 @@ CTU01 货架搬出
 | 部署 | 待 release evidence、镜像 digest、OCI source revision 和迁移结果一致后记录 | `/health`、进程存活或 Swagger 可访问不证明业务链路 |
 | `SCAN12` 现场 schema | 暂按 `device_code=SCAN12`、`event_type=SCAN_COMPLETED`、`data.barcode=<料箱编码>` 验收 | 联调时必须确认真实 ECS payload、时间戳、`source_event_id` 和 apply status |
 | RCS/WMS/ECS 物理闭环 | 操作员已确认本轮直接录入进入真实 WMS/RCS，`SCAN12` 驱动料箱回架并触发最终 `CTU03` | 本轮确认不替代逐消息原始 payload、统一时间窗和现场记录归档 |
-| 业务验收 | 待操作员确认选架、选箱、原 slot 回架及最终返库均符合业务预期 | 只有现场业务 owner 可以签署 |
+| 业务验收 | 待操作员确认选架、选箱、WMS 分配 slot 回架及最终返库均符合业务预期 | 只有现场业务 owner 可以签署 |
 
 ## 3. 前置条件
 
 1. 后端迁移已执行，API、Celery worker 和 beat 使用同一已批准版本。
 2. WMS、RCS、ECS 的时钟和事件身份可追溯；禁止手工改写数据库制造成功终态。
-3. 操作员已按现场实物核对货架、每面 1～4 个料箱及原 slot；页面直接录入这些值，不依赖 WES 资源基础数据或挂载投影。
+3. 操作员已核对本地启用的工作线编码、现场货架、每面 1～4 个料箱及当前 slot；页面直接录入货架和料箱，不依赖其 WES 资源基础数据或挂载投影。
 4. 系统不存在另一个 `RUNNING` 或 `NEEDS_ATTENTION` 的 Transport 自动联调轮次。
 5. 已准备 WMS callback、ECS Evidence、RCS 任务和现场视频/照片或操作记录的统一时间窗口。
+
+### 升级至 WMS 分配回架前的检查
+
+升级前先停止页面接续，并通过 `GET /api/v1/transport/debug-runs` 核对没有 `RUNNING` 或 `NEEDS_ATTENTION` 的旧轮次。
+已有轮次应在原版本中完成至可信 `CTU03` 返库终态；若原轮次需要人工处置，必须先核对关联 Transport 的权威终态和物理位置，
+再按原有物理核验流程关闭。页面关闭、HTTP ACK 或 Mock 成功都不能替代这项检查。
+
+新轮次须提供本地已启用的 `workline_code`，回架使用正式 `outbound.bin.return_batch@v1` 的 WMS 分配槽位。
+旧活动轮次没有冻结的工作线或回架分配时，新版本将其置为 `NEEDS_ATTENTION / DEBUG_RUN_CONFIGURATION_UPGRADE_REQUIRED`，
+保留原 task、请求身份、Evidence 和资源围栏，不推测 WMS 分配、不补写身份、不自动恢复后续步骤。已有 Transport 仍按原身份接收结果；
+人工处理必须先核对原执行结果。有未知 WMS 分配或未闭合 Transport 时不能用本地 abort 释放围栏。
 
 ## 4. 合同核对
 
@@ -87,12 +98,12 @@ WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS �
 
 ### 5.1 单面
 
-1. 直接录入一个面及 1～4 个现场料箱与原 slot，记录页面预览和创建响应中的 `run_id`。
+1. 输入启用的 `workline_code`、一个面及 1～4 个现场料箱与当前 slot，记录页面预览和创建响应中的 `run_id`。
 2. 核对只创建一个 `CTU01`，面值与输入完全一致。
 3. `CTU01` 精确成功后，核对一个 `BIN_MOVE` 把本组全部料箱送到 `CNV0301`。
 4. 在最后一个选中料箱的 `SCAN12` Evidence 到达前，确认不存在回架 task。
-5. 全部选中料箱均被扫描后，核对一个 `BIN_MOVE` 从 `CNV0302` 返回冻结原 slot。
-6. 回架 task 的每个成员均精确成功前，确认不存在 `CTU03`。
+5. 全部选中料箱均被扫描后，核对正式 `outbound.bin.return_batch@v1` 请求按实际扫码 FIFO 排序。每个 `READY` 前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回 WMS 分配的精确 slot；部分批次完成后才为剩余 FIFO 申请下一批，`NO_BATCH` 按重试时间使用新 operation identity。
+6. 当前面所有批次的成员均精确成功前，确认不转面；本轮全部选中箱均精确成功前，确认不存在 `CTU03`。核对响应 `returned_bins` 为实际确认槽位，下一轮以这些槽位为来源。
 7. 核对最终只创建一个省略 `target_face` 的 `CTU03`；WMS 返回精确库位和非空实际 `arrival_face` 后轮次才进入
    `COMPLETED`。
 
@@ -102,9 +113,9 @@ WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS �
 
 ```text
 CTU01("90")
-→ 第一组去 CNV0301 / SCAN12 / 原 slot 回架
+→ 第一组去 CNV0301 / SCAN12 / WMS 分配 slot 回架
 → CTU02("270")
-→ 第二组去 CNV0301 / SCAN12 / 原 slot 回架
+→ 第二组去 CNV0301 / SCAN12 / WMS 分配 slot 回架
 → CTU03（省略 target_face）
 ```
 
@@ -132,6 +143,6 @@ CTU01("90")
 - WMS submit/ACK/callback 的 `operation_id`、时间戳和原始 body digest；
 - `SCAN12` Evidence id、`source_event_id`、设备时间戳、barcode、apply status；
 - RCS 对应任务号、实际位置和面向证据；
-- 操作员确认的货架、料箱、原 slot、异常处理和最终业务结论。
+- 操作员确认的工作线、货架、料箱、初始及 WMS 分配 slot、异常处理和最终业务结论。
 
 验收结论必须分别写为“代码/Mock”“已部署”“物理闭环”“业务验收”，禁止合并成一个“已完成”。

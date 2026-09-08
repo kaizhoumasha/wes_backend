@@ -290,7 +290,7 @@ def test_duplicate_does_not_consume_an_armed_submit_mode() -> None:
     assert armed_result.json()["data"]["reason_code"] == "COORDINATED_BIN_EXCHANGE_UNSUPPORTED"
 
 
-def test_transport_submit_is_the_only_wms_business_route_and_requires_no_authentication() -> None:
+def test_wms_business_routes_require_no_authentication() -> None:
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/v1/wes/transport-requests", json=RACK_MOVE)
 
@@ -306,7 +306,7 @@ def test_transport_submit_is_the_only_wms_business_route_and_requires_no_authent
         for route in wms_mock_server.app.routes
         if route.path.startswith("/api/") and not route.path.startswith("/api/v1/wes/transport-requests/")
     }
-    assert business_routes == {"/api/v1/wes/transport-requests"}
+    assert business_routes == {"/api/v1/wes/transport-requests", "/api/v1/wes/decisions"}
 
 
 @pytest.mark.parametrize("envelope", [RACK_ROTATE, BIN_MOVE, BIN_EXCHANGE])
@@ -1119,3 +1119,204 @@ def test_transport_submit_mock_rejects_face_over_ten_characters(face: str) -> No
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/v1/wes/transport-requests", json=envelope)
     assert response.status_code == 422
+
+
+RETURN_BATCH = {
+    "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4510",
+    "operation": "outbound.bin.return_batch@v1",
+    "timestamp": 1700000000000,
+    "data": {
+        "workline_code": "WL01",
+        "rack_id": "rack-1",
+        "rack_face": "90",
+        "return_candidates": [
+            {
+                "sequence_no": i,
+                "bin_code": f"bin-{i}",
+                "source": {"type": "HANDOFF_POSITION", "location_code": f"HP{i}"},
+            }
+            for i in (1, 2)
+        ],
+    },
+}
+
+
+def _pick_return_candidates(client, *, complete=True):
+    envelope = deepcopy(BIN_MOVE)
+    envelope["data"]["moves"] = [
+        {
+            "container_id": f"bin-{i}",
+            "source": {"kind": "RACK_BIN_SLOT", "rack_id": "rack-1", "rack_face": "90", "slot_id": f"slot-{i}"},
+            "target": {"kind": "HANDOFF_POSITION", "location_code": f"HP{i}"},
+        }
+        for i in (1, 2)
+    ]
+    assert client.post("/api/v1/wes/transport-requests", json=envelope).status_code == 202
+    if complete:
+        wms_mock_server.transport_submission_store.apply_result(
+            {
+                "transport_task_id": envelope["data"]["transport_task_id"],
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {"container_id": move["container_id"], "status": "SUCCEEDED", "final_position": move["target"]}
+                    for move in envelope["data"]["moves"]
+                ],
+            }
+        )
+    return envelope
+
+
+def test_return_batch_allocates_free_learned_slots_in_fifo_and_replays_exactly():
+    from src.app.wms_adapter.outbound_picking.return_batch_wire import (
+        parse_bin_return_batch_request,
+        parse_bin_return_batch_response,
+    )
+
+    with TestClient(wms_mock_server.app) as client:
+        _pick_return_candidates(client)
+        first = client.post("/api/v1/wes/decisions", json=RETURN_BATCH)
+        replay = client.post("/api/v1/wes/decisions", json=RETURN_BATCH)
+        changed = deepcopy(RETURN_BATCH)
+        changed["data"]["workline_code"] = "OTHER"
+        conflict = client.post("/api/v1/wes/decisions", json=changed)
+    assert first.status_code == 200
+    parsed = parse_bin_return_batch_response(200, first.json(), request=parse_bin_return_batch_request(RETURN_BATCH))
+    assert [move.target.slot_id for move in parsed.data.moves] == ["slot-2", "slot-1"]
+    assert replay.json() == first.json()
+    assert conflict.status_code == 409
+    assert conflict.json()["data"] == {"reason_code": "IDEMPOTENCY_CONFLICT"}
+    parse_bin_return_batch_response(409, conflict.json())
+
+
+def test_return_batch_does_not_treat_transport_acceptance_as_free_slots():
+    with TestClient(wms_mock_server.app) as client:
+        _pick_return_candidates(client, complete=False)
+        response = client.post("/api/v1/wes/decisions", json=RETURN_BATCH)
+    assert response.status_code == 200
+    assert response.json()["data"]["result"] == "NO_BATCH"
+
+
+def test_return_batch_reservations_prevent_duplicate_allocation_and_reset_clears_state():
+    with TestClient(wms_mock_server.app) as client:
+        _pick_return_candidates(client)
+        assert client.post("/api/v1/wes/decisions", json=RETURN_BATCH).json()["data"]["result"] == "READY"
+        another = deepcopy(RETURN_BATCH)
+        another["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4511"
+        assert client.post("/api/v1/wes/decisions", json=another).json()["data"]["result"] == "NO_BATCH"
+        client.post("/debug/reset")
+        assert client.post("/api/v1/wes/decisions", json=RETURN_BATCH).json()["data"]["result"] == "NO_BATCH"
+
+
+def test_return_batch_rejects_invalid_fifo_with_stable_response():
+    invalid = deepcopy(RETURN_BATCH)
+    invalid["data"]["return_candidates"][0]["sequence_no"] = 2
+    with TestClient(wms_mock_server.app) as client:
+        first = client.post("/api/v1/wes/decisions", json=invalid)
+        replay = client.post("/api/v1/wes/decisions", json=invalid)
+    assert first.status_code == 422
+    assert first.json()["data"] == {"reason_code": "INVALID_DATA"}
+    assert replay.json() == first.json()
+
+
+def test_return_batch_next_cycle_uses_confirmed_slots_and_can_allocate_fifo_prefix():
+    with TestClient(wms_mock_server.app) as client:
+        pick = _pick_return_candidates(client)
+        first = client.post("/api/v1/wes/decisions", json=RETURN_BATCH).json()
+        returned = deepcopy(pick)
+        returned["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4512"
+        returned["data"]["transport_task_id"] = "transport-return"
+        for move, allocation in zip(returned["data"]["moves"], first["data"]["moves"], strict=True):
+            move["source"] = deepcopy(move["target"])
+            move["target"] = {"kind": "RACK_BIN_SLOT", **{k: v for k, v in allocation["target"].items() if k != "type"}}
+        assert client.post("/api/v1/wes/transport-requests", json=returned).status_code == 202
+
+        def complete(envelope):
+            wms_mock_server.transport_submission_store.apply_result(
+                {
+                    "transport_task_id": envelope["data"]["transport_task_id"],
+                    "kind": "BIN_MOVE",
+                    "outcome_revision": 1,
+                    "results": [
+                        {"container_id": m["container_id"], "status": "SUCCEEDED", "final_position": m["target"]}
+                        for m in envelope["data"]["moves"]
+                    ],
+                }
+            )
+
+        complete(returned)
+        next_pick = deepcopy(returned)
+        next_pick["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4513"
+        next_pick["data"]["transport_task_id"] = "transport-next-pick"
+        # 第二轮仅取队首；另一箱仍占据第一轮分配的槽位。
+        next_pick["data"]["moves"] = next_pick["data"]["moves"][:1]
+        for move in next_pick["data"]["moves"]:
+            move["source"], move["target"] = move["target"], move["source"]
+        assert client.post("/api/v1/wes/transport-requests", json=next_pick).status_code == 202
+        complete(next_pick)
+        next_request = deepcopy(RETURN_BATCH)
+        next_request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4514"
+        response = client.post("/api/v1/wes/decisions", json=next_request)
+        assert response.status_code == 200
+        assert [(m["bin_code"], m["target"]["slot_id"]) for m in response.json()["data"]["moves"]] == [
+            ("bin-1", "slot-2")
+        ]
+
+
+@pytest.mark.parametrize("body", [b'{"operation_id":', b'{"operation_id":"a","operation_id":"b"}'])
+def test_return_batch_rejects_malformed_wire_before_identity(body):
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/decisions", content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 400
+    assert response.content == b""
+
+
+def test_transport_submission_snapshots_exclude_return_batch_decisions():
+    with TestClient(wms_mock_server.app) as client:
+        _pick_return_candidates(client)
+        assert client.post("/api/v1/wes/decisions", json=RETURN_BATCH).status_code == 200
+        response = client.get("/debug/transport-submissions")
+    assert response.status_code == 200
+    snapshots = response.json()["submissions"]
+    assert len(snapshots) == 1
+    assert snapshots[0]["operation"] == "transport.task.submit@v1"
+    assert snapshots[0]["transport_task_id"] == BIN_MOVE["data"]["transport_task_id"]
+
+
+def test_return_batch_requires_explicit_infeed_to_return_handoff_arrival():
+    envelope = deepcopy(BIN_MOVE)
+    envelope["data"]["moves"][0]["target"] = {"kind": "HANDOFF_POSITION", "location_code": "CNV0301"}
+    request = deepcopy(RETURN_BATCH)
+    request["data"]["return_candidates"] = request["data"]["return_candidates"][:1]
+    request["data"]["return_candidates"][0]["source"]["location_code"] = "CNV0302"
+    arrival = {
+        "bin_code": "bin-1",
+        "source": {"type": "HANDOFF_POSITION", "location_code": "CNV0301"},
+        "target": {"type": "HANDOFF_POSITION", "location_code": "CNV0302"},
+    }
+    with TestClient(wms_mock_server.app) as client:
+        assert client.post("/api/v1/wes/transport-requests", json=envelope).status_code == 202
+        assert client.post("/debug/bin-handoff-arrivals", json=arrival).status_code == 409
+        wms_mock_server.transport_submission_store.apply_result(
+            {
+                "transport_task_id": envelope["data"]["transport_task_id"],
+                "kind": "BIN_MOVE",
+                "outcome_revision": 1,
+                "results": [
+                    {
+                        "container_id": "bin-1",
+                        "status": "SUCCEEDED",
+                        "final_position": envelope["data"]["moves"][0]["target"],
+                    }
+                ],
+            }
+        )
+        assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "NO_BATCH"
+        wrong_source = deepcopy(arrival)
+        wrong_source["source"]["location_code"] = "OTHER"
+        assert client.post("/debug/bin-handoff-arrivals", json=wrong_source).status_code == 409
+        assert client.post("/debug/bin-handoff-arrivals", json=arrival).status_code == 200
+        assert client.post("/debug/bin-handoff-arrivals", json=arrival).status_code == 200
+        assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "NO_BATCH"
+        request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4515"
+        assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "READY"

@@ -3,8 +3,8 @@ from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
@@ -13,9 +13,6 @@ from src.app.transport.debug_run_evidence import Scan12EvidenceDisposition, Scan
 from src.app.transport.debug_run_service import TransportDebugRunService
 from src.app.transport.models import TransportDebugRun, TransportDebugRunStep, TransportMember, TransportTask
 from src.utils.timezone import timezone
-
-if TYPE_CHECKING:
-    import pytest
 
 NOW = datetime(2026, 9, 2, 12, 0, 0)
 NOT_BEFORE_MS = 1_725_000_000_000
@@ -263,6 +260,8 @@ def _harness(
         active_scope="GLOBAL",
         rack_id="510056",
         configuration_json={
+            "workline_code": "DEBUG-LINE",
+            "workline_id": 1,
             "rack_id": "510056",
             "face_groups": [
                 {
@@ -273,6 +272,15 @@ def _harness(
                     ],
                 }
             ],
+            "return_queues": {"0": ["A000001922", "A000002653"]},
+            "return_batches": {
+                "0": {
+                    "moves": [
+                        {"bin_code": "A000001922", "rack_id": "510056", "rack_face": "90", "slot_id": "SLOT-01"},
+                        {"bin_code": "A000002653", "rack_id": "510056", "rack_face": "90", "slot_id": "SLOT-02"},
+                    ]
+                }
+            },
             "storage_zone": "WH01",
             "workstation": "KT16",
             "infeed_position": "CNV0301",
@@ -727,17 +735,49 @@ async def test_late_scan12_conflict_is_rechecked_after_bin_return_transport_is_b
     assert len(repository.steps) == 1
 
 
-async def test_ambiguous_evidence_needs_attention_and_does_not_auto_clear() -> None:
-    service, repository, _ = _harness(phase="WAIT_SCAN12", status="WAITING")
-    repository.evidences = [_scan(101, "EVENT-A", "A000001922", apply_status="RECONCILING")]
-
+@pytest.mark.parametrize("resolved_status", [InboundEvidenceApplyStatus.APPLIED, InboundEvidenceApplyStatus.IGNORED])
+async def test_reconciled_scan12_reuses_original_run_and_step_after_processing(resolved_status) -> None:
+    service, repository, transport = _harness(phase="WAIT_SCAN12", status="WAITING")
+    repository.evidences = [
+        _scan(101, "EVENT-A", "A000001922", apply_status="RECONCILING"),
+        _scan(102, "EVENT-B", "A000002653"),
+    ]
+    original_step = repository.steps[0]
     assert await service.advance_run("debug-run-1") is True
     assert repository.run.status == "NEEDS_ATTENTION"
     assert repository.run.attention_code == "EVIDENCE_RECONCILING"
-
-    repository.evidences[0].apply_status = InboundEvidenceApplyStatus.APPLIED
     assert await service.advance_run("debug-run-1") is False
+    assert repository.steps == [original_step]
+    assert transport.calls == []
+
+    repository.evidences[0].apply_status = resolved_status
+    assert await service.advance_run("debug-run-1") is True
+    assert repository.run.run_id == "debug-run-1"
+    assert repository.run.status == "RUNNING"
+    assert repository.run.current_phase == "BINS_TO_RACK"
+    assert repository.steps[0] is original_step
+    assert original_step.status == "SUCCEEDED"
+    assert [item["evidence_id"] for item in original_step.observed_bins_json] == [101, 102]
+    assert len(repository.steps) == 2
+    assert repository.run.active_scope == "GLOBAL"
+    assert transport.calls == []
+
+
+async def test_reconciled_scan12_does_not_bypass_new_evidence_conflict() -> None:
+    service, repository, transport = _harness(phase="WAIT_SCAN12", status="WAITING")
+    repository.evidences = [
+        _scan(101, "EVENT-A", "A000001922", apply_status="RECONCILING"),
+        _scan(102, "EVENT-B", "A000002653"),
+    ]
+    assert await service.advance_run("debug-run-1")
+    repository.evidences[0].apply_status = InboundEvidenceApplyStatus.IGNORED
+    repository.conflicting_evidence_ids.add(101)
+    assert await service.advance_run("debug-run-1")
     assert repository.run.status == "NEEDS_ATTENTION"
+    assert repository.run.attention_code == "EVIDENCE_SOURCE_EVENT_CONFLICT"
+    assert len(repository.steps) == 1
+    assert not await service.advance_run("debug-run-1")
+    assert transport.calls == []
 
 
 async def test_scan12_payload_and_evidence_device_identity_conflict_needs_attention() -> None:
@@ -946,3 +986,210 @@ def _scan(
         contract_version="1.0",
         apply_status=InboundEvidenceApplyStatus(apply_status),
     )
+
+
+async def test_wms_return_request_persists_fifo_identity_without_transport_and_waits_on_restart() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    repository.run.configuration_json["return_batches"] = {}
+    repository.run.configuration_json["return_queues"] = {"0": ["A000002653", "A000001922"]}
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+    service._confirmations = SimpleNamespace(
+        get_by_identity_for_update=AsyncMock(return_value=SimpleNamespace(status="PENDING"))
+    )
+    assert await service.advance_run("debug-run-1")
+    call = service._wms.create_or_get.call_args.kwargs
+    assert call["workline_id"] == 1
+    assert call["operation"] == "outbound.bin.return_batch@v1"
+    assert [item["bin_code"] for item in call["request_payload"]["data"]["return_candidates"]] == [
+        "A000002653",
+        "A000001922",
+    ]
+    assert call["request_payload"]["data"]["return_candidates"][0]["source"]["location_code"] == "CNV0302"
+    assert not await service.advance_run("debug-run-1")
+    assert service._wms.create_or_get.await_count == 1
+    assert transport.calls == []
+    assert repository.run.configuration_json["return_batches"]["0"]["operation_id"] == call["operation_id"]
+
+
+async def test_wms_no_batch_waits_then_creates_new_operation_without_changing_transport_identity() -> None:
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    repository.run.configuration_json["return_batches"] = {}
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+    await service.advance_run("debug-run-1")
+    first = service._wms.create_or_get.call_args.kwargs
+    response = {
+        "operation_id": first["operation_id"],
+        "code": "DECIDED",
+        "timestamp": NOT_BEFORE_MS,
+        "data": {"result": "NO_BATCH", "retry_after_ms": 1000},
+    }
+    service._confirmations = SimpleNamespace(
+        get_by_identity_for_update=AsyncMock(
+            return_value=SimpleNamespace(
+                status="COMPLETED", request_payload=first["request_payload"], response_evidence_id=11
+            )
+        )
+    )
+    service._wms_evidence = SimpleNamespace(
+        get_by_id_without_lock=AsyncMock(return_value=SimpleNamespace(normalized_payload=response))
+    )
+    assert await service.advance_run("debug-run-1")
+    assert not await service.advance_run("debug-run-1")
+    service._clock = lambda: NOW + timedelta(seconds=1)
+    assert await service.advance_run("debug-run-1")
+    assert service._wms.create_or_get.call_args.kwargs["operation_id"] != first["operation_id"]
+    assert repository.steps[0].client_request_id == CLIENT_IDS[0]
+    assert transport.calls == []
+
+
+async def test_partial_wms_ready_freezes_target_and_remaining_fifo_waits_for_physical_success() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    repository.run.configuration_json["return_batches"] = {}
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+    await service.advance_run("debug-run-1")
+    first = service._wms.create_or_get.call_args.kwargs
+    response = {
+        "operation_id": first["operation_id"],
+        "code": "DECIDED",
+        "timestamp": NOT_BEFORE_MS,
+        "data": {
+            "result": "READY",
+            "moves": [
+                {
+                    "sequence_no": 1,
+                    "bin_code": "A000001922",
+                    "target": {
+                        "type": "RACK_BIN_SLOT",
+                        "rack_id": "510056",
+                        "rack_face": "90",
+                        "slot_id": "ALLOCATED-NEW",
+                    },
+                }
+            ],
+        },
+    }
+    service._confirmations = SimpleNamespace(
+        get_by_identity_for_update=AsyncMock(
+            return_value=SimpleNamespace(
+                status="COMPLETED", request_payload=first["request_payload"], response_evidence_id=11
+            )
+        )
+    )
+    service._wms_evidence = SimpleNamespace(
+        get_by_id_without_lock=AsyncMock(return_value=SimpleNamespace(normalized_payload=response))
+    )
+    assert await service.advance_run("debug-run-1")
+    assert transport.calls == []
+    assert await service.advance_run("debug-run-1")
+    assert len(repository.steps) == 1
+    repository.tasks["transport-1"] = _task("transport-1", CLIENT_IDS[0], "BIN_MOVE", status="SUCCEEDED")
+    repository.members["transport-1"] = [
+        _member(
+            "transport-1",
+            object_type="BIN",
+            object_id="A000001922",
+            source={"kind": "HANDOFF_POSITION", "location_code": "CNV0302"},
+            target={"kind": "RACK_BIN_SLOT", "rack_id": "510056", "rack_face": "90", "slot_id": "ALLOCATED-NEW"},
+            face=None,
+        )
+    ]
+    assert await service.advance_run("debug-run-1")
+    snapshot = await service.get_run("debug-run-1")
+    assert snapshot.current_phase == "BINS_TO_RACK"
+    assert len(snapshot.steps) == 2
+    assert snapshot.returned_bins == (
+        {"bin_code": "A000001922", "rack_id": "510056", "rack_face": "90", "slot_id": "ALLOCATED-NEW"},
+    )
+    assert await service.advance_run("debug-run-1")
+    candidates = service._wms.create_or_get.call_args.kwargs["request_payload"]["data"]["return_candidates"]
+    assert [(item["sequence_no"], item["bin_code"]) for item in candidates] == [(1, "A000002653")]
+
+
+async def test_unknown_wms_allocation_retains_scope_and_prevents_physical_abort() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.app.transport.debug_run_service import TransportDebugRunConflict
+
+    service, repository, _ = _harness(phase="BINS_TO_RACK")
+    repository.run.status = "NEEDS_ATTENTION"
+    repository.run.configuration_json["return_batches"] = {"0": {"operation_id": CLIENT_IDS[1]}}
+    service._confirmations = SimpleNamespace(
+        get_by_identity_for_update=AsyncMock(return_value=SimpleNamespace(status="RECONCILING"))
+    )
+    assert not (await service.get_run("debug-run-1")).can_abort
+    with pytest.raises(TransportDebugRunConflict, match="unresolved WMS"):
+        await service.abort_run("debug-run-1", assertion="PHYSICAL_STATE_VERIFIED", reason="checked", actor_id=7)
+    assert repository.run.active_scope == "GLOBAL"
+
+
+@pytest.mark.parametrize("task_id", [None, "transport-original"])
+async def test_legacy_run_freezes_for_upgrade_without_recreating_return_task(task_id: str | None) -> None:
+    service, repository, transport = _harness(phase="BINS_TO_RACK", task_id=task_id)
+    if task_id is None:
+        repository.run.configuration_json.pop("workline_code")
+    repository.run.configuration_json.pop("return_batches")
+    original_id = repository.steps[0].client_request_id
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.status == "NEEDS_ATTENTION"
+    assert repository.run.attention_code == "DEBUG_RUN_CONFIGURATION_UPGRADE_REQUIRED"
+    assert repository.run.active_scope == "GLOBAL"
+    assert repository.steps[0].client_request_id == original_id
+    assert repository.steps[0].transport_task_id == task_id
+    assert not await service.advance_run("debug-run-1")
+    assert transport.calls == []
+
+
+async def test_invalid_wms_owner_recovers_before_any_obligation_without_replacing_transport_identity() -> None:
+    from unittest.mock import AsyncMock
+
+    service, repository, transport = _harness(phase="BINS_TO_RACK")
+    repository.run.configuration_json["return_batches"] = {}
+    service._wms = SimpleNamespace(create_or_get=AsyncMock(side_effect=ValueError("WorkLine owner 不匹配或已关闭")))
+    original_step = repository.steps[0]
+    original_client_id = original_step.client_request_id
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.attention_code == "WMS_RETURN_OWNER_INVALID"
+    assert not await service.advance_run("debug-run-1")
+    assert transport.calls == []
+    assert repository.run.configuration_json["return_batches"] == {}
+    assert repository.steps == [original_step]
+
+    service._wms.create_or_get.side_effect = None
+    service._confirmations = SimpleNamespace(
+        get_by_identity_for_update=AsyncMock(return_value=SimpleNamespace(status="PENDING"))
+    )
+    assert await service.advance_run("debug-run-1")
+    assert original_step.client_request_id == original_client_id
+    assert repository.steps == [original_step]
+    assert repository.run.run_id == "debug-run-1"
+    call = service._wms.create_or_get.call_args.kwargs
+    assert repository.run.configuration_json["return_batches"]["0"]["operation_id"] == call["operation_id"]
+    assert repository.run.status == "RUNNING"
+    assert repository.run.attention_code is None
+    assert original_step.status == "PENDING"
+    successful_create_count = service._wms.create_or_get.await_count
+    assert not await service.advance_run("debug-run-1")
+    assert service._wms.create_or_get.await_count == successful_create_count
+    assert transport.calls == []
+
+
+async def test_unknown_wms_obligation_does_not_use_owner_admission_recovery() -> None:
+    service, repository, transport = _harness(phase="BINS_TO_RACK", status="NEEDS_ATTENTION")
+    repository.run.status = "NEEDS_ATTENTION"
+    repository.run.attention_code = "WMS_RETURN_RECONCILING"
+    repository.run.configuration_json["return_batches"] = {"0": {"operation_id": CLIENT_IDS[1]}}
+    assert not await service.advance_run("debug-run-1")
+    assert repository.run.active_scope == "GLOBAL"
+    assert repository.run.configuration_json["return_batches"]["0"]["operation_id"] == CLIENT_IDS[1]
+    assert transport.calls == []

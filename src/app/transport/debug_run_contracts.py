@@ -60,10 +60,13 @@ class TransportDebugFaceGroup:
 
 @dataclass(frozen=True, slots=True)
 class CreateTransportDebugRun:
+    workline_code: str
     rack_id: str
     face_groups: tuple[TransportDebugFaceGroup, ...]
 
     def __post_init__(self) -> None:
+        if not self.workline_code.strip():
+            raise ValueError("工作线编码不能为空")
         if not self.rack_id.strip():
             raise ValueError("货架编码不能为空")
         if not self.face_groups:

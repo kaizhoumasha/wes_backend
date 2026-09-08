@@ -12,6 +12,7 @@ from src.app.transport.debug_run_service import TransportDebugRunService
 from src.app.transport.models import TransportDebugRun, TransportDebugRunStep, TransportMember, TransportTask
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
+from tests.integration.transport.debug_return_support import debug_workline
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,7 +23,9 @@ class _Publisher:
         return True
 
 
-async def test_recovery_reuses_same_task_and_creates_only_next_step(integration_session_factory: Any) -> None:
+async def test_recovery_reuses_same_task_and_creates_only_next_step(
+    integration_session_factory: Any, debug_workline: int
+) -> None:
     suffix = uuid.uuid4().hex
     run_id = f"debug-recovery-{suffix}"
     task_id = f"transport-recovery-{suffix}"
@@ -34,6 +37,8 @@ async def test_recovery_reuses_same_task_and_creates_only_next_step(integration_
         active_scope="GLOBAL",
         rack_id="510056",
         configuration_json={
+            "workline_code": "DEBUG-LINE",
+            "workline_id": debug_workline,
             "rack_id": "510056",
             "face_groups": [{"face": "90", "bins": [{"bin_code": "A", "slot_id": "S"}]}],
             "storage_zone": "WH01",

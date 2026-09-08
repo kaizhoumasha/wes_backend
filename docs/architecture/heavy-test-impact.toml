@@ -920,6 +920,7 @@ heavy_tests = [
     "tests/integration/transport/test_transport_debug_auto_run.py",
     "tests/integration/transport/test_transport_debug_run_recovery.py",
     "tests/integration/transport/test_transport_debug_run_service.py",
+    "tests/integration/transport/test_transport_debug_run_real_loop.py",
 ]
 
 [[mapping]]
@@ -931,6 +932,7 @@ heavy_tests = [
     "tests/integration/transport/test_transport_debug_run_repository.py",
     "tests/integration/transport/test_transport_debug_run_schema.py",
     "tests/integration/transport/test_transport_debug_run_service.py",
+    "tests/integration/transport/test_transport_debug_run_real_loop.py",
 ]
 
 [[mapping]]
@@ -940,6 +942,7 @@ heavy_tests = [
     "tests/integration/transport/test_transport_debug_auto_run.py",
     "tests/integration/transport/test_transport_debug_run_recovery.py",
     "tests/integration/transport/test_transport_debug_run_service.py",
+    "tests/integration/transport/test_transport_debug_run_real_loop.py",
 ]
 
 # 联调任务完整链路清理由 API Service/Repository 与 CLI raw-SQL 两条 PostgreSQL owner 共同承接。
@@ -2535,4 +2538,13 @@ heavy_tests = [
     "tests/integration/transport/test_transport_schema.py",
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",
     "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+]
+
+
+[[mapping]]
+source_glob = "tests/integration/transport/debug_return_support.py"
+heavy_tests = [
+    "tests/integration/transport/test_transport_debug_run_recovery.py",
+    "tests/integration/transport/test_transport_debug_auto_run.py",
+    "tests/integration/transport/test_transport_debug_run_real_loop.py",
 ]

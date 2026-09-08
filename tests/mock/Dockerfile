@@ -46,6 +46,10 @@ COPY src/wes_plugin_sdk/src/wes_plugin_sdk/ /app/wes_plugin_sdk/
 COPY src/static/swagger-ui/ /app/src/static/swagger-ui/
 # WMS Transport Mock 复用基础线协议能力，不依赖旧业务 operation registry。
 COPY src/app/wms_adapter/strict_json.py /app/src/app/wms_adapter/strict_json.py
+COPY src/app/wms_adapter/wire_common.py /app/src/app/wms_adapter/wire_common.py
+COPY src/app/wms_adapter/outbound_picking/return_batch_wire.py /app/src/app/wms_adapter/outbound_picking/return_batch_wire.py
+COPY src/app/wms_adapter/outbound_picking/response_wire.py /app/src/app/wms_adapter/outbound_picking/response_wire.py
+COPY src/app/wms_adapter/outbound_picking/wire.py /app/src/app/wms_adapter/outbound_picking/wire.py
 COPY src/app/wms_adapter/transport_openapi.py /app/src/app/wms_adapter/transport_openapi.py
 COPY src/app/wms_adapter/transport_wire.py /app/src/app/wms_adapter/transport_wire.py
 COPY src/app/transport/callback_json.py /app/src/app/transport/callback_json.py

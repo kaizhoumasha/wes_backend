@@ -57,6 +57,25 @@ def _run(*, phase: str = "RACK_TO_STATION", group_index: int = 0) -> TransportDe
                     "bins": [{"bin_code": "A000003001", "slot_id": "510056A2F2C101"}],
                 },
             ],
+            "return_batches": {
+                "0": {
+                    "moves": [
+                        {
+                            "bin_code": "A000001922",
+                            "rack_id": "510056",
+                            "rack_face": " 90 ",
+                            "slot_id": "510056A3F2C101",
+                        },
+                        {
+                            "bin_code": "A000002653",
+                            "rack_id": "510056",
+                            "rack_face": " 90 ",
+                            "slot_id": "510056A3F2C102",
+                        },
+                    ]
+                }
+            },
+            "returned_bins": [{"bin_code": code} for code in ("A000001922", "A000002653", "A000003001")],
             "storage_zone": "WH01",
             "workstation": "KT16",
             "infeed_position": "CNV0301",
@@ -386,3 +405,25 @@ def test_ctu03_with_requested_orientation_rejects_a_different_arrival_face() -> 
 
     with pytest.raises(TransportContractError, match="successful arrival face differs from frozen target"):
         _validate_result_frozen_identity(task, [member], {"510056": result})
+
+
+def test_return_transport_requires_wms_allocation_and_uses_exact_partial_target() -> None:
+    run = _run()
+    step = _step("BINS_TO_RACK")
+    run.configuration_json.pop("return_batches")
+    with pytest.raises(TransportContractError, match="allocation"):
+        build_debug_transport_request(run, step)
+    run.configuration_json["return_batches"] = {
+        "0": {"moves": [{"bin_code": "A000001922", "rack_id": "510056", "rack_face": " 90 ", "slot_id": "NEW-SLOT"}]}
+    }
+    request = build_debug_transport_request(run, step)
+    assert isinstance(request, MoveBinsRequest)
+    assert len(request.moves) == 1
+    assert request.moves[0].target == RackBinSlot("510056", " 90 ", "NEW-SLOT")
+
+
+def test_partial_return_keeps_current_face_until_all_bins_confirmed() -> None:
+    run = _run()
+    step = _step("BINS_TO_RACK")
+    run.configuration_json["returned_bins"] = [{"bin_code": "A000001922"}]
+    assert next_debug_step(run, step) == ("BINS_TO_RACK", 0)

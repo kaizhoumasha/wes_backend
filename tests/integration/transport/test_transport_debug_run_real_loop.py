@@ -44,6 +44,7 @@ from src.app.wms_adapter.transport_wire import POSITION_OPERATION, RESULT_OPERAT
 from src.app.workline.models.workline import LineType, WorkLine
 from src.core.uuid7 import new_uuid7
 from src.utils.timezone import timezone
+from tests.integration.transport.debug_return_support import debug_workline, freeze_return_allocation
 from tests.support.transport_callbacks import record_valid_callback
 
 if TYPE_CHECKING:
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 
     from src.app.transport.composition import TransportRuntime
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio, pytest.mark.usefixtures("debug_workline")]
 
 
 @dataclass
@@ -173,6 +174,8 @@ async def _complete_transport_step(
     phase = before.current_phase
     assert phase is not TransportDebugRunPhase.WAIT_SCAN12
     if before.current_step is None or before.current_step.transport_task_id is None:
+        if phase is TransportDebugRunPhase.BINS_TO_RACK:
+            await freeze_return_allocation(debug_run_service, run_id)
         assert await debug_run_service.advance_run(run_id) is True
 
     waiting = await debug_run_service.get_run(run_id)
@@ -387,6 +390,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
             event_publisher=_EventPublisher(),
         )
         request = CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id=rack_id,
             face_groups=(
                 TransportDebugFaceGroup(
@@ -532,6 +536,7 @@ async def test_existing_rack_task_prevents_auto_run_creation_atomically(
             event_publisher=_EventPublisher(),
         )
         request = CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id=rack_id,
             face_groups=(
                 TransportDebugFaceGroup(
@@ -581,6 +586,7 @@ async def test_concurrent_rack_task_and_auto_run_have_exactly_one_owner(
             event_publisher=_EventPublisher(),
         )
         request = CreateTransportDebugRun(
+            workline_code="DEBUG-LINE",
             rack_id=rack_id,
             face_groups=(
                 TransportDebugFaceGroup(
