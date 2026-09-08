@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1.0] - 2026-09-08
+
+### Fixed
+
+- Mock 镜像补齐共享协议所需的纯观察模块；协议导入不再提前加载宿主时钟配置，宿主创建观察的时间语义保持不变。
+- 按 Docker COPY 清单隔离导入两个 Mock 服务，覆盖此前仅在宿主环境测试无法发现的缺失依赖。
+
+### Verification
+
+- 聚焦回归 25 passed；所选 HEAVY 145 passed、零跳过；真实 Mock 镜像可独立导入 WMS/ECS 服务且不加载宿主配置。
+- 无数据库迁移或协议字段变化；未部署。
+
 ## [0.37.0.0] - 2026-09-08
 
 ### Added
