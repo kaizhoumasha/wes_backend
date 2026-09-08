@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0.0] - 2026-09-07
+
+### Added
+
+- 超级用户可分页查询设备接入历史，按设备、命令、事件类型和当前 Evidence 状态过滤，并关联当时请求与当前处理状态。
+- 设备回调复用 CallbackLog 保存脱敏尝试；没有请求历史的既有 Evidence 单独展示，不伪造历史 ACK。历史存储失败不改变既有设备回调语义。
+
+### Verification
+
+- 聚焦回归 81 passed；QUALITY FAST 3340 passed、5 skipped；最终 HEAVY 57 passed、零跳过，包含真实 callback 历史入库。
+- 无数据库迁移；新增只读历史接口，实时 SSE 保持无 replay。未部署；前端接入与现场验收不在本次后端交付范围。
+
 ## [0.35.0.0] - 2026-09-07
 
 ### Added
