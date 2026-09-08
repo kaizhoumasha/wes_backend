@@ -162,9 +162,11 @@ class UniformEcsServer(ThreadingHTTPServer):
 class WesCallbackServer:
     """在真实 TCP 端口运行生产 ECS callback handler。"""
 
-    def __init__(self, *, session_factory: Any) -> None:
+    def __init__(self, *, session_factory: Any, task_queue_gateway: Any = None) -> None:
         app = FastAPI()
-        app.state.device_evidence_service = DeviceEvidenceService(session_factory=session_factory)
+        app.state.device_evidence_service = DeviceEvidenceService(
+            session_factory=session_factory, task_queue_gateway=task_queue_gateway
+        )
         app.include_router(ecs_callback_router, prefix="/api/v1/callback")
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

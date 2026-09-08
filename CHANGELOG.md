@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0.0] - 2026-09-07
+
+### Added
+
+- DeviceCommand、Transport 和自动联调在事务提交后主动唤醒后续处理，减少等待定时扫描的延迟；满批继续处理，发布失败由既有扫描兜底。
+- 唤醒消息不携带业务快照，保留原任务身份、数据库领取、事务回滚与物理事实约束。
+
+### Verification
+
+- 聚焦回归 430 passed；QUALITY FAST 3331 passed、5 skipped；最终 HEAVY 229 passed、零跳过。
+- 真实 broker/worker 验证设备与运输闭环、debug 扫描通道和结果发布；无数据库迁移，未部署、未进行现场验收。
+
 ## [0.34.1.0] - 2026-09-07
 
 ### Fixed

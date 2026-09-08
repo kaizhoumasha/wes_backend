@@ -499,6 +499,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py}"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/test_celery_async_runtime_postgresql.py",
@@ -597,6 +598,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/device/services/device_evidence_service.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
@@ -606,6 +608,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/device/services/device_command_service.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/device_command/test_event_command_blocking_reconciliation_postgresql.py",
@@ -858,7 +861,8 @@ heavy_tests = []
 
 [[mapping]]
 source_glob = "src/app/transport/{__init__.py,composition.py}"
-heavy_tests = ["tests/e2e/transport/test_transport_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py","tests/e2e/transport/test_transport_production_wiring.py"]
 
 [[mapping]]
 source_glob = "src/app/transport/v1/{__init__.py,tasks.py,evidence_stream.py,debug_runs.py}"
@@ -899,6 +903,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/transport/service.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/execution/test_decision_processing_postgresql.py",
     "tests/integration/transport/test_transport_debug_auto_run.py",
@@ -938,6 +943,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/transport/debug_run_service.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/transport/test_transport_debug_auto_run.py",
     "tests/integration/transport/test_transport_debug_run_recovery.py",
@@ -1743,6 +1749,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/celery_app/tasks/transport.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/test_transport_fulfillment_queue.py",
 ]
@@ -1951,6 +1958,7 @@ reviewed_content_sha256 = "6c92c5d4e5fabb5daac2dff5bf19a9d5bf31605da6d6150e3ce93
 [[mapping]]
 source_glob = "src/core/task_queue_gateway.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
 ]
@@ -1985,6 +1993,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "tests/support/transport_broker.py"
 heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/test_transport_broker_harness_cleanup.py",
     "tests/integration/test_transport_fulfillment_queue.py",
@@ -1992,11 +2001,12 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/celery_app/tasks/device_command.py"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = [
+    "tests/e2e/test_active_dispatch_wakeup.py","tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 [[mapping]]
 source_glob = "tests/support/ecs_uniform_wire.py"
-heavy_tests = ["tests/e2e/device_command/test_device_command_production_wiring.py"]
+heavy_tests = ["tests/e2e/test_active_dispatch_wakeup.py", "tests/e2e/device_command/test_device_command_production_wiring.py"]
 
 [[mapping]]
 source_glob = "tests/{e2e,integration}/device_command/__init__.py"
@@ -2554,3 +2564,9 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/wms_adapter/callback_receipt_service.py"
 heavy_tests = ["tests/integration/wms_adapter/test_transport_callback_receipts.py"]
+
+
+# 提交后主动唤醒的真实 worker 闭环（不启动 Beat）。
+[[mapping]]
+source_glob = "src/core/transaction_wakeup.py"
+heavy_tests = ["tests/e2e/test_active_dispatch_wakeup.py"]

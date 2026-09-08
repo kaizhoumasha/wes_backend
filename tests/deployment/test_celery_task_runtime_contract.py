@@ -338,3 +338,30 @@ def test_transport_debug_run_scanner_uses_current_runtime_with_fixed_batch(
 
     with pytest.raises(ValueError, match="Transport batch limit must be 100"):
         module.advance_transport_debug_runs_batch.run(limit=99)
+
+
+@pytest.mark.parametrize(
+    ("module_name", "task_name", "wake_name", "count", "expected"),
+    [
+        ("transport", "submit_transport_tasks_batch", "enqueue_transport_submit", 1, True),
+        ("transport", "submit_transport_tasks_batch", "enqueue_transport_submit", 0, False),
+        ("transport", "process_transport_evidence_batch", "enqueue_transport_evidence", 100, True),
+        ("transport", "process_transport_evidence_batch", "enqueue_transport_evidence", 1, False),
+        ("transport", "publish_transport_outcomes_batch", "enqueue_transport_outcomes", 100, True),
+        ("device_command", "dispatch_device_commands_batch", "enqueue_device_commands", 100, True),
+        ("device_command", "dispatch_device_commands_batch", "enqueue_device_commands", 0, False),
+        ("device_command", "process_device_evidence_batch", "enqueue_device_evidence", 100, True),
+        ("device_command", "process_device_evidence_batch", "enqueue_device_evidence", 1, False),
+    ],
+)
+def test_ready_backlog_continues_but_empty_or_partial_scan_stops(
+    monkeypatch, module_name, task_name, wake_name, count, expected
+):
+    from unittest.mock import Mock
+
+    module = importlib.import_module(f"src.celery_app.tasks.{module_name}")
+    monkeypatch.setattr(module, "run_async", lambda factory: count)
+    gateway = Mock()
+    monkeypatch.setattr(module, "task_queue_gateway", gateway)
+    assert getattr(module, task_name).run() == count
+    assert getattr(gateway, wake_name).call_count == int(expected)

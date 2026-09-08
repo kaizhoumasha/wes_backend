@@ -1460,3 +1460,35 @@ async def test_debug_reset_rejects_task_linked_to_active_debug_run_before_delete
         await service.reset_debug_task("transport-guarded")
 
     assert repository.delete_called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit", [True, False])
+async def test_transport_creation_wakes_dispatch_only_after_caller_commit(service, db_engine, commit):
+    from unittest.mock import Mock
+
+    from src.core import transaction_wakeup
+
+    queue = Mock()
+    service._task_queue = queue
+    sessions = async_sessionmaker(db_engine, expire_on_commit=False)
+    async with sessions() as db:
+        await db.begin()
+        workline_id = await ensure_projection_authority(db)
+        await service.move_rack_in_session(
+            db,
+            new_uuid7(),
+            _caller(),
+            "rack-wake",
+            RackPosition("A"),
+            RackPosition("B"),
+            "90",
+            execution_authority=TransportExecutionAuthority(workline_id=workline_id),
+        )
+        queue.enqueue_transport_submit.assert_not_called()
+        if commit:
+            await db.commit()
+        else:
+            await db.rollback()
+    await asyncio.gather(*tuple(transaction_wakeup._pending))
+    assert queue.enqueue_transport_submit.call_count == int(commit)

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
 from src.core.logger import logger
+from src.core.task_queue_gateway import task_queue_gateway
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -104,6 +105,7 @@ async def build_transport_runtime(
             session_factory,
             repository,
             adapter,
+            task_queue_gateway=task_queue_gateway,
             position_projections=position_projection_service,
             debug_run_guard=debug_run_repository,
         )
@@ -113,6 +115,7 @@ async def build_transport_runtime(
             session_factory,
             debug_run_repository,
             service,
+            task_queue_gateway=task_queue_gateway,
         )
         handler = TransportEventHandler(service)
         return TransportRuntime(

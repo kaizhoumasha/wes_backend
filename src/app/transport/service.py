@@ -69,6 +69,7 @@ from src.app.transport.models import (
 )
 from src.app.transport.submit_snapshot import build_submit_data, build_submit_request_body, request_body_digest
 from src.core.exceptions import NotFoundException
+from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import new_uuid7
 from src.utils.canonical_json import canonical_json_digest
 from src.utils.timezone import timezone
@@ -78,6 +79,7 @@ if TYPE_CHECKING:
 
     from src.app.transport.contracts import TransportOutcomePublisher, TransportProviderPort
     from src.app.transport.repository import TransportRepository
+    from src.core.task_queue_gateway import TaskQueueGateway
 
 _CLAIM_SECONDS = 30
 _SUBMIT_TIMEOUT_SECONDS = 10
@@ -187,6 +189,7 @@ class TransportService:
         position_projections: PositionProjectionPort | None = None,
         event_publisher: TransportEventPublisher = event_stream_service,
         debug_run_guard: TransportDebugRunGuardPort | None = None,
+        task_queue_gateway: TaskQueueGateway | None = None,
     ) -> None:
         if position_projections is None:
             from src.app.execution.services.position_projection_service import position_projection_service
@@ -202,6 +205,7 @@ class TransportService:
         self._position_projections = position_projections
         self._event_publisher = event_publisher
         self._debug_run_guard = debug_run_guard
+        self._task_queue = task_queue_gateway
 
     async def move_rack(
         self,
@@ -668,6 +672,10 @@ class TransportService:
                     has_evidence=has_evidence,
                     operation_id=operation_id,
                 )
+                if self._task_queue is not None:
+                    defer_wakeup(db, self._task_queue.enqueue_transport_debug)
+                    if current.outcome_version > current.published_outcome_version:
+                        defer_wakeup(db, self._task_queue.enqueue_transport_outcomes)
                 if current.status in {"REJECTED", "SUCCEEDED", "FAILED"}:
                     await self._repository.release_bindings(db, task_id, now=writeback_now)
             processed += 1
@@ -752,6 +760,9 @@ class TransportService:
                         reason_code=task.reason_code,
                     )
                     processed += 1
+                if update_event is not None and self._task_queue is not None:
+                    defer_wakeup(db, self._task_queue.enqueue_transport_debug)
+                    defer_wakeup(db, self._task_queue.enqueue_transport_outcomes)
             if update_event is not None:
                 try:
                     await self._event_publisher.publish_to(
@@ -866,6 +877,8 @@ class TransportService:
                         received_at=now,
                     ),
                 )
+                if self._task_queue is not None:
+                    defer_wakeup(db, self._task_queue.enqueue_transport_evidence)
         except IntegrityError:
             # 并发重放由数据库唯一约束裁决；回滚后读取首个已提交收据。
             async with self._sessions.begin() as db:
@@ -1003,7 +1016,7 @@ class TransportService:
                     return _idempotent_handle(existing, request_digest)
             raise TransportResourceConflict("transport resource is already active") from error
 
-    async def _create_task_in_session(
+    async def _create_task_in_session(  # noqa: PLR0912 - closed admission branches plus post-commit wake
         self,
         db: AsyncSession,
         request: TransportRequest,
@@ -1102,6 +1115,8 @@ class TransportService:
                 raise TransportContractError("debug rack face override requires TRANSPORT_DEBUG BIN_MOVE")
             if allow_debug_rack_face:
                 await self._repository.add_aggregate(db, task, members, bindings)
+                if self._task_queue is not None:
+                    defer_wakeup(db, self._task_queue.enqueue_transport_submit)
                 return TransportHandle(task_id, request.client_request_id)
             for rack_id, requested_face in sorted(_rack_faces_for_bin_request(request).items()):
                 projection = await self._get_rack_position_fact(
@@ -1119,6 +1134,8 @@ class TransportService:
                 if projection.arrival_face != requested_face:
                     raise TransportContractError("rack current face does not match request")
         await self._repository.add_aggregate(db, task, members, bindings)
+        if self._task_queue is not None:
+            defer_wakeup(db, self._task_queue.enqueue_transport_submit)
         return TransportHandle(task_id, request.client_request_id)
 
     async def _get_rack_position_fact(

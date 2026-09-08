@@ -231,6 +231,10 @@ def test_fulfillment_queue_initializes_target_transport_without_device_runtime(m
     assert runtime.transport_runtime is infra.transport_runtimes[0]
     runtime.shutdown()
     infra.transport_runtimes[0].aclose.assert_awaited_once()
+    from src.core.task_queue_gateway import task_queue_gateway
+
+    service = infra.build_deployment_runtime.call_args.kwargs["device_command_service"]
+    assert service._task_queue is task_queue_gateway
 
 
 def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:

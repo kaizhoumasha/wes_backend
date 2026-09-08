@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime, run_async
+from src.core.task_queue_gateway import task_queue_gateway
+from src.core.transaction_wakeup import publish_wakeup
 
 if TYPE_CHECKING:
     from src.app.transport.contracts import TransportOutcomePublisher
@@ -40,7 +42,11 @@ def submit_transport_tasks_batch(limit: int = 100) -> int:
     async def _submit() -> int:
         return await _current_transport_service().submit_pending_tasks(limit)
 
-    return run_async(_submit)
+    processed = run_async(_submit)
+    # HTTP 时间预算可能在满批之前耗尽；非空批次续扫，空批次停止。
+    if processed:
+        publish_wakeup(task_queue_gateway.enqueue_transport_submit)
+    return processed
 
 
 @celery_app.task(name="src.celery_app.tasks.transport.advance_transport_debug_runs_batch")
@@ -63,7 +69,10 @@ def process_transport_evidence_batch(limit: int = 100) -> int:
     async def _process() -> int:
         return await _current_transport_service().process_pending_evidence(limit)
 
-    return run_async(_process)
+    processed = run_async(_process)
+    if processed == limit:
+        publish_wakeup(task_queue_gateway.enqueue_transport_evidence)
+    return processed
 
 
 @celery_app.task(name="src.celery_app.tasks.transport.reconcile_transport_tasks_batch")
@@ -83,7 +92,10 @@ def publish_transport_outcomes_batch(limit: int = 100) -> int:
     async def _publish() -> int:
         return await _current_transport_service().publish_pending_outcomes(limit, _current_outcome_publisher())
 
-    return run_async(_publish)
+    processed = run_async(_publish)
+    if processed == limit:
+        publish_wakeup(task_queue_gateway.enqueue_transport_outcomes)
+    return processed
 
 
 __all__ = [

@@ -150,12 +150,16 @@ class _TaskQueue:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.execution_wakes = 0
         self.wms_wakes = 0
+        self.transport_debug_wakes = 0
         self.error = error
 
     def enqueue_execution_facts(self) -> None:
         self.execution_wakes += 1
         if self.error is not None:
             raise self.error
+
+    def enqueue_transport_debug(self) -> None:
+        self.transport_debug_wakes += 1
 
     def enqueue_wms_confirmations(self) -> None:
         self.wms_wakes += 1
@@ -657,3 +661,26 @@ async def test_inflight_identity_conflict_fences_late_response_in_fast_dispatch(
 
     confirmation.claim_token = "stale-late-response"
     assert await repository.get_claimed_for_update(object(), confirmation.id, "stale-late-response") is None
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+async def test_wms_writeback_wakes_transport_debug_only_after_commit(rollback):
+    import asyncio
+    from unittest.mock import Mock
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from src.core.transaction_wakeup import _pending
+
+    gateway = Mock()
+    service = WmsConfirmationService(task_queue_gateway=gateway)
+    try:
+        async with service._execution_wake_transaction(async_sessionmaker()):
+            gateway.enqueue_transport_debug.assert_not_called()
+            if rollback:
+                raise ValueError("rollback")
+    except ValueError:
+        assert rollback
+    if _pending:
+        await asyncio.gather(*tuple(_pending))
+    assert gateway.enqueue_transport_debug.call_count == (0 if rollback else 1)

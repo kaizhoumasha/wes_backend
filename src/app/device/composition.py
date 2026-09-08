@@ -139,7 +139,9 @@ def build_device_command_runtime(
         transport_factory=transport_factory,
         adapter_factory=adapter_factory,
     )
-    command_service = DeviceCommandService(session_factory=session_factory, adapter_provider=provider)
+    command_service = DeviceCommandService(
+        session_factory=session_factory, adapter_provider=provider, task_queue_gateway=task_queue_gateway
+    )
     return DeviceCommandRuntime(
         provider=provider,
         command_service=command_service,

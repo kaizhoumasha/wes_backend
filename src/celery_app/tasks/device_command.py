@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import celery_async_runtime, run_async
+from src.core.task_queue_gateway import task_queue_gateway
+from src.core.transaction_wakeup import publish_wakeup
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -39,7 +41,10 @@ def dispatch_device_commands_batch(limit: int = 100) -> int:
             processed += 1
         return processed
 
-    return run_async(_dispatch)
+    processed = run_async(_dispatch)
+    if processed == limit:
+        publish_wakeup(task_queue_gateway.enqueue_device_commands)
+    return processed
 
 
 @celery_app.task(name="src.celery_app.tasks.device_command.process_device_evidence_batch")
@@ -55,7 +60,10 @@ def process_device_evidence_batch(limit: int = 100) -> int:
             processed += 1
         return processed
 
-    return run_async(_process)
+    processed = run_async(_process)
+    if processed == limit:
+        publish_wakeup(task_queue_gateway.enqueue_device_evidence)
+    return processed
 
 
 @celery_app.task(name="src.celery_app.tasks.device_command.reconcile_device_commands_batch")

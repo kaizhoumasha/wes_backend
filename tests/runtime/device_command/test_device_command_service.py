@@ -642,3 +642,28 @@ async def test_event_debug_command_records_existing_command_without_creating_pla
         blocking_reconciliation_reason="DELIVERY_UNKNOWN",
     )
     assert repository.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit", [True, False])
+async def test_device_command_dispatch_is_woken_only_after_caller_commit(commit):
+    import asyncio
+    from unittest.mock import Mock
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.core import transaction_wakeup
+
+    service, _ = _service(_binding())
+    queue = Mock()
+    service._task_queue = queue
+    async with AsyncSession() as db:
+        await db.begin()
+        await service.create_command_in_session(db, _request())
+        queue.enqueue_device_commands.assert_not_called()
+        if commit:
+            await db.commit()
+        else:
+            await db.rollback()
+    await asyncio.gather(*tuple(transaction_wakeup._pending))
+    assert queue.enqueue_device_commands.call_count == int(commit)

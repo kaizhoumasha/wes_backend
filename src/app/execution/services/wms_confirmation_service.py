@@ -25,6 +25,7 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceService,
 )
 from src.app.wms_adapter.inbound_material.typed import encode_request
+from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import is_uuid7, new_uuid7
 from src.utils.canonical_json import canonical_json_bytes
 from src.utils.timezone import timezone
@@ -584,6 +585,8 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         wake_execution = [False]
         async with sessions.begin() as db:  # type: ignore[attr-defined]
             yield db, wake_execution
+            if self._task_queue is not None:
+                defer_wakeup(db, self._task_queue.enqueue_transport_debug)
         if wake_execution[0]:
             self._enqueue_execution_facts()
 
