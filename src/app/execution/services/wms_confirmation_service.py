@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -25,6 +26,8 @@ from src.app.execution.services.inbound_evidence_service import (
     InboundEvidenceService,
 )
 from src.app.wms_adapter.inbound_material.typed import encode_request
+from src.app.wms_diagnostics import WmsDiagnosticsService, build_diagnostics_service
+from src.app.wms_diagnostics.observation import WmsCallObservation, capture
 from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import is_uuid7, new_uuid7
 from src.utils.canonical_json import canonical_json_bytes
@@ -118,6 +121,7 @@ class WmsConfirmationAdapterPort(Protocol):
         operation_id: str,
         request_payload: dict[str, Any],
         request_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> WmsConfirmationDispatchResultPort: ...
 
 
@@ -363,6 +367,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         workline_owner: WorkLineConfirmationOwnerPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
         follow_up_planner: WmsConfirmationFollowUpPlanner | None = None,
+        diagnostics: WmsDiagnosticsService | None = None,
     ) -> None:
         super().__init__(repository, execution_repository=execution_repository, workline_owner=workline_owner)
         self._sessions = session_factory
@@ -371,6 +376,7 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
         self._picking_task_owner = picking_task_owner
         self._task_queue = task_queue_gateway
         self._follow_up_planner = follow_up_planner
+        self._diagnostics = diagnostics
 
     async def _validate_workline_owner(self, db: object, confirmation: WmsConfirmation) -> bool:
         return (
@@ -466,12 +472,39 @@ class WmsConfirmationService(WmsConfirmationLifecycleService):
             operation_id = confirmation.operation_id
             request_payload = dict(confirmation.request_payload)
             request_digest = confirmation.request_digest
-        result = await adapter.dispatch(
-            operation=operation,
-            operation_id=operation_id,
-            request_payload=request_payload,
-            request_digest=request_digest,
-        )
+        diagnostics = None
+        observation = None
+        try:
+            diagnostics = self._diagnostics or build_diagnostics_service()
+            observation = await diagnostics.start(
+                direction="WES_TO_WMS", operation=operation, operation_id=operation_id, payload=request_payload
+            )
+        except Exception:  # nosec B110
+            pass  # 诊断失败不得影响原业务结果；取消异常不属于 Exception。
+        cancelled = False
+        try:
+            result = await adapter.dispatch(
+                operation=operation,
+                operation_id=operation_id,
+                request_payload=request_payload,
+                request_digest=request_digest,
+                observation=observation,
+            )
+            with suppress(Exception):
+                capture(
+                    observation,
+                    result=getattr(result, "response_result", None) or getattr(result.code, "value", result.code),
+                )
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except Exception as error:
+            capture(observation, error_code=type(error).__name__)
+            raise
+        finally:
+            if diagnostics is not None and not cancelled:
+                with suppress(Exception):
+                    await diagnostics.finish(observation)
         changed_at = now if now is not None else timezone.now_for_db()
         async with self._execution_wake_transaction(sessions) as (db, wake_execution):
             confirmation = await self._repository.get_claimed_for_update(db, confirmation_id, claim_token)

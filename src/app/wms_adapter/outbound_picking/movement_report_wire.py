@@ -17,6 +17,7 @@ from src.app.wms_adapter.wire_common import (
     OperationId,
     StrictWireModel,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 MATERIAL_MOVEMENT_REPORT_OPERATION = "outbound.material.movement_report@v1"
 
@@ -56,13 +57,17 @@ _RESPONSE_ADAPTERS = {
 }
 
 
-def parse_material_movement_report_request(value: object) -> MaterialMovementReportRequest:
-    return MaterialMovementReportRequest.model_validate(value)
+def parse_material_movement_report_request(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> MaterialMovementReportRequest:
+    return validate_observed(MaterialMovementReportRequest, value, observation=observation, side="request")
 
 
-def parse_material_movement_report_response(status_code: int, value: object) -> MaterialMovementReportResponse:
+def parse_material_movement_report_response(
+    status_code: int, value: object, *, observation: WmsCallObservation | None = None
+) -> MaterialMovementReportResponse:
     code = value.get("code") if isinstance(value, dict) else None
     adapter = _RESPONSE_ADAPTERS.get((status_code, code)) if isinstance(code, str) else None
     if adapter is None:
-        raise ValueError("HTTP status 与 movement_report response code 不匹配")
-    return adapter.validate_python(value)
+        raise observed_contract_error(observation, "HTTP status 与 movement_report response code 不匹配")
+    return validate_observed(adapter, value, observation=observation, side="response")

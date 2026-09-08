@@ -297,8 +297,20 @@ async def receive_wms_event(request: Request) -> Response:
     received_at = timezone.now_utc().isoformat()
     started_at = monotonic()
     response: Response = Response(status_code=500)
+    diagnostics = None
+    observation = None
     try:
-        response = await _receive_wms_event(request, request_id, received_at)
+        raw_body, observed_body_bytes = await _read_bounded_body(request)
+        try:
+            from src.app.wms_diagnostics import build_diagnostics_service
+
+            diagnostics = getattr(request.app.state, "wms_diagnostics_service", None) or build_diagnostics_service()
+            observation = await diagnostics.start(direction="WMS_TO_WES", body=raw_body)
+        except Exception:  # nosec B110
+            pass  # 诊断失败不得影响原业务结果；取消异常不属于 Exception。
+        response = await _receive_wms_event(
+            request, request_id, received_at, raw_body, observed_body_bytes, observation
+        )
     except Exception:
         logger.exception("WMS callback handler failed: request_id=%s", request_id)
     finally:
@@ -318,11 +330,38 @@ async def receive_wms_event(request: Request) -> Response:
             response = _unavailable_ack(getattr(request.state, "wms_receipt_body", b""))
             response.status_code = 503
             response.headers["Retry-After"] = "1"
+    if diagnostics is not None:
+        try:
+            from src.app.wms_diagnostics.observation import capture
+
+            final_result = (
+                observation.result
+                if observation is not None and observation.status_code == response.status_code
+                else f"HTTP_{response.status_code}"
+            )
+            capture(
+                observation,
+                path=request.url.path,
+                method=request.method,
+                response_body=bytes(response.body),
+                status_code=response.status_code,
+                request_headers=tuple(request.headers.items()),
+                response_headers=tuple(response.headers.items()),
+                elapsed_ms=(monotonic() - started_at) * 1000,
+                result=final_result,
+                error_code=f"HTTP_{response.status_code}"
+                if response.status_code >= 500 or (response.status_code >= 400 and final_result.startswith("HTTP_"))
+                else None,
+            )
+            await diagnostics.finish(observation)
+        except Exception:  # nosec B110
+            pass  # 诊断失败不得影响原业务结果；取消异常不属于 Exception。
     return response
 
 
-async def _receive_wms_event(request: Request, request_id: str, received_at: str) -> Response:
-    raw_body, observed_body_bytes = await _read_bounded_body(request)
+async def _receive_wms_event(
+    request: Request, request_id: str, received_at: str, raw_body: bytes | None, observed_body_bytes: int, observation
+) -> Response:
     if not _valid_wms_event_request_headers(request):
         await _publish_wms_ingress_attempt(
             request,
@@ -362,8 +401,21 @@ async def _receive_wms_event(request: Request, request_id: str, received_at: str
     envelope = parse_wms_event_envelope(raw_body)
     operation = envelope.get("operation") if envelope is not None else None
     operation = operation if isinstance(operation, str) else None
+    from src.app.wms_diagnostics.observation import capture
+
+    capture(
+        observation, operation=operation, operation_id=envelope.get("operation_id") if envelope is not None else None
+    )
     is_transport_event = operation in {TRANSPORT_POSITION_OPERATION, TRANSPORT_RESULT_OPERATION}
     if operation == RECOVERY_OPERATION:
+        from src.app.wms_adapter.inbound_material.openapi import RECOVERY_EVENT_REQUEST_SCHEMA
+
+        # 恢复决定仍由已安装插件校验；只展示宿主正式合同，不推断其校验结论。
+        capture(
+            observation,
+            request_schema=RECOVERY_EVENT_REQUEST_SCHEMA,
+            contract_source="src.app.wms_adapter.inbound_material.openapi:RECOVERY_EVENT_REQUEST_SCHEMA",
+        )
         handler = getattr(request.app.state, "wms_recovery_event_handler", None)
         if handler is None:
             response = _unavailable_ack(raw_body)
@@ -404,7 +456,7 @@ async def _receive_wms_event(request: Request, request_id: str, received_at: str
                 error_code="PICKING_TASK_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
             )
             return response
-        result = await handler.handle(envelope)
+        result = await handler.handle(envelope, observation=observation)
     elif is_transport_event:
         runtime: TransportRuntime | None = getattr(request.app.state, "transport_runtime", None)
         if runtime is None:
@@ -424,7 +476,7 @@ async def _receive_wms_event(request: Request, request_id: str, received_at: str
                 error_code="TRANSPORT_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
             )
             return response
-        result = await runtime.handler.handle(raw_body)
+        result = await runtime.handler.handle(raw_body, observation=observation)
     else:
         response = _unsupported_operation_ack(raw_body)
         await _publish_wms_ingress_attempt(
@@ -442,6 +494,11 @@ async def _receive_wms_event(request: Request, request_id: str, received_at: str
         BackgroundTask(_enqueue_transport_evidence)
         if is_transport_event and result.body.get("code") in {"RECEIVED", "DUPLICATE"}
         else None
+    )
+    capture(
+        observation,
+        status_code=result.http_status,
+        result=result.body.get("code") if isinstance(result.body.get("code"), str) else f"HTTP_{result.http_status}",
     )
     if result.body:
         response: Response = JSONResponse(status_code=result.http_status, content=result.body, background=background)

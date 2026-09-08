@@ -13,6 +13,7 @@ from src.app.wms_adapter.strict_json import (
     loads_transport_json,
     valid_json_response_headers,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, capture
 from src.core.uuid7 import is_uuid7
 
 if TYPE_CHECKING:
@@ -41,7 +42,9 @@ class WmsTransportAdapter:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> TransportSubmitResult:
+        capture(observation, contract_source=__name__, business_reference=transport_task_id)
         envelope = _decode_frozen_request_body(request_body)
         payload = envelope.get("data") if envelope is not None else None
         timestamp = envelope.get("timestamp") if envelope is not None else None
@@ -54,6 +57,7 @@ class WmsTransportAdapter:
             request_body=request_body,
             request_body_digest=request_body_digest,
         ):
+            capture(observation, request_errors=({"loc": (), "type": "REQUEST_BODY_DIGEST_MISMATCH"},))
             return TransportSubmitResult(
                 TransportSubmitCode.REJECTED,
                 transport_task_id,
@@ -65,6 +69,7 @@ class WmsTransportAdapter:
                 body=request_body,
                 max_request_body_bytes=_BODY_LIMIT,
                 max_response_body_bytes=_BODY_LIMIT,
+                observation=observation,
             )
         except (WmsRequestBodyTooLargeError, OutboundHttpClosedError) as error:
             request_too_large = isinstance(error, WmsRequestBodyTooLargeError)
@@ -92,14 +97,18 @@ class WmsTransportAdapter:
             or not isinstance(body, dict)
             or not _valid_ack_envelope(body, operation_id)
         ):
+            capture(observation, response_errors=({"loc": (), "type": "INVALID_ACK_ENVELOPE"},))
             return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
         code = _map_response_code(access.status_code, body.get("code"))
         data = body.get("data")
         if not isinstance(data, dict) or not _valid_ack_data(data, code):
+            capture(observation, response_errors=({"loc": ("data",), "type": "INVALID_ACK_DATA"},))
             return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
         acknowledged_task_id = data.get("transport_task_id")
         if acknowledged_task_id is not None and acknowledged_task_id != transport_task_id:
+            capture(observation, response_errors=({"loc": ("data", "transport_task_id"), "type": "IDENTITY_MISMATCH"},))
             return TransportSubmitResult(TransportSubmitCode.DELIVERY_UNKNOWN, transport_task_id)
+        capture(observation, response_validated=True)
         return TransportSubmitResult(
             code,
             transport_task_id,

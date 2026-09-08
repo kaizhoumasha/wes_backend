@@ -15,6 +15,7 @@ from src.app.wms_adapter.wire_common import (
     RackFaceText,
     StrictWireModel,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, validate_observed
 
 PICKING_TASK_PLAN_DELTA_OPERATION = "outbound.picking_task.plan_delta@v1"
 
@@ -72,14 +73,16 @@ class PickingTaskPlanDeltaInvalidData:
     validation_error: ValueError
 
 
-def parse_picking_task_plan_delta_event(value: object) -> PickingTaskPlanDeltaEvent:
-    return PickingTaskPlanDeltaEvent.model_validate(value)
+def parse_picking_task_plan_delta_event(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> PickingTaskPlanDeltaEvent:
+    return validate_observed(PickingTaskPlanDeltaEvent, value, observation=observation, side="request")
 
 
 def parse_picking_task_plan_delta_receipt(
-    value: dict[str, Any],
+    value: dict[str, Any], *, observation: WmsCallObservation | None = None
 ) -> PickingTaskPlanDeltaEvent | PickingTaskPlanDeltaInvalidData:
     try:
-        return parse_picking_task_plan_delta_event(value)
+        return parse_picking_task_plan_delta_event(value, observation=observation)
     except ValueError as error:
         return PickingTaskPlanDeltaInvalidData(value, error)

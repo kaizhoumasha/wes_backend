@@ -13,6 +13,34 @@ from src.app.wms_adapter.transport_adapter import WmsTransportAdapter
 TRANSPORT_SUBMIT_PATH = "/api/v1/wes/transport-requests"
 
 
+async def test_transport_observation_uses_original_ack_validation() -> None:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+    from src.core.uuid7 import new_uuid7
+
+    client = FakeClient(
+        FakeAccessResult(
+            Value("RESPONSE_RECEIVED"),
+            422,
+            {
+                "operation_id": "ignored-by-mapping",
+                "code": "REJECTED",
+                "timestamp": 1,
+                "data": {"reason_code": "INVALID_DATA"},
+            },
+        )
+    )
+    observation = WmsCallObservation(direction="WES_TO_WMS")
+    adapter = WmsTransportAdapter(client, submit_path=TRANSPORT_SUBMIT_PATH)
+    result = await adapter.submit(
+        **_snapshot(new_uuid7(), 1, {"transport_task_id": "transport-1"}),
+        observation=observation,
+    )
+    assert result.code is TransportSubmitCode.REJECTED
+    assert client.calls[0][2]["observation"] is observation
+    assert observation.response_validated is True
+    assert observation.response_errors == ()
+
+
 @dataclass
 class FakeAccessResult:
     delivery_state: object
@@ -127,6 +155,7 @@ async def test_exchange_pairs_send_one_fixed_persisted_snapshot() -> None:
     assert kwargs == {
         "max_request_body_bytes": 256 * 1024,
         "max_response_body_bytes": 256 * 1024,
+        "observation": None,
     }
 
 
@@ -215,6 +244,7 @@ async def test_submit_wire_uses_the_persisted_operation_snapshot_without_local_c
             {
                 "max_request_body_bytes": 256 * 1024,
                 "max_response_body_bytes": 256 * 1024,
+                "observation": None,
             },
         )
     ]

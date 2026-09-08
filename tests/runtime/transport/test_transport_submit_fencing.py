@@ -47,6 +47,7 @@ class _BlockingProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         task_id = transport_task_id
         self.calls.append(task_id)
@@ -66,6 +67,7 @@ class _ImmediateProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         task_id = transport_task_id
         self.calls.append(task_id)

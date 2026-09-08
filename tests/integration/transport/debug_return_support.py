@@ -43,7 +43,7 @@ async def freeze_return_allocation(service, run_id, *, max_count=4):
         }
 
     class Adapter:
-        async def dispatch(self, *, operation, operation_id, request_payload, request_digest):
+        async def dispatch(self, *, operation, operation_id, request_payload, request_digest, observation=None):
             data = request_payload["data"]
             return WmsDispatchResult(
                 WmsDispatchCode.DETERMINATE,

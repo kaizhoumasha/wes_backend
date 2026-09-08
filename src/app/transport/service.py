@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
@@ -67,7 +68,14 @@ from src.app.transport.models import (
     TransportResourceBinding,
     TransportTask,
 )
-from src.app.transport.submit_snapshot import build_submit_data, build_submit_request_body, request_body_digest
+from src.app.transport.submit_snapshot import (
+    SUBMIT_OPERATION,
+    build_submit_data,
+    build_submit_request_body,
+    request_body_digest,
+)
+from src.app.wms_diagnostics.observation import capture
+from src.app.wms_diagnostics.service import WmsDiagnosticsService, build_diagnostics_service
 from src.core.exceptions import NotFoundException
 from src.core.transaction_wakeup import defer_wakeup
 from src.core.uuid7 import new_uuid7
@@ -190,6 +198,7 @@ class TransportService:
         event_publisher: TransportEventPublisher = event_stream_service,
         debug_run_guard: TransportDebugRunGuardPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
+        diagnostics: WmsDiagnosticsService | None = None,
     ) -> None:
         if position_projections is None:
             from src.app.execution.services.position_projection_service import position_projection_service
@@ -206,6 +215,7 @@ class TransportService:
         self._event_publisher = event_publisher
         self._debug_run_guard = debug_run_guard
         self._task_queue = task_queue_gateway
+        self._diagnostics = diagnostics
 
     async def move_rack(
         self,
@@ -620,6 +630,17 @@ class TransportService:
                 request_body = task.submit_request_body.encode("utf-8")
                 frozen_request_body_digest = task.submit_request_body_digest
 
+            diagnostics = None
+            observation = None
+            with suppress(Exception):
+                diagnostics = self._diagnostics or build_diagnostics_service()
+                observation = await diagnostics.start(
+                    direction="WES_TO_WMS",
+                    operation=SUBMIT_OPERATION,
+                    operation_id=operation_id,
+                    body=request_body,
+                )
+            cancelled = False
             try:
                 async with asyncio.timeout(_SUBMIT_TIMEOUT_SECONDS):
                     result = await self.provider.submit(
@@ -627,12 +648,25 @@ class TransportService:
                         transport_task_id=task_id,
                         request_body=request_body,
                         request_body_digest=frozen_request_body_digest,
+                        observation=observation,
                     )
             except TimeoutError:
                 result_code = TransportSubmitCode.DELIVERY_UNKNOWN
                 result = None
+                capture(observation, result=result_code.value, error_code="TIMEOUT")
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            except Exception as error:
+                capture(observation, result="EXCEPTION", error_code=type(error).__name__)
+                raise
             else:
                 result_code = result.code if result.transport_task_id == task_id else TransportSubmitCode.CONFLICT
+                capture(observation, result=result_code.value)
+            finally:
+                if diagnostics is not None and not cancelled:
+                    with suppress(Exception):
+                        await diagnostics.finish(observation)
 
             async with self._sessions.begin() as db:
                 current = await self._repository.get_task(db, task_id, for_update=True)

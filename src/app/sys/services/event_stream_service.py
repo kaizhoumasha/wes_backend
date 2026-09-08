@@ -96,8 +96,8 @@ class EventStreamService:
                     return
                 except Exception as exc:
                     logger.warning(f"SSE 订阅异常: channel={channel}, error={exc}")
-                    yield None
-                    continue
+                    # 数据源已断开；结束响应，让客户端重连并提示 live-only 间隙。
+                    return
                 if not message or message.get("type") != "message":
                     yield None
                     continue

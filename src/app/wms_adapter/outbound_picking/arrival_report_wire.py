@@ -20,6 +20,7 @@ from src.app.wms_adapter.wire_common import (
     RackFaceText,
     StrictWireModel,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 RETURN_RACK_ARRIVAL_REPORT_OPERATION = "outbound.return_rack.arrival_report@v1"
 Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
@@ -62,13 +63,17 @@ _RESPONSE_ADAPTERS = {
 }
 
 
-def parse_return_rack_arrival_report_request(value: object) -> ReturnRackArrivalReportRequest:
-    return ReturnRackArrivalReportRequest.model_validate(value)
+def parse_return_rack_arrival_report_request(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> ReturnRackArrivalReportRequest:
+    return validate_observed(ReturnRackArrivalReportRequest, value, observation=observation, side="request")
 
 
-def parse_return_rack_arrival_report_response(status_code: int, value: object) -> ReturnRackArrivalReportResponse:
+def parse_return_rack_arrival_report_response(
+    status_code: int, value: object, *, observation: WmsCallObservation | None = None
+) -> ReturnRackArrivalReportResponse:
     code = value.get("code") if isinstance(value, dict) else None
     adapter = _RESPONSE_ADAPTERS.get((status_code, code)) if isinstance(code, str) else None
     if adapter is None:
-        raise ValueError("HTTP status 与 arrival_report response code 不匹配")
-    return adapter.validate_python(value)
+        raise observed_contract_error(observation, "HTTP status 与 arrival_report response code 不匹配")
+    return validate_observed(adapter, value, observation=observation, side="response")

@@ -13,6 +13,7 @@ from src.app.wms_adapter.outbound_picking.response_wire import (
 )
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
 from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, StrictWireModel
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 BIN_WORK_PLAN_OPERATION = "outbound.bin.work_plan@v1"
 Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
@@ -68,18 +69,24 @@ _RESPONSE_ADAPTERS = {
 }
 
 
-def parse_bin_work_plan_request(value: object) -> BinWorkPlanRequest:
-    return BinWorkPlanRequest.model_validate(value)
+def parse_bin_work_plan_request(value: object, *, observation: WmsCallObservation | None = None) -> BinWorkPlanRequest:
+    return validate_observed(BinWorkPlanRequest, value, observation=observation, side="request")
 
 
 def parse_bin_work_plan_response(
-    status_code: int, value: object, *, request: BinWorkPlanRequest | None = None
+    status_code: int,
+    value: object,
+    *,
+    request: BinWorkPlanRequest | None = None,
+    observation: WmsCallObservation | None = None,
 ) -> BinWorkPlanResponse:
     code = value.get("code") if isinstance(value, dict) else None
     adapter = _RESPONSE_ADAPTERS.get((status_code, code)) if isinstance(code, str) else None
     if adapter is None:
-        raise ValueError("HTTP status 与 work_plan response code 不匹配")
-    response = adapter.validate_python(value)
+        raise observed_contract_error(observation, "HTTP status 与 work_plan response code 不匹配")
+    response = validate_observed(adapter, value, observation=observation, side="response")
     if request is not None and response.operation_id != request.operation_id:
-        raise ValueError("响应 operation_id 必须匹配请求")
+        raise observed_contract_error(
+            observation, "响应 operation_id 必须匹配请求", path=("operation_id",), expected_value=request.operation_id
+        )
     return response

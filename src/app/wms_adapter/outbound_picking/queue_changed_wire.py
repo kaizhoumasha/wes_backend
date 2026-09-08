@@ -14,6 +14,7 @@ from src.app.wms_adapter.wire_common import (
     PositiveInteger,
     StrictWireModel,
 )
+from src.app.wms_diagnostics.observation import WmsCallObservation, validate_observed
 
 PICKING_TASK_QUEUE_CHANGED_OPERATION = "outbound.picking_task.queue_changed@v1"
 
@@ -49,14 +50,16 @@ class PickingTaskQueueChangedInvalidData:
     validation_error: ValueError
 
 
-def parse_picking_task_queue_changed_event(value: object) -> PickingTaskQueueChangedEvent:
-    return PickingTaskQueueChangedEvent.model_validate(value)
+def parse_picking_task_queue_changed_event(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> PickingTaskQueueChangedEvent:
+    return validate_observed(PickingTaskQueueChangedEvent, value, observation=observation, side="request")
 
 
 def parse_picking_task_queue_changed_receipt(
-    value: dict[str, Any],
+    value: dict[str, Any], *, observation: WmsCallObservation | None = None
 ) -> PickingTaskQueueChangedEvent | PickingTaskQueueChangedInvalidData:
     try:
-        return parse_picking_task_queue_changed_event(value)
+        return parse_picking_task_queue_changed_event(value, observation=observation)
     except ValueError as error:
         return PickingTaskQueueChangedInvalidData(value, error)

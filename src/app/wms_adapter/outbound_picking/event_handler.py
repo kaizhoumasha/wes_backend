@@ -22,6 +22,8 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +47,7 @@ class PickingTaskIssuedHandler:
     def __init__(self, recorder: PickingTaskIssuedRecorder) -> None:
         self._recorder = recorder
 
-    async def handle(self, raw_envelope: dict[str, Any]) -> EventAck:
+    async def handle(self, raw_envelope: dict[str, Any], *, observation: WmsCallObservation | None = None) -> EventAck:
         operation_id = raw_envelope.get("operation_id")
         operation = raw_envelope.get("operation")
         if not is_wire_operation_id(operation_id) or not is_wire_operation(operation):
@@ -53,7 +55,7 @@ class PickingTaskIssuedHandler:
         response_time = int(timezone.now_utc().timestamp() * 1000)
         if operation != PICKING_TASK_ISSUED_OPERATION:
             return event_ack(422, operation_id, "REJECTED", response_time, {"reason_code": "UNSUPPORTED_OPERATION"})
-        envelope = parse_picking_task_issued_receipt(raw_envelope)
+        envelope = parse_picking_task_issued_receipt(raw_envelope, observation=observation)
         try:
             persisted = await self._recorder.record(envelope, received_at=timezone.now_for_db())
         except Exception:

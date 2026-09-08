@@ -14,6 +14,7 @@ from src.app.wms_adapter.outbound_picking.response_wire import (
 )
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
 from src.app.wms_adapter.wire_common import NonnegativeMilliseconds, OperationId, RackFaceText, StrictWireModel
+from src.app.wms_diagnostics.observation import WmsCallObservation, observed_contract_error, validate_observed
 
 BIN_RETURN_BATCH_OPERATION = "outbound.bin.return_batch@v1"
 Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTERN)]
@@ -96,28 +97,36 @@ _RESPONSE_ADAPTERS = {
 }
 
 
-def parse_bin_return_batch_request(value: object) -> BinReturnBatchRequest:
-    return BinReturnBatchRequest.model_validate(value)
+def parse_bin_return_batch_request(
+    value: object, *, observation: WmsCallObservation | None = None
+) -> BinReturnBatchRequest:
+    return validate_observed(BinReturnBatchRequest, value, observation=observation, side="request")
 
 
 def parse_bin_return_batch_response(
-    status_code: int, value: object, *, request: BinReturnBatchRequest | None = None
+    status_code: int,
+    value: object,
+    *,
+    request: BinReturnBatchRequest | None = None,
+    observation: WmsCallObservation | None = None,
 ) -> BinReturnBatchResponse:
     code = value.get("code") if isinstance(value, dict) else None
     adapter = _RESPONSE_ADAPTERS.get((status_code, code)) if isinstance(code, str) else None
     if adapter is None:
-        raise ValueError("HTTP status 与 return_batch code 不匹配")
-    response = adapter.validate_python(value)
+        raise observed_contract_error(observation, "HTTP status 与 return_batch code 不匹配")
+    response = validate_observed(adapter, value, observation=observation, side="response")
     if request is not None:
         if response.operation_id != request.operation_id:
-            raise ValueError("响应 identity 不匹配")
+            raise observed_contract_error(
+                observation, "响应 identity 不匹配", path=("operation_id",), expected_value=request.operation_id
+            )
         if response.code == "DECIDED" and isinstance(response.data, BinReturnBatchReady):
             moves = response.data.moves
             candidates = request.data.return_candidates[: len(moves)]
             if [(m.sequence_no, m.bin_code) for m in moves] != [(c.sequence_no, c.bin_code) for c in candidates]:
-                raise ValueError("READY 必须匹配候选 FIFO 前缀")
+                raise observed_contract_error(observation, "READY 必须匹配候选 FIFO 前缀")
             if any(
                 (m.target.rack_id, m.target.rack_face) != (request.data.rack_id, request.data.rack_face) for m in moves
             ):
-                raise ValueError("READY 目标必须匹配冻结货架面")
+                raise observed_contract_error(observation, "READY 目标必须匹配冻结货架面")
     return response

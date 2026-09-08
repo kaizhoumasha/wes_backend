@@ -829,7 +829,10 @@ heavy_tests = [
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/client.py"
-heavy_tests = []
+heavy_tests = [
+    "tests/e2e/transport/test_transport_production_wiring.py",
+    "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
+]
 
 [[mapping]]
 source_glob = "src/app/wms_adapter/factory.py"
@@ -2577,3 +2580,26 @@ heavy_tests = ["tests/e2e/test_active_dispatch_wakeup.py"]
 [[mapping]]
 source_glob = "src/app/device/{repositories/ingress_history_repository.py,services/device_ingress_history_service.py}"
 heavy_tests = ["tests/integration/device_command/test_ingress_history_postgresql.py"]
+
+# 诊断近期记录、跨进程实时流和慢连接释放由独占 Redis 验证。
+[[mapping]]
+source_glob = "src/app/wms_diagnostics/{__init__.py,config.py,contracts.py,observation.py,redaction.py,comparison.py,repository.py,service.py}"
+heavy_tests = [
+    "tests/integration/wms_diagnostics/test_exchange_store.py",
+    "tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py",
+]
+
+[[mapping]]
+source_glob = "src/app/wms_diagnostics/v1/{__init__.py,exchanges.py}"
+heavy_tests = [
+    "tests/integration/wms_diagnostics/test_exchange_store.py",
+    "tests/integration/test_authorization_bootstrap_postgresql.py",
+]
+
+[[mapping]]
+source_glob = "src/core/sse.py"
+heavy_tests = ["tests/integration/wms_diagnostics/test_exchange_store.py"]
+
+[[mapping]]
+source_glob = "tests/integration/wms_diagnostics/test_exchange_store.py"
+heavy_tests = ["tests/integration/wms_diagnostics/test_exchange_store.py"]

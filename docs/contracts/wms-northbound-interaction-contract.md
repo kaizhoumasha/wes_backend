@@ -93,6 +93,15 @@ Transport path、状态或重试语义下沉到 WMS Client。
 
 具体业务模块必须基于自己的响应 DTO 和 WMS 合同解释 status 与 JSON，不得把 HTTP 200 等同于业务成功。
 
+### 5.3 当次诊断观察
+
+共享 Client 接受可选 `WmsCallObservation`，仅记录本次请求/响应的应用层 WIRE、耗时和交付异常；观察类型位于
+`src/app/wms_diagnostics/observation.py`，不执行 I/O。Adapter 在原校验调用处记录实际 DTO 校验结果，不为诊断重复校验。
+
+入站 Event、WmsConfirmation 和 Transport 提交各自拥有一次观察的开始与完成。脱敏、Redis 保存和实时发布由宿主诊断服务负责，
+不得进入 Client 或插件业务逻辑。诊断 I/O 受独立总预算约束，失败不改变原响应、异常、取消、ACK、事务或重试；未收到响应必须与空响应区分。
+完整控制台合同见 [WMS 联调诊断设计](../superpowers/specs/2026-09-07-wms-integration-diagnostics-design.md)。
+
 ## 6. 构造与生命周期
 
 factory 只接收：

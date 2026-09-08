@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json as json_module
 import math
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from src.app.wms_adapter.strict_json import StrictJsonError, loads_strict_json
+from src.app.wms_diagnostics.observation import WmsCallObservation, capture
 from src.core.outbound_http import (
     OutboundHttpClosedError,
     OutboundHttpDeliveryState,
@@ -62,6 +64,7 @@ class WmsClient:
         encoded_json: bytes | object = _MISSING,
         max_request_body_bytes: int | None = None,
         max_response_body_bytes: int | None = None,
+        observation: WmsCallObservation | None = None,
     ) -> WmsAccessResult:
         """发送一次 GET/POST 请求，不解释任何 WMS 业务语义。"""
 
@@ -103,6 +106,15 @@ class WmsClient:
             else OutboundHttpResponseLimits()
         )
 
+        capture(
+            observation,
+            method=method.value,
+            path=path,
+            request_body=body,
+            request_source="WIRE",
+            request_headers=request_headers,
+        )
+        started_at = time.monotonic()
         result = await self._transport.send(
             OutboundHttpRequest(
                 method=method,
@@ -113,7 +125,19 @@ class WmsClient:
                 response_limits=response_limits,
             )
         )
-        return _decode_result(result)
+        capture(
+            observation,
+            response_body=result.decoded_body,
+            response_headers=result.response_headers,
+            status_code=result.status_code,
+            elapsed_ms=(time.monotonic() - started_at) * 1000,
+            result=result.delivery_state.value,
+            error_code=result.failure_kind.value if result.failure_kind else None,
+        )
+        access = _decode_result(result)
+        if access.json_failure:
+            capture(observation, error_code=access.json_failure)
+        return access
 
     async def get(
         self,
@@ -122,6 +146,7 @@ class WmsClient:
         query: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
         max_response_body_bytes: int | None = None,
+        observation: WmsCallObservation | None = None,
     ) -> WmsAccessResult:
         """发送一次无 JSON 请求体的 GET。"""
 
@@ -131,6 +156,7 @@ class WmsClient:
             query=query,
             headers=headers,
             max_response_body_bytes=max_response_body_bytes,
+            observation=observation,
         )
 
     async def post(
@@ -142,6 +168,7 @@ class WmsClient:
         headers: Mapping[str, str] | None = None,
         max_request_body_bytes: int | None = None,
         max_response_body_bytes: int | None = None,
+        observation: WmsCallObservation | None = None,
     ) -> WmsAccessResult:
         """发送一次由 Client 统一编码 JSON 的 POST。"""
 
@@ -153,6 +180,7 @@ class WmsClient:
             json=json,
             max_request_body_bytes=max_request_body_bytes,
             max_response_body_bytes=max_response_body_bytes,
+            observation=observation,
         )
 
     async def post_json_bytes(
@@ -164,6 +192,7 @@ class WmsClient:
         headers: Mapping[str, str] | None = None,
         max_request_body_bytes: int | None = None,
         max_response_body_bytes: int | None = None,
+        observation: WmsCallObservation | None = None,
     ) -> WmsAccessResult:
         """发送已经冻结的 JSON 请求体，不重新序列化。"""
 
@@ -175,6 +204,7 @@ class WmsClient:
             encoded_json=body,
             max_request_body_bytes=max_request_body_bytes,
             max_response_body_bytes=max_response_body_bytes,
+            observation=observation,
         )
 
     async def aclose(self) -> None:

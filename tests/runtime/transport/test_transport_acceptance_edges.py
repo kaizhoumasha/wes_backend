@@ -69,6 +69,7 @@ class ConfigurableProvider:
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: object = None,
     ) -> TransportSubmitResult:
         self.calls += 1
         if self.error is not None:

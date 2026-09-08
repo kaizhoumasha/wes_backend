@@ -14,10 +14,12 @@ from src.app.wms_adapter.inbound_material.wire import (
     parse_outbound_response,
 )
 from src.app.wms_adapter.wire_common import DECISION_PATH, FACT_PATH
+from src.app.wms_diagnostics.observation import capture, observed_contract_error
 from src.utils.canonical_json import canonical_json_digest
 
 if TYPE_CHECKING:
     from src.app.wms_adapter.client import WmsClient
+    from src.app.wms_diagnostics.observation import WmsCallObservation
 
 
 class InboundMaterialAdapter:
@@ -31,10 +33,12 @@ class InboundMaterialAdapter:
         *,
         request: OutboundRequest,
         request_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> WmsDispatchResult:
         request_payload = request.model_dump(mode="json", exclude_none=True)
         operation, operation_id = request.operation, request.operation_id
         if canonical_json_digest(request_payload) != request_digest:
+            capture(observation, error_code="FROZEN_REQUEST_MISMATCH")
             return WmsDispatchResult(WmsDispatchCode.RECONCILING)
         if operation in DECISION_OPERATIONS:
             path = DECISION_PATH
@@ -43,16 +47,21 @@ class InboundMaterialAdapter:
         else:
             return WmsDispatchResult(WmsDispatchCode.RECONCILING)
 
-        access = await receive_json(self._client, path, request_payload)
+        access = await receive_json(self._client, path, request_payload, observation=observation)
         if isinstance(access, WmsDispatchResult):
             return access
         received_json = dict(access.json_body)
         try:
-            response = parse_outbound_response(operation, access.status_code or 0, access.json_body)
+            response = parse_outbound_response(
+                operation, access.status_code or 0, access.json_body, observation=observation
+            )
         except (ValidationError, ValueError, TypeError):
             return WmsDispatchResult(WmsDispatchCode.RECONCILING, normalized_response=received_json)
         normalized = response.model_dump(mode="json")
         if response.operation_id != operation_id:
+            observed_contract_error(
+                observation, "响应 operation_id 必须匹配请求", path=("operation_id",), expected_value=operation_id
+            )
             return WmsDispatchResult(WmsDispatchCode.RECONCILING, normalized_response=normalized)
 
         if response.code in {"DECIDED", "RECORDED", "DUPLICATE"}:

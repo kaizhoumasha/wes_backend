@@ -73,6 +73,9 @@ def _body(
 
 @pytest.mark.asyncio
 async def test_valid_position_callback_is_persisted_before_received_ack() -> None:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
+
+    observation = WmsCallObservation(direction="WMS_TO_WES")
     recorder = FakeRecorder()
     handler = TransportEventHandler(recorder)
     body = _body(
@@ -85,7 +88,9 @@ async def test_valid_position_callback_is_persisted_before_received_ack() -> Non
         },
     )
 
-    response = await handler.handle(body)
+    response = await handler.handle(body, observation=observation)
+    assert observation.request_validated is True
+    assert observation.request_schema is not None
 
     assert response.http_status == 202
     assert response.body["code"] == "RECEIVED"

@@ -80,6 +80,12 @@ def on_worker_init(sender: Any | None = None, **kwargs: Any) -> None:
     """Worker 主进程初始化同步配置门禁，禁止创建可被 fork 继承的异步资源。"""
     global _frozen_worker_queues
     try:
+        from src.app.wms_diagnostics.config import diagnostics_config
+
+        diagnostics_config()
+    except Exception as exc:
+        raise WorkerTerminate("worker diagnostics configuration rejected") from exc
+    try:
         actual_queues = _actual_worker_queues(sender)
         _validate_worker_queue_contract(actual_queues)
         _frozen_worker_queues = actual_queues

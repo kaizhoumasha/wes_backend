@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from wes_plugin_sdk.validation import validate_opaque_face, validate_persistable_text
 
 from src.core.uuid7 import is_uuid7
+
+if TYPE_CHECKING:
+    from src.app.wms_diagnostics.observation import WmsCallObservation
 
 
 class TransportContractError(ValueError):
@@ -463,6 +466,7 @@ class TransportProviderPort(Protocol):
         transport_task_id: str,
         request_body: bytes,
         request_body_digest: str,
+        observation: WmsCallObservation | None = None,
     ) -> TransportSubmitResult: ...
 
 
