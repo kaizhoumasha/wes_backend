@@ -209,13 +209,10 @@ async def _complete_transport_step(
             payload=payload,
         )
         assert early == {
-            "http_status": 409,
-            "code": "CONFLICT",
+            "http_status": 202,
+            "code": "RECEIVED",
             "timestamp": early["timestamp"],
-            "data": {
-                "transport_task_id": transport_task_id,
-                "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
-            },
+            "data": {"transport_task_id": transport_task_id},
         }
         assert callback_timestamp <= early["timestamp"] <= int(timezone.now_utc().timestamp() * 1000)
         assert (await debug_run_service.get_run(run_id)).observed_bin_codes == ()
@@ -239,10 +236,14 @@ async def _complete_transport_step(
             )
             assert position["code"] == "RECEIVED"
         assert await runtime.service.process_pending_evidence(10) == len(results)
-        assert await debug_run_service.advance_run(run_id) is True
+        assert await debug_run_service.advance_run(run_id) is False
         progress = await debug_run_service.get_run(run_id)
         assert progress.current_phase is TransportDebugRunPhase.BINS_TO_RACK
-        assert progress.observed_bin_codes == tuple(result["container_id"] for result in results)
+        # 模拟等待租约到期；无需 WMS 再发送即可由下一轮后台扫描继续。
+        async with runtime.service._sessions.begin() as db:
+            pending = await db.scalar(select(TransportEvidence).where(TransportEvidence.operation_id == operation_id))
+            assert pending is not None and pending.status == "PENDING"
+            pending.claim_until = None
 
     received = await record_valid_callback(
         runtime.service,
@@ -252,7 +253,7 @@ async def _complete_transport_step(
         timestamp=callback_timestamp,
         payload=payload,
     )
-    assert received["code"] == "RECEIVED"
+    assert received["code"] == ("DUPLICATE" if phase is TransportDebugRunPhase.BINS_TO_RACK else "RECEIVED")
 
     if assert_semantic_duplicate:
         duplicate_operation_id = new_uuid7()

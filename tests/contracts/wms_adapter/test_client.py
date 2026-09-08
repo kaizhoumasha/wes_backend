@@ -70,6 +70,7 @@ def test_wms_adapter_exposes_only_the_public_surface() -> None:
         "TransportEventHandler",
         "TransportEventResponse",
         "WmsAccessResult",
+        "WmsCallbackReceiptService",
         "WmsClient",
         "WmsInboundAuthPolicy",
         "WmsTransportAdapter",

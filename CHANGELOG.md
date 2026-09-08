@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.1.0] - 2026-09-07
+
+### Fixed
+
+- 成功回架结果早于位置应用时先可靠接纳，后台等待精确目标事实后完成任务；WMS 无需为内部异步时序重复发送结果。
+- WMS 回调入口保留每次请求的有界原文、响应与请求 ID；收据保存失败时返回可重试的 503，保留原消息身份。
+
+### Verification
+
+- 聚焦回归 188 passed；QUALITY FAST 3306 passed、5 skipped；最终 HEAVY 210 passed、零跳过。
+- 无数据库迁移；更新回调 ACK 与 OpenAPI 合同。未部署，未进行现场业务验收。
+
 ## [0.34.0.0] - 2026-09-07
 
 ### Added

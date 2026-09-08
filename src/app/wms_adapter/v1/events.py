@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from time import monotonic
 from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Request, Response
@@ -16,6 +17,7 @@ from src.app.transport.contracts import (
     TransportIngressAttempt,
     TransportIngressDisposition,
 )
+from src.app.wms_adapter.callback_receipt_service import CALLBACK_RECEIPT_BODY_LIMIT, wms_callback_receipt_service
 from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
 from src.app.wms_adapter.inbound_material.openapi import (
     RECOVERY_EVENT_REQUEST_SCHEMA,
@@ -42,6 +44,7 @@ from src.app.wms_adapter.wire_common import (
 )
 from src.core.task_queue_gateway import task_queue_gateway
 from src.core.uuid7 import new_uuid7
+from src.utils.audit import get_request_id
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -64,10 +67,16 @@ WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
 async def _read_bounded_body(request: Request) -> tuple[bytes | None, int]:
     body = bytearray()
     async for chunk in request.stream():
+        request.state.wms_observed_body_bytes = len(body) + len(chunk)
         if len(body) + len(chunk) > MAX_WMS_EVENT_BODY_BYTES:
+            request.state.wms_receipt_body = (
+                bytes(body[:CALLBACK_RECEIPT_BODY_LIMIT]) + chunk[: max(0, CALLBACK_RECEIPT_BODY_LIMIT - len(body))]
+            )
             return None, len(body) + len(chunk)
         body.extend(chunk)
+        request.state.wms_receipt_body = bytes(body[:CALLBACK_RECEIPT_BODY_LIMIT])
     raw_body = bytes(body)
+    request.state.wms_receipt_body = raw_body
     request._body = raw_body  # pyright: ignore[reportPrivateUsage]  # 单次有界读取后供同一 Request 复用。
     return raw_body, len(raw_body)
 
@@ -284,8 +293,36 @@ def _disposition(code: object, status_code: int) -> TransportIngressDisposition:
     },
 )
 async def receive_wms_event(request: Request) -> Response:
-    request_id = new_uuid7()
+    request_id = get_request_id() or new_uuid7()
     received_at = timezone.now_utc().isoformat()
+    started_at = monotonic()
+    response: Response = Response(status_code=500)
+    try:
+        response = await _receive_wms_event(request, request_id, received_at)
+    except Exception:
+        logger.exception("WMS callback handler failed: request_id=%s", request_id)
+    finally:
+        # handler 的 ACK 事务已结束，避免在单连接池中持有业务事务再开日志事务。
+        recorder = getattr(request.app.state, "wms_callback_receipt_service", wms_callback_receipt_service)
+        try:
+            await recorder.record(
+                request_id=request_id,
+                raw_body=getattr(request.state, "wms_receipt_body", b""),
+                observed_body_bytes=getattr(request.state, "wms_observed_body_bytes", 0),
+                response_status=response.status_code,
+                response_body=bytes(response.body),
+                response_time_ms=int((monotonic() - started_at) * 1000),
+            )
+        except Exception:
+            logger.exception("WMS callback receipt persistence failed: request_id=%s", request_id)
+            response = _unavailable_ack(getattr(request.state, "wms_receipt_body", b""))
+            response.status_code = 503
+            response.headers["Retry-After"] = "1"
+    return response
+
+
+async def _receive_wms_event(request: Request, request_id: str, received_at: str) -> Response:
+    raw_body, observed_body_bytes = await _read_bounded_body(request)
     if not _valid_wms_event_request_headers(request):
         await _publish_wms_ingress_attempt(
             request,
@@ -297,7 +334,6 @@ async def receive_wms_event(request: Request) -> Response:
             error_code="INVALID_CONTENT_TYPE",
         )
         return Response(status_code=400)
-    raw_body, observed_body_bytes = await _read_bounded_body(request)
     if raw_body is None:
         await _publish_wms_ingress_attempt(
             request,

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from fastapi import APIRouter
 
+    from src.app.wms_adapter.callback_receipt_service import WmsCallbackReceiptService
     from src.app.wms_adapter.client import WmsAccessResult, WmsClient
     from src.app.wms_adapter.factory import build_wms_client
     from src.app.wms_adapter.inbound_auth import WmsInboundAuthPolicy
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 router_v1: APIRouter
 
 _LAZY_EXPORTS = {
+    "WmsCallbackReceiptService": ("src.app.wms_adapter.callback_receipt_service", "WmsCallbackReceiptService"),
     "TransportEventHandler": ("src.app.wms_adapter.transport_event_handler", "TransportEventHandler"),
     "TransportEventResponse": ("src.app.wms_adapter.transport_event_handler", "TransportEventResponse"),
     "WmsAccessResult": ("src.app.wms_adapter.client", "WmsAccessResult"),
@@ -30,6 +32,7 @@ __all__ = [
     "TransportEventHandler",
     "TransportEventResponse",
     "WmsAccessResult",
+    "WmsCallbackReceiptService",
     "WmsClient",
     "WmsInboundAuthPolicy",
     "WmsTransportAdapter",

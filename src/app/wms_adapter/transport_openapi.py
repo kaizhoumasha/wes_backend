@@ -251,14 +251,7 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
-_RETRYABLE_CONFLICT_DATA_SCHEMA = _closed_object(
-    ["transport_task_id", "reason_code"],
-    {
-        "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
-        "reason_code": {"type": "string", "enum": ["MEMBER_POSITION_EVIDENCE_PENDING"]},
-    },
-)
-_CONFLICT_DATA_SCHEMA = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA, _RETRYABLE_CONFLICT_DATA_SCHEMA]}
+_CONFLICT_DATA_SCHEMA = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
 _REASON_CODE_SCHEMA = {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}
 _REASON_DATA_SCHEMA = {
     "oneOf": [

@@ -1137,28 +1137,6 @@
                               "pattern": ".*\\S.*"
                             }
                           }
-                        },
-                        {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "required": [
-                            "transport_task_id",
-                            "reason_code"
-                          ],
-                          "properties": {
-                            "transport_task_id": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 80,
-                              "pattern": ".*\\S.*"
-                            },
-                            "reason_code": {
-                              "type": "string",
-                              "enum": [
-                                "MEMBER_POSITION_EVIDENCE_PENDING"
-                              ]
-                            }
-                          }
                         }
                       ]
                     }

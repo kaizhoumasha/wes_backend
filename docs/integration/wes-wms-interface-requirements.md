@@ -323,7 +323,8 @@ flowchart LR
 同一身份的并发首次请求必须串行收敛：只能有一次业务接纳和一份首次响应，其余相同消息返回对应重复结果，不得创建第二项搬运
 义务。接收方使用锁、事务还是其它并发控制方式属于内部实现。
 
-`503 / UNAVAILABLE` 是尚未接纳时的临时响应，不建立业务绑定，也不作为后续 `DUPLICATE` 的冻结响应。
+`503 / UNAVAILABLE` 不作为后续 `DUPLICATE` 的冻结响应。WES→WMS 按各 operation 的接纳合同处理；
+WMS→WES 回调返回 `503` 时可能已提交协议收据或 Evidence，发送方必须保留原身份和完整消息重试。
 `RECEIVED` 是首次接纳终局响应；`REJECTED` 是确定拒绝终局响应。取得合法消息身份的 `REJECTED` 必须保存请求摘要和首次拒绝
 响应；同一身份、同一非法消息稳定重放首次拒绝，同一身份改换内容返回 `409 / CONFLICT`。无法安全建立消息身份的 `400/413`
 不进入幂等记录。
@@ -732,11 +733,10 @@ async Task<HttpResult> ReceiveTransportRequestAsync(HttpRequest request, Cancell
 | `400`，空响应体 | 错误 `Content-Type`、非法 UTF-8/JSON、number 超出合同规范化域，或无法提取合法 UUIDv7 `operation_id` | 无响应信封 | 停止原消息；修正后创建新身份 |
 | `413`，空响应体 | 原始请求正文超过 `256 KiB` | 无响应信封 | 停止原消息；缩小合法业务请求后创建新身份 |
 | `422 / REJECTED` | 已有合法 `operation_id`，但信封、operation 或 DTO 非法 | 必须携带稳定 `reason_code` | 停止原消息；修正后创建新身份 |
-| `409 / CONFLICT`（`reason_code=MEMBER_POSITION_EVIDENCE_PENDING`） | 完整、身份有效的成功 BIN 回架早于任一冻结 `RACK_BIN_SLOT` 目标的已应用精确 `TARGET_PLACED` | `transport_task_id + reason_code` | 该次未接纳、未创建 callback receipt/evidence；所需逐箱事实成功 ACK 后即可原样重试，若仍 pending 则保留同一冻结消息并按既有策略继续重试，由 WES 判断内部应用状态 |
 | 其它 `409 / CONFLICT` | 同一身份对应不同内容，或违反不可变业务约束 | operation 专属冲突信息 | 禁止换 ID 掩盖，进入对账 |
-| `503 / UNAVAILABLE` | 接收方当前无法可靠接纳，且尚未接纳 | operation 专属字段或 `{}` | 使用原完整消息重试 |
+| `503 / UNAVAILABLE` | 回调接收方无法给出可靠 ACK；协议收据或 Evidence 可能已提交 | operation 专属字段或 `{}` | 使用原身份和完整消息重试，不推断未接纳 |
 
-`400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。本合同不使用 HTTP `Retry-After`。
+`400/413` 以外的响应都必须使用公共响应信封并原样回显已解析的 `operation_id`。常规业务 ACK 不使用 HTTP `Retry-After`；WMS 回调请求级收据保存失败时，`503` 响应例外携带 `Retry-After: 1`。
 网络超时或无法确认响应内容时，不能假定对方没有收到消息。
 
 #### 2.2.3 接收方幂等处理伪代码
@@ -827,8 +827,7 @@ WMS 主动通知必须满足以下可联调验证的结果，具体如何实现�
 2. 首次发送前生成新的 UUIDv7 `operation_id`，冻结 `operation + timestamp + data`；进程重启或网络失败不能丢失已形成的发送义务。
 3. 调用 `/api/v1/wms/events` 时使用已经冻结的完整消息，技术重试不得重新读取当前主账并改写旧消息。
 4. 当前容器中间位置事件/搬运最终结果收到 `RECEIVED/DUPLICATE` 后结束本次发送义务；收到 `UNAVAILABLE` 或没有取得明确响应时，使用原完整消息重试。
-5. 收到 `400/413/422` 后停止重试原消息；修正内容后必须创建新的消息身份。除第 3.2 节定义的
-   `MEMBER_POSITION_EVIDENCE_PENDING` 外，收到 `CONFLICT` 后停止自动发送并进入合同对账。
+5. 收到 `400/413/422` 后停止重试原消息；修正内容后必须创建新的消息身份。收到 `CONFLICT` 后停止自动发送并进入合同对账。
 6. 新出现的业务事实必须创建新消息身份，不能覆盖已经形成或已经发送的历史消息。
 7. 每次 WMS → WES HTTP 访问使用 `10000` 毫秒硬超时，并限制响应原始 Body 不超过 `262144` bytes。
 8. 超时、网络失败、响应 Body 超限、非法 JSON、响应信封不合法或未知 HTTP/code 组合都表示“没有取得明确合同响应”；WMS 必须
@@ -932,15 +931,6 @@ async Task DeliverEventAsync(
                 return;
             }
 
-            if (response.Is(409, "CONFLICT") &&
-                response.HasReasonCode("MEMBER_POSITION_EVIDENCE_PENDING"))
-            {
-                // 本次完整结果未被接纳，没有 callback receipt/evidence；不改变任何冻结字段。
-                // 所需逐箱 TARGET_PLACED 已成功 ACK 后即可重发；WES 仍 pending 时继续保留同一组 bytes。
-                await Task.Delay(TimeSpan.FromMilliseconds(2000), cancellationToken);
-                continue;
-            }
-
             if (response.Is(409, "CONFLICT"))
             {
                 await StopAndStartReconciliationAsync(message, response, cancellationToken);
@@ -960,8 +950,7 @@ async Task DeliverEventAsync(
 ```
 
 伪代码中的 `ReliablyFreezeDeliveryObligationAsync`、`MarkDeliveryFinishedAsync` 和重试调度只是行为名称，WMS 可以用现有机制实现。
-`MEMBER_POSITION_EVIDENCE_PENDING` 分支只复用同一冻结消息和既有重试调度，不新增查询、轮询或缓存接口；WMS 不负责观察 WES 的
-内部 `APPLIED` 状态。
+合法早到结果由 WES 保存并返回 `202 / RECEIVED`；等待前置位置和再次处理由 WES 后台负责，WMS 无需观察内部 `APPLIED` 状态。
 `.NET Framework 4.6` 基础类库没有 `Guid.CreateVersion7()`；`CreateUuidV7` 表示 WMS 封装的 RFC 9562 UUIDv7 生成能力，不要求
 双方使用相同库。关键验收点是：重试的
 `operation_id + operation + timestamp + data` 完全不变，且明确接纳前形成的发送义务不会丢失。
@@ -2181,7 +2170,6 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
 | --- | --- | --- |
 | `202 / RECEIVED` | `transport_task_id` | 结束本次消息发送义务；不等于 evidence 已经推进业务 |
 | `200 / DUPLICATE` | `transport_task_id` | 视为已经接纳，结束发送义务 |
-| `409 / CONFLICT`（`data={transport_task_id, reason_code=MEMBER_POSITION_EVIDENCE_PENDING}`） | `transport_task_id` 和固定 `reason_code` | 仅适用于完整、身份有效的成功料箱回架结果早于所需已应用精确目标事件；该临时尝试未创建 callback receipt/evidence。所需事件成功 ACK 后即可原样重试；若仍 pending，继续保留同一 `operation_id`、`timestamp`、`outcome_revision` 和 body 并按既有策略重试 |
 | 其它 `409 / CONFLICT` | 首次收据含合法任务 ID 时为 `transport_task_id`，否则为 `{}` | 停止自动重试并对账 |
 | `422 / REJECTED` | 已知 operation 使用 `reason_code=INVALID_EVIDENCE`；未知 operation 使用 `UNSUPPORTED_OPERATION` | 停止原消息；修正后使用新 `operation_id` |
 | `503 / UNAVAILABLE` | `{}` | 2000 毫秒后使用原完整消息重试 |
@@ -2193,9 +2181,7 @@ Transport 合同不使用 `429 / BUSY`，也不定义 `retry_after_ms`。WES 暂
 必须保留原发送义务、停止每 2 秒热重试并告警，等待配置修复后再恢复发送。HTML 或其它未定义组合仍按未知响应处理。
 
 WMS 只有在严格校验响应 `operation_id` 等于请求值，且 `RECEIVED/DUPLICATE` 的 `data.transport_task_id` 等于冻结消息中的任务
-ID 后，才能结束发送义务。除 `MEMBER_POSITION_EVIDENCE_PENDING` 外，`CONFLICT` 必须停止自动重试并进入对账；该临时 `409` 的
-`transport_task_id` 必须等于冻结任务 ID。所需逐箱事件均成功 ACK 后，WMS 即可原样重试同一完整结果；若仍 pending，继续保留原发送义务
-并按既有策略重试，由 WES 判断是否已应用。其它
+ID 后，才能结束发送义务。`CONFLICT` 必须停止自动重试并进入对账。
 `CONFLICT` 的 `data.transport_task_id` 存在时必须等于冻结任务 ID，
 为空则表示同一消息身份的首份收据没有合法任务 ID。任何已返回关联字段不匹配都属于未知响应，绝不能结束发送义务。
 
@@ -2221,23 +2207,15 @@ ID 后，才能结束发送义务。除 `MEMBER_POSITION_EVIDENCE_PENDING` 外�
 }
 ```
 
-**成功回架结果早到、等待逐箱证据的临时响应：**
+**成功回架结果早到时：**
 
-```json
-{
-  "operation_id": "019fd988-0d40-7b4d-a23a-1b90aa5d4472",
-  "code": "CONFLICT",
-  "timestamp": 1786061000123,
-  "data": {
-    "transport_task_id": "TRANSPORT-000003",
-    "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING"
-  }
-}
-```
+WES 原子保存 callback receipt 和待处理 Evidence，并返回正常的 HTTP `202 / RECEIVED`，ACK 回显原 `operation_id`
+和 `transport_task_id`。后台等待所有精确目标 `TARGET_PLACED` 已应用后继续；等待期间任务和资源锁保持原有约束，
+位置长期缺失时按既有超时机制进入对账。WMS 收到成功 ACK 后结束本次发送义务，无需为内部异步时序重发。
 
-该响应是 HTTP `409`，不是已接纳 ACK：它不创建 callback receipt 或 evidence。WMS 必须先让每个需要的精确目标
-`TARGET_PLACED` 事件取得成功 ACK，然后以完全相同的 `operation_id`、`timestamp`、`outcome_revision` 和 body 重试该完整结果。若仍
-收到同一 pending 响应，继续保留并按既有策略重试该冻结消息；是否已应用由 WES 判断，不得创建新版本、替换身份或修改消息内容。
+共享入口每次请求（包括异常和重试）都在 `callback_logs` 留请求级收据，保存响应体、状态码、请求 ID 和最多 64 KiB 的原始
+请求字节（Base64，明确标记截断）；非法请求头同样有界保留原始字节。Transport 幂等收据仍保留首份身份和响应。
+数据库收据保存失败时记录错误日志并返回 `503`、`Retry-After: 1`，WMS 保留原冻结消息重试。
 
 能够通过信封和 DTO 校验、但引用未知任务、错误成员或矛盾既有事实的 evidence，仍可能先取得 `RECEIVED`。ACK 只证明 WES 已可靠保存
 原始 evidence；WES 随后冻结最小影响范围并进入诊断或对账，不以 ACK 证明搬运结果已经应用。
@@ -2275,7 +2253,7 @@ ID 后，才能结束发送义务。除 `MEMBER_POSITION_EVIDENCE_PENDING` 外�
 | `JSON-WRONG-CASE` | 样例 1 的 `operation_id` 改为 `operationId` | 无法取得合法身份，空响应体 `400` |
 | `JSON-UNKNOWN-FIELD` | 样例 1 `data` 增加 `vehicle_id` | `422 / REJECTED + INVALID_DATA` |
 | `member-position-missing-final-position` | 容器中间位置事件 `TARGET_PLACED` 省略 `final_position` | `422 / REJECTED + INVALID_EVIDENCE` |
-| `bin-return-result-before-target-placed` | 完整、身份有效的成功 BIN 回架结果先于任一冻结 `RACK_BIN_SLOT` 目标的已应用精确 `TARGET_PLACED` | `409 / CONFLICT + {transport_task_id, reason_code=MEMBER_POSITION_EVIDENCE_PENDING}`；无 callback receipt/evidence；全部所需事件成功 ACK 后原样重试，若仍 pending 则保留同一冻结消息并按既有策略继续重试 |
+| `bin-return-result-before-target-placed` | 完整、身份有效的成功 BIN 回架结果早于所需精确目标事件应用 | `202 / RECEIVED`；保存 callback receipt 和待处理 Evidence；后台等待前置位置后继续，无需 WMS 重发 |
 | `搬运提交-CROSS-FACE-EXCHANGE` | 使用下方跨面请求 | `422 / REJECTED + INVALID_DATA`，不得创建部分任务 |
 | `搬运最终结果-SEMANTIC-DUPLICATE` | 同一任务、同一 `outcome_revision` 和相同 `data`，但使用新的 `operation_id` 与 `timestamp` | 第二条消息 `200 / DUPLICATE`，不得创建第二份 evidence |
 | `搬运最终结果-REVISION-CONFLICT` | 同一任务、同一 `outcome_revision`、相同成员但结果内容不同 | 第二条消息 `409 / CONFLICT` |
@@ -2455,7 +2433,7 @@ WMS 可以根据自身现有架构决定以下内部事项，WES 不对其作技
 | --- | --- | --- |
 | 搬运提交 Transport submit 明确未发送或收到 `503` | 原冻结 `operation_id + timestamp + 完整消息` | 固定等待 2000 毫秒，并在最多实际发送 3 次的预算内按搬运提交规则重试 |
 | 容器中间位置事件/搬运最终结果主动通知收到 `503` 或没有取得明确响应 | 原主动通知完整消息 | 按第 2.4 节继续履行发送义务，直到取得确定接纳、拒绝或冲突 |
-| 成功 BIN 回架的 `resulted` 收到 `409 / CONFLICT + MEMBER_POSITION_EVIDENCE_PENDING` | 原冻结 `operation_id + timestamp + outcome_revision + 完整 body` | 当前尝试未接纳、无 callback receipt/evidence；每个所需精确目标 `TARGET_PLACED` 成功 ACK 后原样重试，若仍 pending 则按既有策略继续履行同一发送义务，不换 ID、不刷新时间戳、不改版本或 body |
+| 成功 BIN 回架的 `resulted` 早于前置位置应用 | 原冻结消息和结果版本 | WES 返回 `202 / RECEIVED` 并保存待处理 Evidence；后台等待位置事实后继续，WMS 结束本次发送义务 |
 | Transport submit `DELIVERY_UNKNOWN` | 原 `transport_task_id` | 禁止自动重提，进入 `UNKNOWN/RECONCILING` |
 | `DECIDED.result=WAIT/NO_BATCH/NOT_COMPLETED` | 使用新 `operation_id`；是否引用 `previous_operation_id` 由具体业务合同决定 | 等待新事实或到期后，根据当前现场数据重新请求决定；现有 `outbound.*` operation 不传请求链字段，尚未获批的共同 drain operation 以最终审批为准 |
 | 其它 `409 / CONFLICT` | 禁止换 ID 掩盖 | 暂停最小影响范围并开始人工对账 |

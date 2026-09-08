@@ -138,6 +138,7 @@ async def test_same_event_is_idempotent_and_changed_payload_conflicts(
 
 @pytest.mark.asyncio
 async def test_successful_rack_slot_result_waits_for_applied_exact_target_member_evidence(
+    monkeypatch: pytest.MonkeyPatch,
     outcome_service: TransportService,
     db_engine: object,
 ) -> None:
@@ -171,21 +172,15 @@ async def test_successful_rack_slot_result_waits_for_applied_exact_target_member
         payload=result,
     )
 
-    assert early["http_status"] == 409
-    assert early["code"] == "CONFLICT"
-    assert early["data"] == {
-        "transport_task_id": handle.transport_task_id,
-        "reason_code": "MEMBER_POSITION_EVIDENCE_PENDING",
-    }
+    assert (early["http_status"], early["code"]) == (202, "RECEIVED")
+    assert await outcome_service.process_pending_evidence(1) == 0
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     async with sessions() as db:
-        receipts = list(
-            await db.scalars(
-                select(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == result_operation_id)
-            )
+        receipt = await db.scalar(
+            select(TransportCallbackReceipt).where(TransportCallbackReceipt.operation_id == result_operation_id)
         )
-        evidence = list(
-            await db.scalars(select(TransportEvidence).where(TransportEvidence.operation_id == result_operation_id))
+        pending = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.operation_id == result_operation_id)
         )
         task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
         bindings = list(
@@ -195,10 +190,12 @@ async def test_successful_rack_slot_result_waits_for_applied_exact_target_member
                 )
             )
         )
-    assert receipts == []
-    assert evidence == []
-    assert task is not None and task.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
-    assert bindings and all(binding.released_at is None for binding in bindings)
+        assert receipt is not None and receipt.response_http_status == 202
+        assert pending is not None and pending.status == "PENDING" and pending.processed_at is None
+        assert pending.claim_until is not None
+        retry_at = pending.claim_until
+        assert task is not None and task.status not in {"SUCCEEDED", "FAILED", "REJECTED"}
+        assert bindings and all(binding.released_at is None for binding in bindings)
 
     for operation_id, container_id, target in (
         ("target-placed-return-1", "bin-return-1", target_one),
@@ -213,8 +210,10 @@ async def test_successful_rack_slot_result_waits_for_applied_exact_target_member
             payload={"container_id": container_id, "milestone": "TARGET_PLACED", "final_position": target},
         )
         assert accepted["code"] == "RECEIVED"
-
-    still_pending = await record_valid_callback(
+    # 最早的结果不能持续抢占 limit=1；后到位置 evidence 必须可以被领取。
+    assert await outcome_service.process_pending_evidence(1) == 1
+    assert await outcome_service.process_pending_evidence(1) == 1
+    duplicate = await record_valid_callback(
         outcome_service,
         operation_id=result_operation_id,
         transport_task_id=handle.transport_task_id,
@@ -222,28 +221,27 @@ async def test_successful_rack_slot_result_waits_for_applied_exact_target_member
         timestamp=1,
         payload=result,
     )
-    assert (still_pending["http_status"], still_pending["code"]) == (409, "CONFLICT")
-    assert await outcome_service.process_pending_evidence(2) == 2
+    assert (duplicate["http_status"], duplicate["code"]) == (200, "DUPLICATE")
+    from datetime import timedelta
 
-    accepted_result = await record_valid_callback(
-        outcome_service,
-        operation_id=result_operation_id,
-        transport_task_id=handle.transport_task_id,
-        operation=RESULT_OPERATION,
-        timestamp=1,
-        payload=result,
-    )
-    duplicate_result = await record_valid_callback(
-        outcome_service,
-        operation_id=result_operation_id,
-        transport_task_id=handle.transport_task_id,
-        operation=RESULT_OPERATION,
-        timestamp=1,
-        payload=result,
-    )
-
-    assert (accepted_result["http_status"], accepted_result["code"]) == (202, "RECEIVED")
-    assert (duplicate_result["http_status"], duplicate_result["code"]) == (200, "DUPLICATE")
+    monkeypatch.setattr(timezone, "now_for_db", lambda: retry_at + timedelta(seconds=1))
+    # 无需 WMS 重发：后台重扫已持久化的结果即可完成。
+    assert await outcome_service.process_pending_evidence(1) == 1
+    async with sessions() as db:
+        pending = await db.scalar(
+            select(TransportEvidence).where(TransportEvidence.operation_id == result_operation_id)
+        )
+        task = await db.scalar(select(TransportTask).where(TransportTask.transport_task_id == handle.transport_task_id))
+        bindings = list(
+            await db.scalars(
+                select(TransportResourceBinding).where(
+                    TransportResourceBinding.transport_task_id == handle.transport_task_id
+                )
+            )
+        )
+        assert pending is not None and pending.status == "APPLIED"
+        assert task is not None and task.status == "SUCCEEDED" and task.outcome_version == 1
+        assert all(binding.released_at is not None for binding in bindings)
 
 
 @pytest.mark.asyncio
