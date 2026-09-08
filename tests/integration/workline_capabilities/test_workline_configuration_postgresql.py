@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from datetime import datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select, text
@@ -14,9 +16,11 @@ from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus
 from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
+from src.app.resource.models.resource import RackPlacement
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.workline import LineType, WorkLine, WorkLineRackPositionInput, WorkLineRunMode
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.core.exceptions import BusinessException
@@ -68,6 +72,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     assert left.id is not None and right.id is not None
                     left_id, right_id = left.id, right.id
                     left_version, right_version = left.version, right.version
+                    device_id = device.id
                     # 大 ID 在尚未绑定设备时也必须能查询配置状态。
                     status = await WorkLineConfigurationService(plugins=()).configuration_status(
                         db, workline_id=left_id
@@ -82,12 +87,25 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                         await ready.wait()
                         service = WorkLineConfigurationService(plugins=(_plugin(),))
                         try:
-                            await service.save(
+                            await service.save_base(
                                 db,
+                                rack_positions=tuple(
+                                    WorkLineRackPositionInput(
+                                        device_id=device_id,
+                                        position_code=code,
+                                        position_name=code,
+                                        position_role=role,
+                                        allowed_rack_kind=kind,
+                                    )
+                                    for code, role, kind in (
+                                        ("WORK-1", "SMT_SORTER_STATION", "FIVE_LAYER"),
+                                        ("WORK-2", "SMT_SORTER_STATION", "FIVE_LAYER"),
+                                        ("RETURN", "SMT_RETURN_RACK_POSITION", "RETURN"),
+                                        ("TRANSFER", "SMT_TRANSFER_RACK_POSITION", "TRANSFER"),
+                                    )
+                                ),
                                 workline_id=workline_id,
                                 version=version,
-                                plugin_key="postgresql_test",
-                                config={},
                                 device_codes=("CONFIG-PG-DEVICE",),
                             )
                         except BusinessException:
@@ -105,10 +123,114 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     persisted = await db.scalar(select(Device).where(Device.device_code == "CONFIG-PG-DEVICE"))
                     assert persisted is not None
                     assert persisted.work_line_id in {left_id, right_id}
-                    status = await WorkLineConfigurationService(plugins=(_plugin(),)).configuration_status(
+                    status = await WorkLineConfigurationService(plugins=(_plugin(),)).base_configuration(
                         db, workline_id=persisted.work_line_id
                     )
                     assert status.workline_id == persisted.work_line_id
+                    assert len(status.rack_positions) == 4
+                    rows = list((await db.scalars(select(WorklineRackPosition))).all())
+                    assert len(rows) == 4
+                    assert {row.workline_id for row in rows} == {persisted.work_line_id}
+                    winner_id = persisted.work_line_id
+                    workline = await db.get(WorkLine, winner_id)
+                    assert workline is not None
+                    saved_version = workline.version
+                    saved_ids = {row.position_code: row.id for row in rows}
+                    rows[0].metadata_json = {"site_note": "preserve"}
+                    preserved_code = rows[0].position_code
+                    await db.commit()
+
+                # 提交故障必须同时回滚工作位删除、设备解绑和配置版本。
+                async with sessions() as db:
+                    with patch.object(db, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))):
+                        with pytest.raises(RuntimeError, match="commit failed"):
+                            await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                                db,
+                                workline_id=winner_id,
+                                version=saved_version,
+                                device_codes=(),
+                                rack_positions=(),
+                            )
+                async with sessions() as db:
+                    workline = await db.get(WorkLine, winner_id)
+                    assert workline is not None and workline.version == saved_version
+                    device = await db.scalar(select(Device).where(Device.device_code == "CONFIG-PG-DEVICE"))
+                    assert device is not None and device.work_line_id == winner_id
+                    status = await WorkLineConfigurationService(plugins=(_plugin(),)).base_configuration(
+                        db, workline_id=winner_id
+                    )
+                    assert len(status.rack_positions) == 4
+                    edited = tuple(
+                        position.model_copy(update={"position_name": position.position_name + " updated"})
+                        for position in status.rack_positions
+                    )
+                    await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                        db,
+                        workline_id=winner_id,
+                        version=saved_version,
+                        device_codes=("CONFIG-PG-DEVICE",),
+                        rack_positions=edited,
+                    )
+                async with sessions() as db:
+                    rows = list((await db.scalars(select(WorklineRackPosition))).all())
+                    assert {row.position_code: row.id for row in rows} == saved_ids
+                    assert next(row for row in rows if row.position_code == preserved_code).metadata_json == {
+                        "site_note": "preserve"
+                    }
+                    assert all(row.position_name.endswith(" updated") for row in rows)
+                    assert {row.device_id for row in rows} == {device_id}
+                    line = await db.get(WorkLine, winner_id)
+                    assert line is not None
+                    version = line.version
+                async with sessions() as db:
+                    line = await WorkLineConfigurationService(plugins=(_plugin(),)).save(
+                        db,
+                        workline_id=winner_id,
+                        version=version,
+                        plugin_key="postgresql_test",
+                        config={},
+                    )
+                    await WorkLineConfigurationService(plugins=(_plugin(),)).save(
+                        db,
+                        workline_id=winner_id,
+                        version=line.version,
+                        plugin_key=None,
+                        config={},
+                    )
+                async with sessions() as db:
+                    rows = list((await db.scalars(select(WorklineRackPosition))).all())
+                    assert {row.position_code: row.id for row in rows} == saved_ids
+                    assert {row.device_id for row in rows} == {device_id}
+                    device = await db.get(Device, device_id)
+                    assert device is not None and device.work_line_id == winner_id
+
+                # 没有通用位置投影时，货架到位记录仍禁止删除或改写基础工作位。
+                async with sessions.begin() as db:
+                    db.add(
+                        RackPlacement(
+                            rack_code="CONFIG-OCCUPIED",
+                            workline_id=winner_id,
+                            position_code="WORK-1",
+                            placement_status="ARRIVED",
+                            source_system="ECS",
+                            source_event_id="config-arrived",
+                            started_at=datetime(2026, 9, 8),
+                        )
+                    )
+                async with sessions() as db:
+                    line = await db.get(WorkLine, winner_id)
+                    assert line is not None
+                    with pytest.raises(BusinessException, match="货架或料箱占位"):
+                        await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                            db,
+                            workline_id=winner_id,
+                            version=line.version,
+                            device_codes=(),
+                            rack_positions=(),
+                        )
+                    await db.rollback()
+                    assert len(list((await db.scalars(select(WorklineRackPosition))).all())) == 4
+
             finally:
                 await engine.dispose()
 
@@ -148,12 +270,11 @@ def test_configuration_can_claim_the_active_replacement_for_a_deleted_device_cod
                     replacement_id = replacement.id
 
                 async with sessions() as db:
-                    await WorkLineConfigurationService(plugins=(_plugin(),)).save(
+                    await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
                         db,
+                        rack_positions=(),
                         workline_id=workline_id,
                         version=version,
-                        plugin_key="postgresql_test",
-                        config={},
                         device_codes=("CONFIG-PG-REUSED-DEVICE",),
                     )
 
@@ -449,6 +570,59 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                     if not pending.done():
                         pending.cancel()
                 await asyncio.gather(*running, return_exceptions=True)
+                await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_base_position_device_migration_refuses_lossy_downgrade() -> None:
+    async def scenario() -> None:
+        async with temporary_database() as (_database, database_url):
+            run_alembic("upgrade", "head", database_url=database_url)
+            engine = create_async_engine(database_url)
+            sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            try:
+                async with sessions.begin() as db:
+                    line = WorkLine(line_code="BASE-MIGRATION", line_name="Base migration", line_type=LineType.AUTO)
+                    device = Device(device_code="BASE-MIGRATION-DEVICE", device_name="Base migration device")
+                    db.add_all([line, device])
+                    await db.flush()
+                    position = WorklineRackPosition(
+                        workline_id=line.id,
+                        workline_code=line.line_code,
+                        position_code="RETURN",
+                        position_name="Return",
+                        position_role="SMT_RETURN_RACK_POSITION",
+                        allowed_rack_kind="RETURN",
+                        device_id=device.id,
+                    )
+                    db.add(position)
+                with pytest.raises(subprocess.CalledProcessError) as failure:
+                    run_alembic("downgrade", "bebf575cca2b", database_url=database_url)
+                assert "Cannot downgrade while rack positions reference physical devices" in failure.value.stderr
+                async with sessions.begin() as db:
+                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "a7e8ad4339e5"
+                    row = await db.get(WorklineRackPosition, position.id)
+                    assert row is not None and row.device_id == device.id
+                    row.device_id = None
+                # New position purposes also protect against a lossy downgrade.
+                with pytest.raises(subprocess.CalledProcessError):
+                    run_alembic("downgrade", "bebf575cca2b", database_url=database_url)
+                async with sessions.begin() as db:
+                    row = await db.get(WorklineRackPosition, position.id)
+                    assert row is not None
+                    await db.delete(row)
+                run_alembic("downgrade", "bebf575cca2b", database_url=database_url)
+                run_alembic("upgrade", "head", database_url=database_url)
+                async with sessions() as db:
+                    assert (
+                        await db.scalar(
+                            text("SELECT to_regclass('wes_biz.ix_wes_biz_workline_rack_positions_device_id')")
+                        )
+                        is not None
+                    )
+                    assert await db.get(Device, device.id) is not None
+            finally:
                 await engine.dispose()
 
     asyncio.run(scenario())

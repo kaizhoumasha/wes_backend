@@ -32,4 +32,5 @@ def test_workline_create_keeps_default_factory_fields_optional() -> None:
 
     configuration = WorkLineConfigurationUpdate.model_validate({"version": 0})
     assert configuration.config == {}
-    assert configuration.device_codes == ()
+    assert "device_codes" not in WorkLineConfigurationUpdate.model_fields
+    assert "rack_positions" not in WorkLineConfigurationUpdate.model_fields

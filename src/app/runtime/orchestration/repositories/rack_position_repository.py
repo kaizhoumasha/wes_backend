@@ -6,11 +6,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.resource.repositories.resource_repository import bin_placement_repository, rack_placement_repository
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.workline.models.workline import WorkLine, WorkLineRackPositionInput
 
 
 class WorklineRackPositionRepository(BaseRepository[WorklineRackPosition]):
@@ -18,6 +21,51 @@ class WorklineRackPositionRepository(BaseRepository[WorklineRackPosition]):
 
     def __init__(self) -> None:
         super().__init__(WorklineRackPosition)
+
+    async def has_active_placements(self, db: AsyncSession, workline_id: int) -> bool:
+        """基础配置变更前复用资源投影查询，包含未知但尚未离位的关系。"""
+        for repository in (rack_placement_repository, bin_placement_repository):
+            summary = await repository.get_active_workline_summary(db, workline_id)
+            if summary["count"] > 0:
+                return True
+        return False
+
+    async def list_for_workline(
+        self, db: AsyncSession, workline_id: int, *, for_update: bool = False
+    ) -> list[WorklineRackPosition]:
+        columns = cast("Any", WorklineRackPosition).__table__.c
+        statement = (
+            select(WorklineRackPosition).where(columns.workline_id == workline_id).order_by(columns.position_code)
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return list((await db.execute(statement)).scalars().all())
+
+    async def replace_for_workline(
+        self,
+        db: AsyncSession,
+        *,
+        workline: WorkLine,
+        positions: tuple[WorkLineRackPositionInput, ...],
+        existing: list[WorklineRackPosition],
+    ) -> None:
+        """调用者持有工作线与既有位置锁；保持未变位置身份和扩展属性，不提交事务。"""
+        if workline.id is None:
+            raise ValueError("工作线必须先持久化")
+        by_code = {position.position_code: position for position in existing}
+        for draft in positions:
+            position = by_code.pop(draft.position_code, None)
+            if position is None:
+                position = WorklineRackPosition(
+                    workline_id=workline.id, workline_code=workline.line_code, **draft.model_dump()
+                )
+            else:
+                for key, value in draft.model_dump().items():
+                    setattr(position, key, value)
+                position.workline_code = workline.line_code
+            db.add(position)
+        for position in by_code.values():
+            await db.delete(position)
 
     async def get_by_workline_position(
         self,
