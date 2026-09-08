@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, select, text
 
+from src.app.callback.models import CallbackLog
 from src.app.device.composition import DeviceEndpointAdapterProvider
 from src.app.device.contracts import DeviceCommandRequest
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -55,6 +56,12 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         if command_code is None:
             return
         async with integration_session_factory.begin() as db:
+            await db.execute(
+                delete(CallbackLog).where(
+                    CallbackLog.callback_type == "device_ingress_attempt",
+                    CallbackLog.request_body["command_code"].as_string() == command_code,
+                )
+            )
             evidence_ids = select(InboundEvidence.id).where(InboundEvidence.command_code == command_code)
             await db.execute(
                 delete(InboundEvidenceConflict).where(InboundEvidenceConflict.first_evidence_id.in_(evidence_ids))
@@ -117,6 +124,17 @@ async def test_manual_debug_command_closes_through_broker_ecs_callback_and_postg
         assert command.material_execution_id is None
         assert evidence is not None and evidence.workline_id is None
         assert evidence.material_execution_id is None
+        async with integration_session_factory() as db:
+            history = await db.scalar(
+                select(CallbackLog).where(
+                    CallbackLog.callback_type == "device_ingress_attempt",
+                    CallbackLog.request_body["command_code"].as_string() == command_code,
+                )
+            )
+        assert history is not None
+        assert history.request_body["evidence_id"] == evidence.id
+        assert history.request_body["disposition"] == "ACCEPTED"
+        assert history.response_status == 200
         assert snapshot.callback is not None and snapshot.callback.result == "SUCCESS"
         assert ecs_server.status_requests == [f"ARM-E2E-MANUAL-{suffix}", f"ARM-E2E-MANUAL-{suffix}"]
         assert len(ecs_server.command_requests) == 1

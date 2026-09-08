@@ -27,6 +27,7 @@ from src.app.device.services.device_evidence_service import (
     DeviceResultOutOfOrderError,
     UnknownDeviceCommandError,
 )
+from src.app.device.services.device_ingress_history_service import device_ingress_history_service
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL, event_stream_service
 from src.core.logger import logger
 from src.core.uuid7 import new_uuid7
@@ -312,6 +313,11 @@ async def _publish_attempt(
         observed_body_bytes=observed_body_bytes,
         raw_payload=_redact_diagnostic_payload(decoded.raw_payload) if decoded is not None else None,
     )
+    try:
+        history = getattr(request.app.state, "device_ingress_history_service", device_ingress_history_service)
+        await history.record_attempt(attempt)
+    except Exception:
+        logger.exception("device.ingress.attempt_persist_failed")
     try:
         _ = await _event_publisher(request).publish_to(
             DEVICE_EVIDENCE_STREAM_CHANNEL,

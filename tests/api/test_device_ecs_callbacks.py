@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -60,6 +61,7 @@ def _client(
     raise_server_exceptions: bool = True,
 ) -> TestClient:
     app = FastAPI()
+    app.state.device_ingress_history_service = type("History", (), {"record_attempt": AsyncMock()})()
     app.state.device_evidence_service = service or FakeEvidenceService()
     app.state.device_event_stream_service = publisher or FakePublisher()
     app.include_router(router, prefix="/api/v1/callback")
@@ -149,6 +151,8 @@ def test_duplicate_callback_is_a_distinct_attempt_for_same_evidence() -> None:
     assert [attempt["disposition"] for attempt in attempts] == ["DUPLICATE", "DUPLICATE"]
     assert {attempt["evidence_id"] for attempt in attempts} == {1}
     assert attempts[0]["request_id"] != attempts[1]["request_id"]
+    stored = client.app.state.device_ingress_history_service.record_attempt.await_args_list
+    assert [call.args[0].model_dump(mode="json") for call in stored] == attempts
 
 
 def test_body_limit_is_checked_before_json_decode() -> None:
@@ -254,6 +258,8 @@ def test_diagnostic_attempt_redacts_nested_credentials_without_rejecting_payload
         response = client.post(path, json=payload)
 
     assert response.status_code == 200
+    stored = client.app.state.device_ingress_history_service.record_attempt.call_args.args[0]
+    assert stored.model_dump(mode="json") == publisher.events[0][2]
     diagnostic_data = publisher.events[0][2]["raw_payload"]["data"]
     assert diagnostic_data == {
         "authorization": "[REDACTED]",
@@ -684,3 +690,34 @@ def test_body_limit_stops_streaming_before_buffering_remaining_chunks() -> None:
 
     assert error.value.status_code == 413
     assert request.chunks_read == 2
+
+
+def test_callback_records_redacted_attempt_before_live_publication() -> None:
+    publisher = FakePublisher()
+    client = _client(publisher=publisher)
+    recorded = []
+
+    async def record(attempt):
+        assert publisher.events == []
+        recorded.append(attempt)
+
+    client.app.state.device_ingress_history_service.record_attempt.side_effect = record
+    response = client.post("/api/v1/callback/event", content="{broken")
+    assert response.status_code == 400
+    assert len(recorded) == 1
+    assert recorded[0].request_id == publisher.events[0][2]["request_id"]
+    assert recorded[0].raw_payload is None
+    assert recorded[0].status_code == 400
+
+
+def test_diagnostic_storage_failure_preserves_callback_ack_and_live_event() -> None:
+    publisher = FakePublisher()
+    client = _client(publisher=publisher)
+    client.app.state.device_ingress_history_service.record_attempt.side_effect = RuntimeError(
+        "diagnostic store unavailable"
+    )
+    response = client.post("/api/v1/callback/event", json=_event_payload())
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
+    assert len(publisher.events) == 1
+    client.app.state.device_ingress_history_service.record_attempt.assert_awaited_once()

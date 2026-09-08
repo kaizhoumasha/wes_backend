@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI, Request
@@ -159,3 +160,47 @@ async def test_device_evidence_stream_applies_the_same_filters_to_updates() -> N
     assert "event: device_evidence.updated\n" in event
     assert '"device_code": "ARM-02"' in event
     assert '"device_code": "ARM-01"' not in event
+
+
+@pytest.mark.asyncio
+async def test_device_history_delegates_typed_filters_and_requires_superuser():
+    from src.app.device.contracts import DeviceIngressHistoryPage
+
+    app = FastAPI()
+    register_exception(app)
+    history = SimpleNamespace(list_history=AsyncMock(return_value=DeviceIngressHistoryPage(items=[], next_cursor=None)))
+    app.state.device_ingress_history_service = history
+    app.include_router(router, prefix="/api/v1/device")
+    route = next(route for route in router.routes if isinstance(route, APIRoute) and route.path == "/evidences/history")
+    assert route.dependencies[0].dependency is require_superuser
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        missing = await client.get("/api/v1/device/evidences/history")
+    assert missing.status_code == 401
+    app.dependency_overrides[require_superuser] = lambda: 42
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            "/api/v1/device/evidences/history",
+            params={
+                "device_code": "ARM-1",
+                "kind": "DEVICE_EVENT",
+                "command_code": "CMD-1",
+                "apply_status": "PENDING",
+                "limit": 10,
+            },
+        )
+        invalid = await client.get("/api/v1/device/evidences/history?limit=101")
+    assert response.status_code == 200
+    assert response.json()["data"] == {"items": [], "next_cursor": None}
+    assert invalid.status_code == 422
+    history.list_history.assert_awaited_once_with(
+        device_code="ARM-1",
+        kind=DeviceIngressKind.DEVICE_EVENT,
+        command_code="CMD-1",
+        apply_status=InboundEvidenceApplyStatus.PENDING,
+        limit=10,
+        cursor=None,
+    )
+    history.list_history.side_effect = ValueError("invalid device history cursor")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/device/evidences/history?cursor=bad")
+    assert response.status_code == 400
