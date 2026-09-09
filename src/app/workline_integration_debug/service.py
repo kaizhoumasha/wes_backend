@@ -457,6 +457,12 @@ class IntegrationDebugService:
                 for item in sources
             ):
                 raise IntegrationDebugContractError("inbound_batch 必须引用 plan_delta 中的五层料箱架及朝向")
+            if profile_uses_real_transport(IntegrationDebugProfile(run.profile)):
+                self._assert_rack_arrived_for_inbound_batch(
+                    await self._runs.list_steps(db, run_id),
+                    rack_id=rack_id,
+                    rack_face=rack_face,
+                )
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 inbound_batch 联调步骤缺少 operation_id")
@@ -1109,8 +1115,14 @@ class IntegrationDebugService:
             run.configuration_json = {**run.configuration_json, "inbound_bins": bins}
             run.current_phase = IntegrationDebugPhase.BIN_TRANSPORT
             run.status = IntegrationDebugRunStatus.ACTIVE
-        elif response_result in {"NO_BATCH", "RACK_FACE_DONE"}:
+        elif response_result == "NO_BATCH":
             run.status = IntegrationDebugRunStatus.ACTIVE
+        elif response_result == "RACK_FACE_DONE":
+            run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+            run.attention_code = "RACK_FACE_DONE"
+            run.attention_detail = (
+                "WMS 已关闭当前来源货架面；当前临时单箱联调不自动调度下一来源面，请现场协调后关闭本 run。"
+            )
         else:
             raise IntegrationDebugConflict("inbound_batch 响应结果不在固定联合内")
 
@@ -1849,6 +1861,33 @@ class IntegrationDebugService:
                 and request.get("bin_code") == action.bin_code
             ):
                 raise IntegrationDebugConflict("本节点已为该批次成员创建 Transport；请刷新原动作，禁止换 identity 重发")
+
+    @staticmethod
+    def _assert_rack_arrived_for_inbound_batch(
+        steps: list[IntegrationRunStep],
+        *,
+        rack_id: str,
+        rack_face: str,
+    ) -> None:
+        allowed_positions = set(SORTING_3_SITE_CONFIGURATION["bin_rack_positions"])
+        for step in steps:
+            request = step.request_summary_json
+            result = step.result_summary_json
+            target = request.get("target")
+            if (
+                step.phase == IntegrationDebugPhase.RACK_TRANSPORT
+                and step.status == "SUCCEEDED"
+                and request.get("kind") == IntegrationTransportActionKind.MOVE_RACK
+                and request.get("rack_id") == rack_id
+                and request.get("target_face") == rack_face
+                and isinstance(target, dict)
+                and target.get("kind") == "RACK_POSITION"
+                and target.get("location_code") in allowed_positions
+                and result.get("final_position") == target
+                and result.get("arrival_face") == rack_face
+            ):
+                return
+        raise IntegrationDebugConflict("真实模式必须先取得该来源货架在 KT16/KT17 且朝向一致的 Transport 成功终态")
 
     async def _append_step(
         self,

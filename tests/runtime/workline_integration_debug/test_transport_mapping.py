@@ -1763,6 +1763,111 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
 
 
 @pytest.mark.asyncio
+async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arrival() -> None:
+    run = IntegrationRun(
+        run_id="run-real-inbound-batch",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="BIN_INBOUND_BATCH",
+        task_id="PICK-001",
+        picking_task_id=101,
+        configuration_json={
+            "plan_resources": {
+                "target_rack": {"rack_id": "TARGET-01", "rack_face": "0"},
+                "direct_picks": [],
+                "bin_source_racks": [{"rack_id": "RACK-01", "rack_face": "90"}],
+            }
+        },
+    )
+    repository = _Repository(run)
+    rack_step = IntegrationRunStep(
+        run_id=run.run_id,
+        ordinal=0,
+        phase="RACK_TRANSPORT",
+        status="SUCCEEDED",
+        client_request_id="rack-move-1",
+        transport_task_id="TRANSPORT-001",
+        request_summary_json={
+            "kind": "MOVE_RACK",
+            "rack_id": "RACK-01",
+            "bin_code": None,
+            "source": {"kind": "RACK", "location_code": "RACK-01"},
+            "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
+            "rcs_template_id": "CTU01",
+            "target_face": "90",
+        },
+        result_summary_json={
+            "final_position": {"kind": "RACK_POSITION", "location_code": "KT17"},
+            "arrival_face": "90",
+        },
+    )
+    repository.steps.append(rack_step)
+    confirmations = AsyncMock()
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(SimpleNamespace(id=7), duplicate=False)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="Transport 成功终态"):
+        await service.send_bin_inbound_batch(
+            run.run_id,
+            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
+            rack_id="RACK-01",
+            rack_face="90",
+            max_bin_count=1,
+            expected_version=0,
+            actor_id=42,
+        )
+
+    rack_step.result_summary_json["final_position"] = rack_step.request_summary_json["target"]
+    result = await service.send_bin_inbound_batch(
+        run.run_id,
+        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
+        rack_id="RACK-01",
+        rack_face="90",
+        max_bin_count=1,
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["steps"][-1]["operation"] == "outbound.bin.inbound_batch@v1"
+
+
+def test_rack_face_done_requires_operator_coordination_and_close() -> None:
+    run = IntegrationRun(
+        run_id="run-rack-face-done",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="BIN_INBOUND_BATCH",
+    )
+
+    IntegrationDebugService._advance_inbound_batch(run, "RACK_FACE_DONE", {})
+
+    assert run.status == "NEEDS_ATTENTION"
+    assert run.attention_code == "RACK_FACE_DONE"
+    assert "关闭本 run" in (run.attention_detail or "")
+
+
+@pytest.mark.asyncio
 async def test_transport_action_rejects_rack_outside_the_applied_plan() -> None:
     run = IntegrationRun(
         run_id="run-rack",
