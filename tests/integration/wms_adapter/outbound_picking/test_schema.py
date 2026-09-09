@@ -8,7 +8,7 @@ import pytest
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "133712f6a89a"
+HEAD_REVISION = "3abf401aebaa"
 
 
 @pytest.mark.asyncio
@@ -133,6 +133,8 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
     assert "UNIQUE INDEX" in definition
     assert "picking_task_id IS NOT NULL" in definition
     assert "outbound.picking_task.prepare@v1" in definition
+    assert "SUPERSEDED" in definition
+    assert "SUPERSEDED" in confirmation_constraints["ck_wms_confirmations_wms_confirmation_status_valid"]
     assert tuple(workline_owner_column) == ("bigint", "YES")
     assert confirmation_constraints["fk_wms_confirmations_workline_id_work_lines"] == (
         "FOREIGN KEY (workline_id) REFERENCES wes_biz.work_lines(id)"

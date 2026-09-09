@@ -2607,6 +2607,13 @@ source_glob = "migrations/versions/20260909_0624_133712f6a89a_add_manual_outboun
 heavy_tests = ["tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py"]
 
 [[mapping]]
+source_glob = "migrations/versions/20260909_2349_3abf401aebaa_保留被改正的_wms_prepare_请求.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_prepare_postgresql.py",
+]
+
+[[mapping]]
 source_glob = "src/app/device/{repositories/ingress_history_repository.py,services/device_ingress_history_service.py}"
 heavy_tests = ["tests/integration/device_command/test_ingress_history_postgresql.py"]
 

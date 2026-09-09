@@ -156,9 +156,18 @@ class IntegrationRunRepository:
             statement = statement.with_for_update()
         return await db.scalar(statement)
 
-    async def get_confirmation(self, db: AsyncSession, confirmation_id: int) -> WmsConfirmation | None:
+    async def get_confirmation(
+        self,
+        db: AsyncSession,
+        confirmation_id: int,
+        *,
+        for_update: bool = False,
+    ) -> WmsConfirmation | None:
         columns = cast("Any", WmsConfirmation).__table__.c
-        return await db.scalar(select(WmsConfirmation).where(columns.id == confirmation_id))
+        statement = select(WmsConfirmation).where(columns.id == confirmation_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
 
     async def get_prepare_confirmation(
         self,
@@ -170,6 +179,7 @@ class IntegrationRunRepository:
             select(WmsConfirmation).where(
                 columns.picking_task_id == picking_task_id,
                 columns.operation == "outbound.picking_task.prepare@v1",
+                columns.status != "SUPERSEDED",
             )
         )
 

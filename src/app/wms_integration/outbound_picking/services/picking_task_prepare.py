@@ -89,6 +89,7 @@ class PickingTaskPrepareCoordinator:
         workline_id: int,
         *,
         expected_task_id: str | None = None,
+        wms_workline_code: str | None = None,
         now: datetime | None = None,
     ) -> PickingTaskPrepareResult:
         if not isinstance(workline_id, int) or isinstance(workline_id, bool) or workline_id <= 0:
@@ -126,7 +127,7 @@ class PickingTaskPrepareCoordinator:
             if not await self._runtime_context_ready(db, workline_id, current):
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task_id = getattr(task, "id", None)
-            line_code = getattr(workline, "line_code", None)
+            line_code = wms_workline_code or getattr(workline, "line_code", None)
             if not isinstance(task_id, int) or task_id <= 0 or not isinstance(line_code, str):
                 raise RuntimeError("prepare 冻结对象缺少持久身份")
             operation_id = new_uuid7()

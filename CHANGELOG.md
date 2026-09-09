@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1.0] - 2026-09-09
+
+### Fixed
+
+- 手工出库联调台将 WES `sorting-3` 与 WMS prepare 的 `data.workline_code` 分开，后者由管理员明确填写并默认使用现场代码 `KT16`。
+- WMS 明确未接收后，同参数重发保留原 `operation_id` 和正文；参数改正则保留旧请求审计并使用新 UUIDv7 身份，已保存有效 WMS 响应的请求仍禁止重发。
+
+### Verification
+
+- WmsConfirmation 生命周期、人工出库联调状态机、WMS 派发、API、迁移与 PostgreSQL 聚焦测试通过。
+
 ## [0.40.0.1] - 2026-09-09
 
 ### Fixed
