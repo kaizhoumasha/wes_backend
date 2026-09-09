@@ -1081,6 +1081,61 @@ class IntegrationDebugService:
         await self._publish(snapshot)
         return snapshot
 
+    async def retry_wms_action(
+        self,
+        run_id: str,
+        *,
+        client_request_id: str,
+        wms_non_receipt_confirmed: bool,
+        expected_version: int,
+        actor_id: int,
+    ) -> dict[str, Any]:
+        if not wms_non_receipt_confirmed:
+            raise IntegrationDebugContractError("必须先确认 WMS 未接收原 prepare 请求")
+        now = timezone.now_for_db()
+        async with self._sessions.begin() as db:
+            run = await self._require_run(db, run_id, for_update=True)
+            self._assert_operator_and_version(run, expected_version, actor_id)
+            if (
+                run.current_phase != IntegrationDebugPhase.TASK_PREPARE
+                or run.status != IntegrationDebugRunStatus.NEEDS_ATTENTION
+                or run.attention_code != "WMS_CONFIRMATION_RECONCILING"
+            ):
+                raise IntegrationDebugConflict("当前 run 不处于 prepare WMS 对账状态")
+            step = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if (
+                step is None
+                or step.run_id != run_id
+                or step.phase != IntegrationDebugPhase.TASK_PREPARE
+                or step.operation != PICKING_TASK_PREPARE_OPERATION
+                or step.wms_confirmation_id is None
+            ):
+                raise IntegrationDebugNotFound("未找到该 run 的 prepare WMS 动作")
+            confirmation = await self._runs.get_confirmation(db, step.wms_confirmation_id, for_update=True)
+            if (
+                confirmation is None
+                or confirmation.operation != PICKING_TASK_PREPARE_OPERATION
+                or confirmation.operation_id != step.operation_id
+            ):
+                raise IntegrationDebugConflict("prepare step 与 WmsConfirmation 身份不匹配")
+            await self._confirmations.requeue_reconciling(
+                db,
+                confirmation,
+                changed_at=now,
+                deadline_at=now + timedelta(seconds=30),
+            )
+            defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
+            step.status = "WAITING"
+            step.reason_code = None
+            step.updated_by = actor_id
+            run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+            run.attention_code = None
+            run.updated_by = actor_id
+            run.increment_version()
+            snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
+        await self._publish(snapshot)
+        return snapshot
+
     @staticmethod
     def _advance_completed_wms_action(
         run: IntegrationRun,

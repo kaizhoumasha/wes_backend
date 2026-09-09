@@ -54,6 +54,7 @@ def _service() -> SimpleNamespace:
         list_runs=AsyncMock(return_value=[snapshot]),
         get_run=AsyncMock(return_value=snapshot),
         send_task_prepare=AsyncMock(return_value=snapshot),
+        retry_wms_action=AsyncMock(return_value=snapshot),
         refresh_plan_resources=AsyncMock(return_value=snapshot),
         send_bin_inbound_batch=AsyncMock(return_value=snapshot),
         send_bin_return_batch=AsyncMock(return_value=snapshot),
@@ -104,6 +105,7 @@ def test_routes_use_endpoint_permissions_required_by_the_permission_catalog() ->
         "ops:workline-integration-debug:rack-departure",
         "ops:workline-integration-debug:task-completion",
         "ops:workline-integration-debug:refresh-wms",
+        "ops:workline-integration-debug:retry-wms",
         "ops:workline-integration-debug:bind-completion",
         "ops:workline-integration-debug:completion-apply-report",
         "ops:workline-integration-debug:transport",
@@ -235,6 +237,35 @@ async def test_device_refresh_passes_the_original_client_identity() -> None:
 
     assert response.status_code == 200
     assert service.refresh_device_action.await_args.kwargs["client_request_id"] == payload["client_request_id"]
+
+
+@pytest.mark.asyncio
+async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_original_action_identity() -> None:
+    service = _service()
+    payload = {
+        "expected_version": 0,
+        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+        "wms_non_receipt_confirmed": True,
+    }
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/wms/retry",
+            json=payload,
+        )
+        invalid = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/wms/retry",
+            json={**payload, "wms_non_receipt_confirmed": False},
+        )
+
+    assert response.status_code == 202
+    assert invalid.status_code == 422
+    service.retry_wms_action.assert_awaited_once_with(
+        "run-1",
+        client_request_id=payload["client_request_id"],
+        wms_non_receipt_confirmed=True,
+        expected_version=0,
+        actor_id=42,
+    )
 
 
 @pytest.mark.asyncio

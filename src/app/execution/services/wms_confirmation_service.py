@@ -351,6 +351,36 @@ class WmsConfirmationLifecycleService:
         await self._repository.flush(db)
         return confirmation
 
+    async def requeue_reconciling(
+        self,
+        db: AsyncSession,
+        confirmation: WmsConfirmation,
+        *,
+        changed_at: datetime,
+        deadline_at: datetime,
+    ) -> WmsConfirmation:
+        """人工确认对端未接收后，按原身份和正文恢复一次可靠发送。"""
+        if confirmation.status != WmsConfirmationStatus.RECONCILING:
+            raise ValueError("只有 RECONCILING WmsConfirmation 可人工重发")
+        if (
+            confirmation.response_evidence_id is not None
+            or confirmation.response_result is not None
+            or confirmation.completed_at is not None
+        ):
+            raise ValueError("已保存 WMS 响应的 confirmation 不得重发")
+        if deadline_at <= changed_at:
+            raise ValueError("人工重发 deadline 必须晚于当前时间")
+        confirmation.status = WmsConfirmationStatus.PENDING
+        confirmation.retry_eligible = True
+        confirmation.next_attempt_at = changed_at
+        confirmation.deadline_at = deadline_at
+        confirmation.claim_token = None
+        confirmation.claimed_at = None
+        confirmation.claim_expires_at = None
+        confirmation.updated_at = changed_at
+        await self._repository.flush(db)
+        return confirmation
+
 
 class WmsConfirmationService(WmsConfirmationLifecycleService):
     """短事务 claim、无锁 HTTP 和独立短事务结果回写 dispatcher。"""

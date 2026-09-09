@@ -285,3 +285,50 @@ async def test_epoch_confirmation_requires_owner_validation_and_preserves_identi
     owner.validate_owner.return_value = False
     with pytest.raises(ValueError):
         await service.create_or_get(object(), **(kwargs | {"operation_id": "other"}))
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_requeues_same_reconciling_confirmation_without_changing_identity() -> None:
+    service = WmsConfirmationService(repository=FakeWmsConfirmationRepository())
+    confirmation = await _create(service)
+    original_payload = confirmation.request_payload
+    original_digest = confirmation.request_digest
+    confirmation.status = WmsConfirmationStatus.RECONCILING
+    confirmation.attempt_count = 1
+    confirmation.last_dispatch_at = datetime(2026, 8, 16, 0, 1)
+    changed_at = datetime(2026, 8, 16, 0, 10)
+    deadline_at = changed_at + timedelta(seconds=30)
+
+    retried = await service.requeue_reconciling(
+        object(),
+        confirmation,
+        changed_at=changed_at,
+        deadline_at=deadline_at,
+    )
+
+    assert retried is confirmation
+    assert confirmation.status == WmsConfirmationStatus.PENDING
+    assert confirmation.retry_eligible is True
+    assert confirmation.next_attempt_at == changed_at
+    assert confirmation.deadline_at == deadline_at
+    assert confirmation.operation_id == "OP-001"
+    assert confirmation.request_payload is original_payload
+    assert confirmation.request_digest == original_digest
+    assert confirmation.attempt_count == 1
+    assert confirmation.last_dispatch_at == datetime(2026, 8, 16, 0, 1)
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_rejects_confirmation_with_persisted_response() -> None:
+    service = WmsConfirmationService(repository=FakeWmsConfirmationRepository())
+    confirmation = await _create(service)
+    confirmation.status = WmsConfirmationStatus.RECONCILING
+    confirmation.response_evidence_id = 99
+
+    with pytest.raises(ValueError, match="已保存 WMS 响应"):
+        await service.requeue_reconciling(
+            object(),
+            confirmation,
+            changed_at=datetime(2026, 8, 16, 0, 10),
+            deadline_at=datetime(2026, 8, 16, 0, 11),
+        )

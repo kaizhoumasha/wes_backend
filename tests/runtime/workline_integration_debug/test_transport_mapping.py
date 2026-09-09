@@ -113,7 +113,7 @@ class _Repository:
     ):
         return self.evidence
 
-    async def get_confirmation(self, _db, _confirmation_id):  # type: ignore[no-untyped-def]
+    async def get_confirmation(self, _db, _confirmation_id, *, for_update=False):  # type: ignore[no-untyped-def]
         return self.confirmation
 
     async def get_evidence(self, _db, _evidence_id):  # type: ignore[no-untyped-def]
@@ -679,6 +679,109 @@ async def test_refreshing_completed_historical_wms_step_does_not_rewind_phase() 
     )
 
     assert run.current_phase == "POINT3_ROUTE"
+
+
+@pytest.mark.asyncio
+async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receipt() -> None:
+    run = IntegrationRun(
+        run_id="run-prepare-retry",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="NEEDS_ATTENTION",
+        current_phase="TASK_PREPARE",
+        picking_task_id=19,
+        task_id="PICK-001",
+        device_code="SIM-ECS-01",
+        attention_code="WMS_CONFIRMATION_RECONCILING",
+    )
+    repository = _Repository(run)
+    step = IntegrationRunStep(
+        run_id=run.run_id,
+        ordinal=1,
+        phase="TASK_PREPARE",
+        status="NEEDS_ATTENTION",
+        client_request_id="prepare-request",
+        operation="outbound.picking_task.prepare@v1",
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
+        wms_confirmation_id=9,
+        reason_code="WMS_CONFIRMATION_RECONCILING",
+    )
+    repository.steps.append(step)
+    repository.confirmation = SimpleNamespace(
+        id=9,
+        operation="outbound.picking_task.prepare@v1",
+        operation_id=step.operation_id,
+        status=WmsConfirmationStatus.RECONCILING,
+        response_evidence_id=None,
+        response_result=None,
+    )
+    confirmations = AsyncMock()
+    confirmations.requeue_reconciling.return_value = repository.confirmation
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.retry_wms_action(
+        run.run_id,
+        client_request_id="prepare-request",
+        wms_non_receipt_confirmed=True,
+        expected_version=0,
+        actor_id=42,
+    )
+
+    confirmations.requeue_reconciling.assert_awaited_once()
+    assert result["status"] == "WAITING_EXTERNAL"
+    assert result["attention_code"] is None
+    assert step.status == "WAITING"
+    assert step.reason_code is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() -> None:
+    run = IntegrationRun(
+        run_id="run-prepare-retry-rejected",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="NEEDS_ATTENTION",
+        current_phase="TASK_PREPARE",
+        picking_task_id=19,
+        task_id="PICK-001",
+        attention_code="WMS_CONFIRMATION_RECONCILING",
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=_Repository(run),  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugContractError, match="WMS 未接收"):
+        await service.retry_wms_action(
+            run.run_id,
+            client_request_id="prepare-request",
+            wms_non_receipt_confirmed=False,
+            expected_version=0,
+            actor_id=42,
+        )
 
 
 @pytest.mark.asyncio

@@ -77,6 +77,10 @@ class RefreshWmsActionRequest(ClientActionRequest):
     pass
 
 
+class RetryWmsActionRequest(ClientActionRequest):
+    wms_non_receipt_confirmed: Literal[True]
+
+
 class RefreshTransportActionRequest(ClientActionRequest):
     pass
 
@@ -539,6 +543,31 @@ async def refresh_wms_action(
                 actor_id=request.state.user_id,
             )
         )
+    )
+
+
+@router.post(
+    "/runs/{run_id}/wms/retry",
+    summary="[ops:workline-integration-debug:operate] 确认 WMS 未接收并按原身份重发 prepare",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(RequirePermission("ops:workline-integration-debug:retry-wms"))],
+)
+async def retry_wms_action(
+    request: Request,
+    payload: RetryWmsActionRequest,
+    run_id: Annotated[_RUN_ID, Path()],
+) -> ResponseSchemaModel[IntegrationRunResponse]:
+    return _success(
+        await _domain_call(
+            _service(request).retry_wms_action(
+                run_id,
+                client_request_id=payload.client_request_id,
+                wms_non_receipt_confirmed=payload.wms_non_receipt_confirmed,
+                expected_version=payload.expected_version,
+                actor_id=request.state.user_id,
+            )
+        ),
+        accepted=True,
     )
 
 
