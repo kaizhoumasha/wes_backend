@@ -239,6 +239,32 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_run_rejects_worklines_outside_the_temporary_sorting3_scope() -> None:
+    repository = _Repository(None)  # type: ignore[arg-type]
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugContractError, match="仅支持 sorting-3"):
+        await service.create_run(
+            CreateIntegrationRun(
+                workline_code="sorting-2",
+                profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
+                environment_label="integration",
+                device_code="SIM-ECS-01",
+            ),
+            actor_id=42,
+        )
+
+    assert repository.run is None
+
+
+@pytest.mark.asyncio
 async def test_unstarted_run_can_be_closed_without_leaving_workline_scope_occupied() -> None:
     repository = _Repository(None)  # type: ignore[arg-type]
     service = IntegrationDebugService(
@@ -1881,6 +1907,54 @@ async def test_point2_release_rejects_a_command_for_another_sorting3_station() -
 
 
 @pytest.mark.asyncio
+async def test_ecs_params_are_validated_before_the_run_step_is_frozen() -> None:
+    run = IntegrationRun(
+        run_id="run-invalid-command",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="POINT2_RELEASE",
+        bin_code="BIN-001",
+        configuration_json={
+            "manual_bin_admission_result": "NO_WORK",
+            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+        },
+    )
+    repository = _Repository(run)
+    commands = AsyncMock()
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=commands,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="speed"):
+        await service.create_device_action(
+            run.run_id,
+            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4578",
+            device_code="STATION_SCAN10",
+            task_type="MOVE_FORWARD",
+            params={"speed": 1},
+            timeout_ms=30_000,
+            reason="非法参数",
+            expected_version=0,
+            actor_id=42,
+        )
+
+    assert repository.steps == []
+    commands.create_manual_debug_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_device_command_recovery_reuses_the_original_creator_and_endpoint() -> None:
     run = IntegrationRun(
         run_id="run-device-recovery",
@@ -1916,7 +1990,7 @@ async def test_device_command_recovery_reuses_the_original_creator_and_endpoint(
                 "timeout_ms": 30_000,
                 "reason": "首次创建",
                 "created_by": 41,
-                "endpoint_base_url": "http://10.24.209.26:8080/",
+                "endpoint_base_url": "http://10.24.209.26:8080",
             },
         )
     )
@@ -1946,7 +2020,7 @@ async def test_device_command_recovery_reuses_the_original_creator_and_endpoint(
     assert result["steps"][0]["device_command_code"] == "CMD-001"
     commands.create_manual_debug_command.assert_awaited_once_with(
         client_request_id=client_request_id,
-        endpoint_base_url="http://10.24.209.26:8080/",
+        endpoint_base_url="http://10.24.209.26:8080",
         device_code="STATION_SCAN10",
         contract_key="ecs.manual-debug.command",
         contract_version="1.0",

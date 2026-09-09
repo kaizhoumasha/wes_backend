@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import wes_plugin_sdk as sdk
 
+from src.app.device.endpoint import validate_device_endpoint_base_url
+from src.app.device.models.command import MANUAL_DEBUG_REF_TYPE, DeviceCommandRequestData
 from src.app.device.services import device_service
 from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import (
@@ -147,6 +149,8 @@ class IntegrationDebugService:
                 raise IntegrationDebugNotFound(f"WorkLine {request.workline_code} 不存在")
             if workline.id is None:
                 raise RuntimeError("已持久化 WorkLine 缺少 id")
+            if workline.line_code != "sorting-3":
+                raise IntegrationDebugContractError("当前临时联调能力仅支持 sorting-3")
             if await self._runs.get_active_for_workline(db, workline.id, for_update=True) is not None:
                 raise IntegrationDebugConflict("该 WorkLine 已有活动联调 run")
             run_id = new_uuid7()
@@ -164,11 +168,7 @@ class IntegrationDebugService:
                 current_phase=IntegrationDebugPhase.BIND_TASK,
                 device_code=request.device_code,
                 rack_id=request.rack_id,
-                configuration_json={
-                    "site_configuration": deepcopy(SORTING_3_SITE_CONFIGURATION)
-                    if workline.line_code == "sorting-3"
-                    else {}
-                },
+                configuration_json={"site_configuration": deepcopy(SORTING_3_SITE_CONFIGURATION)},
                 created_by=actor_id,
             )
             step = IntegrationRunStep(
@@ -1464,13 +1464,6 @@ class IntegrationDebugService:
             if task_type != expected_task_type:
                 raise IntegrationDebugContractError(f"当前节点 ECS task_type 必须为 {expected_task_type}")
             real_ecs = profile_uses_real_ecs(IntegrationDebugProfile(run.profile))
-            request_without_creator: dict[str, object] = {
-                "device_code": device_code,
-                "task_type": task_type,
-                "params": params,
-                "timeout_ms": timeout_ms,
-                "reason": reason,
-            }
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None and any(
                 step.phase == current and isinstance(step.request_summary_json.get("task_type"), str)
@@ -1480,18 +1473,59 @@ class IntegrationDebugService:
             if existing is not None:
                 stored_request = existing.request_summary_json
                 original_creator = stored_request.get("created_by")
-                if (
-                    existing.run_id != run_id
-                    or not isinstance(original_creator, int)
-                    or any(stored_request.get(key) != value for key, value in request_without_creator.items())
-                ):
+                endpoint = stored_request.get("endpoint_base_url")
+                if not isinstance(original_creator, int):
+                    raise IntegrationDebugConflict("原 DeviceCommand 联调步骤缺少创建者")
+                if real_ecs and (not isinstance(endpoint, str) or not endpoint):
+                    raise IntegrationDebugConflict("原 DeviceCommand 联调步骤缺少冻结 endpoint")
+            else:
+                original_creator = actor_id
+                if real_ecs:
+                    device = await device_service.get_device_by_code(db, device_code)
+                    if device is None or not device.is_active or not device.endpoint_base_url:
+                        raise IntegrationDebugContractError("Run 选择的设备未登记、未启用或缺少 endpoint")
+                    endpoint = device.endpoint_base_url
+                else:
+                    endpoint = site_configuration.get("ecs_endpoint_base_url")
+            if not isinstance(endpoint, str):
+                raise IntegrationDebugContractError("sorting-3 缺少 ECS endpoint")
+            endpoint = validate_device_endpoint_base_url(endpoint)
+            validated_request = DeviceCommandRequestData.model_validate(
+                {
+                    "device_code": device_code,
+                    "workline_id": None,
+                    "execution_ref_type": MANUAL_DEBUG_REF_TYPE,
+                    "execution_ref_id": client_request_id,
+                    "material_execution_id": None,
+                    "contract_key": "ecs.manual-debug.command",
+                    "contract_version": "1.0",
+                    "task_type": task_type,
+                    "params": params,
+                    "deadline_at": timezone.now_for_db() + timedelta(milliseconds=timeout_ms),
+                    "trace_id": run_id,
+                    "endpoint_base_url": endpoint,
+                    "command_timeout_ms": timeout_ms,
+                    "execution_reason": reason,
+                }
+            )
+            request_without_creator: dict[str, object] = {
+                "device_code": validated_request.device_code,
+                "task_type": validated_request.task_type,
+                "params": validated_request.params,
+                "timeout_ms": timeout_ms,
+                "reason": validated_request.execution_reason or "",
+            }
+            expected_request = {
+                **request_without_creator,
+                "created_by": original_creator,
+                **({"endpoint_base_url": endpoint} if real_ecs else {}),
+            }
+            if existing is not None:
+                if existing.run_id != run_id or stored_request != expected_request:
                     raise IntegrationDebugConflict("client_request_id 已用于其它联调动作或请求内容已变化")
                 if existing.device_command_code is not None or not real_ecs:
                     return self._snapshot(run, await self._runs.list_steps(db, run_id))
-            else:
-                original_creator = actor_id
-            if existing is None and not real_ecs:
-                expected_request = {**request_without_creator, "created_by": original_creator}
+            elif not real_ecs:
                 await self._append_step(
                     db,
                     run,
@@ -1506,22 +1540,7 @@ class IntegrationDebugService:
                 run.updated_by = actor_id
                 run.increment_version()
                 simulated_snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
-            if simulated_snapshot is not None:
-                endpoint = ""
-            elif existing is not None:
-                endpoint = existing.request_summary_json.get("endpoint_base_url")
-                if not isinstance(endpoint, str) or not endpoint:
-                    raise IntegrationDebugConflict("原 DeviceCommand 联调步骤缺少冻结 endpoint")
-            else:
-                device = await device_service.get_device_by_code(db, device_code)
-                if device is None or not device.is_active or not device.endpoint_base_url:
-                    raise IntegrationDebugContractError("Run 选择的设备未登记、未启用或缺少 endpoint")
-                endpoint = device.endpoint_base_url
-                expected_request = {
-                    **request_without_creator,
-                    "created_by": original_creator,
-                    "endpoint_base_url": endpoint,
-                }
+            elif existing is None:
                 await self._append_step(
                     db,
                     run,

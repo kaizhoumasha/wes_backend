@@ -31,6 +31,9 @@ from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
 router = APIRouter(prefix="/v1/workline-integration-debug", tags=["人工出库联调"])
 _RUN_ID = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
 _TEXT = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+_WORKLINE_CODE = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
+_ENVIRONMENT_LABEL = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+_RESOURCE_CODE = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 _IDENTIFIER = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=BUSINESS_IDENTIFIER_PATTERN),
@@ -42,11 +45,11 @@ class _StrictModel(BaseModel):
 
 
 class CreateRunRequest(_StrictModel):
-    workline_code: _TEXT
+    workline_code: _WORKLINE_CODE
     profile: IntegrationDebugProfile
-    environment_label: _TEXT
-    device_code: _TEXT
-    rack_id: _TEXT | None = None
+    environment_label: _ENVIRONMENT_LABEL
+    device_code: _RESOURCE_CODE
+    rack_id: _RESOURCE_CODE | None = None
 
 
 class VersionRequest(_StrictModel):

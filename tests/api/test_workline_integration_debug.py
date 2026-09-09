@@ -141,6 +141,33 @@ async def test_create_run_freezes_scenario_without_accepting_device_endpoint() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workline_code", "w" * 51),
+        ("environment_label", "e" * 81),
+        ("device_code", "d" * 101),
+        ("rack_id", "r" * 101),
+    ],
+)
+async def test_create_run_rejects_values_longer_than_the_persisted_columns(field: str, value: str) -> None:
+    service = _service()
+    payload = {
+        "workline_code": "sorting-3",
+        "profile": "CONTRACT_SIMULATION",
+        "environment_label": "integration",
+        "device_code": "SIM-ECS-01",
+        field: value,
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post("/api/v1/workline-integration-debug/runs", json=payload)
+
+    assert response.status_code == 422
+    service.create_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_transport_action_passes_frozen_site_values_and_authenticated_actor() -> None:
     service = _service()
     payload = {
