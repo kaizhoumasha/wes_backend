@@ -54,7 +54,8 @@ class ManualIntegrationPreparePolicy:
     """临时联调固定选择 MANUAL；现场准入仍由 WorkLine 空闲与事故事实约束。"""
 
     def select_task_type(self, context: PrepareContext) -> PrepareTaskType | None:
-        return PrepareTaskType.MANUAL if context.is_active and context.line_type == "MANUAL" else None
+        del context
+        return PrepareTaskType.MANUAL
 
     def is_ready(self, facts: PrepareRuntimeFacts, *, now: datetime) -> bool:
         del now

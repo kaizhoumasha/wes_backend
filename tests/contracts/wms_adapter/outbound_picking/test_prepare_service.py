@@ -253,6 +253,34 @@ async def test_prepare_noop_never_creates_confirmation_or_enqueues(
 
 
 @pytest.mark.asyncio
+async def test_prepare_allows_an_explicit_policy_to_admit_an_inactive_workline() -> None:
+    class IntegrationPolicy(_Policy):
+        def select_task_type(self, context: PrepareContext) -> PrepareTaskType:
+            assert context.is_active is False
+            return PrepareTaskType.MANUAL
+
+    service, _worklines, tasks, confirmations, queue = _service(
+        policy=IntegrationPolicy(),
+        workline=SimpleNamespace(
+            id=7,
+            line_code="sorting-3",
+            plugin_key=None,
+            flow_mode=None,
+            is_active=False,
+            line_type=LineType.AUTO,
+            run_mode=WorkLineRunMode.AUTO,
+        ),
+    )
+
+    result = await service.prepare_next_for_workline(7, now=datetime(2026, 9, 4))
+
+    assert result.prepared is True
+    assert tasks.task is not None and PickingTaskStatus(tasks.task.status) is PickingTaskStatus.PREPARING
+    assert confirmations.kwargs is not None
+    assert queue.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_missing_workline_cannot_claim_or_create_prepare_obligation() -> None:
     service, worklines, tasks, confirmations, queue = _service()
     worklines.workline = None

@@ -99,7 +99,7 @@ class PickingTaskPrepareCoordinator:
         prepared: PickingTaskPrepareResult
         async with self._sessions.begin() as db:
             workline = await self._worklines.get_for_update(db, workline_id)
-            if workline is None or not workline.is_active:
+            if workline is None:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task_type = self._policy.select_task_type(
                 PrepareContext(

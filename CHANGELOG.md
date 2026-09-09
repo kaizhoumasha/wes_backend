@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0.1] - 2026-09-09
+
+### Fixed
+
+- 手工出库联调台可在 `sorting-3` 尚未启用且未安装 `manual_bin_processing` 时发送 PickingTask prepare；正式插件流程仍执行完整工作线准入检查。
+
 ## [0.40.0.0] - 2026-09-09
 
 ### Added
