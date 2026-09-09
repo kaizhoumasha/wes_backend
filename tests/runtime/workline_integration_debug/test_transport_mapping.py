@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -494,6 +495,84 @@ async def test_completion_binding_rejects_ignored_evidence() -> None:
             expected_version=0,
             actor_id=42,
         )
+
+
+@pytest.mark.asyncio
+async def test_early_completion_enters_reconciling_and_can_be_reported_to_wms() -> None:
+    run = IntegrationRun(
+        run_id="run-early-completion",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="WORK_COMPLETION",
+        task_id="PICK-001",
+        bin_code="BIN-001",
+        device_code="SIM-ECS-01",
+        configuration_json={
+            "point2_scanned_at": 500,
+            "admission_task_id": "PICK-001",
+            "work_completion_wait_started_at": 2_000,
+        },
+    )
+    repository = _Repository(run)
+    repository.evidence = SimpleNamespace(
+        apply_status=InboundEvidenceApplyStatus.PENDING,
+        processed_at=None,
+        received_at=datetime.fromtimestamp(1, tz=UTC),
+        normalized_payload={
+            "data": {
+                "task_id": "PICK-001",
+                "bin_code": "BIN-001",
+                "result": "NORMAL",
+                "completed_at": 1_500,
+            }
+        },
+    )
+    confirmations = AsyncMock()
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(SimpleNamespace(id=9), duplicate=False)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+    operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4477"
+
+    bound = await service.bind_work_completion(
+        run.run_id,
+        operation_id=operation_id,
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert bound["current_phase"] == "WORK_COMPLETION"
+    assert bound["status"] == "NEEDS_ATTENTION"
+    assert bound["attention_code"] == "FIRST_COMPLETION_OUT_OF_WINDOW"
+    assert repository.evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING
+
+    reported = await service.send_completion_apply_report(
+        run.run_id,
+        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
+        completion_operation_id=operation_id,
+        apply_revision=1,
+        apply_result="RECONCILING",
+        reason_code="FIRST_COMPLETION_OUT_OF_WINDOW",
+        occurred_at=1_788_389_999_000,
+        expected_version=1,
+        actor_id=42,
+    )
+
+    assert reported["current_phase"] == "COMPLETION_REPORT"
+    assert reported["status"] == "WAITING_EXTERNAL"
+    confirmations.create_or_get.assert_awaited_once()
 
 
 def test_work_required_freezes_wms_returned_task_and_reconciling_stays_blocked() -> None:

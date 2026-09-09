@@ -6,7 +6,7 @@ import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import wes_plugin_sdk as sdk
@@ -1064,6 +1064,17 @@ class IntegrationDebugService:
                         response_result=confirmation.response_result,
                         response_data=response_data,
                     )
+                    if (
+                        step.operation == MANUAL_BIN_ADMISSION_OPERATION
+                        and confirmation.response_result == "WORK_REQUIRED"
+                    ):
+                        wait_started_at = getattr(response, "received_at", None)
+                        if not isinstance(wait_started_at, datetime):
+                            wait_started_at = timezone.now_for_db()
+                        run.configuration_json = {
+                            **run.configuration_json,
+                            "work_completion_wait_started_at": int(timezone.to_utc(wait_started_at).timestamp() * 1000),
+                        }
             run.updated_by = actor_id
             run.increment_version()
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
@@ -1237,18 +1248,38 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError(
                     "完成决定必须匹配本 run 的 task_id、实际 bin_code，且 completed_at 不得早于 point2 扫码"
                 )
+            wait_started_at = run.configuration_json.get("work_completion_wait_started_at")
+            evidence_received_at = getattr(evidence, "received_at", None)
+            received_at_ms = (
+                int(timezone.to_utc(evidence_received_at).timestamp() * 1000)
+                if isinstance(evidence_received_at, datetime)
+                else None
+            )
+            arrived_before_wait = (
+                isinstance(wait_started_at, int)
+                and not isinstance(wait_started_at, bool)
+                and received_at_ms is not None
+                and received_at_ms < wait_started_at
+            )
             await self._append_step(
                 db,
                 run,
                 phase=IntegrationDebugPhase.WORK_COMPLETION,
-                status="SUCCEEDED",
+                status="NEEDS_ATTENTION" if arrived_before_wait else "SUCCEEDED",
                 actor_id=actor_id,
                 operation=MANUAL_BIN_COMPLETED_OPERATION,
                 operation_id=operation_id,
                 result={"result": data.get("result"), "completed_at": completed_at},
             )
-            run.current_phase = IntegrationDebugPhase.POINT2_RELEASE
-            run.status = IntegrationDebugRunStatus.ACTIVE
+            if arrived_before_wait:
+                evidence.apply_status = InboundEvidenceApplyStatus.RECONCILING
+                evidence.processed_at = timezone.now_for_db()
+                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                run.attention_code = "FIRST_COMPLETION_OUT_OF_WINDOW"
+                run.attention_detail = "完成通知早于当前 point2 等待窗口，禁止自动绑定和放行"
+            else:
+                run.current_phase = IntegrationDebugPhase.POINT2_RELEASE
+                run.status = IntegrationDebugRunStatus.ACTIVE
             run.updated_by = actor_id
             run.increment_version()
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
@@ -1276,7 +1307,11 @@ class IntegrationDebugService:
             allowed_phases = (
                 {IntegrationDebugPhase.COMPLETION_REPORT}
                 if apply_result == "APPLIED"
-                else {IntegrationDebugPhase.POINT2_RELEASE, IntegrationDebugPhase.COMPLETION_REPORT}
+                else {
+                    IntegrationDebugPhase.WORK_COMPLETION,
+                    IntegrationDebugPhase.POINT2_RELEASE,
+                    IntegrationDebugPhase.COMPLETION_REPORT,
+                }
             )
             if IntegrationDebugPhase(run.current_phase) not in allowed_phases:
                 raise IntegrationDebugConflict(f"当前步骤为 {run.current_phase}，不能上报 {apply_result} 应用状态")
@@ -1290,7 +1325,8 @@ class IntegrationDebugService:
                 (
                     step
                     for step in reversed(completion_steps)
-                    if step.operation == MANUAL_BIN_COMPLETED_OPERATION and step.status == "SUCCEEDED"
+                    if step.operation == MANUAL_BIN_COMPLETED_OPERATION
+                    and step.status in {"SUCCEEDED", "NEEDS_ATTENTION"}
                 ),
                 None,
             )
@@ -1336,8 +1372,13 @@ class IntegrationDebugService:
                     request=payload["data"],
                 )
                 return self._snapshot(run, await self._runs.list_steps(db, run_id))
-            if completion_evidence is None or completion_evidence.apply_status != InboundEvidenceApplyStatus.PENDING:
-                raise IntegrationDebugContractError("完成 Evidence 必须处于 PENDING，才能原子冻结应用报告")
+            allowed_evidence_statuses = (
+                {InboundEvidenceApplyStatus.PENDING}
+                if apply_result == "APPLIED"
+                else {InboundEvidenceApplyStatus.PENDING, InboundEvidenceApplyStatus.RECONCILING}
+            )
+            if completion_evidence is None or completion_evidence.apply_status not in allowed_evidence_statuses:
+                raise IntegrationDebugContractError("完成 Evidence 状态不能冻结本次应用报告")
             if apply_result == "APPLIED" and release_step is None:
                 raise IntegrationDebugContractError(
                     "APPLIED 前必须完成 point2 释放步骤，且完成 Evidence 必须等待本次报告原子应用"
