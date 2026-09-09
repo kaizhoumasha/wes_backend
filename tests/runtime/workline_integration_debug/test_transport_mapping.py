@@ -17,7 +17,14 @@ from src.app.transport.contracts import (
     RotateRackRequest,
     TransportHandle,
 )
+from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BinInboundBatchData
+from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import ManualBinAdmissionData
+from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
+    ManualBinApplied,
+    ManualBinReconciling,
+)
 from src.app.wms_adapter.outbound_picking.typed import encode_request as encode_prepare_request
+from src.app.wms_adapter.outbound_picking.wire import PickingTaskPrepareData
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import (
     PickingTaskPrepareNoopReason,
@@ -347,11 +354,14 @@ async def test_completion_report_requires_current_phase_and_bound_completion_ide
     )
     values = {
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
-        "completion_operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
-        "apply_revision": 1,
-        "apply_result": "APPLIED",
-        "reason_code": None,
-        "occurred_at": 1788389999000,
+        "request_data": ManualBinApplied(
+            completion_operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
+            task_id="PICK-WMS",
+            bin_code="BIN-001",
+            apply_revision=1,
+            apply_result="APPLIED",
+            occurred_at=1788389999000,
+        ),
         "expected_version": 0,
         "actor_id": 42,
     }
@@ -360,7 +370,14 @@ async def test_completion_report_requires_current_phase_and_bound_completion_ide
         await service.send_completion_apply_report("run-report", **values)  # type: ignore[arg-type]
 
     run.current_phase = "COMPLETION_REPORT"
-    values["completion_operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4499"
+    values["request_data"] = ManualBinApplied(
+        completion_operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4499",
+        task_id="PICK-WMS",
+        bin_code="BIN-001",
+        apply_revision=1,
+        apply_result="APPLIED",
+        occurred_at=1788389999000,
+    )
     with pytest.raises(IntegrationDebugContractError, match="completion_operation_id"):
         await service.send_completion_apply_report("run-report", **values)  # type: ignore[arg-type]
 
@@ -561,11 +578,15 @@ async def test_early_completion_enters_reconciling_and_can_be_reported_to_wms() 
     reported = await service.send_completion_apply_report(
         run.run_id,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
-        completion_operation_id=operation_id,
-        apply_revision=1,
-        apply_result="RECONCILING",
-        reason_code="FIRST_COMPLETION_OUT_OF_WINDOW",
-        occurred_at=1_788_389_999_000,
+        request_data=ManualBinReconciling(
+            completion_operation_id=operation_id,
+            task_id="PICK-001",
+            bin_code="BIN-001",
+            apply_revision=1,
+            apply_result="RECONCILING",
+            reason_code="FIRST_COMPLETION_OUT_OF_WINDOW",
+            occurred_at=1_788_389_999_000,
+        ),
         expected_version=1,
         actor_id=42,
     )
@@ -738,7 +759,7 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
         run.run_id,
         client_request_id="prepare-request",
         wms_non_receipt_confirmed=True,
-        wms_workline_code="KT16",
+        request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
@@ -782,7 +803,7 @@ async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() ->
             run.run_id,
             client_request_id="prepare-request",
             wms_non_receipt_confirmed=False,
-            wms_workline_code="KT16",
+            request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
             expected_version=0,
             actor_id=42,
         )
@@ -852,7 +873,7 @@ async def test_operator_replaces_an_unreceived_prepare_when_wms_workline_code_ch
         run.run_id,
         client_request_id="prepare-request",
         wms_non_receipt_confirmed=True,
-        wms_workline_code="KT16",
+        request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
@@ -917,7 +938,7 @@ async def test_prepare_retry_recovers_the_existing_confirmation() -> None:
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-retry",
-        wms_workline_code="KT16",
+        request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
@@ -976,7 +997,7 @@ async def test_prepare_retry_recovers_confirmation_after_plan_already_started_ex
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-executing-recovery",
-        wms_workline_code="KT16",
+        request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
@@ -1028,7 +1049,7 @@ async def test_prepare_retry_rejects_confirmation_bound_to_another_workline() ->
         await service.send_task_prepare(
             run.run_id,
             client_request_id="prepare-cross-line",
-            wms_workline_code="KT16",
+            request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
             expected_version=0,
             actor_id=42,
         )
@@ -1087,7 +1108,7 @@ async def test_prepare_non_head_selection_returns_run_to_bind_task() -> None:
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-non-head",
-        wms_workline_code="KT16",
+        request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
@@ -1143,6 +1164,7 @@ async def test_work_admission_rejects_a_new_identity_while_the_previous_request_
         await service.send_work_admission(
             run.run_id,
             client_request_id="admission-replacement",
+            request_data=ManualBinAdmissionData(bin_code="BIN-001", scanned_at=1_788_389_999_000),
             expected_version=0,
             actor_id=42,
         )
@@ -1447,11 +1469,26 @@ async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_
     result = await service.send_completion_apply_report(
         run.run_id,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
-        completion_operation_id=completion_operation_id,
-        apply_revision=1,
-        apply_result=apply_result,
-        reason_code=reason_code,
-        occurred_at=1_788_389_999_000,
+        request_data=(
+            ManualBinApplied(
+                completion_operation_id=completion_operation_id,
+                task_id="PICK-001",
+                bin_code="BIN-001",
+                apply_revision=1,
+                apply_result="APPLIED",
+                occurred_at=1_788_389_999_000,
+            )
+            if apply_result == "APPLIED"
+            else ManualBinReconciling(
+                completion_operation_id=completion_operation_id,
+                task_id="PICK-001",
+                bin_code="BIN-001",
+                apply_revision=1,
+                apply_result="RECONCILING",
+                reason_code=reason_code,
+                occurred_at=1_788_389_999_000,
+            )
+        ),
         expected_version=0,
         actor_id=42,
     )
@@ -2178,9 +2215,7 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
     result = await service.send_bin_inbound_batch(
         "run-inbound-batch",
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
-        rack_id="RACK-01",
-        rack_face="90",
-        max_bin_count=1,
+        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=1),
         expected_version=0,
         actor_id=42,
     )
@@ -2191,9 +2226,7 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
         await service.send_bin_inbound_batch(
             "run-inbound-batch",
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
-            rack_id="RACK-02",
-            rack_face="180",
-            max_bin_count=1,
+            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-02", rack_face="180", max_bin_count=1),
             expected_version=1,
             actor_id=42,
         )
@@ -2202,9 +2235,7 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
         await service.send_bin_inbound_batch(
             "run-inbound-batch",
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4494",
-            rack_id="RACK-01",
-            rack_face="90",
-            max_bin_count=2,
+            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=2),
             expected_version=1,
             actor_id=42,
         )
@@ -2283,9 +2314,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
         await service.send_bin_inbound_batch(
             run.run_id,
             client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
-            rack_id="RACK-01",
-            rack_face="90",
-            max_bin_count=1,
+            request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=1),
             expected_version=0,
             actor_id=42,
         )
@@ -2294,9 +2323,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
     result = await service.send_bin_inbound_batch(
         run.run_id,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",
-        rack_id="RACK-01",
-        rack_face="90",
-        max_bin_count=1,
+        request_data=BinInboundBatchData(task_id="PICK-001", rack_id="RACK-01", rack_face="90", max_bin_count=1),
         expected_version=0,
         actor_id=42,
     )
@@ -2425,7 +2452,7 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
 
 
 @pytest.mark.asyncio
-async def test_point2_release_rejects_a_command_for_another_manual_outbound_station() -> None:
+async def test_point2_release_accepts_an_admin_edited_registered_station_and_task_type() -> None:
     run = IntegrationRun(
         run_id="run-wrong-station",
         workline_id=3,
@@ -2454,20 +2481,21 @@ async def test_point2_release_rejects_a_command_for_another_manual_outbound_stat
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(IntegrationDebugContractError, match="point2"):
-        await service.create_device_action(
-            run.run_id,
-            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4576",
-            device_code="STATION_SCAN9",
-            task_type="MOVE_FORWARD",
-            params={"point": "point2"},
-            timeout_ms=30_000,
-            reason="错误点位",
-            expected_version=0,
-            actor_id=42,
-        )
+    result = await service.create_device_action(
+        run.run_id,
+        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4576",
+        device_code="STATION_SCAN9",
+        task_type="MOVE_LEFT",
+        params={"point": "point2"},
+        timeout_ms=30_000,
+        reason="供应商联调参数修正",
+        expected_version=0,
+        actor_id=42,
+    )
 
     commands.create_manual_debug_command.assert_not_awaited()
+    assert result["steps"][0]["request"]["device_code"] == "STATION_SCAN9"
+    assert result["steps"][0]["request"]["task_type"] == "MOVE_LEFT"
 
 
 @pytest.mark.asyncio

@@ -56,10 +56,12 @@ def _service() -> SimpleNamespace:
         send_task_prepare=AsyncMock(return_value=snapshot),
         retry_wms_action=AsyncMock(return_value=snapshot),
         refresh_plan_resources=AsyncMock(return_value=snapshot),
+        send_work_admission=AsyncMock(return_value=snapshot),
         send_bin_inbound_batch=AsyncMock(return_value=snapshot),
         send_bin_return_batch=AsyncMock(return_value=snapshot),
         send_rack_departure=AsyncMock(return_value=snapshot),
         send_task_completion_confirm=AsyncMock(return_value=snapshot),
+        send_completion_apply_report=AsyncMock(return_value=snapshot),
         create_transport_action=AsyncMock(return_value=snapshot),
         create_device_action=AsyncMock(return_value=snapshot),
         refresh_device_action=AsyncMock(return_value=snapshot),
@@ -246,7 +248,7 @@ async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_o
         "expected_version": 0,
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
         "wms_non_receipt_confirmed": True,
-        "workline_code": "KT16",
+        "data": {"task_id": "PICK-001", "workline_code": "KT16"},
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post(
@@ -260,11 +262,13 @@ async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_o
 
     assert response.status_code == 202
     assert invalid.status_code == 422
+    request_data = service.retry_wms_action.await_args.kwargs["request_data"]
+    assert request_data.model_dump() == payload["data"]
     service.retry_wms_action.assert_awaited_once_with(
         "run-1",
         client_request_id=payload["client_request_id"],
         wms_non_receipt_confirmed=True,
-        wms_workline_code="KT16",
+        request_data=request_data,
         expected_version=0,
         actor_id=42,
     )
@@ -276,7 +280,7 @@ async def test_prepare_passes_the_explicit_wms_workline_code() -> None:
     payload = {
         "expected_version": 0,
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
-        "workline_code": "KT16",
+        "data": {"task_id": "PICK-001", "workline_code": "KT16"},
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post(
@@ -285,13 +289,8 @@ async def test_prepare_passes_the_explicit_wms_workline_code() -> None:
         )
 
     assert response.status_code == 202
-    service.send_task_prepare.assert_awaited_once_with(
-        "run-1",
-        client_request_id=payload["client_request_id"],
-        wms_workline_code="KT16",
-        expected_version=0,
-        actor_id=42,
-    )
+    request_data = service.send_task_prepare.await_args.kwargs["request_data"]
+    assert request_data.model_dump() == payload["data"]
 
 
 @pytest.mark.asyncio
@@ -300,9 +299,12 @@ async def test_bin_inbound_batch_passes_the_admin_selected_max_count() -> None:
     payload = {
         "expected_version": 0,
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4474",
-        "rack_id": "RACK-01",
-        "rack_face": "90",
-        "max_bin_count": 1,
+        "data": {
+            "task_id": "PICK-001",
+            "rack_id": "RACK-01",
+            "rack_face": "90",
+            "max_bin_count": 1,
+        },
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post(
@@ -311,7 +313,98 @@ async def test_bin_inbound_batch_passes_the_admin_selected_max_count() -> None:
         )
 
     assert response.status_code == 202
-    assert service.send_bin_inbound_batch.await_args.kwargs["max_bin_count"] == 1
+    request_data = service.send_bin_inbound_batch.await_args.kwargs["request_data"]
+    assert request_data.model_dump() == payload["data"]
+
+
+@pytest.mark.asyncio
+async def test_work_admission_passes_the_admin_edited_operation_data() -> None:
+    service = _service()
+    payload = {
+        "expected_version": 0,
+        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4475",
+        "data": {"bin_code": "BIN-EDITED", "scanned_at": 1788980000000},
+    }
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/wms/work-admission",
+            json=payload,
+        )
+
+    assert response.status_code == 202
+    request_data = service.send_work_admission.await_args.kwargs["request_data"]
+    assert request_data.model_dump() == payload["data"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "service_method", "data"),
+    [
+        (
+            "bin-return-batch",
+            "send_bin_return_batch",
+            {
+                "workline_code": "KT16",
+                "rack_id": "RACK-EDITED",
+                "rack_face": "180",
+                "return_candidates": [
+                    {
+                        "sequence_no": 1,
+                        "bin_code": "BIN-EDITED",
+                        "source": {"type": "HANDOFF_POSITION", "location_code": "CNV-EDITED"},
+                    }
+                ],
+            },
+        ),
+        (
+            "rack-departure",
+            "send_rack_departure",
+            {
+                "task_id": "PICK-001",
+                "rack_id": "RACK-EDITED",
+                "current_location": {"type": "RACK_POSITION", "location_code": "OUT-EDITED"},
+                "current_face": "270",
+            },
+        ),
+        (
+            "task-completion",
+            "send_task_completion_confirm",
+            {"task_id": "PICK-001", "last_applied_plan_revision": 7},
+        ),
+        (
+            "completion-apply-report",
+            "send_completion_apply_report",
+            {
+                "completion_operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
+                "task_id": "WORK-EDITED",
+                "bin_code": "BIN-EDITED",
+                "apply_revision": 1,
+                "apply_result": "APPLIED",
+                "occurred_at": 1788980000000,
+            },
+        ),
+    ],
+)
+async def test_wms_routes_pass_the_admin_edited_operation_data(
+    path: str,
+    service_method: str,
+    data: dict[str, object],
+) -> None:
+    service = _service()
+    payload = {
+        "expected_version": 0,
+        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4476",
+        "data": data,
+    }
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/workline-integration-debug/runs/run-1/wms/{path}",
+            json=payload,
+        )
+
+    assert response.status_code == 202
+    request_data = getattr(service, service_method).await_args.kwargs["request_data"]
+    assert request_data.model_dump(mode="json") == data
 
 
 @pytest.mark.asyncio

@@ -23,23 +23,33 @@ from src.app.sys.services.event_stream_service import event_stream_service
 from src.app.wms_adapter.outbound_picking.arrival_report_typed import encode_request as encode_arrival_report
 from src.app.wms_adapter.outbound_picking.arrival_report_wire import RETURN_RACK_ARRIVAL_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.completion_confirm_typed import encode_request as encode_completion_confirm
-from src.app.wms_adapter.outbound_picking.completion_confirm_wire import COMPLETION_CONFIRM_OPERATION
+from src.app.wms_adapter.outbound_picking.completion_confirm_wire import (
+    COMPLETION_CONFIRM_OPERATION,
+    CompletionConfirmData,
+)
 from src.app.wms_adapter.outbound_picking.departure_typed import encode_request as encode_departure
-from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
+from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION, RackDepartureData
 from src.app.wms_adapter.outbound_picking.inbound_batch_typed import encode_request as encode_inbound_batch
-from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
+from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION, BinInboundBatchData
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import (
     MANUAL_BIN_ADMISSION_OPERATION,
+    ManualBinAdmissionData,
 )
 from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
     MANUAL_BIN_APPLY_REPORT_OPERATION,
+    ManualBinApplied,
+    ManualBinReconciling,
 )
 from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_typed import encode_admission, encode_apply_report
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request as encode_return_batch
-from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION, BinReturnBatchData
 from src.app.wms_adapter.outbound_picking.typed import encode_request as encode_prepare_request
-from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN, PICKING_TASK_PREPARE_OPERATION
+from src.app.wms_adapter.outbound_picking.wire import (
+    BUSINESS_IDENTIFIER_PATTERN,
+    PICKING_TASK_PREPARE_OPERATION,
+    PickingTaskPrepareData,
+)
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareNoopReason
 from src.app.workline_integration_debug.contracts import (
@@ -242,7 +252,7 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
-        wms_workline_code: str,
+        request_data: PickingTaskPrepareData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -254,6 +264,9 @@ class IntegrationDebugService:
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("必须先选择已接收的 PickingTask")
             workline_id, selected_task_id = run.workline_id, run.task_id
+            if request_data.task_id != selected_task_id:
+                raise IntegrationDebugContractError("prepare data.task_id 必须等于本 run 已绑定的 PickingTask")
+            wms_workline_code = request_data.workline_code
             task = await self._runs.get_picking_task(db, selected_task_id, for_update=True)
             if task is None or task.id != run.picking_task_id or task.task_id != selected_task_id:
                 raise IntegrationDebugConflict("所选 PickingTask 已变化，请重新选择")
@@ -441,13 +454,11 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
-        rack_id: str,
-        rack_face: str,
-        max_bin_count: int,
+        request_data: BinInboundBatchData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
-        if max_bin_count != 1:
+        if request_data.max_bin_count != 1:
             raise IntegrationDebugContractError("当前临时联调页面每次 inbound_batch 只支持 max_bin_count=1")
         now = timezone.now_for_db()
         async with self._sessions.begin() as db:
@@ -455,6 +466,10 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.BIN_INBOUND_BATCH)
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("inbound_batch 缺少 PickingTask")
+            if request_data.task_id != run.task_id:
+                raise IntegrationDebugContractError("inbound_batch data.task_id 必须等于本 run 已绑定的 PickingTask")
+            rack_id = request_data.rack_id
+            rack_face = request_data.rack_face
             plan = run.configuration_json.get("plan_resources")
             sources = plan.get("bin_source_racks") if isinstance(plan, dict) else None
             if not isinstance(sources, list) or not any(
@@ -477,7 +492,7 @@ class IntegrationDebugService:
                 task_id=run.task_id,
                 rack_id=rack_id,
                 rack_face=rack_face,
-                max_bin_count=max_bin_count,
+                max_bin_count=request_data.max_bin_count,
             )
             payload = encode_inbound_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
@@ -529,9 +544,7 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
-        rack_id: str,
-        rack_face: str,
-        source_location_code: str,
+        request_data: BinReturnBatchData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -541,16 +554,27 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.BIN_RETURN_BATCH)
             if run.bin_code is None:
                 raise IntegrationDebugContractError("return_batch 缺少已完成作业的 Bin")
+            if request_data.workline_code != run.workline_code:
+                raise IntegrationDebugContractError("return_batch data.workline_code 必须等于本 run 的 WorkLine")
+            if len(request_data.return_candidates) != 1:
+                raise IntegrationDebugContractError("当前临时联调页面每次 return_batch 只支持一个 Bin")
+            candidate = request_data.return_candidates[0]
+            if candidate.bin_code != run.bin_code:
+                raise IntegrationDebugContractError(
+                    "return_batch data.return_candidates[0].bin_code 必须等于本 run 的 Bin"
+                )
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 return_batch 联调步骤缺少 operation_id")
             operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_bin_return_batch(
                 operation_id=operation_id,
-                workline_code=run.workline_code,
-                rack_id=rack_id,
-                rack_face=rack_face,
-                return_candidates=(sdk.BinReturnCandidate(1, run.bin_code, source_location_code),),
+                workline_code=request_data.workline_code,
+                rack_id=request_data.rack_id,
+                rack_face=request_data.rack_face,
+                return_candidates=(
+                    sdk.BinReturnCandidate(candidate.sequence_no, candidate.bin_code, candidate.source.location_code),
+                ),
             )
             payload = encode_return_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
@@ -602,9 +626,7 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
-        rack_id: str,
-        current_location_code: str,
-        current_face: str,
+        request_data: RackDepartureData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -614,16 +636,18 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.RACK_DEPARTURE)
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("departure_decide 缺少 PickingTask")
+            if request_data.task_id != run.task_id:
+                raise IntegrationDebugContractError("departure_decide data.task_id 必须等于本 run 已绑定的 PickingTask")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 departure_decide 联调步骤缺少 operation_id")
             operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_rack_departure_decide(
                 operation_id=operation_id,
-                task_id=run.task_id,
-                rack_id=rack_id,
-                current_location=sdk.TransportRackPosition(current_location_code),
-                current_face=current_face,
+                task_id=request_data.task_id,
+                rack_id=request_data.rack_id,
+                current_location=sdk.TransportRackPosition(request_data.current_location.location_code),
+                current_face=request_data.current_face,
             )
             payload = encode_departure(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is not None:
@@ -675,6 +699,7 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
+        request_data: CompletionConfirmData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -684,6 +709,10 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.TASK_COMPLETION)
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("completion_confirm 缺少 PickingTask")
+            if request_data.task_id != run.task_id:
+                raise IntegrationDebugContractError(
+                    "completion_confirm data.task_id 必须等于本 run 已绑定的 PickingTask"
+                )
             task = await self._runs.get_picking_task(db, run.task_id)
             if task is None:
                 raise IntegrationDebugNotFound("PickingTask 不存在")
@@ -693,8 +722,8 @@ class IntegrationDebugService:
             operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_picking_task_completion_confirm(
                 operation_id=operation_id,
-                task_id=run.task_id,
-                last_applied_plan_revision=task.last_applied_plan_revision,
+                task_id=request_data.task_id,
+                last_applied_plan_revision=request_data.last_applied_plan_revision,
             )
             payload = encode_completion_confirm(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is not None:
@@ -778,6 +807,7 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
+        request_data: ManualBinAdmissionData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -788,14 +818,19 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.WORK_ADMISSION)
             if run.bin_code is None:
                 raise IntegrationDebugContractError("必须先记录 point2 实际扫码 Bin")
+            run.bin_code = request_data.bin_code
+            run.configuration_json = {
+                **run.configuration_json,
+                "point2_scanned_at": request_data.scanned_at,
+            }
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None and not isinstance(existing.operation_id, str):
                 raise IntegrationDebugConflict("原 work_admission 联调步骤缺少 operation_id")
             operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_manual_bin_work_admission(
                 operation_id=operation_id,
-                bin_code=run.bin_code,
-                scanned_at=run.configuration_json["point2_scanned_at"],
+                bin_code=request_data.bin_code,
+                scanned_at=request_data.scanned_at,
             )
             payload = encode_admission(intent, timestamp=timestamp)
             if existing is None:
@@ -1094,7 +1129,7 @@ class IntegrationDebugService:
         *,
         client_request_id: str,
         wms_non_receipt_confirmed: bool,
-        wms_workline_code: str,
+        request_data: PickingTaskPrepareData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -1110,6 +1145,8 @@ class IntegrationDebugService:
                 or run.attention_code != "WMS_CONFIRMATION_RECONCILING"
             ):
                 raise IntegrationDebugConflict("当前 run 不处于 prepare WMS 对账状态")
+            if request_data.task_id != run.task_id:
+                raise IntegrationDebugContractError("prepare data.task_id 必须等于本 run 已绑定的 PickingTask")
             step = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if (
                 step is None
@@ -1126,10 +1163,10 @@ class IntegrationDebugService:
                 or confirmation.operation_id != step.operation_id
             ):
                 raise IntegrationDebugConflict("prepare step 与 WmsConfirmation 身份不匹配")
-            request_data = confirmation.request_payload.get("data")
-            if not isinstance(request_data, dict) or request_data.get("task_id") != run.task_id:
+            persisted_data = confirmation.request_payload.get("data")
+            if not isinstance(persisted_data, dict) or persisted_data.get("task_id") != run.task_id:
                 raise IntegrationDebugConflict("prepare confirmation 请求正文与当前任务不匹配")
-            if request_data.get("workline_code") == wms_workline_code:
+            if persisted_data == request_data.model_dump(mode="json"):
                 await self._confirmations.requeue_reconciling(
                     db,
                     confirmation,
@@ -1164,7 +1201,7 @@ class IntegrationDebugService:
                     sdk.wms_operations.outbound_picking_task_prepare(
                         operation_id=operation_id,
                         task_id=run.task_id,
-                        work_line_code=wms_workline_code,
+                        work_line_code=request_data.workline_code,
                     ),
                     timestamp=int(timezone.to_utc(now).timestamp() * 1000),
                 )
@@ -1407,16 +1444,13 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
-        completion_operation_id: str,
-        apply_revision: int,
-        apply_result: str,
-        reason_code: str | None,
-        occurred_at: int,
+        request_data: ManualBinApplied | ManualBinReconciling,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
         now = timezone.now_for_db()
         timestamp = int(timezone.to_utc(now).timestamp() * 1000)
+        apply_result = request_data.apply_result
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_operator_and_version(run, expected_version, actor_id)
@@ -1434,7 +1468,9 @@ class IntegrationDebugService:
             admission_task_id = run.configuration_json.get("admission_task_id")
             if not isinstance(admission_task_id, str) or run.bin_code is None:
                 raise IntegrationDebugContractError("完成应用报告缺少已绑定 task_id 或实际 bin_code")
-            if apply_revision != 1:
+            if request_data.task_id != admission_task_id or request_data.bin_code != run.bin_code:
+                raise IntegrationDebugContractError("完成应用报告 data.task_id 和 data.bin_code 必须匹配本 run")
+            if request_data.apply_revision != 1:
                 raise IntegrationDebugContractError("当前固定联调流程只发送首次 apply_revision=1")
             completion_steps = await self._runs.list_steps(db, run_id)
             bound_completion = next(
@@ -1446,12 +1482,12 @@ class IntegrationDebugService:
                 ),
                 None,
             )
-            if bound_completion is None or bound_completion.operation_id != completion_operation_id:
+            if bound_completion is None or bound_completion.operation_id != request_data.completion_operation_id:
                 raise IntegrationDebugContractError("completion_operation_id 必须等于本 run 已绑定的完成决定 identity")
             completion_evidence = await self._runs.get_evidence_by_operation(
                 db,
                 MANUAL_BIN_COMPLETED_OPERATION,
-                completion_operation_id,
+                request_data.completion_operation_id,
                 for_update=True,
             )
             release_step = next(
@@ -1471,13 +1507,13 @@ class IntegrationDebugService:
                 operation_id = new_uuid7()
             intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
                 operation_id=operation_id,
-                completion_operation_id=completion_operation_id,
-                task_id=admission_task_id,
-                bin_code=run.bin_code,
-                apply_revision=apply_revision,
+                completion_operation_id=request_data.completion_operation_id,
+                task_id=request_data.task_id,
+                bin_code=request_data.bin_code,
+                apply_revision=request_data.apply_revision,
                 apply_result=cast("Any", apply_result),
-                reason_code=reason_code,
-                occurred_at=occurred_at,
+                reason_code=request_data.reason_code if isinstance(request_data, ManualBinReconciling) else None,
+                occurred_at=request_data.occurred_at,
             )
             payload = encode_apply_report(intent, timestamp=timestamp)
             if existing is not None:
@@ -1631,18 +1667,13 @@ class IntegrationDebugService:
             scan_device_codes = (
                 site_configuration.get("scan_device_codes") if isinstance(site_configuration, dict) else None
             )
-            expected_device_index = 1 if current is IntegrationDebugPhase.POINT2_RELEASE else 2
             if (
                 not isinstance(scan_device_codes, list)
                 or len(scan_device_codes) != 4
-                or device_code != scan_device_codes[expected_device_index]
+                or device_code not in scan_device_codes
             ):
-                expected_point = "point2" if current is IntegrationDebugPhase.POINT2_RELEASE else "point3"
-                raise IntegrationDebugContractError(f"KT16 {expected_point} ECS 指令必须使用冻结的对应扫码位")
+                raise IntegrationDebugContractError("ECS device_code 必须来自本 run 冻结的扫码位")
             phase_steps = await self._runs.list_steps(db, run_id)
-            expected_task_type = self._expected_device_task_type(current, run.configuration_json, phase_steps)
-            if task_type != expected_task_type:
-                raise IntegrationDebugContractError(f"当前节点 ECS task_type 必须为 {expected_task_type}")
             real_ecs = profile_uses_real_ecs(IntegrationDebugProfile(run.profile))
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None and any(
