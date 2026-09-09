@@ -336,13 +336,13 @@ async def test_operator_retry_rejects_confirmation_with_persisted_response() -> 
 
 
 @pytest.mark.asyncio
-async def test_operator_can_supersede_an_unreceived_reconciling_request_without_mutating_it() -> None:
+async def test_operator_can_supersede_a_wms_voided_reconciling_request_without_mutating_it() -> None:
     service = WmsConfirmationService(repository=FakeWmsConfirmationRepository())
     confirmation = await _create(service)
     confirmation.status = WmsConfirmationStatus.RECONCILING
     original_payload = confirmation.request_payload.copy()
 
-    superseded = await service.supersede_unreceived_reconciling(
+    superseded = await service.supersede_after_wms_void(
         object(),
         confirmation,
         changed_at=datetime(2026, 8, 16, 0, 10),

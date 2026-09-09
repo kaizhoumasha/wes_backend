@@ -91,7 +91,7 @@ class PrepareTaskRequest(ClientActionRequest):
 
 
 class RetryWmsActionRequest(ClientActionRequest):
-    wms_non_receipt_confirmed: Literal[True]
+    wms_original_prepare_voided_confirmed: Literal[True]
     data: PickingTaskPrepareData
 
 
@@ -547,7 +547,7 @@ async def refresh_wms_action(
 
 @router.post(
     "/runs/{run_id}/wms/retry",
-    summary="[ops:workline-integration-debug:operate] 确认 WMS 未接收并重发 prepare；参数变更时使用新身份",
+    summary="[ops:workline-integration-debug:operate] 确认 WMS 已作废原 prepare 并使用新身份重发",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(RequirePermission("ops:workline-integration-debug:retry-wms"))],
 )
@@ -561,7 +561,7 @@ async def retry_wms_action(
             _service(request).retry_wms_action(
                 run_id,
                 client_request_id=payload.client_request_id,
-                wms_non_receipt_confirmed=payload.wms_non_receipt_confirmed,
+                wms_original_prepare_voided_confirmed=payload.wms_original_prepare_voided_confirmed,
                 request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,

@@ -242,12 +242,12 @@ async def test_device_refresh_passes_the_original_client_identity() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_original_action_identity() -> None:
+async def test_wms_retry_requires_explicit_original_prepare_void_confirmation_and_passes_action_identity() -> None:
     service = _service()
     payload = {
         "expected_version": 0,
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
-        "wms_non_receipt_confirmed": True,
+        "wms_original_prepare_voided_confirmed": True,
         "data": {"task_id": "PICK-001", "workline_code": "KT16"},
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
@@ -257,7 +257,7 @@ async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_o
         )
         invalid = await client.post(
             "/api/v1/workline-integration-debug/runs/run-1/wms/retry",
-            json={**payload, "wms_non_receipt_confirmed": False},
+            json={**payload, "wms_original_prepare_voided_confirmed": False},
         )
 
     assert response.status_code == 202
@@ -267,7 +267,7 @@ async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_o
     service.retry_wms_action.assert_awaited_once_with(
         "run-1",
         client_request_id=payload["client_request_id"],
-        wms_non_receipt_confirmed=True,
+        wms_original_prepare_voided_confirmed=True,
         request_data=request_data,
         expected_version=0,
         actor_id=42,
