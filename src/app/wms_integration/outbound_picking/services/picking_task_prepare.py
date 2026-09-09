@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 class PickingTaskPrepareNoopReason(StrEnum):
     WORKLINE_NOT_READY = "WORKLINE_NOT_READY"
     NO_ELIGIBLE_TASK = "NO_ELIGIBLE_TASK"
+    SELECTED_TASK_NOT_NEXT = "SELECTED_TASK_NOT_NEXT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,7 @@ class PickingTaskPrepareCoordinator:
         self,
         workline_id: int,
         *,
+        expected_task_id: str | None = None,
         now: datetime | None = None,
     ) -> PickingTaskPrepareResult:
         if not isinstance(workline_id, int) or isinstance(workline_id, bool) or workline_id <= 0:
@@ -119,6 +121,8 @@ class PickingTaskPrepareCoordinator:
             )
             if task is None:
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK)
+            if expected_task_id is not None and task.task_id != expected_task_id:
+                return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.SELECTED_TASK_NOT_NEXT)
             if not await self._runtime_context_ready(db, workline_id, current):
                 return PickingTaskPrepareResult(False, PickingTaskPrepareNoopReason.WORKLINE_NOT_READY)
             task_id = getattr(task, "id", None)

@@ -21,6 +21,7 @@ from src.app.workline.models.workline import LineType
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_start_service import WorkLineStartService
+from src.app.workline_integration_debug.composition import CombinedWorkLineConfirmationOwner
 from src.core.task_queue_gateway import task_queue_gateway
 
 if TYPE_CHECKING:
@@ -103,7 +104,7 @@ def build_deployment_runtime(
         wms_confirmation_follow_up_planner=InstalledPluginWmsFollowUpPlanner(plugins),
         task_queue_gateway=task_queue_gateway,
         picking_task_owner=PickingTaskConfirmationOwnerService(),
-        workline_owner=ReturnBatchOwnerService(),
+        workline_owner=CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService()),
     )
     recovery_handler = None
     if "rough_sorter" in enabled_plugin_keys:

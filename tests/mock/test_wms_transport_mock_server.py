@@ -306,7 +306,50 @@ def test_wms_business_routes_require_no_authentication() -> None:
         for route in wms_mock_server.app.routes
         if route.path.startswith("/api/") and not route.path.startswith("/api/v1/wes/transport-requests/")
     }
-    assert business_routes == {"/api/v1/wes/transport-requests", "/api/v1/wes/decisions"}
+    assert business_routes == {
+        "/api/v1/wes/transport-requests",
+        "/api/v1/wes/decisions",
+        "/api/v1/wes/facts",
+    }
+
+
+def test_decision_route_accepts_picking_task_prepare() -> None:
+    request = {
+        "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4473",
+        "operation": "outbound.picking_task.prepare@v1",
+        "timestamp": 1786060800000,
+        "data": {"task_id": "PICK-20260811-001", "workline_code": "sorting-3"},
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/decisions", json=request)
+
+    assert response.status_code == 202
+    assert response.json()["code"] == "PREPARE_ACCEPTED"
+    assert response.json()["operation_id"] == request["operation_id"]
+
+
+def test_decision_route_returns_contract_valid_rack_departure_destination() -> None:
+    request = {
+        "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",
+        "operation": "outbound.rack.departure_decide@v1",
+        "timestamp": 1786060800000,
+        "data": {
+            "task_id": "PICK-20260811-001",
+            "rack_id": "RACK-01",
+            "current_location": {"type": "RACK_POSITION", "location_code": "sorting-3-rack-position"},
+            "current_face": "A",
+        },
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post("/api/v1/wes/decisions", json=request)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "result": "READY",
+        "rack_destination": {"type": "RACK_POSITION", "location_code": "QA-STORAGE"},
+    }
 
 
 @pytest.mark.parametrize("envelope", [RACK_ROTATE, BIN_MOVE, BIN_EXCHANGE])
@@ -1187,6 +1230,38 @@ def test_return_batch_allocates_free_learned_slots_in_fifo_and_replays_exactly()
     assert conflict.status_code == 409
     assert conflict.json()["data"] == {"reason_code": "IDEMPOTENCY_CONFLICT"}
     parse_bin_return_batch_response(409, conflict.json())
+
+
+def test_manual_bin_admission_and_apply_report_support_console_happy_path():
+    admission = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4521",
+        "operation": "outbound.manual_bin.work_admission_decide@v1",
+        "timestamp": 1_788_390_000_001,
+        "data": {"bin_code": "BIN-001", "scanned_at": 1_788_390_000_000},
+    }
+    report = {
+        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4522",
+        "operation": "outbound.manual_bin.completion_apply_report@v1",
+        "timestamp": 1_788_390_000_003,
+        "data": {
+            "completion_operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4523",
+            "task_id": "PICK-001",
+            "bin_code": "BIN-001",
+            "apply_revision": 1,
+            "apply_result": "APPLIED",
+            "occurred_at": 1_788_390_000_002,
+        },
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        admission_response = client.post("/api/v1/wes/decisions", json=admission)
+        report_response = client.post("/api/v1/wes/facts", json=report)
+
+    assert admission_response.status_code == 200
+    assert admission_response.json()["code"] == "DECIDED"
+    assert admission_response.json()["data"] == {"result": "WORK_REQUIRED", "task_id": "PICK-BIN-001"}
+    assert report_response.status_code == 200
+    assert report_response.json()["code"] == "RECORDED"
 
 
 def test_return_batch_does_not_treat_transport_acceptance_as_free_slots():

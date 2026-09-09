@@ -20,6 +20,31 @@ from wes_plugin_sdk.validation import is_opaque_face
 from wes_plugin_sdk.validation import is_persistable_text as _nonblank
 
 from src.app.transport.callback_json import canonical_callback_json
+from src.app.wms_adapter.outbound_picking.completion_confirm_wire import (
+    COMPLETION_CONFIRM_OPERATION,
+    parse_completion_confirm_request,
+    parse_completion_confirm_response,
+)
+from src.app.wms_adapter.outbound_picking.departure_wire import (
+    RACK_DEPARTURE_OPERATION,
+    parse_rack_departure_request,
+    parse_rack_departure_response,
+)
+from src.app.wms_adapter.outbound_picking.inbound_batch_wire import (
+    BIN_INBOUND_BATCH_OPERATION,
+    parse_bin_inbound_batch_request,
+    parse_bin_inbound_batch_response,
+)
+from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import (
+    MANUAL_BIN_ADMISSION_OPERATION,
+    parse_manual_bin_admission_request,
+    parse_manual_bin_admission_response,
+)
+from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
+    MANUAL_BIN_APPLY_REPORT_OPERATION,
+    parse_manual_bin_apply_report_request,
+    parse_manual_bin_apply_report_response,
+)
 from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     BIN_RETURN_BATCH_OPERATION,
     BinReturnBatchRequest,
@@ -27,6 +52,11 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     ReturnSource,
     parse_bin_return_batch_request,
     parse_bin_return_batch_response,
+)
+from src.app.wms_adapter.outbound_picking.wire import (
+    PICKING_TASK_PREPARE_OPERATION,
+    parse_picking_task_prepare_request,
+    parse_picking_task_prepare_response,
 )
 from src.app.wms_adapter.strict_json import StrictJsonError, is_json_utf8_media_type, loads_transport_json
 from src.core.uuid7 import is_uuid7
@@ -42,6 +72,7 @@ from tests.mock.wms_transport_mock_openapi import (
 )
 
 DECISION_PATH = "/api/v1/wes/decisions"
+FACT_PATH = "/api/v1/wes/facts"
 TRANSPORT_PATH = "/api/v1/wes/transport-requests"
 WES_TRANSPORT_EVENT_URL = os.getenv("WES_TRANSPORT_EVENT_URL", "http://localhost:8001/api/v1/wms/events")
 BODY_LIMIT = 256 * 1024
@@ -908,9 +939,129 @@ async def decide_return_batch(request: Request) -> Response:
         envelope = loads_transport_json((await request.body()).decode("utf-8"))
     except (UnicodeDecodeError, StrictJsonError):
         return Response(status_code=400)
-    if _valid_identity(envelope) is None:
+    identity = _valid_identity(envelope)
+    if identity is None:
         return Response(status_code=400)
+    operation, operation_id = identity
+    digest = _message_digest(envelope)
+    existing = transport_submission_store.existing(operation, operation_id, digest, None)
+    if existing is not None:
+        stored_status, stored_response = existing
+        return JSONResponse(status_code=stored_status, content=stored_response)
+    if operation == PICKING_TASK_PREPARE_OPERATION:
+        parsed = parse_picking_task_prepare_request(envelope)
+        status, response = 202, _ack(operation_id, "PREPARE_ACCEPTED", None)
+        parse_picking_task_prepare_response(status, response)
+    elif operation == BIN_INBOUND_BATCH_OPERATION:
+        parsed = parse_bin_inbound_batch_request(envelope)
+        status, response = 200, _ack(operation_id, "DECIDED", None)
+        response["data"] = {
+            "result": "READY",
+            "bins": [
+                {
+                    "bin_code": "BIN-QA-001",
+                    "source_locator": {
+                        "type": "RACK_BIN_SLOT",
+                        "rack_id": parsed.data.rack_id,
+                        "rack_face": parsed.data.rack_face,
+                        "slot_id": "SLOT-01",
+                    },
+                }
+            ],
+        }
+        parse_bin_inbound_batch_response(status, response, request=parsed)
+    elif operation == RACK_DEPARTURE_OPERATION:
+        parsed = parse_rack_departure_request(envelope)
+        status, response = 200, _ack(operation_id, "DECIDED", None)
+        response["data"] = {
+            "result": "READY",
+            "rack_destination": {"type": "RACK_POSITION", "location_code": "QA-STORAGE"},
+        }
+        parse_rack_departure_response(status, response, request=parsed)
+    elif operation == COMPLETION_CONFIRM_OPERATION:
+        parsed = parse_completion_confirm_request(envelope)
+        status, response = 200, _ack(operation_id, "DECIDED", None)
+        response["data"] = {"result": "COMPLETED"}
+        parse_completion_confirm_response(status, response, request=parsed)
+    else:
+        parsed = None
+        status = 0
+        response = {}
+    if parsed is not None:
+        transport_submission_store.store(
+            operation=operation,
+            operation_id=operation_id,
+            transport_task_id=None,
+            request=envelope,
+            digest=digest,
+            status_code=status,
+            response=response,
+        )
+        return JSONResponse(status_code=status, content=response)
+    if operation == MANUAL_BIN_ADMISSION_OPERATION:
+        try:
+            parsed = parse_manual_bin_admission_request(envelope)
+        except ValidationError:
+            status = 422
+            response = _ack(operation_id, "REJECTED", None, reason_code="INVALID_DATA")
+        else:
+            status = 200
+            response = _ack(operation_id, "DECIDED", None)
+            response["data"] = {"result": "WORK_REQUIRED", "task_id": f"PICK-{parsed.data.bin_code}"}
+        parse_manual_bin_admission_response(status, response, request=parsed if status == 200 else None)
+        transport_submission_store.store(
+            operation=operation,
+            operation_id=operation_id,
+            transport_task_id=None,
+            request=envelope,
+            digest=digest,
+            status_code=status,
+            response=response,
+        )
+        return JSONResponse(status_code=status, content=response)
     status, response = transport_submission_store.decide_return_batch(envelope)
+    return JSONResponse(status_code=status, content=response)
+
+
+@app.post(FACT_PATH, tags=[WMS_TRANSPORT_CONTRACT_TAG])
+async def record_manual_bin_apply_report(request: Request) -> Response:
+    if (
+        not is_json_utf8_media_type(request.headers.get("content-type", ""))
+        or request.headers.get("content-encoding", "identity").casefold() != "identity"
+    ):
+        return Response(status_code=400)
+    try:
+        envelope = loads_transport_json((await request.body()).decode("utf-8"))
+    except (UnicodeDecodeError, StrictJsonError):
+        return Response(status_code=400)
+    identity = _valid_identity(envelope)
+    if identity is None:
+        return Response(status_code=400)
+    operation, operation_id = identity
+    digest = _message_digest(envelope)
+    existing = transport_submission_store.existing(operation, operation_id, digest, None)
+    if existing is not None:
+        status, response = existing
+        return JSONResponse(status_code=status, content=response)
+    try:
+        parsed = parse_manual_bin_apply_report_request(envelope)
+    except ValidationError:
+        status = 422
+        reason = "INVALID_DATA" if operation == MANUAL_BIN_APPLY_REPORT_OPERATION else "UNSUPPORTED_OPERATION"
+        response = _ack(operation_id, "REJECTED", None, reason_code=reason)
+    else:
+        status = 200
+        response = _ack(operation_id, "RECORDED", None)
+    parse_manual_bin_apply_report_response(status, response, request=parsed if status == 200 else None)
+    transport_submission_store.store(
+        operation=operation,
+        operation_id=operation_id,
+        transport_task_id=None,
+        request=envelope,
+        digest=digest,
+        status_code=status,
+        response=response,
+    )
     return JSONResponse(status_code=status, content=response)
 
 

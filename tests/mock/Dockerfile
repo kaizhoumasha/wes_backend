@@ -48,6 +48,11 @@ COPY src/static/swagger-ui/ /app/src/static/swagger-ui/
 COPY src/app/wms_adapter/strict_json.py /app/src/app/wms_adapter/strict_json.py
 COPY src/app/wms_adapter/wire_common.py /app/src/app/wms_adapter/wire_common.py
 COPY src/app/wms_diagnostics/observation.py /app/src/app/wms_diagnostics/observation.py
+COPY src/app/wms_adapter/outbound_picking/completion_confirm_wire.py /app/src/app/wms_adapter/outbound_picking/completion_confirm_wire.py
+COPY src/app/wms_adapter/outbound_picking/departure_wire.py /app/src/app/wms_adapter/outbound_picking/departure_wire.py
+COPY src/app/wms_adapter/outbound_picking/inbound_batch_wire.py /app/src/app/wms_adapter/outbound_picking/inbound_batch_wire.py
+COPY src/app/wms_adapter/outbound_picking/manual_bin_admission_wire.py /app/src/app/wms_adapter/outbound_picking/manual_bin_admission_wire.py
+COPY src/app/wms_adapter/outbound_picking/manual_bin_apply_report_wire.py /app/src/app/wms_adapter/outbound_picking/manual_bin_apply_report_wire.py
 COPY src/app/wms_adapter/outbound_picking/return_batch_wire.py /app/src/app/wms_adapter/outbound_picking/return_batch_wire.py
 COPY src/app/wms_adapter/outbound_picking/response_wire.py /app/src/app/wms_adapter/outbound_picking/response_wire.py
 COPY src/app/wms_adapter/outbound_picking/wire.py /app/src/app/wms_adapter/outbound_picking/wire.py

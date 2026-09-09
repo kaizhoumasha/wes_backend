@@ -25,7 +25,9 @@ from src.app.wms_adapter.inbound_material.openapi import (
     WMS_EVENT_RESPONSES,
 )
 from src.app.wms_adapter.inbound_material.wire import RECOVERY_OPERATION
+from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUAL_BIN_COMPLETED_OPERATION
 from src.app.wms_adapter.outbound_picking.openapi import (
+    MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
     PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
@@ -59,6 +61,7 @@ WMS_EVENT_REQUEST_SCHEMA = {
         PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA,
         PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA,
         PICKING_TASK_QUEUE_CHANGED_EVENT_REQUEST_SCHEMA,
+        MANUAL_BIN_COMPLETED_EVENT_REQUEST_SCHEMA,
     ]
 }
 WMS_INBOUND_STREAM_CHANNEL = "wms:inbound:stream"
@@ -359,7 +362,7 @@ async def receive_wms_event(request: Request) -> Response:
     return response
 
 
-async def _receive_wms_event(
+async def _receive_wms_event(  # noqa: PLR0911 - 每个固定 operation 在唯一入口 fail closed。
     request: Request, request_id: str, received_at: str, raw_body: bytes | None, observed_body_bytes: int, observation
 ) -> Response:
     if not _valid_wms_event_request_headers(request):
@@ -454,6 +457,24 @@ async def _receive_wms_event(
                 status_code=response.status_code,
                 disposition="UNAVAILABLE" if response.status_code == 503 else "REJECTED",
                 error_code="PICKING_TASK_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
+            )
+            return response
+        result = await handler.handle(envelope, observation=observation)
+    elif operation == MANUAL_BIN_COMPLETED_OPERATION:
+        handler = getattr(request.app.state, "wms_manual_bin_completed_handler", None)
+        if handler is None:
+            operation_id = envelope.get("operation_id") if envelope is not None else None
+            response = (
+                _unavailable_response(operation_id) if is_wire_operation_id(operation_id) else Response(status_code=400)
+            )
+            await _publish_wms_ingress_attempt(
+                request,
+                request_id=request_id,
+                received_at=received_at,
+                observed_body_bytes=observed_body_bytes,
+                status_code=response.status_code,
+                disposition="UNAVAILABLE" if response.status_code == 503 else "REJECTED",
+                error_code="MANUAL_BIN_RUNTIME_UNAVAILABLE" if response.status_code == 503 else "INVALID_ENVELOPE",
             )
             return response
         result = await handler.handle(envelope, observation=observation)

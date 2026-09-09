@@ -9,6 +9,7 @@ from src.register import register_routers
 
 def test_swagger_event_examples_are_executable_wire_requests() -> None:
     from src.app.wms_adapter.inbound_material.wire import parse_recovery_event
+    from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import parse_manual_bin_completed_event
     from src.app.wms_adapter.outbound_picking.plan_delta_wire import parse_picking_task_plan_delta_event
     from src.app.wms_adapter.outbound_picking.queue_changed_wire import parse_picking_task_queue_changed_event
     from src.app.wms_adapter.outbound_picking.wire import parse_picking_task_issued_event
@@ -21,6 +22,7 @@ def test_swagger_event_examples_are_executable_wire_requests() -> None:
         "outbound.picking_task.issued@v1": parse_picking_task_issued_event,
         "outbound.picking_task.queue_changed@v1": parse_picking_task_queue_changed_event,
         "outbound.picking_task.plan_delta@v1": parse_picking_task_plan_delta_event,
+        "outbound.manual_bin.work_completed@v1": parse_manual_bin_completed_event,
     }
     parsers.update(
         {
@@ -72,7 +74,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
 
     assert request_body["required"] is True
     request_variants = request_schema["oneOf"]
-    assert len(request_variants) == 6
+    assert len(request_variants) == 7
     assert all(variant["type"] == "object" for variant in request_variants)
     assert all(variant["additionalProperties"] is False for variant in request_variants)
     assert all(
@@ -85,6 +87,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         ["outbound.picking_task.issued@v1"],
         ["outbound.picking_task.plan_delta@v1"],
         ["outbound.picking_task.queue_changed@v1"],
+        ["outbound.manual_bin.work_completed@v1"],
     ]
     for variant in request_variants:
         timestamp = variant["properties"]["timestamp"]
@@ -92,7 +95,14 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
         assert timestamp["format"] == "int64"
         operation_name = variant["properties"]["operation"]["enum"][0]
         expected_minimum = (
-            1 if operation_name in {"inbound.execution.recovery_decided@v1", "outbound.picking_task.issued@v1"} else 0
+            1
+            if operation_name
+            in {
+                "inbound.execution.recovery_decided@v1",
+                "outbound.picking_task.issued@v1",
+                "outbound.manual_bin.work_completed@v1",
+            }
+            else 0
         )
         assert timestamp["minimum"] == expected_minimum
         assert timestamp["maximum"] >= 2**63 - 1
