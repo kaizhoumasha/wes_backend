@@ -86,6 +86,7 @@ def test_routes_use_endpoint_permissions_required_by_the_permission_catalog() ->
         for route_item in app.routes
         if isinstance(route_item, APIRoute) and route_item.path.startswith("/api/v1/workline-integration-debug")
         for dependency in route_item.dependencies
+        if getattr(dependency.dependency, "permission_required", "")
     }
 
     assert permissions == {
@@ -115,6 +116,13 @@ def test_routes_use_endpoint_permissions_required_by_the_permission_catalog() ->
         "ops:workline-integration-debug:close",
         "ops:workline-integration-debug:export",
     }
+    device_route = next(
+        route_item
+        for route_item in app.routes
+        if isinstance(route_item, APIRoute)
+        and route_item.path == "/api/v1/workline-integration-debug/runs/{run_id}/device-command"
+    )
+    assert any(getattr(dependency.dependency, "is_superuser", False) for dependency in device_route.dependencies)
 
 
 @pytest.mark.asyncio

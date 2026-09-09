@@ -314,7 +314,7 @@ async def test_completion_report_requires_current_phase_and_bound_completion_ide
         task_id="PICK-001",
         bin_code="BIN-001",
         device_code="SIM-ECS-01",
-        configuration_json={"admission_task_id": "PICK-001", "manual_bin_admission_result": "WORK_REQUIRED"},
+        configuration_json={"admission_task_id": "PICK-WMS", "manual_bin_admission_result": "WORK_REQUIRED"},
     )
     repository = _Repository(run)
     repository.steps.append(
@@ -1192,6 +1192,8 @@ async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_
     assert repository.evidence.apply_status == expected_status
     assert repository.evidence.processed_at is not None
     confirmations.create_or_get.assert_awaited_once()
+    assert confirmations.create_or_get.await_args.kwargs["workline_id"] == run.workline_id
+    assert "picking_task_id" not in confirmations.create_or_get.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -1567,6 +1569,95 @@ async def test_refresh_historical_transport_action_does_not_clear_current_attent
     assert result["steps"][0]["status"] == "SUCCEEDED"
     assert result["status"] == "NEEDS_ATTENTION"
     assert result["attention_code"] == "CURRENT_DEVICE_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_return_rack_transport_success_freezes_arrival_report_confirmation() -> None:
+    run = IntegrationRun(
+        run_id="run-return-rack-arrival",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="RACK_TRANSPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
+        configuration_json={
+            "plan_resources": {
+                "target_rack": {"rack_id": "TARGET-01", "rack_face": "0"},
+                "direct_picks": [{"rack_id": "RETURN-01", "rack_face": "A", "slot_id": "SLOT-01"}],
+                "bin_source_racks": [],
+            }
+        },
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=0,
+            phase="RACK_TRANSPORT",
+            status="WAITING",
+            client_request_id="return-rack-move-1",
+            transport_task_id="TRANSPORT-RETURN-001",
+            request_summary_json={
+                "kind": "MOVE_RACK",
+                "rack_id": "RETURN-01",
+                "source": {"kind": "RACK", "location_code": "RETURN-01"},
+                "target": {"kind": "RACK_POSITION", "location_code": "OUT65"},
+                "target_face": "A",
+                "rcs_template_id": "CTU01",
+                "bin_code": None,
+            },
+        )
+    )
+    transport = AsyncMock()
+    transport.get_task_snapshot.return_value = SimpleNamespace(
+        status="SUCCEEDED",
+        reason_code=None,
+        result={
+            "outcome_version": 2,
+            "status": "SUCCEEDED",
+            "reason_code": None,
+            "members": [
+                {
+                    "object_id": "RETURN-01",
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "OUT65"},
+                    "position_unknown": False,
+                    "failure_code": None,
+                    "arrival_face": "A",
+                }
+            ],
+        },
+    )
+    confirmations = AsyncMock()
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(SimpleNamespace(id=10), duplicate=False)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=transport,
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_transport_action(
+        run.run_id,
+        client_request_id="return-rack-move-1",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    arrival_step = result["steps"][-1]
+    assert arrival_step["operation"] == "outbound.return_rack.arrival_report@v1"
+    assert arrival_step["request"]["transport_task_id"] == "TRANSPORT-RETURN-001"
+    assert arrival_step["request"]["outcome_revision"] == 2
+    assert confirmations.create_or_get.await_args.kwargs["picking_task_id"] == 101
 
 
 @pytest.mark.asyncio
