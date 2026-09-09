@@ -975,9 +975,18 @@ class IntegrationDebugService:
             if transport.status == "SUCCEEDED":
                 step.status = "SUCCEEDED"
                 step.reason_code = None
-                await self._freeze_return_rack_arrival_report(db, run, step, actor_id=actor_id)
+                arrival_report_frozen = await self._freeze_return_rack_arrival_report(
+                    db,
+                    run,
+                    step,
+                    actor_id=actor_id,
+                )
                 if updates_current_run:
-                    run.status = IntegrationDebugRunStatus.ACTIVE
+                    if arrival_report_frozen:
+                        run.current_phase = IntegrationDebugPhase.RACK_ARRIVAL
+                        run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+                    else:
+                        run.status = IntegrationDebugRunStatus.ACTIVE
                     run.attention_code = None
             elif transport.status in {"FAILED", "REJECTED", "RECONCILING"}:
                 step.status = "NEEDS_ATTENTION"
@@ -1106,6 +1115,8 @@ class IntegrationDebugService:
             IntegrationDebugService._advance_return_batch(run, response_result, response_data)
         elif step.operation == RACK_DEPARTURE_OPERATION:
             IntegrationDebugService._advance_departure(run, step, response_result, response_data)
+        elif step.operation == RETURN_RACK_ARRIVAL_REPORT_OPERATION:
+            run.status = IntegrationDebugRunStatus.ACTIVE
         elif step.operation == COMPLETION_CONFIRM_OPERATION:
             IntegrationDebugService._advance_completion(run, response_result)
 
@@ -1712,6 +1723,16 @@ class IntegrationDebugService:
                 ]
                 if not phase_steps or any(step.status != "SUCCEEDED" for step in phase_steps):
                     raise IntegrationDebugConflict("本阶段 Transport 尚未全部取得 SUCCEEDED 终态")
+            if current is IntegrationDebugPhase.RACK_ARRIVAL and profile_uses_real_transport(
+                IntegrationDebugProfile(run.profile)
+            ):
+                arrival_steps = [
+                    step
+                    for step in await self._runs.list_steps(db, run_id)
+                    if step.phase == current and step.operation == RETURN_RACK_ARRIVAL_REPORT_OPERATION
+                ]
+                if not arrival_steps or any(step.status != "SUCCEEDED" for step in arrival_steps):
+                    raise IntegrationDebugConflict("货架到位上报尚未取得 WMS 完成确认")
             if current is IntegrationDebugPhase.POINT2_RELEASE:
                 phase_steps = [
                     step
@@ -1907,14 +1928,14 @@ class IntegrationDebugService:
         transport_step: IntegrationRunStep,
         *,
         actor_id: int,
-    ) -> None:
+    ) -> bool:
         if (
             transport_step.phase != IntegrationDebugPhase.RACK_TRANSPORT
             or transport_step.transport_task_id is None
             or run.task_id is None
             or run.picking_task_id is None
         ):
-            return
+            return False
         request = transport_step.request_summary_json
         rack_id = request.get("rack_id")
         rack_face = request.get("target_face")
@@ -1933,7 +1954,7 @@ class IntegrationDebugService:
                 for item in direct_picks
             )
         ):
-            return
+            return False
         result = transport_step.result_summary_json
         outcome_revision = result.get("outcome_version")
         members = result.get("members")
@@ -1961,7 +1982,7 @@ class IntegrationDebugService:
             and step.request_summary_json.get("transport_task_id") == transport_step.transport_task_id
             for step in steps
         ):
-            return
+            return True
         now = timezone.now_for_db()
         operation_id = new_uuid7()
         intent = sdk.wms_operations.outbound_return_rack_arrival_report(
@@ -1997,6 +2018,7 @@ class IntegrationDebugService:
             raise IntegrationDebugConflict("return_rack arrival_report identity 内容冲突")
         step.wms_confirmation_id = acceptance.confirmation.id
         defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
+        return True
 
     async def _append_step(
         self,

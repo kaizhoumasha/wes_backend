@@ -1657,7 +1657,95 @@ async def test_return_rack_transport_success_freezes_arrival_report_confirmation
     assert arrival_step["operation"] == "outbound.return_rack.arrival_report@v1"
     assert arrival_step["request"]["transport_task_id"] == "TRANSPORT-RETURN-001"
     assert arrival_step["request"]["outcome_revision"] == 2
+    assert result["current_phase"] == "RACK_ARRIVAL"
+    assert result["status"] == "WAITING_EXTERNAL"
     assert confirmations.create_or_get.await_args.kwargs["picking_task_id"] == 101
+
+
+@pytest.mark.asyncio
+async def test_full_site_rack_arrival_waits_for_wms_confirmation_before_advancing() -> None:
+    run = IntegrationRun(
+        run_id="run-rack-arrival-wait",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="RACK_ARRIVAL",
+    )
+    repository = _Repository(run)
+    arrival_step = IntegrationRunStep(
+        run_id=run.run_id,
+        ordinal=1,
+        phase="RACK_ARRIVAL",
+        status="WAITING",
+        operation="outbound.return_rack.arrival_report@v1",
+        wms_confirmation_id=10,
+    )
+    repository.steps.append(arrival_step)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="WMS 完成确认"):
+        await service.confirm_current_phase(
+            run.run_id,
+            note="货架已经到位",
+            expected_version=0,
+            actor_id=42,
+        )
+
+    arrival_step.status = "SUCCEEDED"
+    run.status = "ACTIVE"
+    result = await service.confirm_current_phase(
+        run.run_id,
+        note="WMS 已确认货架到位上报",
+        expected_version=0,
+        actor_id=42,
+    )
+    assert result["current_phase"] == "BIN_INBOUND_BATCH"
+
+
+def test_arrival_report_completion_releases_rack_arrival_node() -> None:
+    run = IntegrationRun(
+        run_id="run-arrival-completed",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="RACK_ARRIVAL",
+    )
+    step = IntegrationRunStep(
+        run_id=run.run_id,
+        ordinal=1,
+        phase="RACK_ARRIVAL",
+        status="WAITING",
+        operation="outbound.return_rack.arrival_report@v1",
+    )
+
+    IntegrationDebugService._advance_completed_wms_action(
+        run,
+        step,
+        response_result="RECORDED",
+        response_data={},
+    )
+
+    assert run.current_phase == "RACK_ARRIVAL"
+    assert run.status == "ACTIVE"
 
 
 @pytest.mark.asyncio
