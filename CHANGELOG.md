@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.1.0] - 2026-09-08
+
+### Fixed
+
+- 发布排空门禁不再将已在事务中处理完成的全局 WMS 准入事件误判为待发布；工作线内未发布事件、待处理及待对账事件仍按原规则阻止发布。
+
 ## [0.39.0.0] - 2026-09-08
 
 ### Added
