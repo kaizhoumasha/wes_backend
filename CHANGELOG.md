@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0.0] - 2026-09-08
+
+### Added
+
+- 工作线可按插件声明绑定工作位与设备插槽；草稿允许缺项，启动前检查全部插槽并冻结实际位置和设备编码。
+- 普通工作位与货架工作位统一管理，插件可复用于采用不同现场编码的工作线。
+
+### Changed
+
+- 工作位表统一为 `workline_positions`，原地迁移保留已有 ID、数据和设备关联；绑定中的资源不能直接删除或停用。
+- 基础配置使用 `positions` 字段，插件配置增加 `position_bindings`；前端需在后端合并后同步契约，部署时迁移并重启使用该表的后端进程。
+
 ## [0.38.0.0] - 2026-09-08
 
 ### Added
