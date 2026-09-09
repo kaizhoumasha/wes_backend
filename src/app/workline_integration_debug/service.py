@@ -263,7 +263,7 @@ class IntegrationDebugService:
                     raise RuntimeError("已持久化 prepare confirmation 缺少 id")
                 request_data = confirmation.request_payload.get("data")
                 if (
-                    task.status != PickingTaskStatus.PREPARING
+                    task.status not in {PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING}
                     or task.workline_id != workline_id
                     or not isinstance(request_data, dict)
                     or request_data.get("task_id") != selected_task_id
@@ -831,6 +831,11 @@ class IntegrationDebugService:
                 ):
                     raise IntegrationDebugConflict("client_request_id 已用于其它联调动作或请求内容已变化")
                 return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            self._assert_transport_member_not_created(
+                await self._runs.list_steps(db, run_id),
+                IntegrationDebugPhase(run.current_phase),
+                action,
+            )
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("Transport 缺少已绑定 PickingTask")
             task = await self._runs.get_picking_task(db, run.task_id, for_update=True)
@@ -1498,9 +1503,11 @@ class IntegrationDebugService:
                     if step.phase == IntegrationDebugPhase.POINT2_RELEASE
                 ]
                 profile = IntegrationDebugProfile(run.profile)
-                release_created = any(self._device_action_created(step, profile) for step in phase_steps)
-                if not release_created:
-                    raise IntegrationDebugConflict("point2 释放前必须先创建本 run 的释放 DeviceCommand 或模拟动作")
+                release_succeeded = any(self._device_action_succeeded(step, profile) for step in phase_steps)
+                if not release_succeeded:
+                    raise IntegrationDebugConflict(
+                        "point2 释放前必须取得本 run 的释放 DeviceCommand 或模拟动作 SUCCEEDED"
+                    )
                 admission_result = run.configuration_json.get("manual_bin_admission_result")
                 if admission_result == "NO_WORK":
                     target = IntegrationDebugPhase.POINT3_ROUTE
@@ -1533,8 +1540,8 @@ class IntegrationDebugService:
                 profile = IntegrationDebugProfile(run.profile)
                 steps = await self._runs.list_steps(db, run_id)
                 phase_steps = [step for step in steps if step.phase == IntegrationDebugPhase.POINT3_ROUTE]
-                if not any(self._device_action_created(step, profile) for step in phase_steps):
-                    raise IntegrationDebugConflict("point3 分流前必须先创建本 run 的 DeviceCommand 或模拟动作")
+                if not any(self._device_action_succeeded(step, profile) for step in phase_steps):
+                    raise IntegrationDebugConflict("point3 分流前必须取得本 run 的 DeviceCommand 或模拟动作 SUCCEEDED")
                 task_type = self._expected_device_task_type(current, run.configuration_json, steps)
                 target = (
                     IntegrationDebugPhase.RACK_DEPARTURE
@@ -1613,6 +1620,22 @@ class IntegrationDebugService:
     ) -> None:
         if any(step.phase == phase and step.operation == operation and step.status != "SUCCEEDED" for step in steps):
             raise IntegrationDebugConflict("本节点已有未闭合的 WMS 请求；请刷新原请求，禁止换 identity 重发")
+
+    @staticmethod
+    def _assert_transport_member_not_created(
+        steps: list[IntegrationRunStep],
+        phase: IntegrationDebugPhase,
+        action: IntegrationTransportAction,
+    ) -> None:
+        for step in steps:
+            request = step.request_summary_json
+            if (
+                step.phase == phase
+                and request.get("kind") == action.kind
+                and request.get("rack_id") == action.rack_id
+                and request.get("bin_code") == action.bin_code
+            ):
+                raise IntegrationDebugConflict("本节点已为该批次成员创建 Transport；请刷新原动作，禁止换 identity 重发")
 
     async def _append_step(
         self,
@@ -1738,9 +1761,9 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("退箱 Transport 必须逐字段匹配 WMS return_batch READY 队首 move")
 
     @staticmethod
-    def _device_action_created(step: IntegrationRunStep, profile: IntegrationDebugProfile) -> bool:
+    def _device_action_succeeded(step: IntegrationRunStep, profile: IntegrationDebugProfile) -> bool:
         if profile_uses_real_ecs(profile):
-            return step.device_command_code is not None
+            return step.device_command_code is not None and step.status == "SUCCEEDED"
         return step.status == "SUCCEEDED" and step.result_summary_json.get("simulated") is True
 
     @staticmethod
