@@ -507,9 +507,10 @@ PickingTask 保存业务状态和 WorkLine 绑定，不复制 operation、payloa
 `WmsConfirmation.response_evidence_id` 追溯。所有未闭合义务及待应用 Evidence 阻止 WorkLine 停用或切换。
 
 当前临时联调台仅绑定 WorkLine `KT16`，发送 prepare 时 WES 工作线代码与 WMS 请求中的
-`data.workline_code` 均默认为 `KT16`。WMS 团队确认原请求未接收后：参数未变化时 WES 保留原
-`operation_id` 和完整正文重发；参数需要改正时 WES 保留旧请求审计并将其标记为 `SUPERSEDED`，使用新的
-UUIDv7 `operation_id` 发送改正后的完整正文。C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接受不同正文。
+`data.workline_code` 均默认为 `KT16`。prepare 进入 `RECONCILING` 时，WMS 团队须先按原 `operation_id`
+作废或清理原请求，并确认该请求不会再计算或发送 `plan_delta`。管理员确认后，WES 保留旧请求及响应 Evidence，
+将旧 WmsConfirmation 标记为 `SUPERSEDED`，并使用新的 UUIDv7 `operation_id` 发送当前完整正文；即使参数未变化也不得复用旧身份。
+C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接受不同正文。
 
 共享模型不增加人工结果、point2 或 PDA 字段。当前工位等待、`task_id + bin_code` 最终结果和动作关联仍由插件拥有，
 数据库约束和事务验证由共享 owner 测试承接，人工业务测试不重复基础可靠机制矩阵。

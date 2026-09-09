@@ -1128,13 +1128,13 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
-        wms_non_receipt_confirmed: bool,
+        wms_original_prepare_voided_confirmed: bool,
         request_data: PickingTaskPrepareData,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
-        if not wms_non_receipt_confirmed:
-            raise IntegrationDebugContractError("必须先确认 WMS 未接收原 prepare 请求")
+        if not wms_original_prepare_voided_confirmed:
+            raise IntegrationDebugContractError("必须先确认 WMS 已作废原 prepare 且不会再发送对应 plan_delta")
         now = timezone.now_for_db()
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
@@ -1166,62 +1166,54 @@ class IntegrationDebugService:
             persisted_data = confirmation.request_payload.get("data")
             if not isinstance(persisted_data, dict) or persisted_data.get("task_id") != run.task_id:
                 raise IntegrationDebugConflict("prepare confirmation 请求正文与当前任务不匹配")
-            if persisted_data == request_data.model_dump(mode="json"):
-                await self._confirmations.requeue_reconciling(
-                    db,
-                    confirmation,
-                    changed_at=now,
-                    deadline_at=now + timedelta(seconds=30),
-                )
-            else:
-                if run.picking_task_id is None or run.task_id is None:
-                    raise IntegrationDebugConflict("prepare run 缺少 PickingTask 身份")
-                old_history = step.result_summary_json.get("request_replacement_history")
-                history = list(old_history) if isinstance(old_history, list) else []
-                history.append(
-                    {
-                        "operation_id": confirmation.operation_id,
-                        "request": confirmation.request_payload,
-                        "attempt_count": confirmation.attempt_count,
-                        "last_dispatch_at": (
-                            confirmation.last_dispatch_at.isoformat()
-                            if isinstance(confirmation.last_dispatch_at, datetime)
-                            else None
-                        ),
-                        "reason": "WMS_CONFIRMED_NOT_RECEIVED_PARAMETER_CORRECTION",
-                    }
-                )
-                await self._confirmations.supersede_unreceived_reconciling(
-                    db,
-                    confirmation,
-                    changed_at=now,
-                )
-                operation_id = new_uuid7()
-                request = encode_prepare_request(
-                    sdk.wms_operations.outbound_picking_task_prepare(
-                        operation_id=operation_id,
-                        task_id=run.task_id,
-                        work_line_code=request_data.workline_code,
+            if run.picking_task_id is None or run.task_id is None:
+                raise IntegrationDebugConflict("prepare run 缺少 PickingTask 身份")
+            old_history = step.result_summary_json.get("request_replacement_history")
+            history = list(old_history) if isinstance(old_history, list) else []
+            history.append(
+                {
+                    "operation_id": confirmation.operation_id,
+                    "request": confirmation.request_payload,
+                    "attempt_count": confirmation.attempt_count,
+                    "last_dispatch_at": (
+                        confirmation.last_dispatch_at.isoformat()
+                        if isinstance(confirmation.last_dispatch_at, datetime)
+                        else None
                     ),
-                    timestamp=int(timezone.to_utc(now).timestamp() * 1000),
-                )
-                replacement = await self._confirmations.create_or_get(
-                    db,
-                    operation=PICKING_TASK_PREPARE_OPERATION,
+                    "reason": "WMS_CONFIRMED_ORIGINAL_PREPARE_VOIDED",
+                }
+            )
+            await self._confirmations.supersede_after_wms_void(
+                db,
+                confirmation,
+                changed_at=now,
+            )
+            operation_id = new_uuid7()
+            request = encode_prepare_request(
+                sdk.wms_operations.outbound_picking_task_prepare(
                     operation_id=operation_id,
-                    picking_task_id=run.picking_task_id,
-                    request_payload=request,
-                    deadline_at=now + timedelta(seconds=30),
-                    created_at=now,
-                )
-                if not isinstance(replacement, WmsConfirmationAcceptance) or replacement.duplicate:
-                    raise RuntimeError("改正后的 prepare identity 未创建唯一 WmsConfirmation")
-                if replacement.confirmation.id is None:
-                    raise RuntimeError("改正后的 prepare confirmation 缺少持久身份")
-                step.operation_id = replacement.confirmation.operation_id
-                step.wms_confirmation_id = replacement.confirmation.id
-                step.request_summary_json = request["data"]
-                step.result_summary_json = {"request_replacement_history": history}
+                    task_id=run.task_id,
+                    work_line_code=request_data.workline_code,
+                ),
+                timestamp=int(timezone.to_utc(now).timestamp() * 1000),
+            )
+            replacement = await self._confirmations.create_or_get(
+                db,
+                operation=PICKING_TASK_PREPARE_OPERATION,
+                operation_id=operation_id,
+                picking_task_id=run.picking_task_id,
+                request_payload=request,
+                deadline_at=now + timedelta(seconds=30),
+                created_at=now,
+            )
+            if not isinstance(replacement, WmsConfirmationAcceptance) or replacement.duplicate:
+                raise RuntimeError("重发的 prepare identity 未创建唯一 WmsConfirmation")
+            if replacement.confirmation.id is None:
+                raise RuntimeError("重发的 prepare confirmation 缺少持久身份")
+            step.operation_id = replacement.confirmation.operation_id
+            step.wms_confirmation_id = replacement.confirmation.id
+            step.request_summary_json = request["data"]
+            step.result_summary_json = {"request_replacement_history": history}
             defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
             step.status = "WAITING"
             step.reason_code = None

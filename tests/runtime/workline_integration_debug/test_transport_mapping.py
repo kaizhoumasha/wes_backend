@@ -703,7 +703,7 @@ async def test_refreshing_completed_historical_wms_step_does_not_rewind_phase() 
 
 
 @pytest.mark.asyncio
-async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receipt() -> None:
+async def test_operator_replaces_a_voided_prepare_with_the_same_request_and_a_new_identity() -> None:
     run = IntegrationRun(
         run_id="run-prepare-retry",
         workline_id=3,
@@ -742,10 +742,18 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
         response_evidence_id=None,
         response_result=None,
         completed_at=None,
+        attempt_count=1,
+        last_dispatch_at=datetime(2026, 9, 9, tzinfo=UTC),
+        request_payload={"data": {"task_id": "PICK-001", "workline_code": "KT16"}},
+    )
+    replacement = SimpleNamespace(
+        id=10,
+        operation="outbound.picking_task.prepare@v1",
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4491",
         request_payload={"data": {"task_id": "PICK-001", "workline_code": "KT16"}},
     )
     confirmations = AsyncMock()
-    confirmations.requeue_reconciling.return_value = repository.confirmation
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(replacement, duplicate=False)
     service = IntegrationDebugService(
         _Sessions(),  # type: ignore[arg-type]
         repository=repository,  # type: ignore[arg-type]
@@ -758,13 +766,19 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
     result = await service.retry_wms_action(
         run.run_id,
         client_request_id="prepare-request",
-        wms_non_receipt_confirmed=True,
+        wms_original_prepare_voided_confirmed=True,
         request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
 
-    confirmations.requeue_reconciling.assert_awaited_once()
+    confirmations.supersede_after_wms_void.assert_awaited_once()
+    confirmations.create_or_get.assert_awaited_once()
+    assert step.operation_id == replacement.operation_id
+    assert step.wms_confirmation_id == 10
+    assert step.result_summary_json["request_replacement_history"][0]["reason"] == (
+        "WMS_CONFIRMED_ORIGINAL_PREPARE_VOIDED"
+    )
     assert result["status"] == "WAITING_EXTERNAL"
     assert result["attention_code"] is None
     assert step.status == "WAITING"
@@ -772,7 +786,7 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
 
 
 @pytest.mark.asyncio
-async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() -> None:
+async def test_prepare_retry_requires_explicit_wms_original_prepare_void_confirmation() -> None:
     run = IntegrationRun(
         run_id="run-prepare-retry-rejected",
         workline_id=3,
@@ -798,11 +812,11 @@ async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() ->
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(IntegrationDebugContractError, match="WMS 未接收"):
+    with pytest.raises(IntegrationDebugContractError, match="WMS 已作废原 prepare"):
         await service.retry_wms_action(
             run.run_id,
             client_request_id="prepare-request",
-            wms_non_receipt_confirmed=False,
+            wms_original_prepare_voided_confirmed=False,
             request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
             expected_version=0,
             actor_id=42,
@@ -810,7 +824,7 @@ async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() ->
 
 
 @pytest.mark.asyncio
-async def test_operator_replaces_an_unreceived_prepare_when_wms_workline_code_changes() -> None:
+async def test_operator_replaces_a_voided_prepare_when_wms_workline_code_changes() -> None:
     run = IntegrationRun(
         run_id="run-prepare-replace",
         workline_id=3,
@@ -872,13 +886,13 @@ async def test_operator_replaces_an_unreceived_prepare_when_wms_workline_code_ch
     result = await service.retry_wms_action(
         run.run_id,
         client_request_id="prepare-request",
-        wms_non_receipt_confirmed=True,
+        wms_original_prepare_voided_confirmed=True,
         request_data=PickingTaskPrepareData(task_id=run.task_id or "", workline_code="KT16"),
         expected_version=0,
         actor_id=42,
     )
 
-    confirmations.supersede_unreceived_reconciling.assert_awaited_once()
+    confirmations.supersede_after_wms_void.assert_awaited_once()
     confirmations.create_or_get.assert_awaited_once()
     assert step.operation_id == replacement.operation_id
     assert step.wms_confirmation_id == 10

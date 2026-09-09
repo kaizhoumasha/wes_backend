@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.2.1] - 2026-09-09
+
+### Fixed
+
+- 手工出库联调台在 WMS 作废异常 prepare 后保留旧证据、废止旧确认，并以相同业务参数和新的 `operation_id` 重发，避免复用已产生非法 ACK 的幂等身份。
+
 ## [0.40.2.0] - 2026-09-09
 
 ### Added
