@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import wes_plugin_sdk as sdk
 
 from src.app.device.services import device_service
-from src.app.execution.models import WmsConfirmationStatus
+from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationAcceptance,
     WmsConfirmationLifecycleService,
@@ -243,12 +243,43 @@ class IntegrationDebugService:
     ) -> dict[str, Any]:
         if self._prepare is None:
             raise IntegrationDebugConflict("PickingTask prepare runtime 未装配")
-        async with self._sessions() as db:
-            run = await self._require_run(db, run_id)
+        async with self._sessions.begin() as db:
+            run = await self._require_run(db, run_id, for_update=True)
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.TASK_PREPARE)
-            if run.task_id is None:
+            if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("必须先选择已接收的 PickingTask")
             workline_id, selected_task_id = run.workline_id, run.task_id
+            existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is not None:
+                if existing.run_id != run_id or existing.operation != PICKING_TASK_PREPARE_OPERATION:
+                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+                return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            confirmation = await self._runs.get_prepare_confirmation(db, run.picking_task_id)
+            if confirmation is not None:
+                if confirmation.id is None:
+                    raise RuntimeError("已持久化 prepare confirmation 缺少 id")
+                await self._append_step(
+                    db,
+                    run,
+                    phase=IntegrationDebugPhase.TASK_PREPARE,
+                    status="WAITING",
+                    actor_id=actor_id,
+                    client_request_id=client_request_id,
+                    operation=PICKING_TASK_PREPARE_OPERATION,
+                    operation_id=confirmation.operation_id,
+                    request=confirmation.request_payload["data"],
+                    wms_confirmation_id=confirmation.id,
+                )
+                run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+                run.updated_by = actor_id
+                run.increment_version()
+                snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
+            else:
+                snapshot = None
+
+        if snapshot is not None:
+            await self._publish(snapshot)
+            return snapshot
 
         prepared = await self._prepare.prepare_next_for_workline(
             workline_id,
@@ -702,6 +733,13 @@ class IntegrationDebugService:
                         )
             if action.rack_id not in planned_racks:
                 raise IntegrationDebugContractError("Transport rack_id 必须来自已应用的 plan_delta 资源")
+            if IntegrationDebugPhase(run.current_phase) is IntegrationDebugPhase.RACK_DEPARTURE:
+                ready_rack_id = run.configuration_json.get("departure_ready_rack_id")
+                ready_destination = run.configuration_json.get("rack_destination")
+                if ready_rack_id != action.rack_id or ready_destination != action.target:
+                    raise IntegrationDebugContractError(
+                        "回库 Transport 必须先取得该货架的 departure_decide READY，并使用 WMS 返回的 rack_destination"
+                    )
             if run.workline_code == "sorting-3":
                 self._validate_sorting3_transport(IntegrationDebugPhase(run.current_phase), action)
             existing = await self._runs.get_step_by_client_request_id(db, action.client_request_id, for_update=True)
@@ -805,6 +843,7 @@ class IntegrationDebugService:
                 run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
                 run.attention_code = step.reason_code
             elif confirmation.status == WmsConfirmationStatus.COMPLETED:
+                should_advance = step.status != "SUCCEEDED" and step.phase == run.current_phase
                 step.status = "SUCCEEDED"
                 response = (
                     await self._runs.get_evidence(db, confirmation.response_evidence_id)
@@ -818,12 +857,13 @@ class IntegrationDebugService:
                     if isinstance(response_payload, dict) and response_payload
                     else {"response_result": confirmation.response_result}
                 )
-                self._advance_completed_wms_action(
-                    run,
-                    step,
-                    response_result=confirmation.response_result,
-                    response_data=response_data,
-                )
+                if should_advance:
+                    self._advance_completed_wms_action(
+                        run,
+                        step,
+                        response_result=confirmation.response_result,
+                        response_data=response_data,
+                    )
             run.updated_by = actor_id
             run.increment_version()
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
@@ -853,15 +893,24 @@ class IntegrationDebugService:
                 run.current_phase, run.status = phases[response_result]
             except KeyError as error:
                 raise IntegrationDebugConflict("任务准入响应结果不在固定联合内") from error
+            if response_result == "WORK_REQUIRED":
+                task_id = response_data.get("task_id") if isinstance(response_data, dict) else None
+                if not isinstance(task_id, str) or not task_id:
+                    raise IntegrationDebugConflict("WORK_REQUIRED 响应缺少 task_id")
+                run.configuration_json = {**run.configuration_json, "admission_task_id": task_id}
         elif step.operation == MANUAL_BIN_APPLY_REPORT_OPERATION:
-            run.current_phase = IntegrationDebugPhase.POINT2_RELEASE
-            run.status = IntegrationDebugRunStatus.ACTIVE
+            if step.request_summary_json.get("apply_result") == "RECONCILING":
+                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                run.attention_code = step.request_summary_json.get("reason_code") or "MANUAL_BIN_RECONCILING"
+            else:
+                run.current_phase = IntegrationDebugPhase.POINT3_ROUTE
+                run.status = IntegrationDebugRunStatus.ACTIVE
         elif step.operation == BIN_INBOUND_BATCH_OPERATION:
             IntegrationDebugService._advance_inbound_batch(run, response_result, response_data)
         elif step.operation == BIN_RETURN_BATCH_OPERATION:
             IntegrationDebugService._advance_return_batch(run, response_result, response_data)
         elif step.operation == RACK_DEPARTURE_OPERATION:
-            IntegrationDebugService._advance_departure(run, response_result, response_data)
+            IntegrationDebugService._advance_departure(run, step, response_result, response_data)
         elif step.operation == COMPLETION_CONFIRM_OPERATION:
             IntegrationDebugService._advance_completion(run, response_result)
 
@@ -894,14 +943,31 @@ class IntegrationDebugService:
             raise IntegrationDebugConflict("return_batch 响应结果不在固定联合内")
 
     @staticmethod
-    def _advance_departure(run: IntegrationRun, response_result: str | None, response_data: object) -> None:
+    def _advance_departure(
+        run: IntegrationRun,
+        step: IntegrationRunStep,
+        response_result: str | None,
+        response_data: object,
+    ) -> None:
         if response_result == "READY" and isinstance(response_data, dict):
             destination = response_data.get("rack_destination")
             if not isinstance(destination, dict):
                 raise IntegrationDebugConflict("departure_decide READY 缺少 rack_destination")
-            run.configuration_json = {**run.configuration_json, "rack_destination": destination}
+            rack_id = step.request_summary_json.get("rack_id")
+            if not isinstance(rack_id, str) or not rack_id:
+                raise IntegrationDebugConflict("departure_decide READY 缺少原请求 rack_id")
+            run.configuration_json = {
+                **run.configuration_json,
+                "rack_destination": destination,
+                "departure_ready_rack_id": rack_id,
+            }
             run.status = IntegrationDebugRunStatus.ACTIVE
         elif response_result == "WAIT":
+            run.configuration_json = {
+                key: value
+                for key, value in run.configuration_json.items()
+                if key not in {"rack_destination", "departure_ready_rack_id"}
+            }
             run.status = IntegrationDebugRunStatus.ACTIVE
         else:
             raise IntegrationDebugConflict("departure_decide 响应结果不在固定联合内")
@@ -933,11 +999,15 @@ class IntegrationDebugService:
             data = payload.get("data") if isinstance(payload, dict) else None
             completed_at = data.get("completed_at") if isinstance(data, dict) else None
             scanned_at = run.configuration_json.get("point2_scanned_at")
+            admission_task_id = run.configuration_json.get("admission_task_id")
             if (
                 evidence is None
+                or evidence.apply_status != InboundEvidenceApplyStatus.PENDING
                 or not isinstance(data, dict)
-                or data.get("task_id") != run.task_id
+                or not isinstance(admission_task_id, str)
+                or data.get("task_id") != admission_task_id
                 or data.get("bin_code") != run.bin_code
+                or data.get("result") not in {"NORMAL", "NG"}
                 or not isinstance(completed_at, int)
                 or not isinstance(scanned_at, int)
                 or completed_at < scanned_at
@@ -955,7 +1025,7 @@ class IntegrationDebugService:
                 operation_id=operation_id,
                 result={"result": data.get("result"), "completed_at": completed_at},
             )
-            run.current_phase = IntegrationDebugPhase.COMPLETION_REPORT
+            run.current_phase = IntegrationDebugPhase.POINT2_RELEASE
             run.status = IntegrationDebugRunStatus.ACTIVE
             run.updated_by = actor_id
             run.increment_version()
@@ -981,7 +1051,8 @@ class IntegrationDebugService:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.COMPLETION_REPORT)
-            if run.task_id is None or run.bin_code is None:
+            admission_task_id = run.configuration_json.get("admission_task_id")
+            if not isinstance(admission_task_id, str) or run.bin_code is None:
                 raise IntegrationDebugContractError("完成应用报告缺少已绑定 task_id 或实际 bin_code")
             if apply_revision != 1:
                 raise IntegrationDebugContractError("当前固定联调流程只发送首次 apply_revision=1")
@@ -996,13 +1067,38 @@ class IntegrationDebugService:
             )
             if bound_completion is None or bound_completion.operation_id != completion_operation_id:
                 raise IntegrationDebugContractError("completion_operation_id 必须等于本 run 已绑定的完成决定 identity")
+            completion_evidence = await self._runs.get_evidence_by_operation(
+                db,
+                MANUAL_BIN_COMPLETED_OPERATION,
+                completion_operation_id,
+                for_update=True,
+            )
+            release_step = next(
+                (
+                    step
+                    for step in reversed(completion_steps)
+                    if step.phase == IntegrationDebugPhase.POINT2_RELEASE and step.status == "SUCCEEDED"
+                ),
+                None,
+            )
+            if apply_result == "APPLIED" and (
+                release_step is None
+                or completion_evidence is None
+                or completion_evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
+            ):
+                raise IntegrationDebugContractError(
+                    "APPLIED 前必须完成 point2 释放步骤并将完成 Evidence 标记为 APPLIED"
+                )
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None:
+                report_task = await self._runs.get_picking_task(db, admission_task_id)
+                if report_task is None or report_task.id is None:
+                    raise IntegrationDebugContractError("完成应用报告的 WMS task_id 未关联本地 PickingTask")
                 operation_id = new_uuid7()
                 intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
                     operation_id=operation_id,
                     completion_operation_id=completion_operation_id,
-                    task_id=run.task_id,
+                    task_id=admission_task_id,
                     bin_code=run.bin_code,
                     apply_revision=apply_revision,
                     apply_result=cast("Any", apply_result),
@@ -1025,7 +1121,7 @@ class IntegrationDebugService:
                     db,
                     operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
                     operation_id=operation_id,
-                    workline_id=run.workline_id,
+                    picking_task_id=report_task.id,
                     request_payload=payload,
                     deadline_at=now + timedelta(minutes=30),
                     created_at=now,
@@ -1210,7 +1306,7 @@ class IntegrationDebugService:
             IntegrationDebugPhase.RACK_ARRIVAL: IntegrationDebugPhase.BIN_INBOUND_BATCH,
             IntegrationDebugPhase.BIN_TRANSPORT: IntegrationDebugPhase.POINT1_ARRIVAL,
             IntegrationDebugPhase.POINT1_ARRIVAL: IntegrationDebugPhase.POINT2_SCAN,
-            IntegrationDebugPhase.POINT2_RELEASE: IntegrationDebugPhase.POINT3_ROUTE,
+            IntegrationDebugPhase.POINT2_RELEASE: IntegrationDebugPhase.COMPLETION_REPORT,
             IntegrationDebugPhase.POINT3_ROUTE: IntegrationDebugPhase.RETURN_BUFFER,
             IntegrationDebugPhase.RETURN_BUFFER: IntegrationDebugPhase.BIN_RETURN_BATCH,
             IntegrationDebugPhase.BIN_RETURN_TRANSPORT: IntegrationDebugPhase.RACK_DEPARTURE,
@@ -1242,6 +1338,27 @@ class IntegrationDebugService:
                 ]
                 if not phase_steps or any(step.status != "SUCCEEDED" for step in phase_steps):
                     raise IntegrationDebugConflict("本阶段 Transport 尚未全部取得 SUCCEEDED 终态")
+            if current is IntegrationDebugPhase.POINT2_RELEASE:
+                completion_step = next(
+                    (
+                        step
+                        for step in reversed(await self._runs.list_steps(db, run_id))
+                        if step.operation == MANUAL_BIN_COMPLETED_OPERATION and step.status == "SUCCEEDED"
+                    ),
+                    None,
+                )
+                if completion_step is None or completion_step.operation_id is None:
+                    raise IntegrationDebugConflict("point2 释放缺少已绑定的完成决定")
+                evidence = await self._runs.get_evidence_by_operation(
+                    db,
+                    MANUAL_BIN_COMPLETED_OPERATION,
+                    completion_step.operation_id,
+                    for_update=True,
+                )
+                if evidence is None or evidence.apply_status != InboundEvidenceApplyStatus.PENDING:
+                    raise IntegrationDebugConflict("完成 Evidence 已被其它流程处理或不存在")
+                evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
+                evidence.processed_at = timezone.now_for_db()
             await self._append_step(
                 db,
                 run,
@@ -1406,7 +1523,13 @@ class IntegrationDebugService:
             "site_configuration": run.configuration_json.get("site_configuration", {}),
             "operation_context": {
                 key: run.configuration_json[key]
-                for key in ("inbound_bins", "return_moves", "rack_destination")
+                for key in (
+                    "inbound_bins",
+                    "return_moves",
+                    "rack_destination",
+                    "admission_task_id",
+                    "departure_ready_rack_id",
+                )
                 if key in run.configuration_json
             },
             "attention_code": run.attention_code,

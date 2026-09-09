@@ -144,15 +144,31 @@ class IntegrationRunRepository:
         db: AsyncSession,
         operation: str,
         operation_id: str,
+        *,
+        for_update: bool = False,
     ) -> InboundEvidence | None:
         columns = cast("Any", InboundEvidence).__table__.c
-        return await db.scalar(
-            select(InboundEvidence).where(columns.operation == operation, columns.operation_id == operation_id)
-        )
+        statement = select(InboundEvidence).where(columns.operation == operation, columns.operation_id == operation_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
 
     async def get_confirmation(self, db: AsyncSession, confirmation_id: int) -> WmsConfirmation | None:
         columns = cast("Any", WmsConfirmation).__table__.c
         return await db.scalar(select(WmsConfirmation).where(columns.id == confirmation_id))
+
+    async def get_prepare_confirmation(
+        self,
+        db: AsyncSession,
+        picking_task_id: int,
+    ) -> WmsConfirmation | None:
+        columns = cast("Any", WmsConfirmation).__table__.c
+        return await db.scalar(
+            select(WmsConfirmation).where(
+                columns.picking_task_id == picking_task_id,
+                columns.operation == "outbound.picking_task.prepare@v1",
+            )
+        )
 
     async def owns_operation(self, db: AsyncSession, *, workline_id: int, operation_id: str) -> bool:
         run_columns = cast("Any", IntegrationRun).__table__.c
