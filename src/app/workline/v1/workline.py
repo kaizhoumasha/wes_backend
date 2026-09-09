@@ -210,7 +210,7 @@ async def save_workline_base_configuration(
             workline_id=id,
             version=payload.version,
             device_codes=payload.device_codes,
-            rack_positions=payload.rack_positions,
+            positions=payload.positions,
             cache=cache,
         )
     except ValueError as exc:

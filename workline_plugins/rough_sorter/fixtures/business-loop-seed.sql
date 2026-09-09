@@ -24,12 +24,20 @@ INSERT INTO wes_runtime.workline_runtime_status_projections (
     9201, 9001, 'STOPPED', 'rough-sorter-e2e-fixture', '__NOW__', 'E2E_PUBLIC_START_REQUIRED', '{}'
 );
 
-INSERT INTO wes_biz.workline_rack_positions (
+INSERT INTO wes_biz.workline_positions (
     id, created_at, workline_id, workline_code, position_code, position_name, position_role,
     allowed_rack_kind, capacity, logic_location_code, priority, enabled, metadata_json
 ) VALUES (
     9501, '__NOW__', 9001, 'RS-E2E-LINE', 'RACK-WORK', 'Rack work position',
     'SMT_CLASSIFIER_SINGLE_RACK_WORK', 'SINGLE_LAYER', 1, 'PIPELINE_OUTLET', 100, true, '{}'
 );
+
+INSERT INTO wes_biz.workline_positions (
+    id, created_at, workline_id, workline_code, position_code, position_name, position_type,
+    position_role, allowed_rack_kind, capacity, logic_location_code, priority, enabled, metadata_json
+) VALUES
+    (9502, '__NOW__', 9001, 'RS-E2E-LINE', 'MEASURE', 'Measurement', 'STATION', NULL, NULL, 1, 'MEASUREMENT_POSITION', 100, true, '{}'),
+    (9503, '__NOW__', 9001, 'RS-E2E-LINE', 'INLET', 'Inlet', 'STATION', NULL, NULL, 1, 'PIPELINE_INLET', 100, true, '{}'),
+    (9504, '__NOW__', 9001, 'RS-E2E-LINE', 'NG', 'NG', 'STATION', NULL, NULL, 1, 'NG_POSITION', 100, true, '{}');
 
 COMMIT;

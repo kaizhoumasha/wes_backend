@@ -374,11 +374,17 @@ def _serve(handler: type[_JsonHandler], state: _BoundaryState):
 
 def _rough_sorter_configuration() -> dict[str, object]:
     return {
+        "position_bindings": {
+            "MEASUREMENT_POSITION": "MEASURE",
+            "PIPELINE_INLET": "INLET",
+            "PIPELINE_OUTLET": "RACK-WORK",
+            "NG_POSITION": "NG",
+        },
         "device_bindings": {
             "MEASUREMENT_DEVICE": "RS-E2E-MEASUREMENT",
             "TRANSFER_DEVICE": "RS-E2E-TRANSFER",
             "PLACEMENT_DEVICE": "RS-E2E-PLACEMENT",
-        }
+        },
     }
 
 

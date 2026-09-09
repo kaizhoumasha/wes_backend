@@ -4,37 +4,37 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from src.app.runtime.orchestration.repositories.rack_position_repository import (
-    WorklineRackPositionRepository,
-    workline_rack_position_repository,
+from src.app.runtime.orchestration.repositories.workline_position_repository import (
+    WorkLinePositionRepository,
+    workline_position_repository,
 )
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.resource.models import RackKind
-    from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+    from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 
 
-class WorklineRackPositionService:
+class WorkLinePositionService:
     """工作线货架停靠位配置校验服务。"""
 
     def __init__(
         self,
         *,
-        repository: WorklineRackPositionRepository = workline_rack_position_repository,
+        repository: WorkLinePositionRepository = workline_position_repository,
     ) -> None:
         self.repository = repository
 
     def _require_enabled_position(
         self,
-        position: WorklineRackPosition | None,
+        position: WorkLinePosition | None,
         *,
         workline_code: str,
         position_code: str,
         rack_kind: RackKind | None = None,
         require_capacity: bool = False,
-    ) -> WorklineRackPosition:
+    ) -> WorkLinePosition:
         """统一校验停靠位存在、启用、货架类型和容量规则。"""
 
         if position is None:
@@ -51,7 +51,7 @@ class WorklineRackPositionService:
 
     def _require_capacity_value(
         self,
-        position: WorklineRackPosition,
+        position: WorkLinePosition,
         *,
         workline_code: str,
         position_code: str,
@@ -69,7 +69,7 @@ class WorklineRackPositionService:
         workline_code: str,
         position_code: str,
         rack_kind: RackKind,
-    ) -> WorklineRackPosition:
+    ) -> WorkLinePosition:
         """校验工作线停靠位存在、启用且允许指定货架类型。"""
 
         position = await self.repository.get_by_workline_position(
@@ -91,7 +91,7 @@ class WorklineRackPositionService:
         workline_code: str,
         position_code: str,
         rack_kind: RackKind,
-    ) -> WorklineRackPosition:
+    ) -> WorkLinePosition:
         """校验工作线停靠位，并对目标配置行加锁以串行化容量占用。"""
 
         position = await self.repository.get_by_workline_position_for_update(
@@ -136,7 +136,7 @@ class WorklineRackPositionService:
         workline_code: str,
         position_code: str,
         rack_kind: RackKind,
-    ) -> tuple[WorklineRackPosition, int]:
+    ) -> tuple[WorkLinePosition, int]:
         """加锁读取启用停靠位及容量，用于串行化位置容量占用。"""
 
         position = await self.repository.get_by_workline_position_for_update(
@@ -155,7 +155,7 @@ class WorklineRackPositionService:
         return position, capacity
 
 
-workline_rack_position_service = WorklineRackPositionService()
+workline_position_service = WorkLinePositionService()
 
 
-__all__ = ["WorklineRackPositionService", "workline_rack_position_service"]
+__all__ = ["WorkLinePositionService", "workline_position_service"]

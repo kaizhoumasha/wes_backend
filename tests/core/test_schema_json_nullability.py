@@ -14,7 +14,7 @@ from src.app.resource.models import (
     RackType,
     ResourceStateEvent,
 )
-from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.workline.models import WorkLine
 from src.app.workline.models.safety import WorklineSafetyIncident
 
@@ -38,7 +38,7 @@ def test_non_optional_json_columns_are_not_nullable() -> None:
         WmsConfirmation.__table__.c.request_payload,
         WorkLine.__table__.c.diagnostic_profile,
         WorkLine.__table__.c.runtime_config_json,
-        WorklineRackPosition.__table__.c.metadata_json,
+        WorkLinePosition.__table__.c.metadata_json,
         WorklineSafetyIncident.__table__.c.drain_error_json,
         WorklineSafetyIncident.__table__.c.evidence_json,
         WorklineSafetyIncident.__table__.c.missing_identifiers,

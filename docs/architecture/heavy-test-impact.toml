@@ -1269,7 +1269,7 @@ heavy_tests = [
 ]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/repositories/rack_position_repository.py"
+source_glob = "src/app/runtime/orchestration/repositories/{rack_position_repository,workline_position_repository}.py"
 heavy_tests = ["tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
 
 [[mapping]]
@@ -1323,7 +1323,7 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/resource/services/projection_service.py"
 heavy_tests = []
-reviewed_content_sha256 = "1bcf01665e0aae0e94f75871d98c72eafc021b5163676e5e234b5b894f7ef505"
+reviewed_content_sha256 = "196f276e8a066c4b37cdb49d81ed7ad450b524465e0551447a03446620df700f"
 
 [[mapping]]
 source_glob = "src/app/resource/services/relation_service.py"
@@ -1632,6 +1632,10 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/workline/services/workline_configuration_service.py"
 heavy_tests = ["tests/integration/workline_capabilities/test_unfinished_execution_snapshot_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/app/workline/services/{rack_position_service,workline_position_service}.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py"]
 
 # 旧 START admission 路径已删除；删除 diff 仍由唯一 WorkLine START PostgreSQL owner 承接。
 
@@ -2461,7 +2465,7 @@ source_glob = "src/app/api_auth/models/api_application.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py"]
 
 [[mapping]]
-source_glob = "src/app/runtime/orchestration/models/rack_position.py"
+source_glob = "src/app/runtime/orchestration/models/{rack_position,workline_position}.py"
 heavy_tests = [
     "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
     "tests/integration/test_initial_schema_baseline_postgresql.py",
@@ -2649,3 +2653,7 @@ heavy_tests = [
     "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
     "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
 ]
+
+[[mapping]]
+source_glob = "migrations/versions/20260909_0915_d11f8c6fdb0d_support_generic_workline_position_slots.py"
+heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]

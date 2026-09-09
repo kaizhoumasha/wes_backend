@@ -18,7 +18,7 @@
 #   - 默认 dry-run,必须显式 --yes 才写库
 #   - 全量模式仅 APP_DEBUG=True 时允许；生产型配置需要 --force
 #   - 定向模式不重置 Mock WMS，只删除命中安全条件的单个 TransportTask
-#   - 保留 work_lines/devices/resource_*/workline_rack_positions 等主数据
+#   - 保留 work_lines/devices/resource_*/workline_positions 等主数据
 #   - 默认连 Mock WMS 一起重置(否则连续重跑会撞 TARGET_POSITION_OCCUPIED)
 #
 

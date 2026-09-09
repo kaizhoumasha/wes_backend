@@ -18,7 +18,7 @@ from src.app.workline.activation import (
     WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.models.workline import LineType, WorkLine, WorkLineDeviceRole, WorkLinePositionSlot
 from src.app.workline.services.workline_start_service import (
     WorkLineStartService,
     WorkLineStartVersionConflictError,
@@ -42,7 +42,9 @@ class Builder:
     device_by_workline: dict[int, int]
     calls: list[int] = field(default_factory=list)
 
-    async def build(self, _db: object, workline: WorkLine) -> WorkLineActivationPlan:
+    async def build(
+        self, _db: object, workline: WorkLine, *, position_bindings: tuple[WorkLinePositionBinding, ...]
+    ) -> WorkLineActivationPlan:
         assert workline.id is not None
         self.calls.append(workline.id)
         device_id = self.device_by_workline[workline.id]
@@ -63,13 +65,7 @@ class Builder:
                     command_timeout_ms=5_000,
                 ),
             ),
-            position_bindings=(
-                WorkLinePositionBinding(
-                    position_role="INPUT_POSITION",
-                    location_id=f"LOCATION-{workline.id}",
-                    location_type="RACK_CELL",
-                ),
-            ),
+            position_bindings=position_bindings,
         )
 
 
@@ -84,6 +80,12 @@ def _plugin(builder: Builder) -> InstalledWorkLinePlugin:
         ),
         start_plan_builder=builder,
         supported_line_types=(LineType.AUTO,),
+        device_roles=(WorkLineDeviceRole(role_key="DEVICE_ROLE", display_name="设备"),),
+        position_slots=(
+            WorkLinePositionSlot(
+                slot_key="INPUT_POSITION", display_name="入口", position_type="STATION", location_type="RACK_CELL"
+            ),
+        ),
     )
 
 
@@ -106,7 +108,22 @@ async def _seed_workline(session_factory: async_sessionmaker[AsyncSession], suff
         db.add(device)
         await db.flush()
         assert device.id is not None
-        workline.config = {"device_bindings": {"DEVICE_ROLE": device.device_code}}
+        from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
+
+        db.add(
+            WorkLinePosition(
+                workline_id=workline.id,
+                workline_code=workline.line_code,
+                position_code="LOCAL",
+                position_name="入口",
+                position_type="STATION",
+                logic_location_code=f"LOCATION-{workline.id}",
+            )
+        )
+        workline.config = {
+            "device_bindings": {"DEVICE_ROLE": device.device_code},
+            "position_bindings": {"INPUT_POSITION": "LOCAL"},
+        }
         await db.flush()
         return workline.id, device.id
 
@@ -135,7 +152,10 @@ def test_workline_start_publishes_current_contract_and_serializes_version() -> N
                     assert persisted.is_active and persisted.version == 1
                     assert persisted.plugin_version == "1.0"
                     assert persisted.flow_mode == "GENERIC_FLOW"
-                    assert persisted.config == {"device_bindings": {"DEVICE_ROLE": f"START-PG-DEVICE-{line_id}"}}
+                    assert persisted.config == {
+                        "device_bindings": {"DEVICE_ROLE": f"START-PG-DEVICE-{line_id}"},
+                        "position_bindings": {"INPUT_POSITION": "LOCAL"},
+                    }
                     assert persisted.device_contracts[f"START-PG-DEVICE-{line_id}"]["device_id"] == device_id
                     assert persisted.position_bindings == {
                         "INPUT_POSITION": {"location_id": f"LOCATION-{line_id}", "location_type": "RACK_CELL"}

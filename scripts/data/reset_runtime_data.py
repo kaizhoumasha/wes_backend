@@ -106,7 +106,7 @@ MASTER_DATA_TABLES: frozenset[TableTarget] = frozenset(
     {
         _biz("work_lines"),
         _biz("devices"),
-        _biz("workline_rack_positions"),
+        _biz("workline_positions"),
         _biz("resource_racks"),
         _biz("resource_rack_types"),
         _biz("resource_rack_slot_templates"),
