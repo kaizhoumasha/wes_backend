@@ -161,8 +161,14 @@ async def test_evidence_workline_id_migration_preserves_rows_and_rejects_lossy_d
             async with async_sessionmaker(engine).begin() as db:
                 db.add_all(
                     [
-                        WorkLine(id=42, line_code="SMALL", line_name="Small owner", is_active=False),
-                        WorkLine(id=347454468883008, line_code="LARGE", line_name="Large owner", is_active=False),
+                        WorkLine(id=42, line_code="SMALL", line_name="Small owner", line_type="AUTO", is_active=False),
+                        WorkLine(
+                            id=347454468883008,
+                            line_code="LARGE",
+                            line_name="Large owner",
+                            line_type="AUTO",
+                            is_active=False,
+                        ),
                     ]
                 )
                 await db.flush()
