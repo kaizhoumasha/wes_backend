@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.responses import Response, StreamingResponse
 
 from src.app.sys.services.event_stream_service import event_stream_service
+from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
 from src.app.workline_integration_debug.contracts import (
     IntegrationDebugProfile,
     IntegrationTransportAction,
@@ -30,6 +31,10 @@ from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
 router = APIRouter(prefix="/v1/workline-integration-debug", tags=["人工出库联调"])
 _RUN_ID = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
 _TEXT = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+_IDENTIFIER = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, pattern=BUSINESS_IDENTIFIER_PATTERN),
+]
 
 
 class _StrictModel(BaseModel):
@@ -53,7 +58,7 @@ class BindTaskRequest(VersionRequest):
 
 
 class Point2ScanRequest(VersionRequest):
-    bin_code: _TEXT
+    bin_code: _IDENTIFIER
     scanned_at: int = Field(gt=0)
 
 

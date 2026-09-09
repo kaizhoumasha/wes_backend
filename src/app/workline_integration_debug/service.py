@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
@@ -33,7 +34,7 @@ from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUA
 from src.app.wms_adapter.outbound_picking.manual_bin_typed import encode_admission, encode_apply_report
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request as encode_return_batch
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
-from src.app.wms_adapter.outbound_picking.wire import PICKING_TASK_PREPARE_OPERATION
+from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN, PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareNoopReason
 from src.app.workline_integration_debug.contracts import (
@@ -254,8 +255,12 @@ class IntegrationDebugService:
                 raise IntegrationDebugConflict("所选 PickingTask 已变化，请重新选择")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None:
-                if existing.run_id != run_id or existing.operation != PICKING_TASK_PREPARE_OPERATION:
-                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=PICKING_TASK_PREPARE_OPERATION,
+                    request={"task_id": selected_task_id, "workline_code": run.workline_code},
+                )
                 return self._snapshot(run, await self._runs.list_steps(db, run_id))
             confirmation = await self._runs.get_prepare_confirmation(db, run.picking_task_id)
             if confirmation is not None:
@@ -453,21 +458,23 @@ class IntegrationDebugService:
             ):
                 raise IntegrationDebugContractError("inbound_batch 必须引用 plan_delta 中的五层料箱架及朝向")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is not None and not isinstance(existing.operation_id, str):
+                raise IntegrationDebugConflict("原 inbound_batch 联调步骤缺少 operation_id")
+            operation_id = existing.operation_id if existing is not None else new_uuid7()
+            intent = sdk.wms_operations.outbound_bin_inbound_batch(
+                operation_id=operation_id,
+                task_id=run.task_id,
+                rack_id=rack_id,
+                rack_face=rack_face,
+                max_bin_count=max_bin_count,
+            )
+            payload = encode_inbound_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
                 self._assert_no_open_wms_action(
                     await self._runs.list_steps(db, run_id),
                     IntegrationDebugPhase.BIN_INBOUND_BATCH,
                     BIN_INBOUND_BATCH_OPERATION,
                 )
-                operation_id = new_uuid7()
-                intent = sdk.wms_operations.outbound_bin_inbound_batch(
-                    operation_id=operation_id,
-                    task_id=run.task_id,
-                    rack_id=rack_id,
-                    rack_face=rack_face,
-                    max_bin_count=max_bin_count,
-                )
-                payload = encode_inbound_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
                 step = await self._append_step(
                     db,
                     run,
@@ -495,8 +502,13 @@ class IntegrationDebugService:
                 run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
                 run.updated_by = actor_id
                 run.increment_version()
-            elif existing.run_id != run_id or existing.operation != BIN_INBOUND_BATCH_OPERATION:
-                raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+            else:
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=BIN_INBOUND_BATCH_OPERATION,
+                    request=payload["data"],
+                )
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
         await self._publish(snapshot)
         return snapshot
@@ -519,21 +531,23 @@ class IntegrationDebugService:
             if run.bin_code is None:
                 raise IntegrationDebugContractError("return_batch 缺少已完成作业的 Bin")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is not None and not isinstance(existing.operation_id, str):
+                raise IntegrationDebugConflict("原 return_batch 联调步骤缺少 operation_id")
+            operation_id = existing.operation_id if existing is not None else new_uuid7()
+            intent = sdk.wms_operations.outbound_bin_return_batch(
+                operation_id=operation_id,
+                workline_code=run.workline_code,
+                rack_id=rack_id,
+                rack_face=rack_face,
+                return_candidates=(sdk.BinReturnCandidate(1, run.bin_code, source_location_code),),
+            )
+            payload = encode_return_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
             if existing is None:
                 self._assert_no_open_wms_action(
                     await self._runs.list_steps(db, run_id),
                     IntegrationDebugPhase.BIN_RETURN_BATCH,
                     BIN_RETURN_BATCH_OPERATION,
                 )
-                operation_id = new_uuid7()
-                intent = sdk.wms_operations.outbound_bin_return_batch(
-                    operation_id=operation_id,
-                    workline_code=run.workline_code,
-                    rack_id=rack_id,
-                    rack_face=rack_face,
-                    return_candidates=(sdk.BinReturnCandidate(1, run.bin_code, source_location_code),),
-                )
-                payload = encode_return_batch(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
                 step = await self._append_step(
                     db,
                     run,
@@ -561,8 +575,13 @@ class IntegrationDebugService:
                 run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
                 run.updated_by = actor_id
                 run.increment_version()
-            elif existing.run_id != run_id or existing.operation != BIN_RETURN_BATCH_OPERATION:
-                raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+            else:
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=BIN_RETURN_BATCH_OPERATION,
+                    request=payload["data"],
+                )
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
         await self._publish(snapshot)
         return snapshot
@@ -585,16 +604,9 @@ class IntegrationDebugService:
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("departure_decide 缺少 PickingTask")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
-            if existing is not None:
-                if existing.run_id != run_id or existing.operation != RACK_DEPARTURE_OPERATION:
-                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
-                return self._snapshot(run, await self._runs.list_steps(db, run_id))
-            self._assert_no_open_wms_action(
-                await self._runs.list_steps(db, run_id),
-                IntegrationDebugPhase.RACK_DEPARTURE,
-                RACK_DEPARTURE_OPERATION,
-            )
-            operation_id = new_uuid7()
+            if existing is not None and not isinstance(existing.operation_id, str):
+                raise IntegrationDebugConflict("原 departure_decide 联调步骤缺少 operation_id")
+            operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_rack_departure_decide(
                 operation_id=operation_id,
                 task_id=run.task_id,
@@ -603,6 +615,19 @@ class IntegrationDebugService:
                 current_face=current_face,
             )
             payload = encode_departure(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
+            if existing is not None:
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=RACK_DEPARTURE_OPERATION,
+                    request=payload["data"],
+                )
+                return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            self._assert_no_open_wms_action(
+                await self._runs.list_steps(db, run_id),
+                IntegrationDebugPhase.RACK_DEPARTURE,
+                RACK_DEPARTURE_OPERATION,
+            )
             step = await self._append_step(
                 db,
                 run,
@@ -652,22 +677,28 @@ class IntegrationDebugService:
             if task is None:
                 raise IntegrationDebugNotFound("PickingTask 不存在")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
-            if existing is not None:
-                if existing.run_id != run_id or existing.operation != COMPLETION_CONFIRM_OPERATION:
-                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
-                return self._snapshot(run, await self._runs.list_steps(db, run_id))
-            self._assert_no_open_wms_action(
-                await self._runs.list_steps(db, run_id),
-                IntegrationDebugPhase.TASK_COMPLETION,
-                COMPLETION_CONFIRM_OPERATION,
-            )
-            operation_id = new_uuid7()
+            if existing is not None and not isinstance(existing.operation_id, str):
+                raise IntegrationDebugConflict("原 completion_confirm 联调步骤缺少 operation_id")
+            operation_id = existing.operation_id if existing is not None else new_uuid7()
             intent = sdk.wms_operations.outbound_picking_task_completion_confirm(
                 operation_id=operation_id,
                 task_id=run.task_id,
                 last_applied_plan_revision=task.last_applied_plan_revision,
             )
             payload = encode_completion_confirm(intent, timestamp=int(timezone.to_utc(now).timestamp() * 1000))
+            if existing is not None:
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=COMPLETION_CONFIRM_OPERATION,
+                    request=payload["data"],
+                )
+                return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            self._assert_no_open_wms_action(
+                await self._runs.list_steps(db, run_id),
+                IntegrationDebugPhase.TASK_COMPLETION,
+                COMPLETION_CONFIRM_OPERATION,
+            )
             step = await self._append_step(
                 db,
                 run,
@@ -709,7 +740,7 @@ class IntegrationDebugService:
         actor_id: int,
     ) -> dict[str, Any]:
         now_ms = int(timezone.now_utc().timestamp() * 1000)
-        if not bin_code.strip() or scanned_at <= 0 or scanned_at > now_ms:
+        if re.fullmatch(BUSINESS_IDENTIFIER_PATTERN, bin_code) is None or scanned_at <= 0 or scanned_at > now_ms:
             raise IntegrationDebugContractError("point2 扫码 Bin 和发生时间无效")
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
@@ -744,22 +775,24 @@ class IntegrationDebugService:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.WORK_ADMISSION)
+            if run.bin_code is None:
+                raise IntegrationDebugContractError("必须先记录 point2 实际扫码 Bin")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is not None and not isinstance(existing.operation_id, str):
+                raise IntegrationDebugConflict("原 work_admission 联调步骤缺少 operation_id")
+            operation_id = existing.operation_id if existing is not None else new_uuid7()
+            intent = sdk.wms_operations.outbound_manual_bin_work_admission(
+                operation_id=operation_id,
+                bin_code=run.bin_code,
+                scanned_at=run.configuration_json["point2_scanned_at"],
+            )
+            payload = encode_admission(intent, timestamp=timestamp)
             if existing is None:
                 self._assert_no_open_wms_action(
                     await self._runs.list_steps(db, run_id),
                     IntegrationDebugPhase.WORK_ADMISSION,
                     MANUAL_BIN_ADMISSION_OPERATION,
                 )
-                if run.bin_code is None:
-                    raise IntegrationDebugContractError("必须先记录 point2 实际扫码 Bin")
-                operation_id = new_uuid7()
-                intent = sdk.wms_operations.outbound_manual_bin_work_admission(
-                    operation_id=operation_id,
-                    bin_code=run.bin_code,
-                    scanned_at=run.configuration_json["point2_scanned_at"],
-                )
-                payload = encode_admission(intent, timestamp=timestamp)
                 step = await self._append_step(
                     db,
                     run,
@@ -787,8 +820,13 @@ class IntegrationDebugService:
                 run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
                 run.updated_by = actor_id
                 run.increment_version()
-            elif existing.run_id != run_id or existing.operation != MANUAL_BIN_ADMISSION_OPERATION:
-                raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+            else:
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=MANUAL_BIN_ADMISSION_OPERATION,
+                    request=payload["data"],
+                )
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
         await self._publish(snapshot)
         return snapshot
@@ -1248,8 +1286,29 @@ class IntegrationDebugService:
             )
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None:
-                if existing.run_id != run_id or existing.operation != MANUAL_BIN_APPLY_REPORT_OPERATION:
-                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+                if not isinstance(existing.operation_id, str):
+                    raise IntegrationDebugConflict("原 completion_apply_report 联调步骤缺少 operation_id")
+                operation_id = existing.operation_id
+            else:
+                operation_id = new_uuid7()
+            intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
+                operation_id=operation_id,
+                completion_operation_id=completion_operation_id,
+                task_id=admission_task_id,
+                bin_code=run.bin_code,
+                apply_revision=apply_revision,
+                apply_result=cast("Any", apply_result),
+                reason_code=reason_code,
+                occurred_at=occurred_at,
+            )
+            payload = encode_apply_report(intent, timestamp=timestamp)
+            if existing is not None:
+                self._assert_matching_wms_replay(
+                    existing,
+                    run_id=run_id,
+                    operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
+                    request=payload["data"],
+                )
                 return self._snapshot(run, await self._runs.list_steps(db, run_id))
             if completion_evidence is None or completion_evidence.apply_status != InboundEvidenceApplyStatus.PENDING:
                 raise IntegrationDebugContractError("完成 Evidence 必须处于 PENDING，才能原子冻结应用报告")
@@ -1265,18 +1324,6 @@ class IntegrationDebugService:
             report_task = await self._runs.get_picking_task(db, admission_task_id)
             if report_task is None or report_task.id is None:
                 raise IntegrationDebugContractError("完成应用报告的 WMS task_id 未关联本地 PickingTask")
-            operation_id = new_uuid7()
-            intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
-                operation_id=operation_id,
-                completion_operation_id=completion_operation_id,
-                task_id=admission_task_id,
-                bin_code=run.bin_code,
-                apply_revision=apply_revision,
-                apply_result=cast("Any", apply_result),
-                reason_code=reason_code,
-                occurred_at=occurred_at,
-            )
-            payload = encode_apply_report(intent, timestamp=timestamp)
             step = await self._append_step(
                 db,
                 run,
@@ -1400,17 +1447,29 @@ class IntegrationDebugService:
             current = IntegrationDebugPhase(run.current_phase)
             if current not in {IntegrationDebugPhase.POINT2_RELEASE, IntegrationDebugPhase.POINT3_ROUTE}:
                 raise IntegrationDebugConflict("ECS 指令只允许在 point2 释放或 point3 分流节点创建")
-            if device_code not in SORTING_3_SITE_CONFIGURATION["scan_device_codes"]:
-                raise IntegrationDebugContractError("sorting-3 ECS 设备必须是 STATION_SCAN9 至 STATION_SCAN12")
+            site_configuration = run.configuration_json.get("site_configuration")
+            scan_device_codes = (
+                site_configuration.get("scan_device_codes") if isinstance(site_configuration, dict) else None
+            )
+            expected_device_index = 1 if current is IntegrationDebugPhase.POINT2_RELEASE else 2
+            if (
+                not isinstance(scan_device_codes, list)
+                or len(scan_device_codes) != 4
+                or device_code != scan_device_codes[expected_device_index]
+            ):
+                expected_point = "point2" if current is IntegrationDebugPhase.POINT2_RELEASE else "point3"
+                raise IntegrationDebugContractError(f"sorting-3 {expected_point} ECS 指令必须使用冻结的对应扫码位")
             phase_steps = await self._runs.list_steps(db, run_id)
             expected_task_type = self._expected_device_task_type(current, run.configuration_json, phase_steps)
             if task_type != expected_task_type:
                 raise IntegrationDebugContractError(f"当前节点 ECS task_type 必须为 {expected_task_type}")
             real_ecs = profile_uses_real_ecs(IntegrationDebugProfile(run.profile))
-            expected_request: dict[str, object] = {
+            request_without_creator: dict[str, object] = {
                 "device_code": device_code,
                 "task_type": task_type,
                 "params": params,
+                "timeout_ms": timeout_ms,
+                "reason": reason,
             }
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None and any(
@@ -1419,11 +1478,20 @@ class IntegrationDebugService:
             ):
                 raise IntegrationDebugConflict("本节点已创建 ECS 指令；请刷新原动作，禁止换 identity 重发")
             if existing is not None:
-                if existing.run_id != run_id or existing.request_summary_json != expected_request:
+                stored_request = existing.request_summary_json
+                original_creator = stored_request.get("created_by")
+                if (
+                    existing.run_id != run_id
+                    or not isinstance(original_creator, int)
+                    or any(stored_request.get(key) != value for key, value in request_without_creator.items())
+                ):
                     raise IntegrationDebugConflict("client_request_id 已用于其它联调动作或请求内容已变化")
                 if existing.device_command_code is not None or not real_ecs:
                     return self._snapshot(run, await self._runs.list_steps(db, run_id))
-            elif not real_ecs:
+            else:
+                original_creator = actor_id
+            if existing is None and not real_ecs:
+                expected_request = {**request_without_creator, "created_by": original_creator}
                 await self._append_step(
                     db,
                     run,
@@ -1440,21 +1508,29 @@ class IntegrationDebugService:
                 simulated_snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
             if simulated_snapshot is not None:
                 endpoint = ""
+            elif existing is not None:
+                endpoint = existing.request_summary_json.get("endpoint_base_url")
+                if not isinstance(endpoint, str) or not endpoint:
+                    raise IntegrationDebugConflict("原 DeviceCommand 联调步骤缺少冻结 endpoint")
             else:
                 device = await device_service.get_device_by_code(db, device_code)
                 if device is None or not device.is_active or not device.endpoint_base_url:
                     raise IntegrationDebugContractError("Run 选择的设备未登记、未启用或缺少 endpoint")
                 endpoint = device.endpoint_base_url
-                if existing is None:
-                    await self._append_step(
-                        db,
-                        run,
-                        phase=IntegrationDebugPhase(run.current_phase),
-                        status="WAITING",
-                        actor_id=actor_id,
-                        client_request_id=client_request_id,
-                        request=expected_request,
-                    )
+                expected_request = {
+                    **request_without_creator,
+                    "created_by": original_creator,
+                    "endpoint_base_url": endpoint,
+                }
+                await self._append_step(
+                    db,
+                    run,
+                    phase=IntegrationDebugPhase(run.current_phase),
+                    status="WAITING",
+                    actor_id=actor_id,
+                    client_request_id=client_request_id,
+                    request=expected_request,
+                )
         if simulated_snapshot is not None:
             await self._publish(simulated_snapshot)
             return simulated_snapshot
@@ -1469,7 +1545,7 @@ class IntegrationDebugService:
             params=params,
             trace_id=run_id,
             execution_reason=reason,
-            created_by=actor_id,
+            created_by=original_creator,
         )
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
@@ -1727,6 +1803,17 @@ class IntegrationDebugService:
     ) -> None:
         if any(step.phase == phase and step.operation == operation and step.status != "SUCCEEDED" for step in steps):
             raise IntegrationDebugConflict("本节点已有未闭合的 WMS 请求；请刷新原请求，禁止换 identity 重发")
+
+    @staticmethod
+    def _assert_matching_wms_replay(
+        step: IntegrationRunStep,
+        *,
+        run_id: str,
+        operation: str,
+        request: dict[str, Any],
+    ) -> None:
+        if step.run_id != run_id or step.operation != operation or step.request_summary_json != request:
+            raise IntegrationDebugConflict("client_request_id 已用于其它联调动作或 WMS 请求内容已变化")
 
     @staticmethod
     def _assert_transport_member_not_created(

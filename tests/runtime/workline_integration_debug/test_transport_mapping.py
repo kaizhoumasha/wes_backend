@@ -23,6 +23,7 @@ from src.app.wms_integration.outbound_picking.services.picking_task_prepare impo
     PickingTaskPrepareResult,
 )
 from src.app.workline_integration_debug.contracts import (
+    SORTING_3_SITE_CONFIGURATION,
     IntegrationDebugPhase,
     IntegrationDebugProfile,
     IntegrationTransportAction,
@@ -1030,6 +1031,45 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
     assert repository.evidence.processed_at is None
 
 
+@pytest.mark.asyncio
+async def test_point2_scan_rejects_invalid_bin_before_advancing_the_run() -> None:
+    run = IntegrationRun(
+        run_id="run-invalid-bin",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="POINT2_SCAN",
+    )
+    repository = _Repository(run)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugContractError, match="扫码 Bin"):
+        await service.record_point2_scan(
+            run.run_id,
+            bin_code="BIN 001",
+            scanned_at=1,
+            expected_version=0,
+            actor_id=42,
+        )
+
+    assert run.current_phase == IntegrationDebugPhase.POINT2_SCAN
+    assert run.bin_code is None
+    assert repository.steps == []
+
+
 @pytest.mark.parametrize(
     ("apply_result", "reason_code", "phase", "run_status", "expected_status"),
     [
@@ -1642,7 +1682,10 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
             "plan_resources": {
                 "target_rack": {"rack_id": "TARGET-01", "rack_face": "0"},
                 "direct_picks": [],
-                "bin_source_racks": [{"rack_id": "RACK-01", "rack_face": "90"}],
+                "bin_source_racks": [
+                    {"rack_id": "RACK-01", "rack_face": "90"},
+                    {"rack_id": "RACK-02", "rack_face": "180"},
+                ],
             }
         },
     )
@@ -1669,6 +1712,17 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
     )
 
     assert result["steps"][0]["request"]["max_bin_count"] == 1
+
+    with pytest.raises(IntegrationDebugConflict, match="WMS 请求内容已变化"):
+        await service.send_bin_inbound_batch(
+            "run-inbound-batch",
+            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
+            rack_id="RACK-02",
+            rack_face="180",
+            max_bin_count=1,
+            expected_version=1,
+            actor_id=42,
+        )
 
     with pytest.raises(IntegrationDebugContractError, match="max_bin_count=1"):
         await service.send_bin_inbound_batch(
@@ -1746,7 +1800,10 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
         status="ACTIVE",
         current_phase="POINT2_RELEASE",
         device_code="SIM-ECS-01",
-        configuration_json={"manual_bin_admission_result": "NO_WORK"},
+        configuration_json={
+            "manual_bin_admission_result": "NO_WORK",
+            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+        },
     )
     repository = _Repository(run)
     device_commands = AsyncMock()
@@ -1775,6 +1832,131 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
     assert result["steps"][0]["status"] == "SUCCEEDED"
     assert result["steps"][0]["request"]["device_code"] == "STATION_SCAN10"
     assert result["steps"][0]["result"] == {"simulated": True}
+
+
+@pytest.mark.asyncio
+async def test_point2_release_rejects_a_command_for_another_sorting3_station() -> None:
+    run = IntegrationRun(
+        run_id="run-wrong-station",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="POINT2_RELEASE",
+        bin_code="BIN-001",
+        configuration_json={
+            "manual_bin_admission_result": "NO_WORK",
+            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+        },
+    )
+    commands = AsyncMock()
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=_Repository(run),  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=commands,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugContractError, match="point2"):
+        await service.create_device_action(
+            run.run_id,
+            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4576",
+            device_code="STATION_SCAN9",
+            task_type="MOVE_FORWARD",
+            params={"point": "point2"},
+            timeout_ms=30_000,
+            reason="错误点位",
+            expected_version=0,
+            actor_id=42,
+        )
+
+    commands.create_manual_debug_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_device_command_recovery_reuses_the_original_creator_and_endpoint() -> None:
+    run = IntegrationRun(
+        run_id="run-device-recovery",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="POINT2_RELEASE",
+        bin_code="BIN-001",
+        configuration_json={
+            "manual_bin_admission_result": "NO_WORK",
+            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+        },
+    )
+    repository = _Repository(run)
+    client_request_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4577"
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="POINT2_RELEASE",
+            status="WAITING",
+            client_request_id=client_request_id,
+            request_summary_json={
+                "device_code": "STATION_SCAN10",
+                "task_type": "MOVE_FORWARD",
+                "params": {"point": "point2"},
+                "timeout_ms": 30_000,
+                "reason": "首次创建",
+                "created_by": 41,
+                "endpoint_base_url": "http://10.24.209.26:8080/",
+            },
+        )
+    )
+    commands = AsyncMock()
+    commands.create_manual_debug_command.return_value = SimpleNamespace(command_code="CMD-001")
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=commands,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.create_device_action(
+        run.run_id,
+        client_request_id=client_request_id,
+        device_code="STATION_SCAN10",
+        task_type="MOVE_FORWARD",
+        params={"point": "point2"},
+        timeout_ms=30_000,
+        reason="首次创建",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["steps"][0]["device_command_code"] == "CMD-001"
+    commands.create_manual_debug_command.assert_awaited_once_with(
+        client_request_id=client_request_id,
+        endpoint_base_url="http://10.24.209.26:8080/",
+        device_code="STATION_SCAN10",
+        contract_key="ecs.manual-debug.command",
+        contract_version="1.0",
+        command_timeout_ms=30_000,
+        task_type="MOVE_FORWARD",
+        params={"point": "point2"},
+        trace_id=run.run_id,
+        execution_reason="首次创建",
+        created_by=41,
+    )
 
 
 def test_bin_transports_must_match_the_single_wms_batch_member() -> None:
