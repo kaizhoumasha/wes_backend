@@ -267,7 +267,7 @@ class IntegrationDebugService:
                     or task.workline_id != workline_id
                     or not isinstance(request_data, dict)
                     or request_data.get("task_id") != selected_task_id
-                    or request_data.get("work_line_code") != run.workline_code
+                    or request_data.get("workline_code") != run.workline_code
                 ):
                     raise IntegrationDebugConflict("prepare confirmation 已绑定其它 WorkLine 或任务")
                 await self._append_step(
@@ -1208,7 +1208,14 @@ class IntegrationDebugService:
         timestamp = int(timezone.to_utc(now).timestamp() * 1000)
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
-            self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.COMPLETION_REPORT)
+            self._assert_operator_and_version(run, expected_version, actor_id)
+            allowed_phases = (
+                {IntegrationDebugPhase.COMPLETION_REPORT}
+                if apply_result == "APPLIED"
+                else {IntegrationDebugPhase.POINT2_RELEASE, IntegrationDebugPhase.COMPLETION_REPORT}
+            )
+            if IntegrationDebugPhase(run.current_phase) not in allowed_phases:
+                raise IntegrationDebugConflict(f"当前步骤为 {run.current_phase}，不能上报 {apply_result} 应用状态")
             admission_task_id = run.configuration_json.get("admission_task_id")
             if not isinstance(admission_task_id, str) or run.bin_code is None:
                 raise IntegrationDebugContractError("完成应用报告缺少已绑定 task_id 或实际 bin_code")

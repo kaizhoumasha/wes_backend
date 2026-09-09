@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import wes_plugin_sdk as sdk
 
 from src.app.device.models import CommandStatus
 from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmationStatus
@@ -15,6 +16,7 @@ from src.app.transport.contracts import (
     RotateRackRequest,
     TransportHandle,
 )
+from src.app.wms_adapter.outbound_picking.typed import encode_request as encode_prepare_request
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import (
     PickingTaskPrepareNoopReason,
@@ -326,7 +328,7 @@ async def test_completion_report_requires_current_phase_and_bound_completion_ide
         "actor_id": 42,
     }
 
-    with pytest.raises(IntegrationDebugConflict, match="COMPLETION_REPORT"):
+    with pytest.raises(IntegrationDebugConflict, match="不能上报 APPLIED"):
         await service.send_completion_apply_report("run-report", **values)  # type: ignore[arg-type]
 
     run.current_phase = "COMPLETION_REPORT"
@@ -601,7 +603,14 @@ async def test_prepare_retry_recovers_the_existing_confirmation() -> None:
     repository.prepare_confirmation = SimpleNamespace(
         id=27,
         operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
-        request_payload={"data": {"task_id": "PICK-001", "work_line_code": "sorting-3"}},
+        request_payload=encode_prepare_request(
+            sdk.wms_operations.outbound_picking_task_prepare(
+                operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
+                task_id="PICK-001",
+                work_line_code="sorting-3",
+            ),
+            timestamp=1_788_390_000_000,
+        ),
     )
     prepare = AsyncMock()
     service = IntegrationDebugService(
@@ -653,7 +662,14 @@ async def test_prepare_retry_recovers_confirmation_after_plan_already_started_ex
     repository.prepare_confirmation = SimpleNamespace(
         id=27,
         operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
-        request_payload={"data": {"task_id": "PICK-001", "work_line_code": "sorting-3"}},
+        request_payload=encode_prepare_request(
+            sdk.wms_operations.outbound_picking_task_prepare(
+                operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
+                task_id="PICK-001",
+                work_line_code="sorting-3",
+            ),
+            timestamp=1_788_390_000_000,
+        ),
     )
     service = IntegrationDebugService(
         _Sessions(),  # type: ignore[arg-type]
@@ -1015,16 +1031,30 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
 
 
 @pytest.mark.parametrize(
-    ("apply_result", "reason_code", "expected_status"),
+    ("apply_result", "reason_code", "phase", "run_status", "expected_status"),
     [
-        ("APPLIED", None, InboundEvidenceApplyStatus.APPLIED),
-        ("RECONCILING", "POINT2_BINDING_MISMATCH", InboundEvidenceApplyStatus.RECONCILING),
+        (
+            "APPLIED",
+            None,
+            IntegrationDebugPhase.COMPLETION_REPORT,
+            "ACTIVE",
+            InboundEvidenceApplyStatus.APPLIED,
+        ),
+        (
+            "RECONCILING",
+            "DEVICE_COMMAND_IDENTITY_CONFLICT",
+            IntegrationDebugPhase.POINT2_RELEASE,
+            "NEEDS_ATTENTION",
+            InboundEvidenceApplyStatus.RECONCILING,
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_transaction(
     apply_result: str,
     reason_code: str | None,
+    phase: IntegrationDebugPhase,
+    run_status: str,
     expected_status: InboundEvidenceApplyStatus,
 ) -> None:
     run = IntegrationRun(
@@ -1037,8 +1067,8 @@ async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_
         environment_label="integration",
         operator_user_id=42,
         active_scope="WORKLINE:3",
-        status="ACTIVE",
-        current_phase="COMPLETION_REPORT",
+        status=run_status,
+        current_phase=phase,
         task_id="PICK-001",
         picking_task_id=101,
         bin_code="BIN-001",

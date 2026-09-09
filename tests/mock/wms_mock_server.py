@@ -141,6 +141,7 @@ class TransportSubmissionStore:
         self._bin_origin_slots: dict[str, str] = {}
         self._known_slots: set[tuple[str, str, str]] = set()
         self._return_reservations: dict[str, dict[str, Any]] = {}
+        self._prepared_manual_task_id: str | None = None
 
     def reset(self) -> None:
         with self._lock:
@@ -157,6 +158,15 @@ class TransportSubmissionStore:
             self._bin_origin_slots.clear()
             self._known_slots.clear()
             self._return_reservations.clear()
+            self._prepared_manual_task_id = None
+
+    def remember_prepared_manual_task(self, task_id: str) -> None:
+        with self._lock:
+            self._prepared_manual_task_id = task_id
+
+    def prepared_manual_task(self) -> str | None:
+        with self._lock:
+            return self._prepared_manual_task_id
 
     def configure_rack_faces(self, rack_faces: dict[str, str]) -> None:
         with self._lock:
@@ -952,6 +962,7 @@ async def decide_return_batch(request: Request) -> Response:
         parsed = parse_picking_task_prepare_request(envelope)
         status, response = 202, _ack(operation_id, "PREPARE_ACCEPTED", None)
         parse_picking_task_prepare_response(status, response)
+        transport_submission_store.remember_prepared_manual_task(parsed.data.task_id)
     elif operation == BIN_INBOUND_BATCH_OPERATION:
         parsed = parse_bin_inbound_batch_request(envelope)
         status, response = 200, _ack(operation_id, "DECIDED", None)
@@ -1007,7 +1018,12 @@ async def decide_return_batch(request: Request) -> Response:
         else:
             status = 200
             response = _ack(operation_id, "DECIDED", None)
-            response["data"] = {"result": "WORK_REQUIRED", "task_id": f"PICK-{parsed.data.bin_code}"}
+            prepared_task_id = transport_submission_store.prepared_manual_task()
+            response["data"] = (
+                {"result": "WORK_REQUIRED", "task_id": prepared_task_id}
+                if prepared_task_id is not None
+                else {"result": "WAIT", "retry_after_ms": 1000}
+            )
         parse_manual_bin_admission_response(status, response, request=parsed if status == 200 else None)
         transport_submission_store.store(
             operation=operation,
