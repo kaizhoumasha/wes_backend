@@ -348,7 +348,7 @@ def test_decision_route_returns_contract_valid_rack_departure_destination() -> N
     assert response.status_code == 200
     assert response.json()["data"] == {
         "result": "READY",
-        "rack_destination": {"type": "RACK_POSITION", "location_code": "QA-STORAGE"},
+        "rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"},
     }
 
 

@@ -57,6 +57,7 @@ class _Repository:
         self.confirmation = None
         self.prepare_confirmation = None
         self.response_evidence = None
+        self.plan_resources = {"direct_picks": [], "bin_source_racks": []}
         self.picking_task = (
             SimpleNamespace(
                 id=run.picking_task_id,
@@ -115,6 +116,9 @@ class _Repository:
 
     async def get_picking_task(self, _db, _task_id, *, for_update=False):  # type: ignore[no-untyped-def]
         return self.picking_task
+
+    async def list_plan_resources(self, _db, _picking_task_id):  # type: ignore[no-untyped-def]
+        return self.plan_resources
 
 
 @pytest.mark.parametrize(
@@ -697,6 +701,103 @@ async def test_prepare_non_head_selection_returns_run_to_bind_task() -> None:
     assert run.picking_task_id is None
     assert repository.steps[0].status == "PENDING"
     assert repository.steps[0].result_summary_json == {}
+
+
+@pytest.mark.asyncio
+async def test_work_admission_rejects_a_new_identity_while_the_previous_request_is_open() -> None:
+    run = IntegrationRun(
+        run_id="run-admission-open",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="WORK_ADMISSION",
+        task_id="PICK-001",
+        bin_code="BIN-001",
+        configuration_json={"point2_scanned_at": 1_788_390_000_000},
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="WORK_ADMISSION",
+            status="WAITING",
+            client_request_id="admission-original",
+            operation="outbound.manual_bin.work_admission_decide@v1",
+            operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
+        )
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="未闭合"):
+        await service.send_work_admission(
+            run.run_id,
+            client_request_id="admission-replacement",
+            expected_version=0,
+            actor_id=42,
+        )
+
+
+@pytest.mark.asyncio
+async def test_refresh_plan_resources_updates_later_revision_without_rewinding_the_current_phase() -> None:
+    run = IntegrationRun(
+        run_id="run-plan-refresh",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="BIN_INBOUND_BATCH",
+        picking_task_id=19,
+        task_id="PICK-001",
+        configuration_json={"plan_resources": {"plan_revision": 1}},
+    )
+    repository = _Repository(run)
+    repository.picking_task = SimpleNamespace(
+        id=19,
+        task_id="PICK-001",
+        status=PickingTaskStatus.EXECUTING,
+        workline_id=3,
+        plan_blocked_evidence_id=None,
+        last_applied_plan_revision=2,
+        target_rack_id="TARGET-01",
+        target_rack_face="0",
+    )
+    repository.plan_resources = {
+        "direct_picks": [],
+        "bin_source_racks": [{"rack_id": "RACK-02", "rack_face": "90", "plan_revision": 2}],
+    }
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_plan_resources(run.run_id, expected_version=0, actor_id=42)
+
+    assert result["current_phase"] == "BIN_INBOUND_BATCH"
+    assert result["plan_resources"]["plan_revision"] == 2
+    assert result["plan_resources"]["bin_source_racks"][0]["rack_id"] == "RACK-02"
 
 
 @pytest.mark.asyncio

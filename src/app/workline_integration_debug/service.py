@@ -364,7 +364,29 @@ class IntegrationDebugService:
     ) -> dict[str, Any]:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
-            self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.PLAN_RECEIPT)
+            self._assert_operator_and_version(run, expected_version, actor_id)
+            current_phase = IntegrationDebugPhase(run.current_phase)
+            refreshable_phases = {
+                IntegrationDebugPhase.PLAN_RECEIPT,
+                IntegrationDebugPhase.RACK_TRANSPORT,
+                IntegrationDebugPhase.RACK_ARRIVAL,
+                IntegrationDebugPhase.BIN_INBOUND_BATCH,
+                IntegrationDebugPhase.BIN_TRANSPORT,
+                IntegrationDebugPhase.POINT1_ARRIVAL,
+                IntegrationDebugPhase.POINT2_SCAN,
+                IntegrationDebugPhase.WORK_ADMISSION,
+                IntegrationDebugPhase.WORK_COMPLETION,
+                IntegrationDebugPhase.POINT2_RELEASE,
+                IntegrationDebugPhase.COMPLETION_REPORT,
+                IntegrationDebugPhase.POINT3_ROUTE,
+                IntegrationDebugPhase.RETURN_BUFFER,
+                IntegrationDebugPhase.BIN_RETURN_BATCH,
+                IntegrationDebugPhase.BIN_RETURN_TRANSPORT,
+                IntegrationDebugPhase.RACK_DEPARTURE,
+                IntegrationDebugPhase.TASK_COMPLETION,
+            }
+            if current_phase not in refreshable_phases:
+                raise IntegrationDebugConflict(f"当前步骤 {current_phase} 不能同步 plan_delta 资源")
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("联调 run 尚未选择 PickingTask")
             task = await self._runs.get_picking_task(db, run.task_id)
@@ -387,8 +409,9 @@ class IntegrationDebugService:
                 **resources,
             }
             run.configuration_json = {**run.configuration_json, "plan_resources": plan}
-            run.current_phase = IntegrationDebugPhase.RACK_TRANSPORT
-            run.status = IntegrationDebugRunStatus.ACTIVE
+            if current_phase is IntegrationDebugPhase.PLAN_RECEIPT:
+                run.current_phase = IntegrationDebugPhase.RACK_TRANSPORT
+                run.status = IntegrationDebugRunStatus.ACTIVE
             run.updated_by = actor_id
             run.increment_version()
             await self._append_step(
@@ -431,6 +454,11 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("inbound_batch 必须引用 plan_delta 中的五层料箱架及朝向")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None:
+                self._assert_no_open_wms_action(
+                    await self._runs.list_steps(db, run_id),
+                    IntegrationDebugPhase.BIN_INBOUND_BATCH,
+                    BIN_INBOUND_BATCH_OPERATION,
+                )
                 operation_id = new_uuid7()
                 intent = sdk.wms_operations.outbound_bin_inbound_batch(
                     operation_id=operation_id,
@@ -492,6 +520,11 @@ class IntegrationDebugService:
                 raise IntegrationDebugContractError("return_batch 缺少已完成作业的 Bin")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None:
+                self._assert_no_open_wms_action(
+                    await self._runs.list_steps(db, run_id),
+                    IntegrationDebugPhase.BIN_RETURN_BATCH,
+                    BIN_RETURN_BATCH_OPERATION,
+                )
                 operation_id = new_uuid7()
                 intent = sdk.wms_operations.outbound_bin_return_batch(
                     operation_id=operation_id,
@@ -551,6 +584,16 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.RACK_DEPARTURE)
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("departure_decide 缺少 PickingTask")
+            existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is not None:
+                if existing.run_id != run_id or existing.operation != RACK_DEPARTURE_OPERATION:
+                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+                return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            self._assert_no_open_wms_action(
+                await self._runs.list_steps(db, run_id),
+                IntegrationDebugPhase.RACK_DEPARTURE,
+                RACK_DEPARTURE_OPERATION,
+            )
             operation_id = new_uuid7()
             intent = sdk.wms_operations.outbound_rack_departure_decide(
                 operation_id=operation_id,
@@ -608,6 +651,16 @@ class IntegrationDebugService:
             task = await self._runs.get_picking_task(db, run.task_id)
             if task is None:
                 raise IntegrationDebugNotFound("PickingTask 不存在")
+            existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if existing is not None:
+                if existing.run_id != run_id or existing.operation != COMPLETION_CONFIRM_OPERATION:
+                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+                return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            self._assert_no_open_wms_action(
+                await self._runs.list_steps(db, run_id),
+                IntegrationDebugPhase.TASK_COMPLETION,
+                COMPLETION_CONFIRM_OPERATION,
+            )
             operation_id = new_uuid7()
             intent = sdk.wms_operations.outbound_picking_task_completion_confirm(
                 operation_id=operation_id,
@@ -693,6 +746,11 @@ class IntegrationDebugService:
             self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.WORK_ADMISSION)
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None:
+                self._assert_no_open_wms_action(
+                    await self._runs.list_steps(db, run_id),
+                    IntegrationDebugPhase.WORK_ADMISSION,
+                    MANUAL_BIN_ADMISSION_OPERATION,
+                )
                 if run.bin_code is None:
                     raise IntegrationDebugContractError("必须先记录 point2 实际扫码 Bin")
                 operation_id = new_uuid7()
@@ -1170,6 +1228,11 @@ class IntegrationDebugService:
                 )
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is None:
+                self._assert_no_open_wms_action(
+                    completion_steps,
+                    IntegrationDebugPhase.COMPLETION_REPORT,
+                    MANUAL_BIN_APPLY_REPORT_OPERATION,
+                )
                 report_task = await self._runs.get_picking_task(db, admission_task_id)
                 if report_task is None or report_task.id is None:
                     raise IntegrationDebugContractError("完成应用报告的 WMS task_id 未关联本地 PickingTask")
@@ -1541,6 +1604,15 @@ class IntegrationDebugService:
         self._assert_operator_and_version(run, expected_version, actor_id)
         if run.current_phase != phase:
             raise IntegrationDebugConflict(f"当前步骤为 {run.current_phase}，不能执行 {phase}")
+
+    @staticmethod
+    def _assert_no_open_wms_action(
+        steps: list[IntegrationRunStep],
+        phase: IntegrationDebugPhase,
+        operation: str,
+    ) -> None:
+        if any(step.phase == phase and step.operation == operation and step.status != "SUCCEEDED" for step in steps):
+            raise IntegrationDebugConflict("本节点已有未闭合的 WMS 请求；请刷新原请求，禁止换 identity 重发")
 
     async def _append_step(
         self,

@@ -975,7 +975,7 @@ async def decide_return_batch(request: Request) -> Response:
         status, response = 200, _ack(operation_id, "DECIDED", None)
         response["data"] = {
             "result": "READY",
-            "rack_destination": {"type": "RACK_POSITION", "location_code": "QA-STORAGE"},
+            "rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"},
         }
         parse_rack_departure_response(status, response, request=parsed)
     elif operation == COMPLETION_CONFIRM_OPERATION:
