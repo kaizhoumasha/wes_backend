@@ -10,6 +10,43 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize(
+    ("ci_mode", "pytest_status", "expected_status", "budget_reported"),
+    [("true", 0, 0, True), ("false", 0, 1, True), ("true", 1, 1, False)],
+)
+def test_fast_suite_ci_reports_slow_tests_but_still_blocks_test_failures(
+    tmp_path: Path, ci_mode: str, pytest_status: int, expected_status: int, budget_reported: bool
+) -> None:
+    gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
+    function = gate.split("run_fast_test_suite() {", 1)[1].split("\n}\n", 1)[0]
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy(REPO_ROOT / "scripts/check_fast_test_budget.py", scripts / "check_fast_test_budget.py")
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "fast-tests.xml").write_text('<testsuites><testsuite time="215.342"/></testsuites>')
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'set -euo pipefail\nCI_MODE="$1"\nPYTEST_STATUS="$2"\n'
+            "log_step() { :; }\n"
+            'run_tool() { if [[ "$1" == pytest ]]; then return "$PYTEST_STATUS"; fi; "$@"; }\n'
+            "run_fast_test_suite() {" + function + "\n}\nrun_fast_test_suite\n",
+            "gate-test",
+            ci_mode,
+            str(pytest_status),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == expected_status, result.stderr
+    assert ("套件总耗时 215.342s" in result.stdout) is budget_reported
+
+
 def _isolated_git_environment(git_executable: str) -> dict[str, str]:
     environment = os.environ.copy()
     local_variables = subprocess.run(

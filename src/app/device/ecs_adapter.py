@@ -140,7 +140,7 @@ def _classify_submit_result(result: OutboundHttpResult) -> EcsSubmitResult:  # n
         return EcsSubmitResult(EcsSubmitDisposition.RECONCILING)
     if not _is_json_response(result.response_headers):
         return EcsSubmitResult(EcsSubmitDisposition.RECONCILING, code=status_code)
-    response = _try_common_response(result.decoded_body, allow_extra_fields=status_code == 200)
+    response = _try_common_response(result.decoded_body)
     if status_code == 200:
         if response is None or response[0] != 200 or response[1] != "ACK":
             return EcsSubmitResult(EcsSubmitDisposition.RECONCILING)
@@ -183,8 +183,6 @@ def _with_common_response(
 
 def _try_common_response(
     body: bytes | None,
-    *,
-    allow_extra_fields: bool = False,
 ) -> tuple[int, str, str | None] | None:
     try:
         payload = _decode_json_object(body)
@@ -199,8 +197,6 @@ def _try_common_response(
         trace_id is not None
         and (not isinstance(trace_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,119}", trace_id))
     ):
-        return None
-    if not allow_extra_fields and set(payload) - {"code", "message", "trace_id"}:
         return None
     return code, message, trace_id
 

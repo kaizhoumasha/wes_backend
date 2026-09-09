@@ -77,23 +77,22 @@ def test_picking_task_issued_parser_rejects_values_outside_the_approved_contract
 
 
 @pytest.mark.parametrize("field", ["workline_code", "transport_task_id", "bin_code"])
-def test_picking_task_issued_parser_rejects_unapproved_business_fields(field: str) -> None:
+def test_picking_task_issued_parser_ignores_redundant_business_fields(field: str) -> None:
     payload = deepcopy(_valid_event())
     data = payload["data"]
     assert isinstance(data, dict)
     data[field] = "not-allowed"
 
-    with pytest.raises(ValidationError):
-        parse_picking_task_issued_event(payload)
+    assert parse_picking_task_issued_event(payload).model_dump(mode="json") == _valid_event()
 
 
 def test_picking_task_issued_openapi_schema_is_closed_and_exact() -> None:
     schema = PICKING_TASK_ISSUED_EVENT_REQUEST_SCHEMA
 
-    assert schema["additionalProperties"] is False
+    assert schema["additionalProperties"] is True
     assert schema["properties"]["operation"]["enum"] == [PICKING_TASK_ISSUED_OPERATION]
     data_schema = schema["properties"]["data"]
-    assert data_schema["additionalProperties"] is False
+    assert data_schema["additionalProperties"] is True
     assert data_schema["required"] == ["task_id", "task_type", "queue_revision", "dispatch_sequence"]
     assert data_schema["properties"]["task_type"] == {"type": "string", "enum": ["MANUAL", "AUTO"]}
     assert data_schema["properties"]["queue_revision"] == {

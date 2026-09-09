@@ -64,7 +64,7 @@ class TransportEventHandler:
             rejection_reason_code = "INVALID_EVIDENCE"
         if rejection_reason_code is not None:
             capture(observation, request_errors=({"loc": (), "type": rejection_reason_code},))
-        message = _rejection_message(raw_envelope) if rejection_reason_code is not None else raw_envelope
+        message = _rejection_message(raw_envelope) if envelope is None else envelope
         try:
             ack = await self._recorder.record_callback(
                 operation_id=operation_id,

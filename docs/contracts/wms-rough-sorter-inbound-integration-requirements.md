@@ -88,7 +88,7 @@ CREATED | RUNNING | HOLD | CLOSED | RECONCILING
 | `inbound.source_rack.replacement_plan_decide@v1` | WES → WMS | 无可用 Cell 且没有活动的同货架计划请求 | `READY | WAIT` |
 | `inbound.execution.recovery_decided@v1` | WMS → WES | 人工已核对业务主账与物理事实 | `RECEIVED | DUPLICATE` |
 
-operation 专属 `data` 是严格闭集。未知字段、错误类型、枚举外值、同一稳定身份不同载荷均必须拒绝。业务 `WAIT` 是一次确定
+WES 按 operation 专属 `data` 的已定义字段解析，忽略冗余字段。已定义字段的错误类型、枚举外值、同一稳定身份不同有效载荷均必须拒绝。业务 `WAIT` 是一次确定
 决定；后续重求值使用新 `operation_id`。网络超时、暂时不可用或未得到确定响应不改业务身份。
 
 ## 6. SCAN 与业务准入
@@ -135,7 +135,7 @@ WMS `ACCEPT` 后，插件按以下顺序创建既有 DeviceCommand：
 
 ## 8. placement、NG 与人工核验恢复
 
-以下三个 operation 的 `data` 都是严格对象：只允许表中字段，未知字段、缺少必填字段、错误类型、非法 `null`、重复数组成员或
+以下三个 operation 的 `data` 按表中字段校验，冗余字段忽略；缺少必填字段、错误类型、非法 `null`、重复数组成员或
 条件字段不一致均拒绝。所有 ID、code 和枚举都是大小写敏感的非空 string；时间是大于 `0` 的 UTC Unix 毫秒 integer。
 
 ### 8.1 `inbound.material.placement_report@v1`
@@ -212,7 +212,7 @@ WES 只在 execution 仍为 `RECONCILING`，且公开 `reconciling_evidence_id` 
 
 ### 8.4 严格位置对象
 
-位置 object 以 `type` 判别，只允许以下三个结构；各分支禁止出现其它分支字段或未知字段：
+位置 object 以 `type` 判别，只允许以下三个结构；WES 按所选分支读取字段，忽略其它冗余字段：
 
 | `type` | 完整字段 | JSON 类型 | 可空 | 约束 |
 | --- | --- | --- | --- | --- |

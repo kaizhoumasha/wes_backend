@@ -113,17 +113,13 @@ async def test_closed_results_end_obligation_without_technical_retry(data, kind,
 @pytest.mark.parametrize(
     "data",
     [
-        {"result": "COMPLETED", "retry_after_ms": 1},
-        {"result": "COMPLETED", "current_plan_revision": 5},
         {"result": "PLAN_REVISION_STALE", "current_plan_revision": 0},
         {"result": "PLAN_REVISION_STALE", "current_plan_revision": 5},
         {"result": "PLAN_REVISION_STALE", "current_plan_revision": True},
         {"result": "PLAN_REVISION_STALE", "current_plan_revision": 2**63},
-        {"result": "PLAN_REVISION_STALE", "current_plan_revision": 6, "retry_after_ms": 1},
         {"result": "BUSINESS_IN_PROGRESS", "retry_after_ms": 0},
         {"result": "BUSINESS_IN_PROGRESS", "retry_after_ms": 60001},
         {"result": "BUSINESS_IN_PROGRESS", "retry_after_ms": True},
-        {"result": "BUSINESS_IN_PROGRESS", "retry_after_ms": 1, "current_plan_revision": 5},
         {"result": "FAILED"},
     ],
 )
@@ -161,3 +157,22 @@ async def test_completion_owner_allows_preparing_without_plan_and_executing(stat
         )
         is accepted
     )
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"result": "COMPLETED", "retry_after_ms": 1},
+        {"result": "COMPLETED", "current_plan_revision": 5},
+        {"result": "PLAN_REVISION_STALE", "current_plan_revision": 6, "retry_after_ms": 1},
+        {"result": "BUSINESS_IN_PROGRESS", "retry_after_ms": 1, "current_plan_revision": 5},
+    ],
+)
+def test_redundant_fields_accepted_invalid_or_nonadvancing_business_results_fail_closed(data):
+    from src.app.wms_adapter.outbound_picking.completion_confirm_wire import (
+        parse_completion_confirm_request,
+        parse_completion_confirm_response,
+    )
+
+    parsed = parse_completion_confirm_response(200, response(data), request=parse_completion_confirm_request(request()))
+    assert parsed.data.result == data["result"]

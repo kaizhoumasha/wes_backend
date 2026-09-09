@@ -159,6 +159,12 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
         )
         first = await service.record(event, received_at=datetime(2026, 9, 3, 10))
         replay = await service.record(event, received_at=datetime(2026, 9, 3, 11))
+        extended = event.model_dump(mode="json", exclude_none=True)
+        extended["supplier_trace"] = "T-1"
+        extended["data"]["supplier_extension"] = {"value": 1}
+        redundant_replay = await service.record(
+            type(event).model_validate(extended), received_at=datetime(2026, 9, 3, 11, 30)
+        )
         idempotency_conflict = await service.record(
             _event(operation_id, task_id=task_id, dispatch_sequence=dispatch_sequence + 1),
             received_at=datetime(2026, 9, 3, 12),
@@ -177,6 +183,7 @@ async def test_picking_task_issued_is_persisted_idempotently_and_conflicts_fail_
         )
 
         assert (first.code, replay.code) == ("RECEIVED", "DUPLICATE")
+        assert redundant_replay == replay
         assert first.timestamp_ms == replay.timestamp_ms
         assert first.timestamp_ms == 1788429600000
         assert (idempotency_conflict.code, idempotency_conflict.reason_code) == (

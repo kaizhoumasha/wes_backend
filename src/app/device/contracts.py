@@ -115,7 +115,7 @@ class EcsErrorDetail(BaseModel):
 class EcsDeviceInfo(BaseModel):
     """ECS 返回的设备静态描述。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     device_code: str = Field(min_length=1, max_length=100, pattern=_WIRE_TOKEN_PATTERN)
     device_name: str | None = Field(min_length=1, max_length=200)
@@ -128,7 +128,7 @@ class EcsDeviceInfo(BaseModel):
 class EcsDeviceRuntimeState(BaseModel):
     """ECS 返回的设备运行状态。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     device_code: str = Field(min_length=1, max_length=100, pattern=_WIRE_TOKEN_PATTERN)
     mode: EcsDeviceMode
@@ -142,7 +142,7 @@ class EcsDeviceRuntimeState(BaseModel):
 class EcsDeviceStatus(BaseModel):
     """ECS 批量状态响应中的单设备条目。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     device: EcsDeviceInfo
     state: EcsDeviceRuntimeState
@@ -157,7 +157,7 @@ class EcsDeviceStatus(BaseModel):
 class EcsDeviceStatusResponse(BaseModel):
     """ECS 状态端点的批量响应。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     devices: tuple[EcsDeviceStatus, ...] = Field(min_length=1)
 
@@ -200,7 +200,7 @@ class EcsCommandResultValue(str, Enum):
 class EcsCallbackErrorDetail(BaseModel):
     """白皮书 1.1 callback 的外部错误结构。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     code: str = Field(min_length=1, max_length=100, pattern=_WIRE_TOKEN_PATTERN)
     msg: str = Field(min_length=1, max_length=500)

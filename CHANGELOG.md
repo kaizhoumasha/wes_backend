@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.2.2] - 2026-09-09
+
+### Fixed
+
+- WMS/ECS 接入忽略冗余字段并按有效字段规范化幂等身份，保留已定义字段严格校验。
+- 增加前后端源码联调同步入口，保护依赖与迁移基线并等待本次源码容器就绪。
+- CI 记录测试耗时预算，本地提交继续执行耗时约束。
+
 ## [0.40.2.1] - 2026-09-09
 
 ### Fixed

@@ -190,14 +190,14 @@ async def test_direct_pick_accepts_closed_source_results(data):
         accepted(target_preparation={"mode": "NONE"}),
         accepted(target_preparation={"mode": "REPLACE"}),
         accepted(
-            target_preparation={"mode": "ROTATE", "rack_destination": {"type": "RACK_POSITION", "location_code": "X"}}
+            target_preparation={"mode": "UNKNOWN", "rack_destination": {"type": "RACK_POSITION", "location_code": "X"}}
         ),
         accepted(next_source_action="CLOSE"),
         rejected(business_exception_code="UNKNOWN"),
         rejected(business_exception_code="SOURCE_CELL_MISMATCH"),
         {"result": "WAIT", "retry_after_ms": 60001},
         {"result": "WAIT", "retry_after_ms": True},
-        {"result": "WAIT", "retry_after_ms": 1, "ng_locator": {}},
+        {"result": "WAIT", "ng_locator": {}},
         {"result": "UNKNOWN"},
     ],
 )
@@ -256,9 +256,7 @@ async def test_invalid_request_never_reaches_http(field, value):
     client.post.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "field,value", [("rack_face", "x" * 11), ("rack_face", "\x00"), ("rack_id", "bad id"), ("slot_id", "unexpected")]
-)
+@pytest.mark.parametrize("field,value", [("rack_face", "x" * 11), ("rack_face", "\x00"), ("rack_id", "bad id")])
 def test_source_locator_is_strict(field, value):
     from src.app.wms_adapter.outbound_picking.material_decide_wire import parse_material_decide_request
 

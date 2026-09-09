@@ -87,11 +87,11 @@ def test_transport_openapi_allows_conflict_without_an_associated_task() -> None:
         "schema"
     ]["properties"]["data"]
 
-    assert data_schema["oneOf"][:2] == [
-        {"type": "object", "additionalProperties": False, "required": [], "properties": {}},
+    assert data_schema["anyOf"][:2] == [
+        {"type": "object", "additionalProperties": True, "required": [], "properties": {}},
         {
             "type": "object",
-            "additionalProperties": False,
+            "additionalProperties": True,
             "required": ["transport_task_id"],
             "properties": {
                 "transport_task_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": r".*\S.*"}

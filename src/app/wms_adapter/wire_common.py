@@ -31,7 +31,9 @@ RackFaceText = Annotated[str, StringConstraints(min_length=1, max_length=10), Af
 
 
 class StrictWireModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    """严格校验已定义字段；冗余字段不进入业务模型或规范化摘要。"""
+
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
 
 def parse_wms_event_envelope(raw_body: bytes) -> dict[str, Any] | None:

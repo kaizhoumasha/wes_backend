@@ -118,7 +118,6 @@ def test_sdk_departure_result_is_closed_and_deeply_immutable():
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("rack_role", "SOURCE"),
         ("task_id", "bad id"),
         ("rack_id", ""),
         ("current_face", "x" * 11),
@@ -176,13 +175,11 @@ async def test_destination_equal_to_current_position_is_reconciling():
     "data",
     [
         {"result": "READY"},
-        ready() | {"retry_after_ms": 1},
         {"result": "READY", "rack_destination": {"type": "RACK", "location_code": "STORE-1"}},
         {"result": "WAIT"},
         {"result": "WAIT", "retry_after_ms": 0},
         {"result": "WAIT", "retry_after_ms": True},
         {"result": "WAIT", "retry_after_ms": 60001},
-        {"result": "WAIT", "retry_after_ms": 1, "rack_destination": None},
         {"result": "NO_WORK"},
     ],
 )
@@ -240,3 +237,17 @@ def test_persisted_errors_preserve_shared_typed_results(code, data, expected):
     assert type(result) is expected
     if code == "REJECTED":
         assert result.field_path == "/data/current_face"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        ready() | {"retry_after_ms": 1},
+        {"result": "WAIT", "retry_after_ms": 1, "rack_destination": None},
+    ],
+)
+def test_redundant_fields_accepted_response_union_is_closed(data):
+    from src.app.wms_adapter.outbound_picking.departure_wire import parse_rack_departure_response
+
+    parsed = parse_rack_departure_response(200, response(data))
+    assert parsed.data.result == data["result"]

@@ -168,9 +168,11 @@ WMS 不创建 TransportTask，也不向设备发送 DeviceCommand。
 
 ### 4.4 字段表和公共数据类型
 
-字段表中的“条件”表示：条件成立时必须发送，条件不成立时不要发送。所有接口还要遵守以下规则：
+WES 接收的合法消息先过滤冗余字段，再持久化业务模型并计算幂等摘要。同一 identity 仅冗余字段不同，按同一有效消息处理；已定义字段变化仍按原合同冲突。非法消息保留既有拒绝留痕，原始报文由诊断收据保存。此规则同样适用于 WMS 入库、粗分及 Transport 接收边界。
 
-- HTTP Body 使用 UTF-8 `application/json`。字段名和枚举大小写敏感；未知字段、重复 JSON key、错误类型和枚举外值返回
+字段表中的“条件”表示：条件成立时必须发送，条件不成立时不要发送。WES 接收 WMS 数据时，按当前 operation 和结果分支读取已定义字段，忽略顶层及嵌套对象的冗余字段；发送方仍按字段表构造消息。所有接口还要遵守以下规则：
+
+- HTTP Body 使用 UTF-8 `application/json`。字段名和枚举大小写敏感；已定义字段缺失、重复 JSON key、错误类型和枚举外值返回
   `422 / REJECTED + INVALID_DATA`。
 - 可选字段无值时必须省略。除非字段表明确允许，所有字段、对象元素和数组元素都禁止 `null`；空字符串、空对象和空数组也
   禁止代替省略。
@@ -367,7 +369,7 @@ WMS 保存准备请求并登记后台资源计算工作后，返回 `202 / PREPA
 | `data.task_id` | 是 | string / WMS 原值 | 必须引用当前仍为 `QUEUED`、且已被 WES 在同一事务中领取的 PickingTask |
 | `data.workline_code` | 是 | code / WES 配置 | WES 根据本地可用状态选择的具体 WorkLine；WMS 只据此计算关联 STATION 资源，不得改派另一条线 |
 
-成功响应的 `data={}`。同一 `task_id` 只能成功准备一次；换 `operation_id` 重复准备、改变 `workline_code`，或任务已进入后续
+成功响应的规范化 `data={}`；WMS 返回的冗余字段由 WES 忽略。同一 `task_id` 只能成功准备一次；换 `operation_id` 重复准备、改变 `workline_code`，或任务已进入后续
 状态时，WMS 返回 `409 / CONFLICT + STATE_CONFLICT`。`PREPARE_ACCEPTED` 只表示 WMS 已经接收资源计算请求，不表示已经算出接料货架面、
 来源明细、TransportTask 或 DeviceCommand。
 
@@ -1156,9 +1158,7 @@ WES 只有在没有未完成 PUT、未确认的位置结果上报、相关设备
     "result": "ACCEPT",
     "target_locator": {
       "type": "RACK_SLOT",
-      "rack_id": "TRANSFER-RACK-01",
-      "rack_face": "A",
-      "slot_id": "A-05"
+      "slot_id": "620001-A5C01-401"
     },
     "next_source_action": "CONTINUE"
   }
@@ -1777,10 +1777,11 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 | 场景 | 预期结果 |
 | --- | --- |
 | 请求内容含 `//` 注释或不是标准 JSON | 返回空 Body `400`；请求正文必须是标准 JSON |
-| 请求或响应出现未知字段、`null`、空条件数组或错误字段类型 | 返回 `422 / REJECTED + INVALID_DATA`，不做部分接收 |
+| WMS 请求或响应带冗余字段 | WES 忽略冗余字段，只使用已定义字段；不因冗余字段拒绝消息 |
+| 已定义字段出现非法 `null`、空条件数组或错误类型 | 返回 `422 / REJECTED + INVALID_DATA`，不做部分接收 |
 | `six_in_one.Qty` 使用 JSON number | 返回 `422 / REJECTED + INVALID_DATA`；六个扫码值必须都是字符串 |
 | 位置对象的 `type` 与字段、来源类型或目标用途不一致 | JSON 结构错误返回 `422`；与 WMS 已保存的业务数据冲突返回 `409` |
-| 某种响应缺少必填字段，或混入另一种响应的字段 | JSON 测试用例必须拒绝，客户端不能猜测应该按哪种结果处理 |
+| 某种响应缺少必填字段，或结果判别值不合法 | JSON 测试用例必须拒绝，客户端不能猜测应该按哪种结果处理 |
 | WMS 发布 PickingTask | 只入队，不锁定 WorkLine、来源、目标或物理动作 |
 | 准备请求已接收 | 快速返回 `PREPARE_ACCEPTED`；没有计划增量前不创建 TransportTask 或 DeviceCommand |
 | 准备响应丢失 | WES 使用原 `operation_id` 和原正文重试；WMS 返回第一次保存的完整 `PREPARE_ACCEPTED` 响应 |
@@ -1848,7 +1849,7 @@ Transport 结果判断影响了哪张任务。这个规则属于 WMS 现有的�
 
 - WMS 与 WES 开发组共同评审本文并把 `status` 从 `ReviewRequired` 更新为 `Approved`；有异议必须先修改本文，禁止在代码中
   形成另一份实际生效的合同。
-- 根据本文生成或手写一份严格 JSON Schema；Schema 只能机器化本文，必须设置未知字段拒绝，不得新增别名、默认值、`null`、
+- 根据本文生成或手写一份严格 JSON Schema；Schema 只能机器化本文，必须允许冗余字段并保留已定义字段校验，不得新增别名、默认值、`null`、
   扩展对象或兼容分支。
 - 部署配置提供真实 `workline_code`、货架面、工作位、缓存位、NG 区和货架离场库位编码。编码值可以按现场变化，但字段结构、类型和
   WMS、WES 的职责划分不得变化；两边代码都不能硬编码本文示例值。

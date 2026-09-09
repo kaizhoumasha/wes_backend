@@ -28,7 +28,7 @@ _BUSINESS_IDENTIFIER = {"type": "string", "pattern": BUSINESS_IDENTIFIER_PATTERN
 def _closed(required: list[str], properties: dict[str, object]) -> dict[str, object]:
     return {
         "type": "object",
-        "additionalProperties": False,
+        "additionalProperties": True,
         "required": required,
         "properties": properties,
     }
@@ -180,7 +180,7 @@ prepare、inbound_batch、material.decide、completion_confirm 等由 WES 调用
 1. 使用双方约定的隔离联调环境；`Try it out → Execute` 会发送真实请求并保存业务数据。
 2. 在 **Examples** 中选择样例；如果尚未进入编辑模式，先点 **Try it out**。每轮新测试更换 `task_id`，每个新消息使用新的小写 UUIDv7
    `operation_id`，`timestamp` 使用 UTC Unix 毫秒。货架、面、储位必须换成双方约定的实际业务编码。
-3. `Content-Type` 为 `application/json`，Body 上限 256 KiB，禁止额外字段。WMS Event 当前采用隔离局域网 NONE
+3. `Content-Type` 为 `application/json`，Body 上限 256 KiB，忽略冗余字段，校验已定义字段。WMS Event 当前采用隔离局域网 NONE
    认证，无需管理端 Bearer Token；401 表示入站策略未就绪，503 也可能表示对应运行时未就绪。
 
 ### PickingTask 顺序测试

@@ -324,18 +324,22 @@ def test_callback_accepts_and_ignores_top_level_supplier_extensions(
     assert accepted_payload == expected_payload
 
 
-def test_callback_error_detail_remains_closed() -> None:
+def test_callback_error_detail_ignores_redundant_fields() -> None:
     payload = {
         **_result_payload(),
         "result": "FAILED",
         "error_detail": {"code": "TARGET_BLOCKED", "msg": "Path blocked", "supplier_detail": "opaque"},
     }
 
-    with _client() as client:
+    service = FakeEvidenceService()
+    with _client(service) as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
-    assert response.status_code == 400
-    assert response.json() == _invalid_envelope({"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"})
+    assert response.status_code == 200
+    assert service.accepted[0].model_dump(mode="json")["error_detail"] == {
+        "code": "TARGET_BLOCKED",
+        "msg": "Path blocked",
+    }
 
 
 @pytest.mark.parametrize(
@@ -432,8 +436,6 @@ def test_result_rejection_explains_supplier_private_error_detail_fields() -> Non
     assert response.json() == _invalid_envelope(
         {"field": "error_detail.code", "code": "FIELD_REQUIRED"},
         {"field": "error_detail.msg", "code": "FIELD_REQUIRED"},
-        {"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"},
-        {"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"},
     )
 
 
@@ -492,7 +494,7 @@ def test_non_model_invalid_envelope_logs_only_sanitized_issue(
     assert all("do-not-log" not in message for message in messages)
 
 
-def test_callback_redacts_request_controlled_error_detail_field_names(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_callback_ignores_private_field_names_without_logging_them(monkeypatch: pytest.MonkeyPatch) -> None:
     messages: list[str] = []
     malicious_key = "supplier_extra\nforged=1 secret=do-not-log"
     payload = {
@@ -509,11 +511,9 @@ def test_callback_redacts_request_controlled_error_detail_field_names(monkeypatc
     with _client() as client:
         response = client.post("/api/v1/callback/result", json=payload)
 
-    assert response.status_code == 400
-    assert response.json() == _invalid_envelope({"field": "error_detail.<extra>", "code": "EXTRA_FORBIDDEN"})
-    assert messages == [
-        "device.ingress.invalid_envelope model=EcsCommandResultReport issues=error_detail.<extra>:EXTRA_FORBIDDEN"
-    ]
+    assert response.status_code == 200
+    assert response.json() == {"code": 200, "message": "ACK"}
+    assert messages == []
     assert malicious_key not in str(response.json())
     assert all(malicious_key not in message for message in messages)
 

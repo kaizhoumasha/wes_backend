@@ -22,7 +22,7 @@ _NONBLANK_PATTERN = r".*\S.*"
 def _closed_object(required: list[str], properties: dict[str, object]) -> dict[str, object]:
     return {
         "type": "object",
-        "additionalProperties": False,
+        "additionalProperties": True,
         "required": required,
         "properties": properties,
     }
@@ -81,6 +81,7 @@ _POSITION_DATA_SCHEMA = {
                 "transport_task_id": _TRANSPORT_TASK_ID_SCHEMA,
                 "container_id": _OBJECT_ID_SCHEMA,
                 "milestone": _literal(milestone),
+                "final_position": {"not": {}},
             },
         )
         for milestone in ("SOURCE_PICKED", "POSITION_UNKNOWN")
@@ -106,11 +107,14 @@ def _member_result_schema(
         id_field: _OBJECT_ID_SCHEMA,
         "status": _literal("SUCCEEDED"),
         "final_position": final_position,
+        "position_unknown": {"not": {}},
+        "failure_code": {"not": {}},
     }
     failed_properties: dict[str, object] = {
         id_field: _OBJECT_ID_SCHEMA,
         "status": _literal("FAILED"),
         "final_position": final_position,
+        "position_unknown": {"not": {}},
         "failure_code": {
             "type": "string",
             "enum": sorted(TRANSPORT_FAILURE_CODES - {"POSITION_UNKNOWN"}),
@@ -124,6 +128,9 @@ def _member_result_schema(
         failed_properties["arrival_face"] = arrival_schema
         success_required.append("arrival_face")
         failed_required.append("arrival_face")
+    else:
+        success_properties["arrival_face"] = {"not": {}}
+        failed_properties["arrival_face"] = {"not": {}}
     return {
         "oneOf": [
             _closed_object(success_required, success_properties),
@@ -135,6 +142,8 @@ def _member_result_schema(
                     "status": _literal("FAILED"),
                     "position_unknown": _literal(True),
                     "failure_code": _literal("POSITION_UNKNOWN"),
+                    "final_position": {"not": {}},
+                    "arrival_face": {"not": {}},
                 },
             ),
         ]
@@ -251,10 +260,10 @@ def _ack_schema(code: str, data_schema: dict[str, object]) -> dict[str, object]:
 
 
 _ACK_TASK_DATA_SCHEMA = _closed_object(["transport_task_id"], {"transport_task_id": _TRANSPORT_TASK_ID_SCHEMA})
-_CONFLICT_DATA_SCHEMA: dict[str, object] = {"oneOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
+_CONFLICT_DATA_SCHEMA: dict[str, object] = {"anyOf": [_closed_object([], {}), _ACK_TASK_DATA_SCHEMA]}
 _REASON_CODE_SCHEMA = {"type": "string", "enum": ["INVALID_EVIDENCE", "UNSUPPORTED_OPERATION"]}
 _REASON_DATA_SCHEMA: dict[str, object] = {
-    "oneOf": [
+    "anyOf": [
         _closed_object(["reason_code"], {"reason_code": _REASON_CODE_SCHEMA}),
         _closed_object(
             ["transport_task_id", "reason_code"],

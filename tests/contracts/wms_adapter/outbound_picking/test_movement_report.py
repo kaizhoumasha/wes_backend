@@ -124,9 +124,6 @@ async def test_fact_ack_closes_obligation_through_static_facts_route(ng, code):
         ("occurred_at", True),
         ("source_locator", {"type": "NG_ZONE", "zone_code": "NG-1"}),
         ("to_locator", {"type": "BIN_CELL", "rack_id": "R", "rack_face": "A", "bin_code": "B", "cell_id": "C"}),
-        ("command_code", "CMD-1"),
-        ("six_in_one", {}),
-        ("business_exception_code", "MATERIAL_REJECTED"),
     ],
 )
 @pytest.mark.asyncio
@@ -145,7 +142,7 @@ async def test_invalid_or_unapproved_fact_fields_never_send(field, value):
         (409, "CONFLICT", {"reason_code": "REFERENCE_CONFLICT"}, WmsDispatchCode.RECONCILING),
         (422, "REJECTED", {"reason_code": "INVALID_DATA", "field_path": "/data/PkgID"}, WmsDispatchCode.RECONCILING),
         (202, "RECORDED", {}, WmsDispatchCode.RECONCILING),
-        (200, "RECORDED", {"result": "COMPLETED"}, WmsDispatchCode.RECONCILING),
+        (200, "RECORDED", {"result": "COMPLETED"}, WmsDispatchCode.DETERMINATE),
     ],
 )
 @pytest.mark.asyncio
@@ -153,7 +150,7 @@ async def test_response_is_closed_and_http_status_bound(status, code, data, expe
     body = response(code, data)
     result = await dispatch(client_response(body, status))
     assert result.code is expected
-    assert result.normalized_response == body
+    assert result.normalized_response == (response(code, {}) if expected is WmsDispatchCode.DETERMINATE else body)
 
 
 @pytest.mark.asyncio
