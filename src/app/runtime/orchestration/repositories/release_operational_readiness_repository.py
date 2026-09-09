@@ -170,6 +170,15 @@ class ReleaseOperationalReadinessRepository:
         inbound_claimable = and_(
             col(InboundEvidence.apply_status) == InboundEvidenceApplyStatus.APPLIED.value,
             col(InboundEvidence.published_at).is_(None),
+            # Global WMS admission facts are applied in their owner's transaction;
+            # only workline-bound facts enter plugin decision publication.
+            not_(
+                and_(
+                    col(InboundEvidence.kind) == "WMS_EVENT",
+                    col(InboundEvidence.workline_id).is_(None),
+                    col(InboundEvidence.material_execution_id).is_(None),
+                )
+            ),
             not_(
                 and_(
                     col(InboundEvidence.kind) == "DEVICE_RESULT",
