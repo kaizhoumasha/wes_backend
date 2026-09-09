@@ -10,7 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from starlette.responses import Response, StreamingResponse
 
 from src.app.sys.services.event_stream_service import event_stream_service
-from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN
+from src.app.wms_adapter.outbound_picking.completion_confirm_wire import CompletionConfirmData  # noqa: TC001
+from src.app.wms_adapter.outbound_picking.departure_wire import RackDepartureData  # noqa: TC001
+from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BinInboundBatchData  # noqa: TC001
+from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import ManualBinAdmissionData  # noqa: TC001
+from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
+    ManualBinApplied,  # noqa: TC001
+    ManualBinReconciling,  # noqa: TC001
+)
+from src.app.wms_adapter.outbound_picking.return_batch_wire import BinReturnBatchData  # noqa: TC001
+from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN, PickingTaskPrepareData
 from src.app.workline_integration_debug.contracts import (
     IntegrationDebugProfile,
     IntegrationTransportAction,
@@ -78,12 +87,12 @@ class RefreshWmsActionRequest(ClientActionRequest):
 
 
 class PrepareTaskRequest(ClientActionRequest):
-    workline_code: _WORKLINE_CODE
+    data: PickingTaskPrepareData
 
 
 class RetryWmsActionRequest(ClientActionRequest):
     wms_non_receipt_confirmed: Literal[True]
-    workline_code: _WORKLINE_CODE
+    data: PickingTaskPrepareData
 
 
 class RefreshTransportActionRequest(ClientActionRequest):
@@ -91,21 +100,23 @@ class RefreshTransportActionRequest(ClientActionRequest):
 
 
 class BinInboundBatchRequest(ClientActionRequest):
-    rack_id: _TEXT
-    rack_face: _TEXT
-    max_bin_count: Literal[1] = 1
+    data: BinInboundBatchData
 
 
 class BinReturnBatchRequest(ClientActionRequest):
-    rack_id: _TEXT
-    rack_face: _TEXT
-    source_location_code: _TEXT
+    data: BinReturnBatchData
 
 
 class RackDepartureRequest(ClientActionRequest):
-    rack_id: _TEXT
-    current_location_code: _TEXT
-    current_face: _TEXT
+    data: RackDepartureData
+
+
+class WorkAdmissionRequest(ClientActionRequest):
+    data: ManualBinAdmissionData
+
+
+class TaskCompletionRequest(ClientActionRequest):
+    data: CompletionConfirmData
 
 
 class BindCompletionRequest(VersionRequest):
@@ -144,21 +155,7 @@ class DeviceActionRequest(ClientActionRequest):
 
 
 class CompletionApplyReportRequest(ClientActionRequest):
-    completion_operation_id: _TEXT
-    apply_revision: int = Field(ge=1)
-    apply_result: Literal["APPLIED", "RECONCILING"]
-    reason_code: (
-        Literal[
-            "RESULT_CONFLICT",
-            "FIRST_COMPLETION_OUT_OF_WINDOW",
-            "POINT2_BINDING_MISMATCH",
-            "WORKLINE_NOT_ACTIVE",
-            "COMPLETED_AT_INVALID",
-            "DEVICE_COMMAND_IDENTITY_CONFLICT",
-        ]
-        | None
-    ) = None
-    occurred_at: int = Field(gt=0)
+    data: Annotated[ManualBinApplied | ManualBinReconciling, Field(discriminator="apply_result")]
 
 
 class ConfirmPhaseRequest(VersionRequest):
@@ -371,7 +368,7 @@ async def send_task_prepare(
             _service(request).send_task_prepare(
                 run_id,
                 client_request_id=payload.client_request_id,
-                wms_workline_code=payload.workline_code,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -409,7 +406,7 @@ async def refresh_plan(
 )
 async def send_work_admission(
     request: Request,
-    payload: ClientActionRequest,
+    payload: WorkAdmissionRequest,
     run_id: Annotated[_RUN_ID, Path()],
 ) -> ResponseSchemaModel[IntegrationRunResponse]:
     return _success(
@@ -417,6 +414,7 @@ async def send_work_admission(
             _service(request).send_work_admission(
                 run_id,
                 client_request_id=payload.client_request_id,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -441,9 +439,7 @@ async def send_bin_inbound_batch(
             _service(request).send_bin_inbound_batch(
                 run_id,
                 client_request_id=payload.client_request_id,
-                rack_id=payload.rack_id,
-                rack_face=payload.rack_face,
-                max_bin_count=payload.max_bin_count,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -468,9 +464,7 @@ async def send_bin_return_batch(
             _service(request).send_bin_return_batch(
                 run_id,
                 client_request_id=payload.client_request_id,
-                rack_id=payload.rack_id,
-                rack_face=payload.rack_face,
-                source_location_code=payload.source_location_code,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -495,9 +489,7 @@ async def send_rack_departure(
             _service(request).send_rack_departure(
                 run_id,
                 client_request_id=payload.client_request_id,
-                rack_id=payload.rack_id,
-                current_location_code=payload.current_location_code,
-                current_face=payload.current_face,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -514,7 +506,7 @@ async def send_rack_departure(
 )
 async def send_task_completion(
     request: Request,
-    payload: ClientActionRequest,
+    payload: TaskCompletionRequest,
     run_id: Annotated[_RUN_ID, Path()],
 ) -> ResponseSchemaModel[IntegrationRunResponse]:
     return _success(
@@ -522,6 +514,7 @@ async def send_task_completion(
             _service(request).send_task_completion_confirm(
                 run_id,
                 client_request_id=payload.client_request_id,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -569,7 +562,7 @@ async def retry_wms_action(
                 run_id,
                 client_request_id=payload.client_request_id,
                 wms_non_receipt_confirmed=payload.wms_non_receipt_confirmed,
-                wms_workline_code=payload.workline_code,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -616,11 +609,7 @@ async def send_apply_report(
             _service(request).send_completion_apply_report(
                 run_id,
                 client_request_id=payload.client_request_id,
-                completion_operation_id=payload.completion_operation_id,
-                apply_revision=payload.apply_revision,
-                apply_result=payload.apply_result,
-                reason_code=payload.reason_code,
-                occurred_at=payload.occurred_at,
+                request_data=payload.data,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
