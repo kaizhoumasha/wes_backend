@@ -61,6 +61,7 @@ def _service() -> SimpleNamespace:
         send_task_completion_confirm=AsyncMock(return_value=snapshot),
         create_transport_action=AsyncMock(return_value=snapshot),
         create_device_action=AsyncMock(return_value=snapshot),
+        refresh_device_action=AsyncMock(return_value=snapshot),
         refresh_transport_action=AsyncMock(return_value=snapshot),
         close_run=AsyncMock(return_value=snapshot),
     )
@@ -107,6 +108,7 @@ def test_routes_use_endpoint_permissions_required_by_the_permission_catalog() ->
         "ops:workline-integration-debug:transport",
         "ops:workline-integration-debug:refresh-transport",
         "ops:workline-integration-debug:device-command",
+        "ops:workline-integration-debug:refresh-device",
         "ops:workline-integration-debug:confirm-phase",
         "ops:workline-integration-debug:complete",
         "ops:workline-integration-debug:takeover",
@@ -178,6 +180,23 @@ async def test_device_action_passes_the_selected_sorting3_station() -> None:
 
     assert response.status_code == 202
     assert service.create_device_action.await_args.kwargs["device_code"] == "STATION_SCAN11"
+
+
+@pytest.mark.asyncio
+async def test_device_refresh_passes_the_original_client_identity() -> None:
+    service = _service()
+    payload = {
+        "expected_version": 0,
+        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+    }
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/device-command/refresh",
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert service.refresh_device_action.await_args.kwargs["client_request_id"] == payload["client_request_id"]
 
 
 @pytest.mark.asyncio

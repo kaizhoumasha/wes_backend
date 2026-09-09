@@ -915,20 +915,35 @@ class IntegrationDebugService:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_operator_and_version(run, expected_version, actor_id)
             step = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
-            if step is None or step.transport_task_id != transport_task_id:
+            if step is None or step.run_id != run_id or step.transport_task_id != transport_task_id:
                 raise IntegrationDebugConflict("Transport 联调步骤已变化")
+            previous_reason_code = step.reason_code
+            updates_current_run = step.phase == run.current_phase and (
+                run.status in {IntegrationDebugRunStatus.ACTIVE, IntegrationDebugRunStatus.WAITING_EXTERNAL}
+                or (
+                    run.status == IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    and run.attention_code == previous_reason_code
+                )
+            )
             step.result_summary_json = transport.result or {"status": transport.status}
             if transport.status == "SUCCEEDED":
                 step.status = "SUCCEEDED"
-                run.status = IntegrationDebugRunStatus.ACTIVE
+                step.reason_code = None
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.ACTIVE
+                    run.attention_code = None
             elif transport.status in {"FAILED", "REJECTED", "RECONCILING"}:
                 step.status = "NEEDS_ATTENTION"
                 step.reason_code = transport.reason_code or f"TRANSPORT_{transport.status}"
-                run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
-                run.attention_code = step.reason_code
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    run.attention_code = step.reason_code
             else:
                 step.status = "WAITING"
-                run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+                step.reason_code = None
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+                    run.attention_code = None
             step.updated_by = actor_id
             run.updated_by = actor_id
             run.increment_version()
@@ -1100,6 +1115,7 @@ class IntegrationDebugService:
                 raise IntegrationDebugConflict("departure_decide READY 缺少原请求 rack_id")
             run.configuration_json = {
                 **run.configuration_json,
+                # sorting-3 现场约定 CTU03 目标使用库区代码；WMS 的业务位置类型只在本适配层转换。
                 "rack_destination": {"kind": "ZONE", "location_code": destination["location_code"]},
                 "departure_ready_rack_id": rack_id,
             }
@@ -1223,66 +1239,136 @@ class IntegrationDebugService:
                 ),
                 None,
             )
-            if apply_result == "APPLIED" and (
-                release_step is None
-                or completion_evidence is None
-                or completion_evidence.apply_status != InboundEvidenceApplyStatus.APPLIED
-            ):
-                raise IntegrationDebugContractError(
-                    "APPLIED 前必须完成 point2 释放步骤并将完成 Evidence 标记为 APPLIED"
-                )
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
-            if existing is None:
-                self._assert_no_open_wms_action(
-                    completion_steps,
-                    IntegrationDebugPhase.COMPLETION_REPORT,
-                    MANUAL_BIN_APPLY_REPORT_OPERATION,
+            if existing is not None:
+                if existing.run_id != run_id or existing.operation != MANUAL_BIN_APPLY_REPORT_OPERATION:
+                    raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+                return self._snapshot(run, await self._runs.list_steps(db, run_id))
+            if completion_evidence is None or completion_evidence.apply_status != InboundEvidenceApplyStatus.PENDING:
+                raise IntegrationDebugContractError("完成 Evidence 必须处于 PENDING，才能原子冻结应用报告")
+            if apply_result == "APPLIED" and release_step is None:
+                raise IntegrationDebugContractError(
+                    "APPLIED 前必须完成 point2 释放步骤，且完成 Evidence 必须等待本次报告原子应用"
                 )
-                report_task = await self._runs.get_picking_task(db, admission_task_id)
-                if report_task is None or report_task.id is None:
-                    raise IntegrationDebugContractError("完成应用报告的 WMS task_id 未关联本地 PickingTask")
-                operation_id = new_uuid7()
-                intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
-                    operation_id=operation_id,
-                    completion_operation_id=completion_operation_id,
-                    task_id=admission_task_id,
-                    bin_code=run.bin_code,
-                    apply_revision=apply_revision,
-                    apply_result=cast("Any", apply_result),
-                    reason_code=reason_code,
-                    occurred_at=occurred_at,
+            self._assert_no_open_wms_action(
+                completion_steps,
+                IntegrationDebugPhase.COMPLETION_REPORT,
+                MANUAL_BIN_APPLY_REPORT_OPERATION,
+            )
+            report_task = await self._runs.get_picking_task(db, admission_task_id)
+            if report_task is None or report_task.id is None:
+                raise IntegrationDebugContractError("完成应用报告的 WMS task_id 未关联本地 PickingTask")
+            operation_id = new_uuid7()
+            intent = sdk.wms_operations.outbound_manual_bin_completion_apply_report(
+                operation_id=operation_id,
+                completion_operation_id=completion_operation_id,
+                task_id=admission_task_id,
+                bin_code=run.bin_code,
+                apply_revision=apply_revision,
+                apply_result=cast("Any", apply_result),
+                reason_code=reason_code,
+                occurred_at=occurred_at,
+            )
+            payload = encode_apply_report(intent, timestamp=timestamp)
+            step = await self._append_step(
+                db,
+                run,
+                phase=IntegrationDebugPhase.COMPLETION_REPORT,
+                status="WAITING",
+                actor_id=actor_id,
+                client_request_id=client_request_id,
+                operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
+                operation_id=operation_id,
+                request=payload["data"],
+            )
+            acceptance = await self._confirmations.create_or_get(
+                db,
+                operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
+                operation_id=operation_id,
+                picking_task_id=report_task.id,
+                request_payload=payload,
+                deadline_at=now + timedelta(minutes=30),
+                created_at=now,
+            )
+            if not isinstance(acceptance, WmsConfirmationAcceptance):
+                raise IntegrationDebugConflict("WMS operation identity 内容冲突")
+            step.wms_confirmation_id = acceptance.confirmation.id
+            completion_evidence.apply_status = (
+                InboundEvidenceApplyStatus.APPLIED
+                if apply_result == "APPLIED"
+                else InboundEvidenceApplyStatus.RECONCILING
+            )
+            completion_evidence.processed_at = now
+            defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
+            run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+            run.current_phase = IntegrationDebugPhase.COMPLETION_REPORT
+            run.updated_by = actor_id
+            run.increment_version()
+            snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
+        await self._publish(snapshot)
+        return snapshot
+
+    async def refresh_device_action(
+        self,
+        run_id: str,
+        *,
+        client_request_id: str,
+        expected_version: int,
+        actor_id: int,
+    ) -> dict[str, Any]:
+        async with self._sessions() as db:
+            run = await self._require_run(db, run_id)
+            self._assert_operator_and_version(run, expected_version, actor_id)
+            step = await self._runs.get_step_by_client_request_id(db, client_request_id)
+            if step is None or step.run_id != run_id or step.device_command_code is None:
+                raise IntegrationDebugNotFound("未找到该 run 的真实 DeviceCommand 动作")
+            command_code = step.device_command_code
+        command = await self._device_commands.get_command_snapshot(command_code)
+        async with self._sessions.begin() as db:
+            run = await self._require_run(db, run_id, for_update=True)
+            self._assert_operator_and_version(run, expected_version, actor_id)
+            step = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
+            if step is None or step.run_id != run_id or step.device_command_code != command_code:
+                raise IntegrationDebugConflict("DeviceCommand 联调步骤已变化")
+            previous_reason_code = step.reason_code
+            updates_current_run = step.phase == run.current_phase and (
+                run.status in {IntegrationDebugRunStatus.ACTIVE, IntegrationDebugRunStatus.WAITING_EXTERNAL}
+                or (
+                    run.status == IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    and run.attention_code == previous_reason_code
                 )
-                payload = encode_apply_report(intent, timestamp=timestamp)
-                step = await self._append_step(
-                    db,
-                    run,
-                    phase=IntegrationDebugPhase.COMPLETION_REPORT,
-                    status="WAITING",
-                    actor_id=actor_id,
-                    client_request_id=client_request_id,
-                    operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
-                    operation_id=operation_id,
-                    request=payload["data"],
-                )
-                acceptance = await self._confirmations.create_or_get(
-                    db,
-                    operation=MANUAL_BIN_APPLY_REPORT_OPERATION,
-                    operation_id=operation_id,
-                    picking_task_id=report_task.id,
-                    request_payload=payload,
-                    deadline_at=now + timedelta(minutes=30),
-                    created_at=now,
-                )
-                if not isinstance(acceptance, WmsConfirmationAcceptance):
-                    raise IntegrationDebugConflict("WMS operation identity 内容冲突")
-                step.wms_confirmation_id = acceptance.confirmation.id
-                defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
-                run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
-                run.current_phase = IntegrationDebugPhase.COMPLETION_REPORT
-                run.updated_by = actor_id
-                run.increment_version()
-            elif existing.run_id != run_id or existing.operation != MANUAL_BIN_APPLY_REPORT_OPERATION:
-                raise IntegrationDebugConflict("client_request_id 已用于其它联调动作")
+            )
+            status = command.status.value
+            step.result_summary_json = {
+                key: value
+                for key, value in {
+                    "status": status,
+                    "failure_code": command.failure_code,
+                    "reconciliation_reason": command.reconciliation_reason,
+                }.items()
+                if value is not None
+            }
+            if status == "SUCCEEDED":
+                step.status = "SUCCEEDED"
+                step.reason_code = None
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.ACTIVE
+                    run.attention_code = None
+            elif status in {"FAILED", "TIMED_OUT", "RECONCILING"}:
+                step.status = "NEEDS_ATTENTION"
+                step.reason_code = command.failure_code or command.reconciliation_reason or f"DEVICE_COMMAND_{status}"
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
+                    run.attention_code = step.reason_code
+            else:
+                step.status = "WAITING"
+                step.reason_code = None
+                if updates_current_run:
+                    run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
+                    run.attention_code = None
+            step.updated_by = actor_id
+            run.updated_by = actor_id
+            run.increment_version()
             snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
         await self._publish(snapshot)
         return snapshot
@@ -1406,8 +1492,24 @@ class IntegrationDebugService:
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
             self._assert_operator_and_version(run, expected_version, actor_id)
-            if run.status not in {IntegrationDebugRunStatus.COMPLETED, IntegrationDebugRunStatus.NEEDS_ATTENTION}:
-                raise IntegrationDebugConflict("只有 COMPLETED 或 NEEDS_ATTENTION run 可人工关闭")
+            steps = await self._runs.list_steps(db, run_id)
+            empty_waiting_run = (
+                run.status == IntegrationDebugRunStatus.WAITING_TASK
+                and run.current_phase == IntegrationDebugPhase.BIND_TASK
+                and all(
+                    step.client_request_id is None
+                    and step.operation is None
+                    and step.wms_confirmation_id is None
+                    and step.transport_task_id is None
+                    and step.device_command_code is None
+                    for step in steps
+                )
+            )
+            if (
+                run.status not in {IntegrationDebugRunStatus.COMPLETED, IntegrationDebugRunStatus.NEEDS_ATTENTION}
+                and not empty_waiting_run
+            ):
+                raise IntegrationDebugConflict("只有未启动、COMPLETED 或 NEEDS_ATTENTION run 可人工关闭")
             now = timezone.now_for_db()
             run.status = IntegrationDebugRunStatus.CLOSED_BY_OPERATOR
             run.current_phase = IntegrationDebugPhase.CLEANUP
@@ -1534,8 +1636,6 @@ class IntegrationDebugService:
                 )
                 if evidence is None or evidence.apply_status != InboundEvidenceApplyStatus.PENDING:
                     raise IntegrationDebugConflict("完成 Evidence 已被其它流程处理或不存在")
-                evidence.apply_status = InboundEvidenceApplyStatus.APPLIED
-                evidence.processed_at = timezone.now_for_db()
             if current is IntegrationDebugPhase.POINT3_ROUTE:
                 profile = IntegrationDebugProfile(run.profile)
                 steps = await self._runs.list_steps(db, run_id)

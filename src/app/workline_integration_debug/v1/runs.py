@@ -645,6 +645,28 @@ async def create_device_command(
 
 
 @router.post(
+    "/runs/{run_id}/device-command/refresh",
+    summary="[ops:workline-integration-debug:operate] 刷新 DeviceCommand 权威终态",
+    dependencies=[Depends(RequirePermission("ops:workline-integration-debug:refresh-device"))],
+)
+async def refresh_device_command(
+    request: Request,
+    payload: RefreshTransportActionRequest,
+    run_id: Annotated[_RUN_ID, Path()],
+) -> ResponseSchemaModel[IntegrationRunResponse]:
+    return _success(
+        await _domain_call(
+            _service(request).refresh_device_action(
+                run_id,
+                client_request_id=payload.client_request_id,
+                expected_version=payload.expected_version,
+                actor_id=request.state.user_id,
+            )
+        )
+    )
+
+
+@router.post(
     "/runs/{run_id}/transport/refresh",
     summary="[ops:workline-integration-debug:operate] 刷新 Transport 权威终态",
     dependencies=[Depends(RequirePermission("ops:workline-integration-debug:refresh-transport"))],

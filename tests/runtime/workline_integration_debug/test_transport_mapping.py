@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.device.models import CommandStatus
 from src.app.execution.models import InboundEvidenceApplyStatus, WmsConfirmationStatus
 from src.app.execution.services.wms_confirmation_service import WmsConfirmationAcceptance
 from src.app.transport.contracts import (
@@ -44,6 +45,9 @@ class _Transaction:
 
 
 class _Sessions:
+    def __call__(self) -> _Transaction:
+        return _Transaction()
+
     def begin(self) -> _Transaction:
         return _Transaction()
 
@@ -229,6 +233,39 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
             "STATION_SCAN12",
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_unstarted_run_can_be_closed_without_leaving_workline_scope_occupied() -> None:
+    repository = _Repository(None)  # type: ignore[arg-type]
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+    created = await service.create_run(
+        CreateIntegrationRun(
+            workline_code="sorting-3",
+            profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
+            environment_label="integration",
+            device_code="SIM-ECS-01",
+        ),
+        actor_id=42,
+    )
+
+    closed = await service.close_run(
+        created["run_id"],
+        wms_cleanup_confirmed=True,
+        site_cleanup_confirmed=True,
+        expected_version=created["version"],
+        actor_id=42,
+    )
+
+    assert closed["status"] == "CLOSED_BY_OPERATOR"
+    assert repository.run.active_scope is None
 
 
 @pytest.mark.asyncio
@@ -914,7 +951,7 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
 
 
 @pytest.mark.asyncio
-async def test_point2_release_confirmation_marks_bound_evidence_applied_before_report() -> None:
+async def test_point2_release_confirmation_keeps_evidence_pending_until_report_is_frozen() -> None:
     run = IntegrationRun(
         run_id="run-release",
         workline_id=3,
@@ -973,8 +1010,92 @@ async def test_point2_release_confirmation_marks_bound_evidence_applied_before_r
     )
 
     assert result["current_phase"] == "COMPLETION_REPORT"
-    assert repository.evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
+    assert repository.evidence.apply_status == InboundEvidenceApplyStatus.PENDING
+    assert repository.evidence.processed_at is None
+
+
+@pytest.mark.parametrize(
+    ("apply_result", "reason_code", "expected_status"),
+    [
+        ("APPLIED", None, InboundEvidenceApplyStatus.APPLIED),
+        ("RECONCILING", "POINT2_BINDING_MISMATCH", InboundEvidenceApplyStatus.RECONCILING),
+    ],
+)
+@pytest.mark.asyncio
+async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_transaction(
+    apply_result: str,
+    reason_code: str | None,
+    expected_status: InboundEvidenceApplyStatus,
+) -> None:
+    run = IntegrationRun(
+        run_id="run-report-atomic",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="COMPLETION_REPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
+        bin_code="BIN-001",
+        configuration_json={"admission_task_id": "PICK-001", "manual_bin_admission_result": "WORK_REQUIRED"},
+    )
+    repository = _Repository(run)
+    repository.evidence = SimpleNamespace(
+        apply_status=InboundEvidenceApplyStatus.PENDING,
+        processed_at=None,
+    )
+    completion_operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4477"
+    repository.steps.extend(
+        [
+            IntegrationRunStep(
+                run_id=run.run_id,
+                ordinal=1,
+                phase="WORK_COMPLETION",
+                status="SUCCEEDED",
+                operation="outbound.manual_bin.work_completed@v1",
+                operation_id=completion_operation_id,
+            ),
+            IntegrationRunStep(
+                run_id=run.run_id,
+                ordinal=2,
+                phase="POINT2_RELEASE",
+                status="SUCCEEDED",
+                result_summary_json={"simulated": True},
+            ),
+        ]
+    )
+    confirmations = AsyncMock()
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(SimpleNamespace(id=9), duplicate=False)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.send_completion_apply_report(
+        run.run_id,
+        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
+        completion_operation_id=completion_operation_id,
+        apply_revision=1,
+        apply_result=apply_result,
+        reason_code=reason_code,
+        occurred_at=1_788_389_999_000,
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["status"] == "WAITING_EXTERNAL"
+    assert repository.evidence.apply_status == expected_status
     assert repository.evidence.processed_at is not None
+    confirmations.create_or_get.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1190,6 +1311,166 @@ async def test_full_site_point3_cannot_advance_while_device_command_is_not_succe
             expected_version=0,
             actor_id=42,
         )
+
+
+@pytest.mark.asyncio
+async def test_refresh_device_action_copies_succeeded_terminal_state_to_the_run_step() -> None:
+    run = IntegrationRun(
+        run_id="run-device-refresh",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="POINT3_ROUTE",
+        bin_code="BIN-001",
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="POINT3_ROUTE",
+            status="WAITING",
+            client_request_id="device-refresh-1",
+            device_command_code="CMD-001",
+        )
+    )
+    commands = AsyncMock()
+    commands.get_command_snapshot.return_value = SimpleNamespace(
+        command_code="CMD-001",
+        status=CommandStatus.SUCCEEDED,
+        failure_code=None,
+        reconciliation_reason=None,
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=commands,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_device_action(
+        run.run_id,
+        client_request_id="device-refresh-1",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["steps"][0]["status"] == "SUCCEEDED"
+    assert result["status"] == "ACTIVE"
+
+
+@pytest.mark.asyncio
+async def test_refresh_historical_device_action_does_not_reopen_completed_run() -> None:
+    run = IntegrationRun(
+        run_id="run-device-history",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="COMPLETED",
+        current_phase="CLEANUP",
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="POINT3_ROUTE",
+            status="WAITING",
+            client_request_id="device-history-1",
+            device_command_code="CMD-001",
+        )
+    )
+    commands = AsyncMock()
+    commands.get_command_snapshot.return_value = SimpleNamespace(
+        status=CommandStatus.SUCCEEDED,
+        failure_code=None,
+        reconciliation_reason=None,
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=commands,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_device_action(
+        run.run_id,
+        client_request_id="device-history-1",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["steps"][0]["status"] == "SUCCEEDED"
+    assert result["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_refresh_historical_transport_action_does_not_clear_current_attention() -> None:
+    run = IntegrationRun(
+        run_id="run-transport-history",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="NEEDS_ATTENTION",
+        current_phase="POINT3_ROUTE",
+        attention_code="CURRENT_DEVICE_FAILED",
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="RACK_TRANSPORT",
+            status="WAITING",
+            client_request_id="transport-history-1",
+            transport_task_id="TRANSPORT-001",
+        )
+    )
+    transport = AsyncMock()
+    transport.get_task_snapshot.return_value = SimpleNamespace(
+        status="SUCCEEDED",
+        reason_code=None,
+        result={"final_position": "KT16"},
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=transport,  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_transport_action(
+        run.run_id,
+        client_request_id="transport-history-1",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["steps"][0]["status"] == "SUCCEEDED"
+    assert result["status"] == "NEEDS_ATTENTION"
+    assert result["attention_code"] == "CURRENT_DEVICE_FAILED"
 
 
 @pytest.mark.asyncio
