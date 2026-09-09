@@ -3,11 +3,13 @@
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.resource.models import RackKind
+from src.app.workline.rack_position_role import WorklineRackPositionRole
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -120,6 +122,33 @@ class WorkLineConfigurationCheck(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict, description="检查上下文")
 
 
+class WorkLinePositionInput(BaseModel):
+    """本线静态工作位；不包含承载物身份、占用或物理到位状态。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, from_attributes=True)
+
+    position_code: str = Field(min_length=1, max_length=80)
+    position_name: str = Field(min_length=1, max_length=120)
+    position_type: Literal["RACK_POSITION", "STATION"] = "RACK_POSITION"
+    position_role: WorklineRackPositionRole | None = None
+    allowed_rack_kind: RackKind | None = None
+    capacity: int = Field(default=1, ge=1)
+    logic_location_code: str | None = Field(default=None, min_length=1, max_length=120)
+    external_location_code: str | None = Field(default=None, min_length=1, max_length=120)
+    device_id: int | None = Field(default=None, gt=0, description="关联本线物理设备 ID，与业务插件无关")
+    priority: int = Field(default=100, ge=0)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_position_type(self) -> "WorkLinePositionInput":
+        if self.position_type == "RACK_POSITION":
+            if self.position_role is None or self.allowed_rack_kind is None:
+                raise ValueError("货架工作位必须指定用途和货架类型")
+        elif self.position_role is not None or self.allowed_rack_kind is not None:
+            raise ValueError("普通工作位不能指定货架属性")
+        return self
+
+
 class WorkLineConfigurationStatus(BaseModel):
     """作业线配置状态响应。"""
 
@@ -129,23 +158,40 @@ class WorkLineConfigurationStatus(BaseModel):
     checks: list[WorkLineConfigurationCheck] = Field(default_factory=list, description="启用前检查项")
 
 
+class WorkLineBaseConfigurationUpdate(BaseModel):
+    """稳定的工作位与物理设备全集；不包含插件配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    device_codes: tuple[str, ...]
+    positions: tuple[WorkLinePositionInput, ...]
+
+
+class WorkLineBaseConfigurationResponse(WorkLineBaseConfigurationUpdate):
+    """已保存基础配置，版本与业务装配共用。"""
+
+    workline_id: int
+    is_active: bool
+
+
 class WorkLineConfigurationUpdate(BaseModel):
-    """停用 WorkLine 的插件配置与设备全集替换请求。"""
+    """仅替换插件选择与角色映射，不修改本线物理资源。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     version: int = Field(description="WorkLine 乐观锁版本号")
     plugin_key: str | None = Field(default=None, min_length=1, max_length=100, description="业务插件标识")
     config: dict[str, Any] = Field(default_factory=dict, description="当前业务插件配置")
-    device_codes: tuple[str, ...] = Field(default_factory=tuple, description="目标工作线设备编码全集")
 
 
 class WorkLineConfigurationResponse(BaseModel):
-    """业务插件配置全集保存结果。"""
+    """业务插件关联保存结果。"""
 
     workline_id: int
     version: int
     plugin_key: str | None
     config: dict[str, Any]
-    device_codes: tuple[str, ...]
 
 
 class WorkLineDeviceRole(BaseModel):
@@ -157,6 +203,24 @@ class WorkLineDeviceRole(BaseModel):
     display_name: str = Field(min_length=1, max_length=100)
 
 
+class WorkLinePositionSlot(BaseModel):
+    """插件工作位需求；执行位置类型来自插件合同，现场编码来自工作线。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    slot_key: str = Field(min_length=1, max_length=100)
+    display_name: str = Field(min_length=1, max_length=100)
+    position_type: Literal["RACK_POSITION", "STATION"]
+    location_type: str = Field(min_length=1, max_length=100)
+    allowed_rack_kind: RackKind | None = None
+
+    @model_validator(mode="after")
+    def validate_resource_constraint(self) -> "WorkLinePositionSlot":
+        if self.position_type == "STATION" and self.allowed_rack_kind is not None:
+            raise ValueError("普通工作位插槽不能约束货架类型")
+        return self
+
+
 class WorkLinePluginSummary(BaseModel):
     """部署清单中的业务插件及当前 WorkLine 兼容性。"""
 
@@ -165,6 +229,7 @@ class WorkLinePluginSummary(BaseModel):
     display_name: str
     supported_line_types: tuple[LineType, ...]
     device_roles: tuple[WorkLineDeviceRole, ...] = ()
+    position_slots: tuple[WorkLinePositionSlot, ...] = ()
     compatible: bool
     incompatibility_reasons: tuple[str, ...] = ()
 

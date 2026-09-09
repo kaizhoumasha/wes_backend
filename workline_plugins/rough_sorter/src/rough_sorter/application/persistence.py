@@ -29,7 +29,7 @@ if TYPE_CHECKING:
         WmsConfirmation,
     )
     from src.app.resource.models import RackPlacement
-    from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+    from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
     from src.app.workline.models import WorkLine, WorkLineDeviceBinding, WorkLinePositionBinding
 
 
@@ -65,10 +65,10 @@ class WmsConfirmationRepositoryPort(Protocol):
     ) -> list[WmsConfirmation]: ...
 
 
-class RackPositionRepositoryPort(Protocol):
+class PositionRepositoryPort(Protocol):
     async def get_by_workline_logic_location(
         self, db: Any, *, workline_code: str, logic_location_code: str
-    ) -> WorklineRackPosition | None: ...
+    ) -> WorkLinePosition | None: ...
 
 
 class RackPlacementRepositoryPort(Protocol):
@@ -187,8 +187,8 @@ __all__ = [
     "EvidenceRepositoryPort",
     "ExecutionRepositoryPort",
     "LiveDeviceReadinessReader",
+    "PositionRepositoryPort",
     "RackPlacementRepositoryPort",
-    "RackPositionRepositoryPort",
     "RackReplacementBindingRepositoryPort",
     "RoughSorterInitialExecutionCorrelator",
     "WmsConfirmationRepositoryPort",

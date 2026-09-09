@@ -1,7 +1,7 @@
 """add manual outbound integration runs
 
 Revision ID: 133712f6a89a
-Revises: bebf575cca2b
+Revises: d11f8c6fdb0d
 Create Date: 2026-09-09 06:24:18.742540+08:00
 
 """
@@ -14,7 +14,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "133712f6a89a"
-down_revision: Union[str, Sequence[str], None] = "bebf575cca2b"
+down_revision: Union[str, Sequence[str], None] = "d11f8c6fdb0d"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

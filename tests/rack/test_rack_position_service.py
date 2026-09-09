@@ -7,9 +7,9 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.app.resource.models import RackKind
-from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
-from src.app.runtime.orchestration.repositories.rack_position_repository import WorklineRackPositionRepository
-from src.app.workline.services.rack_position_service import WorklineRackPositionService
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
+from src.app.runtime.orchestration.repositories.workline_position_repository import WorkLinePositionRepository
+from src.app.workline.services.workline_position_service import WorkLinePositionService
 
 
 class CapturingExecuteResult:
@@ -27,7 +27,7 @@ class CapturingDb:
 
 
 class RecordingRackPositionRepo:
-    def __init__(self, position: WorklineRackPosition | None) -> None:
+    def __init__(self, position: WorkLinePosition | None) -> None:
         self.position = position
         self.lookups: list[tuple[str, str]] = []
         self.locked_lookups: list[tuple[str, str]] = []
@@ -38,7 +38,7 @@ class RecordingRackPositionRepo:
         *,
         workline_code: str,
         position_code: str,
-    ) -> WorklineRackPosition | None:
+    ) -> WorkLinePosition | None:
         self.lookups.append((workline_code, position_code))
         return self.position
 
@@ -48,12 +48,12 @@ class RecordingRackPositionRepo:
         *,
         workline_code: str,
         position_code: str,
-    ) -> WorklineRackPosition | None:
+    ) -> WorkLinePosition | None:
         self.locked_lookups.append((workline_code, position_code))
         return self.position
 
 
-def _position(**overrides: Any) -> WorklineRackPosition:
+def _position(**overrides: Any) -> WorkLinePosition:
     values: dict[str, Any] = {
         "workline_id": 1001,
         "workline_code": "SMT_SORTER_01",
@@ -69,13 +69,14 @@ def _position(**overrides: Any) -> WorklineRackPosition:
         "enabled": True,
     }
     values.update(overrides)
-    return WorklineRackPosition(**values)
+    return WorkLinePosition(**values)
 
 
 @pytest.mark.asyncio
 async def test_get_by_workline_position_for_update_builds_for_update_query() -> None:
+    assert WorkLinePosition.__tablename__ == "workline_positions"
     db = CapturingDb()
-    repository = WorklineRackPositionRepository()
+    repository = WorkLinePositionRepository()
 
     result = await repository.get_by_workline_position_for_update(
         db,  # type: ignore[arg-type]
@@ -92,7 +93,7 @@ async def test_get_by_workline_position_for_update_builds_for_update_query() -> 
 @pytest.mark.asyncio
 async def test_require_enabled_position_accepts_matching_rack_kind_with_capacity_two() -> None:
     repo = RecordingRackPositionRepo(_position(capacity=2))
-    service = WorklineRackPositionService(repository=repo)
+    service = WorkLinePositionService(repository=repo)
 
     result = await service.require_enabled_position(
         SimpleNamespace(),
@@ -109,7 +110,7 @@ async def test_require_enabled_position_accepts_matching_rack_kind_with_capacity
 
 @pytest.mark.asyncio
 async def test_require_position_capacity_returns_enabled_capacity_two() -> None:
-    service = WorklineRackPositionService(repository=RecordingRackPositionRepo(_position(capacity=2)))
+    service = WorkLinePositionService(repository=RecordingRackPositionRepo(_position(capacity=2)))
 
     capacity = await service.require_position_capacity(
         SimpleNamespace(),
@@ -123,7 +124,7 @@ async def test_require_position_capacity_returns_enabled_capacity_two() -> None:
 @pytest.mark.asyncio
 async def test_require_enabled_position_for_update_uses_locked_lookup() -> None:
     repo = RecordingRackPositionRepo(_position(capacity=2))
-    service = WorklineRackPositionService(repository=repo)
+    service = WorkLinePositionService(repository=repo)
 
     result = await service.require_enabled_position_for_update(
         SimpleNamespace(),
@@ -140,7 +141,7 @@ async def test_require_enabled_position_for_update_uses_locked_lookup() -> None:
 @pytest.mark.asyncio
 async def test_require_position_capacity_for_update_returns_locked_position_and_capacity() -> None:
     repo = RecordingRackPositionRepo(_position(capacity=2))
-    service = WorklineRackPositionService(repository=repo)
+    service = WorkLinePositionService(repository=repo)
 
     position, capacity = await service.require_position_capacity_for_update(
         SimpleNamespace(),
@@ -157,7 +158,7 @@ async def test_require_position_capacity_for_update_returns_locked_position_and_
 
 @pytest.mark.asyncio
 async def test_require_position_capacity_rejects_disabled_position() -> None:
-    service = WorklineRackPositionService(repository=RecordingRackPositionRepo(_position(enabled=False)))
+    service = WorkLinePositionService(repository=RecordingRackPositionRepo(_position(enabled=False)))
 
     with pytest.raises(ValueError, match="disabled"):
         await service.require_position_capacity(
@@ -169,7 +170,7 @@ async def test_require_position_capacity_rejects_disabled_position() -> None:
 
 @pytest.mark.asyncio
 async def test_require_enabled_position_rejects_rack_kind_mismatch() -> None:
-    service = WorklineRackPositionService(repository=RecordingRackPositionRepo(_position()))
+    service = WorkLinePositionService(repository=RecordingRackPositionRepo(_position()))
 
     with pytest.raises(ValueError, match="allowed rack kind"):
         await service.require_enabled_position(

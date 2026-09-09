@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from src.app.device.repositories.device_repository import device_repository
-from src.app.workline.installed_plugin import InstalledWorkLinePlugin, parse_device_bindings, resolve_installed_plugin
+from src.app.runtime.orchestration.repositories.workline_position_repository import workline_position_repository
+from src.app.workline.installed_plugin import (
+    InstalledWorkLinePlugin,
+    parse_device_bindings,
+    resolve_installed_plugin,
+    resolve_position_bindings,
+)
 from src.app.workline.models.workline import (
     LineType,
     WorkLine,
+    WorkLineBaseConfigurationResponse,
     WorkLineConfigurationStatus,
     WorkLinePluginSummary,
+    WorkLinePositionInput,
 )
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
@@ -58,14 +65,18 @@ class CacheInvalidatorPort(Protocol):
     ) -> None: ...
 
 
-@dataclass(frozen=True, slots=True)
-class WorkLineConfigurationResult:
-    workline: WorkLine
-    device_codes: tuple[str, ...]
+class PositionConfigurationRepositoryPort(Protocol):
+    async def has_active_placements(self, db: Any, workline_id: int) -> bool: ...
+
+    async def list_for_workline(self, db: Any, workline_id: int, *, for_update: bool = False) -> list[Any]: ...
+
+    async def replace_for_workline(
+        self, db: Any, *, workline: WorkLine, positions: tuple[WorkLinePositionInput, ...], existing: list[Any]
+    ) -> None: ...
 
 
 class WorkLineConfigurationService:
-    """在一个事务中替换插件草稿、配置和设备全集。"""
+    """分别维护稳定物理配置和业务插件关联，共用工作线事务边界。"""
 
     def __init__(
         self,
@@ -81,12 +92,32 @@ class WorkLineConfigurationService:
             "SafetyConfigurationRepositoryPort", workline_safety_incident_repository
         ),
         device_cache_invalidator: CacheInvalidatorPort | None = None,
+        position_repository: PositionConfigurationRepositoryPort = cast(
+            "PositionConfigurationRepositoryPort", workline_position_repository
+        ),
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
         self._devices = device_repository
         self._safety = safety_repository
         self._device_cache_invalidator = device_cache_invalidator
+        self._positions = position_repository
+
+    async def _lock_editable(self, db: Any, *, workline_id: int, version: int) -> tuple[WorkLine, list[Any]]:
+        workline = await self._worklines.get_for_update(db, workline_id)
+        if workline is None:
+            raise ValueError(f"WorkLine 不存在: {workline_id}")
+        WorkLineService._assert_version(workline, workline_id, version)
+        if bool(workline.is_active):
+            raise BusinessException(message="已启用工作线不能修改配置")
+        if await self._safety.get_active_for_workline(db, workline_id) is not None:
+            raise BusinessException(message="存在 active safety incident，不能修改工作线配置")
+        positions = await self._positions.list_for_workline(db, workline_id, for_update=True)
+        workload = await self._worklines.get_unfinished_workload_summary(db, workline_id)
+        if workload["count"] > 0:
+            raise BusinessException(message="存在未完成运行负载，不能修改工作线配置", detail={"workload": workload})
+        await self._assert_no_plugin_workload(db, workline, action="修改工作线配置")
+        return workline, positions
 
     async def save(
         self,
@@ -96,24 +127,75 @@ class WorkLineConfigurationService:
         version: int,
         plugin_key: str | None,
         config: dict[str, Any],
-        device_codes: tuple[str, ...],
         cache: object | None = None,
-    ) -> WorkLineConfigurationResult:
+    ) -> WorkLine:
+        """只更新业务装配，不触碰工作位和设备归属。"""
+        workline, positions = await self._lock_editable(db, workline_id=workline_id, version=version)
+        normalized_plugin_key = self._validate_plugin(workline, plugin_key)
+        devices = await self._devices.list_for_workline_configuration_update(
+            db,
+            workline_id=workline_id,
+            device_codes=(),
+        )
+        owned = tuple(device for device in devices if device.work_line_id == workline_id)
+        if normalized_plugin_key is not None:
+            plugin = resolve_installed_plugin(self._plugins, normalized_plugin_key)
+            reasons = self._configuration_reasons(
+                plugin,
+                config,
+                owned,
+                tuple(WorkLinePositionInput.model_validate(p) for p in positions),
+                require_complete=False,
+            )
+            if reasons:
+                raise BusinessException(
+                    message="业务插件与本线资源不兼容，请先完成基础配置",
+                    detail={"plugin_key": normalized_plugin_key, "reasons": list(reasons)},
+                )
+        elif config not in (
+            {},
+            {"device_bindings": {}},
+            {"position_bindings": {}},
+            {"device_bindings": {}, "position_bindings": {}},
+        ):
+            raise BusinessException(message="未选择插件时不能保存角色配置")
+        return await self._finish_save(
+            db,
+            workline_id=workline_id,
+            version=version,
+            changes={"plugin_key": normalized_plugin_key, "config": dict(config)},
+            cache=cache,
+        )
+
+    async def base_configuration(self, db: Any, *, workline_id: int) -> WorkLineBaseConfigurationResponse:
+        # 锁住工作线，避免读取到并发保存前的版本号与保存后的资源集合。
         workline = await self._worklines.get_for_update(db, workline_id)
         if workline is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
-        WorkLineService._assert_version(workline, workline_id, version)
-        if bool(workline.is_active):
-            raise BusinessException(message="已启用工作线不能修改业务插件配置")
-        if await self._safety.get_active_for_workline(db, workline_id) is not None:
-            raise BusinessException(message="存在 active safety incident，不能修改工作线配置")
+        devices = await self._devices.get_by_work_line_id(db, workline_id)
+        positions = await self._positions.list_for_workline(db, workline_id)
+        return WorkLineBaseConfigurationResponse(
+            workline_id=workline_id,
+            version=workline.version,
+            is_active=bool(workline.is_active),
+            device_codes=tuple(sorted(device.device_code for device in devices if not device.is_deleted)),
+            positions=tuple(WorkLinePositionInput.model_validate(position) for position in positions),
+        )
 
-        workload = await self._worklines.get_unfinished_workload_summary(db, workline_id)
-        if workload["count"] > 0:
-            raise BusinessException(message="存在未完成运行负载，不能修改工作线配置", detail={"workload": workload})
-        await self._assert_no_plugin_workload(db, workline, action="修改工作线配置")
-
-        normalized_plugin_key = self._validate_plugin(workline, plugin_key)
+    async def save_base(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        version: int,
+        device_codes: tuple[str, ...],
+        positions: tuple[WorkLinePositionInput, ...],
+        cache: object | None = None,
+    ) -> WorkLineBaseConfigurationResponse:
+        """原子替换基础配置；保持当前插件选择和角色绑定。"""
+        workline, existing_positions = await self._lock_editable(db, workline_id=workline_id, version=version)
+        if await self._positions.has_active_placements(db, workline_id):
+            raise BusinessException(message="存在货架或料箱占位，不能修改基础配置")
         normalized_codes = self._normalize_device_codes(device_codes)
         devices = await self._devices.list_for_workline_configuration_update(
             db,
@@ -124,85 +206,117 @@ class WorkLineConfigurationService:
         missing = sorted(set(normalized_codes) - set(by_code))
         if missing:
             raise BusinessException(message="设备不存在", detail={"device_codes": missing})
-
         selected = set(normalized_codes)
         selected_devices = tuple(by_code[code] for code in normalized_codes)
         for device in selected_devices:
-            if bool(getattr(device, "is_deleted", False)):
+            if bool(device.is_deleted):
                 raise BusinessException(message="设备已删除", detail={"device_code": device.device_code})
             if device.work_line_id not in {None, workline_id}:
-                raise BusinessException(
-                    message="设备已属于其他工作线",
-                    detail={"device_code": device.device_code, "work_line_id": device.work_line_id},
-                )
-        if normalized_plugin_key is not None:
-            plugin = resolve_installed_plugin(self._plugins, normalized_plugin_key)
-            line_type = workline.line_type if isinstance(workline.line_type, LineType) else LineType(workline.line_type)
-            reasons = self._plugin_incompatibility_reasons(plugin, line_type)
-            reasons += self._configuration_reasons(plugin, config, selected_devices, require_complete=False)
+                raise BusinessException(message="设备已属于其他工作线", detail={"device_code": device.device_code})
+        self._validate_positions(positions, {device.id for device in selected_devices})
+        if workline.plugin_key:
+            plugin = resolve_installed_plugin(self._plugins, workline.plugin_key)
+            reasons = self._configuration_reasons(
+                plugin, workline.config, selected_devices, positions, require_complete=False
+            )
             if reasons:
                 raise BusinessException(
-                    message="业务插件与工作线设备不兼容",
-                    detail={"plugin_key": normalized_plugin_key, "reasons": list(reasons)},
+                    message="基础配置变更会使业务装配失效，请先解除相关角色绑定",
+                    detail={"reasons": list(reasons)},
                 )
-        elif config not in ({}, {"device_bindings": {}}):
-            raise BusinessException(message="未选择插件时不能保存角色配置")
-
         changed_device_ids: list[int] = []
         for device in devices:
-            if device.device_code in selected:
-                if device.work_line_id != workline_id:
-                    device.work_line_id = workline_id
-                    device.increment_version()
-                    changed_device_ids.append(device.id)
-            elif device.work_line_id == workline_id:
-                device.work_line_id = None
+            owner = workline_id if device.device_code in selected else None
+            if device.work_line_id != owner:
+                device.work_line_id = owner
                 device.increment_version()
                 changed_device_ids.append(device.id)
+        await self._positions.replace_for_workline(
+            db,
+            workline=workline,
+            positions=positions,
+            existing=existing_positions,
+        )
+        updated = await self._finish_save(
+            db,
+            workline_id=workline_id,
+            version=version,
+            changes={},
+            cache=cache,
+            changed_device_ids=tuple(changed_device_ids),
+        )
+        return WorkLineBaseConfigurationResponse(
+            workline_id=workline_id,
+            version=updated.version,
+            is_active=bool(updated.is_active),
+            device_codes=tuple(sorted(normalized_codes)),
+            positions=tuple(sorted(positions, key=lambda position: position.position_code)),
+        )
 
+    async def _finish_save(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        version: int,
+        changes: dict[str, Any],
+        cache: object | None,
+        changed_device_ids: tuple[int, ...] = (),
+    ) -> WorkLine:
         updated = await self._worklines.update(
             db,
             workline_id,
             {
-                "plugin_key": normalized_plugin_key,
                 "plugin_version": None,
                 "flow_mode": None,
                 "device_contracts": {},
                 "position_bindings": {},
-                "config": dict(config),
+                **changes,
                 "version": version,
             },
         )
         if updated is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
-        await db.flush()
         try:
+            await db.flush()
             await db.commit()
         except Exception:
             await db.rollback()
             raise
-
         workline_device_cache.invalidate(workline_id)
         if cache is not None:
             from src.app.workline.services.workline_service import workline_service
 
             await workline_service.invalidate_cache(cache, workline_id, invalidate_list=True)
-            if self._device_cache_invalidator is not None:
+            if self._device_cache_invalidator is not None and changed_device_ids:
                 for device_id in changed_device_ids:
                     await self._device_cache_invalidator.invalidate_cache(cache, device_id)
                 await self._device_cache_invalidator.invalidate_cache(cache, invalidate_list=True)
-        return WorkLineConfigurationResult(workline=updated, device_codes=tuple(sorted(normalized_codes)))
+        return updated
+
+    @staticmethod
+    def _validate_positions(positions: tuple[WorkLinePositionInput, ...], device_ids: set[int]) -> None:
+        for field in ("position_code", "logic_location_code"):
+            values = [getattr(position, field) for position in positions if getattr(position, field) is not None]
+            if len(values) != len(set(values)):
+                label = "工作位编码" if field == "position_code" else "逻辑位置编码"
+                raise BusinessException(message=f"{label}不能重复")
+        for position in positions:
+            if position.device_id is not None and position.device_id not in device_ids:
+                raise BusinessException(message=f"工作位 {position.position_code} 关联的设备不在本线设备中")
 
     @staticmethod
     def _configuration_reasons(
         plugin: InstalledWorkLinePlugin,
         config: object,
         devices: tuple[Any, ...],
+        positions: tuple[WorkLinePositionInput, ...],
         *,
         require_complete: bool,
     ) -> tuple[str, ...]:
         try:
             bindings = parse_device_bindings(config, plugin.device_roles, require_complete=require_complete)
+            _ = resolve_position_bindings(config, plugin.position_slots, positions, require_complete=require_complete)
         except ValueError:
             return ("CONFIGURATION_INVALID",)
         by_code = {device.device_code: device for device in devices if not device.is_deleted}
@@ -229,6 +343,9 @@ class WorkLineConfigurationService:
         if workline is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
         devices = tuple(await self._devices.get_by_work_line_id(db, workline_id))
+        positions = tuple(
+            WorkLinePositionInput.model_validate(p) for p in await self._positions.list_for_workline(db, workline_id)
+        )
         summaries = self._summarize_plugins(workline)
         checks = [WorkLineService._run_mode_check(workline), WorkLineService._runtime_config_check(workline)]
         selected = next((item for item in summaries if item.plugin_key == workline.plugin_key), None)
@@ -247,7 +364,7 @@ class WorkLineConfigurationService:
             selected_plugin = resolve_installed_plugin(self._plugins, selected.plugin_key)
             configuration_reasons = list(selected.incompatibility_reasons)
             checked_reasons = self._configuration_reasons(
-                selected_plugin, workline.config, devices, require_complete=True
+                selected_plugin, workline.config, devices, positions, require_complete=True
             )
             configuration_reasons.extend(reason for reason in checked_reasons if reason not in configuration_reasons)
             checks.append(
@@ -280,6 +397,7 @@ class WorkLineConfigurationService:
                     display_name=plugin.display_name,
                     supported_line_types=plugin.supported_line_types,
                     device_roles=plugin.device_roles,
+                    position_slots=plugin.position_slots,
                     compatible=not reasons,
                     incompatibility_reasons=reasons,
                 )
@@ -386,4 +504,4 @@ class WorkLineConfigurationService:
         return normalized
 
 
-__all__ = ["WorkLineConfigurationResult", "WorkLineConfigurationService"]
+__all__ = ["WorkLineConfigurationService"]

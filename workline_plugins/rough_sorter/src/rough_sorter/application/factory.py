@@ -12,7 +12,7 @@ from src.app.execution.repositories.transport_decision_binding_repository import
 )
 from src.app.execution.repositories.wms_confirmation_repository import wms_confirmation_repository
 from src.app.resource.repositories import rack_placement_repository
-from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
+from src.app.runtime.orchestration.repositories.workline_position_repository import workline_position_repository
 from src.app.transport.repository import TransportRepository
 from src.app.workline.repositories.workline_repository import workline_repository
 from wes_plugin_sdk import (
@@ -38,8 +38,8 @@ from rough_sorter.application.persistence import (
     EvidenceRepositoryPort,
     ExecutionRepositoryPort,
     LiveDeviceReadinessReader,
+    PositionRepositoryPort,
     RackPlacementRepositoryPort,
-    RackPositionRepositoryPort,
     RackReplacementBindingRepositoryPort,
     WmsConfirmationRepositoryPort,
     WorkLineRepositoryPort,
@@ -84,7 +84,7 @@ class RoughSorterPluginFactFactory:
         device_readiness_reader: DeviceReadinessReader | None = None,
         device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
         device_command_repository: DeviceCommandRepositoryPort = device_command_repository,
-        rack_position_repository: RackPositionRepositoryPort = workline_rack_position_repository,
+        workline_position_repository: PositionRepositoryPort = workline_position_repository,
         rack_placement_repository: RackPlacementRepositoryPort = rack_placement_repository,
         rack_replacement_binding_repository: RackReplacementBindingRepositoryPort = (
             transport_decision_binding_repository
@@ -100,7 +100,7 @@ class RoughSorterPluginFactFactory:
             device_adapter_provider=device_adapter_provider
         )
         self._commands = device_command_repository
-        self._rack_positions = rack_position_repository
+        self._positions = workline_position_repository
         self._rack_placements = rack_placement_repository
         self._rack_replacement_bindings = rack_replacement_binding_repository
         self._transport_tasks = transport_repository or TransportRepository()
@@ -131,7 +131,7 @@ class RoughSorterPluginFactFactory:
                 rack_bindings=self._rack_replacement_bindings,
                 transport_tasks=self._transport_tasks,
                 position_projections=self._position_projections,
-                rack_positions=self._rack_positions,
+                rack_positions=self._positions,
                 current_rack_id=self._current_rack_id,
             )
         if type(fact) is DeviceResultReadyFact:
@@ -172,7 +172,7 @@ class RoughSorterPluginFactFactory:
                 commands=self._commands,
                 readiness=self._device_readiness,
                 confirmations=self._wms_confirmations,
-                rack_positions=self._rack_positions,
+                rack_positions=self._positions,
                 rack_placements=self._rack_placements,
             )
         raise TypeError(f"rough sorter 不支持基础 Fact: {type(fact).__name__}")
@@ -294,7 +294,7 @@ class RoughSorterPluginFactFactory:
 
     async def _current_rack_id(self, db: object, runtime: Any) -> str:
         return await current_rack_id(
-            db=db, runtime=runtime, rack_positions=self._rack_positions, rack_placements=self._rack_placements
+            db=db, runtime=runtime, rack_positions=self._positions, rack_placements=self._rack_placements
         )
 
 
