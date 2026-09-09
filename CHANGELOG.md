@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0.0] - 2026-09-09
+
+### Added
+
+- 增加仅限超级管理员使用的 `sorting-3` 手工出库联调台后端，按 20 个节点人工推进 WMS、Transport 与 ECS 交互，并通过 SSE 提供实时状态。
+- 增加人工料箱准入、完成通知与应用结果 typed operations；支持合同模拟、真实 ECS 和真实 RCS 可选模式，固定现场参数为 CTU01/CTU03、KT16/KT17、OUT65、WH05、CNV0301/CNV0302 与 STATION_SCAN9-12。
+
+### Changed
+
+- 真实 Transport 与 DeviceCommand 必须取得权威终态后才能推进；货架到位上报和 WMS 完成通知保持原 operation identity，提前或冲突 Evidence 进入 `RECONCILING`。
+- 联调清理仅记录 WMS 团队与现场人工清理状态，不直接修改 WMS 业务数据。
+
+### Verification
+
+- QUALITY 3520 passed、5 skipped；所选 HEAVY 346 passed、零跳过，覆盖空库迁移、PostgreSQL、Redis、Celery、WMS operations、Transport 与 DeviceCommand 真实 wiring。
+- 浏览器本地 Docker QA 26 项通过；联调服务器验收在前后端合并部署后执行。
+
 ## [0.39.1.0] - 2026-09-08
 
 ### Fixed

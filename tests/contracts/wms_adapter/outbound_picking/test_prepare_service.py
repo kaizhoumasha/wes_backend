@@ -194,6 +194,26 @@ async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_o
 
 
 @pytest.mark.asyncio
+async def test_prepare_expected_task_fails_closed_before_mutating_queue_head() -> None:
+    service, _worklines, tasks, confirmations, queue = _service()
+
+    result = await service.prepare_next_for_workline(
+        7,
+        expected_task_id="PICK-OTHER",
+        now=datetime(2026, 9, 4),
+    )
+
+    assert result.prepared is False
+    assert result.reason is PickingTaskPrepareNoopReason.SELECTED_TASK_NOT_NEXT
+    assert tasks.task is not None
+    assert PickingTaskStatus(tasks.task.status) is PickingTaskStatus.QUEUED
+    assert tasks.task.workline_id is None
+    assert tasks.flushed is False
+    assert confirmations.kwargs is None
+    assert queue.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_prepare_keeps_persisted_obligation_when_immediate_enqueue_fails() -> None:
     queue = _Queue(fail=True)
     service, _worklines, tasks, _confirmations, _queue = _service(queue=queue)

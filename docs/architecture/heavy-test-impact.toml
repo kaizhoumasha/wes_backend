@@ -278,6 +278,10 @@ heavy_tests = []
 reviewed_content_sha256 = "57f0b8c190b088858cb095f836b24cfb1865de35786b61341ed85359e8386954"
 
 [[mapping]]
+source_glob = "src/wes_plugin_sdk/tests/test_manual_bin_wms_operations.py"
+heavy_tests = []
+
+[[mapping]]
 source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/__init__.py"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py", "tests/integration/execution/test_decision_processing_postgresql.py", "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py"]
 
@@ -1245,6 +1249,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/app/wms_integration/outbound_picking/**"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -1254,6 +1259,7 @@ heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_c
 [[mapping]]
 source_glob = "src/app/wms_adapter/outbound_picking/**"
 heavy_tests = ["tests/integration/wms_adapter/outbound_picking/test_completion_confirm_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_source_empty_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_material_decide_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_departure_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_work_plan_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_inbound_batch_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_movement_report_production_wiring.py", "tests/integration/wms_adapter/outbound_picking/test_arrival_report_production_wiring.py",
+    "tests/integration/wms_adapter/outbound_picking/test_manual_bin_completed_postgresql.py",
     "tests/integration/wms_adapter/outbound_picking/test_queue_changed_postgresql.py",
 
     "tests/integration/wms_adapter/outbound_picking/test_plan_delta_production_wiring.py",
@@ -2590,6 +2596,16 @@ heavy_tests = ["tests/integration/wms_adapter/test_transport_callback_receipts.p
 [[mapping]]
 source_glob = "src/core/transaction_wakeup.py"
 heavy_tests = ["tests/e2e/test_active_dispatch_wakeup.py"]
+
+# 临时人工出库联调能力由运行记录 schema 与 WMS Evidence 事务分别承接。
+[[mapping]]
+source_glob = "src/app/workline_integration_debug/**"
+heavy_tests = ["tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260909_0624_133712f6a89a_add_manual_outbound_integration_runs.py"
+heavy_tests = ["tests/integration/workline_integration_debug/test_manual_outbound_run_schema.py"]
+
 [[mapping]]
 source_glob = "src/app/device/{repositories/ingress_history_repository.py,services/device_ingress_history_service.py}"
 heavy_tests = ["tests/integration/device_command/test_ingress_history_postgresql.py"]

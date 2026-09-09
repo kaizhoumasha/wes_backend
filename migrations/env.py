@@ -76,6 +76,7 @@ from src.app.wms_integration.outbound_picking.models import PickingTask  # noqa:
 from src.app.workline.models import (  # noqa: F401
     WorkLine,
 )
+from src.app.workline_integration_debug.models import IntegrationRun, IntegrationRunStep  # noqa: F401
 
 # 导入项目配置
 from src.core.conf import settings

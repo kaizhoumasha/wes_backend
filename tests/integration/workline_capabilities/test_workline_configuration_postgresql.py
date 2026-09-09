@@ -635,7 +635,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                 )
                 assert expected in failure.value.stderr
                 async with sessions.begin() as db:
-                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "d11f8c6fdb0d"
+                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "133712f6a89a"
                     row = await db.get(WorkLinePosition, position.id)
                     assert row is not None and row.device_id == device.id
                     row.device_id = None
