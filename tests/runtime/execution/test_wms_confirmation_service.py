@@ -216,6 +216,7 @@ def test_status_is_the_minimal_approved_closed_set() -> None:
         "DISPATCHING",
         "COMPLETED",
         "RECONCILING",
+        "SUPERSEDED",
     }
 
 
@@ -332,3 +333,21 @@ async def test_operator_retry_rejects_confirmation_with_persisted_response() -> 
             changed_at=datetime(2026, 8, 16, 0, 10),
             deadline_at=datetime(2026, 8, 16, 0, 11),
         )
+
+
+@pytest.mark.asyncio
+async def test_operator_can_supersede_an_unreceived_reconciling_request_without_mutating_it() -> None:
+    service = WmsConfirmationService(repository=FakeWmsConfirmationRepository())
+    confirmation = await _create(service)
+    confirmation.status = WmsConfirmationStatus.RECONCILING
+    original_payload = confirmation.request_payload.copy()
+
+    superseded = await service.supersede_unreceived_reconciling(
+        object(),
+        confirmation,
+        changed_at=datetime(2026, 8, 16, 0, 10),
+    )
+
+    assert superseded.status == WmsConfirmationStatus.SUPERSEDED
+    assert superseded.request_payload == original_payload
+    assert superseded.retry_eligible is False

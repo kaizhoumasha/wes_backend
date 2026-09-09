@@ -38,6 +38,7 @@ from src.app.wms_adapter.outbound_picking.manual_bin_completed_wire import MANUA
 from src.app.wms_adapter.outbound_picking.manual_bin_typed import encode_admission, encode_apply_report
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request as encode_return_batch
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BIN_RETURN_BATCH_OPERATION
+from src.app.wms_adapter.outbound_picking.typed import encode_request as encode_prepare_request
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN, PICKING_TASK_PREPARE_OPERATION
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareNoopReason
@@ -241,6 +242,7 @@ class IntegrationDebugService:
         run_id: str,
         *,
         client_request_id: str,
+        wms_workline_code: str,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -261,7 +263,7 @@ class IntegrationDebugService:
                     existing,
                     run_id=run_id,
                     operation=PICKING_TASK_PREPARE_OPERATION,
-                    request={"task_id": selected_task_id, "workline_code": run.workline_code},
+                    request={"task_id": selected_task_id, "workline_code": wms_workline_code},
                 )
                 return self._snapshot(run, await self._runs.list_steps(db, run_id))
             confirmation = await self._runs.get_prepare_confirmation(db, run.picking_task_id)
@@ -274,9 +276,9 @@ class IntegrationDebugService:
                     or task.workline_id != workline_id
                     or not isinstance(request_data, dict)
                     or request_data.get("task_id") != selected_task_id
-                    or request_data.get("workline_code") != run.workline_code
+                    or request_data.get("workline_code") != wms_workline_code
                 ):
-                    raise IntegrationDebugConflict("prepare confirmation 已绑定其它 WorkLine 或任务")
+                    raise IntegrationDebugConflict("prepare confirmation 已绑定其它 WorkLine、任务或 WMS 参数")
                 await self._append_step(
                     db,
                     run,
@@ -305,6 +307,7 @@ class IntegrationDebugService:
         prepared = await self._prepare.prepare_next_for_workline(
             workline_id,
             expected_task_id=selected_task_id,
+            wms_workline_code=wms_workline_code,
         )
         if not prepared.prepared or prepared.task is None or prepared.confirmation is None:
             reason = prepared.reason or PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
@@ -1039,11 +1042,15 @@ class IntegrationDebugService:
                 )
                 response_payload = response.normalized_payload if response is not None else {}
                 response_data = response_payload.get("data") if isinstance(response_payload, dict) else None
-                step.result_summary_json = (
+                result_summary = (
                     response_payload
                     if isinstance(response_payload, dict) and response_payload
                     else {"response_result": confirmation.response_result}
                 )
+                replacement_history = step.result_summary_json.get("request_replacement_history")
+                if isinstance(replacement_history, list) and replacement_history:
+                    result_summary = {**result_summary, "request_replacement_history": replacement_history}
+                step.result_summary_json = result_summary
                 if should_advance:
                     if step.operation == COMPLETION_CONFIRM_OPERATION and confirmation.response_result == "COMPLETED":
                         if run.task_id is None or run.picking_task_id is None:
@@ -1087,6 +1094,7 @@ class IntegrationDebugService:
         *,
         client_request_id: str,
         wms_non_receipt_confirmed: bool,
+        wms_workline_code: str,
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
@@ -1118,12 +1126,65 @@ class IntegrationDebugService:
                 or confirmation.operation_id != step.operation_id
             ):
                 raise IntegrationDebugConflict("prepare step 与 WmsConfirmation 身份不匹配")
-            await self._confirmations.requeue_reconciling(
-                db,
-                confirmation,
-                changed_at=now,
-                deadline_at=now + timedelta(seconds=30),
-            )
+            request_data = confirmation.request_payload.get("data")
+            if not isinstance(request_data, dict) or request_data.get("task_id") != run.task_id:
+                raise IntegrationDebugConflict("prepare confirmation 请求正文与当前任务不匹配")
+            if request_data.get("workline_code") == wms_workline_code:
+                await self._confirmations.requeue_reconciling(
+                    db,
+                    confirmation,
+                    changed_at=now,
+                    deadline_at=now + timedelta(seconds=30),
+                )
+            else:
+                if run.picking_task_id is None or run.task_id is None:
+                    raise IntegrationDebugConflict("prepare run 缺少 PickingTask 身份")
+                old_history = step.result_summary_json.get("request_replacement_history")
+                history = list(old_history) if isinstance(old_history, list) else []
+                history.append(
+                    {
+                        "operation_id": confirmation.operation_id,
+                        "request": confirmation.request_payload,
+                        "attempt_count": confirmation.attempt_count,
+                        "last_dispatch_at": (
+                            confirmation.last_dispatch_at.isoformat()
+                            if isinstance(confirmation.last_dispatch_at, datetime)
+                            else None
+                        ),
+                        "reason": "WMS_CONFIRMED_NOT_RECEIVED_PARAMETER_CORRECTION",
+                    }
+                )
+                await self._confirmations.supersede_unreceived_reconciling(
+                    db,
+                    confirmation,
+                    changed_at=now,
+                )
+                operation_id = new_uuid7()
+                request = encode_prepare_request(
+                    sdk.wms_operations.outbound_picking_task_prepare(
+                        operation_id=operation_id,
+                        task_id=run.task_id,
+                        work_line_code=wms_workline_code,
+                    ),
+                    timestamp=int(timezone.to_utc(now).timestamp() * 1000),
+                )
+                replacement = await self._confirmations.create_or_get(
+                    db,
+                    operation=PICKING_TASK_PREPARE_OPERATION,
+                    operation_id=operation_id,
+                    picking_task_id=run.picking_task_id,
+                    request_payload=request,
+                    deadline_at=now + timedelta(seconds=30),
+                    created_at=now,
+                )
+                if not isinstance(replacement, WmsConfirmationAcceptance) or replacement.duplicate:
+                    raise RuntimeError("改正后的 prepare identity 未创建唯一 WmsConfirmation")
+                if replacement.confirmation.id is None:
+                    raise RuntimeError("改正后的 prepare confirmation 缺少持久身份")
+                step.operation_id = replacement.confirmation.operation_id
+                step.wms_confirmation_id = replacement.confirmation.id
+                step.request_summary_json = request["data"]
+                step.result_summary_json = {"request_replacement_history": history}
             defer_wakeup(db, task_queue_gateway.enqueue_wms_confirmations)
             step.status = "WAITING"
             step.reason_code = None

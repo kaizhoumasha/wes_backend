@@ -246,6 +246,7 @@ async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_o
         "expected_version": 0,
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
         "wms_non_receipt_confirmed": True,
+        "workline_code": "KT16",
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post(
@@ -263,6 +264,31 @@ async def test_wms_retry_requires_explicit_non_receipt_confirmation_and_passes_o
         "run-1",
         client_request_id=payload["client_request_id"],
         wms_non_receipt_confirmed=True,
+        wms_workline_code="KT16",
+        expected_version=0,
+        actor_id=42,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_passes_the_explicit_wms_workline_code() -> None:
+    service = _service()
+    payload = {
+        "expected_version": 0,
+        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
+        "workline_code": "KT16",
+    }
+    async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/workline-integration-debug/runs/run-1/wms/prepare",
+            json=payload,
+        )
+
+    assert response.status_code == 202
+    service.send_task_prepare.assert_awaited_once_with(
+        "run-1",
+        client_request_id=payload["client_request_id"],
+        wms_workline_code="KT16",
         expected_version=0,
         actor_id=42,
     )

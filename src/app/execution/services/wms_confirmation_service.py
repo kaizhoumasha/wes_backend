@@ -381,6 +381,32 @@ class WmsConfirmationLifecycleService:
         await self._repository.flush(db)
         return confirmation
 
+    async def supersede_unreceived_reconciling(
+        self,
+        db: AsyncSession,
+        confirmation: WmsConfirmation,
+        *,
+        changed_at: datetime,
+    ) -> WmsConfirmation:
+        """WMS 明确未接收且请求参数需改正时，关闭旧身份但保留完整审计。"""
+        if confirmation.status != WmsConfirmationStatus.RECONCILING:
+            raise ValueError("只有 RECONCILING WmsConfirmation 可被替换")
+        if (
+            confirmation.response_evidence_id is not None
+            or confirmation.response_result is not None
+            or confirmation.completed_at is not None
+        ):
+            raise ValueError("已保存 WMS 响应的 confirmation 不得替换")
+        confirmation.status = WmsConfirmationStatus.SUPERSEDED
+        confirmation.retry_eligible = False
+        confirmation.next_attempt_at = None
+        confirmation.claim_token = None
+        confirmation.claimed_at = None
+        confirmation.claim_expires_at = None
+        confirmation.updated_at = changed_at
+        await self._repository.flush(db)
+        return confirmation
+
 
 class WmsConfirmationService(WmsConfirmationLifecycleService):
     """短事务 claim、无锁 HTTP 和独立短事务结果回写 dispatcher。"""

@@ -20,6 +20,7 @@ class WmsConfirmationStatus(str, Enum):
     DISPATCHING = "DISPATCHING"
     COMPLETED = "COMPLETED"
     RECONCILING = "RECONCILING"
+    SUPERSEDED = "SUPERSEDED"
 
 
 class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
@@ -29,7 +30,7 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         CheckConstraint(
-            "status IN ('PENDING', 'DISPATCHING', 'COMPLETED', 'RECONCILING')",
+            "status IN ('PENDING', 'DISPATCHING', 'COMPLETED', 'RECONCILING', 'SUPERSEDED')",
             name="wms_confirmation_status_valid",
         ),
         CheckConstraint("attempt_count >= 0", name="wms_confirmation_attempt_count_nonnegative"),
@@ -45,8 +46,14 @@ class WmsConfirmation(EnterpriseMixin, DataTableMixin, table=True):
             "picking_task_id",
             "operation",
             unique=True,
-            postgresql_where=text("picking_task_id IS NOT NULL AND operation = 'outbound.picking_task.prepare@v1'"),
-            sqlite_where=text("picking_task_id IS NOT NULL AND operation = 'outbound.picking_task.prepare@v1'"),
+            postgresql_where=text(
+                "picking_task_id IS NOT NULL AND operation = 'outbound.picking_task.prepare@v1' "
+                "AND status <> 'SUPERSEDED'"
+            ),
+            sqlite_where=text(
+                "picking_task_id IS NOT NULL AND operation = 'outbound.picking_task.prepare@v1' "
+                "AND status <> 'SUPERSEDED'"
+            ),
         ),
         Index(
             "ix_wms_confirmations_dispatch_eligible",

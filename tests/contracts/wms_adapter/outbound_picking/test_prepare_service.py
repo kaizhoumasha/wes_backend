@@ -194,6 +194,25 @@ async def test_prepare_claims_one_manual_task_and_creates_confirmation_in_lock_o
 
 
 @pytest.mark.asyncio
+async def test_prepare_allows_integration_caller_to_supply_the_wms_workline_code() -> None:
+    service, _worklines, _tasks, confirmations, _queue = _service()
+
+    result = await service.prepare_next_for_workline(
+        7,
+        expected_task_id="PICK-1",
+        wms_workline_code="KT16",
+        now=datetime(2026, 9, 4),
+    )
+
+    assert result.prepared is True
+    assert confirmations.kwargs is not None
+    assert confirmations.kwargs["request_payload"]["data"] == {  # type: ignore[index]
+        "task_id": "PICK-1",
+        "workline_code": "KT16",
+    }
+
+
+@pytest.mark.asyncio
 async def test_prepare_expected_task_fails_closed_before_mutating_queue_head() -> None:
     service, _worklines, tasks, confirmations, queue = _service()
 

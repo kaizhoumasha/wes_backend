@@ -77,8 +77,13 @@ class RefreshWmsActionRequest(ClientActionRequest):
     pass
 
 
+class PrepareTaskRequest(ClientActionRequest):
+    workline_code: _WORKLINE_CODE
+
+
 class RetryWmsActionRequest(ClientActionRequest):
     wms_non_receipt_confirmed: Literal[True]
+    workline_code: _WORKLINE_CODE
 
 
 class RefreshTransportActionRequest(ClientActionRequest):
@@ -358,7 +363,7 @@ async def point2_scan(
 )
 async def send_task_prepare(
     request: Request,
-    payload: ClientActionRequest,
+    payload: PrepareTaskRequest,
     run_id: Annotated[_RUN_ID, Path()],
 ) -> ResponseSchemaModel[IntegrationRunResponse]:
     return _success(
@@ -366,6 +371,7 @@ async def send_task_prepare(
             _service(request).send_task_prepare(
                 run_id,
                 client_request_id=payload.client_request_id,
+                wms_workline_code=payload.workline_code,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )
@@ -548,7 +554,7 @@ async def refresh_wms_action(
 
 @router.post(
     "/runs/{run_id}/wms/retry",
-    summary="[ops:workline-integration-debug:operate] 确认 WMS 未接收并按原身份重发 prepare",
+    summary="[ops:workline-integration-debug:operate] 确认 WMS 未接收并重发 prepare；参数变更时使用新身份",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(RequirePermission("ops:workline-integration-debug:retry-wms"))],
 )
@@ -563,6 +569,7 @@ async def retry_wms_action(
                 run_id,
                 client_request_id=payload.client_request_id,
                 wms_non_receipt_confirmed=payload.wms_non_receipt_confirmed,
+                wms_workline_code=payload.workline_code,
                 expected_version=payload.expected_version,
                 actor_id=request.state.user_id,
             )

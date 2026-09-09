@@ -179,6 +179,7 @@ class IntegrationRunRepository:
             select(WmsConfirmation).where(
                 columns.picking_task_id == picking_task_id,
                 columns.operation == "outbound.picking_task.prepare@v1",
+                columns.status != "SUPERSEDED",
             )
         )
 

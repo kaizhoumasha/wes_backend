@@ -720,6 +720,8 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
         status=WmsConfirmationStatus.RECONCILING,
         response_evidence_id=None,
         response_result=None,
+        completed_at=None,
+        request_payload={"data": {"task_id": "PICK-001", "workline_code": "KT16"}},
     )
     confirmations = AsyncMock()
     confirmations.requeue_reconciling.return_value = repository.confirmation
@@ -736,6 +738,7 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
         run.run_id,
         client_request_id="prepare-request",
         wms_non_receipt_confirmed=True,
+        wms_workline_code="KT16",
         expected_version=0,
         actor_id=42,
     )
@@ -779,9 +782,88 @@ async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() ->
             run.run_id,
             client_request_id="prepare-request",
             wms_non_receipt_confirmed=False,
+            wms_workline_code="KT16",
             expected_version=0,
             actor_id=42,
         )
+
+
+@pytest.mark.asyncio
+async def test_operator_replaces_an_unreceived_prepare_when_wms_workline_code_changes() -> None:
+    run = IntegrationRun(
+        run_id="run-prepare-replace",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="NEEDS_ATTENTION",
+        current_phase="TASK_PREPARE",
+        picking_task_id=19,
+        task_id="PICK-001",
+        attention_code="WMS_CONFIRMATION_RECONCILING",
+    )
+    repository = _Repository(run)
+    step = IntegrationRunStep(
+        run_id=run.run_id,
+        ordinal=1,
+        phase="TASK_PREPARE",
+        status="NEEDS_ATTENTION",
+        client_request_id="prepare-request",
+        operation="outbound.picking_task.prepare@v1",
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
+        wms_confirmation_id=9,
+        reason_code="WMS_CONFIRMATION_RECONCILING",
+    )
+    repository.steps.append(step)
+    repository.confirmation = SimpleNamespace(
+        id=9,
+        operation="outbound.picking_task.prepare@v1",
+        operation_id=step.operation_id,
+        status=WmsConfirmationStatus.RECONCILING,
+        response_evidence_id=None,
+        response_result=None,
+        completed_at=None,
+        attempt_count=1,
+        last_dispatch_at=datetime(2026, 9, 9, tzinfo=UTC),
+        request_payload={"data": {"task_id": "PICK-001", "workline_code": "sorting-3"}},
+    )
+    replacement = SimpleNamespace(
+        id=10,
+        operation="outbound.picking_task.prepare@v1",
+        operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4491",
+        request_payload={"data": {"task_id": "PICK-001", "workline_code": "KT16"}},
+    )
+    confirmations = AsyncMock()
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(replacement, duplicate=False)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.retry_wms_action(
+        run.run_id,
+        client_request_id="prepare-request",
+        wms_non_receipt_confirmed=True,
+        wms_workline_code="KT16",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    confirmations.supersede_unreceived_reconciling.assert_awaited_once()
+    confirmations.create_or_get.assert_awaited_once()
+    assert step.operation_id == replacement.operation_id
+    assert step.wms_confirmation_id == 10
+    assert step.request_summary_json["workline_code"] == "KT16"
+    assert step.result_summary_json["request_replacement_history"][0]["operation_id"].endswith("4490")
+    assert result["status"] == "WAITING_EXTERNAL"
 
 
 @pytest.mark.asyncio
@@ -835,6 +917,7 @@ async def test_prepare_retry_recovers_the_existing_confirmation() -> None:
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-retry",
+        wms_workline_code="sorting-3",
         expected_version=0,
         actor_id=42,
     )
@@ -893,6 +976,7 @@ async def test_prepare_retry_recovers_confirmation_after_plan_already_started_ex
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-executing-recovery",
+        wms_workline_code="sorting-3",
         expected_version=0,
         actor_id=42,
     )
@@ -944,6 +1028,7 @@ async def test_prepare_retry_rejects_confirmation_bound_to_another_workline() ->
         await service.send_task_prepare(
             run.run_id,
             client_request_id="prepare-cross-line",
+            wms_workline_code="KT16",
             expected_version=0,
             actor_id=42,
         )
@@ -1002,6 +1087,7 @@ async def test_prepare_non_head_selection_returns_run_to_bind_task() -> None:
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-non-head",
+        wms_workline_code="KT16",
         expected_version=0,
         actor_id=42,
     )
