@@ -2042,6 +2042,7 @@ class IntegrationDebugService:
             phase=IntegrationDebugPhase.RACK_ARRIVAL,
             status="WAITING",
             actor_id=actor_id,
+            client_request_id=operation_id,
             operation=RETURN_RACK_ARRIVAL_REPORT_OPERATION,
             operation_id=operation_id,
             request=payload["data"],

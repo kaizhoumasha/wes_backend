@@ -28,7 +28,11 @@ from src.core.exceptions import ConflictException, NotFoundException, ServiceUna
 from src.core.rbac import RequirePermission, require_superuser
 from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
 
-router = APIRouter(prefix="/v1/workline-integration-debug", tags=["人工出库联调"])
+router = APIRouter(
+    prefix="/v1/workline-integration-debug",
+    tags=["人工出库联调"],
+    dependencies=[Depends(require_superuser)],
+)
 _RUN_ID = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
 _TEXT = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 _WORKLINE_CODE = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
@@ -627,10 +631,7 @@ async def create_transport(
     "/runs/{run_id}/device-command",
     summary="[ops:workline-integration-debug:operate] 使用 Run 冻结设备创建 ECS 调试命令",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[
-        Depends(RequirePermission("ops:workline-integration-debug:device-command")),
-        Depends(require_superuser),
-    ],
+    dependencies=[Depends(RequirePermission("ops:workline-integration-debug:device-command"))],
 )
 async def create_device_command(
     request: Request,

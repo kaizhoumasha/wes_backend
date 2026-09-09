@@ -1734,6 +1734,7 @@ async def test_return_rack_transport_success_freezes_arrival_report_confirmation
 
     arrival_step = result["steps"][-1]
     assert arrival_step["operation"] == "outbound.return_rack.arrival_report@v1"
+    assert arrival_step["client_request_id"] == arrival_step["operation_id"]
     assert arrival_step["request"]["transport_task_id"] == "TRANSPORT-RETURN-001"
     assert arrival_step["request"]["outcome_revision"] == 2
     assert result["current_phase"] == "RACK_ARRIVAL"
