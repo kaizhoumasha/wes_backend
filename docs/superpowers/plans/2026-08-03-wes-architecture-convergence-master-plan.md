@@ -32,6 +32,18 @@ Phase 12 Task 0–1 已具备 Bootstrap 启动条件；Task 2–7 在人工合�
 `RACK_MOVE` 场景只由 core contract 支持，尚无业务 flow 接入。软件已部署；supplier、physical、business acceptance 均为
 `NOT RUN`。当前联调环境门禁为 `BLOCK`，由两条 `ACK_DEADLINE_EXPIRED` 的 `EVENT_DEBUG` 命令及其后继事件对账围栏导致。
 
+**通用插件装配补充项（2026-09-08）：**
+
+状态：后端 MVP 已实现；前端契约与通用装配界面待后端合并后同步，尚未部署或现场验收。目标真源为[顶层 SPEC 7.6 节](../specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#76-插件插槽与工作线资源绑定)。
+
+- MVP 范围：所有已声明插槽启动前必填，每个插槽关联一个资源；不增加可选插槽开关、数据字典或配置规则框架。
+- 基础插件装配能力：补齐工作位/设备插槽声明、资源关联校验、工作位类型表达、启动与运行解析、通用前端及生成合同。
+  复用现有 WorkLine、设备接入和可靠执行机制；实施前列全消费者、迁移需求和 HEAVY 映射。
+- 验收：不同 fake 插件可以声明不同资源需求；同一插件在不同工作线上解析到各自现场资源；拒绝非法绑定，允许不同设备
+  共用 ECS 地址，切换插件保留基础资源，既有动作不随新配置改址。具体职责和流程测试仍归各插件。
+- Phase 12/13 等具体插件：分别声明自身插槽并消费解析能力；四个扫码设备只是分拣线实例，不是基础层验收前提。
+  通用能力的设计和实施不等待四个扫码职责，也不等于授权实现完整人工业务或完成相应阶段门禁。
+
 **Requirements baseline:** `docs/architecture/SRS.md`
 
 **Design baseline:** `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md`

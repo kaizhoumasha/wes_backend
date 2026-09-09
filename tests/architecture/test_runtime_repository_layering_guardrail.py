@@ -39,7 +39,7 @@ def test_runtime_repositories_do_not_import_service_layer() -> None:
         "__init__.py",
         "material_unit_repository.py",
         "object_transition_event_repository.py",
-        "rack_position_repository.py",
+        "workline_position_repository.py",
         "release_operational_readiness_repository.py",
         "runtime_location_event_repository.py",
         "session_mutation_repository.py",

@@ -351,7 +351,7 @@ MIGRATED_REPOSITORIES = {
         "src/app/runtime/orchestration/repositories/object_transition_event_repository.py"
     ),
     "src/app/workline/repositories/rack_position_repository.py": (
-        "src/app/runtime/orchestration/repositories/rack_position_repository.py"
+        "src/app/runtime/orchestration/repositories/workline_position_repository.py"
     ),
     "src/app/workline/repositories/runtime_hold_repository.py": (
         "src/app/runtime/orchestration/repositories/runtime_hold_repository.py"

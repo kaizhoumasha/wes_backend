@@ -8,14 +8,6 @@ from .object_transition_event import (
     ObjectTransitionEventCreate,
     ObjectTransitionEventResponse,
 )
-from .rack_position import (
-    WorklineRackPosition,
-    WorklineRackPositionBase,
-    WorklineRackPositionCreate,
-    WorklineRackPositionResponse,
-    WorklineRackPositionRole,
-    WorklineRackPositionUpdate,
-)
 from .runtime_location_event import (
     RuntimeLocationEvent,
     RuntimeLocationEventBase,
@@ -24,6 +16,14 @@ from .runtime_location_event import (
 )
 from .session import SessionStatus, WorklineSession, WorklineSessionBase, WorklineSessionCreate, WorklineSessionUpdate
 from .timeline import WorklineTimeline, WorklineTimelineBase, WorklineTimelineCreate
+from .workline_position import (
+    WorkLinePosition,
+    WorkLinePositionBase,
+    WorkLinePositionCreate,
+    WorkLinePositionResponse,
+    WorkLinePositionUpdate,
+    WorklineRackPositionRole,
+)
 
 __all__ = [
     "MaterialUnit",
@@ -39,12 +39,12 @@ __all__ = [
     "RuntimeLocationEventCreate",
     "RuntimeLocationEventResponse",
     "SessionStatus",
-    "WorklineRackPosition",
-    "WorklineRackPositionBase",
-    "WorklineRackPositionCreate",
-    "WorklineRackPositionResponse",
+    "WorkLinePosition",
+    "WorkLinePositionBase",
+    "WorkLinePositionCreate",
+    "WorkLinePositionResponse",
+    "WorkLinePositionUpdate",
     "WorklineRackPositionRole",
-    "WorklineRackPositionUpdate",
     "WorklineSession",
     "WorklineSessionBase",
     "WorklineSessionCreate",

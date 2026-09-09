@@ -67,8 +67,8 @@ if TYPE_CHECKING:
         DeviceCommandRepositoryPort,
         DeviceReadinessReader,
         EvidenceRepositoryPort,
+        PositionRepositoryPort,
         RackPlacementRepositoryPort,
-        RackPositionRepositoryPort,
         RackReplacementBindingRepositoryPort,
         WmsConfirmationRepositoryPort,
         WorkLineRepositoryPort,
@@ -91,7 +91,7 @@ async def current_rack_id(
     *,
     db: object,
     runtime: Any,
-    rack_positions: RackPositionRepositoryPort,
+    rack_positions: PositionRepositoryPort,
     rack_placements: RackPlacementRepositoryPort,
 ) -> str:
     outlet = position_binding(runtime, "PIPELINE_OUTLET")
@@ -99,7 +99,7 @@ async def current_rack_id(
         db, workline_code=runtime.workline.workline_code, logic_location_code=outlet.location_id
     )
     if rack_position is None or not rack_position.enabled:
-        raise ValueError("PIPELINE_OUTLET 未精确关联 enabled WorklineRackPosition")
+        raise ValueError("PIPELINE_OUTLET 未精确关联 enabled WorkLinePosition")
     placements = await rack_placements.list_active_by_workline_position(
         db, workline_code=runtime.workline.workline_code, position_code=rack_position.position_code
     )
@@ -265,7 +265,7 @@ async def build_recovery_fact(
     commands: DeviceCommandRepositoryPort,
     readiness: DeviceReadinessReader,
     confirmations: WmsConfirmationRepositoryPort,
-    rack_positions: RackPositionRepositoryPort,
+    rack_positions: PositionRepositoryPort,
     rack_placements: RackPlacementRepositoryPort,
 ) -> Any:
     if evidence.kind != InboundEvidenceKind.WMS_EVENT or evidence.operation != "inbound.execution.recovery_decided@v1":

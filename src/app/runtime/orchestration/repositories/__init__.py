@@ -8,10 +8,6 @@ from .object_transition_event_repository import (
     ObjectTransitionEventRepository,
     object_transition_event_repository,
 )
-from .rack_position_repository import (
-    WorklineRackPositionRepository,
-    workline_rack_position_repository,
-)
 from .release_operational_readiness_repository import (
     ReleaseOperationalReadinessCountSnapshot,
     ReleaseOperationalReadinessRepository,
@@ -29,6 +25,10 @@ from .timeline_sequence_repository import (
     TimelineSequenceRepository,
     timeline_sequence_repository,
 )
+from .workline_position_repository import (
+    WorkLinePositionRepository,
+    workline_position_repository,
+)
 
 __all__ = [
     "MaterialUnitRepository",
@@ -38,13 +38,13 @@ __all__ = [
     "RuntimeLocationEventRepository",
     "SessionMutationRepository",
     "TimelineSequenceRepository",
-    "WorklineRackPositionRepository",
+    "WorkLinePositionRepository",
     "WorklineSessionRepository",
     "material_unit_repository",
     "object_transition_event_repository",
     "runtime_location_event_repository",
     "session_mutation_repository",
     "timeline_sequence_repository",
-    "workline_rack_position_repository",
+    "workline_position_repository",
     "workline_session_repository",
 ]

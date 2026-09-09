@@ -703,7 +703,7 @@ async def test_factory_builds_assigned_target_fact_without_recomputing_wms_cell(
 
     rack_bindings = _RackBindings(fenced=True)
     rack_bindings.all_old_out_succeeded = all_old_succeeded
-    factory._rack_positions = _RackPositions()
+    factory._positions = _RackPositions()
     factory._position_projections = AsyncMock()
     factory._position_projections.get.return_value = (
         SimpleNamespace(
@@ -1004,7 +1004,7 @@ async def test_factory_rebuilds_transfer_callback_with_admission_and_current_rac
     factory._evidences = _Evidences(result_evidence, source_result, admission_evidence)  # type: ignore[attr-defined]
     factory._commands = _Commands(command)  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(admission)  # type: ignore[attr-defined]
-    factory._rack_positions = _RackPositions()  # type: ignore[attr-defined]
+    factory._positions = _RackPositions()  # type: ignore[attr-defined]
     factory._rack_placements = _Placements()  # type: ignore[attr-defined]
     base = DeviceResultReadyFact("evidence:35", "35", "1.0", "EXEC-21", command_code, "DEVICE-2", "TRACE-21")
 
@@ -1123,7 +1123,7 @@ async def test_factory_builds_ready_replacement_with_release_snapshot_and_two_tr
     )
     factory._evidences.evidence = evidence  # type: ignore[attr-defined]
     factory._wms_confirmations = _Confirmations(confirmation)  # type: ignore[attr-defined]
-    factory._rack_positions = _RackPositions()  # type: ignore[attr-defined]
+    factory._positions = _RackPositions()  # type: ignore[attr-defined]
     factory._rack_placements = _Placements()  # type: ignore[attr-defined]
     events: list[str] = []
 

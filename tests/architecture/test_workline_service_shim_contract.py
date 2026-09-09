@@ -234,6 +234,9 @@ _WORKLINE_SERVICE_REAL_EXPORTS = frozenset(
         "workline_diagnostic_service",
         # workline_configuration_service
         "WorkLineConfigurationService",
+        # workline_position_service
+        "WorkLinePositionService",
+        "workline_position_service",
         # plane_service
         "WorkLinePlaneService",
         "workline_plane_service",
@@ -273,6 +276,9 @@ def test_workline_services_init_lazy_loader_only_resolves_real_exports():
 
     assert "_LAZY_SHIM_MAP" not in vars(workline_services)
     assert workline_services.WorkLineConfigurationService is not None
+    position_module = importlib.import_module("src.app.workline.services.workline_position_service")
+    assert workline_services.WorkLinePositionService is position_module.WorkLinePositionService
+    assert workline_services.__getattr__("workline_position_service") is position_module.workline_position_service
     with pytest.raises(AttributeError):
         getattr(workline_services, "device_command_" + "gateway")
 

@@ -45,9 +45,9 @@ from src.app.runtime.orchestration.services.inbox.object_transition_event_servic
     ObjectTransitionEventService,
     object_transition_event_service,
 )
-from src.app.workline.services.rack_position_service import (
-    WorklineRackPositionService,
-    workline_rack_position_service,
+from src.app.workline.services.workline_position_service import (
+    WorkLinePositionService,
+    workline_position_service,
 )
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str, enum_str
@@ -169,7 +169,7 @@ class ResourceProjectionService:
         bin_placement_repo: BinPlacementRepository = bin_placement_repository,
         bin_material_mount_repo: BinMaterialMountRepository = bin_material_mount_repository,
         bin_cell_occupancy_repo: BinCellOccupancyRepository = bin_cell_occupancy_repository,
-        rack_position_service: WorklineRackPositionService = workline_rack_position_service,
+        position_service: WorkLinePositionService = workline_position_service,
         snapshot_service: ResourceSnapshotService = resource_snapshot_service,
         object_transition_event_service: ObjectTransitionEventService = object_transition_event_service,
         material_unit_repository: MaterialUnitRepository = material_unit_repository,
@@ -180,7 +180,7 @@ class ResourceProjectionService:
         self.bin_placement_repo = bin_placement_repo
         self.bin_material_mount_repo = bin_material_mount_repo
         self.bin_cell_occupancy_repo = bin_cell_occupancy_repo
-        self.rack_position_service = rack_position_service
+        self.position_service = position_service
         self.snapshot_service = snapshot_service
         self.object_transition_event_service = object_transition_event_service
         self.material_unit_repository = material_unit_repository
@@ -247,7 +247,7 @@ class ResourceProjectionService:
             if released_rack_code != rack_code
         ]
         try:
-            position, capacity = await self.rack_position_service.require_position_capacity_for_update(
+            position, capacity = await self.position_service.require_position_capacity_for_update(
                 db,
                 workline_code=workline_code,
                 position_code=position_code,

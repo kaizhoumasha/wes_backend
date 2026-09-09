@@ -88,6 +88,7 @@ def build_deployment_runtime(
                 supported_line_types=(LineType.AUTO, LineType.MANUAL, LineType.HYBRID),
                 business_blocker=RoughSorterBusinessBlocker(),
                 device_roles=rough_sorter_start_plan_builder.device_roles,
+                position_slots=rough_sorter_start_plan_builder.position_slots,
                 wms_confirmation_follow_up_planner=RoughSorterWmsFollowUpPlanner(),
                 transport_outcome_publisher=rough_sorter_transport_outcome_publisher,
             ),

@@ -57,11 +57,11 @@ from src.app.resource.models import (  # noqa: F401
     RackType,
     ResourceStateEvent,
 )
-
-# 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
-from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition  # noqa: F401
 from src.app.runtime.orchestration.models.session import WorklineSession  # noqa: F401
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline  # noqa: F401
+
+# 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition  # noqa: F401
 from src.app.runtime.orchestration.workline_runtime_status_projection import (  # noqa: F401
     WorklineRuntimeStatusProjection,
 )

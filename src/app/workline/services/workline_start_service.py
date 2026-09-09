@@ -5,8 +5,14 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from src.app.workline.installed_plugin import InstalledWorkLinePlugin, resolve_installed_plugin
-from src.app.workline.models.workline import LineType, WorkLine
+from src.app.runtime.orchestration.repositories.workline_position_repository import workline_position_repository
+from src.app.workline.installed_plugin import (
+    InstalledWorkLinePlugin,
+    parse_device_bindings,
+    resolve_installed_plugin,
+    resolve_position_bindings,
+)
+from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 
@@ -34,10 +40,12 @@ class WorkLineStartService:
         plugins: tuple[InstalledWorkLinePlugin, ...],
         workline_repository=workline_repository,
         safety_repository=workline_safety_incident_repository,
+        position_repository=workline_position_repository,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
         self._safety = safety_repository
+        self._positions = position_repository
 
     async def assert_execution_worker_startable(self, db: Any) -> None:
         for plugin_key, plugin_version in await self._worklines.list_active_plugin_identities(db):
@@ -63,7 +71,19 @@ class WorkLineStartService:
             business = await plugin.business_blocker.get_unfinished_workload_summary(db, workline_id)
             if business["count"] > 0:
                 raise WorkLineStartInvalidStateError(f"WorkLine 存在未闭合插件业务: {business.get('sample')}")
-        plan = await plugin.start_plan_builder.build(db, workline)
+        position_rows = await self._positions.list_for_workline(db, workline_id, for_update=True)
+        try:
+            _ = parse_device_bindings(workline.config, plugin.device_roles)
+            position_bindings = resolve_position_bindings(
+                workline.config,
+                plugin.position_slots,
+                tuple(WorkLinePositionInput.model_validate(row) for row in position_rows),
+            )
+        except ValueError as exc:
+            raise WorkLineStartConfigurationError(str(exc)) from exc
+        plan = await plugin.start_plan_builder.build(db, workline, position_bindings=position_bindings)
+        if plan.position_bindings != position_bindings:
+            raise WorkLineStartConfigurationError("START plan 工作位与 WorkLine 装配不一致")
         if (plan.plugin_key, plan.plugin_version) != (plugin.plugin_key, plugin.plugin_version):
             raise WorkLineStartConfigurationError("START plan 的插件身份与部署插件不一致")
         roles = {binding.device_role: binding.device_code for binding in plan.device_bindings}

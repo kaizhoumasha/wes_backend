@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.device.contracts import EcsDeviceMode, EcsDeviceState
 from src.app.device.repositories.device_repository import device_repository
+from src.app.resource.models import RackKind
 from src.app.workline.activation import (
     WorkLineActivationPlan,
     WorkLineDeviceBinding,
     WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import parse_device_bindings
-from src.app.workline.models.workline import WorkLineDeviceRole
+from src.app.workline.models.workline import WorkLineDeviceRole, WorkLinePositionSlot
 from src.app.workline.services.workline_start_service import WorkLineStartConfigurationError
 from src.utils.timezone import timezone
 
@@ -56,6 +57,17 @@ class RoughSorterStartPlanBuilder:
         WorkLineDeviceRole(role_key="PLACEMENT_DEVICE", display_name="放置设备"),
     )
 
+    position_slots = tuple(
+        WorkLinePositionSlot(
+            slot_key=role,
+            display_name=name,
+            position_type="RACK_POSITION" if role == "PIPELINE_OUTLET" else "STATION",
+            location_type=role,
+            allowed_rack_kind=RackKind.SINGLE_LAYER if role == "PIPELINE_OUTLET" else None,
+        )
+        for role, name in zip(POSITION_ROLES, ("测量位", "输送入口", "输送出口", "NG 位"), strict=True)
+    )
+
     def __init__(
         self,
         *,
@@ -67,7 +79,9 @@ class RoughSorterStartPlanBuilder:
         self._adapter_provider = adapter_provider
         self._clock = clock
 
-    async def build(self, db: Any, workline: Any) -> WorkLineActivationPlan:
+    async def build(
+        self, db: Any, workline: Any, *, position_bindings: tuple[WorkLinePositionBinding, ...]
+    ) -> WorkLineActivationPlan:
         try:
             bindings = parse_device_bindings(workline.config, self.device_roles)
         except ValueError as exc:
@@ -104,14 +118,7 @@ class RoughSorterStartPlanBuilder:
             plugin_version=PLUGIN_VERSION,
             flow_mode="ROUGH_SORT_INBOUND",
             device_bindings=tuple(device_bindings),
-            position_bindings=tuple(
-                WorkLinePositionBinding(
-                    position_role=role,
-                    location_id=role,
-                    location_type=role,
-                )
-                for role in POSITION_ROLES
-            ),
+            position_bindings=position_bindings,
         )
 
     async def _validate_live_devices(self, bindings: tuple[WorkLineDeviceBinding, ...]) -> None:

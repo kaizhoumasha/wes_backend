@@ -13,9 +13,19 @@ from src.app.device.contracts import (
     EcsDeviceState,
     EcsDeviceStatus,
 )
+from src.app.workline.activation import WorkLinePositionBinding
 from src.app.workline.services.workline_start_service import WorkLineStartConfigurationError
 
 from rough_sorter.application.start_plan import RoughSorterStartPlanBuilder
+
+
+def _positions(prefix: str = "SITE") -> tuple[WorkLinePositionBinding, ...]:
+    return tuple(
+        WorkLinePositionBinding(
+            position_role=slot.slot_key, location_id=f"{prefix}-{index}", location_type=slot.location_type
+        )
+        for index, slot in enumerate(RoughSorterStartPlanBuilder.position_slots)
+    )
 
 
 def _rough_sorter_configuration() -> dict[str, object]:
@@ -144,7 +154,7 @@ async def test_builder_reads_devices_once_and_each_ecs_endpoint_once() -> None:
     builder, provider = _builder(repository, {"http://ecs-a:8080": devices[:3]})
     workline = SimpleNamespace(id=10, config=_rough_sorter_configuration())
 
-    plan = await builder.build(object(), workline)
+    plan = await builder.build(object(), workline, position_bindings=_positions())
 
     assert repository.calls == [10]
     assert provider.calls == ["http://ecs-a:8080"]
@@ -190,8 +200,12 @@ async def test_builder_keeps_workline_device_and_endpoint_state_isolated_across_
         "TRANSFER_DEVICE": "DEVICE-102",
         "PLACEMENT_DEVICE": "DEVICE-103",
     }
-    first_plan = await builder.build(object(), SimpleNamespace(id=10, config=first_configuration))
-    second_plan = await builder.build(object(), SimpleNamespace(id=20, config=second_configuration))
+    first_plan = await builder.build(
+        object(), SimpleNamespace(id=10, config=first_configuration), position_bindings=_positions()
+    )
+    second_plan = await builder.build(
+        object(), SimpleNamespace(id=20, config=second_configuration), position_bindings=_positions("OTHER")
+    )
     first_configuration.clear()
     second_configuration.clear()
 
@@ -212,13 +226,8 @@ async def test_builder_keeps_workline_device_and_endpoint_state_isolated_across_
         next(item.device_code for item in second_plan.device_bindings if item.device_role == "MEASUREMENT_DEVICE")
         == "DEVICE-101"
     )
-    assert {binding.location_id for binding in first_plan.position_bindings} == {
-        "MEASUREMENT_POSITION",
-        "PIPELINE_INLET",
-        "PIPELINE_OUTLET",
-        "NG_POSITION",
-    }
-    assert first_plan.position_bindings == second_plan.position_bindings
+    assert first_plan.position_bindings == _positions()
+    assert second_plan.position_bindings == _positions("OTHER")
     assert all(
         binding.status_max_age_ms == 10_000 and binding.command_timeout_ms == 30_000
         for binding in first_plan.device_bindings
@@ -253,7 +262,7 @@ async def test_builder_fails_closed_for_invalid_required_device_topology(case: s
     builder, _provider = _builder(repository, {"http://ecs-a:8080": devices})
 
     with pytest.raises(WorkLineStartConfigurationError):
-        await builder.build(object(), SimpleNamespace(id=10, config=configuration))
+        await builder.build(object(), SimpleNamespace(id=10, config=configuration), position_bindings=_positions())
 
 
 @pytest.mark.asyncio
@@ -263,7 +272,9 @@ async def test_builder_maps_invalid_business_configuration_to_start_configuratio
     builder, _provider = _builder(repository, {"http://ecs-a:8080": devices})
 
     with pytest.raises(WorkLineStartConfigurationError):
-        await builder.build(object(), SimpleNamespace(id=10, config={"rough_sorter": {}}))
+        await builder.build(
+            object(), SimpleNamespace(id=10, config={"rough_sorter": {}}), position_bindings=_positions()
+        )
 
 
 @pytest.mark.asyncio
@@ -288,7 +299,9 @@ async def test_builder_fails_closed_when_ecs_fact_is_not_startable(case: str) ->
     )
 
     with pytest.raises(WorkLineStartConfigurationError, match="http://ecs-a:8080"):
-        await builder.build(object(), SimpleNamespace(id=10, config=_rough_sorter_configuration()))
+        await builder.build(
+            object(), SimpleNamespace(id=10, config=_rough_sorter_configuration()), position_bindings=_positions()
+        )
 
     assert adapter.calls == 1
 
@@ -318,10 +331,14 @@ async def test_start_measures_freshness_after_endpoint_response(age_ms: int) -> 
         clock=lambda: datetime.fromtimestamp(now[0], UTC),
     )
     if 0 <= age_ms <= 10_000:
-        await builder.build(object(), SimpleNamespace(id=10, config=_rough_sorter_configuration()))
+        await builder.build(
+            object(), SimpleNamespace(id=10, config=_rough_sorter_configuration()), position_bindings=_positions()
+        )
     else:
         with pytest.raises(WorkLineStartConfigurationError):
-            await builder.build(object(), SimpleNamespace(id=10, config=_rough_sorter_configuration()))
+            await builder.build(
+                object(), SimpleNamespace(id=10, config=_rough_sorter_configuration()), position_bindings=_positions()
+            )
 
 
 @pytest.mark.asyncio
@@ -344,8 +361,8 @@ async def test_only_measurement_role_requires_scan_completed(device_index: int, 
     workline = SimpleNamespace(id=10, config=_rough_sorter_configuration())
     if device_index == 0 and "SCAN_COMPLETED" not in (events or ()):
         with pytest.raises(WorkLineStartConfigurationError, match="SCAN_COMPLETED"):
-            await builder.build(object(), workline)
+            await builder.build(object(), workline, position_bindings=_positions())
     else:
-        plan = await builder.build(object(), workline)
+        plan = await builder.build(object(), workline, position_bindings=_positions())
         assert len(plan.device_bindings) == 3
     assert adapter.calls == 1

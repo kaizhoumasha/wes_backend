@@ -17,10 +17,10 @@ from src.app.execution.models.position_projection import PositionProjection
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.execution.repositories.position_projection_repository import PositionProjectionRepository
 from src.app.resource.models.resource import RackPlacement
-from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
 from src.app.wms_integration.outbound_picking.models import PickingTask, PickingTaskStatus, PickingTaskType
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType, WorkLine, WorkLineRackPositionInput, WorkLineRunMode
+from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput, WorkLineRunMode
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.core.exceptions import BusinessException
@@ -89,8 +89,8 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                         try:
                             await service.save_base(
                                 db,
-                                rack_positions=tuple(
-                                    WorkLineRackPositionInput(
+                                positions=tuple(
+                                    WorkLinePositionInput(
                                         device_id=device_id,
                                         position_code=code,
                                         position_name=code,
@@ -127,8 +127,8 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                         db, workline_id=persisted.work_line_id
                     )
                     assert status.workline_id == persisted.work_line_id
-                    assert len(status.rack_positions) == 4
-                    rows = list((await db.scalars(select(WorklineRackPosition))).all())
+                    assert len(status.positions) == 4
+                    rows = list((await db.scalars(select(WorkLinePosition))).all())
                     assert len(rows) == 4
                     assert {row.workline_id for row in rows} == {persisted.work_line_id}
                     winner_id = persisted.work_line_id
@@ -149,7 +149,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                                 workline_id=winner_id,
                                 version=saved_version,
                                 device_codes=(),
-                                rack_positions=(),
+                                positions=(),
                             )
                 async with sessions() as db:
                     workline = await db.get(WorkLine, winner_id)
@@ -159,20 +159,20 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     status = await WorkLineConfigurationService(plugins=(_plugin(),)).base_configuration(
                         db, workline_id=winner_id
                     )
-                    assert len(status.rack_positions) == 4
+                    assert len(status.positions) == 4
                     edited = tuple(
                         position.model_copy(update={"position_name": position.position_name + " updated"})
-                        for position in status.rack_positions
+                        for position in status.positions
                     )
                     await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
                         db,
                         workline_id=winner_id,
                         version=saved_version,
                         device_codes=("CONFIG-PG-DEVICE",),
-                        rack_positions=edited,
+                        positions=edited,
                     )
                 async with sessions() as db:
-                    rows = list((await db.scalars(select(WorklineRackPosition))).all())
+                    rows = list((await db.scalars(select(WorkLinePosition))).all())
                     assert {row.position_code: row.id for row in rows} == saved_ids
                     assert next(row for row in rows if row.position_code == preserved_code).metadata_json == {
                         "site_note": "preserve"
@@ -198,7 +198,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                         config={},
                     )
                 async with sessions() as db:
-                    rows = list((await db.scalars(select(WorklineRackPosition))).all())
+                    rows = list((await db.scalars(select(WorkLinePosition))).all())
                     assert {row.position_code: row.id for row in rows} == saved_ids
                     assert {row.device_id for row in rows} == {device_id}
                     device = await db.get(Device, device_id)
@@ -226,10 +226,10 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                             workline_id=winner_id,
                             version=line.version,
                             device_codes=(),
-                            rack_positions=(),
+                            positions=(),
                         )
                     await db.rollback()
-                    assert len(list((await db.scalars(select(WorklineRackPosition))).all())) == 4
+                    assert len(list((await db.scalars(select(WorkLinePosition))).all())) == 4
 
             finally:
                 await engine.dispose()
@@ -272,7 +272,7 @@ def test_configuration_can_claim_the_active_replacement_for_a_deleted_device_cod
                 async with sessions() as db:
                     await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
                         db,
-                        rack_positions=(),
+                        positions=(),
                         workline_id=workline_id,
                         version=version,
                         device_codes=("CONFIG-PG-REUSED-DEVICE",),
@@ -575,7 +575,8 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
     asyncio.run(scenario())
 
 
-def test_base_position_device_migration_refuses_lossy_downgrade() -> None:
+@pytest.mark.parametrize("position_type", ["RACK_POSITION", "STATION"])
+def test_base_position_device_migration_refuses_lossy_downgrade(position_type: str) -> None:
     async def scenario() -> None:
         async with temporary_database() as (_database, database_url):
             run_alembic("upgrade", "head", database_url=database_url)
@@ -587,38 +588,69 @@ def test_base_position_device_migration_refuses_lossy_downgrade() -> None:
                     device = Device(device_code="BASE-MIGRATION-DEVICE", device_name="Base migration device")
                     db.add_all([line, device])
                     await db.flush()
-                    position = WorklineRackPosition(
+                    position = WorkLinePosition(
                         workline_id=line.id,
                         workline_code=line.line_code,
                         position_code="RETURN",
                         position_name="Return",
-                        position_role="SMT_RETURN_RACK_POSITION",
-                        allowed_rack_kind="RETURN",
+                        position_type=position_type,
+                        position_role="SMT_RETURN_RACK_POSITION" if position_type == "RACK_POSITION" else None,
+                        allowed_rack_kind="RETURN" if position_type == "RACK_POSITION" else None,
                         device_id=device.id,
                     )
                     db.add(position)
+                async with sessions() as db:
+                    assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_rack_positions')")) is None
+                    assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_positions')")) is not None
+                if position_type == "RACK_POSITION":
+                    await engine.dispose()
+                    run_alembic("downgrade", "a7e8ad4339e5", database_url=database_url)
+                    async with sessions() as db:
+                        legacy = (
+                            await db.execute(
+                                text(
+                                    "SELECT id, workline_id, device_id FROM wes_biz.workline_rack_positions WHERE id = :id"
+                                ),
+                                {"id": position.id},
+                            )
+                        ).one()
+                        assert tuple(legacy) == (position.id, line.id, device.id)
+                        assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_positions')")) is None
+                    await engine.dispose()
+                    run_alembic("upgrade", "head", database_url=database_url)
+                    async with sessions() as db:
+                        restored = await db.get(WorkLinePosition, position.id)
+                        assert restored is not None
+                        assert (restored.workline_id, restored.device_id, restored.position_code) == (
+                            line.id,
+                            device.id,
+                            "RETURN",
+                        )
                 with pytest.raises(subprocess.CalledProcessError) as failure:
                     run_alembic("downgrade", "bebf575cca2b", database_url=database_url)
-                assert "Cannot downgrade while rack positions reference physical devices" in failure.value.stderr
+                expected = (
+                    "Cannot downgrade while rack positions reference physical devices"
+                    if position_type == "RACK_POSITION"
+                    else "普通工作位仍存在"
+                )
+                assert expected in failure.value.stderr
                 async with sessions.begin() as db:
-                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "a7e8ad4339e5"
-                    row = await db.get(WorklineRackPosition, position.id)
+                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "d11f8c6fdb0d"
+                    row = await db.get(WorkLinePosition, position.id)
                     assert row is not None and row.device_id == device.id
                     row.device_id = None
                 # New position purposes also protect against a lossy downgrade.
                 with pytest.raises(subprocess.CalledProcessError):
                     run_alembic("downgrade", "bebf575cca2b", database_url=database_url)
                 async with sessions.begin() as db:
-                    row = await db.get(WorklineRackPosition, position.id)
+                    row = await db.get(WorkLinePosition, position.id)
                     assert row is not None
                     await db.delete(row)
                 run_alembic("downgrade", "bebf575cca2b", database_url=database_url)
                 run_alembic("upgrade", "head", database_url=database_url)
                 async with sessions() as db:
                     assert (
-                        await db.scalar(
-                            text("SELECT to_regclass('wes_biz.ix_wes_biz_workline_rack_positions_device_id')")
-                        )
+                        await db.scalar(text("SELECT to_regclass('wes_biz.ix_wes_biz_workline_positions_device_id')"))
                         is not None
                     )
                     assert await db.get(Device, device.id) is not None

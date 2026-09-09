@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.workline.activation import WorkLineActivationPlan, WorkLineDeviceBinding, WorkLinePositionBinding
-from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.models.workline import (
+    LineType,
+    WorkLine,
+    WorkLineDeviceRole,
+    WorkLinePositionInput,
+    WorkLinePositionSlot,
+)
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
     WorkLineStartInvalidStateError,
@@ -24,7 +30,7 @@ def setup_start():
         line_type=LineType.AUTO,
         version=3,
         plugin_key="example",
-        config={"device_bindings": {"INPUT": "DEVICE-9"}},
+        config={"device_bindings": {"INPUT": "DEVICE-9"}, "position_bindings": {"INPUT": "LOCAL-IN"}},
     )
     plan = WorkLineActivationPlan(
         plugin_key="example",
@@ -53,6 +59,12 @@ def setup_start():
         plugin_key="example",
         plugin_version="1.0",
         supports=lambda _: True,
+        device_roles=(WorkLineDeviceRole(role_key="INPUT", display_name="设备"),),
+        position_slots=(
+            WorkLinePositionSlot(
+                slot_key="INPUT", display_name="入口", position_type="STATION", location_type="HANDOFF_POSITION"
+            ),
+        ),
         business_blocker=None,
         start_plan_builder=builder,
     )
@@ -68,8 +80,16 @@ def setup_start():
     repository.set_active_for_start.side_effect = activate
     safety = AsyncMock()
     safety.get_active_for_workline.return_value = None
+    positions = AsyncMock()
+    positions.list_for_workline.return_value = [
+        WorkLinePositionInput(
+            position_code="LOCAL-IN", position_name="入口", position_type="STATION", logic_location_code="LOC-1"
+        )
+    ]
     return (
-        WorkLineStartService(plugins=(plugin,), workline_repository=repository, safety_repository=safety),
+        WorkLineStartService(
+            position_repository=positions, plugins=(plugin,), workline_repository=repository, safety_repository=safety
+        ),
         line,
         repository,
         safety,
@@ -84,12 +104,14 @@ async def test_start_atomically_publishes_contracts_and_advances_version():
     result = await service.start(db, workline_id=7, version=3)
     assert result is line and line.is_active and line.version == 4
     assert (line.plugin_version, line.flow_mode) == ("1.0", "FLOW")
-    assert line.config == {"device_bindings": {"INPUT": "DEVICE-9"}}
+    assert line.config == {"device_bindings": {"INPUT": "DEVICE-9"}, "position_bindings": {"INPUT": "LOCAL-IN"}}
     assert line.device_contracts["DEVICE-9"]["endpoint_base_url"] == "http://ecs:8080"
     assert "device_role" not in line.device_contracts["DEVICE-9"]
     assert line.position_bindings == {"INPUT": {"location_id": "LOC-1", "location_type": "HANDOFF_POSITION"}}
     repository.get_for_update.assert_awaited_once_with(db, 7)
-    plugin.start_plan_builder.build.assert_awaited_once_with(db, line)
+    plugin.start_plan_builder.build.assert_awaited_once_with(
+        db, line, position_bindings=plugin.start_plan_builder.build.return_value.position_bindings
+    )
 
 
 @pytest.mark.asyncio
@@ -174,3 +196,25 @@ async def test_start_rejects_inconsistent_device_binding_plan(change):
     with pytest.raises(WorkLineStartConfigurationError):
         await service.start(object(), workline_id=7, version=3)
     repository.set_active_for_start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_unbound_positions_and_builder_cannot_override_site_binding():
+    from dataclasses import replace
+
+    service, line, repository, _, plugin = setup_start()
+    line.config = {"device_bindings": {"INPUT": "DEVICE-9"}, "position_bindings": {"INPUT": "OTHER-LINE"}}
+    with pytest.raises(WorkLineStartConfigurationError, match="缺少本线"):
+        await service.start(object(), workline_id=7, version=3)
+    plugin.start_plan_builder.build.assert_not_awaited()
+    line.config["position_bindings"] = {"INPUT": "LOCAL-IN"}
+    plugin.start_plan_builder.build.return_value = replace(
+        plugin.start_plan_builder.build.return_value,
+        position_bindings=(
+            WorkLinePositionBinding(position_role="INPUT", location_id="WRONG", location_type="HANDOFF_POSITION"),
+        ),
+    )
+    with pytest.raises(WorkLineStartConfigurationError, match="装配不一致"):
+        await service.start(object(), workline_id=7, version=3)
+    repository.set_active_for_start.assert_not_awaited()
+    assert not line.is_active and line.device_contracts == {} and line.position_bindings == {}

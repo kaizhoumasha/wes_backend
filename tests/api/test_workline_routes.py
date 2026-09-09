@@ -174,7 +174,7 @@ async def test_configuration_routes_keep_physical_and_plugin_payloads_separate(k
     route = next(route for route in workline_api.router.routes if route.path == path and "PUT" in route.methods)
     assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == [permission]
     fields = (
-        {"device_codes": ("D-2", "D-1"), "rack_positions": ()}
+        {"device_codes": ("D-2", "D-1"), "positions": ()}
         if is_base
         else {"plugin_key": "example_plugin", "config": {"mode": "AUTO"}}
     )

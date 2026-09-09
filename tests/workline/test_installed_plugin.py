@@ -54,6 +54,8 @@ def test_declared_roles_reject_duplicates_and_validate_only_device_bindings() ->
     from src.app.workline.installed_plugin import parse_device_bindings
     from src.app.workline.models.workline import WorkLineDeviceRole
 
+    with pytest.raises(ValueError):
+        WorkLineDeviceRole.model_validate({"role_key": "SCAN", "display_name": "识别设备", "required": False})
     role = WorkLineDeviceRole(role_key="SCAN", display_name="识别设备")
     with pytest.raises(ValueError, match="duplicate device role"):
         replace(_plugin(), device_roles=(role, role))
@@ -96,3 +98,105 @@ def test_device_binding_draft_null_is_unbound_and_complete_binding_preserves_ide
     with pytest.raises(ValueError):
         parse_device_bindings(draft, roles)
     assert parse_device_bindings({"device_bindings": {"SCAN": " D1 "}}, roles) == {"SCAN": " D1 "}
+
+
+def test_position_slots_resolve_each_worklines_resources_without_site_codes_in_plugin() -> None:
+    from dataclasses import replace
+
+    from src.app.workline.installed_plugin import parse_position_bindings, resolve_position_bindings
+    from src.app.workline.models.workline import WorkLinePositionInput, WorkLinePositionSlot
+
+    slot = WorkLinePositionSlot(slot_key="INPUT", display_name="入口", position_type="STATION", location_type="INLET")
+    with pytest.raises(ValueError):
+        WorkLinePositionSlot.model_validate({**slot.model_dump(), "required": False})
+    plugin = replace(_plugin(), position_slots=(slot,))
+    with pytest.raises(ValueError, match="duplicate position slot"):
+        replace(plugin, position_slots=(slot, slot))
+    for site in ("CNV0301", "OTHER-LINE-IN"):
+        position = WorkLinePositionInput(
+            position_code=site, position_name="现场入口", position_type="STATION", logic_location_code=site
+        )
+        config = {"position_bindings": {"INPUT": site}}
+        assert parse_position_bindings(config, plugin.position_slots) == {"INPUT": site}
+        resolved = resolve_position_bindings(config, plugin.position_slots, (position,))
+        assert resolved[0].position_role == "INPUT"
+        assert resolved[0].location_id == site
+        assert resolved[0].location_type == "INLET"
+        with pytest.raises(ValueError):
+            resolve_position_bindings(config, plugin.position_slots, ())
+        with pytest.raises(ValueError):
+            resolve_position_bindings(config, plugin.position_slots, (position.model_copy(update={"enabled": False}),))
+    assert parse_position_bindings({}, plugin.position_slots, require_complete=False) == {}
+    with pytest.raises(ValueError):
+        parse_position_bindings({}, plugin.position_slots)
+
+    output = slot.model_copy(update={"slot_key": "OUTPUT"})
+    slots = (slot, output)
+    for config in (
+        [],
+        {"unknown": {}},
+        {"position_bindings": []},
+        {"position_bindings": {"UNKNOWN": "IN"}},
+        *({"position_bindings": {"INPUT": value}} for value in (True, " ", "x" * 81)),
+        {"position_bindings": {"INPUT": "IN", "OUTPUT": "IN"}},
+    ):
+        with pytest.raises(ValueError):
+            parse_position_bindings(config, slots, require_complete=False)
+    assert parse_position_bindings({"position_bindings": {"INPUT": "x" * 80}}, (slot,)) == {"INPUT": "x" * 80}
+    null_binding = {"position_bindings": {"INPUT": None}}
+    assert resolve_position_bindings(null_binding, (slot,), (), require_complete=False) == ()
+    with pytest.raises(ValueError):
+        parse_position_bindings(null_binding, (slot,))
+
+    position = WorkLinePositionInput(
+        position_code="IN", position_name="入口", position_type="STATION", logic_location_code="CNV0301"
+    )
+    config = {"position_bindings": {"INPUT": "IN"}}
+    rack = WorkLinePositionInput(
+        position_code="IN",
+        position_name="货架位",
+        position_type="RACK_POSITION",
+        position_role="SMT_SORTER_STATION",
+        allowed_rack_kind="FIVE_LAYER",
+        logic_location_code="KT16",
+    )
+    for positions, message in (
+        ((position, position), "工作位编码不能重复"),
+        ((rack,), "类型不匹配"),
+        (
+            (position.model_copy(update={"logic_location_code": None, "external_location_code": "EXTERNAL"}),),
+            "缺少执行位置编码",
+        ),
+    ):
+        with pytest.raises(ValueError, match=message):
+            resolve_position_bindings(config, (slot,), positions)
+    rack_slot = WorkLinePositionSlot(
+        slot_key="INPUT",
+        display_name="货架",
+        position_type="RACK_POSITION",
+        location_type="RACK_POSITION",
+        allowed_rack_kind="SINGLE_LAYER",
+    )
+    with pytest.raises(ValueError, match="类型不匹配"):
+        resolve_position_bindings(config, (rack_slot,), (rack,))
+    with pytest.raises(ValueError, match="执行位置编码不能重复"):
+        resolve_position_bindings(
+            {"position_bindings": {"INPUT": "IN", "OUTPUT": "OUT"}},
+            slots,
+            (position, position.model_copy(update={"position_code": "OUT"})),
+        )
+    with pytest.raises(ValueError):
+        WorkLinePositionSlot.model_validate({**slot.model_dump(), "allowed_rack_kind": "FIVE_LAYER"})
+
+
+def test_station_positions_do_not_require_or_accept_rack_properties() -> None:
+    from pydantic import ValidationError
+
+    from src.app.workline.models.workline import WorkLinePositionInput
+
+    station = {"position_code": "IN", "position_name": "入口", "position_type": "STATION"}
+    assert WorkLinePositionInput(**station).allowed_rack_kind is None
+    with pytest.raises(ValidationError):
+        WorkLinePositionInput(**station, allowed_rack_kind="FIVE_LAYER")
+    with pytest.raises(ValidationError):
+        WorkLinePositionInput(position_code="RACK", position_name="货架位", position_type="RACK_POSITION")
