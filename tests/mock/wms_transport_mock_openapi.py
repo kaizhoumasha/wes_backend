@@ -132,11 +132,11 @@ _RACK_ROTATE_DATA_SCHEMA = _closed_object(
         "kind": {"type": "string", "enum": ["RACK_ROTATE"]},
         "rack_id": _NONBLANK_TEXT_SCHEMA,
         "source": {"oneOf": [_RACK_REFERENCE_SCHEMA, _RACK_POSITION_SCHEMA]},
-        "target": {"oneOf": [_RACK_REFERENCE_SCHEMA, _RACK_POSITION_SCHEMA]},
+        "target": _RACK_POSITION_SCHEMA,
         "target_face": _FACE_SCHEMA,
         "rcs_template_id": _RCS_TEMPLATE_SCHEMA,
     },
-    description="运行时校验 source 与 target 相同。",
+    description="运行时校验 target 为可信精确原点位；source 为 RACK 引用或与 target 相同的 RACK_POSITION。",
 )
 _BIN_MOVE_DATA_SCHEMA = _closed_object(
     ["transport_task_id", "kind", "moves"],

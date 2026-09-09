@@ -1028,13 +1028,44 @@ async def test_wms_return_request_persists_fifo_identity_without_transport_and_w
     assert repository.run.configuration_json["return_batches"]["0"]["operation_id"] == call["operation_id"]
 
 
-async def test_wms_no_batch_waits_then_creates_new_operation_without_changing_transport_identity() -> None:
-    from datetime import timedelta
+@pytest.mark.parametrize("invalid_source", [None, "missing", "group", "pending", "rack", "face", "slot", "member"])
+async def test_wms_no_batch_returns_fifo_to_confirmed_original_slots(invalid_source: str | None) -> None:
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
     service, repository, transport = _harness(phase="BINS_TO_RACK")
     repository.run.configuration_json["return_batches"] = {}
+    repository.run.configuration_json["return_queues"] = {"0": ["A000002653", "A000001922"]}
+    source_step = TransportDebugRunStep(
+        run_id=repository.run.run_id,
+        ordinal=1,
+        group_index=1 if invalid_source == "group" else 0,
+        phase="BINS_TO_INFEED",
+        status="WAITING" if invalid_source == "pending" else "SUCCEEDED",
+        transport_task_id="outbound-source",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    if invalid_source != "missing":
+        repository.steps.append(source_step)
+    repository.members["outbound-source"] = [
+        _member(
+            "outbound-source",
+            object_type="BIN",
+            object_id=code,
+            source={
+                "kind": "RACK_BIN_SLOT",
+                "rack_id": "wrong" if invalid_source == "rack" else "510056",
+                "rack_face": "270" if invalid_source == "face" else "90",
+                "slot_id": "" if invalid_source == "slot" else slot,
+            },
+            target={"kind": "CONVEYOR_POSITION", "location_code": "CNV0301"},
+            face=None,
+        )
+        for code, slot in [("A000001922", "CONFIRMED-01"), ("A000002653", "CONFIRMED-02")]
+    ]
+    if invalid_source == "member":
+        repository.members["outbound-source"][0].status = "UNKNOWN"
     service._wms = SimpleNamespace(create_or_get=AsyncMock())
     await service.advance_run("debug-run-1")
     first = service._wms.create_or_get.call_args.kwargs
@@ -1047,7 +1078,9 @@ async def test_wms_no_batch_waits_then_creates_new_operation_without_changing_tr
     service._confirmations = SimpleNamespace(
         get_by_identity_for_update=AsyncMock(
             return_value=SimpleNamespace(
-                status="COMPLETED", request_payload=first["request_payload"], response_evidence_id=11
+                status="COMPLETED",
+                request_payload=first["request_payload"],
+                response_evidence_id=11,
             )
         )
     )
@@ -1055,12 +1088,25 @@ async def test_wms_no_batch_waits_then_creates_new_operation_without_changing_tr
         get_by_id_without_lock=AsyncMock(return_value=SimpleNamespace(normalized_payload=response))
     )
     assert await service.advance_run("debug-run-1")
-    assert not await service.advance_run("debug-run-1")
-    service._clock = lambda: NOW + timedelta(seconds=1)
-    assert await service.advance_run("debug-run-1")
-    assert service._wms.create_or_get.call_args.kwargs["operation_id"] != first["operation_id"]
+    batch = repository.run.configuration_json["return_batches"]["0"]
+    assert batch["operation_id"] == first["operation_id"]
+    assert service._wms.create_or_get.await_count == 1
     assert repository.steps[0].client_request_id == CLIENT_IDS[0]
-    assert transport.calls == []
+    if invalid_source:
+        assert repository.steps[0].reason_code == "DEBUG_RETURN_SOURCE_MISSING"
+        assert "moves" not in batch
+        assert transport.calls == []
+    else:
+        assert batch["allocation_source"] == "DEBUG_NO_BATCH_ORIGINAL_SLOTS"
+        assert batch["source_transport_task_id"] == "outbound-source"
+        assert [(move["bin_code"], move["slot_id"]) for move in batch["moves"]] == [
+            ("A000002653", "CONFIRMED-02"),
+            ("A000001922", "CONFIRMED-01"),
+        ]
+        await service.advance_run("debug-run-1")
+        assert transport.calls == [CLIENT_IDS[0]]
+        assert not await service.advance_run("debug-run-1")
+        assert service._wms.create_or_get.await_count == 1
 
 
 async def test_partial_wms_ready_freezes_target_and_remaining_fifo_waits_for_physical_success() -> None:

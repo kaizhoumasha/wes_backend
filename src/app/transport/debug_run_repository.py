@@ -26,6 +26,16 @@ if TYPE_CHECKING:
 class TransportDebugRunRepository:
     """只执行自动联调聚合 SQL 和 flush，不自行提交事务。"""
 
+    async def get_return_request_owner(self, db: AsyncSession, operation_id: str) -> TransportDebugRun | None:
+        # 创建可靠义务与冻结请求同事务；会话关闭 autoflush，查询前必须刷入本轮配置。
+        await db.flush()
+        columns = cast("Any", TransportDebugRun).__table__.c
+        return await db.scalar(
+            select(TransportDebugRun).where(
+                columns.configuration_json["return_requests"][operation_id]["operation_id"].as_string() == operation_id
+            )
+        )
+
     async def add_run(
         self,
         db: AsyncSession,

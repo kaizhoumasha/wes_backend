@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import wes_plugin_sdk as sdk
 from sqlalchemy.exc import IntegrityError
@@ -45,7 +45,6 @@ from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     parse_bin_return_batch_request,
     parse_bin_return_batch_response,
 )
-from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.repositories import WorkLineRepository
 from src.core.exceptions import NotFoundException
 from src.core.transaction_wakeup import defer_wakeup
@@ -81,6 +80,30 @@ _RECOVERABLE_ATTENTION_CODES = {
     "TRANSPORT_RESULT_TIMEOUT",
 }
 _EVIDENCE_PAGE_SIZE = 1000
+
+
+class TransportDebugReturnBatchOwner:
+    """人工确认的联调轮次以冻结请求认领可靠义务，不依赖正式工作线的启用状态。"""
+
+    def __init__(self, repository: TransportDebugRunRepository | None = None) -> None:
+        from src.app.transport.debug_run_repository import TransportDebugRunRepository
+
+        self._repository = repository or TransportDebugRunRepository()
+
+    async def validate_owner(self, db: AsyncSession, *, workline_id: int, request_payload: dict[str, Any]) -> bool:
+        try:
+            request = parse_bin_return_batch_request(request_payload)
+        except (ValueError, TypeError):
+            return False
+        run = await self._repository.get_return_request_owner(db, str(request.operation_id))
+        if run is None:
+            return False
+        configuration = run.configuration_json
+        return (
+            configuration.get("workline_id") == workline_id
+            and configuration.get("workline_code") == request.data.workline_code
+            and configuration.get("return_requests", {}).get(str(request.operation_id)) == request_payload
+        )
 
 
 class TransportDebugRunContractError(ValueError):
@@ -158,7 +181,7 @@ class TransportDebugRunService:
     ) -> None:
         self._worklines = WorkLineRepository()
         self._confirmations = WmsConfirmationRepository()
-        self._wms = WmsConfirmationLifecycleService(workline_owner=ReturnBatchOwnerService())
+        self._wms = WmsConfirmationLifecycleService(workline_owner=TransportDebugReturnBatchOwner(repository))
         self._wms_evidence = InboundEvidenceRepository()
         self._sessions = session_factory
         self._repository = repository
@@ -215,8 +238,8 @@ class TransportDebugRunService:
                 if await self._repository.get_active_run(db, for_update=True) is not None:
                     raise TransportDebugRunConflict("an active debug run already exists")
                 workline = await self._worklines.get_by_line_code(db, request.workline_code)
-                if workline is None or not workline.is_active:
-                    raise TransportDebugRunContractError("工作线不存在或未启用")
+                if workline is None:
+                    raise TransportDebugRunContractError("联调 WMS 归属工作线未登记")
                 configuration["workline_id"] = workline.id
                 first_request = build_debug_transport_request(run, first_step)
                 if first_request is None:
@@ -522,13 +545,21 @@ class TransportDebugRunService:
                     sdk.BinReturnCandidate(i, code, "CNV0302") for i, code in enumerate(candidates, 1)
                 ),
             )
+            payload = encode_request(intent, timestamp=_ceil_unix_ms(now))
+            run.configuration_json = {
+                **run.configuration_json,
+                "return_requests": {
+                    **run.configuration_json.get("return_requests", {}),
+                    operation_id: payload,
+                },
+            }
             try:
                 _ = await self._wms.create_or_get(
                     db,
                     operation=BIN_RETURN_BATCH_OPERATION,
                     operation_id=operation_id,
                     workline_id=run.configuration_json["workline_id"],
-                    request_payload=encode_request(intent, timestamp=_ceil_unix_ms(now)),
+                    request_payload=payload,
                     deadline_at=now + timedelta(minutes=30),
                     created_at=now,
                 )
@@ -565,7 +596,48 @@ class TransportDebugRunService:
                 _ = self._set_attention(run, step, "WMS_RETURN_RESPONSE_INVALID", now, str(error))
                 return "CHANGED"
             if isinstance(outcome, sdk.BinBatchNoBatch):
-                batch = {"retry_at": (now + timedelta(milliseconds=outcome.retry_after_ms)).isoformat()}
+                # 现场自动联调约定：无 WMS 批次时按本组已成功出库的原槽位退回，保持请求 FIFO。
+                source_steps = [
+                    item
+                    for item in await self._repository.list_steps(db, run.run_id)
+                    if item.group_index == step.group_index
+                    and item.phase == TransportDebugRunPhase.BINS_TO_INFEED.value
+                    and item.status == TransportDebugRunStepStatus.SUCCEEDED.value
+                    and item.transport_task_id is not None
+                ]
+                if len(source_steps) != 1:
+                    _ = self._set_attention(run, step, "DEBUG_RETURN_SOURCE_MISSING", now)
+                    return "CHANGED"
+                source_task_id = source_steps[0].transport_task_id
+                members = await self._repository.list_transport_members(db, source_task_id)
+                sources = {member.object_id: member for member in members}
+                request_data = confirmation.request_payload["data"]
+                moves = []
+                for candidate in request_data["return_candidates"]:
+                    member = sources.get(candidate["bin_code"])
+                    if (
+                        member is None
+                        or member.status != TransportTaskStatus.SUCCEEDED.value
+                        or member.source_json.get("kind") != "RACK_BIN_SLOT"
+                        or member.source_json.get("rack_id") != request_data["rack_id"]
+                        or member.source_json.get("rack_face") != request_data["rack_face"]
+                        or not member.source_json.get("slot_id")
+                    ):
+                        _ = self._set_attention(run, step, "DEBUG_RETURN_SOURCE_MISSING", now)
+                        return "CHANGED"
+                    moves.append(
+                        {
+                            "bin_code": member.object_id,
+                            "rack_id": member.source_json["rack_id"],
+                            "rack_face": member.source_json["rack_face"],
+                            "slot_id": member.source_json["slot_id"],
+                        }
+                    )
+                batch.update(
+                    moves=moves,
+                    allocation_source="DEBUG_NO_BATCH_ORIGINAL_SLOTS",
+                    source_transport_task_id=source_task_id,
+                )
             elif isinstance(outcome, sdk.BinReturnBatchReady):
                 batch["moves"] = [
                     {
@@ -1122,6 +1194,7 @@ def _utc_iso(value: datetime) -> str:
 
 
 __all__ = [
+    "TransportDebugReturnBatchOwner",
     "TransportDebugRunConflict",
     "TransportDebugRunContractError",
     "TransportDebugRunEventPublisher",

@@ -265,7 +265,7 @@ kind
 | DTO 族 | `kind` | 来源方法 | `data` 专属字段 |
 | --- | --- | --- | --- |
 | `RackTransportData` | `RACK_MOVE` | `move_rack()` | `rcs_template_id + rack_id + source + target`；CTU03 的 `target_face` 可选且 `None` 时省略，其它模板必填；`source != target` |
-| `RackTransportData` | `RACK_ROTATE` | `rotate_rack()` | `rcs_template_id + rack_id + source + target + target_face`；`source == target` |
+| `RackTransportData` | `RACK_ROTATE` | `rotate_rack()` | `rcs_template_id + rack_id + source + target + target_face`；`target` 为准入确认的精确原点位；`source` 为货架引用或与目标相同的精确位置 |
 | `BinTransportData` | `BIN_MOVE` | `move_bins()` | `moves[1..4] { container_id + source + target }` |
 | `BinTransportData` | `BIN_EXCHANGE` | `exchange_bins()` | `moves[2\|4] { container_id + source + target }`，且为 1～2 个二元闭环 |
 
@@ -286,7 +286,7 @@ Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要
 | 区域内货架到工作位 | `CTU01` | `ZONE` | `RACK_POSITION` | 等于请求目标 |
 | 指定货架到工作位 | `CTU01` | `RACK` | `RACK_POSITION` | 等于请求目标 |
 | 精确库位货架到工作位 | `CTU01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
-| 指定货架在当前工作位原地换面 | `CTU02` | `RACK` | `RACK` | 返回可信精确位置，面向等于 `target_face` |
+| 指定货架在当前工作位原地换面 | `CTU02` | `RACK` | `RACK_POSITION` | 返回冻结的精确原点位，面向等于 `target_face` |
 | 工作位原地换面 | `CTU02` | `RACK_POSITION` | `RACK_POSITION` | 位置不变，面向等于 `target_face` |
 | 指定货架返回指定区域 | `CTU03` | `RACK` | `ZONE` | 指定区域内的精确库位 |
 | 工作位按货架编号返回库位 | `CTU03` | `RACK_POSITION` | `RACK` | WMS/RCS 选定的精确库位 |

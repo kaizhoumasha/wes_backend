@@ -9,6 +9,8 @@ from wes_plugin_sdk import BinReturnCandidate, wms_operations
 
 from src.app.execution.models import InboundEvidence, WmsConfirmation, WmsConfirmationStatus
 from src.app.execution.services import WmsConfirmationService
+from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
+from src.app.transport.models import TransportDebugRun
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 from src.app.wms_adapter.factory import build_wms_client
 from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request
@@ -28,6 +30,90 @@ from tests.support.transport_broker import TransportBrokerWorker, close_transpor
 
 pytest_plugins = ("tests.integration.conftest",)
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
+
+
+async def test_inactive_debug_owner_dispatches_with_real_worker(confirmation_database, monkeypatch):
+    monkeypatch.setenv("ENABLED_WORKLINE_PLUGINS", "[]")
+    database_url, sessions = confirmation_database
+    operation_id = new_uuid7()
+    now = timezone.now_for_db()
+    server = ConfirmationServer(status_code=200, code="DECIDED", data={"result": "NO_BATCH", "retry_after_ms": 1000})
+    worker = TransportBrokerWorker(
+        database_url=database_url, redis_url=os.environ["INTEGRATION_REDIS_URL"], wms_base_url=server.url
+    )
+    service = WmsConfirmationService(workline_owner=TransportDebugReturnBatchOwner(), session_factory=sessions)
+    success, primary_error = False, None
+
+    async def cleanup_database():
+        pass
+
+    try:
+        async with sessions.begin() as db:
+            line = WorkLine(
+                id=347454468883008,
+                line_code=f"DEBUG-{operation_id[-12:]}",
+                line_name="debug",
+                line_type=LineType.AUTO,
+                is_active=False,
+            )
+            db.add(line)
+            await db.flush()
+            request = encode_request(
+                wms_operations.outbound_bin_return_batch(
+                    operation_id=operation_id,
+                    workline_code=line.line_code,
+                    rack_id="RACK-1",
+                    rack_face="A",
+                    return_candidates=(BinReturnCandidate(1, "BIN-1", "CNV0302"),),
+                ),
+                timestamp=1,
+            )
+            db.add(
+                TransportDebugRun(
+                    run_id=f"debug-run-{new_uuid7()}",
+                    status="RUNNING",
+                    active_scope="GLOBAL",
+                    rack_id="RACK-1",
+                    current_phase="BINS_TO_RACK",
+                    created_by_user_id=1,
+                    created_at=now,
+                    updated_at=now,
+                    configuration_json={
+                        "workline_id": line.id,
+                        "workline_code": line.line_code,
+                        "return_requests": {operation_id: request},
+                    },
+                )
+            )
+            await service.create_or_get(
+                db,
+                operation=request["operation"],
+                operation_id=operation_id,
+                workline_id=line.id,
+                request_payload=request,
+                deadline_at=now + timedelta(minutes=5),
+                created_at=now,
+            )
+        server.start()
+        worker.start()
+        worker.result(worker.send("src.celery_app.tasks.wms_confirmation.dispatch_wms_confirmations_batch"))
+        async with sessions() as db:
+            confirmation = await db.scalar(select(WmsConfirmation).where(WmsConfirmation.operation_id == operation_id))
+            assert confirmation.status == WmsConfirmationStatus.COMPLETED
+            assert confirmation.response_result == "NO_BATCH"
+            assert server.requests == [{"path": "/api/v1/wes/decisions", "envelope": request}]
+        success = True
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        await close_transport_test_resources(
+            worker=worker,
+            runtime=None,
+            server=server,
+            cleanup_database=cleanup_database,
+            success=success,
+            primary_error=primary_error,
+        )
 
 
 @pytest.mark.parametrize("result,closed_workline", [("NO_BATCH", False), ("READY", False), ("NO_BATCH", True)])

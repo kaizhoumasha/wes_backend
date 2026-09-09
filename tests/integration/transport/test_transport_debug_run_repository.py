@@ -57,6 +57,30 @@ def _aggregate(run_id: str) -> tuple[TransportDebugRun, TransportDebugRunStep]:
     return run, step
 
 
+async def test_return_owner_reads_unflushed_request_and_keeps_closed_run_identity(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    repository = TransportDebugRunRepository()
+    run, step = _aggregate(f"debug-run-{new_uuid7()}")
+    operation_id = new_uuid7()
+    async with integration_session_factory.begin() as db:
+        await repository.add_run(db, run, step)
+        run.configuration_json = {"return_requests": {operation_id: {"operation_id": operation_id}}}
+        found = await repository.get_return_request_owner(db, operation_id)
+        assert found is not None and found.run_id == run.run_id
+        assert await repository.get_return_request_owner(db, new_uuid7()) is None
+        run.active_scope = None
+        run.status = "COMPLETED"
+    try:
+        async with integration_session_factory.begin() as db:
+            found = await repository.get_return_request_owner(db, operation_id)
+            assert found is not None and found.status == "COMPLETED"
+    finally:
+        async with integration_session_factory.begin() as db:
+            await db.execute(delete(TransportDebugRunStep).where(TransportDebugRunStep.run_id == run.run_id))
+            await db.execute(delete(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+
+
 async def test_debug_run_repository_claims_once_and_recovers_expired_lease(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
