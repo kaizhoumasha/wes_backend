@@ -454,3 +454,43 @@ async def test_create_rejects_unknown_workline_before_transport_is_created() -> 
     with pytest.raises(TransportDebugRunContractError, match="工作线"):
         await service.create_run(_request(), actor_id=7)
     assert repository.runs == {}
+
+
+async def test_operator_confirmed_debug_run_accepts_inactive_workline() -> None:
+    service, repository, _, _ = _service()
+    service._worklines.get_by_line_code.return_value = SimpleNamespace(id=1, is_active=False)
+    snapshot = await service.create_run(_request(), actor_id=7)
+    assert snapshot.current_step.transport_task_id == "transport-1"
+    assert repository.runs[snapshot.run_id].configuration_json["workline_id"] == 1
+
+
+async def test_debug_return_owner_requires_exact_frozen_request() -> None:
+    import wes_plugin_sdk as sdk
+
+    from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
+    from src.app.wms_adapter.outbound_picking.return_batch_typed import encode_request
+
+    payload = encode_request(
+        sdk.wms_operations.outbound_bin_return_batch(
+            operation_id="01990f0d-1800-7000-8000-000000000001",
+            workline_code="sorting-3",
+            rack_id="510056",
+            rack_face="90",
+            return_candidates=(sdk.BinReturnCandidate(1, "B1", "CNV0302"),),
+        ),
+        timestamp=1788960000000,
+    )
+    run = SimpleNamespace(
+        configuration_json={
+            "workline_id": 1,
+            "workline_code": "sorting-3",
+            "return_requests": {payload["operation_id"]: payload},
+        }
+    )
+    repository = SimpleNamespace(get_return_request_owner=AsyncMock(return_value=run))
+    owner = TransportDebugReturnBatchOwner(repository)
+    assert await owner.validate_owner(None, workline_id=1, request_payload=payload)
+    assert not await owner.validate_owner(None, workline_id=2, request_payload=payload)
+    assert not await owner.validate_owner(None, workline_id=1, request_payload={**payload, "timestamp": 1})
+    repository.get_return_request_owner.return_value = None
+    assert not await owner.validate_owner(None, workline_id=1, request_payload=payload)

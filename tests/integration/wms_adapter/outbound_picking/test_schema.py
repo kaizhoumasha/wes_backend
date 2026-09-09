@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import subprocess
+
 import asyncpg
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from src.app.execution.models import InboundEvidence, InboundEvidenceKind
+from src.app.workline.models import WorkLine
+from src.utils.timezone import timezone
 from tests.support.postgresql_catalog import assert_database_head
 from tests.support.postgresql_heavy import run_alembic, temporary_database
 
-HEAD_REVISION = "3abf401aebaa"
+HEAD_REVISION = "910b24bb0e05"
 
 
 @pytest.mark.asyncio
@@ -144,3 +150,67 @@ async def test_picking_task_issued_migration_builds_the_reviewed_postgresql_sche
         assert f"{owner} IS NOT NULL" in owner_check
     assert "= 1" in owner_check
     assert "ix_wes_biz_wms_confirmations_workline_id" in confirmation_indexes
+
+
+@pytest.mark.asyncio
+async def test_evidence_workline_id_migration_preserves_rows_and_rejects_lossy_downgrade() -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "3abf401aebaa", database_url=database_url)
+        engine = create_async_engine(database_url)
+        try:
+            async with async_sessionmaker(engine).begin() as db:
+                db.add_all(
+                    [
+                        WorkLine(id=42, line_code="SMALL", line_name="Small owner", is_active=False),
+                        WorkLine(id=347454468883008, line_code="LARGE", line_name="Large owner", is_active=False),
+                    ]
+                )
+                await db.flush()
+                db.add(
+                    InboundEvidence(
+                        id=43,
+                        kind=InboundEvidenceKind.DEVICE_EVENT,
+                        source_identity="bigint-migration",
+                        payload_digest="a" * 64,
+                        normalized_payload={"preserved": True},
+                        received_at=timezone.now_for_db(),
+                        workline_id=42,
+                        device_code="SCANNER",
+                    )
+                )
+        finally:
+            await engine.dispose()
+        run_alembic("upgrade", HEAD_REVISION, database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            assert (
+                await connection.fetchval(
+                    "SELECT data_type FROM information_schema.columns WHERE table_schema='wes_biz' "
+                    "AND table_name='inbound_evidences' AND column_name='workline_id'"
+                )
+                == "bigint"
+            )
+            row = await connection.fetchrow(
+                "SELECT workline_id, normalized_payload->>'preserved' AS preserved "
+                "FROM wes_biz.inbound_evidences WHERE id=43"
+            )
+            assert tuple(row) == (42, "true")
+            await connection.execute("UPDATE wes_biz.inbound_evidences SET workline_id=347454468883008 WHERE id=43")
+            with pytest.raises(asyncpg.ForeignKeyViolationError):
+                await connection.execute("UPDATE wes_biz.inbound_evidences SET workline_id=999 WHERE id=43")
+        finally:
+            await connection.close()
+        with pytest.raises(subprocess.CalledProcessError):
+            run_alembic("downgrade", "3abf401aebaa", database_url=database_url)
+        connection = await asyncpg.connect(database_url.replace("postgresql+asyncpg", "postgresql", 1))
+        try:
+            await assert_database_head(connection, HEAD_REVISION)
+            assert (
+                await connection.fetchval("SELECT workline_id FROM wes_biz.inbound_evidences WHERE id=43")
+                == 347454468883008
+            )
+            await connection.execute("UPDATE wes_biz.inbound_evidences SET workline_id=42 WHERE id=43")
+        finally:
+            await connection.close()
+        run_alembic("downgrade", "3abf401aebaa", database_url=database_url)
+        run_alembic("upgrade", HEAD_REVISION, database_url=database_url)

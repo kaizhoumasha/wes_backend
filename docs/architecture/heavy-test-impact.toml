@@ -1207,6 +1207,8 @@ heavy_tests = []
 [[mapping]]
 source_glob = "src/app/execution/{models/inbound_evidence.py,services/inbound_evidence_service.py}"
 heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
     "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
@@ -2690,3 +2692,11 @@ heavy_tests = [
 [[mapping]]
 source_glob = "migrations/versions/20260909_0915_d11f8c6fdb0d_support_generic_workline_position_slots.py"
 heavy_tests = ["tests/integration/test_initial_schema_baseline_postgresql.py", "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
+source_glob = "migrations/versions/20260910_0327_910b24bb0e05_widen_inbound_evidence_workline_id.py"
+heavy_tests = [
+    "tests/integration/wms_adapter/outbound_picking/test_schema.py",
+    "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+    "tests/integration/execution/test_execution_constraints.py",
+]

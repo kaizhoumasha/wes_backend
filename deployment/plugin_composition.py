@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
+from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
 from src.app.wms_adapter.confirmation_adapter import WmsConfirmationAdapter
 
 # Web/worker 组合根注册共享外键目标；不依赖具体插件是否安装或启用。
@@ -105,7 +106,9 @@ def build_deployment_runtime(
         wms_confirmation_follow_up_planner=InstalledPluginWmsFollowUpPlanner(plugins),
         task_queue_gateway=task_queue_gateway,
         picking_task_owner=PickingTaskConfirmationOwnerService(),
-        workline_owner=CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService()),
+        workline_owner=CombinedWorkLineConfirmationOwner(
+            CombinedWorkLineConfirmationOwner(ReturnBatchOwnerService(), TransportDebugReturnBatchOwner())
+        ),
     )
     recovery_handler = None
     if "rough_sorter" in enabled_plugin_keys:

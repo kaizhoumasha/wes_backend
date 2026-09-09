@@ -602,6 +602,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                 async with sessions() as db:
                     assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_rack_positions')")) is None
                     assert await db.scalar(text("SELECT to_regclass('wes_biz.workline_positions')")) is not None
+                    head_revision = await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version"))
                 if position_type == "RACK_POSITION":
                     await engine.dispose()
                     run_alembic("downgrade", "a7e8ad4339e5", database_url=database_url)
@@ -635,7 +636,7 @@ def test_base_position_device_migration_refuses_lossy_downgrade(position_type: s
                 )
                 assert expected in failure.value.stderr
                 async with sessions.begin() as db:
-                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == "133712f6a89a"
+                    assert await db.scalar(text("SELECT version_num FROM wes_sys.alembic_version")) == head_revision
                     row = await db.get(WorkLinePosition, position.id)
                     assert row is not None and row.device_id == device.id
                     row.device_id = None

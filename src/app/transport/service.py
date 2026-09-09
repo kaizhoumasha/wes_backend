@@ -95,7 +95,7 @@ if TYPE_CHECKING:
 _CLAIM_SECONDS = 30
 _SUBMIT_TIMEOUT_SECONDS = 10
 _PUBLISH_TIMEOUT_SECONDS = 10
-_RESULT_TIMEOUT = timedelta(minutes=10)
+_RESULT_TIMEOUT = timedelta(minutes=20)
 _RETRY_DELAY = timedelta(seconds=2)
 _SUBMIT_CONTINUE_BUDGET_SECONDS = 5.0
 
@@ -1164,6 +1164,11 @@ class TransportService:
                 members[0].target_json = frozen_position
             if projection.arrival_face == request.target_face:
                 raise TransportContractError("target face equals current face")
+            # 换面目标冻结为准入已确认的原点位，不能把货架编号当作 RCS 目标点位。
+            submit_payload["target"] = _json_value(members[0].target_json)
+            frozen_request_body = build_submit_request_body(submit_operation_id, submit_timestamp_ms, submit_payload)
+            task.submit_request_body = frozen_request_body.decode("utf-8")
+            task.submit_request_body_digest = request_body_digest(frozen_request_body)
         elif isinstance(request, (MoveBinsRequest, ExchangeBinsRequest)):
             if allow_debug_rack_face and (
                 not isinstance(request, MoveBinsRequest)

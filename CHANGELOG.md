@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.2.3] - 2026-09-09
+
+### Fixed
+
+- 自动联调按冻结请求验证 WMS 归属；NO_BATCH 按实际 FIFO 退回已成功出库记录的原槽位。
+- 换面请求使用准入确认的精确目标，运输结果等待窗口调整为 20 分钟。
+- 将 InboundEvidence 工作线外键扩展为 bigint，迁移 `910b24bb0e05` 保留既有身份。
+
 ## [0.40.2.2] - 2026-09-09
 
 ### Fixed

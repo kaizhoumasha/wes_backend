@@ -105,16 +105,17 @@ def test_transport_submit_openapi_schema_is_closed_and_documents_runtime_invaria
     assert "rack bin slot 唯一" in descriptions_by_kind["BIN_MOVE"]
     assert "位置唯一" in descriptions_by_kind["BIN_EXCHANGE"]
     assert "source 与 target 不同" in descriptions_by_kind["RACK_MOVE"]
-    assert "source 与 target 相同" in descriptions_by_kind["RACK_ROTATE"]
+    assert "target 为可信精确原点位" in descriptions_by_kind["RACK_ROTATE"]
     rotate_schema = next(
         envelope
         for envelope in submit_schema["oneOf"]
         if envelope["properties"]["data"]["properties"]["kind"]["enum"] == ["RACK_ROTATE"]
     )["properties"]["data"]
-    for field_name in ("source", "target"):
-        assert {
-            variant["properties"]["kind"]["enum"][0] for variant in rotate_schema["properties"][field_name]["oneOf"]
-        } == {"RACK", "RACK_POSITION"}
+    assert {variant["properties"]["kind"]["enum"][0] for variant in rotate_schema["properties"]["source"]["oneOf"]} == {
+        "RACK",
+        "RACK_POSITION",
+    }
+    assert rotate_schema["properties"]["target"]["properties"]["kind"]["enum"] == ["RACK_POSITION"]
     rack_id_schema = submit_schema["oneOf"][0]["properties"]["data"]["properties"]["rack_id"]
     assert "不得包含 NUL" in rack_id_schema["description"]
     assert rack_id_schema["pattern"] == r".*\S.*"
@@ -443,7 +444,6 @@ def test_transport_submit_mock_accepts_rack_reference_rotation() -> None:
     rack_id = envelope["data"]["rack_id"]
     rack_reference = {"kind": "RACK", "location_code": rack_id}
     envelope["data"]["source"] = rack_reference
-    envelope["data"]["target"] = rack_reference
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/v1/wes/transport-requests", json=envelope)
@@ -455,7 +455,6 @@ def test_transport_submit_mock_rejects_rotation_for_a_different_rack_reference()
     envelope = deepcopy(RACK_ROTATE)
     rack_reference = {"kind": "RACK", "location_code": "other-rack"}
     envelope["data"]["source"] = rack_reference
-    envelope["data"]["target"] = rack_reference
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/v1/wes/transport-requests", json=envelope)
@@ -923,7 +922,7 @@ def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventin
             "transport_task_id": "transport-rack-rotate",
             "rack_id": rack_id,
             "source": {"kind": "RACK", "location_code": rack_id},
-            "target": {"kind": "RACK", "location_code": rack_id},
+            "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
             "target_face": "270",
             "rcs_template_id": "CTU02",
         }
@@ -1430,3 +1429,19 @@ def test_return_batch_requires_explicit_infeed_to_return_handoff_arrival():
         assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "NO_BATCH"
         request["operation_id"] = "019f12d0-58d7-7b4d-a23a-1b90aa5d4515"
         assert client.post("/api/v1/wes/decisions", json=request).json()["data"]["result"] == "READY"
+
+
+@pytest.mark.parametrize(
+    "source,target,accepted",
+    [
+        ({"kind": "RACK", "location_code": "rack-2"}, {"kind": "RACK_POSITION", "location_code": "KT16"}, True),
+        ({"kind": "RACK_POSITION", "location_code": "KT16"}, {"kind": "RACK_POSITION", "location_code": "KT16"}, True),
+        ({"kind": "RACK_POSITION", "location_code": "KT15"}, {"kind": "RACK_POSITION", "location_code": "KT16"}, False),
+        ({"kind": "RACK", "location_code": "rack-2"}, {"kind": "RACK", "location_code": "rack-2"}, False),
+        ({"kind": "RACK", "location_code": "wrong-rack"}, {"kind": "RACK_POSITION", "location_code": "KT16"}, False),
+    ],
+)
+def test_rotate_wire_requires_precise_original_target(source, target, accepted) -> None:
+    data = deepcopy(RACK_ROTATE["data"])
+    data.update(source=source, target=target)
+    assert wms_mock_server._valid_rack_data(data, "RACK_ROTATE") is accepted

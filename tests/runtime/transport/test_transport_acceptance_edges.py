@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from datetime import timedelta
 from unittest.mock import AsyncMock
 
@@ -303,6 +305,11 @@ async def test_debug_rotate_uses_latest_applied_debug_transport_fact(db_engine: 
 
     task = await _load_task(db_engine, rotate.transport_task_id)
     assert task.request_json["position"] == {"kind": "RACK", "location_code": "rack-debug-projection"}
+    assert task.submit_request_body is not None
+    wire = json.loads(task.submit_request_body)
+    assert wire["data"]["source"] == {"kind": "RACK", "location_code": "rack-debug-projection"}
+    assert wire["data"]["target"] == {"kind": "RACK_POSITION", "location_code": "KT19"}
+    assert task.submit_request_body_digest == hashlib.sha256(task.submit_request_body.encode()).hexdigest()
     async with sessions() as db:
         member = await db.scalar(
             select(TransportMember).where(TransportMember.transport_task_id == rotate.transport_task_id)
