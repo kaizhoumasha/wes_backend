@@ -6,6 +6,7 @@ from src.app.wms_adapter.outbound_picking.arrival_report_wire import RETURN_RACK
 from src.app.wms_adapter.outbound_picking.completion_confirm_wire import COMPLETION_CONFIRM_OPERATION
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
+from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import MANUAL_BIN_APPLY_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.material_decide_wire import MATERIAL_DECIDE_OPERATION
 from src.app.wms_adapter.outbound_picking.movement_report_wire import MATERIAL_MOVEMENT_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.source_empty_wire import SOURCE_EMPTY_OPERATION
@@ -37,6 +38,7 @@ class PickingTaskConfirmationOwnerService:
             BIN_WORK_PLAN_OPERATION,
             RACK_DEPARTURE_OPERATION,
             MATERIAL_DECIDE_OPERATION,
+            MANUAL_BIN_APPLY_REPORT_OPERATION,
             SOURCE_EMPTY_OPERATION,
         }:
             return False
@@ -52,6 +54,8 @@ class PickingTaskConfirmationOwnerService:
         }:
             allowed_states = {PickingTaskStatus.EXECUTING}
         if operation in {RACK_DEPARTURE_OPERATION, MATERIAL_MOVEMENT_REPORT_OPERATION}:
+            allowed_states = {PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED}
+        if operation == MANUAL_BIN_APPLY_REPORT_OPERATION:
             allowed_states = {PickingTaskStatus.EXECUTING, PickingTaskStatus.EXECUTION_COMPLETED}
         if operation == COMPLETION_CONFIRM_OPERATION:
             allowed_states = {PickingTaskStatus.PREPARING, PickingTaskStatus.EXECUTING}

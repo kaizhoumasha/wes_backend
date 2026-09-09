@@ -14,6 +14,7 @@ from src.app.transport.contracts import (
     RotateRackRequest,
     TransportHandle,
 )
+from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
 from src.app.workline_integration_debug.contracts import (
     IntegrationDebugPhase,
     IntegrationDebugProfile,
@@ -52,6 +53,16 @@ class _Repository:
         self.confirmation = None
         self.prepare_confirmation = None
         self.response_evidence = None
+        self.picking_task = (
+            SimpleNamespace(
+                id=run.picking_task_id,
+                status=PickingTaskStatus.EXECUTING,
+                plan_blocked_evidence_id=None,
+                last_applied_plan_revision=1,
+            )
+            if run is not None
+            else None
+        )
 
     async def get_run(self, _db, _run_id, *, for_update=False):  # type: ignore[no-untyped-def]
         return self.run
@@ -92,6 +103,9 @@ class _Repository:
 
     async def get_prepare_confirmation(self, _db, _picking_task_id):  # type: ignore[no-untyped-def]
         return self.prepare_confirmation
+
+    async def get_picking_task(self, _db, _task_id, *, for_update=False):  # type: ignore[no-untyped-def]
+        return self.picking_task
 
 
 @pytest.mark.parametrize(
@@ -221,7 +235,7 @@ async def test_completion_report_requires_current_phase_and_bound_completion_ide
         task_id="PICK-001",
         bin_code="BIN-001",
         device_code="SIM-ECS-01",
-        configuration_json={"admission_task_id": "PICK-001"},
+        configuration_json={"admission_task_id": "PICK-001", "manual_bin_admission_result": "WORK_REQUIRED"},
     )
     repository = _Repository(run)
     repository.steps.append(
@@ -436,6 +450,7 @@ def test_work_required_freezes_wms_returned_task_and_reconciling_stays_blocked()
     )
 
     assert run.configuration_json["admission_task_id"] == "PICK-ACTUAL"
+    assert run.configuration_json["manual_bin_admission_result"] == "WORK_REQUIRED"
     report = IntegrationRunStep(
         run_id=run.run_id,
         ordinal=2,
@@ -570,6 +585,7 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
         status="ACTIVE",
         current_phase="RACK_DEPARTURE",
         task_id="PICK-001",
+        picking_task_id=101,
         device_code="SIM-ECS-01",
         configuration_json={
             "plan_resources": {
@@ -600,11 +616,19 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
     with pytest.raises(IntegrationDebugContractError, match="departure_decide READY"):
         await service.create_transport_action(run.run_id, action=action, expected_version=0, actor_id=42)
 
-    run.configuration_json = {
-        **run.configuration_json,
-        "departure_ready_rack_id": "RACK-01",
-        "rack_destination": {"kind": "ZONE", "location_code": "WH05"},
-    }
+    IntegrationDebugService._advance_departure(
+        run,
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="RACK_DEPARTURE",
+            status="WAITING",
+            request_summary_json={"rack_id": "RACK-01"},
+        ),
+        "READY",
+        {"rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"}},
+    )
+    assert run.configuration_json["rack_destination"] == {"kind": "ZONE", "location_code": "WH05"}
     result = await service.create_transport_action(run.run_id, action=action, expected_version=0, actor_id=42)
 
     assert result["steps"][0]["status"] == "SUCCEEDED"
@@ -627,6 +651,7 @@ async def test_point2_release_confirmation_marks_bound_evidence_applied_before_r
         task_id="PICK-001",
         bin_code="BIN-001",
         device_code="SIM-ECS-01",
+        configuration_json={"manual_bin_admission_result": "WORK_REQUIRED"},
     )
     repository = _Repository(run)
     repository.evidence = SimpleNamespace(
@@ -674,6 +699,116 @@ async def test_point2_release_confirmation_marks_bound_evidence_applied_before_r
 
 
 @pytest.mark.asyncio
+async def test_no_work_release_skips_completion_evidence_and_report() -> None:
+    run = IntegrationRun(
+        run_id="run-no-work",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="POINT2_RELEASE",
+        bin_code="BIN-001",
+        device_code="SIM-ECS-01",
+        configuration_json={"manual_bin_admission_result": "NO_WORK"},
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="POINT2_RELEASE",
+            status="SUCCEEDED",
+            result_summary_json={"simulated": True},
+        )
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.confirm_current_phase(
+        run.run_id,
+        note="NO_WORK 已创建放行模拟动作",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["current_phase"] == "POINT3_ROUTE"
+
+
+@pytest.mark.asyncio
+async def test_full_site_release_cannot_apply_evidence_without_device_command() -> None:
+    run = IntegrationRun(
+        run_id="run-release-no-command",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="POINT2_RELEASE",
+        task_id="PICK-001",
+        bin_code="BIN-001",
+        device_code="STATION_SCAN9",
+        configuration_json={"manual_bin_admission_result": "WORK_REQUIRED"},
+    )
+    repository = _Repository(run)
+    repository.evidence = SimpleNamespace(
+        apply_status=InboundEvidenceApplyStatus.PENDING,
+        processed_at=None,
+    )
+    repository.steps.extend(
+        [
+            IntegrationRunStep(
+                run_id=run.run_id,
+                ordinal=1,
+                phase="WORK_COMPLETION",
+                status="SUCCEEDED",
+                operation="outbound.manual_bin.work_completed@v1",
+                operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
+            ),
+            IntegrationRunStep(
+                run_id=run.run_id,
+                ordinal=2,
+                phase="POINT2_RELEASE",
+                status="SUCCEEDED",
+                result_summary_json={"operator_confirmation": "现场口头确认"},
+            ),
+        ]
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="释放 DeviceCommand"):
+        await service.confirm_current_phase(
+            run.run_id,
+            note="缺少命令不能推进",
+            expected_version=0,
+            actor_id=42,
+        )
+
+    assert repository.evidence.apply_status == InboundEvidenceApplyStatus.PENDING
+
+
+@pytest.mark.asyncio
 async def test_full_site_retry_reuses_the_single_transport_task_identity() -> None:
     run = IntegrationRun(
         run_id="run-1",
@@ -687,6 +822,8 @@ async def test_full_site_retry_reuses_the_single_transport_task_identity() -> No
         active_scope="WORKLINE:3",
         status="ACTIVE",
         current_phase="RACK_TRANSPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
         device_code="ECS-01",
         configuration_json={
             "plan_resources": {
@@ -740,6 +877,8 @@ async def test_sorting3_rejects_rack_transport_outside_the_fixed_site_contract()
         active_scope="WORKLINE:3",
         status="ACTIVE",
         current_phase="RACK_TRANSPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
         device_code="STATION_SCAN12",
         configuration_json={
             "plan_resources": {
@@ -789,7 +928,7 @@ def test_sorting3_rack_return_uses_ctu03_and_wh05() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bin_inbound_batch_uses_the_admin_selected_max_count() -> None:
+async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console() -> None:
     run = IntegrationRun(
         run_id="run-inbound-batch",
         workline_id=3,
@@ -829,12 +968,23 @@ async def test_bin_inbound_batch_uses_the_admin_selected_max_count() -> None:
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4493",
         rack_id="RACK-01",
         rack_face="90",
-        max_bin_count=3,
+        max_bin_count=1,
         expected_version=0,
         actor_id=42,
     )
 
-    assert result["steps"][0]["request"]["max_bin_count"] == 3
+    assert result["steps"][0]["request"]["max_bin_count"] == 1
+
+    with pytest.raises(IntegrationDebugContractError, match="max_bin_count=1"):
+        await service.send_bin_inbound_batch(
+            "run-inbound-batch",
+            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4494",
+            rack_id="RACK-01",
+            rack_face="90",
+            max_bin_count=2,
+            expected_version=1,
+            actor_id=42,
+        )
 
 
 @pytest.mark.asyncio
@@ -851,6 +1001,8 @@ async def test_transport_action_rejects_rack_outside_the_applied_plan() -> None:
         active_scope="WORKLINE:3",
         status="ACTIVE",
         current_phase="RACK_TRANSPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
         device_code="ECS-01",
         configuration_json={
             "plan_resources": {
@@ -899,6 +1051,7 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
         status="ACTIVE",
         current_phase="POINT2_RELEASE",
         device_code="SIM-ECS-01",
+        configuration_json={"manual_bin_admission_result": "NO_WORK"},
     )
     repository = _Repository(run)
     device_commands = AsyncMock()
@@ -915,7 +1068,7 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
         "run-sim",
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4476",
         device_code="STATION_SCAN10",
-        task_type="RELEASE_BIN",
+        task_type="MOVE_FORWARD",
         params={"point": "point2"},
         timeout_ms=30_000,
         reason="合同模拟",
@@ -927,6 +1080,183 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
     assert result["steps"][0]["status"] == "SUCCEEDED"
     assert result["steps"][0]["request"]["device_code"] == "STATION_SCAN10"
     assert result["steps"][0]["result"] == {"simulated": True}
+
+
+def test_bin_transports_must_match_the_single_wms_batch_member() -> None:
+    inbound = IntegrationTransportAction(
+        kind=IntegrationTransportActionKind.MOVE_BINS,
+        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4480",
+        rack_id="RACK-01",
+        bin_code="BIN-001",
+        source={"kind": "RACK_BIN_SLOT", "rack_id": "RACK-01", "rack_face": "90", "slot_id": "SLOT-01"},
+        target={"kind": "HANDOFF_POSITION", "location_code": "CNV0301"},
+        rcs_template_id="CTU01",
+    )
+    configuration = {
+        "inbound_bins": [
+            {
+                "bin_code": "BIN-001",
+                "source_locator": {
+                    "type": "RACK_BIN_SLOT",
+                    "rack_id": "RACK-01",
+                    "rack_face": "90",
+                    "slot_id": "SLOT-01",
+                },
+            }
+        ]
+    }
+
+    IntegrationDebugService._validate_batch_transport(IntegrationDebugPhase.BIN_TRANSPORT, configuration, inbound)
+
+    inbound.source["slot_id"] = "SLOT-OTHER"
+    with pytest.raises(IntegrationDebugContractError, match="inbound_batch READY"):
+        IntegrationDebugService._validate_batch_transport(IntegrationDebugPhase.BIN_TRANSPORT, configuration, inbound)
+
+
+@pytest.mark.asyncio
+async def test_plan_blocked_task_cannot_create_a_new_transport() -> None:
+    run = IntegrationRun(
+        run_id="run-plan-blocked",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="RACK_TRANSPORT",
+        task_id="PICK-001",
+        picking_task_id=101,
+        configuration_json={
+            "plan_resources": {
+                "target_rack": {"rack_id": "RACK-01", "rack_face": "90"},
+                "direct_picks": [],
+                "bin_source_racks": [],
+            }
+        },
+    )
+    repository = _Repository(run)
+    repository.picking_task.plan_blocked_evidence_id = 77
+    transport = AsyncMock()
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=transport,
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+    action = IntegrationTransportAction(
+        kind=IntegrationTransportActionKind.MOVE_RACK,
+        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4481",
+        rack_id="RACK-01",
+        source={"kind": "RACK", "location_code": "RACK-01"},
+        target={"kind": "RACK_POSITION", "location_code": "KT16"},
+        target_face="90",
+        rcs_template_id="CTU01",
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="plan_delta"):
+        await service.create_transport_action(run.run_id, action=action, expected_version=0, actor_id=42)
+    transport.create_debug_task_in_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ecs_command_cannot_bypass_work_completion() -> None:
+    run = IntegrationRun(
+        run_id="run-wait-completion",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="FULL_SITE_INTEGRATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="WORK_COMPLETION",
+        bin_code="BIN-001",
+        configuration_json={"manual_bin_admission_result": "WORK_REQUIRED"},
+    )
+    commands = AsyncMock()
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=_Repository(run),  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=commands,  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(IntegrationDebugConflict, match="point2 释放或 point3 分流"):
+        await service.create_device_action(
+            run.run_id,
+            client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4482",
+            device_code="STATION_SCAN9",
+            task_type="MOVE_FORWARD",
+            params={},
+            timeout_ms=30_000,
+            reason="非法提前释放",
+            expected_version=0,
+            actor_id=42,
+        )
+    commands.create_manual_debug_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_completed_wms_confirmation_closes_the_local_picking_task() -> None:
+    run = IntegrationRun(
+        run_id="run-task-complete",
+        workline_id=3,
+        workline_code="sorting-3",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="WAITING_EXTERNAL",
+        current_phase="TASK_COMPLETION",
+        task_id="PICK-001",
+        picking_task_id=101,
+    )
+    repository = _Repository(run)
+    repository.steps.append(
+        IntegrationRunStep(
+            run_id=run.run_id,
+            ordinal=1,
+            phase="TASK_COMPLETION",
+            status="WAITING",
+            client_request_id="complete-request",
+            operation="outbound.picking_task.completion_confirm@v1",
+            wms_confirmation_id=9,
+        )
+    )
+    repository.confirmation = SimpleNamespace(
+        status=WmsConfirmationStatus.COMPLETED,
+        response_evidence_id=None,
+        response_result="COMPLETED",
+    )
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=AsyncMock(),  # type: ignore[arg-type]
+        transport=AsyncMock(),  # type: ignore[arg-type]
+        device_commands=AsyncMock(),  # type: ignore[arg-type]
+        publisher=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    result = await service.refresh_wms_action(
+        run.run_id,
+        client_request_id="complete-request",
+        expected_version=0,
+        actor_id=42,
+    )
+
+    assert result["current_phase"] == "CLEANUP"
+    assert repository.picking_task.status == PickingTaskStatus.EXECUTION_COMPLETED
 
 
 @pytest.mark.asyncio

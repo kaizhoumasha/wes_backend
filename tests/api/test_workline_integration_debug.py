@@ -188,7 +188,7 @@ async def test_bin_inbound_batch_passes_the_admin_selected_max_count() -> None:
         "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4474",
         "rack_id": "RACK-01",
         "rack_face": "90",
-        "max_bin_count": 3,
+        "max_bin_count": 1,
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post(
@@ -197,7 +197,7 @@ async def test_bin_inbound_batch_passes_the_admin_selected_max_count() -> None:
         )
 
     assert response.status_code == 202
-    assert service.send_bin_inbound_batch.await_args.kwargs["max_bin_count"] == 3
+    assert service.send_bin_inbound_batch.await_args.kwargs["max_bin_count"] == 1
 
 
 @pytest.mark.asyncio

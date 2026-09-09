@@ -72,7 +72,7 @@ class RefreshTransportActionRequest(ClientActionRequest):
 class BinInboundBatchRequest(ClientActionRequest):
     rack_id: _TEXT
     rack_face: _TEXT
-    max_bin_count: int = Field(ge=1, le=4)
+    max_bin_count: Literal[1] = 1
 
 
 class BinReturnBatchRequest(ClientActionRequest):

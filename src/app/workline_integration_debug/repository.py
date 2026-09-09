@@ -109,9 +109,12 @@ class IntegrationRunRepository:
             statement = statement.with_for_update()
         return await db.scalar(statement)
 
-    async def get_picking_task(self, db: AsyncSession, task_id: str) -> PickingTask | None:
+    async def get_picking_task(self, db: AsyncSession, task_id: str, *, for_update: bool = False) -> PickingTask | None:
         columns = cast("Any", PickingTask).__table__.c
-        return await db.scalar(select(PickingTask).where(columns.task_id == task_id))
+        statement = select(PickingTask).where(columns.task_id == task_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return await db.scalar(statement)
 
     async def list_plan_resources(self, db: AsyncSession, picking_task_id: int) -> dict[str, list[dict[str, Any]]]:
         direct = cast("Any", DirectPickExecution).__table__.c

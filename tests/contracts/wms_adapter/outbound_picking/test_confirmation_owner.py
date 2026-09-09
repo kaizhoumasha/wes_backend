@@ -75,6 +75,23 @@ async def test_departure_remains_available_after_business_completion(state, acce
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "state,accepted",
+    [("QUEUED", False), ("PREPARING", False), ("EXECUTING", True), ("EXECUTION_COMPLETED", True)],
+)
+async def test_manual_bin_apply_report_keeps_the_picking_task_owner(state, accepted):
+    repository = SimpleNamespace(
+        get_by_id_for_update=AsyncMock(return_value=SimpleNamespace(status=state, workline_id=1))
+    )
+    assert (
+        await PickingTaskConfirmationOwnerService(repository).validate_response_owner(
+            object(), picking_task_id=1, operation="outbound.manual_bin.completion_apply_report@v1"
+        )
+        is accepted
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "operation",
     [
         "outbound.bin.inbound_batch@v1",
