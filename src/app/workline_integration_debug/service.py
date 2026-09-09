@@ -249,6 +249,9 @@ class IntegrationDebugService:
             if run.task_id is None or run.picking_task_id is None:
                 raise IntegrationDebugContractError("必须先选择已接收的 PickingTask")
             workline_id, selected_task_id = run.workline_id, run.task_id
+            task = await self._runs.get_picking_task(db, selected_task_id, for_update=True)
+            if task is None or task.id != run.picking_task_id or task.task_id != selected_task_id:
+                raise IntegrationDebugConflict("所选 PickingTask 已变化，请重新选择")
             existing = await self._runs.get_step_by_client_request_id(db, client_request_id, for_update=True)
             if existing is not None:
                 if existing.run_id != run_id or existing.operation != PICKING_TASK_PREPARE_OPERATION:
@@ -258,6 +261,15 @@ class IntegrationDebugService:
             if confirmation is not None:
                 if confirmation.id is None:
                     raise RuntimeError("已持久化 prepare confirmation 缺少 id")
+                request_data = confirmation.request_payload.get("data")
+                if (
+                    task.status != PickingTaskStatus.PREPARING
+                    or task.workline_id != workline_id
+                    or not isinstance(request_data, dict)
+                    or request_data.get("task_id") != selected_task_id
+                    or request_data.get("work_line_code") != run.workline_code
+                ):
+                    raise IntegrationDebugConflict("prepare confirmation 已绑定其它 WorkLine 或任务")
                 await self._append_step(
                     db,
                     run,
@@ -267,7 +279,7 @@ class IntegrationDebugService:
                     client_request_id=client_request_id,
                     operation=PICKING_TASK_PREPARE_OPERATION,
                     operation_id=confirmation.operation_id,
-                    request=confirmation.request_payload["data"],
+                    request=request_data,
                     wms_confirmation_id=confirmation.id,
                 )
                 run.status = IntegrationDebugRunStatus.WAITING_EXTERNAL
@@ -275,6 +287,8 @@ class IntegrationDebugService:
                 run.increment_version()
                 snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
             else:
+                if task.status != PickingTaskStatus.QUEUED or task.workline_id is not None:
+                    raise IntegrationDebugConflict("所选 PickingTask 已被其它 WorkLine 占用")
                 snapshot = None
 
         if snapshot is not None:
@@ -287,6 +301,26 @@ class IntegrationDebugService:
         )
         if not prepared.prepared or prepared.task is None or prepared.confirmation is None:
             reason = prepared.reason or PickingTaskPrepareNoopReason.WORKLINE_NOT_READY
+            if reason is PickingTaskPrepareNoopReason.SELECTED_TASK_NOT_NEXT:
+                async with self._sessions.begin() as db:
+                    run = await self._require_run(db, run_id, for_update=True)
+                    self._assert_action(run, expected_version, actor_id, IntegrationDebugPhase.TASK_PREPARE)
+                    bind_step = await self._runs.get_step_for_update(db, run_id, IntegrationDebugPhase.BIND_TASK)
+                    if bind_step is None:
+                        raise RuntimeError("联调 run 缺少绑定任务步骤")
+                    run.picking_task_id = None
+                    run.task_id = None
+                    run.issued_operation_id = None
+                    run.status = IntegrationDebugRunStatus.WAITING_TASK
+                    run.current_phase = IntegrationDebugPhase.BIND_TASK
+                    run.updated_by = actor_id
+                    run.increment_version()
+                    bind_step.status = "PENDING"
+                    bind_step.result_summary_json = {}
+                    bind_step.updated_by = actor_id
+                    snapshot = self._snapshot(run, await self._runs.list_steps(db, run_id))
+                await self._publish(snapshot)
+                return snapshot
             messages = {
                 PickingTaskPrepareNoopReason.SELECTED_TASK_NOT_NEXT: "所选任务不是当前 MANUAL 队头，请按 dispatch_sequence 重新选择",
                 PickingTaskPrepareNoopReason.NO_ELIGIBLE_TASK: "当前没有可 prepare 的 MANUAL PickingTask",
@@ -337,6 +371,7 @@ class IntegrationDebugService:
             if (
                 task is None
                 or task.id != run.picking_task_id
+                or task.workline_id != run.workline_id
                 or task.status != PickingTaskStatus.EXECUTING
                 or task.last_applied_plan_revision < 1
                 or task.target_rack_id is None
@@ -744,6 +779,7 @@ class IntegrationDebugService:
             if (
                 task is None
                 or task.id != run.picking_task_id
+                or task.workline_id != run.workline_id
                 or task.status != PickingTaskStatus.EXECUTING
                 or task.plan_blocked_evidence_id is not None
             ):
@@ -1432,13 +1468,16 @@ class IntegrationDebugService:
                 evidence.processed_at = timezone.now_for_db()
             if current is IntegrationDebugPhase.POINT3_ROUTE:
                 profile = IntegrationDebugProfile(run.profile)
-                phase_steps = [
-                    step
-                    for step in await self._runs.list_steps(db, run_id)
-                    if step.phase == IntegrationDebugPhase.POINT3_ROUTE
-                ]
+                steps = await self._runs.list_steps(db, run_id)
+                phase_steps = [step for step in steps if step.phase == IntegrationDebugPhase.POINT3_ROUTE]
                 if not any(self._device_action_created(step, profile) for step in phase_steps):
                     raise IntegrationDebugConflict("point3 分流前必须先创建本 run 的 DeviceCommand 或模拟动作")
+                task_type = self._expected_device_task_type(current, run.configuration_json, steps)
+                target = (
+                    IntegrationDebugPhase.RACK_DEPARTURE
+                    if task_type == "MOVE_LEFT"
+                    else IntegrationDebugPhase.RETURN_BUFFER
+                )
             if target is None:
                 raise RuntimeError("联调步骤缺少下一阶段")
             await self._append_step(
