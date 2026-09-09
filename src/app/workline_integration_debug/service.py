@@ -43,7 +43,7 @@ from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTER
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus, PickingTaskType
 from src.app.wms_integration.outbound_picking.services.picking_task_prepare import PickingTaskPrepareNoopReason
 from src.app.workline_integration_debug.contracts import (
-    SORTING_3_SITE_CONFIGURATION,
+    MANUAL_OUTBOUND_SITE_CONFIGURATION,
     IntegrationDebugPhase,
     IntegrationDebugProfile,
     IntegrationDebugRunStatus,
@@ -152,8 +152,8 @@ class IntegrationDebugService:
                 raise IntegrationDebugNotFound(f"WorkLine {request.workline_code} 不存在")
             if workline.id is None:
                 raise RuntimeError("已持久化 WorkLine 缺少 id")
-            if workline.line_code != "sorting-3":
-                raise IntegrationDebugContractError("当前临时联调能力仅支持 sorting-3")
+            if workline.line_code != "KT16":
+                raise IntegrationDebugContractError("当前临时联调能力仅支持 KT16")
             if await self._runs.get_active_for_workline(db, workline.id, for_update=True) is not None:
                 raise IntegrationDebugConflict("该 WorkLine 已有活动联调 run")
             run_id = new_uuid7()
@@ -171,7 +171,7 @@ class IntegrationDebugService:
                 current_phase=IntegrationDebugPhase.BIND_TASK,
                 device_code=request.device_code,
                 rack_id=request.rack_id,
-                configuration_json={"site_configuration": deepcopy(SORTING_3_SITE_CONFIGURATION)},
+                configuration_json={"site_configuration": deepcopy(MANUAL_OUTBOUND_SITE_CONFIGURATION)},
                 created_by=actor_id,
             )
             step = IntegrationRunStep(
@@ -920,8 +920,8 @@ class IntegrationDebugService:
                         "回库 Transport 必须先取得该货架的 departure_decide READY，并使用 WMS 返回的 rack_destination"
                     )
             self._validate_batch_transport(IntegrationDebugPhase(run.current_phase), run.configuration_json, action)
-            if run.workline_code == "sorting-3":
-                self._validate_sorting3_transport(IntegrationDebugPhase(run.current_phase), action)
+            if run.workline_code == "KT16":
+                self._validate_manual_outbound_transport(IntegrationDebugPhase(run.current_phase), action)
             request = build_transport_request(action)
             handle = await self._transport.create_debug_task_in_session(db, request) if real_transport else None
             await self._append_step(
@@ -1297,16 +1297,16 @@ class IntegrationDebugService:
             ):
                 raise IntegrationDebugConflict("departure_decide READY 缺少 rack_destination")
             if (
-                run.workline_code == "sorting-3"
-                and destination["location_code"] != SORTING_3_SITE_CONFIGURATION["return_zone_code"]
+                run.workline_code == "KT16"
+                and destination["location_code"] != MANUAL_OUTBOUND_SITE_CONFIGURATION["return_zone_code"]
             ):
-                raise IntegrationDebugContractError("sorting-3 departure_decide READY 的 rack_destination 必须为 WH05")
+                raise IntegrationDebugContractError("KT16 departure_decide READY 的 rack_destination 必须为 WH05")
             rack_id = step.request_summary_json.get("rack_id")
             if not isinstance(rack_id, str) or not rack_id:
                 raise IntegrationDebugConflict("departure_decide READY 缺少原请求 rack_id")
             run.configuration_json = {
                 **run.configuration_json,
-                # sorting-3 现场约定 CTU03 目标使用库区代码；WMS 的业务位置类型只在本适配层转换。
+                # KT16 现场约定 CTU03 目标使用库区代码；WMS 的业务位置类型只在本适配层转换。
                 "rack_destination": {"kind": "ZONE", "location_code": destination["location_code"]},
                 "departure_ready_rack_id": rack_id,
             }
@@ -1638,7 +1638,7 @@ class IntegrationDebugService:
                 or device_code != scan_device_codes[expected_device_index]
             ):
                 expected_point = "point2" if current is IntegrationDebugPhase.POINT2_RELEASE else "point3"
-                raise IntegrationDebugContractError(f"sorting-3 {expected_point} ECS 指令必须使用冻结的对应扫码位")
+                raise IntegrationDebugContractError(f"KT16 {expected_point} ECS 指令必须使用冻结的对应扫码位")
             phase_steps = await self._runs.list_steps(db, run_id)
             expected_task_type = self._expected_device_task_type(current, run.configuration_json, phase_steps)
             if task_type != expected_task_type:
@@ -1668,7 +1668,7 @@ class IntegrationDebugService:
                 else:
                     endpoint = site_configuration.get("ecs_endpoint_base_url")
             if not isinstance(endpoint, str):
-                raise IntegrationDebugContractError("sorting-3 缺少 ECS endpoint")
+                raise IntegrationDebugContractError("KT16 缺少 ECS endpoint")
             endpoint = validate_device_endpoint_base_url(endpoint)
             validated_request = DeviceCommandRequestData.model_validate(
                 {
@@ -2047,7 +2047,7 @@ class IntegrationDebugService:
         rack_id: str,
         rack_face: str,
     ) -> None:
-        allowed_positions = set(SORTING_3_SITE_CONFIGURATION["bin_rack_positions"])
+        allowed_positions = set(MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"])
         for step in steps:
             request = step.request_summary_json
             result = step.result_summary_json
@@ -2212,50 +2212,50 @@ class IntegrationDebugService:
         return step
 
     @staticmethod
-    def _validate_sorting3_transport(
+    def _validate_manual_outbound_transport(
         phase: IntegrationDebugPhase,
         action: IntegrationTransportAction,
     ) -> None:
         if phase is IntegrationDebugPhase.RACK_TRANSPORT:
             if action.kind is not IntegrationTransportActionKind.MOVE_RACK:
-                raise IntegrationDebugContractError("sorting-3 出库货架步骤只允许 MOVE_RACK")
-            if action.rcs_template_id != SORTING_3_SITE_CONFIGURATION["outbound_rcs_template"]:
-                raise IntegrationDebugContractError("sorting-3 出库必须使用 CTU01")
+                raise IntegrationDebugContractError("KT16 出库货架步骤只允许 MOVE_RACK")
+            if action.rcs_template_id != MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_rcs_template"]:
+                raise IntegrationDebugContractError("KT16 出库必须使用 CTU01")
             if action.source != {"kind": "RACK", "location_code": action.rack_id}:
-                raise IntegrationDebugContractError("sorting-3 出库来源必须直接使用货架号")
+                raise IntegrationDebugContractError("KT16 出库来源必须直接使用货架号")
             allowed_targets = {
-                SORTING_3_SITE_CONFIGURATION["outbound_transfer_position"],
-                *SORTING_3_SITE_CONFIGURATION["bin_rack_positions"],
+                MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_transfer_position"],
+                *MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"],
             }
             if (
                 action.target.get("kind") != "RACK_POSITION"
                 or action.target.get("location_code") not in allowed_targets
             ):
-                raise IntegrationDebugContractError("sorting-3 出库目标工作位只能是 OUT65、KT16 或 KT17")
+                raise IntegrationDebugContractError("KT16 出库目标工作位只能是 OUT65、KT16 或 KT17")
         elif phase is IntegrationDebugPhase.BIN_TRANSPORT:
             if action.kind is not IntegrationTransportActionKind.MOVE_BINS or action.target != {
                 "kind": "HANDOFF_POSITION",
-                "location_code": SORTING_3_SITE_CONFIGURATION["infeed_position"],
+                "location_code": MANUAL_OUTBOUND_SITE_CONFIGURATION["infeed_position"],
             }:
-                raise IntegrationDebugContractError("sorting-3 入站料箱必须搬到 CNV0301")
+                raise IntegrationDebugContractError("KT16 入站料箱必须搬到 CNV0301")
         elif phase is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
             if action.kind is not IntegrationTransportActionKind.MOVE_BINS or action.source != {
                 "kind": "HANDOFF_POSITION",
-                "location_code": SORTING_3_SITE_CONFIGURATION["outfeed_position"],
+                "location_code": MANUAL_OUTBOUND_SITE_CONFIGURATION["outfeed_position"],
             }:
-                raise IntegrationDebugContractError("sorting-3 退箱必须从 CNV0302 发起")
+                raise IntegrationDebugContractError("KT16 退箱必须从 CNV0302 发起")
         elif phase is IntegrationDebugPhase.RACK_DEPARTURE:
             if action.kind is not IntegrationTransportActionKind.MOVE_RACK:
-                raise IntegrationDebugContractError("sorting-3 回库货架步骤只允许 MOVE_RACK")
-            if action.rcs_template_id != SORTING_3_SITE_CONFIGURATION["return_rcs_template"]:
-                raise IntegrationDebugContractError("sorting-3 回库必须使用 CTU03")
+                raise IntegrationDebugContractError("KT16 回库货架步骤只允许 MOVE_RACK")
+            if action.rcs_template_id != MANUAL_OUTBOUND_SITE_CONFIGURATION["return_rcs_template"]:
+                raise IntegrationDebugContractError("KT16 回库必须使用 CTU03")
             if action.source != {"kind": "RACK", "location_code": action.rack_id}:
-                raise IntegrationDebugContractError("sorting-3 回库来源必须直接使用货架号")
+                raise IntegrationDebugContractError("KT16 回库来源必须直接使用货架号")
             if action.target != {
                 "kind": "ZONE",
-                "location_code": SORTING_3_SITE_CONFIGURATION["return_zone_code"],
+                "location_code": MANUAL_OUTBOUND_SITE_CONFIGURATION["return_zone_code"],
             }:
-                raise IntegrationDebugContractError("sorting-3 回库目标库区必须是 WH05")
+                raise IntegrationDebugContractError("KT16 回库目标库区必须是 WH05")
 
     @staticmethod
     def _validate_batch_transport(

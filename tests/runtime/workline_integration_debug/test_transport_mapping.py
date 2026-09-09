@@ -24,7 +24,7 @@ from src.app.wms_integration.outbound_picking.services.picking_task_prepare impo
     PickingTaskPrepareResult,
 )
 from src.app.workline_integration_debug.contracts import (
-    SORTING_3_SITE_CONFIGURATION,
+    MANUAL_OUTBOUND_SITE_CONFIGURATION,
     IntegrationDebugPhase,
     IntegrationDebugProfile,
     IntegrationTransportAction,
@@ -210,7 +210,7 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
 
     result = await service.create_run(
         CreateIntegrationRun(
-            workline_code="sorting-3",
+            workline_code="KT16",
             profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
             environment_label="integration",
             device_code="SIM-ECS-01",
@@ -240,7 +240,7 @@ async def test_create_run_scopes_exclusivity_to_resolved_workline_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_run_rejects_worklines_outside_the_temporary_sorting3_scope() -> None:
+async def test_create_run_rejects_worklines_outside_the_temporary_manual_outbound_scope() -> None:
     repository = _Repository(None)  # type: ignore[arg-type]
     service = IntegrationDebugService(
         _Sessions(),  # type: ignore[arg-type]
@@ -251,7 +251,7 @@ async def test_create_run_rejects_worklines_outside_the_temporary_sorting3_scope
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(IntegrationDebugContractError, match="仅支持 sorting-3"):
+    with pytest.raises(IntegrationDebugContractError, match="仅支持 KT16"):
         await service.create_run(
             CreateIntegrationRun(
                 workline_code="sorting-2",
@@ -278,7 +278,7 @@ async def test_unstarted_run_can_be_closed_without_leaving_workline_scope_occupi
     )
     created = await service.create_run(
         CreateIntegrationRun(
-            workline_code="sorting-3",
+            workline_code="KT16",
             profile=IntegrationDebugProfile.CONTRACT_SIMULATION,
             environment_label="integration",
             device_code="SIM-ECS-01",
@@ -303,7 +303,7 @@ async def test_completion_report_requires_current_phase_and_bound_completion_ide
     run = IntegrationRun(
         run_id="run-report",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -370,7 +370,7 @@ async def test_completion_report_phase_cannot_be_skipped_by_manual_confirmation(
     run = IntegrationRun(
         run_id="run-report",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -404,7 +404,7 @@ async def test_completion_binding_rejects_completed_at_before_point2_scan() -> N
     run = IntegrationRun(
         run_id="run-completion",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -453,7 +453,7 @@ async def test_completion_binding_rejects_ignored_evidence() -> None:
     run = IntegrationRun(
         run_id="run-completion-rejected",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -502,7 +502,7 @@ async def test_early_completion_enters_reconciling_and_can_be_reported_to_wms() 
     run = IntegrationRun(
         run_id="run-early-completion",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -579,7 +579,7 @@ def test_work_required_freezes_wms_returned_task_and_reconciling_stays_blocked()
     run = IntegrationRun(
         run_id="run-decision",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -632,7 +632,7 @@ async def test_refreshing_completed_historical_wms_step_does_not_rewind_phase() 
     run = IntegrationRun(
         run_id="run-history",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -686,7 +686,7 @@ async def test_operator_can_retry_the_same_prepare_after_wms_confirms_non_receip
     run = IntegrationRun(
         run_id="run-prepare-retry",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -755,7 +755,7 @@ async def test_prepare_retry_requires_explicit_wms_non_receipt_confirmation() ->
     run = IntegrationRun(
         run_id="run-prepare-retry-rejected",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -793,7 +793,7 @@ async def test_operator_replaces_an_unreceived_prepare_when_wms_workline_code_ch
     run = IntegrationRun(
         run_id="run-prepare-replace",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -829,7 +829,7 @@ async def test_operator_replaces_an_unreceived_prepare_when_wms_workline_code_ch
         completed_at=None,
         attempt_count=1,
         last_dispatch_at=datetime(2026, 9, 9, tzinfo=UTC),
-        request_payload={"data": {"task_id": "PICK-001", "workline_code": "sorting-3"}},
+        request_payload={"data": {"task_id": "PICK-001", "workline_code": "OLD-LINE"}},
     )
     replacement = SimpleNamespace(
         id=10,
@@ -871,7 +871,7 @@ async def test_prepare_retry_recovers_the_existing_confirmation() -> None:
     run = IntegrationRun(
         run_id="run-prepare-recovery",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -898,7 +898,7 @@ async def test_prepare_retry_recovers_the_existing_confirmation() -> None:
             sdk.wms_operations.outbound_picking_task_prepare(
                 operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
                 task_id="PICK-001",
-                work_line_code="sorting-3",
+                work_line_code="KT16",
             ),
             timestamp=1_788_390_000_000,
         ),
@@ -917,7 +917,7 @@ async def test_prepare_retry_recovers_the_existing_confirmation() -> None:
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-retry",
-        wms_workline_code="sorting-3",
+        wms_workline_code="KT16",
         expected_version=0,
         actor_id=42,
     )
@@ -932,7 +932,7 @@ async def test_prepare_retry_recovers_confirmation_after_plan_already_started_ex
     run = IntegrationRun(
         run_id="run-prepare-executing-recovery",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -958,7 +958,7 @@ async def test_prepare_retry_recovers_confirmation_after_plan_already_started_ex
             sdk.wms_operations.outbound_picking_task_prepare(
                 operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4490",
                 task_id="PICK-001",
-                work_line_code="sorting-3",
+                work_line_code="KT16",
             ),
             timestamp=1_788_390_000_000,
         ),
@@ -976,7 +976,7 @@ async def test_prepare_retry_recovers_confirmation_after_plan_already_started_ex
     result = await service.send_task_prepare(
         run.run_id,
         client_request_id="prepare-executing-recovery",
-        wms_workline_code="sorting-3",
+        wms_workline_code="KT16",
         expected_version=0,
         actor_id=42,
     )
@@ -989,7 +989,7 @@ async def test_prepare_retry_rejects_confirmation_bound_to_another_workline() ->
     run = IntegrationRun(
         run_id="run-prepare-cross-line",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1039,7 +1039,7 @@ async def test_prepare_non_head_selection_returns_run_to_bind_task() -> None:
     run = IntegrationRun(
         run_id="run-prepare-non-head",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1105,7 +1105,7 @@ async def test_work_admission_rejects_a_new_identity_while_the_previous_request_
     run = IntegrationRun(
         run_id="run-admission-open",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1153,7 +1153,7 @@ async def test_refresh_plan_resources_updates_later_revision_without_rewinding_t
     run = IntegrationRun(
         run_id="run-plan-refresh",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1202,7 +1202,7 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
     run = IntegrationRun(
         run_id="run-return-rack",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1266,7 +1266,7 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
     run = IntegrationRun(
         run_id="run-release",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1330,7 +1330,7 @@ async def test_point2_scan_rejects_invalid_bin_before_advancing_the_run() -> Non
     run = IntegrationRun(
         run_id="run-invalid-bin",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1394,7 +1394,7 @@ async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_
     run = IntegrationRun(
         run_id="run-report-atomic",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1469,7 +1469,7 @@ async def test_no_work_release_skips_completion_evidence_and_report() -> None:
     run = IntegrationRun(
         run_id="run-no-work",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1516,7 +1516,7 @@ async def test_point3_ng_route_skips_return_buffer_and_continues_with_rack_depar
     run = IntegrationRun(
         run_id="run-point3-ng",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -1574,7 +1574,7 @@ async def test_full_site_release_cannot_apply_evidence_without_device_command() 
     run = IntegrationRun(
         run_id="run-release-no-command",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1637,7 +1637,7 @@ async def test_full_site_point3_cannot_advance_while_device_command_is_not_succe
     run = IntegrationRun(
         run_id="run-point3-command-waiting",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1684,7 +1684,7 @@ async def test_refresh_device_action_copies_succeeded_terminal_state_to_the_run_
     run = IntegrationRun(
         run_id="run-device-refresh",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1738,7 +1738,7 @@ async def test_refresh_historical_device_action_does_not_reopen_completed_run() 
     run = IntegrationRun(
         run_id="run-device-history",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1790,7 +1790,7 @@ async def test_refresh_historical_transport_action_does_not_clear_current_attent
     run = IntegrationRun(
         run_id="run-transport-history",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1844,7 +1844,7 @@ async def test_return_rack_transport_success_freezes_arrival_report_confirmation
     run = IntegrationRun(
         run_id="run-return-rack-arrival",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1936,7 +1936,7 @@ async def test_full_site_rack_arrival_waits_for_wms_confirmation_before_advancin
     run = IntegrationRun(
         run_id="run-rack-arrival-wait",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -1988,7 +1988,7 @@ def test_arrival_report_completion_releases_rack_arrival_node() -> None:
     run = IntegrationRun(
         run_id="run-arrival-completed",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2022,7 +2022,7 @@ async def test_full_site_retry_reuses_the_single_transport_task_identity() -> No
     run = IntegrationRun(
         run_id="run-1",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2073,11 +2073,11 @@ async def test_full_site_retry_reuses_the_single_transport_task_identity() -> No
 
 
 @pytest.mark.asyncio
-async def test_sorting3_rejects_rack_transport_outside_the_fixed_site_contract() -> None:
+async def test_manual_outbound_rejects_rack_transport_outside_the_fixed_site_contract() -> None:
     run = IntegrationRun(
         run_id="run-site-contract",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2119,7 +2119,7 @@ async def test_sorting3_rejects_rack_transport_outside_the_fixed_site_contract()
         await service.create_transport_action("run-site-contract", action=action, expected_version=0, actor_id=42)
 
 
-def test_sorting3_rack_return_uses_ctu03_and_wh05() -> None:
+def test_manual_outbound_rack_return_uses_ctu03_and_wh05() -> None:
     action = IntegrationTransportAction(
         kind=IntegrationTransportActionKind.MOVE_RACK,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4492",
@@ -2129,11 +2129,11 @@ def test_sorting3_rack_return_uses_ctu03_and_wh05() -> None:
         rcs_template_id="CTU03",
     )
 
-    IntegrationDebugService._validate_sorting3_transport(IntegrationDebugPhase.RACK_DEPARTURE, action)
+    IntegrationDebugService._validate_manual_outbound_transport(IntegrationDebugPhase.RACK_DEPARTURE, action)
 
     action.target["location_code"] = "RETURN53"
     with pytest.raises(IntegrationDebugContractError, match="WH05"):
-        IntegrationDebugService._validate_sorting3_transport(IntegrationDebugPhase.RACK_DEPARTURE, action)
+        IntegrationDebugService._validate_manual_outbound_transport(IntegrationDebugPhase.RACK_DEPARTURE, action)
 
 
 @pytest.mark.asyncio
@@ -2141,7 +2141,7 @@ async def test_bin_inbound_batch_is_fixed_to_one_bin_for_the_temporary_console()
     run = IntegrationRun(
         run_id="run-inbound-batch",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2215,7 +2215,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
     run = IntegrationRun(
         run_id="run-real-inbound-batch",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2308,7 +2308,7 @@ def test_rack_face_done_requires_operator_coordination_and_close() -> None:
     run = IntegrationRun(
         run_id="run-rack-face-done",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2331,7 +2331,7 @@ async def test_transport_action_rejects_rack_outside_the_applied_plan() -> None:
     run = IntegrationRun(
         run_id="run-rack",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2380,7 +2380,7 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
     run = IntegrationRun(
         run_id="run-sim",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2392,7 +2392,7 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
         device_code="SIM-ECS-01",
         configuration_json={
             "manual_bin_admission_result": "NO_WORK",
-            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+            "site_configuration": MANUAL_OUTBOUND_SITE_CONFIGURATION,
         },
     )
     repository = _Repository(run)
@@ -2425,11 +2425,11 @@ async def test_contract_simulation_records_ecs_action_without_creating_device_co
 
 
 @pytest.mark.asyncio
-async def test_point2_release_rejects_a_command_for_another_sorting3_station() -> None:
+async def test_point2_release_rejects_a_command_for_another_manual_outbound_station() -> None:
     run = IntegrationRun(
         run_id="run-wrong-station",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2441,7 +2441,7 @@ async def test_point2_release_rejects_a_command_for_another_sorting3_station() -
         bin_code="BIN-001",
         configuration_json={
             "manual_bin_admission_result": "NO_WORK",
-            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+            "site_configuration": MANUAL_OUTBOUND_SITE_CONFIGURATION,
         },
     )
     commands = AsyncMock()
@@ -2475,7 +2475,7 @@ async def test_ecs_params_are_validated_before_the_run_step_is_frozen() -> None:
     run = IntegrationRun(
         run_id="run-invalid-command",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2487,7 +2487,7 @@ async def test_ecs_params_are_validated_before_the_run_step_is_frozen() -> None:
         bin_code="BIN-001",
         configuration_json={
             "manual_bin_admission_result": "NO_WORK",
-            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+            "site_configuration": MANUAL_OUTBOUND_SITE_CONFIGURATION,
         },
     )
     repository = _Repository(run)
@@ -2523,7 +2523,7 @@ async def test_device_command_recovery_reuses_the_original_creator_and_endpoint(
     run = IntegrationRun(
         run_id="run-device-recovery",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2535,7 +2535,7 @@ async def test_device_command_recovery_reuses_the_original_creator_and_endpoint(
         bin_code="BIN-001",
         configuration_json={
             "manual_bin_admission_result": "NO_WORK",
-            "site_configuration": SORTING_3_SITE_CONFIGURATION,
+            "site_configuration": MANUAL_OUTBOUND_SITE_CONFIGURATION,
         },
     )
     repository = _Repository(run)
@@ -2633,7 +2633,7 @@ async def test_same_inbound_batch_member_cannot_be_moved_again_with_a_new_identi
     run = IntegrationRun(
         run_id="run-bin-duplicate",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2710,7 +2710,7 @@ async def test_plan_blocked_task_cannot_create_a_new_transport() -> None:
     run = IntegrationRun(
         run_id="run-plan-blocked",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2760,7 +2760,7 @@ async def test_ecs_command_cannot_bypass_work_completion() -> None:
     run = IntegrationRun(
         run_id="run-wait-completion",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="FULL_SITE_INTEGRATION",
@@ -2802,7 +2802,7 @@ async def test_completed_wms_confirmation_closes_the_local_picking_task() -> Non
     run = IntegrationRun(
         run_id="run-task-complete",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
@@ -2856,7 +2856,7 @@ async def test_run_cannot_be_completed_before_cleanup_phase() -> None:
     run = IntegrationRun(
         run_id="run-active",
         workline_id=3,
-        workline_code="sorting-3",
+        workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
         profile="CONTRACT_SIMULATION",
