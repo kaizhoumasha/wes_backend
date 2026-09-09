@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1.1] - 2026-09-09
+
+### Fixed
+
+- 手工出库联调台改为直接绑定现有 WorkLine `KT16`，并以 `KT16` 作为 prepare 的默认 `data.workline_code`；移除已废弃的 `sorting-3` 识别。
+
 ## [0.40.1.0] - 2026-09-09
 
 ### Fixed

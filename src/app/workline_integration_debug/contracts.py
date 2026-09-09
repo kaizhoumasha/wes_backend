@@ -56,7 +56,7 @@ class IntegrationTransportActionKind(StrEnum):
     MOVE_BINS = "MOVE_BINS"
 
 
-class Sorting3SiteConfiguration(TypedDict):
+class ManualOutboundSiteConfiguration(TypedDict):
     outbound_rcs_template: str
     return_rcs_template: str
     bin_rack_positions: list[str]
@@ -68,7 +68,7 @@ class Sorting3SiteConfiguration(TypedDict):
     scan_device_codes: list[str]
 
 
-SORTING_3_SITE_CONFIGURATION: Sorting3SiteConfiguration = {
+MANUAL_OUTBOUND_SITE_CONFIGURATION: ManualOutboundSiteConfiguration = {
     "outbound_rcs_template": "CTU01",
     "return_rcs_template": "CTU03",
     "bin_rack_positions": ["KT16", "KT17"],

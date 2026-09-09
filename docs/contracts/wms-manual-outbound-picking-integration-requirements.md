@@ -506,8 +506,8 @@ WmsConfirmation 使用 `material_execution_id`、`picking_task_id` 或 `workline
 PickingTask 保存业务状态和 WorkLine 绑定，不复制 operation、payload、attempt 或 Evidence 字段；响应沿既有
 `WmsConfirmation.response_evidence_id` 追溯。所有未闭合义务及待应用 Evidence 阻止 WorkLine 停用或切换。
 
-当前 `sorting-3` 联调台发送 prepare 时，WES 内部工作线代码仍为 `sorting-3`，WMS 请求中的
-`data.workline_code` 默认并明确填写 `KT16`。WMS 团队确认原请求未接收后：参数未变化时 WES 保留原
+当前临时联调台仅绑定 WorkLine `KT16`，发送 prepare 时 WES 工作线代码与 WMS 请求中的
+`data.workline_code` 均默认为 `KT16`。WMS 团队确认原请求未接收后：参数未变化时 WES 保留原
 `operation_id` 和完整正文重发；参数需要改正时 WES 保留旧请求审计并将其标记为 `SUPERSEDED`，使用新的
 UUIDv7 `operation_id` 发送改正后的完整正文。C# WMS 必须以 `(operation, operation_id)` 做幂等，同一身份不得接受不同正文。
 

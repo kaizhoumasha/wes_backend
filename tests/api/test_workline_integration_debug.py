@@ -20,7 +20,7 @@ def _snapshot() -> dict[str, object]:
     return {
         "run_id": "run-1",
         "workline_id": 3,
-        "workline_code": "sorting-3",
+        "workline_code": "KT16",
         "scenario_key": "manual_outbound_picking@v1",
         "expected_plugin_key": "manual_bin_processing",
         "profile": "CONTRACT_SIMULATION",
@@ -134,7 +134,7 @@ def test_routes_use_endpoint_permissions_required_by_the_permission_catalog() ->
 async def test_create_run_freezes_scenario_without_accepting_device_endpoint() -> None:
     service = _service()
     payload = {
-        "workline_code": "sorting-3",
+        "workline_code": "KT16",
         "profile": "CONTRACT_SIMULATION",
         "environment_label": "integration",
         "device_code": "SIM-ECS-01",
@@ -148,7 +148,7 @@ async def test_create_run_freezes_scenario_without_accepting_device_endpoint() -
 
     assert created.status_code == 202
     request = service.create_run.await_args.args[0]
-    assert request.workline_code == "sorting-3"
+    assert request.workline_code == "KT16"
     assert request.profile.value == "CONTRACT_SIMULATION"
     assert invalid.status_code == 422
 
@@ -166,7 +166,7 @@ async def test_create_run_freezes_scenario_without_accepting_device_endpoint() -
 async def test_create_run_rejects_values_longer_than_the_persisted_columns(field: str, value: str) -> None:
     service = _service()
     payload = {
-        "workline_code": "sorting-3",
+        "workline_code": "KT16",
         "profile": "CONTRACT_SIMULATION",
         "environment_label": "integration",
         "device_code": "SIM-ECS-01",
@@ -204,7 +204,7 @@ async def test_transport_action_passes_frozen_site_values_and_authenticated_acto
 
 
 @pytest.mark.asyncio
-async def test_device_action_passes_the_selected_sorting3_station() -> None:
+async def test_device_action_passes_the_selected_manual_outbound_station() -> None:
     service = _service()
     payload = {
         "expected_version": 0,
@@ -213,7 +213,7 @@ async def test_device_action_passes_the_selected_sorting3_station() -> None:
         "task_type": "MOVE_FORWARD",
         "params": {"location_id": "STATION_SCAN11"},
         "timeout_ms": 30000,
-        "reason": "sorting-3 联调",
+        "reason": "KT16 联调",
     }
     async with AsyncClient(transport=ASGITransport(app=_app(service)), base_url="http://test") as client:
         response = await client.post("/api/v1/workline-integration-debug/runs/run-1/device-command", json=payload)
