@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.2.0] - 2026-09-09
+
+### Added
+
+- 手工出库联调台可在发送前编辑各 WES → WMS Operation 的 `data`，并可调整当前联调 Run 内允许的 ECS 设备、任务类型和参数。
+
+### Changed
+
+- WES 继续生成并冻结 WMS `operation_id`、ECS 命令身份和时间戳；真实 ECS 指令仍只允许使用当前 Run 冻结的扫码设备。
+
 ## [0.40.1.1] - 2026-09-09
 
 ### Fixed
