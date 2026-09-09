@@ -329,6 +329,33 @@ def test_decision_route_accepts_picking_task_prepare() -> None:
     assert response.json()["operation_id"] == request["operation_id"]
 
 
+@pytest.mark.parametrize(
+    ("operation_id", "operation"),
+    [
+        ("019f33f0-58d7-7b4d-a23a-1b90aa5d4570", "outbound.picking_task.prepare@v1"),
+        ("019f33f0-58d7-7b4d-a23a-1b90aa5d4571", "outbound.bin.inbound_batch@v1"),
+        ("019f33f0-58d7-7b4d-a23a-1b90aa5d4572", "outbound.rack.departure_decide@v1"),
+        ("019f33f0-58d7-7b4d-a23a-1b90aa5d4573", "outbound.picking_task.completion_confirm@v1"),
+    ],
+)
+def test_manual_console_decisions_reject_invalid_data_and_replay_exactly(operation_id: str, operation: str) -> None:
+    request = {
+        "operation_id": operation_id,
+        "operation": operation,
+        "timestamp": 1786060800000,
+        "data": {},
+    }
+
+    with TestClient(wms_mock_server.app) as client:
+        first = client.post("/api/v1/wes/decisions", json=request)
+        replay = client.post("/api/v1/wes/decisions", json=request)
+
+    assert first.status_code == 422
+    assert first.json()["code"] == "REJECTED"
+    assert first.json()["data"] == {"reason_code": "INVALID_DATA"}
+    assert replay.json() == first.json()
+
+
 def test_decision_route_returns_contract_valid_rack_departure_destination() -> None:
     request = {
         "operation_id": "019f33f0-58d7-7b4d-a23a-1b90aa5d4474",

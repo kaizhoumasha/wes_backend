@@ -1804,8 +1804,19 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
             "target_face": "90",
         },
         result_summary_json={
-            "final_position": {"kind": "RACK_POSITION", "location_code": "KT17"},
-            "arrival_face": "90",
+            "outcome_version": 1,
+            "status": "SUCCEEDED",
+            "reason_code": None,
+            "members": [
+                {
+                    "object_id": "RACK-01",
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "KT17"},
+                    "position_unknown": False,
+                    "failure_code": None,
+                    "arrival_face": "90",
+                }
+            ],
         },
     )
     repository.steps.append(rack_step)
@@ -1831,7 +1842,7 @@ async def test_full_site_inbound_batch_requires_matching_authoritative_rack_arri
             actor_id=42,
         )
 
-    rack_step.result_summary_json["final_position"] = rack_step.request_summary_json["target"]
+    rack_step.result_summary_json["members"][0]["final_position"] = rack_step.request_summary_json["target"]
     result = await service.send_bin_inbound_batch(
         run.run_id,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4593",

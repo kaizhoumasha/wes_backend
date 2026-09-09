@@ -958,47 +958,61 @@ async def decide_return_batch(request: Request) -> Response:
     if existing is not None:
         stored_status, stored_response = existing
         return JSONResponse(status_code=stored_status, content=stored_response)
-    if operation == PICKING_TASK_PREPARE_OPERATION:
-        parsed = parse_picking_task_prepare_request(envelope)
-        status, response = 202, _ack(operation_id, "PREPARE_ACCEPTED", None)
-        parse_picking_task_prepare_response(status, response)
-        transport_submission_store.remember_prepared_manual_task(parsed.data.task_id)
-    elif operation == BIN_INBOUND_BATCH_OPERATION:
-        parsed = parse_bin_inbound_batch_request(envelope)
-        status, response = 200, _ack(operation_id, "DECIDED", None)
-        response["data"] = {
-            "result": "READY",
-            "bins": [
-                {
-                    "bin_code": "BIN-QA-001",
-                    "source_locator": {
-                        "type": "RACK_BIN_SLOT",
-                        "rack_id": parsed.data.rack_id,
-                        "rack_face": parsed.data.rack_face,
-                        "slot_id": "SLOT-01",
-                    },
-                }
-            ],
-        }
-        parse_bin_inbound_batch_response(status, response, request=parsed)
-    elif operation == RACK_DEPARTURE_OPERATION:
-        parsed = parse_rack_departure_request(envelope)
-        status, response = 200, _ack(operation_id, "DECIDED", None)
-        response["data"] = {
-            "result": "READY",
-            "rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"},
-        }
-        parse_rack_departure_response(status, response, request=parsed)
-    elif operation == COMPLETION_CONFIRM_OPERATION:
-        parsed = parse_completion_confirm_request(envelope)
-        status, response = 200, _ack(operation_id, "DECIDED", None)
-        response["data"] = {"result": "COMPLETED"}
-        parse_completion_confirm_response(status, response, request=parsed)
-    else:
-        parsed = None
-        status = 0
-        response = {}
-    if parsed is not None:
+    recognized_operation = operation in {
+        PICKING_TASK_PREPARE_OPERATION,
+        BIN_INBOUND_BATCH_OPERATION,
+        RACK_DEPARTURE_OPERATION,
+        COMPLETION_CONFIRM_OPERATION,
+    }
+    try:
+        if operation == PICKING_TASK_PREPARE_OPERATION:
+            parsed = parse_picking_task_prepare_request(envelope)
+            status, response = 202, _ack(operation_id, "PREPARE_ACCEPTED", None)
+            parse_picking_task_prepare_response(status, response)
+            transport_submission_store.remember_prepared_manual_task(parsed.data.task_id)
+        elif operation == BIN_INBOUND_BATCH_OPERATION:
+            parsed = parse_bin_inbound_batch_request(envelope)
+            status, response = 200, _ack(operation_id, "DECIDED", None)
+            response["data"] = {
+                "result": "READY",
+                "bins": [
+                    {
+                        "bin_code": "BIN-QA-001",
+                        "source_locator": {
+                            "type": "RACK_BIN_SLOT",
+                            "rack_id": parsed.data.rack_id,
+                            "rack_face": parsed.data.rack_face,
+                            "slot_id": "SLOT-01",
+                        },
+                    }
+                ],
+            }
+            parse_bin_inbound_batch_response(status, response, request=parsed)
+        elif operation == RACK_DEPARTURE_OPERATION:
+            parsed = parse_rack_departure_request(envelope)
+            status, response = 200, _ack(operation_id, "DECIDED", None)
+            response["data"] = {
+                "result": "READY",
+                "rack_destination": {"type": "RACK_POSITION", "location_code": "WH05"},
+            }
+            parse_rack_departure_response(status, response, request=parsed)
+        elif operation == COMPLETION_CONFIRM_OPERATION:
+            parsed = parse_completion_confirm_request(envelope)
+            status, response = 200, _ack(operation_id, "DECIDED", None)
+            response["data"] = {"result": "COMPLETED"}
+            parse_completion_confirm_response(status, response, request=parsed)
+    except ValidationError:
+        status = 422
+        response = _ack(operation_id, "REJECTED", None, reason_code="INVALID_DATA")
+        if operation == PICKING_TASK_PREPARE_OPERATION:
+            parse_picking_task_prepare_response(status, response)
+        elif operation == BIN_INBOUND_BATCH_OPERATION:
+            parse_bin_inbound_batch_response(status, response)
+        elif operation == RACK_DEPARTURE_OPERATION:
+            parse_rack_departure_response(status, response)
+        else:
+            parse_completion_confirm_response(status, response)
+    if recognized_operation:
         transport_submission_store.store(
             operation=operation,
             operation_id=operation_id,

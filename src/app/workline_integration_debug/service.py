@@ -1874,6 +1874,15 @@ class IntegrationDebugService:
             request = step.request_summary_json
             result = step.result_summary_json
             target = request.get("target")
+            members = result.get("members")
+            member = (
+                next(
+                    (item for item in members if isinstance(item, dict) and item.get("object_id") == rack_id),
+                    None,
+                )
+                if isinstance(members, list)
+                else None
+            )
             if (
                 step.phase == IntegrationDebugPhase.RACK_TRANSPORT
                 and step.status == "SUCCEEDED"
@@ -1883,8 +1892,10 @@ class IntegrationDebugService:
                 and isinstance(target, dict)
                 and target.get("kind") == "RACK_POSITION"
                 and target.get("location_code") in allowed_positions
-                and result.get("final_position") == target
-                and result.get("arrival_face") == rack_face
+                and isinstance(member, dict)
+                and member.get("status") == "SUCCEEDED"
+                and member.get("final_position") == target
+                and member.get("arrival_face") == rack_face
             ):
                 return
         raise IntegrationDebugConflict("真实模式必须先取得该来源货架在 KT16/KT17 且朝向一致的 Transport 成功终态")
