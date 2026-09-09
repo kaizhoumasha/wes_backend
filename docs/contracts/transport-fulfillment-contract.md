@@ -225,8 +225,8 @@ TransportTask 的关系由业务 owner 的执行映射维护。项目中的 `Exe
 返回空响应体 `413`，不得部分处理或猜测 `operation_id`。
 
 HTTP `Content-Type` 必须是 `application/json`；`charset` 可以省略，存在时只能是 UTF-8。`Content-Encoding` 只能缺省或为
-`identity`。其它媒体类型、charset 或压缩编码返回空响应体 `400`。JSON 顶层和各专属 `data` 都是严格闭集：拒绝重复 key、
-未知字段、大小写近似字段、注释、尾逗号、BOM、`NaN/Infinity` 和隐式类型转换。`operation_id` 只接受小写 canonical UUIDv7；
+`identity`。其它媒体类型、charset 或压缩编码返回空响应体 `400`。WES 按 JSON 顶层和各专属 `data`、成员、位置对象的已定义字段解析，忽略冗余字段；仍拒绝重复 key、
+已定义字段缺失、注释、尾逗号、BOM、`NaN/Infinity` 和隐式类型转换。大小写近似字段不能替代必填字段。`operation_id` 只接受小写 canonical UUIDv7；
 `timestamp` 只接受 `0..Int64.MaxValue` 的 UTC Unix 毫秒整数，但不以时钟偏差拒绝消息。
 
 任意层级重复 key 都无法形成唯一规范化消息，统一按预关联失败返回空响应体 `400` 且不建立幂等记录；响应分类不得因
@@ -336,10 +336,10 @@ CTU 物理动作顺序。
 `DUPLICATE`，同时复用首次应答的 `timestamp + data`，不能刷新业务应答时间或改写业务数据。首次 `REJECTED/CONFLICT` 的
 同身份同请求体重试必须原样重放首次响应；`503` 不建立幂等记录。
 除 `REJECTED` 在请求中的任务 ID 缺失或非法时可以省略 `transport_task_id` 外，所有带 Body 的搬运提交 ACK 都必须回显本次请求中已解析的
-合法 `transport_task_id`，包括活动资源与另一任务冲突的 `409`；不得改为返回占用资源的旧任务 ID。`data` 是严格联合：
+合法 `transport_task_id`，包括活动资源与另一任务冲突的 `409`；不得改为返回占用资源的旧任务 ID。WES 按响应分支读取 `data`，忽略冗余字段：
 
-- `RECEIVED | DUPLICATE | CONFLICT | UNAVAILABLE`：完整且仅包含 `transport_task_id`；
-- `REJECTED`：完整且仅包含 `reason_code`，或 `transport_task_id + reason_code`；只有请求中的任务 ID 缺失或非法时才能省略
+- `RECEIVED | DUPLICATE | CONFLICT | UNAVAILABLE`：读取必填的 `transport_task_id`；冗余 `reason_code` 不进入业务结果；
+- `REJECTED`：读取必填的 `reason_code` 和可选的 `transport_task_id`；只有请求中的任务 ID 缺失或非法时才能省略
   `transport_task_id`。
 
 搬运提交 `REJECTED.reason_code` 只允许 `INVALID_ENVELOPE | UNSUPPORTED_OPERATION | INVALID_DATA |
@@ -546,11 +546,11 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 
 1. 检查请求体上限和严格 JSON 语法；任意层级重复 key 按预关联 `400` 处理。随后提取合法
    `operation + operation_id` 并保留可规范化的完整消息；无法取得合法身份的 `400 | 413` 不建立幂等记录；
-2. 查询既有消息身份并比较完整消息：同身份不同消息信封在 DTO 校验前返回 `409 / CONFLICT`；同身份同消息信封按首次响应稳定
+2. 合法 DTO 先忽略各层冗余字段，再查询既有消息身份并比较规范化有效消息；同身份不同有效消息返回 `409 / CONFLICT`；同身份同有效消息按首次响应稳定
    重放，只有首次 `RECEIVED` 转为 `200 / DUPLICATE`；
-3. 只有首次出现的消息才校验信封其余字段、operation 和闭集 DTO。失败时原子保存消息身份、规范化摘要和首次
+3. 校验信封其余字段、operation 和已定义 DTO 字段。失败时保留原拒绝消息的规范化表示，原子保存消息身份、摘要和首次
    `422 / REJECTED`，不保存 Transport evidence；回调 `503` 不冻结为幂等响应，但可能已有先行提交的协议收据或 Evidence；
-4. 合法 DTO 原子保存消息身份、规范化摘要和原始 Transport evidence；前置位置尚未应用的完整成功 BIN 回架结果也先保存。
+4. 合法 DTO 原子保存消息身份、规范化有效字段摘要和 Transport evidence；前置位置尚未应用的完整成功 BIN 回架结果也先保存。
    搬运最终结果同时登记
    `transport_task_id + outcome_revision + data 业务结果`。同一版本已存在相同 `data` 时返回 `200 / DUPLICATE`；存在不同 `data` 时
    返回 `409 / CONFLICT`。两种情况都保存当前消息身份及首次响应以便稳定重放，但不保存第二份 evidence；

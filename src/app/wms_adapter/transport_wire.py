@@ -61,6 +61,7 @@ def _validate_position_data(value: object) -> dict[str, Any]:
         if "final_position" not in data:
             raise TransportContractError("TARGET_PLACED requires final_position")
         final_position = _validate_position(data["final_position"])
+        data["final_position"] = final_position
         if final_position["kind"] not in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}:
             raise TransportContractError("TARGET_PLACED position must be a rack bin slot or handoff position")
     elif "final_position" in data:
@@ -92,7 +93,7 @@ def _validate_result_data(value: object) -> dict[str, Any]:
     ):
         raise TransportContractError("outcome_revision must be a positive integer within signed 64-bit range")
     if kind in {"RACK_MOVE", "RACK_ROTATE"}:
-        _ = _validate_member_result(
+        member = _validate_member_result(
             {
                 key: data[key]
                 for key in ("rack_id", "status", "final_position", "position_unknown", "failure_code", "arrival_face")
@@ -101,6 +102,7 @@ def _validate_result_data(value: object) -> dict[str, Any]:
             id_field="rack_id",
             rack_kind=True,
         )
+        data.update(member)
         return data
     results = data["results"]
     if not isinstance(results, list) or not results:
@@ -143,6 +145,7 @@ def _validate_member_result(value: object, *, id_field: str, rack_kind: bool) ->
         raise TransportContractError("position_unknown must be literal true")
     if has_position:
         final_position = _validate_position(result["final_position"])
+        result["final_position"] = final_position
         if rack_kind and final_position["kind"] != "RACK_POSITION":
             raise TransportContractError("rack result position must be RACK_POSITION")
         if not rack_kind and final_position["kind"] not in {"RACK_BIN_SLOT", "HANDOFF_POSITION"}:
@@ -197,9 +200,9 @@ def _strict_dict(
         raise TransportContractError(f"{field_name} must be an object")
     allowed = required | (optional or set())
     keys = set(value)
-    if not required <= keys or not keys <= allowed:
+    if not required <= keys:
         raise TransportContractError(f"{field_name} fields do not match the closed contract")
-    return dict(value)
+    return {key: value[key] for key in value if key in allowed}
 
 
 __all__ = [

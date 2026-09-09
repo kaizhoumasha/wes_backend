@@ -15,9 +15,12 @@
 | `Jenkinsfile.backend-ci` | 后端质量门禁、provider 制品导出、runtime 镜像构建与发布 |
 | 前端仓库 `Jenkinsfile` | 前端质量门禁、consumer 制品导出、frontend 镜像构建与发布 |
 | `Jenkinsfile.release-checker-ci` | release checker 独立测试、构建与不可变镜像发布 |
-| `Jenkinsfile.test-deploy` | TEST 独立 release orchestrator；唯一环境变更入口 |
+| `Jenkinsfile.test-deploy` | TEST 独立 release orchestrator；正式版本发布入口 |
 
 生产环境不由 Jenkins 直接连接；使用与 `Jenkinsfile.test-deploy` 相同合同的受控 orchestrator，详见 [生产发布 Runbook](prod-release-deploy.md)。
+
+开发期间允许通过[联调服务器源码热更新](integration-hot-reload.md)跳过重复镜像构建。该入口只接受与当前后端基础镜像相容的源码，
+不执行 migration，也不产生正式 release evidence；正式 TEST 发布前必须先恢复 immutable image 模式。
 
 ## 仓库与发布权威
 
@@ -113,4 +116,5 @@ HEAVY selector 只负责测试选择，不能作为 FAST/FULL 发布模式真源
 - [当前环境配置指南](jenkins-setup-current-env.md)
 - [快速配置清单](jenkins-checklist.md)
 - [生产发布 Runbook](prod-release-deploy.md)
+- [联调服务器源码热更新](integration-hot-reload.md)
 - [发布解耦当前设计](../superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md)

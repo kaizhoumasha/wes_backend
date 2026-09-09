@@ -326,7 +326,7 @@ async def test_explicit_not_accepted_status_can_retry_same_identity(status_code:
 
 
 @pytest.mark.asyncio
-async def test_non_ack_response_with_additional_top_level_fields_remains_untrusted() -> None:
+async def test_non_ack_response_ignores_additional_top_level_fields() -> None:
     transport = FakeOutboundHttpTransport(
         [_response(503, {"code": 503, "message": "TEMPORARILY_UNAVAILABLE", "data": None})]
     )
@@ -341,7 +341,20 @@ async def test_non_ack_response_with_additional_top_level_fields_remains_untrust
         params={},
     )
 
-    assert result.disposition is EcsSubmitDisposition.RECONCILING
+    assert result.disposition is EcsSubmitDisposition.RETRYABLE_NOT_ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_status_ignores_redundant_fields_at_every_defined_object() -> None:
+    entry = _status_entry()
+    entry["supplier_extension"] = True
+    entry["device"]["supplier_extension"] = True
+    entry["state"]["supplier_extension"] = True
+    transport = FakeOutboundHttpTransport([_response(200, {"devices": [entry], "supplier_extension": True})])
+
+    result = await EcsAdapter(transport).fetch_status("ARM-01")
+
+    assert result.model_dump(mode="json") == _status_entry()
 
 
 @pytest.mark.asyncio

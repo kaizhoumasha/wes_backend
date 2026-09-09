@@ -135,13 +135,10 @@ async def test_work_plan_decisions_complete_obligation_without_automatic_followu
         {"result": "READY", "cell_ids": []},
         {"result": "READY", "cell_ids": ["C", "C"]},
         {"result": "READY", "cell_ids": ["bad cell"]},
-        {"result": "READY", "cell_ids": ["C"], "retry_after_ms": 1},
-        {"result": "NO_WORK", "cell_ids": None},
         {"result": "WAIT"},
         {"result": "WAIT", "retry_after_ms": 0},
         {"result": "WAIT", "retry_after_ms": 60001},
         {"result": "WAIT", "retry_after_ms": True},
-        {"result": "WAIT", "retry_after_ms": 1, "cell_ids": ["C"]},
         {"result": "NO_BATCH", "retry_after_ms": 1},
     ],
 )
@@ -172,7 +169,7 @@ def test_work_plan_requires_matching_response_identity_and_strict_envelopes():
     body["operation_id"] = "019f3405-2200-7b01-8b01-000000000002"
     with pytest.raises(ValueError):
         parse_bin_work_plan_response(200, body, request=parsed)
-    for changed in (request() | {"extra": 1}, request() | {"operation": "other@v1"}):
+    for changed in (request() | {"data": None}, request() | {"operation": "other@v1"}):
         with pytest.raises(ValueError):
             parse_bin_work_plan_request(changed)
 
@@ -236,3 +233,18 @@ async def test_error_mapping(status, code, data, expected):
         request_digest=canonical_json_digest(payload),
     )
     assert result.code is expected
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"result": "READY", "cell_ids": ["C"], "retry_after_ms": 1},
+        {"result": "NO_WORK", "cell_ids": None},
+        {"result": "WAIT", "retry_after_ms": 1, "cell_ids": ["C"]},
+    ],
+)
+def test_redundant_fields_accepted_response_is_closed_and_cells_unique(data):
+    from src.app.wms_adapter.outbound_picking.work_plan_wire import parse_bin_work_plan_response
+
+    parsed = parse_bin_work_plan_response(200, response(data))
+    assert parsed.data.result == data["result"]

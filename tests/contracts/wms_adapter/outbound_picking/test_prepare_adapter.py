@@ -89,6 +89,32 @@ async def _dispatch(transport: _Transport, payload: dict[str, object] | None = N
 
 
 @pytest.mark.asyncio
+async def test_prepare_accepts_redundant_response_fields_and_normalizes_empty_data() -> None:
+    transport = _Transport(
+        _response(
+            {
+                "operation_id": OPERATION_ID,
+                "code": "PREPARE_ACCEPTED",
+                "timestamp": 1788985091652,
+                "supplier_trace": "trace-1",
+                "data": {"task_id": "A7DE2872228C2444E86406A331E7393C9", "workline_code": "KT16", "awbh_code": "KT16"},
+            },
+            status=202,
+        )
+    )
+
+    result = await _dispatch(transport)
+
+    assert result.code is WmsDispatchCode.DETERMINATE
+    assert result.normalized_response == {
+        "operation_id": OPERATION_ID,
+        "code": "PREPARE_ACCEPTED",
+        "timestamp": 1788985091652,
+        "data": {},
+    }
+
+
+@pytest.mark.asyncio
 async def test_prepare_adapter_sends_to_decision_path_and_accepts_only_prepare_accepted() -> None:
     transport = _Transport(
         _response(

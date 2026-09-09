@@ -1,6 +1,5 @@
 from dataclasses import replace
 
-import pytest
 from wes_plugin_sdk import DevicePosition, wms_operations
 from wes_plugin_sdk.wms_types import AdmissionAccepted, AdmissionOutcome, Measurements, SixInOne
 
@@ -39,5 +38,6 @@ def test_durable_wms_response_becomes_closed_typed_outcome() -> None:
         AdmissionAccepted("PKG-1", "ADM-1")
     )
     response["data"]["unexpected"] = True
-    with pytest.raises(ValueError):
-        decode_outcome(ADMISSION_OPERATION, response, material_trace_id="TRACE-1")
+    assert decode_outcome(ADMISSION_OPERATION, response, material_trace_id="TRACE-1") == AdmissionOutcome(
+        AdmissionAccepted("PKG-1", "ADM-1")
+    )

@@ -53,14 +53,13 @@ def test_prepare_request_parser_rejects_values_outside_the_approved_contract(
         parse_picking_task_prepare_request(payload)
 
 
-def test_prepare_request_parser_rejects_unknown_fields() -> None:
+def test_prepare_request_parser_ignores_unknown_fields() -> None:
     payload = _request()
     data = payload["data"]
     assert isinstance(data, dict)
     data["station_code"] = "STATION-1"
 
-    with pytest.raises(ValidationError):
-        parse_picking_task_prepare_request(payload)
+    assert parse_picking_task_prepare_request(payload).model_dump(mode="json") == _request()
 
 
 @pytest.mark.parametrize(
@@ -115,7 +114,7 @@ def test_prepare_response_parser_accepts_only_the_approved_http_code_pairs(
                 "operation_id": _request()["operation_id"],
                 "code": "PREPARE_ACCEPTED",
                 "timestamp": 2,
-                "data": {"extra": True},
+                "data": None,
             },
         ),
         (

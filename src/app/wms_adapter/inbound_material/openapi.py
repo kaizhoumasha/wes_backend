@@ -38,7 +38,7 @@ _TIMESTAMP = {
 def _closed(required: list[str], properties: dict[str, object]) -> dict[str, object]:
     return {
         "type": "object",
-        "additionalProperties": False,
+        "additionalProperties": True,
         "required": required,
         "properties": properties,
     }
@@ -141,11 +141,11 @@ def _combined_event_responses() -> dict[int | str, dict[str, object]]:
     for status in (200, 202):
         schema = responses[status]["content"]["application/json"]["schema"]
         transport_data = schema["properties"]["data"]
-        schema["properties"]["data"] = {"oneOf": [transport_data, _EMPTY_DATA]}
+        schema["properties"]["data"] = {"anyOf": [transport_data, _EMPTY_DATA]}
     rejected_schema = responses[422]["content"]["application/json"]["schema"]
-    rejected_schema["properties"]["data"]["oneOf"].append(_INBOUND_REJECTION_DATA)
+    rejected_schema["properties"]["data"]["anyOf"].append(_INBOUND_REJECTION_DATA)
     conflict_schema = responses[409]["content"]["application/json"]["schema"]
-    conflict_schema["properties"]["data"]["oneOf"].append(ConflictData.model_json_schema())
+    conflict_schema["properties"]["data"]["anyOf"].append(ConflictData.model_json_schema())
     for status, code, data in (
         (409, "CONFLICT", {"reason_code": "IDEMPOTENCY_CONFLICT"}),
         (422, "REJECTED", {"reason_code": "INVALID_DATA"}),

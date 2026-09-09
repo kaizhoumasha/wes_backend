@@ -90,12 +90,32 @@ async def test_removed_busy_ack_is_not_accepted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retry_after_ms_is_rejected_from_all_ack_data() -> None:
+async def test_retry_after_ms_is_ignored_in_ack_data() -> None:
     access = _ack(503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1500})
 
     result = await _adapter(FakeClient(access)).submit(**_snapshot())
 
-    assert result.code is TransportSubmitCode.DELIVERY_UNKNOWN
+    assert result.code is TransportSubmitCode.UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "status,code", [(202, "RECEIVED"), (200, "DUPLICATE"), (409, "CONFLICT"), (503, "UNAVAILABLE")]
+)
+@pytest.mark.asyncio
+async def test_redundant_ack_fields_are_ignored_without_propagating_reason_code(status, code) -> None:
+    access = _ack(
+        status,
+        code,
+        {
+            "transport_task_id": "transport-1",
+            "reason_code": "INVALID_DATA",
+            "supplier_extension": {"value": 1},
+        },
+    )
+    access.json_body["supplier_trace"] = "T-1"
+    result = await _adapter(FakeClient(access)).submit(**_snapshot())
+    assert result.code == TransportSubmitCode(code)
+    assert result.reason_code is None
 
 
 @pytest.mark.asyncio
@@ -239,7 +259,7 @@ async def test_transport_ack_rejects_malformed_utf8_charset(content_type: str) -
     ("field", "value"),
     [
         ("operation_id", "another-request"),
-        ("unexpected", 123),
+        ("data", None),
         ("timestamp", True),
         ("timestamp", "1"),
         ("code", []),
@@ -283,12 +303,11 @@ async def test_rejected_ack_discards_unencodable_reason_code() -> None:
     [
         (202, "RECEIVED", {}),
         (422, "REJECTED", {"transport_task_id": "transport-1"}),
-        (202, "RECEIVED", {"transport_task_id": "transport-1", "reason_code": "UNEXPECTED"}),
-        (503, "UNAVAILABLE", {"transport_task_id": "transport-1", "retry_after_ms": 1000}),
+        (503, "UNAVAILABLE", {"transport_task_id": None, "retry_after_ms": 1000}),
         (
             422,
             "REJECTED",
-            {"transport_task_id": "transport-1", "reason_code": "INVALID_DATA", "retry_after_ms": 1000},
+            {"transport_task_id": "transport-1", "reason_code": None, "retry_after_ms": 1000},
         ),
     ],
 )

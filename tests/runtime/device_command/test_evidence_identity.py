@@ -11,6 +11,32 @@ def _device_digest(payload: dict[str, Any]) -> str:
     return normalize_payload(payload, digest_policy=InboundEvidenceDigestPolicy.UNIFORM_WIRE)[1]
 
 
+def test_callback_error_extensions_do_not_change_digest_but_required_error_facts_do() -> None:
+    from src.app.device.contracts import EcsCommandResultReport
+
+    payload = {
+        "command_code": "CMD-1",
+        "device_code": "ARM-01",
+        "result": "FAILED",
+        "finish_time": 1,
+        "data": {"position": "A"},
+        "error_detail": {"code": "BLOCKED", "msg": "Blocked"},
+    }
+    extended = {
+        **payload,
+        "supplier_trace": "T-1",
+        "error_detail": {
+            **payload["error_detail"],
+            "supplier_detail": "opaque",
+        },
+    }
+    first = EcsCommandResultReport.model_validate(payload).model_dump(mode="json")
+    second = EcsCommandResultReport.model_validate(extended).model_dump(mode="json")
+    assert _device_digest(first) == _device_digest(second)
+    changed = {**second, "error_detail": {"code": "OTHER", "msg": "Blocked"}}
+    assert _device_digest(first) != _device_digest(changed)
+
+
 def test_trace_id_does_not_change_evidence_digest() -> None:
     first = {
         "device_code": "ARM-01",

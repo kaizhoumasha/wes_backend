@@ -131,8 +131,7 @@ def test_admission_request_is_strict_and_preserves_measurement_strings() -> None
         parse_outbound_request(invalid)
     invalid = request.model_dump(mode="json")
     invalid["data"]["unexpected"] = True
-    with pytest.raises(ValidationError):
-        parse_outbound_request(invalid)
+    assert parse_outbound_request(invalid) == request
 
 
 @pytest.mark.parametrize(
@@ -184,11 +183,10 @@ def test_admission_request_is_strict_and_preserves_measurement_strings() -> None
         ),
     ],
 )
-def test_other_outbound_requests_are_closed(operation: str, data: dict[str, object]) -> None:
+def test_other_outbound_requests_ignore_redundant_fields(operation: str, data: dict[str, object]) -> None:
     request = parse_outbound_request(_envelope(operation, data))
     assert request.operation == operation
-    with pytest.raises(ValidationError):
-        parse_outbound_request(_envelope(operation, {**data, "unknown": 1}))
+    assert parse_outbound_request(_envelope(operation, {**data, "unknown": 1})) == request
 
 
 def test_optional_pkg_id_must_be_omitted_instead_of_null() -> None:
@@ -363,7 +361,7 @@ def test_response_status_code_and_result_pairings_are_strict() -> None:
                 "operation_id": OPERATION_ID,
                 "code": "REJECTED",
                 "timestamp": 2,
-                "data": {"reason_code": "INVALID_DATA", "field_path": "data.material_trace_id"},
+                "data": {"reason_code": "UNRECOGNIZED", "field_path": "data.material_trace_id"},
             },
         )
 
@@ -408,8 +406,7 @@ def test_recovery_is_single_execution_strict_and_continue_has_no_null_position()
 
     legacy_batch = value.copy()
     legacy_batch["data"] = {**value["data"], "affected_execution_ids": ["EXEC-1"]}
-    with pytest.raises(ValidationError):
-        parse_recovery_event(legacy_batch)
+    assert parse_recovery_event(legacy_batch) == parse_recovery_event(value)
     null_position = value.copy()
     null_position["data"] = {
         **value["data"],
@@ -443,8 +440,8 @@ def test_replacement_face_json_schema_publishes_character_limit():
     assert schema["maxLength"] == 10
 
 
-def test_admission_rejects_retired_epoch_field():
+def test_admission_ignores_retired_epoch_field():
     data = _admission_data()
     data["line_run_epoch_id"] = "EPOCH-1"
-    with pytest.raises(ValidationError):
-        parse_outbound_request(_envelope(ADMISSION_OPERATION, data))
+    parsed = parse_outbound_request(_envelope(ADMISSION_OPERATION, data))
+    assert "line_run_epoch_id" not in parsed.model_dump(mode="json")["data"]

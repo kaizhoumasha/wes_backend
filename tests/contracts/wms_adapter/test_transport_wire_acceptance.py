@@ -79,6 +79,37 @@ def _rack_result_data(**overrides: object) -> dict[str, object]:
     return data
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        _result_data(),
+        _rack_result_data(),
+        _position_data(
+            milestone="TARGET_PLACED", final_position={"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN"}
+        ),
+    ],
+)
+def test_callback_normalizes_redundant_fields_at_every_object_depth(data: dict[str, object]) -> None:
+    from copy import deepcopy
+
+    operation = POSITION_OPERATION if "milestone" in data else RESULT_OPERATION
+    expected = _envelope(operation, data)
+    extended = deepcopy(expected)
+
+    def extend(value: object) -> None:
+        if isinstance(value, dict):
+            for child in list(value.values()):
+                extend(child)
+            value["supplier_extension"] = {"value": 1}
+        elif isinstance(value, list):
+            for child in value:
+                extend(child)
+
+    extend(extended)
+    assert validate_callback_envelope(extended) == expected
+    assert "supplier_extension" in extended
+
+
 @pytest.mark.parametrize("arrival_face", ["270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_rack_callback_preserves_any_non_empty_face_string(arrival_face: str) -> None:
     envelope = _envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face))
@@ -342,7 +373,7 @@ def test_callback_rejects_identifiers_longer_than_persistence_contract(
         (
             _position_data(
                 milestone="TARGET_PLACED",
-                final_position={"kind": "HANDOFF_POSITION", "location_code": "ROLLER_IN", "extra": True},
+                final_position={"kind": "HANDOFF_POSITION", "extra": True},
             ),
             "handoff position fields do not match the closed contract",
         ),

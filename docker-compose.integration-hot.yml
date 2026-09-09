@@ -1,0 +1,99 @@
+services:
+  api:
+    entrypoint:
+      - /opt/venv/bin/uvicorn
+    command:
+      - main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --reload
+      - --reload-dir
+      - /app
+    environment:
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+
+  celery:
+    entrypoint:
+      - /bin/sh
+      - /app/src/celery_app/dev_worker_autoreload.sh
+    environment:
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+    volumes:
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+    healthcheck:
+      test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
+
+  celery-wms-fulfillment:
+    entrypoint:
+      - /bin/sh
+      - /app/src/celery_app/dev_worker_autoreload.sh
+    environment:
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+    volumes:
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+    healthcheck:
+      test: ["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]
+
+  celery_beat:
+    entrypoint:
+      - /bin/sh
+      - /app/src/celery_app/dev_beat_autoreload.sh
+    environment:
+      PYTHONPATH: /app/src/wes_plugin_sdk/src:/app
+    volumes:
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/src:/app/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/deployment:/app/deployment:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/workline_plugins/rough_sorter/src:/app/workline_plugins/rough_sorter/src:ro,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/main.py:/app/main.py:ro,z
+    healthcheck:
+      test: ["CMD", "python", "/app/src/celery_app/beat_healthcheck.py"]
+
+  frontend:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    entrypoint:
+      - /bin/sh
+    command:
+      - /opt/wes-hot/frontend-dev-entrypoint.sh
+    environment:
+      FRONTEND_APP_DIR: /app
+      FRONTEND_PORT: "5173"
+      PNPM_HOME: /pnpm
+      PNPM_STORE_DIR: /pnpm/store
+      VITE_API_BASE_URL: /api/v1
+      VITE_API_PROXY_TARGET: http://api:8001
+      VITE_APP_DEV: "true"
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "300"
+    volumes:
+      - ${HOT_FRONTEND_ROOT:?HOT_FRONTEND_ROOT is required}:/app:rw,z
+      - ${HOT_BACKEND_ROOT:?HOT_BACKEND_ROOT is required}/scripts/frontend-dev-entrypoint.sh:/opt/wes-hot/frontend-dev-entrypoint.sh:ro,z
+      - integration_hot_frontend_node_modules:/app/node_modules
+      - integration_hot_frontend_pnpm_store:/pnpm/store
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173/').then((res) => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      start_period: 300s
+
+volumes:
+  integration_hot_frontend_node_modules:
+  integration_hot_frontend_pnpm_store:

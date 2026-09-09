@@ -76,7 +76,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     request_variants = request_schema["oneOf"]
     assert len(request_variants) == 7
     assert all(variant["type"] == "object" for variant in request_variants)
-    assert all(variant["additionalProperties"] is False for variant in request_variants)
+    assert all(variant.get("additionalProperties", True) is True for variant in request_variants)
     assert all(
         variant["required"] == ["operation_id", "operation", "timestamp", "data"] for variant in request_variants
     )
@@ -129,7 +129,7 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     assert picking_task_data["properties"]["queue_revision"]["maximum"] == 1
     queue_data = request_variants[5]["properties"]["data"]
     assert queue_data["required"] == ["task_id", "queue_revision"]
-    assert queue_data["additionalProperties"] is False
+    assert queue_data.get("additionalProperties", True) is True
     assert set(queue_data["properties"]) == {"task_id", "queue_revision", "dispatch_sequence", "not_before"}
     assert queue_data["properties"]["queue_revision"]["type"] == "integer"
     assert queue_data["properties"]["queue_revision"]["minimum"] == 2
@@ -152,10 +152,10 @@ def test_wms_event_openapi_exposes_transport_recovery_and_picking_task_contracts
     }.items():
         ack_schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
         assert ack_schema.get("properties", {}).get("code", {}).get("enum") == [expected_code]
-        assert ack_schema["additionalProperties"] is False
+        assert ack_schema.get("additionalProperties", True) is True
         data_schema = ack_schema["properties"]["data"]
-        data_variants = data_schema.get("oneOf", [data_schema])
-        assert all(variant["additionalProperties"] is False for variant in data_variants)
+        data_variants = data_schema.get("anyOf", [data_schema])
+        assert all(variant.get("additionalProperties", True) is True for variant in data_variants)
     for status_code in ("400", "401", "413"):
         assert "content" not in operation["responses"][status_code]
 

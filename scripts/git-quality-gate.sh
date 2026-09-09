@@ -13,7 +13,8 @@ Usage: scripts/git-quality-gate.sh [--profile PROFILE] [--check CHECK] [--bandit
 
 Profiles:
   quality   Run Ruff, Bandit, runtime gates, runtime contract guardrails, legacy absence, process naming,
-            architecture guardrails, explicit architecture/script suites, and the FAST suite with enforced budgets.
+            architecture guardrails, explicit architecture/script suites, and the FAST suite.
+            Speed budgets are enforced locally and reported without blocking in --ci mode.
   ci-smoke  Run the quality profile plus API signature smoke tests.
 
 Checks:
@@ -230,11 +231,16 @@ run_script_contract_tests() {
 }
 
 run_fast_test_suite() {
+    local budget_args=(python scripts/check_fast_test_budget.py reports/fast-tests.xml)
     mkdir -p reports
     log_step "fast-tests" "pytest --junitxml=reports/fast-tests.xml"
     run_tool pytest --junitxml=reports/fast-tests.xml
-    log_step "fast-tests" "check_fast_test_budget.py reports/fast-tests.xml"
-    run_tool python scripts/check_fast_test_budget.py reports/fast-tests.xml
+    # CI 节点负载影响墙钟耗时；保留速度报告，测试本身失败仍由上一步阻断。
+    if [[ "$CI_MODE" == "true" ]]; then
+        budget_args+=(--report-only)
+    fi
+    log_step "fast-tests" "${budget_args[*]}"
+    run_tool "${budget_args[@]}"
 }
 
 run_quality_profile() {

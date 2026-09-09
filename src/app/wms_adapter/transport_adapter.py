@@ -112,7 +112,9 @@ class WmsTransportAdapter:
         return TransportSubmitResult(
             code,
             transport_task_id,
-            reason_code=_persistable_reason_code(data.get("reason_code")),
+            reason_code=_persistable_reason_code(data.get("reason_code"))
+            if code is TransportSubmitCode.REJECTED
+            else None,
         )
 
 
@@ -128,7 +130,7 @@ def _map_response_code(status_code: int | None, code: object) -> TransportSubmit
 
 
 def _valid_ack_envelope(body: Mapping[str, object], operation_id: str) -> bool:
-    if set(body) != {"operation_id", "code", "timestamp", "data"}:
+    if not {"operation_id", "code", "timestamp", "data"} <= body.keys():
         return False
     if body.get("operation_id") != operation_id or not isinstance(body.get("code"), str):
         return False
@@ -136,23 +138,21 @@ def _valid_ack_envelope(body: Mapping[str, object], operation_id: str) -> bool:
     if not isinstance(timestamp, int) or isinstance(timestamp, bool) or not 0 <= timestamp <= _SIGNED_INT64_MAX:
         return False
     data = body.get("data")
-    return isinstance(data, dict) and set(data) <= {"transport_task_id", "reason_code"}
+    return isinstance(data, dict)
 
 
 def _valid_ack_data(data: Mapping[str, object], code: TransportSubmitCode) -> bool:
     if code is TransportSubmitCode.DELIVERY_UNKNOWN:
         return False
     if code is TransportSubmitCode.REJECTED:
-        if set(data) not in ({"reason_code"}, {"transport_task_id", "reason_code"}):
+        if "reason_code" not in data:
             return False
         task_id = data.get("transport_task_id")
         return ("transport_task_id" not in data or _valid_task_id(task_id)) and _persistable_reason_code(
             data.get("reason_code")
         ) is not None
     task_id = data.get("transport_task_id")
-    if not _valid_task_id(task_id):
-        return False
-    return set(data) == {"transport_task_id"}
+    return _valid_task_id(task_id)
 
 
 def _decode_frozen_request_body(request_body: bytes) -> dict[str, object] | None:

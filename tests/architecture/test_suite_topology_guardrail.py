@@ -54,12 +54,11 @@ def test_pytest_fast_defaults_use_xunit2_without_implicit_coverage_noise() -> No
     assert pytest_options["addopts"] == ["-v", "--durations=10", "--tb=short"]
 
 
-def test_quality_gate_enforces_fast_budget() -> None:
+def test_quality_gate_generates_and_checks_fast_report() -> None:
     gate_text = (REPO_ROOT / "scripts" / "git-quality-gate.sh").read_text(encoding="utf-8")
 
     assert "pytest --junitxml=reports/fast-tests.xml" in gate_text
     assert "check_fast_test_budget.py reports/fast-tests.xml" in gate_text
-    assert "--report-only" not in gate_text
 
 
 def test_test_files_stay_in_governed_top_level_directories() -> None:

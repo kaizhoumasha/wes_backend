@@ -10,7 +10,7 @@ def test_inbound_openapi_exposes_only_the_approved_recovery_operation() -> None:
     schema = RECOVERY_EVENT_REQUEST_SCHEMA
 
     assert schema["type"] == "object"
-    assert schema["additionalProperties"] is False
+    assert schema["additionalProperties"] is True
     assert schema["required"] == ["operation_id", "operation", "timestamp", "data"]
     assert schema["properties"]["operation"]["enum"] == [RECOVERY_OPERATION]
     serialized = json.dumps(schema, ensure_ascii=False)
@@ -21,7 +21,7 @@ def test_inbound_openapi_exposes_only_the_approved_recovery_operation() -> None:
 def test_recovery_openapi_closes_single_execution_position_and_decision_rule() -> None:
     data = RECOVERY_EVENT_REQUEST_SCHEMA["properties"]["data"]
 
-    assert data["additionalProperties"] is False
+    assert data["additionalProperties"] is True
     assert set(data["required"]) == {
         "recovery_id",
         "material_execution_id",
@@ -52,12 +52,12 @@ def test_shared_event_responses_include_inbound_empty_ack_and_invalid_data_witho
     received_data = WMS_EVENT_RESPONSES[202]["content"]["application/json"]["schema"]["properties"]["data"]
     rejected_data = WMS_EVENT_RESPONSES[422]["content"]["application/json"]["schema"]["properties"]["data"]
 
-    assert {tuple(variant["required"]) for variant in received_data["oneOf"]} == {
+    assert {tuple(variant["required"]) for variant in received_data["anyOf"]} == {
         ("transport_task_id",),
         (),
     }
     reason_codes = {
-        reason for variant in rejected_data["oneOf"] for reason in variant["properties"]["reason_code"]["enum"]
+        reason for variant in rejected_data["anyOf"] for reason in variant["properties"]["reason_code"]["enum"]
     }
     assert reason_codes == {"INVALID_EVIDENCE", "INVALID_DATA", "UNSUPPORTED_OPERATION"}
 
@@ -67,10 +67,10 @@ def test_shared_event_schema_accepts_picking_conflict_ack_without_widening_trans
     from src.app.wms_adapter.transport_openapi import TRANSPORT_EVENT_RESPONSES
 
     media = WMS_EVENT_RESPONSES[409]["content"]["application/json"]
-    variants = media["schema"]["properties"]["data"]["oneOf"]
+    variants = media["schema"]["properties"]["data"]["anyOf"]
     picking_variants = [variant for variant in variants if variant["required"] == ["reason_code"]]
     assert len(picking_variants) == 1
-    assert picking_variants[0]["additionalProperties"] is False
+    assert picking_variants[0].get("additionalProperties", True) is True
     assert set(picking_variants[0]["properties"]["reason_code"]["enum"]) == {
         "IDEMPOTENCY_CONFLICT",
         "STATE_CONFLICT",
@@ -80,6 +80,6 @@ def test_shared_event_schema_accepts_picking_conflict_ack_without_widening_trans
     example = media["examples"]["picking_task"]["value"]
     assert ConflictResponse.model_validate(example).data.reason_code == "IDEMPOTENCY_CONFLICT"
     transport_variants = TRANSPORT_EVENT_RESPONSES[409]["content"]["application/json"]["schema"]["properties"]["data"][
-        "oneOf"
+        "anyOf"
     ]
     assert all(variant["required"] != ["reason_code"] for variant in transport_variants)

@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.40.2.1
+**Version**: 0.40.2.2
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -41,6 +41,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - Swagger UI：http://localhost:8001/api/docs
 
 完整规则、端口、初始化数据和排障方式见[本机开发调试环境规范](docs/devops/local-development-environment.md)。
+需要将本机前后端源码快速同步到联调服务器时，使用[联调服务器源码热更新](docs/devops/integration-hot-reload.md)。
 
 ## Configuration
 
@@ -72,6 +73,7 @@ API、Celery/Beat、WMS/ECS Mock、Vite 前端与 Nginx。前后端运行时代�
 - [休斯顿现场服务器初始化与基础支撑环境配置手册](docs/devops/rocky-linux-server-initialization.md)
 - [生产发布 Runbook](docs/devops/prod-release-deploy.md)
 - [Jenkins CI/CD 配置](docs/devops/JENKINS.md)
+- [联调服务器源码热更新](docs/devops/integration-hot-reload.md)
 
 ## Production Bootstrap
 

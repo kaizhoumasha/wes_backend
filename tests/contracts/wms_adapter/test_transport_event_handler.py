@@ -59,6 +59,22 @@ class UnavailableRecorder:
         raise RuntimeError("database unavailable")
 
 
+@pytest.mark.asyncio
+async def test_callback_redundant_fields_do_not_enter_persisted_message_or_business_payload() -> None:
+    recorder = FakeRecorder()
+    handler = TransportEventHandler(recorder)
+    data = {"transport_task_id": "transport-1", "container_id": "bin-1", "milestone": "SOURCE_PICKED"}
+    original = json.loads(_body("transport.task.member_position_changed@v1", data))
+    extended = {**original, "supplier_trace": "trace-1", "data": {**data, "supplier_extra": True}}
+
+    await handler.handle(json.dumps(original).encode())
+    await handler.handle(json.dumps(extended).encode())
+
+    assert recorder.calls[0]["message"] == recorder.calls[1]["message"] == original
+    assert recorder.calls[1]["payload"] == data
+    assert recorder.calls[1]["rejection_reason_code"] is None
+
+
 def _body(
     operation: str,
     data: dict[str, object],
@@ -128,7 +144,7 @@ async def test_handler_rejects_oversized_or_non_closed_json_without_persisting()
                 "transport_task_id": "transport-1",
                 "container_id": "bin-1",
                 "milestone": "SOURCE_PICKED",
-                "unexpected": True,
+                "final_position": {},
             },
         )
     )

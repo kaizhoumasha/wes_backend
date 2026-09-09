@@ -58,7 +58,6 @@ def test_closed_decisions(data):
         ("rack_face", "a\x00"),
         ("rack_id", "退料架 1"),
         ("task_id", ""),
-        ("extra", 1),
     ],
 )
 def test_invalid_request_fields(field, value):
@@ -74,12 +73,9 @@ def test_invalid_request_fields(field, value):
         {"result": "READY", "bins": []},
         {"result": "READY", "bins": [bin_item(), bin_item()]},
         {"result": "READY", "bins": [bin_item(), bin_item("BIN-2")]},
-        {"result": "READY", "bins": [bin_item()], "retry_after_ms": 1},
         {"result": "NO_BATCH", "retry_after_ms": 0},
         {"result": "NO_BATCH", "retry_after_ms": 60001},
         {"result": "NO_BATCH", "retry_after_ms": True},
-        {"result": "NO_BATCH", "bins": [], "retry_after_ms": 1},
-        {"result": "RACK_FACE_DONE", "bins": None},
         {"result": "WAIT", "retry_after_ms": 1},
     ],
 )
@@ -141,3 +137,16 @@ def test_rejection_data_is_closed(data):
     body = {"operation_id": OPERATION_ID, "code": "REJECTED", "timestamp": 0, "data": data}
     with pytest.raises(ValueError):
         parse_bin_inbound_batch_response(422, body)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"result": "READY", "bins": [bin_item()], "retry_after_ms": 1},
+        {"result": "NO_BATCH", "bins": [], "retry_after_ms": 1},
+        {"result": "RACK_FACE_DONE", "bins": None},
+    ],
+)
+def test_redundant_fields_accepted_invalid_decisions(data):
+    parsed = parse_bin_inbound_batch_response(200, response(data))
+    assert parsed.data.result == data["result"]

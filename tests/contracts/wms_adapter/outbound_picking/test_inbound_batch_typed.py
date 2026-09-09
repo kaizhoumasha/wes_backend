@@ -82,7 +82,7 @@ def test_decode_closed_responses(code, data, kind) -> None:
         ("BUSY", {"retry_after_ms": 1}),
         ("DECIDED", {"result": "READY", "bins": []}),
         ("DECIDED", {"result": "NO_BATCH", "retry_after_ms": 0}),
-        ("DECIDED", {"result": "RACK_FACE_DONE", "bins": []}),
+        ("DECIDED", {"result": "UNKNOWN", "bins": []}),
         ("CONFLICT", {"reason_code": "POSITION_CONFLICT"}),
     ],
 )

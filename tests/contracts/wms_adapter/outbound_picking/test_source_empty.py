@@ -108,8 +108,6 @@ async def test_all_business_results_complete_current_obligation_without_technica
 @pytest.mark.parametrize(
     "data",
     [
-        {"result": "RETRY", "retry_after_ms": 1000},
-        {"result": "SOURCE_DONE", "replacement_sources": []},
         {"result": "WAIT"},
         {"result": "WAIT", "retry_after_ms": 0},
         {"result": "WAIT", "retry_after_ms": 60001},
@@ -123,6 +121,21 @@ async def test_unapproved_results_and_replacement_sources_are_rejected(data):
     result = await dispatch(client_response(response(data)))
     assert result.code is WmsDispatchCode.RECONCILING
     assert result.normalized_response == response(data)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"result": "RETRY", "retry_after_ms": 1000},
+        {"result": "SOURCE_DONE", "replacement_sources": []},
+    ],
+)
+@pytest.mark.asyncio
+async def test_redundant_fields_do_not_create_replacement_sources_or_technical_retries(data):
+    result = await dispatch(client_response(response(data)))
+    assert result.code is WmsDispatchCode.DETERMINATE
+    assert result.normalized_response == response({"result": data["result"]})
+    assert result.retry_after_ms is None
 
 
 @pytest.mark.parametrize(

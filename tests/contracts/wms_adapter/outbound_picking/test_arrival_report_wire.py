@@ -52,7 +52,7 @@ def test_request_preserves_face_and_bounded_integer_values():
         ("arrival_face", 1),
         ("arrival_face", None),
         ("final_position", {"type": "HANDOFF_POSITION", "location_code": "WORK-01"}),
-        ("final_position", {"type": "RACK_POSITION", "location_code": "WORK-01", "rack_id": "R"}),
+        ("final_position", {"type": "RACK_POSITION", "rack_id": "R"}),
     ],
 )
 def test_request_rejects_invalid_fields(field, value):
@@ -96,7 +96,7 @@ def test_closed_responses(status, code, data):
         (202, "RECORDED", {}),
         (200, "RECEIVED", {}),
         (429, "BUSY", {}),
-        (200, "RECORDED", {"result": "OK"}),
+        (200, "RECORDED", None),
         (503, "UNAVAILABLE", None),
         (409, "CONFLICT", {"reason_code": "OTHER"}),
         (422, "REJECTED", {"reason_code": "INVALID_DATA", "field_path": None}),
@@ -125,7 +125,7 @@ def test_rejects_response_drift(status, code, data):
         ("timestamp", True),
         ("operation_id", "019f3404-a100-4b01-8b01-000000000001"),
         ("operation", "outbound.return_rack.other@v1"),
-        ("extra", "value"),
+        ("data", None),
     ],
 )
 def test_request_rejects_invalid_envelope(field, value):

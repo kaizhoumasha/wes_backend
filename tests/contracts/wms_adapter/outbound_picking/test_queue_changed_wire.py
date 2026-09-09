@@ -55,8 +55,6 @@ def test_optional_updates_preserve_omission_and_values(updates):
         ("task_id", " PICK"),
         ("task_id", "PICK\u0000"),
         ("task_id", 1),
-        ("task_type", "MANUAL"),
-        ("unknown", 1),
     ],
 )
 def test_invalid_fields_retain_original_receipt(field, value):
@@ -78,7 +76,7 @@ def test_at_least_one_update_is_required():
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("operation", "outbound.picking_task.issued@v1"), ("timestamp", -1), ("timestamp", True), ("unknown", 1)],
+    [("operation", "outbound.picking_task.issued@v1"), ("timestamp", -1), ("timestamp", True)],
 )
 def test_envelope_is_strict(field, value):
     raw = valid_event()

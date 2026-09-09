@@ -16,7 +16,7 @@
                 "oneOf": [
                   {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
                       "operation_id",
                       "operation",
@@ -46,7 +46,7 @@
                         "oneOf": [
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "container_id",
@@ -70,12 +70,15 @@
                                 "enum": [
                                   "SOURCE_PICKED"
                                 ]
+                              },
+                              "final_position": {
+                                "not": {}
                               }
                             }
                           },
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "container_id",
@@ -99,12 +102,15 @@
                                 "enum": [
                                   "POSITION_UNKNOWN"
                                 ]
+                              },
+                              "final_position": {
+                                "not": {}
                               }
                             }
                           },
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "container_id",
@@ -134,7 +140,7 @@
                                 "oneOf": [
                                   {
                                     "type": "object",
-                                    "additionalProperties": false,
+                                    "additionalProperties": true,
                                     "required": [
                                       "kind",
                                       "rack_id",
@@ -171,7 +177,7 @@
                                   },
                                   {
                                     "type": "object",
-                                    "additionalProperties": false,
+                                    "additionalProperties": true,
                                     "required": [
                                       "kind",
                                       "location_code"
@@ -201,7 +207,7 @@
                   },
                   {
                     "type": "object",
-                    "additionalProperties": false,
+                    "additionalProperties": true,
                     "required": [
                       "operation_id",
                       "operation",
@@ -231,7 +237,7 @@
                         "oneOf": [
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "kind",
@@ -275,7 +281,7 @@
                               },
                               "final_position": {
                                 "type": "object",
-                                "additionalProperties": false,
+                                "additionalProperties": true,
                                 "required": [
                                   "kind",
                                   "location_code"
@@ -295,6 +301,12 @@
                                   }
                                 }
                               },
+                              "position_unknown": {
+                                "not": {}
+                              },
+                              "failure_code": {
+                                "not": {}
+                              },
                               "arrival_face": {
                                 "type": "string",
                                 "minLength": 1,
@@ -306,7 +318,7 @@
                           },
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "kind",
@@ -351,7 +363,7 @@
                               },
                               "final_position": {
                                 "type": "object",
-                                "additionalProperties": false,
+                                "additionalProperties": true,
                                 "required": [
                                   "kind",
                                   "location_code"
@@ -370,6 +382,9 @@
                                     "pattern": ".*\\S.*"
                                   }
                                 }
+                              },
+                              "position_unknown": {
+                                "not": {}
                               },
                               "failure_code": {
                                 "type": "string",
@@ -390,7 +405,7 @@
                           },
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "kind",
@@ -443,12 +458,18 @@
                                 "enum": [
                                   "POSITION_UNKNOWN"
                                 ]
+                              },
+                              "final_position": {
+                                "not": {}
+                              },
+                              "arrival_face": {
+                                "not": {}
                               }
                             }
                           },
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "kind",
@@ -482,7 +503,7 @@
                                   "oneOf": [
                                     {
                                       "type": "object",
-                                      "additionalProperties": false,
+                                      "additionalProperties": true,
                                       "required": [
                                         "container_id",
                                         "status",
@@ -505,7 +526,7 @@
                                           "oneOf": [
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "rack_id",
@@ -542,7 +563,7 @@
                                             },
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "location_code"
@@ -563,12 +584,21 @@
                                               }
                                             }
                                           ]
+                                        },
+                                        "position_unknown": {
+                                          "not": {}
+                                        },
+                                        "failure_code": {
+                                          "not": {}
+                                        },
+                                        "arrival_face": {
+                                          "not": {}
                                         }
                                       }
                                     },
                                     {
                                       "type": "object",
-                                      "additionalProperties": false,
+                                      "additionalProperties": true,
                                       "required": [
                                         "container_id",
                                         "status",
@@ -592,7 +622,7 @@
                                           "oneOf": [
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "rack_id",
@@ -629,7 +659,7 @@
                                             },
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "location_code"
@@ -651,6 +681,9 @@
                                             }
                                           ]
                                         },
+                                        "position_unknown": {
+                                          "not": {}
+                                        },
                                         "failure_code": {
                                           "type": "string",
                                           "enum": [
@@ -658,12 +691,15 @@
                                             "RCS_EXECUTION_FAILED",
                                             "RCS_TASK_REJECTED"
                                           ]
+                                        },
+                                        "arrival_face": {
+                                          "not": {}
                                         }
                                       }
                                     },
                                     {
                                       "type": "object",
-                                      "additionalProperties": false,
+                                      "additionalProperties": true,
                                       "required": [
                                         "container_id",
                                         "status",
@@ -694,6 +730,12 @@
                                           "enum": [
                                             "POSITION_UNKNOWN"
                                           ]
+                                        },
+                                        "final_position": {
+                                          "not": {}
+                                        },
+                                        "arrival_face": {
+                                          "not": {}
                                         }
                                       }
                                     }
@@ -704,7 +746,7 @@
                           },
                           {
                             "type": "object",
-                            "additionalProperties": false,
+                            "additionalProperties": true,
                             "required": [
                               "transport_task_id",
                               "kind",
@@ -742,7 +784,7 @@
                                   "oneOf": [
                                     {
                                       "type": "object",
-                                      "additionalProperties": false,
+                                      "additionalProperties": true,
                                       "required": [
                                         "container_id",
                                         "status",
@@ -765,7 +807,7 @@
                                           "oneOf": [
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "rack_id",
@@ -802,7 +844,7 @@
                                             },
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "location_code"
@@ -823,12 +865,21 @@
                                               }
                                             }
                                           ]
+                                        },
+                                        "position_unknown": {
+                                          "not": {}
+                                        },
+                                        "failure_code": {
+                                          "not": {}
+                                        },
+                                        "arrival_face": {
+                                          "not": {}
                                         }
                                       }
                                     },
                                     {
                                       "type": "object",
-                                      "additionalProperties": false,
+                                      "additionalProperties": true,
                                       "required": [
                                         "container_id",
                                         "status",
@@ -852,7 +903,7 @@
                                           "oneOf": [
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "rack_id",
@@ -889,7 +940,7 @@
                                             },
                                             {
                                               "type": "object",
-                                              "additionalProperties": false,
+                                              "additionalProperties": true,
                                               "required": [
                                                 "kind",
                                                 "location_code"
@@ -911,6 +962,9 @@
                                             }
                                           ]
                                         },
+                                        "position_unknown": {
+                                          "not": {}
+                                        },
                                         "failure_code": {
                                           "type": "string",
                                           "enum": [
@@ -918,12 +972,15 @@
                                             "RCS_EXECUTION_FAILED",
                                             "RCS_TASK_REJECTED"
                                           ]
+                                        },
+                                        "arrival_face": {
+                                          "not": {}
                                         }
                                       }
                                     },
                                     {
                                       "type": "object",
-                                      "additionalProperties": false,
+                                      "additionalProperties": true,
                                       "required": [
                                         "container_id",
                                         "status",
@@ -954,6 +1011,12 @@
                                           "enum": [
                                             "POSITION_UNKNOWN"
                                           ]
+                                        },
+                                        "final_position": {
+                                          "not": {}
+                                        },
+                                        "arrival_face": {
+                                          "not": {}
                                         }
                                       }
                                     }
@@ -978,7 +1041,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "operation_id",
                     "code",
@@ -1006,7 +1069,7 @@
                     },
                     "data": {
                       "type": "object",
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "required": [
                         "transport_task_id"
                       ],
@@ -1030,7 +1093,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "operation_id",
                     "code",
@@ -1058,7 +1121,7 @@
                     },
                     "data": {
                       "type": "object",
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "required": [
                         "transport_task_id"
                       ],
@@ -1089,7 +1152,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "operation_id",
                     "code",
@@ -1116,16 +1179,16 @@
                       "description": "Unix 毫秒时间戳"
                     },
                     "data": {
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "type": "object",
-                          "additionalProperties": false,
+                          "additionalProperties": true,
                           "required": [],
                           "properties": {}
                         },
                         {
                           "type": "object",
-                          "additionalProperties": false,
+                          "additionalProperties": true,
                           "required": [
                             "transport_task_id"
                           ],
@@ -1154,7 +1217,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "operation_id",
                     "code",
@@ -1181,10 +1244,10 @@
                       "description": "Unix 毫秒时间戳"
                     },
                     "data": {
-                      "oneOf": [
+                      "anyOf": [
                         {
                           "type": "object",
-                          "additionalProperties": false,
+                          "additionalProperties": true,
                           "required": [
                             "reason_code"
                           ],
@@ -1200,7 +1263,7 @@
                         },
                         {
                           "type": "object",
-                          "additionalProperties": false,
+                          "additionalProperties": true,
                           "required": [
                             "transport_task_id",
                             "reason_code"
@@ -1234,7 +1297,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": false,
+                  "additionalProperties": true,
                   "required": [
                     "operation_id",
                     "code",
@@ -1262,7 +1325,7 @@
                     },
                     "data": {
                       "type": "object",
-                      "additionalProperties": false,
+                      "additionalProperties": true,
                       "required": [],
                       "properties": {}
                     }

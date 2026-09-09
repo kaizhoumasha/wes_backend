@@ -56,7 +56,7 @@ def test_prepare_response_becomes_typed_outcome(code: str, data: dict, expected:
             "operation_id": "0198e729-34bf-7001-8a01-000000000001",
             "timestamp": 1000,
             "code": "PREPARE_ACCEPTED",
-            "data": {"extra": 1},
+            "data": None,
         },
         {
             "operation_id": "0198e729-34bf-7001-8a01-000000000001",

@@ -63,7 +63,7 @@ def test_decode_closed_persisted_responses(code, data, result_type) -> None:
         {"code": "BUSY"},
         {"code": "PREPARE_ACCEPTED"},
         {"code": None},
-        {"data": {"extra": "unapproved"}},
+        {"data": None},
         {"operation_id": "bad"},
         {"code": "CONFLICT", "data": {"reason_code": "POSITION_CONFLICT"}},
         {"code": "REJECTED", "data": {"reason_code": "INVALID_DATA", "field_path": "/bad~2"}},

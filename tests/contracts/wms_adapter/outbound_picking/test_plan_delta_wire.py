@@ -59,7 +59,7 @@ def test_later_revision_accepts_both_source_kinds():
         {"added_direct_picks": []},
         {"added_bin_source_racks": []},
         {"plan_revision": 2},
-        {"bin_code": "unapproved"},
+        {"plan_revision": None},
         {"added_direct_picks": [{"source_locator": {"type": "BIN_CELL"}}]},
     ],
 )
@@ -104,9 +104,9 @@ def test_locator_validation_matches_persistable_identifiers(field, value):
 
 def test_openapi_publishes_closed_revision_and_locator_constraints():
     schema = PICKING_TASK_PLAN_DELTA_EVENT_REQUEST_SCHEMA
-    assert schema["additionalProperties"] is False
+    assert schema["additionalProperties"] is True
     data = schema["properties"]["data"]
-    assert data["additionalProperties"] is False
+    assert data["additionalProperties"] is True
     assert data["properties"]["plan_revision"]["maximum"] == 2**63 - 1
     first, later = data["oneOf"]
     assert first == {"properties": {"plan_revision": {"const": 1}}, "required": ["target_rack"]}
@@ -114,7 +114,7 @@ def test_openapi_publishes_closed_revision_and_locator_constraints():
     assert later["anyOf"] == [{"required": ["added_bin_source_racks"]}, {"required": ["added_direct_picks"]}]
     for key in ("added_bin_source_racks", "added_direct_picks"):
         assert data["properties"][key]["minItems"] == 1
-        assert data["properties"][key]["items"]["additionalProperties"] is False
+        assert data["properties"][key]["items"]["additionalProperties"] is True
 
 
 @pytest.mark.parametrize("face", ["x" * 10, "面" * 10, "x" * 11, "面" * 11])
