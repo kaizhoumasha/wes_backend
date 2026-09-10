@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.3.0] - 2026-09-09
+
+### Fixed
+
+- 自动联调先下发已扫描料箱的 FIFO 回架批次，未扫描成员继续等待；保留原扫码边界，全部成员确认回架后才转面或整架返库。
+- 自动联调扫码和搬运回调不再被工作线插件配置阻断；正式业务事实处理仍先校验工作线。
+- 510056 联调默认返库区域改为 WH05，并同步冻结请求校验与接口示例。
+- 热同步在完整复制源码后重启原应用容器再检查就绪，避免旧进程提前报告成功；保护单文件挂载与重载控制脚本，保留依赖和迁移校验。
+
 ## [0.40.2.3] - 2026-09-09
 
 ### Fixed
@@ -346,7 +355,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 正式 `RACK_ROTATE` 合同允许与外层 `rack_id` 一致的 `RACK` 引用并原样下发；`CTU03` 支持 `RACK → ZONE WH05`，成功回调仍须提供精确 `RACK_POSITION`。
+- 正式 `RACK_ROTATE` 合同允许与外层 `rack_id` 一致的 `RACK` 引用并原样下发；`CTU03` 支持 `RACK → ZONE WH01`，成功回调仍须提供精确 `RACK_POSITION`。
 - `SCAN12` 只接受当前步骤 Evidence 水位和时间边界之后的已处理扫码；关联 Transport Evidence 尚未处理、发生身份冲突、位置不确定或货架偏离工作位时均停止后继派发。
 
 ### Verification
@@ -493,7 +502,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `TRANSPORT_DEBUG` 的 BIN_MOVE 可直接使用请求中冻结的货架面，不读取或写入业务 `PositionProjection`；正式 Transport 路径保持原有位置投影约束。
-- 操作员确认按任务类型和冻结方向校验，仅接受 WH05/KT16 与 CNV0301/CNV0302 对应的四个固定联调步骤。
+- 操作员确认按任务类型和冻结方向校验，仅接受 WH01/KT16 与 CNV0301/CNV0302 对应的四个固定联调步骤。
 
 ### Verification
 
