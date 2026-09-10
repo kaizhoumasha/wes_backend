@@ -122,7 +122,7 @@ TransportDebugRun（冻结配置和当前进度）
   },
   "target": {
     "kind": "ZONE",
-    "location_code": "WH01"
+    "location_code": "WH05"
   },
   "rcs_template_id": "CTU03",
   "kind": "RACK_MOVE"
@@ -137,7 +137,7 @@ WMS wire adapter 继续把旋转表达为其现有 wire 结构；当正式输入
 
 - `CTU01`：结果位置必须是 `KT16`，面值必须与当前组冻结值完全相等。
 - `CTU02`：结果位置必须仍是 `KT16`，面值必须与下一组冻结值完全相等。
-- `CTU03`：结果必须是 WMS 从 `WH01` 解析出的精确 `RACK_POSITION`，并携带非空的实际 `arrival_face`；
+- `CTU03`：结果必须是 WMS 从 `WH05` 解析出的精确 `RACK_POSITION`，并携带非空的实际 `arrival_face`；
   WES 不按请求目标面比较。
 
 若回调缺少精确位置、面值不一致、位置冲突或任务进入 `RECONCILING`，自动流程进入 `NEEDS_ATTENTION`，不创建下一任务。
@@ -162,7 +162,7 @@ WMS wire adapter 继续把旋转表达为其现有 wire 结构；当正式输入
 
 固定快照包含：
 
-- `storage_zone = WH01`
+- `storage_zone = WH05`
 - `workstation = KT16`
 - `infeed_position = CNV0301`
 - `outfeed_position = CNV0302`
@@ -242,19 +242,19 @@ Device ingress 继续只负责中性地持久化 Evidence、去重和发布处�
 
 - 重复记录幂等忽略。
 - 非本组条码保留诊断记录，但不计入完成集合。
-- 当前组所有冻结料箱各出现至少一次后，才能创建回架任务。
+- 当前组已有有效扫码 FIFO 即可申请回架分配，不等待未扫描料箱；已回架成员不重复申请。
 - Evidence 冲突、处理状态不确定或载荷无法解释时，进入 `NEEDS_ATTENTION`。
 
 现场确认真实事件名和字段路径后，只修改这一适配器及其契约测试，不改变 Device 基础合同和状态机。
 
 ### 6.4 当前面料箱回架
 
-当前组全部通过 `SCAN12` 后，创建一个 `BIN_MOVE`，把 1～4 个料箱从 `CNV0302` 一次性搬回各自冻结的原始槽位。只有任务 `SUCCEEDED` 且结果逐项校验通过，当前面才算完成。
+按当前已确认扫码 FIFO 申请 WMS 回架分配，每个获准前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回分配槽位；有效 `NO_BATCH` 按联调约定回到已成功出库记录的原槽位。上一批精确成功后才处理下一批。FIFO 耗尽但仍有未扫码成员时，保留本面原始证据边界继续等待；本面所有选中成员均精确回架后才允许转面或整架返库。
 
 ### 6.5 旋转或返库
 
 - 若还有下一组：创建 `CTU02`，position 使用当前货架的 `RACK` 引用，`target_face` 原样使用下一组面值。成功且精确位置、面值校验通过后处理下一组。
-- 若没有下一组：创建 `CTU03`，source 使用当前货架的 `RACK` 引用，target 使用 `WH01` 的 `ZONE` 引用并省略
+- 若没有下一组：创建 `CTU03`，source 使用当前货架的 `RACK` 引用，target 使用 `WH05` 的 `ZONE` 引用并省略
   `target_face`。WMS/RCS 返回精确位置和非空实际 `arrival_face` 且结果校验通过后，轮次进入 `COMPLETED` 并释放全局执行权。
 
 ## 7. 失败、未知与人工处置

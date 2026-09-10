@@ -28,7 +28,7 @@ Phase 12 Task 0–1 已具备 Bootstrap 启动条件；Task 2–7 在人工合�
 `develop@fdfa4725` 与联调部署 revision `e7e3d6af` 具有相同 tree `46d568d1`；frontend 联调部署 revision 为 `a6c3193f`。
 `f2129982` 的 12 项完整粗分 E2E 仍是历史冻结证据，当前镜像尚未重新执行该业务 E2E；WMS external publication pending。
 `RACK_MOVE` 当前生产 caller 只有 rough-sorter `OLD_OUT/NEW_IN`；当前 debug caller 是 operator-gated 510056 stepper，已对齐
-`ZONE("WH01") → RACK_POSITION("KT16") + CTU01` 与反向 `+ CTU03`，固定 face payload 为 `"90"`。其余 approved
+`ZONE("WH05") → RACK_POSITION("KT16") + CTU01` 与反向 `+ CTU03`，固定 face payload 为 `"90"`。其余 approved
 `RACK_MOVE` 场景只由 core contract 支持，尚无业务 flow 接入。软件已部署；supplier、physical、business acceptance 均为
 `NOT RUN`。当前联调环境门禁为 `BLOCK`，由两条 `ACK_DEADLINE_EXPIRED` 的 `EVENT_DEBUG` 命令及其后继事件对账围栏导致。
 

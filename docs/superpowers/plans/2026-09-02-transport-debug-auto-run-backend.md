@@ -15,8 +15,8 @@
 ## Global Constraints
 
 - `target_face`/`rack_face` 是不透明非空字符串；验证可以判断 `value.strip()` 是否为空，但保存、下发和比较必须使用原字符串。
-- `CTU01` 固定 `RACK → RACK_POSITION(KT16)`；`CTU02` 固定在货架 `RACK` 引用上旋转；`CTU03` 固定 `RACK → ZONE(WH01)`，返库面固定 `"90"`。
-- 每组只能包含 1～4 个料箱；一个 `BIN_MOVE` 必须一次携带整组，不拆分。
+- `CTU01` 固定 `RACK → RACK_POSITION(KT16)`；`CTU02` 固定在货架 `RACK` 引用上旋转；`CTU03` 固定 `RACK → ZONE(WH05)`，返库面固定 `"90"`。
+- 每组只能包含 1～4 个料箱；`BINS_TO_INFEED` 一次携带整组，`BINS_TO_RACK` 按已确认扫码 FIFO 分批回架。
 - 只有 WMS 权威 `SUCCEEDED` 回调和符合边界的 `SCAN12` Evidence 可以推进；ACK、HTTP 200、SSE、健康状态和固定延时都不是物理完成证据。
 - `DELIVERY_UNKNOWN`、`RECONCILING`、位置未知、回调冲突和 Evidence 歧义必须停止在 `NEEDS_ATTENTION`，不得换新请求 ID 重发。
 - `SCAN12` 暂定匹配 `device_code="SCAN12"`、`event_type="SCAN_COMPLETED"`、`data.barcode`；该假设只存在于 diagnostics 窄适配器。
@@ -77,14 +77,14 @@ def test_510056_edges_accept_rack_reference_without_face_mapping() -> None:
         caller,
         "510056",
         RackReference("510056"),
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         "90",
         RcsTemplateId.CTU03,
     )
 
     assert outbound.target_face == "90"
     assert rotate.target_face == "270"
-    assert returned.target == ZonePosition("WH01")
+    assert returned.target == ZonePosition("WH05")
 ```
 
 同时增加 `RackReference("other-rack")` 与 `rack_id="510056"` 不一致、错误模板边仍被拒绝的参数化用例。
@@ -565,7 +565,7 @@ configuration = {
         }
         for group in request.face_groups
     ],
-    "storage_zone": "WH01",
+    "storage_zone": "WH05",
     "workstation": "KT16",
     "infeed_position": "CNV0301",
     "outfeed_position": "CNV0302",
@@ -646,9 +646,9 @@ assert build_debug_transport_request(run, rack_to_station_step) == MoveRackReque
 并分别断言：
 
 - `BINS_TO_INFEED` 把整组 `RackBinSlot(rack_id, face, slot_id)` 搬到 `CNV0301`。
-- `BINS_TO_RACK` 把整组从 `CNV0302` 搬回冻结 slot。
+- `BINS_TO_RACK` 按有效扫码 FIFO 分批从 `CNV0302` 搬回获准 slot；本面全部选中料箱确认回架后才能继续转面或返库。
 - `ROTATE_TO_NEXT_FACE` 使用 `RackReference(rack_id)` 和下一组原始 face。
-- `RACK_TO_STORAGE` 使用 `RackReference(rack_id) → ZonePosition("WH01")`、`"90"`、`CTU03`。
+- `RACK_TO_STORAGE` 使用 `RackReference(rack_id) → ZonePosition("WH05")`、`"90"`、`CTU03`。
 - `WAIT_SCAN12` 不产生 Transport request。
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1020,11 +1020,11 @@ await persist_scan12("A000002653")
 assert latest_task_targets() == ["510056A3F2C101", "510056A2F2C101"]
 await apply_wms_success(kind="BIN_MOVE", final_positions=original_slots)
 assert latest_template() == "CTU03"
-await apply_wms_success(kind="RACK_MOVE", final_position="WH01-01", arrival_face="90")
+await apply_wms_success(kind="RACK_MOVE", final_position="WH05-01", arrival_face="90")
 assert run_status == "COMPLETED"
 ```
 
-`WH01-01` 是测试中的 WMS 精确 `RACK_POSITION`，不是 WES 映射。
+`WH05-01` 是测试中的 WMS 精确 `RACK_POSITION`，不是 WES 映射。
 
 - [ ] **Step 2: 写多面和 fail-closed 集成测试**
 

@@ -39,6 +39,7 @@ def process_execution_facts_batch(limit: int = 100) -> int:
         raise ValueError(f"Execution batch limit must be {_EXECUTION_BATCH_LIMIT}")
 
     async def _process() -> int:
+        await assert_execution_worker_startable()
         return await _current_processor().process_batch(limit)
 
     return run_async(_process)

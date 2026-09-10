@@ -934,7 +934,7 @@ def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventin
             "transport_task_id": "transport-rack-return",
             "rack_id": rack_id,
             "source": {"kind": "RACK", "location_code": rack_id},
-            "target": {"kind": "ZONE", "location_code": "WH01"},
+            "target": {"kind": "ZONE", "location_code": "WH05"},
             "rcs_template_id": "CTU03",
         }
     )
@@ -974,12 +974,12 @@ def test_mock_accepts_rack_reference_out_rotate_and_zone_return_without_inventin
         return_response = client.post("/api/v1/wes/transport-requests", json=rack_return)
         return_result = client.post(
             "/debug/transport-callbacks",
-            json=result_for(rack_return, "019f12d0-58d7-7b4d-a23a-1b90aa5d44b3", "WH01-01"),
+            json=result_for(rack_return, "019f12d0-58d7-7b4d-a23a-1b90aa5d44b3", "WH05-01"),
         )
 
     assert [rack_out_response.status_code, rotate_response.status_code, return_response.status_code] == [202, 202, 202]
     assert [rack_out_result.status_code, rotate_result.status_code, return_result.status_code] == [200, 200, 200]
-    assert rack_return["data"]["target"] == {"kind": "ZONE", "location_code": "WH01"}
+    assert rack_return["data"]["target"] == {"kind": "ZONE", "location_code": "WH05"}
     assert "target_face" not in rack_return["data"]
 
 

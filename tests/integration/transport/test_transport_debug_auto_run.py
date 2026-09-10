@@ -197,7 +197,7 @@ async def _complete_current_transport(
     run_id: str,
     transport: _PersistingTransport,
     *,
-    storage_position: str = "WH01-01",
+    storage_position: str = "WH05-01",
     arrival_face_override: str | None = None,
     position_unknown: bool = False,
 ) -> None:
@@ -428,7 +428,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
         assert isinstance(rack_return, MoveRackRequest)
         assert rack_return.rcs_template_id is RcsTemplateId.CTU03
         assert asdict(rack_return.source) == {"kind": "RACK", "location_code": rack_id}
-        assert asdict(rack_return.target) == {"kind": "ZONE", "location_code": "WH01"}
+        assert asdict(rack_return.target) == {"kind": "ZONE", "location_code": "WH05"}
         assert rack_return.target_face is None
         assert [created_request.kind.value for _, created_request in transport.created] == expected_kinds
         await _complete_current_transport(
@@ -436,7 +436,7 @@ async def test_selected_faces_complete_in_order_and_return_only_after_every_bin_
             service,
             run.run_id,
             transport,
-            storage_position="WH01-01",
+            storage_position="WH05-01",
             arrival_face_override="RCS_CHOSEN",
         )
         assert await service.advance_run(run.run_id) is True
@@ -759,5 +759,66 @@ async def test_partial_wms_batches_survive_restart_and_delay_ctu03(integration_s
         )
         assert await service.advance_run(run.run_id)
         assert (await service.get_run(run.run_id)).status == "COMPLETED"
+    finally:
+        await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)
+
+
+async def test_three_scanned_bins_return_before_fourth_and_late_scan_survives_restart(
+    integration_session_factory: Any,
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    source_prefix = f"partial-{suffix}"
+    rack_id, request = _configuration(suffix, faces=("90",))
+    transport = _PersistingTransport()
+    service = _service(integration_session_factory, transport)
+    group = request.face_groups[0]
+    try:
+        run = await service.create_run(request, actor_id=7)
+        await _advance_to_scan_wait(integration_session_factory, service, transport, run.run_id)
+        scan = await service.get_run(run.run_id)
+        assert scan.current_step is not None
+        boundary = scan.current_step.evidence_not_before_ms
+        assert boundary is not None
+        first = [group.bins[i].bin_code for i in (0, 2, 1)]
+        for i, code in enumerate(first):
+            await _persist_scan12(
+                integration_session_factory,
+                source_event_id=f"{source_prefix}-{i}",
+                bin_code=code,
+                timestamp_ms=boundary,
+            )
+        assert await service.advance_run(run.run_id)
+        assert (await service.get_run(run.run_id)).current_phase == "BINS_TO_RACK"
+        await freeze_return_allocation(service, run.run_id)
+        assert await service.advance_run(run.run_id)
+        batch = transport.created[-1][1]
+        assert isinstance(batch, MoveBinsRequest)
+        assert [move.bin_code for move in batch.moves] == first
+        # 第四箱在上一批搬运期间扫码；恢复等待时不可重置时间边界。
+        await _persist_scan12(
+            integration_session_factory,
+            source_event_id=f"{source_prefix}-last",
+            bin_code=group.bins[3].bin_code,
+            timestamp_ms=boundary,
+        )
+        await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+        assert await service.advance_run(run.run_id)
+        waiting = await service.get_run(run.run_id)
+        assert waiting.current_phase == "WAIT_SCAN12"
+        assert waiting.current_step is not None and waiting.current_step.evidence_not_before_ms == boundary
+        service = _service(integration_session_factory, transport)
+        assert await service.advance_run(run.run_id)
+        await freeze_return_allocation(service, run.run_id)
+        assert await service.advance_run(run.run_id)
+        second = transport.created[-1][1]
+        assert isinstance(second, MoveBinsRequest)
+        assert [move.bin_code for move in second.moves] == [group.bins[3].bin_code]
+        assert all(
+            not isinstance(req, MoveRackRequest) or req.rcs_template_id is not RcsTemplateId.CTU03
+            for _, req in transport.created
+        )
+        await _complete_current_transport(integration_session_factory, service, run.run_id, transport)
+        assert await service.advance_run(run.run_id)
+        assert (await service.get_run(run.run_id)).current_phase == "RACK_TO_STORAGE"
     finally:
         await _cleanup(integration_session_factory, rack_id=rack_id, source_prefix=source_prefix)

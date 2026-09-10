@@ -11,10 +11,10 @@
 ```text
 CTU01 货架搬出
   → 当前面 1..4 个料箱到 CNV0301
-  → SCAN12 为当前面全部选中料箱提供扫码 Evidence
+  → SCAN12 为当前面已到达料箱提供有效扫码 Evidence（不等待整组扫描齐全）
   → WMS 按 SCAN12 FIFO 分配目标，料箱分批从 CNV0302 回到冻结分配 slot
   → 若还有下一面，CTU02 旋转后重复当前面流程
-  → 所有选中料箱回架后，CTU03 返回 WH01
+  → 所有选中料箱回架后，CTU03 返回 WH05
 ```
 
 操作员输入的面值是区分大小写的不透明字符串，例如 `"90"`、`"270"`；WES、WMS 和 RCS 必须原样保存与下发，不做角度映射。
@@ -85,14 +85,14 @@ WMS wire 的 `source` 使用 `RACK` 引用；`target` 使用准入时确认的�
 {
   "rack_id": "510056",
   "source": {"kind": "RACK", "location_code": "510056"},
-  "target": {"kind": "ZONE", "location_code": "WH01"},
+  "target": {"kind": "ZONE", "location_code": "WH05"},
   "rcs_template_id": "CTU03",
   "kind": "RACK_MOVE"
 }
 ```
 
-WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS 必须显式返回其在 `WH01` 内解析出的精确
-`RACK_POSITION`（例如测试数据 `WH01-01`）和非空实际 `arrival_face`；WES 不从 `ZONE` 猜测最终地码，也不按请求目标面比较。
+WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS 必须显式返回其在 `WH05` 内解析出的精确
+`RACK_POSITION`（例如测试数据 `WH05-01`）和非空实际 `arrival_face`；WES 不从 `ZONE` 猜测最终地码，也不按请求目标面比较。
 
 ## 5. 必验场景
 
@@ -101,8 +101,8 @@ WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS �
 1. 输入一个面及 1～4 个现场料箱与当前 slot，记录页面预览和创建响应中的 `run_id`；无需填写工作线编码。
 2. 核对只创建一个 `CTU01`，面值与输入完全一致。
 3. `CTU01` 精确成功后，核对一个 `BIN_MOVE` 把本组全部料箱送到 `CNV0301`。
-4. 在最后一个选中料箱的 `SCAN12` Evidence 到达前，确认不存在回架 task。
-5. 全部选中料箱均被扫描后，核对正式 `outbound.bin.return_batch@v1` 请求按实际扫码 FIFO 排序。每个 `READY` 前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回 WMS 分配的精确 slot；部分批次完成后才为剩余 FIFO 申请下一批，自动联调收到有效 `NO_BATCH` 后，按请求中的实际扫码 FIFO，将剩余料箱退回同组已成功出库任务记录的原货架、原朝向和原 slot；冻结批次保留原 WMS operation identity，并标记 `DEBUG_NO_BATCH_ORIGINAL_SLOTS` 及出库任务 ID。原出库记录缺失或货架/朝向不匹配时停止并提示 `DEBUG_RETURN_SOURCE_MISSING`。此规则仅用于自动联调，正式工作线仍遵循 WMS 分配。
+4. 在首个选中料箱的有效 `SCAN12` Evidence 到达前，确认不存在回架 task；形成有效扫码 FIFO 后允许分批回架。
+5. 已有选中料箱的有效扫码 Evidence 后，即可申请回架，不等待本面全部料箱扫描齐全。核对正式 `outbound.bin.return_batch@v1` 请求按实际扫码 FIFO 排序。每个 `READY` 前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回 WMS 分配的精确 slot；部分批次完成后才为剩余 FIFO 申请下一批；当前 FIFO 已回完但仍有未扫描料箱时，回到扫码等待并保留本面最初的取箱证据边界，不重发已回架料箱。本面全部料箱确认回架后才允许转面或整架返库。自动联调收到有效 `NO_BATCH` 后，按请求中的实际扫码 FIFO，将剩余料箱退回同组已成功出库任务记录的原货架、原朝向和原 slot；冻结批次保留原 WMS operation identity，并标记 `DEBUG_NO_BATCH_ORIGINAL_SLOTS` 及出库任务 ID。原出库记录缺失或货架/朝向不匹配时停止并提示 `DEBUG_RETURN_SOURCE_MISSING`。此规则仅用于自动联调，正式工作线仍遵循 WMS 分配。
 6. 当前面所有批次的成员均精确成功前，确认不转面；本轮全部选中箱均精确成功前，确认不存在 `CTU03`。核对响应 `returned_bins` 为实际确认槽位，下一轮以这些槽位为来源。
 7. 核对最终只创建一个省略 `target_face` 的 `CTU03`；WMS 返回精确库位和非空实际 `arrival_face` 后轮次才进入
    `COMPLETED`。

@@ -346,7 +346,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 正式 `RACK_ROTATE` 合同允许与外层 `rack_id` 一致的 `RACK` 引用并原样下发；`CTU03` 支持 `RACK → ZONE WH01`，成功回调仍须提供精确 `RACK_POSITION`。
+- 正式 `RACK_ROTATE` 合同允许与外层 `rack_id` 一致的 `RACK` 引用并原样下发；`CTU03` 支持 `RACK → ZONE WH05`，成功回调仍须提供精确 `RACK_POSITION`。
 - `SCAN12` 只接受当前步骤 Evidence 水位和时间边界之后的已处理扫码；关联 Transport Evidence 尚未处理、发生身份冲突、位置不确定或货架偏离工作位时均停止后继派发。
 
 ### Verification
@@ -493,7 +493,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `TRANSPORT_DEBUG` 的 BIN_MOVE 可直接使用请求中冻结的货架面，不读取或写入业务 `PositionProjection`；正式 Transport 路径保持原有位置投影约束。
-- 操作员确认按任务类型和冻结方向校验，仅接受 WH01/KT16 与 CNV0301/CNV0302 对应的四个固定联调步骤。
+- 操作员确认按任务类型和冻结方向校验，仅接受 WH05/KT16 与 CNV0301/CNV0302 对应的四个固定联调步骤。
 
 ### Verification
 

@@ -635,7 +635,7 @@ async def test_debug_step_confirmation_is_audited_before_local_reset(
         new_uuid7(),
         TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
         "510056",
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         RackPosition("KT16"),
         "90",
         RcsTemplateId.CTU01,
@@ -678,7 +678,7 @@ async def test_debug_step_confirmation_rejects_same_kind_wrong_direction(db_engi
         TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
         "510056",
         RackPosition("KT16"),
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         "90",
         RcsTemplateId.CTU03,
     )
@@ -702,7 +702,7 @@ async def test_debug_step_confirmation_rejects_non_debug_task_and_kind_mismatch(
         new_uuid7(),
         _caller(),
         "rack-normal",
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         RackPosition("KT16"),
         "90",
         RcsTemplateId.CTU01,
@@ -711,7 +711,7 @@ async def test_debug_step_confirmation_rejects_non_debug_task_and_kind_mismatch(
         new_uuid7(),
         TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
         "rack-debug-kind",
-        RackPosition("WH01"),
+        RackPosition("WH05"),
         RackPosition("KT16"),
         "90",
     )
@@ -808,7 +808,7 @@ async def test_debug_step_audit_failure_does_not_start_local_deletion(
         new_uuid7(),
         TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID, "CTU01"),
         "510056",
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         RackPosition("KT16"),
         "90",
         RcsTemplateId.CTU01,
@@ -1548,7 +1548,7 @@ async def test_ctu03_without_target_face_persists_actual_arrival_and_releases_ra
         TransportCaller(TRANSPORT_DEBUG_CALLER_WORKLINE_ID),
         "rack-return-any-face",
         RackReference("rack-return-any-face"),
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         rcs_template_id=RcsTemplateId.CTU03,
     )
     task = await _load_task(db_engine, handle.transport_task_id)

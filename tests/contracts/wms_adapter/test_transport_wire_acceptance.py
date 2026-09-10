@@ -203,7 +203,7 @@ def test_rack_reference_submit_data_preserves_exact_locations_and_faces() -> Non
             caller,
             "510056",
             RackReference("510056"),
-            ZonePosition("WH01"),
+            ZonePosition("WH05"),
             "90",
             RcsTemplateId.CTU03,
         ),
@@ -214,7 +214,7 @@ def test_rack_reference_submit_data_preserves_exact_locations_and_faces() -> Non
         "rcs_template_id": "CTU03",
         "rack_id": "510056",
         "source": {"kind": "RACK", "location_code": "510056"},
-        "target": {"kind": "ZONE", "location_code": "WH01"},
+        "target": {"kind": "ZONE", "location_code": "WH05"},
         "target_face": "90",
     }
 

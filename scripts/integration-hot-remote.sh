@@ -153,6 +153,8 @@ for path in sorted(source.rglob("*"), key=lambda item: len(item.parts)):
         target.mkdir(parents=True, exist_ok=True)
         continue
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file() and not target.is_symlink() and target.read_bytes() == path.read_bytes():
+        continue
     temporary = target.with_name(f".{target.name}.wes-hot-{os.getpid()}")
     shutil.copy2(path, temporary)
     os.replace(temporary, target)
@@ -211,10 +213,14 @@ activate() {
         printf 'BASE_BACKEND_IMAGE=%q\nBASE_FRONTEND_IMAGE=%q\n' \
             "$base_backend_image" "$base_frontend_image" >>"$BASELINE_FILE"
     fi
-    [[ "$bootstrap_timeout" =~ ^[1-9][0-9]*$ ]] || fail "HOT_BOOTSTRAP_TIMEOUT 必须是正整数"
-    # 重建单文件挂载，并等待本次源码对应的新实例就绪，避免旧实例健康造成假成功。
-    compose up -d --no-build --force-recreate --wait --wait-timeout "$bootstrap_timeout" \
-        "${HOT_SERVICES[@]}"
+    if [[ "$mode" == bootstrap ]]; then
+        [[ "$bootstrap_timeout" =~ ^[1-9][0-9]*$ ]] || fail "HOT_BOOTSTRAP_TIMEOUT 必须是正整数"
+        compose up -d --no-build --force-recreate --wait --wait-timeout "$bootstrap_timeout" \
+            "${HOT_SERVICES[@]}"
+    else
+        # 先终止旧进程，再由完整同步后的源码启动；后续探针不能命中旧版本。
+        compose restart --timeout 30 api celery celery-wms-fulfillment celery_beat frontend
+    fi
     rm -rf -- "$upload_dir"
 }
 

@@ -691,14 +691,14 @@ def test_510056_edges_accept_rack_reference_without_face_mapping() -> None:
         caller,
         "510056",
         RackReference("510056"),
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         "90",
         RcsTemplateId.CTU03,
     )
 
     assert outbound.target_face == "90"
     assert rotate.target_face == "270"
-    assert returned.target == ZonePosition("WH01")
+    assert returned.target == ZonePosition("WH05")
 
 
 def test_rotate_rack_uses_ctu02_and_preserves_opaque_face() -> None:
@@ -724,7 +724,7 @@ def test_ctu03_does_not_require_target_face() -> None:
         _caller(),
         "rack-1",
         RackReference("rack-1"),
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         rcs_template_id=RcsTemplateId.CTU03,
     )
     assert request.target_face is None
@@ -734,7 +734,7 @@ def test_ctu03_does_not_require_target_face() -> None:
         _caller(),
         "rack-1",
         RackReference("rack-1"),
-        ZonePosition("WH01"),
+        ZonePosition("WH05"),
         "270",
         RcsTemplateId.CTU03,
     )

@@ -1693,7 +1693,7 @@ def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebug
         expected_request = {
             TransportDebugStep.RACK_TO_STATION: {
                 "rack_id": "510056",
-                "source": {"kind": "ZONE", "location_code": "WH01"},
+                "source": {"kind": "ZONE", "location_code": "WH05"},
                 "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
                 "target_face": "90",
                 "rcs_template_id": "CTU01",
@@ -1701,7 +1701,7 @@ def _debug_step_matches_frozen_request(task: TransportTask, step: TransportDebug
             TransportDebugStep.RACK_TO_STORAGE: {
                 "rack_id": "510056",
                 "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
-                "target": {"kind": "ZONE", "location_code": "WH01"},
+                "target": {"kind": "ZONE", "location_code": "WH05"},
                 "target_face": "90",
                 "rcs_template_id": "CTU03",
             },

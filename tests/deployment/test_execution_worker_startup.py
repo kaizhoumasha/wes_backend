@@ -3,7 +3,6 @@ import os
 import subprocess
 import time
 from inspect import signature
-from multiprocessing import Value
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -411,7 +410,7 @@ def test_worker_init_rejects_environment_queue_drift(monkeypatch) -> None:
         app_module.on_worker_init(sender=_worker_sender("device-command"))
 
 
-@pytest.mark.parametrize("failure_stage", ["logger", "runtime", "gate"])
+@pytest.mark.parametrize("failure_stage", ["logger", "runtime"])
 def test_worker_process_signal_rejects_any_initialization_failure(monkeypatch, failure_stage: str) -> None:
     from celery.exceptions import WorkerTerminate
     from celery.signals import worker_process_init
@@ -425,8 +424,6 @@ def test_worker_process_signal_rejects_any_initialization_failure(monkeypatch, f
         setup_logger.side_effect = RuntimeError("logger failed")
     elif failure_stage == "runtime":
         initialize.side_effect = RuntimeError("runtime failed")
-    else:
-        gate.side_effect = RuntimeError("gate failed")
     monkeypatch.setattr(app_module, "setup_logger", setup_logger)
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
@@ -450,90 +447,41 @@ def test_execution_worker_child_startup_rejects_unfrozen_queues(monkeypatch) -> 
         app_module.on_worker_process_init()
 
 
-def test_execution_worker_child_startup_rejects_workline_gate_failure(monkeypatch) -> None:
-    from celery.exceptions import WorkerTerminate
-
-    from src.celery_app import app as app_module
-
-    gate = AsyncMock(side_effect=WorkLineStartConfigurationError("active workline"))
-    initialize = MagicMock()
-    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
-    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
-    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
-    monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
-    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
-
-    with pytest.raises(WorkerTerminate, match="worker process initialization rejected"):
-        app_module.on_worker_process_init()
-
-    initialize.assert_called_once_with()
-    gate.assert_awaited_once_with()
-
-
-def test_execution_worker_child_startup_allows_workline_gate_success(monkeypatch) -> None:
-    from src.celery_app import app as app_module
-
-    gate = AsyncMock()
-    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
-    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
-    monkeypatch.setenv("CELERY_WORKER_QUEUES", "default,celery,device-command")
-    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
-
-    app_module.on_worker_process_init()
-
-    gate.assert_awaited_once_with()
-
-
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="Celery production prefork requires POSIX fork")
-def test_replacement_execution_worker_child_does_not_repeat_workline_restart_gate_across_forks(monkeypatch) -> None:
-    from src.celery_app import app as app_module
-
-    gate_calls = Value("i", 0)
-
-    def run_gate_once(_factory: object) -> None:
-        with gate_calls.get_lock():
-            gate_calls.value += 1
-
-    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "initialize", MagicMock())
-    monkeypatch.setattr(app_module.celery_async_runtime, "run_async", run_gate_once)
-    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"device-command"}), raising=False)
-    app_module._execution_restart_gate_passed.value = False
-
-    child_pids: list[int] = []
-    for _ in range(2):
-        child_pid = os.fork()
-        if child_pid == 0:
-            try:
-                app_module.on_worker_process_init()
-            except BaseException:
-                os._exit(1)
-            os._exit(0)
-        child_pids.append(child_pid)
-
-    statuses = [os.waitpid(child_pid, 0)[1] for child_pid in child_pids]
-
-    assert all(os.waitstatus_to_exitcode(status) == 0 for status in statuses)
-    assert gate_calls.value == 1
-
-
-def test_fulfillment_child_runs_execution_workline_gate(monkeypatch) -> None:
+@pytest.mark.parametrize("queues", [("wms-fulfillment",), ("default", "celery", "device-command")])
+def test_worker_child_starts_without_workline_plugin_validation(monkeypatch, queues) -> None:
     from src.celery_app import app as app_module
 
     initialize = MagicMock()
-    gate = AsyncMock()
+    gate = AsyncMock(side_effect=WorkLineStartConfigurationError("active workline has no plugin"))
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     monkeypatch.setattr(app_module.celery_async_runtime, "initialize", initialize)
     monkeypatch.setattr(app_module.celery_async_runtime, "run_async", lambda factory: asyncio.run(factory()))
-    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset({"wms-fulfillment"}), raising=False)
-    monkeypatch.setenv("CELERY_WORKER_QUEUES", "wms-fulfillment")
-    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate, raising=False)
-    app_module._execution_restart_gate_passed.value = False
+    monkeypatch.setattr(app_module, "_frozen_worker_queues", frozenset(queues))
+    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate)
 
     app_module.on_worker_process_init()
 
     initialize.assert_called_once_with()
+    gate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_execution_fact_processing_requires_workline_validation(monkeypatch, valid: bool) -> None:
+    gate = AsyncMock(side_effect=None if valid else WorkLineStartConfigurationError("active workline"))
+
+    async def process_batch(_limit):
+        gate.assert_awaited_once_with()
+        return 3
+
+    processor = SimpleNamespace(process_batch=AsyncMock(side_effect=process_batch))
+    monkeypatch.setattr(execution, "assert_execution_worker_startable", gate)
+    monkeypatch.setattr(execution, "_current_processor", lambda: processor)
+    monkeypatch.setattr(execution, "run_async", lambda factory: asyncio.run(factory()))
+    if valid:
+        assert execution.process_execution_facts_batch.run() == 3
+        processor.process_batch.assert_awaited_once_with(100)
+    else:
+        with pytest.raises(WorkLineStartConfigurationError, match="active workline"):
+            execution.process_execution_facts_batch.run()
+        processor.process_batch.assert_not_awaited()
     gate.assert_awaited_once_with()

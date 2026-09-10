@@ -332,7 +332,7 @@ async def test_debug_task_dispatches_exactly_one_transport_operation(kind: str, 
     ("source", "target", "template"),
     [
         (_rack_reference("510056"), _rack_position("KT16"), RcsTemplateId.CTU01),
-        (_rack_reference("510056"), _zone_position("WH01"), RcsTemplateId.CTU03),
+        (_rack_reference("510056"), _zone_position("WH05"), RcsTemplateId.CTU03),
     ],
 )
 async def test_510056_debug_rack_routes_dispatch_exact_canonical_wire(
@@ -739,7 +739,7 @@ async def test_debug_ctu03_accepts_omitted_target_face() -> None:
     runtime = _runtime()
     payload = _valid_payload("RACK_MOVE")
     payload["data"].update(
-        {"source": _rack_reference("RACK-01"), "target": _zone_position("WH01"), "rcs_template_id": "CTU03"}
+        {"source": _rack_reference("RACK-01"), "target": _zone_position("WH05"), "rcs_template_id": "CTU03"}
     )
     payload["data"].pop("target_face")
     async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:

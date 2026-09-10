@@ -152,7 +152,7 @@ def _callback_payload(
         "outcome_revision": 1,
         "rack_id": rack_id,
         "status": "SUCCEEDED",
-        "final_position": {"kind": "RACK_POSITION", "location_code": "WH01-01"},
+        "final_position": {"kind": "RACK_POSITION", "location_code": "WH05-01"},
         "arrival_face": "90",
     }
 

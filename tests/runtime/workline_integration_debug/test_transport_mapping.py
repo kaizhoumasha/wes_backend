@@ -2160,7 +2160,7 @@ async def test_manual_outbound_rejects_rack_transport_outside_the_fixed_site_con
         kind=IntegrationTransportActionKind.MOVE_RACK,
         client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4491",
         rack_id="RACK-01",
-        source={"kind": "ZONE", "location_code": "WH01"},
+        source={"kind": "ZONE", "location_code": "WH05"},
         target={"kind": "RACK_POSITION", "location_code": "KT16"},
         target_face="90",
         rcs_template_id="CTU01",

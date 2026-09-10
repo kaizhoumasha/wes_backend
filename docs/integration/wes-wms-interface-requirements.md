@@ -1271,7 +1271,7 @@ WES 创建任务前检查可信的精确当前位置和当前工作面；WMS 返
 以下十个代表性请求与本节后文的成功结果样例逐一对应；其中失败结果另用独立任务展示。`RACK` 宽引用的自动联调完整请求另见
 [Transport 自动联调联合验收](transport-joint-acceptance.md)。样例 3、9、10 使用现场分配的专用联调测试数据：
 货架 `510056`、料箱 `A000001922/A000002653`、储位 `510056A3F2C101/510056A2F2C101`、精确工作位 `KT16`、仓储区域
-`WH01` 和滚筒线投料口 `CNV0301`。RCS→WMS→WES 回调链路已完成现场联通验证；后文对应结果仍是合同规范样例，不是某次现场
+`WH05` 和滚筒线投料口 `CNV0301`。RCS→WMS→WES 回调链路已完成现场联通验证；后文对应结果仍是合同规范样例，不是某次现场
 消息的原始抓取文本。
 
 **样例 1：整架搬运（`RACK_MOVE`）**
@@ -1476,7 +1476,7 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
 
 **样例 9：仓储区域内货架搬运到工作位（`RACK_MOVE + CTU01`）**
 
-专用联调货架 `510056` 初始位于仓储区域 `WH01`，WMS/RCS 在该区域内定位货架并通过 `CTU01` 搬运到精确工作位 `KT16`。
+专用联调货架 `510056` 初始位于仓储区域 `WH05`，WMS/RCS 在该区域内定位货架并通过 `CTU01` 搬运到精确工作位 `KT16`。
 
 ```json
 {
@@ -1488,7 +1488,7 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
     "kind": "RACK_MOVE",
     "rcs_template_id": "CTU01",
     "rack_id": "510056",
-    "source": {"kind": "ZONE", "location_code": "WH01"},
+    "source": {"kind": "ZONE", "location_code": "WH05"},
     "target": {"kind": "RACK_POSITION", "location_code": "KT16"},
     "target_face": "90"
   }
@@ -1497,8 +1497,8 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
 
 **样例 10：工作位返回仓储区域（`RACK_MOVE + CTU03`）**
 
-专用联调货架 `510056` 从精确工作位 `KT16` 通过 `CTU03` 返回仓储区域 `WH01`；成功回调必须返回 WMS/RCS 实际选择的
-精确 `RACK_POSITION/location_code`，不能把区域编码 `WH01` 直接当作精确点位。
+专用联调货架 `510056` 从精确工作位 `KT16` 通过 `CTU03` 返回仓储区域 `WH05`；成功回调必须返回 WMS/RCS 实际选择的
+精确 `RACK_POSITION/location_code`，不能把区域编码 `WH05` 直接当作精确点位。
 
 ```json
 {
@@ -1511,14 +1511,14 @@ Transport DTO；在回调链路接通前，人工确认只能形成明确标注�
     "rcs_template_id": "CTU03",
     "rack_id": "510056",
     "source": {"kind": "RACK_POSITION", "location_code": "KT16"},
-    "target": {"kind": "ZONE", "location_code": "WH01"}
+    "target": {"kind": "ZONE", "location_code": "WH05"}
   }
 }
 ```
 
 样例 9～10 的 `TRANSPORT_DEBUG` consumer 已完成 repository alignment：`CTU01` 使用固定 string payload
 `target_face="90"`；`CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向，成功回调必须带回非空实际 `arrival_face`。
-`WH01` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和 `CTU03`。当前只完成仓内生成合同、
+`WH05` 固定为 `ZONE`，`KT16` 固定为 `RACK_POSITION`，模板分别为 `CTU01` 和 `CTU03`。当前只完成仓内生成合同、
 前后端测试和本地 Mock 验证，状态仍为
 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。
 
@@ -1922,7 +1922,7 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
 
 **样例 7：仓储区域内货架搬运到工作位成功（`RACK_MOVE + CTU01`）**
 
-请求已给出专用联调货架的来源区域 `WH01` 和精确目标 `KT16`；以下数据是合同预期回调，实际到达面与冻结 string token
+请求已给出专用联调货架的来源区域 `WH05` 和精确目标 `KT16`；以下数据是合同预期回调，实际到达面与冻结 string token
 `target_face="90"` 一致。
 
 ```json
@@ -1944,8 +1944,8 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
 
 **样例 8：工作位返回仓储区域成功（`RACK_MOVE + CTU03`）**
 
-专用联调货架从 `KT16` 返回 `WH01` 区域后，合同预期回调必须给出 WMS/RCS 实际选择的精确点位。下方
-`WH01-RCS-SELECTED-01` 只是合同示例地码，不是现场抓包；WES 不从该地码推导区域成员关系。
+专用联调货架从 `KT16` 返回 `WH05` 区域后，合同预期回调必须给出 WMS/RCS 实际选择的精确点位。下方
+`WH05-RCS-SELECTED-01` 只是合同示例地码，不是现场抓包；WES 不从该地码推导区域成员关系。
 
 ```json
 {
@@ -1958,7 +1958,7 @@ WMS/RCS 根据 `RACK-005-08` 确认来源位置并完成搬运；回调只报告
     "outcome_revision": 1,
     "rack_id": "510056",
     "status": "SUCCEEDED",
-    "final_position": {"kind": "RACK_POSITION", "location_code": "WH01-RCS-SELECTED-01"},
+    "final_position": {"kind": "RACK_POSITION", "location_code": "WH05-RCS-SELECTED-01"},
     "arrival_face": "90"
   }
 }

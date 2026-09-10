@@ -41,7 +41,7 @@ async def test_recovery_reuses_same_task_and_creates_only_next_step(
             "workline_id": debug_workline,
             "rack_id": "510056",
             "face_groups": [{"face": "90", "bins": [{"bin_code": "A", "slot_id": "S"}]}],
-            "storage_zone": "WH01",
+            "storage_zone": "WH05",
             "workstation": "KT16",
             "infeed_position": "CNV0301",
             "outfeed_position": "CNV0302",

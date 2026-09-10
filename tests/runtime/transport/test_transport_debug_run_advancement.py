@@ -281,7 +281,7 @@ def _harness(
                     ]
                 }
             },
-            "storage_zone": "WH01",
+            "storage_zone": "WH05",
             "workstation": "KT16",
             "infeed_position": "CNV0301",
             "outfeed_position": "CNV0302",
@@ -582,29 +582,50 @@ async def test_bin_return_does_not_count_wrong_target_or_unknown_position_as_con
     assert len(repository.steps) == 1
 
 
-async def test_scan12_uses_set_semantics_and_advances_only_after_every_selected_bin() -> None:
+async def test_scan12_freezes_available_fifo_without_waiting_for_unscanned_bins() -> None:
     service, repository, _ = _harness(phase="WAIT_SCAN12", status="WAITING")
-    boundary = timezone.to_db_datetime(NOT_BEFORE_MS / 1000)
-    assert boundary is not None
+    repository.run.configuration_json["return_queues"] = {}
     repository.evidences = [
-        _scan(99, "OLD", "A000001922", received_at=boundary),
         _scan(101, "EVENT-A", "A000001922"),
         _scan(102, "EVENT-A-DUP", "A000001922"),
         _scan(103, "EVENT-C", "OTHER-BIN"),
     ]
-
-    assert await service.advance_run("debug-run-1") is True
-    snapshot = await service.get_run("debug-run-1")
-    assert snapshot.observed_bin_codes == ("A000001922",)
-    assert snapshot.current_phase == "WAIT_SCAN12"
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.current_phase == "BINS_TO_RACK"
+    assert repository.run.configuration_json["return_queues"]["0"] == ["A000001922"]
     assert repository.steps[0].observed_bins_json[0]["evidence_id"] == 101
 
-    repository.evidences.append(_scan(105, "EVENT-B", "A000002653"))
-    assert await service.advance_run("debug-run-1") is True
-    snapshot = await service.get_run("debug-run-1")
-    assert snapshot.current_phase == "BINS_TO_RACK"
-    assert snapshot.observed_bin_codes == ()
-    assert snapshot.current_step is not None and snapshot.current_step.client_request_id is not None
+
+async def test_partial_return_resumes_scan_with_original_boundary_and_does_not_return_twice() -> None:
+    service, repository, _ = _harness(phase="WAIT_SCAN12", status="WAITING")
+    repository.run.configuration_json["return_queues"] = {}
+    repository.evidences = [_scan(101, "EVENT-A", "A000001922")]
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.current_phase == "BINS_TO_RACK"
+    returned_step = repository.steps[-1]
+    repository.run.configuration_json["returned_bins"] = [{"bin_code": "A000001922"}]
+    await service._append_next_step(service._sessions.db, repository.run, returned_step, NOW)
+    assert repository.run.current_phase == "WAIT_SCAN12"
+    assert repository.steps[-1].evidence_high_watermark == 100
+    assert repository.steps[-1].evidence_not_before_ms == NOT_BEFORE_MS
+    await service.advance_run("debug-run-1")
+    assert repository.run.current_phase == "WAIT_SCAN12"
+    repository.evidences.append(_scan(102, "EVENT-B", "A000002653"))
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.current_phase == "BINS_TO_RACK"
+    assert repository.run.configuration_json["return_queues"]["0"] == ["A000001922", "A000002653"]
+
+
+async def test_pending_scan_allows_confirmed_fifo_prefix_but_not_later_bins() -> None:
+    service, repository, _ = _harness(phase="WAIT_SCAN12", status="WAITING")
+    repository.run.configuration_json["return_queues"] = {}
+    repository.evidences = [
+        _scan(101, "EVENT-A", "A000001922"),
+        _scan(102, "EVENT-B", "A000002653", apply_status="PENDING"),
+    ]
+    assert await service.advance_run("debug-run-1")
+    assert repository.run.current_phase == "BINS_TO_RACK"
+    assert repository.run.configuration_json["return_queues"]["0"] == ["A000001922"]
 
 
 async def test_scan12_pending_selected_evidence_waits_without_advancing_cursor() -> None:

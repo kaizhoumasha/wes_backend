@@ -5,7 +5,6 @@
 # ============================================
 
 import os
-from multiprocessing import Lock, Value
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
@@ -47,8 +46,6 @@ celery_app = Celery(
 
 
 _frozen_worker_queues: frozenset[str] | None = None
-_execution_restart_gate_lock = Lock()
-_execution_restart_gate_passed = Value("b", False)
 
 
 def _declared_worker_queues() -> frozenset[str]:
@@ -110,13 +107,6 @@ def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
         celery_async_runtime.initialize()
         if _frozen_worker_queues is None:
             raise RuntimeError("worker consume queues were not frozen before fork")
-        if _frozen_worker_queues.intersection({"device-command", "wms-fulfillment"}):
-            from src.celery_app.tasks import execution
-
-            with _execution_restart_gate_lock:
-                if not _execution_restart_gate_passed.value:
-                    celery_async_runtime.run_async(execution.assert_execution_worker_startable)
-                    _execution_restart_gate_passed.value = True
     except Exception as exc:
         raise WorkerTerminate("worker process initialization rejected") from exc
 
