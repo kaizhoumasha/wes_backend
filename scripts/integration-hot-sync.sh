@@ -140,11 +140,16 @@ sync_sources() {
         echo "当前服务器未启用热更新模式，请执行 bootstrap" >&2
         return 1
     fi
-    verify_backend_image_compatibility "$image_revision"
+    if [[ "$deploy_layout" != integration ]]; then
+        verify_backend_image_compatibility "$image_revision"
+    fi
 
     backend_sha="$(fingerprint_files "$BACKEND_ROOT" pyproject.toml uv.lock migrations)"
     frontend_sha="$(fingerprint_files "$FRONTEND_ROOT" package.json pnpm-lock.yaml .npmrc)"
-    control_sha="$(fingerprint_files "$BACKEND_ROOT" docker-compose.integration-hot.yml scripts/frontend-dev-entrypoint.sh)"
+    control_sha="$(fingerprint_files \
+        "$BACKEND_ROOT" main.py docker-compose.integration-hot.yml scripts/frontend-dev-entrypoint.sh \
+        src/celery_app/dev_worker_autoreload.sh src/celery_app/dev_beat_autoreload.sh \
+        src/celery_app/dev_reload_fingerprint.sh)"
     if [[ "$deploy_layout" == integration ]]; then
         [[ -n "$image_protected_sha" ]] || {
             echo "联调后端镜像未返回依赖与 migration 指纹" >&2

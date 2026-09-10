@@ -769,6 +769,7 @@ class TransportDebugRunService:
             return self._set_attention(run, step, "EVIDENCE_BOUNDARY_MISSING", now)
         after_received_at: datetime | None = None
         after_id: int | None = None
+        waiting = False
         while True:
             evidences = await self._repository.list_device_evidences_since(
                 db,
@@ -787,11 +788,8 @@ class TransportDebugRunService:
                 if evaluation.disposition is Scan12EvidenceDisposition.ATTENTION:
                     return self._set_attention(run, step, evaluation.reason_code or "EVIDENCE_AMBIGUOUS", now)
                 if evaluation.disposition is Scan12EvidenceDisposition.WAIT:
-                    if changed:
-                        step.observed_bins_json = observed
-                        step.updated_at = now
-                        self._touch(run, now)
-                    return changed
+                    waiting = True
+                    break
                 if evaluation.evidence_id is None:
                     return self._set_attention(run, step, "EVIDENCE_ID_MISSING", now)
                 if evaluation.disposition is not Scan12EvidenceDisposition.MATCH:
@@ -813,7 +811,7 @@ class TransportDebugRunService:
                 observed_bins.add(evaluation.bin_code)
                 source_events[evaluation.source_event_id] = evaluation.bin_code
                 changed = True
-            if len(evidences) < _EVIDENCE_PAGE_SIZE:
+            if waiting or len(evidences) < _EVIDENCE_PAGE_SIZE:
                 break
             tail = evidences[-1]
             if tail.id is None:
@@ -823,7 +821,8 @@ class TransportDebugRunService:
         if changed:
             step.observed_bins_json = observed
             step.updated_at = now
-        if observed_bins >= selected_bins:
+        returned = {item["bin_code"] for item in run.configuration_json.get("returned_bins", [])}
+        if observed_bins - returned:
             if await self._has_observed_evidence_conflict(db, step, observed=observed):
                 return self._set_attention(run, step, "EVIDENCE_SOURCE_EVENT_CONFLICT", now)
             step.status = TransportDebugRunStepStatus.SUCCEEDED.value
@@ -867,12 +866,17 @@ class TransportDebugRunService:
         if next_phase == TransportDebugRunPhase.BINS_TO_INFEED.value:
             high_watermark = await self._repository.max_device_evidence_id(db)
             not_before_ms = _ceil_unix_ms(now)
-        elif next_phase == TransportDebugRunPhase.WAIT_SCAN12.value:
+        elif next_phase in {TransportDebugRunPhase.WAIT_SCAN12.value, TransportDebugRunPhase.BINS_TO_RACK.value}:
+            # 同面分批回架期间仍使用原取箱边界，不能遗漏搬运期间到达的扫码。
             high_watermark = completed_step.evidence_high_watermark
             not_before_ms = completed_step.evidence_not_before_ms
         if completed_step.phase == TransportDebugRunPhase.WAIT_SCAN12.value:
             queues = dict(run.configuration_json.get("return_queues", {}))
-            queues[str(next_group_index)] = [item["bin_code"] for item in completed_step.observed_bins_json]
+            queue = list(queues.get(str(next_group_index), []))
+            for item in completed_step.observed_bins_json:
+                if item["bin_code"] not in queue:
+                    queue.append(item["bin_code"])
+            queues[str(next_group_index)] = queue
             run.configuration_json = {**run.configuration_json, "return_queues": queues}
         next_step = TransportDebugRunStep(
             run_id=run.run_id,
@@ -1076,7 +1080,7 @@ def _freeze_configuration(request: CreateTransportDebugRun) -> dict[str, object]
             }
             for group in request.face_groups
         ],
-        "storage_zone": "WH01",
+        "storage_zone": "WH05",
         "workstation": "KT16",
         "infeed_position": "CNV0301",
         "outfeed_position": "CNV0302",

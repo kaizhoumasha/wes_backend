@@ -123,7 +123,13 @@ def next_debug_step(
     if phase is TransportDebugRunPhase.BINS_TO_RACK:
         returned = {item["bin_code"] for item in run.configuration_json.get("returned_bins", [])}
         if any(item["bin_code"] not in returned for item in _bins(_group(run.configuration_json, group_index))):
-            return TransportDebugRunPhase.BINS_TO_RACK.value, group_index
+            queue = run.configuration_json.get("return_queues", {}).get(str(group_index), [])
+            next_phase = (
+                TransportDebugRunPhase.BINS_TO_RACK
+                if any(code not in returned for code in queue)
+                else TransportDebugRunPhase.WAIT_SCAN12
+            )
+            return next_phase.value, group_index
         next_group = group_index + 1
         if next_group < len(_face_groups(run.configuration_json)):
             return TransportDebugRunPhase.ROTATE_TO_NEXT_FACE.value, next_group

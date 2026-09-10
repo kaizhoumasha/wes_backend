@@ -39,7 +39,7 @@ Transport production-wiring E2E；它不能替代完整粗分业务 E2E。`f2129
 | Transport 0.3 核心合同 | 10 个批准请求场景由 core/ACL/Mock tests 支持；face 为上下文一致、不含 NUL 的不透明非空 UTF-8 string，不做 A/B 或数值语义转换 | 所有合同场景已有生产业务 flow |
 | 粗分生产调用链 | `OLD_OUT = CTU03 / target_face="90"`、`NEW_IN = CTU01 / target_face="270"`；两腿使用不同 `transport_task_id` 并独立闭合，`NEW_IN` 成功无需等待 `OLD_OUT` 即可重新请求 target | `RACK_EXCHANGE`、现场换架已验收或 WMS 库存已闭合 |
 | 其它批准的 `RACK_MOVE` | 例如其它单层货架到工作位、五层货架到 `FIVE_STATION` 仍只是核心合同能力 | 已接入生产业务调用点 |
-| 510056 `TRANSPORT_DEBUG` consumer | repository-aligned；`WH01` 是 `ZONE`，`KT16` 是 `RACK_POSITION`，去程 `CTU01` 使用 `target_face="90"`，回程 `CTU03` 省略 `target_face` 并接收非空实际 `arrival_face` | 权威生产业务链或真实物理运行 |
+| 510056 `TRANSPORT_DEBUG` consumer | repository-aligned；`WH05` 是 `ZONE`，`KT16` 是 `RACK_POSITION`，去程 `CTU01` 使用 `target_face="90"`，回程 `CTU03` 省略 `target_face` 并接收非空实际 `arrival_face` | 权威生产业务链或真实物理运行 |
 
 510056 当前状态为 `NOT PHYSICAL RUN / NOT BUSINESS AUTHORITATIVE`。本机测试数据无需脱敏，但测试通过不能替代 WMS/RCS
 真实接纳、callback、供应商映射、现场位置事实或 WMS 库存事务。

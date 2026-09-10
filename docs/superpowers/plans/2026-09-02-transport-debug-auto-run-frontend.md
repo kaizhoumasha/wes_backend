@@ -378,7 +378,7 @@ Vue Test Utils 断言：
 - 每组已选达到 4 个后其它 option disabled。
 - 同一 bin 在其它组 disabled。
 - 非法配置时“启动自动联调” disabled。
-- preview 显示 `RACK 510056 → RACK_POSITION KT16`、`CTU02 target_face="270"`、最终 `RACK 510056 → ZONE WH01 / CTU03 / "90"`。
+- preview 显示 `RACK 510056 → RACK_POSITION KT16`、`CTU02 target_face="270"`、最终 `RACK 510056 → ZONE WH05 / CTU03 / "90"`。
 
 - [ ] **Step 2: 写运行态组件失败测试**
 

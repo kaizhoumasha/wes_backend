@@ -76,7 +76,7 @@ def _run(*, phase: str = "RACK_TO_STATION", group_index: int = 0) -> TransportDe
                 }
             },
             "returned_bins": [{"bin_code": code} for code in ("A000001922", "A000002653", "A000003001")],
-            "storage_zone": "WH01",
+            "storage_zone": "WH05",
             "workstation": "KT16",
             "infeed_position": "CNV0301",
             "outfeed_position": "CNV0302",
@@ -184,7 +184,7 @@ def _step(phase: str, *, group_index: int = 0, client_id: str = CLIENT_IDS[0]) -
                 TransportCaller("TRANSPORT_DEBUG", "TRANSPORT_DEBUG_AUTO"),
                 "510056",
                 RackReference("510056"),
-                ZonePosition("WH01"),
+                ZonePosition("WH05"),
                 None,
                 RcsTemplateId.CTU03,
             ),
@@ -388,7 +388,7 @@ def test_ctu03_accepts_actual_arrival_face_without_requested_orientation(arrival
     task = _task("SUCCEEDED")
     task.request_json = {"rcs_template_id": "CTU03"}
     member = _member(final_position={"kind": "RACK_POSITION", "location_code": "STORAGE-1"}, arrival_face=arrival_face)
-    member.target_json = {"kind": "ZONE", "location_code": "WH01"}
+    member.target_json = {"kind": "ZONE", "location_code": "WH05"}
     result = {"status": "SUCCEEDED", "final_position": member.final_position_json, "arrival_face": arrival_face}
     _validate_result_frozen_identity(task, [member], {"510056": result})
     assert evaluate_debug_transport_task(step, task, [member], run).disposition == "SUCCEEDED"
@@ -400,7 +400,7 @@ def test_ctu03_with_requested_orientation_rejects_a_different_arrival_face() -> 
     task = _task("SUCCEEDED")
     task.request_json = {"rcs_template_id": "CTU03", "target_face": "90"}
     member = _member(final_position={"kind": "RACK_POSITION", "location_code": "STORAGE-1"}, arrival_face="270")
-    member.target_json = {"kind": "ZONE", "location_code": "WH01"}
+    member.target_json = {"kind": "ZONE", "location_code": "WH05"}
     result = {"status": "SUCCEEDED", "final_position": member.final_position_json, "arrival_face": "270"}
 
     with pytest.raises(TransportContractError, match="successful arrival face differs from frozen target"):
@@ -426,4 +426,7 @@ def test_partial_return_keeps_current_face_until_all_bins_confirmed() -> None:
     run = _run()
     step = _step("BINS_TO_RACK")
     run.configuration_json["returned_bins"] = [{"bin_code": "A000001922"}]
+    run.configuration_json["return_queues"] = {"0": ["A000001922", "A000002653"]}
     assert next_debug_step(run, step) == ("BINS_TO_RACK", 0)
+    run.configuration_json["return_queues"] = {"0": ["A000001922"]}
+    assert next_debug_step(run, step) == ("WAIT_SCAN12", 0)

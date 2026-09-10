@@ -13,7 +13,8 @@
 - 后端 `pyproject.toml`、`uv.lock` 或 `migrations/` 与当前基础镜像不一致时停止，必须先完成正式后端发布和数据库迁移。
 - 已启用后，前端依赖清单或热更新控制文件变化时，普通 `sync` 停止；使用 `bootstrap` 重新建立基线。
 - 正式 Jenkins TEST 发布前先执行 `disable`，恢复启用热更新前保存的前后端 immutable image。
-- 日常 `sync` 复制源码后重建应用容器并等待就绪，确保单文件挂载和运行进程都使用本次源码；不重建镜像或数据库。
+- 日常 `sync` 原子更新目录挂载中的源码，然后重启原容器中的 API、Celery Worker/Beat 和前端应用，再检查就绪状态；不重建容器、镜像或数据库。
+  `main.py` 单文件挂载以及三个 Celery 重载 shell 脚本均纳入控制指纹，发生变化时必须使用 `bootstrap` 重建。
 
 ## 使用
 
@@ -47,10 +48,10 @@ WES_FRONTEND_ROOT=/absolute/path/to/wes_frontend \
 ## 失败边界
 
 传输先进入服务器的 `.integration-hot/uploads/`，两个压缩包均校验并解压后才同步到运行源码目录。同步失败不会修改
-数据库或环境文件。`bootstrap` 和日常 `sync` 都先重建应用容器并等待 Compose 健康，再检查 API、两个 Worker、Beat、前端和 Nginx
-的实际就绪状态；失败时保留上传包和日志供排查。
+数据库或环境文件。`bootstrap` 重建应用容器并等待 Compose 健康；日常 `sync` 在源码完整更新后重启应用，确认旧进程退出后再检查 API、两个 Worker、Beat、前端和
+Nginx 的实际就绪状态；失败时保留上传包和日志供排查。
 
-成功条件由健康探针决定，不用固定启动时间判断。为防止网络或进程异常导致无限等待，仅设置可调整的总超时：`bootstrap` / `sync` 的容器重建和
+成功条件由健康探针决定，不用固定启动时间判断。为防止网络或进程异常导致无限等待，仅设置可调整的总超时：`bootstrap` 和
 `disable` 默认 300 秒，可分别通过 `HOT_BOOTSTRAP_TIMEOUT`、`HOT_DISABLE_TIMEOUT` 调整；`sync` 末尾与独立 `check` 的运行态检查
 默认 60 秒，可通过 `HOT_CHECK_TIMEOUT` 调整。源码传输由 SSH 保活和连接超时单独约束。`HOT_CHECK_INTERVAL` 只控制探针频率，
 默认 1 秒。当前联调服务器实测首次前端依赖安装约 143 秒、

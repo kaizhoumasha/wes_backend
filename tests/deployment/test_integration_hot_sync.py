@@ -264,8 +264,8 @@ def test_remote_bootstrap_activates_both_sources_and_records_baseline(tmp_path: 
     assert "--no-build" in docker_calls
 
 
-@pytest.mark.parametrize("recreate_exit", [0, 1])
-def test_remote_sync_waits_for_recreated_sources(tmp_path: Path, recreate_exit: int) -> None:
+@pytest.mark.parametrize("restart_exit", [0, 1])
+def test_remote_sync_restarts_existing_applications_before_success(tmp_path: Path, restart_exit: int) -> None:
     deploy_root = tmp_path / "deploy"
     state = deploy_root / ".integration-hot"
     upload = state / "uploads/release-2"
@@ -283,6 +283,10 @@ def test_remote_sync_waits_for_recreated_sources(tmp_path: Path, recreate_exit: 
         "CONTROL_SHA=control-baseline\n",
         encoding="utf-8",
     )
+    live_main = state / "source/backend/main.py"
+    live_main.parent.mkdir(parents=True)
+    live_main.write_text("app = object()\n", encoding="utf-8")
+    live_main_inode = live_main.stat().st_ino
     for name, files in {
         "backend": {
             "main.py": "app = object()\n",
@@ -304,7 +308,7 @@ def test_remote_sync_waits_for_recreated_sources(tmp_path: Path, recreate_exit: 
         'printf "%s\\n" "$*" >>"$HOT_DOCKER_TRACE"\n'
         'case "$*" in\n'
         '  *"inspect wes_api_test"*) printf "registry/backend@sha256:test\\n" ;;\n'
-        '  *"--force-recreate"*) exit "$HOT_RECREATE_EXIT" ;;\n'
+        '  *"restart"*) test "$(cat "$HOT_LIVE_SOURCE")" = "VALUE = \'updated\'" || exit 9; exit "$HOT_RESTART_EXIT" ;;\n'
         "esac\n",
         encoding="utf-8",
     )
@@ -327,15 +331,17 @@ def test_remote_sync_waits_for_recreated_sources(tmp_path: Path, recreate_exit: 
         | {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "HOT_DOCKER_TRACE": str(docker_trace),
-            "HOT_RECREATE_EXIT": str(recreate_exit),
+            "HOT_RESTART_EXIT": str(restart_exit),
+            "HOT_LIVE_SOURCE": str(state / "source/backend/src/app.py"),
         },
     )
 
-    assert result.returncode == recreate_exit, result.stderr
+    assert result.returncode == restart_exit, result.stderr
     docker_calls = docker_trace.read_text(encoding="utf-8") if docker_trace.exists() else ""
-    assert "restart" not in docker_calls
-    assert " up -d --no-build --force-recreate --wait --wait-timeout 300 " in docker_calls
-    assert upload.exists() is bool(recreate_exit)
+    assert "restart --timeout 30 api celery celery-wms-fulfillment celery_beat frontend" in docker_calls
+    assert " up " not in docker_calls
+    assert live_main.stat().st_ino == live_main_inode
+    assert upload.exists() is bool(restart_exit)
 
 
 def test_remote_check_retries_transient_frontend_probe(tmp_path: Path) -> None:
@@ -508,3 +514,34 @@ def test_hot_frontend_allows_vite_generated_files_and_slow_first_install() -> No
 
     assert "${HOT_FRONTEND_ROOT:?HOT_FRONTEND_ROOT is required}:/app:rw,z" in frontend["volumes"]
     assert frontend["healthcheck"]["start_period"] == "300s"
+
+
+@pytest.mark.parametrize(
+    "control_file",
+    [
+        "main.py",
+        "src/celery_app/dev_worker_autoreload.sh",
+        "src/celery_app/dev_beat_autoreload.sh",
+        "src/celery_app/dev_reload_fingerprint.sh",
+    ],
+)
+def test_sync_control_fingerprint_changes_for_loaded_control_files(tmp_path: Path, control_file: str) -> None:
+    backend, frontend, revision = _init_source_repositories(tmp_path)
+    bin_dir, trace = _fake_transport(tmp_path, revision, hot_mode=True)
+    environment = _git_environment() | {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "WES_BACKEND_ROOT": str(backend),
+        "WES_FRONTEND_ROOT": str(frontend),
+        "HOT_TEST_TRACE": str(trace),
+    }
+    fingerprints = []
+    for changed in (False, True):
+        if changed:
+            path = backend / control_file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# changed control input\n", encoding="utf-8")
+        result = _run(["/bin/bash", str(LOCAL_SCRIPT), "sync"], cwd=backend, env=environment)
+        assert result.returncode == 0, result.stderr
+        activation = [line for line in trace.read_text().splitlines() if " activate " in line][-1]
+        fingerprints.append(activation.split()[-2])
+    assert fingerprints[0] != fingerprints[1]
