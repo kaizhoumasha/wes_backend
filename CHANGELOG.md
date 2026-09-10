@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0.1] - 2026-09-09
+
+### Fixed
+
+- WMS 可靠事实查询的 404/503 复用统一异常响应，前端可准确区分未找到记录与存储不可用；HTTP 状态及成功响应不变。
+
 ## [0.41.0.0] - 2026-09-09
 
 ### Added
