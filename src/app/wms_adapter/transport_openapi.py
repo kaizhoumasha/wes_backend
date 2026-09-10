@@ -123,11 +123,9 @@ def _member_result_schema(
     success_required = [id_field, "status", "final_position"]
     failed_required = [id_field, "status", "final_position", "failure_code"]
     if arrival_face:
-        arrival_schema = _FACE_SCHEMA
+        arrival_schema = {"anyOf": [_FACE_SCHEMA, {"enum": [None]}]}
         success_properties["arrival_face"] = arrival_schema
         failed_properties["arrival_face"] = arrival_schema
-        success_required.append("arrival_face")
-        failed_required.append("arrival_face")
     else:
         success_properties["arrival_face"] = {"not": {}}
         failed_properties["arrival_face"] = {"not": {}}

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from deployment.plugin_definitions import load_plugin_definitions
-from src.app.device.services import device_command_admission, device_service
+from src.app.device.services import device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
 from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
@@ -123,9 +123,7 @@ def build_deployment_runtime(
     return DeploymentRuntime(
         execution=execution,
         plugins=plugins,
-        workline_start_service=WorkLineStartService(
-            plugins=plugins, device_adapter_provider=device_adapter_provider, device_admission=device_command_admission
-        ),
+        workline_start_service=WorkLineStartService(plugins=plugins, device_adapter_provider=device_adapter_provider),
         workline_configuration_service=WorkLineConfigurationService(
             definitions=definitions,
             business_blockers={

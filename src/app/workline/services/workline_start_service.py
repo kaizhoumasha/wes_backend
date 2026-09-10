@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from src.app.device.contracts import DEVICE_INTEGRATION_CONTRACT_KEY, DEVICE_INTEGRATION_CONTRACT_VERSION
 from src.app.device.repositories.device_repository import device_repository
@@ -19,23 +19,9 @@ from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositio
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.core.conf import settings
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from src.app.device.composition import DeviceEndpointAdapterProvider
-    from src.app.device.contracts import EcsDeviceStatus
-
-
-class DeviceAdmissionPort(Protocol):
-    def ensure_runtime_admissible(
-        self, *, status: EcsDeviceStatus, expected_device_code: str, task_type: str | None = None
-    ) -> None: ...
-
-    def ensure_status_fresh(
-        self, *, status: EcsDeviceStatus, observed_at: datetime, status_max_age_ms: int | None
-    ) -> None: ...
 
 
 class WorkLineStartNotFoundError(LookupError):
@@ -64,7 +50,6 @@ class WorkLineStartService:
         position_repository=workline_position_repository,
         device_repository=device_repository,
         device_adapter_provider: DeviceEndpointAdapterProvider | None = None,
-        device_admission: DeviceAdmissionPort | None = None,
     ) -> None:
         self._plugins = plugins
         self._worklines = workline_repository
@@ -72,7 +57,6 @@ class WorkLineStartService:
         self._positions = position_repository
         self._devices = device_repository
         self._adapter_provider = device_adapter_provider
-        self._admission = device_admission
 
     async def assert_execution_worker_startable(self, db: Any) -> None:
         for plugin_key, plugin_version in await self._worklines.list_active_plugin_identities(db):
@@ -179,8 +163,8 @@ class WorkLineStartService:
             except ValueError as exc:
                 raise WorkLineStartConfigurationError(str(exc)) from exc
         for endpoint in sorted({binding.endpoint_base_url for binding in bindings}):
-            if self._adapter_provider is None or self._admission is None:
-                raise WorkLineStartConfigurationError("ECS 实时状态检查不可用")
+            if self._adapter_provider is None:
+                raise WorkLineStartConfigurationError("ECS 连通性检查不可用")
             try:
                 adapter = await self._adapter_provider.get_adapter(endpoint)
                 statuses = await adapter.fetch_statuses()
@@ -193,12 +177,11 @@ class WorkLineStartService:
                     status = statuses_by_code.get(binding.device_code)
                     if status is None:
                         raise ValueError(f"ECS 缺少设备 {binding.device_code}")
-                    self._admission.ensure_runtime_admissible(status=status, expected_device_code=binding.device_code)
-                    self._admission.ensure_status_fresh(
-                        status=status, observed_at=timezone.now_for_db(), status_max_age_ms=binding.status_max_age_ms
-                    )
+                    # START 只发布执行合同；运行模式、空闲状态和时效由命令派发检查。
+                    if not status.state.is_online:
+                        raise ValueError(f"ECS 设备离线 {binding.device_code}")
             except (KeyError, RuntimeError, ValueError) as exc:
-                raise WorkLineStartConfigurationError(f"ECS 实时状态不可启动: {endpoint}: {exc}") from exc
+                raise WorkLineStartConfigurationError(f"ECS 连通性检查失败: {endpoint}: {exc}") from exc
         return WorkLineActivationPlan(
             plugin_key=plugin.plugin_key,
             plugin_version=plugin.plugin_version,

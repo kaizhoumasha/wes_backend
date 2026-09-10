@@ -222,11 +222,14 @@ async def test_start_rejects_unbound_positions_and_builder_cannot_override_site_
         None,
         "offline",
         "stale",
+        "unknown",
+        "manual",
+        "busy",
+        "active_command",
         "wrong_owner",
         "missing_binding",
         "duplicate_status",
         "missing_provider",
-        "missing_admission",
         "missing_status",
         "fetch_error",
         "invalid_endpoint",
@@ -234,7 +237,6 @@ async def test_start_rejects_unbound_positions_and_builder_cannot_override_site_
 )
 async def test_declaration_without_business_start_activates_validated_devices(failure):
     from src.app.device.contracts import EcsDeviceStatus
-    from src.app.device.services import device_command_admission
     from src.utils.timezone import timezone
 
     service, line, repository, _, plugin = setup_start()
@@ -276,7 +278,6 @@ async def test_declaration_without_business_start_activates_validated_devices(fa
         ),
     )
     service._adapter_provider = provider
-    service._admission = device_command_admission
     if failure == "offline":
         status = adapter.fetch_statuses.return_value[0]
         adapter.fetch_statuses.return_value = (
@@ -287,6 +288,16 @@ async def test_declaration_without_business_start_activates_validated_devices(fa
         adapter.fetch_statuses.return_value = (
             status.model_copy(update={"state": status.state.model_copy(update={"updated_at": 0})}),
         )
+    elif failure in {"unknown", "manual", "busy", "active_command"}:
+        status = adapter.fetch_statuses.return_value[0]
+        changes = {
+            "unknown": {"status": "UNKNOWN"},
+            "manual": {"mode": "MANUAL"},
+            "busy": {"status": "RUNNING"},
+            "active_command": {"current_command_code": "existing-command"},
+        }
+        state = status.state.model_dump() | changes[failure]
+        adapter.fetch_statuses.return_value = (status.model_copy(update={"state": status.state.model_validate(state)}),)
     elif failure == "wrong_owner":
         service._devices.get_by_work_line_id_for_update.return_value[0].work_line_id = 8
     elif failure == "missing_binding":
@@ -295,26 +306,24 @@ async def test_declaration_without_business_start_activates_validated_devices(fa
         adapter.fetch_statuses.return_value *= 2
     elif failure == "missing_provider":
         service._adapter_provider = None
-    elif failure == "missing_admission":
-        service._admission = None
     elif failure == "missing_status":
         adapter.fetch_statuses.return_value = ()
     elif failure == "fetch_error":
         adapter.fetch_statuses.side_effect = RuntimeError("ECS unavailable")
     elif failure == "invalid_endpoint":
         service._devices.get_by_work_line_id_for_update.return_value[0].endpoint_base_url = "not-a-url"
-    if failure is not None:
+    if failure not in {None, "stale", "unknown", "manual", "busy", "active_command"}:
         with pytest.raises(WorkLineStartConfigurationError) as error:
             await service.start(object(), workline_id=7, version=3)
         assert not line.is_active and line.plugin_version is None and line.device_contracts == {}
         assert line.version == 3 and line.position_bindings == {}
         repository.set_active_for_start.assert_not_awaited()
-        if failure in {"missing_provider", "missing_admission", "invalid_endpoint"}:
+        if failure in {"missing_provider", "invalid_endpoint"}:
             adapter.fetch_statuses.assert_not_awaited()
         if failure == "missing_status":
             assert "ECS 缺少设备 DEVICE-9" in str(error.value)
         elif failure == "fetch_error":
-            assert "ECS 实时状态不可启动" in str(error.value)
+            assert "ECS 连通性检查失败" in str(error.value)
             assert isinstance(error.value.__cause__, RuntimeError)
         return
     result = await service.start(object(), workline_id=7, version=3)

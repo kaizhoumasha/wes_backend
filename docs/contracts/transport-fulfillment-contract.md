@@ -269,7 +269,7 @@ kind
 | `BinTransportData` | `BIN_MOVE` | `move_bins()` | `moves[1..4] { container_id + source + target }` |
 | `BinTransportData` | `BIN_EXCHANGE` | `exchange_bins()` | `moves[2\|4] { container_id + source + target }`，且为 1～2 个二元闭环 |
 
-`CTU03` 未提供 `target_face` 时由 WMS/RCS 决定回库朝向，成功回调仍必须提供实际 `arrival_face`；提供具体目标面时按其它模板规则处理。
+`CTU03` 未提供 `target_face` 时由 WMS/RCS 决定回库朝向，回调的 `arrival_face` 可省略或为 `null`，WES 将朝向记录为空，不推定实际朝向；提供具体目标面时按其它模板规则处理。
 所有已提供的 `RackTransportData.target_face` 均由调用方冻结，WMS 原样传给 RCS；成功回调的 `arrival_face` 必须按大小写敏感的
 Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要求最终位置相等。对于 `RACK`
 目标，WMS/RCS 必须确认最终位置是按冻结
@@ -484,11 +484,12 @@ failure_code?
 arrival_face?
 ```
 
-- `SUCCEEDED` 必须携带精确 `RACK_POSITION final_position + arrival_face`；未指定 `target_face` 的 CTU03 使用实际到达面，已指定目标面时
-  `arrival_face` 必须等于冻结值。对于
+- `SUCCEEDED` 必须携带精确 `RACK_POSITION final_position`；未指定 `target_face` 的 CTU03 允许省略 `arrival_face` 或传 `null`，
+  提供实际到达面时原样保存；已指定目标面时 `arrival_face` 必须提供且等于冻结值。对于
   `RACK_POSITION` 目标，最终地码必须等于冻结目标；对于 `RACK` 目标，最终位置必须是 WMS/RCS 按冻结货架编号和模板解析出的
   位置；对于 `ZONE` 目标，最终位置必须属于冻结区域。不得携带 `failure_code` 或 `position_unknown`。
-- `FAILED` 且位置明确时必须携带 `final_position + arrival_face + failure_code`。
+- `FAILED` 且位置明确时必须携带 `final_position + failure_code`；已指定 `target_face` 时还必须提供实际 `arrival_face`，
+  未指定目标面的 CTU03 允许省略到达面或传 `null`。
 - `FAILED` 且位置未知时必须携带 `position_unknown=true + failure_code=POSITION_UNKNOWN`，不得携带位置或到达面。
 - 货架结果不使用只有一个成员的 `results[]`。
 
@@ -531,7 +532,8 @@ WES 保存结果并返回 `202 / RECEIVED`，后台等待所需精确位置 Evid
 `rack_face`、`target_face`、`arrival_face` 按各自上下文可为 `null`；一旦提供，JSON value 必须是长度 `1..10` 个 Unicode code point 且不含 NUL 的 UTF-8 string。
 持久化列使用 PostgreSQL `VARCHAR(10)`，超长值拒绝且不得截断；HTTP Body 仍须符合公共 UTF-8/JSON 信封规则。
 WES/WMS/RCS 对解析后的 string 原样传递，不做 trim、case folding、
-Unicode normalization、A/B 转换、角度计算或容差处理。CTU03 未指定 `target_face` 时记录实际 `arrival_face` 且不比较目标朝向；
+Unicode normalization、A/B 转换、角度计算或容差处理。CTU03 未指定 `target_face` 时不比较目标朝向；`arrival_face` 省略与 `null` 规范化为相同的空值，
+覆盖此前的面向投影，禁止沿用旧面向或填入默认面；若提供非空值则原样记录。
 任何已指定的目标面都必须与 `arrival_face` 精确相等。缺少应有
 `arrival_face` 的货架结果不得接受为确定结果；WES 接受后同步更新本地面向投影，后续货架和 Bin 任务都使用该投影校验工作面。
 

@@ -115,3 +115,17 @@ def _walk_schemas(schema: object):
     elif isinstance(schema, list):
         for value in schema:
             yield from _walk_schemas(value)
+
+
+def test_rack_result_openapi_allows_missing_or_null_arrival_face() -> None:
+    variants = [
+        schema
+        for schema in _walk_schemas(build_transport_openapi_document())
+        if "anyOf" in schema.get("properties", {}).get("arrival_face", {})
+    ]
+    assert len(variants) == 2
+    for schema in variants:
+        assert "arrival_face" not in schema["required"]
+        face, null = schema["properties"]["arrival_face"]["anyOf"]
+        assert face["type"] == "string" and face["minLength"] == 1
+        assert null == {"enum": [None]}

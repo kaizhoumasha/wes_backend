@@ -376,8 +376,8 @@ def test_evaluate_rotate_accepts_rack_reference_intent_and_exact_station_result(
     assert evaluate_debug_transport_task(step, task, (member,), run).disposition == "SUCCEEDED"
 
 
-@pytest.mark.parametrize("arrival_face", ["270", "OTHER"])
-def test_ctu03_accepts_actual_arrival_face_without_requested_orientation(arrival_face: str) -> None:
+@pytest.mark.parametrize("arrival_face", ["270", "OTHER", None])
+def test_ctu03_accepts_actual_arrival_face_without_requested_orientation(arrival_face: str | None) -> None:
     from src.app.transport.service import _validate_result_frozen_identity
 
     run = _run(phase="RACK_TO_STORAGE", group_index=1)
