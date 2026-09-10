@@ -1567,7 +1567,12 @@ class TransportService:
             if status == "FAILED" and (not isinstance(failure_code, str) or not failure_code):
                 raise TransportContractError("failed member requires failure_code")
             arrival_face = result.get("arrival_face")
-            if member.object_type == "RACK" and has_position and (type(arrival_face) is not str or arrival_face == ""):
+            if (
+                member.object_type == "RACK"
+                and has_position
+                and task.request_json.get("target_face") is not None
+                and (type(arrival_face) is not str or arrival_face == "")
+            ):
                 raise TransportContractError("known rack result requires arrival_face")
             final_position = result.get("final_position") if has_position else None
             if _result_contradicts_definite_member_fact(member, result):

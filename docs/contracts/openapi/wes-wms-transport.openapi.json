@@ -244,8 +244,7 @@
                               "outcome_revision",
                               "rack_id",
                               "status",
-                              "final_position",
-                              "arrival_face"
+                              "final_position"
                             ],
                             "properties": {
                               "transport_task_id": {
@@ -308,11 +307,20 @@
                                 "not": {}
                               },
                               "arrival_face": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 10,
-                                "pattern": "^[^\\u0000]+$",
-                                "description": "Opaque non-empty face value without NUL; preserve exactly"
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 10,
+                                    "pattern": "^[^\\u0000]+$",
+                                    "description": "Opaque non-empty face value without NUL; preserve exactly"
+                                  },
+                                  {
+                                    "enum": [
+                                      null
+                                    ]
+                                  }
+                                ]
                               }
                             }
                           },
@@ -326,8 +334,7 @@
                               "rack_id",
                               "status",
                               "final_position",
-                              "failure_code",
-                              "arrival_face"
+                              "failure_code"
                             ],
                             "properties": {
                               "transport_task_id": {
@@ -395,11 +402,20 @@
                                 ]
                               },
                               "arrival_face": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 10,
-                                "pattern": "^[^\\u0000]+$",
-                                "description": "Opaque non-empty face value without NUL; preserve exactly"
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 10,
+                                    "pattern": "^[^\\u0000]+$",
+                                    "description": "Opaque non-empty face value without NUL; preserve exactly"
+                                  },
+                                  {
+                                    "enum": [
+                                      null
+                                    ]
+                                  }
+                                ]
                               }
                             }
                           },

@@ -497,10 +497,6 @@ def test_bin_result_callback_rejects_noncanonical_member_count(kind: str, count:
             "failure_code must not be blank",
         ),
         (
-            _rack_result_data(arrival_face=None),
-            "known rack result requires arrival_face",
-        ),
-        (
             _result_data(
                 results=[
                     {
@@ -683,3 +679,15 @@ def test_callback_positions_reject_text_longer_than_100_code_points(position: di
 
     with pytest.raises(TransportContractError, match="exceeds 100 characters"):
         validate_callback_envelope(_envelope(RESULT_OPERATION, data))
+
+
+@pytest.mark.parametrize("include_null", [False, True])
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED"])
+def test_rack_result_normalizes_missing_or_null_arrival_face(include_null: bool, status: str) -> None:
+    data = _rack_result_data(arrival_face=None, status=status)
+    if not include_null:
+        data.pop("arrival_face")
+    if status == "FAILED":
+        data["failure_code"] = "RCS_EXECUTION_FAILED"
+    result = validate_callback_envelope(_envelope(RESULT_OPERATION, data))
+    assert result["data"]["arrival_face"] is None

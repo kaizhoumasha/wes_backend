@@ -199,7 +199,6 @@ async def test_declaration_only_start_persists_basic_contracts(integration_sessi
     from sqlalchemy import delete
 
     from src.app.device.contracts import EcsDeviceStatus
-    from src.app.device.services import device_command_admission
     from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
     from src.utils.timezone import timezone
 
@@ -238,7 +237,6 @@ async def test_declaration_only_start_persists_basic_contracts(integration_sessi
         service = WorkLineStartService(
             plugins=(InstalledWorkLinePlugin(definition=definition),),
             device_adapter_provider=provider,
-            device_admission=device_command_admission,
         )
         async with sessions.begin() as db:
             await service.start(db, workline_id=line_id, version=0)

@@ -860,9 +860,11 @@ async def test_invalid_rack_slot_result_is_not_reclassified_as_pending(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("arrival_face", ["90", None])
 async def test_move_success_requires_the_frozen_target_face(
     outcome_service: TransportService,
     db_engine: object,
+    arrival_face: str | None,
 ) -> None:
     handle = await outcome_service.move_rack(
         new_uuid7(),
@@ -885,7 +887,7 @@ async def test_move_success_requires_the_frozen_target_face(
             "rack_id": "rack-move-face",
             "status": "SUCCEEDED",
             "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
-            "arrival_face": "90",
+            "arrival_face": arrival_face,
         },
     )
 

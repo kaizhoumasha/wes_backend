@@ -92,7 +92,8 @@ WMS wire 的 `source` 使用 `RACK` 引用；`target` 使用准入时确认的�
 ```
 
 WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS 必须显式返回其在 `WH05` 内解析出的精确
-`RACK_POSITION`（例如测试数据 `WH05-01`）和非空实际 `arrival_face`；WES 不从 `ZONE` 猜测最终地码，也不按请求目标面比较。
+`RACK_POSITION`（例如测试数据 `WH05-01`）；`arrival_face` 可省略或为 `null`，此时 WES 保存空朝向，不沿用旧值。
+提供非空实际值时原样记录；WES 不从 `ZONE` 猜测最终地码，也不按请求目标面比较。
 
 ## 5. 必验场景
 
@@ -104,8 +105,8 @@ WES 对 `CTU03` 省略 `target_face`，由 RCS 自主确定返库朝向。WMS �
 4. 在首个选中料箱的有效 `SCAN12` Evidence 到达前，确认不存在回架 task；形成有效扫码 FIFO 后允许分批回架。
 5. 已有选中料箱的有效扫码 Evidence 后，即可申请回架，不等待本面全部料箱扫描齐全。核对正式 `outbound.bin.return_batch@v1` 请求按实际扫码 FIFO 排序。每个 `READY` 前缀创建一个 `BIN_MOVE`，从 `CNV0302` 返回 WMS 分配的精确 slot；部分批次完成后才为剩余 FIFO 申请下一批；当前 FIFO 已回完但仍有未扫描料箱时，回到扫码等待并保留本面最初的取箱证据边界，不重发已回架料箱。本面全部料箱确认回架后才允许转面或整架返库。自动联调收到有效 `NO_BATCH` 后，按请求中的实际扫码 FIFO，将剩余料箱退回同组已成功出库任务记录的原货架、原朝向和原 slot；冻结批次保留原 WMS operation identity，并标记 `DEBUG_NO_BATCH_ORIGINAL_SLOTS` 及出库任务 ID。原出库记录缺失或货架/朝向不匹配时停止并提示 `DEBUG_RETURN_SOURCE_MISSING`。此规则仅用于自动联调，正式工作线仍遵循 WMS 分配。
 6. 当前面所有批次的成员均精确成功前，确认不转面；本轮全部选中箱均精确成功前，确认不存在 `CTU03`。核对响应 `returned_bins` 为实际确认槽位，下一轮以这些槽位为来源。
-7. 核对最终只创建一个省略 `target_face` 的 `CTU03`；WMS 返回精确库位和非空实际 `arrival_face` 后轮次才进入
-   `COMPLETED`。
+7. 核对最终只创建一个省略 `target_face` 的 `CTU03`；WMS 返回精确库位且成功结果校验通过后轮次才进入
+   `COMPLETED`。分别核对省略 `arrival_face`、传 `null` 和提供实际非空值的结果均按合同接受；前两者清空朝向投影，后者原样记录。
 
 ### 5.2 两面
 
@@ -127,7 +128,7 @@ CTU01("90")
 - 非选中料箱、其它设备和其它事件类型不得推进当前面。
 - `InboundEvidence.apply_status=PENDING|RECONCILING`、无效 barcode 或身份冲突必须进入 `NEEDS_ATTENTION`，不得创建回架 task。
 - Transport `RECONCILING`/`DELIVERY_UNKNOWN`、`position_unknown=true` 或精确位置不一致时不得创建后继 task；
-  携带目标面的请求仍须校验面值，省略目标面的 `CTU03` 只要求非空实际 `arrival_face`。
+  携带目标面的请求仍须校验面值，省略目标面的 `CTU03` 允许省略 `arrival_face` 或传 `null`，但不放宽精确位置及其它终态校验。
 - 对 `DELIVERY_UNKNOWN` 只能等待同一个 `transport_task_id` 的权威终态；不得生成新 `client_request_id` 重发。
 - worker 或 API 重启后使用持久化 step、`client_request_id` 和 `transport_task_id` 恢复，不得重复创建物理任务。
 - 第二个全局活动轮次必须被拒绝。

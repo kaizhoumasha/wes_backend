@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.1.0] - 2026-09-10
+
+### Fixed
+
+- 工作线基础 START 的设备状态检查调整为连通性校验，不再因模式、忙闲、当前命令或状态时间阻止启动；保留配置、归属与安全检查，命令执行阶段继续按原规则准入。
+- 修正 CTU03 未指定目标面时的运输结果校验，允许 arrival_face 省略或为 null，不推定实际朝向；指定目标面时仍要求到达面，成功结果必须与目标一致，并同步接口合同与回归测试。
+
 ## [0.42.0.0] - 2026-09-10
 
 ### Added

@@ -211,8 +211,6 @@ def _members_match(  # noqa: PLR0911 - closed request kinds use separate exact-r
             and final_position.get("kind") == "RACK_POSITION"
             and isinstance(final_position.get("location_code"), str)
             and bool(final_position["location_code"])
-            and isinstance(member.arrival_face, str)
-            and bool(member.arrival_face)
             and (request.target_face is None or member.arrival_face == request.target_face)
         )
     if not isinstance(request, MoveRackRequest):
