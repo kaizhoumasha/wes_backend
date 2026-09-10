@@ -163,7 +163,7 @@ async def _persist_scan12(
     source_event_id: str,
     bin_code: str,
     timestamp_ms: int,
-    device_code: str = "SCAN12",
+    device_code: str = "STATION_SCAN12",
     apply_status: InboundEvidenceApplyStatus = InboundEvidenceApplyStatus.APPLIED,
 ) -> None:
     async with session_factory.begin() as db:

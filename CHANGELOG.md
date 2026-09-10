@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.2.0] - 2026-09-10
+
+### Changed
+
+- 自动联调支持指定货架工作区、投料口、出料口和四个扫码设备，按本轮冻结配置执行运输及 WMS 回架分配请求，使用第四个扫码设备确认出料。
+- 轮次响应返回区域配置，供后续独立轮次沿用；未保存扫码配置的历史轮次保留原扫码判定。
+
 ## [0.42.1.0] - 2026-09-10
 
 ### Fixed

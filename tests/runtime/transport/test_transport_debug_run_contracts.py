@@ -124,3 +124,39 @@ def test_debug_face_group_accepts_ten_characters(face: str) -> None:
 def test_debug_face_group_rejects_eleven_characters(face: str) -> None:
     with pytest.raises(ValueError, match="10"):
         _group(face, _bin("BIN-1", "SLOT-1"))
+
+
+def test_custom_locations_are_frozen_for_execution():
+    from src.app.transport.debug_run_service import _freeze_configuration
+
+    request = CreateTransportDebugRun(
+        workline_code="LINE1",
+        rack_id="510056",
+        face_groups=(_group("90", _bin("BIN-1", "SLOT-1")),),
+        workstation="KT11",
+        infeed_position="CNV0101",
+        outfeed_position="CNV0102",
+        scan_device_codes=("STATION_SCAN1", "STATION_SCAN2", "STATION_SCAN3", "STATION_SCAN4"),
+    )
+    frozen = _freeze_configuration(request)
+    assert frozen["workstation"] == "KT11"
+    assert frozen["infeed_position"] == "CNV0101"
+    assert frozen["outfeed_position"] == "CNV0102"
+    assert frozen["scan_device_codes"] == ["STATION_SCAN1", "STATION_SCAN2", "STATION_SCAN3", "STATION_SCAN4"]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"workstation": " "},
+        {"infeed_position": "CNV0302"},
+        {"scan_device_codes": ("S1", "S2", "S3")},
+        {"scan_device_codes": ("S1", "S2", "S3", "S3")},
+        {"outfeed_position": "x" * 129},
+    ],
+)
+def test_custom_locations_reject_invalid_configuration(changes):
+    with pytest.raises(ValueError):
+        CreateTransportDebugRun(
+            workline_code="LINE1", rack_id="510056", face_groups=(_group("90", _bin("B1", "S1")),), **changes
+        )

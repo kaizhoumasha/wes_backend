@@ -229,3 +229,21 @@ def test_scan12_ignores_unprocessed_evidence_that_is_definitely_unrelated(
     evaluation = _evaluate(evidence)
 
     assert evaluation.disposition is Scan12EvidenceDisposition.IGNORE
+
+
+@pytest.mark.parametrize(
+    "device_code,expected",
+    [
+        ("STATION_SCAN4", Scan12EvidenceDisposition.MATCH),
+        ("STATION_SCAN12", Scan12EvidenceDisposition.IGNORE),
+        ("STATION_SCAN1", Scan12EvidenceDisposition.IGNORE),
+    ],
+)
+def test_custom_exit_scanner_isolates_other_stations(device_code, expected):
+    evidence = _evidence(
+        device_code=device_code, normalized_payload={**_evidence().normalized_payload, "device_code": device_code}
+    )
+    result = evaluate_scan12_evidence(
+        evidence, not_before_ms=NOT_BEFORE_MS, selected_bins=SELECTED_BINS, device_codes=frozenset({"STATION_SCAN4"})
+    )
+    assert result.disposition is expected
