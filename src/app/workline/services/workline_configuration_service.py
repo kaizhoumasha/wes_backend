@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.device.repositories.device_repository import device_repository
 from src.app.runtime.orchestration.repositories.workline_position_repository import workline_position_repository
 from src.app.workline.installed_plugin import (
-    InstalledWorkLinePlugin,
     parse_device_bindings,
-    resolve_installed_plugin,
     resolve_position_bindings,
 )
 from src.app.workline.models.workline import (
@@ -25,6 +23,11 @@ from src.app.workline.repositories.workline_repository import workline_repositor
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BusinessException
 from src.utils.device_cache import workline_device_cache
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from wes_plugin_sdk import PluginDefinition
 
 
 class WorkLineConfigurationRepositoryPort(Protocol):
@@ -75,13 +78,18 @@ class PositionConfigurationRepositoryPort(Protocol):
     ) -> None: ...
 
 
+class PluginBusinessBlockerPort(Protocol):
+    async def get_unfinished_workload_summary(self, db: Any, workline_id: int) -> dict[str, Any]: ...
+
+
 class WorkLineConfigurationService:
     """分别维护稳定物理配置和业务插件关联，共用工作线事务边界。"""
 
     def __init__(
         self,
         *,
-        plugins: tuple[InstalledWorkLinePlugin, ...],
+        definitions: tuple[PluginDefinition, ...],
+        business_blockers: Mapping[str, PluginBusinessBlockerPort] | None = None,
         workline_repository: WorkLineConfigurationRepositoryPort = cast(
             "WorkLineConfigurationRepositoryPort", workline_repository
         ),
@@ -96,7 +104,8 @@ class WorkLineConfigurationService:
             "PositionConfigurationRepositoryPort", workline_position_repository
         ),
     ) -> None:
-        self._plugins = plugins
+        self._definitions = definitions
+        self._business_blockers = dict(business_blockers or {})
         self._worklines = workline_repository
         self._devices = device_repository
         self._safety = safety_repository
@@ -139,7 +148,7 @@ class WorkLineConfigurationService:
         )
         owned = tuple(device for device in devices if device.work_line_id == workline_id)
         if normalized_plugin_key is not None:
-            plugin = resolve_installed_plugin(self._plugins, normalized_plugin_key)
+            plugin = self._resolve_definition(normalized_plugin_key)
             reasons = self._configuration_reasons(
                 plugin,
                 config,
@@ -215,7 +224,7 @@ class WorkLineConfigurationService:
                 raise BusinessException(message="设备已属于其他工作线", detail={"device_code": device.device_code})
         self._validate_positions(positions, {device.id for device in selected_devices})
         if workline.plugin_key:
-            plugin = resolve_installed_plugin(self._plugins, workline.plugin_key)
+            plugin = self._resolve_definition(workline.plugin_key)
             reasons = self._configuration_reasons(
                 plugin, workline.config, selected_devices, positions, require_complete=False
             )
@@ -307,7 +316,7 @@ class WorkLineConfigurationService:
 
     @staticmethod
     def _configuration_reasons(
-        plugin: InstalledWorkLinePlugin,
+        plugin: PluginDefinition,
         config: object,
         devices: tuple[Any, ...],
         positions: tuple[WorkLinePositionInput, ...],
@@ -361,7 +370,7 @@ class WorkLineConfigurationService:
                 )
             )
         else:
-            selected_plugin = resolve_installed_plugin(self._plugins, selected.plugin_key)
+            selected_plugin = self._resolve_definition(selected.plugin_key)
             configuration_reasons = list(selected.incompatibility_reasons)
             checked_reasons = self._configuration_reasons(
                 selected_plugin, workline.config, devices, positions, require_complete=True
@@ -388,14 +397,14 @@ class WorkLineConfigurationService:
     def _summarize_plugins(self, workline: WorkLine) -> tuple[WorkLinePluginSummary, ...]:
         line_type = workline.line_type if isinstance(workline.line_type, LineType) else LineType(workline.line_type)
         summaries: list[WorkLinePluginSummary] = []
-        for plugin in self._plugins:
+        for plugin in self._definitions:
             reasons = self._plugin_incompatibility_reasons(plugin, line_type)
             summaries.append(
                 WorkLinePluginSummary(
                     plugin_key=plugin.plugin_key,
                     plugin_version=plugin.plugin_version,
                     display_name=plugin.display_name,
-                    supported_line_types=plugin.supported_line_types,
+                    supported_line_types=tuple(LineType(value) for value in plugin.supported_line_types),
                     device_roles=plugin.device_roles,
                     position_slots=plugin.position_slots,
                     compatible=not reasons,
@@ -406,11 +415,11 @@ class WorkLineConfigurationService:
 
     @staticmethod
     def _plugin_incompatibility_reasons(
-        plugin: InstalledWorkLinePlugin,
+        plugin: PluginDefinition,
         line_type: LineType,
     ) -> tuple[str, ...]:
         reasons: list[str] = []
-        if not plugin.supports(line_type):
+        if line_type.value not in plugin.supported_line_types:
             reasons.append(f"LINE_TYPE_UNSUPPORTED:{line_type.value}")
         return tuple(reasons)
 
@@ -456,15 +465,23 @@ class WorkLineConfigurationService:
             await workline_service.invalidate_cache(cache, workline_id, invalidate_list=True)
         return updated
 
+    def _resolve_definition(self, plugin_key: str) -> PluginDefinition:
+        matches = tuple(definition for definition in self._definitions if definition.plugin_key == plugin_key)
+        if not matches:
+            raise LookupError(f"未安装业务插件: {plugin_key}")
+        if len(matches) != 1:
+            raise ValueError(f"重复安装业务插件: {plugin_key}")
+        return matches[0]
+
     def _validate_plugin(self, workline: WorkLine, plugin_key: str | None) -> str | None:
         if plugin_key is None:
             return None
         try:
-            plugin = resolve_installed_plugin(self._plugins, plugin_key)
+            plugin = self._resolve_definition(plugin_key)
         except (LookupError, ValueError) as exc:
             raise BusinessException(message=str(exc)) from exc
         line_type = workline.line_type if isinstance(workline.line_type, LineType) else LineType(workline.line_type)
-        if not plugin.supports(line_type):
+        if line_type.value not in plugin.supported_line_types:
             raise BusinessException(message=f"plugin {plugin_key} 不支持 WorkLine line_type {line_type.value}")
         return plugin.plugin_key
 
@@ -478,16 +495,17 @@ class WorkLineConfigurationService:
         if workline.plugin_key is None:
             return
         try:
-            installed = resolve_installed_plugin(self._plugins, workline.plugin_key)
+            installed = self._resolve_definition(workline.plugin_key)
         except LookupError as exc:
             raise BusinessException(message=str(exc)) from exc
         except ValueError as exc:
             raise BusinessException(message=str(exc)) from exc
         if workline.plugin_version is not None and installed.plugin_version != workline.plugin_version:
             raise BusinessException(message=f"未安装当前业务插件版本: {workline.plugin_key}@{workline.plugin_version}")
-        if installed.business_blocker is None:
+        blocker = self._business_blockers.get(installed.plugin_key)
+        if blocker is None:
             return
-        business = await installed.business_blocker.get_unfinished_workload_summary(db, workline.id)
+        business = await blocker.get_unfinished_workload_summary(db, cast("int", workline.id))
         if business["count"] > 0:
             raise BusinessException(
                 message=f"存在未完成插件业务任务，不能{action}: {business.get('sample')}",

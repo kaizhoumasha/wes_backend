@@ -108,8 +108,11 @@ def test_start_request_is_closed_and_uses_version() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_commits_once_and_returns_current_workline() -> None:
-    service = StartService(_line())
+@pytest.mark.parametrize("flow_mode", ["GENERIC_FLOW", None])
+async def test_start_commits_once_and_returns_current_workline(flow_mode) -> None:
+    line = _line()
+    line.flow_mode = flow_mode
+    service = StartService(line)
     db = Db()
 
     body = await operation_api.start_workline(
@@ -129,7 +132,7 @@ async def test_start_commits_once_and_returns_current_workline() -> None:
         "version": 4,
         "plugin_key": "example_plugin",
         "plugin_version": "1.0",
-        "flow_mode": "GENERIC_FLOW",
+        "flow_mode": flow_mode,
         "is_active": True,
     }
 

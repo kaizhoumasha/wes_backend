@@ -26,7 +26,7 @@
 
 - 获批的 [`rough-sorter-device-contract.md`](../contracts/device-annexes/rough-sorter-device-contract.md) 对应供应商 ECS/网关版本、设备/固件版本和设备身份清单。
 - 可访问的真实供应商测试环境、网络与执行窗口；凭据只在受控环境提供，不写入仓库或报告。
-- 三个角色设备的真实 Endpoint、`device_code`、`contract_key`、`contract_version` 与活动 Epoch 绑定证据。
+- 三个角色设备的真实 Endpoint、`device_code`、`contract_key`、`contract_version` 与当前 WorkLine 有效设备插槽绑定及命令冻结合同的证据。
 - 附录要求的 task/event、字段闭集、身份、ACK、CALLBACK、错误、超时、投递未知和不可逆点用例结果。
 - 供应商执行人、WES 复核人、执行时间、环境版本与原始日志/抓包/设备记录的受控证据位置。
 

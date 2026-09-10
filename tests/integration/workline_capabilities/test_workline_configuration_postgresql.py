@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from wes_plugin_sdk import PluginDefinition
 
 from src.app.device.models.device import Device
 from src.app.execution.models import InboundEvidence, InboundEvidenceApplyStatus, InboundEvidenceKind
@@ -31,7 +32,12 @@ pytestmark = pytest.mark.integration
 
 def _plugin() -> InstalledWorkLinePlugin:
     return InstalledWorkLinePlugin(
-        display_name="PostgreSQL test",
+        definition=PluginDefinition(
+            plugin_key="postgresql_test",
+            plugin_version="1.0",
+            display_name="PostgreSQL test",
+            supported_line_types=(LineType.AUTO,),
+        ),
         runtime_binding=PluginRuntimeBinding(
             plugin_key="postgresql_test",
             plugin_version="1.0",
@@ -39,7 +45,6 @@ def _plugin() -> InstalledWorkLinePlugin:
             fact_factory=object(),  # type: ignore[arg-type]
         ),
         start_plan_builder=object(),
-        supported_line_types=(LineType.AUTO,),
     )
 
 
@@ -74,7 +79,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     left_version, right_version = left.version, right.version
                     device_id = device.id
                     # 大 ID 在尚未绑定设备时也必须能查询配置状态。
-                    status = await WorkLineConfigurationService(plugins=()).configuration_status(
+                    status = await WorkLineConfigurationService(definitions=()).configuration_status(
                         db, workline_id=left_id
                     )
                     assert status.workline_id == left_id
@@ -85,7 +90,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                 async def claim(workline_id: int, version: int) -> str:
                     async with sessions() as db:
                         await ready.wait()
-                        service = WorkLineConfigurationService(plugins=(_plugin(),))
+                        service = WorkLineConfigurationService(definitions=((_plugin()).definition,))
                         try:
                             await service.save_base(
                                 db,
@@ -123,9 +128,9 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     persisted = await db.scalar(select(Device).where(Device.device_code == "CONFIG-PG-DEVICE"))
                     assert persisted is not None
                     assert persisted.work_line_id in {left_id, right_id}
-                    status = await WorkLineConfigurationService(plugins=(_plugin(),)).base_configuration(
-                        db, workline_id=persisted.work_line_id
-                    )
+                    status = await WorkLineConfigurationService(
+                        definitions=((_plugin()).definition,)
+                    ).base_configuration(db, workline_id=persisted.work_line_id)
                     assert status.workline_id == persisted.work_line_id
                     assert len(status.positions) == 4
                     rows = list((await db.scalars(select(WorkLinePosition))).all())
@@ -144,7 +149,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                 async with sessions() as db:
                     with patch.object(db, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))):
                         with pytest.raises(RuntimeError, match="commit failed"):
-                            await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                            await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save_base(
                                 db,
                                 workline_id=winner_id,
                                 version=saved_version,
@@ -156,15 +161,15 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     assert workline is not None and workline.version == saved_version
                     device = await db.scalar(select(Device).where(Device.device_code == "CONFIG-PG-DEVICE"))
                     assert device is not None and device.work_line_id == winner_id
-                    status = await WorkLineConfigurationService(plugins=(_plugin(),)).base_configuration(
-                        db, workline_id=winner_id
-                    )
+                    status = await WorkLineConfigurationService(
+                        definitions=((_plugin()).definition,)
+                    ).base_configuration(db, workline_id=winner_id)
                     assert len(status.positions) == 4
                     edited = tuple(
                         position.model_copy(update={"position_name": position.position_name + " updated"})
                         for position in status.positions
                     )
-                    await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                    await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save_base(
                         db,
                         workline_id=winner_id,
                         version=saved_version,
@@ -183,14 +188,14 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     assert line is not None
                     version = line.version
                 async with sessions() as db:
-                    line = await WorkLineConfigurationService(plugins=(_plugin(),)).save(
+                    line = await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save(
                         db,
                         workline_id=winner_id,
                         version=version,
                         plugin_key="postgresql_test",
                         config={},
                     )
-                    await WorkLineConfigurationService(plugins=(_plugin(),)).save(
+                    await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save(
                         db,
                         workline_id=winner_id,
                         version=line.version,
@@ -221,7 +226,7 @@ def test_two_worklines_cannot_claim_the_same_unbound_device() -> None:
                     line = await db.get(WorkLine, winner_id)
                     assert line is not None
                     with pytest.raises(BusinessException, match="货架或料箱占位"):
-                        await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                        await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save_base(
                             db,
                             workline_id=winner_id,
                             version=line.version,
@@ -270,7 +275,7 @@ def test_configuration_can_claim_the_active_replacement_for_a_deleted_device_cod
                     replacement_id = replacement.id
 
                 async with sessions() as db:
-                    await WorkLineConfigurationService(plugins=(_plugin(),)).save_base(
+                    await WorkLineConfigurationService(definitions=((_plugin()).definition,)).save_base(
                         db,
                         positions=(),
                         workline_id=workline_id,
@@ -418,20 +423,27 @@ def test_task_admission_and_deactivate_share_workline_lock() -> None:
 
                 async def deactivate() -> str:
                     service = WorkLineConfigurationService(
-                        plugins=(
-                            InstalledWorkLinePlugin(
-                                display_name="PostgreSQL test",
-                                runtime_binding=PluginRuntimeBinding(
-                                    plugin_key="postgresql_test",
-                                    plugin_version="1.0",
-                                    handlers=(),
-                                    fact_factory=object(),  # type: ignore[arg-type]
-                                ),
-                                start_plan_builder=object(),
-                                supported_line_types=(LineType.MANUAL,),
-                                business_blocker=blocker,
-                            ),
-                        )
+                        definitions=(
+                            (
+                                InstalledWorkLinePlugin(
+                                    definition=PluginDefinition(
+                                        plugin_key="postgresql_test",
+                                        plugin_version="1.0",
+                                        display_name="PostgreSQL test",
+                                        supported_line_types=(LineType.MANUAL,),
+                                    ),
+                                    runtime_binding=PluginRuntimeBinding(
+                                        plugin_key="postgresql_test",
+                                        plugin_version="1.0",
+                                        handlers=(),
+                                        fact_factory=object(),  # type: ignore[arg-type]
+                                    ),
+                                    start_plan_builder=object(),
+                                    business_blocker=blocker,
+                                )
+                            ).definition,
+                        ),
+                        business_blockers={"postgresql_test": blocker},
                     )
                     async with sessions() as db:
                         try:
@@ -533,7 +545,7 @@ def test_picking_binding_commit_is_visible_to_waiting_workline_deactivate() -> N
                         deactivate_connected.set()
                         try:
                             with pytest.raises(BusinessException) as rejected:
-                                await WorkLineConfigurationService(plugins=(_plugin(),)).deactivate(
+                                await WorkLineConfigurationService(definitions=((_plugin()).definition,)).deactivate(
                                     db, workline_id=workline_id, version=workline_version
                                 )
                             return rejected.value

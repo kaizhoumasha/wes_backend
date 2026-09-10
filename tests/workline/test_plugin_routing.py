@@ -5,6 +5,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from wes_plugin_sdk import PluginDefinition
 
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
@@ -48,7 +49,9 @@ class _OutcomePublisher:
 
 def _plugin(*, version: str, planner: object | None = None, publisher: object | None = None) -> InstalledWorkLinePlugin:
     return InstalledWorkLinePlugin(
-        display_name="Example",
+        definition=PluginDefinition(
+            plugin_key="example", plugin_version=version, display_name="Example", supported_line_types=(LineType.AUTO,)
+        ),
         runtime_binding=PluginRuntimeBinding(
             plugin_key="example",
             plugin_version=version,
@@ -56,7 +59,6 @@ def _plugin(*, version: str, planner: object | None = None, publisher: object | 
             fact_factory=object(),  # type: ignore[arg-type]
         ),
         start_plan_builder=object(),
-        supported_line_types=(LineType.AUTO,),
         wms_confirmation_follow_up_planner=planner,
         transport_outcome_publisher=publisher,
     )

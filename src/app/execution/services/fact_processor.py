@@ -158,6 +158,9 @@ class FactProcessor:
         for evidence_id in evidence_ids:
             try:
                 prepared = await self._prepare_fact(evidence_id, token)
+                if not prepared:
+                    processed += 1
+                    continue
                 _ = self._decision_groups(prepared)
                 if await self._apply_locked(evidence_id, token):
                     self._enqueue_wms_confirmations()
@@ -189,6 +192,8 @@ class FactProcessor:
         async with self._sessions.begin() as db:
             evidence = await self._claimed(db, evidence_id, token, now)
             prepared = await self._prepare_facts_in_session(db, evidence, now)
+            if not prepared:
+                return False
             current_groups = self._decision_groups(prepared)
             defer = self._single_defer(current_groups)
             if defer is not None:
@@ -356,6 +361,18 @@ class FactProcessor:
     ) -> tuple[_PreparedFact, ...]:
         await self._restore_workline_from_execution(db, evidence)
         workline = await self._load_workline(db, evidence)
+        if (
+            evidence.kind == InboundEvidenceKind.DEVICE_EVENT
+            and evidence.material_execution_id is None
+            and not self._plugins.has_handlers(cast("str", workline.plugin_key), cast("str", workline.plugin_version))
+        ):
+            # 已声明但无业务消费者的事件只留证，不制造执行或成功 Decision；后续接入也不自动重放。
+            evidence.apply_status = InboundEvidenceApplyStatus.IGNORED
+            evidence.decision_claim_token = None
+            evidence.decision_claim_expires_at = None
+            evidence.decision_next_attempt_at = None
+            await self._evidences.flush(db)
+            return ()
         execution = await self._load_or_correlate_execution(db, evidence, workline, now)
         causal_evidence = None
         if (

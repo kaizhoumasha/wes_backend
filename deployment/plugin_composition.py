@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from src.app.device.services import device_service
+from deployment.plugin_definitions import load_plugin_definitions
+from src.app.device.services import device_command_admission, device_service
 from src.app.execution.composition import ExecutionRuntime, build_execution_runtime
 from src.app.execution.plugin_binding import PluginRuntimeBinding, StaticPluginBinding
 from src.app.transport.debug_run_service import TransportDebugReturnBatchOwner
@@ -18,7 +19,6 @@ from src.app.wms_integration.outbound_picking.services.picking_task_confirmation
 )
 from src.app.wms_integration.outbound_picking.services.return_batch_owner import ReturnBatchOwnerService
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType
 from src.app.workline.plugin_routing import InstalledPluginTransportOutcomePublisher, InstalledPluginWmsFollowUpPlanner
 from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
 from src.app.workline.services.workline_start_service import WorkLineStartService
@@ -54,11 +54,8 @@ def build_deployment_runtime(
 ) -> DeploymentRuntime:
     """Web/Celery 共用的部署期显式插件装配。"""
 
-    if len(set(enabled_plugin_keys)) != len(enabled_plugin_keys):
-        raise ValueError("duplicate enabled plugin keys")
-    unknown = set(enabled_plugin_keys) - {"rough_sorter"}
-    if unknown:
-        raise ValueError(f"unknown enabled plugins: {sorted(unknown)}")
+    definitions = load_plugin_definitions(enabled_plugin_keys)
+    by_key = {definition.plugin_key: definition for definition in definitions}
 
     plugins: tuple[InstalledWorkLinePlugin, ...] = ()
     if "rough_sorter" in enabled_plugin_keys:
@@ -78,7 +75,7 @@ def build_deployment_runtime(
         rough_sorter_transport_outcome_publisher = RoughSorterTransportOutcomePublisher()
         plugins = (
             InstalledWorkLinePlugin(
-                display_name="粗分业务",
+                definition=by_key["rough_sorter"],
                 runtime_binding=PluginRuntimeBinding(
                     plugin_key=PLUGIN_KEY,
                     plugin_version=PLUGIN_VERSION,
@@ -87,15 +84,17 @@ def build_deployment_runtime(
                     initial_execution_correlator=RoughSorterInitialExecutionCorrelator(),
                 ),
                 start_plan_builder=rough_sorter_start_plan_builder,
-                supported_line_types=(LineType.AUTO, LineType.MANUAL, LineType.HYBRID),
                 business_blocker=RoughSorterBusinessBlocker(),
-                device_roles=rough_sorter_start_plan_builder.device_roles,
-                position_slots=rough_sorter_start_plan_builder.position_slots,
                 wms_confirmation_follow_up_planner=RoughSorterWmsFollowUpPlanner(),
                 transport_outcome_publisher=rough_sorter_transport_outcome_publisher,
             ),
         )
-    plugin_binding = StaticPluginBinding(tuple(plugin.runtime_binding for plugin in plugins))
+    if "manual-picking" in enabled_plugin_keys:
+        plugins += (InstalledWorkLinePlugin(definition=by_key["manual-picking"]),)
+    plugin_binding = StaticPluginBinding(
+        tuple(plugin.runtime_binding for plugin in plugins if plugin.runtime_binding is not None),
+        definitions=definitions,
+    )
     execution = build_execution_runtime(
         session_factory=session_factory,
         plugin_binding=plugin_binding,
@@ -124,9 +123,14 @@ def build_deployment_runtime(
     return DeploymentRuntime(
         execution=execution,
         plugins=plugins,
-        workline_start_service=WorkLineStartService(plugins=plugins),
+        workline_start_service=WorkLineStartService(
+            plugins=plugins, device_adapter_provider=device_adapter_provider, device_admission=device_command_admission
+        ),
         workline_configuration_service=WorkLineConfigurationService(
-            plugins=plugins,
+            definitions=definitions,
+            business_blockers={
+                plugin.plugin_key: plugin.business_blocker for plugin in plugins if plugin.business_blocker is not None
+            },
             device_cache_invalidator=device_service,
         ),
         transport_outcome_publisher=InstalledPluginTransportOutcomePublisher(session_factory, plugins),

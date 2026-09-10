@@ -242,7 +242,7 @@ async def test_prepare_filters_queue_and_concurrent_callers_claim_at_most_one_ta
         line = await db.get(WorkLine, ids["workline"])
         assert line is not None
         with pytest.raises(BusinessException, match="未完成运行负载"):
-            await WorkLineConfigurationService(plugins=()).deactivate(db, workline_id=line.id, version=line.version)
+            await WorkLineConfigurationService(definitions=()).deactivate(db, workline_id=line.id, version=line.version)
         await db.rollback()
         persisted_line = await db.get(WorkLine, ids["workline"])
         assert persisted_line is not None and persisted_line.is_active

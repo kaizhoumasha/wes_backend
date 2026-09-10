@@ -12,6 +12,7 @@
 | Transport 结果等待窗口 | [Settings](../../src/core/conf.py) 的 `TRANSPORT_RESULT_TIMEOUT_SECONDS` | 默认值与合法范围以入口为准；重启 API/worker 后影响首次接纳时新冻结的期限，已保存 deadline 不变；现场路线适配单独验收 |
 | WMS 诊断保留时间、条数、单条字节和单次预算 | [DiagnosticsConfig](../../src/app/wms_diagnostics/config.py)；环境变量前缀 `WMS_DIAGNOSTICS_`，字段为 `RETENTION_HOURS`、`MAX_RECORDS`、`MAX_RECORD_BYTES`、`BUDGET_MS` | 默认值和范围只由该入口定义。环境变量优先于运行时 `.env`，修改后重启 API/worker；记录只用于联调观察，不是可靠业务证据 |
 | 启用的已安装插件 | [Settings](../../src/core/conf.py) 的 `ENABLED_WORKLINE_PLUGINS`；[部署关联](../../deployment/plugin_composition.py) | 由部署显式关联并在启动时生效；不能通过配置自动安装插件或绕过工作线切换检查 |
+| 基础 START 的设备状态时效、命令超时 | [Settings](../../src/core/conf.py) 的 `WORKLINE_DEVICE_STATUS_MAX_AGE_MS`、`WORKLINE_DEVICE_COMMAND_TIMEOUT_MS` | 重启使用该配置的 API/worker 后生效；下次无业务启动计划的 START 冻结到设备合同，既有合同不变；默认值与合法范围以入口为准 |
 | 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；运行期间禁止修改；[START Service](../../src/app/workline/services/workline_start_service.py) 校验并保存 WorkLine 当前精确插件版本及必要执行合同 |
 | WmsConfirmation 周期派发调度 | [Celery 配置](../../src/celery_app/config.py) 的 `beat_schedule` 对应任务条目 | 当前是代码配置，修改调度后重启 Beat；任务参数仍须满足 worker 和 Service 的约束，不可仅放大调度参数绕过批量上限 |
 
@@ -29,7 +30,7 @@
 | Decision/Fact 路径、WMS Event 正文上限、货架面字段约束 | [公共 wire 合同](../../src/app/wms_adapter/wire_common.py) | [自动出库交互合同](../contracts/wms-outbound-picking-task-integration-requirements.md)；Transport 提交路径是上一节明确允许的部署路由配置 |
 | operation 名称、状态、错误码及专属 DTO | [WMS Adapter 各领域目录](../../src/app/wms_adapter/) | [当前 Operation 清单](../architecture/northbound-wms-operation-inventory.csv) 指向对应合同 |
 | 共享 WMS Client 当前单次 HTTP 超时 | [Transport Composition](../../src/app/transport/composition.py) 的 `build_transport_runtime` | [Transport 合同](../contracts/transport-fulfillment-contract.md) 的提交超时约束；当前未提供环境变量入口 |
-| prepare 接收窗口 | [执行能力配置](../../src/app/execution/config.py) 的 `WMS_CONFIRMATION_DISPATCH_WINDOW` | [prepare 设计](../superpowers/specs/2026-09-03-outbound-picking-task-prepare-design.md)；窗口不包含 WMS 后台规划时间 |
+| prepare 接收窗口 | [执行能力配置](../../src/app/execution/config.py) 的 `WMS_CONFIRMATION_DISPATCH_WINDOW` | [WMS Operation 与 prepare 所有权设计](../superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md)；窗口不包含 WMS 后台规划时间 |
 
 这些值不能仅为调整方便而配置化。协议调整需同步代码合同、相关消费者和合同测试；已经冻结的可靠义务按原记录继续处理。
 

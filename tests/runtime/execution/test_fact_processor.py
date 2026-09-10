@@ -1022,3 +1022,40 @@ async def test_failure_recording_error_does_not_abort_remaining_claimed_evidence
     assert await processor.process_batch() == 0
     assert processor._prepare_fact.await_count == 2
     assert processor._record_failure.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version,existing_execution", [("1.0.0", False), ("missing", False), ("1.0.0", True)])
+async def test_declared_plugin_without_handlers_only_observes_unowned_device_events(version, existing_execution):
+    from wes_plugin_sdk import PluginDefinition
+
+    evidence = _evidence()
+    processor, service, _applier = _processor(evidence)
+    processor._plugins = StaticPluginBinding(
+        (),
+        definitions=(
+            PluginDefinition(
+                plugin_key="rough_sorter",
+                plugin_version=version,
+                display_name="Example",
+                supported_line_types=("AUTO",),
+            ),
+        ),
+    )
+    if existing_execution:
+        evidence.material_execution_id = 999
+    processed = await processor.process_batch()
+    if version == "1.0.0" and not existing_execution:
+        assert processed == 1
+        assert evidence.apply_status == InboundEvidenceApplyStatus.IGNORED
+        assert evidence.material_execution_id is None
+        assert evidence.decision_digest is None
+        assert evidence.decision_claim_token is None
+        assert evidence.decision_next_attempt_at is None
+        assert evidence.decision_attempt_count == 0
+        assert service._executions.execution is None
+    else:
+        assert processed == 0
+        assert evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
+        assert evidence.decision_attempt_count == 1
+    assert evidence.published_at is None

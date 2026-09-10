@@ -15,7 +15,7 @@ class WorkLineStartResponse(BaseModel):
     version: int
     plugin_key: str
     plugin_version: str
-    flow_mode: str
+    flow_mode: str | None
     is_active: bool
 
 

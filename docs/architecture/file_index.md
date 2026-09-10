@@ -31,7 +31,7 @@
 | 路径 | 职责 |
 | --- | --- |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
-| `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC |
+| `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |
 | `docs/superpowers/plans/2026-08-03-wes-architecture-convergence-master-plan.md` | 十四阶段架构收敛总控计划 |
 | `docs/superpowers/plans/2026-08-20-phase8-dual-remote-governance.md` | GitHub/GitLab develop 汇合、Phase 8 状态真源与不可变 RC 证据治理 |
@@ -43,8 +43,6 @@
 | `docs/superpowers/specs/2026-08-25-frontend-backend-release-decoupling-design.md` | 前后端独立 producer、方向性兼容、release checker、FAST/FULL 与独立 orchestrator 的当前设计真源 |
 | `docs/superpowers/specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 |
 | `docs/superpowers/plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | Phase 12 用户亲自完成 `manual_bin_processing` 合同、代码、migration、Composition 与验收的教学计划 |
-| `docs/superpowers/specs/2026-09-03-outbound-picking-task-prepare-design.md` | `outbound.picking_task.prepare@v1` 单 WorkLine 原子领取、三 owner WmsConfirmation、可靠派发暗构建与生产激活门禁 |
-| `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置及专属配置清理；工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
 | `docs/superpowers/specs/2026-09-04-outbound-picking-task-plan-delta-design.md` | `outbound.picking_task.plan_delta@v1` 连续版本、计划成员持久化、Evidence 追溯与暗构建生产激活门禁 |
 | `docs/superpowers/specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | bin_code 统一、NG 分支独立、BinExecution/LineRunEpoch 退役、WorkLine 当前插件与站点必要关联的实施 SPEC；包含合同替换范围及物理事实门禁 |
 | `docs/superpowers/plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施计划 |
@@ -107,7 +105,7 @@ API → Service → Repository → Database
 | `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层；新增 operation 按 `<domain_key>/` 组织严格 DTO/parser、OpenAPI 和 Adapter/Event Handler，统一 Event route 静态分发并拒绝未知 operation |
 | `src/app/wms_diagnostics/` | WES 观察到的双向 WIRE、实际校验与字段对比；有界脱敏 Redis 近期记录及只读 API/SSE，另提供 WMS 可靠义务与入站 Evidence 的持久化只读查询；不拥有业务状态或重试 |
 | `src/app/wms_integration/` | 使用与 Adapter 相同的 `<domain_key>/` 承载 operation 所需的本地模型、Repository、事务 Service 与组合根；旧 Provider/Profile/Manifest/query/effect/status 通用运行时已退役 |
-| `src/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata 与合同内生校验；不得包含宿主实现、WMS operation DTO 或具体工作线业务 |
+| `src/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata、typed WMS intent/outcome 与纯 facade 合同；不含宿主 I/O、OpenAPI/wire DTO 或具体工作线业务 |
 | `workline_plugins/` | 具体工作线业务纵向切片；纯 Decision 层只依赖 SDK，应用层可调用 `src` 基础端口，反向依赖禁止 |
 
 新 Service 必须从所在 `services/__init__.py` 导出。时间处理、Mixin 继承和零代码 CRUD 约束以

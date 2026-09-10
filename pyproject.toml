@@ -41,10 +41,12 @@ dependencies = [
 wes-plugin-sdk = { path = "src/wes_plugin_sdk" }
 wes-rough-sorter-plugin = { path = "workline_plugins/rough_sorter" }
 wes-manual-bin-processing-plugin = { path = "workline_plugins/manual_bin_processing" }
+wes-manual-picking-plugin = { path = "workline_plugins/manual-picking" }
 
 [project.optional-dependencies]
 rough-sorter = ["wes-rough-sorter-plugin"]
 manual-bin-processing = ["wes-manual-bin-processing-plugin"]
+manual-picking = ["wes-manual-picking-plugin"]
 dev = [
     "aiosqlite>=0.20.0",
     "pytest>=9.0.3",
@@ -474,5 +476,6 @@ extraPaths = [
     "src",
     "src/wes_plugin_sdk/src",
     "workline_plugins/manual_bin_processing/src",
+    "workline_plugins/manual-picking/src",
     "workline_plugins/rough_sorter/src",
 ]

@@ -17,6 +17,7 @@ from wes_plugin_sdk import (
     CreateTransportTask,
     DevicePosition,
     EvidenceReadyFact,
+    PluginDefinition,
     TransportRackPosition,
     TransportRcsTemplateId,
     TransportResultReadyFact,
@@ -1155,12 +1156,13 @@ async def test_postgresql_overlapping_outcome_publishers_hold_switch_gate(integr
             assert current.plugin_version == "1.0.0"
 
     plugin = InstalledWorkLinePlugin(
-        display_name="Test",
+        definition=PluginDefinition(
+            plugin_key="test_plugin", plugin_version="1.0.0", display_name="Test", supported_line_types=(LineType.AUTO,)
+        ),
         runtime_binding=PluginRuntimeBinding(
             plugin_key="test_plugin", plugin_version="1.0.0", handlers=(), fact_factory=object()
         ),
         start_plan_builder=object(),
-        supported_line_types=(LineType.AUTO,),
         transport_outcome_publisher=Publisher(),
     )
     router = InstalledPluginTransportOutcomePublisher(integration_session_factory, (plugin,))
@@ -1210,3 +1212,50 @@ async def test_postgresql_overlapping_outcome_publishers_hold_switch_gate(integr
             await db.execute(delete(TransportTask).where(TransportTask.authority_workline_id == line_id))
             await db.execute(delete(InboundEvidence).where(InboundEvidence.workline_id == line_id))
             await db.execute(delete(WorkLine).where(WorkLine.id == line_id))
+
+
+@pytest.mark.asyncio
+async def test_observed_device_event_does_not_block_deactivate_or_get_claimed_again(
+    integration_session_factory,
+) -> None:
+    from src.app.workline.services.workline_configuration_service import WorkLineConfigurationService
+
+    identity = f"OBSERVE-{uuid4().hex}"
+    now = datetime(2026, 9, 10, 12)
+    definition = PluginDefinition(
+        plugin_key="test_plugin", plugin_version="1.0.0", display_name="Observation", supported_line_types=("AUTO",)
+    )
+    async with integration_session_factory.begin() as db:
+        workline = await _claim_workline(db, identity, now)
+        workline.flow_mode = None
+        evidence = _claim_evidence(identity, received_at=now, workline_id=workline.id)
+        db.add(evidence)
+        await db.flush()
+        evidence_id = evidence.id
+    try:
+        processor = FactProcessor(
+            session_factory=integration_session_factory,
+            plugin_binding=StaticPluginBinding((), definitions=(definition,)),
+            decision_applier=object(),
+            clock=lambda: now,
+        )
+        assert await processor.process_batch() == 1
+        async with integration_session_factory() as db:
+            observed = await db.get(InboundEvidence, evidence_id)
+            assert observed.apply_status == InboundEvidenceApplyStatus.IGNORED
+            assert observed.material_execution_id is None and observed.decision_digest is None
+            assert observed.published_at is None and observed.decision_next_attempt_at is None
+            assert (
+                not (await db.execute(select(MaterialExecution).where(MaterialExecution.workline_id == workline.id)))
+                .scalars()
+                .all()
+            )
+        # 真实 claim 查询排除观察证据，后续处理批次不能再次领取。
+        assert await processor.process_batch() == 0
+        async with integration_session_factory() as db:
+            stopped = await WorkLineConfigurationService(definitions=(definition,)).deactivate(
+                db, workline_id=workline.id, version=workline.version
+            )
+            assert not stopped.is_active
+    finally:
+        await _cleanup_claim_workline(integration_session_factory, source_identity_prefix=identity, workline=workline)

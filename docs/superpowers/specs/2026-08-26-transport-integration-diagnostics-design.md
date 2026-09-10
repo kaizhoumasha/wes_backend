@@ -281,7 +281,7 @@ data: {
 对话框不调用 Preflight，不读取或编辑 Provider URL，不提供 force、cancel、fake callback、retry/resend 或绕过资源约束的按钮。
 
 `TRANSPORT_DEBUG` 的已应用终态由 Transport 模块维护独立、可丢弃的联调当前位置投影；后续 `RACK_ROTATE` 和 `BIN_EXCHANGE`
-只使用该投影校验位置与朝向，不读取或污染绑定活动 `LineRunEpoch` 的业务 `PositionProjection`。定向清理当前来源任务时同步删除该
+只使用该投影校验位置与朝向，不读取或污染业务 WorkLine 的 `PositionProjection`。定向清理当前来源任务时同步删除该
 联调投影，禁止回退到更早的历史任务位置。
 
 ### 6.3 SSE 客户端复用

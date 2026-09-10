@@ -185,7 +185,7 @@ async def test_workline_obligation_requires_active_owner(confirmation_database, 
         async with sessions.begin() as db:
             line = await db.get(WorkLine, workline_id)
             with pytest.raises(BusinessException, match="未完成运行负载"):
-                await WorkLineConfigurationService(plugins=()).deactivate(
+                await WorkLineConfigurationService(definitions=()).deactivate(
                     db, workline_id=workline_id, version=line.version
                 )
             summary = await WorkLineRepository().get_unfinished_workload_summary(db, workline_id)
@@ -238,7 +238,7 @@ async def test_workline_obligation_requires_active_owner(confirmation_database, 
         if not closed_workline:
             async with sessions.begin() as db:
                 line = await db.get(WorkLine, workline_id)
-                closed = await WorkLineConfigurationService(plugins=()).deactivate(
+                closed = await WorkLineConfigurationService(definitions=()).deactivate(
                     db, workline_id=workline_id, version=line.version
                 )
                 assert closed.is_active is False

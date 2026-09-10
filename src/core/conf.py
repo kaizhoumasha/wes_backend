@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     TRANSPORT_SUBMIT_PATH: str = "/api/v1/wes/transport-requests"
     TRANSPORT_RESULT_TIMEOUT_SECONDS: int = Field(default=1200, ge=60, le=86400)
 
+    # 无业务启动计划时的基础设备准入；在 START 时冻结到工作线设备合同。
+    WORKLINE_DEVICE_STATUS_MAX_AGE_MS: int = Field(default=10_000, gt=0)
+    WORKLINE_DEVICE_COMMAND_TIMEOUT_MS: int = Field(default=30_000, gt=0)
     # EVENT_DEBUG 新建命令冻结此地址；Docker 开发编排显式指向 ECS Mock。
     DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL: str = "http://10.24.209.26:8080"
 

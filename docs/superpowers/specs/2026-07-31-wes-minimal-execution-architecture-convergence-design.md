@@ -2,7 +2,7 @@
 title: WES 最小执行架构收敛设计
 status: Approved
 created_at: 2026-07-31
-updated_at: 2026-08-20
+updated_at: 2026-09-09
 scope: 单工厂 WES 产品的目标架构、业务边界、工作线扩展方式与现有系统收敛路径
 implementation_baseline: develop@bda2079d523984f25265c113b2fb213429da40f0; Phase 8 backend RC closed at f51677b62f5da906d4b60fa5a528d04692aff7a2 with immutable image 88-f51677b; current status in docs/integration/rough-sorter-joint-acceptance.md
 delivery_gate: backend and frontend close and publish their own RC independently; onsite deployment and validation are separate project activities
@@ -172,8 +172,8 @@ WES 只可保存完成工作线执行所需的 WMS 结果引用和作业期投�
 WES 是以下本地执行事实的权威：
 
 - WorkLine、设备角色绑定、位置节点、队列容量和活动流程模式。
-- `LineRunEpoch`：一条 WorkLine 在固定插件、配置、流程模式、物理拓扑和设备合同下的连续可信运行代际；它不是
-  PickingTask，同一 Epoch 可以依次执行多张任务。
+- `WorkLine`：保存当前插件、运行配置和实际资源绑定；运行期间不可修改，完全收敛清线后才允许切换。
+  同一工作线可以依次执行多张 PickingTask，不另建运行代际。
 - 设备是否可以接收下一条命令的忙、闲和故障投影。
 - 物料、料箱在当前工作线位置和队列中的瞬时执行投影。
 - 每一条设备命令、`TransportTask`、WMS 确认义务和对应结果证据。
@@ -215,21 +215,20 @@ WES 不关心该请求由 WMS、RCS、MCS 或其他系统最终承接。它们�
 ECS 事件采用持久化后 ACK（ACK-after-persist）：
 
 1. 校验最小传输合同、部署级唯一 `source_event_id`、`contract_key`/`contract_version` 和规范化载荷摘要。
-2. 首次观察时，在现有入站幂等记录中原子保存事件身份、摘要和可空的 `line_run_epoch_id`；没有活动 Epoch 时保存 `null`。
-3. 绑定了 Epoch 时，确认合同身份与其冻结值一致；随后持久化原始 Payload、设备身份、事件类型、接收时间和 Epoch 关联。
-4. 同步返回 ACK。
-5. 只有证据绑定的 Epoch 仍然活动时才异步交给对应 WorkLine 插件；`line_run_epoch_id=null` 的事件只作为诊断证据。
+2. 首次观察时，在现有入站幂等记录中保存事件身份与摘要，按设备有效绑定校验合同并关联 WorkLine。
+3. 持久化原始 Payload、设备身份、事件类型、接收时间及已确定的关联；普通事件无有效工作线关联时留存拒绝证据，不返回成功 ACK。
+4. 合法接纳的证据事务提交后同步返回 ACK。
+5. 后续处理校验 WorkLine 当前准入、设备绑定及具体业务关联后，才交给显式装配的插件；不能仅凭设备编码路由到任意当前插件。
 
 重复事件相同 Payload 返回首次接纳结果；同一稳定身份、不同 Payload 必须拒绝并保存冲突证据。`source_event_id` 在整个 WES
-部署范围内跨供应商、设备、结果和事件回调永久不复用。事件首次观察时形成的 Epoch 绑定同样不可变；旧 Epoch 的迟到或重传
-事件只保留为诊断证据，不得重新绑定当前 Epoch。
+部署范围内跨供应商、设备、结果和事件回调永久不复用。迟到或重复事件不得改写已有证据关联；不满足当前业务准入时记录错误并拒绝推进。
 
 ### 5.2 ECS 命令
 
 设备命令是厂商定义的长命令：
 
 1. 每个独立命令资源 `device_code` 最多存在一个已接纳且未终态的命令；WES 只在可信状态为 `AUTO + IDLE`、无活动命令且状态返回的
-   合同身份与活动 `LineRunEpoch` 冻结值一致时发送。
+   合同身份与当前已校验的 WorkLine 设备绑定一致时发送；既有命令始终使用自身冻结合同。
 2. WES 在 `DeviceCommand` 中冻结 `contract_key`/`contract_version` 和规范化载荷摘要，持久化后调用 ECS。
 3. ECS 原子检查实际加载合同、设备状态和活动命令后返回 ACK；竞争失败返回 `429`，ACK 只表示接纳，不表示物理完成。
 4. 最终 CALLBACK 必须携带原命令合同身份；每个 `command_code` 只接受一个终态结果，只有匹配结果才能推进物理位置和对象状态。
@@ -247,8 +246,8 @@ WMS HTTP 访问由 Phase 3 `WmsClient` 薄封装提供：
 - 工作线插件不直接访问 HTTP；它只消费对应业务模块提供的类型化业务结果。
 - WMS 结果是业务事实，不伪装成 ECS ACK/CALLBACK。
 
-WMS 普通业务事件通过 `/api/v1/wms/events` 接收，必须先持久化为 `InboundEvidence` 再 ACK，并且只触发对应
-工作线对象判定。`WMS_EFFECT_STATUS_HINT` 的当前 successor 为 `NONE`；Phase 5 只删除旧 route、payload、OpenAPI 和测试，
+WMS 普通业务事件通过 `/api/v1/wms/events` 接收，必须按 operation 声明的接收模式提交 `InboundEvidence` 及必要业务事实后再 ACK，
+由对应业务 owner 消费；全局任务输入不强制进入工作线插件队列，参见 §7.9。`WMS_EFFECT_STATUS_HINT` 的当前 successor 为 `NONE`；Phase 5 只删除旧 route、payload、OpenAPI 和测试，
 不建立新 hint 路径。普通事件不得直接充当外部任务终态。
 
 每项具体 WMS 业务 API 在对应业务开发中采用一个显式纵切片：业务 owner 定义具名方法、固定 path、request/response DTO、
@@ -289,10 +288,8 @@ Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界�
 
 | 对象 | 职责 |
 | --- | --- |
-| `WorkLine` | 工作线静态身份、设备和位置拓扑 |
-| `LineRunEpoch` | 一次活动流程模式和固定版本边界 |
+| `WorkLine` | 工作线身份、当前插件与运行配置、设备和位置资源绑定 |
 | `MaterialExecution` | 单个完整料盘或单个可执行物料单位的推进证据 |
-| `BinExecution` | 单个已可靠到达工作线的料箱，从入线、滚筒线和工作位推进，直到正常回库或 NGZone 人工接管的执行证据 |
 | `PositionProjection` | 位置和队列的当前占用 |
 | `DeviceRuntimeProjection` | 单设备忙、闲、故障和当前命令 |
 | `DeviceCommand` | ECS 命令、ACK、CALLBACK 和幂等事实 |
@@ -300,20 +297,13 @@ Phase 3 Client 行为无状态，只复用 Phase 2 Transport 执行一次有界�
 | `WmsConfirmation` | 待提交或已完成的 WMS 业务确认 |
 | `InboundEvidence` | ECS 事件、WMS 输入和回调的持久化原始证据 |
 
-不再使用一个通用 Session 同时承载工作线、物料、料箱、设备和恢复状态。`LineRunEpoch` 管版本边界，
-`MaterialExecution` 和 `BinExecution` 管对象推进，具体命令和外部义务各自拥有生命周期。
+WorkLine 管理当前插件与配置；`MaterialExecution` 保存物料推进，具体命令和外部义务各自拥有生命周期。
+料箱使用实际 `bin_code`，不建立贯穿供箱、线内作业、退箱和 NG 的全程执行实体。插件只保存正常业务所需的工位等待、
+任务与料箱关联、作业进度和 FIFO；位置事实由 `PositionProjection` 及匹配的设备、搬运证据承接。
 
-`BinExecution` 只用于已经可靠到达滚筒线交接位的 Bin，不用于入线前搬运，也不用于单层货架与五层货架之间的满箱交换。WMS 返回并
-冻结精确供给 Bin 后，WES 先创建 TransportTask；提交、接纳、失败、位置未知和资源围栏均由该搬运对象负责。当前 CTU/RCS 没有
-逐容器中间位置事件，只有 `transport.task.resulted@v1` 最终结果确认 Bin成功到达 `HANDOFF_POSITION`，且现场扫码身份与冻结
-`bin_id` 一致后，WES才创建唯一活动 `BinExecution`。
-
-缓存位、SCAN点、正常/NG路线和活动 TransportTask由位置投影、证据及关联对象表达，不为 `BinExecution`复制搬运状态。入线后物理
-执行只能以正常回库或整线 `NGZone`人工接管闭合。
-
-正常 Bin 在当前工作线五层货架精确位置可靠到位且 WMS 已记录主账后关闭；NG Bin 到达整线 `NGZone` 后保持活动，直到操作员
-扫码实际取走才关闭。同一 `bin_id` 同时最多一个活动 `BinExecution`；旧执行关闭后其证据不可变，WES 的旧位置投影不再代表
-全局当前位置，下次供给必须使用 WMS 最新主账创建新的 `bin_execution_id`。
+WMS 冻结精确供给成员后，WES 创建 TransportTask；提交、接纳、失败、位置未知和资源围栏均由该搬运对象负责。
+后续作业必须校验可靠搬运结果、实际扫码与当前任务/工位关联，不能根据条码或预期成员猜测到位。
+NG 结束正常业务分支，不附加人工取走作为业务完成门禁；未决命令和物理占用仍须以匹配的权威结果独立闭合。
 
 ### 6.2 最小执行路径
 
@@ -363,9 +353,20 @@ DeviceCommand  TransportTask  WmsConfirmation
 `WmsConfirmation` 提交仍取得当前 HTTP 的同步业务结果；业务合同没有明确批准异步终局时，不得把同步确认改成接纳 ACK 加
 后续回调。
 
-插件不能直接写数据库、发 HTTP、调用 Repository 或自行启动后台任务。
+纯 Decision 层不能直接写数据库、发 HTTP、调用 Repository 或自行启动后台任务。确需业务持久化的插件 Application
+层使用宿主提供的基础端口和受控事务；两层边界见 §7.7，不复制可靠执行机制。
+
+<a id="workline-plugin-top-level"></a>
 
 ## 7. WorkLine 与插件扩展
+
+本章是 WorkLine 执行插件的顶层设计入口，汇总截至 2026-09-09 已确认的能力边界。§7.1–7.5 定义扩展方式，
+§7.6 定义资源装配，§7.7–7.12 定义系统关系、代码所有权、交互、生命周期和验收责任，§7.13 定义声明先行与渐进业务接入。
+本章记录目标合同，不声明具体插件已实现、已部署或通过现场验收。
+
+阅读时先确定三个问题：业务决定由谁作出、物理事实由谁提供、可靠执行由谁承担。插件拥有本地业务执行编排；
+WMS 拥有业务权威；ECS/RCS 提供各自执行范围的物理事实；宿主负责把插件意图转为有证据、可追踪的可靠义务。
+接口字段、路径及错误码仍以各领域合同为准，本章不另建 wire 合同或通用工作流平台。
 
 ### 7.1 代码插件
 
@@ -378,9 +379,9 @@ DeviceCommand  TransportTask  WmsConfirmation
 - 校验结果的关联、版本、时效和物理可执行性，不改变其业务语义。
 - 将 WMS 业务结果映射为等待、发送、暂停、隔离或对账等封闭执行 Decision。
 
-插件不负责：
+插件不负责的公共机制与外部权威：
 
-- 事务、Repository、幂等、重试和 Outbox。
+- 公共事务框架、通用 Repository、幂等、重试和 Outbox；必要的插件业务持久化按 §7.7 分层实现。
 - 设备安全互锁。
 - WMS 库存和单据业务。
 - 来源、目标、优先级、业务路线、业务异常分类、替代来源、取消、恢复或业务终态裁决。
@@ -510,8 +511,208 @@ WES 解析到 WMS/RCS/ECS 合同可使用的位置标识；设备内部坐标、
 相同 ECS 地址下不同设备的合法绑定、位置解析和插件切换保留资源；具体业务编排测试由各插件拥有。
 UI 验证选择插件后按声明生成绑定界面、草稿缺项提示和保存失败保留输入。冻结与对账验证复用既有可靠执行测试。
 
-后端 MVP 已实现设备与工作位插槽声明、通用工作位模型、绑定校验及启动解析；前端契约和装配界面待后端合并后同步；
-不能把配置界面的完成视为人工插件业务实现完成。实施跟踪归总控计划的通用插件装配补充项。
+实施跟踪归总控计划的通用插件装配补充项，交付证据绑定相应代码和环境快照。
+配置界面的完成不表示具体插件业务实现完成；历史后端、前端通过记录不作为当前现场验收证据。
+
+### 7.7 插件与宿主的能力所有权
+
+| 参与方 | 拥有的职责 | 对插件的约束或提供的能力 |
+| --- | --- | --- |
+| 插件 | 本线业务步骤、事件解释、资源角色、必要业务关联、等待及物理队列顺序 | 消费已验证事实与 WMS 授权，返回封闭 Decision；不能改变业务授权或伪造物理结果 |
+| WorkLine | 工作线身份、当前插件、运行配置、工作位和设备归属及装配 | 把插件声明绑定到本线实际资源，启动与维护统一执行准入检查 |
+| Device | 物理设备身份、类型/能力、合同、Endpoint、状态访问 | 提供可绑定的独立设备资源，不保存插件业务角色 |
+| WES 宿主 | 证据接收、事务、幂等、可靠派发、重试、命令/搬运生命周期、位置投影与资源围栏 | 校验并可靠执行插件意图，不读取插件业务表补全意图或替插件选择业务步骤 |
+| WMS | 任务、库存、分配、业务来源/目标、优先级、路线及最终业务处置 | 返回封闭授权和业务结果；插件只在授权内判断本地可执行性 |
+| ECS / PLC | 设备长命令执行、内部步骤、坐标、安全互锁、防撞、急停、设备终态 | 通过统一接口提供事实和结果，供应商私有实现留在 ECS/网关边界 |
+| RCS / AGV / CTU | 运输执行、机器人路径和车辆控制 | 当前由 WMS 统一调度；WES 跟踪任务级运输事实，不直接下发车辆任务 |
+
+插件包分为两个职责层，只在真实需要时建立 Application 层：
+
+| 层 | 输入与输出 | 允许依赖及副作用边界 |
+| --- | --- | --- |
+| 纯 Decision | 输入不可变类型化 Fact、只读快照、typed WMS outcome；输出封闭 Decision / intent | 只依赖公开 SDK 和纯逻辑能力；不访问数据库、HTTP、Repository、Celery 或全局容器 |
+| 业务 Application | 构造业务 Fact，维护本插件必要状态，协调基础端口 | 可使用宿主注入的基础端口、Service、Repository 和模型；在明确的宿主事务中完成关联和持久化，不另建可靠派发/重试/锁框架 |
+
+宿主只依赖 SDK/基础端口的抽象，部署装配注入具体插件实现。事件应用和结果发布涉及同一事务时，插件 Application
+复用宿主传入的事务，提交业务状态与证据后由宿主唤醒后续处理；不能另开事务、直接 enqueue 或在提交前执行外部动作。
+具体开发方式见[插件开发指南](../../plugin_development_guide.md#3-目标文件结构)。
+
+料箱只使用实际 `bin_code`。插件可以保存当前工位等待、task 与 bin 的关联、作业进度和 FIFO；这些状态各自有明确的
+创建条件、消费人和关闭事实。不能为了共享便利重建全程 BinExecution、通用 Session、业务状态全集或历史条码永久索引。
+已有业务记录足够时直接复用；业务记录关闭不删除其尚未完成的 DeviceCommand、TransportTask 或 WMS 确认义务。
+
+### 7.8 设备、工作位与工作线实例
+
+插件定义可以被多条兼容 WorkLine 复用，各线独立绑定自己的资源和业务状态。同一 WorkLine 的当前插件选择、运行配置、
+实际资源及绑定共同决定可运行流程；安装插件、保存配置和启动工作线是三个不同动作。
+
+| 标识 | 表达的身份 | 不能代替 |
+| --- | --- | --- |
+| `plugin_key` / 插件版本 | 业务实现及其合同版本 | WorkLine、现场设备或运行代际 |
+| 插槽代码 | 插件内稳定的业务职责或位置需求 | 实际资源编码；不以列表顺序隐式绑定 |
+| `workline_code` | 实际工作线 | WMS 任务、料箱或 Endpoint |
+| 工作位编码及外部位置标识 | 实际位置及合同使用的位置引用 | `device_code`、货架编号、PLC 坐标 |
+| `device_code` | 可独立识别、判断忙闲及按合同交互的设备资源 | ECS 地址、PLC 数量或业务角色 |
+| `rack_id` / `bin_code` | 货架和实际料箱身份 | 工作位编码或一次命令身份 |
+| Endpoint | 通信服务地址 | 设备数量、插槽数量或工作线身份 |
+
+设备插槽与工作位插槽分别绑定；如设备和位置存在物理关联，由 WorkLine 基础资源记录并校验，不从编码相似性推导。
+四个扫码职责只是某类分拣插件的声明；其他插件可声明不同数量和类型。多个独立 `device_code` 可以使用同一 ECS
+Endpoint，也可以分布在不同 Endpoint。硬件能力中的 role 只用于能力描述，不能自动成为插件业务角色。
+
+默认每个插槽绑定一个实际资源；多个同类需求声明多个插槽。未参与当前插件的本线资源可以保留，设备重复绑定按既有
+去重规则拒绝；不为假设的共享场景预建多对多拓扑、可选插槽开关或动态 Schema。
+
+### 7.9 与 WMS、ECS、RCS 的交互
+
+```mermaid
+flowchart LR
+    P[工作线插件] -->|类型化意图与 Decision| H[WES 宿主可靠能力]
+    H -->|已验证 Fact 与 typed outcome| P
+    H <-->|业务 operation 与结果| W[WMS]
+    H <-->|DeviceCommand 与设备事件/终态| E[ECS / PLC]
+    H -->|TransportTask 搬运需求| W
+    W <-->|运输调度与结果| R[RCS / AGV / CTU]
+```
+
+**WMS 业务链路。** 插件决定何时触发获批业务 operation，通过单一 `wms_operations` facade 的固定 typed methods
+一次性提供完整业务数据，创建不可变 intent。宿主在同一事务冻结 operation identity、规范化 payload、owner 及可靠
+义务；Adapter 执行一次有界收发并翻译封闭响应，宿主先可靠保存响应，再构造 typed outcome 交给对应业务上下文的插件。
+插件不得传任意 operation 字符串、裸 `dict` 或直接使用 `WmsClient`；宿主不得查询业务表补齐请求。
+
+WMS→WES 通过唯一 Event route 按 operation 静态校验并保存 Evidence。每个 operation 明确自己的 ACK 模式：
+需要同时保存业务事实的，在同一事务提交后 ACK；异步应用的，Evidence 提交后 ACK，再由后续事务处理。
+全局任务输入可以由对应业务 owner 消费，并非所有 WMS Evidence 都进入 WorkLine 插件队列。共享入口不查询具体插件
+业务表，也不按当前插件或默认 owner 猜测路由。
+
+Operation 基础能力与插件消费者解耦，允许零、一或多个静态消费者。插件安装、卸载不动态注册或注销 operation。
+插件缺席时禁止新业务触发；既有可靠义务和迟到结果继续保留。处理需要的冻结插件版本不可用时进入既有对账，
+不得转交任意当前插件或默认消费者。
+
+**设备作业链路。** ECS 事件经统一入口、设备合同与资源绑定校验后成为 Evidence/Fact；插件解释该事件在本线的业务
+意义，返回逻辑动作意图。宿主解析插槽、检查设备与位置准入、冻结 DeviceCommand 并在提交后派发。
+ECS 同步 ACK 仅表示接纳；匹配原命令的最终回调由宿主校验并保存后，插件才能据其推进相应步骤。
+扫码器提供读码/到位事实，不能决定 task、库存或业务路线；插件不能把预期料箱码冒充实际扫码结果。
+
+**运输链路。** 插件使用 WMS 已批准的对象、来源、目标及成员提出搬运意图；宿主创建 TransportTask，经当前 WMS
+转发 Adapter 提交，由 WMS 调度 RCS/AGV/CTU。WES 不直接访问 RCS，也不选车辆、路径或拆解机器人内部步骤。
+普通业务事件不能终结 TransportTask，只有 Transport evidence 应用端口接受并持久化的匹配异步终态才能终结任务。
+DeviceCommand 与 TransportTask 各自维护生命周期，二者不能互相替代。
+
+公开幂等、字段及最终结果以[WMS 公共交互合同](../../contracts/wms-northbound-interaction-contract.md)、
+[设备命令合同](../../architecture/device-command-contract.md)及[Transport 合同](../../contracts/transport-fulfillment-contract.md)
+为准。WES 不定义供应商内部协议，供应商一致性验收在 ECS/网关边界完成。
+
+### 7.10 运行、切换与异常约束
+
+| 时机或状态 | 必须满足的规则 |
+| --- | --- |
+| 安装与显式装配 | 只从构建期明确安装集合选择兼容插件；无动态扫描、热发现、默认业务插件或 no-op consumer |
+| 配置草稿 | 可暂缺绑定；保存必须校验未知插槽、资源归属、类型及重复绑定，不能用草稿成功代表启动成功 |
+| START | 全部必需插槽齐全，资源及未完成义务满足适用准入；不以 handler 非空或整线业务全部实现为门禁，具体动作校验自己的真实依赖，见 §7.13 |
+| 运行期间 | 当前插件及运行配置不可修改；执行根据有效装配解析资源，命令和请求自行冻结身份、合同、目标、载荷及围栏 |
+| 停用或切换 | 停止新接纳，闭合既有业务及物理义务并确认清线，再修改配置、重新校验和启动；不创建 LineRunEpoch 或替代代际实体 |
+| 迟到或重复事实 | 保留首次身份、摘要及已确定关联；不满足当前业务准入时拒绝推进，不按最新绑定重投给其他插件 |
+| WMS 不可用 | 停止需要新 WMS 决定的动作，保留当前业务等待；技术重试由可靠对象按合同使用原身份和内容执行 |
+| 已接纳但结果未知 | 保留原执行身份、Evidence、物理占用和资源围栏，进入既有对账；禁止换身份重发、换址或推定完成 |
+| 业务 NG | 按获批业务结果或设备事实走插件独立分支，保存原因及证据；正常业务结束不等于分流动作或现场取走完成 |
+| 硬件故障与重启 | 故障按证据隔离实际范围；重启遵循 §9.3，不凭数据库状态重放物理动作或自动宣布恢复 |
+
+插件定义其物理队列的作用域、FIFO/LIFO 纪律、冻结顺序、阻塞状态与权威退出证据；宿主提供可靠执行保障。
+任务完成或取消不能删除未闭合队列成员；UNKNOWN、RECONCILING、急停、重试或人工处理不能自动成为越序理由。
+清线所需业务授权或设备事实不足时，保留阻塞并按现有路径处理，不新增跨插件接管或通用自动恢复机制。
+
+### 7.11 代码、配置与交付组织
+
+| 目录 | 唯一职责 | 依赖边界 |
+| --- | --- | --- |
+| `src/` | 宿主基础能力与已批准的共享领域合同 | 不导入具体插件；API → Service → Repository → Database |
+| `src/wes_plugin_sdk/` | 可独立安装的公开 SPI、不可变 Fact/Decision、typed WMS intent/outcome 与纯 facade 合同 | 不含数据库、HTTP、Celery、Repository、OpenAPI/wire DTO 或具体业务流程 |
+| `workline_plugins/<plugin_key>/` | 具体工作线业务、必要 Application、插件专属测试和 fixture | 纯 Decision 依赖 SDK；Application 使用宿主基础端口；禁止反向依赖 |
+| `deployment/` | 显式关联已安装插件及基础端口 | 不承载业务实现，不作为动态 registry 或被宿主内部导入 |
+
+这是两个实现根与一个关联目录，SDK 位于宿主实现根内部。独立插件包不意味着复制宿主 HTTP、Evidence、事务或派发框架。
+插件固定业务不变量由代码合同维护；实际资源由 §7.6 的 WorkLine/Device 唯一配置入口管理；确有可调参数时使用所属能力
+的配置入口并声明合法范围和生效时机。不因实现方便新增全仓常量中心、私有表单或第二套默认值。
+
+新增 WMS operation 按同一业务域分别进入 `wms_adapter/<domain_key>/` 和有持久化需求时的
+`wms_integration/<domain_key>/`，复用公共可靠机制；具体触发、业务结果解释、因果恢复及顺序仍由插件拥有。
+新增插件只增加该插件所需的业务实现、声明、测试和显式部署装配；发现公共能力缺口时单独归属对应基础 owner，
+不把具体插件拓扑、设备数量或供应商私有命令上升为宿主全局规则。
+
+### 7.12 设计验收与证据边界
+
+| 验收层 | 主要证明什么 | 不证明什么 |
+| --- | --- | --- |
+| 宿主/SDK | 零插件独立运行、不同槽位声明、资源绑定/解析、封闭类型和依赖边界 | 某个真实工作线业务正确 |
+| 公共可靠能力 | Evidence 提交后 ACK、幂等冲突、事务原子性、重试保留身份、命令/搬运终态与围栏 | 供应商已执行物理动作 |
+| Operation 域 | 固定 DTO、方向、ACK 模式及接入公共机制的差异 | 具体插件完整流程或 WMS 联合确认 |
+| 插件 Decision / Application | 业务结果到动作映射、必要状态、关联、FIFO/LIFO、NG 与异常分支 | 真实 ECS/RCS 已符合协议 |
+| 前端装配 | 按声明绑定资源、草稿提示、保存校验与失败保留输入 | START、整线运行或现场验收 |
+| 部署集成 | 安装集合、显式装配、运行进程及公共入口形成相应闭环 | 供应商一致性和现场物理/业务验收 |
+| 供应商与现场 | ECS/网关满足批准接口；实际设备和运输终态与现场一致；业务方确认流程结果 | 不能由 Mock、健康检查或历史测试代替 |
+
+核心测试用最小 fake 验证通用边界，具体插件测试归 `workline_plugins/<plugin_key>/tests/`；不复制公共可靠机制的完整
+测试矩阵，不把插件测试加入核心默认测试、覆盖率或 HEAVY selector。真实 worker、数据库、外部系统与物理设备的验证
+按相应变更和合同单独选择，设计记录本身只做文档审阅、引用和结构检查。
+
+评审或交付时至少能回答：角色与资源是否唯一归属，意图是否完整且受授权约束，业务关联是否可证明，动作与结果是否保持
+原身份，未知物理结果是否保留围栏，插件缺席是否拒绝新业务，切换是否真正满足清线门禁，以及结论属于哪一层验收。
+
+### 7.13 声明先行与渐进业务接入
+
+本节为 2026-09-09 用户确认的开发与联调原则：**插件声明描述整线需要什么；handler 表达当前参与哪些业务；
+未参与的节点保持 PLC 原有行为，已参与的业务由 WES 可靠执行。** 不要求 SCAN1～SCAN4 同时开发或同时上线。
+
+静态声明与运行实现分离。声明只依赖 SDK 的不可变类型，包含插件身份、支持线型、设备与工作位插槽；
+读取声明不得实例化业务 handler、启动 builder 或访问数据库/设备。部署仍显式装配，前端通过现有 API 读取声明，
+现场绑定仍由 WorkLine 保存。声明不从运行绑定反向取得身份，不维护第二套身份或资源定义。
+
+#### 声明对象直接复用（已确认）
+
+插件在 `definition.py` 中为设备角色和工作位分别定义有名称的不可变对象，例如 `SCAN2`、`INLET`，
+再将这些对象组成 `DEFINITION.device_roles` 与 `DEFINITION.position_slots`。后续 handler 和 Application
+直接导入同一声明对象，不重复构造等价对象，不重复手写角色/插槽字符串，也不按元组下标查找。
+
+SDK 业务接口优先接收类型化声明对象；确需代码值的接口使用对象的 `role_key` 或 `slot_key`。
+声明类型由 SDK 唯一维护，现有类型按职责收敛，不增加并行定义或兼容转换链。
+对象只是逻辑资源需求，不包含现场资源或运行上下文；宿主根据当前 WorkLine 的有效绑定解析实际 `device_code`
+和位置标识。同一插件用于不同工作线时复用声明，各线分别解析资源，不修改声明或把已解析资源缓存到声明对象中。
+
+声明对象不提供 `send()`、数据库查询、设备连接或后台任务方法；解析与可靠执行继续由宿主基础能力负责。
+`SCAN2`、`INLET` 仅为示例名称，不定义宿主固定角色。这是声明与消费的目标合同，不表示相应 SDK 接口已经实现。
+
+#### 渐进接入阶段
+
+| 阶段 | 可以做什么 | 不作为前提 |
+| --- | --- | --- |
+| 仅有声明 | 展示插件、绑定实际设备/工作位、保存草稿或完整配置、执行静态校验 | 业务 handler、事实工厂或业务启动 builder 已完成 |
+| 声明及有效资源装配 | 按基础准入启用事件接入与观察；handler 集合允许为空，不产生业务指令 | 整线业务全部实现或存在占位 handler |
+| 已接入部分 handler | 运行和联调这些 handler 对应的业务，例如 SCAN1，再扩展到 SCAN1+SCAN2 | 未参与节点也必须实现业务逻辑 |
+| 完整业务验收 | 按具体插件合同验证全部必要业务、异常和物理闭环 | 不能用部分联调或基础能力通过代替 |
+
+资源装配完整性与业务实现完整性独立判断；本节不取消已声明必填资源的绑定规则。基础准入只检查对应基础条件，
+已接入业务只检查当前动作的真实依赖，不把缺少其他节点 handler 视为启动失败或整线故障。
+若当前步骤需要前序任务、料箱或工位关联，由该业务步骤验证；缺少事实时不得猜测，也不将局部依赖升级为整线开发门禁。
+
+运行时以显式装配的 handler 集合表达已接入职责，不另建节点开发状态表、半成品模式、接管开关矩阵或通用能力 registry。
+没有 handler 的合法设备事件经过基础合同及关联校验后保存证据，不触发业务动作；不能因没有消费者而无限重试，
+也不能把观察事件标记成业务已完成。后续增加 handler 不自动重放历史观察事件。
+
+必须区分三类情况：
+
+- **未接入：** 合法事件没有对应 handler，仅留证；该节点继续由既有 PLC 逻辑执行，WES 不自动补发 `MOVE_FORWARD`。
+- **已接入但失败：** handler 报错、业务事实不足或结果未知，沿用已有错误、等待及对账路径；不得降级成未接入或默认放行。
+- **命令结果与可靠义务：** 无论业务接入进度如何，原 DeviceCommand、TransportTask 和 WMS 确认义务仍按自身合同接收结果、
+  保留身份和围栏；不能因当前 handler 缺席而忽略已发出动作的回调。
+
+未接入节点的 PLC 默认行为是现场既有控制，不是 WES 新建的 fallback。普通观察也不复用会自动创建放行命令的
+`is_debug=true` 调试路径。事件接收 ACK 只证明其合同声明的接收事实，不代表业务已处理或物理已完成。
+
+每次迭代验证本轮新增业务及其真实依赖，复用基础能力的已有证据；允许按 SCAN1、SCAN1+SCAN2、SCAN1+SCAN2+SCAN3
+逐步接入，但不把节点数量固定成宿主规则。渐进开发不等于运行时代码热替换，更新仍遵守既有发布、配置变更及未完成义务约束。
+
+本节是目标设计；声明/运行对象解耦、空 handler 准入和未消费事件处理须分别核对实现，不能由文档更新宣称已支持。
 
 ## 8. 工作线并发与版本
 
@@ -538,7 +739,7 @@ UI 验证选择插件后按声明生成绑定界面、草稿缺项提示和保�
 
 ### 8.2 单线活动流程
 
-自动 WorkLine 可以同时具备自动上架和自动拣货插件，但一个 `LineRunEpoch` 只激活其中一个流程。人工 WorkLine 只激活统一
+自动 WorkLine 可以同时具备自动上架和自动拣货插件，但一条 WorkLine 同时只激活其中一个流程。人工 WorkLine 只激活统一
 `manual_bin_processing` 插件；人工上架或拣货由 WMS/PDA 完成，不触发 WorkLine 插件切换。自动线不降级运行人工插件，人工线不伪造机械臂角色运行自动插件。
 
 切换要求：
@@ -548,12 +749,12 @@ UI 验证选择插件后按声明生成绑定界面、草稿缺项提示和保�
 - 没有已经承诺给本线、尚未完成的对象。
 - 没有待完成的人工或自动作业。
 
-切换后创建新的 `LineRunEpoch`。活动 Epoch 固定插件版本、配置版本和流程模式。结构拓扑变更同样要求清线。
+清线并闭合可靠义务后才允许更新 WorkLine 的插件、配置和流程模式，重新校验后启动。结构拓扑变更同样要求清线。
 
 模式不匹配时：
 
 - WMS 单据同步拒绝。
-- ECS 事件先 ACK 并持久化证据。
+- ECS 事件先持久化证据并提交，再返回 ACK。
 - 不执行不匹配流程并产生告警；不得因模式不匹配自动启动另一流程。
 
 ## 9. 异常、NG 与恢复
@@ -588,7 +789,7 @@ fail closed 并暂停当前对象。
 2. 保留所有 InboundEvidence、DeviceCommand、ACK、CALLBACK 和位置投影。
 3. 未明确终态的在途对象标记为需要现场清线。
 4. 迟到 CALLBACK 继续保存，但不自动恢复物理编排。
-5. 操作员完成清线并确认后创建新的 `LineRunEpoch`。
+5. 既有可靠义务闭合、操作员完成物理清线并确认后，按 WorkLine 当前配置重新校验并启动。
 
 不实现自动恢复、自动重放物理命令或根据数据库状态猜测现场位置。
 
@@ -667,7 +868,7 @@ Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integrati
 流程按四段闭合：
 
 1. **执行任务驱动**：自动上架不新增 WMS `InboundTask`。WMS 根据粗分释放快照形成不可变 `putaway_plan_id`，WES 在已激活
-   `automatic_putaway` 的 WorkLine/Epoch 中创建 `putaway_execution_id`。两者共同冻结一次执行的来源成员和本地上下文；满箱交换
+   `automatic_putaway` 的 WorkLine 中创建 `putaway_execution_id`。两者共同冻结一次执行的来源成员和本地上下文；满箱交换
    目标按面、按批次晚绑定，目标 Bin 按缓存容量供给，WES 不按本地阈值增加、删除或改判成员。
 2. **机械臂执行**：实际 Bin 到位并通过 SCAN1/SCAN2 准入后，北向机械臂从冻结来源取盘并在平台复扫；WMS 从当前可用 Bin
    集合晚绑定唯一目标 Cell。南向机械臂可靠 PUT 后形成位置 Fact；ACK、命令下发或设备空闲都不代表 PUT 完成，身份或位置不符时冻结对账。
@@ -675,7 +876,7 @@ Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integrati
    闭合。全部来源成员和外部业务 Fact 闭合后，WES 请求 WMS 裁决 `COMPLETED | NOT_COMPLETED`；WMS 原子迁移料盘位置，不重复 GRN 入库确认。
 4. **Bin/货架独立清场**：业务 `COMPLETED` 不等待目标 Bin 退回、NG Bin 人工取走或来源货架搬离。SCAN3/SCAN4、退料缓存、CTU、
    NG 出口、来源货架清场和 Transport 继续按各自生命周期闭合；仍有物理对象、未知结果或外部义务时，WorkLine 不满足释放门禁，
-   不得切换插件或创建新 Epoch。
+   不得切换插件或修改运行配置。
 
 北向机械臂的厂商 ECS 命令是一个长命令。WES 不要求 ECS 上报命令内部的抓取、移动和放置步骤。
 
@@ -697,7 +898,7 @@ Phase 8 粗分逐盘入库由 `docs/contracts/wms-rough-sorter-inbound-integrati
    只冻结决定；Transport 确定成功且位置保存后才完成批次。这个流程不建立缓存位预留、租约或基础层业务锁。
    退箱目标只能位于当前 CTU 工作位的 `rack_id + rack_face`，但不要求是原货架、原面或原储位。`return_batch` 自身不触发换面或换架；
    当前面暂无合格空位是正常等待，不是 `STATE_CONFLICT` 或 NG。CTU 仍携带 Bin、存在未结束搬运或位置未知，或存在以当前面为冻结目标的退箱决定时，禁止换面、换架或让货架离场。
-   正常运行时只有新入站需求驱动货架切换。停止或切换已请求时停止接纳新任务和新 Bin，Epoch 保持 `ACTIVE`；目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面，但共同排空货架面决定 wire 获批前该路径为 `ReviewRequired/BLOCKED`，不得创建货架切换或退箱 Transport。全部清场义务闭合后才关闭 Epoch。
+   正常运行时只有新入站需求驱动货架切换。停止或切换已请求时停止接纳新任务和新 Bin，保持当前插件与资源绑定；目标合同允许 WMS 为排空既有 FIFO 选择有合格空位的货架面，但共同排空货架面决定 wire 获批前该路径为 `ReviewRequired/BLOCKED`，不得创建货架切换或退箱 Transport。全部清场义务闭合后才允许停用或切换插件。
 4. 设备取盘并扫描完整六合一码后，WMS 返回业务资格、稳定异常分类和精确目标 SLOT；目标需要换面或换架时，同一终局
    `ACCEPT` 还返回完整目标准备方案。WES 不选料、不计算转运货架容量，也不自行决定换面或换架。
 5. 目标架、退料架和五层货架允许并行调度。退料直接取料优先，但不阻塞没有资源冲突的 CTU 和 Bin 流。
@@ -791,8 +992,8 @@ disposition != NG
 ⇒ ingress_workline_id = work_workline_id = return_workline_id
 ```
 
-首次 CTU 单箱投料成功时绑定 `owner_workline_id` 和 `line_run_epoch_id`；没有可靠单箱投料状态证据时，由首次
-SCAN1 事件以原子方式绑定。本次执行期间不得修改。
+插件按可靠供给结果和实际工位扫码建立当前业务所需的 `owner_workline_id`、任务及料箱关联；不能仅凭条码猜测任务或来源。
+该关联只服务于当前工位/业务处理，不建立全程料箱生命周期，未决物理动作仍保持原身份和资源围栏。
 
 校验点：
 
@@ -836,7 +1037,7 @@ Task 驱动货架和 Bin 入站
 → SCAN1/SCAN2 确认实际 Bin 到达人工工作位
 → 操作员通过 WMS PDA 放入或拣出物料
 → WMS 持久化物料子任务和 Bin 释放决定
-→ Bin 进入本 Epoch 跨任务 RETURN_BUFFER FIFO
+→ Bin 进入本 WorkLine 跨任务 RETURN_BUFFER FIFO
 → WMS 在当前工作位货架面原子预留精确空位
 → WES 通过 BIN_MOVE 回库
 ```
@@ -845,10 +1046,10 @@ Task 驱动货架和 Bin 入站
 `task_id`，原任务完成或取消不删除未闭合的 Bin 位置执行。
 
 人工物料子任务在物料已正确放入 Bin 或从 Bin 拣出，并由 WMS/PDA 确认时完成。全部应完成子任务完成且 WMS 确认不再追加后，业务任务才完成；
-取消或失败由 WMS 裁决为独立终态。业务任务完成不等待 Bin 回到货架；Bin 回库和 Epoch 清场是独立物理义务。
+取消或失败由 WMS 裁决为独立终态。业务任务完成不等待 Bin 回到货架；Bin 回库和 WorkLine 清场是独立物理义务。
 
 等待人工完成是正常对象状态，不是设备忙、RuntimeHold 或硬件故障。WMS 不可用时料箱停留在 SCAN2，
-当前 Session 使用现有 `WAITING_EXTERNAL`，`LineRunEpoch` 保持 `ACTIVE`；不新增 WorkLine 停线状态。WES 进程重启仍停止原 Epoch 的物理编排，现场清线后创建新 Epoch。
+插件保留当前工位等待和业务关联，停止创建依赖新 WMS 决定的动作；不新增运行代际或通用 Session。进程重启按 §9.3 的证据与清线门禁恢复。
 
 ### 12.5 三种工作插件的统一边界与差异
 
@@ -860,13 +1061,13 @@ Task 驱动货架和 Bin 入站
 | `automatic_picking` | WMS `task_id`；`plan_revision` 只表达连续计划版本 | 目标机械臂可靠 PUT，位置结果被 WMS `RECORDED \| DUPLICATE` | 全部已接收明细有确定结果且版本一致，WMS 返回 `COMPLETED` |
 | `manual_bin_processing` | WMS 既有且全局唯一的 `task_id` | 物料正确放入 Bin 或从 Bin 拣出，并由 PDA/WMS 持久化 | 全部应完成子任务完成且 WMS 确认不再追加；取消/失败使用独立终态 |
 
-Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并插件业务合同或 operation：
+Bin 离开工作位后统一使用 WorkLine 级物流策略，但不合并插件业务合同或 operation：
 
 | 插件 | 正常 Bin 回流 | 可识别但非预期 Bin | NG |
 | --- | --- | --- | --- |
 | `automatic_putaway` | 当前 `putaway_execution_id` 的 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 冻结预期/实际身份和位置，等待独立恢复 wire；不替代预期成员 | WMS 稳定业务 NG、无法识别或明确物理隔离要求 |
-| `automatic_picking` | 本 Epoch 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 冻结预期/实际身份和位置，等待独立恢复 wire；预期成员保持未完成 | 无法识别、方向异常、CELL NG 后续路由或 WMS 稳定业务 NG |
-| `manual_bin_processing` | 本 Epoch 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 不进入人工业务；冻结预期/实际身份和位置，等待独立恢复 wire | 无法识别、明确物理隔离要求或 WMS 稳定业务 NG |
+| `automatic_picking` | 本 WorkLine 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 冻结预期/实际身份和位置，等待独立恢复 wire；预期成员保持未完成 | 无法识别、方向异常、CELL NG 后续路由或 WMS 稳定业务 NG |
+| `manual_bin_processing` | 本 WorkLine 跨任务 FIFO；WMS 在当前工作货架面为连续前缀预留精确空位 | 不进入人工业务；冻结预期/实际身份和位置，等待独立恢复 wire | 无法识别、明确物理隔离要求或 WMS 稳定业务 NG |
 
 三种插件都遵守相同的 WorkLine 级规则：
 
@@ -875,9 +1076,9 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
 - 已声明的 CTU/Transport 先收口；当前面有可执行空位时优先消耗 FIFO。当前面无合格空位时，候选在各插件批准的 FIFO 作用域内等待，不转 NG、不作为冲突，也不阻止无资源冲突的入站需求推动切换。
 - 插件保留自己的 Task、机械臂、物料完成和 operation 合同；不增加通用回流插件或新的 WMS 业务键。自动上架中的真实满箱交换仍使用 `BIN_EXCHANGE`。
 - 只有设备、工作位、缓存、现场对象、Transport 和可靠外部义务全部闭合，WorkLine 才能释放或切换插件。
-- WMS 不可用时不新增 WorkLine 状态：Epoch 保持 `ACTIVE`，停止创建依赖新 WMS 决定的动作，既有 Outbox 以冻结身份重试；
+- WMS 不可用时不新增 WorkLine 状态：保留当前插件与资源绑定，停止创建依赖新 WMS 决定的动作，既有 Outbox 以冻结身份重试；
   已被设备或 Transport 接纳的动作只接收和保存确定结果。查询层可显示 `WAITING_WMS`，底层仍使用现有等待外部语义。
-- WES 进程重启不同于 WMS 暂不可用：保留证据、停止原 Epoch 物理编排，现场清线后创建新 Epoch。
+- WES 进程重启不同于 WMS 暂不可用：保留证据、停止自动物理编排，可靠义务闭合且现场清线后重新校验并启动 WorkLine。
 
 停线或切换时排空既有 FIFO 还缺少共同的 WMS→WES 货架面决定合同，这是三个插件的实施硬门禁。候选 operation 为
 `workline.return_buffer.drain_rack_decide@v1`，但其字面量和严格 DTO 尚未获批，不得实现。联合评审至少必须冻结：
@@ -885,14 +1086,14 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
 | 合同要素 | 最小要求 |
 | --- | --- |
 | 消息身份 | 顶层 `operation_id` 标识一次不可变决定请求；业务 `WAIT` 后重求值使用新 ID，并以 `previous_operation_id` 引用直接前序请求 |
-| 执行边界 | `workline_code + line_run_epoch_id + plugin_key + drain_reason`；自动上架还必须绑定当前 `putaway_execution_id`，不得把 FIFO 扩到其他执行 |
+| 执行边界 | `workline_code + plugin_key + drain_reason`；自动上架还必须绑定当前 `putaway_execution_id`，不得把 FIFO 扩到其他执行 |
 | 请求事实 | 当前货架/货架面、CTU 空且无未结束搬运或未知位置、尚未冻结目标的 FIFO 连续前缀，以及 WES 已可靠确认的候选货架来源位置 |
-| `READY` 决定 | 如需换架，返回旧架完整离场去向、新架 `rack_id`、可靠来源、工作位目标和到达面；如仅换面，返回精确 `rack_id + rack_face`。WMS 必须在同一事务中把目标 rack/face 绑定到该 `workline_code + line_run_epoch_id`，并保留足以容纳非空 FIFO 连续前缀的合格空位，直到既有 `return_batch` 消耗或获批合同定义的明确释放；其他任务不得使用该容量。绑定直接关联当前决定 `operation_id`，不新增业务键；决定持久化后不可换目标 |
+| `READY` 决定 | 如需换架，返回旧架完整离场去向、新架 `rack_id`、可靠来源、工作位目标和到达面；如仅换面，返回精确 `rack_id + rack_face`。WMS 必须在同一事务中把目标 rack/face 绑定到该 `workline_code`，并保留足以容纳非空 FIFO 连续前缀的合格空位，直到既有 `return_batch` 消耗或获批合同定义的明确释放；其他任务不得使用该容量。绑定直接关联当前决定 `operation_id`，不新增业务键；决定持久化后不可换目标 |
 | 等待 | `WAIT + reason_code + retry_after_ms`；WES 不自选货架、货架面、空位或替代 Transport |
 | 幂等 | 同一 `operation_id`、正文和时间戳重试返回首次完整响应；同 ID 不同正文冲突；Transport 仅在决定与当前物理门禁仍一致时创建一次 |
 
 在该 operation、严格 Schema、正反 fixture 和联合审批证据冻结前，停线/切换时遇到当前面持续 `NO_BATCH` 的 FIFO 排空为
-`ReviewRequired/BLOCKED`：Epoch 保持 `ACTIVE`，停止新任务和新 Bin，不创建货架切换或退箱 Transport，也不得宣称能够自动清场。
+`ReviewRequired/BLOCKED`：保留当前插件与资源绑定，停止新任务和新 Bin，不创建货架切换或退箱 Transport，也不得宣称能够自动清场。
 
 ## 13. 当前系统收敛范围
 
@@ -914,10 +1115,10 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
 
 | 当前概念 | 目标概念 |
 | --- | --- |
-| `ExecutionSession` | `LineRunEpoch` + 具体对象 Execution |
+| `ExecutionSession` | WorkLine 当前配置、插件必要业务关联及具体可靠对象 |
 | 通用 `RuntimeInbox` | 有限类型 `InboundEvidence` |
 | `RuntimeIntent + Effect + Outbox` | `DeviceCommand`、`TransportTask`、`WmsConfirmation` |
-| Binding/Profile Snapshot | Epoch 固定插件和配置版本 |
+| Binding/Profile Snapshot | WorkLine 运行期间配置不可变；动作自行冻结身份、合同和载荷 |
 | `RuntimeHold/Reconciliation` | 业务 NG、硬件故障、依赖暂停、人工清线 |
 | 投影 God Service | 按物料、料箱、位置和设备拆分的窄服务 |
 | 动态 Provider/Catalog | 部署时显式 Adapter 绑定 |
@@ -966,7 +1167,7 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
    `request/get/post/aclose`、统一 JSON 编解码、最小 factory 和开发示例；当前 outbound 无认证。本阶段不包含任何具体
    WMS 业务 API、业务 Port、数据库、evidence、breaker 或可靠生命周期，不接入生产、不修改旧实现和旧测试。
 4. AGV/CTU Transport 基础能力建设：只暗构建 `TransportTask`、member-position/result evidence、位置投影、
-   `Transport Port` 和 WMS 转发 RCS/AGV/CTU Adapter；不建设 DeviceCommand、统一设备 Adapter、ECS、WorkLine/Epoch、
+   `Transport Port` 和 WMS 转发 RCS/AGV/CTU Adapter；不建设 DeviceCommand、统一设备 Adapter、ECS、WorkLine、
    通用执行对象或插件 SDK，不修改当前生产 Composition Root、旧表、旧实现和旧测试。
 5. 旧工作线插件执行闭包退役：删除嵌入核心的具体插件、generated index、registry、dispatcher 及其专属
    Runtime/Intent/Effect/SystemCapability/SystemOutbox 调用闭包；允许核心全绿但业务插件安装清单为空，不把 Phase 4
@@ -974,10 +1175,10 @@ Bin 离开工作位后统一使用 WorkLine/Epoch 级物流策略，但不合并
 6. Transport 正式基础基线与旧 owner 收敛：完成 Transport 最终对象、WMS Adapter、member-position/result evidence、
    PostgreSQL 可靠性测试所有权和直接旧 owner 删除；零插件时保持可安装但未绑定业务 consumer 的状态。
 7. DeviceCommand/ECS 通用能力生产收敛：独立交付命令可靠生命周期、设备状态/事件/结果证据、固定统一接口、
-   ACK/CALLBACK、`LineRunEpoch` fencing、唯一生产装配和旧 Device owner 删除；不包含供应商私有 DTO 或插件业务。
+   ACK/CALLBACK、命令冻结合同与资源围栏、唯一生产装配和旧 Device owner 删除；不包含供应商私有 DTO 或插件业务。
 8. 粗分机参考插件优化：消费 Phase 6/7 基础能力，从真实业务合同重新实现首个独立插件，并以本机分层测试、Mock 验收和
    GitLab PUSH 生成可追溯后端镜像关闭后端 RC；前端在独立仓库关闭自己的 RC，不搬运 Phase 5 已删除的旧插件源码。
-9. 最小执行基础闭合：交付 SRS 已批准的 `BinExecution`、活动管辖期 `PositionProjection` 和 Phase 10 必需 successor；
+9. 最小执行基础闭合：交付活动管辖期 `PositionProjection`、WorkLine 未完成义务检查和 Phase 10 必需 successor；
    不交付人工或自动业务插件，也不为其预建 operation、空包或兼容路径。
 10. 旧平台代码最终闭环清理：扫描并删除跨阶段残留，证明最终生产运行态只有一套最小执行架构。
 11. 旧数据模型与迁移链清理：最终模型稳定后删除历史 schema/revision，生成单一干净 Alembic 基线。
@@ -1032,7 +1233,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 - 新增机器缺席门禁，禁止生产代码、测试和机器可读配置重新引入旧架构 import、配置键、别名和 fallback；
   人类阅读文档通过引用审查、原路径缺席和外部归档检查收敛，不进入 pytest 或质量门禁的正文解析。
 - 新增核心测试所有权门禁：核心 `tests/` 不得包含或导入具体工作线插件；通用 WorkLine 身份、拓扑、
-  `LineRunEpoch`、设备/位置投影和可靠性测试不受此限制。
+  当前配置与资源绑定、设备/位置投影和可靠性测试不受此限制。
 - 测试删除按语义判断，不能按 `replay`、`reconciliation` 等关键词批量处理；每个旧测试必须记录
   `REWRITE`、`DELETE → successor` 或 `DELETE → NONE + 理由`，且 successor 先通过、旧测试后删除。合同样例
   回放和可靠确认重试若属于最终行为，必须使用最终领域名称继续覆盖。
@@ -1096,7 +1297,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 - `inbound_batch` 返回 `READY` 后，所选 Bin 不再撤销或改选。Bin 到达 SCAN2 时，WMS 通过 `work_plan READY | NO_WORK | WAIT`
   给出结果；`READY.cell_ids[]` 首次接收后不可撤销、删减或改写，后续通过逐 Cell、空取、NG 和结果确认流程闭合。
 - `return_batch` 的 FIFO 候选在每次请求中从 1 连续设置 `sequence_no`；WMS 只处理连续前缀，并在响应中原样返回
-  `sequence_no + bin_id`。该顺序号不跨请求延续。目标只能位于当前 `rack_id + rack_face`，不要求原来源面；退箱不自动换面或换架。
+  `sequence_no + bin_code`。该顺序号不跨请求延续。目标只能位于当前 `rack_id + rack_face`，不要求原来源面；退箱不自动换面或换架。
 - 正常计划增量只追加当前任务尚未发布的来源。空取、NG 或确定的 Transport 失败只结束受影响的任务明细。WMS 使用新的 PickingTask
   处理没有满足的需求。`UNKNOWN/RECONCILING` 表示受影响的任务明细还没有处理完。WES 不上报 Transport 失败，WMS 不发送恢复方案。
 - 两个机械臂通过 ECS/PLC 硬件锁防撞和完成扫码台交接。没有安全暂存位时，硬件锁必须在料盘离开来源前取得扫码台交接许可。
@@ -1111,7 +1312,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 
 ### 15.5 四线
 
-- 两条自动线可激活 `automatic_putaway` 或 `automatic_picking`，一个 Epoch 只运行其中一个。
+- 两条自动线可激活 `automatic_putaway` 或 `automatic_picking`，一条 WorkLine 同时只运行其中一个。
 - 两条人工线都使用 `manual_bin_processing`；人工上架和拣货不切换插件。
 - 自动线不降级运行人工插件，人工线不运行自动插件；当前部署不使用 `HYBRID`。
 - NG 料箱在后续 SCAN1/SCAN3 只直行、不进入 SCAN4，并最终到达统一 NG 区。
@@ -1125,7 +1326,7 @@ Transport 与 Device/ECS 的最终测试 owner 和直接旧 owner，阶段 10 �
 - 硬件故障只隔离配置范围内的对象、设备或工作线。
 - WMS 不可用停止新接纳但不丢失已完成物理事实。
 - 进程重启后不自动下发物理恢复命令。
-- 人工清线后使用新 Epoch 恢复。
+- 可靠义务闭合、人工清线后重新校验并启动 WorkLine。
 
 ### 15.7 零兼容与干净基线
 

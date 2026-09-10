@@ -6,6 +6,8 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.device.contracts import (
+    DEVICE_INTEGRATION_CONTRACT_KEY,
+    DEVICE_INTEGRATION_CONTRACT_VERSION,
     DeviceEvidenceReceipt,
     DeviceEvidenceUpdate,
     DeviceIngressKind,
@@ -58,9 +60,6 @@ if TYPE_CHECKING:
     from src.core.task_queue_gateway import TaskQueueGateway
 
 logger = logging.getLogger(__name__)
-
-_UNBOUND_EVENT_CONTRACT_KEY = "third_party_integration"
-_UNBOUND_EVENT_CONTRACT_VERSION = "1.1"
 
 
 class UnknownDeviceCommandError(LookupError):
@@ -309,14 +308,14 @@ class DeviceEvidenceService:
                 if existing is not None and existing.contract_key is not None
                 else binding.contract_key
                 if binding is not None
-                else _UNBOUND_EVENT_CONTRACT_KEY
+                else DEVICE_INTEGRATION_CONTRACT_KEY
             )
             contract_version = (
                 existing.contract_version
                 if existing is not None and existing.contract_version is not None
                 else binding.contract_version
                 if binding is not None
-                else _UNBOUND_EVENT_CONTRACT_VERSION
+                else DEVICE_INTEGRATION_CONTRACT_VERSION
             )
             event = _normalize_event(
                 report,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from wes_plugin_sdk import FactReference, HandlerMetadata
+from wes_plugin_sdk import FactReference, HandlerMetadata, PluginDefinition
 from wes_plugin_sdk.validation import validate_required_text as _required
 
 
@@ -49,9 +49,14 @@ class PluginRuntimeBinding:
 class StaticPluginBinding:
     """不扫描环境的精确 `(plugin, version, Fact type, Fact version)` 路由。"""
 
-    def __init__(self, bindings: tuple[PluginRuntimeBinding, ...]) -> None:
+    def __init__(
+        self, bindings: tuple[PluginRuntimeBinding, ...], *, definitions: tuple[PluginDefinition, ...] = ()
+    ) -> None:
         if type(bindings) is not tuple:
             raise TypeError("bindings must be a tuple")
+        self._declared = {(item.plugin_key, item.plugin_version) for item in definitions}
+        if len(self._declared) != len(definitions):
+            raise ValueError("duplicate plugin definition")
         self._bindings: dict[tuple[str, str], PluginRuntimeBinding] = {}
         self._handlers: dict[tuple[str, str, type[FactReference], str], Any] = {}
         for binding in bindings:
@@ -68,6 +73,15 @@ class StaticPluginBinding:
                     if route in self._handlers:
                         raise ValueError(f"duplicate handler route: {route}")
                     self._handlers[route] = target
+
+    def has_handlers(self, plugin_key: str, plugin_version: str) -> bool:
+        identity = (plugin_key, plugin_version)
+        binding = self._bindings.get(identity)
+        if binding is not None:
+            return bool(binding.handlers)
+        if identity in self._declared:
+            return False
+        raise LookupError(f"no plugin binding or declaration: {identity}")
 
     def resolve_handler(self, plugin_key: str, plugin_version: str, fact: FactReference) -> Any:
         route = (plugin_key, plugin_version, type(fact), fact.fact_version)

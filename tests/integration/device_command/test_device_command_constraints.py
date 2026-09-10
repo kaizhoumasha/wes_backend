@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
+from wes_plugin_sdk import PluginDefinition
 
 from src.app.device.contracts import DeviceCommandRequest, EcsDeviceEventReport, EcsDeviceStatus
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -689,8 +690,13 @@ async def test_postgresql_unclosed_result_states_block_workline_close(
 
         with pytest.raises(BusinessException):
             await WorkLineConfigurationService(
-                plugins=(
-                    SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),
+                definitions=(
+                    PluginDefinition(
+                        plugin_key="device_command_test",
+                        plugin_version="1.0.0",
+                        display_name="Test",
+                        supported_line_types=("AUTO",),
+                    ),
                 )
             ).deactivate(db, workline_id=line.id, version=line.version)
 
@@ -706,8 +712,13 @@ async def test_postgresql_stop_rejects_pending_terminal_result_then_allows_after
     async with integration_session_factory() as db:
         with pytest.raises(BusinessException):
             await WorkLineConfigurationService(
-                plugins=(
-                    SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),
+                definitions=(
+                    PluginDefinition(
+                        plugin_key="device_command_test",
+                        plugin_version="1.0.0",
+                        display_name="Test",
+                        supported_line_types=("AUTO",),
+                    ),
                 )
             ).deactivate(db, workline_id=line.id, version=line.version)
     async with integration_session_factory.begin() as db:
@@ -715,7 +726,14 @@ async def test_postgresql_stop_rejects_pending_terminal_result_then_allows_after
         persisted.transition_to(CommandStatus.SUCCEEDED)
     async with integration_session_factory() as db:
         stopped = await WorkLineConfigurationService(
-            plugins=(SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),)
+            definitions=(
+                PluginDefinition(
+                    plugin_key="device_command_test",
+                    plugin_version="1.0.0",
+                    display_name="Test",
+                    supported_line_types=("AUTO",),
+                ),
+            )
         ).deactivate(db, workline_id=line.id, version=line.version)
         assert not stopped.is_active
 
@@ -761,8 +779,13 @@ async def test_postgresql_create_and_close_serialize_on_workline(integration_ses
     async def close_workline():
         async with integration_session_factory.begin() as db:
             return await WorkLineConfigurationService(
-                plugins=(
-                    SimpleNamespace(plugin_key="device_command_test", plugin_version="1.0.0", business_blocker=None),
+                definitions=(
+                    PluginDefinition(
+                        plugin_key="device_command_test",
+                        plugin_version="1.0.0",
+                        display_name="Test",
+                        supported_line_types=("AUTO",),
+                    ),
                 )
             ).deactivate(db, workline_id=line.id, version=line.version)
 
