@@ -8,11 +8,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.app.wms_diagnostics.v1.execution import get_observation_service, router
+from src.core.error_handlers import register_exception_handlers
 from src.core.uuid7 import new_uuid7
 
 
 def app_and_service():
     app = FastAPI()
+    register_exception_handlers(app)
     service = SimpleNamespace(get_confirmation=AsyncMock(return_value=None), get_evidence=AsyncMock(return_value=None))
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_observation_service] = lambda: service
@@ -31,10 +33,14 @@ def test_exact_identity_missing_unavailable_and_validation(path, method):
     query = {"operation": "sample.action@v1", "operation_id": new_uuid7()}
     with TestClient(app) as client:
         url = f"/api/v1/wms-diagnostics/{path}"
-        assert client.get(url, params=query).status_code == 404
+        missing = client.get(url, params=query)
+        assert missing.status_code == 404
+        assert missing.json()["code"] == "3000"
         getattr(service, method).assert_awaited_once_with(query["operation"], query["operation_id"])
         getattr(service, method).side_effect = ConnectionError("unavailable")
-        assert client.get(url, params=query).status_code == 503
+        unavailable = client.get(url, params=query)
+        assert unavailable.status_code == 503
+        assert unavailable.json()["code"] == "5030"
         getattr(service, method).reset_mock()
         assert client.get(url, params=query | {"operation_id": "invalid"}).status_code == 422
         assert client.get(url, params=query | {"operation": " "}).status_code == 422

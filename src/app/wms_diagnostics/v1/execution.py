@@ -2,7 +2,7 @@
 
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -12,6 +12,7 @@ from src.app.execution.services.execution_observation_service import (
     execution_observation_service,
 )
 from src.app.wms_adapter.wire_common import OperationId, is_wire_operation
+from src.core.exceptions import NotFoundException, ServiceUnavailableException
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
 
@@ -48,9 +49,9 @@ async def get_confirmation(
     try:
         result = await service.get_confirmation(query.operation, query.operation_id)
     except (SQLAlchemyError, ConnectionError, TimeoutError) as exc:
-        raise HTTPException(503, "持久化存储暂不可用") from exc
+        raise ServiceUnavailableException(message="持久化存储暂不可用") from exc
     if result is None:
-        raise HTTPException(404, "可靠义务不存在")
+        raise NotFoundException(message="可靠义务不存在")
     return cast("ResponseSchemaModel[ConfirmationObservation]", response_builder.success(data=result))
 
 
@@ -68,7 +69,7 @@ async def get_evidence(
     try:
         result = await service.get_evidence(query.operation, query.operation_id)
     except (SQLAlchemyError, ConnectionError, TimeoutError) as exc:
-        raise HTTPException(503, "持久化存储暂不可用") from exc
+        raise ServiceUnavailableException(message="持久化存储暂不可用") from exc
     if result is None:
-        raise HTTPException(404, "WMS Evidence 不存在")
+        raise NotFoundException(message="WMS Evidence 不存在")
     return cast("ResponseSchemaModel[EvidenceObservation]", response_builder.success(data=result))
