@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -40,7 +41,9 @@ class _FailingEvidenceInsertRepository(TransportRepository):
 async def test_non_utf8_operation_is_rejected_before_postgresql_receipt(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    service = TransportService(integration_session_factory, TransportRepository(), _UnusedProvider())
+    service = TransportService(
+        integration_session_factory, TransportRepository(), _UnusedProvider(), result_timeout=timedelta(seconds=420)
+    )
     handler = TransportEventHandler(service)
     async with integration_session_factory() as db:
         receipt_count_before = await db.scalar(select(func.count()).select_from(TransportCallbackReceipt))
@@ -67,7 +70,9 @@ async def test_nul_payload_is_durably_rejected_and_replayed_from_postgresql(
         '"milestone":"SOURCE_PICKED"}}'
     ).encode()
     handler = TransportEventHandler(
-        TransportService(integration_session_factory, TransportRepository(), _UnusedProvider())
+        TransportService(
+            integration_session_factory, TransportRepository(), _UnusedProvider(), result_timeout=timedelta(seconds=420)
+        )
     )
 
     try:
@@ -108,7 +113,9 @@ async def test_nul_arrival_face_is_durably_rejected_before_postgresql_projection
         '{"kind":"RACK_POSITION","location_code":"KT16"},"arrival_face":"\\u0000"}}'
     ).encode()
     handler = TransportEventHandler(
-        TransportService(integration_session_factory, TransportRepository(), _UnusedProvider())
+        TransportService(
+            integration_session_factory, TransportRepository(), _UnusedProvider(), result_timeout=timedelta(seconds=420)
+        )
     )
 
     try:
@@ -147,7 +154,10 @@ async def test_concurrent_invalid_callback_replays_share_one_postgresql_receipt(
         "data": {"transport_task_id": "transport-invalid", "container_id": "bin-1", "milestone": "INVALID"},
     }
     services = [
-        TransportService(integration_session_factory, TransportRepository(), _UnusedProvider()) for _ in range(2)
+        TransportService(
+            integration_session_factory, TransportRepository(), _UnusedProvider(), result_timeout=timedelta(seconds=420)
+        )
+        for _ in range(2)
     ]
 
     try:
@@ -201,7 +211,12 @@ async def test_callback_receipt_and_evidence_roll_back_in_one_transaction(
         "timestamp": 1,
         "data": payload,
     }
-    service = TransportService(integration_session_factory, _FailingEvidenceInsertRepository(), _UnusedProvider())
+    service = TransportService(
+        integration_session_factory,
+        _FailingEvidenceInsertRepository(),
+        _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
+    )
 
     with pytest.raises(RuntimeError, match="forced evidence insert failure"):
         await service.record_callback(

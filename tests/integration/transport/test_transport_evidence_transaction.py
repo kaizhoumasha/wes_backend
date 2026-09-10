@@ -223,6 +223,7 @@ async def test_concurrent_duplicate_public_calls_share_one_postgresql_aggregate(
             integration_session_factory,
             TransportRepository(),
             _UnusedProvider(),
+            result_timeout=timedelta(seconds=420),
         )
         for _ in range(2)
     ]
@@ -268,6 +269,7 @@ async def test_concurrent_resource_conflict_has_one_postgresql_winner(
             integration_session_factory,
             TransportRepository(),
             _UnusedProvider(),
+            result_timeout=timedelta(seconds=420),
         )
         for _ in range(2)
     ]
@@ -318,6 +320,7 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     await record_valid_callback(
         setup_service,
@@ -340,11 +343,13 @@ async def test_stale_evidence_worker_cannot_overwrite_reclaimed_result(
         integration_session_factory,
         blocked_repository,
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     winner_service = TransportService(
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     stale_task = asyncio.create_task(stale_service.process_pending_evidence(1))
     await blocked_repository.before_read.wait()
@@ -383,6 +388,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     authority = await ensure_projection_authority_with_sessions(integration_session_factory)
     handle = await service.move_rack(
@@ -416,6 +422,7 @@ async def test_evidence_application_rolls_back_task_member_and_evidence_together
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
         position_projections=_FailingProjectionPort(),
     )
 
@@ -460,6 +467,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-concurrent": "90"})
     handle = await setup_service.move_bins(
@@ -485,6 +493,7 @@ async def test_concurrent_duplicate_callback_converges_to_received_and_duplicate
             integration_session_factory,
             TransportRepository(),
             _UnusedProvider(),
+            result_timeout=timedelta(seconds=420),
         )
         for _ in range(2)
     ]
@@ -532,6 +541,7 @@ async def test_concurrent_semantic_duplicate_revision_converges_to_one_evidence(
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-revision": "90"})
     handle = await setup_service.move_bins(
@@ -556,6 +566,7 @@ async def test_concurrent_semantic_duplicate_revision_converges_to_one_evidence(
             integration_session_factory,
             TransportRepository(),
             _UnusedProvider(),
+            result_timeout=timedelta(seconds=420),
         )
         for _ in range(2)
     ]
@@ -623,6 +634,7 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-lock-order": "90"})
     handle = await setup_service.move_bins(
@@ -657,11 +669,13 @@ async def test_evidence_worker_and_duplicate_callback_share_task_then_evidence_l
         integration_session_factory,
         worker_repository,
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     callback_service = TransportService(
         integration_session_factory,
         callback_repository,
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     worker = asyncio.create_task(worker_service.process_pending_evidence(1))
     await worker_repository.evidence_locked.wait()
@@ -717,6 +731,7 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     rack_id = f"rack-callback-before-reject-{uuid.uuid4().hex}"
     authority = await ensure_projection_authority_with_sessions(integration_session_factory)
@@ -734,11 +749,13 @@ async def test_uncommitted_callback_serializes_before_rejected_submit_writeback(
         integration_session_factory,
         blocking_repository,
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     submit_service = TransportService(
         integration_session_factory,
         TransportRepository(),
         _RejectedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     operation_id = new_uuid7()
     callback_task = asyncio.create_task(
@@ -825,6 +842,7 @@ async def test_result_updates_existing_projection_source_transport_task_id(
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     rack_id = f"rack-projection-source-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
@@ -903,6 +921,7 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     await confirm_rack_faces_with_sessions(integration_session_factory, {"rack-apply-race": "90"})
     handle = await setup_service.move_bins(
@@ -949,6 +968,7 @@ async def test_conflicting_callback_cannot_overwrite_concurrently_applied_eviden
         integration_session_factory,
         tracing_repository,
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     apply_task = asyncio.create_task(apply_without_committing())
     await applied.wait()
@@ -1005,6 +1025,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
     )
     rack_id = f"rack-rotate-race-{uuid.uuid4().hex}"
     async with integration_session_factory.begin() as db:
@@ -1037,6 +1058,7 @@ async def test_rotate_creation_cannot_use_a_projection_changed_by_an_active_move
         integration_session_factory,
         TransportRepository(),
         _UnusedProvider(),
+        result_timeout=timedelta(seconds=420),
         position_projections=race_projection_port,
     )
     rotate_task = asyncio.create_task(

@@ -66,3 +66,29 @@ print(json.dumps({
     assert actual == {key: value for key, value in expected.items() if key in actual}, (
         "conf.py 导入不得用仓库 .env 覆盖真实进程环境"
     )
+
+
+@pytest.mark.parametrize("seconds", [60, 420, 86400])
+def test_transport_result_timeout_accepts_process_override(monkeypatch, seconds) -> None:
+    from src.core.conf import Settings
+
+    monkeypatch.setenv("TRANSPORT_RESULT_TIMEOUT_SECONDS", str(seconds))
+    assert seconds == Settings().TRANSPORT_RESULT_TIMEOUT_SECONDS
+
+
+def test_transport_result_timeout_default(monkeypatch) -> None:
+    from src.core.conf import Settings
+
+    monkeypatch.delenv("TRANSPORT_RESULT_TIMEOUT_SECONDS", raising=False)
+    assert Settings().TRANSPORT_RESULT_TIMEOUT_SECONDS == 1200
+
+
+@pytest.mark.parametrize("seconds", [59, 86401, "invalid"])
+def test_transport_result_timeout_rejects_invalid_window(monkeypatch, seconds) -> None:
+    from pydantic import ValidationError
+
+    from src.core.conf import Settings
+
+    monkeypatch.setenv("TRANSPORT_RESULT_TIMEOUT_SECONDS", str(seconds))
+    with pytest.raises(ValidationError, match="TRANSPORT_RESULT_TIMEOUT_SECONDS"):
+        Settings()

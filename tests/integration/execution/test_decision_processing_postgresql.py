@@ -324,6 +324,7 @@ async def test_multi_decision_transaction_rolls_back_prior_effect_on_later_ident
             integration_session_factory,
             TransportRepository(),
             SimpleNamespace(),
+            result_timeout=timedelta(seconds=420),
         ),
         material_execution_service=MaterialExecutionService(),
         clock=lambda: now,

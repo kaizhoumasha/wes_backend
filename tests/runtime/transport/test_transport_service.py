@@ -176,6 +176,7 @@ def service(db_engine: object, monkeypatch: pytest.MonkeyPatch) -> TransportServ
         sessions,
         TransportRepository(),
         FakeProvider(),
+        result_timeout=timedelta(seconds=420),
         position_projections=PositionProjectionService(repository=projections),
     )
 
@@ -465,6 +466,7 @@ async def test_evidence_update_is_published_only_after_commit_and_failure_is_iso
         sessions,
         TransportRepository(),
         FakeProvider(),
+        result_timeout=timedelta(seconds=420),
         event_publisher=publisher,
     )
     await confirm_rack_faces(db_engine, {"rack-event-publish": "90"})
@@ -511,6 +513,7 @@ async def test_evidence_update_is_published_only_after_commit_and_failure_is_iso
         sessions,
         TransportRepository(),
         FakeProvider(),
+        result_timeout=timedelta(seconds=420),
         event_publisher=FailingEventPublisher(),
     )
     missing_evidence = TransportEvidence(
@@ -1062,7 +1065,7 @@ async def test_expired_claim_after_send_started_reconciles_without_resend(
 async def test_late_deterministic_ack_converges_after_claim_expiry(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = DelayedNotSentProvider()
-    service = TransportService(sessions, TransportRepository(), provider)
+    service = TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
     handle = await service.move_rack(
         new_uuid7(),
         _caller(),
@@ -1109,7 +1112,7 @@ async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
 ) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = DelayedNotSentProvider(code)
-    service = TransportService(sessions, TransportRepository(), provider)
+    service = TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
     rack_id = f"rack-late-{code.value.lower()}"
     handle = await service.move_rack(
         new_uuid7(),
@@ -1145,7 +1148,7 @@ async def test_late_deterministic_negative_ack_converges_after_delivery_unknown(
 async def test_result_arriving_during_submit_is_not_regressed_by_late_ack(db_engine: object) -> None:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = ResultBeforeAckProvider()
-    service = TransportService(sessions, TransportRepository(), provider)
+    service = TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
     provider.service = service
     handle = await service.move_rack(
         new_uuid7(),
@@ -1233,7 +1236,8 @@ async def test_accepted_result_deadline_is_frozen_and_overdue_task_becomes_unkno
     )
     await service.submit_pending_tasks(1)
     accepted = await _load_task(db_engine, handle.transport_task_id)
-    assert accepted.result_deadline_at is not None
+    assert accepted.result_deadline_at == accepted.updated_at + timedelta(seconds=420)
+    service._result_timeout = timedelta(seconds=900)
     position_message = {
         "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4473",
         "operation": "transport.task.member_position_changed@v1",
@@ -1311,7 +1315,7 @@ async def test_position_fact_converges_delivery_unknown_to_accepted(
     accepted = await _load_task(db_engine, handle.transport_task_id)
     assert accepted.status == "ACCEPTED"
     assert accepted.reason_code is None
-    assert accepted.result_deadline_at is not None
+    assert accepted.result_deadline_at == accepted.updated_at + timedelta(seconds=420)
     assert accepted.outcome_json is None
 
 
@@ -1456,6 +1460,7 @@ async def test_debug_reset_rejects_task_linked_to_active_debug_run_before_delete
         _Sessions(),
         repository,
         FakeProvider(),
+        result_timeout=timedelta(seconds=420),
         debug_run_guard=_Guard(),
     )
 

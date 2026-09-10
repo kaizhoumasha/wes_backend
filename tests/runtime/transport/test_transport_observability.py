@@ -97,7 +97,7 @@ def _service(
     provider: _Provider,
 ) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    return TransportService(sessions, TransportRepository(), provider)
+    return TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
 
 
 async def _create_task(service: TransportService, request_id: str, rack_id: str) -> str:
@@ -131,7 +131,9 @@ async def test_diagnostics_failure_does_not_change_transport_submit(db_engine: o
     diagnostics.finish.side_effect = ConnectionError("diagnostics offline")
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
     provider = AsyncMock()
-    service = TransportService(sessions, TransportRepository(), provider, diagnostics=diagnostics)
+    service = TransportService(
+        sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420), diagnostics=diagnostics
+    )
     task_id = await _create_task(service, "diagnostics", "rack-diagnostics")
     provider.submit.return_value = TransportSubmitResult(TransportSubmitCode.RECEIVED, task_id)
     assert await service.submit_pending_tasks(1) == 1
@@ -256,3 +258,49 @@ async def test_outcome_publish_failed_log_has_stable_context(
 
     record = _event(caplog, "transport.outcome.publish_failed")
     assert (record.transport_task_id, record.outcome_version, record.reason) == (task_id, 1, "PUBLISH_ERROR")
+
+
+async def test_snapshot_exposes_persisted_execution_and_publication_facts(db_engine: object) -> None:
+    service = _service(db_engine, _Provider(TransportSubmitCode.RECEIVED))
+    task_id = await _create_task(service, new_uuid7(), "rack-observation")
+    initial = await service.get_task_snapshot(task_id)
+    assert initial.send_started_at is None
+    assert initial.result_deadline_at is None
+    assert initial.submit_attempt_count == 0
+    assert initial.pending_evidence_count == 0
+    assert initial.active_binding_count == 1
+    await service.submit_pending_tasks(1)
+    accepted = await service.get_task_snapshot(task_id)
+    assert accepted.result_deadline_at is not None
+    assert accepted.submit_attempt_count == 1
+    sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with sessions.begin() as db:
+        await db.execute(
+            update(TransportTask)
+            .where(TransportTask.transport_task_id == task_id)
+            .values(outcome_version=2, published_outcome_version=1)
+        )
+    snapshot = await service.get_task_snapshot(task_id)
+    assert (snapshot.outcome_version, snapshot.published_outcome_version) == (2, 1)
+    assert snapshot.active_binding_count == 1
+
+
+async def test_rejected_callback_receipt_can_be_read_without_evidence(db_engine: object) -> None:
+    service = _service(db_engine, _Provider(TransportSubmitCode.RECEIVED))
+    operation = "transport.task.resulted@v1"
+    operation_id = new_uuid7()
+    assert await service.get_callback_receipt_snapshot(operation, operation_id) is None
+    message = {"operation": operation, "operation_id": operation_id, "timestamp": 1, "data": {}}
+    await service.record_callback(
+        operation=operation,
+        operation_id=operation_id,
+        message=message,
+        payload=None,
+        rejection_reason_code="INVALID_EVIDENCE",
+    )
+    receipt = await service.get_callback_receipt_snapshot(operation, operation_id)
+    assert receipt is not None
+    assert receipt.response_code == "REJECTED"
+    assert receipt.response_data["reason_code"] == "INVALID_EVIDENCE"
+    assert receipt.received_at.endswith("Z")
+    assert await service.get_callback_receipt_snapshot(operation, new_uuid7()) is None

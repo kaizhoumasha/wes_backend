@@ -71,7 +71,11 @@ def test_worker_start_reuses_the_locked_test_environment_without_sync(monkeypatc
     captured_command: list[str] = []
     fake_process = type("FakeProcess", (), {"pid": 43220, "poll": lambda self: 1})()
 
+    original_popen = subprocess.Popen
+
     def fake_popen(command: list[str], **kwargs: object) -> object:
+        if command[0] == "git":
+            return original_popen(command, **kwargs)
         captured_command.extend(command)
         return fake_process
 
@@ -205,3 +209,11 @@ async def test_resource_cleanup_attempts_worker_runtime_http_redis_and_database_
         "http cleanup failure",
         "database cleanup failure",
     }
+
+
+def test_worker_environment_removes_all_git_local_variables(monkeypatch):
+    keys = subprocess.check_output(["git", "rev-parse", "--local-env-vars"], text=True).splitlines()  # noqa: S607 - 使用开发环境中的 Git 枚举完整变量集合。
+    for key in keys:
+        monkeypatch.setenv(key, "test-local-context")
+    environment = harness._worker_environment(DATABASE_URL, REDIS_URL, WMS_BASE_URL, "/submit", "test", "test:")
+    assert set(keys).isdisjoint(environment)

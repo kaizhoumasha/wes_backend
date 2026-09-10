@@ -33,7 +33,7 @@ from src.app.transport.debug_reset import (
     TransportDebugStepConfirmation,
     normalize_transport_task_id,
 )
-from src.core.exceptions import ConflictException, ServiceUnavailableException, ValidationException
+from src.core.exceptions import ConflictException, NotFoundException, ServiceUnavailableException, ValidationException
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, SuccessCode, response_builder
 
@@ -239,8 +239,25 @@ class TransportResultResponse(_StrictApiModel):
 
 
 class TransportTaskResponse(TransportTaskSummaryResponse):
+    send_started_at: str | None
+    result_deadline_at: str | None
+    submit_attempt_count: int
+    outcome_version: int
+    published_outcome_version: int
+    pending_evidence_count: int
+    active_binding_count: int
     request: dict[str, Any]
     result: TransportResultResponse | None
+
+
+class TransportCallbackReceiptResponse(_StrictApiModel):
+    operation: str
+    operation_id: str
+    response_http_status: int
+    response_code: str
+    response_data: dict[str, Any]
+    received_at: str
+    conflict_code: str | None
 
 
 class TransportTaskPageResponse(_StrictApiModel):
@@ -553,6 +570,26 @@ async def get_transport_task(
     snapshot = await runtime.service.get_task_snapshot(transport_task_id)
     data = TransportTaskResponse.model_validate(snapshot, from_attributes=True)
     return cast("ResponseSchemaModel[TransportTaskResponse]", response_builder.success(data=data))
+
+
+@router.get(
+    "/callback-receipts",
+    summary="[ops:transport-callback-receipt:read] 查询持久化 Transport 回调收据",
+    response_model=ResponseSchemaModel[TransportCallbackReceiptResponse],
+    dependencies=[Depends(RequirePermission("ops:transport-callback-receipt:read"))],
+    responses={404: {"description": "收据不存在"}, 503: {"description": "Transport runtime 不可用"}},
+)
+async def get_transport_callback_receipt(
+    request: Request,
+    operation: Annotated[str, Query(min_length=1, max_length=80)],
+    operation_id: Annotated[str, Query(pattern=_UUID7_PATTERN)],
+) -> ResponseSchemaModel[TransportCallbackReceiptResponse]:
+    runtime = _transport_runtime(request)
+    snapshot = await runtime.service.get_callback_receipt_snapshot(operation, operation_id)
+    if snapshot is None:
+        raise NotFoundException(resource_type="TransportCallbackReceipt", resource_id=operation_id)
+    data = TransportCallbackReceiptResponse.model_validate(snapshot, from_attributes=True)
+    return cast("ResponseSchemaModel[TransportCallbackReceiptResponse]", response_builder.success(data=data))
 
 
 __all__ = ["router"]

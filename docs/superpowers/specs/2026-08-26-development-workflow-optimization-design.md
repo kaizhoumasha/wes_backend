@@ -152,11 +152,9 @@ ONLINE ──在线预检──> READY ──关闭 Nginx/API/Beat admission─�
   直到对应下游可靠对象提交可见，期间每一个数据库 snapshot 都必须至少命中一个四表 `WAIT_DRAIN` 或
   `BLOCK` 谓词。Celery 消息只是扫描提示，不得是唯一业务真相。
 - 稳定静默前不得停止执行 worker、切换部署源、备份或迁移。维护态内出现 `BLOCK`、查询失败或等待超时，沿用既有失败路径保持外部入口关闭，不自动恢复、重试业务或重发物理指令。
-- Phase 10 一次性 legacy drain 是原子 cutover 前置条件，不是长期四表查询。旧 Inbox/Intent/Outbox producer 或
-  consumer 仍活动时不得启用新门禁；Phase 10 详细计划和退出证据尚未完成，因此本门禁保持 gated。
-  Phase 10 必须在旧 consumer 尚可用时排空并封住 legacy producer，再停旧 API/Beat/worker，原子切换到只装配四个目标
-  owner 的 candidate，并在重开 admission 前通过四表复核和旧 import/task/Compose/schema owner 缺席门禁。不使用
-  feature flag、legacy adapter、双查询或兼容 facade。Phase 11 只删除由此产生的无 owner schema，不为门禁保留空表。
+- Phase 10 一次性 legacy drain 与旧 owner 退出属于已完成的首次切换过程，不进入长期四表查询，也不重新引入旧表、旧
+  consumer、feature flag 或兼容 facade。当前 FULL 发布流程以 `docs/devops/prod-release-deploy.md` 为准；普通 TEST FULL
+  验收由 `docs/superpowers/plans/2026-09-09-stability-recovery-operations.md` C2 承接，未执行部分不能用首次切换证据替代。
 
 该门禁只判断是否适合停止执行进程，不自动取消、重试、修复或对账任何业务记录。
 
@@ -165,7 +163,7 @@ ONLINE ──在线预检──> READY ──关闭 Nginx/API/Beat admission─�
 由于开发门禁与现场运行静默属于两个可独立审批、独立回滚的子系统，分别实施：
 
 1. `2026-08-26-development-workflow-efficiency.md`：前后端 Agent、Git、QUALITY 和 HEAVY 流程。
-2. `2026-08-26-release-operational-readiness.md`：后端 FULL 发布前的只读运行静默门禁。
+2. `docs/superpowers/plans/2026-09-09-stability-recovery-operations.md` C2：已实现的后端 FULL 只读运行静默门禁的普通 TEST 验收；原实施过程已外部归档，机制以当前发布规范为准。
 
 第一份计划不依赖第二份；第二份不得反向改变日常开发测试策略。
 

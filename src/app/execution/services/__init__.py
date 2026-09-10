@@ -1,6 +1,7 @@
 """Execution 应用服务导出。"""
 
 from .decision_applier import DecisionApplier, decision_digest
+from .execution_observation_service import ExecutionObservationService, execution_observation_service
 from .fact_builder import FactBuilder
 from .fact_processor import FactProcessor
 from .inbound_evidence_service import (
@@ -38,6 +39,7 @@ from .wms_confirmation_service import (
 __all__ = [
     "ActiveMaterialExecutionExistsError",
     "DecisionApplier",
+    "ExecutionObservationService",
     "FactBuilder",
     "FactProcessor",
     "InboundEvidenceAcceptance",
@@ -59,6 +61,7 @@ __all__ = [
     "WmsConfirmationResponseConflictResult",
     "WmsConfirmationService",
     "decision_digest",
+    "execution_observation_service",
     "inbound_evidence_service",
     "material_execution_service",
     "position_projection_service",

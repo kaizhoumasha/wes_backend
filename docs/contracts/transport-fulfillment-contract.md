@@ -593,10 +593,13 @@ WES 可靠保存每个合法版本：更高版本可以推进未确定结果；�
 结果携带 `transport_task_id`、`client_request_id`、单调递增的 `outcome_version`、`TransportCaller`、稳定结果码和最终位置。
 只有 `SUCCEEDED` 可以触发依赖动作。
 
-任务首次进入 `ACCEPTED` 时写入唯一截止事实 `result_deadline_at = 当前时间 + 10 分钟`。无论由同步 ACK 还是先到的位置证据
+任务首次进入 `ACCEPTED` 时写入唯一截止事实 `result_deadline_at = 当前时间 + Settings.TRANSPORT_RESULT_TIMEOUT_SECONDS`（秒）。无论由同步 ACK 还是先到的位置证据
 首次证明远端已接纳，都执行相同写入；重复 ACK、成员位置事实和其他更新不得刷新该字段。若最终结果先到并直接形成确定终态，
 无须设置截止时间。到期仍无匹配权威结果时发布 `UNKNOWN / TRANSPORT_RESULT_TIMEOUT` 并保持相关资源绑定；超时只是结果
 不确定，不代表物理失败，也不触发自动补偿。
+
+等待窗口的唯一默认值与合法范围由 `src/core/conf.py` 的 Settings 定义；配置变更须重启消费进程，
+仅影响之后首次接纳且尚未冻结 deadline 的任务，不重算已保存期限。
 
 `reconcile_overdue_tasks(limit)` 只按 `result_deadline_at` 和稳定顺序有界领取超过结果截止时间的 `ACCEPTED` 任务，在一个事务内转为
 `RECONCILING`、递增 `outcome_version` 并形成待发布结果；它不查询 WMS/RCS、不释放资源，也不直接调用 Publisher。

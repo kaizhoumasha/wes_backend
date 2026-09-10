@@ -200,7 +200,9 @@ async def test_task_with_latest_evidence_uses_one_coherent_postgres_snapshot(
             task_with_evidence = await repository.get_task_with_latest_evidence(db, task_id)
 
         assert task_with_evidence is not None
-        task, latest = task_with_evidence
+        task, latest, pending_count, binding_count = task_with_evidence
+        assert pending_count == 2
+        assert binding_count == 0
         assert task.transport_task_id == task_id
         assert latest is not None
         assert latest.operation_id == second_operation_id
