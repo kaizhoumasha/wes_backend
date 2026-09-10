@@ -7,6 +7,18 @@
 
 ## WorkLine
 
+### 粗分插件静态声明与运行依赖拆分（本期不实施）
+
+**What:** 将 `rough_sorter` 的插件身份、设备角色和工作位插槽移入独立 `definition.py`，启动构造器与业务代码直接复用具名 SDK 声明。
+
+**Why:** 当前声明读取仍需导入 `RoughSorterStartPlanBuilder` 及其业务依赖，无法独立于宿主运行模块加载。
+
+**Scope:** 迁移粗分声明与直接消费者，删除原重复定义，并验证声明可独立导入、原 START 和业务行为不变；沿用显式部署组合，不重建插件加载框架。
+
+**Boundary:** 按用户确认，本期仅实施 `manual-picking` 与宿主声明/运行分离，不包含粗分插件内部重构。
+
+---
+
 ### 人工 PickingTask 自动准备生产激活
 
 **What:** 将已暗构建的 `outbound.picking_task.prepare@v1` 接入真实人工 WorkLine 运行链路；在同一原子切片完成

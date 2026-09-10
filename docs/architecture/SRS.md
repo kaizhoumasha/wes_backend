@@ -353,7 +353,7 @@ WMS Client，工作线执行映射由插件拥有；不得互相替代测试。
   * 每个 Device 最多归属一条 WorkLine，归属只通过 WorkLine 配置一次性替换；设备通用 CRUD 不写 `work_line_id`。
     Device 不保存插件业务角色；角色由插件定义，在 WorkLine 当前插件配置中绑定实际 `device_code`。
     当前默认每个必需角色绑定一台设备，允许本线设备不参与当前插件；特殊多重关系仅在真实业务要求时扩展。
-    运行期间保持 WorkLine 的角色与设备关联不变，按 `device_role + device_code` 精确定位；命令自行冻结必要执行合同。
+    运行期间保持 WorkLine 的角色与设备关联不变，按插件设备插槽与实际 `device_code` 的有效绑定精确定位；命令自行冻结必要执行合同。
 
 * **WorkLine 插件、启动与分拣机设备边界**:
   * WorkLine 保存当前选择的 `plugin_key` 和插件业务配置；部署制品提供显式、不可变的已安装插件 tuple，不扫描环境且不提供默认插件。

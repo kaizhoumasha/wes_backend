@@ -75,10 +75,11 @@ ARG WES_PLUGIN_EXTRAS=""
 RUN --mount=type=bind,target=/context \
     cp -a /context/. /app/ && \
     for extra in ${WES_PLUGIN_EXTRAS}; do \
-        case "$extra" in rough-sorter|manual-bin-processing) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
+        case "$extra" in rough-sorter|manual-bin-processing|manual-picking) ;; *) echo "Unknown plugin extra: $extra" >&2; exit 1 ;; esac; \
     done && \
     case " ${WES_PLUGIN_EXTRAS} " in *" rough-sorter "*) ;; *) rm -rf /app/workline_plugins/rough_sorter ;; esac && \
-    case " ${WES_PLUGIN_EXTRAS} " in *" manual-bin-processing "*) ;; *) rm -rf /app/workline_plugins/manual_bin_processing ;; esac
+    case " ${WES_PLUGIN_EXTRAS} " in *" manual-bin-processing "*) ;; *) rm -rf /app/workline_plugins/manual_bin_processing ;; esac && \
+    case " ${WES_PLUGIN_EXTRAS} " in *" manual-picking "*) ;; *) rm -rf /app/workline_plugins/manual-picking ;; esac
 
 # ============================================
 # Stage 2: Builder - 依赖安装

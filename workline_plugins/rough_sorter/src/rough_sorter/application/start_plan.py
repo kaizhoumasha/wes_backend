@@ -6,16 +6,15 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.device.contracts import EcsDeviceMode, EcsDeviceState
 from src.app.device.repositories.device_repository import device_repository
-from src.app.resource.models import RackKind
 from src.app.workline.activation import (
     WorkLineActivationPlan,
     WorkLineDeviceBinding,
     WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import parse_device_bindings
-from src.app.workline.models.workline import WorkLineDeviceRole, WorkLinePositionSlot
 from src.app.workline.services.workline_start_service import WorkLineStartConfigurationError
 from src.utils.timezone import timezone
+from wes_plugin_sdk import WorkLineDeviceRole, WorkLinePositionSlot
 
 from rough_sorter.handlers._guards import ROLE_CONTRACTS
 from rough_sorter.plugin import PLUGIN_KEY, PLUGIN_VERSION, POSITION_ROLES
@@ -63,7 +62,7 @@ class RoughSorterStartPlanBuilder:
             display_name=name,
             position_type="RACK_POSITION" if role == "PIPELINE_OUTLET" else "STATION",
             location_type=role,
-            allowed_rack_kind=RackKind.SINGLE_LAYER if role == "PIPELINE_OUTLET" else None,
+            allowed_rack_kind="SINGLE_LAYER" if role == "PIPELINE_OUTLET" else None,
         )
         for role, name in zip(POSITION_ROLES, ("测量位", "输送入口", "输送出口", "NG 位"), strict=True)
     )

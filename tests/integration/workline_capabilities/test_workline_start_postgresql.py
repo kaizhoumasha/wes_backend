@@ -9,6 +9,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from wes_plugin_sdk import PluginDefinition, WorkLineDeviceRole, WorkLinePositionSlot
 
 from src.app.device.models.device import Device
 from src.app.execution.plugin_binding import PluginRuntimeBinding
@@ -18,7 +19,7 @@ from src.app.workline.activation import (
     WorkLinePositionBinding,
 )
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
-from src.app.workline.models.workline import LineType, WorkLine, WorkLineDeviceRole, WorkLinePositionSlot
+from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.workline_start_service import (
     WorkLineStartService,
     WorkLineStartVersionConflictError,
@@ -71,7 +72,18 @@ class Builder:
 
 def _plugin(builder: Builder) -> InstalledWorkLinePlugin:
     return InstalledWorkLinePlugin(
-        display_name="PostgreSQL test",
+        definition=PluginDefinition(
+            plugin_key="postgresql_test",
+            plugin_version="1.0",
+            display_name="PostgreSQL test",
+            supported_line_types=(LineType.AUTO,),
+            device_roles=(WorkLineDeviceRole(role_key="DEVICE_ROLE", display_name="设备"),),
+            position_slots=(
+                WorkLinePositionSlot(
+                    slot_key="INPUT_POSITION", display_name="入口", position_type="STATION", location_type="RACK_CELL"
+                ),
+            ),
+        ),
         runtime_binding=PluginRuntimeBinding(
             plugin_key="postgresql_test",
             plugin_version="1.0",
@@ -79,13 +91,6 @@ def _plugin(builder: Builder) -> InstalledWorkLinePlugin:
             fact_factory=object(),  # type: ignore[arg-type]
         ),
         start_plan_builder=builder,
-        supported_line_types=(LineType.AUTO,),
-        device_roles=(WorkLineDeviceRole(role_key="DEVICE_ROLE", display_name="设备"),),
-        position_slots=(
-            WorkLinePositionSlot(
-                slot_key="INPUT_POSITION", display_name="入口", position_type="STATION", location_type="RACK_CELL"
-            ),
-        ),
     )
 
 
@@ -184,3 +189,67 @@ def test_workline_start_publishes_current_contract_and_serializes_version() -> N
                 await engine.dispose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_declaration_only_start_persists_basic_contracts(integration_session_factory):
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from sqlalchemy import delete
+
+    from src.app.device.contracts import EcsDeviceStatus
+    from src.app.device.services import device_command_admission
+    from src.app.runtime.orchestration.models.workline_position import WorkLinePosition
+    from src.utils.timezone import timezone
+
+    sessions = integration_session_factory
+    line_id, device_id = await _seed_workline(sessions, uuid4().hex[:10])
+    try:
+        async with sessions.begin() as db:
+            device = await db.get(Device, device_id)
+            device.endpoint_base_url = "http://ecs-start-pg:8080"
+            device.is_active = True
+        provider = AsyncMock()
+        provider.get_adapter.return_value.fetch_statuses.return_value = (
+            EcsDeviceStatus.model_validate(
+                {
+                    "device": {
+                        "device_code": f"START-PG-DEVICE-{line_id}",
+                        "device_name": None,
+                        "device_type": None,
+                        "role": None,
+                        "supported_commands": None,
+                        "supported_events": None,
+                    },
+                    "state": {
+                        "device_code": f"START-PG-DEVICE-{line_id}",
+                        "is_online": True,
+                        "mode": "AUTO",
+                        "status": "IDLE",
+                        "current_command_code": None,
+                        "scenario": None,
+                        "updated_at": int(timezone.now_utc().timestamp() * 1000),
+                    },
+                }
+            ),
+        )
+        definition = _plugin(Builder({})).definition
+        service = WorkLineStartService(
+            plugins=(InstalledWorkLinePlugin(definition=definition),),
+            device_adapter_provider=provider,
+            device_admission=device_command_admission,
+        )
+        async with sessions.begin() as db:
+            await service.start(db, workline_id=line_id, version=0)
+        async with sessions() as db:
+            persisted = await db.get(WorkLine, line_id)
+            assert persisted.is_active and persisted.version == 1 and persisted.flow_mode is None
+            assert persisted.plugin_version == definition.plugin_version
+            assert persisted.device_contracts[f"START-PG-DEVICE-{line_id}"]["device_id"] == device_id
+            assert persisted.position_bindings["INPUT_POSITION"]["location_id"] == f"LOCATION-{line_id}"
+    finally:
+        async with sessions.begin() as db:
+            await db.execute(delete(WorkLinePosition).where(WorkLinePosition.workline_id == line_id))
+            await db.execute(delete(Device).where(Device.id == device_id))
+            await db.execute(delete(WorkLine).where(WorkLine.id == line_id))

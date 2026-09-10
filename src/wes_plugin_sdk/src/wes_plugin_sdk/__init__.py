@@ -17,6 +17,7 @@ from .decisions import (
     TransportZonePosition,
     Wait,
 )
+from .definition import PluginDefinition, WorkLineDeviceRole, WorkLinePositionSlot
 from .facts import (
     DeviceResultReadyFact,
     EvidenceReadyFact,
@@ -187,6 +188,7 @@ __all__ = (
     "PickingTaskPrepareOutcome",
     "PlacementIntent",
     "PlacementOutcome",
+    "PluginDefinition",
     "PositionBindingSnapshot",
     "PrepareAccepted",
     "RackDepartureIntent",
@@ -223,6 +225,8 @@ __all__ = (
     "WmsOperationOutcome",
     "WmsResultReadyFact",
     "WorkLineConfigurationSnapshot",
+    "WorkLineDeviceRole",
+    "WorkLinePositionSlot",
     "handler",
     "wms_operations",
 )

@@ -79,6 +79,10 @@ class ManualDebugDeviceCommandSnapshot:
     callback: DeviceCommandCallbackSnapshot | None
 
 
+DEVICE_INTEGRATION_CONTRACT_KEY = "third_party_integration"
+DEVICE_INTEGRATION_CONTRACT_VERSION = "1.1"
+
+
 class EcsDeviceMode(str, Enum):
     AUTO = "AUTO"
     MANUAL = "MANUAL"

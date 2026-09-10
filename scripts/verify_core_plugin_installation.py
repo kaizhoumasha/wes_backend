@@ -9,8 +9,12 @@ from pathlib import Path
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    for package in ("rough_sorter", "manual_bin_processing"):
-        if find_spec(package) is not None or (root / "workline_plugins" / package).exists():
+    for package, directory in (
+        ("rough_sorter", "rough_sorter"),
+        ("manual_bin_processing", "manual_bin_processing"),
+        ("manual_picking", "manual-picking"),
+    ):
+        if find_spec(package) is not None or (root / "workline_plugins" / directory).exists():
             raise RuntimeError(f"基础制品包含业务包或源码: {package}")
 
     from deployment.plugin_composition import build_deployment_runtime

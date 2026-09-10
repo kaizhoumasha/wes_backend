@@ -42,7 +42,7 @@ class WorkLineActivationPlan:
 
     plugin_key: str
     plugin_version: str
-    flow_mode: str
+    flow_mode: str | None
     device_bindings: tuple[WorkLineDeviceBinding, ...]
     position_bindings: tuple[WorkLinePositionBinding, ...]
 

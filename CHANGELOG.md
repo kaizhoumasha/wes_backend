@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0.0] - 2026-09-10
+
+### Added
+
+- 新增独立 manual-picking 插件声明：SCAN1–4 四个扫码角色与 FIVE_RACK、RETURN_RACK、TRANSFER_RACK、INLET、OUTLET 五个位置插槽；保留旧人工插件，扫码业务处理留待后续实现。
+
+### Changed
+
+- 插件静态声明与运行依赖分离，部署显式加载声明；资源完整时可执行基础 START，继续校验设备归属、在线状态、模式与时效，并冻结设备合同。
+- 无业务 handler 的未关联设备事件可靠留证为 IGNORED；既有执行、命令结果和可靠义务保留原处理边界。
+- 同步 SDK、安装验证及容器装配，补充工作线配置与启动回归；更新当前合同和配置索引，将两份旧设计移出项目归档，粗分插件内部重构列入 TODO。
+
 ## [0.41.0.1] - 2026-09-09
 
 ### Fixed

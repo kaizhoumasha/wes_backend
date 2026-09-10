@@ -1655,7 +1655,8 @@ def test_only_static_composition_root_imports_plugin_without_mutable_registry() 
         if any(module == "rough_sorter" or module.startswith("rough_sorter.") for module in modules):
             direct_importers.append(path.name)
 
-    assert direct_importers == ["plugin_composition.py"]
+    # 声明加载与运行构造同属 deployment 的显式组合边界。
+    assert direct_importers == ["plugin_composition.py", "plugin_definitions.py"]
     assert "install_rough_sorter_types" not in "".join(deployment_sources.values())
     assert "get_rough_sorter_types" not in "".join(deployment_sources.values())
     assert "ContextVar" not in "".join(deployment_sources.values())

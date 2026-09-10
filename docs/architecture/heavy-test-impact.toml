@@ -1604,6 +1604,7 @@ heavy_tests = [
 [[mapping]]
 source_glob = "src/core/conf.py"
 heavy_tests = [
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
     "tests/e2e/transport/test_transport_production_wiring.py",
     "tests/integration/wms_adapter/test_inbound_confirmation_postgresql.py",
 ]
@@ -2729,3 +2730,20 @@ heavy_tests = ["tests/integration/execution/test_execution_observation_postgresq
 [[mapping]]
 source_glob = "tests/support/transport_interruption.py"
 heavy_tests = ["tests/e2e/test_execution_interruption_recovery.py"]
+
+# SDK 声明承接工作线装配的资源类型；持久化装配/启动是其集成消费者。
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/src/wes_plugin_sdk/definition.py"
+heavy_tests = ["tests/integration/workline_capabilities/test_workline_configuration_postgresql.py", "tests/integration/workline_capabilities/test_workline_start_postgresql.py"]
+
+[[mapping]]
+source_glob = "src/wes_plugin_sdk/tests/test_plugin_definition.py"
+heavy_tests = []
+
+[[mapping]]
+source_glob = "deployment/plugin_definitions.py"
+heavy_tests = [
+    "tests/integration/workline_capabilities/test_workline_configuration_postgresql.py",
+    "tests/integration/workline_capabilities/test_workline_start_postgresql.py",
+    "tests/integration/test_celery_async_runtime_postgresql.py",
+]

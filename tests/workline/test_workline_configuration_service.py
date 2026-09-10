@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 import pytest
+from wes_plugin_sdk import PluginDefinition, WorkLineDeviceRole
 
 from src.app.execution.plugin_binding import PluginRuntimeBinding
 from src.app.workline.installed_plugin import InstalledWorkLinePlugin
@@ -12,7 +13,6 @@ from src.app.workline.models.workline import (
     WorkLineBaseConfigurationUpdate,
     WorkLineConfigurationUpdate,
     WorkLineCreate,
-    WorkLineDeviceRole,
     WorkLinePositionInput,
     WorkLineUpdate,
 )
@@ -31,7 +31,13 @@ def _plugin(
     blocker: object | None = None,
 ) -> InstalledWorkLinePlugin:
     return InstalledWorkLinePlugin(
-        display_name="Example",
+        definition=PluginDefinition(
+            plugin_key="example_plugin",
+            plugin_version="1.0",
+            display_name="Example",
+            supported_line_types=(LineType.AUTO,),
+            device_roles=(WorkLineDeviceRole(role_key="SCAN", display_name="识别设备"),),
+        ),
         runtime_binding=PluginRuntimeBinding(
             plugin_key="example_plugin",
             plugin_version="1.0",
@@ -39,9 +45,7 @@ def _plugin(
             fact_factory=_Factory(),
         ),
         start_plan_builder=object(),
-        supported_line_types=(LineType.AUTO,),
         business_blocker=blocker,
-        device_roles=(WorkLineDeviceRole(role_key="SCAN", display_name="识别设备"),),
     )
 
 
@@ -71,7 +75,7 @@ async def test_save_checks_submitted_configuration_before_changing_device_owners
 
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=worklines,
         device_repository=_Devices([previous, incoming]),
         safety_repository=_Safety(),
@@ -92,14 +96,20 @@ async def test_save_checks_submitted_configuration_before_changing_device_owners
 
 
 @pytest.mark.asyncio
-async def test_save_accepts_new_configuration_even_when_saved_configuration_is_incomplete() -> None:
+@pytest.mark.parametrize("declaration_only", [False, True])
+async def test_save_accepts_new_configuration_even_when_saved_configuration_is_incomplete(declaration_only) -> None:
     db = _Db()
     worklines = _WorkLines(_workline(config={}))
     incoming = _device("D-2", 7)
 
+    from dataclasses import replace
+
+    plugin = _plugin()
+    if declaration_only:
+        plugin = replace(plugin, runtime_binding=None, start_plan_builder=None)
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((plugin).definition,),
         workline_repository=worklines,
         device_repository=_Devices([incoming]),
         safety_repository=_Safety(),
@@ -120,7 +130,7 @@ async def test_save_accepts_new_configuration_even_when_saved_configuration_is_i
 async def test_configuration_status_checks_saved_config_in_complete_mode() -> None:
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(
             _workline(plugin_key="example_plugin", config={"device_bindings": {"SCAN": "D-2"}})
         ),
@@ -287,7 +297,7 @@ async def test_save_configuration_replaces_the_complete_device_set_and_commits_o
         logic_location_code="SORT-3-WORK-1",
     )
     service = WorkLineConfigurationService(
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         position_repository=positions,
         workline_repository=worklines,
         device_repository=_Devices([bound, selected]),
@@ -342,7 +352,7 @@ async def test_save_configuration_invalidates_changed_device_detail_caches(monke
     selected = _device("D-2", None)
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(_workline()),
         device_repository=_Devices([bound, selected]),
         safety_repository=_Safety(),
@@ -388,7 +398,7 @@ async def test_save_configuration_fails_closed_without_partial_commit(
     db = _Db()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(workline, unfinished=unfinished),
         device_repository=_Devices(devices),
         safety_repository=_Safety(),
@@ -411,7 +421,7 @@ async def test_save_configuration_rejects_a_plugin_incompatible_with_selected_de
     db = _Db()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(_workline()),
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -438,7 +448,7 @@ async def test_available_plugins_and_configuration_status_report_stable_incompat
     workline = _workline(plugin_key="example_plugin", run_mode="AUTO", runtime_config_json={})
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(workline),
         device_repository=_Devices([]),
     )
@@ -457,7 +467,12 @@ async def test_available_plugins_and_configuration_status_report_stable_incompat
 @pytest.mark.asyncio
 async def test_available_plugins_checks_candidate_compatibility_without_current_plugin_configuration() -> None:
     current = InstalledWorkLinePlugin(
-        display_name="Current",
+        definition=PluginDefinition(
+            plugin_key="current_plugin",
+            plugin_version="1.0",
+            display_name="Current",
+            supported_line_types=(LineType.AUTO,),
+        ),
         runtime_binding=PluginRuntimeBinding(
             plugin_key="current_plugin",
             plugin_version="1.0",
@@ -465,12 +480,14 @@ async def test_available_plugins_checks_candidate_compatibility_without_current_
             fact_factory=_Factory(),
         ),
         start_plan_builder=object(),
-        supported_line_types=(LineType.AUTO,),
     )
     candidate = _plugin()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(current, candidate),
+        definitions=(
+            (current).definition,
+            (candidate).definition,
+        ),
         workline_repository=_WorkLines(_workline(plugin_key="current_plugin", config={"current": {}})),
         device_repository=_Devices([]),
     )
@@ -488,7 +505,7 @@ async def test_save_without_plugin_rejects_leftover_configuration_before_writes(
     device = _device("D1", None)
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=worklines,
         device_repository=_Devices([device]),
         safety_repository=_Safety(),
@@ -514,7 +531,7 @@ async def test_save_configuration_fails_closed_when_current_plugin_was_removed_f
     worklines = _WorkLines(_workline(plugin_key="removed_plugin"))
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=worklines,
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -538,7 +555,8 @@ async def test_save_configuration_is_blocked_by_the_current_plugins_business_tas
     db = _Db()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(blocker=_Blocker(1)),),
+        definitions=((_plugin(blocker=_Blocker(1))).definition,),
+        business_blockers={"example_plugin": _Blocker(1)},
         workline_repository=_WorkLines(_workline(plugin_key="example_plugin")),
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -561,7 +579,7 @@ async def test_save_configuration_is_blocked_by_active_safety_incident() -> None
     db = _Db()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(_workline()),
         device_repository=_Devices([]),
         safety_repository=_Safety(SimpleNamespace(id=9)),
@@ -585,7 +603,8 @@ async def test_deactivate_updates_workline_in_one_commit() -> None:
     worklines = _WorkLines(_workline(is_active=True, plugin_key="example_plugin"))
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(blocker=_Blocker(0)),),
+        definitions=((_plugin(blocker=_Blocker(0))).definition,),
+        business_blockers={"example_plugin": _Blocker(0)},
         workline_repository=worklines,
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -603,7 +622,8 @@ async def test_deactivate_is_blocked_by_the_current_plugins_business_tasks() -> 
     db = _Db()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(blocker=_Blocker(1)),),
+        definitions=((_plugin(blocker=_Blocker(1))).definition,),
+        business_blockers={"example_plugin": _Blocker(1)},
         workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -620,7 +640,7 @@ async def test_deactivate_is_blocked_by_active_safety_incident() -> None:
     db = _Db()
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         workline_repository=_WorkLines(_workline(is_active=True, plugin_key="example_plugin")),
         device_repository=_Devices([]),
         safety_repository=_Safety(SimpleNamespace(id=9)),
@@ -642,7 +662,8 @@ async def test_missing_selected_plugin_version_blocks_lifecycle_before_business_
     blocker = SimpleNamespace(get_unfinished_workload_summary=AsyncMock())
     service = WorkLineConfigurationService(
         position_repository=_RackPositions(),
-        plugins=(_plugin(blocker=blocker),),
+        definitions=((_plugin(blocker=blocker)).definition,),
+        business_blockers={"example_plugin": blocker},
         workline_repository=worklines,
         device_repository=_Devices([]),
         safety_repository=_Safety(),
@@ -700,7 +721,7 @@ async def test_position_validation_prevents_partial_assembly_writes(invalid_fiel
     ]
     setattr(drafts[1], invalid_field, 999 if invalid_field == "device_id" else getattr(drafts[0], invalid_field))
     service = WorkLineConfigurationService(
-        plugins=(_plugin(),),
+        definitions=((_plugin()).definition,),
         position_repository=positions,
         workline_repository=worklines,
         device_repository=_Devices([incoming]),
@@ -724,10 +745,10 @@ async def test_position_validation_prevents_partial_assembly_writes(invalid_fiel
 async def test_position_assembly_is_validated_before_save_and_protects_bound_resources() -> None:
     from dataclasses import replace
 
-    from src.app.workline.models.workline import WorkLinePositionSlot
+    from wes_plugin_sdk import WorkLinePositionSlot
 
     slot = WorkLinePositionSlot(slot_key="INPUT", display_name="入口", position_type="STATION", location_type="INLET")
-    plugin = replace(_plugin(), position_slots=(slot,))
+    plugin = replace(_plugin(), definition=replace(_plugin().definition, position_slots=(slot,)))
     line = _workline()
     positions = _RackPositions()
     positions.saved = (
@@ -738,7 +759,7 @@ async def test_position_assembly_is_validated_before_save_and_protects_bound_res
     db = _Db()
     repository = _WorkLines(line)
     service = WorkLineConfigurationService(
-        plugins=(plugin,),
+        definitions=((plugin).definition,),
         position_repository=positions,
         workline_repository=repository,
         device_repository=_Devices([_device("D-1", 7)]),

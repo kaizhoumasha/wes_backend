@@ -1,8 +1,8 @@
 # `outbound.picking_task.plan_delta@v1` 计划增量设计
 
-> 2026-09-06 料箱流程目标修订：料箱业务编码、全程 BinExecution 和 NG 出口上报的后续实施按
+> 2026-09-06 料箱流程目标修订：料箱业务编码、全程 BinExecution、LineRunEpoch 和 NG 出口上报的后续实施按
 > [料箱编码与扫码驱动流程 SPEC](2026-09-06-bin-code-and-station-driven-flow-design.md) 收敛。
-> 本文既有完成记录仅描述当时实现，不作为继续保留 NG 出口 operation 或 BinExecution 的依据；其余 Operation 任务仍有效。
+> 本文既有完成记录仅描述当时实现，不作为继续保留 NG 出口 operation、BinExecution 或 LineRunEpoch 的依据；其余 Operation 任务仍有效。
 
 > 2026-09-06 执行目标修订（用户明确授权）：先将可运行 Operation 发布到联调服务器，供 WMS 调用并据此收敛合同。
 > 本文以下 T1-A 的“书面确认后方可编码/发布”门禁由此取代：T1-A 转为联合验收项，T1-B–T5、R4 和 R2-B1 可按本设计实现并验证后联调发布。
@@ -17,7 +17,7 @@ scope: Phase 12 WMS Operation 修复总计划；包含共享 typed Operation 基
 
 ## 1. 目标
 
-WES 在已经可靠接收 PickingTask、冻结匹配的 WorkLine/Epoch，并取得 WMS 明确
+WES 在已经可靠接收 PickingTask、冻结匹配的 WorkLine，并取得 WMS 明确
 `PREPARE_ACCEPTED` 后，严格校验并原子应用 `outbound.picking_task.plan_delta@v1`。若匹配的 prepare 尚未超期且结果仍未确定，
 允许先暂存回调证据，但不接纳该 revision、不推进任务、不触发执行。
 
@@ -80,7 +80,7 @@ R3 再基于 R1 快照修改两个 Inbound 合同，禁止并行覆盖分类字�
 - `plan_delta` 不选择具体 `bin_id`。具体 Bin 由后续 `outbound.bin.inbound_batch@v1` 冻结。
 - 计划持久化对 `MANUAL | AUTO` 保持中立；`task_type` 只参与前序任务领取与 WorkLine 准入，不分叉同一个
   operation 的 revision、幂等或来源模型。
-- `plan_delta` 只读取 PickingTask 已冻结的 WorkLine/Epoch/prepare 关联，不读取当前插件、不按 plugin key 选择 owner，也不复制
+- `plan_delta` 只读取 PickingTask 已冻结的 WorkLine/prepare 关联，不读取当前插件、不按 plugin key 选择 owner，也不复制
   `manual_bin_processing`、flow mode 或人工任务领取判断。prepare 的业务准入与任务领取由对应插件拥有，共享宿主只提供
   PickingTask、WmsConfirmation、事务、锁和严格 operation 合同。
 - WMS 拥有任务、版本和资源计划；WES 拥有本地持久化、顺序校验和执行准入；ECS/PLC 不参与本 operation。
@@ -108,7 +108,7 @@ R3 再基于 R1 快照修改两个 Inbound 合同，禁止并行覆盖分类字�
 
 - `QUEUED` 不允许应用计划；
 - `PREPARING` 只有在匹配的 prepare confirmation 已持久化明确 `PREPARE_ACCEPTED` 后才能应用 revision 1；
-  同任务及冻结 WorkLine/Epoch 的 prepare 尚未超期、结果仍未确定时，按第 5 节暂存并等待原请求重试；
+  同任务及冻结 WorkLine 的 prepare 尚未超期、结果仍未确定时，按第 5 节暂存并等待原请求重试；
 - 首个 revision 原子应用后进入 `EXECUTING`；
 - `EXECUTING` 只接受严格的下一 revision；
 - `EXECUTION_COMPLETED` 不接受新的计划；迟到 plan_delta 留 `RECONCILING` Evidence 并返回 `STATE_CONFLICT`，但不设置
@@ -129,8 +129,8 @@ R3 再基于 R1 快照修改两个 Inbound 合同，禁止并行覆盖分类字�
 
 ### 3.3 Evidence 与物料处理隔离
 
-计划证据使用 `WMS_EVENT`，`line_run_epoch_id`、`material_execution_id`、`transport_task_id` 均保持为空。
-任务与来源通过上述 Evidence 外键追溯，Epoch 由 PickingTask 冻结绑定提供；不得为方便查询向 Evidence 填 Epoch，
+计划证据使用 `WMS_EVENT`，`workline_id`、`material_execution_id`、`transport_task_id` 均保持为空。
+任务与来源通过上述 Evidence 外键追溯，WorkLine 由 PickingTask 冻结绑定提供；不得为方便查询向全局计划 Evidence 填工作线关联，
 也不得伪造 `published_at` 或 Decision 摘要来避开扫描器。`PENDING` 仅由 WMS 原请求重试重新处理，不唤醒设备或物料处理器。
 这复用已批准的 prepare 隔离方式，不给共享 Evidence 增加 PickingTask 外键、不改共享扫描规则。
 
@@ -199,7 +199,7 @@ typed handler 不得在 data DTO 失败时本地短路 422。parser 必须保留
 confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚未提交，只读到原来的未定状态并返回 503，允许下次重试。
 只接受唯一匹配 task、prepare operation、冻结绑定且状态为 `COMPLETED`、响应为 `PREPARE_ACCEPTED` 的确认；零条、多条或证据不匹配
 均不当作成功。成功确认不可被回调改写；超期门禁针对尚未成功确定的 prepare，不让后来重试把已持久化的有效成功改成超期。
-生产激活时 STOP/Epoch 关闭必须与任务准入一致串行化，并保留未完成任务围栏；本轮不改该生产生命周期。
+生产激活时 WorkLine 停用必须与任务准入一致串行化，并保留未完成任务围栏；本轮不改该生产生命周期。
 
 ### 4.2 Operation 基础能力与插件消费
 
@@ -219,7 +219,7 @@ confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚�
 
 `wms_operations` 只有一个插件可见 facade；每个方法固定一个 operation 的字面量、typed 输入和 typed outcome 联合。它不实现网络发送、
 重试、幂等、并发领取或插件 registry。共享 `WmsConfirmationLifecycleService`、dispatcher 和 `WmsClient` 继续分别拥有这些机制。
-同一插件节点可以创建多个不同 intent；同一 typed method 可以由多个插件调用。调用实例仍通过已冻结 owner/Epoch/plugin version 关联其
+同一插件节点可以创建多个不同 intent；同一 typed method 可以由多个插件调用。调用实例仍通过已冻结 owner/WorkLine/plugin version 关联其
 业务后续，不按 operation 名称猜测消费者。
 
 零消费者是合法部署状态：基础 Operation 的 DTO、Adapter、可靠 worker 和 WMS→WES 静态 route 可以存在，但不会凭空产生新业务请求。
@@ -234,7 +234,7 @@ confirmation → PickingTask，反向加锁会形成死锁。若并发响应尚�
 - 相同 `operation_id` 但正文变化：返回 `CONFLICT`，保留首次证据和业务结果。
 - 当前 revision 使用新的 `operation_id`、但完整业务内容与已应用 revision 相同：保存本次 Evidence，返回
   `200 / DUPLICATE`，不重复应用；内容不同则进入 `RECONCILING`。
-- revision 1 先于 prepare 响应落库到达，且任务、冻结 WorkLine/Epoch 与 prepare 匹配、prepare 尚未超期且结果仍未确定：
+- revision 1 先于 prepare 响应落库到达，且任务、冻结 WorkLine 与 prepare 匹配、prepare 尚未超期且结果仍未确定：
   将 Evidence 持久化为 `PENDING`，返回 `503 / UNAVAILABLE + data={}`，不修改业务计划、revision 或任务状态。
   这是本 operation 对“证据已保存但尚未成功处理”的明确重试约定，不引入 `WAIT` 响应或新的通用状态。
 - WMS 使用原 `operation_id`、原 timestamp 和原正文重试上述 `PENDING` 请求；WES 复用同一 Evidence 并重新检查前置条件。
@@ -323,7 +323,7 @@ plan_delta 暗构建不注册：
    PickingTask confirmation owner、plan_delta 静态 Event route/OpenAPI 及共享 worker。它不要求 `manual_bin_processing` 当前启用，
    也不从插件清单动态注册或注销 operation。已有可靠义务和迟到回调始终可接收、保存和对账。
 2. **R2-B2 插件消费激活**：在 R2-A 与 R2-B1 之后，才让 `manual_bin_processing` WorkLine START/业务节点创建新的 prepare intent，
-   并装配 PickingTask STOP/Epoch blocker 和后继执行。未来其它插件通过同一 typed method 接入，不修改 operation route 或可靠内核。
+   并装配 PickingTask STOP/插件切换 blocker 和后继执行。未来其它插件通过同一 typed method 接入，不修改 operation route 或可靠内核。
 
 R2-B1/R2-B2 都必须让新动作准入、完成和资源释放路径检查任务的计划阻塞；已有动作结果接收路径不得被这一准入检查拦截。
 插件缺失、版本不匹配或能力未装配时 fail closed：禁止新业务触发；已在途响应保留原 identity、Evidence 和资源围栏并进入对账。
@@ -411,7 +411,7 @@ R4 只交付 plan_delta 阻塞所需的最小受控对账，不扩展为全系�
 | `InboundEvidenceService.accept/record_conflict` | 原身份留证、载荷比较、冲突原因 | 不新增 inbox、响应缓存或 payload 表 |
 | `PickingTaskRepository` | 精确任务行锁、当前版本和首次阻塞 | 不扫描全部任务、不新增分布式锁 |
 | prepare confirmation owner 与响应证据 | 只读判断准备是否明确成功 | 不重发 prepare、不模拟接受响应、不改共享 dispatcher |
-| 已冻结 PickingTask WorkLine/Epoch 关联 | 校验本任务的 prepare 归属 | 不读取当前插件、不硬编码 plugin key/flow mode、不领取任务 |
+| 已冻结 PickingTask WorkLine 关联 | 校验本任务的 prepare 归属 | 不读取当前插件、不硬编码 plugin key/flow mode、不领取任务 |
 | 现有 PostgreSQL 临时库与迁移支持 | 约束、事务、并发与迁移链验证 | 不在共享开发库执行迁移验收 |
 | `CreateWmsConfirmation`、`WmsConfirmationLifecycleService`、dispatcher、`WmsClient` | 提取并保留唯一可靠生命周期；typed intent 在提交前冻结，typed Adapter 单次发送 | 不把字符串/裸 dict 构造入口继续暴露给插件，不复制幂等、重试或并发领取 |
 | `InstalledWorkLinePlugin` 与 deployment 静态 composition | 装配插件对 typed Operation 的消费能力，并按冻结业务上下文精确选择 | Operation 不保存消费者清单，不动态注册 route，不提供默认插件 |
@@ -487,7 +487,7 @@ R4 受控计划对账
 | G04–G12 | `tests/contracts/wms_adapter/outbound_picking/test_plan_delta_service.py` | fake 端口验证 revision、状态、prepare、ACK/原因码、首次指针和 MANUAL/AUTO 中立；G07 证明双方 `data` 复用 `normalize_payload(..., EXACT)` 的内存摘要，键序无关且数组顺序敏感；公共摘要/锁只做一次接入证明，不能把 fake 测试当事务证明 |
 | G13–G15 | `tests/integration/wms_adapter/outbound_picking/test_plan_delta_postgresql.py` | 提交前响应不可成功；中途/提交失败无半批；独立连接验证任务 revision/阻塞并发和 prepare 锁顺序，不重复 Evidence 内核的全套 identity 竞争矩阵 |
 | G16 | 现有 `tests/integration/wms_adapter/outbound_picking/test_schema.py` + 新增 PostgreSQL 文件 | 真实 CHECK/FK/唯一性、旧任务 revision 0、base→head 与空库→head；复跑 issued/prepare PostgreSQL 回归 |
-| G17 | 新增 `test_plan_delta_postgresql.py` + 现有 FactBuilder owner 测试 | 直接调用真实 `claim_decision_batch()`：`PENDING` 由状态条件排除，`APPLIED` plan Evidence 因 `line_run_epoch_id=NULL` 无法通过活动 Epoch 内连接，合法 MaterialExecution Evidence 仍可领取；再直接验证 FactBuilder 对非 recovery 的 `WMS_EVENT` fail closed。不得修改共享扫描器或重复通用内核全套测试 |
+| G17 | 新增 `test_plan_delta_postgresql.py` + 现有 FactBuilder owner 测试 | 直接调用真实 `claim_decision_batch()`：`PENDING` 由状态条件排除，`APPLIED` plan Evidence 不进入工作线插件发布队列，按 WorkLine/发布用途边界隔离，合法 MaterialExecution Evidence 仍可领取；再直接验证 FactBuilder 对非 recovery 的 `WMS_EVENT` fail closed。不得修改共享扫描器或重复通用内核全套测试 |
 | G18 | `tests/architecture/test_outbound_picking_plan_delta_activation_guardrail.py`、现有 `tests/api/test_wms_events.py` | 检查公开 schema 无此 oneOf、生产 route 对该 operation 仍拒绝，main/celery_worker/deployment/src/workline_plugins 无生产激活；保留 issued/prepare 原行为 |
 | G19–G20 | SDK typed Operation 测试、`tests/runtime/execution/test_decision_applier.py`、对应插件测试 | 固定方法生成不可变 typed intent；一个节点组合多个 operation 时分别冻结正确 identity/owner，且没有 I/O |
 | G21–G22 | deployment composition 与插件路由 owner 测试 | 同一 method 可由两个静态插件消费者复用；零消费者时 Operation 能力仍装配，新业务触发 fail closed，无动态 route 注册 |
@@ -572,7 +572,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 - [ ] **T3（P1，人工约 4h / Agent 约 1h）— 原子应用与失败收敛**：实现同域 Service/Repository、完整重放、prepare 暂存、持续阻塞与 Evidence 隔离。
   - 来源：D5–D11；文件：`src/app/wms_integration/outbound_picking/services/`、`repositories/` 与相应导出。
   - 验证：G04–G15、G17；先失败用例再实现；G07 使用 `normalize_payload(..., EXACT)` 分别计算当前与首次 `data` 的内存摘要，
-    验证对象键序变化仍为业务重复、数组换序不是业务重复，且无新增持久化摘要字段。G17 明确覆盖 `claim_decision_batch()` 的状态/Epoch 查询门禁、合法 MaterialExecution
+    验证对象键序变化仍为业务重复、数组换序不是业务重复，且无新增持久化摘要字段。G17 明确覆盖 `claim_decision_batch()` 的状态与工作线关联门禁、合法 MaterialExecution
     正向领取及 FactBuilder 对非 recovery `WMS_EVENT` 的防御性拒绝，不改共享 dispatcher/扫描器；不得读取当前插件或硬编码
     `manual_bin_processing`/flow mode，prepare 业务准入迁移由其独立所有权切片负责。真实 PostgreSQL 用例还须证明
     `EXECUTION_COMPLETED` 迟到消息留 `RECONCILING` Evidence/返回 `STATE_CONFLICT`，任务阻塞指针仍为空。
@@ -589,7 +589,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
   - 验证：聚焦域测试、暗构建 guardrail、QUALITY、selector manifest 及迁移；记录指纹与未验证边界。
 - [x] **R2-0（P1，评审门禁）— prepare 专项计划获批**：专项计划已按本轮结论修订为“宿主可靠事务 Coordinator + 插件无副作用 typed Policy”，
   再完成独立工程评审并取得明确批准；当前所有权边界与实施记录见第 17 节，
-  `docs/superpowers/specs/2026-09-05-generic-workline-role-binding.md` 只作为相邻角色/基础装配边界参考，不能替代本计划的 prepare 所有权约束。
+  顶层架构设计 §7.6 的插件插槽与资源绑定合同只作为相邻角色/基础装配边界参考，不能替代本计划的 prepare 所有权约束。
   - 退出条件：专项计划状态、Coordinator/Policy typed 端口、生产/测试 owner、事务与可靠性边界、暗构建守卫和 HEAVY mapping 均评审闭合；
     显式确认 `picking_task_confirmation_owner.py` 的公开签名、confirmation→PickingTask 锁语义及 `WmsConfirmation` 响应证据形状保持不变；
     未通过不得开始 R2-A。
@@ -634,8 +634,8 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
   - 验证：ASGI 合同、真实 worker 派发/恢复、prepare→plan_delta 联合 fixture、零消费者启动、进程重启及插件缺失时在途响应可靠保存；
     结果只证明接口与运行机制，不能替代现场物理或业务验收。
 - [ ] **R2-B2（P1）— 激活 `manual_bin_processing` 消费能力**：仅在 R2-A 和 R2-B1 完成后，让该插件 WorkLine START/业务节点创建新的 typed prepare intent，
-  并装配 PickingTask STOP/Epoch blocker 与后继执行；未来其它插件复用同一 operation 时只增加静态消费装配，不修改 route/core。
-  - 验证：真实 worker、START/STOP/Epoch、一个节点组合多个 operation、计划阻塞对新动作/完成/释放的门禁，以及已有动作结果仍可闭合；
+  并装配 PickingTask STOP/插件切换 blocker 与后继执行；未来其它插件复用同一 operation 时只增加静态消费装配，不修改 route/core。
+  - 验证：真实 worker、START/STOP/插件切换、一个节点组合多个 operation、计划阻塞对新动作/完成/释放的门禁，以及已有动作结果仍可闭合；
     插件停用只禁止新触发，不切断已存在可靠义务和迟到回调。
 
 最小执行命令与门禁（在实施后的有效快照执行，本次不运行）：
@@ -649,7 +649,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 - R4 运行授权、证据匹配、任务锁、并发/replay、事务失败和 blocker 一致性的聚焦与 PostgreSQL 测试。
 - `uv run scripts/select_heavy_tests.py --scope unstaged` 与 `./scripts/run_selected_heavy_local.sh --scope unstaged`；最终获准暂存后改用 staged。
 - `./scripts/git-quality-gate.sh --profile quality` 只对最终有效代码快照执行一次；纯文档后改不重复。
-- R2-B1 必须增加零消费者启动、真实 worker、ASGI 和进程重启恢复验证；R2-B2 单独验证插件新业务触发与 STOP/Epoch blocker，
+- R2-B1 必须增加零消费者启动、真实 worker、ASGI 和进程重启恢复验证；R2-B2 单独验证插件新业务触发与 STOP/插件切换 blocker，
   两者均不复用 plan_delta 暗构建绿灯。
 
 迁移/HEAVY 所需环境先检查就绪，在独占临时 PostgreSQL 中使用干净逻辑库；`skipped` 不算通过。migration 新 revision 产生后，
@@ -666,7 +666,7 @@ R3 负责共享 typed Operation 生命周期及既有调用迁移，R4 负责计
 | R2-0–R2-A | `docs/superpowers/plans/`、`wms_integration/outbound_picking/`、`workline_plugins/manual_bin_processing/` | R1；R2-A 另依赖 R3-A |
 | R4 | outbound picking 对账 Service/API、授权与对应测试 | T3 |
 | R2-B1 | route/OpenAPI、worker、deployment | T5、R3-B、R4、WMS 联合 fixture |
-| R2-B2 | `workline_plugins/manual_bin_processing/`、WorkLine START/STOP/Epoch | R2-A、R2-B1 |
+| R2-B2 | `workline_plugins/manual_bin_processing/`、WorkLine START/STOP/插件切换 | R2-A、R2-B1 |
 
 - Lane A：R1。
 - Lane B：T0-A → T0-B → T1-A → T1-B → T2 → T3 → T4 → T5。

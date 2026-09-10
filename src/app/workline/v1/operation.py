@@ -160,7 +160,7 @@ async def start_workline(
         version=result.version,
         plugin_key=cast("str", result.plugin_key),
         plugin_version=cast("str", result.plugin_version),
-        flow_mode=cast("str", result.flow_mode),
+        flow_mode=result.flow_mode,
         is_active=result.is_active,
     )
     return cast(

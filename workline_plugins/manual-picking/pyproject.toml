@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wes-manual-picking-plugin"
+dynamic = ["version"]
+description = "人工拣料出库插件"
+requires-python = ">=3.13"
+dependencies = ["wes-plugin-sdk==0.1.0"]
+
+[tool.uv.sources]
+wes-plugin-sdk = { path = "../../src/wes_plugin_sdk" }
+
+[tool.hatch.version]
+path = "src/manual_picking/definition.py"
+pattern = 'plugin_version\s*=\s*"(?P<version>[^\"]+)"'
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/manual_picking"]

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import JSON, Column, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
+from wes_plugin_sdk import WorkLineDeviceRole, WorkLinePositionSlot
 
 from src.app.resource.models import RackKind
 from src.app.workline.rack_position_role import WorklineRackPositionRole
@@ -192,33 +193,6 @@ class WorkLineConfigurationResponse(BaseModel):
     version: int
     plugin_key: str | None
     config: dict[str, Any]
-
-
-class WorkLineDeviceRole(BaseModel):
-    """插件声明的设备角色；前端仅展示名称并选择实体设备。"""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    role_key: str = Field(min_length=1, max_length=100)
-    display_name: str = Field(min_length=1, max_length=100)
-
-
-class WorkLinePositionSlot(BaseModel):
-    """插件工作位需求；执行位置类型来自插件合同，现场编码来自工作线。"""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    slot_key: str = Field(min_length=1, max_length=100)
-    display_name: str = Field(min_length=1, max_length=100)
-    position_type: Literal["RACK_POSITION", "STATION"]
-    location_type: str = Field(min_length=1, max_length=100)
-    allowed_rack_kind: RackKind | None = None
-
-    @model_validator(mode="after")
-    def validate_resource_constraint(self) -> "WorkLinePositionSlot":
-        if self.position_type == "STATION" and self.allowed_rack_kind is not None:
-            raise ValueError("普通工作位插槽不能约束货架类型")
-        return self
 
 
 class WorkLinePluginSummary(BaseModel):

@@ -11,7 +11,7 @@
 Transport member-position/result evidence 和位置投影。Phase 5 退役旧工作线插件及其专属 Runtime/Registry/Intent/Effect
 执行闭包，不把新 Transport 接到旧插件；Phase 6 在零业务插件基线上完成 Transport 正式基础基线和旧 owner 收敛，
 不得用 no-op consumer 假装业务接线；Phase 7 独立交付 DeviceCommand、设备状态、统一设备接口、CALLBACK、
-`LineRunEpoch` 绑定和唯一生产装配。Phase 8 用 `rough_sorter` 验证最小 SPI，Phase 9 闭合最小执行基础，Phase 12/13 再交付人工和自动业务插件。
+WorkLine 设备绑定、命令冻结合同和唯一生产装配。Phase 8 用 `rough_sorter` 验证最小 SPI，Phase 9 闭合最小执行基础，Phase 12/13 再交付人工和自动业务插件。
 
 **Tech Stack:** Python 3.13、FastAPI、SQLModel/SQLAlchemy、PostgreSQL/TimescaleDB、Alembic、Celery、
 Pydantic 2、HTTPX、Pytest 9、Ruff、Bandit、Import Linter、Jenkins。
@@ -386,7 +386,7 @@ Phase 3 `WmsClient` 增加逐请求请求体上限和响应预算透传，但不
 冻结成员、Transport evidence、位置投影、bin/rack 运输资源活动绑定、Transport claim/fencing、六态与闭集对账原因、
 `Transport Port`、WMS 转发 RCS Adapter、operation-scoped Transport evidence handler、统一 `TransportOutcome` 和未注册的暗 Composition。
 
-**Explicit out-of-scope:** DeviceCommand、设备状态、统一设备 Adapter、设备 CALLBACK、ECS、WorkLine/LineRunEpoch、
+**Explicit out-of-scope:** DeviceCommand、设备状态、统一设备 Adapter、设备 CALLBACK、ECS、WorkLine 运行配置、
 Material/Bin Execution、插件 SDK、Decision/EvidenceProcessor、WmsConfirmation、PickingTask 业务、WES 直连 RCS/AGV/CTU、
 车辆/路径/交通策略、动态 registry、Service Locator、Transport 查询/取消/轮询和自动物理恢复。
 
@@ -520,7 +520,7 @@ no-op publisher 或测试专用生产装配。
 ## 12. Phase 7：DeviceCommand/ECS 通用能力生产收敛
 
 **Objective:** 独立交付并原子收敛 WES `DeviceCommand` 可靠生命周期、设备状态与事件证据、统一 ECS 接口、
-ACK/CALLBACK 关联、`LineRunEpoch` fencing 和唯一生产装配，为后续真实插件提供与业务无关的设备执行基础能力。
+ACK/CALLBACK 关联、命令冻结合同与资源围栏和唯一生产装配，为后续真实插件提供与业务无关的设备执行基础能力。
 
 **Authoritative inputs:** 顶层 SPEC §4.2–§5.2、`docs/architecture/device-command-contract.md`、
 `docs/integration/third_party_integration_whitepaper.md`、Phase 2 Outbound HTTP、Phase 5 零插件基线和当前旧 Device owner 引用图。
@@ -530,7 +530,7 @@ RuntimeIntentLog、SystemOutbox 设备分支、gateway、callback、配置、任
 `NONE` 或 `RETAIN`。实施前必须按详细计划重新核对冻结摘要，发生漂移时只复审受影响边界。
 
 **Scope:** 稳定命令 identity 和不可变 payload digest；每 `device_code` 最多一个已接纳未终态命令；发送前
-`AUTO + IDLE` 和活动 Epoch 合同身份校验；同步 ACK 与异步终态 CALLBACK 分离；delivery unknown、deadline、安全重提和人工
+`AUTO + IDLE` 和有效 WorkLine 设备绑定与命令冻结合同身份校验；同步 ACK 与异步终态 CALLBACK 分离；delivery unknown、deadline、安全重提和人工
 对账；状态新鲜度；事件/结果 ACK-after-persist、部署级唯一 `source_event_id`、重复/冲突/迟到 fencing；显式 Composition Root
 和有界 worker；删除全部直接旧 Device owner。
 
@@ -538,7 +538,7 @@ RuntimeIntentLog、SystemOutbox 设备分支、gateway、callback、配置、任
 插件 Decision、WMS 业务流程、Transport、动态 registry、Service Locator、通用工作流和旧数据迁移。
 
 **Deliverables:** 唯一 `DeviceCommand` 聚合与 Repository/Service；统一 ECS Adapter 和 ingress handler；设备状态/事件/结果证据；
-Epoch 绑定与 fencing；固定 worker/路由装配；Device/ECS 核心合同和可靠性测试；旧 gateway/SystemOutbox 设备分支缺席门禁。
+WorkLine 绑定与可靠对象资源围栏；固定 worker/路由装配；Device/ECS 核心合同和可靠性测试；旧 gateway/SystemOutbox 设备分支缺席门禁。
 
 **旧所有者删除规则:** 最终 DeviceCommand 权威测试先建立，随后在同一阶段切换唯一生产装配并删除旧 DeviceCommand、
 RuntimeIntentLog 和 SystemOutbox 的设备命令职责、可配置路径、旧 `event_id`、`priority`/`timeout` wire 和私有认证分支；
@@ -555,14 +555,14 @@ RuntimeIntentLog 和 SystemOutbox 的设备命令职责、可配置路径、旧 
 CALLBACK 可推进投影；未知、冲突、迟到或合同不匹配证据失败关闭；旧 Device owner 和裸 Client 分支零引用。零设备绑定是
 合法退出态：未绑定设备返回 `DEVICE_NOT_FOUND`，不发送 outbound 请求，也不接纳设备事件。
 
-**完成状态:** Phase 7 已按批准合同完成唯一 `DeviceCommand`/ECS 生产基线、三个有界 worker、固定 callback、
+**历史完成证据（Phase 7 当时快照；代际机制已退役）:** Phase 7 已按当时批准合同完成唯一 `DeviceCommand`/ECS 生产基线、三个有界 worker、固定 callback、
 `LineRunEpoch` fencing、schema cutover 和旧 Device owner 收敛。完整受影响 HEAVY 已在真实 PostgreSQL、Redis、Celery
 prefork 与 HTTP 闭环中 426 passed、0 skipped；完成的过程计划已移至项目外
 `../archive_docs/wes_backend/docs/superpowers/plans/2026-08-10-wes-device-ecs-production-convergence.md`。
 这只证明核心基础能力，不代表供应商一致性、设备合同附录、现场联调或 Phase 12/13 业务插件已经交付。
 
 **风险及防止阶段越权的约束:** 不把旧 `DeviceCommandService` 当目标模板；不在本阶段定义具体插件业务、供应商私有协议或
-Transport；`LineRunEpoch` 只拥有设备合同/拓扑/配置的连续可信运行代际，不吸收 PickingTask 生命周期。
+Transport；WorkLine 管理当前插件与资源绑定，命令冻结自身合同，不吸收 PickingTask 生命周期。
 
 ## 13. Phase 8：粗分机参考插件优化
 
@@ -597,13 +597,13 @@ Phase 8 最终扫描确认 `plugin_state`、`src.app.runtime.workline_plugins` �
 | 残余对象 | 当前 owner / 主要消费者 | 已批准 successor / 交接 |
 | --- | --- | --- |
 | `RuntimeInbox` | `runtime/orchestration/runtime_inbox.py`、repository/service、callback writer、WMS handler、Celery scanner | 具体执行证据已由 `InboundEvidence` 承接；剩余通用 callback/inbox 消费闭包由 Phase 10 原子切换 |
-| `ExecutionSession` | session model/repository、WorkLine runtime/query/safety | `LineRunEpoch` 加具体对象 Execution；Phase 10 按消费者删除通用 session 路径 |
+| `ExecutionSession` | session model/repository、WorkLine runtime/query/safety | WorkLine 当前配置与具体可靠对象；按消费者删除通用 session 路径，不新增运行代际 |
 | `RuntimeIntent` / Effect / `SystemCapability` / `SystemOutbox` | intent/effect service、system capability definitions、WMS sync 与 outbox dispatch | `DeviceCommand`、`TransportTask`、`WmsConfirmation` 和类型化领域 Service；Phase 10 删除通用热路径，不建立兼容桥 |
 | `RuntimeHold` | hold model/repository/service、safety/resource/query | 业务 NG、设备故障、依赖暂停和人工清线的具体状态；Phase 10 逐消费者归属，不以粗分业务测试代证 |
 | `confirm_inbound` / `notify_pkg_binding` 通用 WMS operation | WMS operation definitions、generated capability index、sync obligation 与 observability | 不是 Phase 8 粗分 operation；分别由既有 Phase 9/10 cutover guardrail 管理，Phase 8 不删除或改写 |
 
 **设备合同附录责任:** 本阶段只冻结粗分机真实支持的 `task_type`、`event_type`、Payload、错误和时限，并完成 endpoint/device/
-ECS 版本与 `LineRunEpoch` 绑定。固定路径、公共包络、identity、ACK/CALLBACK、状态新鲜度和冲突处理全部复用 Phase 7，
+ECS 合同版本由 WorkLine 有效设备绑定校验，并在命令创建时冻结。固定路径、公共包络、identity、ACK/CALLBACK、状态新鲜度和冲突处理全部复用 Phase 7，
 不得在插件中复制或覆盖。相关诊断文档若已被当前合同取代，按项目规则移出项目目录归档，不保留转发页或重复真源。
 
 **测试所有权与重量要求:** Phase 7 Device/ECS 基础能力测试拥有固定路径、公共包络、DTO 校验、错误映射、身份和
@@ -618,7 +618,7 @@ Device/ECS owner 修订，否则规则留在设备合同附录或粗分插件。
 absence 和零意见 Review 绑定最终源码快照；真实 GitLab `PUSH` 从该快照生成带 Commit/source-tree 标签的后端镜像。MR、手工构建、
 前端进度和现场验证均不得参与或替代该门禁。
 
-**需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；Epoch/前端增量以
+**需要单独编写的子计划:** 初始插件收敛历史已移出项目目录；WorkLine 配置/前端增量以
 `docs/contracts/device-annexes/rough-sorter-device-contract.md` 为真源；当前 RC 与外部验收状态以
 `docs/integration/rough-sorter-joint-acceptance.md` 为唯一真源。当前后端功能与 Mock 已完成，最终候选工作树和
 GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发布；前端按其独立计划推进，现场部署与验收不再建立仓内实施计划。
@@ -634,24 +634,24 @@ GitLab PUSH-only 发布边界已验证，不可变 RC 镜像 `88-f51677b` 已发
 
 **Entry conditions:** 开发流程优化和运输接入诊断已分别进入当前基线；Phase 8 后端 RC 已关闭；Phase 9 Foundation 详细计划获批。
 
-**Scope:** `BinExecution`、唯一活动管辖期 `PositionProjection`、WorkLine unfinished-work target aggregate、
+**Scope（已按料箱简化合同收敛）:** 唯一活动管辖期 `PositionProjection`、WorkLine unfinished-work target aggregate、
 `ESTOP_PRESSED` final router、业务中立的 `WmsConfirmation` 可靠投递机制、最小 WMS target configuration 和 OpenTelemetry HTTP owner 裁决。
 
-`BinExecution` 与 `PositionProjection` 是 SRS 已批准的核心执行对象，不是未来插件的预留 schema。必须同时交付领域不变量、
+位置投影和可靠对象是基础能力；料箱只使用实际 `bin_code` 及插件必要的工位/业务关联，不建立全程料箱执行实体。必须交付领域不变量、
 Repository/Service、直接/间接测试 owner 和精确 HEAVY mapping；只有表、空模型或 fixture 不算完成。
 
 **Explicit out-of-scope:** `manual_bin_processing`、RETURN_BUFFER、人工 Task、PDA/WMS 人工业务 wire、自动上架、自动拣货、
 动态 registry、DSL、兼容层和供应商私有协议。
 
 **Deliverables:** Phase 10 可验证的最小 successor、当前 operation consumer/`DELETE → NONE` 裁决表，以及每个基础对象的测试和
-HEAVY owner。`rough_sorter` 只验证现有插件机制，不替代 `BinExecution` 或未来插件业务验收。
+HEAVY owner。`rough_sorter` 只验证现有插件机制，不替代通用位置事实或未来插件业务验收。
 
 **Exit gate:** 所有基础对象和 successor 有唯一生产 owner；后置业务插件没有遗留 Provider 路径；`UNRESOLVED=0`；
 不存在为 Phase 12/13 预建的业务表、operation、空包或 Composition。
 
 **实施状态:** 基础 successor 已交付；人工业务由 Phase 12 教学计划承接，旧过程文档与未重新评审的合同已移至项目外归档。
 
-**风险及防止阶段越权的约束:** 禁止用 `MaterialExecution` 顶替 `BinExecution`，也禁止用核心对象名义提前实现人工或自动业务。
+**风险及防止阶段越权的约束:** 禁止用 `MaterialExecution` 或新 Session 顶替已退役的全程料箱实体，也禁止用核心对象名义提前实现人工或自动业务。
 
 ## 15. Phase 10：旧平台代码最终闭环清理
 

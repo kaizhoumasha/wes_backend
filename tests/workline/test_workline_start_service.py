@@ -4,15 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from wes_plugin_sdk import WorkLineDeviceRole, WorkLinePositionSlot
 
 from src.app.workline.activation import WorkLineActivationPlan, WorkLineDeviceBinding, WorkLinePositionBinding
-from src.app.workline.models.workline import (
-    LineType,
-    WorkLine,
-    WorkLineDeviceRole,
-    WorkLinePositionInput,
-    WorkLinePositionSlot,
-)
+from src.app.workline.models.workline import LineType, WorkLine, WorkLinePositionInput
 from src.app.workline.services.workline_start_service import (
     WorkLineStartConfigurationError,
     WorkLineStartInvalidStateError,
@@ -218,3 +213,112 @@ async def test_start_rejects_unbound_positions_and_builder_cannot_override_site_
         await service.start(object(), workline_id=7, version=3)
     repository.set_active_for_start.assert_not_awaited()
     assert not line.is_active and line.device_contracts == {} and line.position_bindings == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "offline",
+        "stale",
+        "wrong_owner",
+        "missing_binding",
+        "duplicate_status",
+        "missing_provider",
+        "missing_admission",
+        "missing_status",
+        "fetch_error",
+        "invalid_endpoint",
+    ],
+)
+async def test_declaration_without_business_start_activates_validated_devices(failure):
+    from src.app.device.contracts import EcsDeviceStatus
+    from src.app.device.services import device_command_admission
+    from src.utils.timezone import timezone
+
+    service, line, repository, _, plugin = setup_start()
+    plugin.start_plan_builder = None
+    service._devices = AsyncMock()
+    service._devices.get_by_work_line_id_for_update.return_value = [
+        SimpleNamespace(
+            id=9,
+            device_code="DEVICE-9",
+            work_line_id=7,
+            is_active=True,
+            is_deleted=False,
+            endpoint_base_url="http://ecs:8080",
+        )
+    ]
+    provider = AsyncMock()
+    adapter = provider.get_adapter.return_value
+    adapter.fetch_statuses.return_value = (
+        EcsDeviceStatus.model_validate(
+            {
+                "device": {
+                    "device_code": "DEVICE-9",
+                    "device_name": None,
+                    "device_type": None,
+                    "role": None,
+                    "supported_commands": None,
+                    "supported_events": None,
+                },
+                "state": {
+                    "device_code": "DEVICE-9",
+                    "is_online": True,
+                    "mode": "AUTO",
+                    "status": "IDLE",
+                    "current_command_code": None,
+                    "scenario": None,
+                    "updated_at": int(timezone.now_utc().timestamp() * 1000),
+                },
+            }
+        ),
+    )
+    service._adapter_provider = provider
+    service._admission = device_command_admission
+    if failure == "offline":
+        status = adapter.fetch_statuses.return_value[0]
+        adapter.fetch_statuses.return_value = (
+            status.model_copy(update={"state": status.state.model_copy(update={"is_online": False})}),
+        )
+    elif failure == "stale":
+        status = adapter.fetch_statuses.return_value[0]
+        adapter.fetch_statuses.return_value = (
+            status.model_copy(update={"state": status.state.model_copy(update={"updated_at": 0})}),
+        )
+    elif failure == "wrong_owner":
+        service._devices.get_by_work_line_id_for_update.return_value[0].work_line_id = 8
+    elif failure == "missing_binding":
+        line.config = {"device_bindings": {}, "position_bindings": {"INPUT": "LOCAL-IN"}}
+    elif failure == "duplicate_status":
+        adapter.fetch_statuses.return_value *= 2
+    elif failure == "missing_provider":
+        service._adapter_provider = None
+    elif failure == "missing_admission":
+        service._admission = None
+    elif failure == "missing_status":
+        adapter.fetch_statuses.return_value = ()
+    elif failure == "fetch_error":
+        adapter.fetch_statuses.side_effect = RuntimeError("ECS unavailable")
+    elif failure == "invalid_endpoint":
+        service._devices.get_by_work_line_id_for_update.return_value[0].endpoint_base_url = "not-a-url"
+    if failure is not None:
+        with pytest.raises(WorkLineStartConfigurationError) as error:
+            await service.start(object(), workline_id=7, version=3)
+        assert not line.is_active and line.plugin_version is None and line.device_contracts == {}
+        assert line.version == 3 and line.position_bindings == {}
+        repository.set_active_for_start.assert_not_awaited()
+        if failure in {"missing_provider", "missing_admission", "invalid_endpoint"}:
+            adapter.fetch_statuses.assert_not_awaited()
+        if failure == "missing_status":
+            assert "ECS 缺少设备 DEVICE-9" in str(error.value)
+        elif failure == "fetch_error":
+            assert "ECS 实时状态不可启动" in str(error.value)
+            assert isinstance(error.value.__cause__, RuntimeError)
+        return
+    result = await service.start(object(), workline_id=7, version=3)
+    assert result.is_active and result.version == 4
+    assert result.plugin_version == "1.0" and result.flow_mode is None
+    assert result.device_contracts["DEVICE-9"]["contract_key"] == "third_party_integration"
+    assert result.position_bindings["INPUT"]["location_id"] == "LOC-1"

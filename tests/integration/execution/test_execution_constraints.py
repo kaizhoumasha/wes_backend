@@ -258,7 +258,9 @@ async def test_postgresql_unknown_projection_blocks_waiting_workline_deactivatio
     async def deactivate():
         async with integration_session_factory.begin() as db:
             current = await db.get(WorkLine, line_id)
-            await WorkLineConfigurationService(plugins=()).deactivate(db, workline_id=line_id, version=current.version)
+            await WorkLineConfigurationService(definitions=()).deactivate(
+                db, workline_id=line_id, version=current.version
+            )
 
     applying = asyncio.create_task(apply())
     await asyncio.wait_for(locked.wait(), timeout=5)
@@ -292,9 +294,9 @@ async def test_postgresql_workline_deactivation_rejects_waiting_projection_write
 
     async def deactivate():
         async with integration_session_factory() as db:
-            await WorkLineConfigurationService(plugins=(), workline_repository=BlockingWorkLineRepository()).deactivate(
-                db, workline_id=line_id, version=version
-            )
+            await WorkLineConfigurationService(
+                definitions=(), workline_repository=BlockingWorkLineRepository()
+            ).deactivate(db, workline_id=line_id, version=version)
 
     async def apply():
         async with integration_session_factory.begin() as db:

@@ -208,7 +208,7 @@ def test_development_compose_uses_target_wms_mock_without_profile_mounts() -> No
         assert "environment" not in service or "WMS_PROVIDER_PROFILE_FILE" not in service["environment"]
     compose = _compose("docker-compose.yml")
     assert compose["x-wms-target-config"] == {
-        "ENABLED_WORKLINE_PLUGINS": '["rough_sorter"]',
+        "ENABLED_WORKLINE_PLUGINS": '["rough_sorter", "manual-picking"]',
         "WMS_BASE_URL": "${WMS_BASE_URL}",
         "TRANSPORT_SUBMIT_PATH": "${TRANSPORT_SUBMIT_PATH}",
     }

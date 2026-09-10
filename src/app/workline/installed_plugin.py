@@ -7,51 +7,61 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.app.workline.activation import WorkLinePositionBinding
+from src.app.workline.models.workline import LineType
 
 if TYPE_CHECKING:
+    from wes_plugin_sdk import PluginDefinition, WorkLineDeviceRole, WorkLinePositionSlot
+
     from src.app.execution.plugin_binding import PluginRuntimeBinding
     from src.app.workline.models.workline import (
-        LineType,
-        WorkLineDeviceRole,
         WorkLinePositionInput,
-        WorkLinePositionSlot,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class InstalledWorkLinePlugin:
-    """同时承载执行路由与 WorkLine 装配所需的静态插件信息。"""
+    """声明独立于可选的运行实现，部署显式关联两者。"""
 
-    display_name: str
-    runtime_binding: PluginRuntimeBinding
-    start_plan_builder: Any
-    supported_line_types: tuple[LineType, ...]
-    device_roles: tuple[WorkLineDeviceRole, ...] = ()
-    position_slots: tuple[WorkLinePositionSlot, ...] = ()
+    definition: PluginDefinition
+    runtime_binding: PluginRuntimeBinding | None = None
+    start_plan_builder: Any | None = None
     business_blocker: Any | None = None
     wms_confirmation_follow_up_planner: Any | None = None
     transport_outcome_publisher: Any | None = None
 
     def __post_init__(self) -> None:
-        if len({role.role_key for role in self.device_roles}) != len(self.device_roles):
-            raise ValueError("duplicate device role")
-        if len({slot.slot_key for slot in self.position_slots}) != len(self.position_slots):
-            raise ValueError("duplicate position slot")
-        if not self.display_name.strip():
-            raise ValueError("display_name is required")
-        if type(self.supported_line_types) is not tuple or not self.supported_line_types:
-            raise ValueError("supported_line_types must be a non-empty tuple")
+        if self.runtime_binding is not None and (
+            self.runtime_binding.plugin_key,
+            self.runtime_binding.plugin_version,
+        ) != (self.definition.plugin_key, self.definition.plugin_version):
+            raise ValueError("runtime binding identity differs from plugin definition")
 
     @property
     def plugin_key(self) -> str:
-        return self.runtime_binding.plugin_key
+        return self.definition.plugin_key
 
     @property
     def plugin_version(self) -> str:
-        return self.runtime_binding.plugin_version
+        return self.definition.plugin_version
+
+    @property
+    def display_name(self) -> str:
+        return self.definition.display_name
+
+    @property
+    def supported_line_types(self) -> tuple[LineType, ...]:
+        return tuple(LineType(value) for value in self.definition.supported_line_types)
+
+    @property
+    def device_roles(self) -> tuple[WorkLineDeviceRole, ...]:
+        return self.definition.device_roles
+
+    @property
+    def position_slots(self) -> tuple[WorkLinePositionSlot, ...]:
+        return self.definition.position_slots
 
     def supports(self, line_type: LineType) -> bool:
-        return line_type in self.supported_line_types
+        return line_type in self.definition.supported_line_types
 
 
 def parse_device_bindings(

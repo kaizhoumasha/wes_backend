@@ -42,10 +42,10 @@ Agent 讲解当前调用链并给出任务卡
 
 ### 2.1 必须复用
 
-- Phase 9：`BinExecution`、唯一 `PositionProjection`、unfinished-work aggregate；
+- 当前基础：唯一 `PositionProjection`、WorkLine 未完成义务检查；
 - Phase 6：`TransportTask` 与四个通用 Transport 方法；
 - Phase 7：`DeviceCommand`、设备状态、统一 Command/Status/Result/Event 合同；
-- 当前可靠性：`InboundEvidence`、`WmsConfirmation`、`LineRunEpoch`；
+- 当前可靠性：`InboundEvidence`、`WmsConfirmation`、WorkLine 当前配置与资源绑定；
 - Phase 8：`rough_sorter` 的插件 SDK、静态 Composition、独立测试和部署激活方式。
 
 复用指共享机制，不复用粗分业务语义：`WmsConfirmation` 只持有不可变请求、identity、claim/retry/response evidence；完整业务
@@ -63,8 +63,8 @@ operation 返回 `422`，不得落入 Transport 或其它工作线。
 
 ## 3. 生产实现前合同重审
 
-PR #151 的旧 Phase 9 人工合同、设备附录、OpenAPI 和实施计划已作为历史输入归档，不是当前实施真源。Task 2 生产实现开始前由用户、WMS、
-WES、RCS/ECS 责任方重新确认真实教学范围，至少冻结：
+PR #151 的旧 Phase 9 人工合同、设备附录、OpenAPI 和实施计划已作为历史输入归档，不是当前实施真源。实施前核对当前已批准合同，
+只对本轮业务切片实际缺失的合同由对应责任方确认，不重复审批已有约定，也不要求所有节点同时完成。按本轮涉及范围核对：
 
 - 人工任务来源、身份、生命周期和 WMS/PDA 所有权；
 - SCAN1～SCAN4、不可读码、NG、人工工作位和 RETURN_BUFFER 的真实拓扑；
@@ -76,6 +76,11 @@ WES、RCS/ECS 责任方重新确认真实教学范围，至少冻结：
 重新评审后的当前合同和 OpenAPI 必须直接进入项目真源；不得从归档文件复制状态为 `Approved` 而跳过联合评审。
 
 ## 4. 教学任务
+
+教学按[插件顶层设计 §7.13](../specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#713-声明先行与渐进业务接入)
+渐进推进：先交付静态声明及工作线装配，再按 SCAN1、SCAN1+SCAN2 等实际范围加入 handler。
+声明和装配不依赖 Task 2–6 全部完成；空 handler 可用于基础事件观察，不新增成功占位 handler。
+下列任务按当前切片的真实依赖组合，不能将编号解读成整线联调必须等待全部任务完成。
 
 ### Task 0：用户完成代码导航与 Owner 说明
 
@@ -98,10 +103,10 @@ OpenAPI 使用既有 schema、引用和 operation 映射检查。本任务不修
 
 ### Task 2：建立最小人工 Task 业务模型
 
-用户先写高风险 RED，锁定 Task identity、状态机、Epoch 归属、货架面顺序、重复事件和终态不变量；再生成随机 Alembic revision 并实现最小
+用户先写高风险 RED，锁定 Task identity、状态机、WorkLine 与当前工位关联、货架面顺序、重复事件和终态不变量；再生成随机 Alembic revision 并实现最小
 Model/Repository/Service。
 
-不得把任务字段塞入 `BinExecution`，不得建立通用 Task 基类或计划 DSL。开发/测试数据可清理，不编写旧数据迁移和 downgrade。
+不得建立全程料箱执行实体，不得建立通用 Task 基类或计划 DSL。开发/测试数据可清理，不编写旧数据迁移和 downgrade。
 
 退出条件：单元、PostgreSQL 约束、migration 和测试所有权通过 Review。
 
@@ -134,20 +139,22 @@ Model/Repository/Service。
 
 用户按当前设备合同逐个完成 SCAN1～SCAN4、不可读码、NG 和人工工作位切片。每个切片先锁定：
 
-- evidence identity 与 `BinExecution` 创建/推进；
+- evidence identity、实际 bin_code 与当前工位等待/任务关联；
 - `DeviceCommand` task/event 和 params；
 - 命令接受、结果、设备事件和物理完成的分层状态；
 - 未收到 ACK/Result 时保持原 command identity 并按现有 reconciliation 处理，不盲重发；
 - WMS/PDA 不直接控制 ECS。
 
+未接入节点继续执行 PLC 原有逻辑，合法事件仅留证，不由 WES 自动补发放行命令；已接入节点失败按原路径处理。
+本轮只验证已接入业务及其真实依赖，不要求后续节点同时上线，不自动重放早期观察事件。
+
 退出条件：Device 基础测试保持原 owner，人工业务只测试自己的映射和推进；现场物理验收仍单独记录。
 
 ### Task 6：实现 Transport、RETURN FIFO 与业务闭合
 
-用户复用 `TransportTask` 和 Phase 9 `PositionProjection`，完成任务内搬运、RETURN_BUFFER 连续前缀、离场释放、WMS 记录和
-`BinExecution` 关闭。需要重点解释：
+用户复用 `TransportTask` 和 Phase 9 `PositionProjection`，完成任务内搬运、RETURN_BUFFER 连续前缀、离场释放、WMS 记录及对应物理义务闭合。需要重点解释：
 
-- FIFO 为什么由位置事实而不是第二张队列表表达；
+- FIFO 如何由插件保存必要顺序，并以匹配的权威位置和搬运结果闭合；
 - Transport success、WMS `RECORDED|DUPLICATE` 和执行关闭为什么是不同门禁；
 - `DELIVERY_UNKNOWN` 为什么不能创建新 identity 重发；
 - STOP 为什么只阻止新业务，不改写已发送物理任务。
