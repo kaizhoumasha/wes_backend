@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
@@ -494,3 +495,17 @@ async def test_debug_return_owner_requires_exact_frozen_request() -> None:
     assert not await owner.validate_owner(None, workline_id=1, request_payload={**payload, "timestamp": 1})
     repository.get_return_request_owner.return_value = None
     assert not await owner.validate_owner(None, workline_id=1, request_payload=payload)
+
+
+async def test_return_batch_uses_the_frozen_outfeed_in_wms_request() -> None:
+    service, repository, sessions, _ = _service()
+    snapshot = await service.create_run(replace(_request(), outfeed_position="CNV0102"), actor_id=7)
+    run = repository.runs[snapshot.run_id]
+    run.configuration_json = {**run.configuration_json, "return_queues": {"0": ["A000001922"]}}
+    service._transport.assert_debug_rack_position_in_session = AsyncMock()
+    service._wms = SimpleNamespace(create_or_get=AsyncMock())
+
+    await service._prepare_return_batch(sessions.db, run, repository.steps[snapshot.run_id][0], NOW)
+
+    payload = service._wms.create_or_get.call_args.kwargs["request_payload"]
+    assert payload["data"]["return_candidates"][0]["source"]["location_code"] == "CNV0102"

@@ -160,6 +160,10 @@ class TransportDebugRunSnapshot:
     aborted_reason: str | None
     created_at: str
     updated_at: str
+    workstation: str = "KT16"
+    infeed_position: str = "CNV0301"
+    outfeed_position: str = "CNV0302"
+    scan_device_codes: tuple[str, ...] = ("STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12")
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +209,8 @@ class TransportDebugRunService:
                 rack_id=request.rack_id,
                 rack_face=group.face,
                 return_candidates=tuple(
-                    sdk.BinReturnCandidate(i, item.bin_code, "CNV0302") for i, item in enumerate(group.bins, 1)
+                    sdk.BinReturnCandidate(i, item.bin_code, request.outfeed_position)
+                    for i, item in enumerate(group.bins, 1)
                 ),
             )
         configuration = _freeze_configuration(request)
@@ -542,7 +547,8 @@ class TransportDebugRunService:
                 rack_id=run.rack_id,
                 rack_face=group.face,
                 return_candidates=tuple(
-                    sdk.BinReturnCandidate(i, code, "CNV0302") for i, code in enumerate(candidates, 1)
+                    sdk.BinReturnCandidate(i, code, _configuration_text(run.configuration_json, "outfeed_position"))
+                    for i, code in enumerate(candidates, 1)
                 ),
             )
             payload = encode_request(intent, timestamp=_ceil_unix_ms(now))
@@ -784,6 +790,11 @@ class TransportDebugRunService:
                     evidence,
                     not_before_ms=step.evidence_not_before_ms,
                     selected_bins=selected_bins,
+                    device_codes=(
+                        frozenset({run.configuration_json["scan_device_codes"][3]})
+                        if "scan_device_codes" in run.configuration_json
+                        else frozenset({"SCAN12", "STATION_SCAN12"})
+                    ),
                 )
                 if evaluation.disposition is Scan12EvidenceDisposition.ATTENTION:
                     return self._set_attention(run, step, evaluation.reason_code or "EVIDENCE_AMBIGUOUS", now)
@@ -986,6 +997,14 @@ class TransportDebugRunService:
             None,
         )
         return TransportDebugRunSnapshot(
+            workstation=_configuration_text(run.configuration_json, "workstation"),
+            infeed_position=_configuration_text(run.configuration_json, "infeed_position"),
+            outfeed_position=_configuration_text(run.configuration_json, "outfeed_position"),
+            scan_device_codes=tuple(
+                run.configuration_json.get(
+                    "scan_device_codes", ("STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12")
+                )
+            ),
             workline_code=str(run.configuration_json.get("workline_code", "")),
             returned_bins=tuple(run.configuration_json.get("returned_bins", [])),
             run_id=run.run_id,
@@ -1081,9 +1100,10 @@ def _freeze_configuration(request: CreateTransportDebugRun) -> dict[str, object]
             for group in request.face_groups
         ],
         "storage_zone": "WH05",
-        "workstation": "KT16",
-        "infeed_position": "CNV0301",
-        "outfeed_position": "CNV0302",
+        "workstation": request.workstation,
+        "infeed_position": request.infeed_position,
+        "outfeed_position": request.outfeed_position,
+        "scan_device_codes": list(request.scan_device_codes),
         "rack_out_template": "CTU01",
         "rack_rotate_template": "CTU02",
         "rack_return_template": "CTU03",

@@ -196,6 +196,10 @@ async def _complete_transport_step(
         face=face,
         slot_id=slot_id,
     )
+    if phase is TransportDebugRunPhase.RACK_TO_STATION:
+        payload["final_position"]["location_code"] = waiting.workstation
+    elif phase is TransportDebugRunPhase.BINS_TO_INFEED:
+        payload["results"][0]["final_position"]["location_code"] = waiting.infeed_position
     operation_id = new_uuid7()
     callback_operation_ids.append(operation_id)
     callback_timestamp = int(timezone.now_utc().timestamp() * 1000)
@@ -333,12 +337,22 @@ async def _cleanup(
             await db.execute(delete(TransportTask).where(TransportTask.transport_task_id.in_(task_ids)))
 
 
+@pytest.mark.parametrize(
+    "area",
+    [
+        ("KT16", "CNV0301", "CNV0302", ("STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12")),
+        ("KT11", "CNV0101", "CNV0102", ("STATION_SCAN1", "STATION_SCAN2", "STATION_SCAN3", "STATION_SCAN4")),
+    ],
+)
 async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debug_run(
     integration_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
+    area: tuple[str, str, str, tuple[str, ...]],
 ) -> None:
     from src.app.wms_adapter import factory
 
+    workstation, infeed, outfeed, scanners = area
+    exit_scanner = scanners[3]
     suffix = uuid.uuid4().hex
     rack_id = f"rack-real-loop-{suffix}"
     bin_code = f"bin-real-loop-{suffix}"
@@ -361,16 +375,16 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
                 plugin_key="transport_test",
                 plugin_version="1.0.0",
                 flow_mode="TEST",
-                config={"device_bindings": {"SCAN": "SCAN12"}},
+                config={"device_bindings": {"SCAN": exit_scanner}},
             )
             db.add(line)
             await db.flush()
             scan_workline_id = line.id
-            scanner = Device(device_code="SCAN12", device_name="SCAN12", work_line_id=line.id)
+            scanner = Device(device_code=exit_scanner, device_name=exit_scanner, work_line_id=line.id)
             db.add(scanner)
             await db.flush()
             line.device_contracts = {
-                "SCAN12": {
+                exit_scanner: {
                     "device_id": scanner.id,
                     "endpoint_base_url": "http://ecs-test:8080",
                     "contract_key": "scanner.scan",
@@ -392,6 +406,10 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
         )
         request = CreateTransportDebugRun(
             workline_code="DEBUG-LINE",
+            workstation=workstation,
+            infeed_position=infeed,
+            outfeed_position=outfeed,
+            scan_device_codes=scanners,
             rack_id=rack_id,
             face_groups=(
                 TransportDebugFaceGroup(
@@ -438,7 +456,7 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
         receipt = await device_evidence_service.accept_event(
             EcsDeviceEventReport.model_validate(
                 {
-                    "device_code": "SCAN12",
+                    "device_code": exit_scanner,
                     "event_type": "SCAN_COMPLETED",
                     "timestamp": event_timestamp,
                     "data": {"barcode": bin_code},
@@ -484,6 +502,17 @@ async def test_single_face_real_transport_callbacks_and_scan12_complete_the_debu
         completed = await debug_run_service.get_run(run.run_id)
         assert completed.status is TransportDebugRunStatus.COMPLETED
         assert completed.current_phase is TransportDebugRunPhase.RACK_TO_STORAGE
+        assert completed.workstation == workstation
+        assert completed.scan_device_codes == scanners
+        assert client.calls[0]["data"]["target"]["location_code"] == workstation
+        assert client.calls[1]["data"]["moves"][0]["target"]["location_code"] == infeed
+        assert client.calls[2]["data"]["moves"][0]["source"]["location_code"] == outfeed
+        async with integration_session_factory() as db:
+            persisted_run = await db.scalar(select(TransportDebugRun).where(TransportDebugRun.run_id == run.run_id))
+            assert persisted_run is not None
+            requests = list(persisted_run.configuration_json["return_requests"].values())
+            assert len(requests) == 1
+            assert requests[0]["data"]["return_candidates"][0]["source"]["location_code"] == outfeed
         assert len(client.calls) == 4
         final_request = client.calls[-1]["data"]
         assert isinstance(final_request, dict)

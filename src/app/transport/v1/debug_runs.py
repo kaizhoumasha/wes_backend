@@ -73,6 +73,12 @@ class TransportDebugRunFaceGroupRequest(_StrictApiModel):
 
 
 class CreateTransportDebugRunRequest(_StrictApiModel):
+    workstation: _TEXT = "KT16"
+    infeed_position: _TEXT = "CNV0301"
+    outfeed_position: _TEXT = "CNV0302"
+    scan_device_codes: list[_TEXT] = Field(
+        default=["STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12"], min_length=4, max_length=4
+    )
     workline_code: _TEXT
     rack_id: _TEXT
     face_groups: list[TransportDebugRunFaceGroupRequest] = Field(min_length=1)
@@ -116,6 +122,10 @@ class TransportDebugReturnedBinResponse(_StrictApiModel):
 
 
 class TransportDebugRunResponse(_StrictApiModel):
+    workstation: str
+    infeed_position: str
+    outfeed_position: str
+    scan_device_codes: list[str]
     workline_code: str
     returned_bins: list[TransportDebugReturnedBinResponse]
     run_id: str
@@ -176,6 +186,10 @@ def _stream_service(request: Request) -> EventStreamPort:
 
 def _domain_request(payload: CreateTransportDebugRunRequest) -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
+        workstation=payload.workstation,
+        infeed_position=payload.infeed_position,
+        outfeed_position=payload.outfeed_position,
+        scan_device_codes=tuple(payload.scan_device_codes),
         workline_code=payload.workline_code,
         rack_id=payload.rack_id,
         face_groups=tuple(

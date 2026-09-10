@@ -35,6 +35,7 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
     *,
     not_before_ms: int,
     selected_bins: frozenset[str],
+    device_codes: frozenset[str] = _SCAN12_DEVICE_CODES,
 ) -> Scan12EvidenceEvaluation:
     boundary_result = _evaluate_evidence_boundary(evidence)
     if boundary_result is not None:
@@ -49,7 +50,7 @@ def evaluate_scan12_evidence(  # noqa: PLR0911 - each closed Evidence dispositio
     if event is None:
         return _attention(evidence_id, "INVALID_NORMALIZED_PAYLOAD")
 
-    if event.device_code not in _SCAN12_DEVICE_CODES:
+    if event.device_code not in device_codes:
         return _ignore(evidence_id, "OTHER_DEVICE", source_event_id=event.source_event_id)
     if event.event_type != "SCAN_COMPLETED":
         return _ignore(evidence_id, "OTHER_EVENT", source_event_id=event.source_event_id)

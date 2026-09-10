@@ -64,7 +64,20 @@ class CreateTransportDebugRun:
     rack_id: str
     face_groups: tuple[TransportDebugFaceGroup, ...]
 
+    workstation: str = "KT16"
+    infeed_position: str = "CNV0301"
+    outfeed_position: str = "CNV0302"
+    scan_device_codes: tuple[str, ...] = ("STATION_SCAN9", "STATION_SCAN10", "STATION_SCAN11", "STATION_SCAN12")
+
     def __post_init__(self) -> None:
+        for value in (self.workstation, self.infeed_position, self.outfeed_position, *self.scan_device_codes):
+            if not value.strip() or value != value.strip() or "\x00" in value or len(value) > 100:
+                raise ValueError("点位和设备编码必须为 1～100 字符且不含首尾空白")
+        if len(self.scan_device_codes) != 4 or len(set(self.scan_device_codes)) != 4:
+            raise ValueError("必须配置四个不同的扫码设备")
+        if self.infeed_position == self.outfeed_position:
+            raise ValueError("投料口和出料口不能相同")
+
         if not self.workline_code.strip():
             raise ValueError("工作线编码不能为空")
         if not self.rack_id.strip():

@@ -39,6 +39,9 @@ async def test_abort_persists_release_without_deleting_step(
         active_scope="GLOBAL",
         rack_id="510056",
         configuration_json={
+            "workstation": "KT16",
+            "infeed_position": "CNV0301",
+            "outfeed_position": "CNV0302",
             "rack_id": "510056",
             "face_groups": [{"face": "90", "bins": [{"bin_code": "A", "slot_id": "S"}]}],
         },
