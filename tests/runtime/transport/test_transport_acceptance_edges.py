@@ -166,6 +166,7 @@ def _service(
         sessions,
         TransportRepository(),
         provider or ConfigurableProvider(),
+        result_timeout=timedelta(seconds=420),
     )
 
 
@@ -1350,7 +1351,7 @@ async def test_publish_success_before_bookkeeping_crash_is_retried_with_same_ver
     repository = FailOnceOutcomeBookkeepingRepository()
     publisher = RecordingPublisher()
     provider = ConfigurableProvider(TransportSubmitCode.REJECTED)
-    service = TransportService(sessions, repository, provider)
+    service = TransportService(sessions, repository, provider, result_timeout=timedelta(seconds=420))
     handle = await service.move_rack(
         new_uuid7(),
         _caller(),
@@ -1383,8 +1384,8 @@ async def test_stale_outcome_worker_cannot_bookkeep_over_a_newer_claimed_version
     blocked_repository = BlockedOutcomeBookkeepingRepository()
     publisher = RecordingPublisher()
     provider = ConfigurableProvider(TransportSubmitCode.CONFLICT)
-    stale_service = TransportService(sessions, blocked_repository, provider)
-    winner_service = TransportService(sessions, TransportRepository(), provider)
+    stale_service = TransportService(sessions, blocked_repository, provider, result_timeout=timedelta(seconds=420))
+    winner_service = TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))
     handle = await stale_service.move_rack(
         new_uuid7(),
         _caller(),

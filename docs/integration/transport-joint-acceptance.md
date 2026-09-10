@@ -146,3 +146,16 @@ CTU01("90")
 - 操作员确认的工作线、货架、料箱、初始及 WMS 分配 slot、异常处理和最终业务结论。
 
 验收结论必须分别写为“代码/Mock”“已部署”“物理闭环”“业务验收”，禁止合并成一个“已完成”。
+
+### 6.1 中断恢复证据的分工
+
+| 证据 | 测试/验收所有者 | 不覆盖的结论 |
+| --- | --- | --- |
+| 原身份、持久 Evidence、期限、资源绑定与单调发布 | Transport 基础测试；真实 worker 中断窗口位于 `tests/e2e/test_execution_interruption_recovery.py` | 不证明调试轮次或正式插件的业务推进 |
+| 重启读取原 step/task，仅创建合法下一步；迟到与重复结果 | `tests/runtime/transport/test_transport_debug_run_advancement.py`、`tests/integration/transport/test_transport_debug_run_recovery.py` | 不证明供应商动作已经完成，不覆盖正式插件规则 |
+| 供应商终态与实际位置/面向 | WMS/ECS 联合验收，记录原 operation identity 与外部物理证据 | 不可用本地 HTTP stub 或数据库状态代替 |
+| FIFO、NG、任务切换及最终业务放行 | 对应插件包测试和现场业务负责人 | 不纳入基础查询测试的通过结论 |
+
+2026-09-09 稳定性实施已完成原联调消费者的 FAST 和独占 PostgreSQL 恢复验证；
+基础中断测试使用独占 broker、worker 与 HTTP stub，尚未部署或完成供应商/正式业务验收。
+现场操作按[执行恢复手册](../devops/execution-recovery.md)复核，不能从“结果已发布”直接推断“业务已推进”。

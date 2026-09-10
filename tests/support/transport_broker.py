@@ -47,6 +47,10 @@ if key_prefix := os.getenv(TRANSPORT_BROKER_KEY_PREFIX_ENV):
 
     celery_app.conf.broker_transport_options = _broker_transport_options(key_prefix)
     celery_app.conf.result_backend_transport_options = _broker_transport_options(key_prefix)
+    if os.getenv("TRANSPORT_TEST_CRASH_BEFORE_HTTP"):
+        from tests.support.transport_interruption import install_before_http_crash
+
+        install_before_http_crash()
 
 
 class _WmsHandler(BaseHTTPRequestHandler):
@@ -59,6 +63,9 @@ class _WmsHandler(BaseHTTPRequestHandler):
             self.server.requests.append({"path": self.path, "envelope": envelope, "received_at": time.monotonic()})
             delay = self.server.delays.popleft() if self.server.delays else 0.0
             self.server.condition.notify_all()
+        if self.server.disconnect_after_receive:
+            self.close_connection = True
+            return
         if delay:
             time.sleep(delay)
         data = envelope["data"]
@@ -90,9 +97,10 @@ class MockWmsHttpServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
-    def __init__(self, delays: tuple[float, ...] = ()) -> None:
+    def __init__(self, delays: tuple[float, ...] = (), *, disconnect_after_receive: bool = False) -> None:
         super().__init__(("127.0.0.1", 0), _WmsHandler)
         self.delays = deque(delays)
+        self.disconnect_after_receive = disconnect_after_receive
         self.requests: list[dict[str, Any]] = []
         self.condition = threading.Condition()
         self._thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -152,7 +160,7 @@ def _worker_environment(
 ) -> dict[str, str]:
     database = make_url(database_url)
     redis = make_url(redis_url)
-    return {
+    environment = {
         **os.environ,
         "POSTGRES_HOST": str(database.host),
         "POSTGRES_PORT": str(database.port or 5432),
@@ -178,6 +186,9 @@ def _worker_environment(
         TRANSPORT_BROKER_KEY_PREFIX_ENV: key_prefix,
         "PYTHONPATH": f"{REPO_ROOT}:{os.environ.get('PYTHONPATH', '')}".rstrip(":"),
     }
+
+    git_keys = subprocess.check_output(["git", "rev-parse", "--local-env-vars"], text=True).splitlines()  # noqa: S607 - 使用开发环境中的 Git 枚举完整变量集合。
+    return {key: value for key, value in environment.items() if key not in git_keys}
 
 
 @dataclass

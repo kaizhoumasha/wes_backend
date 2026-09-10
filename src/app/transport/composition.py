@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from src.app.transport.repository import TransportRepository
 from src.app.transport.service import TransportService
+from src.core.conf import settings
 from src.core.logger import logger
 from src.core.task_queue_gateway import task_queue_gateway
 
@@ -105,6 +107,7 @@ async def build_transport_runtime(
             session_factory,
             repository,
             adapter,
+            result_timeout=timedelta(seconds=settings.TRANSPORT_RESULT_TIMEOUT_SECONDS),
             task_queue_gateway=task_queue_gateway,
             position_projections=position_projection_service,
             debug_run_guard=debug_run_repository,

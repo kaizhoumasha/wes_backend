@@ -8,6 +8,10 @@
 
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
+| `plans/2026-09-09-stability-recovery-master.md` | 近期联调稳定性与中断恢复的需求、复用边界、证据等级和交付顺序 | IMPLEMENTING；后端评审与 166 项 HEAVY 通过，前端等待干净 develop 合同 |
+| `plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询及真实中断切点验证 | 后端 A1–A4 实现、评审与验证完成；不依赖具体业务插件，未部署 |
+| `plans/2026-09-09-stability-recovery-consumers.md` | 现有诊断页面、领域恢复入口和独立消费者验收 | IMPLEMENTING；恢复手册与原消费者验证已推进，前端等待干净 develop 合同 |
+| `plans/2026-09-09-stability-recovery-operations.md` | 发布加载证据、普通 TEST FULL 验收及既有备份计划接入 | APPROVED；承接旧发布静默计划剩余 Task 5，未部署 |
 | `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | 部分实施：WMS bin_code 与 NG 出口 operation 清理已纳入 Operation 基线；内部 Transport 改名与 BinExecution 退役待实施，未部署 |
 | `../architecture/SRS.md` | 产品范围、参与方职责和功能/非功能需求真源 | Current Requirements Baseline |
 | `specs/2026-09-05-generic-workline-role-binding.md` | 通用角色绑定、约定大于配置、基础独立性及专属配置清理 | 工作树已实施、聚焦验证与评审完成；正式冻结及制品 E2E 未完成，未部署 |
@@ -32,11 +36,12 @@
 | `specs/2026-08-26-development-workflow-optimization-design.md` | 前后端 Agent、验证所有权、HEAVY 与发布运行静默的流程优化设计真源 | Partially implemented；效率优化及 Phase 10 发布运行静默 Tasks 1–4 已随 #187 合入并包含在当前联调部署中；独立 Task 5 TEST Deploy 未执行 |
 | `plans/2026-08-27-phase12-manual-bin-processing-guided-development.md` | 用户主导的人工 Bin 合同、插件、migration、Composition 与验收教学入口 | Task 0–1 Bootstrap admitted；Task 2–7 在人工业务合同冻结且开发环境验证通过前阻断 |
 | `plans/2026-08-26-development-workflow-efficiency.md` | 前后端默认直接工作、证据复用、手术式规则修正与 HEAVY 治理实施入口 | Implemented - focused verified；backend PR #178 与 frontend PR #82 已分别合入，Gate A 已完成；Deferred 的轻量 Commit profile 未实施 |
-| `plans/2026-08-26-release-operational-readiness.md` | 后端 FULL 发布在线预检、admission closure 与维护态稳定静默门禁实施入口 | Tasks 1–4 implemented and verified on `codex/phase10-implementation`；已纳入 Phase 10 Task 7 联调候选，Task 5 TEST Deploy 未执行 |
 | `specs/2026-08-26-transport-integration-diagnostics-design.md` | Transport 最近任务、详情、共享 SSE 与四类调试下发的前后端设计真源 | Implemented and merged；backend `41ab69bf`、frontend `e103b692`；现已包含在当前联调部署中，未完成现场验收 |
 | `plans/2026-08-26-transport-integration-diagnostics.md` | 运输接入诊断的风险匹配实施切片、验证和现场交接入口 | Implemented and merged；仓内验证已完成并已部署联调；现场交接与验收未执行 |
 
 ## 项目外历史归档
+
+- `../archive_docs/wes_backend/stability-recovery-20260909/2026-08-26-release-operational-readiness.md`：保留原文；已实现机制以 `docs/devops/prod-release-deploy.md` 为准，未完成普通 TEST FULL 验收由 `plans/2026-09-09-stability-recovery-operations.md` C2 完整承接。
 
 - `../archive_docs/wes_backend/2026-08-19-rough-sorter-workline-epoch-activation.md`
 - `../archive_docs/wes_backend/docs/superpowers/specs/2026-09-04-workline-plugin-selection-and-switching-design.md`

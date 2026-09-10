@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -59,7 +61,7 @@ async def reconciling_service(db_engine: object) -> TransportService:
             TransportTask,
         ):
             await db.execute(delete(model))
-    return TransportService(sessions, TransportRepository(), FakeProvider())
+    return TransportService(sessions, TransportRepository(), FakeProvider(), result_timeout=timedelta(seconds=420))
 
 
 @pytest.mark.asyncio

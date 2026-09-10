@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -78,7 +79,9 @@ def _service(
     sessions: async_sessionmaker[AsyncSession],
     repository: TransportRepository | None = None,
 ) -> TransportService:
-    return TransportService(sessions, repository or TransportRepository(), _UnusedProvider())
+    return TransportService(
+        sessions, repository or TransportRepository(), _UnusedProvider(), result_timeout=timedelta(seconds=420)
+    )
 
 
 async def _create_reconciling_task(

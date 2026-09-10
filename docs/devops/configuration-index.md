@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | EVENT_DEBUG 命令接入地址 | [Settings](../../src/core/conf.py) 的 `DEVICE_EVENT_DEBUG_ENDPOINT_BASE_URL` | 重启使用该配置的 API/worker 后生效；新建命令使用既有设备地址校验并冻结，旧命令不变。Docker 本机开发编排指向 ECS Mock |
 | WMS 地址、Transport 提交路由 | [Settings](../../src/core/conf.py) 的 `WMS_BASE_URL`、`TRANSPORT_SUBMIT_PATH` | 环境提供值，启动时校验并冻结；重启使用它们的 API/worker 进程后生效。合法形式见 [Transport 合同](../contracts/transport-fulfillment-contract.md) |
+| Transport 结果等待窗口 | [Settings](../../src/core/conf.py) 的 `TRANSPORT_RESULT_TIMEOUT_SECONDS` | 默认值与合法范围以入口为准；重启 API/worker 后影响首次接纳时新冻结的期限，已保存 deadline 不变；现场路线适配单独验收 |
 | WMS 诊断保留时间、条数、单条字节和单次预算 | [DiagnosticsConfig](../../src/app/wms_diagnostics/config.py)；环境变量前缀 `WMS_DIAGNOSTICS_`，字段为 `RETENTION_HOURS`、`MAX_RECORDS`、`MAX_RECORD_BYTES`、`BUDGET_MS` | 默认值和范围只由该入口定义。环境变量优先于运行时 `.env`，修改后重启 API/worker；记录只用于联调观察，不是可靠业务证据 |
 | 启用的已安装插件 | [Settings](../../src/core/conf.py) 的 `ENABLED_WORKLINE_PLUGINS`；[部署关联](../../deployment/plugin_composition.py) | 由部署显式关联并在启动时生效；不能通过配置自动安装插件或绕过工作线切换检查 |
 | 工作线插件配置、设备角色绑定 | [工作线配置 Service](../../src/app/workline/services/workline_configuration_service.py) 的 `config` 校验入口 | 由工作线配置流程保存，角色定义归插件；运行期间禁止修改；[START Service](../../src/app/workline/services/workline_start_service.py) 校验并保存 WorkLine 当前精确插件版本及必要执行合同 |

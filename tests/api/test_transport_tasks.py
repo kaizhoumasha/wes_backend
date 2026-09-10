@@ -36,6 +36,7 @@ class FakeTransportPort:
 def _runtime() -> SimpleNamespace:
     service = SimpleNamespace(
         get_task_snapshot=AsyncMock(),
+        get_callback_receipt_snapshot=AsyncMock(),
         list_task_snapshots=AsyncMock(),
         preview_debug_task_reset=AsyncMock(),
         reset_debug_task=AsyncMock(),
@@ -570,6 +571,13 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
         reason_code=None,
         created_at="2026-08-20T10:00:00Z",
         updated_at="2026-08-20T10:01:00Z",
+        send_started_at=None,
+        result_deadline_at="2026-08-20T10:07:00Z",
+        submit_attempt_count=1,
+        outcome_version=2,
+        published_outcome_version=1,
+        pending_evidence_count=3,
+        active_binding_count=1,
         request={
             "client_request_id": new_uuid7(),
             "caller": {"workline_id": "TRANSPORT_DEBUG", "station_id": "STATION-DEBUG"},
@@ -614,6 +622,12 @@ async def test_get_transport_task_returns_local_snapshot_without_raw_callback() 
     assert response.status_code == 200
     assert response.json()["code"] == "1000"
     data = response.json()["data"]
+    assert data["pending_evidence_count"] == 3
+    assert data["active_binding_count"] == 1
+    assert data["outcome_version"] == 2
+    assert data["published_outcome_version"] == 1
+    assert data["send_started_at"] is None
+    assert data["result_deadline_at"].endswith("Z")
     assert data["status"] == "SUCCEEDED"
     assert data["latest_evidence"]["status"] == "APPLIED"
     assert data["request"]["kind"] == "BIN_MOVE"
@@ -762,3 +776,29 @@ async def test_debug_task_rejects_old_bin_identity_fields(kind: str, field: str,
     assert response.status_code == 422
     assert runtime.service.move_bins_for_debug.await_count == 0
     assert runtime.service.exchange_bins_for_debug.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_callback_receipt_query_uses_exact_identity_and_missing_is_404() -> None:
+    runtime = _runtime()
+    operation_id = new_uuid7()
+    operation = "transport.task.resulted@v1"
+    runtime.service.get_callback_receipt_snapshot.return_value = SimpleNamespace(
+        operation=operation,
+        operation_id=operation_id,
+        response_http_status=422,
+        response_code="REJECTED",
+        response_data={"reason_code": "INVALID_EVIDENCE"},
+        received_at="2026-09-09T12:00:00Z",
+        conflict_code=None,
+    )
+    async with AsyncClient(transport=ASGITransport(app=_app(runtime)), base_url="http://test") as client:
+        params = {"operation": operation, "operation_id": operation_id}
+        response = await client.get("/api/v1/transport/callback-receipts", params=params)
+        assert response.status_code == 200
+        assert response.json()["data"]["response_code"] == "REJECTED"
+        runtime.service.get_callback_receipt_snapshot.assert_awaited_once_with(operation, operation_id)
+        runtime.service.get_callback_receipt_snapshot.return_value = None
+        assert (await client.get("/api/v1/transport/callback-receipts", params=params)).status_code == 404
+        params["operation_id"] = "invalid"
+        assert (await client.get("/api/v1/transport/callback-receipts", params=params)).status_code == 422

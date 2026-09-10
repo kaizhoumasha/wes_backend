@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0.0] - 2026-09-09
+
+### Added
+
+- 新增 WMS Confirmation、InboundEvidence 与原始回调收据的精确身份查询，分别使用独立只读权限；查询直接读取持久化事实，不依赖插件或近期缓存。
+- Transport 详情补充发送时间、冻结期限、提交次数、结果发布版本及待处理证据和资源绑定计数。
+- 增加真实 PostgreSQL、Redis、worker 与 HTTP 中断恢复验证，覆盖唤醒丢失、迟到终态、发布中断及发送结果未知；保留原执行身份和资源围栏。
+
+### Changed
+
+- 运输结果等待期限统一由 TRANSPORT_RESULT_TIMEOUT_SECONDS 配置，默认 1200 秒；期限建立后不因后续事实延长。
+- 建立执行恢复手册，区分基础可靠性、联调消费者、供应商与业务验收；实施计划统一迁入工作树，替代的过程文档移出项目归档。
+
 ## [0.40.3.0] - 2026-09-09
 
 ### Fixed

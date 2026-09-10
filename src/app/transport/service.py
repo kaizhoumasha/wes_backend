@@ -95,7 +95,6 @@ if TYPE_CHECKING:
 _CLAIM_SECONDS = 30
 _SUBMIT_TIMEOUT_SECONDS = 10
 _PUBLISH_TIMEOUT_SECONDS = 10
-_RESULT_TIMEOUT = timedelta(minutes=20)
 _RETRY_DELAY = timedelta(seconds=2)
 _SUBMIT_CONTINUE_BUDGET_SECONDS = 5.0
 
@@ -122,6 +121,13 @@ class TransportEvidenceSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class TransportTaskSnapshot:
+    send_started_at: str | None
+    result_deadline_at: str | None
+    submit_attempt_count: int
+    outcome_version: int
+    published_outcome_version: int
+    pending_evidence_count: int
+    active_binding_count: int
     transport_task_id: str
     client_request_id: str
     submit_operation_id: str
@@ -133,6 +139,17 @@ class TransportTaskSnapshot:
     request: dict[str, Any]
     result: dict[str, Any] | None
     latest_evidence: TransportEvidenceSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class TransportCallbackReceiptSnapshot:
+    operation: str
+    operation_id: str
+    response_http_status: int
+    response_code: str
+    response_data: dict[str, Any]
+    received_at: str
+    conflict_code: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +235,7 @@ class TransportService:
         repository: TransportRepository,
         provider: TransportProviderPort,
         *,
+        result_timeout: timedelta,
         position_projections: PositionProjectionPort | None = None,
         event_publisher: TransportEventPublisher = event_stream_service,
         debug_run_guard: TransportDebugRunGuardPort | None = None,
@@ -232,6 +250,7 @@ class TransportService:
             from src.app.transport.debug_run_repository import TransportDebugRunRepository
 
             debug_run_guard = TransportDebugRunRepository()
+        self._result_timeout = result_timeout
         self._sessions = session_factory
         self._repository = repository
         self.provider = provider
@@ -410,10 +429,17 @@ class TransportService:
             task_with_evidence = await self._repository.get_task_with_latest_evidence(db, transport_task_id)
             if task_with_evidence is None:
                 raise NotFoundException(resource_type="TransportTask", resource_id=transport_task_id)
-            task, evidence = task_with_evidence
+            task, evidence, pending_count, binding_count = task_with_evidence
 
         latest_evidence = _evidence_snapshot(evidence)
         return TransportTaskSnapshot(
+            send_started_at=_utc_z(task.send_started_at) if task.send_started_at is not None else None,
+            result_deadline_at=_utc_z(task.result_deadline_at) if task.result_deadline_at is not None else None,
+            submit_attempt_count=task.submit_attempt_count,
+            outcome_version=task.outcome_version,
+            published_outcome_version=task.published_outcome_version,
+            pending_evidence_count=pending_count,
+            active_binding_count=binding_count,
             transport_task_id=task.transport_task_id,
             client_request_id=task.client_request_id,
             submit_operation_id=task.submit_operation_id,
@@ -426,6 +452,24 @@ class TransportService:
             result=_normalized_result(task.outcome_json),
             latest_evidence=latest_evidence,
         )
+
+    async def get_callback_receipt_snapshot(
+        self, operation: str, operation_id: str
+    ) -> TransportCallbackReceiptSnapshot | None:
+        """按已接收身份读取原始收据；不重新解析或推断任务关联。"""
+        async with self._sessions() as db:
+            receipt = await self._repository.get_callback_receipt(db, operation, operation_id, for_update=False)
+            if receipt is None:
+                return None
+            return TransportCallbackReceiptSnapshot(
+                operation=receipt.operation,
+                operation_id=receipt.operation_id,
+                response_http_status=receipt.response_http_status,
+                response_code=receipt.response_code,
+                response_data=_json_value(receipt.response_data_json),
+                received_at=_utc_z(receipt.received_at),
+                conflict_code=receipt.conflict_code,
+            )
 
     async def preview_debug_task_reset(self, transport_task_id: str) -> TransportDebugResetPreview:
         """预览指定 TransportTask 的本地 Transport 链路。"""
@@ -1290,7 +1334,7 @@ class TransportService:
                 _discard_stale_delivery_unknown(task)
             task.status = "ACCEPTED"
             task.reason_code = None
-            task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
+            task.result_deadline_at = task.result_deadline_at or now + self._result_timeout
             if lease_matches:
                 _clear_submit_claim(task)
             task.updated_at = now
@@ -1433,7 +1477,7 @@ class TransportService:
                 raise TransportContractError("source picked cannot overwrite unknown position")
             if member.final_position_json is not None:
                 return
-            _accept_position_fact(task, now)
+            _accept_position_fact(task, now, self._result_timeout)
         elif milestone == "TARGET_PLACED":
             final_position = payload.get("final_position")
             if final_position != member.target_json:
@@ -1444,7 +1488,7 @@ class TransportService:
                 raise TransportContractError("placed position contradicts confirmed member position")
             member.final_position_json = final_position
             member.position_unknown = False
-            _accept_position_fact(task, now)
+            _accept_position_fact(task, now, self._result_timeout)
         member.last_operation_id = evidence.operation_id
         member.updated_at = now
         task.updated_at = now
@@ -2006,7 +2050,7 @@ def _clear_submit_claim(task: TransportTask) -> None:
     task.submit_claim_until = None
 
 
-def _accept_position_fact(task: TransportTask, now: Any) -> None:
+def _accept_position_fact(task: TransportTask, now: datetime, result_timeout: timedelta) -> None:
     can_converge_delivery_unknown = (
         task.status == TransportTaskStatus.RECONCILING.value and task.reason_code == "TRANSPORT_DELIVERY_UNKNOWN"
     )
@@ -2016,7 +2060,7 @@ def _accept_position_fact(task: TransportTask, now: Any) -> None:
         _discard_stale_delivery_unknown(task)
     task.status = TransportTaskStatus.ACCEPTED.value
     task.reason_code = None
-    task.result_deadline_at = task.result_deadline_at or now + _RESULT_TIMEOUT
+    task.result_deadline_at = task.result_deadline_at or now + result_timeout
 
 
 def _callback_receipt(
@@ -2169,6 +2213,7 @@ def _applicable_outcome_revision(evidence: TransportEvidence, task: TransportTas
 
 
 __all__ = [
+    "TransportCallbackReceiptSnapshot",
     "TransportEvidenceSnapshot",
     "TransportService",
     "TransportTaskPage",

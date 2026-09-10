@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete
@@ -56,7 +58,7 @@ class OutcomeTransportService(TransportService):
     """为结果收敛测试建立已确认工作面前置事实。"""
 
     def __init__(self, db_engine: object, sessions: async_sessionmaker[AsyncSession]) -> None:
-        super().__init__(sessions, TransportRepository(), FakeProvider())
+        super().__init__(sessions, TransportRepository(), FakeProvider(), result_timeout=timedelta(seconds=420))
         self._db_engine = db_engine
 
     async def move_bins(

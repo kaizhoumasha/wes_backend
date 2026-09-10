@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,7 +42,9 @@ async def test_explicit_endpoint_builds_one_closed_transport_runtime_without_pub
 ) -> None:
     from src.app.transport import composition
     from src.app.wms_adapter import factory
+    from src.core.conf import settings
 
+    monkeypatch.setattr(settings, "TRANSPORT_RESULT_TIMEOUT_SECONDS", 420, raising=False)
     client = _CountingClient()
     client_factory = MagicMock(return_value=client)
     monkeypatch.setattr(factory, "build_wms_client", client_factory)
@@ -56,6 +59,7 @@ async def test_explicit_endpoint_builds_one_closed_transport_runtime_without_pub
     assert runtime.client is client
     assert runtime.adapter._client is client
     assert runtime.adapter._submit_path == "/api/WES/TransportRequests"
+    assert runtime.service._result_timeout == timedelta(seconds=420)
     assert runtime.port is runtime.service
     assert runtime.service._position_projections is runtime.position_projection_service
     assert runtime.service.provider is runtime.adapter
@@ -154,7 +158,7 @@ async def test_outcome_publisher_is_supplied_only_at_the_publish_call() -> None:
 
     sessions = SimpleNamespace(begin=begin)
     publisher = SimpleNamespace(publish=AsyncMock())
-    service = TransportService(sessions, _Repository(), SimpleNamespace())  # type: ignore[arg-type]
+    service = TransportService(sessions, _Repository(), SimpleNamespace(), result_timeout=timedelta(seconds=420))  # type: ignore[arg-type]
 
     assert await service.publish_pending_outcomes(1, publisher) == 0
     publisher.publish.assert_not_awaited()

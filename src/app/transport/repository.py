@@ -407,7 +407,7 @@ class TransportRepository:
         self,
         db: AsyncSession,
         transport_task_id: str,
-    ) -> tuple[TransportTask, TransportEvidence | None] | None:
+    ) -> tuple[TransportTask, TransportEvidence | None, int, int] | None:
         latest_evidence_id = (
             select(col(TransportEvidence.id))
             .where(col(TransportEvidence.transport_task_id) == transport_task_id)
@@ -415,13 +415,31 @@ class TransportRepository:
             .limit(1)
             .scalar_subquery()
         )
+        pending_count = (
+            select(func.count())
+            .select_from(TransportEvidence)
+            .where(
+                col(TransportEvidence.transport_task_id) == transport_task_id,
+                col(TransportEvidence.status) == "PENDING",
+            )
+            .scalar_subquery()
+        )
+        binding_count = (
+            select(func.count())
+            .select_from(TransportResourceBinding)
+            .where(
+                col(TransportResourceBinding.transport_task_id) == transport_task_id,
+                col(TransportResourceBinding.released_at).is_(None),
+            )
+            .scalar_subquery()
+        )
         result = await db.execute(
-            select(TransportTask, TransportEvidence)
+            select(TransportTask, TransportEvidence, pending_count, binding_count)
             .outerjoin(TransportEvidence, col(TransportEvidence.id) == latest_evidence_id)
             .where(col(TransportTask.transport_task_id) == transport_task_id)
         )
         row = result.one_or_none()
-        return None if row is None else (row[0], row[1])
+        return None if row is None else (row[0], row[1], int(row[2]), int(row[3]))
 
     async def list_tasks_with_latest_evidence(
         self,

@@ -91,7 +91,7 @@ async def _clean_transport_tables(db_engine: object) -> None:
 
 def _service(db_engine: object, provider: object) -> TransportService:
     sessions = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
-    return TransportService(sessions, TransportRepository(), provider)  # type: ignore[arg-type]
+    return TransportService(sessions, TransportRepository(), provider, result_timeout=timedelta(seconds=420))  # type: ignore[arg-type]
 
 
 async def _create_task(service: TransportService, request_id: str, rack_id: str) -> str:
