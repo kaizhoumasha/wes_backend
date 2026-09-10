@@ -9,7 +9,7 @@
 | 文档 | 保留原因 | 当前状态 |
 | --- | --- | --- |
 | `plans/2026-09-09-stability-recovery-master.md` | 近期联调稳定性与中断恢复的需求、复用边界、证据等级和交付顺序 | IMPLEMENTING；后端评审与 166 项 HEAVY 通过，前端等待干净 develop 合同 |
-| `plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询及真实中断切点验证 | IMPLEMENTING；基础切片验证中，不依赖具体业务插件 |
+| `plans/2026-09-09-stability-recovery-foundation.md` | 基础 deadline、持久事实查询及真实中断切点验证 | 后端 A1–A4 实现、评审与验证完成；不依赖具体业务插件，未部署 |
 | `plans/2026-09-09-stability-recovery-consumers.md` | 现有诊断页面、领域恢复入口和独立消费者验收 | IMPLEMENTING；恢复手册与原消费者验证已推进，前端等待干净 develop 合同 |
 | `plans/2026-09-09-stability-recovery-operations.md` | 发布加载证据、普通 TEST FULL 验收及既有备份计划接入 | APPROVED；承接旧发布静默计划剩余 Task 5，未部署 |
 | `specs/2026-09-06-bin-code-and-station-driven-flow-design.md` | 料箱编码统一、NG 分支独立与全程 BinExecution 退役的目标合同、实施切片和验收 | 部分实施：WMS bin_code 与 NG 出口 operation 清理已纳入 Operation 基线；内部 Transport 改名与 BinExecution 退役待实施，未部署 |

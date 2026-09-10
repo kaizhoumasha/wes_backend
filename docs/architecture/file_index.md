@@ -105,7 +105,7 @@ API → Service → Repository → Database
 | `src/app/device/` | Phase 7 DeviceCommand/ECS 可靠聚合、统一 wire Adapter、callback、evidence 与唯一 composition root；不包含供应商私有协议或业务 Decision |
 | `src/app/workline/activation.py` | WorkLine 当前设备/位置绑定和启动计划的纯值合同；不建立独立运行实体 |
 | `src/app/wms_adapter/` | 唯一共享 WMS HTTP/JSON 薄访问层；新增 operation 按 `<domain_key>/` 组织严格 DTO/parser、OpenAPI 和 Adapter/Event Handler，统一 Event route 静态分发并拒绝未知 operation |
-| `src/app/wms_diagnostics/` | WES 观察到的双向 WIRE、实际校验与字段对比；有界脱敏 Redis 近期记录及只读 API/SSE，不拥有业务状态或重试 |
+| `src/app/wms_diagnostics/` | WES 观察到的双向 WIRE、实际校验与字段对比；有界脱敏 Redis 近期记录及只读 API/SSE，另提供 WMS 可靠义务与入站 Evidence 的持久化只读查询；不拥有业务状态或重试 |
 | `src/app/wms_integration/` | 使用与 Adapter 相同的 `<domain_key>/` 承载 operation 所需的本地模型、Repository、事务 Service 与组合根；旧 Provider/Profile/Manifest/query/effect/status 通用运行时已退役 |
 | `src/wes_plugin_sdk/` | 可独立安装的公开基础 SPI：封闭 Fact/Decision、handler metadata 与合同内生校验；不得包含宿主实现、WMS operation DTO 或具体工作线业务 |
 | `workline_plugins/` | 具体工作线业务纵向切片；纯 Decision 层只依赖 SDK，应用层可调用 `src` 基础端口，反向依赖禁止 |
