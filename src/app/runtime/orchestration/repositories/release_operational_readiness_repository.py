@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, Select, and_, exists, func, not_, or_, select, text, true
+from sqlalchemy import ColumnElement, Select, and_, exists, func, literal_column, not_, or_, select, text, true
 from sqlmodel import col
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -49,8 +49,12 @@ def _conditional_count(predicate: ColumnElement[bool], label: str):
 class ReleaseOperationalReadinessRepository:
     """以一个 PostgreSQL SELECT 聚合四个可靠账本，不加载业务行。"""
 
-    @staticmethod
-    def build_statement() -> Select[tuple[object, ...]]:
+    def __init__(self, *, inbound_owner_column: str = "workline_id") -> None:
+        if inbound_owner_column not in {"workline_id", "line_run_epoch_id"}:
+            raise ValueError(f"Unsupported inbound evidence owner column: {inbound_owner_column}")
+        self._inbound_owner_column = inbound_owner_column
+
+    def build_statement(self) -> Select[tuple[object, ...]]:
         device_statuses = tuple(status.value for status in CommandStatus)
         device_wait_statuses = (
             CommandStatus.PENDING.value,
@@ -143,6 +147,11 @@ class ReleaseOperationalReadinessRepository:
 
         inbound_statuses = tuple(status.value for status in InboundEvidenceApplyStatus)
         inbound_known = col(InboundEvidence.apply_status).in_(inbound_statuses)
+        inbound_owner = (
+            col(InboundEvidence.workline_id)
+            if self._inbound_owner_column == "workline_id"
+            else literal_column("wes_biz.inbound_evidences.line_run_epoch_id")
+        )
         claim_identity_incomplete = or_(
             and_(
                 col(InboundEvidence.decision_claim_token).is_(None),
@@ -186,7 +195,7 @@ class ReleaseOperationalReadinessRepository:
             not_(
                 and_(
                     col(InboundEvidence.kind) == "WMS_EVENT",
-                    col(InboundEvidence.workline_id).is_(None),
+                    inbound_owner.is_(None),
                     col(InboundEvidence.material_execution_id).is_(None),
                 )
             ),

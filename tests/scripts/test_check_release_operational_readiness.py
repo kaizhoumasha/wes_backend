@@ -36,6 +36,20 @@ def _session_factory() -> _SessionContext:
     return _SessionContext()
 
 
+@pytest.mark.parametrize(
+    ("revision", "expected"),
+    [
+        ("e0da335c057d", "line_run_epoch_id"),
+        ("93deacda8c9c", "workline_id"),
+        ("f7cf0cd8c6d4", "workline_id"),
+    ],
+)
+def test_inbound_owner_column_follows_workline_retirement_revision(revision: str, expected: str) -> None:
+    module = _load_script()
+
+    assert module._inbound_owner_column_for_revision(revision) == expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("state", "exit_code"), [("READY", 0), ("BLOCK", 2), ("WAIT_DRAIN", 3)])
 async def test_cli_emits_one_canonical_json_line_and_state_exit_code(state: str, exit_code: int) -> None:

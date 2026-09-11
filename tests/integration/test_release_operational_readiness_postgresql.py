@@ -12,6 +12,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import event, select, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 from wes_plugin_sdk import CreateDeviceCommand, DevicePosition, EvidenceReadyFact, FactReference, handler
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -33,6 +35,7 @@ from src.app.wms_integration.outbound_picking.models import PickingTask as _Pick
 from src.app.workline.activation import WorkLineDeviceBinding
 from src.app.workline.models.workline import WorkLine
 from src.utils.timezone import timezone
+from tests.support.postgresql_heavy import run_alembic, temporary_database
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -838,8 +841,106 @@ async def test_aggregate_statement_is_count_only_supplemental_evidence(integrati
     sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})).lower()
     assert ";" not in sql
     assert " for update" not in sql
+    assert "to_jsonb" not in sql
     for payload_column in ("request_payload", "normalized_payload", "caller_json", "request_json", "params"):
         assert payload_column not in sql
+
+
+@pytest.mark.asyncio
+async def test_repository_classifies_legacy_epoch_owner_before_workline_retirement() -> None:
+    repository_module, _service_module = _contract_modules()
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "e0da335c057d", database_url=database_url)
+        engine = create_async_engine(database_url, poolclass=NullPool)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with sessions.begin() as db:
+                workline_id = await db.scalar(
+                    text(
+                        """
+                        INSERT INTO wes_biz.work_lines (
+                            created_at, line_code, line_name, line_type, runtime_config_json,
+                            run_mode, diagnostic_profile, is_active
+                        ) VALUES (
+                            CURRENT_TIMESTAMP, 'READINESS-LEGACY', 'Legacy readiness', 'AUTO',
+                            '{}'::json, 'AUTO', '{}'::json, FALSE
+                        )
+                        RETURNING id
+                        """
+                    )
+                )
+                epoch_id = await db.scalar(
+                    text(
+                        """
+                        INSERT INTO wes_biz.line_run_epochs (
+                            created_at, epoch_code, workline_id, plugin_key, plugin_version,
+                            flow_mode, topology_digest, configuration_digest,
+                            configuration_snapshot_json, status, started_at
+                        ) VALUES (
+                            CURRENT_TIMESTAMP, 'READINESS-LEGACY-EPOCH', :workline_id,
+                            'readiness_test', '1.0.0', 'TEST', repeat('a', 64), repeat('b', 64),
+                            '{}'::json, 'CLOSED', CURRENT_TIMESTAMP
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {"workline_id": workline_id},
+                )
+                await db.execute(
+                    text(
+                        """
+                        INSERT INTO wes_biz.inbound_evidences (
+                            created_at, kind, source_identity, payload_digest, normalized_payload,
+                            received_at, line_run_epoch_id, operation, operation_id, apply_status,
+                            processed_at, decision_attempt_count
+                        ) VALUES
+                            (CURRENT_TIMESTAMP, 'WMS_EVENT', 'readiness-legacy-global', repeat('c', 64),
+                             '{}'::json, CURRENT_TIMESTAMP, NULL, 'readiness.legacy@v1', 'global',
+                             'APPLIED', CURRENT_TIMESTAMP, 0),
+                            (CURRENT_TIMESTAMP, 'WMS_EVENT', 'readiness-legacy-bound', repeat('d', 64),
+                             '{}'::json, CURRENT_TIMESTAMP, :epoch_id, 'readiness.legacy@v1', 'bound',
+                             'APPLIED', CURRENT_TIMESTAMP, 0)
+                        """
+                    ),
+                    {"epoch_id": epoch_id},
+                )
+                counts = await repository_module.ReleaseOperationalReadinessRepository(
+                    inbound_owner_column="line_run_epoch_id"
+                ).load_counts(db)
+        finally:
+            await engine.dispose()
+
+    assert counts.inbound_evidence_wait_drain == 1
+    assert sum(vars(counts).values()) == 1
+
+
+@pytest.mark.asyncio
+async def test_owner_compatibility_query_handles_ten_thousand_large_payload_rows(
+    integration_db_session: AsyncSession,
+) -> None:
+    identity = uuid4().hex
+    await integration_db_session.execute(
+        text(
+            """
+            INSERT INTO wes_biz.inbound_evidences (
+                created_at, kind, source_identity, payload_digest, normalized_payload,
+                received_at, operation, operation_id, apply_status, processed_at,
+                decision_attempt_count
+            )
+            SELECT
+                CURRENT_TIMESTAMP, 'WMS_EVENT', :identity || ':' || series, repeat('e', 64),
+                json_build_object('payload', repeat('x', 4096)), CURRENT_TIMESTAMP,
+                'readiness.performance@v1', series::text, 'APPLIED', CURRENT_TIMESTAMP, 0
+            FROM generate_series(1, 10000) AS series
+            """
+        ),
+        {"identity": f"readiness-large:{identity}"},
+    )
+
+    repository_module, _service_module = _contract_modules()
+    counts = await repository_module.ReleaseOperationalReadinessRepository().load_counts(integration_db_session)
+
+    assert all(value == 0 for value in vars(counts).values())
 
 
 def test_representative_performance_builder_owns_forty_thousand_row_shape() -> None:
