@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.5.1] - 2026-09-11
+
+### Fixed
+
+- 后端 CI testing 镜像保留联调热更新 Compose 文件，恢复镜像内发布验证，不改变运行时业务、插件或供应商合同。
+
 ## [0.42.5.0] - 2026-09-11
 
 ### Fixed
