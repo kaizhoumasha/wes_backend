@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.4.0] - 2026-09-11
+
+### Added
+
+- 同一站点的新业务请求可建立独立执行上下文并可靠排队；同设备仍按物理事实串行派发。
+- WES 可持久化未接纳和结果未知的本地设备观察，并通过统一历史查询与实时流提供诊断。
+
+### Changed
+
+- 已存在的 WMS 确认义务在内部派发期限后继续保留原身份、原正文和退避节奏安全重试。
+- 本次恢复能力限定在 WES 基础执行与诊断层，保持粗分业务插件、SDK、新 WMS operation 和供应商 ECS wire 不变。
+
+### Fixed
+
+- `ACKNOWLEDGED` 或 `RECONCILING` 命令继续冻结同设备物理派发，避免 lease 过期的旧 worker 与后续命令并行发送。
+
 ## [0.42.3.0] - 2026-09-10
 
 ### Fixed
