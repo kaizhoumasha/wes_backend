@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, Select, and_, func, not_, or_, select, text, true
+from sqlalchemy import ColumnElement, Select, and_, exists, func, not_, or_, select, text, true
 from sqlmodel import col
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
@@ -167,6 +167,17 @@ class ReleaseOperationalReadinessRepository:
                 ),
             ),
         )
+        completed_non_execution_wms_result = and_(
+            col(InboundEvidence.kind) == "WMS_RESULT",
+            col(InboundEvidence.material_execution_id).is_(None),
+            exists(
+                select(1).where(
+                    col(WmsConfirmation.response_evidence_id) == col(InboundEvidence.id),
+                    col(WmsConfirmation.status) == WmsConfirmationStatus.COMPLETED.value,
+                    col(WmsConfirmation.material_execution_id).is_(None),
+                )
+            ),
+        )
         inbound_claimable = and_(
             col(InboundEvidence.apply_status) == InboundEvidenceApplyStatus.APPLIED.value,
             col(InboundEvidence.published_at).is_(None),
@@ -185,6 +196,7 @@ class ReleaseOperationalReadinessRepository:
                     col(InboundEvidence.material_execution_id).is_(None),
                 )
             ),
+            not_(completed_non_execution_wms_result),
         )
         inbound = (
             select(
