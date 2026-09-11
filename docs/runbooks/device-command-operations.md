@@ -113,6 +113,9 @@ SELECT
     contract_version,
     workline_id,
     apply_status,
+    normalized_payload ->> 'observation' AS observation,
+    normalized_payload ->> 'reason_code' AS observation_reason_code,
+    normalized_payload ->> 'observed_at' AS observed_at,
     received_at,
     processed_at
 FROM wes_biz.inbound_evidences
@@ -122,6 +125,9 @@ ORDER BY received_at ASC, id ASC;
 
 `PENDING` 表示已持久化待应用；`APPLIED` 表示已按当前权威边界处理；`IGNORED` 表示不推进对象；`RECONCILING` 表示证据存在但
 无法安全闭合。重复 `source_identity` 应复用首次接收结果；同一 identity 对应不同摘要会写入冲突表：
+
+`DEVICE_OBSERVATION` 是 WES 内部诊断事实：`NOT_ACCEPTED` 表示请求未被 ECS 接纳，`RESULT_UNKNOWN` 表示接纳或物理结果仍未知。
+它的 `APPLIED` 只表示观察已完成本地处理，不表示命令成功或物理完成；结果未知时必须保留原命令身份与设备围栏，等待匹配的权威终态。
 
 ```sql
 SELECT
