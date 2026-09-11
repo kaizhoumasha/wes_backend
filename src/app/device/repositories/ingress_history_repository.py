@@ -21,7 +21,7 @@ class DeviceIngressHistoryRepository(BaseRepository[CallbackLog]):
         evidence = cast("Any", InboundEvidence).__table__.c
         link = sql_cast(logs.request_body["evidence_id"].as_string(), BigInteger)
         log_filters = [logs.callback_type == DEVICE_INGRESS_CALLBACK_TYPE]
-        evidence_filters = [evidence.kind.in_(("DEVICE_EVENT", "DEVICE_RESULT"))]
+        evidence_filters = [evidence.kind.in_(("DEVICE_EVENT", "DEVICE_OBSERVATION", "DEVICE_RESULT"))]
         for key, value in (("device_code", device_code), ("kind", kind), ("command_code", command_code)):
             if value is not None:
                 log_filters.append(logs.request_body[key].as_string() == value)

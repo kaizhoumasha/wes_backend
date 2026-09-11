@@ -115,7 +115,7 @@ async def cleanup_execution_constraint_rows(integration_session_factory):
 
 
 @pytest.mark.asyncio
-async def test_postgresql_allows_only_one_active_execution_per_material_trace(
+async def test_postgresql_allows_independent_active_executions_for_the_same_material_trace(
     integration_session_factory,
 ) -> None:
     async with integration_session_factory.begin() as db:
@@ -129,10 +129,21 @@ async def test_postgresql_allows_only_one_active_execution_per_material_trace(
             evidence_id=second_evidence.id,
         )
         second.material_trace_id = first.material_trace_id
-        db.add(first)
+        db.add_all([first, second])
         await db.flush()
-        db.add(second)
-        with pytest.raises(IntegrityError):
+
+
+@pytest.mark.asyncio
+async def test_postgresql_allows_only_one_execution_per_initial_evidence(
+    integration_session_factory,
+) -> None:
+    with pytest.raises(IntegrityError):
+        async with integration_session_factory.begin() as db:
+            workline, identity = await _seed_workline(db)
+            evidence = await _seed_creation_evidence(db, workline, identity)
+            first = _execution(workline, identity, evidence_id=evidence.id)
+            second = _execution(workline, f"SECOND-{identity}", evidence_id=evidence.id)
+            db.add_all([first, second])
             await db.flush()
 
 
@@ -419,6 +430,36 @@ async def test_direct_cutover_schema_has_no_previous_evidence_or_resource_confir
 
     assert old_tables == set()
     assert old_column_exists is False
+
+
+@pytest.mark.asyncio
+async def test_device_observation_is_closed_and_requires_device_identity(integration_session_factory) -> None:
+    async with integration_session_factory.begin() as db:
+        db.add(
+            InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_OBSERVATION,
+                source_identity=f"{PREFIX}DEVICE-OBSERVATION-VALID",
+                payload_digest="5" * 64,
+                normalized_payload={"observation": "RESULT_UNKNOWN"},
+                received_at=datetime(2026, 8, 16),
+                device_code=f"{PREFIX}DEVICE-1",
+                command_code=f"{PREFIX}COMMAND-1",
+            )
+        )
+
+    async with integration_session_factory.begin() as db:
+        db.add(
+            InboundEvidence(
+                kind=InboundEvidenceKind.DEVICE_OBSERVATION,
+                source_identity=f"{PREFIX}DEVICE-OBSERVATION-MISSING-DEVICE",
+                payload_digest="6" * 64,
+                normalized_payload={"observation": "NOT_ACCEPTED"},
+                received_at=datetime(2026, 8, 16),
+                command_code=f"{PREFIX}COMMAND-2",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await db.flush()
 
 
 @pytest.mark.asyncio

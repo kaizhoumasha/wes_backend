@@ -89,11 +89,11 @@ class MaterialExecution(EnterpriseMixin, DataTableMixin, table=True):
         ),
         UniqueConstraint("execution_code", name="ux_material_executions_execution_code"),
         Index(
-            "ux_material_executions_active_trace",
-            "material_trace_id",
+            "ux_material_executions_admission_evidence",
+            "admission_evidence_id",
             unique=True,
-            postgresql_where=text("status <> 'CLOSED'"),
-            sqlite_where=text("status <> 'CLOSED'"),
+            postgresql_where=text("admission_evidence_id IS NOT NULL"),
+            sqlite_where=text("admission_evidence_id IS NOT NULL"),
         ),
         Index("ix_material_executions_workline_status", "workline_id", "status", "id"),
         Index(

@@ -512,7 +512,7 @@ heavy_tests = []
 # Phase 7 DeviceCommand/ECS owner 由隔离 PostgreSQL 不变量与真实生产闭环共同承接。
 
 [[mapping]]
-source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py}"
+source_glob = "src/app/device/{__init__.py,composition.py,ecs_adapter.py,evidence_projection.py}"
 heavy_tests = [
     "tests/e2e/test_active_dispatch_wakeup.py",
     "tests/e2e/device_command/test_device_command_production_wiring.py",
@@ -2716,6 +2716,14 @@ source_glob = "migrations/versions/20260910_0327_910b24bb0e05_widen_inbound_evid
 heavy_tests = [
     "tests/integration/wms_adapter/outbound_picking/test_schema.py",
     "tests/integration/wms_adapter/outbound_picking/test_return_batch_production_wiring.py",
+    "tests/integration/execution/test_execution_constraints.py",
+]
+
+[[mapping]]
+source_glob = "migrations/versions/20260911_1125_f7cf0cd8c6d4_allow_independent_station_requests.py"
+heavy_tests = [
+    "tests/integration/test_initial_schema_baseline_postgresql.py",
+    "tests/integration/device_command/test_device_command_constraints.py",
     "tests/integration/execution/test_execution_constraints.py",
 ]
 

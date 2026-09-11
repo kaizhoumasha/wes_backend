@@ -168,7 +168,7 @@ class RoughSorterInitialExecutionCorrelator:
         if not isinstance(data, dict):
             raise TypeError("SCAN_COMPLETED.data 缺失")
         material_trace_id = _required_string(data.get("material_trace_id"), "material_trace_id")
-        digest = hashlib.sha256(f"{evidence.workline_id}:{material_trace_id}".encode()).hexdigest()
+        digest = hashlib.sha256(f"{evidence.workline_id}:{evidence.id}:{material_trace_id}".encode()).hexdigest()
         return InitialExecutionDescriptor(
             material_trace_id=material_trace_id,
             execution_code=f"rough-sorter-{digest}",

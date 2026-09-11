@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -210,6 +210,45 @@ class InboundEvidenceService:
             ),
         )
         return InboundEvidenceAcceptance(evidence, duplicate=False)
+
+    async def record_device_observation(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        device_code: str,
+        observation: Literal["NOT_ACCEPTED", "RESULT_UNKNOWN"],
+        reason_code: str,
+        observed_at: datetime,
+        received_at: datetime,
+        workline_id: int | None,
+        material_execution_id: int | None,
+        contract_key: str,
+        contract_version: str,
+    ) -> InboundEvidenceAcceptance:
+        accepted = await self.accept(
+            db,
+            kind=InboundEvidenceKind.DEVICE_OBSERVATION,
+            source_identity=f"device:{command_code}:observation:{observation}",
+            normalized_payload={
+                "command_code": command_code,
+                "device_code": device_code,
+                "observation": observation,
+                "observed_at": observed_at.isoformat(),
+                "reason_code": reason_code,
+            },
+            received_at=received_at,
+            workline_id=workline_id,
+            material_execution_id=material_execution_id,
+            device_code=device_code,
+            command_code=command_code,
+            contract_key=contract_key,
+            contract_version=contract_version,
+            apply_status=InboundEvidenceApplyStatus.PENDING,
+        )
+        if isinstance(accepted, InboundEvidenceConflictResult):
+            raise accepted.to_exception()
+        return accepted
 
     async def record_conflict(
         self,

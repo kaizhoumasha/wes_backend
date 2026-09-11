@@ -17,6 +17,7 @@ from src.database.schema_conf import SchemaType
 
 class InboundEvidenceKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"
+    DEVICE_OBSERVATION = "DEVICE_OBSERVATION"
     DEVICE_RESULT = "DEVICE_RESULT"
     TRANSPORT_RESULT = "TRANSPORT_RESULT"
     WMS_EVENT = "WMS_EVENT"
@@ -37,7 +38,8 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('DEVICE_EVENT', 'DEVICE_RESULT', 'TRANSPORT_RESULT', 'WMS_EVENT', 'WMS_RESULT')",
+            "kind IN ('DEVICE_EVENT', 'DEVICE_OBSERVATION', 'DEVICE_RESULT', "
+            "'TRANSPORT_RESULT', 'WMS_EVENT', 'WMS_RESULT')",
             name="inbound_evidence_kind_valid",
         ),
         CheckConstraint(
@@ -49,7 +51,7 @@ class InboundEvidence(EnterpriseMixin, DataTableMixin, table=True):
             name="inbound_evidence_wms_identity_required",
         ),
         CheckConstraint(
-            "kind NOT IN ('DEVICE_EVENT', 'DEVICE_RESULT') OR device_code IS NOT NULL",
+            "kind NOT IN ('DEVICE_EVENT', 'DEVICE_OBSERVATION', 'DEVICE_RESULT') OR device_code IS NOT NULL",
             name="inbound_evidence_device_identity_required",
         ),
         CheckConstraint(

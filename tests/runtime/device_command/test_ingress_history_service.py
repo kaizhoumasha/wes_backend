@@ -73,6 +73,51 @@ async def test_history_keeps_each_attempt_and_projects_current_state_without_fab
     repo.load_evidences.assert_awaited_once()
 
 
+async def test_history_projects_internal_device_observation_without_fabricating_supplier_attempt():
+    observation = SimpleNamespace(
+        id=9,
+        kind="DEVICE_OBSERVATION",
+        source_identity="device:CMD-001:observation:RESULT_UNKNOWN",
+        device_code="ARM-01",
+        command_code="CMD-001",
+        normalized_payload={
+            "command_code": "CMD-001",
+            "device_code": "ARM-01",
+            "observation": "RESULT_UNKNOWN",
+            "observed_at": "2026-09-07T10:00:00",
+            "reason_code": "ACK_DEADLINE_EXPIRED",
+        },
+        apply_status="PENDING",
+        processed_at=None,
+    )
+    repo = SimpleNamespace(
+        page_keys=AsyncMock(return_value=[{"id": 9, "source_rank": 0, "recorded_at": NOW}]),
+        load_logs=AsyncMock(return_value={}),
+        load_evidences=AsyncMock(return_value={9: observation}),
+    )
+    service = DeviceIngressHistoryService(session_context=_session, repository=repo)
+
+    page = await service.list_history(kind="DEVICE_OBSERVATION")
+
+    item = page.items[0]
+    assert item.row_key == "evidence:9"
+    assert item.attempt is None
+    assert item.latest_update.model_dump(mode="json") == {
+        "evidence_id": 9,
+        "kind": "DEVICE_OBSERVATION",
+        "source_event_id": "device:CMD-001:observation:RESULT_UNKNOWN",
+        "device_code": "ARM-01",
+        "command_code": "CMD-001",
+        "event_type": None,
+        "observation": "RESULT_UNKNOWN",
+        "reason_code": "ACK_DEADLINE_EXPIRED",
+        "observed_at": "2026-09-07T10:00:00+00:00",
+        "apply_status": "PENDING",
+        "processed_at": None,
+    }
+    assert repo.page_keys.await_args.kwargs["kind"] == "DEVICE_OBSERVATION"
+
+
 async def test_recording_uses_generic_callback_log_with_diagnostic_type_and_preserves_full_device_code():
     logs = SimpleNamespace(log_callback=AsyncMock())
     service = DeviceIngressHistoryService(session_context=_session, log_service=logs)

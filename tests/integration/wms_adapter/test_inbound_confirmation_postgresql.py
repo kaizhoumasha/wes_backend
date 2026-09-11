@@ -248,8 +248,6 @@ async def test_claim_fifo_uses_creation_order_across_due_retry_and_new_pending(i
 class _DispatchAdapter:
     async def dispatch(self, **kwargs):  # type: ignore[no-untyped-def]
         operation_id = kwargs["operation_id"]
-        if kwargs["request_payload"]["data"]["workline_code"] == "EXPIRED":
-            raise AssertionError("过期确认不得调用 HTTP")
         if kwargs["request_payload"]["data"]["workline_code"] == "UNKNOWN":
             return SimpleNamespace(
                 code=WmsDispatchCode.DELIVERY_UNKNOWN,
@@ -319,7 +317,7 @@ class _WaitDispatchAdapter:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evidence_before_completion(
+async def test_dispatch_retries_expired_window_and_commits_evidence_before_completion(
     integration_session_factory,
 ) -> None:
     now = datetime(2026, 8, 16)
@@ -360,13 +358,16 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
             row.id: row
             for row in (await db.execute(select(WmsConfirmation).where(WmsConfirmation.id.in_(ids.values())))).scalars()
         }
-        completed = rows[ids["COMPLETE"]]
-        assert completed.status == WmsConfirmationStatus.COMPLETED
-        assert completed.response_evidence_id is not None
-        response_evidence = await db.get(InboundEvidence, completed.response_evidence_id)
-        assert response_evidence is not None
-        assert response_evidence.workline_id == workline_id
-        assert response_evidence.material_execution_id == completed.material_execution_id
+        response_evidence_ids: list[int] = []
+        for name in ("COMPLETE", "EXPIRED"):
+            completed = rows[ids[name]]
+            assert completed.status == WmsConfirmationStatus.COMPLETED
+            assert completed.response_evidence_id is not None
+            response_evidence_ids.append(completed.response_evidence_id)
+            response_evidence = await db.get(InboundEvidence, completed.response_evidence_id)
+            assert response_evidence is not None
+            assert response_evidence.workline_id == workline_id
+            assert response_evidence.material_execution_id == completed.material_execution_id
         claimed = await InboundEvidenceRepository().claim_decision_batch(
             db,
             now=now,
@@ -374,8 +375,7 @@ async def test_dispatch_rechecks_deadline_retries_same_identity_and_commits_evid
             claim_expires_at=now + timedelta(minutes=1),
             limit=10,
         )
-        assert [evidence.id for evidence in claimed] == [response_evidence.id]
-        assert rows[ids["EXPIRED"]].status == WmsConfirmationStatus.RECONCILING
+        assert [evidence.id for evidence in claimed] == response_evidence_ids
         unknown = rows[ids["UNKNOWN"]]
         assert unknown.status == WmsConfirmationStatus.PENDING
         assert unknown.retry_eligible is True

@@ -37,6 +37,25 @@ async def test_history_pages_attempts_and_legacy_evidence_with_current_status(in
                 db.add(evidence)
                 await db.flush()
                 evidence_ids.append(evidence.id)
+            observation = InboundEvidence(
+                kind="DEVICE_OBSERVATION",
+                source_identity=f"device:{suffix}:observation:RESULT_UNKNOWN",
+                payload_digest="f" * 64,
+                normalized_payload={
+                    "command_code": f"CMD-{suffix}",
+                    "device_code": device,
+                    "observation": "RESULT_UNKNOWN",
+                    "observed_at": timezone.to_utc(now).isoformat(),
+                    "reason_code": "ACK_DEADLINE_EXPIRED",
+                },
+                device_code=device,
+                command_code=f"CMD-{suffix}",
+                received_at=now - timedelta(seconds=1),
+                apply_status="PENDING",
+            )
+            db.add(observation)
+            await db.flush()
+            evidence_ids.append(observation.id)
         for index in range(2):
             await service.record_attempt(
                 DeviceIngressAttempt(
@@ -69,18 +88,20 @@ async def test_history_pages_attempts_and_legacy_evidence_with_current_status(in
             cursor = page.next_cursor
             if cursor is None:
                 break
-        assert len(collected) == 3
-        assert len({item.row_key for item in collected}) == 3
-        assert [item.latest_update.apply_status for item in collected] == ["IGNORED", "IGNORED", "PENDING"]
-        assert collected[-1].attempt is None
-        assert collected[-1].latest_update.evidence_id == evidence_ids[1]
-        assert collected[-1].latest_update.processed_at is None
+        assert len(collected) == 4
+        assert len({item.row_key for item in collected}) == 4
+        assert [item.latest_update.apply_status for item in collected] == ["IGNORED", "IGNORED", "PENDING", "PENDING"]
+        assert all(item.attempt is None for item in collected[-2:])
+        assert [item.latest_update.evidence_id for item in collected[-2:]] == evidence_ids[1:]
+        assert all(item.latest_update.processed_at is None for item in collected[-2:])
         assert {item.attempt.disposition for item in collected[:2]} == {"ACCEPTED", "DUPLICATE"}
         page = await service.list_history(device_code=device, apply_status="IGNORED")
         assert len(page.items) == 2
         assert all(item.attempt.apply_status == "PENDING" for item in page.items)
         page = await service.list_history(device_code=device, apply_status="PENDING")
-        assert [item.latest_update.evidence_id for item in page.items] == [evidence_ids[1]]
+        assert [item.latest_update.evidence_id for item in page.items] == evidence_ids[1:]
+        page = await service.list_history(device_code=device, kind="DEVICE_OBSERVATION")
+        assert [item.latest_update.observation for item in page.items] == ["RESULT_UNKNOWN"]
         assert not (await service.list_history(device_code=device, command_code="unrelated")).items
         assert not (await service.list_history(device_code=device, kind="DEVICE_RESULT")).items
     finally:

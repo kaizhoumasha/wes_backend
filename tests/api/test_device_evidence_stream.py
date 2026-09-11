@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
-from src.app.device.contracts import DeviceIngressKind
+from src.app.device.contracts import DeviceEvidenceKind
 from src.app.device.v1.evidence_stream import evidence_stream, router
 from src.app.execution.models.inbound_evidence import InboundEvidenceApplyStatus
 from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL
@@ -47,6 +47,9 @@ def _update_payload(device_code: str = "ARM-01") -> dict[str, object]:
         "device_code": device_code,
         "command_code": "CMD-001",
         "event_type": None,
+        "observation": None,
+        "reason_code": None,
+        "observed_at": None,
         "apply_status": "APPLIED",
         "processed_at": "2026-08-23T08:00:01+00:00",
     }
@@ -115,7 +118,7 @@ async def test_device_evidence_stream_uses_dedicated_channel_filters_and_omits_s
     response = await evidence_stream(
         request,
         device_code="ARM-02",
-        kind=DeviceIngressKind.DEVICE_RESULT,
+        kind=DeviceEvidenceKind.DEVICE_RESULT,
         command_code="CMD-001",
         apply_status=InboundEvidenceApplyStatus.PENDING,
     )
@@ -148,7 +151,7 @@ async def test_device_evidence_stream_applies_the_same_filters_to_updates() -> N
     response = await evidence_stream(
         request,
         device_code="ARM-02",
-        kind=DeviceIngressKind.DEVICE_RESULT,
+        kind=DeviceEvidenceKind.DEVICE_RESULT,
         command_code="CMD-001",
         apply_status=InboundEvidenceApplyStatus.APPLIED,
     )
@@ -194,7 +197,7 @@ async def test_device_history_delegates_typed_filters_and_requires_superuser():
     assert invalid.status_code == 422
     history.list_history.assert_awaited_once_with(
         device_code="ARM-1",
-        kind=DeviceIngressKind.DEVICE_EVENT,
+        kind=DeviceEvidenceKind.DEVICE_EVENT,
         command_code="CMD-1",
         apply_status=InboundEvidenceApplyStatus.PENDING,
         limit=10,
@@ -204,3 +207,46 @@ async def test_device_history_delegates_typed_filters_and_requires_superuser():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/v1/device/evidences/history?cursor=bad")
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_device_evidence_stream_accepts_internal_observation_update() -> None:
+    payload = {
+        "evidence_id": 9,
+        "kind": "DEVICE_OBSERVATION",
+        "source_event_id": "device:CMD-001:observation:RESULT_UNKNOWN",
+        "device_code": "ARM-01",
+        "command_code": "CMD-001",
+        "event_type": None,
+        "observation": "RESULT_UNKNOWN",
+        "reason_code": "ACK_DEADLINE_EXPIRED",
+        "observed_at": "2026-09-07T10:00:00+00:00",
+        "apply_status": "PENDING",
+        "processed_at": None,
+    }
+    invalid = {**payload, "reason_code": None}
+    stream = FakeStreamService(
+        (
+            {"type": "device_evidence.updated", "payload": invalid, "timestamp": 1},
+            {"type": "device_evidence.updated", "payload": payload, "timestamp": 2},
+        )
+    )
+    app = FastAPI()
+    app.state.device_event_stream_service = stream
+    request = Request({"type": "http", "method": "GET", "path": "/stream", "headers": [], "app": app})
+
+    response = await evidence_stream(
+        request,
+        device_code="ARM-01",
+        kind=DeviceEvidenceKind.DEVICE_OBSERVATION,
+        command_code="CMD-001",
+        apply_status=InboundEvidenceApplyStatus.PENDING,
+    )
+    body = response.body_iterator
+    _ = await anext(body)
+    event = await anext(body)
+    await body.aclose()
+
+    assert "event: device_evidence.updated\n" in event
+    assert '"observation": "RESULT_UNKNOWN"' in event
+    assert '"reason_code": "ACK_DEADLINE_EXPIRED"' in event

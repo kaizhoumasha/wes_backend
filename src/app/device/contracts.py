@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
@@ -306,6 +306,14 @@ class DeviceIngressKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"
 
 
+class DeviceEvidenceKind(str, Enum):
+    """WES 设备诊断 Evidence 分类；不属于供应商 callback wire。"""
+
+    DEVICE_RESULT = "DEVICE_RESULT"
+    DEVICE_EVENT = "DEVICE_EVENT"
+    DEVICE_OBSERVATION = "DEVICE_OBSERVATION"
+
+
 class DeviceIngressDisposition(str, Enum):
     ACCEPTED = "ACCEPTED"
     DUPLICATE = "DUPLICATE"
@@ -341,13 +349,26 @@ class DeviceEvidenceUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     evidence_id: int
-    kind: DeviceIngressKind
+    kind: DeviceEvidenceKind
     source_event_id: str
     device_code: str
     command_code: str | None = None
     event_type: str | None = None
+    observation: Literal["NOT_ACCEPTED", "RESULT_UNKNOWN"] | None = None
+    reason_code: str | None = None
+    observed_at: str | None = None
     apply_status: str
     processed_at: str | None
+
+    @model_validator(mode="after")
+    def validate_observation_shape(self) -> DeviceEvidenceUpdate:
+        observation_fields = (self.observation, self.reason_code, self.observed_at)
+        if self.kind is DeviceEvidenceKind.DEVICE_OBSERVATION:
+            if any(value is None for value in observation_fields) or self.event_type is not None:
+                raise ValueError("DEVICE_OBSERVATION 诊断快照字段不完整")
+        elif any(value is not None for value in observation_fields):
+            raise ValueError("非 DEVICE_OBSERVATION 不得携带 observation 字段")
+        return self
 
 
 class DeviceIngressHistoryItem(BaseModel):
@@ -369,6 +390,7 @@ __all__ = [
     "DeviceCommandHandle",
     "DeviceCommandOutcome",
     "DeviceCommandRequest",
+    "DeviceEvidenceKind",
     "DeviceEvidenceReceipt",
     "DeviceEvidenceUpdate",
     "DeviceIngressAttempt",

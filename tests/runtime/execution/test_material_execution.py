@@ -22,6 +22,7 @@ from src.app.execution.services.material_execution_service import (
 class FakeMaterialExecutionRepository:
     def __init__(self) -> None:
         self.executions: list[MaterialExecution] = []
+        self.locked_initial_evidence_ids: list[int] = []
 
     async def lock_material_trace(self, _db: object, material_trace_id: str) -> None:
         return None
@@ -38,6 +39,19 @@ class FakeMaterialExecutionRepository:
                 if execution.material_trace_id == material_trace_id
                 and execution.status != MaterialExecutionStatus.CLOSED
             ),
+            None,
+        )
+
+    async def lock_initial_evidence(self, _db: object, evidence_id: int) -> None:
+        self.locked_initial_evidence_ids.append(evidence_id)
+
+    async def get_by_admission_evidence_for_update(
+        self,
+        _db: object,
+        evidence_id: int,
+    ) -> MaterialExecution | None:
+        return next(
+            (execution for execution in self.executions if execution.admission_evidence_id == evidence_id),
             None,
         )
 
@@ -154,8 +168,8 @@ async def test_one_trace_rejects_a_second_active_execution_but_closed_trace_can_
 
 
 @pytest.mark.asyncio
-async def test_initial_evidence_correlation_reuses_only_the_same_frozen_execution_identity() -> None:
-    service, _ = _service()
+async def test_initial_evidence_is_idempotent_but_same_material_new_request_gets_independent_execution() -> None:
+    service, repository = _service()
     kwargs = {
         "execution_code": "EXEC-INITIAL",
         "material_trace_id": "TRACE-INITIAL",
@@ -166,8 +180,15 @@ async def test_initial_evidence_correlation_reuses_only_the_same_frozen_executio
 
     first = await service.create_or_get_for_initial_evidence(object(), **kwargs)
     duplicate = await service.create_or_get_for_initial_evidence(object(), **kwargs)
+    next_request = await service.create_or_get_for_initial_evidence(
+        object(),
+        **{**kwargs, "execution_code": "EXEC-NEXT", "evidence_id": 102},
+    )
 
     assert duplicate is first
+    assert next_request is not first
+    assert next_request.material_trace_id == first.material_trace_id
+    assert repository.locked_initial_evidence_ids == [101, 101, 102]
     with pytest.raises(InitialExecutionCorrelationConflictError):
         await service.create_or_get_for_initial_evidence(
             object(),

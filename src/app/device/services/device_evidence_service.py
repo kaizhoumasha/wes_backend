@@ -9,8 +9,6 @@ from src.app.device.contracts import (
     DEVICE_INTEGRATION_CONTRACT_KEY,
     DEVICE_INTEGRATION_CONTRACT_VERSION,
     DeviceEvidenceReceipt,
-    DeviceEvidenceUpdate,
-    DeviceIngressKind,
     EcsCommandResult,
     EcsCommandResultReport,
     EcsCommandResultValue,
@@ -23,6 +21,11 @@ from src.app.device.event_block_contracts import (
     EventDebugCommandBlocked,
     EventDebugCommandReady,
     ReprocessedEventSnapshot,
+)
+from src.app.device.evidence_projection import (
+    DeviceEvidenceEventPublisherPort,
+    build_device_evidence_update,
+    publish_device_evidence_update,
 )
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.event_command_block import DeviceEventCommandBlock, DeviceEventCommandBlockStatus
@@ -44,7 +47,6 @@ from src.app.execution.services.inbound_evidence_service import (
 )
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
-from src.app.sys.services.event_stream_service import DEVICE_EVIDENCE_STREAM_CHANNEL
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.transaction_wakeup import defer_wakeup
 from src.utils.canonical_json import canonical_json_digest
@@ -191,10 +193,6 @@ class SafetyServicePort(Protocol):
     ) -> object: ...
 
 
-class EventPublisherPort(Protocol):
-    async def publish_to(self, channel: str, event_type: str, payload: dict[str, object]) -> bool: ...
-
-
 class EventDebugCommandServicePort(Protocol):
     async def create_event_debug_command_in_session(
         self,
@@ -216,7 +214,7 @@ class DeviceEvidenceService:
         command_repository: EvidenceCommandRepositoryPort | None = None,
         workline_repository: EvidenceWorkLineRepositoryPort | None = None,
         task_queue_gateway: TaskQueueGateway | None = None,
-        event_publisher: EventPublisherPort | None = None,
+        event_publisher: DeviceEvidenceEventPublisherPort | None = None,
         event_debug_command_service: EventDebugCommandServicePort | None = None,
         event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
         audit_service: EvidenceAuditServicePort | None = None,
@@ -465,7 +463,7 @@ class DeviceEvidenceService:
         wake_execution = False
         wake_device_commands = False
         wake_safety_drain = False
-        update: DeviceEvidenceUpdate | None = None
+        update = None
         debug_command_code: str | None = None
         async with self._sessions.begin() as db:
             evidence = await self._processing.claim_next_pending(
@@ -547,12 +545,12 @@ class DeviceEvidenceService:
                     wake_execution = evidence.material_execution_id is not None
             if self._task_queue is not None and evidence.kind == InboundEvidenceKind.DEVICE_EVENT:
                 defer_wakeup(db, self._task_queue.enqueue_transport_debug)
-            update = _evidence_update(evidence, processed_at=now, command_code=debug_command_code)
+            update = build_device_evidence_update(evidence, processed_at=now, command_code=debug_command_code)
         if wake_device_commands:
             self._enqueue_device_commands()
         if wake_safety_drain:
             self._enqueue_safety_drain()
-        await self._publish_update(update)
+        await publish_device_evidence_update(self._event_publisher, update)
         if wake_execution:
             self._enqueue_execution_facts()
         return True
@@ -579,18 +577,6 @@ class DeviceEvidenceService:
         )
         await self._processing.mark_applied(db, evidence, processed_at=processed_at)
         return True
-
-    async def _publish_update(self, update: DeviceEvidenceUpdate) -> None:
-        if self._event_publisher is None:
-            return
-        try:
-            _ = await self._event_publisher.publish_to(
-                DEVICE_EVIDENCE_STREAM_CHANNEL,
-                "device_evidence.updated",
-                update.model_dump(mode="json"),
-            )
-        except Exception:
-            logger.exception("device.evidence.update_publish_failed")
 
     def _enqueue_execution_facts(self) -> None:
         if self._task_queue is None:
@@ -687,28 +673,6 @@ def _receipt(
         duplicate=duplicate,
         trace_id=trace_id,
         apply_status=InboundEvidenceApplyStatus(evidence.apply_status).value,
-    )
-
-
-def _evidence_update(
-    evidence: InboundEvidence,
-    *,
-    processed_at: datetime,
-    command_code: str | None = None,
-) -> DeviceEvidenceUpdate:
-    if evidence.id is None or evidence.device_code is None:
-        raise RuntimeError("device evidence 缺少 update snapshot 字段")
-    kind = DeviceIngressKind(getattr(evidence.kind, "value", evidence.kind))
-    raw_event_type = evidence.normalized_payload.get("event_type") if kind is DeviceIngressKind.DEVICE_EVENT else None
-    return DeviceEvidenceUpdate(
-        evidence_id=evidence.id,
-        kind=kind,
-        source_event_id=evidence.source_identity,
-        device_code=evidence.device_code,
-        command_code=command_code or evidence.command_code,
-        event_type=raw_event_type if isinstance(raw_event_type, str) else None,
-        apply_status=InboundEvidenceApplyStatus(evidence.apply_status).value,
-        processed_at=timezone.to_utc(processed_at).isoformat(),
     )
 
 

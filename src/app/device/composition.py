@@ -140,7 +140,10 @@ def build_device_command_runtime(
         adapter_factory=adapter_factory,
     )
     command_service = DeviceCommandService(
-        session_factory=session_factory, adapter_provider=provider, task_queue_gateway=task_queue_gateway
+        session_factory=session_factory,
+        adapter_provider=provider,
+        task_queue_gateway=task_queue_gateway,
+        event_publisher=event_stream_service,
     )
     return DeviceCommandRuntime(
         provider=provider,
@@ -148,6 +151,7 @@ def build_device_command_runtime(
         dispatch_service=DeviceDispatchService(
             session_factory=session_factory,
             adapter_provider=provider,
+            event_publisher=event_stream_service,
         ),
         evidence_service=DeviceEvidenceService(
             session_factory=session_factory,

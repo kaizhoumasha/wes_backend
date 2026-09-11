@@ -37,6 +37,23 @@ class MaterialExecutionRepository(BaseRepository[MaterialExecution]):
         )
         return result.scalar_one_or_none()
 
+    async def lock_initial_evidence(self, db: AsyncSession, evidence_id: int) -> None:
+        _ = await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+            {"identity": f"material_execution_initial_evidence:{evidence_id}"},
+        )
+
+    async def get_by_admission_evidence_for_update(
+        self,
+        db: AsyncSession,
+        evidence_id: int,
+    ) -> MaterialExecution | None:
+        columns = cast("Any", MaterialExecution).__table__.c
+        result = await db.execute(
+            select(MaterialExecution).where(columns.admission_evidence_id == evidence_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def add(self, db: AsyncSession, execution: MaterialExecution) -> MaterialExecution:
         db.add(execution)
         await db.flush()
