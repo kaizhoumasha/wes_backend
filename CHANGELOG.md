@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.6.0] - 2026-09-11
+
+### Fixed
+
+- 发布前静默门禁按目标数据库 migration lineage 选择旧版或当前 Evidence owner 列，使旧 schema 能完成只读准入后安全迁移，同时保持单次聚合且不读取业务 payload。
+
 ## [0.42.5.2] - 2026-09-11
 
 ### Fixed
