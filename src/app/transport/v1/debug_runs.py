@@ -6,7 +6,16 @@ import json
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, Path, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+)
 from starlette.responses import StreamingResponse
 
 from src.app.sys.services.event_stream_service import (
@@ -73,6 +82,7 @@ class TransportDebugRunFaceGroupRequest(_StrictApiModel):
 
 
 class CreateTransportDebugRunRequest(_StrictApiModel):
+    test_mode: StrictBool = False
     workstation: _TEXT = "KT16"
     infeed_position: _TEXT = "CNV0301"
     outfeed_position: _TEXT = "CNV0302"
@@ -122,6 +132,7 @@ class TransportDebugReturnedBinResponse(_StrictApiModel):
 
 
 class TransportDebugRunResponse(_StrictApiModel):
+    test_mode: bool = False
     workstation: str
     infeed_position: str
     outfeed_position: str
@@ -186,6 +197,7 @@ def _stream_service(request: Request) -> EventStreamPort:
 
 def _domain_request(payload: CreateTransportDebugRunRequest) -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
+        test_mode=payload.test_mode,
         workstation=payload.workstation,
         infeed_position=payload.infeed_position,
         outfeed_position=payload.outfeed_position,

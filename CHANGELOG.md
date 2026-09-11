@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0.0] - 2026-09-11
+
+### Changed
+
+- 手工出库准入固定任务身份；取消完成应用上报接口及阶段，点2释放确认后本地保存 APPLIED 并进入点3。迁移拒绝仍有旧阶段或未完成上报义务的数据库。
+- Transport 接受合同内结构合法的搬运组合，具体可执行性由 WMS/RCS 决定；自动联调增加启动时冻结的扫码测试模式，复用现有 MOVE_FORWARD 可靠命令链。
+- 调整 CI 依赖重试、代理探测与报告发布，发布检查器输出有界脱敏诊断，并保留旧 schema 的只读兼容检查。
+
 ## [0.42.6.1] - 2026-09-11
 
 ### Changed

@@ -19,10 +19,6 @@ from src.app.transport.contracts import (
 )
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BinInboundBatchData
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import ManualBinAdmissionData
-from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
-    ManualBinApplied,
-    ManualBinReconciling,
-)
 from src.app.wms_adapter.outbound_picking.typed import encode_request as encode_prepare_request
 from src.app.wms_adapter.outbound_picking.wire import PickingTaskPrepareData
 from src.app.wms_integration.outbound_picking.models import PickingTaskStatus
@@ -306,117 +302,6 @@ async def test_unstarted_run_can_be_closed_without_leaving_workline_scope_occupi
 
 
 @pytest.mark.asyncio
-async def test_completion_report_requires_current_phase_and_bound_completion_identity() -> None:
-    run = IntegrationRun(
-        run_id="run-report",
-        workline_id=3,
-        workline_code="KT16",
-        scenario_key="manual_outbound_picking@v1",
-        expected_plugin_key="manual_bin_processing",
-        profile="CONTRACT_SIMULATION",
-        environment_label="integration",
-        operator_user_id=42,
-        active_scope="WORKLINE:3",
-        status="ACTIVE",
-        current_phase="POINT2_RELEASE",
-        task_id="PICK-001",
-        bin_code="BIN-001",
-        device_code="SIM-ECS-01",
-        configuration_json={"admission_task_id": "PICK-WMS", "manual_bin_admission_result": "WORK_REQUIRED"},
-    )
-    repository = _Repository(run)
-    repository.steps.append(
-        IntegrationRunStep(
-            run_id=run.run_id,
-            ordinal=1,
-            phase="WORK_COMPLETION",
-            status="SUCCEEDED",
-            operation="outbound.manual_bin.work_completed@v1",
-            operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
-        )
-    )
-    repository.steps.append(
-        IntegrationRunStep(
-            run_id=run.run_id,
-            ordinal=2,
-            phase="POINT2_RELEASE",
-            status="SUCCEEDED",
-            result_summary_json={"simulated": True},
-        )
-    )
-    service = IntegrationDebugService(
-        _Sessions(),  # type: ignore[arg-type]
-        repository=repository,  # type: ignore[arg-type]
-        confirmations=AsyncMock(),  # type: ignore[arg-type]
-        transport=AsyncMock(),  # type: ignore[arg-type]
-        device_commands=AsyncMock(),  # type: ignore[arg-type]
-        publisher=AsyncMock(),  # type: ignore[arg-type]
-    )
-    values = {
-        "client_request_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
-        "request_data": ManualBinApplied(
-            completion_operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4477",
-            task_id="PICK-WMS",
-            bin_code="BIN-001",
-            apply_revision=1,
-            apply_result="APPLIED",
-            occurred_at=1788389999000,
-        ),
-        "expected_version": 0,
-        "actor_id": 42,
-    }
-
-    with pytest.raises(IntegrationDebugConflict, match="不能上报 APPLIED"):
-        await service.send_completion_apply_report("run-report", **values)  # type: ignore[arg-type]
-
-    run.current_phase = "COMPLETION_REPORT"
-    values["request_data"] = ManualBinApplied(
-        completion_operation_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4499",
-        task_id="PICK-WMS",
-        bin_code="BIN-001",
-        apply_revision=1,
-        apply_result="APPLIED",
-        occurred_at=1788389999000,
-    )
-    with pytest.raises(IntegrationDebugContractError, match="completion_operation_id"):
-        await service.send_completion_apply_report("run-report", **values)  # type: ignore[arg-type]
-
-
-@pytest.mark.asyncio
-async def test_completion_report_phase_cannot_be_skipped_by_manual_confirmation() -> None:
-    run = IntegrationRun(
-        run_id="run-report",
-        workline_id=3,
-        workline_code="KT16",
-        scenario_key="manual_outbound_picking@v1",
-        expected_plugin_key="manual_bin_processing",
-        profile="CONTRACT_SIMULATION",
-        environment_label="integration",
-        operator_user_id=42,
-        active_scope="WORKLINE:3",
-        status="ACTIVE",
-        current_phase="COMPLETION_REPORT",
-        device_code="SIM-ECS-01",
-    )
-    service = IntegrationDebugService(
-        _Sessions(),  # type: ignore[arg-type]
-        repository=_Repository(run),  # type: ignore[arg-type]
-        confirmations=AsyncMock(),  # type: ignore[arg-type]
-        transport=AsyncMock(),  # type: ignore[arg-type]
-        device_commands=AsyncMock(),  # type: ignore[arg-type]
-        publisher=AsyncMock(),  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(IntegrationDebugConflict, match="不能人工确认推进"):
-        await service.confirm_current_phase(
-            "run-report",
-            note="现场已确认",
-            expected_version=0,
-            actor_id=42,
-        )
-
-
-@pytest.mark.asyncio
 async def test_completion_binding_rejects_completed_at_before_point2_scan() -> None:
     run = IntegrationRun(
         run_id="run-completion",
@@ -515,7 +400,7 @@ async def test_completion_binding_rejects_ignored_evidence() -> None:
 
 
 @pytest.mark.asyncio
-async def test_early_completion_enters_reconciling_and_can_be_reported_to_wms() -> None:
+async def test_early_completion_stays_in_local_reconciliation_without_wms_report() -> None:
     run = IntegrationRun(
         run_id="run-early-completion",
         workline_id=3,
@@ -575,28 +460,10 @@ async def test_early_completion_enters_reconciling_and_can_be_reported_to_wms() 
     assert bound["attention_code"] == "FIRST_COMPLETION_OUT_OF_WINDOW"
     assert repository.evidence.apply_status == InboundEvidenceApplyStatus.RECONCILING
 
-    reported = await service.send_completion_apply_report(
-        run.run_id,
-        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
-        request_data=ManualBinReconciling(
-            completion_operation_id=operation_id,
-            task_id="PICK-001",
-            bin_code="BIN-001",
-            apply_revision=1,
-            apply_result="RECONCILING",
-            reason_code="FIRST_COMPLETION_OUT_OF_WINDOW",
-            occurred_at=1_788_389_999_000,
-        ),
-        expected_version=1,
-        actor_id=42,
-    )
-
-    assert reported["current_phase"] == "COMPLETION_REPORT"
-    assert reported["status"] == "WAITING_EXTERNAL"
-    confirmations.create_or_get.assert_awaited_once()
+    confirmations.create_or_get.assert_not_awaited()
 
 
-def test_work_required_freezes_wms_returned_task_and_reconciling_stays_blocked() -> None:
+def test_work_required_freezes_wms_returned_task() -> None:
     run = IntegrationRun(
         run_id="run-decision",
         workline_id=3,
@@ -630,22 +497,6 @@ def test_work_required_freezes_wms_returned_task_and_reconciling_stays_blocked()
 
     assert run.configuration_json["admission_task_id"] == "PICK-ACTUAL"
     assert run.configuration_json["manual_bin_admission_result"] == "WORK_REQUIRED"
-    report = IntegrationRunStep(
-        run_id=run.run_id,
-        ordinal=2,
-        phase="COMPLETION_REPORT",
-        status="WAITING",
-        operation="outbound.manual_bin.completion_apply_report@v1",
-        request_summary_json={"apply_result": "RECONCILING", "reason_code": "POINT2_BINDING_MISMATCH"},
-    )
-    IntegrationDebugService._advance_completed_wms_action(
-        run,
-        report,
-        response_result="RECORDED",
-        response_data={},
-    )
-    assert run.status == "NEEDS_ATTENTION"
-    assert run.attention_code == "POINT2_BINDING_MISMATCH"
 
 
 @pytest.mark.asyncio
@@ -1136,7 +987,8 @@ async def test_prepare_non_head_selection_returns_run_to_bind_task() -> None:
 
 
 @pytest.mark.asyncio
-async def test_work_admission_rejects_a_new_identity_while_the_previous_request_is_open() -> None:
+@pytest.mark.parametrize("task_id, message", [("PICK-001", "未闭合"), ("OTHER", "task_id")])
+async def test_work_admission_rejects_open_request_or_wrong_task(task_id: str, message: str) -> None:
     run = IntegrationRun(
         run_id="run-admission-open",
         workline_id=3,
@@ -1174,11 +1026,11 @@ async def test_work_admission_rejects_a_new_identity_while_the_previous_request_
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(IntegrationDebugConflict, match="未闭合"):
+    with pytest.raises((IntegrationDebugConflict, IntegrationDebugContractError), match=message):
         await service.send_work_admission(
             run.run_id,
             client_request_id="admission-replacement",
-            request_data=ManualBinAdmissionData(bin_code="BIN-001", scanned_at=1_788_389_999_000),
+            request_data=ManualBinAdmissionData(task_id=task_id, bin_code="BIN-001", scanned_at=1_788_389_999_000),
             expected_version=0,
             actor_id=42,
         )
@@ -1298,14 +1150,18 @@ async def test_return_transport_requires_ready_decision_for_the_same_rack_and_de
 
 
 @pytest.mark.asyncio
-async def test_point2_release_confirmation_keeps_evidence_pending_until_report_is_frozen() -> None:
+@pytest.mark.parametrize("profile", ["CONTRACT_SIMULATION", "FULL_SITE_INTEGRATION"])
+@pytest.mark.parametrize("apply_status", [InboundEvidenceApplyStatus.PENDING, InboundEvidenceApplyStatus.RECONCILING])
+async def test_point2_release_applies_completion_and_advances_without_wms_report(
+    profile: str, apply_status: InboundEvidenceApplyStatus
+) -> None:
     run = IntegrationRun(
         run_id="run-release",
         workline_id=3,
         workline_code="KT16",
         scenario_key="manual_outbound_picking@v1",
         expected_plugin_key="manual_bin_processing",
-        profile="CONTRACT_SIMULATION",
+        profile=profile,
         environment_label="integration",
         operator_user_id=42,
         active_scope="WORKLINE:3",
@@ -1318,7 +1174,7 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
     )
     repository = _Repository(run)
     repository.evidence = SimpleNamespace(
-        apply_status=InboundEvidenceApplyStatus.PENDING,
+        apply_status=apply_status,
         processed_at=None,
     )
     repository.steps.extend(
@@ -1336,7 +1192,8 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
                 ordinal=2,
                 phase="POINT2_RELEASE",
                 status="SUCCEEDED",
-                result_summary_json={"simulated": True},
+                device_command_code="release-command" if profile == "FULL_SITE_INTEGRATION" else None,
+                result_summary_json={"simulated": profile == "CONTRACT_SIMULATION"},
             ),
         ]
     )
@@ -1349,6 +1206,15 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
         publisher=AsyncMock(),  # type: ignore[arg-type]
     )
 
+    if apply_status == InboundEvidenceApplyStatus.RECONCILING:
+        with pytest.raises(IntegrationDebugConflict, match="完成 Evidence"):
+            await service.confirm_current_phase(run.run_id, note="point2 已放行", expected_version=0, actor_id=42)
+        assert run.current_phase == "POINT2_RELEASE"
+        assert repository.evidence.apply_status == apply_status
+        assert repository.evidence.processed_at is None
+        service._confirmations.create_or_get.assert_not_awaited()
+        return
+
     result = await service.confirm_current_phase(
         run.run_id,
         note="point2 已放行",
@@ -1356,9 +1222,10 @@ async def test_point2_release_confirmation_keeps_evidence_pending_until_report_i
         actor_id=42,
     )
 
-    assert result["current_phase"] == "COMPLETION_REPORT"
-    assert repository.evidence.apply_status == InboundEvidenceApplyStatus.PENDING
-    assert repository.evidence.processed_at is None
+    assert result["current_phase"] == "POINT3_ROUTE"
+    assert repository.evidence.apply_status == InboundEvidenceApplyStatus.APPLIED
+    assert repository.evidence.processed_at is not None
+    service._confirmations.create_or_get.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1398,121 +1265,6 @@ async def test_point2_scan_rejects_invalid_bin_before_advancing_the_run() -> Non
     assert run.current_phase == IntegrationDebugPhase.POINT2_SCAN
     assert run.bin_code is None
     assert repository.steps == []
-
-
-@pytest.mark.parametrize(
-    ("apply_result", "reason_code", "phase", "run_status", "expected_status"),
-    [
-        (
-            "APPLIED",
-            None,
-            IntegrationDebugPhase.COMPLETION_REPORT,
-            "ACTIVE",
-            InboundEvidenceApplyStatus.APPLIED,
-        ),
-        (
-            "RECONCILING",
-            "DEVICE_COMMAND_IDENTITY_CONFLICT",
-            IntegrationDebugPhase.POINT2_RELEASE,
-            "NEEDS_ATTENTION",
-            InboundEvidenceApplyStatus.RECONCILING,
-        ),
-    ],
-)
-@pytest.mark.asyncio
-async def test_completion_report_freezes_confirmation_and_evidence_state_in_one_transaction(
-    apply_result: str,
-    reason_code: str | None,
-    phase: IntegrationDebugPhase,
-    run_status: str,
-    expected_status: InboundEvidenceApplyStatus,
-) -> None:
-    run = IntegrationRun(
-        run_id="run-report-atomic",
-        workline_id=3,
-        workline_code="KT16",
-        scenario_key="manual_outbound_picking@v1",
-        expected_plugin_key="manual_bin_processing",
-        profile="CONTRACT_SIMULATION",
-        environment_label="integration",
-        operator_user_id=42,
-        active_scope="WORKLINE:3",
-        status=run_status,
-        current_phase=phase,
-        task_id="PICK-001",
-        picking_task_id=101,
-        bin_code="BIN-001",
-        configuration_json={"admission_task_id": "PICK-001", "manual_bin_admission_result": "WORK_REQUIRED"},
-    )
-    repository = _Repository(run)
-    repository.evidence = SimpleNamespace(
-        apply_status=InboundEvidenceApplyStatus.PENDING,
-        processed_at=None,
-    )
-    completion_operation_id = "019f12d0-58d7-7b4d-a23a-1b90aa5d4477"
-    repository.steps.extend(
-        [
-            IntegrationRunStep(
-                run_id=run.run_id,
-                ordinal=1,
-                phase="WORK_COMPLETION",
-                status="SUCCEEDED",
-                operation="outbound.manual_bin.work_completed@v1",
-                operation_id=completion_operation_id,
-            ),
-            IntegrationRunStep(
-                run_id=run.run_id,
-                ordinal=2,
-                phase="POINT2_RELEASE",
-                status="SUCCEEDED",
-                result_summary_json={"simulated": True},
-            ),
-        ]
-    )
-    confirmations = AsyncMock()
-    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(SimpleNamespace(id=9), duplicate=False)
-    service = IntegrationDebugService(
-        _Sessions(),  # type: ignore[arg-type]
-        repository=repository,  # type: ignore[arg-type]
-        confirmations=confirmations,
-        transport=AsyncMock(),  # type: ignore[arg-type]
-        device_commands=AsyncMock(),  # type: ignore[arg-type]
-        publisher=AsyncMock(),  # type: ignore[arg-type]
-    )
-
-    result = await service.send_completion_apply_report(
-        run.run_id,
-        client_request_id="019f12d0-58d7-7b4d-a23a-1b90aa5d4478",
-        request_data=(
-            ManualBinApplied(
-                completion_operation_id=completion_operation_id,
-                task_id="PICK-001",
-                bin_code="BIN-001",
-                apply_revision=1,
-                apply_result="APPLIED",
-                occurred_at=1_788_389_999_000,
-            )
-            if apply_result == "APPLIED"
-            else ManualBinReconciling(
-                completion_operation_id=completion_operation_id,
-                task_id="PICK-001",
-                bin_code="BIN-001",
-                apply_revision=1,
-                apply_result="RECONCILING",
-                reason_code=reason_code,
-                occurred_at=1_788_389_999_000,
-            )
-        ),
-        expected_version=0,
-        actor_id=42,
-    )
-
-    assert result["status"] == "WAITING_EXTERNAL"
-    assert repository.evidence.apply_status == expected_status
-    assert repository.evidence.processed_at is not None
-    confirmations.create_or_get.assert_awaited_once()
-    assert confirmations.create_or_get.await_args.kwargs["workline_id"] == run.workline_id
-    assert "picking_task_id" not in confirmations.create_or_get.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -2989,3 +2741,47 @@ async def test_run_cannot_be_completed_before_cleanup_phase() -> None:
 
     with pytest.raises(IntegrationDebugConflict, match="CLEANUP"):
         await service.mark_completed("run-active", expected_version=0, actor_id=42)
+
+
+@pytest.mark.asyncio
+async def test_work_admission_freezes_bound_task_in_confirmation() -> None:
+    run = IntegrationRun(
+        run_id="run-admission-open",
+        workline_id=3,
+        workline_code="KT16",
+        scenario_key="manual_outbound_picking@v1",
+        expected_plugin_key="manual_bin_processing",
+        profile="CONTRACT_SIMULATION",
+        environment_label="integration",
+        operator_user_id=42,
+        active_scope="WORKLINE:3",
+        status="ACTIVE",
+        current_phase="WORK_ADMISSION",
+        task_id="PICK-001",
+        bin_code="BIN-001",
+        configuration_json={"point2_scanned_at": 1_788_390_000_000},
+    )
+    repository = _Repository(run)
+    confirmations = AsyncMock()
+    confirmations.create_or_get.return_value = WmsConfirmationAcceptance(SimpleNamespace(id=9), duplicate=False)
+    service = IntegrationDebugService(
+        _Sessions(),  # type: ignore[arg-type]
+        repository=repository,  # type: ignore[arg-type]
+        confirmations=confirmations,
+        transport=AsyncMock(),
+        device_commands=AsyncMock(),
+        publisher=AsyncMock(),
+    )
+    await service.send_work_admission(
+        run.run_id,
+        client_request_id="admission-new",
+        request_data=ManualBinAdmissionData(task_id="PICK-001", bin_code="BIN-001", scanned_at=1_788_389_999_000),
+        expected_version=0,
+        actor_id=42,
+    )
+    assert confirmations.create_or_get.await_args.kwargs["request_payload"]["data"] == {
+        "task_id": "PICK-001",
+        "bin_code": "BIN-001",
+        "scanned_at": 1_788_389_999_000,
+    }
+    assert repository.steps[-1].request_summary_json["task_id"] == "PICK-001"

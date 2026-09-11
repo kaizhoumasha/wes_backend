@@ -16,6 +16,7 @@ Identifier = Annotated[str, StringConstraints(pattern=BUSINESS_IDENTIFIER_PATTER
 
 
 class ManualBinAdmissionData(StrictWireModel):
+    task_id: Identifier
     bin_code: Identifier
     scanned_at: PositiveMilliseconds
 
@@ -86,6 +87,13 @@ def parse_manual_bin_admission_response(
     response = validate_observed(adapter, value, observation=observation, side="response")
     if request is not None and response.operation_id != request.operation_id:
         raise observed_contract_error(observation, "响应 operation_id 必须匹配请求", path=("operation_id",))
+    if (
+        request is not None
+        and isinstance(response, ManualBinAdmissionDecidedResponse)
+        and isinstance(response.data, ManualBinWorkRequired)
+        and response.data.task_id != request.data.task_id
+    ):
+        raise observed_contract_error(observation, "响应 task_id 必须匹配请求", path=("data", "task_id"))
     return response
 
 

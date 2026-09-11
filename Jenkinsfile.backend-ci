@@ -9,8 +9,8 @@ pipeline {
         CI_BUILD_TARGET = 'testing'
         RUNTIME_BUILD_TARGET = 'production'
         DOCKER_BUILDKIT = '1'
-        BUILD_PROXY = 'http://192.168.30.111:7890'
-        BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.0.220,192.168.0.221,192.168.30.111'
+        BUILD_PROXY = 'http://192.168.0.225:7890'
+        BUILD_NO_PROXY = '127.0.0.1,localhost,192.168.0.220,192.168.0.221,192.168.0.225'
     }
 
     options {
@@ -115,7 +115,7 @@ pipeline {
                                         git -c credential.helper= \
                                             -c 'credential.helper=!f() { printf "%s\\n" \
                                                 "username=$GITLAB_USERNAME" "password=$GITLAB_PASSWORD"; }; f' \
-                                            ls-remote --heads https://git.zontecmes.com/wes/wes_backend.git \
+                                            ls-remote --heads http://192.168.0.220:9080/wes/wes_backend.git \
                                             "refs/heads/${CI_TARGET_BRANCH}"
                                 '''
                             ).trim()
@@ -362,7 +362,13 @@ pipeline {
             }
             post {
                 always {
-                    junit testResults: 'reports/heavy-required.xml', allowEmptyResults: true
+                    script {
+                        if (fileExists('reports/heavy-required.xml')) {
+                            junit testResults: 'reports/heavy-required.xml', allowEmptyResults: false
+                        } else {
+                            echo '本次未生成 HEAVY JUnit 报告。'
+                        }
+                    }
                     archiveArtifacts artifacts: 'reports/heavy-tests.selected.txt,reports/heavy-tests.txt,reports/heavy-required.xml', allowEmptyArchive: true
                     sh '''
                         docker compose \

@@ -82,6 +82,7 @@ async def register_init(_app: FastAPI) -> AsyncIterator[None]:
             session_factory=db_module.AsyncSessionLocal,
             timeout_seconds=device_config.timeout_seconds,
             task_queue_gateway=task_queue_gateway,
+            event_debug_mode_policy=transport_runtime.debug_run_service,
         )
         _app.state.device_command_runtime = device_command_runtime
         _app.state.device_evidence_service = device_command_runtime.evidence_service

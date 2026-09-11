@@ -262,22 +262,6 @@ class MoveRackRequest:
         for position in (self.source, self.target):
             if type(position) is RackReference and position.location_code != self.rack_id:
                 raise TransportContractError("RACK location_code must match rack_id")
-        allowed_edges = {
-            RcsTemplateId.CTU01: {
-                (ZonePosition, RackPosition),
-                (RackReference, RackPosition),
-                (RackPosition, RackPosition),
-            },
-            RcsTemplateId.CTU03: {
-                (RackReference, ZonePosition),
-                (RackPosition, RackReference),
-                (RackPosition, ZonePosition),
-                (RackPosition, RackPosition),
-            },
-            RcsTemplateId.F01: {(RackPosition, RackPosition), (RackReference, RackPosition)},
-        }
-        if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
-            raise TransportContractError("rack source, target, and rcs_template_id are not an approved edge")
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from src.app.device.services.device_evidence_service import EventDebugModePolicyPort
     from src.core.task_queue_gateway import TaskQueueGateway
 
 
@@ -133,6 +134,7 @@ def build_device_command_runtime(
     task_queue_gateway: TaskQueueGateway,
     transport_factory: _TransportFactory = _build_ecs_transport,
     adapter_factory: Callable[[OutboundHttpTransport], EcsAdapter] = EcsAdapter,
+    event_debug_mode_policy: EventDebugModePolicyPort | None = None,
 ) -> DeviceCommandRuntime:
     provider = DeviceEndpointAdapterProvider(
         timeout_seconds=timeout_seconds,
@@ -158,6 +160,7 @@ def build_device_command_runtime(
             task_queue_gateway=task_queue_gateway,
             event_publisher=event_stream_service,
             event_debug_command_service=command_service,
+            event_debug_mode_policy=event_debug_mode_policy,
         ),
     )
 

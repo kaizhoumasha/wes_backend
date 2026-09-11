@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
@@ -160,6 +161,7 @@ class TransportDebugRunSnapshot:
     aborted_reason: str | None
     created_at: str
     updated_at: str
+    test_mode: bool = False
     workstation: str = "KT16"
     infeed_position: str = "CNV0301"
     outfeed_position: str = "CNV0302"
@@ -193,6 +195,18 @@ class TransportDebugRunService:
         self._clock = clock
         self._event_publisher = event_publisher
         self._task_queue = task_queue_gateway
+
+    async def is_event_debug_enabled_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        event_type: str,
+        device_code: str,
+    ) -> bool:
+        if event_type != "SCAN_COMPLETED" or re.fullmatch(r"STATION_SCAN\d+", device_code) is None:
+            return False
+        run = await self._repository.get_active_run(db)
+        return run is not None and run.configuration_json.get("test_mode") is True
 
     async def create_run(
         self,
@@ -997,6 +1011,7 @@ class TransportDebugRunService:
             None,
         )
         return TransportDebugRunSnapshot(
+            test_mode=run.configuration_json.get("test_mode") is True,
             workstation=_configuration_text(run.configuration_json, "workstation"),
             infeed_position=_configuration_text(run.configuration_json, "infeed_position"),
             outfeed_position=_configuration_text(run.configuration_json, "outfeed_position"),
@@ -1090,6 +1105,7 @@ class TransportDebugRunService:
 
 def _freeze_configuration(request: CreateTransportDebugRun) -> dict[str, object]:
     return {
+        "test_mode": request.test_mode,
         "workline_code": request.workline_code,
         "rack_id": request.rack_id,
         "face_groups": [

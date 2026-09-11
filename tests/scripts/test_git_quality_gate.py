@@ -157,6 +157,15 @@ def test_jenkins_runs_canonical_quality_profile_without_partial_duplicates() -> 
     assert "uv run --no-sync pytest tests/scripts -q" not in jenkinsfile
 
 
+def test_ci_fast_suite_reduces_per_test_console_noise_without_weakening_pytest() -> None:
+    quality_gate = (REPO_ROOT / "scripts/git-quality-gate.sh").read_text(encoding="utf-8")
+
+    assert "local pytest_args=(--junitxml=reports/fast-tests.xml)" in quality_gate
+    assert "pytest_args+=(-q)" in quality_gate
+    assert 'run_tool pytest "${pytest_args[@]}"' in quality_gate
+    assert "budget_args+=(--report-only)" in quality_gate
+
+
 def test_jenkins_quality_gate_mounts_git_metadata_read_only() -> None:
     jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
     quality_body = jenkinsfile.split("stage('Quality Gate')", maxsplit=1)[1].split(

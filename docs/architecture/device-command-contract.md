@@ -98,6 +98,16 @@ ECS 还可以在 EVENT 顶层显式传入 `is_debug=true`，触发 `execution_re
 - 本次新建 `PENDING` 命令在事务提交后唤醒既有 DeviceCommand 派发扫描；唤醒失败不改写命令或 evidence，Beat 仍负责补偿扫描；
 - 以 `ECS_EVENT_DEBUG:<event-identity>` 记录系统触发原因，`created_by=null`，不伪装为人工联调。
 
+自动运输联调还可在启动时开启 `test_mode`，复用上述 EVENT_DEBUG 能力。开关默认关闭，启动时冻结到轮次配置，
+连续多轮沿用启动配置；活动轮次结束后不再提升新事件。在活动 `test_mode` 轮次内，所有设备编码精确匹配
+`STATION_SCAN` 加数字的 `SCAN_COMPLETED` 事件，即使 ECS 省略 `is_debug` 或传入 `false`，也按 debug 事件处理，
+向该扫码点下发 `MOVE_FORWARD`。该范围包含已绑定正式工作线的扫码点，不限于本轮 `scan_device_codes`；被提升的事件
+不进入 WorkLine/业务 Decision。其它事件保持原处理方式，ECS 显式 `is_debug=true` 的能力不受此开关影响。
+
+首次接收时冻结有效 debug 标志，重复接收沿用原 Evidence 的有效标志，不因轮次结束或新轮次配置变化重新判定。
+外部事件身份仍按原始规范化 EVENT 计算；开关不改变既有事件身份，不重放历史事件。自动提升与显式 debug 共用上述
+设备锁、命令幂等、运行态准入、结果回调及对账约束，不绕过未闭合命令围栏。
+
 blocker 查询返回检测时的旧命令状态与对账原因、当前命令状态和不可变 `block_id`。匹配原 `command_code` 的 Result Callback 仍是闭合旧命令的首选路径。只有 blocker 指向、仍为 `RECONCILING / DELIVERY_UNKNOWN`、且冻结 binding 能提供状态新鲜度合同的业务命令，才允许超级用户在实时证明设备在线、`AUTO / IDLE`、无当前命令且状态未过期后，将旧命令闭合为 `FAILED / MANUAL_RECONCILIATION_DEVICE_IDLE`。该操作不伪造 Result 或成功终态；已接纳但尚未应用的 Result 优先，必须拒绝人工闭合。未冻结状态新鲜度合同的诊断命令只能由 Result Callback 闭合。
 
 旧命令终态不会自动重放 EVENT。超级用户只能携带 GET blocker 返回的当前 `block_id` 显式重处理；锁内确认该 blocker 仍是 latest `BLOCKED`、旧命令已终态且设备没有其它未终态命令后，才可将原 evidence 重置为 `PENDING`。重处理不改写 EVENT 身份、载荷、摘要或原业务关联；旧 `block_id` 不得作用于后续新 blocker。人工闭合和重处理的状态变化与审计必须同事务成功或回滚。

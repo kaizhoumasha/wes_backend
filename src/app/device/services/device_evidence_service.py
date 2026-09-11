@@ -202,6 +202,16 @@ class EventDebugCommandServicePort(Protocol):
     ) -> EventDebugCommandReady | EventDebugCommandBlocked: ...
 
 
+class EventDebugModePolicyPort(Protocol):
+    async def is_event_debug_enabled_in_session(
+        self,
+        db: AsyncSession,
+        *,
+        event_type: str,
+        device_code: str,
+    ) -> bool: ...
+
+
 class DeviceEvidenceService:
     """把外部 callback 先固化为证据；不在 ingress 中推进业务对象。"""
 
@@ -216,6 +226,7 @@ class DeviceEvidenceService:
         task_queue_gateway: TaskQueueGateway | None = None,
         event_publisher: DeviceEvidenceEventPublisherPort | None = None,
         event_debug_command_service: EventDebugCommandServicePort | None = None,
+        event_debug_mode_policy: EventDebugModePolicyPort | None = None,
         event_command_block_repository: EventCommandBlockRepositoryPort | None = None,
         audit_service: EvidenceAuditServicePort | None = None,
         safety_service: SafetyServicePort | None = None,
@@ -229,6 +240,7 @@ class DeviceEvidenceService:
         self._task_queue = task_queue_gateway
         self._event_publisher = event_publisher
         self._event_debug_commands = event_debug_command_service
+        self._event_debug_mode_policy = event_debug_mode_policy
         self._event_command_blocks = event_command_block_repository or device_event_command_block_repository
         self._audit = audit_service or audit_log_service
         if safety_service is None:
@@ -300,6 +312,15 @@ class DeviceEvidenceService:
         async with self._sessions.begin() as db:
             source_identity = _event_source_identity(report)
             existing = await self._processing.get_by_source_identity_for_update(db, source_identity)
+            effective_is_debug = report.is_debug
+            if existing is not None:
+                effective_is_debug = EcsDeviceEvent.model_validate(existing.normalized_payload).is_debug
+            elif not effective_is_debug and self._event_debug_mode_policy is not None:
+                effective_is_debug = await self._event_debug_mode_policy.is_event_debug_enabled_in_session(
+                    db,
+                    event_type=report.event_type,
+                    device_code=report.device_code,
+                )
             binding = await self._worklines.get_active_binding_for_device(db, report.device_code)
             contract_key = (
                 existing.contract_key
@@ -320,9 +341,10 @@ class DeviceEvidenceService:
                 source_identity=source_identity,
                 contract_key=contract_key,
                 contract_version=contract_version,
+                is_debug=effective_is_debug,
             )
             payload = event.model_dump(mode="json", exclude_unset=True)
-            if not report.is_debug and (
+            if not effective_is_debug and (
                 (existing is None and binding is None) or (existing is not None and existing.workline_id is None)
             ):
                 rejection = DeviceEventNotAdmittedError("WORKLINE_NOT_ACTIVE")
@@ -635,6 +657,7 @@ def _normalize_event(
     source_identity: str,
     contract_key: str,
     contract_version: str,
+    is_debug: bool,
 ) -> EcsDeviceEvent:
     return EcsDeviceEvent.model_validate(
         {
@@ -644,7 +667,7 @@ def _normalize_event(
             "event_type": report.event_type,
             "timestamp": report.timestamp,
             "source_event_id": source_identity,
-            "is_debug": report.is_debug,
+            "is_debug": is_debug,
             "data": report.data,
         }
     )

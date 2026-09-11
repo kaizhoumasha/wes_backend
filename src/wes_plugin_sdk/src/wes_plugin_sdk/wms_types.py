@@ -585,48 +585,17 @@ class CompletionConfirmIntent:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ManualBinAdmissionIntent:
     operation_id: str
+    task_id: str
     bin_code: str
     scanned_at: int
 
     def __post_init__(self) -> None:
         _ = _required(self.operation_id, "operation_id")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.task_id, "task_id")) is None:
+            raise ValueError("task_id must be a business identifier")
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", _required(self.bin_code, "bin_code")) is None:
             raise ValueError("bin_code must be a business identifier")
         _positive(self.scanned_at, "scanned_at", 2**63 - 1)
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ManualBinApplyReportIntent:
-    operation_id: str
-    completion_operation_id: str
-    task_id: str
-    bin_code: str
-    apply_revision: int
-    apply_result: Literal["APPLIED", "RECONCILING"]
-    occurred_at: int
-    reason_code: str | None = None
-
-    def __post_init__(self) -> None:
-        for name in ("operation_id", "completion_operation_id"):
-            _ = _required(getattr(self, name), name)
-        for name in ("task_id", "bin_code"):
-            value = _required(getattr(self, name), name)
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}", value) is None:
-                raise ValueError(f"{name} must be a business identifier")
-        _positive(self.apply_revision, "apply_revision", 2**63 - 1)
-        _positive(self.occurred_at, "occurred_at", 2**63 - 1)
-        reasons = {
-            "RESULT_CONFLICT",
-            "FIRST_COMPLETION_OUT_OF_WINDOW",
-            "POINT2_BINDING_MISMATCH",
-            "WORKLINE_NOT_ACTIVE",
-            "COMPLETED_AT_INVALID",
-            "DEVICE_COMMAND_IDENTITY_CONFLICT",
-        }
-        if self.apply_result == "APPLIED" and self.reason_code is not None:
-            raise ValueError("APPLIED must omit reason_code")
-        if self.apply_result == "RECONCILING" and self.reason_code not in reasons:
-            raise ValueError("RECONCILING requires a reviewed reason_code")
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,7 +665,6 @@ WmsOperationIntent = (
     | SourceEmptyIntent
     | MaterialMovementReportIntent
     | ManualBinAdmissionIntent
-    | ManualBinApplyReportIntent
 )
 
 

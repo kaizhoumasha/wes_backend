@@ -170,8 +170,11 @@ class _Transport:
         return TransportHandle(f"transport-{self.created}", request.client_request_id)  # type: ignore[attr-defined]
 
 
-def _request(*, face: str = " 90 ", slot_id: str = "510056A3F2C101") -> CreateTransportDebugRun:
+def _request(
+    *, face: str = " 90 ", slot_id: str = "510056A3F2C101", test_mode: bool = False
+) -> CreateTransportDebugRun:
     return CreateTransportDebugRun(
+        test_mode=test_mode,
         workline_code="DEBUG-LINE",
         rack_id="510056",
         face_groups=(
@@ -201,7 +204,7 @@ def _service() -> tuple[TransportDebugRunService, _Repository, _Sessions, _Publi
 async def test_create_run_freezes_exact_operator_input_and_first_step_identity() -> None:
     service, repository, sessions, publisher = _service()
 
-    snapshot = await service.create_run(_request(), actor_id=7)
+    snapshot = await service.create_run(_request(test_mode=True), actor_id=7)
 
     run = repository.runs[snapshot.run_id]
     step = repository.steps[snapshot.run_id][0]
@@ -211,6 +214,8 @@ async def test_create_run_freezes_exact_operator_input_and_first_step_identity()
             "bins": [{"bin_code": "A000001922", "slot_id": "510056A3F2C101"}],
         }
     ]
+    assert run.configuration_json["test_mode"] is True
+    assert snapshot.test_mode is True
     assert (step.phase, step.status, step.group_index) == ("RACK_TO_STATION", "WAITING", 0)
     assert step.transport_task_id == "transport-1"
     assert is_uuid7(step.client_request_id)
@@ -230,6 +235,47 @@ async def test_create_run_freezes_exact_operator_input_and_first_step_identity()
             "updated_at": "2026-09-02T12:00:00+00:00",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "device_code", "expected"),
+    [
+        ("SCAN_COMPLETED", "STATION_SCAN1", True),
+        ("SCAN_COMPLETED", "STATION_SCAN12", True),
+        ("SCAN_COMPLETED", "SCAN12", False),
+        ("MATERIAL_ARRIVED", "STATION_SCAN1", False),
+        ("SCAN_COMPLETED", "STATION_SCAN_A", False),
+    ],
+)
+async def test_test_mode_only_promotes_station_scan_completed_events(
+    event_type: str,
+    device_code: str,
+    expected: bool,
+) -> None:
+    service, _repository, sessions, _publisher = _service()
+    await service.create_run(_request(test_mode=True), actor_id=7)
+
+    actual = await service.is_event_debug_enabled_in_session(
+        sessions.db,
+        event_type=event_type,
+        device_code=device_code,
+    )
+
+    assert actual is expected
+
+
+async def test_disabled_test_mode_does_not_promote_station_scan_event() -> None:
+    service, _repository, sessions, _publisher = _service()
+    await service.create_run(_request(), actor_id=7)
+
+    assert (
+        await service.is_event_debug_enabled_in_session(
+            sessions.db,
+            event_type="SCAN_COMPLETED",
+            device_code="STATION_SCAN1",
+        )
+        is False
+    )
 
 
 async def test_get_run_returns_complete_step_history() -> None:

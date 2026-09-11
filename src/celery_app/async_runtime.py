@@ -202,6 +202,7 @@ class CeleryAsyncRuntime:
                 session_factory=db_module.AsyncSessionLocal,
                 timeout_seconds=device_config.timeout_seconds,
                 task_queue_gateway=task_queue_gateway,
+                event_debug_mode_policy=transport_runtime.debug_run_service,
             )
 
         from deployment.plugin_composition import build_deployment_runtime

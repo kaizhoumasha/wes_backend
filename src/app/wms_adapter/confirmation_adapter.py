@@ -20,8 +20,6 @@ from src.app.wms_adapter.outbound_picking.inbound_batch_adapter import BinInboun
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_adapter import ManualBinAdmissionAdapter
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import MANUAL_BIN_ADMISSION_OPERATION
-from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_adapter import ManualBinApplyReportAdapter
-from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import MANUAL_BIN_APPLY_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.material_decide_adapter import PickingMaterialDecideAdapter
 from src.app.wms_adapter.outbound_picking.material_decide_wire import MATERIAL_DECIDE_OPERATION
 from src.app.wms_adapter.outbound_picking.movement_report_adapter import MaterialMovementReportAdapter
@@ -52,7 +50,6 @@ class WmsConfirmationAdapter:
         self._departure = RackDepartureAdapter(client)
         self._material_decide = PickingMaterialDecideAdapter(client)
         self._manual_bin_admission = ManualBinAdmissionAdapter(client)
-        self._manual_bin_apply_report = ManualBinApplyReportAdapter(client)
         self._movement_report = MaterialMovementReportAdapter(client)
         self._source_empty = SourceEmptyAdapter(client)
         self._completion_confirm = CompletionConfirmAdapter(client)
@@ -77,7 +74,6 @@ class WmsConfirmationAdapter:
             | SourceEmptyAdapter
             | MaterialMovementReportAdapter
             | ManualBinAdmissionAdapter
-            | ManualBinApplyReportAdapter
         )
         if operation == BIN_RETURN_BATCH_OPERATION:
             return await self._return_batch.dispatch(
@@ -91,8 +87,6 @@ class WmsConfirmationAdapter:
             adapter = self._movement_report
         elif operation == MANUAL_BIN_ADMISSION_OPERATION:
             adapter = self._manual_bin_admission
-        elif operation == MANUAL_BIN_APPLY_REPORT_OPERATION:
-            adapter = self._manual_bin_apply_report
         elif operation == COMPLETION_CONFIRM_OPERATION:
             adapter = self._completion_confirm
         elif operation == SOURCE_EMPTY_OPERATION:

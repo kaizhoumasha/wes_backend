@@ -102,8 +102,71 @@ async def test_cli_query_error_exits_one_and_redacts_sensitive_detail() -> None:
     assert actual == 1
     assert stdout.getvalue() == ""
     assert stderr.getvalue().count("\n") == 1
+    assert "error_type=RuntimeError" in stderr.getvalue()
+    assert "cause_type=RuntimeError" in stderr.getvalue()
+    assert "sqlstate=none" in stderr.getvalue()
     assert "secret" not in stderr.getvalue()
     assert "private-device-parameter" not in stderr.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_cli_query_error_reports_sanitized_root_cause_and_sqlstate() -> None:
+    module = _load_script()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    class UndefinedColumnError(RuntimeError):
+        sqlstate = "42703"
+
+    database_error = UndefinedColumnError("secret column and payload")
+    service_error = RuntimeError("wrapped secret")
+    service_error.__cause__ = database_error
+
+    actual = await module.run(
+        service=SimpleNamespace(check=AsyncMock(side_effect=service_error)),
+        session_factory=_session_factory,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert actual == 1
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == (
+        "RELEASE_OPERATIONAL_READINESS_QUERY_FAILED "
+        "error_type=RuntimeError cause_type=UndefinedColumnError sqlstate=42703\n"
+    )
+    assert "secret" not in stderr.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_cli_diagnostic_cannot_be_broken_by_exception_properties() -> None:
+    module = _load_script()
+    stderr = io.StringIO()
+
+    class HostileError(RuntimeError):
+        @property
+        def sqlstate(self) -> str:
+            raise RuntimeError("secret sqlstate getter")
+
+        @property
+        def pgcode(self) -> str:
+            raise RuntimeError("secret pgcode getter")
+
+        @property
+        def orig(self) -> object:
+            raise RuntimeError("secret orig getter")
+
+    actual = await module.run(
+        service=SimpleNamespace(check=AsyncMock(side_effect=HostileError("secret payload"))),
+        session_factory=_session_factory,
+        stdout=io.StringIO(),
+        stderr=stderr,
+    )
+
+    assert actual == 1
+    assert stderr.getvalue() == (
+        "RELEASE_OPERATIONAL_READINESS_QUERY_FAILED error_type=HostileError cause_type=HostileError sqlstate=none\n"
+    )
 
 
 @pytest.mark.asyncio

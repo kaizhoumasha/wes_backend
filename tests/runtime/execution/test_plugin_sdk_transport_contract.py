@@ -59,27 +59,6 @@ def test_sdk_rejects_transport_binding_identity_that_cannot_be_persisted(field_n
         _decision(TransportZonePosition("zone-1"), TransportRackPosition("work"), **kwargs)
 
 
-@pytest.mark.parametrize(
-    ("source", "target", "template"),
-    [
-        (TransportZonePosition("zone-1"), TransportRackPosition("work"), TransportRcsTemplateId.CTU01),
-        (TransportRackReference("rack-1"), TransportRackPosition("work"), TransportRcsTemplateId.CTU01),
-        (TransportRackPosition("a"), TransportRackPosition("b"), TransportRcsTemplateId.CTU01),
-        (TransportRackPosition("a"), TransportRackReference("rack-1"), TransportRcsTemplateId.CTU03),
-        (TransportRackPosition("a"), TransportZonePosition("zone-1"), TransportRcsTemplateId.CTU03),
-        (TransportRackPosition("a"), TransportRackPosition("b"), TransportRcsTemplateId.CTU03),
-        (TransportRackPosition("a"), TransportRackPosition("b"), TransportRcsTemplateId.F01),
-        (TransportRackReference("rack-1"), TransportRackPosition("work"), TransportRcsTemplateId.F01),
-    ],
-)
-def test_sdk_accepts_only_approved_rack_move_edges(source: object, target: object, template: object) -> None:
-    decision = _decision(source, target, template=template)
-
-    assert decision.source is source
-    assert decision.target is target
-    assert decision.rcs_template_id is template
-
-
 @pytest.mark.parametrize("face", ["90", "270", "FACE@01", "面-1", " ", "x" * 10, "面" * 10])
 def test_sdk_preserves_any_non_empty_face_string(face: str) -> None:
     assert _decision(TransportZonePosition("zone-1"), TransportRackPosition("work"), face=face).target_face == face
@@ -132,16 +111,29 @@ def test_reasoned_execution_decisions_reject_blank_identity_fields(
 
 
 @pytest.mark.parametrize(
-    ("source", "target", "template"),
+    ("source", "target"),
     [
-        (TransportRackReference("rack-1"), TransportZonePosition("zone-1"), TransportRcsTemplateId.CTU01),
-        (TransportZonePosition("zone-1"), TransportRackReference("rack-1"), TransportRcsTemplateId.CTU03),
-        (TransportRackPosition("a"), TransportRackPosition("b"), TransportRcsTemplateId.CTU02),
+        (TransportRackReference("rack-1"), TransportZonePosition("target-zone")),
+        (TransportRackReference("rack-1"), TransportRackPosition("target")),
+        (TransportZonePosition("source-zone"), TransportRackReference("rack-1")),
+        (TransportZonePosition("source-zone"), TransportZonePosition("target-zone")),
+        (TransportZonePosition("source-zone"), TransportRackPosition("target")),
+        (TransportRackPosition("source"), TransportRackReference("rack-1")),
+        (TransportRackPosition("source"), TransportZonePosition("target-zone")),
+        (TransportRackPosition("source"), TransportRackPosition("target")),
     ],
 )
-def test_sdk_rejects_unapproved_rack_move_edges(source: object, target: object, template: object) -> None:
-    with pytest.raises(ValueError, match="approved edge"):
-        _decision(source, target, template=template)
+@pytest.mark.parametrize("template", list(TransportRcsTemplateId))
+def test_sdk_accepts_any_rack_move_position_and_template_combination(
+    source: object,
+    target: object,
+    template: object,
+) -> None:
+    decision = _decision(source, target, template=template)
+
+    assert decision.source is source
+    assert decision.target is target
+    assert decision.rcs_template_id is template
 
 
 def test_sdk_requires_rack_reference_identity_to_match_outer_rack() -> None:

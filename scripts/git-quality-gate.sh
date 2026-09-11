@@ -232,13 +232,16 @@ run_script_contract_tests() {
 
 run_fast_test_suite() {
     local budget_args=(python scripts/check_fast_test_budget.py reports/fast-tests.xml)
+    local pytest_args=(--junitxml=reports/fast-tests.xml)
     mkdir -p reports
-    log_step "fast-tests" "pytest --junitxml=reports/fast-tests.xml"
-    run_tool pytest --junitxml=reports/fast-tests.xml
     # CI 节点负载影响墙钟耗时；保留速度报告，测试本身失败仍由上一步阻断。
     if [[ "$CI_MODE" == "true" ]]; then
         budget_args+=(--report-only)
+        # 抵消 pyproject.toml 的 -v，JUnit 保留逐测试明细，控制台只保留进度与失败。
+        pytest_args+=(-q)
     fi
+    log_step "fast-tests" "pytest ${pytest_args[*]}"
+    run_tool pytest "${pytest_args[@]}"
     log_step "fast-tests" "${budget_args[*]}"
     run_tool "${budget_args[@]}"
 }

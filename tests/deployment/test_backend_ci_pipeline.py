@@ -230,3 +230,11 @@ def test_backend_producer_publishes_full_commit_and_develop_channel_without_depl
     assert "stage('Trigger Test Deploy')" not in jenkinsfile
     assert "FRONTEND_IMAGE" not in push_body
     assert "FRONTEND_COMMIT" not in jenkinsfile
+
+
+def test_backend_build_proxy_uses_the_current_lan_endpoint() -> None:
+    jenkinsfile = (REPO_ROOT / "Jenkinsfile.backend-ci").read_text(encoding="utf-8")
+
+    assert "BUILD_PROXY = 'http://192.168.0.225:7890'" in jenkinsfile
+    assert "192.168.30.111:7890" not in jenkinsfile
+    assert "Build proxy unavailable, continuing without proxy" in jenkinsfile

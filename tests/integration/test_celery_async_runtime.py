@@ -127,7 +127,13 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     )
 
     def build_transport_runtime(**_: object) -> SimpleNamespace:
-        runtime = SimpleNamespace(aclose=AsyncMock(), service=object(), repository=object(), client=object())
+        runtime = SimpleNamespace(
+            aclose=AsyncMock(),
+            service=object(),
+            repository=object(),
+            client=object(),
+            debug_run_service=object(),
+        )
         infra.transport_runtimes.append(runtime)
         return runtime
 

@@ -40,11 +40,6 @@ from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import (
     parse_manual_bin_admission_request,
     parse_manual_bin_admission_response,
 )
-from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
-    MANUAL_BIN_APPLY_REPORT_OPERATION,
-    parse_manual_bin_apply_report_request,
-    parse_manual_bin_apply_report_response,
-)
 from src.app.wms_adapter.outbound_picking.return_batch_wire import (
     BIN_RETURN_BATCH_OPERATION,
     BinReturnBatchRequest,
@@ -1039,7 +1034,7 @@ async def decide_return_batch(request: Request) -> Response:
             prepared_task_id = transport_submission_store.prepared_manual_task()
             response["data"] = (
                 {"result": "WORK_REQUIRED", "task_id": prepared_task_id}
-                if prepared_task_id is not None
+                if prepared_task_id == parsed.data.task_id
                 else {"result": "WAIT", "retry_after_ms": 1000}
             )
         parse_manual_bin_admission_response(status, response, request=parsed if status == 200 else None)
@@ -1054,48 +1049,6 @@ async def decide_return_batch(request: Request) -> Response:
         )
         return JSONResponse(status_code=status, content=response)
     status, response = transport_submission_store.decide_return_batch(envelope)
-    return JSONResponse(status_code=status, content=response)
-
-
-@app.post(FACT_PATH, tags=[WMS_TRANSPORT_CONTRACT_TAG])
-async def record_manual_bin_apply_report(request: Request) -> Response:
-    if (
-        not is_json_utf8_media_type(request.headers.get("content-type", ""))
-        or request.headers.get("content-encoding", "identity").casefold() != "identity"
-    ):
-        return Response(status_code=400)
-    try:
-        envelope = loads_transport_json((await request.body()).decode("utf-8"))
-    except (UnicodeDecodeError, StrictJsonError):
-        return Response(status_code=400)
-    identity = _valid_identity(envelope)
-    if identity is None:
-        return Response(status_code=400)
-    operation, operation_id = identity
-    digest = _message_digest(envelope)
-    existing = transport_submission_store.existing(operation, operation_id, digest, None)
-    if existing is not None:
-        status, response = existing
-        return JSONResponse(status_code=status, content=response)
-    try:
-        parsed = parse_manual_bin_apply_report_request(envelope)
-    except ValidationError:
-        status = 422
-        reason = "INVALID_DATA" if operation == MANUAL_BIN_APPLY_REPORT_OPERATION else "UNSUPPORTED_OPERATION"
-        response = _ack(operation_id, "REJECTED", None, reason_code=reason)
-    else:
-        status = 200
-        response = _ack(operation_id, "RECORDED", None)
-    parse_manual_bin_apply_report_response(status, response, request=parsed if status == 200 else None)
-    transport_submission_store.store(
-        operation=operation,
-        operation_id=operation_id,
-        transport_task_id=None,
-        request=envelope,
-        digest=digest,
-        status_code=status,
-        response=response,
-    )
     return JSONResponse(status_code=status, content=response)
 
 

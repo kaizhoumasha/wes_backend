@@ -116,10 +116,12 @@ exchange_bins(client_request_id, caller, exchange_pairs) -> TransportHandle
 无论输入是哪种位置，WES 创建任务前都必须已有该货架的可信精确 `RACK_POSITION` 与当前工作面；精确输入还必须与投影完全一致。
 当前位置或当前工作面未知时失败关闭，WES 不从旧数据、目标面或业务流程推断当前事实。
 
-货架任务携带真实 `rcs_template_id`。五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
-人工出库的转运货架使用 `F01` 出库，支持 `RACK → RACK_POSITION`。已确认的两类货架完整规则及各入口实现范围见
+货架任务携带真实 `rcs_template_id`。默认推荐五层货架库位到工作位使用 `CTU01`，工作位原地旋转使用 `CTU02`，工作位返回库位使用 `CTU03`；
+人工出库的转运货架默认使用 `F01` 出库。已确认的两类货架推荐规则及各入口实现范围见
 [人工出库货架搬运规则](../integration/manual-outbound-rack-transport.md)。
 调用方未指定时，WES 在形成不可变请求前规范化为 `F01`。Wire 始终发送明确值，WES 不根据位置编码反推模板，也不建立模板配置映射。
+只要位置与模板各自满足结构合同，WES 就接受、冻结并原样转发，不校验 `source.kind + target.kind + rcs_template_id` 场景组合；
+具体组合是否受支持由 WMS/RCS 判断并通过现有接纳或失败结果返回。
 
 #### 批量搬运料箱 `move_bins()`
 
@@ -280,8 +282,8 @@ Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要
 `rcs_template_id` 只允许 `CTU01 | CTU02 | CTU03 | F01`，分别表示库位到工作位、工作位原地旋转、工作位返回库位和默认模板。
 调用方省略与显式 `F01` 在规范化后形成相同请求；模板、位置和面向值全部进入不可变请求快照及摘要。
 
-货架搬运场景固定如下。`RACK` 和 `ZONE` 是宽泛位置选择器；成功结果一律返回实际到达的精确
-`RACK_POSITION/location_code`。
+下表是调用方已确认的默认推荐处理逻辑，不是 WES 准入白名单。`RACK` 和 `ZONE` 是宽泛位置选择器；成功结果一律返回实际到达的精确
+`RACK_POSITION/location_code`。表外的结构合法组合同样由 WES 接受并转发，WMS/RCS 负责判断模板和位置组合是否可执行。
 
 | 场景 | `rcs_template_id` | `source.kind` | `target.kind` | 成功结果约束 |
 | --- | --- | --- | --- | --- |
@@ -297,7 +299,7 @@ Unicode code point 序列与冻结值精确相等。`RACK_POSITION` 目标还要
 | 工作位返回精确库位 | `CTU03` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
 | 其它精确位置搬运 | `F01` | `RACK_POSITION` | `RACK_POSITION` | 等于请求目标 |
 
-上述十种货架场景以及 `BIN_MOVE`、`BIN_EXCHANGE` 的完整提交与结果 JSON，见
+上述推荐货架场景以及 `BIN_MOVE`、`BIN_EXCHANGE` 的完整提交与结果 JSON，见
 [WES 与 WMS 接口需求说明](../integration/wes-wms-interface-requirements.md) 第 3.1 节。
 
 `RACK_ROTATE` 创建任务前，WES 必须确认货架已有可信精确位置，且 `target_face` 不同于可信当前面；WMS 返回 `RECEIVED` 前使用

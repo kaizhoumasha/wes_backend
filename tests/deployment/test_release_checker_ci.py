@@ -42,13 +42,11 @@ def test_production_checker_image_contains_only_checker_and_pinned_binary() -> N
 def test_checker_ci_is_scoped_to_checker_inputs_and_owns_its_tests() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
 
-    assert "currentBuild.previousBuild == null" in pipeline
-    for path in (
-        "tools/release_checker/**",
-        "Jenkinsfile.release-checker-ci",
-        "tests/deployment/test_release_checker_ci.py",
-    ):
-        assert f'changeset "{path}"' in pipeline
+    assert "CHECKER_INPUT_CHANGED" in pipeline
+    assert "git diff --quiet" in pipeline
+    assert "tools/release_checker" in pipeline
+    assert "Jenkinsfile.release-checker-ci" in pipeline
+    assert "tests/deployment/test_release_checker_ci.py" in pipeline
     assert "--target testing" in pipeline
     assert "/opt/tools/release_checker/tests" in pipeline
     assert "tests/deployment/test_release_checker_ci.py" in pipeline
@@ -56,6 +54,21 @@ def test_checker_ci_is_scoped_to_checker_inputs_and_owns_its_tests() -> None:
     assert "--confcutdir=tests/deployment" in pipeline
     assert "--target production" in pipeline
     assert "tools/release_checker" in pipeline
+
+
+def test_checker_ci_uses_exact_internal_checkout_and_only_publishes_verified_pushes() -> None:
+    pipeline = JENKINSFILE.read_text(encoding="utf-8")
+
+    assert "checkout scm" not in pipeline
+    assert "deleteDir()" in pipeline
+    assert "git remote add origin http://192.168.0.220:9080/wes/wes_backend.git" in pipeline
+    assert "fetch --no-tags --force --filter=blob:none origin" in pipeline
+    assert "Fetched source ref must match the trusted event commit" in pipeline
+    assert "git merge-base --is-ancestor" in pipeline
+    assert "CI_RELEASE_GATE_READY" in pipeline
+    assert "env.CI_EVENT_TYPE == 'PUSH'" in pipeline
+    assert "env.CI_IS_MERGE_REQUEST != 'true'" in pipeline
+    assert "env.CI_RELEASE_GATE_READY == 'true'" in pipeline
 
 
 def test_checker_ci_pushes_immutable_and_channel_tags_and_records_digest() -> None:

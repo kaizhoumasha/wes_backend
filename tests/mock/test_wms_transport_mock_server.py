@@ -310,7 +310,6 @@ def test_wms_business_routes_require_no_authentication() -> None:
     assert business_routes == {
         "/api/v1/wes/transport-requests",
         "/api/v1/wes/decisions",
-        "/api/v1/wes/facts",
     }
 
 
@@ -1258,7 +1257,7 @@ def test_return_batch_allocates_free_learned_slots_in_fifo_and_replays_exactly()
     parse_bin_return_batch_response(409, conflict.json())
 
 
-def test_manual_bin_admission_and_apply_report_support_console_happy_path():
+def test_manual_bin_admission_supports_console_happy_path():
     prepare = {
         "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4520",
         "operation": "outbound.picking_task.prepare@v1",
@@ -1269,33 +1268,17 @@ def test_manual_bin_admission_and_apply_report_support_console_happy_path():
         "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4521",
         "operation": "outbound.manual_bin.work_admission_decide@v1",
         "timestamp": 1_788_390_000_001,
-        "data": {"bin_code": "BIN-001", "scanned_at": 1_788_390_000_000},
-    }
-    report = {
-        "operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4522",
-        "operation": "outbound.manual_bin.completion_apply_report@v1",
-        "timestamp": 1_788_390_000_003,
-        "data": {
-            "completion_operation_id": "019f12d0-58d7-7b4d-a23a-1b90aa5d4523",
-            "task_id": "PICK-001",
-            "bin_code": "BIN-001",
-            "apply_revision": 1,
-            "apply_result": "APPLIED",
-            "occurred_at": 1_788_390_000_002,
-        },
+        "data": {"task_id": "PICK-001", "bin_code": "BIN-001", "scanned_at": 1_788_390_000_000},
     }
 
     with TestClient(wms_mock_server.app) as client:
         prepare_response = client.post("/api/v1/wes/decisions", json=prepare)
         admission_response = client.post("/api/v1/wes/decisions", json=admission)
-        report_response = client.post("/api/v1/wes/facts", json=report)
 
     assert prepare_response.status_code == 202
     assert admission_response.status_code == 200
     assert admission_response.json()["code"] == "DECIDED"
     assert admission_response.json()["data"] == {"result": "WORK_REQUIRED", "task_id": "PICK-001"}
-    assert report_response.status_code == 200
-    assert report_response.json()["code"] == "RECORDED"
 
 
 def test_return_batch_does_not_treat_transport_acceptance_as_free_slots():

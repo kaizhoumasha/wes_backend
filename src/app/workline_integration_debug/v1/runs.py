@@ -14,10 +14,6 @@ from src.app.wms_adapter.outbound_picking.completion_confirm_wire import Complet
 from src.app.wms_adapter.outbound_picking.departure_wire import RackDepartureData  # noqa: TC001
 from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BinInboundBatchData  # noqa: TC001
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import ManualBinAdmissionData  # noqa: TC001
-from src.app.wms_adapter.outbound_picking.manual_bin_apply_report_wire import (
-    ManualBinApplied,  # noqa: TC001
-    ManualBinReconciling,  # noqa: TC001
-)
 from src.app.wms_adapter.outbound_picking.return_batch_wire import BinReturnBatchData  # noqa: TC001
 from src.app.wms_adapter.outbound_picking.wire import BUSINESS_IDENTIFIER_PATTERN, PickingTaskPrepareData
 from src.app.workline_integration_debug.contracts import (
@@ -152,10 +148,6 @@ class DeviceActionRequest(ClientActionRequest):
     params: dict[str, object]
     timeout_ms: int = Field(ge=100, le=600_000)
     reason: _TEXT
-
-
-class CompletionApplyReportRequest(ClientActionRequest):
-    data: Annotated[ManualBinApplied | ManualBinReconciling, Field(discriminator="apply_result")]
 
 
 class ConfirmPhaseRequest(VersionRequest):
@@ -594,31 +586,6 @@ async def bind_completion(
 
 
 @router.post(
-    "/runs/{run_id}/wms/completion-apply-report",
-    summary="[ops:workline-integration-debug:operate] 发送完成决定应用结果 Operation",
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(RequirePermission("ops:workline-integration-debug:completion-apply-report"))],
-)
-async def send_apply_report(
-    request: Request,
-    payload: CompletionApplyReportRequest,
-    run_id: Annotated[_RUN_ID, Path()],
-) -> ResponseSchemaModel[IntegrationRunResponse]:
-    return _success(
-        await _domain_call(
-            _service(request).send_completion_apply_report(
-                run_id,
-                client_request_id=payload.client_request_id,
-                request_data=payload.data,
-                expected_version=payload.expected_version,
-                actor_id=request.state.user_id,
-            )
-        ),
-        accepted=True,
-    )
-
-
-@router.post(
     "/runs/{run_id}/transport",
     summary="[ops:workline-integration-debug:operate] 模拟或创建真实 Transport 调试动作",
     status_code=status.HTTP_202_ACCEPTED,
@@ -864,13 +831,6 @@ async def export_run(request: Request, run_id: Annotated[_RUN_ID, Path()]) -> Re
                     "path": "/api/v1/wms/events",
                     "operation": "outbound.manual_bin.work_completed@v1",
                     "wms_action": "PDA 子任务与 Bin 最终结果同事务提交后发送；503 使用原 identity 和原 body 重试。",
-                },
-                {
-                    "direction": "WES_TO_WMS",
-                    "method": "POST",
-                    "path": "/api/v1/wes/facts",
-                    "operation": "outbound.manual_bin.completion_apply_report@v1",
-                    "wms_action": "按 completion_operation_id + apply_revision 保存应用结果；同报告 identity 内容不得漂移。",
                 },
                 {
                     "direction": "WES_TO_WMS",

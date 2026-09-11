@@ -111,6 +111,18 @@ HEAVY selector 只负责测试选择，不能作为 FAST/FULL 发布模式真源
 4. `.env.test`、`.env.prod` 与 frontend 环境文件继续分离维护；只归档 hash，不记录秘密。
 5. producer PUBLISHED、Cloudflare preview、容器 healthy 或 HTTP readiness 均不能替代真实联调、设备或业务验收。
 
+## 失败分类与重试边界
+
+- `INFRA_DEPENDENCY_UNAVAILABLE`：Git、npm、PyPI 或 Registry 的 DNS、连接、下载失败；只允许有界重试，不归类为代码失败。
+- `QUALITY_FAILED`：测试、类型、lint、合同或镜像内容校验失败；修复代码或合同后再运行，不通过延长总超时规避。
+- `PRE_CUTOVER_ABORTED`：维护前的 candidate、checker、兼容或在线 readiness 失败；环境未切换，禁止直接描述为部署失败后已回滚。
+- `CUTOVER_FAILED_MAINTENANCE_HELD`：进入维护后失败；保持入口关闭并按失败阶段恢复，不能自动放行业务。
+- Jenkins 人工终止单独记录为 `ABORTED`，不得纳入代码失败率。
+
+镜像拉取最多执行 3 次指数退避。release readiness 查询失败必须输出脱敏的异常类型和 SQLSTATE；日志不得包含 SQL、连接串、字段值或业务数据。
+
+Controller executor 保持 `0`。CI 与 TEST deploy 应使用独立节点/标签；尚未拆分节点时，必须监控 CPU、内存、磁盘 I/O、Docker cache、DNS、Registry 延迟和 executor queue 后再调整并发数，不能只通过增加 executor 提升表面吞吐。
+
 ## 相关文档
 
 - [当前环境配置指南](jenkins-setup-current-env.md)

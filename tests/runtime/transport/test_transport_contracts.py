@@ -529,20 +529,20 @@ def test_transport_caller_keeps_only_local_routing_fields() -> None:
 
 
 @pytest.mark.parametrize(
-    ("source", "target", "template"),
+    ("source", "target"),
     [
-        (ZonePosition("ZONE-A"), RackPosition("WORK"), RcsTemplateId.CTU01),
-        (RackReference("rack-1"), RackPosition("WORK"), RcsTemplateId.CTU01),
-        (RackPosition("SOURCE"), RackPosition("WORK"), RcsTemplateId.CTU01),
-        (RackPosition("WORK"), RackReference("rack-1"), RcsTemplateId.CTU03),
-        (RackReference("rack-1"), ZonePosition("ZONE-A"), RcsTemplateId.CTU03),
-        (RackPosition("WORK"), ZonePosition("ZONE-A"), RcsTemplateId.CTU03),
-        (RackPosition("WORK"), RackPosition("TARGET"), RcsTemplateId.CTU03),
-        (RackPosition("WORK"), RackPosition("TARGET"), RcsTemplateId.F01),
-        (RackReference("rack-1"), RackPosition("WORK"), RcsTemplateId.F01),
+        (RackReference("rack-1"), ZonePosition("TARGET-ZONE")),
+        (RackReference("rack-1"), RackPosition("TARGET")),
+        (ZonePosition("SOURCE-ZONE"), RackReference("rack-1")),
+        (ZonePosition("SOURCE-ZONE"), ZonePosition("TARGET-ZONE")),
+        (ZonePosition("SOURCE-ZONE"), RackPosition("TARGET")),
+        (RackPosition("SOURCE"), RackReference("rack-1")),
+        (RackPosition("SOURCE"), ZonePosition("TARGET-ZONE")),
+        (RackPosition("SOURCE"), RackPosition("TARGET")),
     ],
 )
-def test_move_rack_accepts_only_approved_position_and_template_edges(
+@pytest.mark.parametrize("template", list(RcsTemplateId))
+def test_move_rack_accepts_any_position_and_template_combination(
     source: object,
     target: object,
     template: RcsTemplateId,
@@ -616,34 +616,6 @@ def test_required_face_values_reject_empty_or_non_string_values(target_face: obj
             RackPosition("SOURCE"),
             RackPosition("TARGET"),
             cast("str", target_face),
-        )
-
-
-@pytest.mark.parametrize(
-    ("source", "target", "template"),
-    [
-        (RackReference("rack-1"), ZonePosition("ZONE-A"), RcsTemplateId.CTU01),
-        (ZonePosition("ZONE-A"), RackReference("rack-1"), RcsTemplateId.CTU01),
-        (RackReference("rack-1"), RackReference("rack-1"), RcsTemplateId.CTU01),
-        (ZonePosition("ZONE-A"), ZonePosition("ZONE-B"), RcsTemplateId.CTU01),
-        (RackPosition("SOURCE"), ZonePosition("ZONE-A"), RcsTemplateId.F01),
-        (RackPosition("SOURCE"), RackPosition("TARGET"), RcsTemplateId.CTU02),
-    ],
-)
-def test_move_rack_rejects_unapproved_position_and_template_edges(
-    source: object,
-    target: object,
-    template: RcsTemplateId,
-) -> None:
-    with pytest.raises(TransportContractError):
-        MoveRackRequest(
-            _REQUEST_ID,
-            _caller(),
-            "rack-1",
-            cast("RackPosition", source),
-            cast("RackPosition", target),
-            "90",
-            template,
         )
 
 
