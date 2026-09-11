@@ -30,6 +30,8 @@
 
 | 路径 | 职责 |
 | --- | --- |
+| `docs/superpowers/specs/2026-09-10-station-driven-execution-recovery-top-level-design.md` | 点位事件驱动与执行恢复目标补充；ECS 自主运行、WES 可靠决策接入、WMS 最终对账，明确既有合同收敛范围与验收 |
+| `docs/superpowers/plans/2026-09-10-station-driven-execution-recovery-implementation-plan.md` | 本站执行恢复工程决定及 S0–S6 实施切片；基础、实际插件、WMS/ECS 和前端分别验收 |
 | `docs/architecture/SRS.md` | 产品需求、范围和参与方职责基线 |
 | `docs/superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md` | WES 最小执行架构顶层 SPEC；[第 7 章插件顶层设计](../superpowers/specs/2026-07-31-wes-minimal-execution-architecture-convergence-design.md#workline-plugin-top-level)统一能力边界、设备/工作线/WMS/ECS/RCS 关系、装配、生命周期与验收 |
 | `docs/superpowers/specs/2026-08-06-wes-outbound-operation-top-level-design.md` | 评审中的自动出库 PickingTask 和人工分拣 Bin 流转设计；包含 Task 驱动入站、PDA/WMS 分界、跨任务退料和物理清场 |

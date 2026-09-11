@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.3.0] - 2026-09-10
+
+### Fixed
+
+- 人工出库按计划货架角色选择出库模板：转运货架 F01、五层货架 CTU01；纯五层货架计划的到位确认不再等待无关的 WMS 退料货架上报。
+- WMS/RCS 成功回调省略、置空 arrival_face 时，使用冻结的 target_face 补全应用结果；保留原始 Evidence，显式面向冲突仍拒绝。
+- 入站批次支持 1–4 箱，第七步按 WMS 精确来源储位整批创建一个投料 TransportTask，保留完整批次身份与终态确认。
+
+### Documentation
+
+- 记录现场货架搬运规则、整批投料约定，以及工作台优化和站点驱动恢复的后续设计计划；计划内容不代表已实现。
+
 ## [0.42.2.0] - 2026-09-10
 
 ### Changed

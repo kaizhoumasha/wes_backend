@@ -151,9 +151,9 @@ def test_rack_bin_slot_rejects_nul_face() -> None:
         )
 
 
-@pytest.mark.parametrize("arrival_face", ["", 90, True])
-def test_rack_callback_rejects_empty_or_non_string_face(arrival_face: object) -> None:
-    with pytest.raises(TransportContractError, match="known rack result requires arrival_face"):
+@pytest.mark.parametrize("arrival_face", [90, True])
+def test_rack_callback_rejects_non_string_face(arrival_face: object) -> None:
+    with pytest.raises(TransportContractError, match="arrival_face must be a string"):
         validate_callback_envelope(_envelope(RESULT_OPERATION, _rack_result_data(arrival_face=arrival_face)))
 
 
@@ -681,13 +681,23 @@ def test_callback_positions_reject_text_longer_than_100_code_points(position: di
         validate_callback_envelope(_envelope(RESULT_OPERATION, data))
 
 
-@pytest.mark.parametrize("include_null", [False, True])
+@pytest.mark.parametrize("face_fields", [{}, {"arrival_face": None}, {"arrival_face": ""}])
 @pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED"])
-def test_rack_result_normalizes_missing_or_null_arrival_face(include_null: bool, status: str) -> None:
-    data = _rack_result_data(arrival_face=None, status=status)
-    if not include_null:
-        data.pop("arrival_face")
+def test_rack_result_normalizes_missing_or_empty_arrival_face(face_fields: dict[str, object], status: str) -> None:
+    data = _rack_result_data(status=status)
+    data.pop("arrival_face")
+    data.update(face_fields)
     if status == "FAILED":
         data["failure_code"] = "RCS_EXECUTION_FAILED"
+    result = validate_callback_envelope(_envelope(RESULT_OPERATION, data))
+    assert result["data"]["arrival_face"] is None
+
+
+@pytest.mark.parametrize("face_fields", [{}, {"arrival_face": None}, {"arrival_face": ""}])
+def test_unknown_rack_result_accepts_empty_face(face_fields: dict[str, object]) -> None:
+    data = _rack_result_data(status="FAILED")
+    data.pop("final_position")
+    data.pop("arrival_face")
+    data.update(position_unknown=True, failure_code="POSITION_UNKNOWN", **face_fields)
     result = validate_callback_envelope(_envelope(RESULT_OPERATION, data))
     assert result["data"]["arrival_face"] is None

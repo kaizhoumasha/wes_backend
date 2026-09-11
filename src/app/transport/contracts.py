@@ -274,7 +274,7 @@ class MoveRackRequest:
                 (RackPosition, ZonePosition),
                 (RackPosition, RackPosition),
             },
-            RcsTemplateId.F01: {(RackPosition, RackPosition)},
+            RcsTemplateId.F01: {(RackPosition, RackPosition), (RackReference, RackPosition)},
         }
         if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
             raise TransportContractError("rack source, target, and rcs_template_id are not an approved edge")

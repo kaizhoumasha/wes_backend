@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import wes_plugin_sdk as sdk
+from pydantic import ValidationError
 
 from src.app.device.endpoint import validate_device_endpoint_base_url
 from src.app.device.models.command import MANUAL_DEBUG_REF_TYPE, DeviceCommandRequestData
@@ -20,6 +21,7 @@ from src.app.execution.services.wms_confirmation_service import (
     WmsConfirmationLifecycleService,
 )
 from src.app.sys.services.event_stream_service import event_stream_service
+from src.app.transport.contracts import BinMove, HandoffPosition, RackBinSlot
 from src.app.wms_adapter.outbound_picking.arrival_report_typed import encode_request as encode_arrival_report
 from src.app.wms_adapter.outbound_picking.arrival_report_wire import RETURN_RACK_ARRIVAL_REPORT_OPERATION
 from src.app.wms_adapter.outbound_picking.completion_confirm_typed import encode_request as encode_completion_confirm
@@ -30,7 +32,11 @@ from src.app.wms_adapter.outbound_picking.completion_confirm_wire import (
 from src.app.wms_adapter.outbound_picking.departure_typed import encode_request as encode_departure
 from src.app.wms_adapter.outbound_picking.departure_wire import RACK_DEPARTURE_OPERATION, RackDepartureData
 from src.app.wms_adapter.outbound_picking.inbound_batch_typed import encode_request as encode_inbound_batch
-from src.app.wms_adapter.outbound_picking.inbound_batch_wire import BIN_INBOUND_BATCH_OPERATION, BinInboundBatchData
+from src.app.wms_adapter.outbound_picking.inbound_batch_wire import (
+    BIN_INBOUND_BATCH_OPERATION,
+    BinInboundBatchData,
+    BinInboundBatchReady,
+)
 from src.app.wms_adapter.outbound_picking.manual_bin_admission_wire import (
     MANUAL_BIN_ADMISSION_OPERATION,
     ManualBinAdmissionData,
@@ -458,8 +464,6 @@ class IntegrationDebugService:
         expected_version: int,
         actor_id: int,
     ) -> dict[str, Any]:
-        if request_data.max_bin_count != 1:
-            raise IntegrationDebugContractError("当前临时联调页面每次 inbound_batch 只支持 max_bin_count=1")
         now = timezone.now_for_db()
         async with self._sessions.begin() as db:
             run = await self._require_run(db, run_id, for_update=True)
@@ -905,6 +909,8 @@ class IntegrationDebugService:
                 "rcs_template_id": action.rcs_template_id,
                 "target_face": action.target_face,
             }
+            if IntegrationDebugPhase(run.current_phase) is IntegrationDebugPhase.BIN_TRANSPORT:
+                expected_request["inbound_bins"] = deepcopy(run.configuration_json.get("inbound_bins"))
             real_transport = profile_uses_real_transport(IntegrationDebugProfile(run.profile))
             existing = await self._runs.get_step_by_client_request_id(db, action.client_request_id, for_update=True)
             if existing is not None:
@@ -954,10 +960,12 @@ class IntegrationDebugService:
                     raise IntegrationDebugContractError(
                         "回库 Transport 必须先取得该货架的 departure_decide READY，并使用 WMS 返回的 rack_destination"
                     )
-            self._validate_batch_transport(IntegrationDebugPhase(run.current_phase), run.configuration_json, action)
+            bin_moves = self._validate_batch_transport(
+                IntegrationDebugPhase(run.current_phase), run.configuration_json, action
+            )
             if run.workline_code == "KT16":
-                self._validate_manual_outbound_transport(IntegrationDebugPhase(run.current_phase), action)
-            request = build_transport_request(action)
+                self._validate_manual_outbound_transport(IntegrationDebugPhase(run.current_phase), action, plan)
+            request = build_transport_request(action, bin_moves=bin_moves)
             handle = await self._transport.create_debug_task_in_session(db, request) if real_transport else None
             await self._append_step(
                 db,
@@ -1279,10 +1287,11 @@ class IntegrationDebugService:
     @staticmethod
     def _advance_inbound_batch(run: IntegrationRun, response_result: str | None, response_data: object) -> None:
         if response_result == "READY" and isinstance(response_data, dict):
-            bins = response_data.get("bins")
-            if not isinstance(bins, list) or len(bins) != 1:
-                raise IntegrationDebugConflict("当前临时联调页面要求 inbound_batch READY 恰好返回 1 个 Bin")
-            run.configuration_json = {**run.configuration_json, "inbound_bins": bins}
+            try:
+                batch = BinInboundBatchReady.model_validate({"result": "READY", "bins": response_data.get("bins")})
+            except ValidationError as exc:
+                raise IntegrationDebugConflict("inbound_batch READY 必须包含 1–4 个有效且不重复的料箱") from exc
+            run.configuration_json = {**run.configuration_json, "inbound_bins": batch.model_dump(mode="json")["bins"]}
             run.current_phase = IntegrationDebugPhase.BIN_TRANSPORT
             run.status = IntegrationDebugRunStatus.ACTIVE
         elif response_result == "NO_BATCH":
@@ -1290,9 +1299,7 @@ class IntegrationDebugService:
         elif response_result == "RACK_FACE_DONE":
             run.status = IntegrationDebugRunStatus.NEEDS_ATTENTION
             run.attention_code = "RACK_FACE_DONE"
-            run.attention_detail = (
-                "WMS 已关闭当前来源货架面；当前临时单箱联调不自动调度下一来源面，请现场协调后关闭本 run。"
-            )
+            run.attention_detail = "WMS 已关闭当前来源货架面；当前联调不自动调度下一来源面，请现场协调后关闭本 run。"
         else:
             raise IntegrationDebugConflict("inbound_batch 响应结果不在固定联合内")
 
@@ -1911,7 +1918,12 @@ class IntegrationDebugService:
                     for step in await self._runs.list_steps(db, run_id)
                     if step.phase == current and step.operation == RETURN_RACK_ARRIVAL_REPORT_OPERATION
                 ]
-                if not arrival_steps or any(step.status != "SUCCEEDED" for step in arrival_steps):
+                # 到位上报只适用于 direct_picks 退料货架；纯五层货架计划没有此 WMS 义务。
+                plan = run.configuration_json.get("plan_resources")
+                missing_required_report = not arrival_steps and (
+                    not isinstance(plan, dict) or plan.get("direct_picks") != []
+                )
+                if missing_required_report or any(step.status != "SUCCEEDED" for step in arrival_steps):
                     raise IntegrationDebugConflict("货架到位上报尚未取得 WMS 完成确认")
             if current is IntegrationDebugPhase.POINT2_RELEASE:
                 phase_steps = [
@@ -2238,23 +2250,35 @@ class IntegrationDebugService:
     def _validate_manual_outbound_transport(
         phase: IntegrationDebugPhase,
         action: IntegrationTransportAction,
+        plan_resources: dict[str, Any] | None,
     ) -> None:
         if phase is IntegrationDebugPhase.RACK_TRANSPORT:
             if action.kind is not IntegrationTransportActionKind.MOVE_RACK:
                 raise IntegrationDebugContractError("KT16 出库货架步骤只允许 MOVE_RACK")
-            if action.rcs_template_id != MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_rcs_template"]:
-                raise IntegrationDebugContractError("KT16 出库必须使用 CTU01")
             if action.source != {"kind": "RACK", "location_code": action.rack_id}:
                 raise IntegrationDebugContractError("KT16 出库来源必须直接使用货架号")
-            allowed_targets = {
-                MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_transfer_position"],
-                *MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"],
-            }
-            if (
-                action.target.get("kind") != "RACK_POSITION"
-                or action.target.get("location_code") not in allowed_targets
-            ):
-                raise IntegrationDebugContractError("KT16 出库目标工作位只能是 OUT65、KT16 或 KT17")
+            if not isinstance(plan_resources, dict):
+                raise IntegrationDebugContractError("出库搬运缺少已应用的 plan_delta 资源")
+            target_rack = plan_resources.get("target_rack")
+            if isinstance(target_rack, dict) and target_rack.get("rack_id") == action.rack_id:
+                resource = target_rack
+                template = "F01"
+                positions = [MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_transfer_position"]]
+            else:
+                resource = next(
+                    (row for row in plan_resources.get("bin_source_racks", []) if row["rack_id"] == action.rack_id),
+                    None,
+                )
+                if resource is None:
+                    raise IntegrationDebugContractError("出库货架必须是 plan_delta 的转运货架或五层来源货架")
+                template = MANUAL_OUTBOUND_SITE_CONFIGURATION["outbound_rcs_template"]
+                positions = MANUAL_OUTBOUND_SITE_CONFIGURATION["bin_rack_positions"]
+            if action.rcs_template_id != template:
+                raise IntegrationDebugContractError(f"该资源的出库搬运必须使用 {template}")
+            if action.target.get("kind") != "RACK_POSITION" or action.target.get("location_code") not in positions:
+                raise IntegrationDebugContractError(f"该资源的目标工作位只能是 {'、'.join(positions)}")
+            if action.target_face != resource.get("rack_face"):
+                raise IntegrationDebugContractError("出库目标面必须与 plan_delta 的 rack_face 完全一致")
         elif phase is IntegrationDebugPhase.BIN_TRANSPORT:
             if action.kind is not IntegrationTransportActionKind.MOVE_BINS or action.target != {
                 "kind": "HANDOFF_POSITION",
@@ -2285,26 +2309,40 @@ class IntegrationDebugService:
         phase: IntegrationDebugPhase,
         configuration: dict[str, Any],
         action: IntegrationTransportAction,
-    ) -> None:
+    ) -> tuple[BinMove, ...] | None:
         if phase is IntegrationDebugPhase.BIN_TRANSPORT:
-            bins = configuration.get("inbound_bins")
-            member = bins[0] if isinstance(bins, list) and len(bins) == 1 else None
-            locator = member.get("source_locator") if isinstance(member, dict) else None
-            expected_source = (
-                {"kind": "RACK_BIN_SLOT", **{key: locator[key] for key in ("rack_id", "rack_face", "slot_id")}}
-                if isinstance(locator, dict)
-                and all(isinstance(locator.get(key), str) for key in ("rack_id", "rack_face", "slot_id"))
-                else None
-            )
+            try:
+                batch = BinInboundBatchReady.model_validate(
+                    {"result": "READY", "bins": configuration.get("inbound_bins")}
+                )
+            except ValidationError as exc:
+                raise IntegrationDebugContractError("缺少有效的 WMS inbound_batch READY 完整批次") from exc
+            site = configuration.get("site_configuration", MANUAL_OUTBOUND_SITE_CONFIGURATION)
+            expected_target = {"kind": "HANDOFF_POSITION", "location_code": site["infeed_position"]}
             if (
-                not isinstance(member, dict)
-                or action.bin_code != member.get("bin_code")
-                or expected_source is None
-                or action.source != expected_source
-                or action.rack_id != expected_source["rack_id"]
+                action.kind is not IntegrationTransportActionKind.MOVE_BINS
+                or action.bin_code is not None
+                or action.source != {"kind": "RACK", "location_code": action.rack_id}
+                or action.target != expected_target
+                or any(member.source_locator.rack_id != action.rack_id for member in batch.bins)
+                or len({member.source_locator.rack_face for member in batch.bins}) != 1
             ):
-                raise IntegrationDebugContractError("入站料箱 Transport 必须逐字段匹配 WMS inbound_batch READY 成员")
-        elif phase is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
+                raise IntegrationDebugContractError(
+                    "投料 Transport 必须引用 WMS inbound_batch READY 整批料箱并送至投料口"
+                )
+            return tuple(
+                BinMove(
+                    member.bin_code,
+                    RackBinSlot(
+                        member.source_locator.rack_id,
+                        member.source_locator.rack_face,
+                        member.source_locator.slot_id,
+                    ),
+                    HandoffPosition(site["infeed_position"]),
+                )
+                for member in batch.bins
+            )
+        if phase is IntegrationDebugPhase.BIN_RETURN_TRANSPORT:
             moves = configuration.get("return_moves")
             move = moves[0] if isinstance(moves, list) and len(moves) == 1 else None
             locator = move.get("target") if isinstance(move, dict) else None
@@ -2323,6 +2361,7 @@ class IntegrationDebugService:
                 or action.rack_id != expected_target["rack_id"]
             ):
                 raise IntegrationDebugContractError("退箱 Transport 必须逐字段匹配 WMS return_batch READY 队首 move")
+        return None
 
     @staticmethod
     def _device_action_succeeded(step: IntegrationRunStep, profile: IntegrationDebugProfile) -> bool:

@@ -461,3 +461,29 @@ async def test_duplicate_evidence_ack_reuses_owner_snapshot_across_a_new_handler
     assert first.body["operation_id"] == duplicate.body["operation_id"] == operation_id
     assert first.body["timestamp"] == duplicate.body["timestamp"]
     assert first.body["data"] == duplicate.body["data"] == {"transport_task_id": "transport-1"}
+
+
+@pytest.mark.asyncio
+async def test_rack_arrival_empty_forms_share_canonical_message_and_are_accepted() -> None:
+    recorder = FakeRecorder()
+    handler = TransportEventHandler(recorder)
+    for face_fields in ({}, {"arrival_face": None}, {"arrival_face": ""}):
+        response = await handler.handle(
+            _body(
+                "transport.task.resulted@v1",
+                {
+                    "transport_task_id": "transport-1",
+                    "kind": "RACK_MOVE",
+                    "outcome_revision": 1,
+                    "rack_id": "rack-1",
+                    "status": "SUCCEEDED",
+                    "final_position": {"kind": "RACK_POSITION", "location_code": "TARGET"},
+                    **face_fields,
+                },
+            )
+        )
+        assert response.http_status in {200, 202}
+        assert response.body["code"] in {"RECEIVED", "DUPLICATE"}
+    assert all(call["rejection_reason_code"] is None for call in recorder.calls)
+    assert recorder.calls[0]["message"] == recorder.calls[1]["message"] == recorder.calls[2]["message"]
+    assert recorder.calls[0]["payload"]["arrival_face"] is None

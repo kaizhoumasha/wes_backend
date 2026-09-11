@@ -177,7 +177,10 @@ class CreateTransportTask:
                 (TransportRackPosition, TransportZonePosition),
                 (TransportRackPosition, TransportRackPosition),
             },
-            TransportRcsTemplateId.F01: {(TransportRackPosition, TransportRackPosition)},
+            TransportRcsTemplateId.F01: {
+                (TransportRackPosition, TransportRackPosition),
+                (TransportRackReference, TransportRackPosition),
+            },
         }
         if (type(self.source), type(self.target)) not in allowed_edges.get(self.rcs_template_id, set()):
             raise ValueError("source, target, and rcs_template_id are not an approved edge")

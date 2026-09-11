@@ -612,7 +612,7 @@ WMS/RCS 发送的 `transport.task.resulted@v1` 只表达通用搬运结果，不
 | `data.outcome_revision` | 是 | positive integer / WMS 原值 | 已应用的 `transport.task.resulted@v1` 结果版本 |
 | `data.rack_id` | 是 | string / WMS 原值 | 必须命中当前任务 `added_direct_picks[].source_locator.rack_id` |
 | `data.final_position` | 是 | `RACK_POSITION` / WMS Transport 结果原值 | 必须等于该 Transport 冻结的 WorkLine 退料货架目标工作位 |
-| `data.arrival_face` | 是 | code / WMS Transport 结果原值 | 必须等于该 Transport 已确认的实际到达面，并满足冻结目标面约束 |
+| `data.arrival_face` | 是 | code / WES 已应用 Transport 结果 | 使用回调非空面向；成功回调未提供时，按 Transport 合同使用原请求冻结的 `target_face` 补齐，并满足冻结目标面约束 |
 
 WES 只有在 `transport.task.resulted@v1` 已可靠保存并应用、`status=SUCCEEDED`，且 `rack_id + final_position + arrival_face` 与冻结
 Transport 目标完全一致时，才能形成这条上报。WES 在更新本地位置并确认该 Transport 的退料货架业务绑定时，使用现有
